@@ -42,6 +42,7 @@ from app.modules.retrieval.lexical_search import (
     LexicalSearchResult,
     LexicalSearchUnavailableError,
 )
+from app.modules.retrieval.query_embedding_cache import QueryEmbeddingCache
 from app.modules.retrieval.record_cut import (
     RecordCut,
     active_record_cut,
@@ -558,6 +559,7 @@ class RetrievalService:
         self._cached_dense_embeddings: Embeddings | None = None
         self._cached_embedding_config_hash: str | None = None
         self._embedding_model_lock = asyncio.Lock()
+        self._query_embeddings = QueryEmbeddingCache()
 
         self.logger.info(
             f"Retrieval service initialised: strategy='{collection_registry.strategy_name}', "
@@ -2781,18 +2783,26 @@ class RetrievalService:
 
         sparse_embedder = await self._ensure_sparse_embedder()
 
-        dense_tasks = [
-            await_with_retry(
-                lambda q=query: asyncio.wait_for(
-                    dense_embeddings.aembed_query(instruct_query(dense_embeddings, q)),
-                    timeout=attempt_timeout,
-                ),
+        # The same query is searched with the same vector for a while (see
+        # query_embedding_cache): a remote model's vectors vary slightly per call.
+        config_hash = getattr(self, "_cached_embedding_config_hash", None)
+        cache: QueryEmbeddingCache | None = getattr(self, "_query_embeddings", None)
+        instructed = [instruct_query(dense_embeddings, query) for query in queries]
+
+        async def embed(text: str) -> list[float]:
+            if cache is not None and (cached := cache.get(org_id, config_hash, text)) is not None:
+                return cached
+            vector = await await_with_retry(
+                lambda: asyncio.wait_for(dense_embeddings.aembed_query(text), timeout=attempt_timeout),
                 max_retries=_RETRIEVAL_EMBED_MAX_RETRIES,
                 operation="aembed_query",
                 service_name="retrieval",
             )
-            for query in queries
-        ]
+            if cache is not None and isinstance(vector, list):
+                cache.put(org_id, config_hash, text, vector)
+            return vector
+
+        dense_tasks = [embed(text) for text in instructed]
         supports_sparse = self._capabilities.supports_sparse_vectors
 
         # The tasks gather() starts copy the context when they are created, so the
