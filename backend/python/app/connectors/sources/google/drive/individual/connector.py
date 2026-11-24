@@ -475,9 +475,14 @@ class GoogleDriveIndividualConnector(BaseConnector):
         *,
         bypass_folder_filter: bool = False,
         permission_type: PermissionType = PermissionType.OWNER,
+        sharing_optional: bool = False,
     ) -> Optional[RecordUpdate]:
         """
         Process a single Google Drive file and detect changes.
+
+        ``sharing_optional``: a sharing read that fails leaves the shares unknown (stored ones kept) instead of
+        failing the item. A reindex sets it: it has no checkpoint to hold, so a failed item would be requeued at
+        its stored revision and a changed one would never be written.
 
         Args:
             metadata: Google Drive file metadata dictionary
@@ -606,17 +611,23 @@ class GoogleDriveIndividualConnector(BaseConnector):
                 is_shared=is_shared,
             )
 
-            if metadata.get("driveId"):
-                # Drive leaves `permissions` off shared-drive items; their own list says which grants were
-                # made on them, and carries the addresses Drive hid from the owner and the last modifier.
-                item_grants = await self._item_grants(metadata)
-                if item_grants is not None:
-                    people = drive_file_people(metadata, item_grants)
-                    file_record.shared_with = drive_shared_with(
-                        item_grants, owner_ids=set(), parent_grants=None, has_details=True
-                    )
-            elif grants is not None:
-                file_record.shared_with = await self._shared_with(metadata, grants, people.owners)
+            try:
+                if metadata.get("driveId"):
+                    # Drive leaves `permissions` off shared-drive items; their own list says which grants were
+                    # made on them, and carries the addresses Drive hid from the owner and the last modifier.
+                    item_grants = await self._item_grants(metadata)
+                    if item_grants is not None:
+                        people = drive_file_people(metadata, item_grants)
+                        file_record.shared_with = drive_shared_with(
+                            item_grants, owner_ids=set(), parent_grants=None, has_details=True
+                        )
+                elif grants is not None:
+                    file_record.shared_with = await self._shared_with(metadata, grants, people.owners)
+            except HttpError as e:
+                if not sharing_optional:
+                    raise
+                self.logger.info(f"Sharing of file {file_id} not read ({e.resp.status}); its stored shares are kept")
+                file_record.shared_with = None
             set_drive_people(file_record, people)
 
             if existing_record and not content_changed:
@@ -2610,7 +2621,8 @@ class GoogleDriveIndividualConnector(BaseConnector):
                 file_metadata,
                 user_id,
                 user_email,
-                record_group_id
+                record_group_id,
+                sharing_optional=True,
             )
 
             if not record_update or record_update.is_deleted:

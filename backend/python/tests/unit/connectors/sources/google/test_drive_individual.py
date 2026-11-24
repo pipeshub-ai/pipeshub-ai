@@ -932,6 +932,33 @@ class TestPersonalSharedDriveItemSharedWith:
         assert result.record.last_modified_by is None
         assert "LAST_MODIFIED_BY" in result.record.people_unknown
 
+    async def test_on_a_reindex_a_failed_sharing_read_leaves_the_shares_unknown_and_keeps_the_item(
+        self, connector
+    ) -> None:
+        """Sharing is optional to a reindex: a changed revision must still be written."""
+        from googleapiclient.errors import HttpError
+
+        connector.drive_data_source.permissions_list = AsyncMock(side_effect=HttpError(MagicMock(status=503), b"busy"))
+        connector._sync_ledger = MagicMock()
+
+        result = await connector._process_drive_item(
+            metadata=self._item(), user_id="u1", user_email="alice@example.com", drive_id="sd-1",
+            sharing_optional=True,
+        )
+
+        assert result is not None and result.record.shared_with is None
+        connector._sync_ledger.fail_item.assert_not_called()
+
+    async def test_a_reindex_reads_items_with_sharing_optional(self, connector) -> None:
+        connector._get_fresh_datasource = AsyncMock()
+        connector.drive_data_source.files_get = AsyncMock(return_value=self._item())
+        connector._process_drive_item = AsyncMock(return_value=None)
+        record = MagicMock(id="rec-1", external_record_id="file-1", external_record_group_id="sd-1")
+
+        await connector._check_and_fetch_updated_record("org-1", record, "u1", "alice@example.com")
+
+        assert connector._process_drive_item.await_args.kwargs["sharing_optional"] is True
+
     async def test_an_owner_address_the_items_list_carries_is_filled_in(self, connector) -> None:
         connector.drive_data_source.permissions_list = AsyncMock(return_value={"permissions": [
             {"id": "p-own", "type": "user", "role": "owner", "emailAddress": "own@ext.test",

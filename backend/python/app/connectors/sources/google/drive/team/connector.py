@@ -216,6 +216,7 @@ SYNCED_SHARED_DRIVES_SYNC_POINT_KEY = "synced_shared_drives"
 # Shared drives users reach that the admin listing lacks (another organization's), with the users who reach them.
 FOREIGN_SHARED_DRIVES_SYNC_POINT_KEY = "foreign_shared_drives"
 FOREIGN_DRIVE_PAGE_SIZE = 500
+FOREIGN_GROUP_REACH_DEPTH = 100
 DRIVE_RESTRICTIONS_SYNC_POINT_PREFIX = "shared_drive_restrictions_"
 # Stored beside the member groups' digests: the drive's direct members, whom a members-only drive's grants depend on.
 DRIVE_DIRECT_MEMBERS_MARK = "drive-members"
@@ -652,9 +653,6 @@ class GoogleDriveTeamConnector(BaseConnector):
         self._drive_principals: dict[str, tuple[set[str], set[str]]] = {}
         # Per (user, folder), this run: the folder's sharing as that user reads it, None when unreadable.
         self._parent_grant_cache: dict[tuple[str, str], list[dict] | None] = {}
-        # Who each item was shared with, as last written this run: a later read that finds the same people is not
-        # written again, one that differs is.
-        self._shares_linked_this_run: dict[str, frozenset] = {}
         # Each permission id's address, as any read this run gave it: Drive leaves some addresses out of some
         # members' lists, and the same id is the same person.
         self._grant_emails_this_run: dict[str, str] = {}
@@ -665,6 +663,13 @@ class GoogleDriveTeamConnector(BaseConnector):
         # Per run: which foreign drives each user's listing showed, and the admin's drives.get answer for each drive
         # missing from its listing (True: it exists, so it is this Workspace's; False: foreign; None: not known).
         self._foreign_drives_reached_by: dict[str, set[str]] = {}
+        # Per run: the members whose READ grant on each foreign drive's group is written (stored or just written).
+        self._foreign_drive_granted: dict[str, set[str]] = {}
+        # Per run: whether a foreign drive's group reaches what is below a folder (every stored folder up to the
+        # drive inherits).
+        self._foreign_group_reach: dict[str, bool] = {}
+        # Per run: leavers whose grant removal failed, tried again next run rather than on each user's sync.
+        self._leaver_cleanup_failed: set[tuple[str, str]] = set()
         self._foreign_drive_confirmed: dict[str, bool | None] = {}
         self._group_people: dict[str, set[str] | None] = {}
         self._warned_groups: set[tuple[str, str]] = set()
@@ -941,7 +946,6 @@ class GoogleDriveTeamConnector(BaseConnector):
             self._assumed_restrictions = set()
             self._drive_principals = {}
             self._parent_grant_cache = {}
-            self._shares_linked_this_run = {}
             self._grant_emails_this_run = {}
             self._group_people = {}
             self._warned_groups = set()
@@ -961,6 +965,9 @@ class GoogleDriveTeamConnector(BaseConnector):
             self._deployment_emails = None
             self._foreign_drives_written = set()
             self._foreign_drives_reached_by = {}
+            self._foreign_drive_granted = {}
+            self._foreign_group_reach = {}
+            self._leaver_cleanup_failed = set()
             self._foreign_drive_confirmed = {}
             self._external_emails = set()
             self._undecided_visited = set()
@@ -4027,6 +4034,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                 self.data_entities_processor.note_kept_records(self.connector_id, batch)
                 kept += len(batch)
                 kept += await self._keep_unseen_audience_records_linked()
+            kept += await self._keep_memberless_foreign_drive_records(reconcile=reconcile, full_sync=full_sync)
         except Exception as e:
             self.logger.warning(
                 f"The undecided removals could not be read ({type(e).__name__}); nothing unseen is removed or unlinked"
@@ -4037,6 +4045,42 @@ class GoogleDriveTeamConnector(BaseConnector):
             f"{len(self._undecided_file_ids)} undecided removal(s) kept out of the stale-record cleanup; "
             f"{kept} kept linked through the full sync"
         )
+
+    async def _keep_memberless_foreign_drive_records(self, *, reconcile: bool, full_sync: bool) -> int:
+        """Keep the records of each stored foreign drive nobody reaches any more from a full sync's removals.
+
+        Its group's grants are revoked and its records kept (`_note_foreign_drives_reached`), but no listing reads
+        it, so the stale-record cleanup and the full-sync unlink would otherwise take them. A drive with members is
+        read by their syncs, so a file gone from it is still removed. Returns how many; a failed read raises.
+        """
+        stored = await self.drive_delta_sync_point.read_sync_point(FOREIGN_SHARED_DRIVES_SYNC_POINT_KEY) or {}
+        raw = stored.get("drives") or "{}"
+        known = json.loads(raw) if isinstance(raw, str) else {}
+        kept = 0
+        for drive_id, entry in sorted(known.items()):
+            if entry.get("members"):
+                continue
+            group = await self.data_entities_processor.get_record_group_by_external_id(self.connector_id, drive_id)
+            if group is None or not getattr(group, "id", None):
+                continue
+            after_key: str | None = None
+            while True:
+                page = await self.data_entities_processor.get_records_by_status(
+                    self.connector_id, None, limit=FOREIGN_DRIVE_PAGE_SIZE, record_group_id=group.id,
+                    after_key=after_key, visibility=RecordVisibility.ALL,
+                )
+                if not isinstance(page, list):
+                    raise TypeError(f"the records of shared drive {drive_id} were not readable")
+                if reconcile:
+                    for record in page:
+                        self._sync_ledger.see(record.external_record_id)
+                if full_sync:
+                    self.data_entities_processor.note_kept_records(self.connector_id, [r.id for r in page])
+                kept += len(page)
+                if len(page) < FOREIGN_DRIVE_PAGE_SIZE or not getattr(page[-1], "id", None):
+                    break
+                after_key = page[-1].id
+        return kept
 
     async def _keep_unseen_audience_records_linked(self) -> int:
         """Note kept each stored record this run did not see that is granted to an audience group, paging the stored
@@ -5211,7 +5255,6 @@ class GoogleDriveTeamConnector(BaseConnector):
         grants = self._with_known_addresses(grants)
         people = drive_file_people(metadata, grants)
         set_drive_people(record, people)
-        file_id = str(metadata.get("id") or "")
         allowed = getattr(permissions, "allowed_email", None)
         if allowed is not None:
             # A shared drive's restrictions cut some of the listed people out; they cannot open the item.
@@ -5233,13 +5276,6 @@ class GoogleDriveTeamConnector(BaseConnector):
             parent_grants=parent_grants,
             has_details=details,
         )
-        if record.shared_with is not None and file_id:
-            shared = frozenset((p.source_id, (p.email or "").lower()) for p in record.shared_with)
-            if self._shares_linked_this_run.get(file_id) == shared:
-                # Every member's sync of a shared-drive item reads the same list: written once, not once each.
-                record.shared_with = None
-            else:
-                self._shares_linked_this_run[file_id] = shared
 
     def _with_known_addresses(self, grants: list[dict]) -> list[dict]:
         """The grants, each missing address filled from what an earlier read this run gave the same permission id."""
@@ -5588,6 +5624,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                 elif (
                     is_fallback_permissions and read_as["inherits_from_drive"] and not limited_access
                     and self._reaches_foreign_drive(user_email, item_drive_id)
+                    and await self._foreign_group_reaches(item_drive_id, (metadata.get("parents") or [None])[0])
                 ):
                     # A member of another organization's drive reads it through that drive's group, as members of
                     # this Workspace's drives do: a grant of their own would outlast their leaving the drive.
@@ -7028,8 +7065,41 @@ class GoogleDriveTeamConnector(BaseConnector):
         return self._foreign_drive_confirmed[drive_id]
 
     def _reaches_foreign_drive(self, user_email: str | None, drive_id: str | None) -> bool:
-        """Whether this user's own drive listing this run showed this foreign drive: they read it through its group."""
-        return bool(drive_id) and drive_id in self._foreign_drives_reached_by.get((user_email or "").lower(), set())
+        """Whether this user reads this foreign drive through its group: their own listing this run showed it, and
+        their READ grant on the group is written. Until it is, a grant of their own is all their access."""
+        email = (user_email or "").lower()
+        return (
+            bool(drive_id) and drive_id in self._foreign_drives_reached_by.get(email, set())
+            and email in self._foreign_drive_granted.get(drive_id or "", set())
+        )
+
+    async def _foreign_group_reaches(self, drive_id: str | None, parent_id: str | None) -> bool:
+        """Whether a foreign drive's group reaches an item below ``parent_id``: every folder between them is stored
+        and inherits. A limited folder cuts the group off, and a folder not stored yet is not known to pass it on;
+        either way the reader keeps a grant of their own."""
+        path: list[str] = []
+        current = parent_id
+        reaches = True
+        while current and current != drive_id:
+            if current in self._foreign_group_reach:
+                reaches = self._foreign_group_reach[current]
+                break
+            if current in path or len(path) >= FOREIGN_GROUP_REACH_DEPTH:
+                reaches = False
+                break
+            path.append(current)
+            folder = await self.data_entities_processor.get_record_by_external_id(
+                connector_id=self.connector_id, external_record_id=current
+            )
+            if folder is None or not await self.data_entities_processor.inheritance_when_unreadable(
+                CollectionNames.RECORDS.value, folder.id
+            ):
+                reaches = False
+                break
+            current = folder.parent_external_record_id
+        for folder_id in path:
+            self._foreign_group_reach[folder_id] = reaches
+        return reaches
 
     async def _prune_foreign_drives(self) -> None:
         """Once a run, after the users' syncs: drop the members who are no longer users this deployment syncs.
@@ -7057,7 +7127,12 @@ class GoogleDriveTeamConnector(BaseConnector):
             raw = stored.get("drives") or "{}"
             known = json.loads(raw) if isinstance(raw, str) else {}
             drives = {
-                drive_id: {"name": entry.get("name") or drive_id, "members": list(entry.get("members") or [])}
+                drive_id: {
+                    "name": entry.get("name") or drive_id,
+                    "members": list(entry.get("members") or []),
+                    # Revoked from the group, with grants of their own on the drive's files still to remove.
+                    "leavers": list(entry.get("leavers") or []),
+                }
                 for drive_id, entry in known.items()
                 # A drive the admin listing now has is synced, and its grants written, by the admin path.
                 if drive_id not in self._listed_shared_drive_ids
@@ -7079,7 +7154,7 @@ class GoogleDriveTeamConnector(BaseConnector):
             # sees its group and grants; after that only when its membership changes.
             to_write = (set(reached) | set(drives)) - self._foreign_drives_written - unknown
             for drive_id, name in reached.items():
-                entry = drives.setdefault(drive_id, {"name": name, "members": []})
+                entry = drives.setdefault(drive_id, {"name": name, "members": [], "leavers": []})
                 if email not in entry["members"] or entry["name"] != name:
                     to_write.add(drive_id)
                 entry["members"] = sorted({*entry["members"], email})
@@ -7096,16 +7171,40 @@ class GoogleDriveTeamConnector(BaseConnector):
                     to_write.add(drive_id)
             written: dict[str, dict] = {}
             for drive_id in sorted(to_write):
+                entry = drives[drive_id]
                 try:
-                    await self._write_foreign_drive(drive_id, drives[drive_id])
-                    for leaver in sorted(before.get(drive_id, set()) - set(drives[drive_id]["members"])):
-                        await self._drop_leaver_grants(drive_id, leaver)
+                    await self._write_foreign_drive(drive_id, entry)
                 except Exception as e:
                     self._sync_ledger.note_incomplete()
                     self.logger.error(f"Foreign shared drive {drive_id} not updated: {e}", exc_info=True)
                     continue
                 self._foreign_drives_written.add(drive_id)
-                written[drive_id] = drives[drive_id]
+                # The revocation is written: later writes start from it, whatever happens to the leavers' own
+                # grants. One who is a member again keeps theirs.
+                gone = before.get(drive_id, set()) - set(entry["members"])
+                entry["leavers"] = sorted((set(entry["leavers"]) | gone) - set(entry["members"]))
+                written[drive_id] = entry
+            # A leaver's own grants on the drive's files are removed after the revocation, and retried each run
+            # until they are; a drive whose standing is unknown this run is left as stored.
+            for drive_id, entry in drives.items():
+                if drive_id in unknown or not entry["leavers"] or drive_id in to_write - set(written):
+                    continue
+                cleared = []
+                for leaver in entry["leavers"]:
+                    if (drive_id, leaver) in self._leaver_cleanup_failed:
+                        continue
+                    try:
+                        await self._drop_leaver_grants(drive_id, leaver)
+                    except Exception as e:
+                        self._leaver_cleanup_failed.add((drive_id, leaver))
+                        self._sync_ledger.note_incomplete()
+                        self.logger.error(f"Foreign shared drive {drive_id}: a leaver's grants not removed: {e}",
+                                          exc_info=True)
+                        continue
+                    cleared.append(leaver)
+                if cleared:
+                    entry["leavers"] = [m for m in entry["leavers"] if m not in cleared]
+                    written[drive_id] = entry
             # Only a membership whose grants were written is stored: one whose write failed keeps the stored entry,
             # so the next run finds the same change and writes the grants again.
             saved = {**known, **written}
@@ -7113,10 +7212,17 @@ class GoogleDriveTeamConnector(BaseConnector):
                 drive_id: entry for drive_id, entry in saved.items()
                 if drive_id not in self._listed_shared_drive_ids and drive_id not in dropped
             }
+            saved = {
+                drive_id: {k: v for k, v in entry.items() if k != "leavers" or v} for drive_id, entry in saved.items()
+            }
             if saved != known:
                 await self.drive_delta_sync_point.update_sync_point(
                     FOREIGN_SHARED_DRIVES_SYNC_POINT_KEY, {"drives": json.dumps(saved, sort_keys=True)}
                 )
+            # Who holds each drive's group grant: what is stored, as written by now.
+            self._foreign_drive_granted = {
+                drive_id: set(entry.get("members") or []) for drive_id, entry in saved.items()
+            }
 
     async def _drop_leaver_grants(self, drive_id: str, email: str) -> None:
         """Remove a leaver's own grants from a foreign drive's files.
@@ -8187,7 +8293,6 @@ class GoogleDriveTeamConnector(BaseConnector):
         try:
             # Folder sharing may have changed since an earlier call cached it.
             self._parent_grant_cache = {}
-            self._shares_linked_this_run = {}
             self._grant_emails_this_run = {}
             if not records:
                 self.logger.info("No records to reindex")

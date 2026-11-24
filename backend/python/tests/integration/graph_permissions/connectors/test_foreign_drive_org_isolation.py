@@ -63,9 +63,9 @@ async def test_a_foreign_drive_and_its_people_stay_in_the_org_that_reaches_it(ba
     await _user(backend, user_b, shared, org_b)
     await _user(backend, only_b_user, only_b, org_b)
     await _user(backend, user_a, shared, ORG)
-    for conn in (conn_b, conn_a):
+    for conn, org in ((conn_b, org_b), (conn_a, ORG)):
         await _seed_app(backend, conn, name="Drive Workspace", app_type=Connectors.GOOGLE_DRIVE_WORKSPACE.value,
-                        app_group="Google Workspace")
+                        app_group="Google Workspace", org=org)
     proc_a, _ = build_processor(backend.provider, ORG)
     proc_b, _ = build_processor(backend.provider, org_b)
     record_ids: list[str] = []
@@ -125,6 +125,10 @@ async def test_a_foreign_drive_and_its_people_stay_in_the_org_that_reaches_it(ba
         assert await _to(backend, f"{GROUPS}/{group_a.id}", CollectionNames.PERMISSION.value) == set()
         assert f"{USERS}/{user_a}" not in await _to(backend, f"{RECORDS}/{kept_a.id}", CollectionNames.PERMISSION.value)
 
+        # Each org's drive sits under that org's own connector.
+        assert f"{CollectionNames.APPS.value}/{conn_b}" not in await _from(backend, f"{GROUPS}/{group_a.id}", CollectionNames.BELONGS_TO.value)
+        assert f"{CollectionNames.APPS.value}/{conn_a}" not in await _from(backend, f"{GROUPS}/{group_b.id}", CollectionNames.BELONGS_TO.value)
+
         # Org B comes out as it wrote itself: its user still holds its drive, and no edge reaches org A.
         assert await _to(backend, f"{GROUPS}/{group_b.id}", CollectionNames.PERMISSION.value) == {f"{USERS}/{user_b}"}
         assert await _from(backend, f"{USERS}/{user_b}", CollectionNames.PERMISSION.value) == {f"{GROUPS}/{group_b.id}"}
@@ -144,3 +148,5 @@ async def test_a_foreign_drive_and_its_people_stay_in_the_org_that_reaches_it(ba
         if person is not None:
             await backend.provider.delete_nodes_and_edges([person.id], CollectionNames.PEOPLE.value)
         await backend.provider.delete_nodes_and_edges([user_b, only_b_user, user_a], USERS)
+        await backend.provider.delete_nodes_and_edges([conn_a, conn_b], CollectionNames.APPS.value)
+        await backend.provider.delete_nodes_and_edges([org_b], CollectionNames.ORGS.value)
