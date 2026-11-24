@@ -20,7 +20,7 @@ SECURITY DEFINER is looked for in function definitions):
     GRANT CREATE ON SCHEMA to the schema's vetted role for their own transaction); BYPASSRLS; MATERIALIZED VIEW;
     ALTER DEFAULT PRIVILEGES.
 Pure-Python revisions (no .sql) are not parsed by these rules. ``lint_revision`` reads every unreleased revision's .py for its index rules:
-a blocking index build on a table the revision does not create, and a DROP INDEX (also built at run time) without ``min_code_epoch``.
+a blocking index build on a table the revision does not create, and a DROP INDEX or any SQL not constant text without ``min_code_epoch``.
 Not covered: PG18-only syntax (guard with kernel.pg_major()).
 """
 import ast
@@ -111,13 +111,35 @@ def _contract(py_text: str) -> bool:
     return isinstance(mark, ast.Constant) and type(mark.value) is int and mark.value > 0
 
 
-def _const_str(node: ast.expr) -> str | None:
+def _const_str(node: ast.expr, consts: dict[str, str] | None = None) -> str | None:
+    """Constant text: a string literal, ``+`` of constant texts, a name in ``consts`` or an f-string of those; anything else is None."""
     if isinstance(node, ast.Constant) and isinstance(node.value, str):
         return node.value
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
-        a, b = _const_str(node.left), _const_str(node.right)
+        a, b = _const_str(node.left, consts), _const_str(node.right, consts)
         return None if a is None or b is None else a + b
+    if isinstance(node, ast.Name) and consts and node.id in consts:
+        return consts[node.id]
+    if isinstance(node, ast.JoinedStr):                  # f"DROP FUNCTION {SIG}" of module constants, without conversion or format
+        parts = [v.value if isinstance(v, ast.Constant) else
+                 _const_str(v.value, consts) if isinstance(v, ast.FormattedValue) and v.conversion == -1 and v.format_spec is None else None
+                 for v in node.values]
+        return None if None in parts else "".join(parts)
     return None
+
+
+def _module_consts(tree: ast.Module) -> dict[str, str]:
+    """Names the module assigns once, to constant text, and that nothing else in the file binds (a parameter, a local, a loop, an import):
+    a name with any other binding is not resolved, wherever it is used."""
+    binds: dict[str, int] = {}
+    for n in ast.walk(tree):
+        names = ([n.id] if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store) else
+                 [a.arg for a in (*n.posonlyargs, *n.args, *n.kwonlyargs, n.vararg, n.kwarg) if a] if isinstance(n, ast.arguments) else
+                 [(a.asname or a.name).split(".")[0] for a in n.names] if isinstance(n, (ast.Import, ast.ImportFrom)) else [])
+        for name in names:
+            binds[name] = binds.get(name, 0) + 1
+    return {n.targets[0].id: v for n in tree.body if isinstance(n, ast.Assign) and len(n.targets) == 1 and isinstance(n.targets[0], ast.Name)
+            and binds.get(n.targets[0].id) == 1 and (v := _const_str(n.value)) is not None}
 
 
 def _arg(call: ast.Call, i: int, kw: str) -> ast.expr | None:
@@ -204,36 +226,17 @@ def _call_name(f: ast.expr) -> str:
     return ""
 
 
-def _static(node: ast.expr, env: dict[str, list[ast.expr]], depth: int = 0) -> str:
-    """The text of a SQL argument with each part built at run time as ``\x00``: f-strings, ``+``, ``%`` and ``.format`` on a literal, and a name
-    assigned in the same function or at module level (every value it is assigned, each as a statement of its own: which one a call sees is not followed)."""
-    if isinstance(node, ast.Constant) and isinstance(node.value, str):
-        return node.value
-    if isinstance(node, ast.JoinedStr):
-        return "".join(v.value if isinstance(v, ast.Constant) else "\x00" for v in node.values)
-    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
-        return _static(node.left, env, depth) + _static(node.right, env, depth)
-    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mod):
-        return re.sub(r"%[sdr]", "\x00", _static(node.left, env, depth))
-    if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "format":
-        return re.sub(r"\{[^}]*\}", "\x00", _static(node.func.value, env, depth))
-    if isinstance(node, ast.Name) and node.id in env and depth < 5:
-        return ";\n".join(_static(v, env, depth + 1) for v in env[node.id])
-    return "\x00"
-
 
 def _upgrade_sql(py_text: str, runtime: list[str] | None = None) -> tuple[list[str], bool]:
     """SQL a revision runs: string constants passed to execute / exec_driver_sql / text / ensure_index and Alembic's schema API
     calls, in ``upgrade()`` and every module function it calls (``downgrade()`` is not read). True when some argument is not a
-    constant (not parsed); ``runtime`` collects such an argument's text as far as it is written in the file (``_static``).
+    constant (not parsed: an f-string, a non-constant ``+``, a call, a name that is not a module constant); ``runtime`` collects the source
+    of each such argument.
     shortcut: calls through objects other than module functions are not followed."""
-    body = ast.parse(py_text).body
+    tree = ast.parse(py_text)
+    body = tree.body
     funcs = {f.name: f for f in body if isinstance(f, ast.FunctionDef) and f.name != "downgrade"}
-    module_env: dict[str, list[ast.expr]] = {}          # module constants (UPGRADE = """...""") that a function passes by name
-    for n in body:
-        for t in (n.targets if isinstance(n, ast.Assign) else [n.target] if isinstance(n, ast.AnnAssign) and n.value else []):
-            if isinstance(t, ast.Name):
-                module_env.setdefault(t.id, []).append(n.value)
+    consts = _module_consts(tree)                       # UPGRADE = """...""" passed by name
     sql, dynamic, seen, todo = [], False, set(), ["upgrade"] if "upgrade" in funcs else []
     while todo:
         fn = funcs[todo.pop()]
@@ -243,10 +246,6 @@ def _upgrade_sql(py_text: str, runtime: list[str] | None = None) -> tuple[list[s
         nodes = list(ast.walk(fn))
         alias = {t.id for n in nodes if isinstance(n, ast.Assign) and _call_name(n.value) in _EXEC_CALLS
                  for t in n.targets if isinstance(t, ast.Name)}                   # run = conn.exec_driver_sql
-        env = {k: list(v) for k, v in module_env.items()}
-        for n in (n for n in nodes if isinstance(n, ast.Assign)):
-            for t in (t for t in n.targets if isinstance(t, ast.Name)):
-                env.setdefault(t.id, []).append(n.value)
         for call in (n for n in nodes if isinstance(n, ast.Call)):
             name = _call_name(call.func)
             if name in funcs and isinstance(call.func, ast.Name):
@@ -268,11 +267,11 @@ def _upgrade_sql(py_text: str, runtime: list[str] | None = None) -> tuple[list[s
             else:
                 continue
             for a in args:
-                v = _const_str(a)
+                v = _const_str(a, consts)
                 if v is None:
                     dynamic = True
                     if runtime is not None:
-                        runtime.append(_static(a, env))
+                        runtime.append(ast.unparse(a))
                 else:
                     sql.append(v)
     return sql, dynamic
@@ -445,8 +444,9 @@ def lint_revision(py: Path, released: dict[str, int]) -> list[str]:
       - ``ensure_partitioned_index(..., blocking=True)`` on a table this revision does not create, unless the index is one of the
         ``ONLINE_INDEXES`` of the revision or of a later one of its branch (db.migrate builds those before the transaction) or the module
         sets ``blocking_index_ok = "<why>"`` (an index on a column the revision adds cannot be built ahead): a blocking build keeps the table's writers waiting until the upgrade commits;
-      - SQL in ``upgrade()`` that is, or may be, a DROP INDEX (also built at run time: an f-string, ``+``, ``%``, ``.format``) without
-        ``min_code_epoch``: a drop inside the upgrade's transaction keeps every reader of the table waiting until the commit."""
+      - without ``min_code_epoch``, SQL in ``upgrade()`` that is a DROP INDEX or that is not constant text (an f-string, a non-constant ``+``,
+        ``%``, ``.format``, a call, a name other than a module constant): a drop inside the upgrade's transaction keeps every reader of the
+        table waiting until the commit, and SQL built at run time may be one."""
     text = py.read_text(encoding="utf-8")
     rev = _module_assign(text, "revision")
     branch, _, epoch = rev.value.rpartition("_") if isinstance(rev, ast.Constant) and isinstance(rev.value, str) else ("", "", "")
@@ -481,11 +481,11 @@ def lint_revision(py: Path, released: dict[str, int]) -> list[str]:
             continue
         bad.append(f"{py.name}: index {name or '<built at run time>'} on {table or '<built at run time>'} is built inside the upgrade's transaction "
                    "(blocking=True): list it in ONLINE_INDEXES, or set blocking_index_ok = \"<why it cannot be built ahead>\"")
-    if not _contract(text):                     # a .sql's revision has its constant SQL linted by lint_file
-        bad += [f"{py.name}: upgrade() may DROP INDEX without min_code_epoch: {s.replace(chr(0), '{...}')[:60]}"
-                for s in runtime + ([] if sql_file.is_file() else const_sql)
-                # a statement whose verb is built at run time may be a DROP INDEX too
-                if re.search(r"\bDROP\s+(?:INDEX\b|\x00)", s, re.I) or any(q.startswith("\x00") for q in statements(s))]
+    if not _contract(text):
+        # fail closed: SQL the lint cannot read to the end may be a DROP INDEX, wherever the unknown part is
+        bad += [f"{py.name}: upgrade() may DROP INDEX without min_code_epoch: SQL built at run time: {s[:60]}" for s in runtime]
+        bad += [f"{py.name}: upgrade() may DROP INDEX without min_code_epoch: {s[:60]}"     # a .sql's revision: lint_file reads its constant SQL
+                for s in ([] if sql_file.is_file() else const_sql) if re.search(r"\bDROP\s+INDEX\b", s, re.I)]
     return bad
 
 

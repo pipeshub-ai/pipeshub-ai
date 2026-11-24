@@ -691,13 +691,17 @@ def test_lint_takes_an_index_a_later_revision_lists_online_as_built_ahead(tmp_pa
     ("a module constant", 'UPGRADE = "DROP INDEX graph.x"\n\n\ndef upgrade():\n    op.execute(UPGRADE)\n', True),
     ("a module constant that is no drop", 'UPGRADE = "CREATE OR REPLACE VIEW graph.v AS SELECT 1"\n\n\ndef upgrade():\n    op.execute(UPGRADE)\n', False),
     ("its verb a parameter", 'def upgrade():\n    run(op.get_bind(), "x")\n\n\ndef run(c, sql):\n    c.exec_driver_sql(sql)\n', True),
-    ("a known CREATE INDEX prefix", 'def upgrade():\n    op.execute(f"CREATE INDEX IF NOT EXISTS {n} ON graph.x (c)")\n', False),
+    ("a CREATE INDEX built at run time", 'def upgrade():\n    op.execute(f"CREATE INDEX IF NOT EXISTS {n} ON graph.x (c)")\n', True),
+    ("its verb built at run time in a DO body", 'def upgrade():\n    op.execute(f"DO $$ BEGIN {verb} INDEX graph.x; END $$;")\n', True),
+    ("a prefix reassigned after it ran", 'def upgrade():\n    prefix = "DROP "\n    op.execute(prefix + "INDEX graph.x")\n    prefix = "SELECT "\n', True),
+    ("a module name shadowed by a parameter", 'sql = "SELECT 1"\n\n\ndef upgrade():\n    run(op.get_bind(), "DROP INDEX graph.x")\n\n\n'
+                                              'def run(c, sql):\n    c.exec_driver_sql(sql)\n', True),
     (".format", 'def upgrade():\n    op.get_bind().exec_driver_sql("DROP INDEX {}".format(n))\n', True),
     ("a literal in a revision without .sql", 'def upgrade():\n    op.execute("DROP INDEX graph.x")\n', True),
     ("a waiver does not clear it", 'older_code_compatible = "older code never reads that index at all"\n'
                                    'def upgrade():\n    op.execute(f"DROP INDEX graph.{n}")\n', True),
     ("a contract does", 'min_code_epoch = 3\ndef upgrade():\n    op.execute(f"DROP INDEX graph.{n}")\n', False),
-    ("another statement", 'def upgrade():\n    op.execute(f"CREATE INDEX {n} ON graph.x (c)")\n', False),
+    ("another statement", 'def upgrade():\n    op.execute("CREATE INDEX x ON graph.x (c)")\n', False),
     ("in downgrade()", 'def downgrade():\n    op.execute(f"DROP INDEX graph.{n}")\n\n\ndef upgrade():\n    pass\n', False),
 ])
 def test_lint_refuses_a_drop_index_built_at_run_time(tmp_path, name, body, flagged):
@@ -722,3 +726,29 @@ def test_lint_of_a_revision_py_reads_the_constant_sql_of_its_upgrade_when_it_has
     py.write_text('revision = "graph_9999"\n\n\ndef upgrade():\n    op.execute("DROP INDEX graph.x")\n')
     py.with_suffix(".sql").write_text("SELECT 1;\n")
     assert lint.main([str(py)]) == 1
+
+
+@pytest.mark.parametrize("call,flagged", [
+    ('op.execute(build())', True),                              # a call's result
+    ('op.execute(sa.text(f"SELECT {n}"))', True),
+    ('op.execute(self.sql)', True),                             # an attribute
+    ('op.execute("SELECT %s" % n)', True),
+    ('op.execute("SELECT {}".format(n))', True),
+    ('op.execute("SELECT " + n)', True),
+    ('sql = "SELECT 1"\n    op.execute(sql)', True),          # a local name, constant or not
+    ('op.execute(LOOPED)', True),                               # a module name bound twice
+    ('op.execute(f"SELECT {CONST!r}")', True),                 # a conversion
+    ('op.execute("SELECT 1")', False),
+    ('op.execute("SELECT " + "1")', False),
+    ('op.execute(CONST)', False),                               # a module constant nothing else binds
+    ('op.execute(f"SELECT 1 FROM {CONST}")', False),
+    ('op.get_bind().exec_driver_sql(sa.text(CONST))', False),
+])
+def test_lint_takes_sql_it_cannot_read_to_the_end_as_a_possible_drop(tmp_path, call, flagged):
+    """Fail closed: SQL that is not constant text needs min_code_epoch, wherever its unknown part is; only constant text is read."""
+    py = tmp_path / "0003_x.py"
+    body = f'CONST = "graph.t"\nLOOPED = "a"\nfor LOOPED in ("b",):\n    pass\n\n\ndef upgrade():\n    {call}\n'
+    py.write_text('revision = "graph_0003"\n' + body)
+    assert any("may DROP INDEX" in m for m in lint.lint_revision(py, {"graph": 2})) is flagged, call
+    py.write_text('revision = "graph_0003"\nmin_code_epoch = 3\n' + body)
+    assert not any("may DROP INDEX" in m for m in lint.lint_revision(py, {"graph": 2}))
