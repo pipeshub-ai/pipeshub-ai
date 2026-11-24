@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import HTTPException
 
 from app.agents.mcp import service as mcp_service
+from app.api.routes import mcp_servers as mcp_servers_routes
 from app.api.routes.mcp_servers import list_popular_servers
 from app.core.org_context import OrgContext, bind
 from tests.unit.api.routes.mcp_route_fakes import FakeConfigService, route_request
@@ -77,6 +79,16 @@ class TestPopular:
         as_alice = await list_popular_servers(route_request(_store(), user_id=ALICE), limit=6)
 
         assert as_member == as_alice
+
+    async def test_lists_only_the_servers_the_callers_own_list_shows(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # An edition can keep an organization server from some members; Popular must not name it.
+        store = _store()
+        github = await mcp_service.get_instance("github", store, "org-1")
+        monkeypatch.setattr(mcp_servers_routes, "resolve_mcp_instances_with_inheritance", AsyncMock(return_value=[github]))
+
+        result = await list_popular_servers(route_request(store, user_id=BOB), limit=6)
+
+        assert [row["name"] for row in result["servers"]] == ["GitHub"]
 
     async def test_limit(self) -> None:
         result = await list_popular_servers(route_request(_store(), user_id=ALICE), limit=1)

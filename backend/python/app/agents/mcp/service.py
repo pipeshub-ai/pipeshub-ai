@@ -185,9 +185,12 @@ async def count_signed_in_people(config_service: ConfigurationService, instance_
     return sum(1 for owner in owners if _PERSON_ID.fullmatch(owner))
 
 
-async def popular_org_servers(config_service: ConfigurationService, org_id: str) -> list[dict[str, Any]]:
-    """The org's servers that people signed in to, most used first, with how many people."""
-    instances = await load_org_instances(config_service, org_id)
+async def popular_org_servers(
+    config_service: ConfigurationService, visible: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Of the `visible` instances, the org's servers that people signed in to, most used first,
+    with how many people."""
+    instances = [i for i in visible if not is_personal(i)]
     counts = await gather_with_concurrency(
         _PREFIX_READ_CONCURRENCY, *[count_signed_in_people(config_service, i["_id"]) for i in instances],
     )
