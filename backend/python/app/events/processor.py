@@ -72,6 +72,7 @@ from app.modules.parsers.markdown.image_references import extract_and_replace_im
 from app.modules.parsers.markdown.markdown_parser import MarkdownParser
 from app.modules.parsers.pdf.docling_processor import DoclingProcessor
 from app.modules.parsers.pdf.ocr_handler import OCRHandler
+from app.modules.parsers.pdf.page_ocr import ocr_textless_pages
 from app.modules.parsers.pdf.pdfplumber_opencv_processor import (
     PDFPlumberOpenCVProcessor,
 )
@@ -92,6 +93,7 @@ from app.services.messaging.config import (
     PipelineEvent,
     PipelineEventData,
 )
+from app.services.messaging.consumer_concurrency import RequeueWithoutAttempt
 from app.services.parsing.interface import (
     ParseError,
     ParseErrorCode,
@@ -394,6 +396,8 @@ class Processor:
 
             # Phase 1: Parse PDF layout (no LLM calls)
             parsed_data = await processor.parse_document(record_name, pdf_binary)
+            # Pages drawn as outlines have no text layer; read them with OCR, replacing their regions.
+            await ocr_textless_pages(pdf_binary, parsed_data, self.config_service, self.logger)
             pdf_binary = None
 
             # Signal parsing complete
@@ -423,7 +427,8 @@ class Processor:
 
             self.logger.debug(f"PDF processing completed for record: {recordId}, using PdfPlumber+OpenCV processor")
             return
-        except IndexingError:
+        # A parse that waited out its slot is queue time, handed back by the consumer only as itself.
+        except (IndexingError, RequeueWithoutAttempt):
             raise
         except Exception as e:
             raise DocumentProcessingError(
