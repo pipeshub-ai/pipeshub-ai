@@ -38,6 +38,7 @@ from helper.admin_route_table import (
     PYTHON_BEHIND_NODE_ADMIN,
     PYTHON_CONDITIONAL_ADMIN,
     PYTHON_CONDITIONAL_ADMIN_UNIT_ONLY,
+    PYTHON_LIVE_ACCESS_ONLY,
 )
 from helper.admin_routes import (
     admin_routes_in_file,
@@ -284,7 +285,7 @@ def test_every_conditional_admin_handler_has_live_cases() -> None:
         "that they enforce their rule:\n"
         + "\n".join(f"  {key}  ({PYTHON_CONDITIONAL_ADMIN[key]})" for key in missing)
     )
-    stale = sorted(set(rows) - set(PYTHON_CONDITIONAL_ADMIN))
+    stale = sorted(set(rows) - set(PYTHON_CONDITIONAL_ADMIN) - set(PYTHON_LIVE_ACCESS_ONLY))
     assert not stale, f"These rows of live cases name handlers that are no longer conditional: {stale}"
     empty = sorted(key for key, route in rows.items() if not route.cases)
     assert not empty, f"These rows have no cases: {empty}"
@@ -389,6 +390,15 @@ def test_no_conditional_case_can_pass_for_the_wrong_reason() -> None:
                 for a in allowed if not _told_apart(a, case)
             )
     assert not problems, "\n".join(problems)
+
+
+def test_live_access_only_routes_have_live_cases_and_no_admin_check() -> None:
+    rows = _conditional_rows()
+    no_row = sorted(set(PYTHON_LIVE_ACCESS_ONLY) - set(rows))
+    assert not no_row, f"PYTHON_LIVE_ACCESS_ONLY names handlers with no row of live cases: {no_row}"
+    gated = sorted(set(PYTHON_LIVE_ACCESS_ONLY) & set(discover_python_admin_handlers()))
+    assert not gated, f"These now check for an admin; move them to PYTHON_CONDITIONAL_ADMIN: {gated}"
+    assert all(PYTHON_LIVE_ACCESS_ONLY.values()), "every PYTHON_LIVE_ACCESS_ONLY entry says why"
 
 
 def test_connector_rules_cover_every_kind_of_caller() -> None:

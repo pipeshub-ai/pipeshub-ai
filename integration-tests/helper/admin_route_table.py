@@ -359,10 +359,7 @@ PYTHON_CONDITIONAL_ADMIN = {
     "api/routes/toolsets.py::update_toolset_tool_rules": "a personal toolset's rules are its owner's",
     # Record reads: the caller's own access to the record decides, admin or not.
     # The admin flag only reaches the connector loader, which refuses nobody on it.
-    "connectors/api/router.py::download_file": "signed link and record permission",
     "connectors/api/router.py::stream_record": "record permission, admin or not",
-    "connectors/api/router.py::stream_record_internal": "service token only",
-    "connectors/api/router.py::get_record_content_internal": "service token only",
     # Only built-in skills need an admin to switch on or off; a member's own
     # skill is theirs alone.
     "api/routes/skills.py::disable_skill": "built-in skills need admin",
@@ -418,6 +415,16 @@ PYTHON_CONDITIONAL_ADMIN = {
     "api/routes/entity.py::update_team": "owner or admin",
     "api/routes/entity.py::delete_team": "owner or admin",
 }
+
+# Routes with no admin check whose live cases sit in admin_route_conditional_table.py all the same: the
+# caller's own right to the record decides, and those cases are the only live check of it. Each must stay
+# free of an admin check; one that gains one belongs in PYTHON_CONDITIONAL_ADMIN.
+PYTHON_LIVE_ACCESS_ONLY: dict[str, str] = {
+    "connectors/api/router.py::download_file": "signed link and record permission",
+    "connectors/api/router.py::stream_record_internal": "service token only",
+    "connectors/api/router.py::get_record_content_internal": "service token only",
+}
+
 
 # Checked by unit test only: handlers whose admin check is conditional, like
 # those above, but whose member-vs-admin difference cannot be seen honestly on a
