@@ -350,20 +350,21 @@ describe('OAuthAppController', () => {
     })
   })
 
-  // The service that makes the write logs the event (OAuthAppService, OAuthTokenService); the controller adds no twin.
+  // The service that makes the write logs the event (OAuthAppService, OAuthTokenService); the controller adds only the
+  // config.oauth_client.* audit line, which the settings-audit routes test checks field by field.
   describe('a change that succeeds', () => {
-    const changes: Array<[string, (c: OAuthAppController) => Promise<void>]> = [
-      ['createApp', (c) => c.createApp(mockReq, mockRes, mockNext)],
-      ['setTokenIdentity', (c) => c.setTokenIdentity(mockReq, mockRes, mockNext)],
-      ['updateApp', (c) => c.updateApp(mockReq, mockRes, mockNext)],
-      ['deleteApp', (c) => c.deleteApp(mockReq, mockRes, mockNext)],
-      ['regenerateSecret', (c) => c.regenerateSecret(mockReq, mockRes, mockNext)],
-      ['suspendApp', (c) => c.suspendApp(mockReq, mockRes, mockNext)],
-      ['activateApp', (c) => c.activateApp(mockReq, mockRes, mockNext)],
-      ['revokeAllTokens', (c) => c.revokeAllTokens(mockReq, mockRes, mockNext)],
+    const changes: Array<[string, string, (c: OAuthAppController) => Promise<void>]> = [
+      ['createApp', 'create', (c) => c.createApp(mockReq, mockRes, mockNext)],
+      ['setTokenIdentity', 'update', (c) => c.setTokenIdentity(mockReq, mockRes, mockNext)],
+      ['updateApp', 'update', (c) => c.updateApp(mockReq, mockRes, mockNext)],
+      ['deleteApp', 'delete', (c) => c.deleteApp(mockReq, mockRes, mockNext)],
+      ['regenerateSecret', 'update', (c) => c.regenerateSecret(mockReq, mockRes, mockNext)],
+      ['suspendApp', 'update', (c) => c.suspendApp(mockReq, mockRes, mockNext)],
+      ['activateApp', 'update', (c) => c.activateApp(mockReq, mockRes, mockNext)],
+      ['revokeAllTokens', 'update', (c) => c.revokeAllTokens(mockReq, mockRes, mockNext)],
     ]
-    for (const [name, run] of changes) {
-      it(`${name} writes no log line of its own`, async () => {
+    for (const [name, action, run] of changes) {
+      it(`${name} writes no log line of its own but the audit line`, async () => {
         for (const stub of Object.values(mockOAuthAppService) as sinon.SinonStub[]) {
           stub.resolves({ id: 'app-1', clientId: 'cid', clientSecret: 's' })
         }
@@ -376,7 +377,9 @@ describe('OAuthAppController', () => {
 
         expect(mockNext.called).to.be.false
         expect(mockRes.json.calledOnce).to.be.true
-        expect(recordsOf(records, id)).to.deep.equal([])
+        expect(recordsOf(records, id).map((r) => [r.service, r.message])).to.deep.equal([
+          ['audit', `config.oauth_client.${action}`],
+        ])
       })
     }
   })

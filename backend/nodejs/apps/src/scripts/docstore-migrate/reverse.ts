@@ -26,6 +26,8 @@ import {
   appClients,
   describeClients,
   readMongoFence,
+  APP_WRITES_ID,
+  restoreAppWrites,
   setMongoFence,
 } from './fence';
 import { storeEpochOnFreshConnection } from './online';
@@ -361,7 +363,8 @@ export const BUSY =
   'another rollback is running against this store: wait for it to finish';
 
 export type HandOver =
-  | { kind: 'done' }
+  /** `note`: what is left to do about the application's MongoDB write roles ('' when they are back). */
+  | { kind: 'done'; note: string }
   | { kind: 'not_live'; why: string }
   | { kind: 'stuck'; message: string };
 
@@ -391,9 +394,15 @@ export async function handOver(
     const seen = now
       ? `the fence reads '${now.mode}' at epoch ${String(now.epoch)}`
       : 'the fence could not be read back';
+    // MongoDB is confirmed live: the application's users get their write roles back now, as on the normal path. Unconfirmed, the
+    // operator is told how, once they have seen the fence active
+    const roles =
+      now?.mode === 'active' && now.epoch === epoch
+        ? await restoreAppWrites(rt)
+        : ` Once the fence reads active, also give the application's MongoDB users back the write roles the switch took (the ${APP_WRITES_ID} document of docstore_fence lists them; grantRolesToUser).`;
     return {
       kind: 'stuck',
-      message: `MongoDB's fence may be live (${why}; ${seen}). PostgreSQL stays read-only and was not unfrozen. If the fence is active at epoch ${String(epoch)}: set platform.store_epoch to backend mongo, readonly true and the epoch one higher by hand, then roll the application back to DOC_STORE=mongo. If it is retired: run \`UPDATE platform.store_epoch SET readonly = false WHERE backend = 'postgres'\` to keep PostgreSQL as the store`,
+      message: `MongoDB's fence may be live (${why}; ${seen}). PostgreSQL stays read-only and was not unfrozen. If the fence is active at epoch ${String(epoch)}: set platform.store_epoch to backend mongo, readonly true and the epoch one higher by hand, then roll the application back to DOC_STORE=mongo. If it is retired: run \`UPDATE platform.store_epoch SET readonly = false WHERE backend = 'postgres'\` to keep PostgreSQL as the store.${roles}`,
     };
   }
   try {
@@ -409,13 +418,16 @@ export async function handOver(
   } catch (e) {
     // it may have committed before the error reached us
     const row = await storeEpochOnFreshConnection(rt, false).catch(() => null);
-    if (row?.backend === 'mongo') return { kind: 'done' };
+    // MongoDB is live either way, so the application's users get their write roles back
+    const note = await restoreAppWrites(rt);
+    if (row?.backend === 'mongo') return { kind: 'done', note };
     return {
       kind: 'stuck',
-      message: `MongoDB is the live store again (its fence is active), but platform.store_epoch was not updated (${errText(e)}). PostgreSQL is still read-only and was not unfrozen. Set platform.store_epoch to backend mongo, readonly true and the epoch one higher by hand, then roll the application back to DOC_STORE=mongo`,
+      message: `MongoDB is the live store again (its fence is active), but platform.store_epoch was not updated (${errText(e)}). PostgreSQL is still read-only and was not unfrozen. Set platform.store_epoch to backend mongo, readonly true and the epoch one higher by hand, then roll the application back to DOC_STORE=mongo.${note}`,
     };
   }
-  return { kind: 'done' };
+  // MongoDB is the store again: the application's users get back the write roles the switch took
+  return { kind: 'done', note: await restoreAppWrites(rt) };
 }
 
 export async function rollback(
@@ -484,7 +496,7 @@ async function rollbackLocked(
         ok: true,
         mode: 'no_pg_writes',
         verify: v,
-        message: `PostgreSQL equals MongoDB (job ${String(cur?.id ?? '-')}): nothing was written there. MongoDB is the live store again: set DOC_STORE=mongo and start the application`,
+        message: `PostgreSQL equals MongoDB (job ${String(cur?.id ?? '-')}): nothing was written there. MongoDB is the live store again: set DOC_STORE=mongo and start the application.${h.note}`,
       };
     }
     if (!o.reverse) {
@@ -526,8 +538,7 @@ async function rollbackLocked(
       mode: 'reverse',
       verify: after,
       ...r,
-      message:
-        'PostgreSQL was copied back and verified: set DOC_STORE=mongo and start the application',
+      message: `PostgreSQL was copied back and verified: set DOC_STORE=mongo and start the application.${h.note}`,
     };
   } catch (e) {
     if (!state.released) {
