@@ -4393,17 +4393,16 @@ class TestValidateUploadContext:
 
         assert result["valid"] is False
         assert result["code"] == 404
-        assert "kb1" in result["reason"]
+        assert result["reason"] == "Knowledge base not found"
 
     @pytest.mark.asyncio
-    async def test_folder_not_in_kb_includes_names_in_message(self, neo4j_provider: Neo4jProvider):
+    async def test_folder_not_in_kb_names_the_kb_not_the_folder(self, neo4j_provider: Neo4jProvider):
         neo4j_provider.get_user_by_user_id = AsyncMock(
             return_value={"_key": "uk1", "id": "uk1"}
         )
         neo4j_provider.get_user_kb_permission = AsyncMock(return_value="OWNER")
         neo4j_provider.get_and_validate_folder_in_kb = AsyncMock(return_value=None)
         neo4j_provider._fetch_kb_name = AsyncMock(return_value="Engineering Docs")
-        neo4j_provider._fetch_record_name = AsyncMock(return_value="Wrong Folder")
 
         result = await neo4j_provider._validate_upload_context(
             "kb1", "u1", "org1", parent_folder_id="wrong-folder"
@@ -4411,20 +4410,21 @@ class TestValidateUploadContext:
 
         assert result["valid"] is False
         assert result["code"] == 404
-        assert "wrong-folder" in result["reason"]
-        assert "Engineering Docs" in result["reason"]
-        assert "Wrong Folder" in result["reason"]
+        assert "wrong-folder" not in result["reason"]
+        assert result["reason"] == (
+            "The folder was not found in knowledge base 'Engineering Docs' (kb1). "
+            "The folder may not exist or may belong to a different knowledge base."
+        )
 
     @pytest.mark.asyncio
-    async def test_folder_not_in_kb_falls_back_to_ids(self, neo4j_provider: Neo4jProvider):
-        """When name lookups return None, the error still contains the raw IDs."""
+    async def test_folder_not_in_kb_falls_back_to_the_kb_id(self, neo4j_provider: Neo4jProvider):
+        """With no KB name, the KB id stands in; the folder id the client sent is not quoted."""
         neo4j_provider.get_user_by_user_id = AsyncMock(
             return_value={"_key": "uk1", "id": "uk1"}
         )
         neo4j_provider.get_user_kb_permission = AsyncMock(return_value="OWNER")
         neo4j_provider.get_and_validate_folder_in_kb = AsyncMock(return_value=None)
         neo4j_provider._fetch_kb_name = AsyncMock(return_value=None)
-        neo4j_provider._fetch_record_name = AsyncMock(return_value=None)
 
         result = await neo4j_provider._validate_upload_context(
             "kb1", "u1", "org1", parent_folder_id="wrong-folder"
@@ -4432,8 +4432,11 @@ class TestValidateUploadContext:
 
         assert result["valid"] is False
         assert result["code"] == 404
-        assert "wrong-folder" in result["reason"]
-        assert "kb1" in result["reason"]
+        assert "wrong-folder" not in result["reason"]
+        assert result["reason"] == (
+            "The folder was not found in knowledge base kb1. "
+            "The folder may not exist or may belong to a different knowledge base."
+        )
 
     @pytest.mark.asyncio
     async def test_exception_returns_500(self, neo4j_provider: Neo4jProvider):
@@ -4474,15 +4477,14 @@ class TestValidateFolderForUpload:
         neo4j_provider.get_and_validate_folder_in_kb.assert_awaited_once_with("kb1", "f1")
 
     @pytest.mark.asyncio
-    async def test_folder_not_in_kb_returns_404_with_names(self, neo4j_provider: Neo4jProvider):
-        """Folder belongs to a different KB: 404 with KB/folder names in reason."""
+    async def test_folder_not_in_kb_returns_404_naming_the_kb_only(self, neo4j_provider: Neo4jProvider):
+        """Folder belongs to a different KB: 404 naming the KB, not the folder."""
         neo4j_provider.get_user_by_user_id = AsyncMock(
             return_value={"_key": "uk1", "id": "uk1"}
         )
         neo4j_provider.get_user_kb_permission = AsyncMock(return_value="OWNER")
         neo4j_provider.get_and_validate_folder_in_kb = AsyncMock(return_value=None)
         neo4j_provider._fetch_kb_name = AsyncMock(return_value="Docs KB")
-        neo4j_provider._fetch_record_name = AsyncMock(return_value="Foreign Folder")
 
         result = await neo4j_provider.validate_folder_for_upload(
             kb_id="kb1", folder_id="foreign-folder", user_id="u1", org_id="org1"
@@ -4490,20 +4492,21 @@ class TestValidateFolderForUpload:
 
         assert result["valid"] is False
         assert result["code"] == 404
-        assert "foreign-folder" in result["reason"]
-        assert "Docs KB" in result["reason"]
-        assert "Foreign Folder" in result["reason"]
+        assert "foreign-folder" not in result["reason"]
+        assert result["reason"] == (
+            "The folder was not found in knowledge base 'Docs KB' (kb1). "
+            "The folder may not exist or may belong to a different knowledge base."
+        )
 
     @pytest.mark.asyncio
-    async def test_nonexistent_folder_falls_back_to_ids(self, neo4j_provider: Neo4jProvider):
-        """Completely unknown folder: 404 with bare IDs when name lookup returns None."""
+    async def test_nonexistent_folder_falls_back_to_the_kb_id(self, neo4j_provider: Neo4jProvider):
+        """Completely unknown folder: 404 with the KB id; the folder id is not quoted."""
         neo4j_provider.get_user_by_user_id = AsyncMock(
             return_value={"_key": "uk1", "id": "uk1"}
         )
         neo4j_provider.get_user_kb_permission = AsyncMock(return_value="WRITER")
         neo4j_provider.get_and_validate_folder_in_kb = AsyncMock(return_value=None)
         neo4j_provider._fetch_kb_name = AsyncMock(return_value=None)
-        neo4j_provider._fetch_record_name = AsyncMock(return_value=None)
 
         result = await neo4j_provider.validate_folder_for_upload(
             kb_id="kb1", folder_id="ghost", user_id="u1", org_id="org1"
@@ -4511,8 +4514,11 @@ class TestValidateFolderForUpload:
 
         assert result["valid"] is False
         assert result["code"] == 404
-        assert "ghost" in result["reason"]
-        assert "kb1" in result["reason"]
+        assert "ghost" not in result["reason"]
+        assert result["reason"] == (
+            "The folder was not found in knowledge base kb1. "
+            "The folder may not exist or may belong to a different knowledge base."
+        )
 
     @pytest.mark.asyncio
     async def test_reader_role_returns_403_with_role_in_message(self, neo4j_provider: Neo4jProvider):
@@ -4545,7 +4551,7 @@ class TestValidateFolderForUpload:
 
         assert result["valid"] is False
         assert result["code"] == 404
-        assert "kb1" in result["reason"]
+        assert result["reason"] == "Knowledge base not found"
 
     @pytest.mark.asyncio
     async def test_user_not_found_returns_404(self, neo4j_provider: Neo4jProvider):

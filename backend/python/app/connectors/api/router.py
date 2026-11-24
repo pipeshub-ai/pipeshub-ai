@@ -8087,7 +8087,7 @@ async def get_filter_field_options(
         if not filter_config:
             raise HTTPException(
                 status_code=HttpStatusCode.NOT_FOUND.value,
-                detail=f"Filter field '{filter_key}' not found for connector {connector_type}"
+                detail=f"Filter field not found for connector {connector_type}"
             )
 
         # Check if filter supports dynamic options
@@ -9292,10 +9292,10 @@ async def get_connector_schema(
         await check_beta_connector_access(connector_type, request)
         metadata = await connector_registry.get_connector_metadata(connector_type)
         if not metadata:
-            logger.error(f"Connector type {connector_type} not found")
+            logger.error("Connector type not found")
             raise HTTPException(
                 status_code=HttpStatusCode.NOT_FOUND.value,
-                detail=f"Connector type {connector_type} not found"
+                detail="Connector type not found"
             )
 
         raw_schema = metadata.get(ConnectorRequestKeys.CONFIG, {})
@@ -9413,7 +9413,7 @@ async def check_connector_connection(connector_type: str, request: Request) -> d
     if not type_metadata:
         raise HTTPException(
             status_code=HttpStatusCode.NOT_FOUND.value,
-            detail=f"Connector type '{connector_type}' not found in registry"
+            detail="Connector type not found in registry"
         )
     is_admin = is_request_admin(request)
     # Creating a connector takes the same rule: a member makes personal ones, so a type
@@ -9656,10 +9656,10 @@ async def get_oauth_config_registry_by_type(
         connector_info = oauth_registry.get_connector_registry_info(connector_type)
 
         if not connector_info:
-            logger.warning(f"OAuth config registry info not found for connector type: {connector_type}")
+            logger.warning("OAuth config registry info not found for this connector type")
             raise HTTPException(
                 status_code=HttpStatusCode.NOT_FOUND.value,
-                detail=f"OAuth configuration not found for connector type: {connector_type}"
+                detail="OAuth configuration not found for this connector type"
             )
 
         return {
@@ -10638,10 +10638,10 @@ async def get_oauth_config_by_id(
         )
 
         if not oauth_config:
-            logger.error(f"OAuth config {config_id} not found or access denied")
+            logger.error("OAuth config not found or access denied")
             raise HTTPException(
                 status_code=HttpStatusCode.NOT_FOUND.value,
-                detail=f"OAuth config {config_id} not found or access denied"
+                detail="OAuth config not found or access denied"
             )
 
         masked = mask_oauth_config_for_response(
@@ -10743,10 +10743,10 @@ async def update_oauth_config(
                 user_context["org_id"],
                 config_id,
             )
-            logger.error(f"OAuth config {config_id} not found or access denied")
+            logger.error("OAuth config not found or access denied")
             raise HTTPException(
                 status_code=HttpStatusCode.NOT_FOUND.value,
-                detail=f"OAuth config {config_id} not found or access denied"
+                detail="OAuth config not found or access denied"
             )
 
         # Check if new name conflicts with existing configs (within same org)
@@ -10851,10 +10851,10 @@ async def delete_oauth_config(
                 user_context["org_id"],
                 config_id,
             )
-            logger.error(f"OAuth config {config_id} not found or access denied")
+            logger.error("OAuth config not found or access denied")
             raise HTTPException(
                 status_code=HttpStatusCode.NOT_FOUND.value,
-                detail=f"OAuth config {config_id} not found or access denied"
+                detail="OAuth config not found or access denied"
             )
 
         # Remove from array
