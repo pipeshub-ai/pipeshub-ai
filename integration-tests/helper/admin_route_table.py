@@ -359,10 +359,7 @@ PYTHON_CONDITIONAL_ADMIN = {
     "api/routes/toolsets.py::update_toolset_tool_rules": "a personal toolset's rules are its owner's",
     # Record reads: the caller's own access to the record decides, admin or not.
     # The admin flag only reaches the connector loader, which refuses nobody on it.
-    "connectors/api/router.py::download_file": "signed link and record permission",
     "connectors/api/router.py::stream_record": "record permission, admin or not",
-    "connectors/api/router.py::stream_record_internal": "service token only",
-    "connectors/api/router.py::get_record_content_internal": "service token only",
     # Only built-in skills need an admin to switch on or off; a member's own
     # skill is theirs alone.
     "api/routes/skills.py::disable_skill": "built-in skills need admin",
@@ -392,6 +389,17 @@ PYTHON_CONDITIONAL_ADMIN = {
     # because binding spends the access an administrator granted that account.
     "api/routes/agent.py::create_agent": "only a service-account binding needs admin",
     "api/routes/agent.py::update_agent": "only a service-account binding needs admin",
+    # A connector limited to some people (accessLimit) is named only by its id
+    # among an agent's sources for a member the limit refuses; an admin sees its
+    # name. Nobody is refused the agent itself.
+    "api/routes/agent.py::get_agent": "a limited source's name is hidden from members it refuses",
+    "api/routes/agent.py::get_agents": "a limited source's name is hidden from members it refuses",
+    # Every team connector is listed for a member, except one whose access limit
+    # refuses them; an admin is shown every one.
+    "connectors/api/router.py::get_inactive_connector_instances":
+        "a limited connector is hidden from members it refuses",
+    "connectors/api/router.py::get_active_connector_instances":
+        "a limited connector is hidden from members it refuses",
     # The directory of people. Everyone gets it; an administrator asking for
     # service accounts gets those too, and nobody else does.
     "api/routes/entity.py::get_users": "admin widens the directory",
@@ -406,6 +414,52 @@ PYTHON_CONDITIONAL_ADMIN = {
     # also change or delete any team in their org.
     "api/routes/entity.py::update_team": "owner or admin",
     "api/routes/entity.py::delete_team": "owner or admin",
+}
+
+# Routes with no admin check whose live cases sit in admin_route_conditional_table.py all the same: the
+# caller's own right to the record decides, and those cases are the only live check of it. Each must stay
+# free of an admin check; one that gains one belongs in PYTHON_CONDITIONAL_ADMIN.
+PYTHON_LIVE_ACCESS_ONLY: dict[str, str] = {
+    "connectors/api/router.py::download_file": "signed link and record permission",
+    "connectors/api/router.py::stream_record_internal": "service token only",
+    "connectors/api/router.py::get_record_content_internal": "service token only",
+}
+
+
+# Checked by unit test only: handlers whose admin check is conditional, like
+# those above, but whose member-vs-admin difference cannot be seen honestly on a
+# running stack. A last resort: a handler goes here only when no live case could
+# tell the two callers apart, and never to save writing one.
+# handler -> (why it is conditional, why it cannot be checked live, the pytest
+# node id, from the repository root, of the unit test that checks the difference).
+_AGENT_NAMES_TEST = "backend/python/tests/unit/api/routes/test_agent_knowledge_names.py"
+_CHAT_IS_A_PROMPT = (
+    "it only changes what the model is told, and the gateway reaches it only under "
+    "/api/v1/agents/:agentKey/conversations, not at the route it serves"
+)
+PYTHON_CONDITIONAL_ADMIN_UNIT_ONLY: dict[str, tuple[str, str, str]] = {
+    # A limited source a member cannot open reaches the model by its id only,
+    # with no connector config; an admin's turn names it.
+    "api/routes/agent.py::chat_stream": (
+        "a limited source's name is hidden from members it refuses",
+        _CHAT_IS_A_PROMPT,
+        f"{_AGENT_NAMES_TEST}::test_a_chat_turn_names_to_the_model_only_the_sources_the_caller_may_open",
+    ),
+    # Runs chat_stream on its own request.
+    "api/routes/agent.py::chat": (
+        "a limited source's name is hidden from members it refuses",
+        _CHAT_IS_A_PROMPT,
+        f"{_AGENT_NAMES_TEST}::test_a_chat_turn_without_streaming_names_to_the_model_only_the_sources_the_caller_may_open",
+    ),
+    # A member is not shown a per-user connector whose access limit refuses them;
+    # an admin is shown every one.
+    "connectors/api/user_access_router.py::list_my_per_user_connectors": (
+        "a limited connector is hidden from members it refuses",
+        "it lists only active team connectors in per-user mode, which only Notion has, "
+        "and switching one on needs a Notion account",
+        "backend/python/tests/unit/connectors/api/test_connector_names_under_access_limit.py"
+        "::test_the_per_user_connector_list_follows_the_same_rule",
+    ),
 }
 
 
@@ -449,5 +503,7 @@ PYTHON_ADMIN_ROUTES = suite_extensions.add_rows(
 ADMIN_BODIES = suite_extensions.add_items(ADMIN_BODIES, "ADMIN_BODIES", _extensions)
 PYTHON_CONDITIONAL_ADMIN = suite_extensions.add_items(
     PYTHON_CONDITIONAL_ADMIN, "PYTHON_CONDITIONAL_ADMIN", _extensions)
+PYTHON_CONDITIONAL_ADMIN_UNIT_ONLY = suite_extensions.add_items(
+    PYTHON_CONDITIONAL_ADMIN_UNIT_ONLY, "PYTHON_CONDITIONAL_ADMIN_UNIT_ONLY", _extensions)
 SWITCHED_OFF = suite_extensions.add_rows(
     SWITCHED_OFF, "SWITCHED_OFF", _extensions, key=lambda rule: rule.path_prefix)

@@ -131,6 +131,35 @@ def test_a_chat_turn_names_to_the_model_only_the_sources_the_caller_may_open(
     assert _names(query_info["knowledge"]) == _expected(admitted)
 
 
+@pytest.mark.parametrize(("viewer", "admitted"), VIEWERS)
+def test_a_chat_turn_without_streaming_names_to_the_model_only_the_sources_the_caller_may_open(
+    graph: InMemoryGraph, monkeypatch: pytest.MonkeyPatch, viewer: str, admitted: set[str],
+) -> None:
+    """``POST /chat`` runs ``chat_stream`` on its own request, so the caller's admin role decides there too."""
+    calls: list[dict[str, Any]] = []
+
+    def loop(query_info: dict, *_a: object, **_k: object) -> Any:  # noqa: ANN401 - an async iterator
+        calls.append(query_info)
+
+        async def gen() -> Any:  # noqa: ANN401
+            if False:
+                yield ""
+        return gen()
+
+    async def llm(*_a: object, **_k: object) -> tuple[object, dict, dict]:
+        return object(), {"isMultimodal": False, "provider": "openai"}, {}
+
+    async def turn_filters(*, agent_knowledge: list[dict[str, Any]], **_k: object) -> dict[str, Any]:
+        return {"apps": [k["connectorId"] for k in agent_knowledge]}
+    monkeypatch.setattr("app.api.routes.agent.run_agent_loop_stream", loop)
+    monkeypatch.setattr("app.api.routes.agent.get_llm_for_chat", llm)
+    monkeypatch.setattr("app.api.routes.agent._resolve_turn_filters", turn_filters)
+    client, viewer = _client(graph, viewer)
+    client.post("/api/v1/agent/shared/chat", headers=as_user(viewer), json={"query": "hi"})
+    (query_info,) = calls
+    assert _names(query_info["knowledge"]) == _expected(admitted)
+
+
 async def test_no_lookup_is_made_when_no_source_is_limited() -> None:
     graph = AsyncMock()
     knowledge = [{"connectorId": "a", "name": "A", "displayName": "A", "accessLimit": None}, {"connectorId": "kb", "name": "KB"}]
