@@ -3758,6 +3758,23 @@ class TestAFullSyncKeepsWhatItCouldNotWrite:
         assert self._missed(db, graph, stored) == {"1005", "1008"}, "it and its file keep their edges"
         assert json.loads(store.values_for("project_ENG")["failed_issue_attempts"]) == {"1001": 1}, "a first failure"
 
+    async def test_an_issue_closed_after_a_failed_build_keeps_its_links(self, jira, db, store, search) -> None:
+        connector, _ = await self._synced(jira, db, store, search)
+        db.records["1001"].related_external_records = []  # as the scan loads it: the links are not read
+        db.fail_lookup_for = {"1001"}
+        closes: list[Any] = []
+        write = db.on_new_records
+
+        async def spy(records: list[tuple[Any, list[Any]]]) -> None:
+            closes.extend(r for r, _ in records if r.external_record_id == "1001" and r.access_rule == AccessRule.RESTRICTED)
+            await write(records)
+        db.on_new_records = spy
+
+        await run_full_sync(connector, db)
+
+        assert closes and all(r.related_external_records is None for r in closes), (
+            "not read, so the processor keeps its stored link edges")
+
     async def test_an_issue_that_fails_to_build_and_cannot_be_closed_is_not_kept(self, jira, db, store, search) -> None:
         connector, stored = await self._synced(jira, db, store, search)
         db.fail_lookup_for = {"1001"}

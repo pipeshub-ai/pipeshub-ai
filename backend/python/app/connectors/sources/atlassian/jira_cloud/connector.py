@@ -728,6 +728,8 @@ class JiraConnector(BaseConnector):
         self._issues_to_retry: set[str] = set()
         # Those of them whose build failed: a full sync closes them before it keeps them (``_keep_stored_records``).
         self._issues_failed_to_build: set[str] = set()
+        # External ids of attachments whose record could not be built: a full sync closes them before it keeps them.
+        self._attachments_failed_to_build: set[str] = set()
         # The reindex requests this project's sync read (``_update_project_sync_checkpoint``): only those may leave the list.
         self._retry_read: dict[str, str] = {}
         # Sub-tasks among the issues just built, which have no children to read again.
@@ -994,6 +996,7 @@ class JiraConnector(BaseConnector):
 
     async def _keep_stored_records(
         self, project_id: str, issue_ids: set[str] | None = None, close: AbstractSet[str] = frozenset(),
+        close_files: AbstractSet[str] = frozenset(),
     ) -> None:
         """Note this project's stored records as seen by a full sync in progress: its issues
         could not be read, so they stay as stored and must survive the unlink after it. So does
@@ -1001,8 +1004,9 @@ class JiraConnector(BaseConnector):
         records too: a restored issue must come back with its edges. With ``issue_ids``, only those issues, the
         files and comments filed under them and the comments' files: their sub-tasks are written when still in Jira.
         Those in ``close`` (whose build failed) are first stored closed, as their access was not read again
-        (``close_kept_issues``), on the whole-project keep too; one that cannot be closed is not kept, nor is anything
-        under it, so the unlink takes their edges."""
+        (``close_kept_issues``), on the whole-project keep too, and so are the attachments in ``close_files`` (whose
+        record could not be built, wherever filed); one that cannot be closed is not kept, nor is anything under it,
+        so the unlink takes their edges."""
         await self.data_entities_processor.note_kept_record_group(self.connector_id, project_id)
         filed_under = close if issue_ids is None else issue_ids
         page_size = 1000
@@ -1017,14 +1021,16 @@ class JiraConnector(BaseConnector):
                 every_id += [record.id for record in page]
             stored += [
                 record for record in page
-                if record.external_record_id in filed_under
+                if record.external_record_id in filed_under or record.external_record_id in close_files
                 or (record.parent_external_record_id in filed_under
                     and record.record_type in (RecordType.FILE, RecordType.COMMENT))
             ]
             if len(page) < page_size:
                 break
             after_key = page[-1].id
-        unclosed = await close_kept_issues(self.data_entities_processor, stored, close & filed_under, self.logger)
+        unclosed = await close_kept_issues(
+            self.data_entities_processor, stored, (close & filed_under) | close_files, self.logger,
+        )
         unkept = [record for record in stored
                   if record.external_record_id in unclosed or record.parent_external_record_id in unclosed]
         if issue_ids is None:
@@ -1040,9 +1046,11 @@ class JiraConnector(BaseConnector):
         self.data_entities_processor.note_kept_records(self.connector_id, [record.id for record in kept])
         comments = [record for record in kept if record.record_type == RecordType.COMMENT]
         if comments:
-            self.data_entities_processor.note_kept_records(
-                self.connector_id, await self._with_their_files(comments, RecordVisibility.ALL),
-            )
+            unclosed_ids = {record.id for record in stored if record.external_record_id in unclosed}
+            self.data_entities_processor.note_kept_records(self.connector_id, [
+                record_id for record_id in await self._with_their_files(comments, RecordVisibility.ALL)
+                if record_id not in unclosed_ids
+            ])
 
     def _project_access_may_be_partial(self, project_key: str) -> bool:
         """Whether this project's access list may be partial: the user list was not read in
@@ -4926,6 +4934,7 @@ class JiraConnector(BaseConnector):
         self._parents_to_retry = set()
         self._issues_to_retry = set()
         self._issues_failed_to_build = set()
+        self._attachments_failed_to_build = set()
         self._retry_read = {}
         readable = security.knowledge == SchemeKnowledge.PRESENT and security.members_readable
         if (reason := unreadable_reason(security)) is not None:
@@ -5150,10 +5159,15 @@ class JiraConnector(BaseConnector):
             if self._issue_search_cut_short:
                 # The issues Jira did not list are unknown, so the whole project stays as stored;
                 # those that failed to build are closed first.
-                await self._keep_stored_records(project_id, close=self._issues_failed_to_build)
+                await self._keep_stored_records(
+                    project_id, close=self._issues_failed_to_build, close_files=self._attachments_failed_to_build,
+                )
             elif self._issues_to_retry:
                 # Scanned rather than looked up where the write failed: that lookup is often what failed.
-                await self._keep_stored_records(project_id, self._issues_to_retry, close=self._issues_failed_to_build)
+                await self._keep_stored_records(
+                    project_id, self._issues_to_retry, close=self._issues_failed_to_build,
+                    close_files=self._attachments_failed_to_build,
+                )
         if self._parents_to_retry:
             # Their children kept where they were filed; the next sync reads them first.
             self.logger.warning(
@@ -6575,9 +6589,13 @@ class JiraConnector(BaseConnector):
                 rendered_fields=rendered_fields,
                 failed=failed_attachments,
             )
+            if self._attachments_failed_to_build:  # built on a later read of the issue: no longer closed
+                self._attachments_failed_to_build.difference_update(r.external_record_id for r, _, _ in attachment_records)
             if failed_attachments:
-                # A file left out keeps its stored place (and access) until the issue is read again: it stays changed and is retried.
+                # A file left out keeps its stored place until the issue is read again: it stays changed and is retried.
+                # Its access was not read (a restricted comment may show it now), so a full sync closes it before it keeps it.
                 self._leave_changed(issue_record, existing_record, retry=True)
+                self._attachments_failed_to_build.update(f"attachment_{a}" for a in failed_attachments)
             for attachment_record, _, _ in attachment_records if owner_of else []:
                 owner = owner_of.get(attachment_record.external_record_id.removeprefix("attachment_"))
                 if owner is not None:
