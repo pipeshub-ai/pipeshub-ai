@@ -655,7 +655,9 @@ class KernelDB:
             return LockTimeout(str(e))
         if prologue and state == "55000":
             return ProfileEpochMismatch(str(e))
-        lost = isinstance(e, asyncpg.InterfaceError) or (
+        # InternalClientError: the driver's protocol state is broken ("failed", or another operation in progress), as a connection the
+        # server or the pooler dropped mid-operation leaves it; the connection cannot be used again
+        lost = isinstance(e, (asyncpg.InterfaceError, asyncpg.InternalClientError)) or (
             not isinstance(e, TimeoutError) and isinstance(e, (OSError, asyncio.IncompleteReadError))
         ) or lost_state(state)
         if lost:
