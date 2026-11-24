@@ -1361,7 +1361,7 @@ func kg.count_keys(kg.records[],bigint) owner=pipeshub_owner secdef=false leakpr
 func kg.count_restored() owner=pipeshub_owner secdef=false leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, pg_temp body=afda13637bd674ab8c91ebd15ebc5560 ext=-
 func kg.edge_ends(text,text,text,text,text,jsonb) owner=pipeshub_owner secdef=false leakproof=false volatility=i language=sql config=- body=57337d71b2e3db93f671dd871f50f648 ext=-
 func kg.edge_sem(text,jsonb) owner=pipeshub_owner secdef=false leakproof=false volatility=i language=sql config=- body=4ee117750a97059370f78e27a2b20ea6 ext=-
-func kg.log_graph_change() owner=pipeshub_owner secdef=false leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kg, pg_temp;enable_nestloop=off;jit=off body=c68d0390aacd231ff9c8e6e986468041 ext=-
+func kg.log_graph_change() owner=pipeshub_owner secdef=false leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kg, pg_temp;enable_nestloop=off;jit=off body=3b9ed755d10934b1f4428a71e6fb5bcc ext=-
 func kg.proj_doc(text,jsonb) owner=pipeshub_owner secdef=false leakproof=false volatility=i language=sql config=- body=b9e4e9e171e168156e7627caff1b1616 ext=-
 func kg.refuse_truncate() owner=pipeshub_owner secdef=false leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, pg_temp body=7e7bdc290cfd80fba9d7f003e6e3314f ext=-
 func kg.stamp_change() owner=pipeshub_owner secdef=false leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, pg_temp body=c2d564b9001cfde74232432425286116 ext=-

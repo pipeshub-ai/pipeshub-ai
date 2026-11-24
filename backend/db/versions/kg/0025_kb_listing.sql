@@ -41,24 +41,30 @@ BEGIN
       INSERT INTO kg.graph_changes (org_id, app_id, ends)
         SELECT n.org_id, CASE n.coll WHEN 'apps' THEN n.id ELSE COALESCE(n.doc->>'connectorId', '') END, array_agg(kg.coll_code(n.coll) || ':' || n.id)
         FROM newtab n WHERE kg.coll_code(n.coll) IS NOT NULL GROUP BY 1, 2, length(n.id) > 256;
-      -- a file's type document: a change of what a record's listing reads of it (kg.proj_doc), or the document coming or going, is a change of the records typed by it
-      INSERT INTO kg.graph_changes (org_id, app_id, ends)
-        SELECT f.org_id, COALESCE(r.cid, ''), array_agg(DISTINCT kg.coll_code('records') || ':' || e.from_id)
-        FROM (SELECT n.org_id, n.id FROM newtab n WHERE n.coll = 'files') f
-        CROSS JOIN LATERAL (SELECT e.from_id FROM graph.edges e WHERE e.org_id = f.org_id AND e.coll = 'isOfType' AND e.to_id = f.id AND e.to_coll = 'files' AND e.from_coll = 'records') e
-        LEFT JOIN LATERAL (SELECT n.doc->>'connectorId' AS cid FROM graph.nodes n WHERE n.org_id = f.org_id AND n.coll = 'records' AND n.id = e.from_id) r ON true
-        GROUP BY 1, 2, length(e.from_id) > 256;
+      -- a file's type document: a change of what a record's listing reads of it (kg.proj_doc), or the document coming or going, is a change of the records typed by
+      -- it. A statement that writes no file document skips the read.
+      IF EXISTS (SELECT 1 FROM newtab x WHERE x.coll = 'files') THEN
+        INSERT INTO kg.graph_changes (org_id, app_id, ends)
+          SELECT f.org_id, COALESCE(r.cid, ''), array_agg(DISTINCT kg.coll_code('records') || ':' || e.from_id)
+          FROM (SELECT n.org_id, n.id FROM newtab n WHERE n.coll = 'files') f
+          CROSS JOIN LATERAL (SELECT e.from_id FROM graph.edges e WHERE e.org_id = f.org_id AND e.coll = 'isOfType' AND e.to_id = f.id AND e.to_coll = 'files' AND e.from_coll = 'records') e
+          LEFT JOIN LATERAL (SELECT n.doc->>'connectorId' AS cid FROM graph.nodes n WHERE n.org_id = f.org_id AND n.coll = 'records' AND n.id = e.from_id) r ON true
+          GROUP BY 1, 2, length(e.from_id) > 256;
+      END IF;
     ELSIF TG_OP = 'DELETE' THEN
       INSERT INTO kg.graph_changes (org_id, app_id, ends)
         SELECT o.org_id, CASE o.coll WHEN 'apps' THEN o.id ELSE COALESCE(o.doc->>'connectorId', '') END, array_agg(kg.coll_code(o.coll) || ':' || o.id)
         FROM oldtab o WHERE kg.coll_code(o.coll) IS NOT NULL GROUP BY 1, 2, length(o.id) > 256;
-      -- a file's type document: a change of what a record's listing reads of it (kg.proj_doc), or the document coming or going, is a change of the records typed by it
-      INSERT INTO kg.graph_changes (org_id, app_id, ends)
-        SELECT f.org_id, COALESCE(r.cid, ''), array_agg(DISTINCT kg.coll_code('records') || ':' || e.from_id)
-        FROM (SELECT o.org_id, o.id FROM oldtab o WHERE o.coll = 'files') f
-        CROSS JOIN LATERAL (SELECT e.from_id FROM graph.edges e WHERE e.org_id = f.org_id AND e.coll = 'isOfType' AND e.to_id = f.id AND e.to_coll = 'files' AND e.from_coll = 'records') e
-        LEFT JOIN LATERAL (SELECT n.doc->>'connectorId' AS cid FROM graph.nodes n WHERE n.org_id = f.org_id AND n.coll = 'records' AND n.id = e.from_id) r ON true
-        GROUP BY 1, 2, length(e.from_id) > 256;
+      -- a file's type document: a change of what a record's listing reads of it (kg.proj_doc), or the document coming or going, is a change of the records typed by
+      -- it. A statement that writes no file document skips the read.
+      IF EXISTS (SELECT 1 FROM oldtab x WHERE x.coll = 'files') THEN
+        INSERT INTO kg.graph_changes (org_id, app_id, ends)
+          SELECT f.org_id, COALESCE(r.cid, ''), array_agg(DISTINCT kg.coll_code('records') || ':' || e.from_id)
+          FROM (SELECT o.org_id, o.id FROM oldtab o WHERE o.coll = 'files') f
+          CROSS JOIN LATERAL (SELECT e.from_id FROM graph.edges e WHERE e.org_id = f.org_id AND e.coll = 'isOfType' AND e.to_id = f.id AND e.to_coll = 'files' AND e.from_coll = 'records') e
+          LEFT JOIN LATERAL (SELECT n.doc->>'connectorId' AS cid FROM graph.nodes n WHERE n.org_id = f.org_id AND n.coll = 'records' AND n.id = e.from_id) r ON true
+          GROUP BY 1, 2, length(e.from_id) > 256;
+      END IF;
     ELSE
       INSERT INTO kg.graph_changes (org_id, app_id, ends)
         SELECT n.org_id, CASE n.coll WHEN 'apps' THEN n.id ELSE COALESCE(n.doc->>'connectorId', '') END, array_agg(kg.coll_code(n.coll) || ':' || n.id)
@@ -76,15 +82,18 @@ BEGIN
       INSERT INTO kg.graph_changes (org_id, app_id, ends)
         SELECT n.org_id, CASE n.coll WHEN 'apps' THEN n.id ELSE COALESCE(n.doc->>'connectorId', '') END, array_agg(kg.coll_code(n.coll) || ':' || n.id)
         FROM newtab n WHERE kg.coll_code(n.coll) IS NOT NULL AND NOT EXISTS (SELECT 1 FROM oldtab o WHERE o.org_id = n.org_id AND o.coll = n.coll AND o.id = n.id) GROUP BY 1, 2, length(n.id) > 256;
-      -- a file's type document: a change of what a record's listing reads of it (kg.proj_doc), or the document coming or going, is a change of the records typed by it
-      INSERT INTO kg.graph_changes (org_id, app_id, ends)
-        SELECT f.org_id, COALESCE(r.cid, ''), array_agg(DISTINCT kg.coll_code('records') || ':' || e.from_id)
-        FROM (SELECT n.org_id, n.id FROM newtab n LEFT JOIN oldtab o ON o.org_id = n.org_id AND o.coll = n.coll AND o.id = n.id
-                WHERE n.coll = 'files' AND (o.id IS NULL OR kg.proj_doc(n.coll, o.doc) IS DISTINCT FROM kg.proj_doc(n.coll, n.doc))
-              UNION SELECT o.org_id, o.id FROM oldtab o WHERE o.coll = 'files' AND NOT EXISTS (SELECT 1 FROM newtab n WHERE n.org_id = o.org_id AND n.coll = o.coll AND n.id = o.id)) f
-        CROSS JOIN LATERAL (SELECT e.from_id FROM graph.edges e WHERE e.org_id = f.org_id AND e.coll = 'isOfType' AND e.to_id = f.id AND e.to_coll = 'files' AND e.from_coll = 'records') e
-        LEFT JOIN LATERAL (SELECT n.doc->>'connectorId' AS cid FROM graph.nodes n WHERE n.org_id = f.org_id AND n.coll = 'records' AND n.id = e.from_id) r ON true
-        GROUP BY 1, 2, length(e.from_id) > 256;
+      -- a file's type document: a change of what a record's listing reads of it (kg.proj_doc), or the document coming or going, is a change of the records typed by
+      -- it. A statement that writes no file document skips the read.
+      IF EXISTS (SELECT 1 FROM newtab x WHERE x.coll = 'files') OR EXISTS (SELECT 1 FROM oldtab x WHERE x.coll = 'files') THEN
+        INSERT INTO kg.graph_changes (org_id, app_id, ends)
+          SELECT f.org_id, COALESCE(r.cid, ''), array_agg(DISTINCT kg.coll_code('records') || ':' || e.from_id)
+          FROM (SELECT n.org_id, n.id FROM newtab n LEFT JOIN oldtab o ON o.org_id = n.org_id AND o.coll = n.coll AND o.id = n.id
+                  WHERE n.coll = 'files' AND (o.id IS NULL OR kg.proj_doc(n.coll, o.doc) IS DISTINCT FROM kg.proj_doc(n.coll, n.doc))
+                UNION SELECT o.org_id, o.id FROM oldtab o WHERE o.coll = 'files' AND NOT EXISTS (SELECT 1 FROM newtab n WHERE n.org_id = o.org_id AND n.coll = o.coll AND n.id = o.id)) f
+          CROSS JOIN LATERAL (SELECT e.from_id FROM graph.edges e WHERE e.org_id = f.org_id AND e.coll = 'isOfType' AND e.to_id = f.id AND e.to_coll = 'files' AND e.from_coll = 'records') e
+          LEFT JOIN LATERAL (SELECT n.doc->>'connectorId' AS cid FROM graph.nodes n WHERE n.org_id = f.org_id AND n.coll = 'records' AND n.id = e.from_id) r ON true
+          GROUP BY 1, 2, length(e.from_id) > 256;
+      END IF;
     END IF;
   ELSE
     IF TG_OP = 'INSERT' THEN
