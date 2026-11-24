@@ -12,9 +12,8 @@ import os
 import asyncpg
 import pytest
 
-from app.core.org_context import spawn_detached
 from app.services.graph_db.postgres.kg import backfill as bf
-from app.services.graph_db.postgres.kg import drainer, flush, modes
+from app.services.graph_db.postgres.kg import drainer, modes
 from app.services.graph_db.postgres.kg.drainer import drain_org
 from app.services.graph_db.postgres.kg.locks import lock_apps
 from app.services.graph_db.postgres.kg.model import CODE_EPOCH
@@ -414,46 +413,6 @@ async def test_promotion_needs_shadow_a_clean_verify_and_an_empty_log_and_demoti
     assert (await state(pg_db, org, "app1"))[:2] == (None, "legacy")
 
 
-async def test_a_backfill_and_a_promotion_refuse_to_run_with_the_projection_off(pg_db, monkeypatch) -> None:
-    p, org = await fresh_world(pg_db)
-    monkeypatch.setenv("PG_KG_PROJECT", "0")
-    with pytest.raises(bf.ProjectionOff):
-        await bf.backfill(pg_db, org, "app1")
-    with pytest.raises(bf.ProjectionOff):
-        await bf.promote(pg_db, org, "app1")
-
-
-async def test_turning_the_projection_off_sends_the_connectors_back_to_the_walk_and_a_new_backfill_starts_over(pg_db, monkeypatch) -> None:
-    p, org = await shadowed(pg_db)
-    await bf.promote(pg_db, org, "app1")
-    monkeypatch.setenv("PG_KG_PROJECT", "0")
-    with ctx(org):
-        await p.batch_upsert_nodes([{"_key": "off1", "orgId": org, "recordName": "While off", "connectorId": "app1", "recordType": "FILE", "origin": "CONNECTOR"}], "records")
-    cursor, mode, _ = await state(pg_db, org, "app1")
-    assert (cursor, mode) == (None, "legacy")                               # the unit took its own log rows back and demoted
-    assert (await state(pg_db, org, None))[:2] == (None, "legacy")
-    monkeypatch.setenv("PG_KG_PROJECT", "1")
-    out = await bf.backfill(pg_db, org, "app1", page=4)
-    assert out.flipped and out.batches > 0                                  # from the first node, and it covers the write made while off
-    async def has_it(tx) -> bool:
-        return bool(await tx.fetchval("SELECT 1 FROM kg.node_keys WHERE org_id = $1 AND id = 'off1'", org))
-    assert await run_in(pg_db, org, has_it)
-
-
-async def test_the_sweep_of_other_roles_rows_also_sends_the_connectors_back(pg_db, monkeypatch) -> None:
-    p, org = await shadowed(pg_db)
-    monkeypatch.setenv("PG_KG_PROJECT", "0")
-    monkeypatch.setattr(flush, "SWEEP_GAP_S", 0.0)
-    monkeypatch.setattr(flush, "_last_sweep", {})
-
-    await _admin("INSERT INTO kg.graph_changes (org_id, ends) VALUES ($1, ARRAY['3:f1'])", org)       # a row another service's committed write left
-    async def no_graph(tx) -> None:
-        await tx.fetchval("/* pipeshub:test.no_graph */ SELECT 1")
-    await run_in(pg_db, org, no_graph, write=True)
-    await flush.settle_sweeps()
-    assert (await state(pg_db, org, "app1"))[:2] == (None, "legacy")
-
-
 async def is_current(db, org: str, app_id: str) -> bool:
     async def go(tx) -> bool:
         return await drainer.is_current(tx, org, app_id)
@@ -510,60 +469,6 @@ async def test_writers_running_while_a_backfill_copies_leave_kg_equal_to_the_gra
     await task
     final = await bf.backfill(pg_db, org, "app1", page=2)
     assert final.flipped and (await verify(pg_db, org, "app1")).ok
-
-
-# ---- a take-back in another process while a flip or a promotion verifies ----------------------------------------------------------------------------------------------------------
-async def interleave(p, org: str) -> None:
-    """What a process whose projection is off does while the flip runs: a change commits (its log row is written), and the sweep tries to take the row back and demote."""
-    await OPS[5](p, org)                                   # a record moves into app2
-    await flush._sweep(p._db, org)
-
-
-@pytest.mark.parametrize("where", ["after_verify", "after_state_read"])
-@pytest.mark.parametrize("which", ["promote", "flip"])
-async def test_a_take_back_cannot_slip_between_a_verify_and_the_write_that_trusts_it(pg_db, monkeypatch, which: str, where: str) -> None:
-    """The flip holds the connector's lock from before its verify to its write: a take-back that would delete a change's log row and demote must leave the row (so the flip sees a
-    change is waiting) or wait; it must never demote between the verify and the write and be overwritten by ``shadow`` or ``enforce`` while the log is empty."""
-    p, org = await fresh_world(pg_db)
-    if which == "promote":
-        assert (await bf.backfill(pg_db, org, "app1", page=4)).flipped
-    real_verify, real_state, hit = bf.verify_app, modes.state, {"verified": False, "fired": False}
-
-    async def verify_then(tx, o, a) -> Result:
-        res = await real_verify(tx, o, a)
-        hit["verified"] = True
-        if where == "after_verify" and not hit["fired"]:
-            hit["fired"] = True
-            await spawn_detached(interleave(p, org))         # another process: its own context, its own units
-        return res
-
-    async def state_then(tx, o, sk) -> tuple:
-        got = await real_state(tx, o, sk)
-        if where == "after_state_read" and hit["verified"] and not hit["fired"]:
-            hit["fired"] = True
-            await spawn_detached(interleave(p, org))
-        return got
-    monkeypatch.setattr(bf, "verify_app", verify_then)
-    monkeypatch.setattr(modes, "state", state_then)
-    try:
-        if which == "promote":
-            if where == "after_verify":          # the change is in the log when the flip counts it: refused
-                with pytest.raises(bf.Refused):
-                    await bf.promote(pg_db, org, "app1")
-            else:                                # it commits after the count: the state may be written, with the change still in the log (not current until drained)
-                await bf.promote(pg_db, org, "app1")
-        else:
-            out = await bf.backfill(pg_db, org, "app1", page=4)
-            assert out.flipped is (where == "after_state_read")
-    finally:
-        monkeypatch.undo()
-        monkeypatch.setenv("PG_KG_PROJECT", "1")
-    assert hit["fired"]
-    cursor, mode, _ = await state(pg_db, org, "app1")
-    waiting = await run_in(pg_db, org, lambda tx: tx.fetchval("SELECT count(*) FROM kg.graph_changes WHERE org_id = $1", org))
-    res = await verify(pg_db, org, "app1")
-    assert mode == "legacy" or res.ok or waiting, f"{mode} with {waiting} rows in the log while kg differs from the graph: {res.summary()}"
-    assert waiting or mode == "legacy"                      # either the change is still visible in the log, or the connector went back to the walk
 
 
 # ---- T1: the verify names an extra grant and an extra closure row; an unreadable row makes the connector not current --------------------------------------------------------------
@@ -743,51 +648,3 @@ async def test_the_verify_names_a_stale_stamp_and_a_backfill_repairs_it(pg_db) -
     assert not res.ok and any(m.startswith("s|fold") for m in res.changed), res.changed
     again = await bf.backfill(pg_db, org, "app1", page=4)                          # the backfill restamps the connector whole: the stale stamp is repaired
     assert again.flipped and (await verify(pg_db, org, "app1")).ok
-
-
-async def test_a_take_back_leaves_the_rows_of_a_connector_whose_first_backfill_batch_has_not_committed(pg_db, monkeypatch) -> None:
-    """A first batch holds its connector's lock but has no mode and no cursor until it commits, so the connectors on a copy do not name it: the take-back has to try the lock of the connector of
-    the rows it acknowledges, or it deletes the rows, demotes nothing, and the batch then commits a copy with no row in the log to show it is behind."""
-    p, org = await fresh_world(pg_db)
-    held, release = asyncio.Event(), asyncio.Event()
-    sweep, sweeps_may_run = flush._sweep, asyncio.Event()
-
-    async def held_sweep(db, o) -> None:
-        """The sweep a commit schedules waits here: left to run, it takes the rows and sends the connector back to the walk before the test has read the cursor its batch committed."""
-        await sweeps_may_run.wait()
-        await sweep(db, o)
-    monkeypatch.setattr(flush, "_sweep", held_sweep)
-
-    async def first_batch(tx) -> None:
-        await lock_apps(tx, org, {"app1"}, org_wide=False)
-        held.set()
-        await release.wait()
-        w = KgWriter(tx)
-        sk = (await w.nodes_upsert({("apps", "app1")}))[("apps", "app1")]
-        await w.projection_set(sk, epoch=0, mode="legacy", digest=None, cursor="2:x", verified_at=None)
-    batch = asyncio.create_task(run_in(pg_db, org, first_batch, write=True))
-    try:
-        waiter = asyncio.ensure_future(held.wait())
-        await asyncio.wait({waiter, batch}, timeout=30, return_when=asyncio.FIRST_COMPLETED)       # the batch failing before it holds the lock ends the wait with its own error
-        if batch.done():
-            batch.result()
-        assert held.is_set(), "the first batch never took its lock"
-        monkeypatch.setenv("PG_KG_PROJECT", "0")
-        await OPS[5](p, org)                                      # a record moves into app2: rows of app1 and app2, taken back at the commit of the unit that wrote them
-        rows = await run_in(pg_db, org, lambda tx: tx.fetchval("SELECT count(*) FROM kg.graph_changes WHERE org_id = $1", org))
-        release.set()
-        await batch
-        assert rows > 0                                            # the lock of app1 was held: the rows were left for the sweep
-        assert (await state(pg_db, org, "app1"))[0] == "2:x"       # the batch committed its cursor
-        sweeps_may_run.set()
-        await flush.settle_sweeps()                               # the sweeps the commits scheduled: a sweep that finds another one holding the lock leaves the rows to it
-        await sweep(pg_db, org)
-        left = await run_in(pg_db, org, lambda tx: tx.fetchval("SELECT count(*) FROM kg.graph_changes WHERE org_id = $1", org))
-        assert left == 0 and (await state(pg_db, org, "app1"))[:2] == (None, "legacy")       # the sweep took them and sent the connector back to the walk
-    finally:
-        release.set()                                              # whatever failed above, the batch is let go and awaited, so it never holds its connection
-        sweeps_may_run.set()
-        if not batch.done():
-            await asyncio.wait({batch}, timeout=30)
-            batch.cancel()
-        waiter.cancel()

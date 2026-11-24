@@ -441,6 +441,40 @@ def test_a_copy_labelled_epoch_8_when_the_trash_columns_are_added_is_relabelled_
         assert [tuple(x) for x in c.execute("SELECT rule, object FROM kernel.rls_violations")] == []
 
 
+def test_the_counters_revision_keeps_no_facet_2_and_its_downgrade_keeps_it_again(db):
+    """kg_0023: a live, decided record adds a facet 1 delta and no facet 2 delta, and the facet 2 rows kept before the upgrade are gone; down to kg_0022 a write adds facet 2
+    deltas again (kg_0015's body) and the catalog is clean."""
+    from .rls_fixture import ORG_A as org
+    from .test_kg_writers import call, rec_args, rec_values
+    cluster, name = db
+    url = cluster.url(name, "pipeshub_migrate")
+
+    def write(c, sk: int) -> None:
+        rid = f"rec-{sk}"
+        call(c, "kg.w_records_upsert", org, rec_args((sk, rec_values(id=rid, deleted=False))))
+        call(c, "kg.w_stamps_set", org, ([sk], [3], [rid], [3], [b"\x00\x01"], [9], [True], [True], [False], [True], [4], [False]))
+        call(c, "kg.w_r13_set", org, ([sk], [3], [rid], [3], [False]))
+
+    def facets(c) -> list[tuple]:
+        return [tuple(r) for r in c.execute("SELECT facet, sum(n)::int FROM kg.counts WHERE org_id = %s GROUP BY facet ORDER BY facet", (org,))]
+
+    assert run_migrate(url).returncode == 0
+    r = run_migrate(url, "downgrade", "kg_0022", PG_MIGRATE_ALLOW_DOWNGRADE="1")
+    assert r.returncode == 0, r.stdout
+    with connect(cluster, name) as c:
+        write(c, 11)
+        assert facets(c) == [(1, 1), (2, 1)]
+        assert [tuple(x) for x in c.execute("SELECT rule, object FROM kernel.rls_violations")] == []
+    r = run_migrate(url)
+    assert r.returncode == 0, r.stdout
+    with connect(cluster, name) as c:
+        assert facets(c) == [(1, 1)]                                         # the facet 2 rows of every org are gone
+        write(c, 12)
+        assert facets(c) == [(1, 2)]
+        assert c.execute("SELECT relforcerowsecurity FROM pg_class WHERE oid = 'kg.counts'::regclass").fetchone()[0] is True
+        assert [tuple(x) for x in c.execute("SELECT rule, object FROM kernel.rls_violations")] == []
+
+
 def test_the_capture_only_revision_refuses_a_services_own_row_and_its_downgrade_takes_the_refusal_back(db):
     """kg_0022: a change-log row a service inserts itself is refused; down to kg_0021 it is taken again (kg_0004's body) and the catalog is clean; an upgrade refuses it again."""
     import psycopg
