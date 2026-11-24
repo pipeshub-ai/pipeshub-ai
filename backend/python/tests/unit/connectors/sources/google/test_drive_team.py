@@ -1887,6 +1887,32 @@ class TestForeignSharedDrive:
         assert self._last_group_write(connector)[1] == ["b@example.com"]
         assert _drives(state)["0APG"]["members"] == ["b@example.com"]
 
+    @pytest.mark.parametrize(("answer", "opens"), [
+        ({"mimeType": "application/vnd.google-apps.folder", "capabilities": {"canListChildren": False}}, False),
+        ({"mimeType": "application/vnd.google-apps.folder", "capabilities": {"canListChildren": True}}, True),
+        ({"mimeType": "application/pdf", "capabilities": {}}, True),
+        ({"mimeType": "application/pdf", "trashed": True}, True),
+    ])
+    async def test_a_leaver_opens_a_folder_only_when_they_can_list_it(self, connector, answer, opens) -> None:
+        """A limited folder shows its name to people it cuts out: that is not access to what is in it."""
+        source = MagicMock()
+        source.files_get = AsyncMock(return_value={"id": "f", **answer})
+        connector._build_user_drive_data_source = AsyncMock(return_value=source)
+
+        result = await connector._leaver_still_opens(MagicMock(external_record_id="f"), self._user("a@example.com"), {})
+
+        assert result is opens
+        assert "capabilities/canListChildren" in source.files_get.await_args.kwargs["fields"]
+
+    async def test_a_leaver_the_file_is_gone_for_does_not_open_it(self, connector) -> None:
+        from googleapiclient.errors import HttpError
+
+        source = MagicMock()
+        source.files_get = AsyncMock(side_effect=HttpError(MagicMock(status=404), b"not found"))
+        connector._build_user_drive_data_source = AsyncMock(return_value=source)
+
+        assert await connector._leaver_still_opens(MagicMock(external_record_id="f"), self._user("a@example.com"), {}) is False
+
     async def test_a_leaver_who_still_opens_a_file_keeps_their_grant_on_it(self, connector) -> None:
         """A share of their own on it (below a limited folder, say) outlasts their leaving the drive."""
         self._store(connector)
@@ -1896,7 +1922,7 @@ class TestForeignSharedDrive:
         dep.get_record_group_by_external_id = AsyncMock(side_effect=lambda _c, ext: MagicMock(id="group-d") if ext == "0APG" else None)
         dep.get_records_by_status = AsyncMock(side_effect=[[MagicMock(id="shared-1"), MagicMock(id="gone-1")], []])
         dep.delete_permission_from_record = AsyncMock()
-        connector._file_state_for = AsyncMock(side_effect=lambda record, *_: "open" if record.id == "shared-1" else "unable")
+        connector._leaver_still_opens = AsyncMock(side_effect=lambda record, *_: record.id == "shared-1")
 
         await connector._note_foreign_drives_reached(self._user("a@example.com"), [])
 

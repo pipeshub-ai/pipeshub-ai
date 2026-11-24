@@ -7276,7 +7276,7 @@ class GoogleDriveTeamConnector(BaseConnector):
             for record in page:
                 if shared_with_me is not None and await processor.record_in_group(record.id, shared_with_me.id):
                     continue
-                if leaver is not None and await self._file_state_for(record, leaver, sources) != "unable":
+                if leaver is not None and await self._leaver_still_opens(record, leaver, sources):
                     continue
                 await processor.delete_permission_from_record(record.id, email, self.connector_id)
             if len(page) < FOREIGN_DRIVE_PAGE_SIZE:
@@ -7284,6 +7284,29 @@ class GoogleDriveTeamConnector(BaseConnector):
             after_key = getattr(page[-1], "id", None)
             if not after_key:
                 raise RuntimeError(f"The records of shared drive {drive_id} could not be paged")
+
+    async def _leaver_still_opens(
+        self, record: Record, user: AppUser, sources: dict[str, GoogleDriveDataSource]
+    ) -> bool:
+        """Whether a leaver still opens the file, asked as them. A limited folder shows its name to people it cuts
+        out, with `canListChildren` false: that is not access to what is in it, which inherits their grant. "Not
+        found" or a known refusal is not; any other failure raises."""
+        source = sources.get(user.email)
+        if source is None:
+            source = await self._build_user_drive_data_source(user)
+            sources[user.email] = source
+        try:
+            metadata = await source.files_get(
+                fileId=record.external_record_id, supportsAllDrives=True,
+                fields="id, trashed, mimeType, capabilities/canListChildren",
+            )
+        except HttpError as e:
+            if e.resp.status == HttpStatusCode.NOT_FOUND.value or is_permission_denied_403(e):
+                return False
+            raise
+        if metadata.get("mimeType") == MimeTypes.GOOGLE_DRIVE_FOLDER.value:
+            return bool((metadata.get("capabilities") or {}).get("canListChildren"))
+        return True
 
     async def _write_foreign_drive(self, drive_id: str, entry: dict) -> None:
         """Write a foreign drive's group with a READ grant for each member; with none, its grants are revoked."""
