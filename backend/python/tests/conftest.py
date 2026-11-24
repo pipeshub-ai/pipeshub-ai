@@ -40,6 +40,40 @@ with open(_EMPTY_OPIK_CONFIG, "w", encoding="utf-8") as _opik_config:
     _opik_config.write("[opik]\n")
 os.environ["OPIK_CONFIG_PATH"] = _EMPTY_OPIK_CONFIG
 
+# The code sandbox and Docker proxy settings in a checkout's `.env` (a developer's
+# local stack) must not reach the tests: their defaults are what the tests pin, and
+# a test that needs a value sets it itself. The app loads `.env` at import with
+# `load_dotenv()`, which only fills variables that are unset, so a blank value is not
+# an option here (several of these read an empty string as a value); instead the
+# loader drops these from what it adds. Values set in the shell that runs the tests
+# (such as SANDBOX_TEST_IMAGE) are kept.
+_DOTENV_DROPPED_PREFIXES = ("SANDBOX_", "DOCKER_PROXY_")
+
+
+def _install_dotenv_filter() -> None:
+    try:
+        import dotenv
+        import dotenv.main
+    except ImportError:  # pragma: no cover - python-dotenv is a dependency
+        return
+    real = dotenv.main.load_dotenv
+    if getattr(real, "_drops_sandbox_settings", False):
+        return
+
+    def load_dotenv(*args: object, **kwargs: object) -> bool:
+        before = {key for key in os.environ if key.startswith(_DOTENV_DROPPED_PREFIXES)}
+        loaded = real(*args, **kwargs)
+        for key in [k for k in os.environ if k.startswith(_DOTENV_DROPPED_PREFIXES) and k not in before]:
+            del os.environ[key]
+        return loaded
+
+    load_dotenv._drops_sandbox_settings = True  # type: ignore[attr-defined]
+    dotenv.load_dotenv = load_dotenv
+    dotenv.main.load_dotenv = load_dotenv
+
+
+_install_dotenv_filter()
+
 
 @pytest.fixture(autouse=True)
 def _fresh_lane_assignments(monkeypatch: pytest.MonkeyPatch) -> None:

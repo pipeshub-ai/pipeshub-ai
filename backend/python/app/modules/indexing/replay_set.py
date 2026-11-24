@@ -38,6 +38,8 @@ a replay that asks for more (a forced run after a non-forced completion, another
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import hashlib
 import os
 import re
@@ -273,8 +275,16 @@ async def note_record_completed(record_id: str, completed_at_ms: int, logger: Lo
             logger.warning("Replay set not written for record %s: %s", record_id, type(exc).__name__)
 
 
+#: Longest the start-up eviction check waits for Redis (as the Node API's check).
+EVICTION_CHECK_TIMEOUT_SECONDS = 10.0
+
 #: Eviction policies that cannot silently drop a ``messaging:`` or ``sg:`` key.
 SAFE_EVICTION_POLICIES = frozenset({"noeviction"})
+
+
+class UnsafeEvictionPolicyError(RuntimeError):
+    """An ``allkeys-*`` policy on the Redis that holds the key-value store and broker streams, whose keys have no TTL:
+    it can drop stored configuration and queued events. ``volatile-*`` only evicts keys that expire, so it is a warning."""
 
 EVICTION_POLICY_UNSAFE = METRICS_BACKEND.gauge(
     "pipeshub_redis_eviction_policy_unsafe",
@@ -290,19 +300,57 @@ def eviction_policy_warning() -> str | None:
     return _eviction_warning
 
 
-async def check_eviction_policy(redis: Redis, logger: Logger | None = None) -> str | None:
+async def _maxmemory_policies(redis: Redis) -> tuple[list[str], list[Exception]]:
+    """``maxmemory-policy`` of every primary that answered, and the errors of those that did not. A cluster client sends
+    an untargeted ``INFO`` to one node only, so each primary is asked on its own; one that fails must not hide another's
+    answer."""
+    if callable(getattr(type(redis), "get_primaries", None)):  # a cluster client (no client import outside the providers)
+        # The node list is empty until the client has loaded the slot map, and an empty list must not read as safe.
+        # With every node down the client keeps retrying; start-up must not wait out the outage.
+        await asyncio.wait_for(redis.initialize(), EVICTION_CHECK_TIMEOUT_SECONDS)  # type: ignore[attr-defined]
+        primaries = redis.get_primaries()  # type: ignore[attr-defined]
+        if not primaries:
+            raise RuntimeError("Redis Cluster reported no primaries")
+        reads = [redis.info("memory", target_nodes=node) for node in primaries]  # type: ignore[misc]
+    else:
+        reads = [redis.info("memory")]  # type: ignore[misc]
+    policies: list[str] = []
+    errors: list[Exception] = []
+    for read in reads:
+        try:
+            # Each primary has its own deadline, so a slow one cannot discard what the others already answered.
+            info = await asyncio.wait_for(read, EVICTION_CHECK_TIMEOUT_SECONDS)
+        except Exception as exc:
+            errors.append(exc)
+            continue
+        policies.append(str(info.get("maxmemory_policy") or "").strip().lower())
+    return policies, errors
+
+
+async def check_eviction_policy(redis: Redis, logger: Logger | None = None, service: str = "indexing") -> str | None:
     """Read ``maxmemory-policy`` from ``INFO memory`` (``CONFIG GET`` is often disabled on managed Redis) and
-    report a policy that can evict keys silently. Indexing keeps running either way; the admin is told."""
+    report a policy that can evict keys silently; the admin is told. An ``allkeys-*`` policy raises
+    ``UnsafeEvictionPolicyError`` instead. A Redis that cannot be read is not a reason to stop."""
     global _eviction_warning  # noqa: PLW0603 - module state read by /health
     try:
-        info = await redis.info("memory")  # type: ignore[misc]
-        policy = str(info.get("maxmemory_policy") or "").strip().lower()
+        policies, errors = await _maxmemory_policies(redis)
     except Exception as exc:
-        if logger is not None:
-            logger.warning("Redis eviction policy not read: %s", type(exc).__name__)
+        errors, policies = [exc], []
+    if errors and logger is not None:
+        logger.warning("Redis eviction policy not read on %d node(s): %s", len(errors), type(errors[0]).__name__)
+    if not policies:
         return _eviction_warning
+    # The worst readable one decides, whatever the unreadable ones are: any primary can hold any key.
+    unsafe_policies = [p for p in policies if p and p not in SAFE_EVICTION_POLICIES]
+    policy = next((p for p in unsafe_policies if p.startswith("allkeys-")), unsafe_policies[0] if unsafe_policies else "")
+    if policy.startswith("allkeys-"):
+        raise UnsafeEvictionPolicyError(
+            f"Redis maxmemory-policy is '{policy}' on the Redis that holds the key-value store, broker streams, leases "
+            "and counters: it can drop stored configuration and queued events. Set it to 'noeviction' (or a volatile-* "
+            "policy), and put caches on their own Redis with REDIS_CACHE_URL if they need an evicting policy."
+        )
     unsafe = bool(policy) and policy not in SAFE_EVICTION_POLICIES
-    EVICTION_POLICY_UNSAFE.set("indexing", value=1.0 if unsafe else 0.0)
+    EVICTION_POLICY_UNSAFE.set(service, value=1.0 if unsafe else 0.0)
     _eviction_warning = (
         f"maxmemory-policy is '{policy}': Redis may evict the replay set, pause counters and budgets silently. "
         "Use 'noeviction'."
@@ -311,3 +359,26 @@ async def check_eviction_policy(redis: Redis, logger: Logger | None = None) -> s
     if unsafe and logger is not None:
         logger.warning(_eviction_warning)
     return _eviction_warning
+
+
+async def check_main_redis_eviction_policy(config_service: Any, logger: Logger, service: str) -> None:  # noqa: ANN401
+    """Start-up check run by every service that writes to the main Redis (the configuration service's Redis config: the
+    key-value store, broker streams, leases and counters). Raises ``UnsafeEvictionPolicyError`` on ``allkeys-*``; a Redis
+    that cannot be read leaves the warning unset and the service starts. Skipped when there is no Redis server."""
+    from app.services.redis.connection_provider_factory import default_redis_mode
+    from app.services.vector_db.rebuild_state import redis_from_config_service
+
+    if default_redis_mode() in ("postgres", "inprocess"):
+        return
+    redis = None
+    try:
+        redis = await redis_from_config_service(config_service)
+        await check_eviction_policy(redis, logger, service)
+    except UnsafeEvictionPolicyError:
+        raise
+    except Exception as exc:
+        logger.warning("Redis eviction policy not checked: %s", type(exc).__name__)
+    finally:
+        if redis is not None:
+            with contextlib.suppress(Exception):
+                await redis.aclose()

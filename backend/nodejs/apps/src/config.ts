@@ -30,6 +30,12 @@ export { createOrgAuthConfigRouter } from './modules/auth/routes/orgAuthConfig.r
 export { MailServiceContainer } from './modules/mail/container/mailService.container';
 export { createMailServiceRouter } from './modules/mail/routes/mail.routes';
 
+// --- Contact support and Send feedback (emailed to SUPPORT_EMAIL; nothing stored) ---
+export {
+  createSupportRouter,
+  createFeedbackRouter,
+} from './modules/support/support.routes';
+
 // --- Enterprise search ---
 export { EnterpriseSearchAgentContainer } from './modules/enterprise_search/container/es.container';
 export {
@@ -90,6 +96,10 @@ export { dynamicClientOwnerOrg as dynamicClientOrg } from './modules/oauth_provi
 // --- OAuth Apps ---
 export { OAuthAppsContainer } from './modules/oauth_apps/container/oauth_apps.container';
 export { createOAuthAppsRouter } from './modules/oauth_apps/routes/oauth_apps.routes';
+
+// --- Platform alerts ---
+export { resolvePlatformAdminRecipients } from './modules/notification/utils/platform-admin-recipients';
+export type { PlatformRecipientOrg } from './modules/notification/utils/platform-admin-recipients';
 
 // --- Edition boot hooks ---
 export { noopEditionBoot as editionBoot } from './libs/edition/edition-boot';

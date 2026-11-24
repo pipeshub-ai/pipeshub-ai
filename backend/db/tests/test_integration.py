@@ -504,25 +504,22 @@ def test_a_downgrade_to_the_previous_revision_leaves_a_clean_catalog_and_upgrade
     assert epochs(cluster, name) == HEADS
 
 
-def test_the_jobs_role_can_read_the_organisation_gauges_through_functions_and_the_revision_round_trips(db):
+def test_the_jobs_role_reads_the_organisation_gauges_only_through_functions_and_the_revisions_round_trip(db):
     cluster, name = db
     url = cluster.url(name, MIGRATE)
     assert run_migrate(url).returncode == 0
     policies = "SELECT count(*) FROM pg_policies WHERE schemaname = 'identity' AND policyname = 'jobs_all'"
+    grants = "SELECT table_name, privilege_type FROM information_schema.role_table_grants WHERE grantee = 'pipeshub_jobs' AND table_schema = 'identity' ORDER BY 1, 2"
     gauges = {"gauge_user_counts": ["org_id", "n"], "gauge_live_orgs": ["org_id", "account_type", "domain"], "gauge_auth_configs": ["org_id", "auth_steps"]}
-    with connect(cluster, name) as c:
-        for org in ("a" * 24, "b" * 24):
-            c.execute("INSERT INTO identity.orgs (org_id, domain, contact_email, account_type, created_at, updated_at) VALUES (%s, 'x.test', 'a@x.test', 'business', now(), now())", (org,))
-            c.execute("INSERT INTO identity.users (org_id, id, slug, email, created_at, updated_at) VALUES (%s, %s, 'user-1', 'a@x.test', now(), now())", (org, "a" * 24))
-            c.execute("INSERT INTO identity.org_auth_config (org_id, id, auth_steps, created_at, updated_at) VALUES (%s, %s, '[1]', now(), now())", (org, "a" * 24))
-        assert c.execute(policies).fetchone()[0] == 3      # this revision only adds the functions: the jobs role keeps its three tables
+    readable_before = ("users", "orgs", "org_auth_config")      # what identity_0004 left the jobs role and identity_0006 takes away
+
+    def as_jobs(c, readable):
         tables = [r[0] for r in c.execute("SELECT table_name FROM information_schema.tables WHERE table_schema = 'identity' AND table_type = 'BASE TABLE'").fetchall()]
         assert len(tables) == 11
         c.execute("SET ROLE pipeshub_jobs")      # no app.org_id: the system context of the gauges
         for fn, cols in gauges.items():
             cur = c.execute(f"SELECT * FROM identity.{fn}()")
             assert [d.name for d in cur.description] == cols and len(cur.fetchall()) == 2
-        readable = ("users", "orgs", "org_auth_config")
         for t in tables:
             if t in readable:
                 assert len(c.execute(f"SELECT 1 FROM identity.{t}").fetchall()) == 2
@@ -530,15 +527,30 @@ def test_the_jobs_role_can_read_the_organisation_gauges_through_functions_and_th
                 with pytest.raises(psycopg.errors.InsufficientPrivilege):
                     c.execute(f"SELECT 1 FROM identity.{t}")
         c.execute("RESET ROLE")
+
+    with connect(cluster, name) as c:
+        for org in ("a" * 24, "b" * 24):
+            c.execute("INSERT INTO identity.orgs (org_id, domain, contact_email, account_type, created_at, updated_at) VALUES (%s, 'x.test', 'a@x.test', 'business', now(), now())", (org,))
+            c.execute("INSERT INTO identity.users (org_id, id, slug, email, created_at, updated_at) VALUES (%s, %s, 'user-1', 'a@x.test', now(), now())", (org, "a" * 24))
+            c.execute("INSERT INTO identity.org_auth_config (org_id, id, auth_steps, created_at, updated_at) VALUES (%s, %s, '[1]', now(), now())", (org, "a" * 24))
+        assert c.execute(policies).fetchone()[0] == 0
+        assert c.execute(grants).fetchall() == []
+        as_jobs(c, ())      # every identity table refused, the gauges still answer
         for fn in gauges:
             who = [r[0] for r in c.execute("SELECT r.rolname FROM pg_roles r WHERE has_function_privilege(r.oid, %s::regprocedure, 'EXECUTE') AND NOT r.rolsuper ORDER BY 1", (f"identity.{fn}()",))]
             assert who == ["pipeshub_jobs", "pipeshub_vetted_identity"], who      # the grant, and the owner
+    r = run_migrate(url, "downgrade", "identity_0005", PG_MIGRATE_ALLOW_DOWNGRADE="1")
+    assert r.returncode == 0, r.stdout
+    with connect(cluster, name) as c:      # the downgrade gives the jobs role back what identity_0005's code may still read
+        assert [tuple(x) for x in c.execute(grants)] == [(t, "SELECT") for t in ("org_auth_config", "orgs", "users")]
+        assert c.execute(policies).fetchone()[0] == 3
+        as_jobs(c, readable_before)
+        assert [tuple(x) for x in c.execute("SELECT rule, object FROM kernel.rls_violations")] == []
         c.execute("DELETE FROM identity.org_auth_config; DELETE FROM identity.users; DELETE FROM identity.orgs")
     r = run_migrate(url, "downgrade", "identity_0004", PG_MIGRATE_ALLOW_DOWNGRADE="1")
     assert r.returncode == 0, r.stdout
     with connect(cluster, name) as c:
-        assert [tuple(x) for x in c.execute("SELECT table_name, privilege_type FROM information_schema.role_table_grants WHERE grantee = 'pipeshub_jobs' AND table_schema = 'identity' ORDER BY 1, 2")] == [
-            (t, "SELECT") for t in ("org_auth_config", "orgs", "users")]
+        assert [tuple(x) for x in c.execute(grants)] == [(t, "SELECT") for t in ("org_auth_config", "orgs", "users")]
         assert c.execute(policies).fetchone()[0] == 3
         assert c.execute("SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = 'identity' AND p.proname LIKE 'gauge\\_%%'").fetchone()[0] == 0
         assert [tuple(x) for x in c.execute("SELECT rule, object FROM kernel.rls_violations")] == []
@@ -548,8 +560,8 @@ def test_the_jobs_role_can_read_the_organisation_gauges_through_functions_and_th
     assert r.returncode == 0, r.stdout
     assert epochs(cluster, name) == HEADS
     with connect(cluster, name) as c:      # the tables are found whatever the session's search_path is
-        assert c.execute(policies).fetchone()[0] == 3
-        assert c.execute("SELECT count(*) FROM information_schema.role_table_grants WHERE grantee = 'pipeshub_jobs' AND table_schema = 'identity'").fetchone()[0] == 3
+        assert c.execute(policies).fetchone()[0] == 0
+        assert c.execute(grants).fetchall() == []
         assert c.execute("SELECT count(*) FROM information_schema.routine_privileges WHERE grantee = 'pipeshub_jobs' AND routine_schema = 'identity'").fetchone()[0] == 3
         assert [tuple(x) for x in c.execute("SELECT rule, object FROM kernel.rls_violations")] == []
 
@@ -806,8 +818,9 @@ def test_the_doctor_reports_each_layer_and_changes_nothing(db):
 
 # ---- a build older than the database (helm rollback of a deployment whose migrate Job is created again) ----------------------------
 
-def _as_newer_build(cluster, name, revision="platform_0010", min_code=None):
+def _as_newer_build(cluster, name, revision=None, min_code=None):
     """Emulate a database migrated by a newer build: one head carries a revision id this tree does not have."""
+    revision = revision or next(r for r in REVISION_HEADS if r.startswith("platform_0"))  # the platform head (not platform_data)
     with cluster.admin(name) as c:
         c.execute("UPDATE kernel.alembic_version SET version_num = 'platform_0099' WHERE version_num = %s", (revision,))
         if min_code is not None:
@@ -936,6 +949,8 @@ KV_MATRIX = [
     ("query", "/services/scopeFields/enabled", True, True), ("query", "state:counter:retry:fail:m1", True, True),
     ("query", "/migrations/node_relation_v1", True, False), ("query", "/services/smtp", False, False),
     ("query", "/services/toolset-instancesx", True, False),
+    ("query", "/services/sandbox/alerts/org/o1/critical", True, True),                  # the sandbox alert cooldown claims (platform_0011)
+    ("connectors", "/services/sandbox/alerts/org/o1/critical", True, False), ("indexing", "/services/sandbox/alerts/org/o1/critical", False, False),
     ("indexing", "/services/secretKeys", True, False), ("indexing", "/services/aiModels", True, False),
     ("indexing", "/services/platform/settings", True, False), ("indexing", "/migrations/kh_listing_state_v1", True, False),
     ("indexing", "/services/connectors/c1/metadataSchemas/latest", True, False),
@@ -1095,6 +1110,26 @@ def test_platform_0010_downgrades_to_the_matrix_of_platform_0008_and_upgrades_ag
     _set_mode(cluster, name, True)
     with _as(cluster, name, "connectors") as c:
         c.execute(UPSERT, ("/services/vectordb/embedding_epoch/records/current",))
+        c.rollback()
+
+
+def test_platform_0011_downgrades_to_the_matrix_of_platform_0010_and_upgrades_again(kv_db):
+    cluster, name = kv_db
+    url = cluster.url(name, MIGRATE)
+    key = "/services/sandbox/alerts/org/o1/critical"
+    assert run_migrate(url, "downgrade", "platform_0010", PG_MIGRATE_ALLOW_DOWNGRADE="1").returncode == 0
+    _set_mode(cluster, name, True)
+    with _as(cluster, name, "query") as c:
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            c.execute(UPSERT, (key,))
+    with _as(cluster, name, "connectors") as c:                                 # platform_0010's epoch keys are kept
+        c.execute(UPSERT, ("/services/vectordb/embedding_epoch/records/current",))
+        c.rollback()
+    _set_mode(cluster, name, False)
+    assert run_migrate(url).returncode == 0
+    _set_mode(cluster, name, True)
+    with _as(cluster, name, "query") as c:
+        c.execute(UPSERT, (key,))
         c.rollback()
 
 

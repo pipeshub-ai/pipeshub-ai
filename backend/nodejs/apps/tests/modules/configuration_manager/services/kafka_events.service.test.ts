@@ -107,7 +107,8 @@ describe('kafka_events.service', () => {
         expect(topic).to.equal('sync-events')
         expect(message.key).to.equal(EventType.LLMConfiguredEvent)
         expect(JSON.parse(message.value).eventType).to.equal(EventType.LLMConfiguredEvent)
-        expect(logger.info.calledOnce).to.be.true
+        expect(logger.debug.calledOnceWithExactly('broker.event.published', { event_type: EventType.LLMConfiguredEvent, topic: 'sync-events' })).to.be.true
+        expect(logger.info.called).to.be.false
       })
 
       it('should publish a ConnectorPublicUrlChangedEvent', async () => {
@@ -118,14 +119,19 @@ describe('kafka_events.service', () => {
         }
         await producer.publishEvent(event)
         expect(mockProducer.publish.calledOnce).to.be.true
-        expect(logger.info.calledOnce).to.be.true
+        expect(logger.debug.calledOnceWithExactly('broker.event.published', { event_type: EventType.ConnectorPublicUrlChangedEvent, topic: 'sync-events' })).to.be.true
+        expect(logger.info.called).to.be.false
       })
 
       it('should log error when publish throws', async () => {
         mockProducer.publish.rejects(new Error('Kafka unavailable'))
         await producer.publishEvent(makeSampleEvent())
-        expect(logger.error.calledOnce).to.be.true
-        expect(logger.info.called).to.be.false
+        expect(logger.error.calledOnceWithExactly('broker.event.publish_failed', {
+          event_type: EventType.LLMConfiguredEvent,
+          topic: 'sync-events',
+          error: sinon.match.instanceOf(Error).and(sinon.match.has('message', 'Kafka unavailable')),
+        })).to.be.true
+        expect(logger.debug.called).to.be.false
       })
 
       it('should include timestamp in message headers', async () => {
@@ -256,13 +262,19 @@ describe('kafka_events.service', () => {
         const [topic, message] = mockProducer.publish.firstCall.args
         expect(topic).to.equal('entity-events')
         expect(message.key).to.equal(EventType.EmbeddingModelConfiguredEvent)
-        expect(logger.info.calledOnce).to.be.true
+        expect(logger.debug.calledOnceWithExactly('broker.event.published', { event_type: EventType.EmbeddingModelConfiguredEvent, topic: 'entity-events' })).to.be.true
+        expect(logger.info.called).to.be.false
       })
 
       it('should log error when publish fails', async () => {
         mockProducer.publish.rejects(new Error('Broker error'))
         await producer.publishEvent(makeSampleEvent())
-        expect(logger.error.calledOnce).to.be.true
+        expect(logger.error.calledOnceWithExactly('broker.event.publish_failed', {
+          event_type: EventType.LLMConfiguredEvent,
+          topic: 'entity-events',
+          error: sinon.match.instanceOf(Error).and(sinon.match.has('message', 'Broker error')),
+        })).to.be.true
+        expect(logger.debug.called).to.be.false
       })
     })
   })
@@ -331,14 +343,20 @@ describe('kafka_events.service', () => {
         const [topic, message] = mockProducer.publish.firstCall.args
         expect(topic).to.equal('ai-config-events')
         expect(JSON.parse(message.value).payload).to.deep.equal({ credentialsRoute: '/llm-credentials' })
-        expect(logger.info.calledOnce).to.be.true
+        expect(logger.debug.calledOnceWithExactly('broker.event.published', { event_type: EventType.LLMConfiguredEvent, topic: 'ai-config-events' })).to.be.true
+        expect(logger.info.called).to.be.false
       })
 
       it('should log error and not rethrow when publish fails', async () => {
         mockProducer.publish.rejects(new Error('Network error'))
         // Should not throw
         await producer.publishEvent(makeSampleEvent())
-        expect(logger.error.calledOnce).to.be.true
+        expect(logger.error.calledOnceWithExactly('broker.event.publish_failed', {
+          event_type: EventType.LLMConfiguredEvent,
+          topic: 'ai-config-events',
+          error: sinon.match.instanceOf(Error).and(sinon.match.has('message', 'Network error')),
+        })).to.be.true
+        expect(logger.debug.called).to.be.false
       })
 
       it('should include correct headers in published message', async () => {

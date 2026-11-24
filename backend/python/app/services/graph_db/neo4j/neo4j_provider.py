@@ -13,6 +13,7 @@ import copy
 import hashlib
 import json
 import logging
+import math
 import os
 import random
 import re
@@ -75,7 +76,8 @@ from app.config.constants.neo4j import (
 )
 from app.config.constants.service import DefaultEndpoints, config_node_constants
 from app.config.constants.service_accounts import cypher_not_a_service_account
-from app.core.org_context import MissingOrgContext, spawn_in_request
+from app.core.org_context import MissingOrgContext, spawn_detached, spawn_in_request
+from app.edition import extra_node_collections
 from app.exceptions.graph_db_exceptions import (
     GraphLockUnavailableError,
     GraphMemoryLimitError,
@@ -516,15 +518,20 @@ def _cypher_kh_has_children(
     # the row's own declared scope admits a child as the rule's declared arm does: held to the same hiding test
     hide_arm = f" AND NOT {hidden('kh_ch', v)}" if hidden else ""
     stub_kept = " OR coalesce(kh_ch.isPlaceholder, false)" if stub_arm else ""
-    body = (
-        f"({holds} OR "
-        f"EXISTS {{ ({v})-[kh_hr:NODE_RELATION]->(kh_ch) "
-        f"WHERE kh_hr.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT'] "
+    # The child's inheritance edge is read once per child and bound (`kh_inh`): the cheap reject and the rule
+    # each spelled it, and Neo4j plans every spelling as a subquery of its own.
+    inherits = f"EXISTS {{ (kh_ch)-[:INHERIT_PERMISSIONS]->({v}) }}"
+    child_test = (
+        f"kh_hr.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT'] "
         # Cheap reject first: a child no arm of the rule can open is skipped before the full rule.
         f"AND ({filed} OR size($declaredScope) > 0 OR kh_ch.id IN $grantedIds OR {declared} "
-        f"OR EXISTS {{ (kh_ch)-[:INHERIT_PERMISSIONS]->({v}) }}{stub_kept}) "
+        f"OR {inherits}{stub_kept}) "
         f"AND (kh_ch:Record OR kh_ch:RecordGroup) AND kh_ch.orgId = $org_id AND kh_ch.id IS NOT NULL "
-        f"{stub('kh_ch')} AND ({rule} OR ({in_scope}{hide_arm}){stub_arm}) }} "
+        f"{stub('kh_ch')} AND ({rule} OR ({in_scope}{hide_arm}){stub_arm})"
+    ).replace(inherits, "kh_inh")
+    body = (
+        f"({holds} OR "
+        f"EXISTS {{ MATCH ({v})-[kh_hr:NODE_RELATION]->(kh_ch) WITH *, {inherits} AS kh_inh WHERE {child_test} }} "
         f"OR ({filed} AND {'NOT coalesce(' + container + ', false)' if exact else 'true'} AND {held('kh_bc')}))"
     )
     if exact:
@@ -1274,9 +1281,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         """
         constraints: list[str] = []
 
-        # dict.fromkeys preserves order while de-duplicating the two sources.
+        # dict.fromkeys preserves order while de-duplicating the sources.
         collections = dict.fromkeys(
-            [*NODE_SCHEMA_REGISTRY, *RECORD_TYPE_COLLECTION_MAPPING.values()]
+            [*NODE_SCHEMA_REGISTRY, *RECORD_TYPE_COLLECTION_MAPPING.values(), *extra_node_collections()]
         )
 
         for collection in collections:
@@ -1339,6 +1346,18 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             List of Cypher CREATE INDEX queries
         """
         indexes: list[str] = []
+
+        # Collections a build adds (app.edition.extra_node_collections), with the indexes it declares. A node keeps its
+        # key as `id` here (`_arango_to_neo4j_node`), so a declared `_key` is indexed as `id`. The name carries a digest of
+        # the exact field list: `IF NOT EXISTS` also matches by name, and joined names alone can collide.
+        for collection, declared in extra_node_collections().items():
+            label = collection_to_label(collection)
+            for fields in declared:
+                props = ["id" if f == "_key" else f for f in fields]
+                digest = hashlib.sha256("\x00".join([label, *props]).encode()).hexdigest()[:10]
+                indexes.append(
+                    f"CREATE INDEX extra_{label.lower()}_{digest} IF NOT EXISTS FOR (n:{label}) ON ({', '.join(f'n.{p}' for p in props)})"
+                )
 
         # ==================== TAXONOMY INDEXES ====================
         # Entity resolution looks canonical taxonomy nodes up by
@@ -20064,13 +20083,11 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         *,
         reverse: bool = False,
         lowered: bool = False,
-        order: bool = True,
     ) -> str:
         """Project ``sortKey`` and ``nullRank``, then order by them.
 
         ``lowered`` says the name is already lowercase (the stored sort name).
-        ``order=False`` stops before the ORDER BY, for a caller that sorts only the
-        page later (``_kh_v2_item_order``). ``reverse`` flips all three terms for a
+        ``reverse`` flips all three terms for a
         previous page: the query takes the rows just before the boundary, nearest
         first, and the caller turns them back into page order.
 
@@ -20099,8 +20116,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         # and tiebreak.
         keyset = f"\n            WHERE {where}" if where else ""
         null_dir, value_dir, id_dir = self._kh_v2_order_dirs(direction, reverse=reverse)
-        order_by = (f"\n            ORDER BY nullRank {null_dir}, sortKey {value_dir}, {node_var}.id {id_dir}"
-                    if order else "")
+        order_by = f"\n            ORDER BY nullRank {null_dir}, sortKey {value_dir}, {node_var}.id {id_dir}"
         return f"""
             WITH {node_var}{extra}, {key_expr} AS sortKey
             WITH {node_var}{extra}, sortKey,
@@ -20111,15 +20127,6 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
     def _kh_v2_order_dirs(direction: str, *, reverse: bool) -> tuple[str, str, str]:
         flipped = "ASC" if direction == "DESC" else "DESC"
         return ("DESC", flipped, "DESC") if reverse else ("ASC", direction, "ASC")
-
-    def _kh_v2_item_order(self, sort_order: str, item: str, *, reverse: bool) -> str:
-        """``_kh_v2_sort_cypher``'s ORDER BY over maps that already carry
-        ``sortKey``, ``nullRank`` and ``id``."""
-        null_dir, value_dir, id_dir = self._kh_v2_order_dirs(
-            self._kh_v2_sort_direction(sort_order), reverse=reverse,
-        )
-        return (f"ORDER BY {item}.nullRank {null_dir}, {item}.sortKey {value_dir}, "
-                f"{item}.id {id_dir}")
 
     def _kh_v2_keyset_cypher(
         self, sort_order: str, direction: str = "next", node_var: str = "node", param: str = "ks",
@@ -20951,25 +20958,104 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 planned.clear()
             planned.add(key)
 
+    # Neo4j discards a cached plan once the counts it was made with have moved past a threshold that shrinks as the plan
+    # ages (from 75% to about 7% at its 7-hour target): a few hours on, the records one sync adds send the next request
+    # to plan again, seconds of a person's click. The plan keeper (`kh_refresh_plans`) plans again, off the request path,
+    # each listing statement in use whose plan is older than this, so that the plans stay young enough for a sync to
+    # leave them. 0 turns it off.
+    _KH_PLAN_REFRESH_S = env_seconds("NEO4J_KH_PLAN_REFRESH", 3600.0)
+    # A statement no request has run for this long is forgotten.
+    _KH_PLAN_IDLE_S = 86400.0
+
+    def _kh_statements(self) -> dict[str, list[Any]]:
+        """Each listing statement this process ran: ``key -> [text, parameters as typed for the plan cache, planned at, last run]``."""
+        return vars(self).setdefault("_kh_statements_seen", {})
+
+    @staticmethod
+    def _kh_plan_parameters(parameters: dict[str, Any]) -> dict[str, Any]:
+        """``parameters`` as the plan cache tells them apart, by name and type: every list emptied, in a map as well, so a
+        statement kept for planning again does not hold a request's grant lists."""
+        def typed(value: object) -> object:
+            if isinstance(value, list):
+                return []
+            if isinstance(value, dict):
+                return {k: typed(v) for k, v in value.items()}
+            return value
+        return {k: typed(v) for k, v in parameters.items()}
+
+    @staticmethod
+    def _kh_size_class(value: object) -> int | None:
+        """The size class a plan-cache key gives a top-level string or list parameter (0, 1, then powers of ten); None for others.
+        A list inside a map carries no size (`_kh_query`), so only top-level values count."""
+        if not isinstance(value, (str, list)):
+            return None
+        n = len(value)
+        return n if n <= 1 else 10 ** math.ceil(math.log10(n))
+
+    def _kh_seen(self, key: str, query: str, parameters: dict[str, Any]) -> None:
+        # One entry per size class as well: a search string of another length is another cached plan, kept fresh on its own.
+        sizes = sorted((k, c) for k, v in parameters.items() if (c := self._kh_size_class(v)) is not None)
+        if sizes:
+            key = f"{key}|{sizes}"
+        seen, now = self._kh_statements(), time.monotonic()
+        entry = seen.get(key)
+        if entry is not None:
+            entry[3] = now
+            return
+        if len(seen) >= self._KH_PLANNED_MAX:
+            del seen[min(seen, key=lambda k: seen[k][3])]
+        seen[key] = [query, self._kh_plan_parameters(parameters), now, now]
+
+    async def kh_refresh_plans(self, max_age: float | None = None) -> int:
+        """Plan again (``EXPLAIN``, ``replan=force``) each listing statement run since its plan was made, once that plan
+        is older than ``max_age`` (``NEO4J_KH_PLAN_REFRESH``), one at a time so that it takes one planner thread. Returns
+        how many were planned."""
+        max_age = self._KH_PLAN_REFRESH_S if max_age is None else max_age
+        if max_age <= 0:
+            return 0
+        seen, done = self._kh_statements(), 0
+        for key, entry in list(seen.items()):
+            query, typed, planned_at, ran_at = entry
+            now = time.monotonic()
+            if now - ran_at > self._KH_PLAN_IDLE_S:
+                seen.pop(key, None)
+                continue
+            # A plan no request has used since it was made is left to age: planning it again would serve nobody.
+            if now - planned_at < max_age or ran_at <= planned_at:
+                continue
+            try:
+                await self.client.execute_query(
+                    "CYPHER replan=force EXPLAIN " + query.lstrip(), parameters=typed, plain=True, timeout=self._KH_QUERY_TIMEOUT_S)
+            except Exception as e:
+                error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False,
+                                        op="kh_refresh_plans", step="explain")
+                continue
+            entry[2] = time.monotonic()
+            done += 1
+        return done
+
     async def _kh_run(self, query: str, parameters: dict[str, Any], txn_id: str | None) -> list[dict]:
         if txn_id is not None:
             # Inside a transaction the statement shares that transaction's session and limit.
             return await self.client.execute_query(query, parameters=parameters, txn_id=txn_id, plain=True)
         if self._kh_time_left(None) == 0:
             raise KnowledgeHubListingBusy(timed_out=True)
+        await self._kh_server_restarted()
         planning, planned = self._kh_plans()
         # Neo4j keys a cached plan on the text and on the type of each parameter (a null sort key is another plan).
         types = sorted((k, type(v).__name__) for k, v in parameters.items())
         key = hashlib.sha1(f"{query}\n{types}".encode()).hexdigest()
+        self._kh_seen(key, query, parameters)
         # One wait budget per request, even when a failed planner hands the planning on.
         deadline = time.monotonic() + self._KH_PLAN_WAIT_S
-        # shortcut: a text is trusted as planned for the life of the process; a plan Neo4j evicts later is planned again
-        # by every request at once (bounded by the query timeout). Track evictions if that shows up again.
+        # shortcut: a text is trusted as planned until the server restarts (`_kh_server_restarted`); a plan Neo4j evicts
+        # from a running server is planned again by every request at once (bounded by the query timeout).
+        text = self._kh_text(query)
         while key not in planned:
             task = planning.get(key)
             if task is None or task.done():
                 task = spawn_in_request(
-                    self.client.execute_query(query, parameters=parameters, plain=True, timeout=self._KH_QUERY_TIMEOUT_S),
+                    self.client.execute_query(text, parameters=parameters, plain=True, timeout=self._KH_QUERY_TIMEOUT_S),
                     name="kh-plan",
                 )
                 planning[key] = task
@@ -20987,8 +21073,57 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         # The client may wait for a pooled connection and retry a lost one with the limit it was given: the request is
         # answered at its deadline whichever it is doing, and a statement already sent ends at that limit on the server.
         return await self._kh_timed(self._kh_until_deadline(
-            self.client.execute_query(query, parameters=parameters, plain=True, timeout=self._kh_time_left(self._KH_QUERY_TIMEOUT_S))
+            self.client.execute_query(text, parameters=parameters, plain=True, timeout=self._kh_time_left(self._KH_QUERY_TIMEOUT_S))
         ))
+
+    # A listing statement keeps its cached plan whatever the counts have done since (`replan=skip`): the plan is the
+    # same query over the same schema, and a request never pays for planning it again. `kh_refresh_plans` plans it again
+    # off the request path, so a plan made on very different data (an org before its first sync) does not stay.
+    # NEO4J_KH_KEEP_PLANS=0 leaves Neo4j's own staleness test on.
+    _KH_KEEP_PLANS = os.getenv("NEO4J_KH_KEEP_PLANS", "1").strip() != "0"
+
+    @classmethod
+    def _kh_text(cls, query: str) -> str:
+        return "CYPHER replan=skip " + query.lstrip() if cls._KH_KEEP_PLANS else query
+
+    # A restarted Neo4j has no plan cached, while this process still trusts every text it planned: each request would plan
+    # its statements at once, every copy competing for the same CPUs. So a request on its way in reads the server's start
+    # time, at most once per interval (one read shared by the requests that arrive meanwhile); a new one forgets the
+    # planned texts, and one request per text plans again while the others wait. 0 turns it off.
+    _KH_SERVER_CHECK_S = env_seconds("NEO4J_KH_SERVER_CHECK", 30.0)
+    # An unreadable start time (a server on its way up, or one that refuses the procedure) is asked for again this soon.
+    _KH_SERVER_RETRY_S = 5.0
+    # The longest a request waits for the read (never past its deadline); past it the request goes on, and the read
+    # still lands for the ones after it.
+    _KH_SERVER_WAIT_S = 1.0
+
+    async def _kh_server_restarted(self) -> None:
+        if self._KH_SERVER_CHECK_S <= 0:
+            return
+        state = vars(self).setdefault("_kh_server", {"next": 0.0, "started": None, "check": None})
+        if time.monotonic() < state["next"]:
+            return
+        if state["check"] is None or state["check"].done():
+            # Server-wide, shared by every request that waits on it: its own context, not the first caller's.
+            state["check"] = spawn_detached(self._kh_read_server_start(state), name="kh-server-start")
+        with contextlib.suppress(asyncio.TimeoutError):
+            await asyncio.wait_for(asyncio.shield(state["check"]), self._kh_time_left(self._KH_SERVER_WAIT_S))
+
+    async def _kh_read_server_start(self, state: dict[str, Any]) -> None:
+        try:
+            rows = await self.client.execute_query(
+                "CALL dbms.queryJmx('java.lang:type=Runtime') YIELD attributes RETURN attributes.StartTime.value AS started",
+                plain=True, timeout=5.0)
+            started = (rows or [{}])[0].get("started")
+        except Exception:
+            state["next"] = time.monotonic() + self._KH_SERVER_RETRY_S
+            return
+        state["next"] = time.monotonic() + self._KH_SERVER_CHECK_S
+        if started is not None and state["started"] is not None and started != state["started"]:
+            self._kh_plans()[1].clear()
+            log_event(self.logger, "kh.listing.server_restarted", level=logging.INFO)
+        if started is not None:
+            state["started"] = started
 
     @staticmethod
     def _kh_time_left(limit: float | None) -> float | None:
@@ -21092,13 +21227,14 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
     async def _kh_v3_cross(
         self, user_key: str | None, org_id: str, gated_app_ids: list[str], app_id: str, transaction: str | None,
-        grants_by_connector: dict[str, list[str]] | None = None,
+        grants_by_connector: dict[str, list[str]] | None = None, *, every_app: bool = False,
     ) -> list[str] | dict[str, Any] | None:
         """``$kh_cross`` for a statement that reads ``app_id``'s grants: the live records and groups of the other gated
         connectors the viewer is granted there, from ``grants_by_connector`` when the caller holds them, else read for
         ``user_key`` with the grantees ``_kh_v3_connector_grantees`` names in each connector (so a source account's
         grants count inside its own connector only). Past ``_KH_CROSS_MAX`` ids, the holders to test on each node instead
-        (``_kh_cross_by_probe``). None when no other connector is gated, or neither is known."""
+        (``_kh_cross_by_probe``). None when no other connector is gated, or neither is known. ``every_app``: the request lists
+        every gated connector, each asking for all the others, so one read of all of them serves every page."""
         others = sorted({a for a in gated_app_ids if a != app_id})
         if not others:
             return None
@@ -21112,9 +21248,42 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return self._kh_cross_probe(others, holders, user_key)
         if not user_key:
             return None
-        holders, ids = await (self._kh_v3_shared(("cross", user_key, *others), lambda: self._kh_v3_cross_read(user_key, others, None))
-                              if transaction is None else self._kh_v3_cross_read(user_key, others, transaction))
+        if every_app and transaction is None:
+            gated = sorted(set(gated_app_ids))
+            holders, by_app = await self._kh_v3_shared(
+                ("cross-every", user_key, *gated), lambda: self._kh_v3_cross_read_by_app(user_key, gated))
+            # Each connector's ids are complete up to the bound, so a union within it is the read of ``others`` alone.
+            ids = sorted({i for a in others for i in by_app.get(a, ())})
+        else:
+            holders, ids = await (self._kh_v3_shared(("cross", user_key, *others), lambda: self._kh_v3_cross_read(user_key, others, None))
+                                  if transaction is None else self._kh_v3_cross_read(user_key, others, transaction))
         return ids if len(ids) <= self._KH_CROSS_MAX else self._kh_cross_probe(others, holders, user_key)
+
+    async def _kh_v3_cross_read_by_app(
+        self, user_key: str, apps: list[str],
+    ) -> tuple[list[list[str | None]], dict[str, list[str]]]:
+        """``_kh_v3_cross_read`` over ``apps``, the ids by connector: the first ``_KH_CROSS_MAX`` + 1 of each, in id order."""
+        holders, _ = await self._kh_v3_cross_read(user_key, apps, None, with_ids=False)
+        if not holders:
+            return holders, {}
+        rows = await self.client.execute_query(
+            f"""
+            UNWIND $others AS app
+            // Bounded per connector before collecting, as `_kh_v3_cross_read`: a connector holds at most the bound + 1 ids.
+            CALL (app) {{
+                UNWIND $holders AS kh_h
+                MATCH (kh_g:User|Group|Role|Teams|Organization {{id: kh_h[0]}})
+                MATCH (kh_g)-[kh_p:PERMISSION]->(kh_n:Record|RecordGroup)
+                WHERE kh_n.connectorId = app AND (kh_h[1] IS NULL OR kh_h[1] = app)
+                  AND NOT coalesce(kh_n.isDeleted, false) AND {_cypher_grant_edge("kh_g", "kh_p")}
+                WITH DISTINCT kh_n.id AS id ORDER BY id LIMIT $limit
+                RETURN collect(id) AS ids
+            }}
+            RETURN app, ids
+            """,
+            parameters={"holders": holders, "others": apps, "limit": self._KH_CROSS_MAX + 1}, plain=True,
+        )
+        return holders, {r["app"]: list(r["ids"] or []) for r in rows or []}
 
     async def _kh_v3_cross_read(
         self, user_key: str, others: list[str], transaction: str | None, *, with_ids: bool = True,
@@ -22415,7 +22584,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         cross_read = None
         if transaction is None:
             cross_read = spawn_in_request(
-                self._kh_v3_cross(user_key, org_id, gated_app_ids, app_id, None, grants_by_connector), name="kh-cross-grantees")
+                self._kh_v3_cross(user_key, org_id, gated_app_ids, app_id, None, grants_by_connector,
+                                  every_app=grants_out is not None), name="kh-cross-grantees")
             # A page that fails before it reads the answer leaves no unretrieved error behind.
             cross_read.add_done_callback(lambda done: done.cancelled() or done.exception())
         # Browse lists the user's chain-tops beside the start's own children: under
@@ -23055,7 +23225,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 # Only the page is projected, so this expand is one hop per
                 # returned row. Collection items often belong to the folder
                 # instead of hanging off it by NODE_RELATION.
-                "hasChildren": has_children(row_from_app, row=True),
+                # A flat page's arrows are read apart (`arrows_query`).
+                "hasChildren": "false" if flatten else has_children(row_from_app, row=True),
             },
             include_comparator=False,
         )
@@ -23080,51 +23251,36 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         filter_clause = ""
         if conditions:
             filter_clause = "WHERE " + "\n          AND ".join(conditions)
-        if include_total and name_matches is not None:
-            # At most _KH_NAME_FIRST_MAX rows reach here, so they are all sorted
-            # and the page sliced off. The ORDER BY + LIMIT below is charged the
-            # whole row list for every row it keeps (745 MB for 201 rows of 5650
-            # matches); the sort is charged each row once.
+        if include_total:
             sort = self._kh_v2_sort_cypher(
                 sort_field, sort_dir, carry=probe_carry, where=keyset, reverse=direction == "prev",
                 lowered=state,
             )
+            # Ids only. The full record map is built after the page is cut.
+            # Every visible node is sorted once, before the rows are collected:
+            # ORDER BY + LIMIT over the collected rows was charged the whole list
+            # for every row it kept (745 MB for 201 rows of 5650 name matches,
+            # 1.6 GB for the first page of a 50k-record connector, past any pool
+            # at 200k); the sort is charged each row once (sorting 200k rows
+            # takes about 0.3 s, 850k about 2 s). The
+            # page is cut through an aggregation, so an empty listing still
+            # yields its one row, and the page is a list of its own: a slice
+            # riding along every enrich row is charged the whole list per row by
+            # Neo4j Enterprise's pipelined runtime.
             tail = f"""
         {filter_clause}
         {sort}
-        WITH collect({{id: node.id, nodeType: node.nodeType,
-                       sortKey: sortKey, nullRank: nullRank{probe_field}}}) AS rows
-        WITH rows[0..$kh_limit] AS page, size(rows) AS total,
-             size([n IN rows WHERE n.nodeType = 'record' | 1]) AS nRecord,
-             size([n IN rows WHERE n.nodeType = 'folder' | 1]) AS nFolder,
-             size([n IN rows WHERE n.nodeType = 'recordGroup' | 1]) AS nGroup, {probes_of.format("rows")} AS khProbes
-            """
-        elif include_total:
-            sort_key = self._kh_v2_sort_cypher(
-                sort_field, sort_dir, carry=probe_carry, where=keyset, reverse=direction == "prev",
-                lowered=state, order=False,
-            )
-            # Ids only. The full record map is built after the page is cut.
-            # The total and counts come from the unsorted rows; only the page is
-            # ordered, by ORDER BY + LIMIT, which keeps the best rows as it scans
-            # instead of sorting every visible node (about 6 s at 850k). The CALL
-            # aggregates, so an empty listing still yields its one row, and the
-            # row list is dropped before `enrich`: a list riding along every enrich
-            # row is charged per row by Enterprise's pipelined runtime.
-            tail = f"""
-        {filter_clause}
-        {sort_key}
         WITH collect({{id: node.id, nodeType: node.nodeType,
                        sortKey: sortKey, nullRank: nullRank{probe_field}}}) AS rows
         WITH rows, size(rows) AS total,
              size([n IN rows WHERE n.nodeType = 'record' | 1]) AS nRecord,
              size([n IN rows WHERE n.nodeType = 'folder' | 1]) AS nFolder,
              size([n IN rows WHERE n.nodeType = 'recordGroup' | 1]) AS nGroup, {probes_of.format("rows")} AS khProbes
+        // The page rows in their place in the sorted list: UNWIND does not promise list order.
         CALL (rows) {{
-            UNWIND rows AS pageItem
-            WITH pageItem
-            {self._kh_v2_item_order(sort_dir, "pageItem", reverse=direction == "prev")}
-            LIMIT $kh_limit
+            UNWIND range(0, size(rows[0..$kh_limit]) - 1) AS kh_i
+            WITH rows[kh_i] AS pageItem, kh_i
+            ORDER BY kh_i
             RETURN collect(pageItem) AS page
         }}
         WITH total, nRecord, nFolder, nGroup, khProbes, page
@@ -23294,13 +23450,14 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                  CASE WHEN sentinel OR node IS NULL THEN false ELSE {held_by_row() if not flatten else "false"} END AS khHeld,
                  {"true" if flatten else opened_row()} AS khFromApp,
                  CASE WHEN item IS NULL THEN null ELSE item.sortKey END AS sortKey,
-                 CASE WHEN item IS NULL THEN null ELSE item.nullRank END AS nullRank,
+                 CASE WHEN item IS NULL THEN null ELSE item.nullRank END AS nullRank,{"""
+                 CASE WHEN item IS NULL THEN false ELSE coalesce(item.fa, false) END AS khFa,""" if flatten else ""}
                  total, nRecord, nFolder, nGroup, parentOptions, node, kh_row_from_app, khUndecided, khProbes
-            WITH khUndecided, khProbes, built, khHeld, khFromApp, sortKey, nullRank, total, nRecord, nFolder, nGroup, parentOptions,
+            WITH khUndecided, khProbes, built, khHeld, khFromApp, sortKey, nullRank, total, nRecord, nFolder, nGroup, parentOptions,{" khFa," if flatten else ""}
                  {"false" if flatten else f"CASE WHEN built IS NULL OR built.hasChildren THEN false ELSE {has_child('node')} END"} AS khAsk
             RETURN [x IN collect(CASE WHEN built IS NULL THEN null
                     ELSE built{{.*, sortKey: sortKey, nullRank: nullRank,
-                                parentOptions: parentOptions, khHeld: khHeld, khFromApp: khFromApp, khAsk: khAsk}} END)
+                                parentOptions: parentOptions, khHeld: khHeld, khFromApp: khFromApp, khAsk: khAsk{", khFa: khFa" if flatten else ""}}} END)
                     WHERE x IS NOT NULL] AS rows,
                    head(collect(total)) AS total,
                    head(collect(nRecord)) AS nRecord,
@@ -23360,9 +23517,22 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         })
         if probe:
             params.update({"kh_conn": app_id, "kh_grantees": probe["grantees"]})
+        arrows_query = None
+        if flatten:
+            # A flat page's arrows, for its rows alone: inside the page statement the planner weighs them against every node the walk
+            # reaches (about half its planning), and apart they are one text for every sort and filter. A row's expansion starts from
+            # the App as the start's does (`$kh_fa`, false from the App itself).
+            arrows_query = f"""
+        MATCH (app:App {{id: $app_id}})
+        UNWIND $kh_ids AS kh_id
+        MATCH (node:Record|RecordGroup {{id: kh_id}})
+        RETURN node.id AS id, {has_children("$kh_fa", row=True)} AS has
+            """
         if probe and listing_by_probe:
             del params["grantedIds"]
             query = self._kh_grants_by_probe(query)
+            if arrows_query is not None:
+                arrows_query = self._kh_grants_by_probe(arrows_query)
         # The global listing from the App can be read from precomputed scopes (kh_scope) instead of walking the whole
         # tree, behind the ENABLE_KH_SCOPE_LISTING flag. Only where it gives exactly this query's answer: a sort
         # kh_scope keeps an index for, filters that keep a connector all or none (origin, connector), listing state
@@ -23535,6 +23705,15 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 r["khKids"] = kids.get(r["id"], [])
                 if r["id"] in leads:      # a stub group below it lists a chain-top
                     r["hasChildren"] = True
+        if arrows_query is not None:
+            rows_ = payload.get("rows") or []
+            from_app = [r.pop("khFa", False) for r in rows_]
+            if rows_:
+                got = await self._kh_query(arrows_query, parameters={
+                    **params, "kh_ids": [r["id"] for r in rows_], "kh_fa": bool(from_app[0])}, txn_id=transaction)
+                lit = {g["id"] for g in got or [] if g.get("has")}
+                for r in rows_:
+                    r["hasChildren"] = r["id"] in lit
         if scope_query is not None and scope_mode == "verify":
             await self._kh_scope_verify(app_id, payload, scope_query, scope_params, scope_info, transaction)
         elif use_scope:

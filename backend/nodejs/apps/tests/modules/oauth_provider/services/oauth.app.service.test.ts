@@ -1302,6 +1302,20 @@ describe('OAuthAppService', () => {
         expect(error).to.be.instanceOf(InvalidClientError)
       }
     })
+
+    // Without the guard, hashing an absent secret throws a TypeError, which the endpoints answer as their own failure.
+    for (const secret of [undefined, null, '', 42]) {
+      it(`should refuse a client_secret of ${JSON.stringify(secret)} as invalid_client, before any read`, async () => {
+        const findOne = sinon.stub(OAuthApp, 'findOne')
+        try {
+          await service.verifyClientCredentials('cid', secret as never)
+          expect.fail('Should have thrown')
+        } catch (error) {
+          expect(error).to.be.instanceOf(InvalidClientError)
+        }
+        expect(findOne.called).to.equal(false)
+      })
+    }
   })
 
   describe('validateRedirectUriForApp', () => {

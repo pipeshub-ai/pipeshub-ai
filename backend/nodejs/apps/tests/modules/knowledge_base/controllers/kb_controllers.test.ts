@@ -3130,10 +3130,11 @@ describe('Knowledge Base Controller', () => {
       expect(response.fileUploaded).to.be.true
     })
 
-    it('logs whether a file came with the update, never the file itself', async () => {
+    it('writes no INFO line for an update (the access line has it), and never logs the file itself', async () => {
       stubUpdateRecordFileUploadConnectorCalls()
       sinon.stub(kbUtils, 'uploadNextVersionToStorage').resolves()
       const info = sinon.stub(Logger.prototype, 'info')
+      const debug = sinon.stub(Logger.prototype, 'debug')
 
       const handler = updateRecord(
         createMockKeyValueStore(),
@@ -3146,13 +3147,9 @@ describe('Knowledge Base Controller', () => {
 
       await handler(req, createMockResponse(), createMockNext())
 
-      const call = info
-        .getCalls()
-        .find((c) => c.args[0] === 'Updating record in database via Python service')
-      expect(call, 'update log line').to.exist
-      const meta = call!.args[1] as Record<string, unknown>
-      expect(meta.hasFileUpload).to.equal(true)
-      for (const c of info.getCalls()) {
+      expect(info.called).to.equal(false)
+      expect(debug.called, 'the storage upload is a DEBUG line').to.equal(true)
+      for (const c of debug.getCalls()) {
         for (const value of Object.values((c.args[1] ?? {}) as Record<string, unknown>)) {
           expect(Buffer.isBuffer(value), `${c.args[0]} carries a Buffer`).to.be.false
         }
@@ -3239,9 +3236,10 @@ describe('Knowledge Base Controller', () => {
       expect(connectorStub.callCount).to.equal(2)
     })
 
-    it('should call next when storage upload fails with non-404 error', async () => {
+    it('should call next when storage upload fails with non-404 error, carrying the storage failure as its cause', async () => {
       const connectorStub = stubUpdateRecordFileUploadConnectorCalls()
-      sinon.stub(kbUtils, 'uploadNextVersionToStorage').rejects(new Error('Storage timeout'))
+      const storageFailure = new Error('Storage timeout')
+      sinon.stub(kbUtils, 'uploadNextVersionToStorage').rejects(storageFailure)
 
       const handler = updateRecord(
         createMockKeyValueStore(),
@@ -3259,6 +3257,8 @@ describe('Knowledge Base Controller', () => {
       expect(next.calledOnce).to.be.true
       expect(next.firstCall.args[0]).to.be.instanceOf(InternalServerError)
       expect(next.firstCall.args[0].message).to.include('PipesHub tried to save this file')
+      // The handler does not log it: the error middleware's one line says why, from this cause.
+      expect(next.firstCall.args[0].cause).to.equal(storageFailure)
       expect(connectorStub.callCount).to.equal(2)
     })
 
