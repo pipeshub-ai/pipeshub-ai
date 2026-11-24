@@ -1,7 +1,12 @@
 """Zapmail's hosted Streamable HTTP MCP server with OAuth and dynamic registration."""
 
 from app.agents.mcp.mcp_server_decorator import mcp_server
-from app.agents.mcp.models import MCPAuthMode, MCPServerTemplate, MCPTransport
+from app.agents.mcp.models import (
+    MCPAuthMode,
+    MCPCategory,
+    MCPServerTemplate,
+    MCPTransport,
+)
 
 
 @mcp_server(
@@ -24,6 +29,12 @@ from app.agents.mcp.models import MCPAuthMode, MCPServerTemplate, MCPTransport
         supports_dcr=True,
         documentation_url="https://docs.zapmail.ai/mcp-2107149m0",
         tags=["email", "outreach", "infrastructure"],
+        category=MCPCategory.SALES,
+        capabilities=[
+            "Provision and update outreach mailboxes",
+            "Read a mailbox's inbox",
+            "Buy and renew sending domains",
+        ],
     )
 )
 class ZapmailMCPServer:
