@@ -15,7 +15,7 @@ from .pg_support import new_org
 
 pytestmark = pytest.mark.integration
 
-COLLS = ("apps", "recordGroups", "records", "users", "groups", "roles", "teams", "organizations", "blocks")
+COLLS = ("apps", "recordGroups", "records", "users", "groups", "roles", "teams", "organizations", "blocks", "files")
 EDGES = ("permission", "belongsTo", "nodeRelations", "inheritPermissions", "userAppRelation", "authenticatedAs", "isOfType")
 DOCS = ({}, {"relationshipType": "PARENT_CHILD"}, {"relationshipType": "ATTACHMENT"}, {"relationshipType": "BOOKMARK"}, {"type": "USER"})
 
@@ -45,7 +45,9 @@ async def test_the_collection_codes_are_the_same_in_sql_and_in_python(pg_db) -> 
 
 
 async def test_the_projected_part_of_a_node_document_is_only_what_the_projection_reads(pg_db) -> None:
-    doc = '{"recordName": "n", "indexingStatus": "DONE", "isDeleted": null, "accessRule": "OPEN", "extra": {"x": 1}, "orgId": "o"}'
-    rows = await fetch(pg_db, "SELECT kg.proj_doc('records', $1::jsonb)::text AS d, kg.proj_doc('users', $1::jsonb)::text AS u", doc)
-    assert json.loads(rows[0]["d"]) == {"recordName": "n", "accessRule": "OPEN", "orgId": "o"}      # a status and an unknown field are not projected, a null flag is absent
+    doc = '{"recordName": "n", "indexingStatus": "DONE", "generation": 3, "isDeleted": null, "accessRule": "OPEN", "extra": {"x": 1}, "orgId": "o", "isFile": true, "sizeInBytes": 4}'
+    rows = await fetch(pg_db, "SELECT kg.proj_doc('records', $1::jsonb)::text AS d, kg.proj_doc('users', $1::jsonb)::text AS u, kg.proj_doc('files', $1::jsonb)::text AS f", doc)
+    # the status is projected (a knowledge-base listing filters by it, kg_0025); a generation and an unknown field are not, a null flag is absent
+    assert json.loads(rows[0]["d"]) == {"recordName": "n", "indexingStatus": "DONE", "accessRule": "OPEN", "orgId": "o", "sizeInBytes": 4}
     assert rows[0]["u"] is None                                                                  # a principal's document is not projected at all
+    assert json.loads(rows[0]["f"]) == {"isFile": True, "sizeInBytes": 4}                        # what the listing reads of the file a record is typed as

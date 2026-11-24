@@ -70,11 +70,48 @@ async def test_an_update_of_what_the_projection_does_not_read_logs_nothing_and_o
     p, org = prov(pg_db), new_org()
     await world(p, org)
     with ctx(org):
-        await p.batch_upsert_nodes([{"_key": "r1", "orgId": org, **REC, "indexingStatus": "COMPLETED", "generation": 4}], "records")
+        await p.batch_upsert_nodes([{"_key": "r1", "orgId": org, **REC, "generation": 4}], "records")
     assert await log(p, org) == []
     with ctx(org):
         await p.batch_upsert_nodes([{"_key": "r1", "orgId": org, **{**REC, "recordName": "Renamed"}}], "records")
     assert await log(p, org) == [("c1", ["3:r1"])]
+
+
+async def test_a_status_change_is_logged_as_a_change_of_the_record(pg_db) -> None:
+    """kg_0025: a knowledge-base listing filters by the indexing status and the connector name, so a write of either is a change of the record (before, a status flip logged nothing)."""
+    p, org = prov(pg_db), new_org()
+    await world(p, org)
+    with ctx(org):
+        await p.batch_upsert_nodes([{"_key": "r1", "orgId": org, **REC, "indexingStatus": "COMPLETED"}], "records")
+        await p.batch_upsert_nodes([{"_key": "r2", "orgId": org, **REC, "connectorName": "DRIVE"}], "records")
+        await p.batch_upsert_nodes([{"_key": "r1", "orgId": org, **REC, "indexingStatus": "COMPLETED", "generation": 5}], "records")      # the same status: nothing
+    assert await log(p, org) == [("c1", ["3:r1"]), ("c1", ["3:r2"])]
+
+
+async def test_a_file_document_is_logged_as_a_change_of_the_records_typed_by_it(pg_db) -> None:
+    """kg_0025: the record's listing reads the file it is typed as (isOfType to 'files'): the edge logs the record, and a change of what the listing reads of the file (isFile,
+    sizeInBytes), its insert and its delete log every record typed by it, under the record's connector. A change of anything else of the file, a file nothing is typed as and
+    an isOfType edge to another collection log nothing."""
+    p, org = prov(pg_db), new_org()
+    await world(p, org)
+    with ctx(org):
+        await p.batch_upsert_nodes([{"_key": "f1", "orgId": org, "isFile": True, "sizeInBytes": 10}, {"_key": "f9", "orgId": org, "isFile": True}], "files")
+        await p.batch_create_edges([edge("r1", "records", "f1", "files"), edge("r2", "records", "f1", "files")], "isOfType")
+        await p.batch_create_edges([edge("r1", "records", "m1", "mails")], "isOfType")
+    assert await log(p, org) == [("", ["3:r1", "3:r2"])]                                  # an edge, as every edge, under no connector
+    await clear(p, org)
+    with ctx(org):
+        await p.batch_upsert_nodes([{"_key": "f1", "orgId": org, "isFile": True, "sizeInBytes": 10, "path": "/x"}], "files")        # nothing the listing reads
+        await p.batch_upsert_nodes([{"_key": "f1", "orgId": org, "isFile": True, "sizeInBytes": 11}], "files")
+    await raw(p, org, "/* pipeshub:test.drop_file */ DELETE FROM graph.nodes WHERE org_id = $1 AND coll = 'files' AND id = 'f1'", org)      # the node alone: its edges stay
+    with ctx(org):
+        await p.batch_upsert_nodes([{"_key": "f1", "orgId": org, "isFile": False}], "files")
+        await p.batch_upsert_nodes([{"_key": "f9", "orgId": org, "isFile": False}], "files")                                       # typed by nothing
+    assert await log(p, org) == [("c1", ["3:r1", "3:r2"])] * 3
+    await clear(p, org)
+    with ctx(org):
+        await p.delete_nodes(["f1"], "files")                                    # with its edges: the edges' rows name the records
+    assert [e for _, e in await log(p, org)] == [["3:r1", "3:r2"]]
 
 
 async def test_a_node_that_changes_connector_is_logged_under_both(pg_db) -> None:
@@ -265,11 +302,11 @@ async def test_the_capture_lists_exactly_the_fields_the_projection_reads(pg_db) 
     """A field the projection reads and the capture ignores is a change that is never projected; a field the capture keeps and nothing reads only costs a projection."""
     import json
     read = fields_the_projection_reads()
-    probe = dict.fromkeys(sorted(read | {"indexingStatus", "generation", "zzzNobodyReads"}), "x")
+    probe = dict.fromkeys(sorted(read | {"generation", "zzzNobodyReads"}), "x")
 
     async def go(tx) -> tuple[set, set]:
         nodes = set()
-        for coll in ("apps", "recordGroups", "records"):
+        for coll in ("apps", "recordGroups", "records", "files"):
             nodes |= set(json.loads(await tx.fetchval("SELECT kg.proj_doc($1, $2::jsonb)::text", coll, json.dumps(probe))))
         edges = set()
         for coll in ("permission", "nodeRelations", "authenticatedAs", "belongsTo"):
@@ -280,6 +317,6 @@ async def test_the_capture_lists_exactly_the_fields_the_projection_reads(pg_db) 
         nodes, edges = await p._q(go, None)
     edge_fields = {"relationshipType", "role", "type", "connectorId"}          # the four fields reader.py selects of an edge document
     assert edges == edge_fields
-    assert "zzzNobodyReads" not in nodes and "indexingStatus" not in nodes
+    assert "zzzNobodyReads" not in nodes and "generation" not in nodes
     assert read <= nodes | edges, f"the projection reads {sorted(read - nodes - edges)} and the capture ignores it"
     assert nodes <= read, f"the capture keeps {sorted(nodes - read)} and the projection never reads it"

@@ -87,6 +87,15 @@ class KgWriter:
                                         *[[r[i] for r in part] for i in range(5)])
         return n
 
+    async def kb_listing_set(self, rows: list[tuple]) -> int:
+        """The knowledge-base listing columns: (sk, coll code, id, kind code, indexing_status, connector_name, doc_created_ms, doc_updated_ms, file_size, file_kind, kb_odd),
+        of rows the caller has just written (the writer is an upsert)."""
+        n = 0
+        for part in _chunks(sorted(rows)):
+            n += await self.tx.fetchval("/* pipeshub:kg.w_kb_listing_set */ SELECT kg.w_kb_listing_set($1::bigint[], $2::smallint[], $3::text[], $4::smallint[], $5::text[], $6::text[], "
+                                        "$7::bigint[], $8::bigint[], $9::bigint[], $10::smallint[], $11::boolean[])", *[[r[i] for r in part] for i in range(11)])
+        return n
+
     async def classes_set(self, rows: list[tuple[int, int, int | None, str, bytes]]) -> int:
         """New classes, by id (an existing id is left as it is): (id, app_sk, group_sk, clauses as JSON text, hash)."""
         return sum([await self.tx.fetchval("/* pipeshub:kg.w_classes_set */ SELECT kg.w_classes_set($1::bigint[], $2::bigint[], $3::bigint[], $4::text[]::jsonb[], $5::bytea[])",
