@@ -39,7 +39,7 @@ PipesHub saves the text of every record as a file, in folders that match the sou
 2. hybrid dense + BM25 lookup of the nearest existing entity;
 3. one LLM decision per record on whether to merge.
 
-The graph is stored behind `IGraphDBProvider`, so it runs on Neo4j (default) or ArangoDB.
+The graph is stored behind `IGraphDBProvider`, so it runs on Neo4j (default), ArangoDB or PostgreSQL.
 
 ## 3. Agent tools that reveal detail step by step
 
@@ -47,12 +47,12 @@ Instead of filling the agent's context with everything up front, PipesHub gives 
 
 | Tool | What it does | Code |
 | --- | --- | --- |
-| `search` | Hybrid dense + BM25 search fused with reciprocal rank fusion (Qdrant or OpenSearch), with LLM-written `grep` patterns run alongside. Hits come back with graph context: parent and related records. | `agents/actions/knowledge_graph/`, `utils/pattern_match.py`, `utils/chat_helpers.py` |
+| `search` | Hybrid dense + BM25 search fused with reciprocal rank fusion, with LLM-written `grep` patterns run alongside. Hits come back with graph context: parent and related records. | `agents/actions/knowledge_graph/`, `utils/pattern_match.py`, `utils/chat_helpers.py` |
 | `run_command`, `find_records` | Runs `grep`, `rg`, `find`, `ls`, `head`, `tail`, `wc`, `sort`, `uniq` and similar over the text of every record, PDFs and Office files included, stored in folders that match the source (`records/<connector>/<space>/<folder>/…`). There is no shell, dangerous flags are blocked, and `find_records` turns matching paths into record IDs. | `agents/actions/storage_search/storage_search.py` |
 | `navigate`, `list_files` | Walks app → space → folder → record up to three levels at once, with breadcrumbs, paging and date filters. Accepts a URL or issue key as the starting node. | `agents/actions/knowledge_graph/` |
 | `lookup_record` | Turns a URL, Jira key or external ID into a PipesHub record. | `agents/actions/knowledge_graph/` |
 | `search_entities`, `find_records_by_entity` | Finds a person, project or customer, then every record that mentions them. | `agents/actions/knowledge_graph/` |
-| `fetch_full_record` | Reads a whole record in pages (`start_block`, `max_blocks`). | `agents/actions/knowledge_graph/ops/fetch.py` |
+| `fetch_full_record` | Reads a whole record in pages (`start_block`, `max_blocks`). | `utils/fetch_full_record.py` |
 
 The order works like this:
 
@@ -83,12 +83,17 @@ Answers cite blocks as `[source](refN)`. Each reference maps to a real block, an
 
 ## Using the context layer from outside PipesHub
 
-- **MCP:** the Node API serves `/mcp` (Streamable HTTP) with OAuth, personal access tokens or service tokens. Tools: `pipeshub_search`, `pipeshub_chat`, `pipeshub_get_record_content`, `pipeshub_download_record`, `pipeshub_directory`, `pipeshub_sources`, `pipeshub_agents`, plus the `pipeshub_code_*` tools when code repositories are indexed. Setup for Claude Code, Cursor and Codex: [examples/company-knowledge-mcp](https://github.com/pipeshub-ai/examples/tree/main/company-knowledge-mcp).
+The web app uses the same API you can call yourself, so PipesHub also runs headless: anything done in the UI can be done in code.
+
+- **REST API:** described by the [OpenAPI spec](../backend/nodejs/apps/src/modules/api-docs/pipeshub-openapi.yaml); browse it at `/api/v1/docs` on your instance.
 - **SDKs:** [Python](https://github.com/pipeshub-ai/pipeshub-sdk-python), [TypeScript](https://github.com/pipeshub-ai/pipeshub-sdk-typescript), [Go](https://github.com/pipeshub-ai/pipeshub-sdk-go).
+- **MCP:** the Node API serves `/mcp` (Streamable HTTP) for Claude Code, Cursor, Codex and other MCP clients: search, chat, record reading and navigation, entity lookups, and the `pipeshub_code_*` tools when code repositories are indexed. The current list is in [MCP tools](https://docs.pipeshub.com/mcp/tools). Setup for Claude Code, Cursor and Codex: [examples/company-knowledge-mcp](https://github.com/pipeshub-ai/examples/tree/main/company-knowledge-mcp).
+
+A personal access token or user OAuth acts as one person and sees only what that person can see.
 
 ## Current limitations
 
 - `grep` and `find` over records work when blob storage is local. On S3 or Azure Blob, search still runs, but the pattern-match tools are skipped.
-- MCP exposes search, chat, record reading, lookup and navigation (`pipeshub_get_record_content` with `mode` `content`, `lookup` or `navigate`), and the code-graph tools. `grep`/`find` and the entity tools are available to PipesHub's own agents and are coming to MCP next.
+- `grep` and `find` over records are available to PipesHub's own agents, not over MCP.
 - A `wc -l` style count can include records the user cannot open. The lines themselves are filtered.
-- `grep` skips very large records (over 20 MB of text). Search still finds them.
+- `grep` skips records stored compressed: those over 20 MB by default (`PIPESHUB_RECORD_COMPRESSION_THRESHOLD_BYTES`). Search still finds them.

@@ -39,7 +39,8 @@ For the standard interactive install, see the [Deployment Guide in the main READ
 | `--upgrade` | Pull or rebuild images and recreate containers; data is preserved |
 | `--rotate-signing-secrets` | Replace the JWT, scoped JWT and cookie signing secrets. Every session, refresh token, password-reset link and in-flight service token stops working. Needs an existing `.env`; combine with `--upgrade` to rotate during an image refresh |
 | `--stop` | Stop the running stack; data is preserved |
-| `--uninstall` | Stop the stack and remove all data volumes (irreversible) |
+| `--uninstall` | Stop the stack and remove its data volumes (irreversible). The PostgreSQL data volume is kept with `--yes`; an interactive run asks |
+| `--delete-postgres` | With `--uninstall`: also remove the PostgreSQL data volume |
 | `-h` / `--help` | Print the options and the environment overrides |
 
 `install.sh` refuses `--rotate-signing-secrets` together with `--stop` or `--uninstall` and exits with an error. `--stop` and `--uninstall` act on the existing stack and exit without installing, so install and upgrade flags passed with them have no effect (`--yes` still skips the uninstall confirmation). Given both, `--stop` runs and `--uninstall` does not.
