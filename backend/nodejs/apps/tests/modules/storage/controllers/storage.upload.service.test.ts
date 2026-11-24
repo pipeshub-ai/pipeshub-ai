@@ -9,6 +9,7 @@ import { DocumentModel } from '../../../../src/modules/storage/schema/document.s
 import { HTTP_STATUS } from '../../../../src/libs/enums/http-status.enum'
 import { STORAGE_WRITE_FAILED_MESSAGE } from '../../../../src/modules/storage/constants/constants'
 import { useInertWriteState } from '../../../support/inert-write-state'
+import { captureLogRecords } from '../../../helpers/log-capture'
 
 // The repository reloads the row it updates, so create and findOne answer with the same object.
 const stubDocumentStore = (doc: any) => {
@@ -681,8 +682,11 @@ describe('UploadDocumentService', () => {
         isVersionedFile: false, save: sinon.stub().resolves(),
       }
       const deleteOne = sinon.stub(DocumentModel, 'deleteOne').resolves({} as any)
-      mockAdapter.generatePresignedUrlForDirectUpload.rejects(new Error('AccessDenied: s3:PutObject'))
+      mockAdapter.generatePresignedUrlForDirectUpload.rejects(
+        Object.assign(new Error('AccessDenied: s3:PutObject'), { name: 'AccessDenied', $metadata: { httpStatusCode: 403 } }),
+      )
       const { service, req, res } = directUpload(placeholderDoc)
+      const records = captureLogRecords()
 
       const next = sinon.stub()
       try {
@@ -691,10 +695,38 @@ describe('UploadDocumentService', () => {
       } catch (error: any) {
         expect(error.statusCode).to.equal(503)
         expect(error.message).to.equal(STORAGE_WRITE_FAILED_MESSAGE)
+        // The error middleware's line says why; this service writes none.
+        expect(error.cause).to.deep.equal({ status: 403, code: 'AccessDenied' })
       }
+      expect(records.filter((r) => ['error', 'warning'].includes(r.level))).to.deep.equal([])
       expect(deleteOne.calledOnceWithExactly({ _id: 'doc-7', s3: { $exists: false } })).to.be.true
       expect(placeholderDoc.save.called).to.be.false
       expect(res.setHeader.called).to.be.false
+    })
+
+    it('a direct-upload URL storage refuses is a 503 whose cause is the answered status; no line names the URL', async () => {
+      const placeholderDoc: any = {
+        _id: 'doc-9', documentName: 'big', documentPath: '507f1f77bcf86cd799439011/PipesHub/Finance',
+        isVersionedFile: false, save: sinon.stub().resolves(),
+      }
+      sinon.stub(DocumentModel, 'deleteOne').resolves({} as any)
+      mockAdapter.generatePresignedUrlForDirectUpload.resolves({
+        statusCode: 500, msg: 'n5d-vendor-text', data: { url: 'https://bucket.s3.amazonaws.com/n5d-presigned?sig=1' },
+      })
+      const { service, req, res } = directUpload(placeholderDoc)
+      const records = captureLogRecords()
+
+      let error: any
+      try {
+        await service.uploadDocument(req, res, () => undefined)
+      } catch (e) {
+        error = e
+      }
+
+      expect(error?.statusCode).to.equal(503)
+      expect(error.cause).to.deep.equal({ status: 500 })
+      expect(records.filter((r) => ['error', 'warning', 'info'].includes(r.level))).to.deep.equal([])
+      expect(JSON.stringify(records)).to.not.contain('n5d-presigned')
     })
 
     it('should keep the placeholder once a direct upload has started', async () => {

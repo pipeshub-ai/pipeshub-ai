@@ -120,7 +120,7 @@ export async function validateS3Capabilities(
     };
   }
 
-  logger.info('Starting S3 health check', {
+  logger.debug('Starting S3 health check', {
     bucketName,
     bucketNameLength: bucketName?.length,
     region,
@@ -155,7 +155,7 @@ export async function validateS3Capabilities(
       bucket: bucketName,
     });
   } catch (error) {
-    logger.error('S3 adapter initialization failed', {
+    logger.warn('S3 adapter initialization failed', {
       error: formatError(error),
     });
     return {
@@ -185,10 +185,10 @@ export async function validateS3Capabilities(
     keysToCleanup.add(testKey);
     checks.push({ capability: 'bucketAccess', passed: true });
     checks.push({ capability: 'upload', passed: true });
-    logger.info('S3 upload check passed', { uploadedUrl });
+    logger.debug('S3 upload check passed');
   } catch (error) {
     const failedCapability = classifyUploadError(error);
-    logger.error('S3 upload check failed', {
+    logger.warn('S3 upload check failed', {
       capability: failedCapability,
       error: formatError(error),
     });
@@ -224,9 +224,9 @@ export async function validateS3Capabilities(
         );
       }
       checks.push({ capability: 'read', passed: true });
-      logger.info('S3 read check passed');
+      logger.debug('S3 read check passed');
     } catch (error) {
-      logger.error('S3 read check failed', { error: formatError(error) });
+      logger.warn('S3 read check failed', { error: formatError(error) });
       checks.push({
         capability: 'read',
         passed: false,
@@ -239,9 +239,9 @@ export async function validateS3Capabilities(
       const signedUrlResult = await adapter.getSignedUrl(probeDocument);
       signedGetUrl = signedUrlResult.data;
       checks.push({ capability: 'signedUrlGet', passed: true });
-      logger.info('S3 signedUrlGet check passed');
+      logger.debug('S3 signedUrlGet check passed');
     } catch (error) {
-      logger.error('S3 signedUrlGet check failed', {
+      logger.warn('S3 signedUrlGet check failed', {
         error: formatError(error),
       });
       checks.push({
@@ -276,9 +276,9 @@ export async function validateS3Capabilities(
           clearTimeout(timeout);
         }
         checks.push({ capability: 'getContent', passed: true });
-        logger.info('S3 getContent check passed');
+        logger.debug('S3 getContent check passed');
       } catch (error) {
-        logger.error('S3 getContent check failed', {
+        logger.warn('S3 getContent check failed', {
           error: formatError(error),
         });
         checks.push({
@@ -317,9 +317,9 @@ export async function validateS3Capabilities(
   try {
     await adapter.generatePresignedUrlForDirectUpload(directUploadKey);
     checks.push({ capability: 'signedUrlPut', passed: true });
-    logger.info('S3 signedUrlPut check passed');
+    logger.debug('S3 signedUrlPut check passed');
   } catch (error) {
-    logger.error('S3 signedUrlPut check failed', { error: formatError(error) });
+    logger.warn('S3 signedUrlPut check failed', { error: formatError(error) });
     checks.push({
       capability: 'signedUrlPut',
       passed: false,
