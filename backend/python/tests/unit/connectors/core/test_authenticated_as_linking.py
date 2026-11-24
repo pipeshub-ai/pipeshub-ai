@@ -164,9 +164,12 @@ class TestListedAuthenticator:
 
     async def test_alias_match_ignores_case_and_spaces(self) -> None:
         tx = _tx_store(creator_email="Dash@Gmail.com", source_user=SOURCE)
-        await _link(_processor(tx), extra_present_emails=(" dash@gmail.com ",))
+        tx.remove_authenticated_as = AsyncMock(return_value=True)
+        result = await _link(_processor(tx), extra_present_emails=(" dash@gmail.com ",))
 
         tx.upsert_authenticated_as.assert_not_called()
+        tx.remove_authenticated_as.assert_awaited_once_with(CONNECTOR)
+        assert result.outcome is AuthenticatorLink.UNLINKED
 
     async def test_a_failed_edge_read_changes_nothing(self) -> None:
         tx = _tx_store(source_user=SOURCE)
@@ -179,42 +182,94 @@ class TestListedAuthenticator:
         assert result.outcome is AuthenticatorLink.UNCHANGED
         proc.logger.warning.assert_called()
 
-    async def test_a_failed_marker_read_changes_nothing(self) -> None:
-        tx = _tx_store(source_user=SOURCE, edges=[LISTED_EDGE])
-        proc = _processor(tx)
-
-        async def get_config(key, use_cache=True, default=None, raise_on_error=False) -> object:
+    @staticmethod
+    def _unreadable_marker(proc: DataSourceEntitiesProcessor) -> None:
+        async def get_config(
+            key: str, use_cache: bool = True, default: object = None, raise_on_error: bool = False,
+        ) -> object:
             if raise_on_error:
                 raise RuntimeError("kv down")
             return default
 
         proc.config_service.get_config = AsyncMock(side_effect=get_config)
+
+    async def test_a_failed_marker_read_never_links(self) -> None:
+        tx = _tx_store(source_user=SOURCE, edges=[])
+        proc = _processor(tx)
+        self._unreadable_marker(proc)
         result = await _link(proc)
 
-        tx.remove_authenticated_as.assert_not_called()
         tx.upsert_authenticated_as.assert_not_called()
+        tx.remove_authenticated_as.assert_not_called()
         assert result.outcome is AuthenticatorLink.UNCHANGED
         proc.logger.warning.assert_called()
 
-    @pytest.mark.parametrize("stored", ["creator-key", {"creator-key": 1}, 7])
-    async def test_a_marker_that_is_not_a_list_is_a_failed_read(self, stored) -> None:
-        tx = _tx_store(source_user=SOURCE, edges=[LISTED_EDGE])
+    @pytest.mark.parametrize("evidence", ["membership", "listing"])
+    async def test_a_failed_marker_read_still_removes_a_link_the_source_shows_they_should_not_hold(
+        self, evidence: str,
+    ) -> None:
+        tx = _tx_store(source_user=SOURCE, edges=[LISTED_EDGE] if evidence == "membership" else [])
+        tx.remove_authenticated_as = AsyncMock(return_value=True)
+        proc = _processor(tx)
+        self._unreadable_marker(proc)
+        extra = ("dash@gmail.com",) if evidence == "listing" else ()
+
+        result = await _link(proc, extra_present_emails=extra)
+
+        tx.remove_authenticated_as.assert_awaited_once_with(CONNECTOR)
+        tx.upsert_authenticated_as.assert_not_called()
+        assert result.outcome is AuthenticatorLink.UNLINKED
+        proc.config_service.set_config.assert_not_called()
+
+    @pytest.mark.parametrize("stored", [
+        "creator-key", {"creator-key": 1}, 7, [None], [""], ["  "], ["creator-key", 3], [["creator-key"]],
+    ])
+    async def test_a_malformed_marker_is_a_failed_read_and_never_links(self, stored: object) -> None:
+        tx = _tx_store(source_user=SOURCE, edges=[])
         proc = _processor(tx)
         proc.config_service.get_config = AsyncMock(return_value=stored)
         result = await _link(proc)
 
-        tx.remove_authenticated_as.assert_not_called()
         tx.upsert_authenticated_as.assert_not_called()
         assert result.outcome is AuthenticatorLink.UNCHANGED
         proc.logger.warning.assert_called()
 
-    async def test_a_failed_marker_write_still_removes_the_link(self) -> None:
+    async def test_the_marker_is_written_before_the_link_is_removed(self) -> None:
         tx = _tx_store(source_user=SOURCE, edges=[LISTED_EDGE])
+        order: list[str] = []
+        tx.remove_authenticated_as = AsyncMock(side_effect=lambda *_: order.append("unlink") or True)
         proc = _processor(tx)
-        proc.config_service.set_config = AsyncMock(side_effect=RuntimeError("kv down"))
+        proc.config_service.set_config = AsyncMock(side_effect=lambda *_: order.append("marker") or True)
+
         await _link(proc)
 
+        assert order == ["marker", "unlink"]
+
+    @pytest.mark.parametrize("failure", [{"return_value": False}, {"side_effect": RuntimeError("kv down")}])
+    async def test_a_failed_marker_write_is_retried_once_then_warned_and_the_link_still_goes(
+        self, failure: dict,
+    ) -> None:
+        tx = _tx_store(source_user=SOURCE, edges=[LISTED_EDGE])
+        tx.remove_authenticated_as = AsyncMock(return_value=True)
+        proc = _processor(tx)
+        proc.config_service.set_config = AsyncMock(**failure)
+
+        result = await _link(proc)
+
+        assert proc.config_service.set_config.await_count == 2
+        proc.logger.warning.assert_called_once()
         tx.remove_authenticated_as.assert_awaited_once_with(CONNECTOR)
+        assert result.outcome is AuthenticatorLink.UNLINKED
+
+    async def test_a_marker_write_that_fails_once_is_written_on_the_retry(self) -> None:
+        tx = _tx_store(source_user=SOURCE, edges=[LISTED_EDGE])
+        proc = _processor(tx)
+        proc.config_service.set_config = AsyncMock(side_effect=[False, True])
+
+        await _link(proc)
+
+        assert proc.config_service.set_config.await_count == 2
+        proc.logger.warning.assert_not_called()
 
     async def test_removal_only_pass_never_links(self) -> None:
         tx = _tx_store(source_user=SOURCE)
