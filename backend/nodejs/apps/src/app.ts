@@ -517,8 +517,9 @@ export class Application {
     this.app.use(
       helmet({
         crossOriginOpenerPolicy: { policy: 'unsafe-none' }, // Required for MSAL popup
-        // The from-source UI runs on another port; same-site still covers it and keeps other sites out.
-        crossOriginResourcePolicy: { policy: 'same-site' },
+        // The desktop app's pages load from app://, another site to Chromium, and it shows API
+        // images and media in <img>/<video>; same-site or same-origin would block those loads.
+        crossOriginResourcePolicy: { policy: 'cross-origin' },
         contentSecurityPolicy: {
           directives: {
             defaultSrc: ["'self'"],

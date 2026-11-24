@@ -682,8 +682,8 @@ describe('Application', () => {
       expect(csp).to.match(/script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'/);
       expect(csp).to.match(/connect-src 'self' blob: [^;]*https:\/\/api\.github\.com/);
       expect(csp).to.not.include('upgrade-insecure-requests');
-      // A UI on another port of the same host can still load API-served media.
-      expect(headers['cross-origin-resource-policy']).to.equal('same-site');
+      // The desktop app (app://) and a UI on another port can still load API-served media.
+      expect(headers['cross-origin-resource-policy']).to.equal('cross-origin');
       expect(headers['x-frame-options']).to.equal('SAMEORIGIN');
       expect(headers['x-content-type-options']).to.equal('nosniff');
       expect(headers['strict-transport-security']).to.be.a('string');
