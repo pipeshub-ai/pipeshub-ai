@@ -1,6 +1,6 @@
 import { inject, injectable } from 'inversify';
 import { Logger } from '../../../libs/services/logger.service';
-import { enforcing, forOrg } from '../../../libs/context/orgContext';
+import { forOrg, orgContextStorage } from '../../../libs/context/orgContext';
 import { createHash } from 'node:crypto';
 import { ServiceUnavailableError } from '../../../libs/errors/http.errors';
 import {
@@ -85,22 +85,20 @@ export function isPlatformAudience(raw: unknown): boolean {
 
 /**
  * Why platform alerts cannot arrive with the current envelope settings, or
- * null. The alerts are about the whole installation and have no org to sign
- * with, so a consumer that requires a signed context rejects every one.
+ * null. With signing on, the publisher signs one copy per org under that org,
+ * which is delivered to that org's admins; with it off the one copy is
+ * unsigned, which a consumer that requires a signed context rejects.
  */
 export function platformAlertsBlockedByEnvelope(): string | null {
-  if (ctxRequired()) return 'ENVELOPE_CTX_REQUIRED is on';
-  let enforce: boolean;
-  try {
-    enforce = enforcing();
-  } catch {
-    // An invalid mode fails the app's startup elsewhere; it is not enforce.
-    enforce = false;
-  }
-  if (signEnabled() && enforce) {
-    return 'ENVELOPE_SIGN is on with ORG_CONTEXT_MODE=enforce';
-  }
+  if (ctxRequired() && !signEnabled())
+    return 'ENVELOPE_CTX_REQUIRED is on and ENVELOPE_SIGN is off';
   return null;
+}
+
+/** The org a verified envelope bound for this delivery: a signed copy of an alert is for that org's admins only. */
+function signedOrg(): string | null {
+  const ctx = orgContextStorage.getStore();
+  return ctx?.source === 'envelope' && ctx.orgId ? ctx.orgId : null;
 }
 
 /** Logs one ERROR at startup when the envelope settings drop every platform alert. */
@@ -108,7 +106,7 @@ export function logIfPlatformAlertsBlocked(logger: Logger): void {
   const why = platformAlertsBlockedByEnvelope();
   if (!why) return;
   logger.error(
-    'Code sandbox load alerts will not be delivered: they have no org to sign, and ' +
+    'Code sandbox load alerts will not be delivered: they are sent unsigned, and ' +
       `unsigned notification messages are rejected (${why})`,
     { reason: why },
   );
@@ -298,21 +296,25 @@ export class PlatformAlertHandler {
       });
       return;
     }
-    if (this.alreadyDelivered(alertId, now)) {
+    const org = signedOrg();
+    // Each org's signed copy is delivered and remembered apart; an unsigned one is for every org.
+    const deliveryKey = org ? `${alertId}@${org}` : alertId;
+    if (this.alreadyDelivered(deliveryKey, now)) {
       this.logger.debug('Platform alert skipped: already delivered', {
         type,
         alertId,
       });
       return;
     }
-    const scope = budgetScope(alert);
+    // shortcut: a signed copy draws on its org's own budget, the all-scopes caps stay shared; split them too if many orgs share a host
+    const scope = org ? `${budgetScope(alert)}@${org}` : budgetScope(alert);
     const durable = inDurableDelivery();
     let orgs: PlatformRecipientOrg[] | undefined;
     // An alert whose notifications an earlier delivery already stored was counted against the hourly cap then: its redelivery
     // is neither counted again nor refused by the cap.
     let begun = false;
     if (durable) {
-      orgs = await this.resolveRecipients();
+      orgs = await this.recipients(org);
       begun = await this.anyOrg(orgs, (org) => deliveryRecordedFor(org.orgId));
     }
     const token = begun ? null : this.deliveries.take(type, scope, now);
@@ -328,7 +330,7 @@ export class PlatformAlertHandler {
     let recipients = 0;
     let storedBefore = 0;
     try {
-      orgs ??= await this.resolveRecipients();
+      orgs ??= await this.recipients(org);
       for (const org of orgs) {
         let delivered: number;
         try {
@@ -373,7 +375,7 @@ export class PlatformAlertHandler {
     }
 
     // Only now: an alert remembered before its mail was queued would drop the redelivery that queues it.
-    this.remember(alertId, now);
+    this.remember(deliveryKey, now);
     this.logger.info('Platform alert delivered', {
       type,
       alertId,
@@ -381,6 +383,12 @@ export class PlatformAlertHandler {
       recipients,
       emailQueued,
     });
+  }
+
+  /** The admins to notify: of the signed copy's org only, or of every org for an unsigned event. */
+  private async recipients(org: string | null): Promise<PlatformRecipientOrg[]> {
+    const all = await this.resolveRecipients();
+    return org ? all.filter((o) => o.orgId === org) : all;
   }
 
   private async anyOrg(

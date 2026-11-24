@@ -39,6 +39,7 @@ _LEVELS = ("critical", "warning")
 
 ProducerFactory = Callable[[], Awaitable[IMessagingProducer]]
 SnapshotFn = Callable[[], dict[str, Any]]
+OrgIds = Callable[[], Awaitable[list[str]]]
 
 
 def _default_snapshot() -> dict[str, Any]:
@@ -49,19 +50,13 @@ def _default_snapshot() -> dict[str, Any]:
 
 def envelope_blocks_alerts() -> str | None:
     """Why Node will reject every alert under the current envelope settings,
-    or ``None``. An alert has no org, so it is sent unsigned, and a consumer
-    that requires a signed context drops unsigned messages."""
+    or ``None``. With signing on, each org's copy of an alert is signed under
+    that org (`SandboxAlertRunner._publish`); with it off the one copy is
+    unsigned, which a consumer that requires a signed context drops."""
     from app.core.envelope import ctx_required, sign_enabled
-    from app.core.org_context import enforcing
 
-    if ctx_required():
-        return "ENVELOPE_CTX_REQUIRED is on"
-    try:
-        enforce = enforcing()
-    except ValueError:
-        enforce = False
-    if sign_enabled() and enforce:
-        return "ENVELOPE_SIGN is on with ORG_CONTEXT_MODE=enforce"
+    if ctx_required() and not sign_enabled():
+        return "ENVELOPE_CTX_REQUIRED is on and ENVELOPE_SIGN is off"
     return None
 
 
@@ -97,8 +92,10 @@ class SandboxAlertRunner:
         host: str | None = None,
         store_timeout_s: float = STORE_TIMEOUT_S,
         publish_timeout_s: float = PUBLISH_TIMEOUT_S,
+        org_ids: OrgIds | None = None,
     ) -> None:
         self._settings = settings
+        self._org_ids = org_ids
         self._publish_timeout_s = publish_timeout_s
         # Failures already logged at WARNING, until the next success.
         self._failing: set[str] = set()
@@ -303,13 +300,30 @@ class SandboxAlertRunner:
             self._warn_once("resolve", "sandbox load alert: could not mark resolved; retrying next interval")
 
     async def _publish(self, event: dict[str, Any], alert_id: str) -> bool:
+        from app.core.envelope import sign_enabled
+        from app.core.org_context import for_org
+
         try:
             if self._producer is None:
                 self._producer = await asyncio.wait_for(self._producer_factory(), self._publish_timeout_s)
-            sent = await asyncio.wait_for(
-                self._producer.send_message(NOTIFICATION_TOPIC, event, key=f"sandbox-capacity-{alert_id}"),
-                self._publish_timeout_s,
-            )
+            if sign_enabled() and self._org_ids is not None:
+                # A signed message names one org: each org's admins get the copy signed under their org (Node delivers it to that
+                # org only), so nothing is sent unsigned and nothing runs unbound. A failed copy fails the send; Node skips the orgs
+                # whose copy it already delivered (by alert id and org) when the alert is sent again.
+                sent = True
+                for org in await asyncio.wait_for(self._org_ids(), self._publish_timeout_s):
+                    with for_org(org, job="sandbox-alerts"):
+                        copy = {**event, "payload": {**event["payload"], "orgId": org}}
+                        ok = await asyncio.wait_for(
+                            self._producer.send_message(NOTIFICATION_TOPIC, copy, key=f"sandbox-capacity-{alert_id}"),
+                            self._publish_timeout_s,
+                        )
+                    sent = sent and ok is not False
+            else:
+                sent = await asyncio.wait_for(
+                    self._producer.send_message(NOTIFICATION_TOPIC, event, key=f"sandbox-capacity-{alert_id}"),
+                    self._publish_timeout_s,
+                )
         except Exception as exc:
             if isinstance(exc, TimeoutError):
                 # A producer that hung once is rebuilt on the next try.
@@ -349,6 +363,18 @@ def _delete(paths: tuple[Path, ...]) -> None:
             os.unlink(path)
 
 
+def graph_org_ids(graph_provider: Any) -> OrgIds:  # noqa: ANN401
+    """The installation's active orgs, the recipients of a signed alert; a failed list fails the send, which is retried."""
+    from app.core.org_context import system
+
+    async def ids() -> list[str]:
+        with system("sandbox-alerts"):
+            orgs = await graph_provider.get_all_orgs(active=True, raise_on_error=True)
+        return [str(o.get("_key") or o.get("id")) for o in orgs or [] if o.get("_key") or o.get("id")]
+
+    return ids
+
+
 def default_producer_factory(
     config_service: ConfigurationService, logger: logging.Logger,
 ) -> ProducerFactory:
@@ -374,6 +400,7 @@ async def run_sandbox_alert_loop(
     state_directory: Path | None = None,
     producer_factory: ProducerFactory | None = None,
     snapshot: SnapshotFn = _default_snapshot,
+    org_ids: OrgIds | None = None,
 ) -> None:
     """Runs until cancelled. Exits at once, with one INFO line, where alerts
     are off: ``SANDBOX_ALERTS=false``, no code sandbox, E2B, or no state
@@ -393,13 +420,13 @@ async def run_sandbox_alert_loop(
     blocked = envelope_blocks_alerts()
     if blocked is not None:
         log.error(
-            "sandbox load alerts will not be delivered: they have no org to sign, and unsigned "
+            "sandbox load alerts will not be delivered: they are sent unsigned, and unsigned "
             "notification messages are rejected (%s)", blocked,
         )
     runner = SandboxAlertRunner(
         config_service, settings, state_directory,
         producer_factory=producer_factory or default_producer_factory(config_service, log),
-        snapshot=snapshot, logger=log,
+        snapshot=snapshot, logger=log, org_ids=org_ids,
     )
     unusable_logged = False
     try:

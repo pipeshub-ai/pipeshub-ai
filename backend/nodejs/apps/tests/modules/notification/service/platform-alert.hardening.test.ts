@@ -343,20 +343,18 @@ describe('platform alerts under envelope enforcement', () => {
     expect(platformAlertsBlockedByEnvelope()).to.equal(null);
   });
 
-  it('are named as dropped when signing is on and the mode is left at its default (enforce)', () => {
+  it('are delivered with signing on in enforce, the default or set: each org gets the copy signed under it', () => {
     process.env.ENVELOPE_SIGN = 'true';
-    expect(platformAlertsBlockedByEnvelope()).to.contain('ORG_CONTEXT_MODE=enforce');
+    expect(platformAlertsBlockedByEnvelope()).to.equal(null);
+    process.env.ORG_CONTEXT_MODE = 'enforce';
+    expect(platformAlertsBlockedByEnvelope()).to.equal(null);
   });
 
-  it('are named as dropped when a signed context is required', () => {
+  it('are named as dropped when a signed context is required and signing is off, and delivered with signing on', () => {
     process.env.ENVELOPE_CTX_REQUIRED = 'true';
     expect(platformAlertsBlockedByEnvelope()).to.contain('ENVELOPE_CTX_REQUIRED');
-  });
-
-  it('are named as dropped when signing is enforced', () => {
     process.env.ENVELOPE_SIGN = 'true';
-    process.env.ORG_CONTEXT_MODE = 'enforce';
-    expect(platformAlertsBlockedByEnvelope()).to.contain('ORG_CONTEXT_MODE=enforce');
+    expect(platformAlertsBlockedByEnvelope()).to.equal(null);
   });
 
   it('an invalid mode does not throw here', () => {

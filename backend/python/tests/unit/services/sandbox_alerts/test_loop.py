@@ -315,3 +315,36 @@ class TestBackToNormal:
         assert env.store.values[WARN_KEY]["state"] == "claimed"
         await self.tick(env, runner, 10, "warn")
         assert len(env.producer.sent) == 3
+
+
+async def test_with_signing_on_in_enforce_each_org_gets_its_alert_signed_under_it(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """ENVELOPE_SIGN=true with ORG_CONTEXT_MODE at its default (enforce): Node refuses an unsigned alert, so each active org gets
+    a copy signed under that org (its ``ctx.orgId`` and ``payload.orgId``), and none is sent unsigned."""
+    from app.core import envelope
+
+    monkeypatch.setenv("ENVELOPE_SIGN", "true")
+    monkeypatch.delenv("ORG_CONTEXT_MODE", raising=False)
+    monkeypatch.delenv("ENVELOPE_CTX_REQUIRED", raising=False)
+    monkeypatch.setattr(envelope, "_sign_key", envelope.derive_key("test-secret"))
+
+    class SigningProducer(FakeProducer):
+        async def send_message(self, topic: str, message: dict, key: str | None = None) -> bool:
+            return await super().send_message(topic, envelope.sign_message(topic, message), key)
+
+    async def org_ids() -> list[str]:
+        return ["org-a", "org-b"]
+
+    env = Env(tmp_path)
+    env.producer = SigningProducer()
+    runner = SandboxAlertRunner(
+        env.store, SETTINGS, env.state,  # type: ignore[arg-type]
+        producer_factory=env.factory, snapshot=lambda: dict(SNAPSHOT), clock=env.clock, host="test-host", org_ids=org_ids,
+    )
+    env.warn()
+    await runner.run_once()
+    sent = env.producer.sent
+    assert [m["ctx"]["orgId"] for _, m, _ in sent] == ["org-a", "org-b"]
+    for _, message, _ in sent:
+        opened = await envelope.open_envelope("notification", message, keys=(envelope.derive_key("test-secret"),))
+        assert opened.ctx.org_id == message["ctx"]["orgId"] == opened.message["payload"]["orgId"]
+        assert opened.message["audience"] == "platformAdmins"

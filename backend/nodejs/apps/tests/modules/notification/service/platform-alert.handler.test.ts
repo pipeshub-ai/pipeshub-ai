@@ -2,11 +2,14 @@ import 'reflect-metadata';
 import { expect } from 'chai';
 import sinon from 'sinon';
 import mongoose from 'mongoose';
-import { PlatformAlertHandler } from '../../../../src/modules/notification/service/platform-alert.handler';
+import {
+  PlatformAlertHandler,
+  platformAlertsBlockedByEnvelope,
+} from '../../../../src/modules/notification/service/platform-alert.handler';
 import { NotificationService } from '../../../../src/modules/notification/service/notification.service';
 import { setNotificationRepository } from '../../../../src/libs/repositories/notification';
 import { setUserRepository } from '../../../../src/libs/repositories/user';
-import { getCurrentOrgId } from '../../../../src/libs/context/orgContext';
+import { getCurrentOrgId, runWithOrgContext } from '../../../../src/libs/context/orgContext';
 import { DocStoreReadOnlyError } from '../../../../src/libs/repositories/errors';
 import { getEmailContent } from '../../../../src/modules/mail/utils/email-content';
 import { configureInbox, runWithEnvelope } from '../../../../src/libs/context/envelope';
@@ -234,6 +237,42 @@ describe('notification/service/platform-alert.handler', () => {
     expect(insertOrgs).to.deep.equal([orgA, orgB]);
     expect(mailProducer.publishEvent.callCount).to.equal(2);
     expect(mailProducer.publishEvent.secondCall.args[0].payload.orgId).to.equal(orgB);
+  });
+
+  describe('with signing on and the org context enforced (the default)', () => {
+    const saved = { sign: process.env.ENVELOPE_SIGN, mode: process.env.ORG_CONTEXT_MODE };
+    beforeEach(() => {
+      process.env.ENVELOPE_SIGN = 'true';
+      delete process.env.ORG_CONTEXT_MODE;
+    });
+    afterEach(() => {
+      if (saved.sign === undefined) delete process.env.ENVELOPE_SIGN;
+      else process.env.ENVELOPE_SIGN = saved.sign;
+      if (saved.mode === undefined) delete process.env.ORG_CONTEXT_MODE;
+      else process.env.ORG_CONTEXT_MODE = saved.mode;
+    });
+    // what the consumer binds for a message whose envelope verified
+    const signedFor = (orgId: string, fn: () => Promise<void>) =>
+      runWithOrgContext({ orgId, userId: null, kind: 'service', source: 'envelope', requestId: 't' }, fn);
+
+    it("are not dropped, and each org's signed copy reaches that org's admins exactly once", async () => {
+      expect(platformAlertsBlockedByEnvelope()).to.equal(null);
+      resolveRecipients.resolves([
+        { orgId: orgA, userIds: [admin1] },
+        { orgId: orgB, userIds: [admin2] },
+      ]);
+
+      await signedFor(orgA, () => handler.handle(event({}, { orgId: orgA })));
+      await signedFor(orgA, () => handler.handle(event({}, { orgId: orgA })));   // the broker delivers it again
+      expect(insertOrgs).to.deep.equal([orgA]);
+      expect(insertMany.firstCall.args[0].map((d: any) => d.assignedTo)).to.deep.equal([admin1]);
+      expect(mailProducer.publishEvent.callCount).to.equal(1);
+
+      await signedFor(orgB, () => handler.handle(event({}, { orgId: orgB })));   // org B's own copy of the same alert
+      expect(insertOrgs).to.deep.equal([orgA, orgB]);
+      expect(mailProducer.publishEvent.callCount).to.equal(2);
+      expect(mailProducer.publishEvent.secondCall.args[0].payload.orgId).to.equal(orgB);
+    });
   });
 
   describe('with the durable consumer inbox', () => {

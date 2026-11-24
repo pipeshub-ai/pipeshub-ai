@@ -93,9 +93,7 @@ async def test_a_release_that_works_again_warns_again_on_the_next_failure(
 @pytest.mark.parametrize(
     ("env_vars", "why"),
     [
-        ({"ENVELOPE_CTX_REQUIRED": "true"}, "ENVELOPE_CTX_REQUIRED"),
-        ({"ENVELOPE_SIGN": "true", "ORG_CONTEXT_MODE": "enforce"}, "ORG_CONTEXT_MODE=enforce"),
-        ({"ENVELOPE_SIGN": "true"}, "ORG_CONTEXT_MODE=enforce"),  # enforce is the default
+        ({"ENVELOPE_CTX_REQUIRED": "true"}, "ENVELOPE_CTX_REQUIRED"),  # unsigned, and a signed context is required
     ],
 )
 def test_envelope_settings_that_drop_alerts_are_named(
@@ -114,6 +112,8 @@ def test_envelope_settings_that_drop_alerts_are_named(
     [
         {"ENVELOPE_SIGN": "true", "ORG_CONTEXT_MODE": "shadow"},  # shadow mode accepts unsigned messages
         {"ORG_CONTEXT_MODE": "enforce"},  # without signing, unsigned messages are accepted
+        {"ENVELOPE_SIGN": "true"},  # enforce, the default: each org's copy is signed under that org
+        {"ENVELOPE_SIGN": "true", "ENVELOPE_CTX_REQUIRED": "true"},
         {"ENVELOPE_SIGN": "true", "ORG_CONTEXT_MODE": "bogus"},
     ],
 )
