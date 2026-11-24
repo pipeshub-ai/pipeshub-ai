@@ -258,6 +258,17 @@ async def test_unchanged_states_are_not_written_again() -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_failed_store_write_keeps_the_last_states_so_the_next_pass_writes_again() -> None:
+    gp, config = _graph([_named("a")]), AsyncMock()
+    config.set_config = AsyncMock(side_effect=[False, True])
+    last = {"connectors": []}
+    assert await licence_lift.publish_connector_states(config, gp, _LOG, last) is last
+    published = await licence_lift.publish_connector_states(config, gp, _LOG, last)
+    assert published != last
+    assert config.set_config.await_count == 2
+
+
+@pytest.mark.asyncio
 async def test_a_failed_read_publishes_nothing_and_keeps_the_last_states() -> None:
     gp, config = _graph([_named("a")]), AsyncMock()
     gp.get_org_apps = AsyncMock(side_effect=ConnectionError("graph down"))

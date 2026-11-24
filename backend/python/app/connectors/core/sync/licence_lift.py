@@ -144,8 +144,10 @@ async def publish_connector_states(
         if await for_each_org(graph_provider, "licence_connector_states", read, logger, raise_on_error=True):
             return last
         states = connector_states(apps_by_org)
-        if states != last:
-            await config_service.set_config(LICENCE_CONNECTORS_KEY, states)
+        # set_config answers False on a store failure rather than raising; keep `last` so the next pass writes again.
+        if states != last and not await config_service.set_config(LICENCE_CONNECTORS_KEY, states):
+            logger.warning("The connector states for the licence notices could not be stored; retrying next pass")
+            return last
         return states
     except Exception as e:
         error_class.log_failure(logger, "sync_step.failed", e, level=logging.WARNING, step="licence_connector_states")
