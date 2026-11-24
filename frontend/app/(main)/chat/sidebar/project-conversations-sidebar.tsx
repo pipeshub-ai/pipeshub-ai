@@ -53,7 +53,7 @@ function toConversation(
     lastActivityAt: row.lastActivityAt,
     status: row.status,
     isOwner: row.userId === currentUserId || row.initiator === currentUserId,
-    projectId: row.sessionType === 'agent' ? undefined : projectId,
+    projectId,
     projectVisibility: row.projectVisibility,
   };
 }
@@ -260,7 +260,7 @@ export const ProjectConversationsSidebar = React.memo(function ProjectConversati
                         isActive={currentConversationId === row._id}
                         onClick={handleSelectConversation}
                         agentId={row.sessionType === 'agent' ? row.agentKey : undefined}
-                        projectId={row.sessionType === 'agent' ? undefined : projectId}
+                        projectId={projectId}
                       />
                     ))}
                   </Flex>

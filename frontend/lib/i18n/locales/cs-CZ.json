@@ -1433,7 +1433,11 @@
         },
         "toolNeedsApproval": "Vyžaduje schválení",
         "toolNeedsApprovalHint": "Tento nástroj může mazat data. V chatu projektu se spustí až po schválení.",
-        "indexingStatusLabel": "Indexování: {{status}}"
+        "indexingStatusLabel": "Indexování: {{status}}",
+        "assistantDefault": "Obecný asistent",
+        "noAgentsAvailable": "Žádní agenti nejsou k dispozici",
+        "agentToolsOutsideProject_one": "1 z nástrojů tohoto agenta není v seznamu nástrojů tohoto projektu, takže jej agent zde v chatech nepoužije. Přidejte jej v sekci Nástroje a MCP, pokud jej má používat.",
+        "agentToolsOutsideProject_other": "{{count}} nástrojů tohoto agenta není v seznamu nástrojů tohoto projektu, takže je agent zde v chatech nepoužije. Přidejte je v sekci Nástroje a MCP, pokud je má používat."
       },
       "moveDialog": {
         "title": "Přesunout do projektu",

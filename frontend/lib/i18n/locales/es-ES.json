@@ -1266,7 +1266,11 @@
         },
         "toolNeedsApproval": "Requiere aprobación",
         "toolNeedsApprovalHint": "Esta herramienta puede eliminar datos. En un chat de proyecto solo se ejecuta después de que alguien la apruebe.",
-        "indexingStatusLabel": "Indexación: {{status}}"
+        "indexingStatusLabel": "Indexación: {{status}}",
+        "assistantDefault": "Asistente general",
+        "noAgentsAvailable": "No hay agentes disponibles",
+        "agentToolsOutsideProject_one": "1 de las herramientas de este agente no está en la lista de herramientas de este proyecto, así que el agente la pierde en los chats aquí. Añádela en Herramientas y MCP si debería usarla.",
+        "agentToolsOutsideProject_other": "{{count}} de las herramientas de este agente no están en la lista de herramientas de este proyecto, así que el agente las pierde en los chats aquí. Añádelas en Herramientas y MCP si debería usarlas."
       },
       "moveDialog": {
         "title": "Mover a proyecto",

@@ -1286,7 +1286,11 @@
         },
         "toolNeedsApproval": "Needs approval",
         "toolNeedsApprovalHint": "This tool can delete data. In a project chat it runs only after someone approves it.",
-        "indexingStatusLabel": "Indexing: {{status}}"
+        "indexingStatusLabel": "Indexing: {{status}}",
+        "assistantDefault": "General assistant",
+        "noAgentsAvailable": "No agents available",
+        "agentToolsOutsideProject_one": "1 of this agent's tools is not in this project's tool list, so the agent loses it in chats here. Add it under Tools & MCP if it should use it.",
+        "agentToolsOutsideProject_other": "{{count}} of this agent's tools are not in this project's tool list, so the agent loses them in chats here. Add them under Tools & MCP if it should use them."
       },
       "moveDialog": {
         "title": "Move to project",

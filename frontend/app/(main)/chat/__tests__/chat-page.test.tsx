@@ -1153,6 +1153,24 @@ describe('Chat page — projects and previews', () => {
     expect(useChatStore.getState().activeProjectId).toBe('p-1');
   });
 
+  it('opens an agent conversation linked to a project through the agent API, with both scopes in the slot', async () => {
+    useFeatureFlagsStore.setState({ flags: { ENABLE_PROJECTS: true } } as Partial<ReturnType<typeof useFeatureFlagsStore.getState>>);
+    getProject.mockResolvedValue({ id: 'p-1', name: 'Launch plan', color: '#f00' });
+    getAgent.mockResolvedValue({ agent: { name: 'Support Bot', toolsets: [] }, toolFullNames: [] });
+    fetchAgentConversation.mockResolvedValue(conversationDetail({ isOwner: true }));
+
+    renderPage('agentId=agent-7&conversationId=conv-1&projectId=p-1');
+
+    // The agent route serves the history — the assistant endpoint 404s for
+    // agent conversations ("Conversation not found" before this was fixed).
+    expect(await screen.findByText('You get 25 days a year.')).toBeTruthy();
+    expect(fetchAgentConversation).toHaveBeenCalledWith('agent-7', 'conv-1');
+    expect(fetchConversation).not.toHaveBeenCalled();
+    const slot = useChatStore.getState().slots[useChatStore.getState().activeSlotId ?? ''];
+    expect(slot?.threadAgentId).toBe('agent-7');
+    expect(slot?.projectId).toBe('p-1');
+  });
+
   it('says so when the project cannot be loaded', async () => {
     useFeatureFlagsStore.setState({ flags: { ENABLE_PROJECTS: true } } as Partial<ReturnType<typeof useFeatureFlagsStore.getState>>);
     getProject.mockRejectedValue(new Error('boom'));

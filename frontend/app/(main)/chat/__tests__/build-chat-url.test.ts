@@ -63,8 +63,8 @@ describe('buildChatHref', () => {
     expect(buildChatHref({ projectId: 'p1' })).toBe('/chat/?projectId=p1');
   });
 
-  it('agentId wins over projectId — a thread cannot be scoped to both', () => {
-    expect(buildChatHref({ agentId: 'a1', projectId: 'p1' })).toBe('/chat/?agentId=a1');
+  it('keeps both scopes — an agent chat may be linked to a project', () => {
+    expect(buildChatHref({ agentId: 'a1', projectId: 'p1' })).toBe('/chat/?agentId=a1&projectId=p1');
   });
 
   it('adds conversationId alongside agentId', () => {
