@@ -124,6 +124,17 @@ class TestRunOrder:
         assert order == ["drop", "active"]
 
     @pytest.mark.asyncio
+    async def test_the_removal_pass_runs_even_when_the_connector_is_not_initialized(self) -> None:
+        order: list[str] = []
+        connector = self._conn(order)
+        connector.data_source = None
+
+        with pytest.raises(RuntimeError, match="not initialized"):
+            await self._run(connector)
+
+        assert order == ["drop"]
+
+    @pytest.mark.asyncio
     async def test_no_full_pass_when_the_user_listing_raises(self) -> None:
         order: list[str] = []
         connector = self._conn(order, fetch_error=RuntimeError("down"))

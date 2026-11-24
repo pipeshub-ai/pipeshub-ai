@@ -832,15 +832,15 @@ class SlackConnector(BaseConnector):
         Phase 5 — Changes     (_sync_message_changes)   → AUDIT_LOG checkpoint
         """
         try:
-            self.logger.info(f"🚀 Slack sync — org {self.data_entities_processor.org_id}")
-
-            if not self.external_client:
-                raise RuntimeError("Call init() first.")
-
             # First, with no source call, so a sync that fails early still removes a link
             # the creator should not hold.
             self._listed_user_emails = set()
             await self.drop_authenticator_link_if_listed()
+
+            self.logger.info(f"🚀 Slack sync — org {self.data_entities_processor.org_id}")
+
+            if not self.external_client:
+                raise RuntimeError("Call init() first.")
 
             # Set when a read fails and the sync carries on without it; see
             # full_sync_coverage.

@@ -1401,14 +1401,15 @@ class GoogleGmailTeamConnector(BaseConnector):
         """
         self._sync_health = GmailSyncHealth()
         try:
+            # Needs nothing below, so a run that fails early still removes a link it should not keep.
+            await self.drop_authenticator_link_if_listed()
+
             self.logger.info("Starting Google Gmail workspace connector sync")
 
             # Load sync and indexing filters
             self.sync_filters, self.indexing_filters = await load_connector_filters(
                 self.config_service, "gmail", self.connector_id, self.logger
             )
-
-            await self.drop_authenticator_link_if_listed()
 
             self.logger.info("Syncing users...")
             await self._sync_users()

@@ -930,17 +930,18 @@ class ConfluenceConnector(BaseConnector):
         self._sync_finished = False
         self._now_blocks = {}
         try:
+            # Reset so a value left by an earlier run never counts as this run's listing. The removal
+            # pass needs no client, so a run that cannot start still removes a link it should not keep.
+            self._user_list_complete = False
+            self._listed_user_emails = set()
+            await self.drop_authenticator_link_if_listed()
+
             org_id = self.data_entities_processor.org_id
             self.logger.info(f"🚀 Starting Confluence Cloud sync for org: {org_id}")
 
             # Ensure client is initialized
             if not self.external_client or not self.data_source:
                 raise Exception("Confluence client not initialized. Call init() first.")
-
-            # Reset so a value left by an earlier run never counts as this run's listing.
-            self._user_list_complete = False
-            self._listed_user_emails = set()
-            await self.drop_authenticator_link_if_listed()
 
             # Load sync and indexing filters
             self.sync_filters, self.indexing_filters = await load_connector_filters(

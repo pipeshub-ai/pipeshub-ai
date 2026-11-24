@@ -892,6 +892,9 @@ class GoogleDriveTeamConnector(BaseConnector):
 
     async def _run_sync_steps(self) -> None:
         try:
+            # Needs nothing below, so a run that fails early still removes a link it should not keep.
+            await self.drop_authenticator_link_if_listed()
+
             self.logger.info("Starting Google Drive enterprise connector sync")
             self._shortcut_cache = {}
 
@@ -951,8 +954,6 @@ class GoogleDriveTeamConnector(BaseConnector):
                 self.logger.info(
                     f"📁 Folder filter active with {len(self._folder_seed_ids)} seed folder(s)"
                 )
-
-            await self.drop_authenticator_link_if_listed()
 
             # Step 1: Sync users
             self.logger.info("Syncing users...")

@@ -726,6 +726,9 @@ class LinearConnector(BaseConnector):
         """
         self._users_listing_complete, self._listed_user_emails = False, set()
         try:
+            # Needs no client: a run that cannot start still removes a link it should not keep.
+            await self.drop_authenticator_link_if_listed()
+
             self.logger.info(f"🚀 Starting Linear sync for connector {self.connector_id}")
 
             if not self.data_source:
@@ -734,8 +737,6 @@ class LinearConnector(BaseConnector):
                 )
                 init_error._notification_sent = True
                 raise init_error
-
-            await self.drop_authenticator_link_if_listed()
 
             # Load sync and indexing filters (loaded in run_sync to ensure latest values)
             self.sync_filters, self.indexing_filters = await load_connector_filters(

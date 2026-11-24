@@ -575,6 +575,17 @@ class TestGoogleWorkspaceSyncOrder:
 
         assert order == ["drop", "users"]
 
+    async def test_the_removal_pass_survives_a_failing_filter_load(self, connector_cls: type) -> None:
+        order: list[str] = []
+        conn = self._conn(connector_cls, order)
+        module = sys.modules[connector_cls.__module__]
+        failing = AsyncMock(side_effect=RuntimeError("config down"))
+
+        with patch.object(module, "load_connector_filters", failing), pytest.raises(RuntimeError):
+            await getattr(connector_cls, _ENTRY[connector_cls])(conn)
+
+        assert order == ["drop"]
+
 
 _APP_NAME = {GoogleDriveTeamConnector: "DRIVE WORKSPACE", GoogleGmailTeamConnector: "GMAIL WORKSPACE"}
 
@@ -1211,6 +1222,17 @@ class TestJiraDataCenterSyncOrder:
 
         assert order[0] == "drop" and "own" in order and "register" not in order
 
+    async def test_the_removal_pass_runs_even_when_init_fails(self) -> None:
+        order: list[str] = []
+        conn = self._conn(order, active_users=[MagicMock()])
+        conn.data_source = None
+        conn.init = AsyncMock(return_value=False)
+
+        with pytest.raises(RuntimeError):
+            await self._run(conn)
+
+        assert order == ["drop"]
+
     async def test_an_empty_first_listing_is_not_complete(self) -> None:
         conn = self._conn([], active_users=[MagicMock()], complete=False)
 
@@ -1306,6 +1328,16 @@ class TestConfluenceCloudSyncOrder:
             await self._run(conn)
 
         assert order == ["drop", "audit", "users", "groups", "reconcile", "register"]
+
+    async def test_the_removal_pass_runs_even_without_a_client(self) -> None:
+        order: list[str] = []
+        conn = self._conn(order)
+        conn.external_client = None
+
+        with pytest.raises(Exception, match="not initialized"):
+            await self._run(conn)
+
+        assert order == ["drop"]
 
     @pytest.mark.parametrize("complete", [True, False])
     async def test_listing_complete_follows_the_user_search(self, complete: bool) -> None:
@@ -1597,6 +1629,16 @@ class TestSlackSyncOrder:
             "app.connectors.sources.slack.team.connector.load_connector_filters",
             AsyncMock(side_effect=RuntimeError("config down")),
         ), pytest.raises(RuntimeError):
+            await SlackConnector.run_sync(conn)
+
+        assert order == ["drop"]
+
+    async def test_the_removal_pass_runs_even_without_a_client(self) -> None:
+        order: list[str] = []
+        conn = self._conn(order)
+        conn.external_client = None
+
+        with pytest.raises(RuntimeError, match="init"):
             await SlackConnector.run_sync(conn)
 
         assert order == ["drop"]

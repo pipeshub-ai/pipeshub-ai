@@ -1051,6 +1051,11 @@ class JiraDataCenterConnector(BaseConnector):
         Run sync of Jira projects and issues - only new/updated tickets
         """
         try:
+            # Reset so a value left by an earlier run never counts as this run's listing. The removal
+            # pass needs no client, so a run whose init fails still removes a link it should not keep.
+            self._listed_user_emails = set()
+            await self.drop_authenticator_link_if_listed()
+
             if not self.data_source:
                 # ``init()`` returns False (rather than raising) on missing /
                 # invalid auth config. Without this check we would proceed
@@ -1064,9 +1069,6 @@ class JiraDataCenterConnector(BaseConnector):
                         "check auth configuration (authType / baseUrl / credentials)"
                     )
 
-            # Reset so a value left by an earlier run never counts as this run's listing.
-            self._listed_user_emails = set()
-            await self.drop_authenticator_link_if_listed()
             own_email, own_key = await self._read_own_account()
             await self._read_server_version()
 
