@@ -298,6 +298,7 @@ class ProjectsSync:
                     "record_group", c.connector_id, group_path, keep=True,
                 ):
                     # Unreadable for now is not gone: the stored group and its grants stay.
+                    await self._withdraw_withheld_creator([group_path])
                     continue
             if not group_res.success or not group_res.data:
                 creator_permission = c.creator_token_view_permission()
@@ -367,6 +368,25 @@ class ProjectsSync:
                 inherit_permissions=parent_path is not None,
             )
             await c.data_entities_processor.on_new_record_groups([(group_rg, group_permissions)])
+            if group_permissions is None:
+                await self._withdraw_withheld_creator([full_path])
+
+    async def _withdraw_withheld_creator(self, external_group_ids: list[str]) -> None:
+        """Take the token's view away from a creator the listing named, on groups whose grants are
+        kept as stored because their members could not be read. Only the creator's own grant there
+        goes; a member list read again gives them back their own. Non-fatal: the next sync tries again."""
+        c = self.c
+        email = c._withheld_creator_email
+        if not email or not external_group_ids:
+            return
+        try:
+            await c.data_entities_processor.remove_user_grant_from_record_groups(
+                c.connector_id, external_group_ids, email,
+            )
+        except Exception as e:
+            self.logger.warning(
+                "Could not take the creator's creator-only access away from %s: %s", external_group_ids, e,
+            )
 
     # ------------------------------------------------------------------
     # Project member sync
@@ -402,9 +422,9 @@ class ProjectsSync:
                 "Members of project %s (%s) unreadable or empty; keeping its stored access.",
                 project_id, project_name,
             )
-            await c.data_entities_processor.on_new_record_groups(
-                [(group, None) for group in self._build_project_record_groups(project)]
-            )
+            kept = self._build_project_record_groups(project)
+            await c.data_entities_processor.on_new_record_groups([(group, None) for group in kept])
+            await self._withdraw_withheld_creator([group.external_group_id for group in kept])
             return
         if listing_failed or listing_empty:
             creator_perm = c.creator_token_view_permission()

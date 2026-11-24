@@ -40,6 +40,7 @@ class UsersSync:
         self.logger = connector.logger
         self._read_cut = False
         self._member_rows = 0
+        self._unresolved_members = 0
 
     # ------------------------------------------------------------------
     # Entry point
@@ -56,7 +57,7 @@ class UsersSync:
         """
         c = self.c
         c._users_listing_complete, c._listed_user_emails = False, set()
-        c._creator_is_token_holder = False
+        self._unresolved_members = 0
         # Set by any member read that was skipped or failed: what was read is then partial.
         self._read_cut = False
         self._member_rows = 0
@@ -71,8 +72,9 @@ class UsersSync:
             await self._sync_users_scoped(group_paths, project_paths)
         else:
             await self._sync_users_unscoped()
-        # A directory with no member at all is a read that found nothing, not an empty directory.
-        c._users_listing_complete = not self._read_cut and self._member_rows > 0
+        # A directory with no member at all is a read that found nothing, not an empty directory. A member
+        # whose email GitLab did not show may be the creator under their own account: not a complete listing.
+        c._users_listing_complete = not self._read_cut and self._member_rows > 0 and not self._unresolved_members
 
     # ------------------------------------------------------------------
     # Scope resolution
@@ -428,8 +430,7 @@ class UsersSync:
             self._read_cut = True
             self.logger.error("Error in fetching projects: %s", projects_res.error)
 
-        creator_is_new = c._gitlab_user_id not in dict_member
-        creator_added = self._inject_creator_member_into(dict_member)
+        creator_added = self._build_creator_member_stub() is not None
         if groups_failed and projects_failed and not creator_added:
             raise RuntimeError(
                 "GitLab user sync aborted: both list_groups and list_projects "
@@ -475,7 +476,9 @@ class UsersSync:
                     self._read_cut = True
                     self.logger.error("Error in syncing users for project: %s", e, exc_info=True)
 
-        self._member_rows = len(dict_member) - (1 if creator_added and creator_is_new else 0)
+        # Counted before the creator is added: a row the source returned for the token's own account counts.
+        self._member_rows = len(dict_member)
+        self._inject_creator_member_into(dict_member)
         self.logger.info(
             "Total groups synced: %s, Total groups skipped: %s",
             total_groups_synced, total_groups_skipped,
@@ -654,11 +657,7 @@ class UsersSync:
                 )
 
         c._listed_user_emails = {u.email.strip().lower() for u in app_users if u.email}
-        creator = (c.creator_email or "").strip().lower()
-        token_account = str(c._gitlab_user_id) if c._gitlab_user_id is not None else None
-        c._creator_is_token_holder = bool(creator) and any(
-            u.source_user_id == token_account and u.email.strip().lower() == creator for u in app_users
-        )
+        self._unresolved_members = total_users_skipped
         if app_users:
             await c.data_entities_processor.on_new_app_users(app_users)
             total_users_synced += len(app_users)

@@ -59,6 +59,8 @@ class GLUser:
     username: str
     name: str
     public_email: str | None = None
+    # The account's own address: GitLab returns it only to the account itself (GET /user).
+    private_email: str | None = None
     is_admin: bool = False
     is_auditor: bool = False
     state: str = "active"
@@ -69,6 +71,8 @@ class GLUser:
             "state": self.state, "public_email": self.public_email or "",
             "web_url": f"{BASE_URL}/{self.username}",
         }
+        if with_roles and self.private_email:
+            out["email"] = self.private_email
         # GitLab omits the role flags for callers who do not hold them.
         if with_roles and self.is_admin:
             out["is_admin"] = True

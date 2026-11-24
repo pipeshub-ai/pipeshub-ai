@@ -289,10 +289,12 @@ class GitLabConnector(BaseConnector):
         # The member listing of this run: read in full and non-empty, and every listed member's email.
         self._users_listing_complete = False
         self._listed_user_emails: set[str] = set()
-        # Whether this run's listing bound the creator's email to the token's own GitLab account.
-        self._creator_is_token_holder = False
+        # The token account's own email as GitLab returns it to the token (lower-cased), this run.
+        self._token_account_email: str | None = None
         # Whether the creator gets the token's view this run (_decide_creator_token_view).
         self._creator_token_view = False
+        # The creator a listing named this run: the token's view is taken away from them where kept.
+        self._withheld_creator_email: str | None = None
         # GitLab ids of each project's members at Guest or above, from this run's member read.
         self._project_reader_ids: dict[int, set[int]] = {}
         self._is_admin: bool = False
@@ -419,6 +421,7 @@ class GitLabConnector(BaseConnector):
     async def _register_authenticated_identity(self) -> None:
         """Record which source account this connector is authenticated as, so a creator whose
         PipesHub email differs still resolves that account's permissions for this connector."""
+        self._token_account_email = None
         if not self.data_source:
             return
         email, source_user_id = None, None
@@ -432,6 +435,8 @@ class GitLabConnector(BaseConnector):
         except Exception as e:
             self.logger.debug("Could not read the authenticated GitLab account: %s", e)
             return
+        if isinstance(email, str) and email.strip():
+            self._token_account_email = email.strip().lower()
         await self.register_authenticated_source_user(
             email.strip() if isinstance(email, str) else None,
             str(source_user_id) if source_user_id is not None else None,
@@ -598,22 +603,27 @@ class GitLabConnector(BaseConnector):
         """Decide from this run's member listing whether the creator gets the token's view: OWNER
         on every group, and on what GitLab gives no member list for.
 
-        A creator the listing names under their own GitLab account sees what they can through
-        their own membership, not the token's. A complete listing decides it and the decision is
-        stored; when the listing was not read in full that is unknown, so the stored decision
-        stands and nobody is newly granted. A creator the listing binds to the token's own
-        account keeps the view either way.
+        The creator whose email GitLab returns for the token's own account holds the token, so
+        the token's view is theirs. Anyone else follows decide_authenticator_grant: a listing that
+        names them (they see what they can through their own membership) withholds it, a complete
+        listing that does not grants it, and an incomplete one keeps the stored decision. A creator
+        email the user sync put on the token account itself is not proof of either.
         """
         creator = (self.creator_email or "").strip().lower()
+        self._withheld_creator_email = None
         if not creator:
             self._creator_token_view = False
-        elif self._users_listing_complete:
-            self._creator_token_view = self._creator_is_token_holder or creator not in self._listed_user_emails
-            await self.remember_authenticator_grant(creator, granted=self._creator_token_view)
-        elif self._creator_is_token_holder:
+        elif self._token_account_email == creator:
             self._creator_token_view = True
+            if self._users_listing_complete:
+                await self.remember_authenticator_grant(creator, granted=True)
         else:
-            self._creator_token_view = await self.authenticator_grant_kept(creator)
+            listed = creator in self._listed_user_emails
+            if listed:
+                self._withheld_creator_email = creator
+            self._creator_token_view = await self.decide_authenticator_grant(
+                creator, listing_complete=self._users_listing_complete, listed=listed,
+            )
 
     def creator_token_view_permission(self) -> Permission | None:
         """The creator's OWNER permission where they get the token's view, else None."""
