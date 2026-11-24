@@ -98,9 +98,10 @@ def make_mock_connector() -> MagicMock:
 
     # creator_user_permission
     c.creator_user_permission = MagicMock(return_value=None)
-    c.creator_group_permission = MagicMock(return_value=None)
+    c.creator_token_view_permission = MagicMock(return_value=None)
+    c._decide_creator_token_view = AsyncMock()
     c._creator_is_token_holder = False
-    c._creator_group_grant = False
+    c._creator_token_view = False
 
     return c
 

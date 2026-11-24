@@ -291,8 +291,8 @@ class GitLabConnector(BaseConnector):
         self._listed_user_emails: set[str] = set()
         # Whether this run's listing bound the creator's email to the token's own GitLab account.
         self._creator_is_token_holder = False
-        # Whether the creator holds OWNER on every group; kept from the last complete listing.
-        self._creator_group_grant = False
+        # Whether the creator gets the token's view this run (_decide_creator_token_view).
+        self._creator_token_view = False
         # GitLab ids of each project's members at Guest or above, from this run's member read.
         self._project_reader_ids: dict[int, set[int]] = {}
         self._is_admin: bool = False
@@ -455,7 +455,7 @@ class GitLabConnector(BaseConnector):
             self.logger.info("Starting sync of GitLab users")
             await self.users.sync_users()
             await self._register_authenticated_identity()
-            self._decide_creator_group_grant()
+            await self._decide_creator_token_view()
             self.logger.info("Starting sync of GitLab projects")
             await self.projects.sync_all_projects()
             self.repos.schedule_timestamp_backfill()
@@ -594,22 +594,30 @@ class GitLabConnector(BaseConnector):
             type=PermissionType.OWNER,
         )
 
-    def _decide_creator_group_grant(self) -> None:
-        """Decide from this run's member listing whether the creator gets OWNER on every group.
+    async def _decide_creator_token_view(self) -> None:
+        """Decide from this run's member listing whether the creator gets the token's view: OWNER
+        on every group, and on what GitLab gives no member list for.
 
-        A creator the listing names under their own GitLab account sees their groups through
-        their own membership, not the token's. When the listing was not read in full that is
-        unknown, so the last decision stands and nobody is newly granted.
+        A creator the listing names under their own GitLab account sees what they can through
+        their own membership, not the token's. A complete listing decides it and the decision is
+        stored; when the listing was not read in full that is unknown, so the stored decision
+        stands and nobody is newly granted. A creator the listing binds to the token's own
+        account keeps the view either way.
         """
-        if self._creator_is_token_holder:
-            self._creator_group_grant = True
+        creator = (self.creator_email or "").strip().lower()
+        if not creator:
+            self._creator_token_view = False
         elif self._users_listing_complete:
-            creator = (self.creator_email or "").strip().lower()
-            self._creator_group_grant = bool(creator) and creator not in self._listed_user_emails
+            self._creator_token_view = self._creator_is_token_holder or creator not in self._listed_user_emails
+            await self.remember_authenticator_grant(creator, granted=self._creator_token_view)
+        elif self._creator_is_token_holder:
+            self._creator_token_view = True
+        else:
+            self._creator_token_view = await self.authenticator_grant_kept(creator)
 
-    def creator_group_permission(self) -> Permission | None:
-        """The creator's OWNER permission for a group record group, when they are to hold one."""
-        return self.creator_user_permission() if self._creator_group_grant else None
+    def creator_token_view_permission(self) -> Permission | None:
+        """The creator's OWNER permission where they get the token's view, else None."""
+        return self.creator_user_permission() if self._creator_token_view else None
 
     # ------------------------------------------------------------------
     # Factory method

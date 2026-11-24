@@ -469,7 +469,7 @@ class TestEnsureGitlabGroupRecordGroups:
 
         from app.models.permission import Permission, EntityType, PermissionType
         creator_perm = Permission(email="creator@example.com", type=PermissionType.OWNER.value, entity_type=EntityType.USER)
-        c.creator_user_permission = MagicMock(return_value=creator_perm)
+        c.creator_token_view_permission = MagicMock(return_value=creator_perm)
 
         projects_sync = ProjectsSync(c)
         await projects_sync._ensure_gitlab_group_record_groups(["eng"])

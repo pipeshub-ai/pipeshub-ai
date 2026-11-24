@@ -300,10 +300,11 @@ class ProjectsSync:
                     # Unreadable for now is not gone: the stored group and its grants stay.
                     continue
             if not group_res.success or not group_res.data:
-                creator_permission = c.creator_user_permission()
+                creator_permission = c.creator_token_view_permission()
                 if creator_permission is None:
                     self.logger.error(
-                        "GitLab group %s not found/inaccessible (%s) and no creator identity; "
+                        "GitLab group %s not found/inaccessible (%s) and no creator to grant it to "
+                        "(no creator identity, or a creator with their own GitLab account); "
                         "child projects will be orphaned in the browse view.",
                         group_path, group_res.error,
                     )
@@ -347,7 +348,7 @@ class ProjectsSync:
                     if permission:
                         group_permissions.append(permission)
 
-                creator_permission = c.creator_group_permission()
+                creator_permission = c.creator_token_view_permission()
                 if creator_permission is not None and not any(
                     getattr(p, "email", None) == creator_permission.email for p in group_permissions
                 ):
@@ -406,7 +407,7 @@ class ProjectsSync:
             )
             return
         if listing_failed or listing_empty:
-            creator_perm = c.creator_user_permission()
+            creator_perm = c.creator_token_view_permission()
             if creator_perm is None:
                 if listing_failed:
                     self.logger.error(
@@ -581,11 +582,12 @@ class ProjectsSync:
         Called when ``list_project_members_all`` fails or returns empty.
         """
         c = self.c
-        creator_permission = c.creator_user_permission()
+        creator_permission = c.creator_token_view_permission()
         if creator_permission is None:
             self.logger.error(
-                "Cannot fall back to creator-only permissions for project %s (%s): "
-                "no creator identity. Downstream records on this project will not be ingested.",
+                "Cannot fall back to creator-only permissions for project %s (%s): no creator to "
+                "grant it to (no creator identity, or a creator with their own GitLab account). "
+                "Downstream records on this project will not be ingested.",
                 project.id, project.path_with_namespace,
             )
             return
