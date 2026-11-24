@@ -5713,6 +5713,8 @@
     "mcpServerNodeSubtitle": "किसी MCP सर्वर के टूल",
     "webSearchLocked": "इस एजेंट के लिए वेब खोज नहीं बदली जा सकती",
     "webSearchLoading": "वेब खोज प्रदाता लोड हो रहे हैं…",
+    "webSearchNotSetUp": "वेब खोज अभी सेट अप नहीं है। अपने एडमिन से Workspace → Web search में कोई प्रदाता चुनने के लिए कहें।",
+    "webSearchLoadFailed": "वेब खोज प्रदाता लोड नहीं हो सके।",
     "webSearchConfigureFirst": "पहले {{name}} कॉन्फ़िगर करें",
     "webSearch": "वेब खोज",
     "toolsetOAuthServerError": "प्रमाणीकरण विफल रहा। कृपया पुनः प्रयास करें या अपने व्यवस्थापक से संपर्क करें।",

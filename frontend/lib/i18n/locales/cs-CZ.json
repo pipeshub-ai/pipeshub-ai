@@ -5951,6 +5951,8 @@
     "mcpServerNodeSubtitle": "Nástroje z MCP serveru",
     "webSearchLocked": "Vyhledávání na webu nelze pro tohoto agenta měnit",
     "webSearchLoading": "Načítání poskytovatelů vyhledávání na webu…",
+    "webSearchNotSetUp": "Vyhledávání na webu zatím není nastaveno. Požádejte správce, aby vybral poskytovatele v Workspace → Vyhledávání na webu.",
+    "webSearchLoadFailed": "Poskytovatele vyhledávání na webu se nepodařilo načíst.",
     "webSearchConfigureFirst": "Nejprve nastavte {{name}}",
     "webSearch": "Vyhledávání na webu",
     "toolsetOAuthServerError": "Ověření se nezdařilo. Zkuste to prosím znovu nebo kontaktujte svého správce.",

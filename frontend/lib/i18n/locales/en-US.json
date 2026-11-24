@@ -5803,6 +5803,8 @@
     "mcpServerNodeSubtitle": "Tools from an MCP server",
     "webSearchLocked": "Web search cannot be changed for this agent",
     "webSearchLoading": "Loading web search providers…",
+    "webSearchNotSetUp": "Web search isn’t set up yet. Ask your admin to choose a provider under Workspace → Web search.",
+    "webSearchLoadFailed": "Couldn’t load web search providers.",
     "webSearchConfigureFirst": "Configure {{name}} first",
     "webSearch": "Web search",
     "toolsetOAuthServerError": "Authentication failed. Please try again or contact your administrator.",
