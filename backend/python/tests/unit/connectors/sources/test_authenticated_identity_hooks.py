@@ -2105,6 +2105,21 @@ class TestGitHubTeamsListing:
         assert users.listing_complete is True
         assert users.listed_emails() == {"a@corp.com", "b@corp.com"}
 
+    async def test_a_member_whose_email_stays_unresolved_makes_the_listing_incomplete(self) -> None:
+        users = self._users({"o1": self._ok(self._member(1, "a@corp.com"), self._member(2))})
+
+        await users.sync_users()
+
+        assert users.listing_complete is False
+        assert users.listed_emails() == {"a@corp.com"}
+
+    async def test_an_outside_collaborator_whose_email_stays_unresolved_makes_the_listing_incomplete(self) -> None:
+        users = self._users({"o1": self._ok(self._member(1, "a@corp.com"))}, outside=self._ok(self._member(3)))
+
+        await users.sync_users()
+
+        assert users.listing_complete is False
+
     async def test_one_failed_org_is_an_incomplete_listing(self) -> None:
         users = self._users({
             "o1": self._ok(self._member(1, "a@corp.com")),
@@ -2236,9 +2251,33 @@ class TestGitHubTeamsListingReads:
 
         assert users._listing_read_to_the_end is False
 
-    async def test_a_failure_on_the_first_verified_domain_chunk_stays_complete(self) -> None:
+    @pytest.mark.parametrize("failure", [
+        SimpleNamespace(success=False, error="502", status_code=502, exception_type="GitHubHTTPError"),
+        SimpleNamespace(success=False, error="rate limited", status_code=429, is_rate_limited=True),
+        SimpleNamespace(success=False, error="reset", status_code=None, exception_type="ConnectError"),
+        SimpleNamespace(success=False, error="timed out", status_code=None, exception_type="TimeoutError"),
+    ])
+    async def test_a_transient_failure_on_the_first_verified_domain_chunk_is_incomplete(
+        self, failure: SimpleNamespace,
+    ) -> None:
         async def ds_call(fn: object, *args: object) -> object:
-            return SimpleNamespace(success=False, error="403 not an owner")
+            return failure
+
+        users = self._users(ds_call)
+        members = self._members(250)
+        users._member_ids = set(members)
+
+        await users._resolve_via_verified_domains(members, set(members), ["org1"])
+
+        assert users._listing_read_to_the_end is False
+
+    @pytest.mark.parametrize("refusal", [
+        SimpleNamespace(success=False, error="403 not an owner"),
+        SimpleNamespace(success=False, error="forbidden", status_code=403, exception_type="GitHubHTTPError"),
+    ])
+    async def test_a_refusal_on_the_first_verified_domain_chunk_stays_complete(self, refusal: SimpleNamespace) -> None:
+        async def ds_call(fn: object, *args: object) -> object:
+            return refusal
 
         users = self._users(ds_call)
         members = self._members(250)

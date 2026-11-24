@@ -35,6 +35,8 @@ from app.models.entities import AppUser
 from .constants import (
     _GITHUB_PROFILE_REUSE_SECONDS,
     _GITHUB_USER_ENRICHMENT_CONCURRENCY,
+    HTTP_SERVER_ERROR,
+    HTTP_TOO_MANY_REQUESTS,
     NOREPLY_EMAIL_SUFFIX,
     VERIFIED_DOMAIN_EMAIL_BATCH,
 )
@@ -67,6 +69,17 @@ _recent_profiles: dict[tuple[str, int], tuple[float, object]] = {}
 # cache wait for one fetch instead of each making their own. All syncs of a
 # process run on its one event loop.
 _profile_fetch_locks: dict[tuple[str, int], asyncio.Lock] = {}
+
+
+def _is_transient_failure(res: object) -> bool:
+    """A failed call GitHub may answer next time: a rate limit, a 5xx, or no answer at all (a dropped
+    connection, a timeout). A GraphQL error payload or a 4xx is GitHub's answer."""
+    if getattr(res, "is_rate_limited", None) is True:
+        return True
+    status = getattr(res, "status_code", None)
+    if status is not None:
+        return status == HTTP_TOO_MANY_REQUESTS or status >= HTTP_SERVER_ERROR
+    return getattr(res, "exception_type", None) is not None
 
 
 def _recent_profile(org_id: str, user_id: int) -> object | None:
@@ -215,7 +228,9 @@ class UsersSync:
         await self._persist_app_users(dict_member, resolved_email)
         self._resolved_emails = dict(resolved_email)
         self._listed_user_emails = {email.strip().lower() for email in resolved_email.values()}
-        self._users_listing_complete = self._listing_read_to_the_end
+        # A principal whose email stays unknown may be the authenticator, and GitHub has no lookup
+        # by a private email to settle it, so such a listing can only remove a link.
+        self._users_listing_complete = self._listing_read_to_the_end and not unresolved_ids
         member_ids = getattr(self, "_member_ids", set())
         self._org_member_emails = {
             email for uid, email in resolved_email.items() if uid in member_ids
@@ -455,10 +470,11 @@ class UsersSync:
                 query = self._verified_domain_query(org, [login for _, login in chunk])
                 res = await c.runtime.ds_call(c.data_source.graphql_query, query)
                 if not res.success:
-                    # A first-chunk failure is how a token that is not an org owner always
+                    # A first-chunk refusal is how a token that is not an org owner always
                     # answers, and must not stop it linking; a failure after a chunk was
-                    # read is an outage that left members unresolved.
-                    if earlier_chunk_read:
+                    # read, or one GitHub may not repeat, is an outage that left members
+                    # unresolved.
+                    if earlier_chunk_read or _is_transient_failure(res):
                         self._listing_read_to_the_end = False
                     self.logger.info(
                         "Verified-domain email lookup unavailable for org %s: %s. "
