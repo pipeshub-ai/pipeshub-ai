@@ -1084,6 +1084,22 @@ class TestTeamDriveItemSharedWith:
         assert again.record.shared_with is None
         assert again.record.last_modified_by is not None and again.record.last_modified_by.email == "ext@other.test"
 
+    async def test_a_later_sync_whose_read_hides_an_address_keeps_the_stored_shares(self, connector) -> None:
+        """A new sync knows no address yet: the share stays on the person stored by email."""
+        connector.drive_data_source.permissions_list, _ = self._lists({
+            "file-1": [_user_grant("p-alice", "alice@example.com", "owner"),
+                       {"id": "p-ext", "type": "user", "role": "writer"}],
+            "folder-1": [_user_grant("p-alice", "alice@example.com", "owner")],
+        })
+        connector._grant_emails_this_run = {}
+        connector._shares_linked_this_run = {}
+
+        result = await connector._process_drive_item(
+            metadata=self._my_drive_file(), user_id="u1", user_email="alice@example.com", drive_id="drive-1"
+        )
+
+        assert result.record.shared_with is None
+
     async def test_in_a_limited_folder_every_grant_on_the_item_is_its_own(self, connector) -> None:
         bob = _user_grant("p-bob", "bob@example.com", "reader")
         connector.drive_data_source.permissions_list, calls = self._lists({

@@ -96,6 +96,10 @@ def drive_shared_with(
     Drive does not, so a grant counts as direct when the parent folder gives
     that person no role as high: ``parent_grants`` is ``[]`` for an item with
     no parent, and ``None`` when the parent's sharing could not be read.
+
+    Also None when Drive hid the address of anyone the item was shared with:
+    linked by permission id alone, the share would leave the person stored by
+    email, and a reader who sees every address answers instead.
     """
     if not has_details and parent_grants is None:
         return None
@@ -117,6 +121,8 @@ def drive_shared_with(
             if held >= ROLE_RANK.get(g.get("role", ""), 0):
                 continue
         email = g.get("emailAddress") or None
+        if email is None:
+            return None
         shared.append(SourcePerson(
             source_id=g.get("id") or None, email=email,
             display_name=g.get("displayName") or None,

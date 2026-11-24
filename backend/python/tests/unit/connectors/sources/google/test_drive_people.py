@@ -210,3 +210,23 @@ def test_a_service_account_sharee_is_marked_and_not_identifiable() -> None:
     )
 
     assert shared is not None and shared[0].is_service_account and not shared[0].identifiable
+
+
+def test_a_direct_grant_whose_address_is_hidden_leaves_the_shares_unknown() -> None:
+    """Linked by permission id alone, the share would leave the person stored by email."""
+    hidden = _grant("p-ext", None, "writer")
+
+    assert drive_shared_with(
+        [_grant("1", "bob@x.test", "reader"), hidden], owner_ids=set(), parent_grants=[], has_details=False,
+    ) is None
+
+
+def test_a_hidden_address_on_a_grant_that_is_not_direct_changes_nothing() -> None:
+    hidden = _grant("p-ext", None, "reader")
+
+    shared = drive_shared_with(
+        [_grant("1", "bob@x.test", "writer"), hidden], owner_ids=set(),
+        parent_grants=[_grant("p-ext", None, "writer")], has_details=False,
+    )
+
+    assert [p.email for p in shared or []] == ["bob@x.test"]
