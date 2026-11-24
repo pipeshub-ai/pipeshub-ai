@@ -65930,7 +65930,8 @@ paths:
         The organization's servers that people signed in to with their own credentials, most used
         first, with how many people. Counts only, never who. A server people reach through one
         shared credential, or with no sign-in, keeps no per-person record and is not listed;
-        agents' own credentials are not counted. Personal servers are never listed.
+        agents' own credentials are not counted. Personal servers are never listed, nor an
+        organization server the caller can't see in their own server list.
       operationId: listPopularMcpServers
       security:
         - bearerAuth: []

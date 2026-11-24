@@ -613,8 +613,11 @@ async def list_popular_servers(request: Request, limit: int = Query(default=6, g
     Servers people reach through one shared credential, or with no sign-in, keep no per-person
     record, so they aren't ranked here.
     """
-    _get_user_context(request)
-    rows = await mcp_service.popular_org_servers(_get_config_service(request), current_org_id())
+    user_context = _get_user_context(request)
+    config_service = _get_config_service(request)
+    # Only the servers this person can see: an edition may keep an admin server from some members.
+    visible = await resolve_mcp_instances_with_inheritance(config_service, current_org_id(), user_context["user_id"])
+    rows = await mcp_service.popular_org_servers(config_service, visible)
     return {"servers": rows[:limit]}
 
 
