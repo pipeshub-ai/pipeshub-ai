@@ -90,6 +90,7 @@ PIPESHUB_COMPOSE_OVERRIDES="${PIPESHUB_COMPOSE_OVERRIDES:-$(_saved_env_val PIPES
 # a name .env does not hold, so sourcing .env later cannot put the old value back.
 # SAVED_EXTRA_PROFILES is the value as this run found it, read before anything rewrites .env.
 SAVED_EXTRA_PROFILES="$(_saved_env_val PIPESHUB_EXTRA_PROFILES)"
+SAVED_EXTRA_PROFILES="${SAVED_EXTRA_PROFILES//[[:space:]]/}"
 EXTRA_PROFILES="${PIPESHUB_EXTRA_PROFILES-$SAVED_EXTRA_PROFILES}"
 EXTRA_PROFILES="${EXTRA_PROFILES//[[:space:]]/}"
 # The value goes into .env, which this script sources: profile names and nothing else.
@@ -294,6 +295,25 @@ optional_env_line() {
   else
     printf '# %s=%s' "$key" "$hint"
   fi
+}
+
+# A value the operator typed into .env, written so that this script can source it and Compose reads the same
+# value: as it is when it is plain, otherwise in single quotes, where neither expands anything. Fails, printing
+# nothing, for a value that cannot be written that way: one with a quote, a $ or a backtick inside, a
+# backslash between double quotes, or a trailing comment.
+sourceable_env_value() {
+  local v="$1"
+  if [[ ${#v} -ge 2 && "$v" == \'*\' ]]; then
+    v="${v:1:${#v}-2}"
+  elif [[ ${#v} -ge 2 && "$v" == \"*\" ]]; then
+    v="${v:1:${#v}-2}"
+    [[ "$v" != *\\* ]] || return 1
+  else
+    [[ "$v" != *" #"* ]] || return 1
+    v="${v%"${v##*[![:space:]]}"}"
+  fi
+  [[ "$v" != *[\'\"\$\`]* ]] || return 1
+  if [[ "$v" =~ ^[A-Za-z0-9_.:/@%+=,-]*$ ]]; then printf '%s' "$v"; else printf "'%s'" "$v"; fi
 }
 
 # The opt-in PostgreSQL profiles are not derived from a selector: keep the ones already set (in the shell or in the saved .env), and
@@ -1575,10 +1595,18 @@ ENVFILE
     printf 'PIPESHUB_EXTRA_PROFILES=%s\n' "$EXTRA_PROFILES" >> "$ENV_FILE"
   fi
   # The web readers' credentials as they were saved, unless PIPESHUB_ENV_EXTRA sets them for this .env.
+  # This script sources .env, and these two are typed by hand: a value with a space or a $ written back as it
+  # was would run as a command there. So each goes in as sourceable_env_value gives it, or is left out with a warning.
   for _kept in "SEARXNG_SECRET=${_saved_searxng_secret}" "CRAWL4AI_API_TOKEN=${_saved_crawl4ai_token}"; do
+    _kept_key="${_kept%%=*}"
     [[ -n "${_kept#*=}" ]] || continue
-    if [[ -n "${PIPESHUB_ENV_EXTRA:-}" && -f "$PIPESHUB_ENV_EXTRA" ]] && grep -qE "^${_kept%%=*}=" "$PIPESHUB_ENV_EXTRA"; then continue; fi
-    printf '%s\n' "$_kept" >> "$ENV_FILE"
+    if [[ -n "${PIPESHUB_ENV_EXTRA:-}" && -f "$PIPESHUB_ENV_EXTRA" ]] && grep -qE "^${_kept_key}=" "$PIPESHUB_ENV_EXTRA"; then continue; fi
+    if _kept_val="$(sourceable_env_value "${_kept#*=}")"; then
+      [[ -z "$_kept_val" ]] || printf '%s=%s\n' "$_kept_key" "$_kept_val" >> "$ENV_FILE"
+    else
+      warn "${_kept_key} was not carried over: its value has a quote, a \$, a backtick or a comment in it, which .env cannot hold safely here."
+      warn "  It is in $(basename "${_backup:-the .env backup}"). Use a value without those, and add it to .env by hand."
+    fi
   done
   if [[ -n "${PIPESHUB_ENV_EXTRA:-}" ]]; then
     [[ -f "$PIPESHUB_ENV_EXTRA" ]] || die "PIPESHUB_ENV_EXTRA: $PIPESHUB_ENV_EXTRA not found"

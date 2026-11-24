@@ -1076,6 +1076,33 @@ check_exact "the document-store override keeps both whatever the setting says" "
   [[ "$(grep -c '^SEARXNG_SECRET=' "$work/.env")" == "1" ]] && pass "and it is written once" || fail "and it is written once"
   check_exact "the other credential is still carried over" "$(saved CRAWL4AI_API_TOKEN)" "t0ken=with=equals"
 
+  # The installer sources .env. A value with a space written back as typed would run its second word as a command
+  # there, on this run and on every --stop and --upgrade after it. It is written in single quotes instead.
+  sourced() { ( set -a; . "$work/.env" >/dev/null 2>&1; eval "printf '%s' \"\${$1-}\"" ); }
+  set_line() { grep -v "^$1=" "$work/.env" >"$work/.env.tmp"; printf '%s=%s\n' "$1" "$2" >>"$work/.env.tmp"; mv "$work/.env.tmp" "$work/.env"; }
+  set_line CRAWL4AI_API_TOKEN 'hello world'
+  set_line SEARXNG_SECRET '"two words; and more"'
+  (cd "$work" && bash ./install.sh --reconfigure --yes --print-env-only >/dev/null 2>&1) && pass "--reconfigure with a credential that has a space exits 0" || fail "--reconfigure with a credential that has a space exits 0"
+  check_exact "a value with a space is saved in single quotes" "$(saved CRAWL4AI_API_TOKEN)" "'hello world'"
+  check_exact "and is read back as it was typed" "$(sourced CRAWL4AI_API_TOKEN)" "hello world"
+  check_exact "a double-quoted value is read back the same" "$(sourced SEARXNG_SECRET)" "two words; and more"
+  (cd "$work" && bash ./install.sh --upgrade --print-env-only >/dev/null 2>&1) && pass "the next --upgrade still runs" || fail "the next --upgrade still runs"
+  (cd "$work" && bash ./install.sh --reconfigure --yes --print-env-only >/dev/null 2>&1)
+  check_exact "a second --reconfigure keeps the value as it was saved" "$(saved CRAWL4AI_API_TOKEN)" "'hello world'"
+  # A docker that only records: --stop must never reach a real one from a test.
+  printf '#!/usr/bin/env bash\necho "docker $*" >>"$DOCKER_LOG"\nexit 0\n' >"$work/bin/docker"; chmod +x "$work/bin/docker"
+  : >"$work/docker.log"
+  (cd "$work" && PATH="$work/bin:$PATH" DOCKER_LOG="$work/docker.log" bash ./install.sh --stop >/dev/null 2>&1) && pass "--stop still runs with such a value in .env" || fail "--stop still runs with such a value in .env"
+  check "and takes the stack down" "$(cat "$work/docker.log")" " down --remove-orphans"
+
+  # A value that cannot be written safely (a command substitution here) is left out and named, and never run.
+  set_line CRAWL4AI_API_TOKEN 'a$(touch pwned-by-token)b'
+  out="$(cd "$work" && bash ./install.sh --reconfigure --yes --print-env-only 2>&1)" && pass "--reconfigure with a credential that holds a \$ exits 0" || fail "--reconfigure with a credential that holds a \$ exits 0"
+  check "the credential that was left out is named" "$out" "CRAWL4AI_API_TOKEN was not carried over"
+  check_exact "it is not written back" "$(saved CRAWL4AI_API_TOKEN)" ""
+  [[ ! -e "$work/pwned-by-token" ]] && pass "and nothing in it is run" || fail "and nothing in it is run"
+  check_exact "the other credential is unaffected" "$(sourced SEARXNG_SECRET)" "two words; and more"
+
   # --stop and --uninstall name the extra profiles, or `down` leaves their containers (checked with a recording docker).
   cat >"$work/bin/docker" <<'STUB'
 #!/usr/bin/env bash
@@ -1105,7 +1132,8 @@ STUB
     mkdir -p "$work/sudobin"
     cat >"$work/sudobin/docker" <<STUB
 #!/usr/bin/env bash
-[[ "\${1:-}" == info && -z "\${SUDO_USER:-}" ]] && exit 1
+# `info` is answered here, so the re-run happens once whoever runs the tests: refused before sudo, fine after it.
+if [[ "\${1:-}" == info ]]; then [[ -n "\${SUDO_USER:-}" ]]; exit; fi
 exec "$real_docker" "\$@"
 STUB
     cat >"$work/sudobin/sudo" <<STUB
