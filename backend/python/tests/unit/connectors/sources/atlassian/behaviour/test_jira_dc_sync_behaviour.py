@@ -1145,7 +1145,7 @@ class TestUserDirectoryFallbacks:
     @pytest.mark.parametrize(
         ("payload", "expected_keys", "expected_cursor"),
         [
-            ([{"key": "a"}, "junk"], ["a"], None),
+            ([{"key": "a"}], ["a"], None),
             ({"users": [{"key": "a"}], "nextCursor": "c1"}, ["a"], "c1"),
             ({"values": [{"key": "a"}], "nextPage": f"{BASE}{API}/user/list?cursor=c2"}, ["a"], "c2"),
             ({"values": [], "nextPage": "c3"}, [], "c3"),
@@ -1954,7 +1954,11 @@ class TestUnfinishedUserRead:
             db.record_group_permissions["10000"]
         ), "a project it never saved is saved with the grants that were read"
 
-    @pytest.mark.parametrize("payload", ["not json", 5, {"other": 1}, {"values": "x"}, {"users": None}])
+    @pytest.mark.parametrize("payload", [
+        "not json", 5, {"other": 1}, {"values": "x"}, {"users": None},
+        # A row that is not a user may be anyone, the authenticator too: the page is not read as one.
+        [{"key": "a"}, "junk"], {"values": [{"key": "a"}, None], "isLast": True},
+    ])
     def test_a_user_list_answer_that_is_not_a_page_is_not_read_as_the_last_page(self, payload) -> None:
         assert _parse_jira_dc_user_list_page(payload) is None
 

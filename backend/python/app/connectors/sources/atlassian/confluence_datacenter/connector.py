@@ -658,6 +658,8 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
             self._users_listing_complete = False
             self._listed_user_emails = set()
             listed_any = False
+            # A listed user without an email may be the authenticator: the listing can then only remove a link.
+            unresolved_rows = False
 
             # Paginate through all users
             while True:
@@ -692,7 +694,7 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                 # more after it, and an empty page that points further is a failed read.
                 has_next = bool((response_data.get("_links") or {}).get("next"))
                 if not users_data:
-                    self._users_listing_complete = listed_any and not has_next
+                    self._users_listing_complete = listed_any and not has_next and not unresolved_rows
                     break
                 listed_any = True
 
@@ -711,6 +713,7 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                     if not email:
                         self.logger.warning(f"Skipping user creation with name : {user_data.get('displayName')}, Reason: No email found for the user")
                         total_skipped += 1
+                        unresolved_rows = True
                         continue
                     self._listed_user_emails.add(email.lower())
 
@@ -746,7 +749,7 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
 
                 # Check if we've reached the end
                 if len(users_data) < batch_size and not has_next:
-                    self._users_listing_complete = True
+                    self._users_listing_complete = not unresolved_rows
                     break
 
             self.logger.info(f"✅ User sync complete. Synced: {total_synced}, Skipped (no email): {total_skipped}")

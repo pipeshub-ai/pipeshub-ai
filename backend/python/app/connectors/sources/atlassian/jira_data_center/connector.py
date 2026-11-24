@@ -315,20 +315,21 @@ def _is_unanswered_user_lookup(status: int, *, bulk_forbidden: bool) -> bool:
 def _parse_jira_dc_user_list_page(payload: Any) -> tuple[list[dict[str, Any]], str | None] | None:
     """Parse ``GET /rest/api/2/user/list`` JSON into ``(users, next_cursor)``.
 
-    Returns None when the payload is not a page of users (a scalar, or an object with no
-    list of ``values`` or ``users``): that says nothing about whether more pages follow.
+    Returns None when the payload is not a page of users (a scalar, an object with no list of
+    ``values`` or ``users``, or a list holding a row that is not a user): that says nothing about
+    whether more pages follow, and the row may be anyone.
     """
     if isinstance(payload, list):
-        return [u for u in payload if isinstance(u, dict)], None
+        return (payload, None) if all(isinstance(u, dict) for u in payload) else None
     if not isinstance(payload, dict):
         return None
 
     raw_users = payload.get("values")
     if raw_users is None:
         raw_users = payload.get("users")
-    if not isinstance(raw_users, list):
+    if not isinstance(raw_users, list) or not all(isinstance(u, dict) for u in raw_users):
         return None
-    users = [u for u in raw_users if isinstance(u, dict)]
+    users = raw_users
 
     next_cursor = payload.get("nextCursor")
     if not next_cursor and isinstance(payload.get("nextPage"), str):

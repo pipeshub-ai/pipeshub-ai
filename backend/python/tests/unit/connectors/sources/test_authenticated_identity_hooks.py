@@ -2012,6 +2012,17 @@ class TestConfluenceDataCenterUserListing:
 
         assert conn._users_listing_complete is False
 
+    @pytest.mark.parametrize("pages", [
+        [(200, {"results": [{"userKey": "u0", "email": "u0@corp.com"}, {"userKey": "u1", "email": ""}]})],
+        [(200, {"results": [{"userKey": "u1"}], "_links": {"next": "/x"}}), (200, {"results": []})],
+    ])
+    async def test_a_listed_row_without_an_email_leaves_the_listing_incomplete(self, pages: list) -> None:
+        conn = self._conn(pages)
+
+        await ConfluenceDataCenterConnector._sync_users(conn)
+
+        assert conn._users_listing_complete is False
+
     async def test_a_row_that_raises_is_never_a_complete_listing(self) -> None:
         conn = self._conn([(200, self._users(3))])
         conn._transform_to_app_user = MagicMock(side_effect=ValueError("bad row"))
