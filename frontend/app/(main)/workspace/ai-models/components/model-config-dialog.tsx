@@ -50,7 +50,7 @@ const PER_MODEL_FIELD_NAMES = new Set([
 const NO_HIDDEN_FIELDS: ReadonlySet<string> = new Set();
 
 /** Besides required fields, these change which models the provider lists. */
-const DISCOVERY_SCOPE_FIELDS = ['endpoint', 'region', 'awsAccessKeyId'];
+const DISCOVERY_SCOPE_FIELDS = ['endpoint', 'region', 'awsAccessKeyId', 'awsAccessSecretKey'];
 
 const DISCOVERY_DEBOUNCE_MS = 500;
 
@@ -909,8 +909,12 @@ export function ModelConfigDialog({
 
   const discoveryMode = provider?.discovery?.mode ?? 'manual';
   const canListModels = discoveryMode !== 'manual';
-  const requiredFields = provider?.discovery?.requiredFields ?? [];
-  const credentialKey = [...requiredFields, ...DISCOVERY_SCOPE_FIELDS]
+  const listingFields = provider?.discovery?.requiredFields ?? [];
+  // An endpoint answers with the key when it has one, but discovery does not require the
+  // key because only some capabilities do. Wait for it where this form requires it.
+  const apiKeyField = listingFields.includes('endpoint') ? fields.find((f) => f.name === 'apiKey') : undefined;
+  const requiredFields = apiKeyField?.required ? [...listingFields, 'apiKey'] : listingFields;
+  const credentialKey = [...requiredFields, ...DISCOVERY_SCOPE_FIELDS, ...(apiKeyField ? ['apiKey'] : [])]
     .map((name) => String(values[name] ?? ''))
     .join('\u0000');
   const seenCredential = useRef<string | null>(null);
