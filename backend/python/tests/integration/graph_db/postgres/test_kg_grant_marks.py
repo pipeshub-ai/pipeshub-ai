@@ -165,8 +165,13 @@ async def test_an_older_copy_is_filled_in_place_and_served_again(pg_provider, pg
         assert await pg_db.run(epoch) == CODE_EPOCH
 
 
+def _shown(page: dict[str, Any]) -> tuple:
+    """What a page shows: each row's id and arrow, and its counts."""
+    return (sorted((r["id"], r["hasChildren"]) for r in page["rows"]), page.get("total"), page.get("totalCapped"), page.get("nRecord"), page.get("nFolder"), page.get("nGroup"))
+
+
 async def _pages(p, org: str, user: str) -> dict[str, Any]:
-    """Every browse of the viewer (the App, each group, each folder, the flat listing) with each row's id and arrow."""
+    """Every browse of the viewer (the App, each group, each folder, the flat listing) with each row's id and arrow, and its counts."""
     with ctx(org):
         acc = await p.get_knowledge_hub_access_v3(user, org)
         kw = {"grantee_ids": acc["grantee_ids"], "gated_app_ids": acc["gated_app_ids"], "grants_by_connector": acc["by_connector"], "user_key": user}
@@ -175,9 +180,8 @@ async def _pages(p, org: str, user: str) -> dict[str, Any]:
             for side in (False, True):
                 page = await p.get_knowledge_hub_connector_page_v3("app1" if typ == "app" else "", org, limit=50, flatten=False, start_id=start, start_type=typ,
                                                                    filters={"only_containers": True} if side else {}, **kw)
-                out[f"{start} {side}"] = sorted((r["id"], r["hasChildren"]) for r in page["rows"])
-        page = await p.get_knowledge_hub_connector_page_v3("app1", org, limit=50, **kw)
-        out["flat"] = sorted((r["id"], r["hasChildren"]) for r in page["rows"])
+                out[f"{start} {side}"] = _shown(page)
+        out["flat"] = _shown(await p.get_knowledge_hub_connector_page_v3("app1", org, limit=50, **kw))
     return out
 
 
@@ -202,5 +206,6 @@ async def test_a_browse_from_the_marked_grants_lists_what_one_from_every_grant_l
     monkeypatch.setattr(kh_listing.KhListingMixin, "_kh_top_grants", real_top)
     # u1's root: a (in g1, which u1 may open) and c (its folder f2 is u1's) are not handed to the walk; f2 and e are, and are listed there (and g1, team1's, of no group)
     assert at_root == ["e", "f2", "g1"]
-    assert ("e", False) in marked["u1"]["app1 False"] and ("f2", True) in marked["u1"]["app1 False"]
-    assert not any(i in ("a", "c") for i, _ in marked["u1"]["app1 False"])
+    assert ("e", False) in marked["u1"]["app1 False"][0] and ("f2", True) in marked["u1"]["app1 False"][0]
+    assert not any(i in ("a", "c") for i, _ in marked["u1"]["app1 False"][0])
+    assert marked["u1"]["app1 False"][1] == len(marked["u1"]["app1 False"][0])      # the total counts the chain-tops listed
