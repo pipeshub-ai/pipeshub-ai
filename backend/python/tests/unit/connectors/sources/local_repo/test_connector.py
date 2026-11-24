@@ -8,7 +8,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.config import file_types
 from app.config.constants.arangodb import Connectors
+from app.connectors.core.registry.filters import Filter, FilterType, MultiselectOperator
 from app.connectors.sources.local_folder import scan
 from app.connectors.sources.local_repo import store
 from app.connectors.sources.local_repo.connector import LocalRepoConnector
@@ -368,3 +370,51 @@ async def test_the_commit_and_the_sync_agree_on_which_files_are_code_records(env
         expected = code_rule.is_code_record(rel, lambda stored=stored: code_rule.read_head(stored))
         indexed = rel in env.graph.records and type(env.graph.records[rel]).__name__ == "CodeFileRecord"
         assert indexed == expected, rel
+
+
+def test_the_extension_filter_offers_the_repository_text_types_after_the_indexable_ones():
+    fields = LocalRepoConnector._connector_metadata["config"]["filters"]["sync"]["schema"]["fields"]
+    options = next(f for f in fields if f["name"] == "file_extensions")["options"]
+    ids = [o.id for o in options]
+    repository_text = ["vue", "svelte", "pl", "pm", "r", "ex", "exs", "erl", "hs", "clj", "cljs", "zsh", "fish", "ps1",
+                       "scss", "sass", "less", "proto", "graphql", "gql", "tf", "tfvars", "css", "sql"]
+    start = ids.index("vue")
+    assert ids[start:start + 24] == repository_text
+    assert ids[start - 1] == "pptm" and ids[start + 24] == file_types.EXCLUDE_ONLY_EXTENSIONS[0]
+    assert len(ids) == len(set(ids)) == 133
+    assert {o.id: o.label for o in options}["tfvars"] == ".tfvars"
+
+
+# Existing behaviour pinned: a saved filter is matched by extension string and never reads the option list.
+EXCLUDABLE = "infra/main.tf"
+REPO_FILES = {EXCLUDABLE: 'region = "eu"\n', "src/App.vue": "<template><p/></template>\n", "src/app.py": "x = 1\n"}
+
+
+def ext_filter(operator, value):
+    return FilterCollection(filters=[Filter(key="file_extensions", value=value, type=FilterType.MULTISELECT, operator=operator)])
+
+
+@pytest.mark.parametrize(
+    ("sync_filters", "kept"),
+    [
+        (FilterCollection(), {EXCLUDABLE, "src/App.vue", "src/app.py"}),
+        (ext_filter(MultiselectOperator.IN, ["py"]), {"src/app.py"}),
+        (ext_filter(MultiselectOperator.NOT_IN, ["zip"]), {EXCLUDABLE, "src/App.vue", "src/app.py"}),
+        (ext_filter(MultiselectOperator.NOT_IN, [EXCLUDABLE.rsplit(".", 1)[1]]), {"src/App.vue", "src/app.py"}),
+    ],
+)
+async def test_a_saved_extension_filter_decides_which_repository_files_get_a_record(env, sync_filters, kept):
+    push(env.repo, **REPO_FILES)
+    with patch.object(mod, "load_connector_filters", AsyncMock(return_value=(sync_filters, FilterCollection()))):
+        await env.c.run_sync()
+    assert {k for k in env.graph.records if k in REPO_FILES} == kept
+
+
+async def test_excluding_an_extension_deletes_the_record_an_earlier_sync_made(env):
+    push(env.repo, **REPO_FILES)
+    await env.c.run_sync()
+    assert EXCLUDABLE in env.graph.records
+    excluded = ext_filter(MultiselectOperator.NOT_IN, [EXCLUDABLE.rsplit(".", 1)[1]])
+    with patch.object(mod, "load_connector_filters", AsyncMock(return_value=(excluded, FilterCollection()))):
+        await env.c.run_sync()
+    assert EXCLUDABLE not in env.graph.records and "src/app.py" in env.graph.records

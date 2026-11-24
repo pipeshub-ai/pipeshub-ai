@@ -48,7 +48,7 @@ from app.connectors.sources.local_repo.store import LOCAL_REPO_CONNECTOR_NAME, R
                         description="Set by pipeshub index. Do not change.")
         )
         .add_sync_custom_field(CommonFields.batch_size_field())
-        .add_filter_field(CommonFields.file_extension_filter())
+        .add_filter_field(CommonFields.file_extension_filter(repository=True))
     )
     .build_decorator()
 )
