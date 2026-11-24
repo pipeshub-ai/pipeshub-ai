@@ -216,6 +216,9 @@ SYNCED_SHARED_DRIVES_SYNC_POINT_KEY = "synced_shared_drives"
 # Shared drives users reach that the admin listing lacks (another organization's), with the users who reach them.
 FOREIGN_SHARED_DRIVES_SYNC_POINT_KEY = "foreign_shared_drives"
 FOREIGN_LIMITED_SUBTREES_SYNC_POINT_KEY = "foreign_limited_subtrees"
+FOREIGN_INHERIT_WAITING_SYNC_POINT_KEY = "foreign_inherit_waiting"
+# Runs a foreign drive's file waits for a parent folder to be stored before it is left to its next write.
+FOREIGN_INHERIT_WAIT_RUNS = 5
 FOREIGN_DRIVE_PAGE_SIZE = 500
 FOREIGN_GROUP_REACH_DEPTH = 100
 DRIVE_RESTRICTIONS_SYNC_POINT_PREFIX = "shared_drive_restrictions_"
@@ -667,6 +670,9 @@ class GoogleDriveTeamConnector(BaseConnector):
         # Per run: (drive id, folder id) of each foreign drive's folder that turned limited this run, whose members'
         # own grants below it are checked with Google (`_check_foreign_limited_subtrees`).
         self._foreign_limited_folders: set[tuple[str, str]] = set()
+        # Per run: (file id, drive id, parent id) of a foreign drive's file written before its parent folder was stored:
+        # its inheritance is settled once the run is written (`_settle_foreign_inherit_waiting`).
+        self._foreign_inherit_waiting: set[tuple[str, str, str]] = set()
         # Per run: leavers whose grant removal failed, tried again next run rather than on each user's sync.
         self._leaver_cleanup_failed: set[tuple[str, str]] = set()
         self._foreign_drive_confirmed: dict[str, bool | None] = {}
@@ -965,6 +971,7 @@ class GoogleDriveTeamConnector(BaseConnector):
             self._foreign_drives_written = set()
             self._foreign_drives_reached_by = {}
             self._foreign_limited_folders = set()
+            self._foreign_inherit_waiting = set()
             self._leaver_cleanup_failed = set()
             self._foreign_drive_confirmed = {}
             self._external_emails = set()
@@ -5507,6 +5514,9 @@ class GoogleDriveTeamConnector(BaseConnector):
                 (is_shared_with_me or item_shared_drive_id)
                 and existing_record is not None
                 and not metadata.get("parents")
+                # Moved to another drive: the old drive's folder is not its parent any more, and kept, its inherit
+                # edge would leave the old drive's members reading it.
+                and existing_record.external_record_group_id == file_record.external_record_group_id
             ):
                 # Drive leaves out `parents` when the grantee cannot see the folder; that
                 # is not a move to the drive's root, and writing it as one dropped the
@@ -5564,7 +5574,12 @@ class GoogleDriveTeamConnector(BaseConnector):
                     )
                 ):
                     # Another organization's folder turned limited: no Manager of it lists the members it now cuts
-                    # out, so each member's own grant below it is checked with Google once the run is written.
+                    # out, so each member's own grant below it is checked with Google once the run is written. Stored
+                    # before its inheritance changes: a run that stops before the check leaves it for the next one,
+                    # and a failed save fails the item, so the change is read again.
+                    await self._add_pending_foreign(
+                        FOREIGN_LIMITED_SUBTREES_SYNC_POINT_KEY, "folders", [item_drive_id, str(file_id)]
+                    )
                     self._foreign_limited_folders.add((item_drive_id, str(file_id)))
                 read_as = {
                     "inherited_permissions_disabled": limited_access,
@@ -5634,12 +5649,20 @@ class GoogleDriveTeamConnector(BaseConnector):
                 # drive's group, as in Drive, when its listed folder's stored chain does. A hidden or unknown parent
                 # is not hung off the group. The viewer keeps their own grant: it goes only when Google says they no
                 # longer open the file (`_drop_leaver_grants`, `_check_foreign_limited_subtrees`).
-                reads_foreign_drive = (
+                reads_foreign_drive = False
+                if (
                     is_fallback_permissions and not in_scope and bool(item_drive_id) and not limited_access
                     and read_as["inherits_from_drive"]
                     and item_drive_id in self._foreign_drives_reached_by.get((user_email or "").lower(), set())
-                    and await self._foreign_group_reaches(item_drive_id, (metadata.get("parents") or [None])[0])
-                )
+                    and metadata.get("parents")
+                ):
+                    listed_parent = str(metadata["parents"][0])
+                    reach = await self._foreign_group_reach(item_drive_id, listed_parent)
+                    reads_foreign_drive = reach is True
+                    if reach is None:
+                        # A folder above is not stored yet (a listing returns items in no set order): settled once
+                        # the run is written, so the file is not left without the drive's group.
+                        self._foreign_inherit_waiting.add((str(file_id), item_drive_id, listed_parent))
                 if is_fallback_permissions:
                     permissions_changed = False
                     if limited_access:
@@ -7079,6 +7102,56 @@ class GoogleDriveTeamConnector(BaseConnector):
         users = await self._get_users_to_sync(self.synced_users, raise_on_error=True)
         return {u.email.lower() for u in users if u.is_active and u.email}
 
+    async def _add_pending_foreign(self, key: str, field: str, item: list) -> None:
+        """Add ``item`` to the JSON list ``field`` of sync point ``key``; a failed write raises."""
+        async with self._foreign_drives_lock:
+            stored = await self.drive_delta_sync_point.read_sync_point(key) or {}
+            raw = stored.get(field) or "[]"
+            items = json.loads(raw) if isinstance(raw, str) else []
+            if item not in items:
+                items.append(item)
+                await self.drive_delta_sync_point.update_sync_point(key, {field: json.dumps(sorted(items))})
+
+    async def _settle_foreign_inherit_waiting(self) -> None:
+        """Once a run, after every write: a foreign drive's file written before its parent folder was stored gets the
+        drive's group through that folder once the folder's stored chain reaches the drive. One still waiting is kept
+        for up to FOREIGN_INHERIT_WAIT_RUNS runs; a move or a limited folder since leaves it as written."""
+        processor = self.data_entities_processor
+        async with self._foreign_drives_lock:
+            stored = await self.drive_delta_sync_point.read_sync_point(FOREIGN_INHERIT_WAITING_SYNC_POINT_KEY) or {}
+            raw = stored.get("items") or "[]"
+            waiting = {(f, d, p): n for f, d, p, n in (json.loads(raw) if isinstance(raw, str) else [])}
+            for item in self._foreign_inherit_waiting:
+                waiting.setdefault(item, 0)
+            if not waiting:
+                return
+            kept: list[list] = []
+            for (file_id, drive_id, parent_id), runs in sorted(waiting.items()):
+                record = await processor.get_record_by_external_id(connector_id=self.connector_id, external_record_id=file_id)
+                if record is None or (record.parent_external_record_id or drive_id) != parent_id:
+                    continue
+                if await processor.inheritance_when_unreadable(CollectionNames.RECORDS.value, record.id):
+                    continue
+                reach = await self._foreign_group_reach(drive_id, parent_id)
+                if reach is None:
+                    if runs + 1 < FOREIGN_INHERIT_WAIT_RUNS:
+                        kept.append([file_id, drive_id, parent_id, runs + 1])
+                    continue
+                if reach is False:
+                    continue
+                if parent_id == drive_id:
+                    group = await processor.get_record_group_by_external_id(self.connector_id, drive_id)
+                    if group is not None:
+                        await processor.resume_inheriting_permissions(record.id, self.connector_id, record_group_id=group.id)
+                else:
+                    parent = await processor.get_record_by_external_id(connector_id=self.connector_id, external_record_id=parent_id)
+                    if parent is not None:
+                        await processor.resume_inheriting_permissions(record.id, self.connector_id, parent_record_id=parent.id)
+            self._foreign_inherit_waiting = set()
+            await self.drive_delta_sync_point.update_sync_point(
+                FOREIGN_INHERIT_WAITING_SYNC_POINT_KEY, {"items": json.dumps(kept)}
+            )
+
     async def _check_foreign_limited_subtrees(self) -> None:
         """Once a run, after every write: for each foreign drive's folder that turned limited (this run's, and any a
         failed check left), remove a member's own grant on it or below it when Google, asked as them, says they no
@@ -7096,7 +7169,8 @@ class GoogleDriveTeamConnector(BaseConnector):
             for drive_id, folder_id in sorted(pending):
                 members = set((drives.get(drive_id) or {}).get("members") or [])
                 try:
-                    await self._check_limited_subtree(folder_id, members, users)
+                    if not await self._check_limited_subtree(folder_id, members, users):
+                        left.add((drive_id, folder_id))
                 except Exception as e:
                     left.add((drive_id, folder_id))
                     self._sync_ledger.note_incomplete()
@@ -7107,8 +7181,12 @@ class GoogleDriveTeamConnector(BaseConnector):
                 FOREIGN_LIMITED_SUBTREES_SYNC_POINT_KEY, {"folders": json.dumps(sorted(list(f) for f in left))}
             )
 
-    async def _check_limited_subtree(self, folder_id: str, members: set[str], users: dict[str, AppUser]) -> None:
+    async def _check_limited_subtree(self, folder_id: str, members: set[str], users: dict[str, AppUser]) -> bool:
+        """Check each member's own grant on the folder and below it. Whether every grant was settled: a probe that
+        fails, or a member a cut user listing left out, leaves the folder to the next run while the others are still
+        checked. A member a complete listing does not have is no longer synced; the prune removes them."""
         processor = self.data_entities_processor
+        settled = True
         sources: dict[str, GoogleDriveDataSource] = {}
         root = await processor.get_record_by_external_id(connector_id=self.connector_id, external_record_id=folder_id)
         pending, seen = ([root] if root is not None else []), set()
@@ -7118,20 +7196,32 @@ class GoogleDriveTeamConnector(BaseConnector):
                 continue
             seen.add(record.id)
             held = (await processor.get_roles_on_record(record.id))[0]
-            for email in sorted(e for e in held if e in members and e in users):
-                if not await self._leaver_still_opens(record, users[email], sources):
+            for email in sorted(e for e in held if e in members):
+                if email not in users:
+                    settled = settled and not self._listing_cut
+                    continue
+                try:
+                    opens = await self._leaver_still_opens(record, users[email], sources)
+                except Exception as e:
+                    settled = False
+                    self._sync_ledger.note_incomplete()
+                    self.logger.warning(f"A limited folder's grant on record {record.id} not checked: {e}")
+                    continue
+                if not opens:
                     await processor.delete_permission_from_record(record.id, email, self.connector_id)
             if record.mime_type in FOLDER_MIME_TYPES:
                 # Trashed ones too: restored, they would come back still granting a member it cuts out.
                 pending.extend(await processor.get_records_by_parent(
                     self.connector_id, record.external_record_id, visibility=RecordVisibility.ALL
                 ))
+        return settled
 
-    async def _foreign_group_reaches(self, drive_id: str, parent_id: str | None) -> bool:
+    async def _foreign_group_reach(self, drive_id: str, parent_id: str | None) -> bool | None:
         """Whether a foreign drive's group reaches what is below ``parent_id``: it is the drive, or every folder up to
-        the drive is stored and inherits. Read from the store each time. A missing parent is not the root: Drive
-        leaves `parents` out when the reader cannot see the folder. A stored folder with no parent that inherits is
-        at the root, since one whose parent was hidden is written without inheriting."""
+        the drive is stored and inherits (True); a folder on the way does not inherit (False); one is not stored yet
+        (None). Read from the store each time. A missing parent is not the root: Drive leaves `parents` out when the
+        reader cannot see the folder. A stored folder with no parent that inherits is at the root, since one whose
+        parent was hidden is written without inheriting."""
         current, seen = parent_id, set()
         while current != drive_id:
             if not current or current in seen or len(seen) >= FOREIGN_GROUP_REACH_DEPTH:
@@ -7140,7 +7230,9 @@ class GoogleDriveTeamConnector(BaseConnector):
             folder = await self.data_entities_processor.get_record_by_external_id(
                 connector_id=self.connector_id, external_record_id=current
             )
-            if folder is None or not await self.data_entities_processor.inheritance_when_unreadable(
+            if folder is None:
+                return None
+            if not await self.data_entities_processor.inheritance_when_unreadable(
                 CollectionNames.RECORDS.value, folder.id
             ):
                 return False
@@ -7205,6 +7297,13 @@ class GoogleDriveTeamConnector(BaseConnector):
             to_write = (set(reached) | set(drives)) - self._foreign_drives_written - unknown
             for drive_id, name in reached.items():
                 entry = drives.setdefault(drive_id, {"name": name, "members": [], "leavers": []})
+                # Back in the drive: a later leave starts its cleanup from the first page, not where an earlier one
+                # stopped, since their syncs since may have written grants before it.
+                if email in entry.get("cursors", {}):
+                    entry["cursors"].pop(email)
+                    to_write.add(drive_id)
+                    if not entry["cursors"]:
+                        entry.pop("cursors")
                 if email not in entry["members"] or entry["name"] != name:
                     to_write.add(drive_id)
                 entry["members"] = sorted({*entry["members"], email})
@@ -7909,6 +8008,11 @@ class GoogleDriveTeamConnector(BaseConnector):
             except Exception as e:
                 self._sync_ledger.note_incomplete()
                 self.logger.error(f"Foreign shared drive members not pruned: {e}", exc_info=True)
+            try:
+                await self._settle_foreign_inherit_waiting()
+            except Exception as e:
+                self._sync_ledger.note_incomplete()
+                self.logger.error(f"Foreign shared drive files waiting for a folder not settled: {e}", exc_info=True)
             try:
                 await self._check_foreign_limited_subtrees()
             except Exception as e:
