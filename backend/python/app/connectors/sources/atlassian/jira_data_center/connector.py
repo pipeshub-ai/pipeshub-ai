@@ -1840,9 +1840,10 @@ class JiraDataCenterConnector(BaseConnector):
     async def _settle_authenticator(self, listing: SourceUserListing) -> None:
         """When the read cannot tell, look the authenticator up by email, active or not: found, they are
         PRESENT; ABSENT only when no row of the answer may hide them. A failed lookup leaves them UNKNOWN."""
-        email = (await self.authenticator_email() or "").strip().lower()
+        email = await self.authenticator_email()
         if not email or listing.presence(email) is not Presence.UNKNOWN:
             return
+        wanted = email.strip().lower()
         try:
             datasource = await self._get_fresh_datasource()
             response = await datasource.get_user_search_v2(username=email, includeInactive=True, maxResults=50)
@@ -1854,7 +1855,7 @@ class JiraDataCenterConnector(BaseConnector):
             return
         if not isinstance(rows, list):
             return
-        if any(isinstance(r, dict) and (r.get("emailAddress") or "").strip().lower() == email for r in rows):
+        if any(isinstance(r, dict) and (r.get("emailAddress") or "").strip().lower() == wanted for r in rows):
             listing.settle(email, Presence.PRESENT)
         # A malformed row or one with its email hidden may be the authenticator, and a full page may hide the match.
         elif all(isinstance(r, dict) and r.get("emailAddress") for r in rows) and len(rows) < 50:

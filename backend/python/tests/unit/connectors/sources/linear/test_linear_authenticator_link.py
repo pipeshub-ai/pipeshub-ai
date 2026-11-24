@@ -106,7 +106,7 @@ async def test_the_users_query_passes_include_disabled_to_linear() -> None:
 
 @pytest.mark.asyncio
 async def test_a_listed_account_without_an_email_leaves_the_creator_unknown() -> None:
-    # Linear's User.email is non-null: a row without one is malformed, and may be the authenticator.
+    # A row without an email may be the authenticator.
     connector = _make_connector()
     _listing(connector, [{"id": "u1", "email": "live@corp.com", "active": True}, {"id": "u3", "active": True}])
 

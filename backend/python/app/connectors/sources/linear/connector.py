@@ -1007,7 +1007,7 @@ class LinearConnector(BaseConnector):
                 fetch=lambda ds, first, after: ds.users(first=first, after=after, includeDisabled=True),
             ):
                 for user in users_list:
-                    # User.email is non-null in Linear's schema: a row without one is an unidentified row.
+                    # A row without an email may be anyone: an unidentified row.
                     email = user.get("email")
                     listing.add_row(email if isinstance(email, str) else None, user.get("id"))
                 all_users.extend(users_list)

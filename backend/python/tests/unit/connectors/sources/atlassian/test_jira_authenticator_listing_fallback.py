@@ -262,7 +262,8 @@ class TestJiraCloudRefusedBulkRead:
 
     async def test_the_token_account_is_never_probed(self) -> None:
         def find_users(*, query: str, **_: object) -> SimpleNamespace:
-            assert query.lower() != TOKEN.lower(), "probed the token account"
+            if query.lower() == TOKEN.lower():  # not an assert: the lookup swallows any Exception
+                pytest.fail("probed the token account")
             return _resp(OK, [])
         conn = _cloud(find_users)
 
@@ -272,7 +273,8 @@ class TestJiraCloudRefusedBulkRead:
 
     async def test_a_found_authenticator_needs_no_probe_of_the_token_account(self) -> None:
         def find_users(*, query: str, **_: object) -> SimpleNamespace:
-            assert query.lower() != TOKEN.lower(), "probed the token account"
+            if query.lower() == TOKEN.lower():  # not an assert: the lookup swallows any Exception
+                pytest.fail("probed the token account")
             return _resp(OK, [_acct("a1", "creator@corp.com")])
         conn = _cloud(find_users)
 
