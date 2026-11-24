@@ -50,6 +50,7 @@ from helper.admin_route_conditional_table import (
 from helper import suite_extensions
 from helper.connector_service import CONNECTOR_URL_ENV, connector_service_url
 from helper.source_credentials import missing_env, source_unavailable
+from helper.web_fixtures import WebFixtures
 
 if TYPE_CHECKING:
     from helper.second_user import SecondUser
@@ -267,7 +268,7 @@ class World:
 
     # -------------------------------------------------------------- connectors
 
-    def _create_connector(self, caller: str, connector_type: str, scope: str, **extra: str) -> tuple[str, str]:
+    def _create_connector(self, caller: str, connector_type: str, scope: str, **extra: Any) -> tuple[str, str]:
         name = self._unique_name()
         body = self._json(
             caller, "POST", f"{_CONNECTORS}/", f"Creating a {scope} {connector_type} connector",
@@ -783,6 +784,35 @@ class World:
             "limited_connector": connector_id, "limited_connector_name": connector_name,
             "limited_agent": agent_id, "limited_agent_name": agent_name,
         }
+
+    def _switch_sync(self, connector_id: str, on: bool) -> None:
+        """The toggle flips sync, so it is sent only when sync is not already as wanted."""
+        path = f"{_CONNECTORS}/{connector_id}"
+        if bool((self._json(ADMIN, "GET", path, "Looking up a test connector").get("connector") or {}).get("isActive")) != on:
+            self._json(ADMIN, "POST", f"{path}/toggle", f"Switching sync {'on' if on else 'off'} for a test connector",
+                       json={"type": "sync"})
+
+    def _build_active(self) -> dict[str, str]:
+        fixtures = WebFixtures()
+        try:
+            fixtures.check_available()
+        except requests.RequestException as exc:
+            source_unavailable(
+                f"The web-fixtures service is not reachable at {fixtures.test_url} ({type(exc).__name__}), "
+                "so no Web connector has a site to sync."
+            )
+        config = {"sync": {"url": fixtures.url_for_connector("site/docs/"), "type": "single"}}
+        made = {}
+        for key, limited in (("active_limited", True), ("active_team", False)):
+            connector_id, name = self._create_connector(ADMIN, PLAIN_CONNECTOR_TYPE, "team", config=config)
+            self._later(f"team connector {name}", lambda cid=connector_id: self._delete_connector(cid, ADMIN))
+            if limited:
+                # Before sync is on, so no sync is running when the limit is written.
+                self._limit_to_its_creator(connector_id)
+            self._switch_sync(connector_id, True)
+            self._later(f"sync of team connector {name}", lambda cid=connector_id: self._switch_sync(cid, False))
+            made[key] = connector_id
+        return made
 
     # ---------------------------------------------------------------- teardown
 

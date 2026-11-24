@@ -100,6 +100,10 @@ WORLD_GROUPS: dict[str, tuple[str, ...]] = {
     # backend's own `set_access_limit`, since no route sets a limit; and an agent
     # shared with the whole org that searches it.
     "limited": ("limited_connector", "limited_connector_name", "limited_agent", "limited_agent_name"),
+    # Two team Web connectors of the admin's with sync switched on, crawling one
+    # page of the stack's web-fixtures site: one limited to its creator as in
+    # "limited", one not. Web is an open type, so a sync never sets or lifts the limit.
+    "active": ("active_limited", "active_team"),
 }
 # Made new each time they are asked for: a connector, or an MCP server (the
 # admin's, or the creator's personal one) for a case that deletes it.
@@ -718,6 +722,16 @@ CONDITIONAL_ROUTES: tuple[ConditionalRoute, ...] = (
             Case("limited_connector", MEMBER, False, 200, '"connectors":', absent=("{target}",)),
             Case("limited_connector", ADMIN, True, 200, "{target}"),
             Case("team", MEMBER, True, 200, "{target}"),
+        ),
+    ),
+    # The same rule on the active list. The unlimited active team connector is
+    # the control.
+    ConditionalRoute(
+        f"{_ROUTER}::get_active_connector_instances", "GET", f"{_CONNECTORS}/active",
+        cases=(
+            Case("active_limited", MEMBER, False, 200, '"connectors":', absent=("{target}",)),
+            Case("active_limited", ADMIN, True, 200, "{target}"),
+            Case("active_team", MEMBER, True, 200, "{target}"),
         ),
     ),
     # The directory behind the people screen. Every row carries the `userId`
