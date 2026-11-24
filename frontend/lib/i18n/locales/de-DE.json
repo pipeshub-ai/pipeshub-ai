@@ -1244,7 +1244,15 @@
         },
         "toolNeedsApproval": "Erfordert Genehmigung",
         "toolNeedsApprovalHint": "Dieses Tool kann Daten löschen. In einem Projekt-Chat wird es erst nach einer Genehmigung ausgeführt.",
-        "indexingStatusLabel": "Indizierung: {{status}}"
+        "indexingStatusLabel": "Indizierung: {{status}}",
+        "collectionsTitle": "Sammlungen",
+        "collectionsSubtitle": "Chats in diesem Projekt durchsuchen die ausgewählten Sammlungen und hochgeladene Projektdateien.",
+        "noCollectionsAvailable": "Noch keine Sammlungen zum Hinzufügen vorhanden.",
+        "failedToLoadCollections": "Fehler beim Laden der Sammlungen",
+        "updateCollectionsFailed": "Fehler beim Aktualisieren der Sammlungen",
+        "collectionsStatusCount": "{{count}} ausgewählt",
+        "collectionsStatusNone": "Keine",
+        "untitledCollection": "Unbenannte Sammlung"
       },
       "moveDialog": {
         "title": "In Projekt verschieben",

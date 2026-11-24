@@ -44319,7 +44319,7 @@ paths:
         refused with `400`.
 
         **Access:** a caller with no role on the knowledge base gets `404`
-        (`Knowledge base <kbId> not found`), a `READER` gets `403`.
+        (`Knowledge base not found`), a `READER` gets `403`.
 
         **Response:** Returns `id` and `name` for the created folder.
       operationId: createFolder
@@ -44428,9 +44428,9 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: |
-            - `Knowledge base <kbId> not found`: unknown knowledge base, or the caller holds no
+            - `Knowledge base not found`: unknown knowledge base, or the caller holds no
               role on it
-            - `Parent folder <folderId> not found in KB <kbId>`: `folderId` is not a folder of
+            - `The parent folder was not found in this knowledge base.`: `folderId` is not a folder of
               this knowledge base (unknown id, or a file)
           content:
             application/json:
@@ -44500,7 +44500,7 @@ paths:
         refused with `400`.
 
         **Access:** a caller with no role on the knowledge base gets `404`
-        (`Knowledge base <kbId> not found`), a `READER` gets `403`.
+        (`Knowledge base not found`), a `READER` gets `403`.
 
         **Response:** Returns `id` and `name` for the created folder.
       operationId: createSubfolder
@@ -44620,9 +44620,9 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: |
-            - `Knowledge base <kbId> not found`: unknown knowledge base, or the caller holds no
+            - `Knowledge base not found`: unknown knowledge base, or the caller holds no
               role on it
-            - `Parent folder <folderId> not found in KB <kbId>`: `folderId` is not a folder of
+            - `The parent folder was not found in this knowledge base.`: `folderId` is not a folder of
               this knowledge base (unknown id, or a file)
           content:
             application/json:
@@ -45099,7 +45099,7 @@ paths:
           description: |
             - `Knowledge base not found`: unknown knowledge base, or the caller holds no
               role on it
-            - `Folder <folderId> was not found in knowledge base '<name>' (<kbId>). ...`
+            - `The folder was not found in knowledge base '<name>' (<kbId>). ...`
           content:
             application/json:
               schema:
@@ -45694,7 +45694,7 @@ paths:
 
             - `Knowledge base not found`: the knowledge base does not exist, or the caller holds
               no role on it
-            - `Record <recordId> not found in KB <kbId>`: the record is unknown or belongs to
+            - `The record was not found in this knowledge base.`: the record is unknown or belongs to
               another knowledge base
             - `Target folder <newParentId> not found in KB <kbId>`: the target is unknown or is a
               file
@@ -47241,7 +47241,7 @@ paths:
                   value:
                     error:
                       code: HTTP_BAD_REQUEST
-                      message: "Invalid UUID format for parent_id: abc"
+                      message: "Invalid UUID format for parent_id"
                 parent_of_another_kind:
                   summary: parentId exists but is not a node of the given parentType
                   value:
@@ -62696,7 +62696,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: |-
-            No toolset of this type is in the registry (`Toolset '<type>' not found in registry`).
+            No toolset of this type is in the registry (`Toolset not found in registry`).
           content:
             application/json:
               schema:
@@ -63770,7 +63770,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: |-
-            No agent with this key that the caller can see (`Agent '<key>' not found.`); an agent the caller
+            No agent with this key that the caller can see (`Agent not found.`); an agent the caller
             has no access to answers the same.
           content:
             application/json:
@@ -63879,7 +63879,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: |-
-            No agent with this key that the caller can see (`Agent '<key>' not found.`), or no instance with
+            No agent with this key that the caller can see (`Agent not found.`), or no instance with
             this id in the caller's organization.
           content:
             application/json:
@@ -63981,7 +63981,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: |-
-            No agent with this key that the caller can see (`Agent '<key>' not found.`), no instance with
+            No agent with this key that the caller can see (`Agent not found.`), no instance with
             this id in the caller's organization, or the agent has saved no credentials for it (`No existing
             credentials found for this instance. Please authenticate first.`).
           content:
@@ -64057,7 +64057,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: |-
-            No agent with this key that the caller can see (`Agent '<key>' not found.`).
+            No agent with this key that the caller can see (`Agent not found.`).
           content:
             application/json:
               schema:
@@ -64132,7 +64132,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: |-
-            No agent with this key that the caller can see (`Agent '<key>' not found.`), or no instance with
+            No agent with this key that the caller can see (`Agent not found.`), or no instance with
             this id in the caller's organization.
           content:
             application/json:
@@ -64228,7 +64228,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: |-
-            No agent with this key that the caller can see (`Agent '<key>' not found.`), or no instance with
+            No agent with this key that the caller can see (`Agent not found.`), or no instance with
             this id in the caller's organization.
           content:
             application/json:
@@ -65663,7 +65663,7 @@ paths:
         '404':
           description: |-
             No OAuth configuration with this id for this toolset type in the caller's organization (`OAuth
-            configuration '<id>' not found.`).
+            configuration not found.`).
           content:
             application/json:
               schema:
@@ -65736,7 +65736,7 @@ paths:
         '404':
           description: |-
             No OAuth configuration with this id for this toolset type in the caller's organization (`OAuth
-            configuration '<id>' not found.`).
+            configuration not found.`).
           content:
             application/json:
               schema:
@@ -71196,7 +71196,7 @@ paths:
                   - $ref: '#/components/schemas/ErrorResponse'
                   - $ref: '#/components/schemas/SkillsServiceError'
         '404':
-          description: "No such resource. A name that matches no skill visible to the caller (missing, or another user's custom skill) and a path outside the skill (`../x`) are reported the same way: `Resource '<path>' not found for skill '<name>'`."
+          description: "No such resource. A name that matches no skill visible to the caller (missing, or another user's custom skill) and a path outside the skill (`../x`) are reported the same way: `Resource not found for this skill.`"
           content:
             application/json:
               schema:
@@ -71364,7 +71364,7 @@ paths:
                   - $ref: '#/components/schemas/ErrorResponse'
                   - $ref: '#/components/schemas/SkillsServiceError'
         '404':
-          description: "The skill is missing or is another user's custom skill (`Skill '<name>' not found`), or the skill has no resource at `path`, including a path outside the skill such as `../x` (`Resource '<path>' not found for skill '<name>'.`)"
+          description: "The skill is missing or is another user's custom skill (`Skill not found.`), or the skill has no resource at `path`, including a path outside the skill such as `../x` (`Resource not found for this skill.`)"
           content:
             application/json:
               schema:

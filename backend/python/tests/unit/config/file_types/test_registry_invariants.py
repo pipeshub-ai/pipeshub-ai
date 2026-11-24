@@ -128,6 +128,17 @@ def test_the_filter_roles_follow_the_gate() -> None:
             assert not ft.indexable, ft.key
 
 
+def test_only_the_repository_text_types_are_offered_to_repositories_alone() -> None:
+    repository = {ft.key for ft in _TYPES if ft.filter is FilterRole.OFFER_REPOSITORY}
+    assert repository == {
+        "vue", "svelte", "pl", "pm", "r", "ex", "exs", "erl", "hs", "clj", "cljs", "zsh", "fish", "ps1",
+        "scss", "sass", "less", "proto", "graphql", "gql", "tf", "tfvars", "css", "sql",
+    }
+    for ft in _TYPES:
+        if ft.filter is FilterRole.OFFER_REPOSITORY:
+            assert ft.repo_code and not ft.ext_indexable, ft.key
+
+
 def test_acceptance_is_split_by_side_as_the_gate_splits_it() -> None:
     def get(key: str) -> FileType:
         return next(ft for ft in _TYPES if ft.key == key)
@@ -183,3 +194,14 @@ def test_the_upload_table_stores_every_indexable_extension() -> None:
 def test_the_import_time_checks_catch_a_broken_entry(broken: FileType, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(file_types, "FILE_TYPES", (*_TYPES, broken))
     assert list(file_types._problems())
+
+
+def test_the_import_time_checks_catch_a_type_offered_to_repositories_that_is_not_repository_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    role = FilterRole("offer_repository")  # built in the body so the module still loads where the role is missing
+    indexable = FileType(key="v", extensions=("v",), repo_code=True, ext_indexable=True, filter=role)
+    not_repository = FileType(key="u", extensions=("u",), filter=role)
+    for broken in (indexable, not_repository):
+        monkeypatch.setattr(file_types, "FILE_TYPES", (*_TYPES, broken))
+        assert list(file_types._problems()) == [f"{broken.key}: offered to repositories, but not a repository-only type"]

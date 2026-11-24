@@ -57,6 +57,35 @@
 
 PipesHub xây dựng một **lớp ngữ cảnh hợp nhất** trên tài liệu, hội thoại, dữ liệu có cấu trúc, wiki, ticket và mã nguồn. Các connector đồng bộ từng nguồn cùng với quyền truy cập của nó. Pipeline lập chỉ mục phân tích, chia nhỏ và tạo embedding cho nội dung, đồng thời liên kết bản ghi, con người và thực thể trong một đồ thị tri thức.
 
+```mermaid
+flowchart LR
+  subgraph Sources["50+ connectors"]
+    S1["Drive · SharePoint · Box · S3"]
+    S2["Slack · Gmail · Outlook"]
+    S3["Jira · Confluence · Notion · GitHub"]
+    S4["Postgres · Snowflake · Salesforce"]
+  end
+  subgraph Layer["PipesHub context layer"]
+    B["Blocks: one representation for documents, tables, threads, code and SQL"]
+    H["Hierarchy: app, space, folder, record, block"]
+    G["Knowledge graph: entities and typed relations"]
+    T["Agent tools: hybrid search, grep, graph navigation, document reading"]
+    P{{"Permission check on every call"}}
+  end
+  subgraph Consumers["Agents"]
+    A1["Built-in agent loop: chat, deep research, no-code agents"]
+    A2["Claude Code, Cursor, Codex via MCP"]
+    A3["Your apps via SDKs"]
+  end
+  Sources --> B
+  B --> H
+  B --> G
+  H --> T
+  G --> T
+  T --> P
+  P --> Consumers
+```
+
 Câu hỏi được trả lời bởi một **vòng lặp agent**, không phải một lượt "truy xuất rồi sinh" duy nhất. Agent lập kế hoạch, gọi công cụ, đọc kết quả và tiếp tục cho đến khi có đủ bằng chứng:
 
 - **Tìm kiếm lai (hybrid)** — kết hợp truy xuất ngữ nghĩa và từ khóa, khớp cả ý nghĩa lẫn thuật ngữ chính xác.
@@ -66,6 +95,14 @@ Câu hỏi được trả lời bởi một **vòng lặp agent**, không phải
 
 Mỗi lần gọi công cụ đều được lọc theo quyền của người hỏi, và mỗi câu trả lời đều trích dẫn các khối mà nó dựa vào.
 
+
+| | RAG với top-k đoạn văn | PipesHub |
+| --- | --- | --- |
+| **Tác nhân thấy gì trước tiên** | Vài đoạn văn bản | Tên, vị trí, siêu dữ liệu và tóm tắt của từng bản ghi, cùng các block khớp |
+| **Cách đào sâu hơn** | Không thể: một lần truy xuất cho mỗi câu hỏi | Tìm kiếm lai, `grep`/`find` trên bản ghi, điều hướng thư mục và tra cứu đồ thị tri thức, trong một vòng lặp |
+| **Cấu trúc** | Mất khi chia đoạn | Mọi nguồn đều trở thành Blocks: mục, bảng với hàng và ô, luồng hội thoại, mã, bảng SQL kèm schema |
+| **Quyền truy cập** | Thường chỉ ước lượng lúc lập chỉ mục | Được kiểm tra theo quyền của hệ thống nguồn cho người dùng gửi yêu cầu, ở mọi lần gọi công cụ |
+| **Trích dẫn** | Theo đoạn, nếu có | Theo block: trang, ô bảng, hàng, slide hoặc dòng, và các trích dẫn bịa đặt bị loại bỏ |
 
 ## Tính năng
 
