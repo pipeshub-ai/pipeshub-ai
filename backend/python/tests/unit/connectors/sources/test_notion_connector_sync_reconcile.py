@@ -641,8 +641,8 @@ class _NotionStop(Exception):
 
 
 def _sync_order(order: list[str], *, per_user: bool = False, users_error: Exception | None = None) -> NotionConnector:
-    def step(name: str, error: Exception | None = None, result: Any = None) -> AsyncMock:
-        async def _run(*_a: object, **_k: object) -> Any:
+    def step(name: str, error: Exception | None = None, result: object = None) -> AsyncMock:
+        async def _run(*_a: object, **_k: object) -> object:
             order.append(name)
             if error:
                 raise error

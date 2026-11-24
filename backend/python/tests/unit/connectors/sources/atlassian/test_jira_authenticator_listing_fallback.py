@@ -11,6 +11,7 @@ the token's own account.
 from collections.abc import Callable
 from functools import partial
 from types import SimpleNamespace
+from typing import NoReturn
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -35,7 +36,7 @@ def _bind(conn: MagicMock, cls: type, *names: str) -> None:
         setattr(conn, name, partial(getattr(cls, name), conn))
 
 
-def _raise(error: Exception):
+def _raise(error: Exception) -> NoReturn:
     raise error
 
 
@@ -76,8 +77,8 @@ def _row(key: str, email: str | None, active: bool = True) -> dict:
     return row
 
 
-def _search(listing: list[dict], lookup):
-    def run(*, username, **_):
+def _search(listing: list[dict], lookup) -> Callable[..., object]:
+    def run(*, username, **_) -> object:
         return lookup(username) if username != "." else _resp(OK, listing)
     return run
 
@@ -148,7 +149,7 @@ class TestJiraDataCenterSearchFallback:
         assert conn._listing_complete_for_link is False
 
     async def test_a_refused_bulk_read_looks_the_authenticator_up(self) -> None:
-        def search(*, username, **_):
+        def search(*, username, **_) -> object:
             return _resp(403) if username == "." else _resp(OK, [])
         conn = _dc(search)
 
@@ -201,7 +202,7 @@ def _cloud(find_users, *, creator: str | None = CREATOR, token: str | None = TOK
     conn.data_entities_processor = MagicMock(org_id="org", get_all_app_users=AsyncMock(return_value=[]))
     conn.authenticator_email = AsyncMock(return_value=creator)
     ds = MagicMock(find_users=AsyncMock(side_effect=find_users))
-    async def call_with_retry(call, ctx, **_):
+    async def call_with_retry(call, ctx, **_) -> object:
         return await call(ds)
 
     conn._call_with_retry = call_with_retry

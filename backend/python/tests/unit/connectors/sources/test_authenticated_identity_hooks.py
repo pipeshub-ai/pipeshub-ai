@@ -8,6 +8,7 @@ tests/unit/connectors/core/test_authenticated_as_linking.py.
 """
 
 import sys
+from collections.abc import Callable
 from functools import partial
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -1143,7 +1144,7 @@ class _AtlassianStop(Exception):
     pass
 
 
-def _steps(order: list[str]):
+def _steps(order: list[str]) -> Callable[..., AsyncMock]:
     def step(name: str, result: object = None, error: Exception | None = None) -> AsyncMock:
         async def _run(*_: object, **__: object) -> object:
             order.append(name)

@@ -5,6 +5,7 @@ told whether the listing was read in full and every listed user's email, an inac
 connector access is withdrawn, so no stored edge shows it as listed).
 """
 
+from collections.abc import AsyncIterator
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -128,7 +129,7 @@ async def test_a_listing_that_shows_fewer_users_than_it_counts_is_incomplete(ser
     sc = servicenow_connector
     _wire_users(sc, [_user(1)])
 
-    async def iter_table(*_a: object, listing=None, **_k: object):
+    async def iter_table(*_a: object, listing=None, **_k: object) -> AsyncIterator[list[TableAPIRecord]]:
         listing.total, listing.seen = 5, 1  # an ACL or domain separation hid four rows
         yield [TableAPIRecord(**_user(1))]
 

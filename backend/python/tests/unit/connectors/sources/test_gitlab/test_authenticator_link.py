@@ -34,10 +34,10 @@ def _failed() -> MagicMock:
     return MagicMock(success=False, data=None, error="403")
 
 
-def _scoped(group_members: object, project_members: object = None, projects: list | None = None):
+def _scoped(group_members: object, project_members: object = None, projects: list | None = None) -> tuple[MagicMock, UsersSync]:
     c = make_mock_connector()
 
-    async def ds_call(fn, *_a, **_k):
+    async def ds_call(fn, *_a, **_k) -> object:
         name = str(fn)
         if "list_group_members_all" in name:
             if isinstance(group_members, Exception):
@@ -56,7 +56,7 @@ def _scoped(group_members: object, project_members: object = None, projects: lis
     return c, users
 
 
-def _unscoped(groups: object, projects: object):
+def _unscoped(groups: object, projects: object) -> tuple[MagicMock, UsersSync]:
     c = make_mock_connector()
     c.scope.paged_list_groups_with_role_fallback = AsyncMock(return_value=groups)
     c.scope.paged_list_projects_with_role_fallback = AsyncMock(return_value=projects)
@@ -110,7 +110,7 @@ async def test_a_member_whose_profile_could_not_be_read_is_incomplete() -> None:
     c, users = _scoped(_ok([_member(1, None)]))
     users._enrich_members_with_full_user = UsersSync._enrich_members_with_full_user.__get__(users)
 
-    async def ds_call(fn, *_a, **_k):
+    async def ds_call(fn, *_a, **_k) -> object:
         return _ok([_member(1, None)]) if "list_group_members_all" in str(fn) else _failed()
 
     c.runtime.ds_call = AsyncMock(side_effect=ds_call)

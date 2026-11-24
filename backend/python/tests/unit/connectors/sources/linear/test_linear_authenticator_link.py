@@ -6,7 +6,6 @@ a guest too (its connector access is withdrawn).
 """
 
 from collections.abc import AsyncIterator
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -14,6 +13,7 @@ import pytest
 from app.connectors.core.registry.filters import FilterCollection
 from app.connectors.sources.linear import connector as connector_module
 from app.connectors.sources.linear.api_gateway import LinearPaginationError
+from app.connectors.sources.linear.connector import LinearConnector
 from tests.unit.connectors.sources.linear.test_linear_connector_behaviour import (
     _make_connector,
 )
@@ -23,7 +23,7 @@ class _Stop(Exception):
     pass
 
 
-def _listing(connector: Any, users: list[dict], error: Exception | None = None) -> None:
+def _listing(connector: LinearConnector, users: list[dict], error: Exception | None = None) -> None:
     connector.data_source = MagicMock()
 
     async def pages(*_: object, **__: object) -> AsyncIterator[tuple]:
@@ -76,9 +76,9 @@ async def test_a_listing_that_cannot_continue_is_incomplete() -> None:
 
 
 class TestRunOrder:
-    def _conn(self, order: list[str], *, active: list | None = None, fetch_error: Exception | None = None):
-        def step(name: str, result: Any = None, error: Exception | None = None) -> AsyncMock:
-            async def _run(*_a: object, **_k: object) -> Any:
+    def _conn(self, order: list[str], *, active: list | None = None, fetch_error: Exception | None = None) -> LinearConnector:
+        def step(name: str, result: object = None, error: Exception | None = None) -> AsyncMock:
+            async def _run(*_a: object, **_k: object) -> object:
                 order.append(name)
                 if error:
                     raise error
@@ -97,7 +97,7 @@ class TestRunOrder:
         connector._register_authenticated_identity = step("register", error=_Stop())
         return connector
 
-    async def _run(self, connector: Any) -> None:
+    async def _run(self, connector: LinearConnector) -> None:
         with patch.object(
             connector_module, "load_connector_filters",
             new=AsyncMock(return_value=(FilterCollection(), FilterCollection())),

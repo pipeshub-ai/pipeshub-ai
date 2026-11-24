@@ -183,7 +183,7 @@ class TestListedAuthenticator:
         tx = _tx_store(source_user=SOURCE, edges=[LISTED_EDGE])
         proc = _processor(tx)
 
-        async def get_config(key, use_cache=True, default=None, raise_on_error=False):
+        async def get_config(key, use_cache=True, default=None, raise_on_error=False) -> object:
             if raise_on_error:
                 raise RuntimeError("kv down")
             return default
