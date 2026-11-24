@@ -2,6 +2,7 @@ import { Request, Response, NextFunction } from 'express';
 import xss from 'xss';
 import { Logger } from '../services/logger.service';
 import { BadRequestError } from '../errors/http.errors';
+import { pathForLog } from './access-log.middleware';
 import {
   containsEncodedScriptTag,
   containsHTMLTag,
@@ -548,7 +549,7 @@ export const xssSanitizationMiddleware = (
     Logger.getInstance().error('XSS sanitization middleware error', {
       error: error instanceof Error ? error.message : String(error),
       stack: error instanceof Error ? error.stack : undefined,
-      path: req.path,
+      path: pathForLog(req),
       method: req.method,
     });
 

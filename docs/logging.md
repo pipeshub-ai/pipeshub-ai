@@ -307,6 +307,12 @@ the auth middleware bound.
   bound only when it fits: an id field (`connector_id`, `kb_id`, …) takes an id, `connector_type` a name (letters,
   digits, spaces, `_.:-`). This covers `params` and the bound fields: a one-word value (`ada`, `report.pdf`) or a
   first-and-last name still fits, and an error message the connector service wrote is passed on as written.
+- Node: `Rate limit exceeded` and `XSS sanitization middleware error` carry `path`: the request path (mount included, no
+  query) with each segment that is not an id as `[not an id]`, by the same rule as `params`, cut at a `/` so that it is
+  at most 256 characters, `…` included, and no segment is split. `Rejected client-supplied conversation history` carries no path (the
+  request's `http.request.error` has the route).
+  A segment made only of letters, digits and `._:-` is shown, so a single-word name, a dotted name, a number or a name
+  split across segments still appears.
 - Node: a 401 for a credential the request submitted (a sign-in code, a password, a CAPTCHA, an identity-provider token) that
   is wrong, expired or already used is a `WrongCredentialError`, logged `error_class=bad_request`; the request's own session or
   token refused stays `auth_expired`. `status=401 error_class=bad_request` on `http.request.end` selects credential guessing.

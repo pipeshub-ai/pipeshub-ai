@@ -68,6 +68,11 @@ export function routeTemplate(req: Request): string {
 }
 
 const NOT_AN_ID = '[not an id]';
+const MAX_LOGGED_PATH = 256;
+
+/** A request value on a log line: an id as sent, anything else as a marker. */
+const forLog = (value: unknown): string =>
+  isShownId(value) ? value : NOT_AN_ID;
 
 /**
  * The route params as the matched route saw them, for a log line: an id as
@@ -76,11 +81,25 @@ const NOT_AN_ID = '[not an id]';
 export function routeParams(req: Request): Record<string, string> {
   const params = matched.get(req)?.params ?? req.params;
   return Object.fromEntries(
-    Object.entries(params).map(([name, value]) => [
-      name,
-      isShownId(value) ? value : NOT_AN_ID,
-    ]),
+    Object.entries(params).map(([name, value]) => [name, forLog(value)]),
   );
+}
+
+/**
+ * The request's path (mount included, no query) for a log line where no route
+ * template exists yet (before routing): each id-shaped segment as sent, any
+ * other as `[not an id]`. At most 256 characters, `…` included, cut at a `/`, since
+ * every marker is longer than `@`.
+ */
+export function pathForLog(req: Request): string {
+  const shown = `${req.baseUrl}${req.path}`
+    .split('/')
+    .map((segment) => (segment === '' ? segment : forLog(segment)))
+    .join('/');
+  if (shown.length <= MAX_LOGGED_PATH) return shown;
+  // Whole segments only: a cut-off JWT no longer matches the logger's JWT pattern.
+  // The kept part ends at the `/` (index <= MAX - 2), so with `…` the line stays within MAX.
+  return `${shown.slice(0, shown.lastIndexOf('/', MAX_LOGGED_PATH - 2) + 1)}…`;
 }
 
 /** The error middleware records why the request failed, so the access line says the same. */
