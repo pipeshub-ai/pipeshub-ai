@@ -1331,6 +1331,29 @@ class TestEnsureSchema:
         assert result is False
 
     @pytest.mark.asyncio
+    async def test_ensure_schema_creates_the_extra_node_collections_and_their_indexes(self, connected_provider, monkeypatch) -> None:
+        """A build may add document collections through ``app.edition.extra_node_collections``; they are created with
+        the shared ones, as document collections, and get their persistent indexes."""
+        import app.services.graph_db.arango.arango_http_provider as module
+
+        monkeypatch.setattr(module, "extra_node_collections", lambda: {"extraDocs": (("orgId", "kind"), ("orgId",))})
+        client = connected_provider.http_client
+        client.has_collection = AsyncMock(side_effect=lambda name: name != "extraDocs")
+        client.create_collection = AsyncMock(return_value=True)
+        client.has_graph = AsyncMock(return_value=True)
+        client.ensure_persistent_index = AsyncMock(return_value=True)
+        connected_provider._apply_schema = AsyncMock(return_value=True)
+        connected_provider._ensure_edge_definitions_up_to_date = AsyncMock()
+        connected_provider._ensure_departments_seed = AsyncMock()
+        connected_provider.start_record_schema_poll = MagicMock()
+
+        await connected_provider.ensure_schema()
+
+        client.create_collection.assert_any_call("extraDocs", edge=False, schema=None)
+        client.ensure_persistent_index.assert_any_call("extraDocs", ["orgId", "kind"])
+        client.ensure_persistent_index.assert_any_call("extraDocs", ["orgId"])
+
+    @pytest.mark.asyncio
     async def test_an_apps_schema_not_applied_fails_the_ensure(self, connected_provider) -> None:
         """Every write to an app document is checked against the live schema; a sync whose start is refused does not run."""
         from app.config.constants.arangodb import CollectionNames

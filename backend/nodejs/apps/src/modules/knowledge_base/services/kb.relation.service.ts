@@ -1,4 +1,5 @@
 import { inject, injectable } from 'inversify';
+import { withCause } from '../../../libs/errors/base.error';
 import { Logger } from '../../../libs/services/logger.service';
 import { IRecordDocument } from '../types/record';
 import { IFileRecordDocument } from '../types/file_record';
@@ -188,19 +189,16 @@ export class RecordRelationService {
       };
 
       await this.syncEventProducer.publishEvent(event);
-      logger.info(
-        `Published resync connector event for app ${resyncConnectorPayload.connectorName}`,
-      );
 
       return { success: true };
     } catch (eventError: any) {
-      logger.error('Failed to publish resync connector event', {
-        error: eventError,
-      });
       if (eventError?.statusCode === 409) {
         throw eventError;
       }
-      throw markClientSafe(new ServiceUnavailableError(RESYNC_NOT_QUEUED_MESSAGE));
+      throw withCause(
+        markClientSafe(new ServiceUnavailableError(RESYNC_NOT_QUEUED_MESSAGE)),
+        eventError,
+      );
     }
   }
 

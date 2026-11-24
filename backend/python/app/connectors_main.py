@@ -944,6 +944,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     app.state.config_service = app_container.config_service()
     await configure_envelope(app.state.config_service)
+    from app.modules.indexing.replay_set import check_main_redis_eviction_policy
+
+    await check_main_redis_eviction_policy(app.state.config_service, app_container.logger(), "connectors")
 
     # Resolve data_store first - this internally resolves graph_provider
     data_store = await app_container.data_store()

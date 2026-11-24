@@ -2205,9 +2205,29 @@
         "pasteBlockLabel": "可直接粘贴到您的 MCP 配置中",
         "copyPasteBlockAria": "复制粘贴块",
         "copySuccessTitle": "已复制",
-        "copyErrorTitle": "无法复制"
+        "copyErrorTitle": "无法复制",
+        "knowledgeLimitLaterHint": "你之后可以更改此项，无需更换令牌。"
       },
-      "scopeCount_other": "{{count}} 个权限范围"
+      "scopeCount_other": "{{count}} 个权限范围",
+      "access": {
+        "panelTitle": "更改访问权限",
+        "intro": "选择 {{name}} 可以查看的内容。令牌会继续有效，更改从它的下一次请求起生效，因此无需更新任何使用它的地方。",
+        "save": "保存",
+        "savedTitle": "访问权限已更改",
+        "savedEverything": "{{name}} 现在可以查看你能查看的所有内容。",
+        "savedSome_other": "{{name}} 现在可以查看所选的 {{count}} 项。",
+        "undo": "撤销",
+        "undoneTitle": "已撤销更改",
+        "undoErrorTitle": "无法撤销更改。请打开“更改访问权限”重新设置。",
+        "errorTitle": "无法更改访问权限",
+        "errorDescription": "未做任何更改。请重试。",
+        "unknownTitle": "无法确认更改",
+        "unknownDescription": "更改可能已保存。请先检查此处显示的访问范围，再重试。",
+        "unknownReloadFailedDescription": "更改可能已保存，但无法加载最新的访问范围。请先重新加载页面，再以显示内容为准。",
+        "rowAction": "更改访问权限",
+        "rowActionAria": "更改 {{name}} 可以查看的内容",
+        "rowActionTooltip": "更改访问权限：选择此令牌可以查看的内容"
+      }
     },
     "agentSignIns": {
       "title": "代理登录",
@@ -2481,7 +2501,8 @@
         "security": "安全",
         "personal": "个人",
         "people": "成员",
-        "developerSettings": "开发者设置"
+        "developerSettings": "开发者设置",
+        "help": "帮助"
       },
       "nav": {
         "general": "常规",
@@ -4055,7 +4076,8 @@
           "shared": "所有人共用一个凭据",
           "sharedHint": "你在下方添加一次。所有人都以它的权限操作。"
         },
-        "advanced": "高级"
+        "advanced": "高级",
+        "nameTaken": "已有其他服务器使用这个名称。请换一个。"
       },
       "configPanel": {
         "editTitle": "编辑 MCP 服务器",
@@ -6370,5 +6392,151 @@
       "copyDetails": "复制详细信息给管理员",
       "copied": "详细信息已复制"
     }
+  },
+  "support": {
+    "menuLabel": "联系支持",
+    "title": "联系支持",
+    "steps": {
+      "area": "类别",
+      "details": "详细信息"
+    },
+    "close": "关闭",
+    "cancel": "取消",
+    "back": "返回",
+    "continue": "继续",
+    "send": "发送请求",
+    "sending": "正在发送…",
+    "changeArea": "更改类别",
+    "change": "更改",
+    "issueOther": "其他（未列出）",
+    "areaStep": {
+      "title": "您需要哪方面的帮助？",
+      "subtitle": "请选择与您的问题最相关的类别。",
+      "suggested": "推荐",
+      "suggestion": "{{area}} 在 {{time}} 出现错误，因此我们推荐了此类别。",
+      "idea": "有想法要分享？发送反馈"
+    },
+    "areas": {
+      "connectors": {
+        "label": "连接器与同步",
+        "hint": "连接应用、同步错误或数据缺失"
+      },
+      "chat": {
+        "label": "聊天与搜索",
+        "hint": "回答、引用或搜索结果"
+      },
+      "agents": {
+        "label": "智能体与操作",
+        "hint": "创建、运行或共享智能体"
+      },
+      "files": {
+        "label": "文件与集合",
+        "hint": "上传、文件夹或文件预览"
+      },
+      "access": {
+        "label": "登录与访问",
+        "hint": "登录、密码或单点登录"
+      },
+      "people": {
+        "label": "成员与权限",
+        "hint": "邀请用户、角色或群组"
+      },
+      "other": {
+        "label": "其他",
+        "hint": "此处未列出的任何问题"
+      }
+    },
+    "details": {
+      "descriptionLabel": "发生了什么？",
+      "descriptionPlaceholder": "您当时想做什么？实际发生了什么？",
+      "descriptionMin_other": "至少 {{count}} 个字符。",
+      "descriptionMax_other": "已达到 {{count}} 个字符的上限。",
+      "attach": "附加截图",
+      "removeFile": "移除 {{name}}",
+      "fileUnsupported": "{{name}}：不支持此文件类型。",
+      "fileTooLarge": "{{name}} 超过 5 MB。",
+      "tooManyFiles": "最多可附加 5 个文件。",
+      "filesTotalTooLarge": "文件总大小不能超过 8 MB。",
+      "smtpTitle": "此工作区尚未设置邮件",
+      "smtpBody": "我们会为您生成一封邮件，您可以用自己的邮件应用发送到 {{email}}。",
+      "smtpAdmin": "如需直接发送请求，请在工作区设置中配置 SMTP。",
+      "smtpMember": "如需直接发送请求，请让管理员配置 SMTP。",
+      "includeErrors_other": "包含最近的 {{count}} 个错误",
+      "errorLine": "{{area}}：{{time}} 出现错误 {{status}}",
+      "errorLineUnknown": "{{time}} 出现错误 {{status}}",
+      "sentWith": "随请求一并发送：{{list}}。",
+      "sentParts": {
+        "workspace": "您的工作区",
+        "identity": "您的姓名和邮箱",
+        "browser": "您的浏览器",
+        "errors": "最近的错误"
+      },
+      "viewDetails": "查看详细信息",
+      "hideDetails": "隐藏详细信息",
+      "rows": {
+        "issue": "问题类别",
+        "workspace": "工作区",
+        "signedInAs": "登录身份",
+        "browser": "浏览器",
+        "recentErrors": "最近的错误"
+      }
+    },
+    "blocked": {
+      "area": "请选择一个类别以继续。",
+      "description": "“发生了什么？”至少需要 {{min}} 个字符（还差 {{left}} 个）。"
+    },
+    "result": {
+      "sentTitle": "请求已发送",
+      "sentBody": "支持团队已收到您的请求。我们已向您发送一份副本，回复将发送到您的收件箱。",
+      "pendingTitle": "仍在发送",
+      "pendingBody": "发送到 {{email}} 的邮件比平时慢。如果没有收到回复，请凭此编号联系我们。",
+      "referenceLabel": "您的编号",
+      "copyReference": "复制编号",
+      "quote": "就同一问题再次联系我们时，请提供此编号。",
+      "done": "完成"
+    },
+    "email": {
+      "title": "通过您的邮件应用发送",
+      "noSmtp": "此处尚未设置邮件，因此请求 {{reference}} 未发送。请用您自己的邮件应用发送此邮件，以便支持团队收到。",
+      "failed": "我们无法通过邮件发送请求 {{reference}}。请用您自己的邮件应用发送此邮件，以便支持团队收到。",
+      "limit": "您在过去一小时内已发送多个请求。请通过您的邮件应用发送这一条。",
+      "unsaved": "我们未能发送您的请求。请用您自己的邮件应用发送此邮件，以便支持团队收到。",
+      "to": "收件人",
+      "subject": "主题",
+      "copy": "复制邮件",
+      "copied": "已复制",
+      "open": "打开邮件应用",
+      "shortened": "邮件应用中的内容已缩短。使用“复制邮件”可获取完整内容。",
+      "attachFiles_other": "您的 {{count}} 个文件不在这封邮件中，请在邮件应用中自行添加附件。",
+      "copyFallback": "无法自动复制。邮件内容已选中，请按 Ctrl+C（Mac 上按 ⌘C）。"
+    },
+    "errors": {
+      "load": "无法加载支持选项。",
+      "retry": "重试",
+      "send": "无法发送您的请求，请重试。",
+      "emailInstead": "改用邮件发送"
+    }
+  },
+  "feedback": {
+    "menuLabel": "发送反馈",
+    "title": "发送反馈",
+    "subtitle": "告诉我们哪些好用、哪些不好用，以及您希望看到什么。",
+    "kindIssue": "一般反馈",
+    "kindFeedback": "功能请求",
+    "descriptionPlaceholder": "发生了什么，或我们应该改进什么？",
+    "addFiles": "添加文件",
+    "removeFile": "移除",
+    "fileHint": "可选。最多 5 个文件，每个 5 MB。图片、PDF、文本或 CSV。",
+    "cancel": "取消",
+    "submit": "提交",
+    "needReply": "需要回复？联系支持",
+    "success": "谢谢，我们已收到你的反馈。",
+    "pending": "发送到 {{email}} 的邮件耗时比平时更长。如果您没有收到回复，请联系我们。",
+    "submitError": "提交失败，请重试。",
+    "descriptionTooShort": "请再补充一些细节（至少 10 个字符）。",
+    "invalidType": "不支持该文件类型。",
+    "fileTooLarge": "每个文件不能超过 5 MB。",
+    "tooManyFiles": "最多只能附加 5 个文件。",
+    "filesTotalTooLarge": "文件总大小不能超过 8 MB。"
   }
 }

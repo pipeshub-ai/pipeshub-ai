@@ -247,10 +247,10 @@ async def _finalize(
 
     ``full_sync_cut_short``: a full sync that stopped before it finished — a
     restart, a stop, a crash in ``run_sync`` — or whose removal of what it did
-    not see failed. Its prep already deleted the connector's sync points, and the
-    links of whatever it did not see are only removed once a full sync runs to
-    the end. The flag that asks for one goes in the same write as IDLE: the
-    connector is never seen IDLE without it.
+    not see failed or was skipped because its prep could not reset the sync
+    points. The links of whatever it did not see are only removed once a full
+    sync runs to the end. The flag that asks for one goes in the same write as
+    IDLE: the connector is never seen IDLE without it.
 
     ``full_sync_still_requested``: the run was cut short by this service
     shutting down, not by a person stopping it or by the sync failing. The
@@ -806,6 +806,7 @@ async def run_sync_task(
     coordinator: SyncCoordinator | None = None,
     close_connector: bool = False,
     resync_spec: object | None = None,
+    sync_points_reset: bool = True,
 ) -> None:
     start = time.monotonic()
     stopped = False
@@ -903,9 +904,14 @@ async def run_sync_task(
         if seen is not None and not (
             lease is not None and (lease.stop_requested.is_set() or lease.lost.is_set())
         ):
-            unlink_failed = not await _unlink_what_full_sync_missed(
-                connector, connector_id, graph_provider, logger, seen
-            )
+            if sync_points_reset:
+                unlink_failed = not await _unlink_what_full_sync_missed(
+                    connector, connector_id, graph_provider, logger, seen
+                )
+            else:
+                logger.warning(
+                    "Full sync could not reset the connector's sync points; nothing it did not see is unlinked, and a full sync is owed"
+                )
         if incomplete is not None:
             raise incomplete
     except asyncio.CancelledError:
@@ -941,7 +947,9 @@ async def run_sync_task(
         # raising, so `finished` alone would call that run complete.
         # A failed unlink owes one too: what the sync did not see is
         # still linked, revoked access included.
-        full_sync_cut_short = full_sync and (not finished or stopped or unlink_failed or lease_lost)
+        full_sync_cut_short = full_sync and (
+            not finished or stopped or unlink_failed or lease_lost or not sync_points_reset
+        )
         stop_cause = _stop_cause(lease, coordinator, lost=lease_lost) if outcome is SyncRunOutcome.STOPPED else None
         end_fields: dict[str, Any] = {
             "sync_type": sync_type,

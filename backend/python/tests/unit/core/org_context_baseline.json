@@ -69,6 +69,7 @@
   "app/query_main.py": 1,
   "app/sandbox/artifact_cleanup.py": 1,
   "app/sandbox/artifact_upload.py": 1,
+  "app/sandbox/docker_proxy.py": 2,
   "app/scripts/build_code_graph_edges.py": 1,
   "app/services/cache/accessible_records_cache.py": 2,
   "app/services/graph_db/dated_scope.py": 1,

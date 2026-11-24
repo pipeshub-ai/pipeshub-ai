@@ -582,6 +582,10 @@ class TransactionStore(BaseDataStore):
         """Whether *error* rolled this transaction back cleanly so it can be run again."""
         return False
 
+    async def publish_with_commit(self, producer: Any, topic: str, messages: list[tuple[str | None, dict]]) -> bool:  # noqa: ANN401
+        """Publish *messages* inside this transaction; False when the store cannot, and the caller publishes after the commit."""
+        return False
+
     @abstractmethod
     async def commit(self) -> None:
         """Commit the transaction"""

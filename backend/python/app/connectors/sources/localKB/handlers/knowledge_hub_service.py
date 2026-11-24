@@ -549,6 +549,9 @@ class KnowledgeHubService:
                 token, secret, user_id, org_id,
                 mode=mode, parent_id=parent_id, parent_type=parent_type,
             )
+            if want_counts and page_cursor is not None and page_cursor.total is not None and page_cursor.counts_by_type is None:
+                # The listing was counted without per-type counts, so the cursor carries the total alone: counted again as if it had aged out.
+                page_cursor = replace(page_cursor, total=None, total_capped=False, counted_at_ms=0)
             # The cursor decides sort and filters, so a page cannot resume a
             # keyset from an order that no longer applies.
             active = dict(page_cursor.filters or {}) if page_cursor else dict(filters)
@@ -704,7 +707,8 @@ class KnowledgeHubService:
 
     async def _resolve_user(self, user_id: str, org_id: str) -> Any | None:
         """Resolve graph user node from external userId. EE overrides for org-scoped lookup."""
-        return await get_caller_user(self.graph_provider, user_id)
+        # A lookup that failed is not a missing user: the error reaches get_nodes, which answers busy or failed.
+        return await get_caller_user(self.graph_provider, user_id, raise_on_error=True)
 
     async def _get_user_app_ids(
         self, user_key: str, org_id: str

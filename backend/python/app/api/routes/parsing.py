@@ -81,7 +81,7 @@ from app.services.resource_governor import (
 )
 from app.services.resource_governor.kinds import (
     EXCESS_WAIT_SECONDS,
-    classify_kind,
+    parse_format_kind,
     permit_excess_bytes,
 )
 from app.services.resource_governor.lanes import LaneWaitTimeout
@@ -392,7 +392,8 @@ async def _parse_file(
 
     message_id = current_display_id()
     # The parser the registry resolves decides a heavy tier: a PDF labelled txt is parsed by the PDF parser.
-    tier = reader_tier(extension, mime_type, file_types.format_tier(file_types.parse_format(mime_type, extension)))
+    fmt = file_types.parse_format(mime_type, extension)
+    tier = reader_tier(extension, mime_type, file_types.format_tier(fmt))
     cost = parse_cost(tier, len(content))
     logger.debug(
         "Received parse request: record='%s' format=%s provider=%s size_bytes=%d tier=%s cost=%d",
@@ -456,7 +457,7 @@ async def _parse_file(
         working_set = governor.heavy_working_set
         base_gb = working_set.gb if tier is ParseTier.HEAVY else INDEX_LIGHT_WORKING_SET_GB
         excess = permit_excess_bytes(
-            classify_kind(extension, mime_type), base_gb, working_set.source, len(content)
+            parse_format_kind(fmt, extension, mime_type), base_gb, working_set.source, len(content)
         )
         if excess:
             if not await governor.memory_budget.reserve(excess, EXCESS_WAIT_SECONDS):

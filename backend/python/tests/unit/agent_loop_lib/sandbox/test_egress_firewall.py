@@ -9,6 +9,7 @@ import pytest
 from app.agent_loop_lib.sandbox.coding.egress_firewall import (
     BLOCKED_CIDRS,
     FIREWALL_UNAVAILABLE_EXIT_CODE,
+    EgressNetworkUnsafe,
     build_firewall_script,
     ensure_egress_network_sync,
     firewall_unavailable,
@@ -179,13 +180,14 @@ class TestEnsureEgressNetwork:
         legacy.remove.assert_called_once()
         client.networks.create.assert_called_once()
 
-    def test_in_use_network_with_icc_on_is_kept(self) -> None:
+    def test_in_use_network_with_icc_on_is_refused(self) -> None:
         client = MagicMock()
         legacy = _network("egress", icc_off=False, containers={"c": {}})
         client.networks.list.return_value = [legacy]
         client.networks.get.return_value = legacy
 
-        assert ensure_egress_network_sync(client, "egress", {}) == ["172.30.0.0/16"]
+        with pytest.raises(EgressNetworkUnsafe, match="inter-container traffic"):
+            ensure_egress_network_sync(client, "egress", {})
         legacy.remove.assert_not_called()
         client.networks.create.assert_not_called()
 
@@ -273,6 +275,64 @@ class TestCreateSandboxContainerDiskQuota:
         assert "storage_opt" not in client.containers.create.call_args.kwargs
 
 
+class TestCreateSandboxContainerOomScoreAdj:
+    """Sandboxes are created first-to-kill; an older proxy that refuses the
+    field must not break every run."""
+
+    _OLD_PROXY = "403 Client Error: docker-proxy: HostConfig: field 'OomScoreAdj' is not permitted"
+
+    @pytest.fixture(autouse=True)
+    def _fresh(self, monkeypatch) -> None:
+        import app.agent_loop_lib.sandbox.coding.egress_firewall as ef
+        monkeypatch.setattr(ef, "_oom_score_adj_usable", True)
+        monkeypatch.setenv("SANDBOX_DISK_QUOTA", "0")
+
+    def test_every_create_is_marked(self) -> None:
+        import app.agent_loop_lib.sandbox.coding.egress_firewall as ef
+        client = MagicMock()
+        ef.create_sandbox_container(client, image="img", detach=True)
+        assert client.containers.create.call_args.kwargs["oom_score_adj"] == 1000
+
+    def test_an_older_proxy_falls_back_and_warns_once(self, caplog) -> None:
+        import logging
+
+        import app.agent_loop_lib.sandbox.coding.egress_firewall as ef
+        client = MagicMock()
+        ok = MagicMock()
+        client.containers.create.side_effect = [Exception(self._OLD_PROXY), ok, ok]
+        with caplog.at_level(logging.WARNING):
+            assert ef.create_sandbox_container(client, image="img", detach=True) is ok
+            ef.create_sandbox_container(client, image="img", detach=True)
+        first, second, third = client.containers.create.call_args_list
+        assert first.kwargs["oom_score_adj"] == 1000
+        assert "oom_score_adj" not in second.kwargs and "oom_score_adj" not in third.kwargs
+        warns = [r for r in caplog.records if "first-to-kill" in r.getMessage()]
+        assert len(warns) == 1
+
+    @pytest.mark.parametrize("message", [
+        "403 Client Error: docker-proxy: HostConfig.OomScoreAdj may not be negative: -5",
+        "403 Client Error: docker-proxy: HostConfig: field 'Privileged' is not permitted",
+        "image not found",
+    ])
+    def test_other_refusals_are_raised(self, message: str) -> None:
+        import app.agent_loop_lib.sandbox.coding.egress_firewall as ef
+        client = MagicMock()
+        client.containers.create.side_effect = Exception(message)
+        with pytest.raises(Exception, match="."):
+            ef.create_sandbox_container(client, image="img", detach=True)
+        assert client.containers.create.call_count == 1
+        assert ef._oom_score_adj_usable is True
+
+    def test_the_quota_fallback_keeps_the_mark(self, monkeypatch) -> None:
+        import app.agent_loop_lib.sandbox.coding.egress_firewall as ef
+        monkeypatch.setattr(ef, "_storage_opt_usable", None)
+        monkeypatch.setenv("SANDBOX_DISK_QUOTA", "10g")
+        client = MagicMock()
+        client.containers.create.side_effect = [Exception("--storage-opt is not supported"), MagicMock()]
+        ef.create_sandbox_container(client, image="img", detach=True)
+        assert client.containers.create.call_args.kwargs["oom_score_adj"] == 1000
+
+
 class TestIsStorageOptRejected:
     def test_recognises_storage_opt_rejections(self) -> None:
         import app.agent_loop_lib.sandbox.coding.egress_firewall as ef
@@ -283,3 +343,48 @@ class TestIsStorageOptRejected:
     def test_other_errors_are_not_rejections(self) -> None:
         import app.agent_loop_lib.sandbox.coding.egress_firewall as ef
         assert ef._is_storage_opt_rejected(Exception("No such image: img")) is False
+
+
+class TestDeadlineCommand:
+    def test_argv(self) -> None:
+        from app.agent_loop_lib.sandbox.coding.egress_firewall import deadline_command
+
+        argv = deadline_command(["sh", "-c", "python3 main.py"], 30)
+        assert argv[:2] == ["sh", "-c"]
+        assert argv[3:] == ["sandbox-deadline", "30", "sh", "-c", "python3 main.py"]
+        assert 'exec timeout -s KILL "$s" "$@"' in argv[2]
+
+    def _run(self, tmp_path, *, with_timeout: bool) -> str:
+        import os
+        import subprocess
+
+        from app.agent_loop_lib.sandbox.coding.egress_firewall import deadline_command
+
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        if with_timeout:
+            stub = bin_dir / "timeout"
+            stub.write_text('#!/bin/sh\necho "timeout $*"\n')
+            stub.chmod(0o755)
+        # Only the stub directory and the shell's own: no real `timeout` on PATH.
+        env = {"PATH": f"{bin_dir}:/nonexistent"}
+        argv = deadline_command(["/bin/echo", "ran", "it"], 30)
+        argv[0] = "/bin/sh"
+        return subprocess.run(argv, env=env, capture_output=True, text=True, check=True, cwd=os.getcwd()).stdout
+
+    def test_execs_timeout_when_the_image_has_it(self, tmp_path) -> None:
+        assert self._run(tmp_path, with_timeout=True) == "timeout -s KILL 30 /bin/echo ran it\n"
+
+    def test_runs_the_command_directly_without_timeout(self, tmp_path) -> None:
+        assert self._run(tmp_path, with_timeout=False) == "ran it\n"
+
+    def test_composes_inside_the_firewall_wrapper(self) -> None:
+        from app.agent_loop_lib.sandbox.coding.egress_firewall import (
+            deadline_command,
+            firewalled_container_kwargs,
+        )
+
+        inner = deadline_command(["sh", "-c", "python3 main.py"], 30)
+        kwargs = firewalled_container_kwargs(inner, network_cidrs=["172.30.0.0/16"], token="0" * 32)
+        assert kwargs["command"][3] == "sandbox-egress"
+        assert kwargs["command"][4:] == inner

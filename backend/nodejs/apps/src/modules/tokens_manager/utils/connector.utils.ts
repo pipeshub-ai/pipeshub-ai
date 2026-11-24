@@ -4,8 +4,8 @@ import {
   ConnectorServiceResponse,
 } from '../../../libs/commands/connector_service/connector.service.command';
 import { HttpMethod } from '../../../libs/enums/http-methods.enum';
-import { NextFunction, Request, Response, Router } from 'express';
-import { bindLogContext } from '../../../libs/context/request-context';
+import { Response, Router } from 'express';
+import { bindPathLogFields } from '../../../libs/middlewares/safe-path-params.middleware';
 import { isLocalFsConnector } from '../../../utils/local-fs-utils';
 import {
   DesktopPresence,
@@ -46,24 +46,14 @@ export const handleBackendError = (error: unknown, operation: string): Error =>
 
 /**
  * Names the connector (and record) a request is about on every line it writes: the service call
- * lines, the error line and the access line. Register after `guardPathParams`, so only a checked
- * path segment is bound.
+ * lines, the error line and the access line. Register after `guardPathParams`.
  */
 export const bindConnectorLogFields = (router: Router): void => {
-  const bind =
-    (key: 'connector_id' | 'connector_type' | 'record_id') =>
-    (
-      _req: Request,
-      _res: Response,
-      next: NextFunction,
-      value: string,
-    ): void => {
-      bindLogContext({ [key]: value });
-      next();
-    };
-  router.param('connectorId', bind('connector_id'));
-  router.param('connectorType', bind('connector_type'));
-  router.param('recordId', bind('record_id'));
+  bindPathLogFields(router, {
+    connectorId: 'connector_id',
+    connectorType: 'connector_type',
+    recordId: 'record_id',
+  });
 };
 
 // Helper function to execute connector service commands

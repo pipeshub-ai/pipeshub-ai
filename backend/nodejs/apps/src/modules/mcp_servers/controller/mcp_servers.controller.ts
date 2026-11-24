@@ -122,7 +122,6 @@ function proxyMcp(
 
         // The OAuth callback's path carries the authorization code and state.
         logger.debug(`MCP servers proxy: ${action}`, {
-          userId,
           path: redactSensitiveQueryParams(pathBuilder(req)),
         });
 
@@ -139,12 +138,6 @@ function proxyMcp(
 
         handleConnectorResponse(connectorResponse, res, action, `${action} failed`);
       } catch (error: any) {
-        logger.error(`Error in MCP servers proxy: ${action}`, {
-          error: error.message,
-          userId: req.user?.userId,
-          status: error.response?.status || error.statusCode,
-          data: error.response?.data || error.data,
-        });
         next(handleBackendError(error, action));
       }
     };

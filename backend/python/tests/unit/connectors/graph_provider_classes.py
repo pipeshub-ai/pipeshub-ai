@@ -16,6 +16,7 @@ A method added to the interface fails `test_every_provider_method_is_classified`
 """
 
 READS = frozenset("""
+    kh_refresh_plans
     check_access check_agent_permission check_api_toolset_in_use check_collection_has_document check_connector_in_use
     check_connector_name_exists check_connector_name_uniqueness check_edge_exists check_mcp_instance_in_use
     check_record_access_with_details check_toolset_instance_in_use count_active_apps_by_type count_connector_instances_by_scope

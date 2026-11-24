@@ -148,6 +148,7 @@ from app.services.redis.connection_provider_factory import uses_pg_state
 from app.services.resource_governor import ResourceGovernor
 from app.services.resource_governor.controller import run_for_health
 from app.services.resource_governor.shared_slots import shared_slots_directory
+from app.services.resource_governor.yield_signal import YieldSignal
 from app.telemetry.modules.record_storage_metrics import record_recovery_org_pass
 from app.telemetry.ops_exporter import exporter_from_env
 from app.telemetry.setup import setup_telemetry
@@ -2604,25 +2605,11 @@ _TOPIC_RETRY_MAX_S = 300.0
 
 
 async def _check_redis_eviction_policy(app_container: Any, logger: logging.Logger) -> None:  # noqa: ANN401
-    """Tell the admin when Redis may evict the keys indexing keeps there (replay set, pause counters, budgets).
+    """Tell the admin when Redis may evict the keys indexing keeps there (replay set, pause counters, budgets), and
+    stop the start on an ``allkeys-*`` policy. The result is also what ``/health`` reports."""
+    from app.modules.indexing.replay_set import check_main_redis_eviction_policy
 
-    Reads the Redis the replay set is written to (the configuration service's Redis config, which is also what the
-    record handler uses under the PostgreSQL broker). Best effort: a Redis that cannot be read leaves the warning
-    unset and indexing starts anyway.
-    """
-    from app.modules.indexing.replay_set import check_eviction_policy
-    from app.services.vector_db.rebuild_state import redis_from_config_service
-
-    redis = None
-    try:
-        redis = await redis_from_config_service(app_container.config_service())
-        await check_eviction_policy(redis, logger)
-    except Exception as exc:
-        logger.warning("Redis eviction policy not checked: %s", type(exc).__name__)
-    finally:
-        if redis is not None:
-            with contextlib.suppress(Exception):
-                await redis.aclose()
+    await check_main_redis_eviction_policy(app_container.config_service(), logger, "indexing")
 
 
 def warn_if_deferral_fields_write(logger: logging.Logger) -> None:
@@ -3284,6 +3271,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         reserve_embedding_cpus=await is_local_cpu_embedding_configured(
             app_container.config_service(), logger
         ),
+        # Indexing admits work first in this container, so it alone slows
+        # down for code sandbox runs waiting for memory; parsing and Docling
+        # would brake the same parse a second time.
+        yield_signal=YieldSignal.open_default(role="indexing governor"),
         remote_parse_slots=remote_parse_concurrency(),
     )
     app.state.governor = governor

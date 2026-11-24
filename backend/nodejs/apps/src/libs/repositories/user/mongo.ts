@@ -1,6 +1,9 @@
 import { randomUUID } from 'crypto';
-import mongoose from 'mongoose';
-import { Users } from '../../../modules/user_management/schema/users.schema';
+import mongoose, { type UpdateQuery } from 'mongoose';
+import {
+  Users,
+  type User,
+} from '../../../modules/user_management/schema/users.schema';
 import { UserGroups } from '../../../modules/user_management/schema/userGroup.schema';
 import { Org } from '../../../modules/user_management/schema/org.schema';
 import { UserCredentials } from '../../../modules/auth/schema/userCredentials.schema';
@@ -749,10 +752,13 @@ export class MongoUserRepository implements UserRepository {
     const user = await Users.findOne({ orgId, _id: id, isDeleted: false });
     if (!user) return null;
     Object.assign(user, fields);
+    // The account can be removed between the read and the save; the write must not land on it then.
+    user.$where = { isDeleted: false };
     try {
       if (session) await user.save({ session });
       else await user.save();
     } catch (error) {
+      if (error instanceof mongoose.Error.DocumentNotFoundError) return null;
       throw mapMongoError(error);
     }
     return dto(user);
@@ -761,15 +767,27 @@ export class MongoUserRepository implements UserRepository {
   async markDeleted(
     orgId: string,
     id: string,
-    extra?: { signedOut?: boolean; deletedBy?: string },
+    extra?: { signedOut?: boolean; deletedBy?: string; onlyMember?: boolean },
   ): Promise<UserDto | null> {
-    const user = await Users.findOne({ orgId, _id: id });
-    if (!user) return null;
-    user.isDeleted = true;
-    if (extra?.signedOut) user.hasLoggedIn = false;
-    if (extra && 'deletedBy' in extra) user.deletedBy = extra.deletedBy;
-    await user.save();
-    return dto(user);
+    const $set: Partial<User> = { isDeleted: true };
+    if (extra?.signedOut) $set.hasLoggedIn = false;
+    const update: UpdateQuery<User> = { $set };
+    if (extra && 'deletedBy' in extra) {
+      if (extra.deletedBy === undefined) update.$unset = { deletedBy: '' };
+      else $set.deletedBy = extra.deletedBy;
+    }
+    // One conditional write: the role is judged by the store at the moment it removes the account.
+    // `$ne` rather than 'member': a row from before the role backfill has no role and reads as a member.
+    const row = await Users.findOneAndUpdate(
+      {
+        orgId,
+        _id: id,
+        ...(extra?.onlyMember ? { role: { $ne: 'admin' } } : {}),
+      },
+      update,
+      { returnDocument: 'after' },
+    ).exec();
+    return row ? dto(row) : null;
   }
 
   async restoreByEmails(
@@ -779,7 +797,8 @@ export class MongoUserRepository implements UserRepository {
   ): Promise<UserDto[]> {
     const session = sessionOf(tx);
     const filter = { email: { $in: emails }, isDeleted: true, orgId };
-    const restore = { $set: { isDeleted: false } };
+    // A restore grants nothing: an admin invite promotes afterwards, cap-checked.
+    const restore = { $set: { isDeleted: false, role: 'member' as const } };
     if (session) await Users.updateMany(filter, restore, { session });
     else await Users.updateMany(filter, restore);
     const query = Users.find({

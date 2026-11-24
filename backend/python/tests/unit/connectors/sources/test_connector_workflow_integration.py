@@ -451,6 +451,9 @@ class MockTransactionStore:
     def is_transient_error(self, error: BaseException) -> bool:
         return False
 
+    async def publish_with_commit(self, producer: object, topic: str, messages: list) -> bool:
+        return False  # no broker shares this store's transaction: the processor publishes after the commit
+
     async def get_users_by_emails(
         self, emails: list[str], *, raise_on_error: bool = False, org_id: str | None = None,
     ) -> dict[str, User]:

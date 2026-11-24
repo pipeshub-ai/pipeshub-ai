@@ -537,6 +537,47 @@ describe('AuthMiddleware', () => {
       expect(req.user.oauthScopes).to.deep.equal(['user:read', 'kb:read'])
     })
 
+    it("puts a personal access token's current knowledge limit on req.user", async () => {
+      const limit = { apps: [], recordGroups: ['rg-1'], records: [] }
+      sinon.stub(jwt, 'decode').returns({ tokenType: 'oauth', client_id: 'pat-system:org1', iss: 'https://example.com' })
+      mockOAuthTokenService.verifyAccessToken.resolves({
+        userId: 'user1', orgId: 'org1', client_id: 'pat-system:org1', scope: 'kb:read', knowledgeLimit: limit,
+      })
+      sinon.stub(Users, 'findOne').returns(createMockQuery({ email: 'test@example.com', role: 'member' }))
+
+      const req = createMockRequest({ headers: { authorization: 'Bearer phpat_token' } })
+      await authMiddleware.authenticate(req, createMockResponse(), createMockNext())
+
+      expect(req.user.knowledgeLimit).to.deep.equal(limit)
+    })
+
+    it('marks a personal access token with no limit as seeing everything (null)', async () => {
+      sinon.stub(jwt, 'decode').returns({ tokenType: 'oauth', client_id: 'pat-system:org1', iss: 'https://example.com' })
+      mockOAuthTokenService.verifyAccessToken.resolves({
+        userId: 'user1', orgId: 'org1', client_id: 'pat-system:org1', scope: 'kb:read',
+      })
+      sinon.stub(Users, 'findOne').returns(createMockQuery({ email: 'test@example.com', role: 'member' }))
+
+      const req = createMockRequest({ headers: { authorization: 'Bearer phpat_token' } })
+      await authMiddleware.authenticate(req, createMockResponse(), createMockNext())
+
+      expect(req.user.knowledgeLimit).to.equal(null)
+    })
+
+    it("leaves an OAuth app token's req.user without a knowledge limit", async () => {
+      sinon.stub(jwt, 'decode').returns({ tokenType: 'oauth', client_id: 'client123', iss: 'https://example.com' })
+      mockOAuthTokenService.verifyAccessToken.resolves({
+        userId: 'user1', orgId: 'org1', client_id: 'client123', scope: 'kb:read',
+        knowledgeLimit: { apps: ['a'], recordGroups: [], records: [] },
+      })
+      sinon.stub(Users, 'findOne').returns(createMockQuery({ email: 'test@example.com', role: 'member' }))
+
+      const req = createMockRequest({ headers: { authorization: 'Bearer oauth-token' } })
+      await authMiddleware.authenticate(req, createMockResponse(), createMockNext())
+
+      expect(req.user).to.not.have.property('knowledgeLimit')
+    })
+
     describe('a token bound to /mcp', () => {
       const MCP = 'https://example.com/mcp'
 

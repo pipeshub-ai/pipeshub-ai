@@ -55,6 +55,7 @@ from app.config.constants.service import DefaultEndpoints, config_node_constants
 from app.config.constants.service_accounts import aql_not_a_service_account
 from app.connectors.sources.localKB.handlers.kh_merge import key_for, sort_order
 from app.core.org_context import MissingOrgContext
+from app.edition import extra_node_collections
 from app.exceptions.graph_db_exceptions import (
     GraphLockUnavailableError,
     GraphQueryError,
@@ -1372,8 +1373,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             # 1. Create all collections (node + edge)
             apps_schema_applied = True
             edge_collection_names = {ed["edge_collection"] for ed in EDGE_DEFINITIONS}
-            for col in CollectionNames:
-                name = col.value
+            for name in [*(col.value for col in CollectionNames), *extra_node_collections()]:
                 is_edge = name in edge_collection_names
                 col_schema = schema_by_collection.get(name)
                 if not await self.http_client.has_collection(name):
@@ -1555,6 +1555,11 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         """
         if self.http_client is None:
             raise RuntimeError("ArangoDB client is not connected")
+        for collection, indexes in extra_node_collections().items():
+            for fields in indexes:
+                if not await self.http_client.ensure_persistent_index(collection, list(fields)):
+                    # Not fatal for the schema (it would hold every service's start for one feature's index); the next start retries it.
+                    self.logger.error("The index %s on collection '%s' was not created", list(fields), collection)
         # ==================== TAXONOMY INDEXES ====================
         # Entity resolution looks canonical category/subcategory/topic/language
         # nodes up by (orgId, normalizedName) once per record — see
@@ -24479,7 +24484,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                                 FILTER parent_doc != null AND IS_SAME_COLLECTION("recordGroups", parent_doc)
                                 RETURN PARSE_IDENTIFIER(edge._to).key
                         )
-                    ) : (
+                    ) : FIRST((
+                        // A subquery: without FIRST its value is an array, which names no document,
+                        // and every connector record read as having no parent.
                         // For connector records, check nodeRelations first (for nested folders/records),
                         // then belongsTo (for immediate children of record groups),
                         // then inheritPermissions (alternative way records can be connected to record groups)
@@ -24509,7 +24516,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                                 RETURN PARSE_IDENTIFIER(edge._to).key
                         ) : null
                         RETURN parent_from_rel || parent_from_belongs || parent_from_inherit
-                    )
+                    ))
                 ) : null
             )
         )
