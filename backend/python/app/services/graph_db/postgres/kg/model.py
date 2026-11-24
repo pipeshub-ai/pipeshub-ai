@@ -21,6 +21,7 @@ GROUP_LIKE = ("groups", "roles", "teams")                    # what a user is a 
 # The nodes a grant can come from, as kg keys them (``access_sql.PRINCIPALS``: no sourceAccounts).
 # shortcut: kg keys no source account (no coll code), so its grants make no kg.scope_members rows and its links no principal closure rows; no verdict
 # reads either (the stamps take a source account's grants as literals, stampgraph.PRINCIPAL_COLLS), so add a code before a reader of them is written.
+# A record's ``granted`` flag does count them (``Snapshot.accounts``): the stamper reads that flag for a verified copy, in place of stampgraph.GRANTED.
 PRINCIPALS = ("users", "groups", "roles", "teams", "organizations")
 HIERARCHY = ("PARENT_CHILD", "ATTACHMENT")
 EDGE_COLLS = ("permission", "belongsTo", "nodeRelations", "inheritPermissions", "userAppRelation", "authenticatedAs")
@@ -122,6 +123,7 @@ class Snapshot:
     sk: dict[Key, int]
     has_children: set[Key] = field(default_factory=set)                       # record-like nodes (of those loaded) with at least one existing hierarchy child
     org: str = ""                                                             # the organization read; a node whose document names another is not listed
+    accounts: set[Key] = field(default_factory=set)                           # the source accounts that grant a loaded node and exist (kg keys none of them)
 
     def leaf(self, k: Key) -> bool:
         """A record with no hierarchy children. Record groups and apps carry record-group-level literals whatever their children are, so never."""
@@ -179,7 +181,7 @@ def record_row(k: Key, doc: dict, snap: Snapshot) -> dict:
     parents = [snap.sk[e.frm] for e in parent_edges]
     group_edges = [e for e in snap.edges_from.get(k, []) if e.coll == "belongsTo" and e.to_coll == "recordGroups" and snap.exists(e.to)]
     groups = [snap.sk[e.to] for e in sorted(group_edges, key=lambda e: (0 if app_id_of(e.to, snap.nodes.get(e.to, {})) == app else 1, snap.sk[e.to]))]
-    granted = any(e.coll == "permission" and e.frm[0] in PRINCIPALS and snap.exists(e.frm) for e in snap.edges_to.get(k, []))
+    granted = any(e.coll == "permission" and (snap.exists(e.frm) if e.frm[0] in PRINCIPALS else e.frm in snap.accounts) for e in snap.edges_to.get(k, []))
     return {
         "coll": COLL_CODE[coll], "id": nid, "kind": KIND[coll], "app_sk": snap.app_sk(k),
         "group_sk": groups[0] if groups else None, "parent_sk": parents[0] if parents else None,
