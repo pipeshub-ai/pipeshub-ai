@@ -19,6 +19,7 @@ from slack_behaviour_setup import (
     NOEMAIL,
     PARTNERS,
     SECRET,
+    WORKSPACE_CONNECTOR_ID,
     standard_workspace,
     workspace_config,
     workspace_connector,
@@ -153,6 +154,58 @@ class TestBotToken:
 
         assert store.links == []
         assert store.unlinks == 1
+
+
+GRANT_KEY = f"/services/connectors/{WORKSPACE_CONNECTOR_ID}/authenticatorGrant"
+
+
+async def _admin_listed_after_a_grant(workspace, store, checkpoints) -> tuple:
+    """Sync once with the authenticator outside the workspace (the token's view is given and
+    stored), then add them to the workspace at the head of the user list."""
+    store.authenticator_email = ADMIN
+    connector, config = await workspace_connector(store, checkpoints)
+    await connector.run_sync()
+    assert config.others[GRANT_KEY] == {"email": ADMIN, "granted": True}
+    workspace.add_user("U0ADMIN", ADMIN, "Admin")
+    workspace.users.insert(0, workspace.users.pop())
+    return connector, config
+
+
+class TestWithdrawalCoverage:
+    """ "No grant" is stored only once every channel was rewritten from its members or had the
+    token's view taken off; otherwise the record stays and the next sync withdraws again."""
+
+    async def test_a_sync_that_covers_every_channel_confirms_the_withdrawal(self, workspace, store, checkpoints) -> None:
+        connector, config = await _admin_listed_after_a_grant(workspace, store, checkpoints)
+
+        await connector.run_sync()
+
+        assert config.others[GRANT_KEY] == {"email": ADMIN, "granted": False}
+
+    async def test_a_user_list_cut_after_the_authenticator_leaves_the_withdrawal_owed(
+        self, workspace, store, checkpoints,
+    ) -> None:
+        connector, config = await _admin_listed_after_a_grant(workspace, store, checkpoints)
+        workspace.page_size["users.list"] = 1
+        workspace.fail("users.list", SlackError("internal_error"), times=None,
+                       when=lambda p: p.get("cursor") == "page:1")
+
+        await connector.run_sync()
+
+        assert config.others[GRANT_KEY] == {"email": ADMIN, "granted": True}, "private channels were skipped"
+
+    async def test_a_channel_that_could_not_be_built_leaves_the_withdrawal_owed(
+        self, workspace, store, checkpoints, monkeypatch,
+    ) -> None:
+        connector, config = await _admin_listed_after_a_grant(workspace, store, checkpoints)
+        build = connector._to_channel_record_group
+        monkeypatch.setattr(
+            connector, "_to_channel_record_group", lambda cd: None if cd.get("id") == SECRET else build(cd),
+        )
+
+        await connector.run_sync()
+
+        assert config.others[GRANT_KEY] == {"email": ADMIN, "granted": True}
 
 
 class TestUpdates:

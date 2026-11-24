@@ -598,6 +598,58 @@ class TestCreatorTokenViewOnFallbacks:
         )
         assert kv.values[GRANT_KEY] == {"email": CREATOR, "granted": False}
 
+    async def test_a_group_project_list_that_fails_leaves_the_withdrawal_owed(self) -> None:
+        from app.connectors.core.registry.filters import SyncFilterKey
+
+        kv = _given()
+        c = await _decided(listed=_LISTED, kv=kv)
+        c.sync_filters = {SyncFilterKey.GROUP_IDS: SimpleNamespace(
+            is_empty=lambda: False, operator="in", value=["eng", "ops"],
+        )}
+        good = _project()
+
+        async def paged_list(fn: object, group: str, **_: object) -> MagicMock:
+            return _ok([good]) if group == "eng" else MagicMock(success=False, data=[good], error="500")
+
+        c.runtime.paged_list = AsyncMock(side_effect=paged_list)
+        projects = ProjectsSync(c)
+        projects._build_included_group_hierarchy = AsyncMock(return_value=[])
+
+        await projects._resolve_projects_with_filters(prune=True)
+        await GitLabConnector._confirm_creator_withdrawal(c)
+
+        assert kv.values[GRANT_KEY] == {"email": CREATOR, "granted": True}
+
+    async def test_a_project_member_step_that_raises_leaves_the_withdrawal_owed(self) -> None:
+        kv = _given()
+        c = await _decided(listed=_LISTED, kv=kv)
+        c.issues = MagicMock(fetch_issues_batched=AsyncMock())
+        c.repos = MagicMock(run=AsyncMock())
+        c.merge_requests = MagicMock(fetch_prs_batched=AsyncMock())
+        projects = ProjectsSync(c)
+        projects._resolve_projects_with_filters = AsyncMock(return_value=[_project()])
+        projects._sync_project_members_as_pseudo = AsyncMock(side_effect=RuntimeError("members down"))
+
+        await projects._sync_projects()
+        await GitLabConnector._confirm_creator_withdrawal(c)
+
+        assert kv.values[GRANT_KEY] == {"email": CREATOR, "granted": True}
+
+    async def test_a_listed_project_that_cannot_be_read_leaves_the_withdrawal_owed(self) -> None:
+        from app.connectors.core.registry.filters import SyncFilterKey
+
+        kv = _given()
+        c = await _decided(listed=_LISTED, kv=kv)
+        c.sync_filters = {SyncFilterKey.PROJECT_IDS: SimpleNamespace(
+            is_empty=lambda: False, operator="in", value=["eng/p"],
+        )}
+        c.runtime.ds_call = AsyncMock(return_value=MagicMock(success=False, data=None, error="500", status_code=500))
+
+        await ProjectsSync(c)._resolve_projects_with_filters(prune=True)
+        await GitLabConnector._confirm_creator_withdrawal(c)
+
+        assert kv.values[GRANT_KEY] == {"email": CREATOR, "granted": True}
+
     async def test_no_group_left_to_clean_still_confirms_the_withdrawal(self) -> None:
         kv = _given()
         c = await _decided(listed=_LISTED, kv=kv)

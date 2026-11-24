@@ -120,6 +120,8 @@ class ProjectsSync:
                 try:
                     await step()
                 except Exception as e:
+                    if step_name == "members":
+                        self.c._creator_withdrawal_incomplete = True
                     self.logger.error(
                         "Unhandled error syncing %s for project %s (%s); continuing: %s",
                         step_name, project_id, project_path, e, exc_info=True,
@@ -174,6 +176,7 @@ class ProjectsSync:
                     self.logger.error("Repository not found or inaccessible: %s (%s)", pth, res.error)
                     if res.status_code != 404:
                         c.note_failed_read(f"project {pth}", res)
+                        c._creator_withdrawal_incomplete = True
                     continue
                 by_id[int(project.id)] = project
                 await c.removed_projects.remember(pth, int(project.id))
@@ -188,6 +191,7 @@ class ProjectsSync:
                     self.logger.error("Could not list projects for group %s: %s", gp, gres.error)
                     c.note_failed_read(f"projects of group {gp}", gres)
                     listing_complete = False
+                    c._creator_withdrawal_incomplete = True
                     continue
                 for p in gres.data or []:
                     by_id[int(p.id)] = p
@@ -385,7 +389,7 @@ class ProjectsSync:
                 c.connector_id, external_group_ids, email,
             )
         except Exception as e:
-            c._creator_withdrawal_failed = True
+            c._creator_withdrawal_incomplete = True
             self.logger.warning(
                 "Could not take the creator's creator-only access away from %s; the next sync tries again: %s",
                 external_group_ids, e,

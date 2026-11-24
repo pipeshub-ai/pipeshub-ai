@@ -559,9 +559,10 @@ class SlackConnector(BaseConnector):
         # Set each run_sync by _authenticator_grant(); added to every channel's grants.
         self._authenticator_permission:    Permission | None         = None
         # An authenticator whose earlier grant from the token's view is taken back this sync, and
-        # whether taking it off a channel failed (then "no grant" is not stored and the next sync retries).
+        # whether some channel was neither rewritten from its members nor had that grant taken off
+        # (then "no grant" is not stored and the next sync withdraws again).
         self._withheld_authenticator_email: str | None = None
-        self._authenticator_withdrawal_failed = False
+        self._authenticator_withdrawal_incomplete = False
         # Until a sync has read the user listing, it counts as cut.
         self._users_listing_cut:           bool                      = True
         self._listed_user_emails:          set[str]                  = set()
@@ -1369,6 +1370,7 @@ class SlackConnector(BaseConnector):
             for cd in channels:
                 cid = cd.get("id")
                 if not cid:
+                    self._authenticator_withdrawal_incomplete = True
                     continue
                 if include_ids and cid not in include_ids:
                     continue
@@ -1383,6 +1385,7 @@ class SlackConnector(BaseConnector):
                     self.logger.warning(
                         f"User list was not read in full; channel {cd.get('name') or cid} left as it is"
                     )
+                    self._authenticator_withdrawal_incomplete = True
                     continue
                 try:
                     rg = self._to_channel_record_group(cd)
@@ -1390,6 +1393,7 @@ class SlackConnector(BaseConnector):
                         # It logs and answers None when it cannot build the group:
                         # the channel goes unwritten, so it must not be unlinked.
                         self._full_sync_read_failed = True
+                        self._authenticator_withdrawal_incomplete = True
                         continue
                     if rg.name:
                         self.channel_id_to_name_cache[cid] = rg.name
@@ -1398,6 +1402,7 @@ class SlackConnector(BaseConnector):
                     page_items.append((rg, cd))
                 except Exception as exc:
                     self._full_sync_read_failed = True
+                    self._authenticator_withdrawal_incomplete = True
                     self.logger.error(
                         f"❌ Failed to build RecordGroup for {cd.get('name')}: {exc}"
                     )
@@ -1488,7 +1493,7 @@ class SlackConnector(BaseConnector):
         channels through their membership, not the token's view. The decision and what is
         stored follow decide_authenticator_grant."""
         self._withheld_authenticator_email = None
-        self._authenticator_withdrawal_failed = False
+        self._authenticator_withdrawal_incomplete = False
         email = await self.authenticator_email()
         if not email:
             self.logger.warning(
@@ -1519,7 +1524,7 @@ class SlackConnector(BaseConnector):
                 self.connector_id, channel_ids, email,
             )
         except Exception as exc:
-            self._authenticator_withdrawal_failed = True
+            self._authenticator_withdrawal_incomplete = True
             self.logger.warning(
                 f"Connector {self.connector_id}: could not take the connector account's view away from "
                 f"the authenticator on {len(channel_ids)} channel(s) whose members could not be read; "
@@ -1527,10 +1532,11 @@ class SlackConnector(BaseConnector):
             )
 
     async def _confirm_authenticator_withdrawal(self) -> None:
-        """Store "no grant" once every channel this sync wrote has had the token's view taken off.
-        Not when a removal failed or the channel list was not read in full: the next sync tries again."""
+        """Store "no grant" once every channel was either rewritten from its members or had the
+        token's view taken off. Not when a channel was skipped or not built, a removal failed, or the
+        channel list was not read in full: the next sync withdraws again."""
         email = getattr(self, "_withheld_authenticator_email", None)
-        if not email or getattr(self, "_authenticator_withdrawal_failed", False) or self._channel_list_failed:
+        if not email or getattr(self, "_authenticator_withdrawal_incomplete", False) or self._channel_list_failed:
             return
         await self.confirm_authenticator_withdrawn(email)
 

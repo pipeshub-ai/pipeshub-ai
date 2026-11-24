@@ -102,7 +102,7 @@ def make_mock_connector() -> MagicMock:
     c._decide_creator_token_view = AsyncMock()
     c._token_account_email = None
     c._withheld_creator_email = None
-    c._creator_withdrawal_failed = False
+    c._creator_withdrawal_incomplete = False
     c._confirm_creator_withdrawal = AsyncMock()
     c._creator_token_view = False
 

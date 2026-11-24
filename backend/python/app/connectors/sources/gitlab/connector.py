@@ -295,8 +295,9 @@ class GitLabConnector(BaseConnector):
         self._creator_token_view = False
         # The creator whose earlier token view is taken back this run, where stored grants are kept.
         self._withheld_creator_email: str | None = None
-        # Whether taking that view off a group failed: then "no grant" is not stored, the next sync retries.
-        self._creator_withdrawal_failed = False
+        # Whether some group or project was neither rewritten from its members nor had that view taken
+        # off (a failed list, read or removal): then "no grant" is not stored, the next sync retries.
+        self._creator_withdrawal_incomplete = False
         # GitLab ids of each project's members at Guest or above, from this run's member read.
         self._project_reader_ids: dict[int, set[int]] = {}
         self._is_admin: bool = False
@@ -614,7 +615,7 @@ class GitLabConnector(BaseConnector):
         """
         creator = (self.creator_email or "").strip().lower()
         self._withheld_creator_email = None
-        self._creator_withdrawal_failed = False
+        self._creator_withdrawal_incomplete = False
         if not creator:
             self._creator_token_view = False
         elif self._token_account_email == creator:
@@ -630,9 +631,10 @@ class GitLabConnector(BaseConnector):
                 self._withheld_creator_email = creator
 
     async def _confirm_creator_withdrawal(self) -> None:
-        """Store "no grant" once the projects pass has taken the creator's token view off every group
-        it kept as stored. Not when a removal failed: the next sync tries again."""
-        if self._withheld_creator_email and not self._creator_withdrawal_failed:
+        """Store "no grant" once the projects pass has covered every group and project: rewritten from
+        its members, or the creator's token view taken off. Not when a list, a member step or a
+        removal failed: the next sync withdraws again."""
+        if self._withheld_creator_email and not self._creator_withdrawal_incomplete:
             await self.confirm_authenticator_withdrawn(self._withheld_creator_email)
 
     def creator_token_view_permission(self) -> Permission | None:
