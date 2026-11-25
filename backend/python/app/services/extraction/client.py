@@ -23,6 +23,7 @@ from app.config.constants.service import TokenScopes, config_node_constants
 from app.models.blocks import BlocksContainer, SemanticMetadata
 from app.modules.transformers.document_extraction import (
     DEFAULT_CONTEXT_LENGTH,
+    ExtractionContentFilteredError,
     _classifies_as_code,
     classify_request_blocks,
 )
@@ -128,6 +129,8 @@ class ExtractionClient(BaseServiceClient):
                 raise LLMNotConfiguredError(error_msg)
             if body.get("error_code") == LLMUnavailableError.code:
                 raise _unavailable_error(error_msg, body, response)
+            if body.get("error_code") == ExtractionContentFilteredError.code:
+                raise ExtractionContentFilteredError
             raise ExtractionClientError(message=error_msg)
 
         classification_dict = body.get("classification")

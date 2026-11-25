@@ -243,11 +243,12 @@ async def classify(
         except LLMUnavailableError as exc:
             return _unavailable_response(exc, trace.usage() if trace is not None else None)
         except ExtractionLLMError as exc:
-            # The model answered but produced nothing usable for this document: retried a few times.
+            # The model answered but produced nothing usable for this document: retried a few times, unless the
+            # code says the provider's content filter refused it.
             return JSONResponse(
                 status_code=status.HTTP_424_FAILED_DEPENDENCY,
                 content=ClassifyResponse(
-                    success=False, error=str(exc), error_code=ExtractionLLMError.code, usage=_usage_of(trace)
+                    success=False, error=str(exc), error_code=exc.code, usage=_usage_of(trace)
                 ).model_dump(),
             )
         except NonRetryableError as exc:
