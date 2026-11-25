@@ -443,26 +443,26 @@ class TestScanBatchSize:
     made a directory listing take seconds on a shared Redis."""
 
     @staticmethod
-    def _recording(store):
-        counts = []
+    def _recording(store) -> list[int | None]:
+        counts: list[int | None] = []
 
-        async def _scan_iter(match=None, count=None):
+        async def _scan_iter(match: str | None = None, count: int | None = None) -> AsyncIterator[bytes]:
             counts.append(count)
             return
-            yield  # noqa: E501 - make it an async generator
+            yield
 
         store._mock_client.scan_iter = _scan_iter
         return counts
 
     @pytest.mark.asyncio
-    async def test_directory_listing_reads_keys_in_large_batches(self):
+    async def test_directory_listing_reads_keys_in_large_batches(self) -> None:
         store = _make_store()
         counts = self._recording(store)
         await store.list_keys_in_directory("/services/mcp/instances/")
         assert counts and counts[0] >= 1000
 
     @pytest.mark.asyncio
-    async def test_listing_every_key_reads_keys_in_large_batches(self):
+    async def test_listing_every_key_reads_keys_in_large_batches(self) -> None:
         store = _make_store()
         counts = self._recording(store)
         await store.get_all_keys()
