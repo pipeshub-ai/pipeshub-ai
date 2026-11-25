@@ -33,7 +33,7 @@ ALICE_EMAIL, BOB_EMAIL, CAROL_EMAIL = "alice@acme.test", "bob@acme.test", "carol
 CAROLS = ("fold-carol", "file-carol", "file-carol-link", "file-carol-own")
 
 
-def enterprise(api: FakeBoxApi, db: FakeBoxRecordsDb) -> None:
+def box_org(api: FakeBoxApi, db: FakeBoxRecordsDb) -> None:
     api.add_user(ALICE, ALICE_EMAIL, "Alice")
     api.add_user(BOB, BOB_EMAIL, "Bob")
     api.add_user(CAROL, CAROL_EMAIL, "Carol")
@@ -85,7 +85,7 @@ async def sync(connector: BoxConnector, checkpoints: FakeCheckpointStore, path: 
 @pytest.mark.parametrize("path", ["full", "incremental"])
 class TestContentOfAnInactiveOwner:
     async def test_by_default_no_collaborator_reads_it_after_the_next_sync(self, box_api, db, checkpoints, path) -> None:
-        enterprise(box_api, db)
+        box_org(box_api, db)
         connector = await synced(box_api, db, checkpoints)
         box_api.deactivate(CAROL)
 
@@ -96,7 +96,7 @@ class TestContentOfAnInactiveOwner:
         assert BOB_EMAIL in readers(db, "fold-alice")
 
     async def test_kept_available_its_collaborators_keep_reading_it(self, box_api, db, checkpoints, path) -> None:
-        enterprise(box_api, db)
+        box_org(box_api, db)
         connector = await synced(box_api, db, checkpoints)
         box_api.deactivate(CAROL, keep_content_available=True)
 
@@ -107,7 +107,7 @@ class TestContentOfAnInactiveOwner:
             assert readers(db, item) == {BOB_EMAIL}, item
 
     async def test_hidden_later_by_the_admin_no_collaborator_reads_it(self, box_api, db, checkpoints, path) -> None:
-        enterprise(box_api, db)
+        box_org(box_api, db)
         connector = await synced(box_api, db, checkpoints)
         box_api.deactivate(CAROL, keep_content_available=True)
         await sync(connector, checkpoints, path)
@@ -119,7 +119,7 @@ class TestContentOfAnInactiveOwner:
             assert readers(db, item) == set(), item
 
     async def test_reactivated_its_collaborators_read_it_again(self, box_api, db, checkpoints, path) -> None:
-        enterprise(box_api, db)
+        box_org(box_api, db)
         connector = await synced(box_api, db, checkpoints)
         box_api.deactivate(CAROL)
         await sync(connector, checkpoints, path)
@@ -136,7 +136,7 @@ class TestContentOfAnInactiveOwner:
     async def test_kept_available_after_it_was_hidden_its_collaborators_read_it_again(
         self, box_api, db, checkpoints, path
     ) -> None:
-        enterprise(box_api, db)
+        box_org(box_api, db)
         connector = await synced(box_api, db, checkpoints)
         box_api.deactivate(CAROL)
         await sync(connector, checkpoints, path)
@@ -149,7 +149,7 @@ class TestContentOfAnInactiveOwner:
 
     async def test_a_user_list_cut_short_before_the_owner_closes_nothing(self, box_api, db, checkpoints, path) -> None:
         box_api.page_cap["/2.0/users"] = 2
-        enterprise(box_api, db)
+        box_org(box_api, db)
         connector = await synced(box_api, db, checkpoints)
         # Carol is on the second page, which cannot be read.
         box_api.deactivate(CAROL)
@@ -165,7 +165,7 @@ class TestContentOfAnInactiveOwner:
 
 class TestFirstSeenWhileInactive:
     async def test_content_first_seen_kept_available_is_closed_once_hidden(self, box_api, db, checkpoints) -> None:
-        enterprise(box_api, db)
+        box_org(box_api, db)
         box_api.deactivate(CAROL, keep_content_available=True)
         connector = await ready_connector(db, checkpoints)
         await connector.run_sync()
@@ -178,7 +178,7 @@ class TestFirstSeenWhileInactive:
             assert readers(db, item) == set(), item
 
     async def test_hidden_content_gets_no_grant_from_the_share_history(self, box_api, db, checkpoints) -> None:
-        enterprise(box_api, db)
+        box_org(box_api, db)
         box_api.deactivate(CAROL)
         box_api.add_event(
             "COLLABORATION_INVITE",
@@ -199,7 +199,7 @@ class TestAWalkCutShort:
     async def test_a_full_sync_that_could_not_read_everything_removes_nothing_it_did_not_see(
         self, box_api, db, checkpoints
     ) -> None:
-        enterprise(box_api, db)
+        box_org(box_api, db)
         connector = await synced(box_api, db, checkpoints)
         assert connector.full_sync_coverage().complete
         # Bob's walk stops at his root: what it did not reach must keep its links.
