@@ -7,6 +7,7 @@ answered by an in-memory stub, and our databases are in-memory fakes.
 """
 
 import base64
+import inspect
 import logging
 import re
 import sys
@@ -2901,8 +2902,10 @@ async def run_full_sync(connector: OneDriveConnector, db: FakeRecordsDb, checkpo
         original = getattr(db, name, None)
 
         async def write(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
-            result = await original(*args, **kwargs) if original else None
-            mark(*args)
+            # The connector passes some arguments by keyword; the marker gets them as the fake write bound them.
+            call = inspect.signature(original).bind(*args, **kwargs) if original else None
+            result = await original(*call.args, **call.kwargs) if call else None
+            mark(*(call.args if call else args))
             return result
 
         return write
@@ -3021,6 +3024,17 @@ class TestFullSyncUnlinksOnlyWhatIsGone:
 
         assert "drive-bo" in db.kept_record_groups
         assert connector.full_sync_coverage().complete is True
+        assert unlinked == self.REALLY_GONE
+
+    async def test_a_locked_users_drive_that_answers_404_keeps_its_links(self, cloud, tenant, db, checkpoints) -> None:
+        # The full sync drops the remembered owners; the drive id resolved on the first sync still names Bo.
+        connector, _, _ = await seed_ana_and_bo(cloud, tenant, db, checkpoints)
+        cloud.on("GET", "/v1.0/users/u-bo/drive", graph_error(423, "resourceLocked", "resourceLocked"))
+        cloud.on("GET", "/v1.0/drives/drive-bo", graph_error(404, "itemNotFound"))
+
+        unlinked = await run_full_sync(connector, db, checkpoints)
+
+        assert "drive-bo" in db.kept_record_groups
         assert unlinked == self.REALLY_GONE
 
     async def test_a_drive_whose_check_fails_keeps_its_links(self, cloud, tenant, db, checkpoints) -> None:

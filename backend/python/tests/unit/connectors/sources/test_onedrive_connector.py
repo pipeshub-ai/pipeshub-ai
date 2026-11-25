@@ -3378,6 +3378,16 @@ class TestProcessUsersInBatchesCoverage:
             await connector._process_users_in_batches([MagicMock()])
 
     @pytest.mark.asyncio
+    async def test_the_active_users_are_read_so_that_a_failed_read_raises(self) -> None:
+        # An empty answer for a failed read would put every user's drive out of scope.
+        connector = _make_connector_cov()
+        connector.data_entities_processor.get_all_active_users = AsyncMock(return_value=[])
+
+        await connector._process_users_in_batches([MagicMock(email="u@t.com")])
+
+        connector.data_entities_processor.get_all_active_users.assert_awaited_once_with(raise_on_error=True)
+
+    @pytest.mark.asyncio
     async def test_user_without_email_filtered(self):
         """User with None email is filtered out."""
         connector = _make_connector_cov()

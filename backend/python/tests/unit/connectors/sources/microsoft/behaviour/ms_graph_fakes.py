@@ -478,7 +478,7 @@ class FakeRecordsDb:
         gone = {u.source_user_id for u in users}
         self.app_users = [u for u in self.app_users if u.source_user_id not in gone]
 
-    async def get_all_active_users(self) -> list[Any]:
+    async def get_all_active_users(self, *, raise_on_error: bool = False) -> list[Any]:
         return list(self.active_users)
 
     def full_sync_running(self, connector_id: str) -> bool:

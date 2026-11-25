@@ -2588,7 +2588,8 @@ class OneDriveConnector(BaseConnector):
             users: List of users to process
         """
         try:
-            all_active_users = await self.data_entities_processor.get_all_active_users()
+            # A failed read raises: an empty answer would put every user out of scope.
+            all_active_users = await self.data_entities_processor.get_all_active_users(raise_on_error=True)
             active_user_emails = {active_user.email.lower() for active_user in all_active_users}
 
             # Filter users to sync (only active users)
@@ -2822,6 +2823,10 @@ class OneDriveConnector(BaseConnector):
             self.logger.error("❌ Error checking if user has OneDrive: %s", e)
             raise
     
+    def _cached_drive_owner(self, drive_id: str) -> str:
+        """The user whose drive this run's availability checks resolved to ``drive_id``, or ``""``."""
+        return next((user for user, drive in self._user_drive_ids.items() if drive == drive_id), "")
+
     def _keeps_unreadable_drive(self, drive_id: str, owner: str) -> bool:
         """Whether a stored drive that could not be read is kept: when this run could not verify its
         owner's drives (an active user whose OneDrive was skipped or failed, or any owner while the active
@@ -2831,7 +2836,7 @@ class OneDriveConnector(BaseConnector):
         scope = self._drive_owners_in_scope
         if scope is None:
             return True
-        owner = owner or next((user for user, drive in self._user_drive_ids.items() if drive == drive_id), "")
+        owner = owner or self._cached_drive_owner(drive_id)
         if not owner:
             return any(user not in self._user_drive_ids for user in scope)
         if owner in self._unsynced_drive_owners:
@@ -2889,6 +2894,8 @@ class OneDriveConnector(BaseConnector):
                         self.logger.warning(f"Could not read OneDrive {drive_id}; keeping its records this run: {e}")
                         await self._keep_stored_drive(drive_id)
                     continue
+            # A full sync drops the remembered owners; the drive ids this run resolved still name them.
+            owner = owner or self._cached_drive_owner(drive_id)
             if not owner:
                 self.logger.warning(f"OneDrive {drive_id} answers 404 and its owner is not known; keeping its records")
                 continue
