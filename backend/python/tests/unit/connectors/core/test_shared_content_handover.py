@@ -30,6 +30,12 @@ from app.connectors.core.base.data_processor.storage_cleanup import (
 from app.connectors.services.event_service import EventService
 from tests.unit.connectors.services.coordinator_stub import installed_stub
 
+
+@pytest.fixture(autouse=True)
+def _one_request_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keys these tests can name: each delete request's entry is stored as ``r``."""
+    monkeypatch.setattr("app.connectors.services.connector_intents.uuid4", lambda: SimpleNamespace(hex="r"))
+
 ORG = "org1"
 CREDENTIALS = "/services/connectors/conn-a/config"
 PREFIX = "/api/v1/document/internal"
@@ -681,7 +687,7 @@ class TestReconciler:
         )
 
         await record_pending_storage_release(config, org_id=ORG, connector_id="conn-a", now_ms=self.NOW - age_ms)
-        key = f"/services/storageRelease/pending/{ORG}/conn-a"
+        key = f"/services/storageRelease/pending/{ORG}/conn-a/r"
         config.kv[key] = {**config.kv[key], **fields}
         return key
 

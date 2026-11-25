@@ -44,9 +44,16 @@ async def record_pending_entity_cleanup(
     )
 
 
-async def clear_pending_entity_cleanup(config_service: ConfigurationService, connector_id: str, *, org_id: str, intent: dict[str, Any] | None = None) -> bool:
+async def read_pending_entity_cleanup(
+    config_service: ConfigurationService, *, org_id: str, connector_id: str,
+) -> dict[str, Any] | None:
+    """What is pending now, to clear once the cleanup finished. Raises when the KV store cannot answer."""
+    return await _STORE.read(config_service, org_id, connector_id)
+
+
+async def clear_pending_entity_cleanup(config_service: ConfigurationService, intent: dict[str, Any]) -> bool:
     """Forget the intent once the cleanup finished."""
-    return await _STORE.clear(config_service, org_id, connector_id, intent=intent)
+    return await _STORE.clear(config_service, intent)
 
 
 async def reschedule_pending_entity_cleanup(

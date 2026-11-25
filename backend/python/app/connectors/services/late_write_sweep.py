@@ -78,7 +78,7 @@ async def record_pending_late_write_sweep(
     now_ms: int | None = None,
 ) -> None:
     """Raises ``LateWriteSweepIntentError`` when the KV store refuses the write, or when the
-    connector's record groups or an earlier intent cannot be read.
+    connector's record groups cannot be read.
 
     The intent keeps the connector's record groups, read here before the delete removes
     them: the links indexing writes late carry a group and no connector (see
@@ -90,15 +90,12 @@ async def record_pending_late_write_sweep(
             return_fields=["_key"],
             raise_on_error=True,
         )
-        # A retried delete may run after the first attempt removed some groups; keep those too.
-        earlier = await _STORE.read(config_service, org_id, connector_id)
     except Exception as e:
         raise LateWriteSweepIntentError(
             f"could not read the record groups to sweep for connector {connector_id}"
         ) from e
-    kept = earlier.get("recordGroupIds") if earlier else None
-    read = [row.get("_key") for row in rows or []]
-    groups = list(dict.fromkeys(str(g) for g in [*(kept if isinstance(kept, list) else []), *read] if g))
+    # A retried delete may run after the first attempt removed some groups: those are in that attempt's own entry.
+    groups = list(dict.fromkeys(str(row["_key"]) for row in rows or [] if row.get("_key")))
     await _STORE.record(
         config_service, org_id=org_id, connector_id=connector_id, now_ms=now_ms, recordGroupIds=groups,
     )
@@ -224,7 +221,7 @@ class LateWriteSweeper:
     async def _clear(self, intent: dict[str, Any]) -> None:
         org_id, connector_id = str(owner_of(intent)), str(intent["connectorId"])
         try:
-            if await _STORE.clear(self.config_service, org_id, connector_id, intent=intent):
+            if await _STORE.clear(self.config_service, intent):
                 return
         except Exception:
             self.logger.warning("Late-write sweep intent not cleared | connector=%s", connector_id, exc_info=True)

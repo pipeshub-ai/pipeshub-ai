@@ -14,23 +14,22 @@ Covers:
 - _handle_delete: missing ids, success, graph fails with revert, config delete fail, kafka fail
 """
 
-import logging
 import asyncio
+import logging
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.config.constants.arangodb import CollectionNames
+from app.connectors.core.constants import ConnectorStateKeys
 from app.connectors.core.sync.sync_coordinator import LocalSyncCoordinator
 from app.connectors.core.sync.task_manager import reindex_task_manager
 from app.connectors.services import event_service as event_service_module
 from app.connectors.services.event_service import EventService, evict_cached_connector
 from app.exceptions.non_retryable import NonRetryableError
-
-from app.config.constants.arangodb import CollectionNames
-from app.connectors.core.constants import ConnectorStateKeys
 from app.services.graph_db.interface.graph_db_provider import AccessCheck
 from app.utils.logger import log_record_fields
-from tests.unit.connectors.services.local_run_stub import end_local_run, local_run
 from tests.unit.connectors.services.coordinator_stub import (
     at_capacity,
     current,
@@ -39,6 +38,13 @@ from tests.unit.connectors.services.coordinator_stub import (
     installed_stub,
     spawned,
 )
+from tests.unit.connectors.services.local_run_stub import end_local_run, local_run
+
+
+@pytest.fixture(autouse=True)
+def _one_request_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keys these tests can name: each delete request's entry is stored as ``r``."""
+    monkeypatch.setattr("app.connectors.services.connector_intents.uuid4", lambda: SimpleNamespace(hex="r"))
 
 
 # ---------------------------------------------------------------------------
@@ -1741,9 +1747,9 @@ class TestHandleDelete:
             mock_stm.cancel_sync = AsyncMock()
             assert await service._handle_delete("gmail", {"orgId": "org1", "connectorId": "c1"}) is True
         assert calls[:4] == [
-            "intent:/services/entityCleanup/pending/org1/c1:org1",
-            "intent:/services/storageRelease/pending/org1/c1:org1",
-            "intent:/services/lateWriteSweep/pending/org1/c1:org1",
+            "intent:/services/entityCleanup/pending/org1/c1/r:org1",
+            "intent:/services/storageRelease/pending/org1/c1/r:org1",
+            "intent:/services/lateWriteSweep/pending/org1/c1/r:org1",
             "graph-delete",
         ]
 
@@ -1761,7 +1767,7 @@ class TestHandleDelete:
             mock_stm.cancel_sync = AsyncMock()
             assert await service._handle_delete("gmail", {"orgId": "org1", "connectorId": "c1"}) is True
 
-        assert written["/services/lateWriteSweep/pending/org1/c1"]["recordGroupIds"] == ["rg-1", "rg-2"]
+        assert written["/services/lateWriteSweep/pending/org1/c1/r"]["recordGroupIds"] == ["rg-1", "rg-2"]
         assert service.graph_provider.get_nodes_by_filters.await_args.kwargs["filters"] == {"connectorId": "c1"}
 
     @pytest.mark.asyncio
@@ -1779,7 +1785,7 @@ class TestHandleDelete:
             mock_stm.cancel_sync = AsyncMock()
             assert await service._handle_delete("gmail", {"orgId": "org1", "connectorId": "c1"}) is False
 
-        assert "/services/lateWriteSweep/pending/org1/c1" not in written
+        assert "/services/lateWriteSweep/pending/org1/c1/r" not in written
         service.graph_provider.delete_connector_instance.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -1864,7 +1870,7 @@ class TestConfigServiceFor:
         service.app_container.config_service.return_value.delete_config.assert_not_awaited()
         # Cleanup intents are service-wide: the reconcilers read them back.
         written = [c.args[0] for c in service.app_container.config_service.return_value.set_config.await_args_list]
-        assert written[:2] == ["/services/entityCleanup/pending/org1/c1", "/services/storageRelease/pending/org1/c1"]
+        assert written[:2] == ["/services/entityCleanup/pending/org1/c1/r", "/services/storageRelease/pending/org1/c1/r"]
 
 
 class TestConnectorClassComesFromStoredType:

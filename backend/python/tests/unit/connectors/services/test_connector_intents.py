@@ -1,8 +1,9 @@
-"""A connector's cleanup is recorded under its org and id: no write or delete for one org reaches another's."""
+"""Every delete request has an entry of its own, and settling an intent removes what was read and nothing else."""
 
 import pytest
 
 from app.connectors.services.connector_intents import (
+    KEYS,
     ConnectorIntentStore,
     held_by_another_org,
 )
@@ -15,95 +16,118 @@ class RefusedError(Exception):
 
 
 STORE = ConnectorIntentStore("/services/cleanup/pending/", RefusedError, "cleanup")
-A, B = "/services/cleanup/pending/org-a/c1", "/services/cleanup/pending/org-b/c1"
 EARLIER = "/services/cleanup/pending/c1"
 
 
-async def test_two_orgs_intents_for_one_connector_id_live_apart_whatever_the_order() -> None:
-    config = Config()
-    await STORE.record(config, org_id="org-a", connector_id="c1", now_ms=1)
-    await STORE.record(config, org_id="org-b", connector_id="c1", now_ms=2)
-    theirs = config.kv[B]
-    assert {i["orgId"] for i in await STORE.list(config)} == {"org-a", "org-b"}
-
-    assert await STORE.reschedule(config, config.kv[A], next_attempt_at=9)  # type: ignore[arg-type]
-    await STORE.record(config, org_id="org-a", connector_id="c1", now_ms=3)
-    assert config.kv[B] == theirs
-    assert await STORE.clear(config, "org-a", "c1")
-    assert config.kv == {B: theirs}
+async def record(config: Config, org: str = "org-a", at: int = 1, **fields: object) -> None:
+    await STORE.record(config, org_id=org, connector_id="c1", now_ms=at, **fields)
 
 
-async def test_a_write_or_delete_for_one_org_names_no_key_another_org_uses(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Another org records in every gap between a read and the write after it: nothing of it is ever touched."""
-    config = Config()
-    theirs = {"orgId": "org-b", "connectorId": "c1", "requestedAt": 7}
-    read = Config.get_config
-
-    async def racing(self: Config, key: str, *a: object, **kw: object) -> object:
-        value = await read(self, key, *a, **kw)
-        self.kv[B] = theirs
-        return value
-
-    monkeypatch.setattr(Config, "get_config", racing)
-    await STORE.record(config, org_id="org-a", connector_id="c1", now_ms=1)
-    await STORE.reschedule(config, {"orgId": "org-a", "connectorId": "c1"}, next_attempt_at=9)
-    await STORE.clear(config, "org-a", "c1")
-    assert config.kv == {B: theirs}
+async def pending(config: Config) -> list[tuple[str, int]]:
+    return [(i["orgId"], i["requestedAt"]) for i in await STORE.list(config)]
 
 
-async def test_an_earlier_versions_intent_is_listed_read_and_settled_by_its_own_org_only() -> None:
-    config = Config()
-    config.kv[EARLIER] = {"orgId": "org-a", "connectorId": "c1", "requestedAt": 1, "recordGroupIds": ["g1"]}
-    earlier = dict(config.kv)
-    assert await STORE.read(config, "org-b", "c1") is None
-    assert await STORE.clear(config, "org-b", "c1") and config.kv == earlier
-    [intent] = await STORE.list(config)
-
-    await STORE.reschedule(config, intent, next_attempt_at=9)
-    [merged] = await STORE.list(config)
-    assert (merged["attempts"], merged["recordGroupIds"]) == (1, ["g1"])
-    assert await STORE.clear(config, "org-a", "c1")
-    assert config.kv[EARLIER] == earlier[EARLIER]  # left where it is, and no longer pending
-    assert await STORE.list(config) == [] and await STORE.read(config, "org-a", "c1") is None
-    assert await STORE.clear(config, "org-a", "c1")
+async def read(config: Config, org: str = "org-a") -> dict:
+    intent = await STORE.read(config, org, "c1")
+    assert intent is not None
+    return intent
 
 
-@pytest.mark.parametrize("gap", ["before the write", "after the write"])
-async def test_an_old_replica_swapping_in_another_orgs_intent_loses_nothing(
-    monkeypatch: pytest.MonkeyPatch, gap: str,
+@pytest.mark.parametrize("org", ["org-a", "org-b"])
+@pytest.mark.parametrize("step", ["get_config", "delete_config"])
+async def test_a_delete_recorded_between_the_read_and_the_delete_stays_pending(
+    monkeypatch: pytest.MonkeyPatch, org: str, step: str,
 ) -> None:
-    """A replica of the earlier version removes org A's entry and records org B's, around every step of org A's clear."""
+    """A newer delete, of the same org or another one, is recorded in every gap of a clear."""
     config = Config()
-    config.kv[EARLIER] = {"orgId": "org-a", "connectorId": "c1", "requestedAt": 1}
-    theirs = {"orgId": "org-b", "connectorId": "c1", "requestedAt": 2}
-    read, write = Config.get_config, Config.set_config
-    swapped = False
+    await record(config)
+    intent = await read(config)
+    real, at = getattr(Config, step), [5]
 
-    async def swap_after_read(self: Config, key: str, *a: object, **kw: object) -> object:
-        value = await read(self, key, *a, **kw)
-        nonlocal swapped
-        if not swapped:
-            swapped, self.kv[EARLIER] = True, theirs
-        return value
-
-    async def swap_after_write(self: Config, key: str, value: object, **kw: object) -> bool:
-        done = await write(self, key, value, **kw)
-        self.kv[EARLIER] = theirs
-        return done
+    async def racing(self: Config, *a: object, **kw: object) -> object:
+        at[0] += 1
+        await STORE.record(self, org_id=org, connector_id="c1", now_ms=at[0])
+        return await real(self, *a, **kw)
 
     with monkeypatch.context() as m:
-        if gap == "before the write":
-            m.setattr(Config, "get_config", swap_after_read)
-        else:
-            m.setattr(Config, "set_config", swap_after_write)
-        assert await STORE.clear(config, "org-a", "c1")
+        m.setattr(Config, step, racing)
+        assert await STORE.clear(config, intent)
 
-    assert config.kv[EARLIER] == theirs
-    assert await STORE.list(config) == [theirs]
-    assert await STORE.read(config, "org-b", "c1") == theirs
+    if at[0] > 5:
+        assert await pending(config) == [(org, at[0])]
+    assert all(key not in config.kv for key in intent[KEYS])
 
 
-async def test_no_call_ever_writes_or_deletes_an_earlier_versions_key() -> None:
+async def test_a_clear_deletes_only_the_entries_that_were_read() -> None:
+    config = Config()
+    await record(config, at=1)
+    intent = await read(config)
+    await record(config, at=2)
+    await record(config, "org-b", at=3)
+    newer = {k: v for k, v in config.kv.items() if v["requestedAt"] > 1}  # type: ignore[index]
+
+    assert await STORE.clear(config, intent)
+
+    assert config.kv == newer and await pending(config) == [("org-a", 2), ("org-b", 3)]
+
+
+async def test_a_delete_recorded_during_a_reschedule_is_not_replaced() -> None:
+    config = Config()
+    await record(config, at=1)
+    intent = await read(config)
+    await record(config, at=2)
+    assert await STORE.reschedule(config, intent, next_attempt_at=9)
+    assert sorted(v["requestedAt"] for v in config.kv.values()) == [1, 2]  # type: ignore[index]
+    assert (await read(config)).get("nextAttemptAt") is None  # the newer delete is not held back
+    assert await STORE.clear(config, await read(config)) and config.kv == {}
+
+
+async def test_a_retried_delete_is_one_intent_with_the_groups_of_every_attempt() -> None:
+    config = Config()
+    await record(config, at=1, recordGroupIds=["g1", "g2"])
+    await record(config, at=2, recordGroupIds=["g2", "g3"])
+    [intent] = await STORE.list(config)
+    assert (intent["requestedAt"], intent["recordGroupIds"]) == (2, ["g2", "g3", "g1"])
+    assert intent == await read(config)
+    assert await STORE.clear(config, intent) and config.kv == {}
+
+
+async def test_nothing_about_where_an_intent_was_read_is_stored() -> None:
+    config = Config()
+    await record(config)
+    await STORE.reschedule(config, await read(config), next_attempt_at=9)
+    [stored] = config.kv.values()
+    assert stored == {"orgId": "org-a", "connectorId": "c1", "requestedAt": 1, "attempts": 1, "nextAttemptAt": 9}
+
+
+async def test_two_orgs_intents_for_one_connector_id_live_apart() -> None:
+    config = Config()
+    await record(config, "org-a", 1)
+    await record(config, "org-b", 2)
+    assert await pending(config) == [("org-a", 1), ("org-b", 2)]
+    assert await STORE.clear(config, await read(config, "org-a"))
+    assert await pending(config) == [("org-b", 2)]
+
+
+async def test_an_earlier_versions_intent_is_pending_for_its_own_org_until_it_is_settled() -> None:
+    config = Config()
+    config.kv[EARLIER] = earlier = {"orgId": "org-a", "connectorId": "c1", "requestedAt": 1, "recordGroupIds": ["g1"]}
+    assert await STORE.read(config, "org-b", "c1") is None
+    intent = await read(config)
+
+    for attempt in (1, 2):
+        assert await STORE.reschedule(config, intent, next_attempt_at=9)
+        intent = await read(config)
+        assert (intent["attempts"], intent["recordGroupIds"]) == (attempt, ["g1"])
+        assert len(config.kv) == 2  # rescheduled in one entry of its own
+
+    assert await STORE.clear(config, intent)
+    assert config.kv[EARLIER] == earlier  # left where it is
+    assert await pending(config) == [] and await STORE.read(config, "org-a", "c1") is None
+
+
+@pytest.mark.parametrize("owner", ["org-a", "org-b"])
+async def test_no_call_ever_writes_or_deletes_an_earlier_versions_key(owner: str) -> None:
     class Guarded(Config):
         async def set_config(self, key: str, value: object, **kw: object) -> bool:
             assert key != EARLIER
@@ -113,92 +137,52 @@ async def test_no_call_ever_writes_or_deletes_an_earlier_versions_key() -> None:
             assert key != EARLIER
             return await super().delete_config(key)
 
-    for owner in ("org-a", "org-b"):
-        config = Guarded()
-        config.kv[EARLIER] = {"orgId": owner, "connectorId": "c1", "requestedAt": 1}
-        await STORE.record(config, org_id="org-a", connector_id="c1", now_ms=2)
-        await STORE.reschedule(config, {"orgId": "org-a", "connectorId": "c1", "requestedAt": 2}, next_attempt_at=9)
-        assert await STORE.clear(config, "org-a", "c1")
-        assert [i["orgId"] for i in await STORE.list(config)] == ([] if owner == "org-a" else ["org-b"])
+    config = Guarded()
+    config.kv[EARLIER] = {"orgId": owner, "connectorId": "c1", "requestedAt": 1}
+    await record(config, at=2)
+    await STORE.reschedule(config, await read(config), next_attempt_at=9)
+    assert await STORE.clear(config, await read(config))
+    assert await pending(config) == ([] if owner == "org-a" else [("org-b", 1)])
 
 
-async def test_a_later_delete_by_an_old_replica_is_pending_again() -> None:
+@pytest.mark.parametrize("theirs", [("org-b", 2), ("org-a", 2)])
+async def test_an_old_replica_recording_another_delete_around_a_clear_loses_nothing(theirs: tuple[str, int]) -> None:
     config = Config()
     config.kv[EARLIER] = {"orgId": "org-a", "connectorId": "c1", "requestedAt": 1}
-    await STORE.clear(config, "org-a", "c1")
-    config.kv[EARLIER] = later = {"orgId": "org-a", "connectorId": "c1", "requestedAt": 5}
-    assert await STORE.list(config) == [later]
-    await STORE.reschedule(config, later, next_attempt_at=9)
-    assert [i["attempts"] for i in await STORE.list(config)] == [1]
+    intent = await read(config)
+    config.kv[EARLIER] = later = {"orgId": theirs[0], "connectorId": "c1", "requestedAt": theirs[1]}
+    assert await STORE.clear(config, intent)
+    assert config.kv[EARLIER] == later and await pending(config) == [theirs]
 
 
-async def test_a_new_delete_after_a_settled_one_is_pending_and_clears() -> None:
+async def test_a_settled_entry_stays_settled_when_the_org_deletes_again() -> None:
     config = Config()
-    config.kv[EARLIER] = {"orgId": "org-a", "connectorId": "c1", "requestedAt": 1}
-    await STORE.clear(config, "org-a", "c1")
-    await STORE.record(config, org_id="org-a", connector_id="c1", now_ms=8)
-    assert [i["requestedAt"] for i in await STORE.list(config)] == [8]
-    assert await STORE.clear(config, "org-a", "c1") and await STORE.list(config) == []
+    config.kv[EARLIER] = {"orgId": "org-a", "connectorId": "c1", "requestedAt": 1, "recordGroupIds": ["old"]}
+    await STORE.clear(config, await read(config))
+    await record(config, at=8)
+    [intent] = await STORE.list(config)
+    assert intent["requestedAt"] == 8 and "recordGroupIds" not in intent
+    assert await STORE.clear(config, intent) and await pending(config) == []
 
 
-async def test_a_marker_that_cannot_be_written_keeps_the_intent_pending() -> None:
+async def test_a_settled_entry_that_cannot_be_written_keeps_the_intent_pending() -> None:
     class Refuses(Config):
         async def set_config(self, key: str, value: object, **_kw: object) -> bool:
             return False
 
     config = Refuses()
     config.kv[EARLIER] = {"orgId": "org-a", "connectorId": "c1", "requestedAt": 1}
-    assert not await STORE.clear(config, "org-a", "c1")
-    assert len(await STORE.list(config)) == 1
+    assert not await STORE.clear(config, await read(config))
+    assert await pending(config) == [("org-a", 1)]
 
 
-async def test_the_groups_of_both_versions_intents_are_kept() -> None:
-    config = Config()
-    config.kv[EARLIER] = {"orgId": "org-a", "connectorId": "c1", "requestedAt": 1, "recordGroupIds": ["g1"]}
-    await STORE.record(config, org_id="org-a", connector_id="c1", now_ms=2, recordGroupIds=["g2"])
-    [merged] = await STORE.list(config)
-    assert (merged["requestedAt"], merged["recordGroupIds"]) == (2, ["g2", "g1"])
-    assert (await STORE.read(config, "org-a", "c1") or {})["recordGroupIds"] == ["g2", "g1"]
+async def test_an_intent_that_cannot_be_recorded_raises() -> None:
+    class Refuses(Config):
+        async def set_config(self, key: str, value: object, **_kw: object) -> bool:
+            return False
 
-
-async def test_groups_added_since_the_intent_was_read_survive_a_reschedule() -> None:
-    config = Config()
-    await STORE.record(config, org_id="org-a", connector_id="c1", now_ms=1, recordGroupIds=["g1", "g2"])
-    assert await STORE.reschedule(
-        config, {"orgId": "org-a", "connectorId": "c1", "recordGroupIds": ["g1"]}, next_attempt_at=9,
-    )
-    assert config.kv[A]["recordGroupIds"] == ["g1", "g2"]
-
-
-async def test_an_intent_that_cannot_be_read_is_not_rescheduled_or_taken_for_cleared() -> None:
-    config = Config()
-    await STORE.record(config, org_id="org-a", connector_id="c1", now_ms=1)
-    before = dict(config.kv)
-    config.read_error = ConnectionError("down")
-    with pytest.raises(ConnectionError):
-        await STORE.reschedule(config, {"orgId": "org-a", "connectorId": "c1"}, next_attempt_at=9)
-    assert not await STORE.clear(config, "org-a", "c1")
-    assert config.kv == before
-
-
-async def test_an_entry_whose_key_names_another_org_is_not_listed() -> None:
-    config = Config()
-    config.kv[B] = {"orgId": "org-a", "connectorId": "c1", "requestedAt": 1}
-    assert await STORE.list(config) == []
-
-
-@pytest.mark.parametrize(("app", "other"), [
-    ({"orgId": "org-b"}, True), ({"orgId": "org-a"}, False), ({"orgId": None}, False), ({}, False),
-])
-def test_an_app_with_no_org_is_not_another_orgs(app: dict, other: bool) -> None:
-    assert held_by_another_org(app, "org-a") is other
-
-
-async def test_a_malformed_group_list_does_not_stop_the_listing() -> None:
-    config = Config()
-    config.kv[EARLIER] = {"orgId": "org-a", "connectorId": "c1", "recordGroupIds": 3}
-    await STORE.record(config, org_id="org-b", connector_id="c2", now_ms=1)
-    assert {i["orgId"] for i in await STORE.list(config)} == {"org-a", "org-b"}
+    with pytest.raises(RefusedError):
+        await record(Refuses())
 
 
 async def test_an_unreadable_earlier_entry_does_not_keep_the_orgs_own_intent_from_settling() -> None:
@@ -210,36 +194,44 @@ async def test_an_unreadable_earlier_entry_does_not_keep_the_orgs_own_intent_fro
 
     config = Corrupt()
     config.kv[EARLIER] = "corrupt"
-    await STORE.record(config, org_id="org-a", connector_id="c1", now_ms=1)
-    assert (await STORE.read(config, "org-a", "c1") or {})["requestedAt"] == 1
-    assert await STORE.clear(config, "org-a", "c1") and A not in config.kv
+    await record(config)
+    assert await STORE.clear(config, await read(config))
+    assert config.kv == {EARLIER: "corrupt"}
 
 
-@pytest.mark.parametrize("key", [A, EARLIER])
-async def test_a_delete_recorded_since_the_intent_was_read_stays_pending(key: str) -> None:
+async def test_an_intent_of_the_org_that_cannot_be_read_raises() -> None:
     config = Config()
-    old = {"orgId": "org-a", "connectorId": "c1", "requestedAt": 1}
-    config.kv[key] = {**old, "requestedAt": 5}
-    assert await STORE.clear(config, "org-a", "c1", intent=old)
-    assert [i["requestedAt"] for i in await STORE.list(config)] == [5]
+    await record(config)
+    config.read_error = ConnectionError("down")
+    with pytest.raises(ConnectionError):
+        await STORE.read(config, "org-a", "c1")
 
 
-async def test_settling_an_earlier_entry_keeps_a_newer_intent_of_the_org() -> None:
+async def test_an_entry_another_completer_already_removed_counts_as_cleared() -> None:
     config = Config()
-    old = {"orgId": "org-a", "connectorId": "c1", "requestedAt": 1}
-    config.kv[EARLIER] = old
-    await STORE.record(config, org_id="org-a", connector_id="c1", now_ms=5, recordGroupIds=["g"])
-    assert await STORE.clear(config, "org-a", "c1", intent=old)
-    assert [(i["requestedAt"], i["recordGroupIds"]) for i in await STORE.list(config)] == [(5, ["g"])]
-    assert await STORE.clear(config, "org-a", "c1") and await STORE.list(config) == []
+    await record(config)
+    intent = await read(config)
+    config.kv.clear()
+    assert await STORE.clear(config, intent)
 
 
-async def test_an_intent_another_completer_already_removed_counts_as_cleared() -> None:
-    class Gone(Config):
-        async def delete_config(self, key: str) -> bool:
-            self.kv.pop(key, None)
-            return False
+async def test_an_entry_whose_key_names_another_org_or_connector_is_not_listed() -> None:
+    config = Config()
+    config.kv["/services/cleanup/pending/org-b/c1/r"] = {"orgId": "org-a", "connectorId": "c1", "requestedAt": 1}
+    config.kv["/services/cleanup/pending/org-a/c2/r"] = {"orgId": "org-a", "connectorId": "c1", "requestedAt": 1}
+    config.kv[EARLIER] = {"orgId": "org-a", "connectorId": "other", "requestedAt": 1}
+    assert await STORE.list(config) == []
 
-    config = Gone()
-    await STORE.record(config, org_id="org-a", connector_id="c1", now_ms=1)
-    assert await STORE.clear(config, "org-a", "c1")
+
+async def test_a_malformed_group_list_does_not_stop_the_listing() -> None:
+    config = Config()
+    config.kv[EARLIER] = {"orgId": "org-a", "connectorId": "c1", "requestedAt": 1, "recordGroupIds": 3}
+    await STORE.record(config, org_id="org-b", connector_id="c2", now_ms=1)
+    assert {i["orgId"] for i in await STORE.list(config)} == {"org-a", "org-b"}
+
+
+@pytest.mark.parametrize(("app", "other"), [
+    ({"orgId": "org-b"}, True), ({"orgId": "org-a"}, False), ({"orgId": None}, False), ({}, False),
+])
+def test_an_app_with_no_org_is_not_another_orgs(app: dict, other: bool) -> None:
+    assert held_by_another_org(app, "org-a") is other

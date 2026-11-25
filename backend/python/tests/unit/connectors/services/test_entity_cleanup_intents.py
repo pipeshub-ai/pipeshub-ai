@@ -2,6 +2,8 @@
 lost deleteConnectorEntities event is still reconciled (KG-45 review)."""
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from app.connectors.services.entity_cleanup_intents import (
@@ -9,8 +11,15 @@ from app.connectors.services.entity_cleanup_intents import (
     EntityCleanupIntentError,
     clear_pending_entity_cleanup,
     list_pending_entity_cleanups,
+    read_pending_entity_cleanup,
     record_pending_entity_cleanup,
 )
+
+
+@pytest.fixture(autouse=True)
+def _one_request_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keys these tests can name: each delete request's entry is stored as ``r``."""
+    monkeypatch.setattr("app.connectors.services.connector_intents.uuid4", lambda: SimpleNamespace(hex="r"))
 
 
 class FakeConfig:
@@ -43,11 +52,13 @@ class FakeConfig:
 async def test_an_intent_is_recorded_listed_and_cleared() -> None:
     config = FakeConfig()
     await record_pending_entity_cleanup(config, org_id="o", connector_id="c", connector_name="DRIVE", now_ms=5)
-    assert list(config.kv) == [f"{PENDING_DIRECTORY}o/c"]
-    assert await list_pending_entity_cleanups(config) == [
-        {"orgId": "o", "connectorId": "c", "connectorName": "DRIVE", "requestedAt": 5},
-    ]
-    assert await clear_pending_entity_cleanup(config, "c", org_id="o") is True
+    assert list(config.kv) == [f"{PENDING_DIRECTORY}o/c/r"]
+    [intent] = await list_pending_entity_cleanups(config)
+    assert {k: v for k, v in intent.items() if not k.startswith("_")} == {
+        "orgId": "o", "connectorId": "c", "connectorName": "DRIVE", "requestedAt": 5,
+    }
+    assert await read_pending_entity_cleanup(config, org_id="o", connector_id="c") == intent
+    assert await clear_pending_entity_cleanup(config, intent) is True
     assert await list_pending_entity_cleanups(config) == []
 
 
@@ -69,8 +80,9 @@ async def test_a_malformed_entry_is_skipped() -> None:
 async def test_a_failed_clear_is_reported_not_raised() -> None:
     config = FakeConfig()
     await record_pending_entity_cleanup(config, org_id="o", connector_id="c", connector_name=None)
+    [intent] = await list_pending_entity_cleanups(config)
     config.fail_delete = True
-    assert await clear_pending_entity_cleanup(config, "c", org_id="o") is False
+    assert await clear_pending_entity_cleanup(config, intent) is False
 
 
 async def test_clearing_an_absent_intent_writes_nothing() -> None:
@@ -78,4 +90,4 @@ async def test_clearing_an_absent_intent_writes_nothing() -> None:
     settled: the store would log a failed delete for a missing key."""
     config = FakeConfig()
     config.fail_delete = True
-    assert await clear_pending_entity_cleanup(config, "never-recorded", org_id="o") is True
+    assert await read_pending_entity_cleanup(config, org_id="o", connector_id="never-recorded") is None

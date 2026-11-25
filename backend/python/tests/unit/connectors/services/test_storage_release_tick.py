@@ -17,6 +17,12 @@ from app.core.org_context import current_or_system, peek
 
 from .test_storage_release_finisher import Config
 
+
+@pytest.fixture(autouse=True)
+def _one_request_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keys these tests can name: each delete request's entry is stored as ``r``."""
+    monkeypatch.setattr("app.connectors.services.connector_intents.uuid4", lambda: SimpleNamespace(hex="r"))
+
 NOW = 10 * 24 * 60 * 60 * 1000
 ORG_A, ORG_B = "org-a", "org-b"
 
@@ -122,7 +128,7 @@ async def test_an_intent_never_finishes_or_settles_another_orgs_connector(releas
 async def test_a_connector_that_cannot_be_read_does_not_hold_up_another_orgs_release(released: list) -> None:
     outcome, config, _ = await tick_all({"bad": RuntimeError("unreadable")}, {"bad": ORG_A, "gone": ORG_B})
     assert outcome == "released" and [c for c, _ in released] == ["gone"]
-    assert f"/services/storageRelease/pending/{ORG_A}/bad" in config.kv
+    assert f"/services/storageRelease/pending/{ORG_A}/bad/r" in config.kv
 
 
 async def test_a_store_that_reads_nothing_fails_the_tick_so_the_loop_backs_off(released: list) -> None:
@@ -150,7 +156,7 @@ async def test_a_stale_intent_on_another_orgs_connector_is_dropped_so_its_own_or
 async def test_an_intent_that_cannot_be_cleared_does_not_hold_up_the_later_ones(released: list, org_of_app: str) -> None:
     class KeepsX(Config):
         async def delete_config(self, key: str) -> bool:
-            return False if key.endswith("/x") else await super().delete_config(key)
+            return False if "/x/" in key else await super().delete_config(key)
 
     config, old = KeepsX(), NOW - storage_release.STALE_MS - 2
     await record_pending_storage_release(config, org_id=ORG_A, connector_id="x", now_ms=old)

@@ -18,6 +18,12 @@ from app.connectors.services.storage_release import (
 )
 from app.core.org_context import ambient_org, current_org_id
 
+
+@pytest.fixture(autouse=True)
+def _one_request_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keys these tests can name: each delete request's entry is stored as ``r``."""
+    monkeypatch.setattr("app.connectors.services.connector_intents.uuid4", lambda: SimpleNamespace(hex="r"))
+
 NOW = 10 * 24 * 60 * 60 * 1000
 ORG, KB = "org1", "kb1"
 
@@ -52,7 +58,7 @@ async def reconciler(app: dict | None, *, age_ms: int, finish=None, lease=None, 
     config = Config()
     await record_pending_storage_release(config, org_id=ORG, connector_id=KB, now_ms=NOW - age_ms)
     if attempts:
-        key = f"/services/storageRelease/pending/{ORG}/{KB}"
+        key = f"/services/storageRelease/pending/{ORG}/{KB}/r"
         config.kv[key] = {**config.kv[key], "attempts": attempts}
     lock = SimpleNamespace(try_acquire=AsyncMock(return_value=leader), refresh=AsyncMock(return_value=True))
     return StorageReleaseReconciler(
@@ -280,7 +286,7 @@ async def test_a_release_whose_intent_cannot_be_cleared_is_held_back_not_run_aga
     config = Keeps()
     await record_pending_storage_release(config, org_id=ORG, connector_id=KB, now_ms=1)
     helper = SimpleNamespace(release_connector_storage=AsyncMock(return_value=SimpleNamespace(completed=True)))
-    [intent] = config.kv.values()
+    [intent] = await storage_release.list_pending_storage_releases(config)
     assert not await storage_release.release_connector_storage(
         MagicMock(), helper, config, org_id=ORG, connector_id=KB, intent=intent, now_ms=lambda: NOW,
     )

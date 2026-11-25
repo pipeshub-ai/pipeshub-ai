@@ -86,10 +86,8 @@ async def record_pending_storage_release(
     await _STORE.record(config_service, org_id=org_id, connector_id=connector_id, now_ms=now_ms)
 
 
-async def clear_pending_storage_release(
-    config_service: ConfigurationService, connector_id: str, *, org_id: str, intent: dict[str, Any] | None = None,
-) -> bool:
-    return await _STORE.clear(config_service, org_id, connector_id, intent=intent)
+async def clear_pending_storage_release(config_service: ConfigurationService, intent: dict[str, Any]) -> bool:
+    return await _STORE.clear(config_service, intent)
 
 
 async def list_pending_storage_releases(config_service: ConfigurationService) -> list[dict[str, Any]]:
@@ -131,6 +129,14 @@ async def release_connector_storage(
     """Run one release and settle its intent: cleared when it completed,
     rescheduled with backoff when it did not. ``org_config_service`` holds the
     connector's credentials; None when it has none (a KB). Never raises."""
+    unread = False
+    if intent is None:
+        # Read before the release: a delete recorded while it runs is not settled by it.
+        try:
+            intent = await _STORE.read(config_service, org_id, connector_id)
+        except Exception:
+            unread = True
+            logger.warning("Storage release intent not read | org=%s connector=%s", org_id, connector_id, exc_info=True)
     try:
         result = await helper.release_connector_storage(org_id, connector_id)
         completed = result.completed
@@ -144,12 +150,14 @@ async def release_connector_storage(
         completed = False
     try:
         if completed:
-            if await clear_pending_storage_release(config_service, connector_id, org_id=org_id, intent=intent):
+            if not unread and (intent is None or await clear_pending_storage_release(config_service, intent)):
                 logger.info("Storage release intent cleared | org=%s connector=%s", org_id, connector_id)
                 return True
             # Held back like a failed attempt: released again at once, it would keep every later intent waiting.
             logger.warning("Storage release intent not cleared | org=%s connector=%s", org_id, connector_id)
             completed = False
+        if unread:
+            return False  # what was recorded is still there
         current = intent or {"orgId": org_id, "connectorId": connector_id, "requestedAt": now_ms()}
         attempts = int(current.get("attempts") or 0)
         wait = retry_delay_ms(attempts)
@@ -236,7 +244,7 @@ class StorageReleaseReconciler:
                 if requested > now - STALE_MS:
                     continue
                 # It can never be settled.
-                if await clear_pending_storage_release(self.config_service, connector_id, org_id=org_id, intent=intent):
+                if await clear_pending_storage_release(self.config_service, intent):
                     return "dropped"
                 continue
             if app is not None:
@@ -250,7 +258,7 @@ class StorageReleaseReconciler:
                     return outcome
                 if requested > now - STALE_MS:
                     continue
-                if not await clear_pending_storage_release(self.config_service, connector_id, org_id=org_id, intent=intent):
+                if not await clear_pending_storage_release(self.config_service, intent):
                     # "dropped" would look again at once, and find the same intent before the later ones.
                     self.logger.warning(
                         "Storage release intent not cleared | org=%s connector=%s", org_id, connector_id,
