@@ -408,12 +408,12 @@ describe('AgentRegistrationService', () => {
       cap = null; // MCP_SCOPES widened and the server restarted while the page was open
       await expectFail(service.completeClaim(token, r.claim.user_code, 'approve', USER, shown), 'invalid_request');
       await expectFail(service.completeClaim(token, r.claim.user_code, 'approve', USER), 'invalid_request');
-      expect([...repo.rows.values()][0].status).to.equal('pending');
+      expect([...repo.rows.values()][0]!.status).to.equal('pending');
       // Reloaded, the page shows the new list, and that is what the approval records.
       const again = await shownFor(token);
       expect(again).to.deep.equal(['org:read', 'kb:read']);
       await service.completeClaim(token, r.claim.user_code, 'approve', USER, again);
-      expect([...repo.rows.values()][0].approvedScopes).to.deep.equal(['org:read', 'kb:read']);
+      expect([...repo.rows.values()][0]!.approvedScopes).to.deep.equal(['org:read', 'kb:read']);
     });
 
     it('marks the registration revoked on deny', async () => {

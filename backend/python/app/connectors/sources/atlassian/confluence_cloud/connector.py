@@ -137,7 +137,6 @@ from app.models.blocks import (
     Block,
     BlockComment,
     BlockGroup,
-    BlockGroupChildren,
     BlocksContainer,
     BlockSubType,
     BlockType,
@@ -7233,35 +7232,7 @@ class ConfluenceConnector(BaseConnector):
         ConfluenceBlockParser.sync_table_row_links(blocks, block_groups)
         ConfluenceBlockParser.sync_nested_table_group_links(block_groups)
 
-        # Build children references for block groups
-        blockgroup_children_map: dict[int, list[int]] = defaultdict(list)
-        block_children_map: dict[int, list[int]] = defaultdict(list)
-
-        for bg in block_groups:
-            if bg.parent_index is not None:
-                blockgroup_children_map[bg.parent_index].append(bg.index)
-
-        for b in blocks:
-            if b.parent_index is not None:
-                block_children_map[b.parent_index].append(b.index)
-
-        # Populate children arrays
-        for bg in block_groups:
-            child_block_indices = []
-            child_bg_indices = []
-
-            if bg.index in blockgroup_children_map:
-                child_bg_indices = sorted(blockgroup_children_map[bg.index])
-
-            if bg.index in block_children_map:
-                child_block_indices = sorted(block_children_map[bg.index])
-
-            # Only update if we have children and group doesn't already have children set
-            if (child_block_indices or child_bg_indices) and not bg.children:
-                bg.children = BlockGroupChildren.from_indices(
-                    block_indices=child_block_indices,
-                    block_group_indices=child_bg_indices
-                )
+        ConfluenceBlockParser.rebuild_group_children(blocks, block_groups)
 
         return BlocksContainer(blocks=blocks, block_groups=block_groups)
 
