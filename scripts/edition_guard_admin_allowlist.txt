@@ -60,6 +60,9 @@ page approvals -- a page slot that renders not found here (config-pages.ts); no 
 page memories -- a person's own memories, with their own switch to turn memory off
 page schedules -- a person's own schedules
 
+# Pages the desktop app adds
+page desktop -- a person's own desktop app: whether PipesHub runs on this computer and which local folders it indexes; listed only in the app's local mode
+
 # Sections of the run policy layer: the shared contract every pin folds; here the release and the deployment set them
 section access -- who may use the harness, engines and models; unset here, so every member may
 section approvals -- per-call approval rules; the deployment's rules and the built-in defaults set them here
