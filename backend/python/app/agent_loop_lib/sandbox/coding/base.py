@@ -39,6 +39,7 @@ __all__ = [
     "ErrorAnalysis",
     "CodingSandboxBackend",
     "CodingLanguage",
+    "CodingSandboxBusy",
     "CodingSandboxError",
     "CodeOutOfMemory",
     "EnvironmentSetupError",
@@ -118,6 +119,10 @@ class CodingSandboxError(AgentLoopError):
     """Base for coding-sandbox infrastructure failures (as opposed to
     code-level failures, which are represented as data on `CodeResult`/
     `InstallResult` — see their docstrings)."""
+
+
+class CodingSandboxBusy(CodingSandboxError):
+    """The install's sandbox ceiling stayed full for the whole slot wait: capacity, which the caller retries."""
 
 
 class EnvironmentSetupError(CodingSandboxError):

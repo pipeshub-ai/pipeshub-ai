@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeVar, runtime_check
 
 from app.agent_loop_lib.core.exceptions import AgentLoopError
 from app.agent_loop_lib.core.tasks import wait_owned
+from app.agent_loop_lib.sandbox.capacity_wait import CapacityWait, capacity_wait
 from app.core.org_context import spawn_in_request
 
 if TYPE_CHECKING:
@@ -517,19 +518,42 @@ class SandboxManager:
         container, a subprocess) is still running: it stops that first, and
         only then lets the cancel through.
         """
+        # The call's whole wait, the slot's and the broker's, is one SANDBOX_SLOT_WAIT_S.
+        wait = CapacityWait(
+            deadline=time.monotonic() + self._slot_wait_s if self._slot_wait_s >= 0 else None,
+            note=self._capacity_note(tool),
+        )
         record = self._instances.get((type, sandbox_id))
         if record is None or self._governor is None or record.governor_lease is not None:
-            yield
+            with capacity_wait(wait):
+                yield
             return
         lease = await self._acquire_slot(
             record.org_id, tool, per_request=self._max_slots_per_request is not None,
         )
         try:
-            yield
+            with capacity_wait(wait):
+                yield
         finally:
             # Shielded: a cancel landing while the release waits for the
             # governor's lock must not leave the slot counted.
             await asyncio.shield(self._release_lease(lease))
+
+    def _capacity_note(self, tool: str) -> Callable[[bool], Awaitable[None]]:
+        """The slot wait's note, for a wait on the broker: bounded, and never the call's failure."""
+        notify = self._on_slot_wait
+
+        async def note(waiting: bool) -> None:
+            if notify is None:
+                return
+            try:
+                await asyncio.wait_for(notify(tool, waiting=waiting), _SLOT_NOTE_S)
+            except TimeoutError:
+                logger.warning("the capacity-wait note took over %gs; going on", _SLOT_NOTE_S)
+            except Exception:
+                logger.warning("the capacity-wait note failed", exc_info=True)
+
+        return note
 
     def request_slot_limit(self) -> int | None:
         """The most slots this request's calls hold at once: the setting,

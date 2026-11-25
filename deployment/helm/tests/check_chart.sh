@@ -946,7 +946,7 @@ check_notes "external run cap" has "SANDBOX_MAX_RUN_TIMEOUT_S=900" "${EXTERNAL[@
 BROKER=(--set config.sandboxMode=broker --set sandbox.dind.enabled=true --set replicaCount=3 --set autoscaling.enabled=false)
 check_notes "broker sized" has "The broker sizes its ceiling on sandboxes from the \`dind\` sidecar's limits" "${BROKER[@]}"
 check_notes "broker maxTotal 12" has "The broker runs at most 12 sandboxes at once" "${BROKER[@]}" --set sandbox.capacity.maxTotal=12
-check_notes "broker 3 pods" has "Each application pod runs at most 1/3 of it" "${BROKER[@]}"
+check_notes "broker 3 pods" has "Each application pod runs at most 1/3 of it, and never fewer than one" "${BROKER[@]}"
 
 # The eksctl config: it parses, and the parsing node group carries the taint and label and
 # a max that fits the pods the chart sizes for it.

@@ -111,6 +111,7 @@ MAX_SLOT_FILES = 1024
 # Retries while Docker does not answer: after 5 s, 15 s, 30 s, then every 60 s.
 _SIZING_RETRY_S = (5.0, 15.0, 30.0)
 _SIZING_RETRY_EVERY_S = 60.0
+_BROKER_REREAD_S = 60.0
 
 Mode = Literal["compose", "helm_dind", "local", "e2b"]
 
@@ -374,7 +375,8 @@ def compute_plan(
         "pids": _term(machine.pid_limit, PID_SHARE, run and run.pids, divisor),
     }
     if machine.ceiling is not None:
-        terms["broker"] = machine.ceiling // divisor
+        # Every app may run one: with more apps than broker places, the broker's own ceiling is the limit.
+        terms["broker"] = max(1, machine.ceiling // divisor)
     known = {name: value for name, value in terms.items() if value is not None}
     min_total = settings.min_total
     if explicit is not None:
@@ -387,6 +389,9 @@ def compute_plan(
         # it and pin the floor there, so the live limit could never shrink: it
         # is held to the machine's terms (never below the default minimum).
         min_total = min(min_total, max(DEFAULT_MIN_TOTAL, known[binding]))
+        # The broker refuses past its share, so no minimum lifts the ceiling above it (ADR-CAP-02 D3).
+        if "broker" in known:
+            min_total = min(min_total, known["broker"])
         ceiling = max(min_total, min(known[binding], slot_files))
         ceiling = min(ceiling, slot_files)
     return CapacityPlan(
@@ -796,7 +801,21 @@ class SandboxCapacity:
             self._apply(machine, info)
             if self._first_attempt is not None:
                 self._first_attempt.set()
+            if machine.ceiling is not None:
+                await self._follow_broker()
             return
+
+    async def _follow_broker(self) -> None:
+        """Re-read the broker, so a ceiling it was restarted with reaches this app without restarting it."""
+        while True:
+            await self._sleep(_BROKER_REREAD_S)
+            try:
+                machine, info = await self._reader()
+            except Exception:
+                logger.debug("sandbox capacity: re-reading the broker failed; keeping the plan", exc_info=True)
+                continue
+            if machine.ceiling is not None and machine != self._machine:
+                self._apply(machine, info)
 
     def _apply(self, machine: MachineSize, info: DockerInfo | None) -> None:
         self._machine = machine

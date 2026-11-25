@@ -173,3 +173,60 @@ async def test_cap02_broker_mode_reads_the_broker(monkeypatch: pytest.MonkeyPatc
 def test_cap02_an_unread_broker_reports_only_its_minimum() -> None:
     broker = build_daemon_capacity(_info(SMALL), {})
     assert broker_detail(broker) == {BROKER_CEILING: "2", BROKER_MEASURED: "false"}
+
+
+@pytest.mark.parametrize(
+    ("broker_ceiling", "divisor", "ceiling"),
+    [
+        # 16 / 8 is the default minimum already.
+        ("16", "8", 2),
+        # 10 / 8 is one: the minimum may not lift an app past what the broker lets it run.
+        ("10", "8", 1),
+        # More apps than broker places: each still runs one, and the broker's ceiling holds across them.
+        ("3", "8", 1),
+    ],
+)
+async def test_cap02_no_minimum_lifts_an_app_past_its_broker_share(
+    broker_ceiling: str, divisor: str, ceiling: int,
+) -> None:
+    broker = await _broker({"SANDBOX_MAX_TOTAL": broker_ceiling}, LARGE)
+    app = await _app_in_broker_mode({"SANDBOX_CAPACITY_DIVISOR": divisor}, broker)
+    assert (app.ceiling(), app.plan.floor, app.plan.binding) == (ceiling, ceiling, "broker")
+
+
+async def test_cap02_a_broker_restarted_with_a_new_ceiling_reaches_the_app_without_a_restart() -> None:
+    import asyncio
+
+    detail = broker_detail(await _broker({}, LARGE))
+    ceilings = ["6", "6", "12"]
+
+    async def health() -> dict[str, str]:
+        return {**detail, BROKER_CEILING: ceilings.pop(0) if ceilings else "12"}
+
+    async def no_wait(_seconds: float) -> None:
+        await asyncio.sleep(0)
+
+    settings = CapacitySettings()
+    app = SandboxCapacity(
+        "compose", settings, sleep=no_wait,
+        machine_reader=lambda: read_broker_machine_size("compose", settings, health_detail=health),
+    )
+    woken: list[int] = []
+    raised = asyncio.Event()
+
+    class Governor:
+        def capacity_changed(self) -> None:
+            woken.append(app.ceiling())
+            if app.ceiling() == 12:
+                raised.set()
+
+    governor = Governor()
+    app.add_listener(governor.capacity_changed)
+    try:
+        await _sized(app)
+        await asyncio.wait_for(raised.wait(), 5)
+        # The unchanged re-read woke nobody.
+        assert woken == [6, 12]
+    finally:
+        assert app._task is not None
+        app._task.cancel()

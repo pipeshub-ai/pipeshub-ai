@@ -166,7 +166,7 @@ The broker sizes its ceiling on sandboxes from {{ if eq $path "broker-dind" }}th
 sandbox cap is sized (sandbox.capacity). Set sandbox.capacity.maxTotal to override it.
 {{- end }}
 {{- with (include "pipeshub-ai.sandboxCapacityDivisor" .) }}
-Each application pod runs at most 1/{{ . }} of it (up to {{ . }} pods can run).
+Each application pod runs at most 1/{{ . }} of it, and never fewer than one (up to {{ . }} pods can run); the broker's ceiling still holds across them.
 {{- end }}
 
 {{- else if eq $path "local" }}

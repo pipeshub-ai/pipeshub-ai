@@ -13,6 +13,7 @@ from app.agent_loop_lib.sandbox.coding.base import (
     CodeRequest,
     CodeResult,
     CodingSandboxBackend,
+    CodingSandboxBusy,
     ErrorCategory,
 )
 from app.agent_loop_lib.sandbox.manager import (
@@ -737,7 +738,7 @@ class CodingSandboxTool(Tool):
         try:
             # Raced against Stop: covers the slot wait and the run itself.
             result = await self._manager.unless_stopped(_run, tool=self.name)
-        except SandboxLimitExceeded as e:
+        except (SandboxLimitExceeded, CodingSandboxBusy) as e:
             _logger.warning("CodingSandboxTool.execute: no free slot: %s", e)
             await _drop_unused_sandbox(self._manager, resolved_id, is_fresh_sandbox)
             return ToolOutput(success=False, error=sandbox_limit_guidance(e, reuse_helps=False))
@@ -905,7 +906,7 @@ class InstallPackagesTool(Tool):
 
         try:
             result = await self._manager.unless_stopped(_install, tool=self.name)
-        except SandboxLimitExceeded as e:
+        except (SandboxLimitExceeded, CodingSandboxBusy) as e:
             await _drop_unused_sandbox(self._manager, resolved_id, is_fresh_sandbox)
             return ToolOutput(success=False, error=sandbox_limit_guidance(e, reuse_helps=False))
         except SandboxCallStopped:

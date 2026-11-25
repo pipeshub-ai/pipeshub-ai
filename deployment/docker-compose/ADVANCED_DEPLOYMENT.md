@@ -788,7 +788,7 @@ the table says.
 
 ## Code sandbox capacity
 
-Code the agent runs (`run_code`, `install_packages`) gets a throwaway container per run. The app counts how many run at once for the **whole app container**: every query worker (`QUERY_UVICORN_WORKERS`) shares one count, kept in lock files under the container's `/tmp`. A run that finds every sandbox busy waits up to `SANDBOX_SLOT_WAIT_S` (120 s) and shows "waiting in queue", then is refused with a message the model can act on.
+Code the agent runs (`run_code`, `install_packages`) gets a throwaway container per run. The app counts how many run at once for the **whole app container**: every query worker (`QUERY_UVICORN_WORKERS`) shares one count, kept in lock files under the container's `/tmp`. A run that finds every sandbox busy waits up to `SANDBOX_SLOT_WAIT_S` (120 s) and shows "waiting in queue", then is refused with a message the model can act on. With the sandbox broker, the same wait covers a broker that is full, engine sandboxes included.
 
 The cap is sized from the Docker host when the app starts (the app asks the Docker proxy, which answers a filtered `/info`). It is the smallest of:
 
