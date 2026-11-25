@@ -21,6 +21,8 @@ export interface AppServices {
   docling: ServiceStatus;
   parsing?: ServiceStatus;
   extraction?: ServiceStatus;
+  /** A check added on the server's health extension point, by its name. */
+  [added: string]: ServiceStatus | undefined;
 }
 
 interface ServicesHealthState {

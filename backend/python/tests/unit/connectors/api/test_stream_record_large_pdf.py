@@ -27,6 +27,7 @@ from app.connectors.api import router as router_mod
 from app.connectors.sources.localKB.connector import KnowledgeBaseConnector
 from app.services.storage_documents import StorageDocuments
 from app.utils.content_tag import content_tag
+from tests.support.record_access import InMemoryRecordAccess
 
 MIB = 1024 * 1024
 SIZE = 200 * MIB
@@ -131,7 +132,7 @@ async def _stream(server: TestServer, headers: dict[str, str]) -> Any:
     graph = MagicMock()
     graph.get_record_by_id = AsyncMock(return_value=record)
     graph.get_document = AsyncMock(side_effect=get_document)
-    graph.check_record_access_with_details = AsyncMock(return_value={"id": RECORD_ID})
+    InMemoryRecordAccess().readable("u1", "org-1", RECORD_ID).serve(graph)
     container = SimpleNamespace(logger=lambda: MagicMock(), connectors_map={"conn-1": kb}, config_service=lambda: MagicMock())
     request = SimpleNamespace(
         state=SimpleNamespace(user={"userId": "u1", "orgId": "org-1", "role": "member"}),

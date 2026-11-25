@@ -1,0 +1,11 @@
+{
+  "$comment": "Jobs excused from a scripts/workflow_lint.py rule, each with the reason (SEC-D-12). An entry that excuses nothing fails the lint, so the list only shrinks.",
+  "exceptions": [
+    {
+      "rule": "WF-PERSIST",
+      "workflow": "release-changelog.yml",
+      "job": "publish",
+      "reason": "Pushes the changelog branch with the job token. It runs only git and gh: no checked-out code, no agent, and the patch it applies is held to regular files under CHANGELOG.md and changelog/ and refused if it carries a credential."
+    }
+  ]
+}

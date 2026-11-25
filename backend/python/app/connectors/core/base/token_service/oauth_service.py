@@ -67,12 +67,14 @@ def _require_access_token(data: object) -> None:
 
 class OAuthStateError(ValueError):
     """The callback is not for the sign-in in progress: its state is stale, replayed or forged, or its code was used.
-    Nothing was exchanged or saved."""
+    Nothing was exchanged or saved. The client sent an expired or spent state or code, so it is the request's fault."""
+
+    log_error_class = "bad_request"
 
 
 class OAuthStoreUnavailableError(Exception):
-    """Our own config or graph store failed during a sign-in callback, so the sign-in was not recorded (the provider's
-    sign-in itself did not fail)."""
+    """Our own config or graph store failed while saving a sign-in or a connector's settings, so they were not recorded
+    (a provider's sign-in itself did not fail)."""
 
     log_error_class = "unavailable"
 
@@ -497,8 +499,9 @@ class OAuthProvider:
         token = OAuthToken.from_dict(normalized_data)
         return token
 
-    async def refresh_access_token(self, refresh_token: str) -> OAuthToken:
-        """Refresh access token using refresh token"""
+    async def refresh_access_token(self, refresh_token: str, *, persist: bool = True) -> OAuthToken:
+        """Refresh access token using refresh token. ``persist=False``: the caller stores the token itself
+        (a control-plane binding, CPD-8), so ``credentials_path`` is not written."""
         data = {
             "grant_type": GrantType.REFRESH_TOKEN.value,
             "refresh_token": refresh_token,
@@ -532,10 +535,15 @@ class OAuthProvider:
         if not token.refresh_token:
             token.refresh_token = refresh_token
 
+        if not persist:
+            return token
+
         # Update the stored credentials with the new token
-        config = await self.configuration_service.get_config(self.credentials_path)
-        if not isinstance(config, dict):
-            config = {}
+        try:
+            config = await read_oauth_config(self.configuration_service, self.credentials_path)
+        except OAuthStoreUnavailableError:
+            # Saving without the rest of the record would wipe it; every caller saves the token itself.
+            return token
 
         # Best effort: callers verify the write and retry it. A copy, because
         # get_config hands back the cached dict and a failed write must not change it.
@@ -561,9 +569,7 @@ class OAuthProvider:
     async def revoke_token(self) -> bool:
         """Revoke access token"""
         # Default implementation - override in specific providers
-        config = await self.configuration_service.get_config(self.credentials_path)
-        if not isinstance(config, dict):
-            config = {}
+        config = await read_oauth_config(self.configuration_service, self.credentials_path)
         config['credentials'] = None
         await self.configuration_service.set_config(self.credentials_path, config)
         return True
@@ -596,9 +602,8 @@ class OAuthProvider:
                 "code_challenge": code_challenge,
                 "code_challenge_method": "S256"
             })
-        config = await self.configuration_service.get_config(self.credentials_path)
-        if not isinstance(config, dict):
-            config = {}
+        # An unread record must not be saved back as just this session: it holds the sign-in, filters and sync settings.
+        config = await read_oauth_config(self.configuration_service, self.credentials_path)
         # Replace entire oauth session data - this clears any old state, codes, etc.
         # This is important for re-authentication to ensure fresh start
         config['oauth'] = session_data
@@ -630,7 +635,7 @@ class OAuthProvider:
                 except (TypeError, ValueError, KeyError):
                     # Not an OAuthStateError: this code was used and the saved credentials no longer load, so
                     # the connector is marked signed out.
-                    raise ValueError("Invalid or expired state")
+                    raise ValueError("Invalid or expired state") from None
 
             # State mismatch and not a duplicate callback
             raise OAuthStateError("Invalid or expired state")

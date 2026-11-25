@@ -27,6 +27,7 @@ vi.mock('@/config', () => ({
     props.saveRef.current = mocks.saveAccess;
     return <div data-testid="manage-access" />;
   },
+  McpInstanceConfigExtras: () => null,
 }));
 vi.mock('../../../api', () => ({
   McpServersApi: {
@@ -85,6 +86,9 @@ vi.mock('../../../../components', () => ({
         </option>
       ))}
     </select>
+  ),
+  FormFieldTextField: ({ size: _size, ...props }: React.InputHTMLAttributes<HTMLInputElement> & { size?: string }) => (
+    <input {...props} />
   ),
   TagInput: () => null,
   ConfirmationDialog: () => null,

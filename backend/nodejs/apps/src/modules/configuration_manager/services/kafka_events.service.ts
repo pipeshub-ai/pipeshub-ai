@@ -114,11 +114,16 @@ export class SyncEventProducer {
 
     try {
       await this.producer.publish(this.topic, message);
-      this.logger.info(
-        `Published event: ${event.eventType} to topic ${this.topic}`,
-      );
+      this.logger.debug('broker.event.published', {
+        event_type: event.eventType,
+        topic: this.topic,
+      });
     } catch (error) {
-      this.logger.error(`Failed to publish event: ${event.eventType}`, error);
+      this.logger.error('broker.event.publish_failed', {
+        event_type: event.eventType,
+        topic: this.topic,
+        error,
+      });
     }
   }
 }
@@ -160,11 +165,16 @@ export class EntitiesEventProducer {
 
     try {
       await this.producer.publish(this.topic, message);
-      this.logger.info(
-        `Published event: ${event.eventType} to topic ${this.topic}`,
-      );
+      this.logger.debug('broker.event.published', {
+        event_type: event.eventType,
+        topic: this.topic,
+      });
     } catch (error) {
-      this.logger.error(`Failed to publish event: ${event.eventType}`, error);
+      this.logger.error('broker.event.publish_failed', {
+        event_type: event.eventType,
+        topic: this.topic,
+        error,
+      });
     }
   }
 }
@@ -206,11 +216,16 @@ export class AiConfigEventProducer {
 
     try {
       await this.producer.publish(this.topic, message);
-      this.logger.info(
-        `Published event: ${event.eventType} to topic ${this.topic}`,
-      );
+      this.logger.debug('broker.event.published', {
+        event_type: event.eventType,
+        topic: this.topic,
+      });
     } catch (error) {
-      this.logger.error(`Failed to publish event: ${event.eventType}`, error);
+      this.logger.error('broker.event.publish_failed', {
+        event_type: event.eventType,
+        topic: this.topic,
+        error,
+      });
     }
   }
 }

@@ -55,13 +55,127 @@
   "chatStream": {
     "thinkingFallback": "Thinking…",
     "refiningResponse": "Refining response…",
+    "reconnecting": "Reconnecting…",
+    "durableStreamLost": "The connection dropped, but the answer is still being worked on. Reload the page to see it.",
     "errorFallback": "An error occurred. Please try again.",
     "askQuestionResumeFailed": "Couldn't send your answers. Submit again to retry.",
     "copyCode": "Copy",
     "copiedCode": "Copied",
+    "queued": "Waiting to start…",
+    "admission": {
+      "quota": "You've sent a lot of messages in a short time. Wait a minute, then send again.",
+      "quotaActiveUser": "You already have as many answers running as your workspace allows. Wait for one to finish, or stop it, then send again.",
+      "quotaActiveOrg": "Your workspace has as many answers running as it allows. Try again when one finishes.",
+      "readOnly": "This conversation was shared with you to read. To ask something, use \"Continue privately\" or start a new chat.",
+      "collaboratorTurns": "Your organization doesn't let people a conversation is shared with send messages in it. Use \"Continue privately\" to ask in your own copy.",
+      "runActive": "The agent is still working on this conversation. Wait for it to finish, or stop it, then try again.",
+      "erased": "This conversation was deleted. Start a new chat to keep going.",
+      "regenerateNotLast": "Only the latest answer can be regenerated. Reload the conversation and try again.",
+      "historyTooLarge": "This conversation is too long to continue. Start a new chat to keep going.",
+      "engineUnavailable": "This agent's coding engine can't run on this deployment right now. Ask your admin.",
+      "engineProfileUntrusted": "This agent's coding engine isn't signed for this deployment, so it can't run here. Ask your admin.",
+      "engineSandboxMissing": "Coding engines need the sandbox add-on, which isn't installed on this deployment. Ask your admin.",
+      "configUnavailable": "Your organisation's settings couldn't be loaded just now, so nothing was started. Send your message again in a moment.",
+      "placement": "This agent can't run on this server for your organisation. Ask your admin.",
+      "accountMissing": "This agent's model account isn't set up here. Ask your admin to set up a model for this engine under AI Models, then send again.",
+      "forbidden": "You don't have access to this agent or to something this message names. Ask the agent's owner or your admin.",
+      "notFound": "This conversation or agent could not be found. It may have been deleted or unshared.",
+      "network": "Your message couldn't reach the server. Check your connection and send it again.",
+      "modelAccess": "Your organization's AI rules don't allow this model or account here. Pick another model, or ask your admin.",
+      "failed": "Your message couldn't be started. Try again; if it keeps happening, ask your admin.",
+      "sharedSessionEngine": "Only this conversation's owner can send messages to its coding agent. To ask something, use \"Continue privately\" or start a new chat.",
+      "engineProfile": "This agent's settings ask for more than your organization allows. Ask your admin to check the engine profile.",
+      "policyUnavailable": "Your organization's AI rules couldn't be read just now, so nothing was sent. Wait a moment, then send it again.",
+      "repositoryNeedsEngine": "A repository needs a coding engine. Pick one for this chat first, then choose the repository.",
+      "repositoryToolsetMissing": "Your GitHub connection is missing or signed out. Connect GitHub under Your actions, then choose the repository again.",
+      "repositoryNotGithub": "Only GitHub repositories can be used. Choose a GitHub repository.",
+      "repositoryLocked": "This chat already has its repository copied. Start a new chat to work on another repository.",
+      "repositoryFailed": "Couldn't save the repository. Try again.",
+      "gatesNeedRuntime": "This agent's safety settings need the agent runtime, which is turned off for this workspace. Ask an admin to turn it on.",
+      "harnessGroup": "Your organization lets only some groups use agents. Ask your admin to add you to one of them.",
+      "modelGroup": "Your organization lets only some groups use this model. Pick another model, or ask your admin to add you.",
+      "engineGroup": "Your organization lets only some groups use this coding engine. Pick another one, or ask your admin to add you.",
+      "operatorStopped": "Your admin stopped agent work here for now. Ask your admin."
+    },
+    "runError": {
+      "workerLost": "The server running this task stopped, and this agent does not resume on its own, so the task ended. Send your message again to run it once more.",
+      "notStarted": "The agent couldn't start: no server picked up the request within a minute and a half. Nothing was done. Try again; if it keeps happening, ask your admin.",
+      "noCompatibleWorker": "No server here can run this kind of task right now. Nothing was done. Ask your admin.",
+      "deadlineExceeded": "This run took too long and was stopped. Nothing more will happen. Send your message again to try once more.",
+      "quarantined": "This run kept failing and was stopped. Send your message again to try once more.",
+      "capabilityLost": "A tool or connection this agent needs is no longer available. Try again; if it keeps happening, ask your admin.",
+      "modelNoLongerConfigured": "The AI model this conversation was using is no longer set up. Send your message again to continue on a current model, or ask your admin to check AI Models.",
+      "engineUnavailable": "This agent's coding engine can't run on this deployment right now. Nothing was done. Ask your admin.",
+      "mcpUnavailable": "MCP servers can't be reached right now. Try again in a minute; if it keeps happening, ask your admin.",
+      "mcpToolWithdrawn_one": "{{servers}} no longer offers a tool this task was using, so the task stopped. Send your message again to continue without it, or ask your admin to review the app's tools.",
+      "mcpToolWithdrawn_other": "{{servers}} no longer offer a tool this task was using, so the task stopped. Send your message again to continue without it, or ask your admin to review their tools.",
+      "mcpToolWithdrawnUnnamed": "A connected app no longer offers a tool this task was using, so the task stopped. Send your message again to continue without it, or ask your admin to review its tools.",
+      "providerUnavailable": "The AI model provider was unavailable, so this task stopped. Nothing is wrong on your side: try again in a few minutes.",
+      "rateLimited": "The AI model provider is limiting requests, so this task stopped. Try again in a few minutes.",
+      "sandboxUnavailable": "No sandbox was free to run this task, so nothing was done. Try again in a few minutes; if it keeps happening, ask your admin.",
+      "storeUnavailable": "File storage could not be reached for several minutes, so this task stopped. Try again in a few minutes; if it keeps happening, ask your admin.",
+      "eventFlood": "The coding engine sent far more updates than a task can, so it was stopped. Send your message again; if it keeps happening, ask your admin.",
+      "gvisorUnavailable": "Coding engines need the gVisor sandbox runtime on this server. Ask your admin to install it — install guide: https://github.com/pipeshub-ai/pipeshub-ai/blob/main/deployment/docker-compose/GVISOR.md",
+      "engineToolsUnreachable": "The coding engine couldn't reach PipesHub's tools, so this task stopped before it finished. Send your message again; if it keeps happening, ask your admin.",
+      "egressVolumeExceeded": "This task moved more data than one task may on this server, so it stopped. Send a smaller request, or ask your admin about the limit.",
+      "secretBlocked": "PipesHub blocked a request from this task because it looked like it contained a secret (an API key or access token), so the task stopped. Remove the secret from your message or files and send it again.",
+      "operatorStopped": "Your admin stopped this agent work for now. Ask your admin, or send your message again once they resume it.",
+      "operatorStoppedSession": "Your admin stopped agent work in this conversation for now.",
+      "operatorStoppedAgent": "Your admin stopped this agent for now.",
+      "operatorStoppedOrg": "Your admin stopped agent work for your organization for now.",
+      "operatorStoppedEngineVersion": "Your admin stopped this coding engine version. Send your message again to continue on another version.",
+      "operatorStoppedEngineVersionSecurity": "This coding engine version was stopped by your admin for a security fix. Send your message again to continue on a newer version.",
+      "operatorStoppedInstance": "Your admin stopped agent work on this server for now.",
+      "operatorStoppedEgress": "Your admin turned off internet access for coding sandboxes, so this task stopped. Send your message again; the assistant will answer without the coding engine.",
+      "imageUntrusted": "This agent's sandbox image isn't signed by a key this server trusts, so nothing was started. Ask your admin.",
+      "outOfMemory": "This task ran out of memory and was stopped. Send a smaller task, or ask your admin about the coding engine's memory.",
+      "outOfMemoryLimit": "This task ran out of memory (limit {{limit}}) and was stopped. Send a smaller task, or ask your admin about the coding engine's memory."
+    },
+    "toolFailure": {
+      "unavailable": "{{tool}} could not be reached.",
+      "timeout": "{{tool}} did not answer in time.",
+      "rateLimited": "{{tool}} is limiting requests right now.",
+      "auth": "{{tool}} could not use your connection. Connect it again, or ask your admin to check it.",
+      "notFound": "{{tool}} could not find what the agent asked for.",
+      "invalidCall": "The agent called {{tool}} incorrectly; it can try again.",
+      "failed": "{{tool}} failed.",
+      "nothingSent": "Nothing was sent."
+    },
+    "answerError": {
+      "contentFilter": "The AI provider's content filter blocked this request. This is often a false positive caused by something in the conversation or the documents it read. Rephrase your question, or start a new conversation and try again.",
+      "quotaExceeded": "The AI model's account has run out of credit or reached its usage limit. Ask a workspace admin to top it up, or to pick another model in Workspace → AI Models.",
+      "rateLimit": "The AI model's provider is limiting requests right now. Wait a minute, then try again.",
+      "authError": "The AI model's provider rejected its API key. Ask a workspace admin to check the key in Workspace → AI Models.",
+      "modelNotFound": "The AI model's provider couldn't find this model at its endpoint. Ask a workspace admin to check the model name and endpoint in Workspace → AI Models.",
+      "requestTooLarge": "This conversation is too long for the selected model. Shorten your message or start a new conversation.",
+      "invalidRequest": "The AI model rejected this request. Ask a workspace admin to check the model settings in Workspace → AI Models.",
+      "serverError": "The AI model's provider isn't responding right now. Try again in a minute.",
+      "timeout": "The AI model took too long to answer. Try again.",
+      "unknown": "Something went wrong while answering. Try again, and if it keeps happening, contact your workspace admin.",
+      "needsReconciliation": "A tool action may have completed before its result was recorded. An administrator must reconcile the action before this run can continue.",
+      "deadlineExceeded": "This run took too long and was stopped. Send your message again to try once more.",
+      "budgetExhausted": "This reply stopped because it reached its spending limit. Ask your admin to raise the limit, or ask for less at a time.",
+      "budgetInsufficient": "This reply stopped because its spending limit had too little left for the next step. Ask your admin to raise the limit, or ask for less at a time.",
+      "approvalExpired": "This task waited for an approval that nobody gave in time, so the action was not taken. Send your message again to try once more."
+    },
+    "providerWait": "Waiting for the AI model (busy or too many requests), retrying in {{seconds}} s…",
+    "providerWaitNow": "Waiting for the AI model (busy or too many requests), retrying…",
+    "sandboxWait": "Waiting for a free sandbox…",
+    "engineVersionWait": "Paused: waiting for a compatible coding engine version…",
+    "storeWait": "File storage is not responding; the task will carry on once it is back…",
     "remoteImageBlocked": "External image not loaded",
     "remoteImageFrom": "from {{host}}",
-    "remoteImageLoad": "Load image"
+    "remoteImageLoad": "Load image",
+    "linkDataHint": "Sends extra data to {{host}}",
+    "linkDataTitle": "This link sends extra data",
+    "linkDataBody": "Opening it passes the information in the address to {{host}}. Open it only if you trust where it came from.",
+    "linkDataOpen": "Open link",
+    "nextStep": {
+      "retry": "Try again",
+      "reload": "Reload",
+      "newChat": "New chat"
+    },
+    "sandboxWaitIn": "Queued for a free sandbox, trying again in {{seconds}} s…"
   },
   "uploadProgress": {
     "uploadFailedDefault": "Upload failed",
@@ -245,7 +359,11 @@
     "searchChats": "Search chats",
     "inbox": "Inbox",
     "notifications": "Notifications",
-    "home": "Home"
+    "home": "Home",
+    "needsYou": "Needs you",
+    "jobs": "Jobs",
+    "jobsWorkingAria_one": "{{count}} job working",
+    "jobsWorkingAria_other": "{{count}} jobs working"
   },
   "artifacts": {
     "title": "All artifacts",
@@ -413,7 +531,6 @@
     "newFolder": "New collection folder",
     "createCollection": "Create collection",
     "newCollection": "New collection",
-    "deleteConfirmation": "Delete confirmation",
     "replaceFile": "Replace file",
     "uploadData": "Upload data",
     "moveFolder": "Move folder",
@@ -433,7 +550,18 @@
     "reindexDescription": "This will update the search index for this {{type}} and its contents.",
     "deleteCollectionBody": "'{{name}}' and everything in it will be permanently deleted. It will also be removed from any agents that use it. This can't be undone.",
     "deleteFolderBody": "'{{name}}' and everything in it will be deleted from this collection.",
-    "deleteFileBody": "'{{name}}' will be deleted from this collection."
+    "deleteFileBody": "'{{name}}' will be deleted from this collection.",
+    "typedConfirmMismatch": "Doesn't match. Type it exactly as shown.",
+    "deleteCollectionTitle": "Delete collection?",
+    "deleteFolderTitle": "Delete folder?",
+    "deleteFileTitle": "Delete file?",
+    "bulkDeleteTitle_one": "Delete {{count}} item?",
+    "bulkDeleteTitle_other": "Delete {{count}} items?",
+    "bulkDeleteBody": "This can't be undone. Every selected item will be permanently deleted.",
+    "bulkDeleteConfirm_one": "Delete {{count}} item",
+    "bulkDeleteConfirm_other": "Delete {{count}} items",
+    "replaceFileSupports": "Supports: only {{fileType}}",
+    "folderDetails": "Folder details"
   },
   "table": {
     "fileName": "File name",
@@ -547,7 +675,26 @@
       "goToChat": "Go to chat",
       "notFoundTitle": "Page not found",
       "notFoundBody": "This page doesn't exist or has moved."
-    }
+    },
+    "estimatedCharge": {
+      "label": "estimated (stopped early)",
+      "hint": "Part of this is an estimate: a step was stopped before the provider reported what it used. It is corrected if the provider reports it."
+    },
+    "previousPage": "Previous page",
+    "nextPage": "Next page",
+    "previousMonth": "Previous month",
+    "nextMonth": "Next month",
+    "scrollLeft": "Scroll left",
+    "scrollRight": "Scroll right",
+    "send": "Send",
+    "showValue": "Show value",
+    "hideValue": "Hide value",
+    "settings": "Settings",
+    "undo": "Undo",
+    "redo": "Redo",
+    "discard": "Discard",
+    "showDetails": "Show details",
+    "clearAll": "Clear all"
   },
   "units": {
     "bytes": "Bytes",
@@ -593,7 +740,12 @@
     "expand": "Expand sidebar",
     "close": "Close sidebar",
     "collapse": "Collapse sidebar",
-    "navigation": "Navigation"
+    "navigation": "Navigation",
+    "dot": {
+      "needsYou": "Needs you",
+      "working": "Working",
+      "finished": "Finished since you last looked"
+    }
   },
   "menu": {
     "reindex": "Reindex",
@@ -626,7 +778,7 @@
     "allRecordsView": "All records view",
     "newFolder": "New folder",
     "newFile": "New file",
-    "emptyFolder": "This folder is empty",
+    "emptyFolder": "Empty",
     "emptyCollection": "This collection is empty",
     "addFirstItem": "Add your first item to get started",
     "folderEmpty": "This folder is empty",
@@ -710,7 +862,11 @@
       "collectionExists": "You already have a collection named \"{{name}}\". Choose a different name."
     },
     "sourcesNotReady": "Some sources are still being prepared and are not listed yet ({{count}}). Try again in a moment.",
-    "sourcePreparing": "Preparing this source… Its items will show here in a moment."
+    "sourcePreparing": "Preparing this source… Its items will show here in a moment.",
+    "selectionActionsNotice": "Index first",
+    "selectionActionsNoticeEnterprise": "Choosing which selected items are indexed first is part of the Enterprise Edition.",
+    "uploadExtrasNotice": "Index these files first",
+    "uploadExtrasNoticeEnterprise": "Choosing which uploads are indexed first is part of the Enterprise Edition."
   },
   "connectorTypes": {
     "slack": "Slack",
@@ -721,7 +877,8 @@
     "confluence": "Confluence",
     "github": "GitHub",
     "gitlab": "GitLab",
-    "localFs": "Local FS"
+    "localFs": "Local FS",
+    "repository": "Repository"
   },
   "itemType": {
     "knowledgeBase": "knowledge base",
@@ -757,6 +914,7 @@
     "voiceInputNotSupported": "Voice input is not supported in this browser",
     "voiceError": "Could not access microphone",
     "noModelsAvailable": "No AI models are configured yet",
+    "modelUnavailableGroup": "Unavailable: your organisation lets only some groups use this model",
     "failedToLoadModels": "Failed to load AI models",
     "failedToLoadAgentConfig": "Failed to load this agent's model configuration",
     "openModels": "Manage models",
@@ -870,6 +1028,8 @@
     "copiedAsMarkdown": "Copied as markdown",
     "copiedAsText": "Copied as a text",
     "citations": "Citations",
+    "citationUnavailable": "Source not available to you",
+    "artifactUnavailable": "File not available to you",
     "showMoreCitations_one": "Show {{count}} more citation",
     "showMoreCitations_other": "Show {{count}} more citations",
     "markdownWithCitations": "Markdown with citations",
@@ -913,6 +1073,17 @@
     "showDiagramSource": "Show source",
     "hideDiagramSource": "Hide source",
     "stoppedMarker": "Stopped",
+    "cutShort": {
+      "budget": "Stopped early: spending limit reached",
+      "turns": "Stopped early: turn limit reached",
+      "time": "Stopped early: time limit reached",
+      "stall": "Stopped early: its steps kept repeating without progress",
+      "provider": "Stopped early: the AI model kept refusing requests (busy or too many requests)",
+      "engineError": "Stopped early: the coding engine ran into an error",
+      "secretBlocked": "Stopped early: PipesHub blocked a request that looked like it contained a secret",
+      "hint": "The answer uses what was gathered before the limit. Send “continue” to carry on.",
+      "providerHint": "The answer uses what was gathered before then. Try again in a few minutes, or ask your admin to check the model’s limits."
+    },
     "toolCard": {
       "arguments": "Arguments",
       "query": "Query",
@@ -928,7 +1099,11 @@
       "needsApproval": "Needs approval",
       "approved": "Approved",
       "declined": "Declined",
-      "expired": "Expired"
+      "expired": "Expired",
+      "showResult": "Show result",
+      "hideResult": "Hide result",
+      "details": "Details",
+      "hideDetails": "Hide details"
     },
     "mcpConnect": {
       "title": "Connect these MCP servers to use this agent",
@@ -1153,7 +1328,8 @@
       "exporting": "Exporting chat…",
       "done": "Chat exported",
       "failed": "Could not export the chat",
-      "assistant": "Assistant"
+      "assistant": "Assistant",
+      "untitled": "Chat"
     },
     "deleteChatConfirm": "Are you sure?",
     "deleteChatDescription": "The chat titled",
@@ -1219,6 +1395,13 @@
         "noConnectorsAvailable": "No connectors to add yet.",
         "failedToLoadConnectors": "Failed to load connectors",
         "updateConnectorsFailed": "Failed to update connectors",
+        "collectionsTitle": "Collections",
+        "collectionsSubtitle": "Chats in this project search the selected collections and uploaded project files.",
+        "noCollectionsAvailable": "No collections to add yet.",
+        "failedToLoadCollections": "Failed to load collections",
+        "updateCollectionsFailed": "Failed to update collections",
+        "collectionsStatusCount": "{{count}} selected",
+        "collectionsStatusNone": "None",
         "toolsTitle": "Tools & MCP",
         "noToolsAvailable": "No authenticated actions or MCP servers to add yet.",
         "knowledgeBaseUnavailable": "Could not prepare this project’s file storage",
@@ -1282,7 +1465,8 @@
         },
         "toolNeedsApproval": "Needs approval",
         "toolNeedsApprovalHint": "This tool can delete data. In a project chat it runs only after someone approves it.",
-        "indexingStatusLabel": "Indexing: {{status}}"
+        "indexingStatusLabel": "Indexing: {{status}}",
+        "untitledCollection": "Untitled collection"
       },
       "moveDialog": {
         "title": "Move to project",
@@ -1379,6 +1563,8 @@
       "pastedText": "Pasted text",
       "uploadingNamed": "Uploading pasted text",
       "removePastedText": "Remove pasted text",
+      "removed": "Attachment removed",
+      "removedTitle": "{{name}} was removed when another conversation that carried it was deleted.",
       "showInTextField": "Show in text field",
       "previewLoadFailed": "Failed to load content",
       "copyText": "Copy",
@@ -1438,9 +1624,47 @@
     "agentCapabilities": {
       "notConfiguredOnAgent": "Not configured on this agent",
       "internalSearch": "Internal search",
-      "webSearch": "Web search"
+      "webSearch": "Web search",
+      "newHarness": "New agent harness",
+      "newHarnessTooltip": "Durable runs, live timeline and approvals. Turn off to use the classic chat.",
+      "newHarnessAgentNeeds": "This agent needs the new agent harness",
+      "newHarnessNewChats": "Applies to new chats",
+      "newHarnessPaused": "New agent harness runs are paused for your organisation. Chats use the classic chat until they resume.",
+      "newHarnessPausedHint": "Paused for now: chats use the classic chat"
     },
     "resizePanels": "Resize chat and preview panels",
+    "steering": {
+      "added": "Added to the running task",
+      "addedDescription": "It will be taken into account at the next step.",
+      "nextRun": "Queued after the running task",
+      "nextRunDescription": "Someone else's task is running. Your message starts as your own task when it ends.",
+      "failed": "Couldn't add this to the running task. Send it again when the task finishes.",
+      "send": "Add to the running task",
+      "you": "You added",
+      "notTaken": "The task ended before it could use this message."
+    },
+    "continuePrivately": {
+      "action": "Continue privately",
+      "title": "Continue privately",
+      "description": "Start a private copy of this conversation that only you can see. The shared conversation stays as it is.",
+      "copiedHeading": "Copied into your private conversation",
+      "copiesYourTurns": "Your own messages and the answers to them",
+      "copiesSources": "The sources and files of those answers that you can open",
+      "copiesWorkspace": "The files in this conversation's workspace",
+      "notCopiedHeading": "Not copied",
+      "othersBecomePlaceholders": "Other people's messages: each becomes a placeholder",
+      "noToolResults": "Tool results, reasoning and attachments",
+      "confirm": "Continue privately",
+      "forkTitle": "Fork this chat",
+      "forkDescription": "Start a copy of this chat that only you can see. This chat stays as it is.",
+      "forkConfirm": "Fork",
+      "working": "Copying…",
+      "failed": "The private copy could not be made. Try again.",
+      "foreignTurn": "A message from another participant is not part of your private copy."
+    },
+    "copiedHistory": {
+      "note": "Messages above were copied from the original conversation. Their detailed activity stays there."
+    },
     "toolApproval": {
       "noArguments": "No details",
       "deny": "Deny",
@@ -1545,7 +1769,109 @@
       "setUp": "Set up web search",
       "notNow": "Not now",
       "gotIt": "Got it"
-    }
+    },
+    "pendingEngine": {
+      "label": "{{engine}} for this chat",
+      "clear": "Use my default engine"
+    },
+    "repository": {
+      "menuTitle": "Work on a repository",
+      "menuSubtitle": "Clone a GitHub repository into this chat",
+      "chip": "{{repository}} from {{branch}}",
+      "chipNoBranch": "{{repository}}",
+      "clear": "Don't use this repository",
+      "picker": {
+        "title": "Work on a repository",
+        "loading": "Loading…",
+        "connectionsFailed": "Couldn't load your GitHub connections. Try again.",
+        "connectFirst": "Connect GitHub first. PipesHub uses your GitHub connection to copy the repository and push the engine's branch.",
+        "cancel": "Cancel",
+        "connectGithub": "Connect GitHub",
+        "connection": "GitHub connection",
+        "repository": "Repository",
+        "search": "Search, or paste a repository link",
+        "reposFailed": "Couldn't load the repositories. Try again.",
+        "noMatch": "No repository matches. Paste its link or owner/name to open any repository this GitHub sign-in can see.",
+        "none": "This connection has no repositories.",
+        "loadMore": "Load more",
+        "branch": "Start from branch",
+        "branchFirst": "Choose a repository first",
+        "defaultBranch": "{{branch}} (default)",
+        "whatHappens": "What happens:",
+        "noteCopy": "PipesHub copies {{repository}} into this chat's workspace before the engine starts.",
+        "noteBranch": "The engine works on its own branch, pipeshub/session-…, and can push only there.",
+        "noteToken": "It never sees your GitHub token. It can't push to {{branch}}, tags or other branches.",
+        "notePullRequest": "A pull request opens into {{branch}} only when you ask for one.",
+        "use": "Use repository",
+        "private": "private",
+        "updated": "updated {{when}}"
+      }
+    },
+    "pastedSecret": {
+      "title": "This message has a secret in it",
+      "description": "It looks like a password, API key or token. Secrets sent in chat are kept in the conversation and seen by the model, so PipesHub removes them before sending.",
+      "credentialHint": "To let an agent use it, save it as a credential on your Actions page instead. Agents use credentials without ever seeing them.",
+      "keepEditing": "Keep editing",
+      "saveAsCredential": "Save as a credential",
+      "sendWithout": "Send without it"
+    },
+    "runGates": {
+      "dryRun": "Dry run",
+      "dryRunHint": "Reads for real; nothing is changed, sent or deleted. You see what it would have done.",
+      "planApproval": "Approve plan first",
+      "planApprovalHint": "The agent looks things up, then shows you its plan before it acts.",
+      "planApprovalAgent": "This agent always shows its plan before it acts.",
+      "verify": "Check the result",
+      "verifyHint": "Checks that what the answer quotes is really in its sources.",
+      "verifyAgent": "Uses the checks this agent defines (set in its builder).",
+      "chipAgent": "{{gate}} · set by this agent",
+      "turnOff": "Turn off {{gate}}"
+    },
+    "outcome": {
+      "unwritten": "{{name}} isn't written yet.",
+      "endedWithout": "The task ended its turn without writing it.",
+      "sources_one": "It read {{count}} source.",
+      "sources_other": "It read {{count}} sources.",
+      "nothingGathered": "It stopped before it gathered anything.",
+      "kept": "What it gathered is saved in this conversation's files.",
+      "lost": "What it gathered could not be saved, so trying again starts over.",
+      "writtenByEngine": "{{name}} holds what the task had written when it stopped; its last part may be missing.",
+      "savedPartial": "Saved so far: {{name}}, marked partial.",
+      "writtenFromGathered": "{{name}} was written from the sources the task gathered, because it ended its turn without writing it.",
+      "fullReport": "The full report is in {{name}}.",
+      "partial": "This result is partial",
+      "continue": "Continue",
+      "retry": "Try again"
+    },
+    "responseTabs": "Answer views",
+    "notFound": {
+      "title": "I couldn't find anything about “{{subject}}” in your knowledge.",
+      "nothing": "This answer is not based on any of your documents about it.",
+      "related_one": "What follows draws on {{count}} related document that does not mention it, so check it before you rely on it.",
+      "related_other": "What follows draws on {{count}} related documents that do not mention it, so check it before you rely on it.",
+      "near": "Closest matches in your knowledge: {{names}}",
+      "knowledge": "your PipesHub knowledge",
+      "titleIn": "I looked in {{places}} and couldn't find anything about “{{subject}}”."
+    },
+    "couldNotDo": {
+      "declined": "I couldn't read {{what}}: the clone was declined.",
+      "refused": "I couldn't read {{what}}: a rule of your organisation refused the clone.",
+      "notAllowed": "I couldn't read {{what}}: its host is not one this server may clone from.",
+      "failed": "I couldn't read {{what}}: the clone failed.",
+      "notCloned": "I couldn't read {{what}}: it was never cloned, so its code was not checked.",
+      "repositories_one": "a code repository",
+      "repositories_other": "{{count}} code repositories",
+      "attachmentNotAccessible_one": "I couldn't read {{file}}: access to it was refused.",
+      "attachmentNotAccessible_other": "I couldn't read {{file}}: access to them was refused.",
+      "attachmentUnreadable_one": "I couldn't read {{file}}: its content could not be read.",
+      "attachmentUnreadable_other": "I couldn't read {{file}}: their content could not be read.",
+      "attachmentTooLarge_one": "I couldn't read {{file}}: it is over the size limit for files given to a task.",
+      "attachmentTooLarge_other": "I couldn't read {{file}}: they are over the size limit for files given to a task.",
+      "namedFile": "the attached file {{name}}",
+      "unnamedFile_one": "one of the attached files",
+      "unnamedFile_other": "{{count}} of the attached files"
+    },
+    "archiveChatTitle": "Archive this chat?"
   },
   "workspaceMenu": {
     "appearance": "Appearance",
@@ -1591,15 +1917,35 @@
         "demoteAdminBeforeRemoveTitle": "Cannot remove admin",
         "demoteAdminBeforeRemove": "Demote the admin to member, then remove them.",
         "removeUserTitle": "Remove user?",
-        "removeUserMessage": "Are you sure you want to remove {{email}} from {{workspace}} workspace?",
+        "removeUserMessage": "Remove {{email}} from {{workspace}}?",
         "removeUserOAuthAppsOne": "They created 1 OAuth app. It will move to you, so people who connected through it stay connected.",
         "removeUserOAuthAppsMany": "They created {{count}} OAuth apps. They will move to you, so people who connected through them stay connected.",
+        "removeUserThisOrg": "this organisation",
+        "removeUserErases": "Their private chats, uploaded files, workspaces, code sandboxes and engine sign-ins are erased. This can't be undone.",
+        "removeUserSharedChats": "Chats they shared with others are not erased. They move to an admin, so the people they were shared with keep them.",
         "removeButton": "Remove",
         "cancelButton": "Cancel",
         "removeSuccess": "User removed successfully",
-        "removeSuccessDescription": "{{name}} is no longer part of this workspace",
+        "removeSuccessDescription": "{{name}} was removed from {{workspace}}",
         "removeError": "Failed to remove user",
+        "removeNoAdminForHandover": "This person owns chats shared with others, and there's no other active admin to take them over. Make someone else an admin first, then delete this person.",
         "deactivate": "Deactivate",
+        "reactivate": "Reactivate",
+        "deactivateTitle": "Deactivate {{name}}?",
+        "deactivateStopsWork": "They can't sign in, and any work an agent is doing for them stops now.",
+        "deactivatePausesSchedules": "Their schedules and triggers are paused.",
+        "deactivateRevokesTokens": "Their access tokens are revoked. Their chats and files are kept.",
+        "deactivateButton": "Deactivate",
+        "deactivateSuccess": "User deactivated",
+        "deactivateSuccessDescription": "{{name}} can no longer sign in, and their work was stopped",
+        "deactivateError": "Failed to deactivate user",
+        "reactivateTitle": "Reactivate {{name}}?",
+        "reactivateNothingRestarts": "They can sign in again. Nothing that was stopped restarts: their schedules stay paused until they resume them.",
+        "reactivateNewTokens": "They need to create new access tokens.",
+        "reactivateButton": "Reactivate",
+        "reactivateSuccess": "User reactivated",
+        "reactivateSuccessDescription": "{{name}} can sign in again. Their schedules stay paused until they resume them.",
+        "reactivateError": "Failed to reactivate user",
         "resendInvite": "Resend invite",
         "editInvite": "Edit invite",
         "cancelInvite": "Cancel invite",
@@ -2318,7 +2664,11 @@
       "showing_one": "Showing {{from}}-{{to}} of {{count}} item",
       "showing_other": "Showing {{from}}-{{to}} of {{count}} items",
       "previous": "Previous",
-      "next": "Next"
+      "next": "Next",
+      "showingRange": "Showing {{from}}–{{to}}",
+      "newer": "Newer",
+      "older": "Older",
+      "perPage": "{{count}} per page"
     },
     "sidebar": {
       "backToApp": "Back to app",
@@ -2329,7 +2679,8 @@
         "security": "Security",
         "personal": "Personal",
         "people": "People",
-        "developerSettings": "Developer settings"
+        "developerSettings": "Developer settings",
+        "help": "Help"
       },
       "nav": {
         "general": "General",
@@ -2365,6 +2716,10 @@
         "superOrgs": "Organisations",
         "oauthApps": "Connector OAuth apps",
         "serviceAccounts": "Service accounts",
+        "aiAccounts": "AI accounts",
+        "schedules": "Schedules",
+        "memories": "Memories",
+        "aiSettings": "AI settings",
         "agentActivity": "Agent activity"
       }
     },
@@ -2473,7 +2828,9 @@
         "availableActionsLabel": "AVAILABLE ACTIONS",
         "enabledByLabel": "ENABLED BY",
         "authBannerTitle": "Authenticate your account",
-        "authBannerBody": "Sign in to use this action with your identity and permissions."
+        "authBannerBody": "Sign in to use this action with your identity and permissions.",
+        "signInRejected": "{{item}} rejected the saved sign-in. Sign in again to use it.",
+        "signInRejectedAt": "{{item}} rejected the saved sign-in at {{time}}. Sign in again to use it."
       },
       "manage": {
         "panelTitle": "Manage action configuration",
@@ -2648,7 +3005,7 @@
           "pipeshub_search": "Searches indexed documents by meaning across the connectors and collections the user can read, and returns the matching passages with their records.",
           "pipeshub_get_record_content": "Reads the full text of one record. It also finds a record from a URL, issue key or external ID, browses what sits under a folder, space or epic, and reads a whole Slack thread.",
           "pipeshub_download_record": "Downloads the original file stored for a record, optionally converted to PDF.",
-          "pipeshub_directory": "Looks up the signed-in user, the workspace's users and groups, and the teams the user belongs to. It changes nothing.",
+          "pipeshub_directory": "Looks up the signed-in user, the workspace's users, and the teams the user belongs to. It changes nothing.",
           "pipeshub_create_collection": "Creates a new, empty collection owned by the user, ready for uploads.",
           "pipeshub_upload": "Uploads documents into a collection so they are indexed and become searchable. Up to 20 documents and about 3 MB per call.",
           "pipeshub_indexing_status": "Reports how far a collection's indexing has got, and which documents failed and why.",
@@ -2697,7 +3054,7 @@
           },
           "people": {
             "label": "People and entities",
-            "description": "The workspace's users and groups, and the people, projects, topics and values in its knowledge graph."
+            "description": "The workspace's users, and the people, projects, topics and values in its knowledge graph."
           },
           "chat": {
             "label": "Chat and agents",
@@ -2807,29 +3164,6 @@
         }
       }
     },
-    "agentActivity": {
-      "title": "Agent activity",
-      "subtitle": "Calls made in this workspace with personal access tokens, OAuth app tokens and service tokens, newest first. Successful reads are grouped by minute. Calls from the signed-in dashboard are not recorded, and entries are kept for 30 days.",
-      "filterKind": "Token type",
-      "filterStatus": "Status",
-      "allKinds": "All token types",
-      "allStatuses": "All statuses",
-      "kindPat": "Personal access token",
-      "kindOauth": "OAuth app",
-      "kindDelegated": "Service token",
-      "columnUser": "User",
-      "columnToken": "Token",
-      "columnRequest": "Request",
-      "columnStatus": "Status",
-      "columnTime": "Time",
-      "scopeDenied": "Missing scope",
-      "rolledUp": "{{calls}} calls",
-      "loadMore": "Load more",
-      "retry": "Retry",
-      "loadError": "Agent activity could not be loaded.",
-      "emptyTitle": "No calls yet",
-      "emptyDescription": "Calls made with access tokens appear here."
-    },
     "labs": {
       "title": "Platform configuration",
       "subtitle": "Changes to platform settings affect all users and take effect immediately.",
@@ -2867,6 +3201,30 @@
       "vectorStore": {
         "title": "Vector store",
         "subtitle": "Delete all embeddings or re-embed every record from stored content."
+      },
+      "overrides": {
+        "changed": "Changed from default",
+        "reset": "Reset to default ({{value}})",
+        "resetLabel": "Reset {{flag}} to its default",
+        "on": "on",
+        "off": "off"
+      },
+      "durableNotice": {
+        "title": "The agent harness (Beta) is available",
+        "body": "This server can run agent chats on the agent harness. It is in beta and off by default, so everyone in your organisation uses the classic chat until an admin turns on Agent harness in Labs. Turning it on changes what people see:",
+        "openLabs": "Open Labs",
+        "dismiss": "Dismiss",
+        "failed": "Your choice could not be saved. Try again.",
+        "changes": {
+          "asks": "Before sending company content outside your organization (a Slack post, an email, a new issue), the agent asks the user first.",
+          "steering": "A message sent while the agent works joins the running task, and Stop keeps the answer written so far.",
+          "screens": "New settings pages: Approvals and Memories, and for admins Unknown effects.",
+          "legacy": "Plan-and-execute, Universal Agent Mode and project chats run as before; there the agent does not send company content outside after reading it, and says so."
+        }
+      },
+      "conflict": {
+        "message": "Someone else changed Labs while you were editing. The page now shows what they saved, with your unsaved changes kept on top. Review and save again.",
+        "badge": "Changed by someone else"
       }
     },
     "authentication": {
@@ -3649,6 +4007,25 @@
         "reach": "Changes in {{connector}} reach PipesHub within {{interval}}.",
         "reachUnknown": "Changes in {{connector}} reach PipesHub on its next sync.",
         "syncNow": "Sync permissions now",
+        "filter": {
+          "label": "How search checks access",
+          "mode": {
+            "inherit": "Deployment default",
+            "legacy": "Classic check",
+            "scopes": "Faster search"
+          },
+          "effective": {
+            "scopes": "Searches of {{connector}} use the faster search: results are narrowed to what each person may see before they are found, and each result is still checked.",
+            "legacy": "Searches of {{connector}} use the classic check: results are checked after they are found."
+          },
+          "waiting": "Faster search starts once the permissions of {{connector}} are up to date.",
+          "applies": "This change reaches search within 30 seconds.",
+          "blocker": {
+            "serving_off": "Faster search is turned off for this deployment.",
+            "store_unsupported": "This deployment's vector store does not support faster search."
+          },
+          "saveError": "Could not change this setting. Try again."
+        },
         "span": {
           "minutes": "{{count, number(style: unit; unit: minute; unitDisplay: long)}}",
           "hours": "{{count, number(style: unit; unit: hour; unitDisplay: long)}}",
@@ -3773,7 +4150,9 @@
           "cancelled": "You cancelled the sign-in.",
           "signInFailed": "The sign-in did not finish. Try again."
         }
-      }
+      },
+      "indexPriorityNotice": "Prioritize indexing for this connector",
+      "indexPriorityNoticeEnterprise": "Indexing priority is part of the Enterprise Edition."
     },
     "mcpServers": {
       "searchPlaceholder": "Search MCP servers...",
@@ -3824,7 +4203,6 @@
         "unavailable": "Unavailable"
       },
       "catalog": {
-        "title": "Add more servers",
         "description": "Ready-made servers. Add one, then sign in to it.",
         "personalDescription": "Servers you add here are only visible to you.",
         "added": "Added",
@@ -3901,6 +4279,9 @@
         "argsPlaceholder": "Add an argument",
         "requiredEnv": "Required env",
         "requiredEnvPlaceholder": "Add an env var name (e.g. API_KEY)",
+        "egressHosts": "Hosts it reaches",
+        "egressHostsPlaceholder": "Add a host (e.g. api.example.com)",
+        "egressHostsHint": "Its MCP runner reaches only these hosts. Changing them signs everyone out of this server.",
         "defaultTokenEnvHint": "With no variables listed, the token is passed to the command as {{name}}.",
         "url": "URL",
         "authMode": "Auth mode",
@@ -3927,7 +4308,8 @@
           "shared": "One shared credential for everyone",
           "sharedHint": "You add it once, below. Everyone acts with its access."
         },
-        "advanced": "Advanced"
+        "advanced": "Advanced",
+        "nameTaken": "Another server already has this name. Choose a different one."
       },
       "configPanel": {
         "editTitle": "Edit MCP server",
@@ -4078,6 +4460,67 @@
         "signIn": "{{name}} is added. Sign in below so its tools can run.",
         "other": "{{name}} is added, but it isn't working yet. See below for why.",
         "dismiss": "Done"
+      },
+      "searchYourServers": "Search your servers",
+      "categories": {
+        "communication": "Communication",
+        "meetings": "Meetings & calendar",
+        "docs": "Docs & files",
+        "projects": "Project management",
+        "developer": "Developer tools",
+        "data": "Data & analytics",
+        "sales": "Sales & CRM",
+        "support": "Customer support",
+        "finance": "Finance & legal",
+        "design": "Design & whiteboards",
+        "automation": "Automation",
+        "search": "Search & research",
+        "security": "Security & identity"
+      },
+      "discover": {
+        "title": "Discover servers",
+        "searchPlaceholder": "Search by name or by what you want to do, such as “schedule meetings”",
+        "searchLabel": "Search ready-made servers",
+        "clearSearch": "Clear search",
+        "categoriesLabel": "Categories",
+        "all": "All",
+        "allServers": "All servers",
+        "resultsFor_one": "{{count}} server for “{{query}}”",
+        "resultsFor_other": "{{count}} servers for “{{query}}”",
+        "searching": "Searching…",
+        "catalogLoadFailed": "Couldn't load the catalog.",
+        "noMatch": "No ready-made server matches “{{query}}”. You can still add any server by its URL.",
+        "whatItDoes": "What it can do",
+        "beforeYouAdd": "Before you add it",
+        "readOnly": "Reads only",
+        "changesData": "Reads and changes data",
+        "readOnlyNote": "It only looks things up.",
+        "changesDataNote": "Tools that change data ask before they run, unless you allow them.",
+        "signIn": "Sign-in",
+        "signInOauth": "Each person signs in with their {{name}} account",
+        "signInToken": "An API token",
+        "signInNone": "No sign-in needed",
+        "documentation": "Documentation",
+        "added_one": "Added",
+        "added_other": "{{count}} added",
+        "addOrg": "Add to your organization",
+        "addPersonal": "Add for yourself",
+        "orgNote": "Everyone in your organization will see it. Each person signs in to use it.",
+        "personalNote": "Only you will see it.",
+        "popularTitle": "Popular in your organization",
+        "popularHint": "By people signed in",
+        "peopleUse_one": "{{count}} person uses it",
+        "peopleUse_other": "{{count}} people use it",
+        "browse": "Browse MCP servers",
+        "browseHint": "Add a server and sign in to it; it then shows in the list, ready to drag onto the canvas.",
+        "fromCatalog": "From the catalog",
+        "add": "Add",
+        "view": "View",
+        "askAdmin": "A shared agent can only use servers your organization added. Ask an admin to add one.",
+        "sharedAgentNote": "Only an admin can add a server that a shared agent can use. Ask an admin to add {{name}} for your organization.",
+        "addedSignIn": "{{name}} is added. Sign in to it from the list to use its tools.",
+        "emptyBuilder": "No MCP servers yet. Add one to give this agent tools from apps like Linear, Slack or GitHub.",
+        "noAddedMatch": "None of your servers match."
       }
     },
     "bots": {
@@ -4163,7 +4606,20 @@
         "loadConfigs": "Failed to load bot configurations",
         "loadData": "Failed to load data"
       },
-      "refreshed": "Refreshed"
+      "refreshed": "Refreshed",
+      "identityLinks": {
+        "title": "Linked Slack accounts",
+        "subtitle": "Each Slack person acts as the PipesHub account they linked by signing in. People who have not linked get a private sign-in link from the bot.",
+        "empty": "No one has linked a Slack account yet.",
+        "loadFailed": "Couldn't load the linked Slack accounts.",
+        "slackPerson": "Slack person",
+        "account": "PipesHub account",
+        "linkedAt": "Linked",
+        "inactive": "Account disabled or removed",
+        "remove": "Unlink",
+        "removed": "Slack account unlinked",
+        "removeFailed": "Couldn't unlink the Slack account."
+      }
     },
     "mail": {
       "subtitle": "Email server configuration for OTP and notifications",
@@ -4551,6 +5007,19 @@
         "extraction": {
           "label": "Extraction service",
           "description": "LLM-based document classification and metadata extraction"
+        },
+        "agentHarness": {
+          "label": "Agent runs",
+          "description": "Durable agent runs that keep going across restarts",
+          "statusUnavailable": "Unavailable",
+          "reason": {
+            "standalone": "MongoDB runs as a single server, not a replica set, so durable agent runs stay off and chat uses the standard path. Run MongoDB as a replica set to turn them on.",
+            "arbiter": "MongoDB has an arbiter, so a write can be confirmed by one data member alone and lost on failover. Durable agent runs stay off. Use three data-bearing members and no arbiter.",
+            "majorityUnavailable": "MongoDB did not confirm a test write on a majority of its members. Durable agent runs stay off until most replica-set members are up.",
+            "probeFailed": "PipesHub could not check whether MongoDB stores durable agent runs safely, so they stay off. See the Node log.",
+            "preparationFailed": "PipesHub could not prepare the database for durable agent runs and keeps trying. Chat uses the standard path meanwhile. See the Node log.",
+            "unknown": "Durable agent runs are off. See the Node log."
+          }
         }
       },
       "healthWarnings": {
@@ -4798,10 +5267,31 @@
         "pasteBlockLabel": "Ready to paste into your MCP config",
         "copyPasteBlockAria": "Copy paste block",
         "copySuccessTitle": "Copied",
-        "copyErrorTitle": "Could not copy"
+        "copyErrorTitle": "Could not copy",
+        "knowledgeLimitLaterHint": "You can change this later without replacing the token."
       },
       "scopeCount_one": "{{count}} scope",
-      "scopeCount_other": "{{count}} scopes"
+      "scopeCount_other": "{{count}} scopes",
+      "access": {
+        "panelTitle": "Change access",
+        "intro": "Pick what {{name}} can see. The token keeps working, and the change applies from its next request, so you don't need to update anything that uses it.",
+        "save": "Save",
+        "savedTitle": "Access changed",
+        "savedEverything": "{{name}} can now see everything you can.",
+        "savedSome_one": "{{name}} can now see {{count}} picked item.",
+        "savedSome_other": "{{name}} can now see {{count}} picked items.",
+        "undo": "Undo",
+        "undoneTitle": "Change undone",
+        "undoErrorTitle": "Couldn't undo the change. Open Change access to set it again.",
+        "errorTitle": "Couldn't change access",
+        "errorDescription": "Nothing changed. Try again.",
+        "unknownTitle": "Couldn't confirm the change",
+        "unknownDescription": "It may have been saved. Check the access shown here before you try again.",
+        "unknownReloadFailedDescription": "It may have been saved, and the latest access couldn't be loaded. Reload the page before you rely on what's shown.",
+        "rowAction": "Change access",
+        "rowActionAria": "Change what {{name}} can see",
+        "rowActionTooltip": "Change access: pick what this token can see"
+      }
     },
     "agentSignIns": {
       "title": "Agent sign-ins",
@@ -4876,6 +5366,7 @@
         "candidateApproved": "Approved \"{{name}}\"",
         "candidateRejected": "Rejected \"{{name}}\"",
         "candidateActionError": "Failed to update candidate",
+        "candidateGone": "This candidate has already been reviewed",
         "conflict": "This skill was changed elsewhere",
         "conflictDescription": "Reload the latest version, then re-apply your edits.",
         "conflictReload": "Reload"
@@ -4891,7 +5382,8 @@
         "content": "Content",
         "metadata": "Metadata",
         "resources": "Resources",
-        "versions": "Versions"
+        "versions": "Versions",
+        "command": "Command"
       },
       "form": {
         "name": "Name",
@@ -4972,6 +5464,61 @@
         "view": "View",
         "hide": "Hide",
         "editAndApprove": "Edit & approve"
+      },
+      "command": {
+        "toggle": "Usable as a /command",
+        "toggleDescription": "Shows in the chat's / menu. Its text is sent as your own message.",
+        "modelToggle": "The agent may also use it on its own",
+        "modelToggleDescription": "Off: only people run it, from the / menu.",
+        "arguments": "Arguments",
+        "argumentsHint": "Filled from what follows the command, in order, or by name=value. Use $name, $1 or $ARGUMENTS in the text.",
+        "argName": "Name",
+        "argDescription": "Description",
+        "argValues": "Allowed values (comma-separated)",
+        "argDefault": "Default",
+        "argRequired": "Required",
+        "addArgument": "Add argument",
+        "removeArgument": "Remove argument",
+        "problemReserved": "/{{name}} is reserved. Choose another name.",
+        "problemArgumentName": "Argument names use lowercase letters, digits and _ and start with a letter.",
+        "problemDuplicate": "Each argument needs its own name.",
+        "preview": "Preview",
+        "sampleArguments": "Sample arguments",
+        "tryIt": "Try it",
+        "saveFirst": "Save your changes to try them.",
+        "share": "Who can use it",
+        "shareDescription": "A shared command shows in the / menu of everyone it is shared with, with its author's name.",
+        "sharePersonal": "Only you",
+        "shareTeam": "Team: {{team}}",
+        "shareOrg": "Everyone in your organization",
+        "shareError": "Saved, but the command could not be shared. Try again.",
+        "problemShadowed": "Hidden by the built-in /{{name}}. Rename it to use it.",
+        "shadowedTitle": "Some commands are hidden by built-in commands",
+        "shadowedBody": "PipesHub now has built-in commands with these names, so the built-in runs instead. Rename these to use them:",
+        "shadowedDismiss": "Got it"
+      },
+      "scan": {
+        "findingsTitle": "What the scanner found",
+        "findingsHint": "A finding is a reason to read that line, not proof of an attack.",
+        "at": "{{path}}, line {{line}}",
+        "finding": {
+          "remote_code_execution": "Downloads code and runs it",
+          "encoded_code_execution": "Decodes hidden code and runs it",
+          "credential_access": "Reads credentials or secrets",
+          "destructive_command": "Deletes or overwrites files or disks",
+          "native_binary": "Contains a compiled program",
+          "instruction_override": "Tells the AI to ignore its instructions",
+          "hidden_directive": "Hides instructions in tags",
+          "secret_access": "Asks for secrets",
+          "exfiltration": "Sends data somewhere else",
+          "concealment": "Tells the AI to hide something from the person",
+          "tool_shadowing": "Tries to change how other tools behave",
+          "invisible_text": "Contains invisible characters",
+          "other": "Needs a closer look"
+        },
+        "flagged": "The content scanner flagged this imported skill, so agents can't use it. Change the flagged lines to use it.",
+        "notUsable": "Agents can't use this imported skill yet.",
+        "importNote": "Agents use an imported skill only once its content is trusted; read anything the scanner found first."
       }
     },
     "serviceAccounts": {
@@ -4999,6 +5546,7 @@
       "deleteDescription": "{{name}} will stop working immediately, and every token it holds will be revoked. Any integration still using one of those tokens will begin to fail.",
       "deleteSuccessTitle": "Service account deleted",
       "deleteErrorTitle": "The service account could not be deleted",
+      "deleteNoAdminForHandover": "This service account owns chats shared with others, and there's no active admin to take them over. Make someone an admin first, then delete it.",
       "create": {
         "title": "New service account",
         "intro": "An automated system authenticates as this account rather than as one of your colleagues. You choose what it is allowed to read, so its access does not depend on whoever set it up.",
@@ -5265,6 +5813,29 @@
         "write": "asks the user first",
         "destructive": "blocked unless the agent's action rules allow it"
       }
+    },
+    "agentActivity": {
+      "title": "Agent activity",
+      "subtitle": "Calls made in this workspace with personal access tokens, OAuth app tokens and service tokens, newest first. Successful reads are grouped by minute. Calls from the signed-in dashboard are not recorded, and entries are kept for 30 days.",
+      "filterKind": "Token type",
+      "filterStatus": "Status",
+      "allKinds": "All token types",
+      "allStatuses": "All statuses",
+      "kindPat": "Personal access token",
+      "kindOauth": "OAuth app",
+      "kindDelegated": "Service token",
+      "columnUser": "User",
+      "columnToken": "Token",
+      "columnRequest": "Request",
+      "columnStatus": "Status",
+      "columnTime": "Time",
+      "scopeDenied": "Missing scope",
+      "rolledUp": "{{calls}} calls",
+      "loadMore": "Load more",
+      "retry": "Retry",
+      "loadError": "Agent activity could not be loaded.",
+      "emptyTitle": "No calls yet",
+      "emptyDescription": "Calls made with access tokens appear here."
     }
   },
   "filePreview": {
@@ -5386,6 +5957,30 @@
     "responseSection": "Response",
     "connectModel": "Connect a model",
     "usingOrgDefault": "Using organization default model",
+    "subAgentModels": {
+      "title": "Sub-agent models",
+      "hint": "Give the sub-agents this agent starts a model of their own. Without one, a sub-agent uses the model of the agent that starts it.",
+      "startsNone": "This agent starts no sub-agents, so these models are not used. A Deep turn of this agent is answered by the agent on its own.",
+      "allSubAgents": "All sub-agents",
+      "unnamedRole": "Unnamed role",
+      "roleNameLabel": "Role name",
+      "roleNamePlaceholder": "e.g. researcher",
+      "savedAs": "Saved as {{key}}",
+      "sameAsAgent": "Same as the agent",
+      "modelFor": "Model for {{role}}",
+      "price": "{{price}} per 1M tokens",
+      "notAllowed": "No longer allowed by your workspace: sub-agents with this role will not start until you choose another model.",
+      "notAllowedOption": "{{model}} (no longer allowed)",
+      "duplicateRole": "This role is already in the list. Only the first one is saved.",
+      "nameNeeded": "Enter a role name to save this choice.",
+      "loading": "Loading the allowed models…",
+      "ceiling": "Sub-agent models are limited to {{limit}} by your workspace.",
+      "roleCeiling": "{{role}} is limited to {{limit}} by your workspace.",
+      "addAllSubAgents": "Set a model for all sub-agents",
+      "addRole": "Add a role",
+      "removeRole": "Remove {{role}}",
+      "limit": "An agent can have at most {{max}} roles."
+    },
     "optional": "Optional",
     "connectChatInput": "Connect chat input",
     "toChatOutput": "To chat output",
@@ -5618,9 +6213,10 @@
     "mcpServerAlreadyAttachedNotify": "This agent already has another server of the same type as {{name}}. An agent can use one server of each type.",
     "webSearchOnlyOne": "Only one web search provider can be attached",
     "mcpServerNodeSubtitle": "Tools from an MCP server",
-    "noMcpServersAvailable": "No MCP servers available",
     "webSearchLocked": "Web search cannot be changed for this agent",
     "webSearchLoading": "Loading web search providers…",
+    "webSearchNotSetUp": "Web search isn’t set up yet. Ask your admin to choose a provider under Workspace → Web search.",
+    "webSearchLoadFailed": "Couldn’t load web search providers.",
     "webSearchConfigureFirst": "Configure {{name}} first",
     "webSearch": "Web search",
     "toolsetOAuthServerError": "Authentication failed. Please try again or contact your administrator.",
@@ -5629,6 +6225,18 @@
     "mcpServerWithToolCount_other": "MCP server with {{count}} tools",
     "deprecatedToolsBanner_one": "{{count}} tool on this agent is deprecated. Remove it: {{tools}}",
     "deprecatedToolsBanner_other": "{{count}} tools on this agent are deprecated. Remove them: {{tools}}",
+    "mcpToolApproval": {
+      "unapproved": "Not approved: an admin hasn't approved this tool, so it won't be added",
+      "changed": "Changed since an admin approved it",
+      "unknown": "Approval can't be checked right now"
+    },
+    "capability": {
+      "needsConnection": "Needs your connection",
+      "waitingApproval": "Waiting for approval",
+      "disabled": "Disabled",
+      "notShared": "Not shared with you",
+      "blockedByPolicy": "Blocked by org policy"
+    },
     "mcpAllTools": "All tools",
     "mcpAllToolsHint": "Includes tools the server adds later.",
     "mcpServerUnavailable": "Not available",
@@ -5646,12 +6254,151 @@
     "limitSource": "Choose what {{name}} searches",
     "limitSourceHint": "Keep the whole source ticked, or untick it and tick the folders and items the agent may search.",
     "limitSourceCount": "Limited to {{count}} selected",
+    "initDraftNote": "Drafted from your chat with /init. Review it, then save; nothing is saved until you save the agent.",
     "toolsetPersonalOnSharedAgentNotify": "{{name}} is your personal action. It can't be added to an agent shared with your organization or running as a service account.",
     "apiToolsets": {
       "section": "API actions",
       "connectTooltip": "Connect it under Actions",
       "serviceAccountBlocked": "Service-account agents can only use API actions with a shared credential or no sign-in."
+    },
+    "gates": {
+      "title": "Safety and checks",
+      "planApproval": "Require plan approval",
+      "planApprovalHint": "Every run shows its plan before it acts. Good for scheduled and background runs.",
+      "verify": "Check results before finishing",
+      "verifyHint": "Deterministic checks, not the model's own opinion.",
+      "kindLabel": "Check",
+      "kind": {
+        "file": "A file exists and opens",
+        "json_schema": "A JSON file matches a schema",
+        "citations": "Citations are in their sources",
+        "command": "A command passes (tests)"
+      },
+      "pathLabel": "File for \"{{check}}\"",
+      "pathPlaceholder": "out/report.pdf",
+      "formatLabel": "Opens as",
+      "anyFormat": "Any file",
+      "schemaLabel": "JSON schema",
+      "schemaPlaceholder": "{\"type\": \"object\"}",
+      "commandLabel": "Command",
+      "within": "within",
+      "timeoutLabel": "Time limit in seconds",
+      "seconds": "s",
+      "remove": "Remove \"{{check}}\"",
+      "addCheck": "Add a check",
+      "whenFails": "When a check fails",
+      "onFailContinue": "Tell the agent and let it fix it (up to {{rounds}} times)",
+      "onFailFlag": "Finish and mark it not verified",
+      "problem": {
+        "path": "Give a file path inside the task's workspace, such as out/report.pdf.",
+        "schema": "The schema must be a JSON object.",
+        "command": "Give the command to run, such as pytest -q.",
+        "timeout": "The time limit is a whole number of seconds from 1 to 600."
+      }
+    },
+    "runtime": {
+      "title": "How it runs",
+      "hint": "Model, coding engine, spending, websites and schedules. Each is checked when it is saved."
+    },
+    "schedules": {
+      "title": "Schedules",
+      "hint": "Your schedules that run this agent on their own.",
+      "empty": "None of your schedules runs this agent yet.",
+      "saveFirst": "Save the agent to run it on a schedule.",
+      "unavailable": "Schedules cannot be read right now.",
+      "add": "Add a schedule",
+      "manage": "Manage all schedules",
+      "thisAgent": "This agent",
+      "pausedByYou": "Paused. Resume it under Manage all schedules."
+    },
+    "environment": {
+      "title": "Environment",
+      "intro": "What the agent's workspace needs before it starts: tools, packages and settings. Used when the agent works in a coding engine.",
+      "howLabel": "How the environment is set up",
+      "steps": "Setup steps",
+      "devcontainer": "From devcontainer.json",
+      "setupLabel": "Setup commands",
+      "setupHint": "Run in a fresh workspace before your files are added. Up to 64 KB.",
+      "settingsLabel": "Settings (one per line, NAME=value)",
+      "settingsHint": "Not for secrets. Names PipesHub sets itself (PATH, HOME, proxies) are not allowed.",
+      "devcontainerLabel": "devcontainer.json",
+      "devcontainerHint": "Paste the file from your repository. Its settings and its create commands are used.",
+      "ignored": "Not used: {{keys}} (the coding engine's own image is the base).",
+      "problem": {
+        "setting": "\"{{name}}\" is not a NAME=value line.",
+        "reserved": "{{name}} is set by PipesHub and cannot be changed here.",
+        "secret": "{{name}} looks like a secret. Connect it as an account instead; settings here are not secret.",
+        "tooMany": "At most 64 settings.",
+        "folder": "Each folder is a full path starting with /, at most 16.",
+        "devcontainer": "This is not a JSON object."
+      }
     }
+  },
+  "agentVersions": {
+    "liveVersion": "Live: version {{version}}",
+    "unpublishedChanges": "Unpublished changes",
+    "notPublishedYet": "Not published yet",
+    "versions": "Versions",
+    "versionsTooltip": "Every published version: who published it, when, and rollback.",
+    "saveDraft": "Save draft",
+    "saveDraftTooltip": "Keep your edits without changing what chats run.",
+    "publish": "Publish",
+    "publishing": "Publishing…",
+    "publishTooltip": "Make your edits the version chats run.",
+    "nothingToPublish": "Nothing to publish: the live version already matches your edits.",
+    "draftSaved": "Draft saved. Chats keep running version {{version}} until you publish.",
+    "draftSavedNoVersion": "Draft saved. Chats keep running the live version until you publish.",
+    "saveDraftFailed": "The draft could not be saved. Try again.",
+    "publishTitle": "Publish version {{version}}?",
+    "publishTitleGeneric": "Publish your changes?",
+    "publishBody": "Chats with this agent use version {{version}} from now on. Schedules keep the version they run until their owner moves them.",
+    "publishBodyGeneric": "Chats with this agent use your changes from now on. Schedules keep the version they run until their owner moves them.",
+    "noteLabel": "What changed (optional)",
+    "notePlaceholder": "For example: escalate P1 tickets to the support leads.",
+    "publishedTitle": "Version {{version}} published",
+    "publishedTitleGeneric": "Published",
+    "publishedDesc": "Chats with this agent use it from now on.",
+    "publishUnchanged": "Nothing changed since version {{version}}, so nothing new was published.",
+    "publishIncomplete": "Your edits are saved as a draft, but publishing them failed. Try Publish again.",
+    "publishFailed": "The agent could not be published. Try again.",
+    "panelTitle": "Versions",
+    "loading": "Loading versions…",
+    "loadFailed": "The versions could not be loaded.",
+    "retry": "Try again",
+    "empty": "No published versions yet. Publish the agent to create version 1.",
+    "unpublishedCallout": "You have unpublished changes. Rolling back to an earlier version discards them.",
+    "publishAs": "Publish as version {{version}}",
+    "versionLabel": "Version {{version}}",
+    "live": "Live",
+    "rolledBackFrom": "Rolled back from version {{version}}",
+    "beforeVersions": "As it was before versions",
+    "migrationMeta": "Created when versions were turned on · {{when}}",
+    "publishedMeta": "{{who}} · {{when}}",
+    "unknownPublisher": "Unknown user",
+    "details": "What this version does",
+    "detailsLoading": "Loading…",
+    "detailsFailed": "The details could not be loaded.",
+    "detailModels": "Models: {{list}}",
+    "detailOrgDefaultModel": "Model: the organization's default",
+    "detailTools": "Tools: {{list}}",
+    "detailMcpServers": "MCP servers: {{list}}",
+    "detailKnowledge": "Knowledge sources: {{amount}}",
+    "detailSkills": "Skills: {{amount}}",
+    "detailInstructions": "Instructions: {{amount}} characters",
+    "rollback": "Roll back to this version",
+    "rollbackTitle": "Roll back to version {{version}}?",
+    "rollbackBody": "This sets the agent back to version {{version}} and publishes it as version {{next}}. Chats use it from now on.",
+    "rollbackBodyGeneric": "This sets the agent back to version {{version}} and publishes it again. Chats use it from now on.",
+    "rollbackDiscardWarning": "Your unpublished changes will be discarded.",
+    "rollbackNoteLabel": "Why (optional)",
+    "rollbackConfirm": "Roll back",
+    "rollingBack": "Rolling back…",
+    "rolledBack": "Rolled back to version {{from}}. It is live as version {{version}}.",
+    "rolledBackUnchanged": "Version {{version}} already matches version {{from}}, so nothing new was published.",
+    "discarded": "Your unpublished changes were discarded.",
+    "rollbackFailed": "The rollback did not finish. Try again.",
+    "chatLabel": "{{name}} · version {{version}}",
+    "chatLabelNoName": "Agent version {{version}}"
   },
   "recordView": {
     "sections": {
@@ -5999,7 +6746,173 @@
     "selectMany": "Select all that apply",
     "skipAll": "Skip all",
     "expired": "This question has expired. Reply in the chat to continue.",
-    "repliedInChat": "You replied in the chat."
+    "repliedInChat": "You replied in the chat.",
+    "grounding": {
+      "header": "Not found",
+      "intent": "Before starting the work, I looked for “{{subject}}” in what you can reach.",
+      "questionNear": "I couldn't find anything about “{{subject}}” in your knowledge. Did you mean one of these?",
+      "questionNone": "I couldn't find anything about “{{subject}}” in your knowledge. How should I go on?",
+      "useFound": "Use what you can find",
+      "nameIt": "Name a document or folder",
+      "intentIn": "Before starting the work, I looked for “{{subject}}” in {{places}}.",
+      "questionNearIn": "I looked in {{places}} and couldn't find anything about “{{subject}}”. Did you mean one of these?",
+      "questionNoneIn": "I looked in {{places}} and couldn't find anything about “{{subject}}”. How should I go on?"
+    }
+  },
+  "approvalCard": {
+    "title": "Approve {{tool}}?",
+    "description": "The agent wants to run this tool. Nothing happens until you decide.",
+    "arguments": "Arguments",
+    "approve": "Approve",
+    "deny": "Deny",
+    "approveLabel": "Approve running {{tool}}",
+    "denyLabel": "Deny running {{tool}}",
+    "sending": "Sending your decision…",
+    "approved": "Approved",
+    "denied": "Denied",
+    "closed": "Closed",
+    "failed": "Your decision did not reach the server. Check your connection, then choose again.",
+    "refusedApprover": "Only the person this task runs for, or an approver, can approve it.",
+    "refusedNotAllowed": "You can't decide on this task.",
+    "refusedClosed": "This request is no longer open.",
+    "expired": "Expired",
+    "expiredDescription": "The task ended before anyone decided.",
+    "noAuthority": "Only the person this task runs for, or an approver, can decide.",
+    "argumentsHidden": "The arguments are shown only to people who can approve or who are in the conversation.",
+    "flow": {
+      "titleToIn": "{{action}} to {{destination}} in {{app}}?",
+      "titleTo": "{{action}} to {{destination}}?",
+      "titleIn": "{{action}} in {{app}}?",
+      "titleAction": "{{action}}?",
+      "whyPrivate": "Earlier in this conversation the agent read private content, so it asks before it sends anything outside your organization, such as a message, an email or a file written to another app. Nothing is sent until you decide.",
+      "whyUnknown": "Earlier in this conversation the agent used a result from a connected app or an outside tool whose origin cannot be checked, so it asks before it sends anything outside your organization, such as a message, an email or a file written to another app. Nothing is sent until you decide.",
+      "willSend": "What will be sent",
+      "nothingToSend": "No content, only the action itself.",
+      "redacted": "Looks like a password or key: hidden here, but it would be sent as written.",
+      "showAll": "Show all",
+      "showLess": "Show less",
+      "sources": "Read earlier in this conversation",
+      "untitledSource": "Untitled source",
+      "moreSources": "and {{count}} more",
+      "deny": "Deny",
+      "denyLabel": "Deny {{tool}}: nothing is sent",
+      "allowOnce": "Allow once",
+      "buttonName": "{{action}}: {{subject}}",
+      "allowConversation": "Allow for this conversation",
+      "allowConversationFor": "Allow {{destination}} for this conversation",
+      "conversationScope": "Allowing it for this conversation covers {{destination}} only. Anything else still asks.",
+      "allowedConversationScope": "Later calls to {{destination}} in this conversation run without asking.",
+      "allowedConversation": "Allowed for this conversation",
+      "expiredDescription": "Nobody decided in time, so nothing was sent.",
+      "refusedConversation": "This one can only be allowed once. Choose Allow once or Deny."
+    },
+    "engine": {
+      "why": "The coding agent asks before each change that would reach other people or systems outside your own space. Nothing is sent until you decide.",
+      "whyRead": "The coding agent asks before each change that would reach other people or systems outside your own space, and earlier in this conversation it read content listed below. Nothing is sent until you decide."
+    },
+    "policy": {
+      "why": "An approval rule asks for a decision before this action. Nothing happens until you decide.",
+      "whyDeployment": "Your administrator requires approval before an agent does this. Nothing happens until you decide.",
+      "whyOrg": "Your organization requires approval before an agent does this. Nothing happens until you decide.",
+      "whyAgent": "This agent is set up to ask for approval before it does this. Nothing happens until you decide.",
+      "whyEngine": "The coding agent's settings require approval before it does this. Nothing happens until you decide."
+    },
+    "child": {
+      "from": "Sub-agent “{{role}}” wants to:"
+    },
+    "refusedEnded": "This task has already ended, so there is nothing left to decide.",
+    "effect": {
+      "whatChanges": "What changes",
+      "diffLabel": "Changes to {{target}}",
+      "diffUntitled": "the file",
+      "showFull_one": "Show the full change ({{count}} line)",
+      "showFull_other": "Show the full change ({{count}} lines)",
+      "showLess": "Show less",
+      "truncated": "The change is longer than the card can show, so its end is cut here.",
+      "cost": "Estimated cost: about {{amount}}",
+      "costBasis": "as the tool states it",
+      "costEach": "{{amount}} per call × {{calls}}, as the tool states it"
+    },
+    "denyReason": {
+      "label": "Why not? (optional, the agent reads this)",
+      "placeholder": "For example: post it in #team-updates instead",
+      "counter": "{{count}} / {{max}}",
+      "cancel": "Cancel",
+      "given": "Your reason: “{{reason}}”"
+    },
+    "plan": {
+      "why": "The agent wrote a plan. Nothing that changes anything runs until you approve it."
+    },
+    "edit": {
+      "edit": "Edit",
+      "editLabel": "Edit what {{tool}} sends, then approve",
+      "intro": "Change what will be sent, then approve. The task is told exactly what ran.",
+      "changed": "changed",
+      "cannotEdit": "Can't be edited here",
+      "yes": "Yes",
+      "no": "No",
+      "notANumber": "Enter a number.",
+      "undo": "Undo changes",
+      "cancel": "Cancel",
+      "approve": "Approve with changes",
+      "keys": "Esc cancels. Ctrl or Cmd + Enter approves with your changes.",
+      "approvedWithChanges": "Approved with your changes",
+      "before": "Before",
+      "after": "After",
+      "showAll": "Show everything that was sent",
+      "hideAll": "Hide what was sent",
+      "hasSecret": "This looks like a password or key. Save it as a credential on the Actions page instead of typing it here.",
+      "openActions": "Open Actions",
+      "refusedNotAllowed": "Only the person this task runs for can change what it sends. You can allow or deny it as asked.",
+      "refusedNotOffered": "This request can't be edited. Allow or deny it as asked."
+    },
+    "externalPolicy": {
+      "why": "Your organization's policy system asked for a person to approve this. Nothing happens until you decide."
+    },
+    "editHasSecret": "Your change has what looks like a password, API key or token in it, so nothing was approved. Take it out. To let an agent use it, save it as a credential on your Actions page instead. Agents use credentials without ever seeing them.",
+    "clone": {
+      "sizeAbout": "about {{mb}} MB",
+      "sizeUpTo": "up to {{mb}} MB",
+      "what": "Public, read-only.",
+      "whatSized": "Public, read-only, {{size}}.",
+      "nothingBack": "PipesHub copies it into the agent's workspace; nothing is sent back to {{host}}.",
+      "privateRead": "This conversation has read private data. The repository address is sent to {{host}}.",
+      "privateReadShort": "This conversation has read private data.",
+      "allowConversation": "Allow this repository for this conversation",
+      "allowConversationShort": "Allow this repository here"
+    },
+    "siteUpload": {
+      "allowRun": "Allow for this run"
+    },
+    "textCheck": {
+      "hidden": "Some characters here would be invisible or would change the order of the text, so they are shown as codes like ⟨U+202E⟩. Check that this is what you expect to send.",
+      "host": "{{ascii}} mixes alphabets and looks like {{unicode}}. It is shown in its real form because it may not be the site it seems to be.",
+      "markerTitle": "A character that would otherwise be invisible or reorder the text"
+    }
+  },
+  "codeTaskCard": {
+    "change": {
+      "added": "Added",
+      "modified": "Modified",
+      "deleted": "Deleted"
+    },
+    "showDiff": "Show changes in {{path}}",
+    "hideDiff": "Hide changes in {{path}}",
+    "diffLabel": "Changes in {{path}}",
+    "diffSummary": "Lines added: {{added}}. Lines removed: {{removed}}.",
+    "diffTruncated": "The diff was shortened.",
+    "binary": "Binary file, {{size}}. No text diff.",
+    "tooLarge": "Too large to compare ({{size}}).",
+    "noDiff": "No diff available yet.",
+    "versionReason": {
+      "autosave": "saved while working",
+      "turnEnd": "saved at the end",
+      "beforeEffect": "saved before a tool call",
+      "other": "saved",
+      "rollback": "restored",
+      "merge": "a sub-task's files merged"
+    },
+    "draft": "Draft"
   },
   "demoData": {
     "badge": {
@@ -6427,5 +7340,2596 @@
       "copyDetails": "Copy details for an admin",
       "copied": "Details copied"
     }
+  },
+  "support": {
+    "menuLabel": "Contact support",
+    "title": "Contact support",
+    "steps": {
+      "area": "Area",
+      "details": "Details"
+    },
+    "close": "Close",
+    "cancel": "Cancel",
+    "back": "Back",
+    "continue": "Continue",
+    "send": "Send request",
+    "sending": "Sending…",
+    "changeArea": "Change area",
+    "change": "Change",
+    "issueOther": "Other (not listed)",
+    "areaStep": {
+      "title": "What do you need help with?",
+      "subtitle": "Choose the area closest to your problem.",
+      "suggested": "Suggested",
+      "suggestion": "Something in {{area}} failed at {{time}}, so we suggested it.",
+      "idea": "Have an idea instead? Send feedback"
+    },
+    "areas": {
+      "connectors": {
+        "label": "Connectors and sync",
+        "hint": "Connecting apps, sync errors or missing data"
+      },
+      "chat": {
+        "label": "Chat and search",
+        "hint": "Answers, citations or search results"
+      },
+      "agents": {
+        "label": "Agents and actions",
+        "hint": "Building, running or sharing agents"
+      },
+      "files": {
+        "label": "Files and collections",
+        "hint": "Uploads, folders or file previews"
+      },
+      "access": {
+        "label": "Sign-in and access",
+        "hint": "Signing in, passwords or single sign-on"
+      },
+      "people": {
+        "label": "People and permissions",
+        "hint": "Inviting users, roles or groups"
+      },
+      "other": {
+        "label": "Something else",
+        "hint": "Anything not listed here"
+      }
+    },
+    "details": {
+      "descriptionLabel": "What happened?",
+      "descriptionPlaceholder": "What were you trying to do, and what happened instead?",
+      "descriptionMin_one": "At least {{count}} character.",
+      "descriptionMin_other": "At least {{count}} characters.",
+      "descriptionMax_one": "You've reached the {{count}}-character limit.",
+      "descriptionMax_other": "You've reached the {{count}}-character limit.",
+      "attach": "Attach screenshot",
+      "removeFile": "Remove {{name}}",
+      "fileUnsupported": "{{name}}: this file type isn't supported.",
+      "fileTooLarge": "{{name}} is larger than 5 MB.",
+      "tooManyFiles": "You can attach up to 5 files.",
+      "filesTotalTooLarge": "Files can total up to 8 MB.",
+      "smtpTitle": "Email isn't set up for this workspace",
+      "smtpBody": "We'll give you a message to send to {{email}} from your own email app.",
+      "smtpAdmin": "To send requests directly, configure SMTP in workspace settings.",
+      "smtpMember": "To send requests directly, ask your admin to configure SMTP.",
+      "includeErrors_one": "Include {{count}} recent error",
+      "includeErrors_other": "Include {{count}} recent errors",
+      "errorLine": "{{area}}: error {{status}} at {{time}}",
+      "errorLineUnknown": "Error {{status}} at {{time}}",
+      "sentWith": "Sent with your request: {{list}}.",
+      "sentParts": {
+        "workspace": "your workspace",
+        "identity": "your name and email",
+        "browser": "your browser",
+        "errors": "recent errors"
+      },
+      "viewDetails": "View details",
+      "hideDetails": "Hide details",
+      "rows": {
+        "issue": "Issue regarding",
+        "workspace": "Workspace",
+        "signedInAs": "Signed in as",
+        "browser": "Browser",
+        "recentErrors": "Recent errors"
+      }
+    },
+    "blocked": {
+      "area": "Choose an area to continue.",
+      "description": "“What happened?” needs at least {{min}} characters ({{left}} to go)."
+    },
+    "result": {
+      "sentTitle": "Request sent",
+      "sentBody": "Our support team has your request. We emailed you a copy, and replies will come to your inbox.",
+      "pendingTitle": "Still sending",
+      "pendingBody": "The email to {{email}} is taking longer than usual. If you don't hear back, contact us with this reference.",
+      "referenceLabel": "Your reference",
+      "copyReference": "Copy reference",
+      "quote": "Mention this reference if you contact us about the same issue.",
+      "done": "Done"
+    },
+    "email": {
+      "title": "Send it from your email app",
+      "noSmtp": "Email isn't set up here, so request {{reference}} wasn't sent. Send this message from your own email app so support gets it.",
+      "failed": "We couldn't email request {{reference}}. Send this message from your own email app so support gets it.",
+      "limit": "You've sent several requests in the last hour. Send this one from your email app instead.",
+      "unsaved": "We couldn't send your request. Send this message from your own email app so support gets it.",
+      "to": "To",
+      "subject": "Subject",
+      "copy": "Copy message",
+      "copied": "Copied",
+      "open": "Open email app",
+      "shortened": "Your email app gets a shorter version. Use Copy message to get the full text.",
+      "attachFiles_one": "Your {{count}} file isn't part of this message. Attach it in your email app.",
+      "attachFiles_other": "Your {{count}} files aren't part of this message. Attach them in your email app.",
+      "copyFallback": "Couldn't copy automatically. The message is selected, so press Ctrl+C (⌘C on Mac)."
+    },
+    "errors": {
+      "load": "Couldn't load support options.",
+      "retry": "Try again",
+      "send": "Couldn't send your request. Please try again.",
+      "emailInstead": "Send by email instead"
+    }
+  },
+  "feedback": {
+    "menuLabel": "Send feedback",
+    "title": "Send feedback",
+    "subtitle": "Tell us what's working, what isn't, or what you'd like to see.",
+    "kindIssue": "General feedback",
+    "kindFeedback": "Feature request",
+    "descriptionPlaceholder": "What happened, or what should we improve?",
+    "addFiles": "Add files",
+    "removeFile": "Remove",
+    "fileHint": "Optional. Up to 5 files, 5 MB each. Images, PDF, text, or CSV.",
+    "cancel": "Cancel",
+    "submit": "Submit",
+    "needReply": "Need a reply? Contact support",
+    "success": "Thanks, we received your feedback.",
+    "pending": "The email to {{email}} is taking longer than usual. If you don't hear back, contact us.",
+    "submitError": "Could not submit. Please try again.",
+    "descriptionTooShort": "Please add a bit more detail (at least 10 characters).",
+    "invalidType": "That file type is not supported.",
+    "fileTooLarge": "Each file must be 5 MB or smaller.",
+    "tooManyFiles": "You can attach up to 5 files.",
+    "filesTotalTooLarge": "Files can total up to 8 MB."
+  },
+  "aiAccounts": {
+    "common": {
+      "loading": "Loading…",
+      "unavailable": "This can't be reached right now. Nothing was changed. Try again in a moment.",
+      "adminOnly": "Only organization admins can manage this.",
+      "forbidden": "You don't have permission to change this.",
+      "notFound": "This was already removed.",
+      "failed": "Something went wrong. Try again.",
+      "tryAgain": "Try again",
+      "offering": "Installation: {{offering}}",
+      "rulesVersion": "rules {{version}}",
+      "conflict": "Someone saved this after you opened it. Reload to see their change."
+    },
+    "my": {
+      "title": "My AI accounts",
+      "subtitle": "Your own AI settings: your Claude sign-in, your coding engine, and the ways of reaching AI models you can use.",
+      "accessTitle": "What you can use",
+      "accessDescription": "Ways of reaching AI models that this installation and your organization allow, and why the others are not available."
+    },
+    "table": {
+      "provider": "Provider",
+      "account": "Account",
+      "engines": "Engines",
+      "status": "Status",
+      "consumer": "consumer plan",
+      "allEngines": "All",
+      "notAvailable": "Not available"
+    },
+    "routes": {
+      "gateway": "through PipesHub",
+      "vendor_injected": "directly to the provider",
+      "vendor_sandbox_login": "provider sign-in inside the task"
+    },
+    "kinds": {
+      "org_api_key": "Organization key",
+      "org_cloud": "Organization cloud account",
+      "user_api_key": "Personal key",
+      "user_plan_injected": "Personal subscription (signed in through PipesHub)",
+      "user_plan_sandbox_login": "Personal subscription (signed in inside the task)"
+    },
+    "offerings": {
+      "oss": "Open source",
+      "managed": "Managed service",
+      "unknown": "Unknown"
+    },
+    "reasons": {
+      "available": "Available",
+      "vendor_prohibited": "The provider's terms do not allow this.",
+      "vendor_pending": "Waiting for the provider to confirm this use is allowed.",
+      "offering_not_permitted": "Not available in this kind of installation.",
+      "org_policy_refused": "Switched off by your organization.",
+      "route_not_built": "PipesHub does not support this yet.",
+      "transport_not_built": "Can be stored, but PipesHub cannot use this provider yet.",
+      "vendor_rule_missing": "No rule allows this.",
+      "vendor_rules_invalid": "The access rules of this release could not be verified, so nothing can be used. Contact your administrator.",
+      "access_policy_unavailable": "Your organization's access settings can't be read right now. Try again in a moment.",
+      "access_policy_invalid": "Only rules of this release can be switched off.",
+      "account_not_owned": "You can only use your own key.",
+      "account_missing": "That account no longer exists.",
+      "account_provider_mismatch": "That account is for a different provider than the model.",
+      "account_requires_engine": "Only agents that run on an engine can choose an account.",
+      "account_model_required": "Choose a model to use with this account.",
+      "route_unavailable": "This way of reaching the model is not available.",
+      "route_not_configured": "This model is not set up.",
+      "unknown": "Not available.",
+      "engine_unavailable": "This coding engine is not installed on this deployment.",
+      "engine_profile_untrusted": "This engine's profile isn't signed for this deployment.",
+      "engine_sandbox_missing": "Coding engines need the sandbox add-on, not installed on this deployment.",
+      "engine_profile_widening": "Your organization does not allow this."
+    },
+    "agent": {
+      "title": "AI account",
+      "description": "Which kind of account this agent's engine tasks use for the model.",
+      "any": "Any account the organization allows",
+      "custom": "Set to several kinds: {{kinds}}",
+      "unavailable": "The account options can't be loaded right now."
+    },
+    "codingEngine": {
+      "title": "Coding engine",
+      "label": "Coding engine",
+      "myDescription": "Which coding engine your Agent-mode chats hand code and file work to.",
+      "myHelper": "Used in Agent mode when a question needs code, files or many steps of work.",
+      "agentHelper": "Used when a task needs code, files or many steps of work; other questions are answered directly.",
+      "orgLabel": "Default coding engine for the org",
+      "orgHelper": "Used in Agent mode when a question needs code, files or many steps of work, unless a person chooses another engine under My AI accounts.",
+      "autoRoute": {
+        "label": "Hand long work to the coding engine",
+        "helper": "Research across many sources, planning, long reports and other work that needs many steps goes to the coding engine on its own. Simple questions stay in the chat.",
+        "saved": "Long work setting saved"
+      },
+      "orgDefault": "Organization default ({{name}})",
+      "noneShort": "none",
+      "none": "None",
+      "noneLoop": "None – built-in agent loop",
+      "noneLoopShort": "None – built-in loop",
+      "noneSandbox": "None – run code in the built-in sandbox",
+      "anyEngine": "Any engine the organization allows",
+      "engineSettings": "Engine settings",
+      "saved": "Coding engine saved",
+      "orgSaved": "Default coding engine saved",
+      "unavailable": "The coding engines can't be loaded right now.",
+      "reasons": {
+        "route_not_configured": "Needs an AI model set up for the organization",
+        "engine_unavailable": "Not installed on this deployment",
+        "engine_profile_untrusted": "Profile not signed for this deployment",
+        "engine_sandbox_missing": "Coding engines need the sandbox add-on, not installed on this deployment",
+        "offering_not_permitted": "Not available in this kind of installation with your organization's models",
+        "engine_profile_widening": "No longer allowed by your organization",
+        "engine_isolation_unavailable": "Needs the gVisor sandbox runtime on this server",
+        "engine_group_required": "Only some groups in your organization can use it"
+      },
+      "isolation": {
+        "required": "Coding engines need the gVisor sandbox runtime on this server —",
+        "guide": "install guide",
+        "weaker": "Coding engines run without gVisor — weaker isolation",
+        "noSyscallFilter": "Coding engines run on gVisor without its own syscall filter — one layer of defence short.",
+        "syscallFilterGuide": "how to turn it on"
+      },
+      "orgDescription": "The engine Agent-mode chats hand code and file work to when a person has not chosen one."
+    },
+    "org": {
+      "title": "Organization AI settings",
+      "subtitle": "Defaults for the agents people in your organization use."
+    }
+  },
+  "durableRun": {
+    "budget": {
+      "exhausted": "This task reached its spending limit and was stopped.",
+      "insufficient": "This task did not have enough budget left for its next step and was stopped.",
+      "unavailable": "The spending limit could not be checked, so the task was stopped.",
+      "closed": "This task's budget is closed.",
+      "childExceeds": "Not enough budget was left to start this sub-task."
+    },
+    "cost": {
+      "label": "Cost",
+      "spent": "Spent {{spent}}",
+      "spentOf": "Spent {{spent}} of {{cap}}",
+      "tokens": "{{tokens}} tokens",
+      "tokensOf": "{{tokens}} of {{cap}} tokens",
+      "exhausted": "Budget used up"
+    },
+    "child": {
+      "running": "Running",
+      "completed": "Finished",
+      "failed": "Did not finish",
+      "loading": "Loading the timeline…",
+      "loadFailed": "The timeline could not be loaded.",
+      "noStepsYet": "No steps yet. They show here as the task works.",
+      "noSteps": "This task finished without running any steps.",
+      "answer": "Answer"
+    },
+    "merge": {
+      "heading": "Files merged back",
+      "upToDate": "No file changes to merge.",
+      "notMerged": "No files were merged.",
+      "merged_one": "{{count}} file merged into workspace version {{revision}}.",
+      "merged_other": "{{count}} files merged into workspace version {{revision}}.",
+      "conflictsHeading": "Conflicts (the conversation’s version was kept)",
+      "forkVersion": "The sub-task's version of these files is in its workspace version {{revision}}.",
+      "repositories": "Repositories left out: {{paths}}",
+      "kind": {
+        "bothChanged": "changed on both sides",
+        "targetDeleted": "deleted in the conversation's workspace",
+        "forkDeleted": "deleted by the sub-task"
+      }
+    },
+    "versions": {
+      "heading": "Workspace versions",
+      "loadFailed": "The workspace versions could not be loaded.",
+      "empty": "No versions yet.",
+      "item": "Version {{revision}}: {{files}} files ({{reason}})",
+      "byYou": "restored by you",
+      "current": "Current",
+      "restore": "Restore",
+      "restoreLabel": "Restore version {{revision}}",
+      "confirm": "Restore version {{revision}} as a new version? Nothing is deleted.",
+      "confirmYes": "Restore",
+      "cancel": "Cancel",
+      "restored": "Version {{from}} restored as version {{to}}.",
+      "conflict": "The workspace changed since this list was loaded. The list has been refreshed.",
+      "busy": "A task is writing to this workspace. Try again when it is done.",
+      "failed": "The version could not be restored."
+    }
+  },
+  "approvals": {
+    "policy": {
+      "removeNamed": "Remove {{name}}",
+      "none": "None",
+      "search": "Search",
+      "searchPlaceholder": "Name",
+      "searchFailed": "Search is not available right now. Try again.",
+      "noResults": "No matches.",
+      "results": "Matches for {{label}}",
+      "addNamed": "Add {{name}}"
+    }
+  },
+  "memories": {
+    "title": "Memories",
+    "subtitle": "What agents remember about you across conversations. Only you see your memories; they are used only where you can still open what they came from.",
+    "listTitle": "Your memories",
+    "listDescription": "Edit or delete any of them. Memories waiting for review are not used until you accept them.",
+    "remember": {
+      "sectionTitle": "Memory",
+      "title": "Remember things about me",
+      "description": "On: agents use your memories in your chats and keep new ones. Off: they do neither. The memories below stay until you delete them.",
+      "unavailable": "Your memory setting can't be read right now. Try again in a moment.",
+      "failed": "Your memory setting wasn't saved. Try again in a moment."
+    },
+    "filterLabel": "Show",
+    "filter": {
+      "all": "All",
+      "review": "Waiting for review",
+      "accepted": "Accepted"
+    },
+    "empty": "Nothing remembered yet.",
+    "emptyReview": "Nothing is waiting for your review.",
+    "unavailable": "Memories can't be reached right now. Nothing was changed. Try again in a moment.",
+    "rowLabel": "Memory from {{date}}",
+    "content": "Memory",
+    "editedByYou": "Edited by you",
+    "unknownOrigin": "This came from content of unknown origin. Only you can see it, and it is not used until you accept it.",
+    "followedOutsideContent": "This was suggested after the assistant read content from outside your organisation, such as a web page or an outside email. Check that it is something you want before you accept it.",
+    "status": {
+      "pending": "Not reviewed yet",
+      "proposed": "Waiting for review",
+      "accepted": "Accepted"
+    },
+    "kind": {
+      "fact": "Fact",
+      "preference": "Preference"
+    },
+    "scope": {
+      "user": "All your conversations",
+      "session": "One conversation",
+      "agent": "An agent"
+    },
+    "actions": {
+      "accept": "Accept",
+      "reject": "Reject",
+      "edit": "Edit",
+      "delete": "Delete"
+    },
+    "confirmReject": {
+      "title": "Reject this memory?",
+      "message": "It is deleted and never used."
+    },
+    "confirmDelete": {
+      "title": "Delete this memory?",
+      "message": "It is deleted now and no later run uses it."
+    },
+    "refusal": {
+      "notFound": "This memory no longer exists.",
+      "invalid": "Check the memory.",
+      "writeNotGranted": "Memories can only be changed by you, not by a connected app.",
+      "limit": "Too many memories at once. Try again later.",
+      "notReviewable": "This memory was already reviewed.",
+      "policyInvalid": "Check the memory settings.",
+      "replaceUnknown": "That memory can't be replaced here."
+    },
+    "notSaving": "The agent is not saving new memories while durable agent chat is switched off. You can still review, edit and delete what is stored here."
+  },
+  "publications": {
+    "open": "Publish",
+    "title": "Publish {{name}}",
+    "description": "Let people who can't open this collection get answers from it. Searches and agents then use it for them too. You can revoke a publication at any time.",
+    "ownersOnly": "Only owners of this collection and organization admins can publish it.",
+    "empty": "This collection is not published to anyone.",
+    "listLabel": "Publications",
+    "revoked": "Revoked",
+    "expired": "Expired",
+    "until": "Until {{date}}",
+    "noExpiry": "No expiry",
+    "revoke": "Revoke",
+    "confirmRevoke": {
+      "title": "Revoke this publication?",
+      "message": "Its audience stops getting answers from this collection at their next question. The record of it is kept."
+    },
+    "audience": {
+      "org": "Everyone in the organization",
+      "wholeOrg": "Everyone in the organization",
+      "people": "People",
+      "searchPeople": "Search people by name or email",
+      "matches": "Matching people",
+      "removePerson": "Remove {{name}}",
+      "teams": "Teams"
+    },
+    "mode": {
+      "label": "What they get",
+      "answer_only": {
+        "label": "Answers only",
+        "hint": "Answers can quote it and cite it, but nobody in the audience can open, download or share the files."
+      },
+      "full": {
+        "label": "Full access",
+        "hint": "The audience can also open and download the files."
+      }
+    },
+    "create": {
+      "title": "Publish to more people",
+      "expiry": "Expires at the end of (optional)",
+      "submit": "Publish"
+    },
+    "refusal": {
+      "forbidden": "Only owners of this collection and organization admins can publish it.",
+      "invalid": "Check the publication.",
+      "notFound": "This publication or collection no longer exists.",
+      "disabled": "Knowledge publications are turned off for your organization.",
+      "unavailable": "Publications can't be reached right now. Nothing was changed. Try again in a moment.",
+      "answerOnly": "This was published for answers only.",
+      "refused": "The knowledge service refused this request."
+    }
+  },
+  "schedules": {
+    "title": "Schedules",
+    "subtitle": "Run an agent on a schedule or when a webhook is called. Every run acts as you, with your access checked again each time.",
+    "harnessPaused": "Paused for now: schedules won't run until the agent harness is back.",
+    "mineTitle": "Your schedules",
+    "mineDescription": "Runs that start without you. A run that needs an approval waits for you until its deadline.",
+    "new": "New schedule",
+    "tabs": {
+      "mine": "Yours",
+      "org": "Organization"
+    },
+    "empty": "No schedules yet.",
+    "unavailable": "Schedules can't be reached right now. Nothing was changed. Try again in a moment.",
+    "assistant": "Assistant",
+    "runsAs": "runs as {{name}}",
+    "nextRun": "Next run {{date}}",
+    "noNextRun": "No run planned",
+    "budget": "Up to {{amount}} USD per run",
+    "budgetDefault": "Default budget per run",
+    "pausedBecause": "Paused by PipesHub: {{reason}}",
+    "disabledBecause": "Turned off by PipesHub: {{reason}}",
+    "started": "Started.",
+    "historyLabel": "Runs of {{name}}",
+    "status": {
+      "active": "Active",
+      "paused": "Paused",
+      "disabled": "Turned off"
+    },
+    "trigger": {
+      "cron": "Cron",
+      "webhook": "When its webhook is called",
+      "connector": "When a connector receives a new record"
+    },
+    "actions": {
+      "pause": "Pause",
+      "resume": "Resume",
+      "runNow": "Run now",
+      "history": "History",
+      "delete": "Delete"
+    },
+    "delete": {
+      "title": "Delete {{name}}?",
+      "message": "It stops running and its history is deleted. Conversations its runs started are kept."
+    },
+    "firing": {
+      "kind": {
+        "cron": "Scheduled",
+        "manual": "Run now",
+        "event": "Triggered",
+        "cronCaughtUp": "Scheduled (caught up)"
+      },
+      "openConversation": "Open the conversation",
+      "admitted": "Started",
+      "refused": "Not started: {{reason}}",
+      "skipped": "Skipped. Missed while PipesHub was down: {{count}}",
+      "skippedOverlap": "Skipped: the last run was still going",
+      "skippedQueueFull": "Skipped: a run was already waiting",
+      "waitingForLastRun": "Waiting for the last run to finish",
+      "pending": "Starting…",
+      "none": "No runs yet."
+    },
+    "create": {
+      "title": "New schedule",
+      "name": "Name",
+      "agent": "Agent",
+      "prompt": "What to ask",
+      "promptHint": "Sent as your message at every run.",
+      "when": "When it runs",
+      "kindCron": "On a schedule (cron)",
+      "kindWebhook": "When a webhook is called",
+      "cron": "Cron expression",
+      "cronHint": "Minute, hour, day of month, month, day of week. For example 0 9 * * 1 is every Monday at 9:00. At most once every 5 minutes.",
+      "timeZone": "Time zone",
+      "catchUp": "If PipesHub was down",
+      "catchUpSkip": "Skip the runs it missed",
+      "catchUpRunLatest": "Run once for the latest missed time",
+      "webhookHint": "You get the webhook's address and secret once, after you create it.",
+      "budget": "Budget per run, USD (optional)",
+      "budgetHint": "At most 5 USD. Empty: the default.",
+      "deadline": "Deadline, hours (optional)",
+      "deadlineHint": "An approval left unanswered until then ends the run. Empty: 8 hours.",
+      "submit": "Create",
+      "catchUpRunAll": "Run once for each missed time",
+      "catchUpRunAllHint": "Up to 24, oldest first, one after another.",
+      "overlap": "If the last run is still going",
+      "overlapSkip": "Skip this run",
+      "overlapQueue": "Wait for it to finish, then run",
+      "overlapQueueHint": "One run can wait. If another is due while one waits, it is skipped.",
+      "overlapAllow": "Run both at the same time",
+      "notify": "Tell me when a run ends",
+      "notifyInApp": "In PipesHub",
+      "notifyInAppHint": "With a short summary and links to the files it made.",
+      "notifyEmail": "Email",
+      "notifyEmailHint": "The schedule's name, whether it finished, and a link.",
+      "notifySlack": "Slack",
+      "notifySlackHint": "A message from this agent's Slack bot: the schedule's name, whether it finished, and a link.",
+      "notifyNoSlackBot": "This agent has no Slack bot. Add one in Slack settings to get messages there.",
+      "notifyNoSlackBotAssistant": "The assistant has no Slack bot. Pick an agent that has one to get messages there.",
+      "notifyOrgOff": "Your organization turned this off.",
+      "notifyUnknown": "Not available right now.",
+      "notifyCheckFailed": "Couldn't check which channels you can use, so only PipesHub is offered.",
+      "webhookCantSign": "The caller can't sign. Use a token in a header instead",
+      "webhookCantSignHint": "Anyone who sees the token can call it. Signing is safer."
+    },
+    "webhook": {
+      "title": "Your webhook",
+      "shownOnce": "Copy the secret now. It is shown only this once; PipesHub keeps only a fingerprint of it.",
+      "url": "Address",
+      "copyUrl": "Copy address",
+      "secret": "Secret",
+      "copySecret": "Copy secret",
+      "copied": "Copied",
+      "howTo": "Send a POST request to the address with the secret in the header",
+      "done": "Done",
+      "signedShownOnce": "Copy this secret now. You won't see it again.",
+      "signHowTo": "Sign each call: send the current time and an HMAC-SHA256 of it and the body.",
+      "example": "Signing example",
+      "copyExample": "Copy example"
+    },
+    "refusal": {
+      "disabledForOrg": "Scheduled runs are turned off for your organization.",
+      "invalid": "Check the schedule.",
+      "notFound": "This schedule no longer exists.",
+      "forbidden": "You can't do this with this schedule.",
+      "scheduleDisabled": "This schedule was turned off because its owner can no longer run it.",
+      "limit": "You have reached the number of schedules allowed. Delete one first.",
+      "budgetCeiling": "The budget per run is too high.",
+      "unavailable": "Scheduled runs need durable agent chat, which is off for your organization.",
+      "triggerTokenInvalid": "The webhook's trigger token does not match. Copy the current token from the schedule and try again."
+    },
+    "reason": {
+      "scheduledRunsDisabled": "scheduled runs were turned off for the organization",
+      "actorDeleted": "its owner was removed",
+      "actorDisabled": "its owner's account is disabled",
+      "actorNotPerson": "its owner is not a person",
+      "orgInactive": "the organization is inactive",
+      "agentForbidden": "its owner can no longer use this agent",
+      "agentDeleted": "its agent was deleted",
+      "narrowing": "the agent's settings no longer allow this run",
+      "rolloutLegacy": "the durable agent harness is off for the organization",
+      "unavailable": "PipesHub could not start it in time",
+      "templateMissing": "its prompt is gone",
+      "catchUpSkip": "missed while PipesHub was down",
+      "byActor": "paused by its owner",
+      "byAdmin": "paused by an admin",
+      "other": "PipesHub refused this run"
+    },
+    "version": {
+      "label": "Agent version",
+      "createPinned": "The version live now",
+      "createLatest": "Always the live version",
+      "pinnedHint": "Each run uses exactly what you tested. You can move it later.",
+      "runs": "Runs version {{version}}",
+      "runsLatest": "Runs the live version",
+      "liveIs": "Version {{version}} is live",
+      "change": "Change version",
+      "ownerOnly": "Only the schedule's owner can change it.",
+      "keep": "Keep version {{version}}",
+      "keepHint": "Each run uses exactly what you tested.",
+      "move": "Move to version {{version}}",
+      "moveHint": "From the next run. You can move back.",
+      "latest": "Always use the live version",
+      "latestHint": "Each run uses whatever was published last.",
+      "save": "Save"
+    }
+  },
+  "unknownEffectCard": {
+    "title": "Did this happen? {{action}}",
+    "titleIn": "Did this happen? {{action}} in {{app}}",
+    "why": "The agent was interrupted while doing this, so it can't tell whether it went through. Check, then tell it. Nothing is tried again on its own.",
+    "whyIn": "The agent was interrupted while doing this, so it can't tell whether it went through. Check {{app}}, then tell it. Nothing is tried again on its own.",
+    "checked": "An automatic check could not tell either.",
+    "done": "It happened",
+    "notDone": "It didn't happen",
+    "doneLabel": "It happened: {{action}}",
+    "notDoneLabel": "It didn't happen: {{action}}",
+    "markedDone": "Marked as done",
+    "markedNotDone": "Marked as not done",
+    "retried": "Tried again",
+    "closed": "No longer waiting",
+    "adminRetry": "Try it again",
+    "adminNote": "If it didn't happen and still should, an admin can try it again.",
+    "refusedNotAllowed": "Only the person this chat acts for, the conversation owner or an admin can answer this.",
+    "refusedClosed": "This is no longer waiting for an answer.",
+    "failed": "Your answer could not be sent. Try again."
+  },
+  "memoryChip": {
+    "saved": "Saved to your memories",
+    "review": "Review"
+  },
+  "activityPanel": {
+    "title": "Activity",
+    "close": "Close activity panel",
+    "subtitle": "What the agent ran in its sandbox. Read-only.",
+    "subtitlePersonRan": "What you ran in this chat's sandbox. Read-only.",
+    "model": "Model: {{model}}",
+    "reconnecting": "Reconnecting…",
+    "loading": "Loading activity…",
+    "unavailable": "Activity isn't available for this run.",
+    "unavailableHint": "It may be turned off for your organization, or the run belongs to someone else.",
+    "empty": "Nothing has run yet.",
+    "emptyRunning": "Commands, tool calls and changed files appear here as the agent works.",
+    "emptyDone": "This run did not run commands, call tools or change files.",
+    "jumpToLatest": "Jump to latest",
+    "planCaption": "What the agent plans to do next.",
+    "omittedCommands": "Earlier commands not shown: {{count}}",
+    "section": {
+      "plan": "Plan",
+      "commands": "Commands",
+      "tools": "Steps",
+      "files": "Files changed",
+      "workspace": "Workspace files"
+    },
+    "status": {
+      "queued": "Queued",
+      "running": "Running",
+      "waiting": "Waiting for you",
+      "completed": "Finished",
+      "failed": "Failed",
+      "cancelled": "Stopped"
+    },
+    "command": {
+      "running": "Running",
+      "timedOut": "Timed out",
+      "cancelled": "Cancelled",
+      "failed": "Failed",
+      "done": "Done",
+      "exit": "Exit {{code}}",
+      "unnamed": "Command",
+      "truncated": "Earlier output is not shown here. The full log has it.",
+      "dropped": "{{size}} of output was not shown live. The full log has it.",
+      "outputLabel": "Output of {{command}}",
+      "waitingOutput": "Waiting for output…",
+      "noOutput": "No output.",
+      "noOutputCaptured": "No output was captured.",
+      "fullLog": "Full log",
+      "fullLogLabel": "Full log of {{command}}"
+    },
+    "task": {
+      "pending": "To do",
+      "inProgress": "In progress",
+      "completed": "Done",
+      "cancelled": "Cancelled"
+    },
+    "tool": {
+      "running": "Running",
+      "completed": "Done",
+      "failed": "Failed",
+      "awaiting": "Waiting for approval",
+      "denied": "Denied",
+      "blocked": "Blocked",
+      "waitingGeneric": "This call waits for your approval.",
+      "decideInChat": "Decide on the approval card in the chat.",
+      "refusedBy": "Refused by the rule “{{rule}}”.",
+      "deniedGeneric": "This call was denied and did not run.",
+      "blockedBy": "Blocked by the rule “{{rule}}”.",
+      "blockedGeneric": "Blocked by a policy. It did not run.",
+      "webAddressRefused": "Not opened: this address didn't come from a search result or from you, and the chat had read private content.",
+      "detail": "Details: {{detail}}",
+      "dryRun": "Dry run: not done",
+      "dryRunWouldAsk": "Dry run: not done (would have asked for approval)"
+    },
+    "announce": {
+      "started": "Command started: {{command}}",
+      "finishedExit": "Command finished with exit code {{code}}: {{command}}",
+      "finished": "Command finished: {{command}}",
+      "failed": "Command failed: {{command}}",
+      "timedOut": "Command timed out: {{command}}",
+      "cancelled": "Command cancelled: {{command}}",
+      "approval": "Approval needed: {{tool}}",
+      "runCompleted": "The run finished.",
+      "runFailed": "The run failed.",
+      "runCancelled": "The run was stopped."
+    },
+    "log": {
+      "title": "Full log",
+      "loading": "Loading the full log…",
+      "failed": "The full log could not be loaded. Try again.",
+      "label": "Full log of {{command}}",
+      "download": "Download"
+    },
+    "viewActivity": "View activity",
+    "slashCommand": "Ran /{{name}} (v{{version}}) · {{chars}} characters sent",
+    "steps": {
+      "running": "Running…",
+      "done": "Done",
+      "noResults": "No results",
+      "found_one": "Found {{count}} result",
+      "found_other": "Found {{count}} results",
+      "details": "Details",
+      "lookedUpTools": "Looked up available tools",
+      "lookedUpSkills": "Looked up skills",
+      "groupTitle": "{{label}} ({{count}} times)",
+      "groupFinished_one": "{{count}} finished",
+      "groupFinished_other": "{{count}} finished",
+      "groupRunning_one": "{{count}} running",
+      "groupRunning_other": "{{count}} running",
+      "groupFailed_one": "{{count}} failed",
+      "groupFailed_other": "{{count}} failed",
+      "childLoading": "Loading its steps…",
+      "childEmpty": "No steps yet.",
+      "childUnavailable": "Its steps could not be loaded.",
+      "exitCode": "exit code {{code}}",
+      "resultLoading": "Loading the result…",
+      "resultUnavailable": "The result could not be loaded. Close the step and open it again to retry."
+    },
+    "workspace": {
+      "treeLabel": "Workspace files, read only",
+      "failed": "The files could not be listed.",
+      "readOnly": "Read only. Use /open or /download in the chat to read a file."
+    }
+  },
+  "followups": {
+    "title": "Suggested next steps",
+    "hint": "Puts the text in the message box so you can edit it. Nothing is sent until you send it.",
+    "openFiles": "Open the changed files",
+    "runTests": "Run the tests again",
+    "runTestsPrompt": "Run the tests again: {{command}}"
+  },
+  "agentActivity": {
+    "summary": {
+      "steps": "Completed {{done}} of {{total}} steps",
+      "thought_one": "Thought about this",
+      "thought_other": "Thought {{count}} times",
+      "tools_one": "Used {{count}} tool",
+      "tools_other": "Used {{count}} tools",
+      "delegated_one": "Delegated to {{count}} sub-agent",
+      "delegated_other": "Delegated to {{count}} sub-agents",
+      "fallback": "Show steps",
+      "repeated": "{{label}} ({{count}})",
+      "more": "{{count}} more",
+      "usedApp": "Used {{app}}: {{tool}}",
+      "commands_one": "Ran {{count}} command",
+      "commands_other": "Ran {{count}} commands",
+      "created": "Created {{name}}",
+      "edited": "Edited {{name}}",
+      "deleted": "Deleted {{name}}",
+      "files_one": "Edited {{count}} file",
+      "files_other": "Edited {{count}} files",
+      "askedYou": "Asked you a question",
+      "approvals_one": "{{count}} approval",
+      "approvals_other": "{{count}} approvals",
+      "costSoFar": "{{cost}} so far"
+    },
+    "plan": {
+      "label": "Plan",
+      "status": {
+        "completed": "Done",
+        "in_progress": "In progress",
+        "pending": "To do",
+        "cancelled": "Dropped"
+      }
+    },
+    "duration": {
+      "seconds": "{{seconds}}s",
+      "minutes": "{{minutes}}m {{seconds}}s"
+    },
+    "notice": {
+      "mcpUnavailable": "Some of your MCP servers didn't respond or have no approved tools, so this answer couldn't use them. Check them under MCP servers, then try again.",
+      "credentialMissingToolset": "{{item}} isn't connected for your account, so this answer couldn't use it. Connect it under Actions, then ask again.",
+      "credentialMissingMcp": "{{item}} isn't connected for your account, so this answer couldn't use it. Connect it under MCP servers, then ask again.",
+      "connectItem": "Connect {{item}}",
+      "signinUnavailable": "Your Claude account can't be used on this server yet, so this task ran on your organization's account.",
+      "resumed": "This task was interrupted (a server restarted) and carried on from where it stopped.",
+      "dryRun": "This was a dry run: nothing in this answer was actually changed, sent or deleted.",
+      "verified": "Checked: this answer passed its checks.",
+      "unverified": "Not verified: this answer didn't pass its checks.",
+      "unverifiedBecause": "Not verified: {{reason}}",
+      "engineRetired": "Your admin retired the coding engine version this task was using. It is paused and will continue on its own when a compatible version is available. To start fresh instead, stop it and send your message again.",
+      "engineContinued": "A compatible coding engine version is available again, so this task carried on.",
+      "timePlan": "Time plan: gathering until {{writeBy}} at the latest, then writing; done by {{finishBy}}.",
+      "ranWithoutCodeTools": {
+        "notAvailable": "This answer was written without code tools: the coding engine isn't available on this server right now.",
+        "pausedByAdmin": "This answer was written without code tools: an admin has paused the coding engine.",
+        "notAllowed": "This answer was written without code tools: your organisation's settings don't let this chat use the coding engine.",
+        "isolationUnavailable": "This answer was written without code tools: this server can't run the coding engine with the isolation your organisation requires.",
+        "engineOff": "This answer was written without code tools: your admin turned off the coding engine this chat or agent uses. Ask your admin to turn it back on, or choose another coding engine."
+      },
+      "modelSwitched": "The usual AI model wasn't responding, so this answer was written with {{model}}.",
+      "engineSwitched": "{{off}} is turned off for your organisation, so this task's coding work used {{engine}}.",
+      "sandboxQueued": "This task waited in a queue for a free sandbox before it ran.",
+      "mcpUnused": {
+        "signIn_one": "{{names}} wasn't used for this answer: sign in to it first.",
+        "signIn_other": "{{names}} weren't used for this answer: sign in to them first.",
+        "notApproved_one": "{{names}} wasn't used for this answer: an admin hasn't approved any of its tools yet.",
+        "notApproved_other": "{{names}} weren't used for this answer: an admin hasn't approved any of their tools yet.",
+        "unreachable_one": "{{names}} wasn't used for this answer: it didn't respond. Check it under MCP servers, then ask again.",
+        "unreachable_other": "{{names}} weren't used for this answer: they didn't respond. Check them under MCP servers, then ask again.",
+        "noTools_one": "{{names}} wasn't used for this answer: it offers no tools.",
+        "noTools_other": "{{names}} weren't used for this answer: they offer no tools.",
+        "unknown_one": "{{names}} wasn't used for this answer. Check it under MCP servers, then ask again.",
+        "unknown_other": "{{names}} weren't used for this answer. Check them under MCP servers, then ask again.",
+        "approveTools_one": "Approve its tools",
+        "approveTools_other": "Approve their tools",
+        "openServers": "Open MCP servers",
+        "signInTo": "Sign in to {{name}}",
+        "signingIn": "Signing in to {{name}}…",
+        "signedIn": "Signed in to {{name}}. Ask again to use it.",
+        "flagged_one": "{{names}} wasn't used for this answer: its tools' descriptions look like instructions to the model, so they were held back for safety.",
+        "flagged_other": "{{names}} weren't used for this answer: their tools' descriptions look like instructions to the model, so they were held back for safety.",
+        "held_one": "{{server}}'s tool {{tools}} was held back for safety: its description looks like instructions to the model.",
+        "held_other": "{{server}}'s tools {{tools}} were held back for safety: their descriptions look like instructions to the model."
+      }
+    },
+    "command": {
+      "ran": "Ran",
+      "running": "Running",
+      "exit": "exit {{code}}",
+      "showWhole": "Show the whole output",
+      "showTail": "Show only the last lines",
+      "fullLogInActivity": "Full log in Activity"
+    },
+    "files": {
+      "title": "Files changed",
+      "added": "added",
+      "modified": "modified",
+      "deleted": "deleted",
+      "fullDiff": "Full diff in View activity"
+    },
+    "codeTask": "Code task: {{goal}}",
+    "engineHelper": "Helper agent",
+    "engineHelperTask": "Helper agent: {{task}}",
+    "handoff": {
+      "label": "Handed to {{engine}}: {{reason}}",
+      "engineFallback": "the coding engine",
+      "reason": {
+        "research": "this needs research across many sources",
+        "analysis": "this needs analysis across many items",
+        "planning": "this needs planning",
+        "long_report": "this needs a long write-up",
+        "many_steps": "this needs many steps",
+        "context": "this needs more room than a chat reply",
+        "budget": "this was using much of the reply's budget"
+      }
+    },
+    "slashCommand": {
+      "ran": "Ran /{{name}}",
+      "ranVersion": "Ran /{{name}} (v{{version}})"
+    },
+    "fileStep": {
+      "added": "Created",
+      "modified": "Edited",
+      "deleted": "Deleted"
+    },
+    "skill": {
+      "read": "Read the {{skill}} skill",
+      "reading": "Reading the {{skill}} skill",
+      "readMany": "Read the {{skills}} skills",
+      "readingMany": "Reading the {{skills}} skills",
+      "names": {
+        "docx": "Word document",
+        "xlsx": "Excel spreadsheet",
+        "pptx": "PowerPoint presentation"
+      }
+    },
+    "unavailable": {
+      "notConnected": "{{tool}} isn't connected",
+      "notAvailable": "{{tool}} isn't available to this agent",
+      "connect": "Connect",
+      "connectLabel": "Connect {{tool}}"
+    },
+    "repo": {
+      "copied": "Copied {{repository}} · branch {{branch}}",
+      "copiedNoBranch": "Copied {{repository}}",
+      "pushed": "Pushed to {{branch}}",
+      "pushedNoBranch": "Pushed the branch",
+      "pushFailed": "Couldn't push to {{target}}",
+      "pushFailedNoTarget": "Couldn't push",
+      "refused": {
+        "otherBranch": "this chat can only push its own branch",
+        "overwrite": "it can only add to its branch, never overwrite it",
+        "delete": "it can't delete branches",
+        "tags": "it can't push tags",
+        "other": "the push didn't go through"
+      },
+      "prOpened": "Opened pull request #{{number}} in {{repository}}",
+      "prOpenedPlain": "Opened a pull request",
+      "prFailed": "Couldn't open the pull request",
+      "viewOnGithub": "View on GitHub"
+    },
+    "runSummary": {
+      "title": "Summary",
+      "outcome": {
+        "answered": "Answered",
+        "needs_input": "Waiting for your answer",
+        "failed": "Failed",
+        "cancelled": "Cancelled"
+      },
+      "cutShort": {
+        "budget": "Stopped early: budget reached",
+        "turns": "Stopped early: step limit reached",
+        "time": "Stopped early: time limit reached",
+        "stall": "Stopped early: no progress",
+        "provider": "Stopped early: provider unavailable",
+        "engine_error": "Stopped early: engine error",
+        "secret_blocked": "Stopped early: secret blocked"
+      },
+      "failed_one": "{{count}} failed",
+      "failed_other": "{{count}} failed",
+      "refused_one": "{{count}} stopped",
+      "refused_other": "{{count}} stopped",
+      "read_one": "Read {{count}} record",
+      "read_other": "Read {{count}} records",
+      "changed_one": "Made {{count}} change",
+      "changed_other": "Made {{count}} changes",
+      "saved": "Saved {{names}}",
+      "approvals_one": "Asked {{count}} approval",
+      "approvals_other": "Asked {{count}} approvals",
+      "approved_one": "{{count}} approved",
+      "approved_other": "{{count}} approved",
+      "denied_one": "{{count}} denied",
+      "denied_other": "{{count}} denied",
+      "unanswered_one": "{{count}} unanswered",
+      "unanswered_other": "{{count}} unanswered",
+      "cost": "Cost {{usd}} · {{tokens}} tokens"
+    },
+    "step": {
+      "results_one": "{{count}} result",
+      "results_other": "{{count}} results",
+      "noResults": "No results",
+      "files_one": "{{count}} file",
+      "files_other": "{{count}} files",
+      "cited": "Cited as {{refs}}"
+    }
+  },
+  "controlPlane": {
+    "conflict": {
+      "message": "Someone saved this section after you opened it. Your changes are kept below.",
+      "reapply": "Reload and reapply",
+      "discard": "Discard"
+    },
+    "recentChanges": {
+      "system": "PipesHub"
+    },
+    "agentData": {
+      "who": {
+        "actions": {
+          "email": "Emails",
+          "message": "Chat messages",
+          "ticket": "Tickets and comments",
+          "document": "Pages and documents",
+          "event": "Calendar events",
+          "commit": "Commits"
+        }
+      }
+    }
+  },
+  "slashCommands": {
+    "menuLabel": "Commands",
+    "owner": {
+      "you": "You",
+      "team": "Team",
+      "org": "Org",
+      "pipeshub": "PipesHub"
+    },
+    "problem": {
+      "missing": "Missing: {{names}}",
+      "invalid": "Not a valid value: {{names}}",
+      "tooLong": "Too long to send"
+    },
+    "preview": "Preview",
+    "previewNote": "This is the text that will be sent.",
+    "queued": "/{{name}} will run next",
+    "queuedDescription": "It starts as soon as the current task finishes.",
+    "saveAsCommand": "Save as command",
+    "byYou": "by you",
+    "byPipeshub": "by PipesHub",
+    "whatWasSent": "What was sent",
+    "byAuthor": "by {{name}}",
+    "byFormerMember": "by a former member",
+    "reviewOfFiles_one": "Review of {{count}} changed file",
+    "reviewOfFiles_other": "Review of {{count}} changed files",
+    "teamNamed": "team {{team}}",
+    "group": {
+      "builtin": "Built-in",
+      "you": "Your commands",
+      "team": "Team",
+      "org": "Organization",
+      "sandbox": "Sandbox"
+    },
+    "alsoAlias": "also {{alias}}",
+    "moreBuiltins": "More built-ins…",
+    "moreCount": "{{n}} more",
+    "terminalWord": "PipesHub has no /{{name}}. Your text will be sent as a message.",
+    "reason": {
+      "notRunning": "Nothing is running",
+      "wait": "Wait for this run to finish",
+      "noConversation": "Send a message first",
+      "noAnswer": "There is no answer yet",
+      "noWorkspace": "This chat has no workspace yet",
+      "sandboxOwner": "Only the chat's owner can use the sandbox",
+      "sandboxLegacy": "Sandbox commands need the new harness"
+    },
+    "builtin": {
+      "new": {
+        "description": "Start a new chat"
+      },
+      "model": {
+        "description": "Choose the model for your next message"
+      },
+      "effort": {
+        "description": "Set the reasoning effort for your next message",
+        "reason": {
+          "noEffort": "This model has no effort setting"
+        }
+      },
+      "stop": {
+        "description": "Stop the running reply"
+      },
+      "status": {
+        "description": "Model, effort, executor and tools of the last reply"
+      },
+      "usage": {
+        "description": "Tokens and cost of this chat",
+        "reason": {
+          "legacy": "Cost is recorded for new-harness chats only"
+        }
+      },
+      "fork": {
+        "description": "Continue this chat privately in a copy",
+        "reason": {
+          "unavailable": "Forking is not available for this chat"
+        }
+      },
+      "copy": {
+        "description": "Copy the last answer"
+      },
+      "help": {
+        "description": "List the commands you can use"
+      },
+      "resume": {
+        "description": "Find an earlier chat"
+      },
+      "rename": {
+        "description": "Rename this chat"
+      },
+      "export": {
+        "description": "Download this chat as Markdown"
+      },
+      "plan": {
+        "description": "Switch to Plan & execute for your next message",
+        "reason": {
+          "agentOnly": "Plan mode is for agent chats"
+        }
+      },
+      "skills": {
+        "description": "Skills this chat can use",
+        "reason": {
+          "off": "Skills are not turned on for your organization"
+        }
+      },
+      "mcp": {
+        "description": "Your MCP servers and whether they are connected",
+        "reason": {
+          "off": "MCP is turned off for your organization"
+        }
+      },
+      "agents": {
+        "description": "Agents you can chat with"
+      },
+      "memory": {
+        "description": "Open your memories",
+        "reason": {
+          "off": "Memory is not turned on for your organization"
+        }
+      },
+      "permissions": {
+        "description": "What this chat may do without asking",
+        "reason": {
+          "legacy": "Approvals are a new-harness feature"
+        }
+      },
+      "feedback": {
+        "description": "Rate the last answer"
+      },
+      "compact": {
+        "description": "Summarise this chat to free up context",
+        "reason": {
+          "legacy": "Compacting needs the new harness",
+          "nothing": "Nothing to compact yet",
+          "owner": "Only the chat's owner can compact it"
+        },
+        "requested": "Compaction saved · runs before your next message",
+        "requestedFocus": "Keeping in focus: {{focus}}",
+        "row": {
+          "compacted": "Context compacted",
+          "tokens": "{{before}} → {{after}} tokens",
+          "kept": "your messages kept",
+          "unsupported": "This engine can't compact on request",
+          "failed": "Compaction didn't complete; the reply used the full context"
+        }
+      },
+      "diff": {
+        "description": "Files this chat changed"
+      },
+      "undo": {
+        "description": "Restore the files from before the last reply"
+      },
+      "review": {
+        "description": "Review the changes in this chat's workspace"
+      },
+      "init": {
+        "description": "Draft this agent's instructions from this chat",
+        "reason": {
+          "noAgent": "Use /init in a chat with an agent",
+          "notEditor": "Only the agent's editors can change its instructions"
+        }
+      },
+      "knowledge": {
+        "description": "Choose the collections and connectors for your next message",
+        "reason": {
+          "fixed": "This chat's knowledge can't be changed here"
+        }
+      },
+      "files": {
+        "description": "Files in this chat's workspace"
+      },
+      "open": {
+        "description": "Show a file here"
+      },
+      "download": {
+        "description": "A file, or everything as .zip"
+      },
+      "upload": {
+        "description": "Add files to the workspace"
+      },
+      "run": {
+        "description": "Run a command, without the model",
+        "reason": {
+          "noRunCode": "This chat can't run code",
+          "denied": "Running code is blocked by your organization's policy"
+        }
+      },
+      "sandbox": {
+        "description": "What runs this chat's code"
+      },
+      "engine": {
+        "description": "Coding engine for your next message",
+        "reason": {
+          "fixed": "This agent's engine is set by its owner",
+          "quickChat": "Coding engines run in Agent mode"
+        }
+      },
+      "logs": {
+        "description": "Commands and their output"
+      },
+      "repo": {
+        "description": "Work on a GitHub repository in this chat",
+        "reason": {
+          "noEngine": "Needs a coding engine. Pick one first.",
+          "orgOff": "Your organization hasn't turned on coding engines.",
+          "hasRepository": "This chat already works on {{repo}}. Start a new chat for another repository."
+        }
+      }
+    },
+    "result": {
+      "loading": "Loading…",
+      "failed": "Could not load this. Try again.",
+      "none": "—",
+      "dismiss": "Dismiss",
+      "renamed": "Renamed to “{{title}}”",
+      "noSuchModel": "No model named “{{name}}”. Pick one from the list.",
+      "noSuchEffort": "Use one of: {{values}}",
+      "modelNext": "Model for your next message: {{model}}",
+      "was": "was {{model}}",
+      "effortNext": "Reasoning effort for your next message: {{effort}}",
+      "planNext": "Plan & execute is on for your next message.",
+      "runKeepsPins": "The reply in progress keeps its settings.",
+      "manageCommands": "Manage your commands",
+      "mcpConnected": "Connected",
+      "mcpNotConnected": "Not connected",
+      "openSkills": "Open skills",
+      "noSkills": "No skills yet",
+      "openMcp": "Open MCP servers",
+      "noMcp": "No MCP servers yet",
+      "openAgents": "All agents",
+      "noAgents": "No agents yet",
+      "yes": "Yes",
+      "no": "No",
+      "status": {
+        "model": "Model",
+        "mode": "Mode",
+        "effort": "Effort",
+        "executor": "Executor",
+        "codingEngine": "Coding engine",
+        "tools": "Tools granted",
+        "approvals": "Approvals",
+        "run": "Last reply",
+        "tokens": "Tokens used",
+        "policyVersion": "Settings version",
+        "effortDefault": "Model default",
+        "executorLoop": "Agent loop",
+        "approvalsNone": "None asked",
+        "approvalsAsked": "{{count}} asked in this reply",
+        "legacy": "This chat runs on the classic path, so only its model and mode are shown."
+      },
+      "usage": {
+        "chat": "This chat",
+        "chatValue": "{{tokens}} tokens · {{usd}} · replies: {{runs}}",
+        "last": "Last reply",
+        "lastValue": "{{tokens}} tokens · {{usd}}",
+        "lastValueCap": "{{tokens}} tokens · {{usd}} · cap left {{left}}"
+      },
+      "permissions": {
+        "approve": "You can approve",
+        "deny": "You can deny",
+        "readOnly": "Read-only. The approval rules decide what runs without asking.",
+        "policy": "Change these rules"
+      },
+      "knowledgeNext": "Knowledge for your next message: {{names}}",
+      "knowledgeAll": "Your next message searches everything you can read.",
+      "diff": {
+        "summary": "Files changed since this chat began: {{count}}",
+        "none": "No files changed since this chat began.",
+        "omitted": "More not shown: {{count}}",
+        "undo": "Undo last turn",
+        "review": "Review these changes"
+      },
+      "undo": {
+        "nothing": "No workspace changes to undo",
+        "confirm": "Restore these files to how they were before the last reply? Files: {{count}}",
+        "confirmLabel": "Confirm undo",
+        "filesOnly": "Only files go back. Your messages stay; to rewind the conversation, fork from a message.",
+        "restore": "Restore files",
+        "moved": "The workspace changed since this was shown. Run /undo again.",
+        "done": "Files restored to version {{from}} ({{count}} changed back). Now version {{revision}}.",
+        "doneSaved": "You restored the workspace files. Now version {{revision}}.",
+        "forkHint": "Your messages are unchanged.",
+        "savedHeading": "Workspace restored"
+      },
+      "init": {
+        "open": "Open in the agent editor",
+        "notSaved": "Nothing is saved until you save the agent."
+      },
+      "files": {
+        "summary": "Version {{revision}} · files: {{count}} · {{size}}",
+        "lastSave": "As of the last save, {{seconds}} s ago. The reply in progress may have newer changes.",
+        "treeLabel": "Workspace files",
+        "more": "{{label}} more",
+        "hidden": "hidden from engines",
+        "open": "Open {{path}}",
+        "download": "Download {{path}}",
+        "omitted": "Not listed: {{count}}",
+        "downloadAll": "Download all (.zip)",
+        "notFound": "No file or folder at {{path}}",
+        "reference": "{{label}} at {{version}} — fetched copy, not saved",
+        "referenceUnversioned": "{{label}} — fetched copy, not saved"
+      },
+      "download": {
+        "file": "Downloaded {{name}}",
+        "zip": "Downloaded {{name}}",
+        "tooLarge": "These files are larger than 2 GiB. Download a folder instead, for example /download out/"
+      },
+      "logs": {
+        "none": "No commands have run in this chat"
+      },
+      "open": {
+        "lastSave": "As of the last save. The reply in progress may have newer changes.",
+        "download": "Download",
+        "image": "{{path}} · {{size}} · version {{revision}}",
+        "binary": "{{path}} · binary file, {{size}}",
+        "csv": "{{path}} · first rows: {{rows}} · version {{revision}}",
+        "moreRows": "More rows in the file: download it to see them all",
+        "text": "{{path}} · lines: {{lines}} · version {{revision}}",
+        "moreLines": "More lines not shown: {{count}}. Download the file to read it all."
+      },
+      "sandbox": {
+        "executor": "Executor",
+        "noRunYet": "Not known until the first reply",
+        "codeRunsIn": "Code runs in",
+        "gvisor": "gVisor",
+        "runc": "runc",
+        "network": "Network",
+        "networkNone": "None",
+        "networkProxy": "Public hosts through PipesHub's proxy, approval each time",
+        "approvals": "Approvals",
+        "approvalsAllow": "Code runs without asking (own sandbox)",
+        "approvalsAsk": "Asks before running code",
+        "workspace": "Workspace",
+        "workspaceValue": "Version {{revision}} · files: {{count}} · {{size}}",
+        "kept": "Kept sandbox",
+        "keptValue": "Signed in to Claude · ends after {{idle}} min idle, at the latest {{hours}} h after sign-in",
+        "endNowAsk": "End now…",
+        "endNow": "End now",
+        "endConfirm": "End the kept sandbox? It signs out of Claude and wipes the sandbox; your next message asks you to sign in again.",
+        "ended": "The kept sandbox has ended. Your next message signs in again.",
+        "foot": "No sandbox is running. Each message starts a fresh one from your files.",
+        "footKept": "Each message starts a fresh sandbox from your files. Only a Claude sign-in sandbox is kept between messages.",
+        "nextMessage": "next message: {{engine}}"
+      },
+      "run": {
+        "interactive": "No interactive programs: /run runs one command and returns.",
+        "install": "Packages can't be installed with /run; ask the agent to install them.",
+        "rateLimited": "Too many /run commands. Try again in {{seconds}} s.",
+        "ask": "Ask about this",
+        "undo": "Undo",
+        "viewOutput": "View full output",
+        "notSent": "This output is not sent to the model unless you ask about it."
+      },
+      "upload": {
+        "replace": "Replace files: {{count}}?",
+        "replaceButton": "Replace",
+        "added": "Added to the workspace as version {{revision}} · files: {{count}}",
+        "addedSaved": "By you · upload · version {{revision}}",
+        "savedHeading": "/upload",
+        "notAttachment": "These files are in the sandbox's folder for code to use. They are not attached to your next message.",
+        "tooLarge": "Too large: up to 100 MiB a file, 512 MiB an upload and 2 GiB in the workspace.",
+        "refusedPath": "These files can't go there: a name some computers can't use (such as CON, or one that ends in a dot), an engine's settings folder, or a path that leaves the workspace.",
+        "failed": "Could not add the files to the workspace. Try again."
+      },
+      "engine": {
+        "heading": "Coding engine for this chat",
+        "nextMessage": "from your next message",
+        "asDefaultIs": "As my default · {{engine}}",
+        "noEngine": "None",
+        "none": "None – built-in agent loop",
+        "saved": "Saved. Your next message uses it; your files carry over.",
+        "refused": "This engine can't be used now; the choice was not saved.",
+        "unknown": "No coding engine called “{{name}}”. Choose one below.",
+        "carryOver": "Your files carry over. A reply in progress keeps its engine.",
+        "makeDefault": "Make this my default",
+        "defaultSaved": "Saved as your default for new chats.",
+        "defaultFailed": "Your default was not changed. Try again from My AI accounts.",
+        "firstMessage": "Your first message in this chat uses it.",
+        "firstMessageHeading": "from your first message",
+        "firstMessageHint": "Nothing is saved until you send. Reloading the page lets the choice go."
+      }
+    }
+  },
+  "interaction": {
+    "title": "{{what}}?",
+    "titleIn": "{{what}} in {{app}}?",
+    "titleTo": "{{what}} to {{destination}}?",
+    "titleToIn": "{{what}} to {{destination}} in {{app}}?",
+    "titleClone": "Clone {{destination}}?",
+    "titlePush": "Push to {{destination}}?",
+    "verb": {
+      "web_search_one": "Search the web",
+      "web_search_other": "Search the web {{count}} times",
+      "fetch_url_one": "Read a web page",
+      "fetch_url_other": "Read {{count}} web pages",
+      "generate_image_one": "Generate an image",
+      "generate_image_other": "Generate {{count}} images",
+      "run_code_one": "Run code",
+      "run_code_other": "Run code {{count}} times",
+      "generic_one": "{{action}}",
+      "generic_other": "{{action}} ({{count}} calls)",
+      "install_packages_one": "Install packages",
+      "install_packages_other": "Install packages {{count}} times"
+    },
+    "engineWants": "{{engine}} wants to:",
+    "childWants": "The code task wants to:",
+    "engine": {
+      "codex": "Codex",
+      "claude_code": "Claude Code",
+      "opencode": "OpenCode"
+    },
+    "outside": "a site outside your organization",
+    "why": {
+      "flowReadUnknown_one": "This sends words to {{destination}}. An earlier step used a result from a connected app or an outside tool whose origin cannot be checked, so we ask before anything leaves your organization.",
+      "flowReadUnknown_other": "These send words to {{destination}}. An earlier step used a result from a connected app or an outside tool whose origin cannot be checked, so we ask before anything leaves your organization.",
+      "flowReadPrivate_one": "This sends words to {{destination}}. Earlier in this conversation the agent read private content, so we ask before anything leaves your organization.",
+      "flowReadPrivate_other": "These send words to {{destination}}. Earlier in this conversation the agent read private content, so we ask before anything leaves your organization.",
+      "siteUpload": "This conversation read private data, so requests to {{destination}} wait for you: a link or an upload can carry what it read. Package installs keep working meanwhile."
+    },
+    "paused": "Paused, waiting for you",
+    "pausedHint": "The run continues when you decide.",
+    "keysHint": "Press Enter to allow once, or Escape to go back to the message box.",
+    "keysHintAll_one": "Press Enter to allow it, or Escape to go back to the message box.",
+    "keysHintAll_other": "Press Enter to allow all {{count}}, or Escape to go back to the message box.",
+    "keysHintQuestion": "Press Enter to continue, or Escape to go back to the message box.",
+    "queued": "Next: {{title}}",
+    "reviewEach": "Review each",
+    "hideEach": "Decide together",
+    "allowAll_one": "Allow",
+    "allowAll_other": "Allow all {{count}}",
+    "denyAll_one": "Deny",
+    "denyAll_other": "Deny all",
+    "allowItem": "Allow once: {{item}}",
+    "denyItem": "Deny: {{item}}",
+    "moreItems_one": "+{{count}} more",
+    "moreItems_other": "+{{count}} more",
+    "receipt": {
+      "allowed_one": "Allowed once by you",
+      "allowed_other": "Allowed all {{count}} by you",
+      "allowedConversation_one": "Allowed for this conversation by you",
+      "allowedConversation_other": "Allowed for this conversation by you",
+      "allowedConversationFor": "Allowed {{destination}} for this conversation by you",
+      "denied_one": "Denied by you · nothing was sent",
+      "denied_other": "Denied all {{count}} by you · nothing was sent",
+      "mixed": "{{allowed}} allowed, {{denied}} not run",
+      "lapsed": "Nobody decided in time · nothing was sent",
+      "decided": "Decided by you",
+      "answered": "You answered: {{answer}}",
+      "skipped": "Skipped (you sent a new message)",
+      "named": "{{title}} · {{decision}}",
+      "deniedBecause": "Denied by you, because “{{reason}}”",
+      "approvedWithChanges": "Approved with your changes"
+    },
+    "waitingCount_one": "{{count}} waiting for you",
+    "waitingCount_other": "{{count}} waiting for you",
+    "waitingCountSince_one": "{{count}} waiting for you since {{time}}",
+    "waitingCountSince_other": "{{count}} waiting for you since {{time}}",
+    "pill_one": "{{count}} waiting for you · Go to first",
+    "pill_other": "{{count}} waiting for you · Go to first",
+    "announce_one": "Agent needs your approval: {{title}}. {{count}} waiting for you.",
+    "announce_other": "Agent needs your approval: {{title}}. {{count}} waiting for you.",
+    "announceQuestion_one": "Agent asks you: {{title}}. {{count}} waiting for you.",
+    "announceQuestion_other": "Agent asks you: {{title}}. {{count}} waiting for you.",
+    "composerWaiting": "Waiting for you above. Type to steer the run",
+    "composerQuestion": "A question waits above. A new message skips it",
+    "steerQueued": "Queued: the run reads it at its next step",
+    "steerQueuedWaiting": "Queued: the run reads it after you decide above",
+    "waitingForOwner_one": "Waiting for the conversation's owner to decide on a step",
+    "waitingForOwner_other": "Waiting for the conversation's owner to decide on {{count}} steps",
+    "denyAllLabel": "Deny all: {{title}}",
+    "titleSiteUpload": "Allow uploads to {{destination}} for this run?"
+  },
+  "engineSignIn": {
+    "title": "Coding engine sign-in",
+    "description": "Use your own subscription for coding tasks you start. Your organization's accounts are used otherwise.",
+    "plan": {
+      "pro": "Claude Pro",
+      "max": "Claude Max",
+      "team": "Claude Team",
+      "enterprise": "Claude Enterprise",
+      "other": "Claude plan"
+    },
+    "can": {
+      "heading": "PipesHub can",
+      "run": "Run Claude Code with your Claude plan, only for tasks you start yourself",
+      "plan": "Show the account and plan Claude Code reports after you sign in"
+    },
+    "cannot": {
+      "heading": "PipesHub cannot",
+      "see": "See, keep or copy your password or login: Claude Code holds it inside your sandbox only",
+      "others": "Use it for anyone else, shared conversations, scheduled runs, Slack or connected apps",
+      "keep_one": "Keep it after your conversation. You'll sign in once per conversation; the sign-in ends after {{count}} minute idle or when you disconnect.",
+      "keep_other": "Keep it after your conversation. You'll sign in once per conversation; the sign-in ends after {{count}} minutes idle or when you disconnect.",
+      "keepMax_one": "It ends {{count}} hour after you signed in at the latest.",
+      "keepMax_other": "It ends {{count}} hours after you signed in at the latest."
+    },
+    "consent": {
+      "limits": "Usage counts against your Claude plan's limits, not your organization's budget. Anthropic's terms for your plan apply.",
+      "operator": "Whoever runs this PipesHub can technically reach a running sandbox. Sign in only if you trust this deployment."
+    },
+    "error": {
+      "notAllowed": "Your organization does not allow personal Claude accounts."
+    },
+    "state": {
+      "notAllowed": "Not allowed by your organization",
+      "available": "Not connected",
+      "onWaiting": "On: sign in when a task starts",
+      "connected": "Connected",
+      "disconnected": "Disconnected",
+      "waitingVendor": "Waiting for OpenAI",
+      "unavailable": "Not available on this server"
+    },
+    "notAllowed": {
+      "org": "Your admin has not allowed personal Claude accounts. Tasks use your organization's account.",
+      "service": "Service accounts cannot use a personal Claude account."
+    },
+    "connected": {
+      "as": "Signed in as {{email}} · {{plan}}",
+      "when": "Last signed in {{date}}. Each new task asks you to sign in again inside its own sandbox."
+    },
+    "disconnected": {
+      "body": "Disconnected {{date}}. Every sandbox that held your sign-in was signed out and wiped. To also end the session at Anthropic,"
+    },
+    "revokeAtClaude": "open your Claude settings",
+    "available": {
+      "onBody": "When you start an Agent-mode task on Claude Code, it asks you to sign in to Claude inside your own sandbox."
+    },
+    "plans": {
+      "workOnly": "Your organization allows Team and Enterprise plans only.",
+      "any": "Your organization allows any Claude plan, including Pro and Max."
+    },
+    "action": {
+      "useMine": "Use my Claude account for my tasks",
+      "connectAgain": "Connect again",
+      "connect": "Connect",
+      "disconnect": "Disconnect",
+      "disconnecting": "Disconnecting..."
+    },
+    "toast": {
+      "on": "Your Claude account will be used for your tasks",
+      "off": "Your Claude account was disconnected"
+    },
+    "confirm": {
+      "title": "Disconnect your Claude account?",
+      "message": "Running tasks on your Claude plan stop, and their sandboxes are signed out and wiped within a minute. New tasks use your organization's account."
+    },
+    "claude": {
+      "title": "Claude account",
+      "engine": "You sign in to Claude Code itself, inside your own sandbox."
+    },
+    "chatgpt": {
+      "title": "ChatGPT account",
+      "body": "Used by Codex. Waiting for OpenAI to approve PipesHub; until then, Codex uses your organization's AI models."
+    },
+    "card": {
+      "title": "Sign in to Claude Code",
+      "body": "This task uses your Claude account. Open Anthropic's page, approve, then paste the code it shows. The code goes straight to Claude Code in your sandbox; PipesHub does not keep it.",
+      "open": "Open Anthropic's sign-in page",
+      "codeLabel": "Code from Anthropic",
+      "continue": "Continue",
+      "checking": "Checking...",
+      "privacy": "Never paste this code anywhere else.",
+      "ended": "This sign-in has ended.",
+      "useOrg": "Use organization account instead",
+      "orgChosen": "Your Claude account is off. Send your message again to run it on your organization's account.",
+      "usingPlan": "Using your Claude plan",
+      "usingPlanNamed": "Using your Claude plan · {{plan}}"
+    },
+    "reason": {
+      "codeInvalid": "That is not the code Anthropic showed for this sign-in. Copy the whole code and try again.",
+      "failed": "Anthropic did not accept the code. Try again with a new code.",
+      "planNotAllowed": "Your organization allows only Team and Enterprise plans. You were signed out again.",
+      "timeout": "Nobody signed in within 15 minutes, so the task stopped.",
+      "cancelled": "The sign-in was cancelled.",
+      "urlRefused": "Claude Code showed a sign-in link that is not Anthropic's, so it is not shown.",
+      "unavailable": "Personal Claude sign-in is not available on this deployment.",
+      "disconnected": "Your Claude sign-in was ended, so the task stopped.",
+      "expired": "Your Claude sign-in expired or was revoked. Send your message again to sign in again.",
+      "planLimit": "Your Claude plan's usage limit is reached. Try later, or use your organization's account.",
+      "required": "Claude Code is not signed in. Send your message again to sign in.",
+      "shared": "Your Claude account is not used in a shared conversation.",
+      "interactive": "Your Claude account is used only for tasks you start yourself in the web app.",
+      "orgOff": "Your organization does not allow personal Claude accounts now. Turn off \"Use my Claude account\" to use your organization's account."
+    },
+    "unavailable": {
+      "reason": "Personal Claude accounts need the sign-in add-on on this server.",
+      "member": "Until it is installed, your Claude Code tasks use your organization's account.",
+      "guide": "See the install guide"
+    }
+  },
+  "toolNames": {
+    "webSearch": {
+      "present": "Searching the web",
+      "past": "Searched the web"
+    },
+    "readPage": {
+      "present": "Reading a page",
+      "past": "Read a page"
+    },
+    "generateImage": {
+      "present": "Generating an image",
+      "past": "Generated an image"
+    },
+    "runCode": {
+      "present": "Running code",
+      "past": "Ran code"
+    },
+    "installPackages": {
+      "present": "Installing packages",
+      "past": "Installed packages"
+    },
+    "readFile": {
+      "present": "Reading a file",
+      "past": "Read a file"
+    },
+    "viewImage": {
+      "present": "Looking at an image",
+      "past": "Looked at an image"
+    },
+    "askUser": {
+      "present": "Asking you a question",
+      "past": "Asked you a question"
+    },
+    "readRecord": {
+      "present": "Reading the full record",
+      "past": "Read the full record"
+    },
+    "listSkills": {
+      "present": "Listing skills",
+      "past": "Listed skills"
+    },
+    "searchSkills": {
+      "present": "Searching skills",
+      "past": "Searched skills"
+    },
+    "loadSkill": {
+      "present": "Loading skill",
+      "past": "Loaded skill"
+    },
+    "loadSkillFile": {
+      "present": "Loading skill file",
+      "past": "Loaded skill file"
+    },
+    "manageSkill": {
+      "present": "Managing skill",
+      "past": "Managed skill"
+    },
+    "using": "Using {{tool}}",
+    "findFiles": {
+      "present": "Finding files",
+      "past": "Found files"
+    },
+    "searchFiles": {
+      "present": "Searching files",
+      "past": "Searched files"
+    },
+    "listFiles": {
+      "present": "Listing files",
+      "past": "Listed files"
+    },
+    "updatePlan": {
+      "present": "Updating the plan",
+      "past": "Updated the plan"
+    }
+  },
+  "orgDeletion": {
+    "section": {
+      "title": "Delete organization",
+      "deleteLabel": "Delete {{org}}",
+      "deleteButton": "Delete organization…",
+      "descriptionNow": "Deletes {{org}} and its data for everyone, at once. This can't be undone.",
+      "deleteNow": "Everyone is signed out at once, and nobody can cancel it."
+    },
+    "dialog": {
+      "heading": "Delete {{org}}?",
+      "typeToConfirm": "Type {{name}} to confirm",
+      "keep": "Keep {{org}}",
+      "confirm": "Delete {{org}}",
+      "deleting": "Deleting…",
+      "failed": "Couldn't delete the organization",
+      "nameMismatch": "The name you typed doesn't match. Nothing was deleted.",
+      "typedMismatch": "Doesn't match the organisation name",
+      "deletedNow": "As soon as you confirm, everyone is signed out and can't sign in, including you, and {{org}} and its data are deleted at once. This can't be undone."
+    }
+  },
+  "agentTransfer": {
+    "export": {
+      "menuItem": "Export configuration…",
+      "title": "Export configuration",
+      "body": "Download this agent's settings to set it up in another PipesHub. Sign-ins, keys and who it is shared with are never included.",
+      "what": "What to export",
+      "loading": "Reading the versions…",
+      "liveVersion": "The live version",
+      "versionLive": "Version {{version}} (live)",
+      "version": "Version {{version}}",
+      "draft": "Unpublished draft",
+      "notIncluded": "Not included, set these again after importing: who it's shared with, the model account it uses and the organization's approval rules for it.",
+      "download": "Download",
+      "downloading": "Downloading…",
+      "failed": "Couldn't export this agent. Try again."
+    },
+    "import": {
+      "button": "Import an agent",
+      "title": "Import an agent",
+      "choose": "Choose a file exported from PipesHub.",
+      "drop": "Drop the .agent.json file here, or choose a file",
+      "dropAria": "Choose an agent file to import",
+      "fileAria": "Agent file",
+      "previewTitle": "Import “{{name}}”",
+      "fromVersion": "Exported from version {{version}}. It will be a new agent of yours, not shared.",
+      "fromDraft": "Exported from an unpublished draft. It will be a new agent of yours, not shared.",
+      "models": "Models",
+      "actions": "Actions",
+      "knowledge": "Knowledge",
+      "skills": "Skills",
+      "limits": "Limits",
+      "turns_one": "{{count}} turn",
+      "turns_other": "{{count}} turns",
+      "costPerRun": "{{cost}} per run",
+      "newAgentNote": "Each name is matched to your own models, actions, MCP servers and sources. Nothing is guessed: what is not found, or matched twice, is left out and listed in the builder for you to choose.",
+      "refusedTitle": "Can't import this file.",
+      "notExport": "This is not an agent export PipesHub can import.",
+      "newerSchema": "This export is schema version {{version}}; this PipesHub reads versions 1 and 2.",
+      "tooBig": "This file is too large to be an agent export.",
+      "failed": "The import didn't go through. Try again.",
+      "back": "Back",
+      "cancel": "Cancel",
+      "import": "Import",
+      "importing": "Importing…"
+    },
+    "needsChoice": {
+      "aria": "What still needs your choice",
+      "title_one": "{{count}} thing needs your choice",
+      "title_other": "{{count}} things need your choice",
+      "ready": "“{{name}}” is ready",
+      "matched": "Matched here: {{names}}.",
+      "choose": "Choose",
+      "close": "Close",
+      "setAgain": "Set again yourself: {{items}}.",
+      "reason": {
+        "ambiguous": "More than one here is called “{{name}}”; choose the right one.",
+        "limited": "It searched only some folders or files of this source; choose them again.",
+        "notReasoning": "None of its models is a reasoning model here, so it uses the organization's default model.",
+        "notFound": {
+          "model": "No model here serves “{{name}}”.",
+          "roleModel": "No model here serves “{{name}}”.",
+          "toolset": "No action here is called “{{name}}”.",
+          "mcpServer": "No MCP server here is called “{{name}}”.",
+          "knowledge": "No source here is called “{{name}}”.",
+          "skill": "No skill here is called “{{name}}”."
+        }
+      }
+    },
+    "kind": {
+      "model": "Model",
+      "roleModel": "Sub-agent model",
+      "toolset": "Action",
+      "mcpServer": "MCP server",
+      "knowledge": "Knowledge",
+      "skill": "Skill"
+    },
+    "excluded": {
+      "modelAccount": "the model account it uses",
+      "sharing": "who it's shared with",
+      "ownerTeam": "its owner team",
+      "serviceAccount": "running as a service account",
+      "approvals": "the organization's approval rules for it",
+      "gates": "its Safety and checks"
+    },
+    "notImported": {
+      "other": "A setting ({{section}}) isn't available in this edition, so it wasn't imported."
+    }
+  },
+  "connectCard": {
+    "title": "Connect {{item}} to continue",
+    "waitingTitle": "Waiting for the person this task runs for to connect {{item}}",
+    "othersBody": "Only they can connect their {{item}} account. You can skip this step for them.",
+    "needsAccountTo": "This step needs your {{item}} account to {{action}}. Connect it and the task carries on from here.",
+    "needsAccount": "This step needs your {{item}} account. Connect it and the task carries on from here.",
+    "needsMcp": "This step needs your {{item}} MCP server. Connect it and the task carries on from here.",
+    "finishSigningIn": "Finish signing in to {{item}} in the window that opened.",
+    "connectedElsewhere": "Connected in another tab? Tell the task to carry on.",
+    "signInFailed": "{{item}} did not finish signing you in. Try again.",
+    "notConnectedYet": "{{item}} isn't connected yet. Connect it, then try again.",
+    "connect": "Connect {{item}}",
+    "connecting": "Connecting…",
+    "alreadyConnected": "I've connected it",
+    "skip": "Skip",
+    "refusedOwner": "Only the person this task runs for can connect this. You can skip it.",
+    "receipt": {
+      "connected": "{{item}} connected · the task went on",
+      "skipped": "Skipped · the task went on without {{item}}",
+      "expired": "Not connected in time · the task went on without {{item}}",
+      "closed": "The task ended before {{item}} was connected"
+    },
+    "reconnectTitle": "Reconnect {{item}} to continue",
+    "reconnect": "Reconnect {{item}}",
+    "rejected": "{{item}} rejected the saved sign-in. Reconnect it and the task carries on from here.",
+    "rejectedAt": "{{item}} rejected the saved sign-in at {{time}}. Reconnect it and the task carries on from here.",
+    "waitingReconnectTitle": "Waiting for the person this task runs for to reconnect {{item}}",
+    "waitingReconnectYou": "Waiting for you to reconnect {{item}}",
+    "waitingConnectYou": "Waiting for you to connect {{item}}"
+  },
+  "runGates": {
+    "plan": {
+      "title": "Review the agent's plan",
+      "why": "The agent wrote a plan. Nothing that changes anything runs until you approve it.",
+      "approve": "Approve plan",
+      "declineMore": "Decline…",
+      "decline": "Decline plan",
+      "receiptApproved": "Plan approved",
+      "receiptDeclined": "Plan declined · nothing was done",
+      "receiptDeclinedBecause": "Plan declined · nothing was done: {{reason}}"
+    },
+    "verify": {
+      "verified": "Verified",
+      "unverified": "Not verified",
+      "passedCount_one": "{{count}} check passed",
+      "passedCount_other": "{{count}} checks passed",
+      "failedCount_one": "{{failed}} of {{count}} check failed",
+      "failedCount_other": "{{failed}} of {{count}} checks failed",
+      "checkedTwice": "checked twice",
+      "checkedTimes": "checked {{count}} times",
+      "check": {
+        "filePassed": "{{target}} opens",
+        "fileFailed": "{{target}} did not open",
+        "schemaPassed": "{{target}} matches its schema",
+        "schemaFailed": "{{target}} does not match its schema",
+        "citationsPassed": "What the answer quotes is in its sources",
+        "citationsFailed": "Something the answer quotes is not in its source",
+        "commandPassed": "The command {{target}} passed",
+        "commandFailed": "The command {{target}} failed",
+        "otherPassed": "A check passed",
+        "otherFailed": "A check failed"
+      }
+    }
+  },
+  "outsideAccess": {
+    "title": "Outside access ({{n}})",
+    "showAll": "Show all {{n}}",
+    "unavailable": {
+      "title": "Clone not available",
+      "body": "{{host}} is not a host this server may clone from.",
+      "askAdmin": "Ask an admin to turn on {{host}} in Security settings",
+      "copy": "Copy",
+      "copied": "Copied",
+      "adminAdd": "You can add it under",
+      "adminLink": "Git hosts for cloning"
+    },
+    "access": {
+      "read": "read-only",
+      "readWrite": "read and write",
+      "hostLevel": "host-level only"
+    },
+    "line": {
+      "read": "Read {{at}}: allowed, {{access}}",
+      "write": "Sent data to {{at}}: allowed, {{access}}",
+      "hostLevel": "Connected to {{host}}: host-level only, not inspected",
+      "held": "Request to {{at}} is held until you allow it: this conversation read private data",
+      "uploadAllowed": "Requests to {{host}} allowed",
+      "uploadDenied": "Requests to {{host}} denied by you",
+      "cloned": "Cloned {{at}} ({{size}}, read-only)",
+      "cloneDenied": "Clone denied by you",
+      "cloneDeniedAt": "Clone of {{at}} denied by you",
+      "pushDenied": "Push denied by you",
+      "pushDeniedAt": "Push to {{at}} denied by you"
+    },
+    "blocked": {
+      "site_read_only": "Blocked upload to {{at}} (read-only)",
+      "site_relay": "Blocked {{at}}: it passes on or shows what it is sent, so it needs read and write access",
+      "site_path_not_allowed": "Blocked {{at}}: outside the allowed paths",
+      "host_mismatch": "Blocked a request to {{at}} that named another site",
+      "site_git_refused": "Blocked git at {{at}}: clone repositories with ph git clone",
+      "destination_not_allowed": "Blocked {{at}}: not an allowed website",
+      "destination_private_address": "Blocked {{at}}: it points to a private address",
+      "destination_unresolvable": "Could not reach {{at}}: the name does not resolve",
+      "tunnel_ip_literal": "Blocked {{at}}: sites are reached by name, not address",
+      "tunnel_refused": "Blocked {{at}}: this connection is not allowed",
+      "volume_cap_exceeded": "Blocked {{at}}: the run moved more data than allowed",
+      "forbidden_pattern": "Blocked a request to {{at}} that carried a credential",
+      "token_replayed": "Blocked a request to {{at}} that carried a credential",
+      "generic": "Blocked a request to {{at}}"
+    }
+  },
+  "secretsHidden": {
+    "title_one": "Hid a secret-shaped value from the model",
+    "title_other": "Hid {{count}} secret-shaped values from the model",
+    "detail_one": "PipesHub put a placeholder in its place before the model saw it: {{kinds}}.",
+    "detail_other": "PipesHub put placeholders in their place before the model saw them: {{kinds}}.",
+    "kind": {
+      "anthropic_key": "Anthropic API key",
+      "aws_access_key": "AWS access key",
+      "github_token": "GitHub token",
+      "gitlab_token": "GitLab token",
+      "google_api_key": "Google API key",
+      "jwt": "sign-in token",
+      "openai_key": "OpenAI API key",
+      "pipeshub_pat": "PipesHub access token",
+      "private_key": "private key",
+      "slack_token": "Slack token",
+      "policy_pattern": "value your organization marks as secret",
+      "other": "secret"
+    }
+  },
+  "ui": {
+    "common": {
+      "someoneInOrg": "Someone in your org",
+      "anAgent": "An agent"
+    },
+    "topBar": {
+      "inbox": "Inbox",
+      "inboxUnread": "Inbox, {{count}} unread"
+    },
+    "status": {
+      "upNext": "Up next",
+      "working": "Working",
+      "needsYou": "Needs you",
+      "done": "Done",
+      "couldntFinish": "Couldn't finish",
+      "stopped": "Stopped"
+    },
+    "trail": {
+      "reasoning": "Thought it through",
+      "readPage": "Read {{target}}",
+      "webSearch": "Searched the web for {{target}}",
+      "findFiles": "Looked for files named {{target}}",
+      "searchFiles": "Searched the files for {{target}}",
+      "readFile": "Read {{target}}",
+      "listFiles": "Listed the files in {{target}}",
+      "usedTool": "Used {{tool}}",
+      "handedOff": "Handed the work to a background agent",
+      "ranCommand": "Ran a command",
+      "runningCommand": "Running a command",
+      "addedFile": "Created {{path}}",
+      "modifiedFile": "Changed {{path}}",
+      "deletedFile": "Deleted {{path}}",
+      "helper": "A helper worked on part of it",
+      "helperTask": "A helper worked on: {{task}}",
+      "approved": "Approved by you",
+      "declined": "Declined by you",
+      "expired": "No answer in time, so it didn't go ahead",
+      "closed": "Closed without an answer",
+      "thinking": "Thinking",
+      "thoughtFor": "Thought for {{time}}",
+      "worked": "Worked through it",
+      "record": "What you answered",
+      "waitingOnYou": "Waiting on you",
+      "answerBelow": "Answer below to carry on",
+      "steps_one": "{{count}} step",
+      "steps_other": "{{count}} steps",
+      "showAll": "Show all {{count}} steps",
+      "showFewer": "Show fewer",
+      "ended": {
+        "stopped": "Stopped after {{time}}",
+        "offline": "Interrupted after {{time}}",
+        "timeout": "Timed out after {{time}}",
+        "failed": "Failed after {{time}}"
+      },
+      "state": {
+        "running": "In progress",
+        "waiting": "Waiting on you",
+        "failed": "Couldn't finish"
+      },
+      "stamp": {
+        "approved": "Approved by you: {{action}}",
+        "approvedChat": "Allowed for this chat by you: {{action}}",
+        "happened": "You said it happened: {{action}}",
+        "declined": "Declined by you: {{action}}",
+        "expired": "No answer in time, so it didn't go ahead: {{action}}",
+        "closed": "Closed without an answer, so it didn't go ahead: {{action}}",
+        "answered": "You answered: {{answer}}",
+        "replied": "You replied in the chat",
+        "unanswered": "Not answered"
+      },
+      "waitingFor": "{{action}} · waiting for you",
+      "questions": {
+        "waiting_one": "Asked you {{count}} question · waiting for you",
+        "waiting_other": "Asked you {{count}} questions · waiting for you",
+        "waitingSome_one": "Asked you {{count}} question · {{answered}} answered · waiting for you",
+        "waitingSome_other": "Asked you {{count}} questions · {{answered}} answered · waiting for you",
+        "answered_one": "You answered {{count}} question",
+        "answered_other": "You answered {{count}} questions",
+        "answeredSome_one": "You answered {{answered}} of {{count}} question",
+        "answeredSome_other": "You answered {{answered}} of {{count}} questions"
+      }
+    },
+    "job": {
+      "untitled": "Background job",
+      "commandFailed": "The command stopped with code {{code}}.",
+      "allowQuestion": "Allow {{action}}?",
+      "allow": "Allow",
+      "dontAllow": "Don't allow",
+      "adminStopped": "An admin stopped this: {{reason}}",
+      "stopReason": {
+        "security": "security",
+        "cost": "cost",
+        "incident": "an incident",
+        "maintenance": "maintenance",
+        "other": "another reason"
+      },
+      "clock": {
+        "seconds": "{{s}}s",
+        "minutes": "{{m}}m {{s}}s",
+        "hours": "{{h}}h {{m}}m",
+        "days_one": "{{count}} day",
+        "days_other": "{{count}} days"
+      },
+      "workingFor": "Working · {{time}}",
+      "doneIn": "Done in {{time}}",
+      "doingFor": "{{doing}} · {{time}}",
+      "needsYouAt": "Needs you · {{doing}}",
+      "needsYouFor": "Needs you · {{time}}",
+      "byline": {
+        "failed": "couldn't finish",
+        "stopped": "was stopped",
+        "done": "finished",
+        "doneIn": "finished in {{time}}"
+      }
+    },
+    "needsYou": {
+      "allow": "Allow",
+      "allowAll": "Allow all {{count}}",
+      "dontAllow": "Don't allow",
+      "dontAllowAll": "Don't allow any",
+      "allowChat": "Allow for this chat",
+      "allowChatFor": "Allow {{destination}} for this chat",
+      "refused": "That decision didn't go through. Try again.",
+      "reason": {
+        "outside": "Because this sends data outside your company",
+        "upload": "Because uploads leave your company",
+        "engine": "Because a background agent wants to change something",
+        "externalPolicy": "Because your company's policy service asks for a person",
+        "policy": "Because your workspace asks before this kind of action",
+        "plan": "It wants your go-ahead on its plan before it starts",
+        "unknownEffect": "It can't tell whether this went through, so it won't guess",
+        "default": "It asks before it acts"
+      },
+      "why": {
+        "read": "Read earlier in this chat: {{sources}}.",
+        "more": "And {{count}} more."
+      },
+      "unknownEffect": {
+        "title": "Did this happen: {{action}}?",
+        "happened": "It happened",
+        "didNot": "It didn't happen"
+      },
+      "connect": {
+        "title": "Connect {{item}} to carry on",
+        "reason": "{{action}} needs {{item}}, and it isn't connected for you yet",
+        "rejected": "{{item}} turned down your saved sign-in. Connect it again to carry on.",
+        "connect": "Connect {{item}}",
+        "done": "I've connected it",
+        "skip": "Skip it"
+      },
+      "question": {
+        "title": "{{count}} questions for you",
+        "reason": "Your answer decides how it carries on",
+        "send": "Send answer"
+      },
+      "mcp": {
+        "title": "Sign in to {{servers}} to carry on",
+        "reason": "It needs permission it doesn't have yet",
+        "signIn": "Sign in",
+        "retry": "Try again"
+      },
+      "engine": {
+        "title": "Sign in to Claude to carry on",
+        "reason": "The background agent runs on your own plan",
+        "signIn": "Open the sign-in page"
+      },
+      "sendsTo": "Sends to {{destination}}"
+    },
+    "approval": {
+      "actionIn": "{{action}} in {{app}}",
+      "question": "{{action}}?",
+      "times": "{{action}}, {{count}} times"
+    },
+    "jobs": {
+      "request": "A request",
+      "section": {
+        "needsYou": "Needs you",
+        "working": "Working",
+        "upNext": "Up next",
+        "finished": "Finished"
+      },
+      "requestView": {
+        "ran_one": "Ran {{count}} job",
+        "ran_other": "Ran {{count}} jobs",
+        "back": "{{back}} of {{total}} back",
+        "allBack": "All back"
+      }
+    },
+    "activity": {
+      "answerInCard": "Answer it in the card over the chat.",
+      "youStopped": "It was stopped",
+      "stoppedText": "Nothing after this ran. Starting again begins from the top.",
+      "couldntGoOn": "Couldn't go on",
+      "failedText": "It hit a step it couldn't get past. What it made before that is kept.",
+      "waitingFor": "Waiting for you: {{question}}"
+    },
+    "brief": {
+      "sent": {
+        "files_one": "{{count}} file from this chat",
+        "files_other": "{{count}} files from this chat",
+        "sources_one": "{{count}} source PipesHub had read",
+        "sources_other": "{{count}} sources PipesHub had read",
+        "someSources": "What PipesHub had read",
+        "sourcesIncomplete": "Some of it can't be named",
+        "knowledge_one": "{{count}} app or collection it may search",
+        "knowledge_other": "{{count}} apps and collections it may search",
+        "skills": "Skills: {{skills}}",
+        "continues": "It carries on from an earlier job",
+        "taskOnly": "Only its task"
+      },
+      "withheld": {
+        "conversation": "The rest of this chat",
+        "credentials": "Passwords, keys and sign-ins",
+        "tools": "Tools",
+        "knowledge": "Knowledge",
+        "skills": "Skills",
+        "internet": "Websites",
+        "files": "Files of this chat"
+      },
+      "reason": {
+        "task_only": "It was given only its task",
+        "outside_sandbox": "They stay in PipesHub, outside its sandbox",
+        "not_granted": "Not handed to it",
+        "not_handed_off": "Not given to it"
+      },
+      "reasonWithItems": "{{reason}}: {{items}}",
+      "reach": {
+        "noInternet": "No websites",
+        "allowedSites": "Only your company's allowed websites",
+        "sandbox": "Its own sandbox, closed when it ends",
+        "tools": "Tools: {{tools}}",
+        "noTools": "None of your tools",
+        "granted_one": "{{count}} action allowed for this chat without asking",
+        "granted_other": "{{count}} actions allowed for this chat without asking",
+        "keys": "Passwords and keys stay in PipesHub. None are sent in."
+      },
+      "change": {
+        "message": "You added: {{text}}",
+        "approved": "You chose to allow: {{action}}",
+        "denied": "You chose to decline: {{action}}",
+        "replanned": "Handed on to a new job: {{goal}}",
+        "replannedPlain": "Handed on to a new job"
+      }
+    },
+    "grants": {
+      "toolTo": "{{tool}} to {{destination}}",
+      "allowedBy": "Allowed by {{name}} on {{when}}",
+      "allowedOn": "Allowed on {{when}}",
+      "title": "Permissions in this chat",
+      "empty": "Nothing is allowed for this chat yet. When you allow something for this chat, it shows here.",
+      "remove": "Remove",
+      "removeLabel": "Remove {{name}}",
+      "removed": "Removed: {{name}}",
+      "removedBody": "It asks you again the next time.",
+      "removeFailed": "That permission is still on. Try again.",
+      "allowedByYou": "Allowed by you on {{when}}",
+      "declinedBy": "Declined by {{name}} on {{when}}",
+      "declinedOn": "Declined on {{when}}",
+      "declinedByYou": "Declined by you on {{when}}"
+    },
+    "command": {
+      "done": {
+        "clone": "Copied the repository",
+        "cloneNamed": "Copied the {{name}} repository",
+        "gitStatus": "Checked the changes",
+        "gitCommit": "Saved a commit",
+        "gitPush": "Pushed the changes",
+        "gitSwitch": "Switched branch",
+        "install": "Installed packages",
+        "build": "Built the project",
+        "typecheck": "Checked the types",
+        "look": "Looked at files",
+        "search": "Searched the files",
+        "mkdir": "Made a folder",
+        "tests": "Ran the tests",
+        "testsNamed": "Ran the {{name}} tests",
+        "script": "Ran {{script}}"
+      },
+      "running": {
+        "clone": "Copying the repository",
+        "cloneNamed": "Copying the {{name}} repository",
+        "gitStatus": "Checking the changes",
+        "gitCommit": "Saving a commit",
+        "gitPush": "Pushing the changes",
+        "gitSwitch": "Switching branch",
+        "install": "Installing packages",
+        "build": "Building the project",
+        "typecheck": "Checking the types",
+        "look": "Looking at files",
+        "search": "Searching the files",
+        "mkdir": "Making a folder",
+        "tests": "Running the tests",
+        "testsNamed": "Running the {{name}} tests",
+        "script": "Running {{script}}"
+      },
+      "result": {
+        "passed": "All passed",
+        "someFailed": "Some failed",
+        "failed_one": "{{count}} failed",
+        "failed_other": "{{count}} failed"
+      }
+    },
+    "workflows": {
+      "summary": {
+        "inApp": "{{what}} in {{app}}",
+        "aStep": "a step"
+      }
+    },
+    "inbox": {
+      "justNow": "now",
+      "glyphPaused": "Inbox, notifications paused",
+      "glyphPausedCount": "Inbox, notifications paused, {{count}} waiting for you",
+      "action": {
+        "reviewInChat": "Review in chat",
+        "answerInChat": "Answer in chat",
+        "reviewMemory": "Review memory",
+        "reviewSkill": "Review skill",
+        "approve": "Approve",
+        "edit": "Edit",
+        "reject": "Reject",
+        "openChat": "Open chat",
+        "open": "Open",
+        "viewRun": "View run",
+        "muteWorkflow": "Mute workflow",
+        "unmuteWorkflow": "Unmute workflow",
+        "restore": "Restore"
+      },
+      "pause": {
+        "untilResumedLabel": "you turn them back on",
+        "tomorrowAt": "tomorrow at {{time}}"
+      },
+      "words": {
+        "approvalTitle": "Approve: {{what}}",
+        "connectTitle": "Connect {{what}} to continue",
+        "approvalWaiting": "A task is waiting for your decision before it goes on.",
+        "connectWaiting": "A task is waiting for you to connect this before it goes on.",
+        "questionTitle": "A question for you",
+        "memoryOwnTitle": "Keep this memory?",
+        "memoryAgentTitle": "An agent wants to remember this",
+        "skillTitle": "New skill proposed: {{name}}",
+        "skillReviewTitle": "Review the imported skill {{name}}",
+        "skillReviewFlagged": "The content scan found something to check before you approve it.",
+        "yourChat": "Your chat",
+        "finished": "Finished. The answer is ready.",
+        "finishedEarly": "Finished early: it stopped at its limit and answered with what it had.",
+        "notFinished": "Couldn't finish. Open the chat to see what happened and try again.",
+        "workflowRan": "Ran.",
+        "workflowFailed": "Couldn't finish.",
+        "workflowRefused": "Didn't run. Open the schedules page to see why in its history.",
+        "workflowRefusedWhy": {
+          "workflow_changed": "Didn't run: the workflow was changed, paused or removed before its time.",
+          "scheduled_runs_off": "Didn't run: scheduled runs are turned off for this workspace.",
+          "no_agent_access": "Didn't run: you can no longer use its agent.",
+          "model_not_allowed": "Didn't run: its model isn't available to you.",
+          "engine_not_allowed": "Didn't run: its coding engine isn't allowed.",
+          "stopped_by_admin": "Didn't run: an admin has stopped it for now.",
+          "budget_reached": "Didn't run: a spending limit was reached.",
+          "too_busy": "Didn't run: too many runs were going at once.",
+          "not_found": "Didn't run: something it needs is no longer there.",
+          "unavailable": "Didn't run: PipesHub couldn't start it."
+        },
+        "workflowWaiting": "Paused before a write. Approve or deny it, or it stops.",
+        "workflowWaitingBy": "Paused before a write. Approve or deny it by {{time}}, or it stops then.",
+        "sharedChat": "{{name}} shared a chat with you",
+        "sharedAgentChat": "{{name}} shared an agent chat with you",
+        "sharedOpen": "You can now open “{{title}}”.",
+        "sharedOpenList": "You can now open it from your shared chats.",
+        "colleague": "A colleague",
+        "mentionTitle": "You were mentioned",
+        "approvalTitleIn": "Approve: {{what}} in {{app}}",
+        "mentionIn": "In “{{chat}}”"
+      }
+    },
+    "actionKey": {
+      "name": {
+        "send_message": "Send message",
+        "post_message": "Post message",
+        "send_email": "Send email",
+        "reply_to_email": "Reply to email",
+        "create_draft": "Create draft",
+        "create_issue": "Create issue",
+        "update_issue": "Update issue",
+        "create_ticket": "Create ticket",
+        "create_page": "Create page",
+        "update_page": "Update page",
+        "create_pull_request": "Create pull request",
+        "add_comment": "Add comment",
+        "create_event": "Create event",
+        "create_task": "Create task",
+        "create_record": "Create record",
+        "update_record": "Update record",
+        "upload_file": "Upload file"
+      },
+      "verb": {
+        "send": "Send something",
+        "post": "Post something",
+        "reply": "Reply",
+        "create": "Create an item",
+        "add": "Add an item",
+        "update": "Change an item",
+        "edit": "Change an item",
+        "delete": "Delete an item",
+        "remove": "Remove an item",
+        "comment": "Add a comment",
+        "upload": "Upload a file",
+        "draft": "Draft something",
+        "assign": "Assign an item",
+        "move": "Move an item",
+        "close": "Close an item",
+        "schedule": "Schedule something"
+      }
+    }
+  },
+  "jobCard": {
+    "status": {
+      "upNext": "Starting",
+      "working": "Working",
+      "needsYou": "Needs you",
+      "done": "Done",
+      "couldntFinish": "Couldn't finish",
+      "stopped": "Stopped"
+    },
+    "stopped": {
+      "byYou": "Stopped by you",
+      "byAdmin": "Stopped by your admin: {{reason}}",
+      "budget": "Stopped: out of budget",
+      "time": "Stopped: took too long"
+    },
+    "adminReason": {
+      "security": "security",
+      "cost": "cost",
+      "incident": "an incident",
+      "maintenance": "maintenance",
+      "other": "another reason"
+    },
+    "made": "Made {{file}}",
+    "changedFiles_one": "Changed {{count}} file",
+    "changedFiles_other": "Changed {{count}} files",
+    "finished": "Finished",
+    "hasQuestion": "Has a question for you",
+    "wantsTo": "Wants to use {{tool}}",
+    "booting": "Getting the machine ready",
+    "steps_one": "{{count}} step",
+    "steps_other": "{{count}} steps",
+    "showSteps": "Steps",
+    "groupLabel": "{{title}}, {{status}}",
+    "needsYouAlert": "{{title}} needs you",
+    "stopAria": "Stop job: {{title}}",
+    "stopGone": "It had already finished",
+    "stopFailed": "Couldn't stop it. Try again.",
+    "untitled": "Background job",
+    "region": "Background agents",
+    "board": {
+      "count_one": "{{count}} agent",
+      "count_other": "{{count}} agents",
+      "hide": "Hide agents",
+      "show": "Show agents"
+    }
+  },
+  "jobReport": {
+    "region": "Reports from background agents",
+    "groupLabel": "Report from {{title}}: {{outcome}}",
+    "finished": "finished",
+    "finishedIn": "finished in {{time}}",
+    "couldntFinish": "couldn't finish",
+    "stoppedByYou": "was stopped by you",
+    "stoppedByAdmin": "was stopped by your admin: {{reason}}",
+    "outOfBudget": "ran out of budget",
+    "outOfTime": "ran out of time",
+    "stopped": "was stopped",
+    "partial": "Partial",
+    "workingFiles_one": "{{count}} working file",
+    "workingFiles_other": "{{count}} working files"
+  },
+  "jobPanel": {
+    "title": "Job details",
+    "sections": "Job sections",
+    "brief": "Brief",
+    "activity": "Activity",
+    "terminal": "Terminal",
+    "outputs": "Outputs",
+    "changed": "Changed files",
+    "goalErased": "Its task was erased with this chat's content.",
+    "sent": "Sent",
+    "keptBack": "Kept back",
+    "canReach": "Can reach",
+    "connectedSources": "Connected sources",
+    "howItChanged": "How it changed",
+    "unchanged": "Unchanged since it started",
+    "briefLoading": "Reading its brief",
+    "briefFailed": "Couldn't load the brief.",
+    "tryAgain": "Try again",
+    "ownerOnly": "Only the person who started this job can see its details",
+    "noFiles": "No files yet",
+    "noSteps": "Nothing has run yet",
+    "stop": "Stop",
+    "stopAria": "Stop job: {{title}}",
+    "stopGone": "It had already finished",
+    "stopFailed": "Couldn't stop it. Try again.",
+    "stoppedByYou": "Stopped by you",
+    "withTime": "{{status}} · {{time}}",
+    "withReason": "{{status}} · {{reason}}",
+    "askWaiting_one": "It is waiting for your answer",
+    "askWaiting_other": "It is waiting for {{count}} answers",
+    "answerInChat": "Answer in chat",
+    "openOutput": "Open {{name}}",
+    "downloadOutput": "Download {{name}}",
+    "outputGone": "No longer available",
+    "close": "Close job details",
+    "machine": "Machine",
+    "breadcrumb": "Where you are",
+    "backgroundAgents": "Background agents",
+    "widen": "Widen the panel",
+    "narrow": "Narrow the panel",
+    "cameOut": "How it came out",
+    "whatItWasGiven": "What it was given",
+    "noCommands": "No commands yet",
+    "showMachine": "Go to Machine",
+    "ranCommandsMachine_one": "Ran {{count}} command, listed in Machine",
+    "ranCommandsMachine_other": "Ran {{count}} commands, listed in Machine",
+    "youAsked": "You asked: “{{request}}”",
+    "limits": {
+      "due": "Due by {{when}}",
+      "cost": "Up to {{amount}}",
+      "file": "Delivers {{name}}"
+    },
+    "startedWith": "What it started with",
+    "alreadyDone": "Already done before the hand-off",
+    "earlier": "From earlier in this chat",
+    "carried": {
+      "skill": "Loaded the {{skill}} skill",
+      "failed": "Didn't work",
+      "times": "{{text}} (×{{count}})"
+    },
+    "showMore": "Show more",
+    "showLess": "Show less",
+    "workingFiles_one": "{{count}} working file",
+    "workingFiles_other": "{{count}} working files",
+    "delivered_one": "Delivered file",
+    "delivered_other": "Delivered files",
+    "outputsWillShow": "Files it makes will show here",
+    "outputsNone": "It didn't make any files",
+    "workingFilesHint": "Notes, scripts and drafts it used along the way. They stay in this chat’s workspace.",
+    "allFilesMachine": "See the whole workspace in Machine"
+  },
+  "needsYou": {
+    "fromChats": "From your chats and jobs",
+    "reviews": "Reviews",
+    "empty": "Nothing needs you right now.",
+    "seeJobs": "See your jobs",
+    "loading": "Loading what needs you",
+    "loadFailed": "Couldn't load what needs you. Try again.",
+    "partial": "Some asks couldn't be loaded right now, so this list may be missing a few.",
+    "skillApproved": "Approved the skill {{name}}",
+    "skillRejected": "Rejected the skill {{name}}",
+    "skillFailed": "Couldn't save that. Try again.",
+    "skillGone": "That proposal is no longer waiting",
+    "badgeAria_one": "{{count}} thing needs you",
+    "badgeAria_other": "{{count}} things need you"
+  },
+  "jobsPage": {
+    "title": "Jobs",
+    "tabsLabel": "Needs you and jobs",
+    "tab": {
+      "needsYou": "Needs you",
+      "jobs": "Jobs"
+    },
+    "empty": "No jobs yet. When an agent hands work to a background job, it shows here.",
+    "nothingRunning": "Nothing is running.",
+    "allCleared": "You cleared every finished job on this device.",
+    "clearFinished": "Clear finished",
+    "undo": "Undo",
+    "loadMore": "Load more",
+    "loading": "Loading your jobs",
+    "loadFailed": "Couldn't load your jobs. Try again.",
+    "retry": "Try again",
+    "open": "Open",
+    "openAria": "Open job: {{title}}",
+    "stop": "Stop",
+    "stopAria": "Stop job: {{title}}",
+    "stopGone": "It had already finished",
+    "stopFailed": "Couldn't stop it. Try again.",
+    "stoppedByYou": "Stopped by you",
+    "harnessOff": "Background jobs are not turned on for your workspace.",
+    "backToChat": "Back to chat",
+    "cleared_one": "Cleared {{count}} finished job",
+    "cleared_other": "Cleared {{count}} finished jobs"
+  },
+  "backgroundAgents": {
+    "title": "Background agents",
+    "openerRunning_one": "Background agents, {{count}} running",
+    "openerRunning_other": "Background agents, {{count}} running",
+    "openerNeedsYou_one": "Background agents, {{count}} needs you",
+    "openerNeedsYou_other": "Background agents, {{count}} need you",
+    "close": "Close background agents",
+    "back": "Back to background agents",
+    "clearFinished": "Clear finished agents",
+    "cleared_one": "Cleared {{count}} finished agent",
+    "cleared_other": "Cleared {{count}} finished agents",
+    "clearedBody": "Their cards stay in the chat.",
+    "undo": "Undo",
+    "empty": "Nothing here",
+    "emptyBody": "Agents this chat starts show up here.",
+    "jobCount_one": "{{count}} job",
+    "jobCount_other": "{{count}} jobs",
+    "tasks_one": "{{count}} task",
+    "tasks_other": "{{count}} tasks",
+    "showEarlier_one": "Show {{count}} earlier task",
+    "showEarlier_other": "Show {{count}} earlier tasks",
+    "taskNow": "{{title}}…",
+    "stop": "Stop {{name}}",
+    "stopGone": "It had already finished.",
+    "stopFailed": "Couldn't stop it. Try again.",
+    "requestAsked": "What you asked",
+    "requestLoading": "Loading the request",
+    "requestUnavailable": "This request can't be shown right now.",
+    "requestErased": "What was asked has been erased."
+  },
+  "jobAsk": {
+    "asking": "{{job}} is asking first",
+    "signIn": "{{job}} needs you to sign in",
+    "connect": "{{job}} needs you to connect {{item}}",
+    "where": "{{job}} · Step {{n}} of {{total}}: {{doing}}",
+    "seeActivity": "See activity",
+    "seeJob": "See the job",
+    "position": "{{n}} of {{total}}",
+    "previous": "Previous ask",
+    "next": "Next ask",
+    "announce": "{{job}} needs you: {{title}}",
+    "pointer": "Waiting for you. Answer it in the card above the message box.",
+    "showIt": "Show it",
+    "paused": "{{job}} paused. Everything is saved.",
+    "signInAction": "Sign in",
+    "connectAction": "Connect",
+    "review": "Review",
+    "keepOut": "Keep it out",
+    "keepOutAll": "Keep them out",
+    "details": "Details",
+    "hideDetails": "Hide details"
+  },
+  "cardSend": {
+    "reason": {
+      "restarting": "PipesHub is restarting",
+      "offline": "PipesHub can't be reached",
+      "server": "PipesHub ran into a problem"
+    },
+    "retrying": "Couldn't send your answer: {{reason}}. Trying again…",
+    "stopped": "Couldn't send your answer: {{reason}}.",
+    "codeRetrying": "Couldn't send your code: {{reason}}. Trying again…",
+    "codeStopped": "Couldn't send your code: {{reason}}.",
+    "tryAgain": "Try again"
+  },
+  "fullNameDialog": {
+    "title": "Complete your profile",
+    "description": "Please set your full name to continue. This helps your teammates identify you across workspaces.",
+    "label": "Full name",
+    "placeholder": "e.g. Priya Sharma",
+    "submit": "Save and continue",
+    "required": "Full name is required",
+    "tooShort": "Full name must be at least 2 characters",
+    "noUser": "Unable to identify user. Please refresh and try again.",
+    "saveFailed": "Failed to save your name. Please try again."
+  },
+  "slackLink": {
+    "title": "Link your Slack account",
+    "loading": "Checking the link…",
+    "missingLink": "This page needs the link the PipesHub bot sent you in Slack. Send the bot a message to get one.",
+    "summary": "Slack user {{slackPerson}} in workspace {{workspace}} will act as your PipesHub account, {{account}}.",
+    "effect": "When you ask the PipesHub bot something in Slack, it answers with your access to PipesHub, as if you asked here.",
+    "replacesOther": "This Slack account is linked to another PipesHub account now. Approving moves the link to you.",
+    "onlyIfYou": "Approve only if you asked the bot for this link yourself.",
+    "approve": "Link my account",
+    "deny": "Cancel",
+    "doneTitle": "Your Slack account is linked",
+    "doneLine": "Go back to Slack and send your message again.",
+    "deniedTitle": "Nothing was linked",
+    "deniedLine": "The link is cancelled. You can close this page.",
+    "otherOrg": "This link is for another organization. Sign in to the PipesHub account of the organization whose Slack bot sent it."
   }
 }

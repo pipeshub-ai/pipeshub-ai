@@ -7,7 +7,7 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ShowStoredValuesButton } from '@/app/components/ui/show-stored-values-button';
 import { LoadingButton } from '@/app/components/ui/loading-button';
 import { WorkspaceRightPanel, WorkspaceRightPanelBodyPortalContext } from '@/app/(main)/workspace/components/workspace-right-panel';
-import { FormField } from '@/app/(main)/workspace/components/form-field';
+import { FormField, FormFieldSelectTrigger, FormFieldTextField } from '@/app/(main)/workspace/components/form-field';
 import { DestructiveTypedConfirmationDialog } from '@/app/(main)/workspace/components/destructive-typed-confirmation-dialog';
 import { toast } from '@/lib/store/toast-store';
 import { CONFIG_SECRET_PLACEHOLDER } from '@/lib/constants/config-secret-placeholder';
@@ -208,7 +208,7 @@ function BotTypeRow({ bot, onClick }: { bot: BotTypeInfo; onClick: () => void })
         style={{ width: 24, height: 24, flexShrink: 0 }}
       >
         {iconError ? (
-          <MaterialIcon name="smart_toy" size={20} color="var(--gray-9)" />
+          <MaterialIcon name="smart_toy" size={20} color="var(--gray-11)" />
         ) : (
           <img
             src={bot.icon}
@@ -228,9 +228,9 @@ function BotTypeRow({ bot, onClick }: { bot: BotTypeInfo; onClick: () => void })
 
       {/* Chevron or "Coming soon" */}
       {bot.enabled ? (
-        <MaterialIcon name="chevron_right" size={18} color="var(--slate-9)" />
+        <MaterialIcon name="chevron_right" size={18} color="var(--slate-11)" />
       ) : (
-        <Text size="1" style={{ color: 'var(--slate-9)' }}>{t('workspace.bots.comingSoon')}</Text>
+        <Text size="1" style={{ color: 'var(--slate-11)' }}>{t('workspace.bots.comingSoon')}</Text>
       )}
     </Flex>
   );
@@ -373,7 +373,7 @@ function SlackBotFormView({ editingConfig, agents, agentsComplete, onClose, onSa
         </Flex>
 
         <FormField label={t('form.name')}>
-          <TextField.Root
+          <FormFieldTextField
             size="2"
             placeholder={t('workspace.bots.form.namePlaceholder')}
             value={name}
@@ -399,7 +399,9 @@ function SlackBotFormView({ editingConfig, agents, agentsComplete, onClose, onSa
             onChange={(e) => setBotToken(e.target.value)}
           >
             <TextField.Slot side="right">
-              <IconButton className="touch-hit"
+              <IconButton
+                className="touch-hit"
+                aria-label={showBotToken ? t('common.hideValue') : t('common.showValue')}
                 variant="ghost"
                 color="gray"
                 size="1"
@@ -409,7 +411,7 @@ function SlackBotFormView({ editingConfig, agents, agentsComplete, onClose, onSa
                 <MaterialIcon
                   name={showBotToken ? 'visibility_off' : 'visibility'}
                   size={16}
-                  color="var(--gray-10)"
+                  color="var(--gray-11)"
                 />
               </IconButton>
             </TextField.Slot>
@@ -425,7 +427,9 @@ function SlackBotFormView({ editingConfig, agents, agentsComplete, onClose, onSa
             onChange={(e) => setSigningSecret(e.target.value)}
           >
             <TextField.Slot side="right">
-              <IconButton className="touch-hit"
+              <IconButton
+                className="touch-hit"
+                aria-label={showSigningSecret ? t('common.hideValue') : t('common.showValue')}
                 variant="ghost"
                 color="gray"
                 size="1"
@@ -435,7 +439,7 @@ function SlackBotFormView({ editingConfig, agents, agentsComplete, onClose, onSa
                 <MaterialIcon
                   name={showSigningSecret ? 'visibility_off' : 'visibility'}
                   size={16}
-                  color="var(--gray-10)"
+                  color="var(--gray-11)"
                 />
               </IconButton>
             </TextField.Slot>
@@ -448,7 +452,7 @@ function SlackBotFormView({ editingConfig, agents, agentsComplete, onClose, onSa
             value={selectedAgentId}
             onValueChange={setAgentId}
           >
-            <Select.Trigger style={{ width: '100%', height: 32 }} placeholder={t('workspace.bots.form.agentPlaceholder')} />
+            <FormFieldSelectTrigger style={{ width: '100%', height: 32 }} placeholder={t('workspace.bots.form.agentPlaceholder')} />
             <Select.Content
               position="popper"
               container={panelBodyPortal ?? undefined}

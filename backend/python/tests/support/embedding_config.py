@@ -33,7 +33,7 @@ def config_service(*embedding: dict[str, Any]) -> ConfigurationService:
     # The watch thread subscribes for notifications; the in-memory store has
     # none, and ``switch_embedding_model`` delivers them itself.
     with patch.object(ConfigurationService, "_start_watch"), \
-            patch.dict("os.environ", {"SECRET_KEY": "test-secret-key"}):
+            patch.dict("os.environ", {"SECRET_KEY": "2ceac6f36363c6246a64cca805cd43ca7a01b14eb2fcc532ceec3f60f2f7df1c"}):
         service = ConfigurationService(logger=logging.getLogger("test-config"), key_value_store=store)
     if embedding:
         store.store[AI_MODELS] = KeyData({"embedding": list(embedding)})
@@ -44,7 +44,7 @@ def another_process(service: ConfigurationService) -> ConfigurationService:
     """A ConfigurationService over the same key-value store as ``service``,
     with its own cache: what a second replica sees."""
     with patch.object(ConfigurationService, "_start_watch"), \
-            patch.dict("os.environ", {"SECRET_KEY": "test-secret-key"}):
+            patch.dict("os.environ", {"SECRET_KEY": "2ceac6f36363c6246a64cca805cd43ca7a01b14eb2fcc532ceec3f60f2f7df1c"}):
         return ConfigurationService(logger=logging.getLogger("test-config"), key_value_store=service.store)
 
 

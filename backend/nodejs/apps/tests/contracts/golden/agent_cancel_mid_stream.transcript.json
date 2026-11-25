@@ -1,0 +1,105 @@
+{
+  "conversation": {
+    "sessionType": "agent",
+    "nextSeq": 2,
+    "userId": "oid-1",
+    "orgId": "oid-2",
+    "title": "Export the Q3 report",
+    "initiator": "oid-1",
+    "isShared": false,
+    "isDeleted": false,
+    "isArchived": false,
+    "lastActivityAt": "<clock>",
+    "status": "Stopped",
+    "modelInfo": {
+      "chatMode": "quick"
+    },
+    "agentKey": "agent-1",
+    "conversationSource": "agent_chat",
+    "_id": "oid-3",
+    "sharedWith": [],
+    "conversationErrors": [],
+    "createdAt": "<timestamp>",
+    "updatedAt": "<timestamp>",
+    "__v": 0
+  },
+  "messages": [
+    {
+      "sessionId": "oid-3",
+      "orgId": "oid-2",
+      "seq": 1,
+      "messageType": "user_query",
+      "content": "Export the Q3 report",
+      "contentFormat": "MARKDOWN",
+      "modelInfo": {
+        "chatMode": "quick"
+      },
+      "appliedFilters": {
+        "apps": [],
+        "kb": [],
+        "recordGroups": [],
+        "records": [],
+        "recordsExact": []
+      },
+      "parts": [],
+      "_id": "oid-4",
+      "createdAt": "<timestamp>",
+      "updatedAt": "<timestamp>",
+      "citations": [],
+      "followUpQuestions": [],
+      "feedback": [],
+      "attachments": [],
+      "referenceData": [],
+      "tools": [],
+      "reasoning": []
+    },
+    {
+      "sessionId": "oid-3",
+      "orgId": "oid-2",
+      "seq": 2,
+      "messageType": "bot_response",
+      "content": "",
+      "contentFormat": "MARKDOWN",
+      "status": "stopped",
+      "citations": [],
+      "followUpQuestions": [],
+      "modelInfo": {
+        "chatMode": "quick"
+      },
+      "appliedFilters": {
+        "apps": [],
+        "kb": [],
+        "recordGroups": [],
+        "records": [],
+        "recordsExact": []
+      },
+      "parts": [
+        {
+          "type": "text",
+          "content": "",
+          "runId": "uuid-1",
+          "isFinal": true
+        },
+        {
+          "type": "tool_call",
+          "toolCallId": "call-export",
+          "toolName": "goldendocs__export_report",
+          "args": "{\"name\": \"q3\"}",
+          "status": "completed",
+          "runId": "uuid-1",
+          "argsSummary": "Export Report: \"q3\"",
+          "resultPreview": "{\"name\": \"q3\", \"rows\": 3}",
+          "resultSummary": "Completed successfully"
+        }
+      ],
+      "_id": "oid-5",
+      "createdAt": "<timestamp>",
+      "updatedAt": "<timestamp>",
+      "feedback": [],
+      "attachments": [],
+      "referenceData": [],
+      "tools": [],
+      "reasoning": []
+    }
+  ]
+}

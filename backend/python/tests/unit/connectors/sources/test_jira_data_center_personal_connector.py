@@ -24,6 +24,7 @@ from app.connectors.sources.atlassian.jira_data_center_personal.connector import
 )
 from app.models.entities import AppUser, AppUserGroup, RecordGroupType
 from app.models.permission import EntityType, Permission, PermissionType
+from app.services.notification.types import NotificationType
 
 
 def _make_logger() -> logging.Logger:
@@ -284,6 +285,69 @@ class TestPersonalRunSyncOrchestration:
         # Downstream steps still run.
         conn._fetch_projects.assert_awaited_once()
         conn._sync_all_project_issues.assert_awaited_once()
+
+    async def test_run_sync_resets_full_sync_coverage_state(self) -> None:
+        conn = _make_connector()
+        conn.data_source = MagicMock()
+        conn.creator_email = "owner@example.com"
+        conn._kept_unread_access = True
+        conn._kept_after_refusal = [("project_issues", "OLD")]
+
+        conn._fetch_projects = AsyncMock(return_value=([], []))
+        conn._sync_all_project_issues = AsyncMock(
+            return_value={"total_synced": 0, "new_count": 0, "updated_count": 0}
+        )
+        conn._get_issues_sync_checkpoint = AsyncMock(return_value=None)
+        conn._update_issues_sync_checkpoint = AsyncMock()
+        conn._keep_stored_records = AsyncMock()
+
+        with patch(
+            "app.connectors.sources.atlassian.jira_data_center_personal.connector.load_connector_filters",
+            new_callable=AsyncMock,
+            return_value=(None, None),
+        ):
+            await conn.run_sync()
+
+        assert conn._kept_unread_access is False
+        assert conn.full_sync_coverage().complete is True
+        assert conn._kept_after_refusal == []
+        conn._keep_stored_records.assert_not_awaited()
+
+    async def test_run_sync_notes_failed_projects_unread(self) -> None:
+        conn = _make_connector()
+        conn.data_source = MagicMock()
+        conn.creator_email = "owner@example.com"
+        eng = MagicMock(short_name="ENG", external_group_id="10000")
+        ops = MagicMock(short_name="OPS", external_group_id="10001")
+        conn._fetch_projects = AsyncMock(return_value=([(eng, None), (ops, None)], []))
+        conn._sync_all_project_issues = AsyncMock(
+            return_value={
+                "total_synced": 0,
+                "new_count": 0,
+                "updated_count": 0,
+                "failed_project_keys": ["ENG", "OPS"],
+                "failed_project_statuses": {"ENG": 403, "OPS": 503},
+            }
+        )
+        conn._get_issues_sync_checkpoint = AsyncMock(return_value=None)
+        conn._update_issues_sync_checkpoint = AsyncMock()
+        conn._remove_issues_no_longer_visible = AsyncMock()
+        conn._sweep_placeholder_records = AsyncMock(return_value=0)
+        conn._keep_stored_records = AsyncMock()
+        conn.notify = AsyncMock()
+
+        with patch(
+            "app.connectors.sources.atlassian.jira_data_center_personal.connector.load_connector_filters",
+            new_callable=AsyncMock,
+            return_value=(None, None),
+        ):
+            await conn.run_sync()
+
+        conn._keep_stored_records.assert_awaited_once_with("10000")
+        assert conn.full_sync_coverage().complete is False
+        assert conn._kept_after_refusal == []
+        conn.notify.assert_awaited_once()
+        assert conn.notify.await_args.kwargs["type"] == NotificationType.CONNECTOR_SYNC_ERROR
 
     async def test_run_sync_calls_placeholder_sweep(self) -> None:
         conn = _make_connector()

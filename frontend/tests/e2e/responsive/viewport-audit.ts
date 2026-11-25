@@ -1,8 +1,8 @@
-import { request, type Browser, type Page, type TestInfo } from '@playwright/test';
+import { request, type Page, type TestInfo } from '@playwright/test';
 import * as fs from 'fs';
 import * as path from 'path';
 import { test, expect } from '../fixtures/base.fixture';
-import { apiBaseURL } from '../fixtures/api-context.fixture';
+import { apiBaseURL, getAccessToken } from '../fixtures/api-context.fixture';
 import { seedResponsiveData, type SeedIds } from './seed-responsive';
 
 export type { SeedIds };
@@ -34,26 +34,7 @@ export const ACTION_TIMEOUT = 5_000;
  * the others wait for its result. The output dir is emptied at the start of
  * every run, so a lock from an earlier run never blocks this one.
  */
-/**
- * The bearer token the signed-in app sends. Read from its own requests, because
- * where the app keeps its tokens in the browser storage differs between builds.
- */
-async function appAccessToken(browser: Browser, testInfo: TestInfo): Promise<string> {
-  const { baseURL, storageState } = testInfo.project.use;
-  const context = await browser.newContext({ baseURL, storageState });
-  try {
-    const page = await context.newPage();
-    const signed = page.waitForRequest((r) => r.url().includes('/api/v1/') && !!r.headers().authorization, {
-      timeout: 30_000,
-    });
-    await page.goto('/chat/');
-    return (await signed).headers().authorization.replace(/^Bearer /, '');
-  } finally {
-    await context.close();
-  }
-}
-
-async function seedOnce(browser: Browser, testInfo: TestInfo): Promise<SeedIds> {
+async function seedOnce(testInfo: TestInfo): Promise<SeedIds> {
   const outputDir = path.dirname(testInfo.outputDir);
   const file = path.join(outputDir, 'responsive-seed.json');
   const lock = `${file}.lock`;
@@ -73,7 +54,7 @@ async function seedOnce(browser: Browser, testInfo: TestInfo): Promise<SeedIds> 
   }
   const api = await request.newContext({
     baseURL: apiBaseURL(),
-    extraHTTPHeaders: { Authorization: `Bearer ${await appAccessToken(browser, testInfo)}` },
+    extraHTTPHeaders: { Authorization: `Bearer ${getAccessToken()}` },
   });
   try {
     const seed = await seedResponsiveData(api);
@@ -240,8 +221,8 @@ export async function openNavIfMobile(page: Page): Promise<void> {
 export function runViewportAudit(routes: AuditRoute[]): void {
   let seed: SeedIds;
 
-  test.beforeAll(async ({ browser }, testInfo) => {
-    seed = await seedOnce(browser, testInfo);
+  test.beforeAll(async ({}, testInfo) => {
+    seed = await seedOnce(testInfo);
   });
 
   for (const vp of VIEWPORTS) {

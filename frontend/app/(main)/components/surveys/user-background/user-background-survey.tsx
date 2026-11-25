@@ -119,7 +119,7 @@ export function UserBackgroundSurvey() {
             as="div"
             size="1"
             align="center"
-            style={{ color: 'var(--gray-9)', marginBottom: '12px', display: 'block' }}
+            style={{ color: 'var(--gray-11)', marginBottom: '12px', display: 'block' }}
           >
             This will help us personalise your {brand.productName} experience
           </Text>
@@ -197,7 +197,7 @@ export function UserBackgroundSurvey() {
               height: '34px',
               backgroundColor:
                 !selectedRole || submitting ? 'var(--gray-4)' : 'var(--accent-9)',
-              color: !selectedRole || submitting ? 'var(--gray-9)' : 'white',
+              color: !selectedRole || submitting ? 'var(--gray-11)' : 'white',
               cursor: !selectedRole || submitting ? 'not-allowed' : 'pointer',
             }}
           >

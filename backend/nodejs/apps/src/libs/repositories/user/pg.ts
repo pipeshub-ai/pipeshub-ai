@@ -877,7 +877,7 @@ export class PgUserRepository implements UserRepository, Importable {
   async markDeleted(
     orgId: string,
     id: string,
-    extra?: { signedOut?: boolean; deletedBy?: string },
+    extra?: { signedOut?: boolean; deletedBy?: string; onlyMember?: boolean },
   ): Promise<UserDto | null> {
     const oid = oidOf(id);
     if (oid === undefined) return null;
@@ -895,7 +895,7 @@ export class PgUserRepository implements UserRepository, Importable {
         sets.push(`deleted_by = $${String(values.length)}`);
       }
       const { rows } = await k.query<UserRow>(
-        `/* pipeshub:identity.user_mark_deleted */ UPDATE identity.users u SET ${sets.join(', ')} WHERE u.org_id = $1 AND u.id = $2::text RETURNING ${COLS}`,
+        `/* pipeshub:identity.user_mark_deleted */ UPDATE identity.users u SET ${sets.join(', ')} WHERE u.org_id = $1 AND u.id = $2::text${extra?.onlyMember ? " AND u.role <> 'admin'" : ''} RETURNING ${COLS}`,
         values,
       );
       return rows[0] ? dto(rows[0]) : null;
@@ -912,7 +912,7 @@ export class PgUserRepository implements UserRepository, Importable {
     return inUnit(tx, { write: true }, async (k) => {
       assertOrg(k, orgId);
       await k.query(
-        '/* pipeshub:identity.user_restore */ UPDATE identity.users u SET is_deleted = false, updated_at = $3 WHERE u.org_id = $1 AND u.email = ANY($2::text[]) AND u.is_deleted',
+        "/* pipeshub:identity.user_restore */ UPDATE identity.users u SET is_deleted = false, role = 'member', updated_at = $3 WHERE u.org_id = $1 AND u.email = ANY($2::text[]) AND u.is_deleted",
         [k.orgId, list, new Date()],
       );
       const { rows } = await k.query<UserRow>(
@@ -961,6 +961,21 @@ export class PgUserRepository implements UserRepository, Importable {
     });
   }
 
+  async holdLiveAdmin(orgId: string, id: string, tx?: Tx): Promise<boolean> {
+    const oid = oidOf(id);
+    if (oid === undefined) return false;
+    return inUnit(tx, { write: true }, async (k) => {
+      assertOrg(k, orgId);
+      // FOR SHARE: a demotion or removal updates the row, so it waits for the caller's commit, or the caller, coming
+      // second, re-reads the row as it committed and finds no admin.
+      const { rows } = await k.query(
+        "/* pipeshub:identity.user_hold_live_admin */ SELECT 1 FROM identity.users u WHERE u.org_id = $1 AND u.id = $2::text AND u.role = 'admin' AND u.kind <> 'service' AND NOT u.is_deleted FOR SHARE",
+        [k.orgId, oid],
+      );
+      return rows.length > 0;
+    });
+  }
+
   async lockOrgAdminChanges(orgId: string, tx: Tx): Promise<void> {
     await inUnit(tx, { write: true }, async (k) => {
       assertOrg(k, orgId);
@@ -969,6 +984,16 @@ export class PgUserRepository implements UserRepository, Importable {
         [k.orgId],
       );
     });
+  }
+
+  // PostgreSQL units are always transactions, so admin changes take lockOrgAdminChanges
+  // and never reach this; passing `fn` through would look like a lease and be none.
+  withAdminLease<T>(): Promise<T> {
+    return Promise.reject(
+      new Error(
+        'withAdminLease is for a standalone MongoDB; PostgreSQL serialises admin changes with lockOrgAdminChanges',
+      ),
+    );
   }
 
   async deleteById(id: string): Promise<void> {
@@ -1027,6 +1052,36 @@ export class PgUserRepository implements UserRepository, Importable {
           new Date(),
           except ?? null,
         ],
+      );
+      return rows.length;
+    });
+  }
+
+  async disableEnabledAccounts(orgId: string): Promise<string[]> {
+    return inUnit(undefined, { write: true }, async (k) => {
+      assertOrg(k, orgId);
+      const { rows } = await k.query<{ id: string }>(
+        `/* pipeshub:identity.user_disable_enabled */ UPDATE identity.users u SET is_disabled = true, updated_at = $2
+          WHERE u.org_id = $1 AND NOT u.is_deleted AND NOT u.is_disabled RETURNING u.id`,
+        [k.orgId, new Date()],
+      );
+      return rows.map((r) => r.id).sort();
+    });
+  }
+
+  async setAccountsDisabled(
+    orgId: string,
+    ids: string[],
+    disabled: boolean,
+  ): Promise<number> {
+    const list = oidsOf(ids);
+    if (list.length === 0) return 0;
+    return inUnit(undefined, { write: true }, async (k) => {
+      assertOrg(k, orgId);
+      const { rows } = await k.query(
+        `/* pipeshub:identity.user_set_disabled */ UPDATE identity.users u SET is_disabled = $3, updated_at = $4
+          WHERE u.org_id = $1 AND u.id = ANY($2::text[]) AND NOT u.is_deleted AND u.is_disabled <> $3 RETURNING u.id`,
+        [k.orgId, list, disabled, new Date()],
       );
       return rows.length;
     });

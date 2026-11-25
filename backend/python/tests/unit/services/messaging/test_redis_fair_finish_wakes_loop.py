@@ -168,6 +168,7 @@ class TestAFinishWakesTheLoop:
         started = time.monotonic()  # from the first record, so the worker's cold start is not counted
         await _until(lambda: len(handler.seen) == 20, timeout=15)
 
+        # wall-clock-ok: 20 records on a woken loop take well under a second; the regression polls each one
         assert time.monotonic() - started < 5.0
 
     async def test_finishes_do_not_count_as_idle_polls(

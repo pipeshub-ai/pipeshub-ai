@@ -1,0 +1,38 @@
+{{- if .Values.metrics.harness.enabled }}
+{{- if not .Values.metrics.harness.remoteWrite.url }}
+{{- fail "metrics.harness.enabled needs metrics.harness.remoteWrite.url: the Prometheus agent in each pod remote-writes the harness metrics there (a receiver started with --web.enable-remote-write-receiver)" }}
+{{- end }}
+# R41SUPPLY-FU-13 (ADR-OPS-05): each pod's Prometheus agent scrapes its own Node's
+# merged harness route on loopback with the rotating scrape credential Node
+# writes to a memory-backed volume only this pod shares, and labels every series
+# with the pod, so N replicas are N series rather than one that alternates.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "pipeshub-ai.fullname" . }}-harness-metrics
+  labels:
+    {{- include "pipeshub-ai.labels" . | nindent 4 }}
+data:
+  agent.yml: |
+    global:
+      scrape_interval: {{ .Values.metrics.harness.scrapeInterval }}
+      external_labels:
+        pod: ${POD_NAME}
+        namespace: ${POD_NAMESPACE}
+    scrape_configs:
+      - job_name: pipeshub-agent-harness
+        metrics_path: /api/v1/agent-harness/internal/metrics
+        scrape_timeout: 10s
+        authorization:
+          type: Bearer
+          credentials_file: /run/pxh-monitoring/worker-credential
+        static_configs:
+          - targets: ["127.0.0.1:{{ .Values.config.agentHarnessInternalPort }}"]
+    remote_write:
+      - url: {{ .Values.metrics.harness.remoteWrite.url | quote }}
+        {{- if .Values.metrics.harness.remoteWrite.bearerTokenSecret.name }}
+        authorization:
+          type: Bearer
+          credentials_file: /etc/pxh-remote-write/token
+        {{- end }}
+{{- end }}

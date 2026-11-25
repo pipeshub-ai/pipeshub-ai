@@ -19,6 +19,7 @@ import {
   upstreamFetch,
   upstreamTarget,
 } from '../../../src/libs/http/upstream-call'
+import { RETRY_POLICY } from '../../../src/libs/http/retry-policy'
 
 const MESSAGE = Symbol.for('message')
 const ORG = '64f0c0ffee0000000000000a'
@@ -44,7 +45,7 @@ describe('upstream-call: one upstream.call.end per outbound attempt', () => {
     const root = Logger.getInstance()
     ;(root as any).logger.level = 'debug'
     records = []
-    sinon.stub((root as any).logger, 'log').callsFake((r: Record<string, any>) => {
+    sinon.stub((root as any).logger, 'log').callsFake((r: any) => {
       records.push(r)
     })
   }
@@ -52,9 +53,9 @@ describe('upstream-call: one upstream.call.end per outbound attempt', () => {
   const winstonRoot = (): winston.Logger => (Logger.getInstance() as any).logger
   /** What the console transport prints for a record, under the current LOG_FORMAT. */
   const consoleLine = (r: Record<string, unknown>): string => {
-    const shaped = winstonRoot().format.transform({ ...r }, {}) as Record<string | symbol, unknown>
+    const shaped = winstonRoot().format.transform({ ...r } as any, {}) as Record<string | symbol, unknown>
     const console = winstonRoot().transports.find((t) => t instanceof winston.transports.Console)!
-    return String((console.format!.transform(shaped, {}) as Record<symbol, unknown>)[MESSAGE])
+    return String((console.format!.transform(shaped as any, {}) as Record<symbol, unknown>)[MESSAGE])
   }
   const inRequest = <T>(rootId: string, fn: () => Promise<T>): Promise<T> =>
     runWithRequestContext({ rootId }, () => {
@@ -658,16 +659,15 @@ describe('upstream-call: one upstream.call.end per outbound attempt', () => {
       registerUpstreams({ query: [origin] })
     })
 
-    it("counts every axios-retry attempt with the app's retry rule", async () => {
+    const retryingClient = () => {
       const client = axios.create({ adapter: refusedAdapter })
-      axiosRetry(client, {
-        retries: 3,
-        retryDelay: () => 0,
-        retryCondition: (error) =>
-          !!(axiosRetry.isNetworkOrIdempotentRequestError(error) || (error.response && error.response.status >= 500)),
-      })
+      axiosRetry(client, { ...RETRY_POLICY, retryDelay: () => 0 })
       installUpstreamLogging(client)
-      await client.get(`${origin}/api/v1/skills/`).catch(() => undefined)
+      return client
+    }
+
+    it("counts every axios-retry attempt with the app's retry rule", async () => {
+      await retryingClient().get(`${origin}/api/v1/skills/`).catch(() => undefined)
       expect(lines().map((l) => [l.attempt, l.level, l.error_class, l.network_code])).to.deep.equal([
         [1, 'warning', 'unavailable', 'ECONNREFUSED'],
         [2, 'warning', 'unavailable', 'ECONNREFUSED'],
@@ -675,6 +675,11 @@ describe('upstream-call: one upstream.call.end per outbound attempt', () => {
         [4, 'warning', 'unavailable', 'ECONNREFUSED'],
       ])
       expect(lines()[0]).to.include({ upstream: 'query', method: 'GET', route: '/api/v1/skills/' })
+    })
+
+    it("writes one line for a refused POST: the app's retry rule never sends it again", async () => {
+      await retryingClient().post(`${origin}/api/v1/skills/`, {}).catch(() => undefined)
+      expect(lines().map((l) => [l.attempt, l.method, l.error_class])).to.deep.equal([[1, 'POST', 'unavailable']])
     })
 
     it('a status the caller accepts (validateStatus) or refuses is an answer, never a transport failure', async () => {

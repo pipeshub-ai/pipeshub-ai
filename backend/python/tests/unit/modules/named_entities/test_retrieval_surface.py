@@ -21,6 +21,7 @@ from app.modules.retrieval.retrieval_service import (
 )
 from app.modules.retrieval.selection_scope import SelectionScope
 from app.services.graph_db.interface.graph_db_provider import AccessCheck
+from tests.support.record_access import InMemoryRecordAccess
 
 
 def _service() -> RetrievalService:
@@ -28,6 +29,8 @@ def _service() -> RetrievalService:
     svc.logger = MagicMock()
     svc.graph_provider = AsyncMock()
     svc.vector_db_service = AsyncMock()
+    # Knowledge publications (off by default) are read before the search scope is built.
+    svc.publications = MagicMock(enabled=AsyncMock(return_value=False))
     return svc
 
 
@@ -178,6 +181,22 @@ def _context(*app_ids: str) -> EntityAccessContext:
     )
 
 
+class _Access(InMemoryRecordAccess):
+    """The shared fake, counting its batch checks; every answer is the shared rule's."""
+
+    async def filter_accessible_record_ids(self, record_ids, user_id, org_id, *, transaction=None) -> set[str]:
+        self.batches.append((list(record_ids), user_id, org_id))
+        return await super().filter_accessible_record_ids(record_ids, user_id, org_id, transaction=transaction)
+
+
+def _access(graph, *readable: str, failure: BaseException | None = None) -> _Access:
+    """u1 of org reads exactly ``readable``."""
+    access = _Access().user("u1", "org")
+    access.batches = []
+    access.readable("u1", "org", *readable).fail_with(failure).serve(graph)
+    return access
+
+
 def _state(graph) -> dict:
     return {"graph_provider": graph, "org_id": "org", "user_id": "u1", "config_service": object()}
 
@@ -210,13 +229,13 @@ async def test_find_records_by_value_checks_only_in_scope_hits(tool_env):
     graph.get_records_for_named_entities = AsyncMock(return_value=_hits(
         ("r1", "v1", "app-in-scope"), ("r-denied", "v2", "app-in-scope"), ("r-other-app", "v3", "app-elsewhere"),
     ))
-    graph.filter_accessible_record_ids = AsyncMock(return_value={"r1"})
+    access = _access(graph, "r1")
 
     ok, body = await values.execute_find_records_by_value(_state(graph), kinds=["currency"], amount_min=10, currency="USD")
 
     assert ok
     assert _listed(body) == ["r1"]
-    assert graph.filter_accessible_record_ids.await_args.args == (["r-denied", "r1"], "u1", "org")
+    assert access.batches[-1] == (["r-denied", "r1"], "u1", "org")
     graph.get_accessible_virtual_record_ids.assert_not_called()
     query = graph.get_records_for_named_entities.await_args.args[2]
     assert (query.currency, query.amount_min) == ("USD", 10)
@@ -225,7 +244,7 @@ async def test_find_records_by_value_checks_only_in_scope_hits(tool_env):
 async def test_find_records_by_value_filters_on_a_percentage_alone(tool_env):
     graph = _tool_graph()
     graph.get_records_for_named_entities = AsyncMock(return_value=_hits(("r1", "v1", "app-in-scope")))
-    graph.filter_accessible_record_ids = AsyncMock(return_value={"r1"})
+    _access(graph, "r1")
 
     ok, _ = await values.execute_find_records_by_value(_state(graph), percent_min=0.2)
 
@@ -240,7 +259,7 @@ async def test_records_found_by_value_can_be_fetched_next(tool_env):
     graph.get_records_for_named_entities = AsyncMock(return_value=_hits(
         ("r1", "v1", "app-in-scope"), ("r-denied", "v2", "app-in-scope"),
     ))
-    graph.filter_accessible_record_ids = AsyncMock(return_value={"r1"})
+    _access(graph, "r1")
     state = _state(graph)
 
     await values.execute_find_records_by_value(state, kinds=["organization"])
@@ -254,7 +273,7 @@ async def test_a_value_too_broad_for_one_page_is_listed_further_and_checked_for_
     graph.get_records_for_named_entities = AsyncMock(side_effect=[
         _hits(truncated=True), _hits(("r1", "v1", "app-in-scope"), ("r2", "v2", "app-in-scope")),
     ])
-    graph.filter_accessible_record_ids = AsyncMock(return_value={"r1"})
+    _access(graph, "r1")
 
     ok, body = await values.execute_find_records_by_value(_state(graph), kinds=["date"])
 
@@ -269,7 +288,7 @@ async def test_a_value_too_broad_to_list_is_counted_over_readable_records(tool_e
         _hits(truncated=True), _hits(truncated=True), _hits(("r1", "v1", "app-in-scope")),
     ])
     graph.get_accessible_virtual_record_ids = AsyncMock(return_value={"v1": "r1", "v2": "r2"})
-    graph.filter_accessible_record_ids = AsyncMock(return_value={"r1"})
+    _access(graph, "r1")
 
     ok, body = await values.execute_find_records_by_value(_state(graph), kinds=["date"])
 
@@ -292,13 +311,13 @@ async def test_more_readable_records_than_a_page_are_paged_not_refused(tool_env)
     graph = _tool_graph()
     rows = [(f"r{i:03}", f"v{i}", "app-in-scope") for i in range(400)]
     graph.get_records_for_named_entities = AsyncMock(return_value=_hits(*rows))
-    graph.filter_accessible_record_ids = AsyncMock(side_effect=lambda ids, *_: set(ids))
+    access = _access(graph, *(row[0] for row in rows))
 
     ok, body = await values.execute_find_records_by_value(_state(graph), kinds=["organization"])
 
     assert ok and _listed(body) == [f"r{i:03}" for i in range(20)]
     assert 'cursor="0:r019"' in body
-    assert graph.filter_accessible_record_ids.await_count == 1
+    assert len(access.batches) == 1
 
 
 async def test_a_page_checks_only_the_batches_it_walks(tool_env):
@@ -307,12 +326,12 @@ async def test_a_page_checks_only_the_batches_it_walks(tool_env):
     rows = [(f"r{i:05}", f"v{i}", "app-in-scope") for i in range(total)]
     graph.get_records_for_named_entities = AsyncMock(return_value=_hits(*rows))
     readable = {f"r{i:05}" for i in range(0, total, total // 50)}
-    graph.filter_accessible_record_ids = AsyncMock(side_effect=lambda ids, *_: set(ids) & readable)
+    access = _access(graph, *readable)
 
     ok, body = await values.execute_find_records_by_value(_state(graph), kinds=["organization"], limit=50)
 
     assert ok and len(_listed(body)) == 50
-    assert graph.filter_accessible_record_ids.await_count == 2
+    assert len(access.batches) == 2
 
 
 @pytest.mark.parametrize(
@@ -328,7 +347,7 @@ async def test_find_records_by_value_fails_when_access_cannot_be_resolved(tool_e
     graph.get_records_for_named_entities = AsyncMock(
         side_effect=failure.get("lookup"), return_value=_hits(("r1", "v1", "app-in-scope")),
     )
-    graph.filter_accessible_record_ids = AsyncMock(side_effect=failure.get("permissions"), return_value={"r1"})
+    _access(graph, "r1", failure=failure.get("permissions"))
     if "context" in failure:
         tool_env.side_effect = failure["context"]
 
@@ -352,7 +371,7 @@ async def test_a_model_that_sends_every_parameter_filters_only_on_the_ones_it_se
     """Strict tool schemas make models fill unused numbers with 0; 0 to 0 is not a range."""
     graph = _tool_graph()
     graph.get_records_for_named_entities = AsyncMock(return_value=_hits(("r1", "v1", "app-in-scope")))
-    graph.filter_accessible_record_ids = AsyncMock(return_value={"r1"})
+    _access(graph, "r1")
 
     ok, body = await values.execute_find_records_by_value(
         _state(graph), kinds=[], name="", date_from=0, date_to=0, amount_min=-800, amount_max=-700,
@@ -381,6 +400,14 @@ def _limited_context(*app_ids: str) -> EntityAccessContext:
     )
 
 
+def _gated(graph, *readable: str) -> _Access:
+    """u1 reads exactly ``readable`` through the shared fake; the selection gate (``check_access``) stays the stub."""
+    check_access = graph.check_access
+    access = _access(graph, *readable)
+    graph.check_access = check_access
+    return access
+
+
 def _limited_graph(in_scope: set[str]) -> AsyncMock:
     graph = _tool_graph()
     graph.get_knowledge_hub_access_v3 = AsyncMock(return_value={})
@@ -396,7 +423,7 @@ async def test_inside_a_selection_a_readable_value_hit_outside_it_is_dropped(too
     graph.get_records_for_named_entities = AsyncMock(return_value=_hits(
         ("r-in", "v1", "app-in-scope"), ("r-out", "v2", "app-in-scope"),
     ))
-    graph.filter_accessible_record_ids = AsyncMock(return_value={"r-in", "r-out"})
+    _gated(graph, "r-in", "r-out")
 
     ok, body = await values.execute_find_records_by_value(_state(graph), kinds=["currency"], amount_min=10)
 
@@ -412,7 +439,7 @@ async def test_inside_a_selection_placeholders_stay_excluded(tool_env: AsyncMock
     graph.get_records_for_named_entities = AsyncMock(return_value=_hits(
         ("r-in", "v1", "app-in-scope"), ("r-stub", "v2", "app-in-scope"),
     ))
-    graph.filter_accessible_record_ids = AsyncMock(return_value={"r-in"})
+    _gated(graph, "r-in").readable("u1", "org", "r-stub", isPlaceholder=True)
 
     ok, body = await values.execute_find_records_by_value(_state(graph), kinds=["currency"], amount_min=10)
 
@@ -428,7 +455,7 @@ async def test_inside_a_selection_too_broad_is_counted_over_the_touched_apps_onl
         _hits(truncated=True), _hits(truncated=True), _hits(("r1", "v1", "app-in-scope"), ("r2", "v2", "app-in-scope")),
     ])
     graph.get_accessible_virtual_record_ids = AsyncMock(return_value={"v1": "r1", "v2": "r2"})
-    graph.filter_accessible_record_ids = AsyncMock(return_value={"r1", "r2"})
+    _gated(graph, "r1", "r2")
 
     ok, body = await values.execute_find_records_by_value(_state(graph), kinds=["date"])
 
@@ -440,7 +467,7 @@ async def test_nothing_inside_a_selection_says_only_the_selection_was_searched(t
     tool_env.return_value = _limited_context("app-in-scope")
     graph = _limited_graph(in_scope=set())
     graph.get_records_for_named_entities = AsyncMock(return_value=_hits(("r-out", "v2", "app-in-scope")))
-    graph.filter_accessible_record_ids = AsyncMock(return_value={"r-out"})
+    _gated(graph, "r-out")
 
     ok, body = await values.execute_find_records_by_value(_state(graph), kinds=["currency"], amount_min=10)
 
@@ -451,7 +478,7 @@ async def test_nothing_inside_a_selection_says_only_the_selection_was_searched(t
 async def test_nothing_found_without_a_selection_has_no_scope_note(tool_env: AsyncMock) -> None:
     graph = _tool_graph()
     graph.get_records_for_named_entities = AsyncMock(return_value=_hits(("r1", "v1", "app-in-scope")))
-    graph.filter_accessible_record_ids = AsyncMock(return_value=set())
+    _gated(graph)
 
     ok, body = await values.execute_find_records_by_value(_state(graph), kinds=["currency"], amount_min=10)
 

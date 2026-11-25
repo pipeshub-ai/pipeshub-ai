@@ -16,10 +16,11 @@ import app.connectors.api.router as router_mod
 import app.edition_config  # noqa: F401  (binds the edition seams before the router loads)
 from app.config.constants.arangodb import Connectors, OriginTypes
 from app.connectors.api.router import delete_record
+from tests.support.record_access import InMemoryRecordAccess
 
 ORG_A = "org-A"
 RECORD_ID = "rec-1"
-KB_ACCESS = {"record": {"origin": "UPLOAD", "connectorName": "KB"}}
+KB_RECORD = {"origin": "UPLOAD", "connectorName": "KB"}
 
 
 def _request(user_id: str = "user-a", org_id: str = ORG_A) -> MagicMock:
@@ -30,9 +31,29 @@ def _request(user_id: str = "user-a", org_id: str = ORG_A) -> MagicMock:
     return req
 
 
-def _provider(access: object, delete_result: object = None) -> MagicMock:
-    provider = MagicMock()
+def _provider(
+    record: dict | None = KB_RECORD, delete_result: object = None, access: InMemoryRecordAccess | None = None
+) -> MagicMock:
+    """The caller reads ``record`` (stored with these fields) through the shared fake; ``None``: no grant."""
+    provider = _bare_provider(delete_result)
+    access = (access or InMemoryRecordAccess()).user("user-a", ORG_A)
+    if record is None:
+        access.record(RECORD_ID, ORG_A)
+    else:
+        access.readable("user-a", ORG_A, RECORD_ID, **record)
+    access.serve(provider)
+    return provider
+
+
+def _answering(access: object) -> MagicMock:
+    provider = _bare_provider()
+    # These shapes are what a provider might return, not what any seeded world does: the route must fail closed.
     provider.check_record_access_with_details = AsyncMock(return_value=access)
+    return provider
+
+
+def _bare_provider(delete_result: object = None) -> MagicMock:
+    provider = MagicMock()
     provider.delete_record = AsyncMock(
         return_value=delete_result if delete_result is not None else {"success": True, "eventData": None}
     )
@@ -53,9 +74,21 @@ def _assert_no_delete(provider: MagicMock, kafka: AsyncMock) -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("access", [None, {}, [], False], ids=repr)
+async def test_unreadable_record_is_404_and_nothing_is_deleted() -> None:
+    provider, kafka = _provider(record=None), AsyncMock()
+
+    with pytest.raises(HTTPException) as exc:
+        await _call(provider, kafka)
+
+    assert exc.value.status_code == 404
+    assert exc.value.detail == "You do not have access to this record"
+    _assert_no_delete(provider, kafka)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("access", [{}, [], False], ids=repr)
 async def test_falsy_access_result_is_404_and_nothing_is_deleted(access: object) -> None:
-    provider, kafka = _provider(access), AsyncMock()
+    provider, kafka = _answering(access), AsyncMock()
 
     with pytest.raises(HTTPException) as exc:
         await _call(provider, kafka)
@@ -67,18 +100,27 @@ async def test_falsy_access_result_is_404_and_nothing_is_deleted(access: object)
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "access",
-    [
-        {"record": None},
-        {"permissions": []},
-        {"record": {"id": RECORD_ID}},
-        {"record": {"origin": None, "connectorName": None}},
-        {"record": {"origin": "", "connectorName": ""}},
-    ],
-    ids=["record-none", "no-record-key", "record-without-origin-or-connector", "both-none", "both-empty"],
+    "record",
+    [{}, {"origin": None, "connectorName": None}, {"origin": "", "connectorName": ""}],
+    ids=["record-without-origin-or-connector", "both-none", "both-empty"],
+)
+async def test_record_without_origin_or_connector_is_403_not_500(record: dict) -> None:
+    provider, kafka = _provider(record), AsyncMock()
+
+    with pytest.raises(HTTPException) as exc:
+        await _call(provider, kafka)
+
+    assert exc.value.status_code == 403
+    assert "synced from a connector" in exc.value.detail
+    _assert_no_delete(provider, kafka)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "access", [{"record": None}, {"permissions": []}], ids=["record-none", "no-record-key"]
 )
 async def test_access_result_without_usable_record_is_403_not_500(access: dict) -> None:
-    provider, kafka = _provider(access), AsyncMock()
+    provider, kafka = _answering(access), AsyncMock()
 
     with pytest.raises(HTTPException) as exc:
         await _call(provider, kafka)
@@ -95,7 +137,7 @@ async def test_access_result_without_usable_record_is_403_not_500(access: dict) 
     ids=["record-str", "record-int", "access-list", "access-true"],
 )
 async def test_wrongly_typed_access_result_never_deletes(access: object) -> None:
-    provider, kafka = _provider(access), AsyncMock()
+    provider, kafka = _answering(access), AsyncMock()
 
     with pytest.raises(HTTPException) as exc:
         await _call(provider, kafka)
@@ -127,7 +169,7 @@ async def test_wrongly_typed_access_result_never_deletes(access: object) -> None
     ],
 )
 async def test_near_miss_values_do_not_pass_as_an_upload(record: dict) -> None:
-    provider, kafka = _provider({"record": record}), AsyncMock()
+    provider, kafka = _provider(record), AsyncMock()
 
     with pytest.raises(HTTPException) as exc:
         await _call(provider, kafka)
@@ -157,7 +199,7 @@ async def test_near_miss_values_do_not_pass_as_an_upload(record: dict) -> None:
 async def test_provider_failure_is_reported_with_its_status(
     delete_result: dict, status: int, detail: str | None
 ) -> None:
-    provider, kafka = _provider(KB_ACCESS, delete_result), AsyncMock()
+    provider, kafka = _provider(delete_result=delete_result), AsyncMock()
 
     with pytest.raises(HTTPException) as exc:
         await _call(provider, kafka)
@@ -174,7 +216,7 @@ async def test_provider_failure_is_reported_with_its_status(
 @pytest.mark.asyncio
 @pytest.mark.parametrize("delete_result", [{"reason": "no success key"}, "ok"], ids=["no-success-key", "not-a-dict"])
 async def test_malformed_provider_result_is_500_not_a_reported_success(delete_result: object) -> None:
-    provider, kafka = _provider(KB_ACCESS, delete_result), AsyncMock()
+    provider, kafka = _provider(delete_result=delete_result), AsyncMock()
 
     with pytest.raises(HTTPException) as exc:
         await _call(provider, kafka)
@@ -185,10 +227,8 @@ async def test_malformed_provider_result_is_500_not_a_reported_success(delete_re
 
 @pytest.mark.asyncio
 async def test_access_check_error_is_503_without_leaking_and_without_deleting() -> None:
-    provider, kafka = _provider(KB_ACCESS), AsyncMock()
-    provider.check_record_access_with_details = AsyncMock(
-        side_effect=RuntimeError("bolt://neo4j:7687 connection refused")
-    )
+    access = InMemoryRecordAccess().fail_with(RuntimeError("bolt://neo4j:7687 connection refused"))
+    provider, kafka = _provider(access=access), AsyncMock()
 
     with pytest.raises(HTTPException) as exc:
         await _call(provider, kafka)
@@ -241,10 +281,9 @@ async def test_a_kb_upload_without_a_connector_id_moves_the_generation_of_its_kb
         noted.append(connector_id)
 
     monkeypatch.setattr(router_mod, "note_structure_change", note)
-    access = {**KB_ACCESS, "knowledgeBase": {"id": "kb-9"}}
-    provider = _provider(access, {"success": True, "eventData": None})
-    await _call(provider, AsyncMock())
+    # The access check's knowledge base is a provider answer the shared fake does not seed (it names none).
+    await _call(_answering({"record": KB_RECORD, "knowledgeBase": {"id": "kb-9"}}), AsyncMock())
     assert noted == ["kb-9"]
     noted.clear()
-    await _call(_provider({"record": {**KB_ACCESS["record"], "connectorId": "kb-1"}, "knowledgeBase": {"id": "kb-9"}}), AsyncMock())
+    await _call(_answering({"record": {**KB_RECORD, "connectorId": "kb-1"}, "knowledgeBase": {"id": "kb-9"}}), AsyncMock())
     assert noted == ["kb-1"]  # the record's own connector still wins

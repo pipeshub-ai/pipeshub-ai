@@ -15,6 +15,7 @@ import {
   ENTITY_TOOL_NAMES,
   registerEntityTools,
 } from './entity.tools';
+import { PUBLIC_MCP_TOOLS } from './constants/allowed-tools';
 
 /** One argument of a tool, flattened from its input schema for people to read. */
 export interface McpAccessToolArgument {
@@ -160,6 +161,8 @@ async function buildCatalog(): Promise<McpAccessTool[]> {
         error: noop,
       },
       dynamic: false,
+      // The catalog lists what a request's server can mount, so it applies the same allowlist.
+      allowedTools: [...PUBLIC_MCP_TOOLS],
       // Lists the citation tools, which a per-request server shows only to clients with views.
       apps: true,
       scopes,

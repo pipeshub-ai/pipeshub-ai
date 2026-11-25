@@ -7,6 +7,7 @@ import sys
 from unittest.mock import MagicMock, patch
 
 import pytest
+from docker.types import IPAMConfig, IPAMPool
 
 from app.agent_loop_lib.sandbox.coding.docker_client import (
     DockerClientProvider,
@@ -100,12 +101,14 @@ class TestDockerClientProvider:
         # default network, or compose siblings (mongo, arango, redis) would
         # be reachable by name. ICC off keeps one org's sandbox from
         # reaching another's on the same bridge.
+        # Its subnet is the install's own, never one of the daemon's default pools.
         fake_client.networks.create.assert_called_once_with(
             name="new_net",
             driver="bridge",
             internal=False,
             enable_ipv6=False,
             options={"com.docker.network.bridge.enable_icc": "false"},
+            ipam=IPAMConfig(pool_configs=[IPAMPool(subnet="10.212.0.0/22", gateway="10.212.0.1")]),
             labels={"agent_loop.sandbox": "egress"},
             check_duplicate=True,
         )
@@ -202,3 +205,47 @@ class TestDockerClientProvider:
         provider = DockerClientProvider(max_workers=2)
         assert provider._executor._max_workers == 2
         provider.close()
+
+    @pytest.mark.parametrize(("raw", "workers"), [(None, 260), ("300", 304), ("0", 1028)])
+    def test_the_default_pool_covers_every_shared_slot(
+        self, monkeypatch: pytest.MonkeyPatch, raw: str | None, workers: int,
+    ) -> None:
+        """Any one worker may hold every slot the workers share, and a run
+        keeps its thread for the container's life."""
+        from app.agent_loop_lib.sandbox.coding.docker_client import (
+            get_default_provider,
+            reset_default_provider,
+        )
+
+        if raw is None:
+            monkeypatch.delenv("SANDBOX_MAX_TOTAL", raising=False)
+        else:
+            monkeypatch.setenv("SANDBOX_MAX_TOTAL", raw)
+        reset_default_provider()
+        try:
+            assert get_default_provider()._executor._max_workers == workers
+        finally:
+            reset_default_provider()
+
+    async def test_run_control_runs_while_every_run_worker_is_busy(self) -> None:
+        import asyncio
+        import threading
+
+        provider = DockerClientProvider(max_workers=1)
+        release = threading.Event()
+        busy = asyncio.ensure_future(provider.run_blocking(release.wait, 5))
+        try:
+            await asyncio.sleep(0.05)
+            result = await asyncio.wait_for(provider.run_control(lambda: "removed"), timeout=2)
+            assert result == "removed"
+            assert not busy.done()
+        finally:
+            release.set()
+            await busy
+            provider.close()
+
+    def test_close_shuts_down_both_executors(self) -> None:
+        provider = DockerClientProvider()
+        provider.close()
+        assert provider._executor._shutdown
+        assert provider._control_executor._shutdown

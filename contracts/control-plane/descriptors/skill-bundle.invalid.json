@@ -1,0 +1,43 @@
+[
+  {
+    "description": "another bundle format",
+    "instance": {
+      "name": "quarterly-report",
+      "format": "skill-bundle/2",
+      "files": {
+        "SKILL.md": {
+          "sha256": "89bc9236218276ba24ae56d5feee949728f2cfdd13885876666b06f0c3f396ba",
+          "size": 72
+        }
+      },
+      "digest": "sha256:468475bd15c20d9951c9ccf5ef0bf2f9cb79f6d0c130c4fdc4aa9df897db804d"
+    }
+  },
+  {
+    "description": "a file without its size",
+    "instance": {
+      "name": "quarterly-report",
+      "format": "skill-bundle/1",
+      "files": {
+        "SKILL.md": {
+          "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      },
+      "digest": "sha256:468475bd15c20d9951c9ccf5ef0bf2f9cb79f6d0c130c4fdc4aa9df897db804d"
+    }
+  },
+  {
+    "description": "a file with a short hash",
+    "instance": {
+      "name": "quarterly-report",
+      "format": "skill-bundle/1",
+      "files": {
+        "SKILL.md": {
+          "sha256": "abc",
+          "size": 1
+        }
+      },
+      "digest": "sha256:468475bd15c20d9951c9ccf5ef0bf2f9cb79f6d0c130c4fdc4aa9df897db804d"
+    }
+  }
+]

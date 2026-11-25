@@ -1,0 +1,17 @@
+id: react-ticket-error-then-success
+description: The first lookup uses a wrong key and fails; the agent retries with the right one.
+chat_mode: react
+task: What is the status of ticket PROJ-42 and who owns it?
+fixtures:
+  tickets:
+    - {key: PROJ-42, summary: Login returns 500, status: Resolved, owner: Priya}
+script:
+  turns:
+    - reply: {text: "Look up Jira ticket PROJ-42 and report its status and owner."}
+    - reply:
+        tool_calls: [{id: call-bad, name: jira__get_issue, args: {issue_key: PROJ-4}}]
+    - expect: {tool_result_for: jira__get_issue, status: failed}
+      reply:
+        tool_calls: [{id: call-good, name: jira__get_issue, args: {issue_key: PROJ-42}}]
+    - expect: {tool_result_for: jira__get_issue, status: succeeded}
+      reply: {text: "PROJ-42 is Resolved and owned by Priya."}

@@ -42,7 +42,11 @@ from app.agent_loop_lib.core.messages import (
     as_sent,
 )
 from app.agent_loop_lib.core.responses import TokenUsage
-from app.agent_loop_lib.transport.tool_images import relocated_tool_images
+from harness_core.models.transports.tool_results import (
+    RELOCATED_IMAGES_PREFIX,
+    relocated_images,
+    relocated_message,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -238,6 +242,10 @@ def convert_message_to_langchain(
     raise ValueError(f"Unsupported agent-loop message role: {message.role!r}")
 
 
+# The direct transports relocate the same way (`tool_results.relocated_images`): one wording for both paths.
+_RELOCATED_IMAGES_PREFIX = RELOCATED_IMAGES_PREFIX
+
+
 def convert_messages_to_langchain(
     messages: list[Message],
     system: str | None = None,
@@ -251,21 +259,21 @@ def convert_messages_to_langchain(
 
     `relocate_tool_images`: strip images out of tool results (as
     `strip_tool_images` does) but send them once in a loop-added user message
-    after the results (`agent_loop_lib/transport/tool_images.py`), the one
+    after the run of results they came from (`harness_core/models/transports/tool_results.py`), the one
     delivery path for providers that reject images in a tool result: always
     on for those, and `LangChainTransport`'s recovery when a provider rejects
     one at runtime.
     """
-    converted = [
-        convert_message_to_langchain(
+    relocated = relocated_images(messages) if relocate_tool_images else {}
+    converted: list[BaseMessage] = []
+    for index, m in enumerate(messages):
+        converted.append(convert_message_to_langchain(
             m, strip_tool_images=strip_tool_images or relocate_tool_images,
-        )
-        for m in messages
-    ]
-    if relocate_tool_images:
-        relocated = relocated_tool_images(messages)
-        if relocated is not None:
-            converted.append(convert_message_to_langchain(relocated))
+        ))
+        # After the run of results they came from, as the direct transports send them, so the history stays
+        # append-only and both arms carry the same request.
+        if moved := relocated.get(index):
+            converted.append(convert_message_to_langchain(relocated_message(moved)))
     if system:
         return [LCSystemMessage(content=system), *converted]
     return converted
@@ -326,8 +334,27 @@ def convert_tool_call_from_langchain(call: dict[str, Any]) -> ToolCall:
 # stray ```json fence around the arguments, or a trailing comma before a
 # closing brace/bracket. Both are cheap, unambiguous to strip, and cover
 # the overwhelming majority of "almost valid" JSON weak models produce.
-_JSON_FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.MULTILINE)
 _TRAILING_COMMA_RE = re.compile(r",(\s*[}\]])")
+
+
+def _strip_line_fences(raw: str) -> str:
+    """Drops a ```/```json fence opening a line and a ``` closing one.
+
+    Line by line rather than the ``^```(?:json)?\\s*|\\s*```$`` regex it replaces:
+    that regex retried its ``\\s*`` from every position of a whitespace run, so a
+    runaway of whitespace in a truncated tool call cost quadratic CPU on the event
+    loop (80,000 characters: 5 s; DUR1-F7)."""
+    if "```" not in raw:
+        # No fence to drop, and no per-line Python work over a long run of newlines.
+        return raw
+    return "\n".join(_strip_fence(line) for line in raw.split("\n"))
+
+
+def _strip_fence(line: str) -> str:
+    if line.startswith("```"):
+        line = (line[7:] if line.startswith("```json") else line[3:]).lstrip()
+    stripped = line.rstrip()
+    return stripped[:-3].rstrip() if stripped.endswith("```") else line
 
 
 def _try_repair_json(raw: str) -> tuple[dict[str, Any] | None, str | None]:
@@ -339,7 +366,7 @@ def _try_repair_json(raw: str) -> tuple[dict[str, Any] | None, str | None]:
         return {}, None
 
     candidates = [raw]
-    defenced = _JSON_FENCE_RE.sub("", raw).strip()
+    defenced = _strip_line_fences(raw).strip()
     if defenced != raw:
         candidates.append(defenced)
     candidates.append(_TRAILING_COMMA_RE.sub(r"\1", candidates[-1]))
@@ -467,6 +494,7 @@ def token_usage_from_ai_message(ai_message: AIMessage, *, input_excludes_cached:
         output_tokens=_int(usage.get("output_tokens")),
         cache_read_tokens=cache_read,
         cache_write_tokens=cache_write,
+        reasoning_tokens=_int((usage.get("output_token_details") or {}).get("reasoning")),
     )
 
 

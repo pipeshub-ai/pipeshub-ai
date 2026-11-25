@@ -1,0 +1,200 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/control-plane/v1/live-layer.schema.json",
+  "title": "LiveLayer",
+  "description": "An org's live layer at a head revision (02-lld §3.1, §8.3): what running work is narrowed by while it runs. Each member of `layers` is a policy layer of kind `live` holding only what narrows, for every run of the org or, with `agentKey`, for that agent's runs; several may name the same agent (the deployment's rules, the org's). A worker folds them under a run's pin with meet on every ceiling, so a value looser than the pin changes nothing (NFR-24) and a stricter one applies within the propagation bound (NFR-23). Answered by GET /api/v1/agent-harness/internal/control-plane/orgs/{orgId}/live; a change event names the org and its new revision, never these values, so a holder reloads from the route. Never holds a secret or an approver.",
+  "type": "object",
+  "additionalProperties": false,
+  "x-extensible": true,
+  "required": [
+    "schemaVersion",
+    "orgId",
+    "revision",
+    "layers",
+    "revokedBindings"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "orgId": {
+      "$ref": "common.schema.json#/$defs/OrgId"
+    },
+    "revision": {
+      "description": "The org head revision the layer reflects.",
+      "$ref": "common.schema.json#/$defs/Revision"
+    },
+    "layers": {
+      "type": "array",
+      "maxItems": 20000,
+      "items": {
+        "$ref": "#/$defs/ScopedLiveLayer"
+      }
+    },
+    "websites": {
+      "description": "Allowed websites (WP-63) as the deployment's, the org's and each agent's layers hold them: the worker folds them at each engine turn (the deployment's caps, the org's lists, an agent's narrows). Kept apart, not met as ceilings: an org that lists nothing allows nothing, while a deployment that lists nothing caps nothing. Absent: no layer sets any.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [],
+      "properties": {
+        "deployment": {
+          "$ref": "https://schemas.pipeshub.com/harness/v2/core/policy/policy-layer.schema.json#/$defs/WebsitePolicy"
+        },
+        "org": {
+          "$ref": "https://schemas.pipeshub.com/harness/v2/core/policy/policy-layer.schema.json#/$defs/WebsitePolicy"
+        },
+        "agents": {
+          "type": "object",
+          "maxProperties": 20000,
+          "additionalProperties": {
+            "$ref": "https://schemas.pipeshub.com/harness/v2/core/policy/policy-layer.schema.json#/$defs/WebsitePolicy"
+          },
+          "description": "Agent key -> that agent's own section."
+        }
+      }
+    },
+    "revokedBindings": {
+      "description": "Bindings revoked since their runs were pinned (CPD-8 fills it).",
+      "type": "array",
+      "maxItems": 10000,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "common.schema.json#/$defs/BindingRef"
+      }
+    },
+    "repositories": {
+      "description": "Allowed git hosts for repository_fetch (WP-63 part A) as the deployment's cap (HARNESS_ALLOWED_REPOSITORIES_CAP), the org's list and each agent's narrowing hold them: the worker folds them at each call (the cap holds the org's, an agent's narrows those). Kept apart: an org that saved an empty list allows nothing, a deployment that lists nothing caps nothing. An org absent here never saved its git hosts: a run with web access gets the release's default presets (ADR-REPO-01), one without none.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [],
+      "properties": {
+        "deployment": {
+          "$ref": "https://schemas.pipeshub.com/harness/v2/core/policy/policy-layer.schema.json#/$defs/RepositoryPolicy"
+        },
+        "org": {
+          "$ref": "https://schemas.pipeshub.com/harness/v2/core/policy/policy-layer.schema.json#/$defs/RepositoryPolicy"
+        },
+        "agents": {
+          "type": "object",
+          "maxProperties": 20000,
+          "additionalProperties": {
+            "$ref": "https://schemas.pipeshub.com/harness/v2/core/policy/policy-layer.schema.json#/$defs/RepositoryPolicy"
+          },
+          "description": "Agent key -> that agent's own section."
+        }
+      }
+    }
+  },
+  "$defs": {
+    "ScopedLiveLayer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "layer"
+      ],
+      "properties": {
+        "agentKey": {
+          "description": "The agent whose runs the layer narrows; absent: every run of the org.",
+          "$ref": "https://schemas.pipeshub.com/harness/v2/core/common.schema.json#/$defs/Id"
+        },
+        "layer": {
+          "$ref": "https://schemas.pipeshub.com/harness/v2/core/policy/policy-layer.schema.json"
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "schemaVersion": 1,
+      "orgId": "o1",
+      "revision": 1042,
+      "layers": [],
+      "revokedBindings": []
+    },
+    {
+      "schemaVersion": 1,
+      "orgId": "o1",
+      "revision": 1043,
+      "layers": [
+        {
+          "layer": {
+            "schemaVersion": 1,
+            "scope": {
+              "kind": "live"
+            },
+            "approvals": {
+              "writes": "ask"
+            },
+            "rollout": {
+              "AGENT_HARNESS_KILL_SWITCH": true
+            }
+          }
+        },
+        {
+          "agentKey": "a7",
+          "layer": {
+            "schemaVersion": 1,
+            "scope": {
+              "kind": "live"
+            },
+            "approvals": {
+              "tools": {
+                "jira@inst_1/create_issue": "deny"
+              }
+            }
+          }
+        }
+      ],
+      "revokedBindings": [
+        "bnd_01J9ZZZZZZZZZZZZZZZZZZZZZZ"
+      ]
+    },
+    {
+      "schemaVersion": 1,
+      "orgId": "o1",
+      "revision": 1044,
+      "layers": [],
+      "websites": {
+        "org": {
+          "sites": [
+            {
+              "host": "github.com",
+              "access": "read"
+            }
+          ]
+        },
+        "agents": {
+          "a7": {
+            "sites": []
+          }
+        }
+      },
+      "revokedBindings": []
+    },
+    {
+      "schemaVersion": 1,
+      "orgId": "o1",
+      "revision": 1045,
+      "layers": [],
+      "repositories": {
+        "org": {
+          "hosts": [
+            {
+              "host": "github.com",
+              "preset": "github-public",
+              "prefixes": [
+                "onyx-dot-app/"
+              ]
+            }
+          ]
+        },
+        "agents": {
+          "a7": {
+            "hosts": []
+          }
+        }
+      },
+      "revokedBindings": []
+    }
+  ]
+}

@@ -85,7 +85,8 @@ describe('es_controller on a replica set: a failed answer is saved, not rolled b
   })
 
   after(() => {
-    process.env.REPLICA_SET_AVAILABLE = previous
+    if (previous === undefined) delete process.env.REPLICA_SET_AVAILABLE
+    else process.env.REPLICA_SET_AVAILABLE = previous
     delete require.cache[require.resolve(CONTROLLER)]
   })
 

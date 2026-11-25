@@ -1,4 +1,6 @@
 import React from 'react';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { render, screen, fireEvent, cleanup, within } from '@testing-library/react';
 import { Theme } from '@radix-ui/themes';
@@ -15,7 +17,8 @@ import {
   ToolCallCard,
   formatToolPayload,
 } from '../agent-activity';
-import { TOOL_PROGRESS_STATUS, type MessagePart, type StatusMessage } from '../../../types';
+import { TOOL_PROGRESS_STATUS, type MessagePart, type SSEPlanEvent, type StatusMessage } from '../../../types';
+import testI18n from '@/lib/__tests__/test-i18n';
 
 // No global RTL setup file is wired into vitest.config.ts for this
 // project — clean up the DOM after each test ourselves so renders from
@@ -249,13 +252,13 @@ describe('AgentActivityTimeline — tool call grouping', () => {
     expect(screen.getByText('Searched the web')).toBeTruthy();
   });
 
-  it('labels a non-search multi-tool burst as "Ran N tools"', () => {
+  it('labels a non-search multi-tool burst as "Used N tools", the count the steps header uses (QA-FP4)', () => {
     renderTimeline([
       { type: 'tool_call', toolCallId: 'call-1', toolName: 'run_code', displayName: 'Ran code', status: 'completed' },
       { type: 'tool_call', toolCallId: 'call-2', toolName: 'install_packages', displayName: 'Installed packages', status: 'completed' },
     ]);
 
-    expect(screen.getByText('Ran 2 tools')).toBeTruthy();
+    expect(screen.getByText('Used 2 tools')).toBeTruthy();
   });
 
   it('labels a burst of skill tool calls as "Used N skills", not "Explored N searches" — skill_search matches /search/i too', () => {
@@ -277,7 +280,8 @@ describe('AgentActivityTimeline — tool call grouping', () => {
 
     expect(screen.queryByText(/Explored \d+ searches/)).toBeNull();
     expect(screen.getByText('Searched the web')).toBeTruthy();
-    expect(screen.getByText('Read a web page')).toBeTruthy();
+    // TOOLNAMES: a built-in reads its own (translated) action, whatever English the server sent.
+    expect(screen.getByText('Read a page')).toBeTruthy();
   });
 });
 
@@ -296,10 +300,10 @@ describe('toolActivityLabel — derived, model-independent labels', () => {
     expect(toolActivityLabel({ type: 'tool_call', toolName: 'run_code', displayName: 'Ran code' })).toBe('Ran code');
   });
 
-  it('humanizes the tool name when displayName is absent', () => {
-    expect(toolActivityLabel({ type: 'tool_call', toolName: 'web_search' })).toBe('Web Search');
+  it('names a built-in by its action when displayName is absent (TOOLNAMES)', () => {
+    expect(toolActivityLabel({ type: 'tool_call', toolName: 'web_search' })).toBe('Searched the web');
     expect(toolActivityLabel({ type: 'tool_call', toolName: 'retrieval__search_internal_knowledge' })).toBe(
-      'Search Internal Knowledge',
+      'Search internal knowledge',
     );
   });
 
@@ -321,10 +325,10 @@ describe('toolActivityLabel — derived, model-independent labels', () => {
     expect(toolActivityLabel({ type: 'tool_call', toolName: 'skill_manage' })).toBe('Managed skill');
   });
 
-  it('still prefers a backend-provided displayName over the skill label map', () => {
+  it('a built-in skill reads its translated action, not the English the server sent (TOOLNAMES)', () => {
     expect(
       toolActivityLabel({ type: 'tool_call', toolName: 'load_skill', displayName: 'Loaded skill docx' }),
-    ).toBe('Loaded skill docx');
+    ).toBe('Loaded skill');
   });
 });
 
@@ -409,6 +413,24 @@ describe('ToolCallCard — raw arguments and result', () => {
 
     expect(screen.getByText('start: "2026-09-01"')).toBeTruthy();
     expect(screen.getByText(/"limit": 50/).textContent).toBe('{\n  "start": "2026-09-01",\n  "limit": 50\n}');
+  });
+
+  it('a code step shows the code it ran and what it printed, under its summaries (QAFIX2)', () => {
+    expand({
+      type: 'tool_call',
+      toolCallId: 'code-1',
+      toolName: 'run_code',
+      status: 'completed',
+      argsSummary: 'python · print(sum(range(1, 11)))',
+      args: JSON.stringify({ code: '# sum\nprint(sum(range(1, 11)))', language: 'python' }),
+      resultSummary: 'exit 0 · 55',
+      resultPreview: JSON.stringify({ stdout: '55\n', stderr: 'warn: slow\n', exit_code: 0, artifacts: [] }),
+    });
+
+    expect(screen.getByText('python · print(sum(range(1, 11)))')).toBeTruthy();
+    expect(screen.getByText(/^# sum/).textContent).toBe('# sum\nprint(sum(range(1, 11)))');
+    expect(screen.getByText('exit 0 · 55')).toBeTruthy();
+    expect(screen.getByText(/^55/).textContent).toBe('55\nwarn: slow');
   });
 
   it('shows the raw arguments when there is no summary', () => {
@@ -875,16 +897,53 @@ describe('getVisibleRootParts', () => {
     expect(getVisibleRootParts(parts, true)).toEqual(parts);
     expect(getVisibleRootParts(parts, false)).toEqual(parts);
   });
+
+  // CHAT-TL R3: a saved engine answer (run 9d1315d0) put an empty "Worked on this" header over the answer.
+  it('shows nothing for a saved engine answer, whose steps the timeline does not draw', () => {
+    const parts: MessagePart[] = [
+      {
+        type: 'engine_task',
+        runId: 'run-1',
+        taskId: 'run-1',
+        frames: [{ tool: 'code_task', taskId: 'run-1', kind: 'started', text: 'what is our travel policy?' }],
+      },
+      { type: 'text', content: 'Our travel policy is…', runId: 'run-1', isFinal: true },
+    ];
+    expect(getVisibleRootParts(parts, false)).toEqual([]);
+    expect(getVisibleRootParts(parts, true)).toEqual([]);
+  });
+
+  it('hides blank narration between tool calls', () => {
+    const parts: MessagePart[] = [
+      { type: 'tool_call', toolCallId: 'c1', toolName: 'search' },
+      { type: 'text', content: '', settled: true },
+      { type: 'reasoning', content: '  ' },
+    ];
+    expect(getVisibleRootParts(parts, false)).toEqual([parts[0]]);
+  });
 });
+
+const summary = (parts: MessagePart[], plan?: SSEPlanEvent | null) => buildActivitySummary(parts, testI18n.t, plan);
+
+const PLAN: SSEPlanEvent = {
+  runId: 'run-1',
+  currentTaskId: 't2',
+  steps: [
+    { taskId: 't1', title: 'Find the travel policy', status: 'completed', deps: [] },
+    { taskId: 't2', title: 'Read the hotel limits', status: 'in_progress', deps: ['t1'] },
+    { taskId: 't3', title: 'Write the summary', status: 'pending', deps: ['t2'] },
+    { taskId: 't4', title: 'Check receipts rules', status: 'cancelled', deps: [] },
+  ],
+};
 
 describe('buildActivitySummary', () => {
   it('describes a single tool call', () => {
-    expect(buildActivitySummary([{ type: 'tool_call', toolCallId: 'c1', toolName: 't' }])).toBe('Used 1 tool');
+    expect(summary([{ type: 'tool_call', toolCallId: 'c1', toolName: 't' }])).toBe('Used 1 tool');
   });
 
   it('describes multiple tool calls', () => {
     expect(
-      buildActivitySummary([
+      summary([
         { type: 'tool_call', toolCallId: 'c1', toolName: 't' },
         { type: 'tool_call', toolCallId: 'c2', toolName: 't' },
       ]),
@@ -893,7 +952,7 @@ describe('buildActivitySummary', () => {
 
   it('combines reasoning and tool segments', () => {
     expect(
-      buildActivitySummary([
+      summary([
         { type: 'reasoning', content: 'thinking' },
         { type: 'tool_call', toolCallId: 'c1', toolName: 't' },
       ]),
@@ -901,11 +960,52 @@ describe('buildActivitySummary', () => {
   });
 
   it('describes sub-agent delegation', () => {
-    expect(buildActivitySummary([{ type: 'sub_agent', runId: 'r1', parts: [] }])).toBe('Delegated to 1 sub-agent');
+    expect(summary([{ type: 'sub_agent', runId: 'r1', parts: [] }])).toBe('Delegated to 1 sub-agent');
   });
 
-  it('falls back to a generic label when there is no groupable activity', () => {
-    expect(buildActivitySummary([{ type: 'text', content: 'narration', settled: true }])).toBe('Worked on this');
+  it('CTL-3: never says "Worked on this"; steps it cannot count are offered as steps', () => {
+    expect(summary([{ type: 'text', content: 'narration', settled: true }])).toBe('Show steps');
+  });
+
+  it('CTL-3b: names each step by what the tool says it did, never by guessing from its name', () => {
+    expect(
+      summary([
+        { type: 'tool_call', toolCallId: 'c1', toolName: 'knowledgegraph__search_entities', displayName: 'Searched the knowledge base' },
+        { type: 'tool_call', toolCallId: 'c2', toolName: 'knowledgegraph__search_entities', displayName: 'Searched the knowledge base' },
+        { type: 'tool_call', toolCallId: 'c3', toolName: 'knowledgegraph__fetch_record', displayName: 'Read the full record' },
+      ]),
+    ).toBe('Searched the knowledge base (2) · Read the full record');
+  });
+
+  it('CTL-3b: a connector tool with no display name says which app it used', () => {
+    expect(summary([{ type: 'tool_call', toolCallId: 'c1', toolName: 'jira__create_issue' }])).toBe(
+      'Used Jira: Create issue',
+    );
+    // A name with no app and no display name is still only counted.
+    expect(summary([{ type: 'tool_call', toolCallId: 'c1', toolName: 'retrieval_search' }])).toBe('Used 1 tool');
+  });
+
+  it('CTL-3b: lists three kinds of step, then says how many more', () => {
+    const tool = (id: string, displayName: string): MessagePart => ({ type: 'tool_call', toolCallId: id, toolName: `x__${id}`, displayName });
+    expect(summary([tool('a', 'A'), tool('b', 'B'), tool('c', 'C'), tool('d', 'D'), tool('e', 'E')])).toBe('A · B · C · 2 more · Used 5 tools');
+  });
+
+  it('CTL-3b: ends with how long the run took, from the saved answer', () => {
+    expect(
+      summary([
+        { type: 'tool_call', toolCallId: 'c1', toolName: 't', durationMs: 3_500 },
+        { type: 'text', content: 'Done.', isFinal: true, elapsedMs: 42_400 },
+      ]),
+    ).toBe('Used 1 tool · 42s');
+    expect(summary([{ type: 'text', content: 'Done.', isFinal: true, elapsedMs: 125_000 }])).toBe('Show steps · 2m 5s');
+  });
+
+  it('CTL-3: leads with the plan when the run planned two or more steps', () => {
+    expect(summary([{ type: 'tool_call', toolCallId: 'c1', toolName: 't' }], PLAN)).toBe(
+      'Completed 1 of 3 steps · Used 1 tool',
+    );
+    const one: SSEPlanEvent = { ...PLAN, steps: PLAN.steps.slice(0, 1) };
+    expect(summary([{ type: 'tool_call', toolCallId: 'c1', toolName: 't' }], one)).toBe('Used 1 tool');
   });
 });
 
@@ -962,7 +1062,7 @@ describe('CollapsibleActivitySection', () => {
     expect(isContentHidden()).toBe(true);
   });
 
-  it('does not auto-collapse when isStreaming transitions from true to false', () => {
+  it('CTL-3: collapses to its summary when the run finishes, as Claude does', () => {
     const parts: MessagePart[] = [{ type: 'tool_call', toolCallId: 'c1', toolName: 't' }];
     const { rerender } = renderCollapsible(parts, { isStreaming: true });
     expect(isContentHidden()).toBe(false);
@@ -970,7 +1070,18 @@ describe('CollapsibleActivitySection', () => {
     rerender(
       h(Theme, null, h(CollapsibleActivitySection, { parts, isStreaming: false }, h('div', { 'data-testid': 'child' }, 'child content'))),
     );
-    // Stays expanded — collapse is user-driven only.
+    expect(isContentHidden()).toBe(true);
+    expect(screen.getByText('Used 1 tool')).toBeTruthy();
+  });
+
+  it('CTL-3: a section the user opened again while it ran stays open when it finishes', () => {
+    const parts: MessagePart[] = [{ type: 'tool_call', toolCallId: 'c1', toolName: 't' }];
+    const { rerender } = renderCollapsible(parts, { isStreaming: true });
+    fireEvent.click(screen.getByText('Used 1 tool'));
+    fireEvent.click(screen.getByText('Used 1 tool'));
+    rerender(
+      h(Theme, null, h(CollapsibleActivitySection, { parts, isStreaming: false }, h('div', { 'data-testid': 'child' }, 'child content'))),
+    );
     expect(isContentHidden()).toBe(false);
   });
 
@@ -1007,6 +1118,99 @@ describe('CollapsibleActivitySection', () => {
     fireEvent.click(screen.getByText('Used 1 tool'));
     expect(panel?.hasAttribute('aria-hidden')).toBe(false);
     expect(panel?.hasAttribute('inert')).toBe(false);
+  });
+});
+
+describe('AgentActivityTimeline — a message the user added while it worked (T2)', () => {
+  it('shows it where the run took it, marked as the user\'s', () => {
+    renderTimeline([
+      { type: 'tool_call', toolCallId: 't1', toolName: 'search', status: 'completed' },
+      { type: 'user_input', content: 'Also check the 2025 policy', messageSeq: 1 },
+      { type: 'text', content: 'Done.', isFinal: true },
+    ]);
+    const message = screen.getByTestId('steering-message');
+    expect(message.textContent).toContain('You added');
+    expect(message.textContent).toContain('Also check the 2025 policy');
+    expect(message.textContent).not.toContain('The task ended');
+  });
+
+  it('says so when the task ended before it could use the message', () => {
+    renderTimeline([{ type: 'user_input', content: 'Too late', messageSeq: 2, consumed: false }]);
+    expect(screen.getByTestId('steering-message').textContent).toContain(
+      'The task ended before it could use this message.',
+    );
+  });
+
+  it('C-21b: names the files the message carried', () => {
+    renderTimeline([
+      {
+        type: 'user_input',
+        content: 'And this one',
+        messageSeq: 1,
+        attachments: [{ recordId: 'rec-1', virtualRecordId: 'v-1', recordName: 'q4.pdf', mimeType: 'application/pdf', extension: 'pdf' }],
+      },
+    ]);
+    expect(screen.getByTestId('steering-attachments').textContent).toContain('q4.pdf');
+  });
+
+  it('makes a response multi-step, so its timeline is shown', () => {
+    expect(hasMultiStepActivity([{ type: 'user_input', content: 'x' }, { type: 'text', content: 'y', isFinal: true }])).toBe(true);
+    expect(getVisibleRootParts([{ type: 'user_input', content: 'x' }], true)).toHaveLength(1);
+  });
+});
+
+describe('CTL-3: the plan checklist', () => {
+  it('lists the plan above the steps with each step\'s state', () => {
+    render(
+      h(Theme, null, h(AgentActivityTimeline, {
+        parts: [{ type: 'tool_call', toolCallId: 'c1', toolName: 'search', status: 'completed' }],
+        isStreaming: true,
+        plan: PLAN,
+      })),
+    );
+    const list = screen.getByRole('list', { name: 'Plan' });
+    const items = within(list).getAllByRole('listitem');
+    // What a reader hears: the icon's ligature is aria-hidden.
+    const spoken = (item: HTMLElement) =>
+      Array.from(item.children)
+        .filter((child) => child.getAttribute('aria-hidden') !== 'true')
+        .map((child) => child.textContent)
+        .join('');
+    expect(items.map(spoken)).toEqual([
+      'Find the travel policyDone',
+      'Read the hotel limitsIn progress',
+      'Write the summaryTo do',
+      'Check receipts rulesDropped',
+    ]);
+    expect(items[1].getAttribute('aria-current')).toBe('step');
+  });
+
+  it('shows no checklist for a single-step plan or none', () => {
+    const parts: MessagePart[] = [{ type: 'tool_call', toolCallId: 'c1', toolName: 'search', status: 'completed' }];
+    render(h(Theme, null, h(AgentActivityTimeline, { parts, plan: { ...PLAN, steps: PLAN.steps.slice(0, 1) } })));
+    expect(screen.queryByRole('list', { name: 'Plan' })).toBeNull();
+    cleanup();
+    render(h(Theme, null, h(AgentActivityTimeline, { parts, plan: null })));
+    expect(screen.queryByRole('list', { name: 'Plan' })).toBeNull();
+  });
+
+  it('shows the checklist even before the first step has a row', () => {
+    render(h(Theme, null, h(AgentActivityTimeline, { parts: [], isStreaming: true, plan: PLAN })));
+    expect(screen.getByRole('list', { name: 'Plan' })).toBeTruthy();
+  });
+});
+
+describe('CTL-3b: each step shows how long it took', () => {
+  it('a tool call over a second shows its duration; a quicker one shows none', () => {
+    renderTimeline([
+      { type: 'tool_call', toolCallId: 'c1', toolName: 'web_search', displayName: 'Searched the web', status: 'completed', durationMs: 3_400 },
+    ]);
+    expect(screen.getAllByTestId('step-duration').map((el) => el.textContent)).toEqual(['3s']);
+    cleanup();
+    renderTimeline([
+      { type: 'tool_call', toolCallId: 'c2', toolName: 'web_fetch', displayName: 'Read a web page', status: 'completed', durationMs: 400 },
+    ]);
+    expect(screen.queryByTestId('step-duration')).toBeNull();
   });
 });
 
@@ -1066,5 +1270,20 @@ describe('ToolCallCard — web tools list what they found', () => {
     });
 
     expect(screen.getByText('news.example.com')).toBeTruthy();
+  });
+});
+
+describe('getVisibleRootParts — an engine report saved as the answer (FIX-UI1)', () => {
+  // A recorded IPL turn as Node saves it now: the report is the isFinal part, after the code_task row.
+  const fixture = JSON.parse(
+    readFileSync(path.join(__dirname, 'data/engine-report-turn.json'), 'utf8'),
+  ) as { answer: string; parts: MessagePart[] };
+  const [, call, child] = fixture.parts;
+  const saved: MessagePart[] = [{ type: 'text', content: fixture.answer, isFinal: true }, call, child];
+
+  it('the classic view shows the report once, as the answer, never as narration', () => {
+    const visible = getVisibleRootParts(saved, false);
+    expect(visible.some((part) => part.type === 'text')).toBe(false);
+    expect(visible.map((part) => part.type)).toEqual(getVisibleRootParts(fixture.parts.slice(1), false).map((p) => p.type));
   });
 });

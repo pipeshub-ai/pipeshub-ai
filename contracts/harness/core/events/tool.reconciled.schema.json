@@ -1,0 +1,97 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/core/events/tool.reconciled.schema.json",
+  "title": "ToolReconciledEvent",
+  "description": "How an effect whose outcome was unknown was decided (P2.9, R-31): by the reconciler's read (lookups counted, never a write) or by an operator. 'applied' rides with the outcome built from the evidence; 'not_applied' precedes the one re-call's own intent; 'still_unknown' rides with tool.unknown and the suspension for a person. Written non-critical: a fold that does not know it parks the effect as before, which never re-calls.",
+  "x-writer": [
+    "worker"
+  ],
+  "allOf": [
+    {
+      "$ref": "../envelope.schema.json#/$defs/InlineEnvelope"
+    }
+  ],
+  "properties": {
+    "type": {
+      "const": "tool.reconciled"
+    },
+    "writer": {
+      "const": "worker"
+    },
+    "data": {
+      "$ref": "#/$defs/ToolReconciledData"
+    }
+  },
+  "$defs": {
+    "ToolReconciledData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "invocationId",
+        "verdict",
+        "reason",
+        "lookups",
+        "source"
+      ],
+      "properties": {
+        "invocationId": {
+          "$ref": "../common.schema.json#/$defs/Id"
+        },
+        "verdict": {
+          "enum": [
+            "applied",
+            "not_applied",
+            "still_unknown"
+          ]
+        },
+        "reason": {
+          "enum": [
+            "found",
+            "absent",
+            "window_beyond_hold",
+            "lookup_failed",
+            "no_hook",
+            "undecidable",
+            "write_refused",
+            "recall_spent"
+          ]
+        },
+        "lookups": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "source": {
+          "enum": [
+            "reconciler",
+            "operator"
+          ]
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 9,
+      "runId": "run_1",
+      "type": "tool.reconciled",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-05T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "data": {
+        "invocationId": "t1.0",
+        "verdict": "applied",
+        "reason": "found",
+        "lookups": 1,
+        "source": "reconciler"
+      },
+      "attemptId": "att_2",
+      "fence": 4
+    }
+  ]
+}

@@ -12,8 +12,16 @@ globalThis.ResizeObserver ??= class { observe() {} unobserve() {} disconnect() {
 // knowing who the user was, so a member who opened it by URL got a 403 from the
 // server. Prompts (fixed on main in #4808) is held to the same contract here.
 
-const user = { isAdmin: null as boolean | null, isProfileInitialized: false };
-const replace = vi.fn();
+// Hoisted with the mocks: the pages are imported with the file (below), so the mocks' state must exist first.
+const { user, replace, getSlackBotConfigs, getSystemPrompts, listAgentActivity } = vi.hoisted(() => ({
+  user: { isAdmin: null as boolean | null, isProfileInitialized: false },
+  replace: vi.fn(),
+  getSlackBotConfigs: vi.fn(async () => []),
+  getSystemPrompts: vi.fn(async () => ({
+    customSystemPrompt: '', customSystemPromptWebSearch: '', customSystemPromptAgent: '',
+  })),
+  listAgentActivity: vi.fn(async () => ({ items: [] })),
+}));
 
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ replace, push: vi.fn() }),
@@ -25,7 +33,6 @@ vi.mock('@/lib/store/user-store', () => ({
   selectIsProfileInitialized: (s: typeof user) => s.isProfileInitialized,
 }));
 
-const getSlackBotConfigs = vi.fn(async () => []);
 vi.mock('../bots/api', () => ({
   BotsApi: { getSlackBotConfigs, getAgents: vi.fn(async () => ({ agents: [], complete: true })) },
 }));
@@ -34,25 +41,27 @@ vi.mock('../bots/components', () => ({
   BotConfigPanel: () => null,
 }));
 
-const getSystemPrompts = vi.fn(async () => ({
-  customSystemPrompt: '', customSystemPromptWebSearch: '', customSystemPromptAgent: '',
-}));
 vi.mock('../prompts/api', () => ({ PromptsApi: { getSystemPrompts } }));
 
-const listAgentActivity = vi.fn(async () => ({ items: [] }));
 vi.mock('../agent-activity/api', () => ({ AgentActivityApi: { list: listAgentActivity } }));
 vi.mock('@/lib/hooks/use-is-mobile', () => ({ useIsMobile: () => false }));
 
 vi.mock('@/app/components/ui/lottie-loader', () => ({ LottieLoader: () => <div>loading</div> }));
 
+// Imported with the file, not inside a test: the first dynamic import compiled the Bots page's module graph (about
+// 4 s cold) inside the first test's 5 s budget, so that test timed out whenever the host was busy. Mocks above are
+// hoisted, so the pages still see them.
+import BotsPage from '../bots/page';
+import PromptsPage from '../prompts/page';
+import AgentActivityPage from '../agent-activity/page';
+
 const pages = [
-  { name: 'Bots', load: () => import('../bots/page'), fetched: getSlackBotConfigs },
-  { name: 'Prompts', load: () => import('../prompts/page'), fetched: getSystemPrompts },
-  { name: 'Agent activity', load: () => import('../agent-activity/page'), fetched: listAgentActivity },
+  { name: 'Bots', Page: BotsPage, fetched: getSlackBotConfigs },
+  { name: 'Prompts', Page: PromptsPage, fetched: getSystemPrompts },
+  { name: 'Agent activity', Page: AgentActivityPage, fetched: listAgentActivity },
 ];
 
-async function renderPage(load: () => Promise<{ default: React.ComponentType }>) {
-  const { default: Page } = await load();
+function renderPage(Page: React.ComponentType) {
   return render(
     <Theme>
       <Page />
@@ -74,7 +83,7 @@ describe('admin-only workspace pages', () => {
       it('loads nothing while it is not yet known who the user is', async () => {
         Object.assign(user, { isAdmin: null, isProfileInitialized: false });
 
-        await renderPage(page.load);
+        renderPage(page.Page);
         await new Promise((resolve) => setTimeout(resolve, 0));
 
         expect(page.fetched).not.toHaveBeenCalled();
@@ -83,7 +92,7 @@ describe('admin-only workspace pages', () => {
       it('sends a member away without asking the server', async () => {
         Object.assign(user, { isAdmin: false, isProfileInitialized: true });
 
-        const { container } = await renderPage(page.load);
+        const { container } = renderPage(page.Page);
         await new Promise((resolve) => setTimeout(resolve, 0));
 
         expect(replace).toHaveBeenCalledWith('/workspace/general');
@@ -94,7 +103,7 @@ describe('admin-only workspace pages', () => {
       it('sends the user away when their role could not be loaded', async () => {
         Object.assign(user, { isAdmin: null, isProfileInitialized: true });
 
-        await renderPage(page.load);
+        renderPage(page.Page);
         await new Promise((resolve) => setTimeout(resolve, 0));
 
         expect(replace).toHaveBeenCalledWith('/workspace/general');
@@ -104,7 +113,7 @@ describe('admin-only workspace pages', () => {
       it('loads the settings for an admin', async () => {
         Object.assign(user, { isAdmin: true, isProfileInitialized: true });
 
-        await renderPage(page.load);
+        renderPage(page.Page);
 
         await waitFor(() => expect(page.fetched).toHaveBeenCalledTimes(1));
         expect(replace).not.toHaveBeenCalled();

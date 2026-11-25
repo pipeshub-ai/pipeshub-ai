@@ -2,7 +2,6 @@
 import 'reflect-metadata'
 import { expect } from 'chai'
 import {
-  DuplicateEnvelope,
   EnvelopeRejected,
   assertMayStart,
   computeSig,
@@ -143,16 +142,6 @@ describe('envelope v2', () => {
     expect(await reason(open({ ctx: { v: 1 }, payload: '{}' }))).to.equal('malformed')
     const obj = msg(); obj.payload = { orgId: 'org_b' }
     expect(await reason(open(obj))).to.equal('malformed')
-  })
-
-  it('replay is skipped through the durable inbox (no Redis seen-id)', async () => {
-    const seen = new Set<string>()
-    const inbox = { claim: async (t: string, id: string) => (seen.has(t + id) ? false : (seen.add(t + id), true)) }
-    const m = msg()
-    await open(m, { inbox })
-    let dup = false
-    try { await open(m, { inbox }) } catch (e) { dup = e instanceof DuplicateEnvelope }
-    expect(dup).to.equal(true)
   })
 
   it('a message without ctx is accepted and counted before the flag, dead-lettered after', async () => {

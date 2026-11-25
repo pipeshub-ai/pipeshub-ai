@@ -3,7 +3,6 @@ import { expect } from 'chai'
 import sinon from 'sinon'
 import express from 'express'
 import http from 'http'
-import winston from 'winston'
 import { Container } from 'inversify'
 import type { AddressInfo } from 'net'
 import { Logger } from '../../../../src/libs/services/logger.service'
@@ -13,11 +12,14 @@ import { accessLog } from '../../../../src/libs/middlewares/access-log.middlewar
 import { AuthMiddleware } from '../../../../src/libs/middlewares/auth.middleware'
 import { AuthTokenService } from '../../../../src/libs/services/authtoken.service'
 import { registerUpstreams } from '../../../../src/libs/http/upstream-call'
+import { runWithRequestContext } from '../../../../src/libs/context/request-context'
+import { captureLogRecords, newRequestId, recordsOf } from '../../../helpers/log-capture'
 import { Users } from '../../../../src/modules/user_management/schema/users.schema'
 import { UserActivities } from '../../../../src/modules/auth/schema/userActivities.schema'
 import { CrawlingSchedulerService } from '../../../../src/modules/crawling_manager/services/crawling_service'
 import { AppConfig, registerAppUpstreams } from '../../../../src/modules/tokens_manager/config/config'
 import { createConnectorRouter } from '../../../../src/modules/tokens_manager/routes/connectors.routes'
+import { VECTOR_STORE_REBUILD_AVAILABLE } from '../../../../src/edition'
 import { createOAuthRouter } from '../../../../src/modules/tokens_manager/routes/oauth.routes'
 import { FakeBackend, RecordingProducer, buildConfig } from './connectors-http-harness'
 
@@ -60,7 +62,9 @@ describe('Connector routes: a request is logged once, with its connector', funct
   let config: AppConfig
   let origin: string
   let server: http.Server
+  // Every record the process writes while a test runs; `mine()` is the current request's.
   let records: Row[]
+  let requestId = ''
 
   before(async () => {
     await backend.start()
@@ -71,13 +75,7 @@ describe('Connector routes: a request is logged once, with its connector', funct
   })
 
   beforeEach(async () => {
-    records = []
-    // Every winston logger, whichever root a module got at load, at every level.
-    sinon.stub(winston.Logger.prototype, 'isLevelEnabled').returns(true)
-    sinon.stub(winston.Logger.prototype, 'log').callsFake(function (this: unknown, info: Row) {
-      records.push(info)
-      return this
-    } as any)
+    records = captureLogRecords()
     registerAppUpstreams(config)
     backend.reset()
     sinon.stub(Users, 'findOne').callsFake((() => query(ADMIN)) as any)
@@ -120,20 +118,26 @@ describe('Connector routes: a request is logged once, with its connector', funct
   /** Sends one request and returns its status once the access line is written. */
   const send = async (method: string, path: string, body?: unknown): Promise<number> => {
     records.length = 0
+    requestId = newRequestId('connectors-logging-once')
     const res = await fetch(`${origin}${path}`, {
       method,
-      headers: { authorization: `Bearer ${session()}`, ...(body === undefined ? {} : { 'content-type': 'application/json' }) },
+      headers: {
+        authorization: `Bearer ${session()}`,
+        'x-request-id': requestId,
+        ...(body === undefined ? {} : { 'content-type': 'application/json' }),
+      },
       body: body === undefined ? undefined : JSON.stringify(body),
     })
     await res.text()
     const deadline = Date.now() + 5000
-    while (Date.now() < deadline && !records.some((r) => r.message === 'http.request.end')) {
+    while (Date.now() < deadline && !mine().some((r) => r.message === 'http.request.end')) {
       await new Promise((resolve) => setImmediate(resolve))
     }
     return res.status
   }
-  const visible = (): Row[] => records.filter(atLeastInfo)
-  const byMessage = (message: string): Row[] => records.filter((r) => r.message === message)
+  const mine = (): Row[] => recordsOf(records, requestId)
+  const visible = (): Row[] => mine().filter(atLeastInfo)
+  const byMessage = (message: string): Row[] => mine().filter((r) => r.message === message)
 
   it('a connector-service 400 on a config save is the middleware line, the call line and the access line, each with connector_id', async () => {
     backend.on('PUT', `/api/v1/connectors/${CONNECTOR}/config/auth`, { status: 400, body: { detail: 'Base URL must start with https://' } })
@@ -156,7 +160,7 @@ describe('Connector routes: a request is logged once, with its connector', funct
     const status = await send('GET', '/api/v1/connectors/?scope=team')
 
     expect(status).to.equal(503)
-    expect(records.filter((r) => level(r) === 'error')).to.deep.equal([])
+    expect(mine().filter((r) => level(r) === 'error')).to.deep.equal([])
     expect(byMessage('upstream.call.end').length).to.be.at.least(1)
     expect(visible().every((r) => level(r) === 'warn')).to.equal(true)
     expect(byMessage('http.request.error')[0].error_class).to.equal('unavailable')
@@ -170,17 +174,18 @@ describe('Connector routes: a request is logged once, with its connector', funct
     expect(status).to.equal(404)
     const failure = byMessage('http.request.error')
     expect(failure.map((r) => [level(r), r.error_class, r.connector_id])).to.deep.equal([['warn', 'not_found', CONNECTOR]])
-    expect(records.filter((r) => CONTROLLER_LOGGERS.has(r.service))).to.deep.equal([])
+    expect(mine().filter((r) => CONTROLLER_LOGGERS.has(r.service))).to.deep.equal([])
   })
 
-  for (const [name, method, path, backendMethod, backendPath, body] of [
-    ['a read', 'GET', '/active', 'GET', '/api/v1/connectors/active', undefined],
-    ['an instance read', 'GET', `/${CONNECTOR}`, 'GET', `/api/v1/connectors/${CONNECTOR}`, undefined],
-    ['a delete', 'DELETE', `/${CONNECTOR}`, 'DELETE', `/api/v1/connectors/${CONNECTOR}`, undefined],
-    ['an agent toggle', 'POST', `/${CONNECTOR}/toggle`, 'POST', `/api/v1/connectors/${CONNECTOR}/toggle`, { type: 'agent' }],
-    ['a create', 'POST', '/', 'POST', '/api/v1/connectors/', { connectorType: 'Jira', instanceName: INSTANCE_NAME, scope: 'team' }],
+  // A save also writes its settings audit line, on the `audit` logger.
+  for (const [name, method, path, backendMethod, backendPath, body, auditEvent] of [
+    ['a read', 'GET', '/active', 'GET', '/api/v1/connectors/active', undefined, null],
+    ['an instance read', 'GET', `/${CONNECTOR}`, 'GET', `/api/v1/connectors/${CONNECTOR}`, undefined, null],
+    ['a delete', 'DELETE', `/${CONNECTOR}`, 'DELETE', `/api/v1/connectors/${CONNECTOR}`, undefined, 'config.connector.delete'],
+    ['an agent toggle', 'POST', `/${CONNECTOR}/toggle`, 'POST', `/api/v1/connectors/${CONNECTOR}/toggle`, { type: 'agent' }, 'config.connector.update'],
+    ['a create', 'POST', '/', 'POST', '/api/v1/connectors/', { connectorType: 'Jira', instanceName: INSTANCE_NAME, scope: 'team' }, 'config.connector.create'],
   ] as const) {
-    it(`${name} that succeeds writes one line at INFO or above: the access line`, async () => {
+    it(`${name} that succeeds writes one line at INFO or above besides any audit line: the access line`, async () => {
       backend.on(backendMethod, backendPath, { status: 200, body: { success: true, connector: { _key: CONNECTOR }, connectors: [] } })
 
       const status = await send(method, `/api/v1/connectors${path}`, body)
@@ -188,10 +193,33 @@ describe('Connector routes: a request is logged once, with its connector', funct
       await new Promise((resolve) => setTimeout(resolve, 20))
 
       expect(status).to.equal(200)
-      expect(visible().map((r) => r.message)).to.deep.equal(['http.request.end'])
-      if (path.includes(CONNECTOR)) expect(visible()[0].connector_id).to.equal(CONNECTOR)
+      expect(visible().map((r) => [r.service, r.message])).to.deep.equal([
+        ...(auditEvent === null ? [] : [['audit', auditEvent]]),
+        ['HttpAccess', 'http.request.end'],
+      ])
+      if (path.includes(CONNECTOR)) expect(visible().map((r) => r.connector_id)).to.deep.equal(visible().map(() => CONNECTOR))
     })
   }
+
+  it('a background timer logging during the request (another run, or no context) is not counted as its line', async () => {
+    backend.on('GET', '/api/v1/connectors/active', { status: 200, body: { connectors: [] } })
+    const background = Logger.getInstance({ service: 'n5f-background' })
+    // Like a chat run's heartbeat that outlived its test: fires on every turn of the event loop.
+    const timers = [
+      setInterval(() => background.warn('Failed to record run activity'), 0),
+      runWithRequestContext({ rootId: 'some-other-run' }, () =>
+        setInterval(() => background.warn('Failed to record run activity'), 0),
+      ),
+    ]
+    try {
+      expect(await send('GET', '/api/v1/connectors/active')).to.equal(200)
+    } finally {
+      timers.forEach(clearInterval)
+    }
+
+    expect(records.some((r) => r.message === 'Failed to record run activity')).to.equal(true)
+    expect(visible().map((r) => r.message)).to.deep.equal(['http.request.end'])
+  })
 
   it('a registry read names the connector type on its lines', async () => {
     backend.on('GET', '/api/v1/connectors/registry/Jira/schema', { status: 200, body: { schema: {} } })
@@ -199,6 +227,28 @@ describe('Connector routes: a request is logged once, with its connector', funct
     expect(await send('GET', '/api/v1/connectors/registry/Jira/schema')).to.equal(200)
 
     expect(visible().map((r) => [r.message, r.connector_type])).to.deep.equal([['http.request.end', 'Jira']])
+  })
+
+  // N5n: a value the caller put in the path is logged only if it is an id (or, for a type, a name).
+  const EMAIL = 'n5n-fake-ada@example.com'
+  const carriesEmail = (): boolean => [EMAIL, encodeURIComponent(EMAIL)].some((v) => JSON.stringify(mine()).includes(v))
+
+  it('an email pasted as a connector id on resync: refused, and on no line, the error message included', async () => {
+    backend.on('GET', '/api/v1/connectors/active', { status: 200, body: { connectors: [{ _key: CONNECTOR }] } })
+
+    expect(await send('POST', `/api/v1/connectors/${encodeURIComponent(EMAIL)}/resync`, { connectorName: 'Jira' })).to.equal(400)
+
+    expect(byMessage('http.request.error').map((r) => [r.metadata.params, r.metadata.error.message])).to.deep.equal([
+      [{ connectorId: '[not an id]' }, 'Connector not allowed'],
+    ])
+    expect(carriesEmail()).to.equal(false)
+  })
+
+  it('an email as an OAuth connector type is not a name: not bound, on no line', async () => {
+    await send('GET', `/api/v1/oauth/${encodeURIComponent(EMAIL)}`)
+
+    expect(mine().some((r) => r.connector_type !== undefined)).to.equal(false)
+    expect(carriesEmail()).to.equal(false)
   })
 
   it('a record read names the record on its lines', async () => {
@@ -245,8 +295,13 @@ describe('Connector routes: a request is logged once, with its connector', funct
     ['POST', `/api/v1/connectors/${CONNECTOR}/reindex`, {}],
     ['POST', `/api/v1/connectors/${CONNECTOR}/sync/stop`, undefined],
     ['POST', `/api/v1/connectors/${CONNECTOR}/resync`, { connectorName: 'Jira' }],
-    ['POST', '/api/v1/connectors/vector-store/cleanup', {}],
-    ['POST', '/api/v1/connectors/vector-store/reindex', {}],
+    // These two reach the service only where the deployment offers them (edition.ts); elsewhere they answer 403 first.
+    ...(VECTOR_STORE_REBUILD_AVAILABLE
+      ? ([
+          ['POST', '/api/v1/connectors/vector-store/cleanup', {}],
+          ['POST', '/api/v1/connectors/vector-store/reindex', {}],
+        ] as const)
+      : []),
     ['GET', '/api/v1/oauth/registry', undefined],
     ['GET', '/api/v1/oauth/registry/Jira', undefined],
     ['GET', '/api/v1/oauth/', undefined],
@@ -262,7 +317,7 @@ describe('Connector routes: a request is logged once, with its connector', funct
       expect(backend.calls.length, 'the request must reach the connector service').to.be.at.least(1)
       expect(status).to.be.at.least(400)
       // The deprecated POST /filters still warns that it was called; that is not a failure line.
-      const own = records.filter(
+      const own = mine().filter(
         (r) => CONTROLLER_LOGGERS.has(r.service) && atLeastInfo(r) && !String(r.message).startsWith('Deprecated POST'),
       )
       expect(own).to.deep.equal([])
@@ -272,5 +327,15 @@ describe('Connector routes: a request is logged once, with its connector', funct
       expect(text).to.not.include(INSTANCE_NAME)
       expect(text).to.not.include(ADMIN.email)
     })
+  }
+
+  if (!VECTOR_STORE_REBUILD_AVAILABLE) {
+    for (const path of ['/api/v1/connectors/vector-store/cleanup', '/api/v1/connectors/vector-store/reindex']) {
+      it(`POST ${path}: refused here (403) without reaching the service, logged once`, async () => {
+        expect(await send('POST', path, {})).to.equal(403)
+        expect(backend.calls).to.have.length(0)
+        expect(byMessage('http.request.error')).to.have.length(1)
+      })
+    }
   }
 })

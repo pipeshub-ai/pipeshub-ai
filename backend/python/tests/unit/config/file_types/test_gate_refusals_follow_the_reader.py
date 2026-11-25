@@ -9,7 +9,7 @@ from tests.unit.config.file_types import delta_rules
 from tests.unit.config.file_types import gen_pinned_decisions as gen
 
 _PINNED = gen.load()
-_NEW_TYPES = ("msg", "odt", "rtf", "xlsm", "log", "cfg", "docm", "dotx", "potx")
+_NEW_TYPES = ("msg", "odt", "rtf", "xlsm", "log", "cfg", "docm", "dotx", "potx", "pptm")
 
 
 def _main_read_rows() -> list[list[object]]:

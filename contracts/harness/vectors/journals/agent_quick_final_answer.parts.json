@@ -1,0 +1,38 @@
+{
+ "scenario": "agent_quick_final_answer",
+ "parts": [
+  {
+   "type": "text",
+   "content": "",
+   "runId": "run-golden"
+  },
+  {
+   "type": "tool_call",
+   "toolCallId": "call-search",
+   "toolName": "goldendocs__search_docs",
+   "args": "{\"query\": \"paid leave\"}",
+   "status": "completed",
+   "runId": "run-golden",
+   "argsSummary": "Search Docs: \"paid leave\"",
+   "resultPreview": "{\"query\": \"paid leave\", \"hits\": [{\"title\": \"Leave policy\", \"excerpt\": \"25 days of paid leave.\"}]}",
+   "resultSummary": "Completed successfully"
+  },
+  {
+   "type": "text",
+   "content": "You get **25 days** of paid leave a year.",
+   "runId": "run-golden",
+   "isFinal": true
+  },
+  {
+   "type": "tool_call",
+   "toolCallId": "call-final",
+   "toolName": "final_answer",
+   "args": "{\"answer_markdown\": \"You get **25 days** of paid leave a year.\", \"confidence\": \"High\"}",
+   "status": "completed",
+   "runId": "run-golden",
+   "argsSummary": "Final Answer — answer_markdown: \"You get **25 days** of paid leave a year.\", confidence: \"High\"",
+   "resultPreview": "{\"answer_markdown\": \"You get **25 days** of paid leave a year.\", \"sources_used\": [], \"unavailable_sources\": [], \"confidence\": \"High\", \"confidence_reason\": null}",
+   "resultSummary": "Completed successfully"
+  }
+ ]
+}

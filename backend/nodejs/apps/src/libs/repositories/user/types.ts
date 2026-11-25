@@ -125,6 +125,15 @@ export interface RestoreServiceAccountInput {
   role: UserRole;
 }
 
+/**
+ * The admin-role lease a `withAdminLease` callback runs under. Nothing stops a holder
+ * whose lease expired, so a write that removes an admin confirms the lease first.
+ */
+export interface AdminLease {
+  /** True, and renewed for a full term, while the lease is still this holder's. */
+  confirm(): Promise<boolean>;
+}
+
 export interface UserRepository {
   // --- single account
   /** The live account in this organisation. */
@@ -265,19 +274,37 @@ export interface UserRepository {
     fields: UserFields,
     tx?: Tx,
   ): Promise<UserDto | null>;
-  /** Marks the account removed (kept for restore); null when there is none. */
+  /**
+   * Marks the account removed (kept for restore); null when there is none, or,
+   * with `onlyMember`, when it is an admin at the moment of the write.
+   */
   markDeleted(
     orgId: string,
     id: string,
-    extra?: { signedOut?: boolean; deletedBy?: string },
+    extra?: { signedOut?: boolean; deletedBy?: string; onlyMember?: boolean },
   ): Promise<UserDto | null>;
-  /** Brings removed accounts at these addresses back; returns them. */
+  /** Brings removed accounts at these addresses back as members; returns every live account at them, restored now or already live. */
   restoreByEmails(orgId: string, emails: string[], tx?: Tx): Promise<UserDto[]>;
   /** Makes these people admins (service accounts excluded). */
   promoteToAdmin(orgId: string, ids: string[], tx?: Tx): Promise<void>;
   setRole(orgId: string, id: string, role: UserRole): Promise<void>;
   /** Serialises concurrent admin changes in this organisation (inside a transaction). */
   lockOrgAdminChanges(orgId: string, tx: Tx): Promise<void>;
+  /**
+   * Inside `tx`, holds a live human admin's account until `tx` ends, so a demotion or removal of the account and the
+   * caller's write (an approval decision) cannot both commit; false when the account is not one.
+   */
+  holdLiveAdmin(orgId: string, id: string, tx?: Tx): Promise<boolean>;
+  /**
+   * Runs `fn` while holding this organisation's admin-role lease, for stores whose
+   * units of work are not transactions (a standalone MongoDB), where
+   * `lockOrgAdminChanges` cannot serialise anything. Not re-entrant: a nested call
+   * for the same organisation waits for itself and then fails as busy.
+   */
+  withAdminLease<T>(
+    orgId: string,
+    fn: (lease: AdminLease) => Promise<T>,
+  ): Promise<T>;
   /** Hard delete, to undo a create that did not finish. */
   deleteById(id: string): Promise<void>;
   /** Hard delete of a removed account (sample accounts); false when it was brought back meanwhile. */
@@ -288,6 +315,14 @@ export interface UserRepository {
     orgId: string,
     domain: string,
     exceptId: string | undefined,
+    disabled: boolean,
+  ): Promise<number>;
+  /** Disables every live account of the organisation that is enabled (its deletion); the ids it disabled, sorted. */
+  disableEnabledAccounts(orgId: string): Promise<string[]>;
+  /** Sets the disabled flag of these live accounts of the organisation; how many changed. */
+  setAccountsDisabled(
+    orgId: string,
+    ids: string[],
     disabled: boolean,
   ): Promise<number>;
   /** Moves the account to this address; null when it does not exist. */

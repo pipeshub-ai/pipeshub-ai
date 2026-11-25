@@ -9,7 +9,7 @@ import asyncio
 import json
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from typing import Any, Generic, TypeVar
 
 from app.config.key_value_store import KeyValueStore
@@ -219,7 +219,9 @@ class PostgresKeyValueStore(KeyValueStore[T], Generic[T]):
         else:
             self._watchers.pop(key, None)
 
-    async def subscribe_changes(self, callback: Callable[[str], None]) -> Any | None:  # noqa: ANN401
+    async def subscribe_changes(
+        self, callback: Callable[[str], None], *, keys: Collection[str] | None = None
+    ) -> Any | None:  # noqa: ANN401
         dsn = listen_dsn(self._rt.cfg)
         if dsn is None:
             logger.warning(

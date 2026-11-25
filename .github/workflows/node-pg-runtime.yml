@@ -44,11 +44,11 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq postgresql-17 postgresql-18 postgresql-17-pgvector postgresql-18-pgvector pgbouncer
           python -m venv "$RUNNER_TEMP/migrate-venv"
-          "$RUNNER_TEMP/migrate-venv/bin/pip" install -r backend/db/requirements.txt
+          "$RUNNER_TEMP/migrate-venv/bin/pip" install --require-hashes --no-deps -r backend/db/requirements.lock
 
       - name: Install dependencies
         working-directory: backend/nodejs/apps
-        run: npm ci
+        run: npm ci --ignore-scripts
 
       - name: Integration tests (includes the generated-types drift check)
         working-directory: backend/nodejs/apps

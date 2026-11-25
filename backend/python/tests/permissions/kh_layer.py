@@ -312,7 +312,15 @@ async def children_of(
     page = await KnowledgeHubService(logging.getLogger("kh-layer"), layer._provider, _Config()).get_nodes(
         user_id=ns.id(viewer), org_id=ns.org, parent_id=ns.id(node), parent_type=parent_type, limit=PAGE, sort_by="name", sort_order="asc",
         only_containers=only_containers, flattened=flattened)
-    return {ns.local(i.id): bool(i.hasChildren) for i in page.items} if page.success else None
+    return {ns.local(i.id): bool(i.hasChildren) for i in page.items} if _opened(page) else None
+
+
+def _opened(page: Any) -> bool:  # noqa: ANN401
+    """Whether the browse opened the node: a refusal (4xx) is False; a server error is no answer about access, so it raises instead of
+    reading as a refusal or an empty page."""
+    if not page.success and (page.errorCode or 0) >= 500:
+        raise RuntimeError(f"the browse failed with {page.errorCode}: {page.error}")
+    return bool(page.success)
 
 
 def held_to_rows(totals: list[int], capped: list[bool], rows: int) -> list[int]:
@@ -353,7 +361,7 @@ async def browse_pages(
         if cursor:
             args["cursor"] = cursor
         page = await service.get_nodes(**args)
-        if not page.success:
+        if not _opened(page):
             return None
         items += page.items
         totals.append(page.pagination.totalItems)
@@ -365,6 +373,35 @@ async def browse_pages(
             cursors.append(cursor)
         if not cursor:
             return items, held_to_rows(totals, capped, len(items)), held_to_rows(counted, counted_capped, len(items))
+    raise AssertionError("browse did not end")
+
+
+async def counts_from_the_second_page(
+    layer: GraphCheckLayer, world: World, viewer: str, node: str, parent_type: str, page_size: int,
+) -> tuple[list[Any], list[tuple[int, int, int, dict[str, int]]]]:
+    """Every page of opening ``node``, the first asked without counts and the rest with them: the rows, and for each later page the sum of its
+    counts by type, its ``counts.total``, its ``totalItems`` and its counts by type (by node type)."""
+    from app.connectors.sources.localKB.handlers.knowledge_hub_service import (
+        KnowledgeHubService,
+    )
+
+    labels = {"records": "record", "folders": "folder", "groups": "recordGroup", "apps": "app"}
+    ns = await layer._ns(world)
+    service = KnowledgeHubService(logging.getLogger("kh-layer"), layer._provider, _Config())
+    args = {"user_id": ns.id(viewer), "org_id": ns.org, "parent_id": ns.id(node), "parent_type": parent_type, "limit": page_size,
+            "sort_by": "name", "sort_order": "asc"}
+    first = await service.get_nodes(**args)
+    assert first.success and first.counts is None, first.error
+    items, cursor, pages = list(first.items), first.pagination.nextCursor, []
+    for _ in range(MAX_PAGES):
+        if not cursor:
+            return items, pages
+        page = await service.get_nodes(**args, cursor=cursor, include=["counts"])
+        assert page.success, page.error
+        items += page.items
+        by_type = {labels[c.label]: c.count for c in page.counts.items}
+        pages.append((sum(by_type.values()), page.counts.total, page.pagination.totalItems, by_type))
+        cursor = page.pagination.nextCursor
     raise AssertionError("browse did not end")
 
 

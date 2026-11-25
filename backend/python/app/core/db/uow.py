@@ -47,7 +47,7 @@ from app.core.db.errors import (
     UnsupportedIsolation,
     UowUsageError,
 )
-from app.core.db.pool import create_pool
+from app.core.db.pool import connect_failure, create_pool, lost_state
 from app.telemetry.backend import METRICS_BACKEND
 from app.utils import db_query_log, error_class
 
@@ -87,7 +87,6 @@ _SQL_NOISE = re.compile(r"/\*.*?\*/|--[^\n]*|(\$[A-Za-z_]*\$).*?\1|'(?:[^']|'')*
 COMMIT_PROBE = True  # ask the server before COMMIT whether the transaction is still alive (write units)
 _current_tx: contextvars.ContextVar[Tx | None] = contextvars.ContextVar("pg_current_tx", default=None)
 _COLTYPE = re.compile(r"[a-z][a-z0-9_ ]{0,40}(\(\d{1,4}(,\d{1,4})?\))?(\[\])?")
-_LOST_STATES = {"57P01", "57P02", "57P03", "25P03"}
 _ISOLATION = ("read_committed", "repeatable_read", "serializable")
 RETRIES_MAX = 3
 BACKOFF_BASE_S = 0.01
@@ -148,6 +147,7 @@ class Tx:
         self.org_id = ""  # the org the unit is bound to
         self.role = ""  # the database role the unit runs as
         self.kg_dirty = False  # a statement of this unit that the guard recognised writes graph.nodes or graph.edges (the capture trigger's mark is the authority)
+        self.before_commit: list[Callable[[Tx], Awaitable[None]]] = []  # run last, right before COMMIT (after the pre-commit hook)
         self._open = True
 
     @staticmethod
@@ -256,6 +256,7 @@ class Tx:
         if not _IDENT.fullmatch(name):
             raise ValueError(f"invalid savepoint name {name!r}")
         await self._run("execute", f"/* pipeshub:kernel.savepoint */ SAVEPOINT {name}", internal=True)
+        mark = len(self.before_commit)
         try:
             yield
         except Exception:
@@ -268,6 +269,7 @@ class Tx:
                 mapped = self._db.map_error(e, self)
                 self._record("rollback_to", "kernel.savepoint", t0, mapped, getattr(e, "sqlstate", None))
                 raise mapped from e
+            del self.before_commit[mark:]  # what the rolled-back block registered (an event of its write) is rolled back with it
             self.failed = False
             raise
         else:
@@ -323,7 +325,6 @@ class KernelDB:
         # set by app.services.graph_db.postgres.kg.flush.install: asked before a statement that writes the graph, and awaited before COMMIT of every write unit
         self.graph_write_hook: Callable[[Tx, str], None] | None = None
         self.pre_commit_hook: Callable[[Tx], Awaitable[None]] | None = None
-        self.post_commit_hook: Callable[[Tx], None] | None = None  # called, without waiting, once a write unit has committed
 
     # ---- lifecycle ---------------------------------------------------------------------------------------------
     async def start(self) -> None:
@@ -520,13 +521,11 @@ class KernelDB:
             con = await pool.acquire(timeout=statement_ms / 1000)
         except TimeoutError as e:
             raise PoolTimeout("no pooled connection became free in time") from e
-        except OSError as e:  # connection refused and similar while opening a new connection
-            lost = ConnectionLost("cannot connect", retry_safe=True)
-            error_class.mark_error(lost, hide_text=True)  # no statement exists to record it; the OS text names the host
+        except (OSError, asyncpg.PostgresError) as e:  # the OS or the server refused a new connection
+            lost = connect_failure(e)
+            if lost is None:
+                raise
             raise lost from e
-        except asyncpg.PostgresError as e:  # the server refused the new connection: 28P01 names the user, 57P03, 53300
-            error_class.mark_error(e, hide_text=True)
-            raise
         waited = time.perf_counter() - t_start
         POOL_WAIT.observe(self.cfg.service, value=waited)
         if timeout_ms and statement_ms <= timeout_ms:      # the caller's budget covers the wait for a connection and the statement together
@@ -550,6 +549,8 @@ class KernelDB:
             yield tx
             if write and self.pre_commit_hook is not None and not tx.failed:
                 await self.pre_commit_hook(tx)
+            for step in tx.before_commit:
+                await step(tx)
             await self._check_alive(con, tx, write=write)
             tx.commit_sent = True
             t_commit = time.perf_counter()
@@ -561,12 +562,10 @@ class KernelDB:
                 tx._record("commit", None, t_commit, failure, getattr(e, "sqlstate", None))
                 raise failure from e
             outcome = "commit"
-            if write and self.post_commit_hook is not None:
-                try:
-                    self.post_commit_hook(tx)  # the unit is committed: a hook that fails must not fail it
-                except Exception:
-                    logger.exception("post-commit hook failed")
-        except BaseException:
+        except BaseException as e:
+            if not tx.commit_sent:
+                with suppress(Exception):
+                    e.commit_not_sent = True  # type: ignore[attr-defined]  # a known rollback: nothing of the unit was applied
             await self._abort(con, txn, tx)
             raise
         finally:
@@ -656,15 +655,23 @@ class KernelDB:
             return LockTimeout(str(e))
         if prologue and state == "55000":
             return ProfileEpochMismatch(str(e))
-        lost = isinstance(e, asyncpg.InterfaceError) or (
+        lost = isinstance(e, asyncpg.InterfaceError) or _broken_protocol(e) or (
             not isinstance(e, TimeoutError) and isinstance(e, (OSError, asyncio.IncompleteReadError))
-        ) or (state is not None and (state in _LOST_STATES or state.startswith("08")))
+        ) or lost_state(state)
         if lost:
             safe = not tx.commit_sent and (tx.idempotent or tx.completed == 0)
             return ConnectionLost(str(e) or type(e).__name__, retry_safe=safe)
         if prologue:
             return PrologueFailed(f"{type(e).__name__}: {e}")
         return e
+
+
+def _broken_protocol(e: Exception) -> bool:
+    """The driver's protocol state is broken ("failed", another operation in progress, not connected), as a connection the server
+    or the pooler dropped mid-operation leaves it: the connection cannot be used again. asyncpg raises the same InternalClientError
+    type for a missing codec, which is a bug and is not a lost connection, so the messages of asyncpg's protocol state checks
+    (protocol/coreproto.pyx ``_set_state``, ``_ensure_connected``) are matched."""
+    return isinstance(e, asyncpg.InternalClientError) and str(e).startswith(("cannot switch to state", "not connected"))
 
 
 def _class_of_state(state: str) -> str:

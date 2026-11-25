@@ -28,6 +28,7 @@ from app.utils.embedding_gate import BulkGate, get_bulk_gate
 from app.utils.embedding_retry import await_with_retry, call_with_retry
 from app.utils.logger import create_logger
 from app.utils.precision_witness import get_precision_witness
+from harness_core.deadline import CONNECT_TIMEOUT_S, bounded_read
 
 if TYPE_CHECKING:
     from app.services.messaging.backpressure import BackpressureCoordinator
@@ -135,7 +136,8 @@ class EmbeddingServerEmbeddings(Embeddings):
             base_url=_embedding_server_base_url(),
             check_embedding_ctx_length=False,
             max_retries=0,
-            timeout=self.timeout,
+            # A short connect: an unroutable embedding server fails in seconds, not after the read bound (ERR-UX).
+            timeout=httpx.Timeout(self.timeout, connect=CONNECT_TIMEOUT_S),
             extra_body=extra_body,
             http_client=self._http,
             http_async_client=self._http_async,
@@ -150,7 +152,7 @@ class EmbeddingServerEmbeddings(Embeddings):
             base_url=_embedding_server_base_url(),
             check_embedding_ctx_length=False,
             max_retries=0,
-            timeout=self.timeout,
+            timeout=httpx.Timeout(self.timeout, connect=CONNECT_TIMEOUT_S),
             extra_body=extra_body,
             default_headers={EMBEDDING_PRIORITY_HEADER: EMBEDDING_PRIORITY_QUERY},
             http_client=self._http,
@@ -378,15 +380,16 @@ class EmbeddingServerEmbeddings(Embeddings):
             self._precision_stale = True
             raise
 
+    # On a run's tool call the retries together are bounded by the call's remaining time (ERR-UX).
     async def aembed_documents(self, texts: list[str], *, single_attempt: bool = False) -> list[list[float]]:
         # single_attempt: the caller retries, so no backoff sleep here (it may hold a bulk permit).
-        vectors = await await_with_retry(
+        vectors = await bounded_read("embedding", await_with_retry(
             lambda: self._aembed_noting_lost_connection(texts),
             max_retries=1 if single_attempt else self.max_retries,
             operation="aembed_documents",
             service_name=_EMBEDDING_SERVER_SERVICE_NAME,
             backpressure_coordinator=self._backpressure_coordinator,
-        )
+        ))
         # Re-read only after a lost connection, never per batch. If the read fails
         # the flag stays set and the next batch tries again.
         if self._precision_stale and await self._read_precision_once():
@@ -394,13 +397,24 @@ class EmbeddingServerEmbeddings(Embeddings):
         return vectors
 
     async def aembed_query(self, text: str) -> list[float]:
-        return await await_with_retry(
+        return await bounded_read("embedding", await_with_retry(
             lambda: self._query_inner.aembed_query(text),
             max_retries=self.max_retries,
             operation="aembed_query",
             service_name=_EMBEDDING_SERVER_SERVICE_NAME,
             backpressure_coordinator=self._backpressure_coordinator,
-        )
+        ))
+
+
+async def list_embedding_server_models() -> list[object]:
+    """The in-cluster embedding server's ``/v1/models`` entries (what it serves and at which weight precision). A listing,
+    not a model call: no org content goes out, so it is not behind an org's region pin (MG-15)."""
+    client = openai.AsyncOpenAI(base_url=_embedding_server_base_url(), api_key=_EMBEDDING_SERVER_API_KEY, max_retries=0, timeout=5.0)
+    try:
+        page = await client.models.list()
+    finally:
+        await client.close()
+    return list(page.data)
 
 
 def get_embedding_server_embeddings(

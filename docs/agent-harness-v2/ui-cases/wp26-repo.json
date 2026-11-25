@@ -1,0 +1,168 @@
+[
+  {
+    "id": "wp26-1",
+    "title": "The + menu offers \"Work on a repository\"",
+    "steps": [
+      "Sign in as the test admin",
+      "Open a new chat (assistant, Agent mode, agent harness on)",
+      "Open the composer + menu"
+    ],
+    "expected": [
+      "A row \"Work on a repository\" with the subtitle \"Clone a GitHub repository into this chat\"",
+      "The row is enabled (not aria-disabled)"
+    ],
+    "screenshots": [
+      "01-plus-menu-desktop-light.png",
+      "01-plus-menu-desktop-dark.png",
+      "01-plus-menu-phone-light.png",
+      "01-plus-menu-phone-dark.png"
+    ]
+  },
+  {
+    "id": "wp26-2a",
+    "title": "Greyed: this chat has no coding engine",
+    "steps": [
+      "Sign in as the test admin",
+      "Open a new chat",
+      "Send \"/engine none\" from the composer",
+      "Open the + menu",
+      "Type \"/repo\" in the composer"
+    ],
+    "expected": [
+      "The row is greyed with the subtitle \"Needs a coding engine. Pick one first.\"",
+      "/repo is greyed with the same reason"
+    ],
+    "screenshots": [
+      "02a-greyed-no-engine-desktop-light.png",
+      "02a-greyed-no-engine-desktop-dark.png",
+      "02a-greyed-no-engine-phone-light.png",
+      "02a-greyed-no-engine-phone-dark.png"
+    ]
+  },
+  {
+    "id": "wp26-2b",
+    "title": "Greyed: the organization has no coding engine turned on",
+    "steps": [
+      "Sign in as the test admin",
+      "Stub only GET /api/v1/agent-harness/model-accounts/coding-engine so every engine is unavailable",
+      "Open a new chat and the + menu"
+    ],
+    "expected": [
+      "The row is greyed with the subtitle \"Your organization hasn't turned on coding engines.\""
+    ],
+    "screenshots": [
+      "02b-greyed-org-off-desktop-light.png",
+      "02b-greyed-org-off-desktop-dark.png",
+      "02b-greyed-org-off-phone-light.png",
+      "02b-greyed-org-off-phone-dark.png"
+    ]
+  },
+  {
+    "id": "wp26-2c",
+    "title": "Greyed: the chat already works on a repository",
+    "steps": [
+      "Sign in as the test admin",
+      "Send a first message in a new chat and wait for the answer",
+      "Open the + menu, pick acme/widgets from main, \"Use repository\" (PUT …/repository)",
+      "Reload the chat and open the + menu",
+      "Remove it with the chip's ×"
+    ],
+    "expected": [
+      "The chip \"acme/widgets from main\" shows over the composer (not copied yet)",
+      "The row is greyed: \"This chat already works on acme/widgets. Start a new chat for another repository.\"",
+      "After ×, the chip is gone and the row is enabled again"
+    ],
+    "screenshots": [
+      "02c-greyed-has-repository-desktop-light.png",
+      "02c-greyed-has-repository-desktop-dark.png",
+      "02c-greyed-has-repository-phone-light.png",
+      "02c-greyed-has-repository-phone-dark.png"
+    ]
+  },
+  {
+    "id": "wp26-3",
+    "title": "The picker lists repositories, searches, and marks the default branch",
+    "steps": [
+      "Sign in as the test admin",
+      "Open a new chat, + menu, \"Work on a repository\"",
+      "Search \"widgets\" and pick acme/widgets",
+      "Open \"Start from branch\""
+    ],
+    "expected": [
+      "The GitHub connection select shows \"GitHub\"",
+      "Three repositories, acme/widgets tagged \"private\", each with \"updated …\"",
+      "Searching \"widgets\" leaves two",
+      "The branch select shows \"main (default)\" and offers release/1.x",
+      "The \"What happens\" note names acme/widgets and main"
+    ],
+    "screenshots": [
+      "03-picker-desktop-light.png",
+      "03-picker-desktop-dark.png",
+      "03-picker-phone-light.png",
+      "03-picker-phone-dark.png"
+    ]
+  },
+  {
+    "id": "wp26-4",
+    "title": "No GitHub connection: \"Connect GitHub first\"",
+    "steps": [
+      "Sign in as the test member (no GitHub connection)",
+      "Open a new chat and send \"/engine opencode\" from the composer (the member has no default engine)",
+      "Open the + menu, \"Work on a repository\"",
+      "Click \"Connect GitHub\""
+    ],
+    "expected": [
+      "The warning \"Connect GitHub first. PipesHub uses your GitHub connection to copy the repository and push the engine's branch.\" with Cancel and Connect GitHub",
+      "Connect GitHub opens /workspace/actions/personal?toolsetType=github"
+    ],
+    "screenshots": [
+      "04-connect-github-desktop-light.png",
+      "04-connect-github-desktop-dark.png",
+      "04-connect-github-phone-light.png",
+      "04-connect-github-phone-dark.png"
+    ]
+  },
+  {
+    "id": "wp26-5",
+    "title": "A new chat: the chip before the first message",
+    "steps": [
+      "Sign in as the test admin",
+      "Open a new chat, pick acme/widgets from main and \"Use repository\"",
+      "Type \"/repo\"",
+      "Click the chip's ×"
+    ],
+    "expected": [
+      "The chip \"acme/widgets from main\" with × (\"Don't use this repository\") sits over the composer",
+      "/repo is greyed: the chat already works on acme/widgets",
+      "× removes the chip"
+    ],
+    "screenshots": [
+      "05-chip-desktop-light.png",
+      "05-chip-desktop-dark.png",
+      "05-chip-phone-light.png",
+      "05-chip-phone-dark.png"
+    ]
+  },
+  {
+    "id": "wp26-6",
+    "title": "Activity rows of an engine turn: copied, pushed, pull request",
+    "steps": [
+      "Needs PXH_REPO_ENGINE_TURN and a cloneable repository (skipped otherwise)",
+      "Sign in as the test admin",
+      "Open a new chat, pick acme/widgets from main",
+      "Ask the engine to change README.md, push its branch and open a pull request"
+    ],
+    "expected": [
+      "\"Copied acme/widgets · branch pipeshub/session-…\"",
+      "\"Pushed to pipeshub/session-…\"",
+      "\"Opened pull request #N in acme/widgets\" with \"View on GitHub\"",
+      "No JSON, ids or raw command output in those rows; a refused push is one row \"Couldn't push to <target> · <reason>\""
+    ],
+    "screenshots": [
+      "06-activity-desktop-light.png",
+      "06-activity-desktop-dark.png",
+      "06-activity-phone-light.png",
+      "06-activity-phone-dark.png"
+    ]
+  }
+]

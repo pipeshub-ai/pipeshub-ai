@@ -821,7 +821,7 @@ export function MermaidDiagram({ chart }: MermaidDiagramProps) {
             borderBottom: showErrorSource ? '1px solid var(--slate-5)' : undefined,
           }}
         >
-          <MaterialIcon name="warning_amber" size={ICON_SIZES.SECONDARY} style={{ color: 'var(--amber-9)', flexShrink: 0 }} />
+          <MaterialIcon name="warning_amber" size={ICON_SIZES.SECONDARY} style={{ color: 'var(--amber-11)', flexShrink: 0 }} />
           <Text size="1" style={{ color: 'var(--slate-11)', flex: 1 }}>
             {t('chat.diagramRenderFailed')}
           </Text>
@@ -900,7 +900,7 @@ export function MermaidDiagram({ chart }: MermaidDiagramProps) {
             variant="ghost"
             color="gray"
             title={t('chat.expandDiagram')}
-            style={{ cursor: 'pointer', color: 'var(--slate-9)' }}
+            style={{ cursor: 'pointer', color: 'var(--slate-11)' }}
             onClick={() => setOpen(true)}
           >
             <MaterialIcon name="open_in_full" size={ICON_SIZES.SECONDARY} />
@@ -930,7 +930,7 @@ export function MermaidDiagram({ chart }: MermaidDiagramProps) {
         ) : (
           <Flex align="center" gap="2">
             <Spinner size="2" />
-            <Text size="1" style={{ color: 'var(--slate-9)' }}>
+            <Text size="1" style={{ color: 'var(--slate-11)' }}>
               {t('chat.renderingDiagram')}
             </Text>
           </Flex>
@@ -1040,7 +1040,7 @@ export function MermaidDiagram({ chart }: MermaidDiagramProps) {
 
               {/* Close */}
               <Dialog.Close>
-                <IconButton className="touch-hit" size="1" variant="ghost" color="gray" style={{ cursor: 'pointer' }}>
+                <IconButton aria-label={t('common.close')} className="touch-hit" size="1" variant="ghost" color="gray" style={{ cursor: 'pointer' }}>
                   <MaterialIcon name="close" size={ICON_SIZES.SECONDARY} />
                 </IconButton>
               </Dialog.Close>

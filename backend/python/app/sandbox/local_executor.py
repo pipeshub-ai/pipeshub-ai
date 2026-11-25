@@ -7,15 +7,21 @@ Each invocation gets its own temp directory for source files and artifacts.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import importlib.metadata
 import logging
 import os
 import shutil
 import sys
-import tempfile
 import time
 from uuid import uuid4
 
+from app.agent_loop_lib.sandbox.coding.credentials import (
+    PGPASS_ENV,
+    PSQL_FORGET,
+    database,
+    pgpass,
+)
 from app.sandbox.base_executor import BaseExecutor, build_sandbox_env
 from app.sandbox.models import (
     DEFAULT_TIMEOUT_SECONDS,
@@ -24,10 +30,14 @@ from app.sandbox.models import (
     validate_packages,
 )
 from app.sandbox.package_policy import canonicalize
+from app.sandbox.roots import LOCAL, ensure_private_dir, sandbox_root
 
 logger = logging.getLogger(__name__)
 
-_SANDBOX_ROOT = os.path.join(tempfile.gettempdir(), "pipeshub_sandbox")
+def _sandbox_root() -> str:
+    """The running user's own folder, never a shared name another user could own or plant (R13-ROOT). Read at each
+    use, as the artifact reader reads it, so a temp folder that moves after import moves both."""
+    return sandbox_root(LOCAL)
 
 # Substrings that indicate ``pip install`` failed because the host can't reach
 # PyPI (DNS / proxy / firewall issues). Matched against pip's stderr so we can
@@ -73,7 +83,7 @@ class LocalExecutor(BaseExecutor):
     """Execute code in a local subprocess (developer mode)."""
 
     def __init__(self) -> None:
-        os.makedirs(_SANDBOX_ROOT, exist_ok=True)
+        _ = ensure_private_dir(_sandbox_root())
 
     async def execute(
         self,
@@ -85,7 +95,7 @@ class LocalExecutor(BaseExecutor):
         env: dict[str, str] | None = None,
     ) -> ExecutionResult:
         execution_id = str(uuid4())
-        work_dir = os.path.join(_SANDBOX_ROOT, execution_id)
+        work_dir = os.path.join(_sandbox_root(), execution_id)
         output_dir = os.path.join(work_dir, "output")
         os.makedirs(output_dir, exist_ok=True)
 
@@ -321,13 +331,24 @@ class LocalExecutor(BaseExecutor):
                 execution_time_ms=_now_ms() - start_ms,
             )
 
-        run_env = {**(env or {}), "OUTPUT_DIR": output_dir, "PGAPPNAME": "pipeshub_sandbox"}
-        result = await self._subprocess(
-            ["psql", pg_url, "-c", sql, "--csv"],
-            work_dir,
-            timeout,
-            run_env,
-        )
+        secured = database(pg_url)
+        run_env = {**(env or {}), "DATABASE_URL": secured.url, "OUTPUT_DIR": output_dir, "PGAPPNAME": "pipeshub_sandbox"}
+        if secured.password is None:
+            argv = ["psql", secured.url, "-c", sql, "--csv"]
+            result = await self._subprocess(argv, work_dir, timeout, run_env)
+        else:
+            os.makedirs(work_dir, exist_ok=True)
+            password_file = os.path.join(work_dir, ".pgpass")
+            fd = os.open(password_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(pgpass(secured.password))
+            run_env[PGPASS_ENV] = password_file
+            argv = ["psql", secured.url, "-c", PSQL_FORGET.strip(), "-c", sql, "--csv"]
+            try:
+                result = await self._subprocess(argv, work_dir, timeout, run_env)
+            finally:
+                with contextlib.suppress(FileNotFoundError):
+                    os.unlink(password_file)
         result.artifacts = self.collect_artifacts(output_dir)
         result.execution_time_ms = _now_ms() - start_ms
         return result
@@ -375,8 +396,6 @@ class LocalExecutor(BaseExecutor):
             "[LocalExecutor._subprocess] pid=%s exit_code=%s stdout_len=%d stderr_len=%d",
             proc.pid, proc.returncode, len(stdout), len(stderr),
         )
-        if proc.returncode != 0 and stderr:
-            logger.info("[LocalExecutor._subprocess] STDERR:\n%s", stderr[:2000])
 
         return ExecutionResult(
             success=proc.returncode == 0,
@@ -392,13 +411,13 @@ class LocalExecutor(BaseExecutor):
     @staticmethod
     def cleanup_execution(execution_id: str) -> None:
         """Remove the working directory for a given execution."""
-        path = os.path.join(_SANDBOX_ROOT, execution_id)
+        path = os.path.join(_sandbox_root(), execution_id)
         if os.path.isdir(path):
             shutil.rmtree(path, ignore_errors=True)
 
     @staticmethod
     def get_sandbox_root() -> str:
-        return _SANDBOX_ROOT
+        return _sandbox_root()
 
 
 def _now_ms() -> int:

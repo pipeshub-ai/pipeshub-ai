@@ -56,7 +56,7 @@ export function OAuthApplicationCard({ client, onManage }: OAuthApplicationCardP
             flexShrink: 0,
           }}
         >
-          <MaterialIcon name="settings" size={16} color="var(--gray-9)" />
+          <MaterialIcon name="settings" size={16} color="var(--gray-11)" />
         </Flex>
 
         <Flex direction="column" gap="2" style={{ width: '100%', minWidth: 0 }}>

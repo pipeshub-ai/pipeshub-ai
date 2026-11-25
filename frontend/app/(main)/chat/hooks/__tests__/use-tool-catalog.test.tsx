@@ -14,7 +14,7 @@ vi.mock('@/app/(main)/toolsets/api', () => ({ ToolsetsApi: toolsetsApi, MAX_TOOL
 vi.mock('@/app/(main)/workspace/mcp-servers/api', () => ({ McpServersApi: mcpApi }));
 
 import { useChatStore } from '@/chat/store';
-import { useAuthStore } from '@/lib/store/auth-store';
+import { useAuthStore } from '@/config';
 import { useFeatureFlagsStore } from '@/lib/store/feature-flags-store';
 import { clearSessionCache } from '@/lib/api/session-cache';
 import { useProjectScopeHydration, useToolCatalog } from '../use-project-scope-hydration';
@@ -69,7 +69,7 @@ beforeEach(() => {
   toolsetsApi.getAllMyToolsets.mockReset();
   mcpApi.getMyMcpServers.mockReset().mockResolvedValue({ instances: [] as McpMyServerEntry[] });
   useFeatureFlagsStore.setState({ flags: { ENABLE_MCP: true } });
-  useAuthStore.setState({ accessToken: 'a', refreshToken: 'r', isAuthenticated: true });
+  useAuthStore.setState({ accessToken: 'a', isAuthenticated: true });
 });
 
 afterEach(() => {
@@ -168,7 +168,7 @@ describe('useToolCatalog', () => {
     await settle();
 
     act(() => useAuthStore.getState().logout());
-    useAuthStore.setState({ accessToken: 'b', refreshToken: 'rb', isAuthenticated: true });
+    useAuthStore.setState({ accessToken: 'b', isAuthenticated: true });
     const b = renderHook(() => useCatalog(true));
     expect(b.result.current.data).toBeUndefined();
     await settle();

@@ -1,5 +1,4 @@
 """Tests for app.api.routes.chatbot helper functions and models."""
-import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -307,7 +306,7 @@ class TestGetLlmForChat:
         }
 
     @pytest.mark.asyncio
-    @patch("app.api.routes.chatbot.get_generator_model_async")
+    @patch("app.utils.llm.get_generator_model_async")
     @patch("app.api.routes.chatbot.get_model_config")
     async def test_fallback_to_first_model(self, mock_get_model_config, mock_gen):
         from app.api.routes.chatbot import get_llm_for_chat
@@ -320,10 +319,10 @@ class TestGetLlmForChat:
         mock_gen.return_value = MagicMock()
 
         llm, cfg, ai = await get_llm_for_chat(AsyncMock())
-        mock_gen.assert_called_once_with("openai", config, "gpt-4o", None)
+        mock_gen.assert_called_once_with("openai", config, "gpt-4o", None, None)
 
     @pytest.mark.asyncio
-    @patch("app.api.routes.chatbot.get_generator_model_async")
+    @patch("app.utils.llm.get_generator_model_async")
     @patch("app.api.routes.chatbot.get_model_config")
     async def test_with_model_key_only(self, mock_get_model_config, mock_gen):
         from app.api.routes.chatbot import get_llm_for_chat
@@ -336,10 +335,10 @@ class TestGetLlmForChat:
         mock_gen.return_value = MagicMock()
 
         llm, cfg, ai = await get_llm_for_chat(AsyncMock(), model_key="key-1")
-        mock_gen.assert_called_once_with("openai", config, "gpt-4o", None)
+        mock_gen.assert_called_once_with("openai", config, "gpt-4o", None, None)
 
     @pytest.mark.asyncio
-    @patch("app.api.routes.chatbot.get_generator_model_async")
+    @patch("app.utils.llm.get_generator_model_async")
     @patch("app.api.routes.chatbot.get_model_config")
     async def test_with_model_key_and_name_matching(self, mock_get_model_config, mock_gen):
         from app.api.routes.chatbot import get_llm_for_chat
@@ -354,10 +353,10 @@ class TestGetLlmForChat:
         llm, cfg, ai = await get_llm_for_chat(
             AsyncMock(), model_key="key-1", model_name="gpt-4o-mini"
         )
-        mock_gen.assert_called_once_with("openai", config, "gpt-4o-mini", None)
+        mock_gen.assert_called_once_with("openai", config, "gpt-4o-mini", None, None)
 
     @pytest.mark.asyncio
-    @patch("app.api.routes.chatbot.get_generator_model_async")
+    @patch("app.utils.llm.get_generator_model_async")
     @patch("app.api.routes.chatbot.get_model_config")
     async def test_with_model_key_and_name_not_matching(self, mock_get_model_config, mock_gen):
         """When model_key matches but model_name is not in config, falls to model_key branch."""
@@ -374,10 +373,10 @@ class TestGetLlmForChat:
             AsyncMock(), model_key="key-1", model_name="nonexistent"
         )
         # Falls to the model_key-only branch, uses first model name
-        mock_gen.assert_called_once_with("openai", config, "gpt-4o", None)
+        mock_gen.assert_called_once_with("openai", config, "gpt-4o", None, None)
 
     @pytest.mark.asyncio
-    @patch("app.api.routes.chatbot.get_generator_model_async")
+    @patch("app.utils.llm.get_generator_model_async")
     @patch("app.api.routes.chatbot.get_model_config")
     async def test_list_config_takes_first(self, mock_get_model_config, mock_gen):
         """When get_model_config returns a list, first element is used."""
@@ -398,10 +397,10 @@ class TestGetLlmForChat:
         mock_gen.return_value = MagicMock()
 
         llm, cfg, ai = await get_llm_for_chat(AsyncMock())
-        mock_gen.assert_called_once_with("openai", configs[0], "gpt-4o", None)
+        mock_gen.assert_called_once_with("openai", configs[0], "gpt-4o", None, None)
 
     @pytest.mark.asyncio
-    @patch("app.api.routes.chatbot.get_generator_model_async")
+    @patch("app.utils.llm.get_generator_model_async")
     @patch("app.api.routes.chatbot.get_model_config")
     async def test_reasoning_effort_forwarded_to_generator(self, mock_get_model_config, mock_gen):
         """reasoning_effort passed to get_llm_for_chat must reach get_generator_model_async
@@ -416,7 +415,7 @@ class TestGetLlmForChat:
         mock_gen.return_value = MagicMock()
 
         await get_llm_for_chat(AsyncMock(), reasoning_effort="high")
-        mock_gen.assert_called_once_with("openai", config, "gpt-4o", "high")
+        mock_gen.assert_called_once_with("openai", config, "gpt-4o", "high", None)
 
     @pytest.mark.asyncio
     @patch("app.api.routes.chatbot.get_model_config")
@@ -435,7 +434,7 @@ class TestGetLlmForChat:
             await get_llm_for_chat(AsyncMock())
 
     @pytest.mark.asyncio
-    @patch("app.api.routes.chatbot.get_generator_model_async")
+    @patch("app.utils.llm.get_generator_model_async")
     @patch("app.api.routes.chatbot.get_model_config")
     async def test_generator_model_raises_wraps(self, mock_get_model_config, mock_gen):
         from app.api.routes.chatbot import get_llm_for_chat
@@ -662,12 +661,12 @@ class TestGetLlmForChatAdditional:
             }]
         })
 
-        with patch("app.api.routes.chatbot.get_generator_model_async") as mock_gen:
+        with patch("app.utils.llm.get_generator_model_async") as mock_gen:
             mock_gen.return_value = MagicMock()
             llm, cfg, ai = await get_llm_for_chat(
                 mock_cs, model_key="key-1", model_name="gpt-4o-mini"
             )
-            mock_gen.assert_called_once_with("openai", cfg, "gpt-4o-mini", None)
+            mock_gen.assert_called_once_with("openai", cfg, "gpt-4o-mini", None, None)
         assert llm is mock_gen.return_value
         assert cfg["modelKey"] == "key-1"
         assert ai == mock_cs.get_config.return_value

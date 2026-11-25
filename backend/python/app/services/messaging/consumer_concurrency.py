@@ -1229,13 +1229,35 @@ def held_downstream(host: ConcurrencyHost, message: "StreamMessage", pools: froz
         return True
     # shortcut: the PDF route is Docling's, the one SERVICE_POOL entry; a second tier-scoped service needs its own test
     payload = message.payload
-    mime = str(payload.get("mimeType") or "unknown")
-    extension = payload.get("extension") or "unknown"
-    code_ext = file_types.code_extension(extension, payload.get("filePath"), payload.get("recordName"))
-    dispatch = file_types.legacy_route(
-        mime, extension, code_ext=code_ext, reads_as_code_file=file_types.reads_as_source(mime, code_ext)
+    dispatch = file_types.labels_route(
+        payload.get("extension"), payload.get("mimeType"),
+        file_path=payload.get("filePath"), record_name=payload.get("recordName"),
     )
     return dispatch is not None and dispatch.route is file_types.Route.PDF
+
+
+async def wait_out_held_service(
+    host: ConcurrencyHost, tier: ParseTier | None, message: "StreamMessage", wait: "AdmissionWait", *, scoped: bool,
+) -> None:
+    """A record the dispatch could not judge calls a held service: wait that service's pause out before the parse permit.
+
+    The dispatch judged the event's labels; a stored PDF sent with light ones is known only at START_PARSING, by its
+    raised *tier*. The wait runs inside START_PARSING's own parse wait (*wait*), so the budget is paused once and the
+    bound is that wait's. A pause that outlasts it hands the record back: returning would not, since a gate with room
+    admits whatever the timeout.
+    """
+    if not scoped:  # a broker-order consumer already stops for every pause
+        return
+    pools = held_pools(host)
+    pool = index_pool(effective_index_tier(host, tier))
+    if pool not in pools or held_downstream(host, message, pools):
+        return
+    coordinator = host.backpressure_coordinator  # type: ignore[attr-defined]
+    holding = {name for name, owner in SERVICE_POOL.items() if owner is pool}
+    while (left := coordinator.pause_remaining(ignoring=coordinator.paused_services - holding)) > 0:
+        if wait.remaining() <= 0:
+            raise wait.timed_out("docling")
+        await asyncio.sleep(min(left, wait.remaining()))
 
 
 def get_gate_waiter_count(

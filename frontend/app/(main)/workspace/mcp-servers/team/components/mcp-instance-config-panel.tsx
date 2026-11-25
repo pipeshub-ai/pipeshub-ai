@@ -11,14 +11,23 @@ import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { isProcessedError } from '@/lib/api';
 import { isMcpInstanceReadOnly, McpInheritedCallout, McpManageAccess } from '@/config';
 import { useWorkspaceDrawerNestedModalHost, WorkspaceRightPanel } from '../../../components/workspace-right-panel';
-import { ConfirmationDialog, FormField, SelectDropdown, TagInput, type TagItem } from '../../../components';
+import {
+  ConfirmationDialog,
+  FormField,
+  FormFieldTextField,
+  SelectDropdown,
+  TagInput,
+  type TagItem,
+} from '../../../components';
 import { McpServersApi } from '../../api';
 import { McpDisabledCallout, isMcpInstanceDisabled } from '../../components';
 import { mcpConnectionState } from '../../connection-state';
+import { freeServerName, serverNameKey } from '../../server-names';
 import { McpPanelTitle } from './mcp-panel-header';
 import { McpClientSecretPrefixHint } from './mcp-client-secret-prefix-hint';
 import { McpLogoField } from './mcp-logo-field';
 import { setMcpServerLogo, useMcpServerLogo } from '../../logo-store';
+import { useMcpDeploymentStore } from '../../hub/deployment';
 import {
   isOauthClientMissing,
   isOauthClientRequired,
@@ -49,6 +58,7 @@ import {
   MCP_TRANSPORT_LABELS,
   isPersonalMcpInstance,
 } from '../../types';
+import { McpInstanceConfigExtras } from '@/config';
 import { SecretTextField } from '@/app/components/ui/secret-text-field';
 
 const DCR_PROBE_DEBOUNCE_MS = 500;
@@ -124,6 +134,14 @@ export function McpInstanceConfigPanel({
 
   const isTemplateBased = Boolean(resolvedTemplate);
   const isReadOnly = isMcpInstanceReadOnly(editingInstance);
+  const adminInstance =
+    open && mode === 'edit' && editingInstance && !isReadOnly && !isPersonal
+      ? {
+          instanceId: editingInstance._id,
+          transport: editingInstance.transport,
+          insideOrganization: liveInstance?.insideOrganization === true,
+        }
+      : null;
   // Set by a Manage Access section that saves who may use an organization server.
   const manageAccessSave = useRef<((serverId: string) => Promise<void>) | null>(null);
   // The server a save in this panel created: a retry after a later step failed updates it instead of creating another.
@@ -139,6 +157,8 @@ export function McpInstanceConfigPanel({
   const [command, setCommand] = useState('');
   const [argTags, setArgTags] = useState<TagItem[]>([]);
   const [requiredEnvTags, setRequiredEnvTags] = useState<TagItem[]>([]);
+  const [egressHostTags, setEgressHostTags] = useState<TagItem[]>([]);
+  const stdioRunners = useMcpDeploymentStore((s) => s.stdioRunners);
   const [url, setUrl] = useState('');
   const [headerName, setHeaderName] = useState('');
   const [authorizationUrl, setAuthorizationUrl] = useState('');
@@ -186,6 +206,7 @@ export function McpInstanceConfigPanel({
       setCommand(editingInstance.command ?? '');
       setArgTags(stringsToTags(editingInstance.args ?? []));
       setRequiredEnvTags(stringsToTags(editingInstance.requiredEnv ?? []));
+      setEgressHostTags(stringsToTags(editingInstance.declaredEgressHosts ?? []));
       setUrl(editingInstance.url ?? '');
       setHeaderName(editingInstance.headerName ?? '');
       setAuthorizationUrl(editingInstance.authorizationUrl ?? '');
@@ -205,7 +226,7 @@ export function McpInstanceConfigPanel({
       );
     } else if (prefillTemplate) {
       setShowAdvanced(false);
-      setName(prefillTemplate.displayName);
+      setName(freeServerName(prefillTemplate.displayName, instances.map((i) => i.name)));
       setDescription(prefillTemplate.description);
       setTransport(prefillTemplate.transport);
       setAuthMode(prefillTemplate.defaultAuthMode);
@@ -213,6 +234,7 @@ export function McpInstanceConfigPanel({
       setCommand(prefillTemplate.command ?? '');
       setArgTags(stringsToTags(prefillTemplate.args ?? []));
       setRequiredEnvTags(stringsToTags(prefillTemplate.requiredEnv ?? []));
+      setEgressHostTags([]);
       setUrl(prefillTemplate.defaultUrl ?? '');
       setHeaderName('');
       setAuthorizationUrl(prefillTemplate.authorizationUrl ?? '');
@@ -230,6 +252,7 @@ export function McpInstanceConfigPanel({
       setCommand('');
       setArgTags([]);
       setRequiredEnvTags([]);
+      setEgressHostTags([]);
       setUrl('');
       setHeaderName('');
       setAuthorizationUrl('');
@@ -378,7 +401,16 @@ export function McpInstanceConfigPanel({
   const connectTimeoutInput = parseTimeout(connectTimeout, MCP_TIMEOUT_LIMITS.connect);
   const callTimeoutInput = parseTimeout(callTimeout, MCP_TIMEOUT_LIMITS.call);
 
+  // The same list the backend checks: on the team page the org's servers, on the personal page
+  // the org's and the person's own. A server keeping its own name is never flagged.
+  const nameTaken = useMemo(() => {
+    const key = serverNameKey(name);
+    if (!key || (editingInstance && key === serverNameKey(editingInstance.name))) return false;
+    return instances.some((i) => i._id !== editingInstance?._id && serverNameKey(i.name) === key);
+  }, [name, instances, editingInstance]);
+
   const isValid =
+    !nameTaken &&
     connectTimeoutInput.valid &&
     callTimeoutInput.valid &&
     name.trim().length > 0 &&
@@ -471,6 +503,7 @@ export function McpInstanceConfigPanel({
             command: command.trim(),
             args: tagsToStrings(argTags),
             requiredEnv: tagsToStrings(requiredEnvTags),
+            egressHosts: tagsToStrings(egressHostTags),
           }
         : { url: url.trim() }),
     ...(authMode === 'headers' ? { headerName: headerName.trim() || null } : {}),
@@ -588,7 +621,7 @@ export function McpInstanceConfigPanel({
         <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
           {t('workspace.mcpServers.form.credentialsHeading')}
         </Text>
-        <Text size="1" style={{ color: 'var(--gray-10)' }}>
+        <Text size="1" style={{ color: 'var(--gray-11)' }}>
           {t('workspace.mcpServers.form.credentialsHint')}
         </Text>
       </Flex>
@@ -660,7 +693,7 @@ export function McpInstanceConfigPanel({
             optional={!oauthClientRequired}
             error={oauthPairError}
           >
-            <TextField.Root
+            <FormFieldTextField
               size="2"
               value={oauthClientId}
               onChange={(e) => setOauthClientId(e.target.value)}
@@ -681,6 +714,7 @@ export function McpInstanceConfigPanel({
             >
               <TextField.Slot side="right">
                 <IconButton
+                  aria-label={showOauthClientSecret ? t('common.hideValue') : t('common.showValue')}
                   type="button"
                   variant="ghost"
                   color="gray"
@@ -691,7 +725,7 @@ export function McpInstanceConfigPanel({
                   <MaterialIcon
                     name={showOauthClientSecret ? 'visibility_off' : 'visibility'}
                     size={16}
-                    color="var(--gray-10)"
+                    color="var(--gray-11)"
                   />
                 </IconButton>
               </TextField.Slot>
@@ -714,8 +748,17 @@ export function McpInstanceConfigPanel({
       <McpInheritedCallout instance={editingInstance} />
       <McpDisabledCallout instance={liveInstance} />
 
-      <FormField label={t('workspace.mcpServers.form.name')} required>
-        <TextField.Root size="2" value={name} onChange={(e) => setName(e.target.value)} />
+      <FormField
+        label={t('workspace.mcpServers.form.name')}
+        required
+        error={nameTaken ? t('workspace.mcpServers.form.nameTaken') : undefined}
+      >
+        <FormFieldTextField
+          size="2"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          aria-invalid={nameTaken || undefined}
+        />
       </FormField>
 
       {!isTemplateBased && (
@@ -726,7 +769,7 @@ export function McpInstanceConfigPanel({
             options={transportOptions}
           />
           {!customStdioAllowed && !isPersonal && mode === 'create' && (
-            <Text size="1" style={{ color: 'var(--gray-10)' }}>
+            <Text size="1" style={{ color: 'var(--gray-11)' }}>
               {t('workspace.mcpServers.stdioPolicy.unavailableHint', { flag: MCP_CUSTOM_STDIO_FLAG })}
             </Text>
           )}
@@ -745,7 +788,7 @@ export function McpInstanceConfigPanel({
       {!isTemplateBased && transport === 'stdio' && (
         <>
           <FormField label={t('workspace.mcpServers.form.command')} required>
-            <TextField.Root
+            <FormFieldTextField
               size="2"
               value={command}
               onChange={(e) => setCommand(e.target.value)}
@@ -762,24 +805,36 @@ export function McpInstanceConfigPanel({
               placeholder={t('workspace.mcpServers.form.requiredEnvPlaceholder')}
             />
             {authMode === 'api_token' && requiredEnvTags.length === 0 && (
-              <Text size="1" style={{ color: 'var(--gray-10)' }}>
+              <Text size="1" style={{ color: 'var(--gray-11)' }}>
                 {t('workspace.mcpServers.form.defaultTokenEnvHint', { name: 'API_TOKEN' })}
               </Text>
             )}
           </FormField>
+          {stdioRunners && (
+            <FormField label={t('workspace.mcpServers.form.egressHosts')} optional>
+              <TagInput
+                tags={egressHostTags}
+                onTagsChange={setEgressHostTags}
+                placeholder={t('workspace.mcpServers.form.egressHostsPlaceholder')}
+              />
+              <Text size="1" style={{ color: 'var(--gray-11)' }}>
+                {t('workspace.mcpServers.form.egressHostsHint')}
+              </Text>
+            </FormField>
+          )}
         </>
       )}
 
       {(urlEditable || (!isTemplateBased && transport !== 'stdio')) && (
         <FormField label={t('workspace.mcpServers.form.url')} required>
-          <TextField.Root
+          <FormFieldTextField
             size="2"
             value={url}
             onChange={(e) => setUrl(e.target.value)}
             placeholder={urlEditable ? 'https://your-company.okta.com/mcp' : 'https://example.com/mcp'}
           />
           {urlEditable && resolvedTemplate?.authHint?.helpText && (
-            <Text size="1" style={{ color: 'var(--gray-10)' }}>
+            <Text size="1" style={{ color: 'var(--gray-11)' }}>
               {resolvedTemplate.authHint.helpText}
             </Text>
           )}
@@ -796,7 +851,7 @@ export function McpInstanceConfigPanel({
 
       {authMode === 'headers' && (
         <FormField label={t('workspace.mcpServers.form.headerName')} optional>
-          <TextField.Root
+          <FormFieldTextField
             size="2"
             value={headerName}
             onChange={(e) => setHeaderName(e.target.value)}
@@ -880,7 +935,7 @@ export function McpInstanceConfigPanel({
         <Flex direction="column" gap="4" style={{ paddingLeft: 'var(--space-3)', borderLeft: '2px solid var(--olive-4)' }}>
           {oauthClientOptional && credentialsBox}
           <FormField label={t('workspace.mcpServers.form.description')} optional>
-            <TextField.Root size="2" value={description} onChange={(e) => setDescription(e.target.value)} />
+            <FormFieldTextField size="2" value={description} onChange={(e) => setDescription(e.target.value)} />
           </FormField>
 
           {!isTemplateBased && !isReadOnly && (
@@ -895,7 +950,7 @@ export function McpInstanceConfigPanel({
           {authMode === 'oauth' && !isTemplateBased && (
             <>
               <FormField label={t('workspace.mcpServers.form.authorizationUrl')} optional>
-                <TextField.Root
+                <FormFieldTextField
                   size="2"
                   value={authorizationUrl}
                   onChange={(e) => setAuthorizationUrl(e.target.value)}
@@ -903,7 +958,7 @@ export function McpInstanceConfigPanel({
                 />
               </FormField>
               <FormField label={t('workspace.mcpServers.form.tokenUrl')} optional>
-                <TextField.Root size="2" value={tokenUrl} onChange={(e) => setTokenUrl(e.target.value)} />
+                <FormFieldTextField size="2" value={tokenUrl} onChange={(e) => setTokenUrl(e.target.value)} />
               </FormField>
               <FormField label={t('workspace.mcpServers.form.scopes')} optional>
                 <TagInput tags={scopeTags} onTagsChange={setScopeTags} placeholder={t('workspace.mcpServers.form.scopesPlaceholder')} />
@@ -925,7 +980,7 @@ export function McpInstanceConfigPanel({
                     : t('workspace.mcpServers.form.timeoutRange', MCP_TIMEOUT_LIMITS.connect)
                 }
               >
-                <TextField.Root
+                <FormFieldTextField
                   size="2"
                   type="number"
                   inputMode="numeric"
@@ -941,7 +996,7 @@ export function McpInstanceConfigPanel({
                   callTimeoutInput.valid ? undefined : t('workspace.mcpServers.form.timeoutRange', MCP_TIMEOUT_LIMITS.call)
                 }
               >
-                <TextField.Root
+                <FormFieldTextField
                   size="2"
                   type="number"
                   inputMode="numeric"
@@ -952,7 +1007,6 @@ export function McpInstanceConfigPanel({
               </FormField>
             </Grid>
           </Flex>
-
         </Flex>
       )}
 
@@ -960,6 +1014,7 @@ export function McpInstanceConfigPanel({
         <McpManageAccess serverId={editingInstance?._id ?? null} disabled={isReadOnly} saveRef={manageAccessSave} />
       )}
 
+      {adminInstance !== null && <McpInstanceConfigExtras {...adminInstance} />}
     </Flex>
   );
 
@@ -1061,7 +1116,7 @@ function McpOAuthCallbackUrlCard({
         <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
           {t('workspace.mcpServers.oauthConfig.callbackUrlLabel')}
         </Text>
-        <Text size="1" style={{ color: 'var(--gray-10)', lineHeight: 1.5 }}>
+        <Text size="1" style={{ color: 'var(--gray-11)', lineHeight: 1.5 }}>
           {hint}
         </Text>
       </Flex>
@@ -1104,7 +1159,7 @@ function McpOAuthCallbackUrlCard({
         </Tooltip>
       </Flex>
       {documentationUrl && (
-        <Text size="1" style={{ color: 'var(--gray-10)' }}>
+        <Text size="1" style={{ color: 'var(--gray-11)' }}>
           <a href={documentationUrl} target="_blank" rel="noreferrer" style={{ color: 'var(--accent-11)' }}>
             {t('workspace.mcpServers.oauthConfig.providerDocsLink')}
           </a>
