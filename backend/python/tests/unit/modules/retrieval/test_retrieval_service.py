@@ -486,7 +486,7 @@ class TestQueryEmbeddingAttemptBound:
     """A stalled request to a hosted embedding API is retried well inside a search's budget."""
 
     @pytest.mark.asyncio
-    async def test_a_hosted_model_is_bounded_and_a_local_one_is_not(
+    async def test_a_hosted_model_and_a_local_one_are_told_apart(
         self, retrieval_service, mock_config_service
     ) -> None:
         mock_config_service.get_config.return_value = {
@@ -540,7 +540,8 @@ class TestQueryEmbeddingAttemptBound:
     async def test_a_local_model_is_given_the_time_it_needs(
         self, retrieval_service, mock_vector_db_service
     ) -> None:
-        """A local model may still be loading; cutting it off would only start the load again."""
+        """A local model may still be loading (first use, or after an idle unload), so it gets far longer
+        than a hosted API."""
         async def slow(_query: str) -> list[float]:
             await asyncio.sleep(0.2)
             return [0.1]
@@ -552,6 +553,29 @@ class TestQueryEmbeddingAttemptBound:
 
         with patch("app.modules.retrieval.retrieval_service.QUERY_EMBEDDING_ATTEMPT_TIMEOUT_SECONDS", 0.05):
             await retrieval_service._execute_parallel_searches(["q"], models.Filter(must=[]), 10, "org-1")
+
+        assert dense.aembed_query.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_a_stalled_local_model_gets_one_bounded_attempt(
+        self, retrieval_service, mock_vector_db_service
+    ) -> None:
+        """A local embedding server that accepts the connection and never answers must not hold the search
+        for the client's own timeout (600 s per attempt, retried): one long attempt, then the search fails."""
+        async def never(_query: str) -> list[float]:
+            await asyncio.Event().wait()
+            return [0.1]
+
+        dense = AsyncMock()
+        dense.aembed_query = AsyncMock(side_effect=never)
+        retrieval_service.get_embedding_model_instance = AsyncMock(return_value=dense)
+        mock_vector_db_service.query_nearest_points.return_value = [[]]
+
+        with patch("app.modules.retrieval.retrieval_service.LOCAL_QUERY_EMBEDDING_ATTEMPT_TIMEOUT_SECONDS", 0.05),                 pytest.raises(TimeoutError):
+            await asyncio.wait_for(
+                retrieval_service._execute_parallel_searches(["q"], models.Filter(must=[]), 10, "org-1"),
+                timeout=5,
+            )
 
         assert dense.aembed_query.await_count == 1
 

@@ -16,6 +16,8 @@ what an in-process cosine scan over one org's skills can serve cheaply.
 
 from __future__ import annotations
 
+import asyncio
+import functools
 import hashlib
 import logging
 import math
@@ -36,6 +38,7 @@ from app.agent_loop_lib.modules.providers.skills.text_scoring import (
     skill_haystack,
     tokenize,
 )
+from app.config.constants.ai_models import QUERY_EMBEDDING_ATTEMPT_TIMEOUT_SECONDS
 from app.utils.env_utils import env_int
 from app.utils.error_class import log_failure
 from app.utils.query_instruction import instruct_query
@@ -46,6 +49,23 @@ if TYPE_CHECKING:
 __all__ = ["SemanticSkillIndex"]
 
 logger = logging.getLogger(__name__)
+
+# Skill matching runs before the model's first call on every agent turn and falls back to keyword
+# scoring on any error, so an embedder that accepts the connection and never answers must not hold the
+# turn for the client's own timeout (600s per attempt for the local embedding server).
+SKILL_QUERY_EMBED_TIMEOUT_SECONDS = QUERY_EMBEDDING_ATTEMPT_TIMEOUT_SECONDS
+SKILL_BULK_EMBED_TIMEOUT_SECONDS = 60.0
+
+# Catalog embeds still running, by their cache keys, so a turn that gives up on one doesn't start another.
+_bulk_embeds: dict[tuple[str, ...], "asyncio.Future[list[list[float]]]"] = {}
+
+
+def _cache_bulk_result(cache_keys: tuple[str, ...], task: "asyncio.Future[list[list[float]]]") -> None:
+    _bulk_embeds.pop(cache_keys, None)
+    if task.cancelled() or task.exception() is not None:
+        return  # the waiting turn already logged it, or nobody waits and the next rebuild retries
+    for key, vector in zip(cache_keys, task.result()):
+        _vector_cache[key] = vector
 
 
 # Skill vectors are pure functions of the skill's text and the embedding model,
@@ -123,7 +143,7 @@ class SemanticSkillIndex(SkillIndex):
             self._vectors[metadata.name] = cached
             return
         try:
-            vector = await embedder.aembed_query(text)
+            vector = await asyncio.wait_for(embedder.aembed_query(text), SKILL_QUERY_EMBED_TIMEOUT_SECONDS)
             self._vectors[metadata.name] = vector
             _vector_cache[key] = vector
         except Exception as exc:
@@ -153,8 +173,15 @@ class SemanticSkillIndex(SkillIndex):
                 vectors[m.name] = cached
 
         if missing:
+            missing_keys = tuple(keys[m.name] for m in missing)
+            task = _bulk_embeds.get(missing_keys)
+            if task is None:
+                task = asyncio.ensure_future(embedder.aembed_documents([texts[m.name] for m in missing]))
+                _bulk_embeds[missing_keys] = task
+                task.add_done_callback(functools.partial(_cache_bulk_result, missing_keys))
             try:
-                fresh = await embedder.aembed_documents([texts[m.name] for m in missing])
+                # shield: on timeout the embed keeps running and fills the cache for a later turn.
+                fresh = await asyncio.wait_for(asyncio.shield(task), SKILL_BULK_EMBED_TIMEOUT_SECONDS)
             except Exception as exc:
                 # Whatever is already cached still scores semantically; only the
                 # uncached skills fall back to keyword matching.
@@ -166,7 +193,6 @@ class SemanticSkillIndex(SkillIndex):
                 return
             for m, vector in zip(missing, fresh):
                 vectors[m.name] = vector
-                _vector_cache[keys[m.name]] = vector
 
         logger.debug(
             "SemanticSkillIndex: rebuilt %d skill(s), %d embedded, %d from cache",
@@ -212,7 +238,9 @@ class SemanticSkillIndex(SkillIndex):
         if embedder is None:
             return None
         try:
-            return await embedder.aembed_query(instruct_query(embedder, query))
+            return await asyncio.wait_for(
+                embedder.aembed_query(instruct_query(embedder, query)), SKILL_QUERY_EMBED_TIMEOUT_SECONDS
+            )
         except Exception as exc:
             log_failure(logger, "skill_index.embed_failed", exc, include_error_text=False, step="query")
             return None
