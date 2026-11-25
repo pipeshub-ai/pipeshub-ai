@@ -1939,6 +1939,7 @@ func graph.person_by_source_key(text) owner=pipeshub_vetted_graph secdef=true le
 func graph.principals_by_email(text[],text[]) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=6a33bd7db303fb546e7d022e6e760846 ext=-
 func graph.record_by_external(text,text) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=fecf8201da859ec9b8130c4a6c38c607 ext=-
 func graph.record_by_issue_url(text,text) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=e4633fcd31ecdc8695837ee6dc77ad9a ext=-
+func graph.records_by_name(text,text,integer) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=256d0309251ba56a2701c3613b4460ec ext=-
 func graph.records_by_revision(text[],text[]) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=fabfcd807dfc2dc04e8e24e2166fe227 ext=-
 func graph.records_by_virtual_id(text[]) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=7b37fec02326bf5e1b55832b1a484cb7 ext=-
 func graph.records_by_weburl(text[]) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=3b5614297fbcd4a23631d756abcadd7b ext=-
@@ -2108,6 +2109,9 @@ funcacl graph.record_by_external(text,text) pipeshub_query EXECUTE
 funcacl graph.record_by_issue_url(text,text) pipeshub_connectors EXECUTE
 funcacl graph.record_by_issue_url(text,text) pipeshub_indexing EXECUTE
 funcacl graph.record_by_issue_url(text,text) pipeshub_query EXECUTE
+funcacl graph.records_by_name(text,text,integer) pipeshub_connectors EXECUTE
+funcacl graph.records_by_name(text,text,integer) pipeshub_indexing EXECUTE
+funcacl graph.records_by_name(text,text,integer) pipeshub_query EXECUTE
 funcacl graph.records_by_revision(text[],text[]) pipeshub_connectors EXECUTE
 funcacl graph.records_by_revision(text[],text[]) pipeshub_indexing EXECUTE
 funcacl graph.records_by_revision(text[],text[]) pipeshub_query EXECUTE
@@ -2322,6 +2326,7 @@ index graph.nodes_record_connector_c on graph.nodes unique=false exclusion=false
 index graph.nodes_record_connector_id on graph.nodes unique=false exclusion=false valid=true def=e9822c643d639761d85db36c3c97c7b7
 index graph.nodes_record_external on graph.nodes unique=false exclusion=false valid=true def=722f3304e57357338b93de57feed4e54
 index graph.nodes_record_external_any on graph.nodes unique=false exclusion=false valid=true def=6bf577338a8f5cc6491718d073f1ec00
+index graph.nodes_record_name_trgm on graph.nodes unique=false exclusion=false valid=true def=44fba1b11a87c6c66e71a273b0725baf
 index graph.nodes_record_parent on graph.nodes unique=false exclusion=false valid=true def=355737265fa9f21dc8128c5a660c4f99
 index graph.nodes_record_pending_vrid on graph.nodes unique=false exclusion=false valid=true def=e9cf8f4cc709d7da6cb0f813649cc954
 index graph.nodes_record_refresh_intent on graph.nodes unique=false exclusion=false valid=true def=fb87455fa6227258d671b7d118a5e0a0
