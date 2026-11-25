@@ -22628,8 +22628,13 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         RETURN COUNT {{ (kh_p)-[kh_d:NODE_RELATION]->() WHERE kh_d.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT'] }} AS n""",
                                      parameters={"start_id": start_id}, txn_id=transaction)
         wide = bool(edges) and edges[0]["n"] > self._KH_SPLIT_START_MAX
-        kids = (await self._kh_split_children([start_id], app_id=app_id, org_id=org_id, transaction=transaction, stubs_only=wide,
-                                              most=None if wide else self._KH_SPLIT_START_MAX))[start_id]
+        if not wide:
+            kids = (await self._kh_split_children([start_id], app_id=app_id, org_id=org_id, transaction=transaction,
+                                                  most=self._KH_SPLIT_START_MAX))[start_id]
+            # Children added between the count and the read: the read holds one past the bound, so the start is wide after all.
+            wide = len(kids) > self._KH_SPLIT_START_MAX
+        if wide:
+            kids = (await self._kh_split_children([start_id], app_id=app_id, org_id=org_id, transaction=transaction, stubs_only=True))[start_id]
         if wide and len(kids) > self._KH_SPLIT_MAX_CHILDREN:
             raise _KhSplitUndecided("the start has more stubs than the split browse reads")
         visible = [k for k in kids if not k["hidden"]]

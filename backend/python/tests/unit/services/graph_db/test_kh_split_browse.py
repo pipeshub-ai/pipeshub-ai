@@ -31,6 +31,7 @@ class World:
         self.by_hop = set(by_hop)      # children the check's walk from the App admits through the start (a subset of admitted)
         self.refused_stubs = set(refused_stubs)      # stubs a browse of would refuse to open (the rest open by the walk from the App)
         self.checked: list[set[str]] = []
+        self.counted: dict[str, int] = {}      # a start's edge count, where it differs from its children (they changed in between)
         self.walked: list[str] = []
 
 
@@ -41,7 +42,8 @@ def _provider(world: World) -> Neo4jProvider:
     async def kh_query(query: str, parameters: dict[str, Any] | None = None, txn_id: str | None = None) -> list[dict]:
         ids = (parameters or {}).get("ids") or []
         if "-[kh_d:NODE_RELATION]->() WHERE" in query:
-            return [{"n": len(world.children.get(parameters["start_id"], []))}]
+            start = parameters["start_id"]
+            return [{"n": world.counted.get(start, len(world.children.get(start, [])))}]
         if "kh_c:Record|RecordGroup" in query:
             per_parent, stubs_only = parameters["per_parent"], "kh_c <> kh_p AND coalesce(kh_c.isPlaceholder, false)" in query
             return [{"parent": i, "id": c, "stub": stub, "hidden": hidden, "isGroup": c in world.groups}
@@ -175,6 +177,19 @@ async def test_a_start_with_more_children_than_the_bound_leaves_them_to_the_page
     p._KH_SPLIT_MAX_CHILDREN = 3
     with pytest.raises(_KhSplitUndecided):
         await p._kh_split_listed("W", **kw)
+
+
+@pytest.mark.asyncio
+async def test_a_start_that_grew_past_the_bound_after_its_count_is_read_in_windows() -> None:
+    """A sync adds children between the count and the read: the read holds one past the bound, so the start is wide after all. Deciding the
+    children it read would leave out those past them."""
+    world = World({"N": [*((f"c{i}", False, False) for i in range(5)), ("s", True, False)], "s": [("r", False, False)]},
+                  admitted={"c4", "r"})
+    world.counted["N"] = 3
+    p = _provider(world)
+    p._KH_SPLIT_START_MAX = 3
+    kw = {"app_id": "A", "org_id": "o", "access": ACCESS, "placed": [], "transaction": None, "memo": {}}
+    assert await p._kh_split_listed("N", **kw) == (["s"], True)
 
 
 @pytest.mark.asyncio
