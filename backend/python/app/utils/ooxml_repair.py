@@ -51,10 +51,11 @@ def _part_name(entry: str) -> str:
 
 
 def _check_directory(source: Path) -> None:
-    """Refuse an oversized directory. Asks zipfile's own reader, so that both see the same one."""
+    """Refuse an oversized directory. Asks zipfile's own reader, so that both see the same one:
+    the public API loads the directory first."""
     with source.open("rb") as handle:
-        end = zipfile._EndRecData(handle)  # noqa: SLF001 - the public API loads the directory first
-    if not end or end[zipfile._ECD_SIZE] > _MAX_DIRECTORY_BYTES:  # noqa: SLF001
+        end = zipfile._EndRecData(handle)
+    if not end or end[zipfile._ECD_SIZE] > _MAX_DIRECTORY_BYTES:
         raise _NotRepairableError("no directory, or one over the size limit")
 
 

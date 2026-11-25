@@ -173,7 +173,14 @@ async def _rebuild_package(source: str, target: str, *, timeout: float) -> bool:
         finally:
             # The caller removes the directory next; the thread must not outlive it.
             stop.set()
-            await asyncio.wait([worker])
+            cancelled = False
+            while not worker.done():
+                try:
+                    await asyncio.wait([worker])
+                except asyncio.CancelledError:
+                    cancelled = True
+            if cancelled:
+                raise asyncio.CancelledError
 
 
 async def libreoffice_to_pdf(

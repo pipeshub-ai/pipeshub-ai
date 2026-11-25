@@ -329,7 +329,7 @@ def test_compression_office_does_not_use_is_refused(tmp_path: Path, method: int)
     assert rebuild_package(source, target) is False
 
 
-@pytest.mark.parametrize("how", ["cancelled", "timed out"])
+@pytest.mark.parametrize("how", ["cancelled", "cancelled twice", "timed out"])
 async def test_the_conversion_slot_is_held_until_the_rebuild_thread_ends(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, how: str
 ) -> None:
@@ -347,11 +347,14 @@ async def test_the_conversion_slot_is_held_until_the_rebuild_thread_ends(
         return False
 
     monkeypatch.setattr(pdf_stream_conversion, "rebuild_package", slow)
-    timeout = 30.0 if how == "cancelled" else 0.2
+    timeout = 0.2 if how == "timed out" else 30.0
     task = asyncio.create_task(pdf_stream_conversion._rebuild_package(str(tmp_path / "a"), str(tmp_path / "b"), timeout=timeout))
     await asyncio.to_thread(started.wait, 5)
-    if how == "cancelled":
+    if how != "timed out":
         task.cancel()
+        if how == "cancelled twice":
+            await asyncio.sleep(0.03)
+            task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
     else:
