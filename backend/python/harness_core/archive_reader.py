@@ -222,6 +222,8 @@ def _head(source: IO[bytes], size: int) -> bytes:
 _GZIP: Final = b"\x1f\x8b"
 _BZIP2: Final = b"BZh"
 _XZ: Final = b"\xfd7zXZ\x00"
+# The signatures of the tar compressions read here; the longest is six bytes.
+COMPRESSED_TAR_MAGIC: Final = (_GZIP, _BZIP2, _XZ)
 
 
 def _plain_tar_header(block: bytes) -> bool:
@@ -238,7 +240,7 @@ def archive_kind(data: bytes | IO[bytes]) -> ArchiveKind | None:
     """What the bytes are, from their own signature, never a file name: a compressed or plain tar, or a zip."""
     source = _source_of(data)
     head = _head(source, tarfile.BLOCKSIZE)
-    if head.startswith((_GZIP, _BZIP2, _XZ)) or _plain_tar_header(head):
+    if head.startswith(COMPRESSED_TAR_MAGIC) or _plain_tar_header(head):
         return "tar"
     start = source.tell()
     try:
@@ -483,6 +485,7 @@ def check_zip(data: bytes | IO[bytes], limits: ArchiveLimits) -> tuple[str, ...]
 
 
 __all__ = [
+    "COMPRESSED_TAR_MAGIC",
     "CORRUPT",
     "ENCRYPTED",
     "ENTRY_TOO_LARGE",
