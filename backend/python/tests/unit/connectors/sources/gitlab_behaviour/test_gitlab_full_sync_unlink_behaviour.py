@@ -17,7 +17,7 @@ from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
 from app.connectors.sources.gitlab.connector import GitLabSyncIncompleteError
 
 if TYPE_CHECKING:
-    from conftest import GitLabHarness
+    from gitlab_harness import GitLabHarness
     from gitlab_store_fakes import FakeCheckpointStore, FakeRecordsDb
 
 ERIN = 6
