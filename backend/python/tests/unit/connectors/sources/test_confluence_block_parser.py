@@ -12,6 +12,7 @@ from app.models.blocks import (
     Block,
     BlockGroup,
     BlockGroupChildren,
+    BlocksContainer,
     BlockSubType,
     BlockType,
     DataFormat,
@@ -21,6 +22,7 @@ from app.models.blocks import (
     TableMetadata,
     TableRowMetadata,
 )
+from app.modules.transformers.block_container_validator import BlockContainerValidator
 
 
 def _parser() -> ConfluenceBlockParser:
@@ -3395,3 +3397,54 @@ class TestParserEdgeCases:
             {"type": "listItem", "content": [_p("see"), macro]},
         ]}]})
         assert blocks[0].data == "- see [Extension: jira] key: PROJ-1"
+
+
+class TestRebuildGroupChildren:
+    """Children agree with parent_index after post-processing moves list items under list groups."""
+
+    async def test_lists_in_panel_pass_linkage_checks(self) -> None:
+        def p(text: str) -> dict:
+            return {"type": "paragraph", "content": [{"type": "text", "text": text}]}
+
+        def bullets(*items: str) -> dict:
+            return {"type": "bulletList", "content": [{"type": "listItem", "content": [p(t)]} for t in items]}
+
+        parser = _parser()
+        blocks, groups = await parser.parse_adf({
+            "type": "doc",
+            "content": [{
+                "type": "panel",
+                "attrs": {"panelType": "info"},
+                "content": [p("lead"), bullets("a", "b"), p("mid"), bullets("c", "d")],
+            }],
+        }, page_id="p1")
+        parser.post_process_blocks(blocks, groups)
+        ConfluenceBlockParser.rebuild_group_children(blocks, groups)
+
+        issues = BlockContainerValidator().validate(BlocksContainer(blocks=blocks, block_groups=groups))
+        assert not [i for i in issues if i.code in ("CHILDREN_PARENT_INDEX_MISMATCH", "REVERSE_LINKAGE_MISSING")]
+        panel = next(g for g in groups if g.sub_type == GroupSubType.CALLOUT)
+        lists = [g.index for g in groups if g.parent_index == panel.index]
+        assert len(lists) == 2
+        assert [i for r in panel.children.block_group_ranges for i in range(r.start, r.end + 1)] == lists
+
+    def test_image_in_a_cell_moves_to_the_group_holding_the_table(self) -> None:
+        panel = BlockGroup(index=0, type=GroupType.TEXT_SECTION)
+        outer = BlockGroup(index=1, type=GroupType.TABLE, parent_index=0)
+        inner = BlockGroup(index=2, type=GroupType.TABLE, parent_index=1)
+        image = Block(index=0, type=BlockType.IMAGE, format=DataFormat.BASE64, data={}, parent_index=2)
+        inner_row = Block(index=1, type=BlockType.TABLE_ROW, format=DataFormat.JSON, data={}, parent_index=2)
+        outer_row = Block(index=2, type=BlockType.TABLE_ROW, format=DataFormat.JSON, data={}, parent_index=1)
+        ConfluenceBlockParser.rebuild_group_children([image, inner_row, outer_row], [panel, outer, inner])
+        assert image.parent_index == 0
+        assert [(r.start, r.end) for r in panel.children.block_ranges] == [(0, 0)]
+        assert [(r.start, r.end) for r in inner.children.block_ranges] == [(1, 1)]
+        assert [(r.start, r.end) for r in outer.children.block_ranges] == [(2, 2)]
+
+    def test_image_in_a_top_level_table_has_no_parent(self) -> None:
+        table = BlockGroup(index=0, type=GroupType.TABLE)
+        image = Block(index=0, type=BlockType.IMAGE, format=DataFormat.BASE64, data={}, parent_index=0)
+        row = Block(index=1, type=BlockType.TABLE_ROW, format=DataFormat.JSON, data={}, parent_index=0)
+        ConfluenceBlockParser.rebuild_group_children([image, row], [table])
+        assert image.parent_index is None
+        assert [(r.start, r.end) for r in table.children.block_ranges] == [(1, 1)]
