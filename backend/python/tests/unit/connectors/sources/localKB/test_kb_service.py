@@ -892,6 +892,7 @@ class TestDeleteKnowledgeBase:
         service.graph_provider.delete_connector_instance = AsyncMock(return_value={"success": True, "virtual_record_ids": []})
         mock_config_service.get_config = AsyncMock(return_value=None)
         mock_config_service.set_config = AsyncMock(side_effect=record)
+        mock_config_service.create_config_if_absent = mock_config_service.set_config
 
         assert (await service.delete_knowledge_base("kb1", "user1", "org1"))["success"] is True
         assert written["/services/lateWriteSweep/pending/kb1"]["recordGroupIds"] == ["kb1"]
