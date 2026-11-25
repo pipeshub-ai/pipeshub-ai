@@ -39,6 +39,7 @@ from app.agent_loop_lib.modules.providers.skills.text_scoring import (
     tokenize,
 )
 from app.config.constants.ai_models import QUERY_EMBEDDING_ATTEMPT_TIMEOUT_SECONDS
+from app.core.org_context import spawn_in_request
 from app.utils.env_utils import env_int
 from app.utils.error_class import log_failure
 from app.utils.query_instruction import instruct_query
@@ -54,7 +55,8 @@ logger = logging.getLogger(__name__)
 # scoring on any error, so an embedder that accepts the connection and never answers must not hold the
 # turn for the client's own timeout (600s per attempt for the local embedding server).
 SKILL_QUERY_EMBED_TIMEOUT_SECONDS = QUERY_EMBEDDING_ATTEMPT_TIMEOUT_SECONDS
-SKILL_BULK_EMBED_TIMEOUT_SECONDS = 60.0
+# Under the API's 30s proxy timeout for the skills search route; a slower catalog embed keeps running and fills the cache.
+SKILL_BULK_EMBED_TIMEOUT_SECONDS = 20.0
 
 # Catalog embeds still running, by their cache keys, so a turn that gives up on one doesn't start another.
 _bulk_embeds: dict[tuple[str, ...], "asyncio.Future[list[list[float]]]"] = {}
@@ -176,7 +178,10 @@ class SemanticSkillIndex(SkillIndex):
             missing_keys = tuple(keys[m.name] for m in missing)
             task = _bulk_embeds.get(missing_keys)
             if task is None:
-                task = asyncio.ensure_future(embedder.aembed_documents([texts[m.name] for m in missing]))
+                # In the request's context (org, metering), but it may outlive the request to fill the cache.
+                task = spawn_in_request(
+                    embedder.aembed_documents([texts[m.name] for m in missing]), name="skill-catalog-embed"
+                )
                 _bulk_embeds[missing_keys] = task
                 task.add_done_callback(functools.partial(_cache_bulk_result, missing_keys))
             try:

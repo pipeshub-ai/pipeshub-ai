@@ -557,11 +557,11 @@ class TestQueryEmbeddingAttemptBound:
         assert dense.aembed_query.await_count == 1
 
     @pytest.mark.asyncio
-    async def test_a_stalled_local_model_gets_one_bounded_attempt(
+    async def test_a_stalled_local_model_gives_up_at_the_deadline(
         self, retrieval_service, mock_vector_db_service
     ) -> None:
         """A local embedding server that accepts the connection and never answers must not hold the search
-        for the client's own timeout (600 s per attempt, retried): one long attempt, then the search fails."""
+        for the client's own timeout (600 s per attempt, retried): the search fails at the deadline."""
         async def never(_query: str) -> list[float]:
             await asyncio.Event().wait()
             return [0.1]
@@ -571,13 +571,41 @@ class TestQueryEmbeddingAttemptBound:
         retrieval_service.get_embedding_model_instance = AsyncMock(return_value=dense)
         mock_vector_db_service.query_nearest_points.return_value = [[]]
 
-        with patch("app.modules.retrieval.retrieval_service.LOCAL_QUERY_EMBEDDING_ATTEMPT_TIMEOUT_SECONDS", 0.05),                 pytest.raises(TimeoutError):
+        async def search_fails_at_the_deadline() -> None:
+            with pytest.raises(TimeoutError):
+                await retrieval_service._execute_parallel_searches(["q"], models.Filter(must=[]), 10, "org-1")
+
+        with patch("app.modules.retrieval.retrieval_service.LOCAL_QUERY_EMBEDDING_DEADLINE_SECONDS", 0.05):
+            # Outside pytest.raises: if the deadline were gone, this watchdog's own TimeoutError fails the test.
+            await asyncio.wait_for(search_fails_at_the_deadline(), timeout=5)
+
+        assert dense.aembed_query.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_a_transient_local_error_is_retried_within_the_deadline(
+        self, retrieval_service, mock_vector_db_service
+    ) -> None:
+        """Some local clients (an OpenAI-compatible server on an internal address) don't retry themselves."""
+        calls = {"n": 0}
+
+        async def flaky(_query: str) -> list[float]:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise TimeoutError("transient")
+            return [0.1]
+
+        dense = AsyncMock()
+        dense.aembed_query = AsyncMock(side_effect=flaky)
+        retrieval_service.get_embedding_model_instance = AsyncMock(return_value=dense)
+        mock_vector_db_service.query_nearest_points.return_value = [[]]
+
+        with patch("app.utils.embedding_retry.retry_delay_seconds", return_value=0):
             await asyncio.wait_for(
                 retrieval_service._execute_parallel_searches(["q"], models.Filter(must=[]), 10, "org-1"),
                 timeout=5,
             )
 
-        assert dense.aembed_query.await_count == 1
+        assert dense.aembed_query.await_count == 2
 
 
 # ============================================================================
