@@ -1,0 +1,237 @@
+{
+ "constructor": {
+  "extractor": "TieredKeyExtractor",
+  "key_fields": [
+   "orgId",
+   "connectorId"
+  ],
+  "observer": null,
+  "planner": "SlotShare",
+  "scheduler": "DRRScheduler",
+  "topics": [
+   "t"
+  ],
+  "weights": true
+ },
+ "run": {
+  "counters": {
+   "count": 636,
+   "head": [
+    [
+     31,
+     0,
+     9
+    ],
+    [
+     65,
+     0,
+     15
+    ],
+    [
+     67,
+     1,
+     24
+    ],
+    [
+     71,
+     3,
+     30
+    ],
+    [
+     69,
+     2,
+     39
+    ],
+    [
+     73,
+     1,
+     45
+    ],
+    [
+     70,
+     1,
+     54
+    ],
+    [
+     71,
+     2,
+     60
+    ],
+    [
+     69,
+     1,
+     69
+    ],
+    [
+     71,
+     1,
+     75
+    ],
+    [
+     68,
+     1,
+     84
+    ],
+    [
+     70,
+     1,
+     90
+    ],
+    [
+     69,
+     1,
+     99
+    ],
+    [
+     70,
+     2,
+     105
+    ],
+    [
+     67,
+     2,
+     114
+    ],
+    [
+     69,
+     2,
+     120
+    ],
+    [
+     68,
+     2,
+     129
+    ],
+    [
+     70,
+     2,
+     135
+    ],
+    [
+     67,
+     2,
+     144
+    ],
+    [
+     68,
+     3,
+     150
+    ]
+   ],
+   "sha256": "6bf78a784aaed8a6ef8ab314404a36e3a0d19c642fa83b62c23882254117bcda"
+  },
+  "dispatch": {
+   "count": 5000,
+   "head": [
+    "rec-9",
+    "rec-30",
+    "rec-0",
+    "rec-6",
+    "rec-4",
+    "rec-14",
+    "rec-10",
+    "rec-24",
+    "rec-15",
+    "rec-35",
+    "rec-2",
+    "rec-18",
+    "rec-16",
+    "rec-29",
+    "rec-19",
+    "rec-34",
+    "rec-22",
+    "rec-42",
+    "rec-20",
+    "rec-53"
+   ],
+   "sha256": "141811c2d4e12e9bafbced0124ff833f01d1a4f93e6a2fed1aa3952ae02c672f"
+  },
+  "settled": {
+   "count": 5000,
+   "head": [
+    [
+     "record-events.0",
+     "10-0"
+    ],
+    [
+     "record-events.0",
+     "31-0"
+    ],
+    [
+     "record-events.1",
+     "1-0"
+    ],
+    [
+     "record-events.3",
+     "7-0"
+    ],
+    [
+     "record-events.2",
+     "5-0"
+    ],
+    [
+     "record-events.2",
+     "15-0"
+    ],
+    [
+     "record-events.3",
+     "11-0"
+    ],
+    [
+     "record-events.3",
+     "25-0"
+    ],
+    [
+     "record-events.2",
+     "16-0"
+    ],
+    [
+     "record-events.0",
+     "36-0"
+    ],
+    [
+     "record-events.1",
+     "3-0"
+    ],
+    [
+     "record-events.3",
+     "19-0"
+    ],
+    [
+     "record-events.0",
+     "17-0"
+    ],
+    [
+     "record-events.2",
+     "30-0"
+    ],
+    [
+     "record-events.2",
+     "20-0"
+    ],
+    [
+     "record-events.0",
+     "35-0"
+    ],
+    [
+     "record-events.3",
+     "23-0"
+    ],
+    [
+     "record-events.3",
+     "43-0"
+    ],
+    [
+     "record-events.2",
+     "21-0"
+    ],
+    [
+     "record-events.2",
+     "54-0"
+    ]
+   ],
+   "sha256": "0aeeabc3069f41573b00a59844e86422da263b2333032b9af7a12ee4608a4dc0"
+  },
+  "steps": 636
+ }
+}

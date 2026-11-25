@@ -1,6 +1,11 @@
 """Context7 MCP server template — Upstash's official remote server (Streamable HTTP), no sign-in."""
 from app.agents.mcp.mcp_server_decorator import mcp_server
-from app.agents.mcp.models import MCPAuthMode, MCPServerTemplate, MCPTransport
+from app.agents.mcp.models import (
+    MCPAuthMode,
+    MCPCategory,
+    MCPServerTemplate,
+    MCPTransport,
+)
 
 
 @mcp_server(
@@ -19,6 +24,13 @@ from app.agents.mcp.models import MCPAuthMode, MCPServerTemplate, MCPTransport
         default_url="https://mcp.context7.com/mcp",
         documentation_url="https://context7.com/docs",
         tags=["docs", "developer", "libraries"],
+        category=MCPCategory.DEVELOPER,
+        capabilities=[
+            "Look up library documentation",
+            "Get current code examples",
+            "Check how an API is used",
+        ],
+        read_only=True,
     )
 )
 class Context7MCPServer:

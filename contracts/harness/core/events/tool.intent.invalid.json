@@ -1,0 +1,142 @@
+[
+  {
+    "description": "wrong type for this schema",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "type": "turn.aborted",
+      "schemaVersion": 1,
+      "critical": true,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "data": {
+        "invocationId": "inv_1",
+        "toolId": "jira@inst_42/create_issue",
+        "argsDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "effect": "write",
+        "sink": {
+          "egress": "internal_audience",
+          "argsLeaveBoundary": false
+        }
+      },
+      "attemptId": "att_1",
+      "fence": 3
+    }
+  },
+  {
+    "description": "writer allowlist: only worker writes tool.intent",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "type": "tool.intent",
+      "schemaVersion": 1,
+      "critical": true,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "node",
+      "visibility": "owner",
+      "data": {
+        "invocationId": "inv_1",
+        "toolId": "jira@inst_42/create_issue",
+        "argsDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "effect": "write",
+        "sink": {
+          "egress": "internal_audience",
+          "argsLeaveBoundary": false
+        }
+      }
+    }
+  },
+  {
+    "description": "unknown data field",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "type": "tool.intent",
+      "schemaVersion": 1,
+      "critical": true,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "data": {
+        "invocationId": "inv_1",
+        "toolId": "jira@inst_42/create_issue",
+        "argsDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "effect": "write",
+        "sink": {
+          "egress": "internal_audience",
+          "argsLeaveBoundary": false
+        },
+        "unexpected": true
+      },
+      "attemptId": "att_1",
+      "fence": 3
+    }
+  },
+  {
+    "description": "unknown effect",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "type": "tool.intent",
+      "schemaVersion": 1,
+      "critical": true,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "data": {
+        "invocationId": "inv_1",
+        "toolId": "jira@inst_42/create_issue",
+        "argsDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "effect": "delete",
+        "sink": {
+          "egress": "none",
+          "argsLeaveBoundary": false
+        }
+      },
+      "attemptId": "att_1",
+      "fence": 3
+    }
+  },
+  {
+    "description": "allowedBy names only a rule that lets a call run without a person",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "type": "tool.intent",
+      "schemaVersion": 1,
+      "critical": true,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "data": {
+        "invocationId": "inv_3",
+        "toolId": "pipeshub@sandbox/run_code",
+        "argsDigest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "effect": "execute",
+        "sink": {
+          "egress": "none",
+          "argsLeaveBoundary": false
+        },
+        "allowedBy": "person"
+      },
+      "attemptId": "att_1",
+      "fence": 3
+    }
+  }
+]

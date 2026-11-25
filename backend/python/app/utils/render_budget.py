@@ -30,10 +30,8 @@ import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
 
-from app.agent_loop_lib.hooks.middleware.builtin.budget_reduction import (
-    DEFAULT_MAX_RESULT_CHARS,
-)
 from app.utils.env_utils import enabled_unless_off, env_int
+from harness_core.context.results import RESULT_CAP_CHARS as DEFAULT_MAX_RESULT_CHARS
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence

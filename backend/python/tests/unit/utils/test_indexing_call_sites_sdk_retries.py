@@ -28,6 +28,7 @@ from app.utils.aimodels import (
     get_embedding_model,
     get_generator_model,
 )
+from tests.support.app_tree import may_contain_name, sources
 from tests.support.in_memory_config import InMemoryConfigService
 from tests.support.provider_configs import BASE, service_account_json
 from tests.support.sdk_retries import sdk_retries
@@ -65,6 +66,19 @@ def _no_aws_lookup_leaves_the_process(monkeypatch: pytest.MonkeyPatch) -> Any:  
     monkeypatch.setattr(URLLib3Session, "send", refuse)
     yield
     assert not attempted, f"building models sent requests: {attempted}"
+
+
+@pytest.fixture(autouse=True)
+def _no_tokenizer_download(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Building Mistral embeddings downloads a tokenizer from Hugging Face unless one is given; the unit lane refuses
+    the dial (tests/support/no_network.py). Refusing it here takes the client's own offline fallback (a len() tokenizer),
+    which does not change the SDK client whose retries the test reads."""
+    from tokenizers import Tokenizer
+
+    def offline(*_args: Any, **_kwargs: Any) -> Any:  # noqa: ANN401
+        raise OSError("no tokenizer download in a unit test")
+
+    monkeypatch.setattr(Tokenizer, "from_pretrained", offline)
 
 
 def test_the_indexing_constant_is_zero() -> None:
@@ -118,16 +132,11 @@ def built(monkeypatch: pytest.MonkeyPatch) -> list[Any]:
         return model
 
     monkeypatch.setattr(llm_module, "get_generator_model", record)
-    from app.modules.parsers.pdf import vlm_ocr_strategy
+    # The region-pinned builder (``llm.build_chat_model``, which VLM OCR goes through) reaches the factory through
+    # ``get_generator_model_async``, which calls it by its name in ``app.utils.aimodels``.
+    from app.utils import aimodels
 
-    real_vlm = vlm_ocr_strategy.get_generator_model
-
-    def record_vlm(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
-        model = real_vlm(*args, **kwargs)
-        models.append(model)
-        return model
-
-    monkeypatch.setattr(vlm_ocr_strategy, "get_generator_model", record_vlm)
+    monkeypatch.setattr(aimodels, "get_generator_model", record)
     return models
 
 
@@ -205,8 +214,11 @@ NOT_INDEXING = {
 }
 
 
+ROLE_RESOLVERS = ("get_llm_for_role", "_get_llm_for_role")
+
+
 def _role_arg(call: ast.Call) -> ast.expr | None:
-    names = {"get_llm_for_role", "_get_llm_for_role"}
+    names = set(ROLE_RESOLVERS)
     func = call.func
     name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
     if name not in names:
@@ -222,11 +234,14 @@ def test_every_indexing_role_call_site_passes_sdk_retries() -> None:
     ``sdk_retries=INDEXING_SDK_RETRIES``. A new site that forgets it fails here, not in production."""
     offenders: list[str] = []
     seen = 0
-    for path in sorted(APP.rglob("*.py")):
+    # ``sources`` is the tree's one cached read and ``may_contain_name`` skips every file that holds neither function name
+    # (a call can only match by its name), so only the few files that resolve a role are parsed; the rest of the 2,250
+    # files were parsed for nothing (30 s on an idle core, over the 60 s timeout on a loaded runner).
+    for path, text in sources(APP):
         relative = path.relative_to(APP.parent).as_posix()
-        if relative in NOT_INDEXING:
+        if relative in NOT_INDEXING or not may_contain_name(text, *ROLE_RESOLVERS):
             continue
-        tree = ast.parse(path.read_bytes())
+        tree = ast.parse(text)
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
                 continue

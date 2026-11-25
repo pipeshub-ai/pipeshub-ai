@@ -11,6 +11,7 @@ import {
   Tray,
   Menu,
   systemPreferences,
+  safeStorage,
   type IpcMainInvokeEvent,
   type IpcMainEvent,
   type NativeImage,
@@ -39,6 +40,7 @@ import {
 import { classifyWindowOpen, isAppUrl, isExternalWebUrl } from './navigation';
 import { resolveStaticExportPath } from './static-export';
 import { LocalMode } from './local-mode';
+import { SessionVault } from './session-vault';
 
 // Directory where `next build` (static export) output lands after electron:copy
 // Static export lives at electron/out/ (see electron-prepare); main runs from electron/compile/
@@ -449,6 +451,25 @@ app.whenReady().then(() => {
       return { ok: false, error: error instanceof Error ? error.message : String(error) };
     }
   });
+
+  // ADR-WEB-02 D5: the refresh tokens, sealed by the OS keychain, never in the renderer's storage. `key` names one of
+  // several sessions (an edition's, by organisation); without it, the app's one session.
+  const sessionVault = new SessionVault(path.join(app.getPath('userData'), 'session-refresh.bin'), safeStorage);
+  ipcMain.handle('session/refresh-token/read', (_event: IpcMainInvokeEvent, payload?: { key?: unknown }) => (
+    sessionVault.read(payload?.key)
+  ));
+  ipcMain.handle(
+    'session/refresh-token/write',
+    (_event: IpcMainInvokeEvent, payload: { refreshToken?: unknown; key?: unknown }) => (
+      sessionVault.write(payload?.refreshToken, payload?.key)
+    ),
+  );
+  ipcMain.handle('session/refresh-token/clear', (_event: IpcMainInvokeEvent, payload?: { key?: unknown; all?: unknown }) => {
+    if (payload?.all === true) sessionVault.clearAll();
+    else sessionVault.clear(payload?.key);
+    return true;
+  });
+  ipcMain.handle('session/refresh-token/keys', () => sessionVault.keys());
 
   ipcMain.handle('local-sync/clear-credentials', async () => {
     desktopCredentials?.clear();

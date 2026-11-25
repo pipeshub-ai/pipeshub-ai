@@ -25,6 +25,18 @@ if TYPE_CHECKING:
     from app.agent_loop_lib.core.types import Message
 
 
+def latest_request_index(messages: list[Message]) -> int | None:
+    """The index of the user's latest own message (not an injection), which no shaper folds, summarises or drops.
+
+    It is what the run is answering: QA-FP12 run 8cbf6950 sent a request whose pasted batch loop compaction had
+    folded into a one-line note, and the model asked the user what to do (QAFIX4 B2)."""
+    for index in range(len(messages) - 1, -1, -1):
+        message = messages[index]
+        if message.role == MessageRole.USER and not getattr(message, "injected", False):
+            return index
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Layer 1: prevention — adjust split boundaries
 # ---------------------------------------------------------------------------

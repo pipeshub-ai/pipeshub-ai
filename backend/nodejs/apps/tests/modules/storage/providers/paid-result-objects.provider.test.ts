@@ -22,6 +22,11 @@ describe('Object listing, batch delete and conditional put for the paid-result c
       home = fs.mkdtempSync(path.join(os.tmpdir(), 'paid-result-local-'))
       sinon.stub(os, 'homedir').returns(home)
     })
+    const locked: string[] = []
+    // Restores modes before the home folder is removed (hooks run in order).
+    afterEach(() => {
+      for (const p of locked.splice(0)) fs.chmodSync(p, 0o755)
+    })
     afterEach(() => fs.rmSync(home, { recursive: true, force: true }))
     const adapter = () => new LocalStorageAdapter({ mountName: 'PipesHub', baseUrl: 'http://localhost:3000' } as any)
 
@@ -139,6 +144,68 @@ describe('Object listing, batch delete and conditional put for the paid-result c
         thrown = e
       }
       expect(thrown).to.be.an('error')
+    })
+
+    describe('a read the OS refuses', () => {
+      // Root ignores file modes, so the chmod cases cannot fail as root.
+      const skipAsRoot = (t: Mocha.Context) => {
+        if (process.getuid?.() === 0) t.skip()
+      }
+      const lock = (p: string, mode: number) => {
+        fs.chmodSync(p, mode)
+        locked.push(p)
+      }
+      const under = (name: string) =>
+        path.join(home, (fs.readdirSync(home, { recursive: true }) as string[]).find((p) => path.basename(p) === name)!)
+      const eacces = (syscall: string) =>
+        Object.assign(new Error(`EACCES: permission denied, ${syscall} '${under('f.json')}'`), { code: 'EACCES' })
+      const expectNoPath = async (call: Promise<unknown>) => {
+        const e = await call.then(
+          () => {
+            throw new Error('resolved')
+          },
+          (x) => x,
+        )
+        expect(e).to.be.instanceOf(StorageDownloadError)
+        expect(e.metadata).to.include({ code: 'EACCES' })
+        expect(e.message).to.not.contain(home)
+        expect(JSON.stringify(e.toJSON(true).metadata)).to.not.contain(home)
+      }
+      const stored = async () => {
+        const a = adapter()
+        await a.writeObject(`${ROOT}/x/f.json`, Buffer.from('{}'))
+        return a
+      }
+
+      it('openObject: a file the OS refuses to open is a StorageDownloadError with its code, never its path', async function () {
+        skipAsRoot(this)
+        const a = await stored()
+        lock(under('f.json'), 0o000)
+        await expectNoPath(a.openObject(`${ROOT}/x/f.json`))
+      })
+
+      it('openObject: a check after the open that the OS refuses is wrapped too', async () => {
+        const a = await stored()
+        sinon.stub(fsp, 'lstat').rejects(eacces('lstat'))
+        await expectNoPath(a.openObject(`${ROOT}/x/f.json`))
+      })
+
+      it('listObjects: a folder it can read but not enter is a StorageDownloadError with its code, never its path', async function () {
+        skipAsRoot(this)
+        const a = await stored()
+        lock(under('x'), 0o644)
+        await expectNoPath(a.listObjects(`${ROOT}/`, { limit: 10 }))
+      })
+
+      it('a write whose folder check the OS refuses stays a StorageUploadError', async () => {
+        const a = await stored()
+        sinon.stub(fsp, 'realpath').rejects(eacces('realpath'))
+        const e = await a.writeObject(`${ROOT}/x/g.json`, Buffer.from('{}')).then(
+          () => null,
+          (x) => x,
+        )
+        expect(e).to.be.instanceOf(StorageUploadError)
+      })
     })
   })
 

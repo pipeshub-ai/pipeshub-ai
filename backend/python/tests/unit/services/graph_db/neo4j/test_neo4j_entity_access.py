@@ -85,7 +85,7 @@ class TestGetEntityAccessContext:
             f"INHERIT_PERMISSIONS*1..{CONTAINER_INHERIT_MAX_DEPTH}",
             # Records inherit too; the walk must not expand through them.
             # Whole path, not a slice: only this form prunes the expand.
-            "all(n IN nodes(p) WHERE n:RecordGroup)",
+            "all(n IN nodes(p) WHERE n:RecordGroup AND n.connectorId = seed.connectorId)",
             "{type: 'TEAM'}",
             "{type: 'ORG'}",
             "USER_APP_RELATION",
@@ -417,11 +417,12 @@ class TestFilterNodesWithPermissionRole:
         """The batch access check behind it raises one error for every failure,
         carrying the cause, so a caller can tell it from "no access"."""
         p = _provider(RuntimeError("neo4j down"))
-        with pytest.raises(PermissionVerificationUnavailableError, match="neo4j down") as raised:
+        with pytest.raises(PermissionVerificationUnavailableError) as raised:
             await p.filter_nodes_with_permission_role(
                 self._NODES, "uk1", "org1", raise_on_error=True
             )
         assert isinstance(raised.value.__cause__, RuntimeError)
+        assert str(raised.value.__cause__) == "neo4j down" and "neo4j down" not in str(raised.value)
 
     @pytest.mark.asyncio
     async def test_missing_client_raises_only_when_requested(self) -> None:

@@ -1,0 +1,82 @@
+[
+  {
+    "description": "a table has rows",
+    "instance": {
+      "schemaVersion": 1,
+      "dimensions": []
+    }
+  },
+  {
+    "description": "no unknown order kind",
+    "instance": {
+      "schemaVersion": 1,
+      "dimensions": [
+        {
+          "path": "budgets.maxCostUsd",
+          "kind": "ceiling",
+          "order": {
+            "kind": "max"
+          },
+          "exposure": [
+            "org"
+          ],
+          "description": "cost"
+        }
+      ]
+    }
+  },
+  {
+    "description": "a row says who may set it",
+    "instance": {
+      "schemaVersion": 1,
+      "dimensions": [
+        {
+          "path": "budgets.maxCostUsd",
+          "kind": "ceiling",
+          "order": {
+            "kind": "min"
+          },
+          "description": "cost"
+        }
+      ]
+    }
+  },
+  {
+    "description": "a path is dotted names",
+    "instance": {
+      "schemaVersion": 1,
+      "dimensions": [
+        {
+          "path": "Budgets/maxCostUsd",
+          "kind": "ceiling",
+          "order": {
+            "kind": "min"
+          },
+          "exposure": [
+            "org"
+          ],
+          "description": "cost"
+        }
+      ]
+    }
+  },
+  {
+    "description": "exposure names layers",
+    "instance": {
+      "schemaVersion": 1,
+      "dimensions": [
+        {
+          "path": "budgets.maxCostUsd",
+          "kind": "ceiling",
+          "order": {
+            "kind": "min"
+          },
+          "exposure": [
+            "galaxy"
+          ],
+          "description": "cost"
+        }
+      ]
+    }
+  }
+]

@@ -54,6 +54,7 @@ async def _dispatch(ext: str | None, mime: str, content: bytes, *, record_type: 
         ("docm", samples.make_docm("s"), "process_docx_document"),
         ("dotx", samples.make_dotx("s"), "process_docx_document"),
         ("potx", samples.make_potx("s"), "process_pptx_document"),
+        ("pptm", samples.make_pptm("s"), "process_pptx_document"),
         ("xlsm", samples.make_xlsm("s"), "process_excel_document"),
         ("msg", samples.msg_with_text_body(), "process_msg_document"),
         ("odt", samples.make_odt("s"), "process_libreoffice_document"),
@@ -61,7 +62,7 @@ async def _dispatch(ext: str | None, mime: str, content: bytes, *, record_type: 
         ("log", samples.make_log("s"), "process_plain_text_document"),
         ("cfg", samples.make_cfg("s"), "process_plain_text_document"),
     ],
-    ids=["docm", "dotx", "potx", "xlsm", "msg", "odt", "rtf", "log", "cfg"],  # the sample bytes hold a timestamp
+    ids=["docm", "dotx", "potx", "pptm", "xlsm", "msg", "odt", "rtf", "log", "cfg"],  # the sample bytes hold a timestamp
 )
 @pytest.mark.parametrize("mime", ["application/octet-stream", "text/plain"])
 @pytest.mark.parametrize("record_type", ["FILE", "CODE_FILE"])
@@ -80,6 +81,7 @@ async def test_the_extension_decides_the_handler_whatever_the_stored_mime(
         # Cells main already read keep main's parser.
         ("log", "application/json", "process_structured_document"),
         ("docm", "application/pdf", "_dispatch_pdf_binary"),
+        ("pptm", "application/pdf", "_dispatch_pdf_binary"),
         ("xlsm", "application/vnd.ms-excel", "process_xls_document"),
         ("rtf", "application/msword", "process_doc_document"),
         ("htm", "application/json", "process_structured_document"),
@@ -162,11 +164,12 @@ async def test_an_encrypted_odt_is_password_protected_before_conversion() -> Non
         ("docm", samples.make_docm("s"), "docx", _DOCX),
         ("dotx", samples.make_dotx("s"), "docx", _DOCX),
         ("potx", samples.make_potx("s"), "pptx", _PPTX),
+        ("pptm", samples.make_pptm("s"), "pptm", "text/plain"),
         ("msg", samples.msg_with_text_body(), "msg", "text/plain"),
         ("log", samples.make_log("s"), "log", "text/plain"),
         ("xlsm", samples.make_xlsm("s"), "xlsm", "text/plain"),
     ],
-    ids=["docm", "dotx", "potx", "msg", "log", "xlsm"],
+    ids=["docm", "dotx", "potx", "pptm", "msg", "log", "xlsm"],
 )
 async def test_the_parsing_service_gets_the_prepared_file(
     ext: str, content: bytes, service_ext: str, service_mime: str

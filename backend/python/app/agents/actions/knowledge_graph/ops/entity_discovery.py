@@ -43,6 +43,7 @@ from app.modules.retrieval.entity_permissions import (
 from app.modules.retrieval.provenance import graph_record_refs, note_retrieved_by
 from app.modules.retrieval.title_hits import MIN_TITLE_COSINE, TITLE_SEARCH_TOP_K
 from app.utils.chat_helpers import get_record_id_shortener_if_enabled
+from app.utils.error_class import innermost_type
 from app.utils.not_indexed import not_indexed_note
 
 if TYPE_CHECKING:
@@ -301,7 +302,11 @@ async def execute_search_entities(
     # A kind put in entity_types ("organization") was ignored, leaving only the
     # other types searched; it is a named-entity kind. One that is also an
     # entity type ("person") stays one too, so it is searched with extraction off.
-    kinds = list(dict.fromkeys([*kinds, *(t for t in requested if t in _ENTITY_KIND_NAMES)]))
+    # Beside an explicit named_entity such a type means only the type: it must not narrow named_entity to its kind.
+    named_asked = "named_entity" in requested
+    kinds = list(dict.fromkeys([
+        *kinds, *(t for t in requested if t in _ENTITY_KIND_NAMES and not (named_asked and t in SEARCHABLE_ENTITY_TYPES)),
+    ]))
     requested = [t for t in requested if t not in _ENTITY_KIND_NAMES or t in SEARCHABLE_ENTITY_TYPES]
     kind_notes: list[str] = []
     asked_kinds = bool(kinds)
@@ -358,8 +363,11 @@ async def execute_search_entities(
             "this is not an empty result. Try again, or use knowledgegraph__search.",
             retryable=True,
         )
-    except EntityAccessError:
-        logger.warning("search_entities failed", exc_info=True)
+    except EntityAccessError as exc:
+        logger.warning(
+            "search_entities failed",
+            extra={"error_type": type(exc).__name__, "cause_type": innermost_type(exc)},
+        )
         return False, _error("Entity search failed — try again.", retryable=True)
 
     ignored = sorted(set(requested) - SEARCHABLE_ENTITY_TYPES)

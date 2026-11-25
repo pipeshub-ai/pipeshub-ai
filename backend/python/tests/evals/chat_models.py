@@ -36,11 +36,14 @@ def build_chat_model(
     azure_deployment: str | None = None,
     azure_api_version: str | None = None,
 ) -> BaseChatModel:
-    """A LangChain chat model for ``provider``.
+    """A LangChain chat model for ``provider``, with the product's client timeout: without one the
+    OpenAI client waits forever on a stalled connection (P4.9 FB-2).
 
     Azure's endpoint and deployment default to ``TEST_AZURE_OPENAI_*``; the
     demo answer judge passes its own.
     """
+    from app.utils.aimodels import DEFAULT_LLM_TIMEOUT_S
+
     if not api_key:
         raise MissingModelError(
             f"No API key for '{provider}'. Set the key in the workflow's "
@@ -50,7 +53,7 @@ def build_chat_model(
     if provider == "openai":
         from langchain_openai import ChatOpenAI
 
-        return ChatOpenAI(model=model, api_key=api_key, temperature=0)
+        return ChatOpenAI(model=model, api_key=api_key, temperature=0, timeout=DEFAULT_LLM_TIMEOUT_S)
     if provider == "azure_openai":
         from langchain_openai import AzureChatOpenAI
 
@@ -71,11 +74,12 @@ def build_chat_model(
             # thing they are measuring does.
             api_version=azure_api_version or AzureOpenAILLM.AZURE_OPENAI_VERSION.value,
             temperature=0,
+            timeout=DEFAULT_LLM_TIMEOUT_S,
         )
     if provider == "anthropic":
         from langchain_anthropic import ChatAnthropic
 
-        return ChatAnthropic(model=model, api_key=api_key, temperature=0)
+        return ChatAnthropic(model=model, api_key=api_key, temperature=0, timeout=DEFAULT_LLM_TIMEOUT_S)
     raise MissingModelError(
         f"'{provider}' is not a provider this runner knows. Use 'azure_openai', "
         "'openai' or 'anthropic', or add it to build_chat_model in "
@@ -96,7 +100,7 @@ def resolve_model(
     Reads the variables the integration workflows already set, so a scheduled
     run needs no new secret.
     """
-    provider = provider_override or os.getenv("EVAL_PROVIDER", "openai")
+    provider = provider_override or os.getenv("EVAL_PROVIDER") or run_provider() or "openai"
     model = model_override or os.getenv("EVAL_MODEL") or ""
     if provider == "azure_openai":
         return (
@@ -242,19 +246,29 @@ def _dedicated_judge(provider: str) -> JudgeModel:
     return JudgeModel(LangChainJudgeClient(chat, json_mode=provider != "anthropic"), provider, model, dedicated=True)
 
 
+# TEST_AI_MODEL_PROVIDER (the integration helper's provider ids) -> this module's.
+# Matched without case, so `openai` doesn't quietly send the judge to Azure.
+_RUN_PROVIDERS = {"openai": "openai", "azureopenai": "azure_openai"}
+
+
+def run_provider() -> str | None:
+    """The eval provider matching the run's TEST_AI_MODEL_PROVIDER, if it names one here."""
+    return _RUN_PROVIDERS.get(os.getenv("TEST_AI_MODEL_PROVIDER", "").strip().lower())
+
+
 def judge_model_from_env() -> JudgeModel:
     """The demo answer judge's model.
 
     With ``JUDGE_PROVIDER`` set, only the ``JUDGE_*`` settings are used, and an
-    incomplete set raises ``JudgeConfigError``. Otherwise the judge uses Azure
-    OpenAI when its key is set, as the integration workflow's instance does;
-    ``EVAL_PROVIDER`` overrides, and an unconfigured provider raises
-    ``MissingModelError``.
+    incomplete set raises ``JudgeConfigError``. Otherwise the judge uses the
+    provider the run's instance uses (``TEST_AI_MODEL_PROVIDER``); without one,
+    Azure OpenAI when its key is set, else OpenAI. ``EVAL_PROVIDER`` overrides,
+    and an unconfigured provider raises ``MissingModelError``.
     """
     judge_provider = os.getenv("JUDGE_PROVIDER")
     if judge_provider:
         return _dedicated_judge(judge_provider)
-    default = "azure_openai" if os.getenv("TEST_AZURE_OPENAI_API_KEY") else "openai"
+    default = run_provider() or ("azure_openai" if os.getenv("TEST_AZURE_OPENAI_API_KEY") else "openai")
     provider, model, key = resolve_model(provider_override=os.getenv("EVAL_PROVIDER") or default)
     chat = build_chat_model(provider, model, key)
     return JudgeModel(LangChainJudgeClient(chat, json_mode=provider != "anthropic"), provider, model, dedicated=False)
@@ -271,4 +285,5 @@ __all__ = [
     "foundry_resource",
     "judge_model_from_env",
     "resolve_model",
+    "run_provider",
 ]

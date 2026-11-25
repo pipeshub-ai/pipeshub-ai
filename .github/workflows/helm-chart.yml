@@ -60,7 +60,7 @@ jobs:
           python-version: '3.12'
 
       - name: Install PyYAML
-        run: python -m pip install pyyaml==6.0.2
+        run: backend/python/requirements/install.sh tools
 
       - name: Install kubeconform
         run: |
@@ -84,7 +84,8 @@ jobs:
       fail-fast: false
       matrix:
         # The two graph databases and two message brokers the chart supports,
-        # paired so each appears once.
+        # paired so each appears once. arangodb-redis also runs the code
+        # sandbox on a small DinD sidecar and checks it.
         variant: [neo4j-kafka, arangodb-redis]
     steps:
       - name: Checkout

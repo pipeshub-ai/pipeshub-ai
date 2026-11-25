@@ -30,6 +30,7 @@ from app.config.constants.service import (
     config_node_constants,
 )
 from app.utils.jwt import mint_service_token
+from app.utils.storage_download import is_signed_url_reply
 
 logger = logging.getLogger(__name__)
 
@@ -153,8 +154,7 @@ async def fetch_blob_bytes(
                 raise BlobStagingError(
                     f"Storage download failed [{resp.status}]: {detail}"
                 )
-            content_type = (resp.headers.get("Content-Type") or "").lower()
-            if "application/json" in content_type:
+            if is_signed_url_reply(resp.headers):
                 payload = await resp.json()
                 signed_url = (
                     payload.get("signedUrl")

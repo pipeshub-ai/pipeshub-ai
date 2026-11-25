@@ -1,4 +1,5 @@
 import ctypes
+import importlib.util
 import logging
 import os
 import sys
@@ -18,6 +19,28 @@ def disable_vendor_telemetry(environ: MutableMapping[str, str] = os.environ) -> 
     """Opt this process and its children out of third-party telemetry, keeping an operator's explicit value."""
     for name, value in VENDOR_TELEMETRY_OPT_OUTS.items():
         _ = environ.setdefault(name, value)
+
+
+def use_bundled_tiktoken_encodings(environ: MutableMapping[str, str] = os.environ) -> None:
+    """Point tiktoken at the encodings LiteLLM ships, keeping an operator's explicit ``TIKTOKEN_CACHE_DIR``.
+
+    Without it tiktoken downloads cl100k_base from openaipublic.blob.core.windows.net into $TMPDIR; LiteLLM ≤ 1.97
+    set this on import, newer releases only once its token counter loads, so egress-restricted installs fell back
+    to estimated token counts.
+    """
+    if "TIKTOKEN_CACHE_DIR" in environ:
+        return
+    spec = importlib.util.find_spec("litellm")
+    bundled = (
+        os.path.join(os.path.dirname(spec.origin), "litellm_core_utils", "tokenizers") if spec and spec.origin else None
+    )
+    if bundled and os.path.isdir(bundled):
+        environ["TIKTOKEN_CACHE_DIR"] = bundled
+    else:
+        logger.warning(
+            "LiteLLM's bundled tiktoken encodings not found; set TIKTOKEN_CACHE_DIR to a folder holding cl100k_base "
+            "or tiktoken will download it at first use"
+        )
 
 
 def mark_process_non_dumpable() -> bool:

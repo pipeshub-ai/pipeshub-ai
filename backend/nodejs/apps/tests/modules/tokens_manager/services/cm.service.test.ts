@@ -909,6 +909,99 @@ describe('tokens_manager/services/cm.service', () => {
       })
     })
 
+    describe('getSandboxPlaneEndpoints (D1)', () => {
+      const planeEnv = [
+        'SANDBOX_BROKER_BACKEND',
+        'EGRESS_PROXY_CONTROL_BACKEND',
+        'MODEL_GATEWAY_BACKEND',
+        'TOOL_GATEWAY_BACKEND',
+      ]
+      beforeEach(() => {
+        for (const name of planeEnv) delete process.env[name]
+      })
+
+      it('EN-1: writes the four addresses from the environment and keeps every other key', async () => {
+        mockKvStore.get.resolves(JSON.stringify({ queryBackend: { endpoint: 'http://q:8000' } }))
+        process.env.SANDBOX_BROKER_BACKEND = 'http://sandbox-broker:8095/'
+        process.env.EGRESS_PROXY_CONTROL_BACKEND = 'http://egress-proxy:8098'
+        process.env.MODEL_GATEWAY_BACKEND = 'http://model-gateway:8096'
+        process.env.TOOL_GATEWAY_BACKEND = 'http://tool-gateway:8099'
+
+        const result = await configService.getSandboxPlaneEndpoints()
+
+        expect(mockKvStore.set.calledOnce).to.equal(true)
+        expect(JSON.parse(mockKvStore.set.firstCall.args[1])).to.deep.equal({
+          queryBackend: { endpoint: 'http://q:8000' },
+          sandboxBroker: { endpoint: 'http://sandbox-broker:8095' },
+          egressProxy: { controlEndpoint: 'http://egress-proxy:8098' },
+          modelGateway: { endpoint: 'http://model-gateway:8096' },
+          toolGateway: { endpoint: 'http://tool-gateway:8099' },
+        })
+        expect(result).to.deep.equal({
+          'sandboxBroker.endpoint': 'http://sandbox-broker:8095',
+          'egressProxy.controlEndpoint': 'http://egress-proxy:8098',
+          'modelGateway.endpoint': 'http://model-gateway:8096',
+          'toolGateway.endpoint': 'http://tool-gateway:8099',
+        })
+      })
+
+      it('EN-2: keeps stored addresses when unset and never invents an absent one', async () => {
+        mockKvStore.get.resolves(
+          JSON.stringify({ sandboxBroker: { endpoint: 'http://broker.internal:8095', other: 'x' } }),
+        )
+
+        const result = await configService.getSandboxPlaneEndpoints()
+
+        expect(mockKvStore.set.called).to.equal(false)
+        expect(result).to.deep.equal({ 'sandboxBroker.endpoint': 'http://broker.internal:8095' })
+      })
+
+      it('EN-2: an environment value replaces a stored one and keeps sibling keys', async () => {
+        mockKvStore.get.resolves(
+          JSON.stringify({ egressProxy: { controlEndpoint: 'http://old:8098', note: 'kept' } }),
+        )
+        process.env.EGRESS_PROXY_CONTROL_BACKEND = 'http://egress-proxy:8098'
+
+        await configService.getSandboxPlaneEndpoints()
+
+        expect(JSON.parse(mockKvStore.set.firstCall.args[1])).to.deep.equal({
+          egressProxy: { controlEndpoint: 'http://egress-proxy:8098', note: 'kept' },
+        })
+      })
+    })
+
+    describe('endpoints stored as a JSON string of JSON (older Python writer)', () => {
+      const endpoints = {
+        frontend: { publicEndpoint: 'http://stored-frontend:3000' },
+        storage: { endpoint: 'http://storage:3000' },
+        nodejs: { endpoint: 'http://localhost:3001' },
+      }
+      const doubled = JSON.stringify(JSON.stringify(endpoints))
+
+      it('getFrontendUrl resolves and rewrites the key as a single JSON layer', async () => {
+        delete process.env.FRONTEND_PUBLIC_URL
+        mockKvStore.get.resolves(doubled)
+        const result = await configService.getFrontendUrl()
+        expect(result).to.equal('http://stored-frontend:3000')
+        const [key, written] = mockKvStore.set.lastCall.args
+        expect(key).to.equal('/services/endpoints')
+        expect(JSON.parse(written)).to.deep.equal(endpoints)
+      })
+
+      it('getFrontendUrl on a single-layer value is unchanged', async () => {
+        delete process.env.FRONTEND_PUBLIC_URL
+        mockKvStore.get.resolves(JSON.stringify(endpoints))
+        const result = await configService.getFrontendUrl()
+        expect(result).to.equal('http://stored-frontend:3000')
+        expect(JSON.parse(mockKvStore.set.lastCall.args[1])).to.deep.equal(endpoints)
+      })
+
+      it('getStorageBackendUrl reads the doubled value', async () => {
+        mockKvStore.get.resolves(doubled)
+        expect(await configService.getStorageBackendUrl()).to.equal('http://storage:3000')
+      })
+    })
+
     describe('getAiBackendUrl', () => {
       it('should return AI backend URL from env var', async () => {
         process.env.QUERY_BACKEND = 'http://query:8000'

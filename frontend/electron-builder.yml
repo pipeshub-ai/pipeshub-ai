@@ -12,6 +12,7 @@ files:
   - electron/compile/local-mode.js
   - electron/compile/local-server/**/*.js
   - electron/compile/local-repos/**/*.js
+  - electron/compile/session-vault.js
   - electron/package.json
   - electron/compile/local-sync/**/*.js
   - "!electron/compile/local-sync/**/*.test.js"

@@ -286,6 +286,9 @@ export const contentDocs = (): Record<string, unknown[]> => ({
     { _id: oid(), threadId: '1700000000.000100', botId: 'B1', email: 'a@example.test', conversationId: SESSION_1, createdAt: at('2026-07-01T10:00:00.000Z'), updatedAt: at('2026-07-02T10:00:00.000Z'), __v: 0 },
     { _id: oid(), threadId: '1700000000.000200', botId: 'B1', email: 'b@example.test', conversationId: SESSION_2, createdAt: at('2026-07-03T10:00:00.000Z'), updatedAt: at('2026-07-03T10:00:00.000Z') },
   ],
+  slack_user_links: [
+    { _id: oid(), orgId: String(ORG_A), workspaceId: 'E1', slackUserId: 'U1', teamId: 'T1', userId: String(USER_1), email: 'a@example.test', slackName: 'ada', linkedAt: at('2026-11-01T10:00:00.000Z'), createdAt: at('2026-11-01T10:00:00.000Z'), updatedAt: at('2026-11-01T10:00:00.000Z'), __v: 0 },
+  ],
   serviceAccountDelegations: [
     { _id: oid(), orgId: ORG_A, serviceAccountId: SERVICE_ACCOUNT, subjectUserId: USER_1, grantedBy: USER_2, reason: 'reports', createdAt: at('2026-08-01T10:00:00.000Z'), updatedAt: at('2026-08-01T10:00:00.000Z'), __v: 0 },
     { _id: oid(), orgId: ORG_A, serviceAccountId: SERVICE_ACCOUNT, subjectUserId: USER_2, grantedBy: USER_1, createdAt: at('2026-08-02T10:00:00.000Z'), updatedAt: at('2026-08-02T10:00:00.000Z') },

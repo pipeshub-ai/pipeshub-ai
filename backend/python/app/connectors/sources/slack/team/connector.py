@@ -111,9 +111,11 @@ from app.connectors.sources.slack.common.stream_errors import (
 )
 from app.connectors.sources.slack.common.token_renewal import (
     PASTED_ROTATING_TOKEN_MESSAGE,
+    RENEWABLE_ERRORS,
     RenewingSlackDataSource,
     SlackTokenRenewal,
 )
+from app.exceptions.non_retryable import NonRetryableError
 from app.models.blocks import (
     Block,
     BlockGroup,
@@ -157,6 +159,7 @@ if TYPE_CHECKING:
     from app.config.configuration_service import ConfigurationService
     from app.connectors.core.base.data_store.data_store import DataStoreProvider
     from app.connectors.core.thread_pool import ThreadPoolLease
+    from app.services.rate_budget import AccountBudget
 
 # ── Constants ──────────────────────────────────────────────────────────────────
 BURST_WINDOW_SECONDS        = 300           # 5-minute conversational burst window
@@ -232,8 +235,13 @@ _SIGN_IN_PAGE = object()
 _USER_MENTION_RE = re.compile(r"<@([UW]\w+)(?:\|[^>]+)?>")
 
 
-class SlackTokenRefusedError(ConnectorInitError):
-    """Slack refused the connector's token; the sync stops and the user is told."""
+class SlackTokenRefusedError(ConnectorInitError, NonRetryableError):
+    """Slack refused the connector's token or its grant: setup fails, or the sync stops and tells the user.
+
+    Slack answers with HTTP 200 and ``ok: false``, so no status reaches the classifiers: the type
+    says it is not retried and is an ``auth_expired`` failure, also for a grant an admin withdrew."""
+
+    log_error_class = "auth_expired"
 
 
 # ── Internal dataclasses ───────────────────────────────────────────────────────
@@ -304,6 +312,7 @@ class RateLimiter:
         limits: Optional[dict[int, int]] = None,
         headroom: float = RATE_LIMIT_HEADROOM,
         logger: Optional[Logger] = None,
+        shared: "AccountBudget | None" = None,
     ) -> None:
         src = limits if limits is not None else SLACK_TIER_LIMITS_PER_MINUTE
         self._limits: dict[int, int] = {
@@ -314,6 +323,8 @@ class RateLimiter:
             t: asyncio.Lock() for t in self._limits
         }
         self._logger = logger
+        # The org's Slack budget, which agent toolsets spend too (G-31); taken after the tier's own window.
+        self._shared = shared
 
     async def acquire(self, tier: Tier) -> None:
         key = int(tier)
@@ -336,6 +347,8 @@ class RateLimiter:
                     ]
 
             window.append(datetime.now())
+        if self._shared is not None:
+            await self._shared.acquire()
 
 
 # ── Connector declaration ──────────────────────────────────────────────────────
@@ -522,7 +535,7 @@ class SlackConnector(BaseConnector):
         self.audit_log_sync_point = _sp(SyncDataPointType.RECORDS)
 
         # ── Rate limiter ─────────────────────────────────────────────────────
-        self.rate_limiter = RateLimiter(logger=logger)
+        self.rate_limiter = RateLimiter(logger=logger, shared=self.rate_budget)
 
         # ── Workspace-wide caches ────────────────────────────────────────────
         # Populated during _sync_users(); re-populated on every run_sync().
@@ -648,7 +661,7 @@ class SlackConnector(BaseConnector):
                 self.team_id = team.get("id")
                 self.logger.info(f"Workspace: {self.workspace_domain} ({self.team_id})")
             else:
-                self._raise_if_token_refused(resp, "team.info")
+                self._raise_if_token_refused(resp)
                 self.logger.warning(
                     f"team.info failed ({getattr(resp, 'error', 'no response')}); "
                     f"reading the workspace from auth.test"
@@ -673,7 +686,7 @@ class SlackConnector(BaseConnector):
                                 f"{self.workspace_domain}"
                             )
                 elif auth_resp is not None:
-                    self._raise_if_token_refused(auth_resp, "auth.test")
+                    self._raise_if_token_refused(auth_resp)
                     self.logger.warning(
                         f"auth.test fallback failed: {getattr(auth_resp, 'error', 'no response')}"
                     )
@@ -687,12 +700,21 @@ class SlackConnector(BaseConnector):
             self.logger.error(f"❌ Init failed: {exc}", exc_info=True)
             return False
 
-    def _raise_if_token_refused(self, resp: object, operation: str) -> None:
-        """Raise ConnectorInitError when Slack answered ``operation`` by refusing the token."""
+    def _raise_if_token_refused(self, resp: object) -> None:
+        """Raise when Slack's answer ``resp`` refuses the token; see ``_token_refused_error``."""
         error = getattr(resp, "error", None)
         if error in SLACK_AUTH_ERRORS:
-            self.logger.error(f"❌ Slack refused the token on {operation}: {error}")
-            raise ConnectorInitError(self._token_refused_message(error))
+            raise self._token_refused_error(error)
+
+    def _token_refused_error(self, error: str | None) -> ConnectorInitError:
+        """SlackTokenRefusedError, or a retryable ConnectorInitError while renewing the token may still work."""
+        # Only a renewable error went through the renewal, so only it can read its outcome.
+        if error in RENEWABLE_ERRORS and self._token_renewal.refresh_failed_transiently:
+            return ConnectorInitError(
+                f"Slack refused the expired token saved in {self.display_name} and renewing it "
+                f"failed for now; it is renewed again on the next try."
+            )
+        return SlackTokenRefusedError(self._token_refused_message(error))
 
     def _token_refused_message(self, error: str | None) -> str:
         if error == "token_expired":
@@ -704,7 +726,7 @@ class SlackConnector(BaseConnector):
             f"Token into the connector's settings."
         )
 
-    async def _fail_if_token_refused(self, resp: object, operation: str) -> None:
+    async def _fail_if_token_refused(self, resp: object) -> None:
         """Stop the sync and tell the user, once per run, when Slack refuses the token.
 
         A bot token has no refresh, and token renewal has already had its try, so
@@ -714,17 +736,16 @@ class SlackConnector(BaseConnector):
         error = getattr(resp, "error", None)
         if error not in SLACK_AUTH_ERRORS:
             return
-        message = self._token_refused_message(error)
-        self.logger.error(f"❌ Slack refused the token on {operation}: {error}")
-        if not self._token_refused:
+        refused = self._token_refused_error(error)
+        if isinstance(refused, SlackTokenRefusedError) and not self._token_refused:
             self._token_refused = True
             await self.notify(
                 type=NotificationType.CONNECTOR_AUTH_ERROR,
                 severity=NotificationSeverity.ERROR,
                 title=f"{self.display_name}: Slack token refused",
-                message=message,
+                message=str(refused),
             )
-        raise SlackTokenRefusedError(message)
+        raise refused
 
     async def _report_unreadable_channels(self) -> None:
         """One notice per run for the channels whose messages could not be read."""
@@ -903,7 +924,7 @@ class SlackConnector(BaseConnector):
             self.logger.info("✅ Slack sync complete")
 
         except SlackTokenRefusedError:
-            raise  # logged and notified where Slack refused the token
+            raise  # the user was notified where Slack refused it; sync_run.end logs it
         except Exception as exc:
             self.logger.error(f"❌ Sync failed: {exc}", exc_info=True)
             raise
@@ -943,7 +964,7 @@ class SlackConnector(BaseConnector):
             resp = await ds.users_list(limit=PAGE_SIZE_USERS, cursor=cursor)
 
             if not resp or not resp.success:
-                await self._fail_if_token_refused(resp, "users.list")
+                await self._fail_if_token_refused(resp)
                 # The workspace_member role is written from these pages: with one
                 # missing it is left out or short, and must not be unlinked as unseen.
                 self._full_sync_read_failed = True
@@ -1297,7 +1318,7 @@ class SlackConnector(BaseConnector):
             )
 
             if not resp or not resp.success:
-                await self._fail_if_token_refused(resp, "conversations.list")
+                await self._fail_if_token_refused(resp)
                 self._full_sync_read_failed = True
                 self._channel_list_failed = True
                 self.logger.error(
@@ -1787,7 +1808,7 @@ class SlackConnector(BaseConnector):
                     )
                     break
                 elif error in SLACK_AUTH_ERRORS:
-                    await self._fail_if_token_refused(resp, "conversations.history")
+                    await self._fail_if_token_refused(resp)
                 else:
                     self.logger.error(
                         f"❌ conversations.history({channel_id}) failed: {error}"

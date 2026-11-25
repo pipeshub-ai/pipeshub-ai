@@ -1,0 +1,36 @@
+{
+  "$comment": "npm install scripts (SEC-SC-08; scripts/supply_chain.py check, rule NODE-SCRIPTS). Every package a committed package-lock.json marks hasInstallScript is listed under its lock with what an image build or a CI job does with its script: `skip` (npm ci --ignore-scripts, with why that is safe) or `rebuild` (an `npm rebuild NAME` after the script-free install, the only scripts an image runs). Every `npm ci` in a Dockerfile or a CI workflow (.github/workflows, C644-FU-2) carries --ignore-scripts unless it is in `scriptedInstalls`, each with the reason and the follow-up that removes it. C6.44: no architecture runs a lock's scripts by default; a script runs only by name.",
+  "packages": {
+    ".github/tools/spectral/package-lock.json": {
+      "@scarf/scarf": {"run": "skip", "why": "install telemetry only"},
+      "fsevents": {"run": "skip", "why": "macOS only"}
+    },
+    "backend/nodejs/apps/docker/pm2/package-lock.json": {
+      "fsevents": {"run": "skip", "why": "macOS only"}
+    },
+    "backend/nodejs/apps/package-lock.json": {
+      "@scarf/scarf": {"run": "skip", "why": "install telemetry only"},
+      "bun": {"run": "skip", "why": "a dependency of @pipeshub-ai/mcp that nothing in the API runs; its script copies the platform binary into bin/"},
+      "fsevents": {"run": "skip", "why": "macOS only"},
+      "msgpackr-extract": {"run": "skip", "why": "the lock carries the prebuilt @msgpackr-extract/msgpackr-extract-linux-* binaries; the script only builds from source when none fits"},
+      "protobufjs": {"run": "skip", "why": "the script prints a version notice about dependents"}
+    },
+    "deployment/sandbox-images/acp-dsh/engine/package-lock.json": {
+      "@deepseek-ai/dsh-subprocess-local": {"run": "skip", "why": "the native addons are prebuilt in the lock (acp-dsh/Dockerfile)"},
+      "@google/genai": {"run": "skip", "why": "the script is a no-op notice"},
+      "koffi": {"run": "skip", "why": "ships prebuilt binaries for every platform"},
+      "node-pty": {"run": "skip", "why": "prebuilt for linux in the package"},
+      "protobufjs": {"run": "skip", "why": "the script prints a version notice about dependents"}
+    },
+    "deployment/sandbox/tsx/package-lock.json": {
+      "esbuild": {"run": "skip", "why": "the lock carries @esbuild/linux-*; the script only verifies and links that binary"},
+      "fsevents": {"run": "skip", "why": "macOS only"}
+    },
+    "frontend/package-lock.json": {
+      "electron-winstaller": {"run": "skip", "why": "Windows installer builds only (dev)"},
+      "fsevents": {"run": "skip", "why": "macOS only"},
+      "unrs-resolver": {"run": "skip", "why": "eslint's import resolver (dev); the lock carries its napi bindings, installed with the optional packages (C644-FU-1)"}
+    }
+  },
+  "scriptedInstalls": []
+}

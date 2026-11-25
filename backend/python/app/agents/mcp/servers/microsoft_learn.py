@@ -1,6 +1,11 @@
 """Microsoft Learn MCP server template — Microsoft's official remote server (Streamable HTTP), no sign-in."""
 from app.agents.mcp.mcp_server_decorator import mcp_server
-from app.agents.mcp.models import MCPAuthMode, MCPServerTemplate, MCPTransport
+from app.agents.mcp.models import (
+    MCPAuthMode,
+    MCPCategory,
+    MCPServerTemplate,
+    MCPTransport,
+)
 
 
 @mcp_server(
@@ -18,6 +23,13 @@ from app.agents.mcp.models import MCPAuthMode, MCPServerTemplate, MCPTransport
         default_url="https://learn.microsoft.com/api/mcp",
         documentation_url="https://learn.microsoft.com/en-us/training/support/mcp",
         tags=["docs", "microsoft", "azure", "developer"],
+        category=MCPCategory.DEVELOPER,
+        capabilities=[
+            "Look up Azure documentation",
+            "Find .NET code samples",
+            "Search Microsoft 365 docs",
+        ],
+        read_only=True,
     )
 )
 class MicrosoftLearnMCPServer:

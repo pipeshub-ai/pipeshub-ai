@@ -17,7 +17,7 @@ from app.modules.transformers.blob_storage import (
     StorageDocumentNotFoundError,
 )
 
-RECORD = {"_key": "r1", "id": "r1", "orgId": "o1", "virtualRecordId": "v1", "contentRev": "rev-a",
+RECORD = {"_key": "r1", "id": "r1", "orgId": "o1", "virtualRecordId": "v1", "contentRev": "rev-a", "indexingStatus": "COMPLETED",
           "recordName": "n", "recordType": "FILE", "origin": "UPLOAD", "connectorName": "KB",
           "connectorId": "c", "externalRecordId": "e", "version": 0}
 
@@ -30,7 +30,7 @@ def _sink(mapping: list[str], by_doc: dict) -> MagicMock:
         side_effect=[{"record_doc_id": d, "fileSizeBytes": 10} for d in mapping]
     )
 
-    async def read(org_id, vrid, doc, size, headers, endpoint) -> dict:
+    async def read(org_id, vrid, doc, size, headers, endpoint, **_kwargs) -> dict:
         outcome = by_doc[doc]
         if isinstance(outcome, Exception):
             raise outcome

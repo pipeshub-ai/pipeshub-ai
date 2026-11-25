@@ -50,11 +50,14 @@ jobs:
       PIPESHUB_TEST_ENV: local
       PIPESHUB_TEST_USER_EMAIL: ${{ secrets.PIPESHUB_TEST_USER_EMAIL }}
       PIPESHUB_TEST_USER_PASSWORD: ${{ secrets.PIPESHUB_TEST_USER_PASSWORD }}
-      TEST_OPENAI_LLM_MODEL: ${{ vars.TEST_OPENAI_LLM_MODEL }}
-      # Azure OpenAI is where the credits are. The helper prefers it over
-      # OpenAI when its credentials are present, and TEST_AI_MODEL_PROVIDER
-      # stops a failure here quietly falling back to a key we no longer fund.
-      TEST_AI_MODEL_PROVIDER: azureOpenAI
+      # The AI model provider is the repository variable TEST_AI_MODEL_PROVIDER
+      # (openAI or azureOpenAI; openAI when unset). Both providers' settings are
+      # always passed, so switching provider is that one variable. The model setup,
+      # the evals and judge, and the browser tests all use only the named provider.
+      TEST_AI_MODEL_PROVIDER: ${{ vars.TEST_AI_MODEL_PROVIDER || 'openAI' }}
+      TEST_OPENAI_API_KEY: ${{ secrets.TEST_OPENAI_API_KEY }}
+      TEST_OPENAI_LLM_MODEL: ${{ vars.TEST_OPENAI_LLM_MODEL || 'gpt-5.6-luna' }}
+      TEST_OPENAI_EMBEDDING_MODEL: ${{ vars.TEST_OPENAI_EMBEDDING_MODEL }}
       TEST_AZURE_OPENAI_API_KEY: ${{ secrets.TEST_AZURE_OPENAI_API_KEY }}
       TEST_AZURE_OPENAI_ENDPOINT: ${{ secrets.TEST_AZURE_OPENAI_ENDPOINT || vars.TEST_AZURE_OPENAI_ENDPOINT }}
       TEST_AZURE_OPENAI_DEPLOYMENT_NAME: ${{ secrets.TEST_AZURE_OPENAI_DEPLOYMENT_NAME || vars.TEST_AZURE_OPENAI_DEPLOYMENT_NAME }}
@@ -118,8 +121,7 @@ jobs:
       - name: Install integration-test dependencies
         working-directory: integration-tests
         run: |
-          uv venv
-          uv pip install -e .
+          uv sync --locked
 
       # Only the app and the stores it depends on: the connector source
       # databases the integration suite also starts would be idle neighbours

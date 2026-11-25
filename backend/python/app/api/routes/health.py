@@ -71,6 +71,7 @@ from app.web.errors import (
     WebError,
 )
 from app.web.health import check_provider, provider_name
+from harness_core.models.capabilities import model_capabilities
 
 
 async def _bind_health_check_identity(request: Request) -> AsyncIterator[None]:
@@ -524,8 +525,18 @@ async def _model_setup_failed_response(
             ),
             model_config, model, error_code="endpoint_unreachable",
         )
-    if code in ("rate_limit", "quota_exceeded"):
-        # OpenAI answers 429 for an exhausted quota as well as a rate limit, and the key is fine in both.
+    if code == "quota_exceeded":
+        # OpenAI answers 429 for an empty balance as well as a rate limit; waiting only fixes the second.
+        return _config_error(
+            _with_provider_reason(
+                f"The {_provider_display_name(provider)} account for {name} is out of credit, so the test "
+                "call was turned down. The API key is fine: add credit or raise the usage limit in the "
+                "provider's billing settings, then try again.",
+                provider, reason,
+            ),
+            model_config, model, error_code=code,
+        )
+    if code == "rate_limit":
         return _config_error(
             _with_provider_reason(
                 f"{_provider_display_name(provider)} turned down the test call for {name} because of a "
@@ -559,8 +570,9 @@ async def _model_setup_failed_response(
 
 
 def _is_settings_failure(e: BaseException) -> bool:
-    """Whether the provider refused the settings or could not be reached at all."""
-    return provider_error_code(e) in _REJECTED_SETTINGS_CODES or _looks_like_connectivity_error(e)
+    """Whether the provider refused the settings, has no credit left for them, or could not be reached at all."""
+    code = provider_error_code(e)
+    return code in _REJECTED_SETTINGS_CODES or code == "quota_exceeded" or _looks_like_connectivity_error(e)
 
 
 def _chosen_embedding_config(embedding_configs: list[dict]) -> dict:
@@ -1709,6 +1721,14 @@ async def _check_one_llm(
     is_multimodal = bool(
         llm_config.get("isMultimodal", False) or configuration.get("isMultimodal", False)
     )
+    # A documented "no image input" (C13.03) is answered from the rows, without a call to the provider.
+    if is_multimodal and model_capabilities(model_name, configuration.get("endpoint")).image_input is False:
+        return _config_error(
+            "This model's endpoint does not accept image input.",
+            llm_config,
+            model_name,
+            hint="Uncheck Multimodal for this model, or choose a vision model.",
+        )
 
     llm_model = await asyncio.to_thread(
         get_generator_model, provider=provider, config=llm_config, model_name=model_name,

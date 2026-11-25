@@ -1,0 +1,48 @@
+[
+  {
+    "description": "another harness major",
+    "instance": {
+      "harnessMajor": 1,
+      "supportedSchemaVersions": [2],
+      "foldVersion": 5,
+      "features": []
+    }
+  },
+  {
+    "description": "no spec schema version",
+    "instance": {
+      "harnessMajor": 2,
+      "supportedSchemaVersions": [],
+      "foldVersion": 5,
+      "features": []
+    }
+  },
+  {
+    "description": "fold version zero",
+    "instance": {
+      "harnessMajor": 2,
+      "supportedSchemaVersions": [2],
+      "foldVersion": 0,
+      "features": []
+    }
+  },
+  {
+    "description": "feature name that is not a machine name",
+    "instance": {
+      "harnessMajor": 2,
+      "supportedSchemaVersions": [2],
+      "foldVersion": 5,
+      "features": ["Steering Support"]
+    }
+  },
+  {
+    "description": "unknown member",
+    "instance": {
+      "harnessMajor": 2,
+      "supportedSchemaVersions": [2],
+      "foldVersion": 5,
+      "features": [],
+      "maxFold": 6
+    }
+  }
+]

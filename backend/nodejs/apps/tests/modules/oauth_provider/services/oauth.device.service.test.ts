@@ -19,7 +19,7 @@ import {
 import { BadRequestError, NotFoundError } from '../../../../src/libs/errors/http.errors'
 import { Users } from '../../../../src/modules/user_management/schema/users.schema'
 import { Org } from '../../../../src/modules/user_management/schema/org.schema'
-import { createMockLogger, MockLogger } from '../../../helpers/mock-logger'
+import { createMockLogger, createSnakeCaseLogKeyGuard, MockLogger } from '../../../helpers/mock-logger'
 
 function sha256Hex(value: string): string {
   return crypto.createHash('sha256').update(value).digest('hex')
@@ -91,7 +91,11 @@ describe('OAuthDeviceService', () => {
     )
   })
 
-  afterEach(() => {
+  const snakeCaseKeys = createSnakeCaseLogKeyGuard()
+  after(() => snakeCaseKeys.report())
+
+  afterEach(function () {
+    snakeCaseKeys.check(this, mockLogger)
     sinon.restore()
     delete process.env.PIPESHUB_ENABLE_DEVICE_GRANT
   })
@@ -123,7 +127,7 @@ describe('OAuthDeviceService', () => {
       'user:read agent:read',
       'http://localhost:3000',
     )
-    expect(create.firstCall.args[0].scopes).to.deep.equal(['user:read'])
+    expect(create.firstCall.args[0]!.scopes).to.deep.equal(['user:read'])
   })
 
   it('should not reset lastPolledAt when rejecting a fast poll', async () => {
@@ -228,7 +232,7 @@ describe('OAuthDeviceService', () => {
     const findOne = sinon.stub(OAuthDeviceCode, 'findOne').resolves(pending);
     const update = sinon.stub(OAuthDeviceCode, 'updateOne').resolves({} as any);
     const ids = [new Types.ObjectId().toString(), new Types.ObjectId().toString()];
-    await service.approve('ABCD-EFGH', ids[0], ids[1], 'granted');
+    await service.approve('ABCD-EFGH', ids[0]!, ids[1]!, 'granted');
     expect((update.firstCall.args[1] as any).$set.status).to.equal(OAuthDeviceCodeStatus.APPROVED);
 
     mockOAuthAppService.getAppByClientId.resolves({
@@ -238,7 +242,7 @@ describe('OAuthDeviceService', () => {
     update.resetHistory();
     findOne.resolves({ ...pending });
     try {
-      await service.approve('ABCD-EFGH', ids[0], ids[1], 'granted');
+      await service.approve('ABCD-EFGH', ids[0]!, ids[1]!, 'granted');
       expect.fail('should have thrown');
     } catch (err) {
       expect(err).to.be.instanceOf(InvalidGrantError);
@@ -483,10 +487,10 @@ describe('OAuthDeviceService', () => {
     } catch (err) {
       expect(err).to.be.instanceOf(DeviceGrantError)
     }
-    expect(findOne.firstCall.args[0].deviceCodeHash).to.deep.equal({
+    expect(findOne.firstCall.args[0]!.deviceCodeHash).to.deep.equal({
       $eq: sha256Hex(plaintext),
     })
-    expect(findOne.firstCall.args[0].deviceCodeHash.$eq).to.not.equal(plaintext)
+    expect(findOne.firstCall.args[0]!.deviceCodeHash.$eq).to.not.equal(plaintext)
   })
 
   it('should reject a missing device_code before lookup', async () => {
@@ -588,6 +592,14 @@ describe('OAuthDeviceService', () => {
     expect(denied.status).to.equal(OAuthDeviceCodeStatus.DENIED)
     expect(denied.userId).to.equal(undefined)
     expect(mockOAuthTokenService.generateTokens.called).to.be.false
+    expect(mockLogger.info.args).to.deep.include([
+      'Device authorization approved',
+      { client_id: 'cid', user_id: userId, org_id: orgId },
+    ])
+    expect(mockLogger.info.args).to.deep.include([
+      'Device authorization denied',
+      { client_id: 'cid', user_id: userId },
+    ])
   })
 
   it('should surface isDynamic on consent data', async () => {

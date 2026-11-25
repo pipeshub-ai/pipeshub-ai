@@ -76,10 +76,18 @@ class SkillLearning:
         manager: "SkillManager",
         spawn_skill_writer: SpawnSkillWriter,
         timeline_store: "TimelineStore | None" = None,
+        *,
+        source_session_id: str | None = None,
+        source_agent_key: str | None = None,
     ) -> None:
         self._manager = manager
         self._spawn = spawn_skill_writer
         self._timeline = timeline_store
+        # The conversation candidates are learned from, recorded on each so its erasure takes them (CLEANUP-G7).
+        # Separate from the hook's session id, which also counts skill usage.
+        self._source_session_id = source_session_id
+        # UI-B4: the agent whose run a candidate is learned from (None: the assistant), named on the proposal.
+        self._source_agent_key = source_agent_key
 
     async def __call__(self, ctx: AgentLifecycleContext, next_fn) -> None:
         result = ctx.result
@@ -87,11 +95,16 @@ class SkillLearning:
             await next_fn()
             return
 
-        await self._record_outcomes(result, ctx.session_id)
-        if result.success:
-            await self._learn(ctx, result)
-
+        run_id = ctx.scope.identity.run_id if ctx.scope is not None else None
+        await self.settle(result, session_id=ctx.session_id, run_id=run_id)
         await next_fn()
+
+    async def settle(self, result: AgentResult, *, session_id: str | None, run_id: str | None) -> None:
+        """Both responsibilities for one finished run. The POST_AGENT hook calls it
+        on today's loop; the durable harness's post-run step calls it once per run."""
+        await self._record_outcomes(result, session_id)
+        if result.success:
+            await self._learn(result, session_id=session_id, run_id=run_id)
 
     async def _record_outcomes(self, result: AgentResult, session_id: str | None) -> None:
         if session_id is None:
@@ -103,10 +116,9 @@ class SkillLearning:
             except Exception:
                 logger.exception("skill_learning: failed to record outcome for %r", skill_name)
 
-    async def _learn(self, ctx: AgentLifecycleContext, result: AgentResult) -> None:
+    async def _learn(self, result: AgentResult, *, session_id: str | None, run_id: str | None) -> None:
         trajectory = None
         decision_trace = None
-        run_id = ctx.scope.identity.run_id if ctx.scope is not None else None
         if self._timeline is not None and run_id is not None:
             try:
                 entries = await self._timeline.get_by_run(run_id)
@@ -118,7 +130,8 @@ class SkillLearning:
 
         try:
             candidates = await self._manager.learn_from_execution(
-                result, trajectory, decision_trace, session_id=ctx.session_id,
+                result, trajectory, decision_trace, session_id=session_id or self._source_session_id,
+                agent_key=self._source_agent_key, run_id=run_id,
             )
         except Exception:
             logger.exception("skill_learning: extraction failed")

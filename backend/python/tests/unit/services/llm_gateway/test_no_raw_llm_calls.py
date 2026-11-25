@@ -214,11 +214,22 @@ def test_no_retrying_sdk_on_an_indexing_factory_path() -> None:
                     if not (isinstance(value, ast.Constant) and value.value in (0, None)):
                         offenders.append(f"{path.relative_to(APP).as_posix()}:{node.value.lineno}: max_retries={ast.unparse(value)}")
     assert not offenders, "\n".join(offenders)
+    # The indexing sites build through the region-pinned funnel (``app/utils/llm.py`` build_embeddings, MG-15), which
+    # hands sdk_retries to get_embedding_model; a call for the built-in server (config None) has no SDK to retry.
+    funnel = ast.parse((APP / "utils" / "llm.py").read_bytes())
+    factory = [n for n in ast.walk(funnel) if isinstance(n, ast.Call) and getattr(n.func, "id", "") == "get_embedding_model"
+               or isinstance(n, ast.Call) and any(getattr(a, "id", "") == "get_embedding_model" for a in n.args)]
+    assert factory, "utils/llm.py: build_embeddings no longer reaches get_embedding_model"
     for relative in ("modules/transformers/vectorstore.py", "modules/transformers/entity_vectorstore.py"):
         tree = ast.parse((APP / relative).read_bytes())
-        calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call) and getattr(n.func, "id", "") == "get_embedding_model"]
-        assert calls, f"{relative}: no get_embedding_model call found"
+        calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call)
+                 and getattr(n.func, "id", "") in ("get_embedding_model", "build_embeddings")]
+        assert calls, f"{relative}: no embedding factory call found"
         for call in calls:
+            builtin = (getattr(call.func, "id", "") == "build_embeddings" and len(call.args) > 1
+                       and isinstance(call.args[1], ast.Constant) and call.args[1].value is None)
+            if builtin:
+                continue
             assert any(k.arg == "sdk_retries" for k in call.keywords), f"{relative}:{call.lineno}: pass sdk_retries"
 
 

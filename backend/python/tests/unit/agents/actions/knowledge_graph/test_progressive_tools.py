@@ -38,6 +38,8 @@ _EXPECTED_TOOL_PATHS = {
     "/tools/knowledgegraph/search_by_entities",
     # Withheld when the deployment sets TIMELINE_SUMMARIES=false.
     "/tools/knowledgegraph/search_timeline",
+    # Withheld unless a harness run bound a quarantined summarizer over knowledge outsiders write (G-58).
+    "/tools/knowledgegraph/summarize",
 }
 
 # Parameters whose default is the tool's page/result-size cap.

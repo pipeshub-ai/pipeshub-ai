@@ -208,7 +208,7 @@ export function AccessCheckDialog({ connectorId, container }: AccessCheckDialogP
                   <MaterialIcon
                     name={phase.result.admitted ? 'check_circle' : 'block'}
                     size={20}
-                    color={phase.result.admitted ? 'var(--jade-9)' : 'var(--red-9)'}
+                    color={phase.result.admitted ? 'var(--jade-11)' : 'var(--red-11)'}
                   />
                   {t(
                     phase.result.admitted

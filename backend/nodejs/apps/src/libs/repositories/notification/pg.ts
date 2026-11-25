@@ -78,11 +78,13 @@ function toRow(r: Row): NotificationRow {
 }
 
 /**
- * The conditions every read and change shares; `$1` org, `$2` user, `$3` retention cutoff. A scheduled row (`visible_at` set)
- * is not there until its time.
+ * The conditions every read and change shares; `$1` org, `$2` user, `$3` retention cutoff, `$4` the operation's clock. A scheduled
+ * row (`visible_at` set) is not there until its time. The clock is read by the application once per operation and passed in:
+ * `now()` is the start of the surrounding transaction, which a unit reused by a caller may have held open for a long time, while
+ * the MongoDB store compares with the time of the call.
  */
 const LIVE = `n.org_id = $1 AND n.assigned_to = $2 AND NOT n.is_deleted AND n.created_at >= $3
-  AND (n.visible_at IS NULL OR n.visible_at <= now())`;
+  AND (n.visible_at IS NULL OR n.visible_at <= $4::timestamptz)`;
 
 export class PgNotificationRepository
   implements NotificationRepository, Importable
@@ -215,7 +217,7 @@ export class PgNotificationRepository
     if (!user || (query.cursor && !cursorId)) return [];
     return inUnit(undefined, { write: false }, async (k) => {
       assertOrg(k, scope.orgId);
-      const values: unknown[] = [k.orgId, user, retentionCutoff()];
+      const values: unknown[] = [k.orgId, user, retentionCutoff(), new Date()];
       let extra = query.status
         ? ` AND n.status = $${values.push(query.status)}`
         : ` AND n.status <> 'archived'`;
@@ -247,7 +249,7 @@ export class PgNotificationRepository
         `/* pipeshub:platform.notification_counts */ SELECT count(*) FILTER (WHERE n.status = 'unread') AS unread,
            count(*) FILTER (WHERE n.status = 'read') AS read, count(*) FILTER (WHERE n.status = 'archived') AS archived
            FROM platform.notifications n WHERE ${LIVE}`,
-        [k.orgId, user, retentionCutoff()],
+        [k.orgId, user, retentionCutoff(), new Date()],
       );
       const c = rows[0];
       return {
@@ -281,7 +283,7 @@ export class PgNotificationRepository
       scope,
       id,
       `n.status <> 'archived'`,
-      `status = $5`,
+      `status = $6`,
       status,
     );
   }
@@ -300,6 +302,33 @@ export class PgNotificationRepository
     return this.change(scope, id, 'true', `is_deleted = true, deleted_by = $2`);
   }
 
+  eraseForConversation(orgId: string, conversationId: string): Promise<number> {
+    if (!oidOf(orgId)) return Promise.resolve(0);
+    return inUnit(undefined, { write: true }, async (k) => {
+      assertOrg(k, orgId);
+      const r = await k.query(
+        `/* pipeshub:platform.notification_erase_for_conversation */ DELETE FROM platform.notifications n
+           WHERE n.org_id = $1 AND n.payload->>'conversationId' = $2::text`,
+        [k.orgId, conversationId],
+      );
+      return r.rowCount ?? 0;
+    });
+  }
+
+  eraseForOrg(orgId: string, limit: number): Promise<number> {
+    if (!oidOf(orgId) || limit <= 0) return Promise.resolve(0);
+    return inUnit(undefined, { write: true }, async (k) => {
+      assertOrg(k, orgId);
+      const r = await k.query(
+        `/* pipeshub:platform.notification_erase_for_org */ DELETE FROM platform.notifications n
+           WHERE (n.org_id, n.created_at, n.id) IN
+             (SELECT org_id, created_at, id FROM platform.notifications WHERE org_id = $1 LIMIT $2)`,
+        [k.orgId, limit],
+      );
+      return r.rowCount ?? 0;
+    });
+  }
+
   private async change(
     scope: NotificationScope,
     id: string,
@@ -311,16 +340,18 @@ export class PgNotificationRepository
     if (!user || !row) return null;
     return inUnit(undefined, { write: true }, async (k) => {
       assertOrg(k, scope.orgId);
+      const now = new Date();
       const values: unknown[] = [
         k.orgId,
         user,
         retentionCutoff(),
+        now,
         row,
         ...(arg === undefined ? [] : [arg]),
       ];
       const { rows } = await k.query<Row>(
-        `/* pipeshub:platform.notification_change */ UPDATE platform.notifications n SET ${set}, updated_at = date_trunc('milliseconds', now())
-           WHERE ${LIVE} AND n.id = $4 AND ${guard} RETURNING ${COLS}`,
+        `/* pipeshub:platform.notification_change */ UPDATE platform.notifications n SET ${set}, updated_at = $4
+           WHERE ${LIVE} AND n.id = $5 AND ${guard} RETURNING ${COLS}`,
         values,
       );
       return rows[0] ? toRow(rows[0]) : null;

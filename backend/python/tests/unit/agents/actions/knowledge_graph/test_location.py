@@ -18,6 +18,8 @@ from app.agents.actions.knowledge_graph.location import (
 from app.models.entities import Connectors, OriginTypes, Record, RecordType
 from app.modules.retrieval.selection_scope import SelectionScope
 from app.services.graph_db.interface.graph_db_provider import AccessCheck
+from tests.support.graph_read_errors import CASES, GRAPH_KEY, SENTINELS
+from tests.support.log_capture import assert_text_free, failure_line
 
 
 def _adj(
@@ -371,9 +373,51 @@ async def test_resolve_warns_when_no_ancestor_accessible(
             ["story"],
             graph_provider=mock_provider,
             org_id="org",
-            user_key="uk",
+            user_key=GRAPH_KEY,
         )
-    assert any("0/2 ancestors accessible" in r.message for r in caplog.records)
+    assert [r.getMessage() for r in caplog.records] == [
+        "resolve_ancestor_locations: 0/2 ancestors accessible despite ACL-filtered hits — check user_key wiring"
+    ]
+    assert_text_free(caplog.records, *SENTINELS)  # the graph key is no identity support can match
+
+
+_LOCATION_LOGGER = "app.agents.actions.knowledge_graph.location"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("error", "error_class", "level"), CASES)
+async def test_a_failed_access_check_is_one_text_free_line_and_trails_lose_names(
+    caplog: pytest.LogCaptureFixture, error, error_class, level,
+) -> None:
+    mock_provider = MagicMock()
+    mock_provider.get_record_parent_adjacency = AsyncMock(return_value=_jira_adjacency_payload())
+    mock_provider.check_access = AsyncMock(side_effect=error())
+    with caplog.at_level(logging.DEBUG, _LOCATION_LOGGER):
+        locs = await resolve_ancestor_locations(["story"], graph_provider=mock_provider, org_id="org", user_key=GRAPH_KEY)
+
+    assert locs["story"] == "Jira (App ID: app1)"
+    assert_text_free(caplog.records, *SENTINELS)
+    failure_line(caplog.records, "search.location_access_failed", error_class, level, *SENTINELS,
+                 handler="resolve_ancestor_locations")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("error", "error_class", "level"), CASES)
+async def test_a_failed_adjacency_read_is_one_text_free_line_and_the_app_only_fallback(
+    caplog: pytest.LogCaptureFixture, error, error_class, level,
+) -> None:
+    mock_provider = MagicMock()
+    mock_provider.get_record_parent_adjacency = AsyncMock(side_effect=error())
+    docs = {"story": {"connectorId": "app1", "connectorName": "Jira"}}
+    with caplog.at_level(logging.DEBUG, _LOCATION_LOGGER):
+        locs = await resolve_ancestor_locations(
+            ["story"], graph_provider=mock_provider, org_id="org", user_key=GRAPH_KEY, record_docs=docs,
+        )
+
+    assert locs == {"story": "Jira (App ID: app1)"}
+    assert_text_free(caplog.records, *SENTINELS)
+    failure_line(caplog.records, "search.location_failed", error_class, level, *SENTINELS,
+                 handler="resolve_ancestor_locations")
 
 
 @pytest.mark.asyncio

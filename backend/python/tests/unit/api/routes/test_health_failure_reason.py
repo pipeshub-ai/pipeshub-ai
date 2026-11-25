@@ -6,7 +6,11 @@ import httpx
 import openai
 from fastapi import HTTPException
 
-from app.api.routes.health import _http_exception_response, _model_setup_failed_response
+from app.api.routes.health import (
+    _http_exception_response,
+    _is_settings_failure,
+    _model_setup_failed_response,
+)
 
 _KEY = "sk-proj-abcdefghijklmnopqrstuvwxyz0123456789"
 _CONFIG = {"provider": "openAI", "configuration": {"model": "gpt-6-luna", "apiKey": _KEY}}
@@ -34,6 +38,33 @@ async def test_exhausted_quota_says_quota_and_quotes_openai() -> None:
     assert "exhausted quota" in body["message"]
     assert "API key" not in body["message"]
     assert body["message"].endswith(f'OpenAI said: "{quota}"')
+
+
+async def test_an_empty_openai_balance_says_out_of_credit_not_wait_a_minute() -> None:
+    # OpenAI answers an empty balance with the same 429 as a rate limit; only the code tells them apart.
+    quota = "You exceeded your current quota, please check your plan and billing details."
+    error = openai.RateLimitError(
+        f"Error code: 429 - {quota}",
+        response=httpx.Response(429, request=_REQUEST),
+        body={"error": {"message": quota, "type": "insufficient_quota", "code": "insufficient_quota"}},
+    )
+    status, body = await _check(error)
+    assert status == 400
+    assert body["details"]["error_code"] == "quota_exceeded"
+    assert "out of credit" in body["message"]
+    assert "wait a minute" not in body["message"]
+    assert "Couldn't connect" not in body["message"]
+
+
+def test_an_empty_balance_takes_the_embedding_check_to_the_out_of_credit_answer() -> None:
+    # The embedding check answers a generic "not healthy" 500 unless the failure is one the admin can fix.
+    error = openai.RateLimitError(
+        "Error code: 429",
+        response=httpx.Response(429, request=_REQUEST),
+        body={"error": {"message": "no credit", "type": "insufficient_quota", "code": "insufficient_quota"}},
+    )
+    assert _is_settings_failure(error)
+    assert not _is_settings_failure(_openai_error(openai.RateLimitError, 429, "Rate limit reached"))
 
 
 async def test_provider_server_error_is_a_502_with_the_provider_reason() -> None:
@@ -159,7 +190,7 @@ async def test_a_quota_named_only_in_the_text_gets_the_billing_advice() -> None:
     body = json.loads(response.body)
     assert response.status_code == 400
     assert body["details"]["error_code"] == "quota_exceeded"
-    assert "exhausted quota" in body["message"]
+    assert "out of credit" in body["message"]
     assert body["message"].endswith(f'said: "{text}"')
 
 

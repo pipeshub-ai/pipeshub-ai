@@ -5,7 +5,7 @@ export { apiClient, default as apiClientDefault } from './axios-instance';
 export { axiosFetcher, publicFetcher, configuredFetcher } from './fetcher';
 
 // Streaming utilities (native fetch for SSE)
-export { streamRequest, createStreamController, streamSSERequest } from './streaming';
+export { streamRequest, createStreamController, streamSSERequest, streamSSEGet } from './streaming';
 export type { StreamingOptions, SSEEvent, SSEStreamingOptions } from './streaming';
 
 // Error handling

@@ -5,6 +5,7 @@ import * as connectorUtils from '../../../../src/modules/tokens_manager/utils/co
 import { Logger } from '../../../../src/libs/services/logger.service'
 import {
   listMcpCatalog,
+  listPopularMcpServers,
   getMcpCatalogTemplate,
   listMcpInstances,
   createMcpInstance,
@@ -30,6 +31,8 @@ import {
   reauthenticateAgentMcpInstance,
   getAgentMcpOAuthAuthorizationUrl,
 } from '../../../../src/modules/mcp_servers/controller/mcp_servers.controller'
+import { testControlPlane } from '../../control-plane/support/in-memory'
+import { inRequestOrg } from '../../../helpers/request-org-context'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -81,13 +84,14 @@ describe('mcp_servers/controller/mcp_servers.controller', () => {
   // -------------------------------------------------------------------------
   const handlers: Array<{
     name: string
-    factory: (appConfig: any) => any
+    factory: (appConfig: any, controlPlane?: any) => any
     expectedPath: string
     expectedMethod: string
     params?: Record<string, string>
     hasBody?: boolean
   }> = [
     { name: 'listMcpCatalog', factory: listMcpCatalog, expectedPath: '/api/v1/mcp-servers/catalog', expectedMethod: 'GET' },
+    { name: 'listPopularMcpServers', factory: listPopularMcpServers, expectedPath: '/api/v1/mcp-servers/popular', expectedMethod: 'GET' },
     {
       name: 'getMcpCatalogTemplate',
       factory: getMcpCatalogTemplate,
@@ -240,12 +244,12 @@ describe('mcp_servers/controller/mcp_servers.controller', () => {
   for (const { name, factory, expectedPath, expectedMethod, params, hasBody } of handlers) {
     describe(name, () => {
       it('should return a handler function', () => {
-        const handler = factory(createMockAppConfig())
+        const handler = inRequestOrg(factory(createMockAppConfig(), testControlPlane()))
         expect(handler).to.be.a('function')
       })
 
       it('should call next with UnauthorizedError when userId is missing', async () => {
-        const handler = factory(createMockAppConfig())
+        const handler = inRequestOrg(factory(createMockAppConfig(), testControlPlane()))
         const req = createMockRequest({ user: {}, params })
         const res = createMockResponse()
         const next = sinon.stub()
@@ -258,7 +262,7 @@ describe('mcp_servers/controller/mcp_servers.controller', () => {
 
       it(`should forward ${expectedMethod} to ${expectedPath}`, async () => {
         executeStub.resolves({ statusCode: 200, data: { success: true } })
-        const handler = factory(createMockAppConfig())
+        const handler = inRequestOrg(factory(createMockAppConfig(), testControlPlane()))
         const body = hasBody ? { some: 'payload' } : undefined
         const req = createMockRequest({ params, body })
         const res = createMockResponse()
@@ -282,7 +286,7 @@ describe('mcp_servers/controller/mcp_servers.controller', () => {
       it('should call next with the mapped error when the backend call fails', async () => {
         const error = new Error('upstream unreachable')
         executeStub.rejects(error)
-        const handler = factory(createMockAppConfig())
+        const handler = inRequestOrg(factory(createMockAppConfig(), testControlPlane()))
         const req = createMockRequest({ params })
         const res = createMockResponse()
         const next = sinon.stub()
@@ -299,10 +303,10 @@ describe('mcp_servers/controller/mcp_servers.controller', () => {
   // Query-string forwarding (handlers with non-trivial query params)
   // -------------------------------------------------------------------------
   describe('listMcpCatalog query params', () => {
-    it('should forward page, limit, and search', async () => {
+    it('should forward page, limit, search and category', async () => {
       executeStub.resolves({ statusCode: 200, data: { templates: [] } })
       const handler = listMcpCatalog(createMockAppConfig())
-      const req = createMockRequest({ query: { page: '2', limit: '10', search: 'jira' } })
+      const req = createMockRequest({ query: { page: '2', limit: '10', search: 'jira', category: 'projects' } })
       const res = createMockResponse()
       const next = sinon.stub()
 
@@ -312,6 +316,7 @@ describe('mcp_servers/controller/mcp_servers.controller', () => {
       expect(url).to.include('page=2')
       expect(url).to.include('limit=10')
       expect(url).to.include('search=jira')
+      expect(url).to.include('category=projects')
     })
 
     it('should omit empty/undefined query params', async () => {
@@ -331,7 +336,7 @@ describe('mcp_servers/controller/mcp_servers.controller', () => {
   describe('resends and timeouts', () => {
     async function optionsFor(factory: (appConfig: any) => any, method: string): Promise<Record<string, unknown>> {
       executeStub.resolves({ statusCode: 200, data: {} })
-      const handler = factory(createMockAppConfig())
+      const handler = inRequestOrg(factory(createMockAppConfig()))
       await handler(createMockRequest({ method, params: { instanceId: 'inst-1', agentKey: 'a1' }, query: {} }), createMockResponse(), sinon.stub())
       return executeStub.lastCall.args[4]
     }
@@ -354,7 +359,7 @@ describe('mcp_servers/controller/mcp_servers.controller', () => {
       executeStub.resolves({ statusCode: 200, data: { instances: [] } })
       const req = createMockRequest({ query: { includePersonal: 'true', orgId: 'other-org' } })
 
-      await listMcpInstances(createMockAppConfig())(req, createMockResponse(), sinon.stub())
+      await listMcpInstances(createMockAppConfig())(req, createMockResponse(), sinon.stub<unknown[]>())
 
       expect(executeStub.firstCall.args[0]).to.equal('http://localhost:8088/api/v1/mcp-servers/instances')
     })
@@ -459,7 +464,7 @@ describe('mcp_servers/controller/mcp_servers.controller', () => {
         executeStub.resolves({ statusCode: 200, data: {} })
         const req = createMockRequest({ params: { instanceId: 'inst-1' }, query: { reveal: 'true' } })
 
-        await factory(createMockAppConfig())(req, createMockResponse(), sinon.stub())
+        await inRequestOrg(factory(createMockAppConfig()))(req, createMockResponse(), sinon.stub<unknown[]>())
 
         expect(executeStub.firstCall.args[0]).to.equal(`http://localhost:8088${path}?reveal=true`)
       })
@@ -469,7 +474,7 @@ describe('mcp_servers/controller/mcp_servers.controller', () => {
           executeStub.resolves({ statusCode: 200, data: {} })
           const req = createMockRequest({ params: { instanceId: 'inst-1' }, query: { reveal } })
 
-          await factory(createMockAppConfig())(req, createMockResponse(), sinon.stub())
+          await inRequestOrg(factory(createMockAppConfig()))(req, createMockResponse(), sinon.stub<unknown[]>())
 
           expect(executeStub.firstCall.args[0]).to.equal(`http://localhost:8088${path}`)
         })
@@ -483,7 +488,7 @@ describe('mcp_servers/controller/mcp_servers.controller', () => {
           user: { userId: 'user-1', orgId: 'org-1', isOAuth: true },
         })
 
-        await factory(createMockAppConfig())(req, createMockResponse(), sinon.stub())
+        await inRequestOrg(factory(createMockAppConfig()))(req, createMockResponse(), sinon.stub<unknown[]>())
 
         expect(executeStub.firstCall.args[0]).to.equal(`http://localhost:8088${path}`)
       })
@@ -526,7 +531,7 @@ describe('mcp_servers/controller/mcp_servers.controller', () => {
       const handler = privateCopy.handleMcpOAuthCallback(createMockAppConfig())
       const req = createMockRequest({ query: { code: 'code-secret', state: 'state-secret' } })
 
-      await handler(req, createMockResponse(), sinon.stub())
+      await handler(req, createMockResponse(), sinon.stub<unknown[]>())
 
       const logged = JSON.stringify(debug.args)
       expect(logged).to.contain('/oauth/callback')

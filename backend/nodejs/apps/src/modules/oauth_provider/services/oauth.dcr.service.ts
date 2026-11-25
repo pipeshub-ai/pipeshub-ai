@@ -8,7 +8,11 @@ import {
   OAuthAppService,
 } from './oauth.app.service'
 import { ScopeValidatorService } from './scope.validator.service'
-import { AgentMcpScopes, mcpDiscoveryScopes } from '../config/scopes.config';
+import {
+  AgentMcpScopes,
+  McpToolScopes,
+  mcpDiscoveryScopes,
+} from '../config/scopes.config';
 import { AppConfig } from '../../tokens_manager/config/config'
 import {
   getOAuthAppRepository,
@@ -266,7 +270,7 @@ export class OAuthDcrService {
         isConfidential: false,
       });
       this.logger.info('Stored client from its metadata document', {
-        clientId,
+        client_id: clientId,
       });
     } catch (error) {
       // Two first consents at once: the other one stored it. Anything else is a real failure.
@@ -328,11 +332,15 @@ export class OAuthDcrService {
     const memberAllowed = new Set(
       this.scopeValidatorService.getAllowedScopeNamesForRole(false),
     )
-    // With no scope asked for, the agent preset is offered as far as this instance's MCP_SCOPES allows (a scope an operator has not
-    // enabled, such as code:write, is left out); a scope that is asked for by name and not allowed is still refused.
+    // With no scope asked for (Cursor registers this way), the client gets the /mcp tool scopes discovery advertises in
+    // scopes_supported, offline_access included, plus the agent preset. Otherwise its /authorize request for scopes_supported
+    // is partly refused and it never gets a refresh token. Only what this instance's MCP_SCOPES enables and a member may
+    // hold is offered (code:write, when not enabled, is left out); a scope asked for by name and not allowed is still refused.
     const requested = scope
       ? this.scopeValidatorService.parseScopes(scope)
-      : AgentMcpScopes.filter((s) => mcp.size === 0 || mcp.has(s))
+      : [...new Set<string>([...McpToolScopes, ...AgentMcpScopes])].filter(
+          (s) => memberAllowed.has(s) && (mcp.size === 0 || mcp.has(s)),
+        );
 
     const granted: string[] = []
     for (const s of requested) {

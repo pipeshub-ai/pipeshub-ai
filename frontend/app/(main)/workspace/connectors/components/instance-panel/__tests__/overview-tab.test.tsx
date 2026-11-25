@@ -3,6 +3,12 @@ import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import { screen, fireEvent, cleanup, waitFor } from '@testing-library/react';
 import '@/lib/__tests__/test-i18n';
 
+// These tests are about other behaviour; group permissions grant everything.
+vi.mock('@/config', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/config')>()),
+  useUserPermission: () => true,
+}));
+
 const reindexConnector = vi.fn();
 vi.mock('../../../api', () => ({
   ConnectorsApi: { reindexConnector: (...args: unknown[]) => reindexConnector(...args) },

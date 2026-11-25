@@ -1,12 +1,19 @@
 """BackpressureCoordinator is signalled on the worker loop's thread and read on the main loop's."""
 
+import logging
 import threading
 from unittest.mock import patch
+
+import pytest
 
 from app.services.messaging.backpressure import BackpressureCoordinator
 
 
-def test_signals_and_reads_from_two_threads_do_not_collide() -> None:
+def test_signals_and_reads_from_two_threads_do_not_collide(caplog: pytest.LogCaptureFixture) -> None:
+    # Every signal here extends a pause and logs at INFO. With the root logger at INFO (tests/conftest.py imports
+    # app.utils.logger) the 20,000 records, each written while the reader spins on the GIL, took over 30s and
+    # tripped the suite timeout, so the race under test never got to finish.
+    caplog.set_level(logging.WARNING, logger="app.services.messaging.backpressure")
     coordinator = BackpressureCoordinator()
     errors: list[BaseException] = []
     done = threading.Event()
@@ -33,5 +40,6 @@ def test_signals_and_reads_from_two_threads_do_not_collide() -> None:
         for thread in threads:
             thread.start()
         for thread in threads:
-            thread.join(timeout=60)
+            thread.join(timeout=20)
+    assert not any(thread.is_alive() for thread in threads)
     assert errors == []

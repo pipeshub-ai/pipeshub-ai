@@ -1,7 +1,8 @@
 """``PostgresGraphProvider.check_access`` against the product oracle: the permission conformance corpus (``tests/permissions``) on PostgreSQL.
 
 Every scenario's final world is loaded under its own org and ``check_access`` is asked about every viewer x node pair. The layer must equal
-the oracle: no over-admit (a leak) and no under-admit (a gap).
+the oracle: no over-admit (a leak) and no under-admit (a gap). Both ways the check reads grants are asked: per node (no ``access`` given) and from
+every grant the viewer holds (``get_knowledge_hub_access_v3`` handed in, as a listing does).
 """
 from __future__ import annotations
 
@@ -22,6 +23,7 @@ from tests.permissions.scenario import Scenario, load_all
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Iterable
 
+    from app.services.graph_db.interface.graph_db_provider import AccessCheck
     from tests.permissions.model import World
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(1800)]
@@ -44,9 +46,13 @@ class PgLayer:
 
     name = "postgres"
 
-    def __init__(self, provider, db) -> None:
-        self._provider, self._db = provider, db
+    def __init__(self, provider, db, *, all_grants: bool = False) -> None:
+        self._provider, self._db, self._all_grants = provider, db, all_grants
         self._prefix: dict[World, str] = {}
+
+    async def _check(self, user: str, org: str, **kw: object) -> AccessCheck:
+        access = await self._provider.get_knowledge_hub_access_v3(user, org) if self._all_grants else None
+        return await self._provider.check_access(user, org, access=access, **kw)
 
     def shape(self, graph: Graph) -> Graph:
         return graph
@@ -88,7 +94,7 @@ class PgLayer:
         ns = await self._ns(world)
         org = _hex(ns.org)
         with bind(OrgContext(org, None, "job", "job:test", "t")):
-            found = await self._provider.check_access(ns.id(viewer), org, node_ids=[ns.id(n) for n in node_ids])
+            found = await self._check(ns.id(viewer), org, node_ids=[ns.id(n) for n in node_ids])
         # a placeholder asked by id is reachable (the hub opens it) but is not a record the user may read
         return {ns.local(n) for n in found.node_ids - found.placeholder_ids}
 
@@ -97,13 +103,13 @@ class PgLayer:
         org = _hex(ns.org)
         stored = [ns.id(v) for v in vrids]
         with bind(OrgContext(org, None, "job", "job:test", "t")):
-            found = await self._provider.check_access(ns.id(viewer), org, virtual_record_ids=stored, indexed_only=indexed_only)
+            found = await self._check(ns.id(viewer), org, virtual_record_ids=stored, indexed_only=indexed_only)
         return {v: (None if found.records_by_vrid.get(s) is None else ns.local(found.records_by_vrid[s])) for v, s in zip(vrids, stored, strict=True)}
 
 
-@pytest.fixture
-async def layer(pg_provider, pg_db) -> AsyncIterator[PgLayer]:
-    layer = PgLayer(pg_provider, pg_db)
+@pytest.fixture(params=["per_node", "all_grants"])
+async def layer(request, pg_provider, pg_db) -> AsyncIterator[PgLayer]:
+    layer = PgLayer(pg_provider, pg_db, all_grants=request.param == "all_grants")
     yield layer
     await layer.release(list(layer._prefix))
 

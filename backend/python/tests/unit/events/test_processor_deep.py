@@ -15,6 +15,7 @@ from app.exceptions.indexing_exceptions import (
     DocumentProcessingError,
     RecordDeletedError,
 )
+from app.services.docling.client import DoclingParseError
 from app.services.messaging.config import (
     IndexingEvent,
     PipelineEvent,
@@ -715,16 +716,15 @@ class TestProcessPdfWithDocling:
         assert any(e.event == "indexing_complete" for e in events)
 
     @pytest.mark.asyncio
-    async def test_parse_returns_none(self):
-        """When docling parse_pdf_batched returns None, yields docling_failed."""
+    async def test_parse_error_propagates(self):
+        """A parse error from parse_pdf_batched reaches the caller, which falls back."""
         proc = _make_processor()
-        proc.docling_client.parse_pdf_batched = AsyncMock(return_value=None)
+        proc.docling_client.parse_pdf_batched = AsyncMock(side_effect=DoclingParseError("Docling could not parse the document", status_code=422, reason="parse_failed"))
 
-        events = await _collect_events(
-            proc.process_pdf_with_docling("test.pdf", "r1", b"pdfdata", "vr1")
-        )
-
-        assert any(e.event == "docling_failed" for e in events)
+        with pytest.raises(DoclingParseError):
+            await _collect_events(
+                proc.process_pdf_with_docling("test.pdf", "r1", b"pdfdata", "vr1")
+            )
 
     @pytest.mark.asyncio
     async def test_create_blocks_returns_none_yields_docling_failed(self):

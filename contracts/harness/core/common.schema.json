@@ -1,0 +1,371 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/core/common.schema.json",
+  "title": "Common",
+  "description": "Shared definitions for harness contracts. Not an instance schema.",
+  "$defs": {
+    "Id": {
+      "description": "Opaque identifier (org, session, run, attempt, invocation, record ...).",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
+    },
+    "PrincipalRef": {
+      "description": "Reference to a principal set by Node at admission; resolved by PrincipalResolver.",
+      "type": "string",
+      "pattern": "^p_[A-Za-z0-9_-]{1,128}$"
+    },
+    "SessionRole": {
+      "description": "A participant's role in the session a run belongs to: its owner, or a collaborator the owner shared it with (ARCHITECTURE 4.9).",
+      "enum": [
+        "owner",
+        "collaborator"
+      ]
+    },
+    "ToolId": {
+      "description": "Instance-scoped tool identity: <source>@<instance>/<tool>.",
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9_-]{0,63}@[A-Za-z0-9_-]{1,128}/[A-Za-z0-9_.-]{1,128}$"
+    },
+    "ModelToolName": {
+      "description": "Tool name as shown to the model; unique per run.",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{1,64}$"
+    },
+    "Name": {
+      "description": "Lower-case machine name (provider, transport, resolver, rule ...).",
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9_.-]{0,63}$"
+    },
+    "Text": {
+      "description": "Non-empty free text.",
+      "type": "string",
+      "minLength": 1
+    },
+    "Digest": {
+      "description": "SHA-256 over RFC 8785 canonical JSON (or raw bytes for blobs).",
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "Timestamp": {
+      "description": "RFC 3339 UTC timestamp with a literal Z. Kept a string so digests never depend on a parser's re-formatting.",
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,9})?Z$"
+    },
+    "UInt": {
+      "description": "Non-negative integer within the IEEE-754 safe range, so it survives JavaScript.",
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "PosInt": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "Usd": {
+      "description": "US dollars, at most a billion (well inside JavaScript's safe integers).",
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1000000000
+    },
+    "ContentRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ref",
+        "hash",
+        "size"
+      ],
+      "properties": {
+        "ref": {
+          "description": "Where the content is: `sealed:` (Node's sealed store) or `inline:` (the bytes themselves, base64url). One bound for every receiver, events and a child's result alike (CHILDREF): the longest inline ref anyone writes is Node's steering message (100,000 characters of UTF-8, 400,007 characters inlined); the worker's store seals what would not fit.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 524288
+        },
+        "hash": {
+          "$ref": "#/$defs/Digest"
+        },
+        "size": {
+          "$ref": "#/$defs/UInt"
+        }
+      },
+      "description": "Claim-checked content in CAS; hash and size are verified on read."
+    },
+    "Usage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "inputTokens",
+        "outputTokens"
+      ],
+      "properties": {
+        "inputTokens": {
+          "$ref": "#/$defs/UInt"
+        },
+        "outputTokens": {
+          "$ref": "#/$defs/UInt"
+        },
+        "cacheReadTokens": {
+          "$ref": "#/$defs/UInt"
+        },
+        "cacheWriteTokens": {
+          "$ref": "#/$defs/UInt"
+        },
+        "reasoningTokens": {
+          "$ref": "#/$defs/UInt"
+        },
+        "inputIncludesCached": {
+          "type": "boolean",
+          "description": "true: inputTokens counts cacheReadTokens and cacheWriteTokens. Absent on a usage with no cached tokens and on events written before USAGE1, whose inputTokens is the reporter's own count."
+        }
+      }
+    },
+    "SeqRange": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "fromSeq",
+        "toSeq"
+      ],
+      "properties": {
+        "fromSeq": {
+          "$ref": "#/$defs/PosInt"
+        },
+        "toSeq": {
+          "$ref": "#/$defs/PosInt"
+        }
+      }
+    },
+    "ModelRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "provider",
+        "model"
+      ],
+      "properties": {
+        "provider": {
+          "$ref": "#/$defs/Name"
+        },
+        "model": {
+          "$ref": "#/$defs/Text"
+        }
+      }
+    },
+    "RiskClass": {
+      "description": "A tool's risk class (OWD-7), ranked read < write_internal < write_external < destructive < financial: its effect and sink, unless its metadata marks it as one that cannot be undone (a delete, a send) or that moves money. Metadata for policy and audit; which calls ask stays the approval rules' decision.",
+      "x-constant": "RISK_CLASSES",
+      "enum": [
+        "read",
+        "write_internal",
+        "write_external",
+        "destructive",
+        "financial"
+      ]
+    },
+    "Effect": {
+      "description": "A tool's effect class: what it does to the world, ranked read < workspace < write < execute.",
+      "x-constant": "EFFECT_CLASSES",
+      "enum": [
+        "read",
+        "workspace",
+        "write",
+        "execute"
+      ]
+    },
+    "RunKind": {
+      "description": "command: a person's /run (SLASH3), one run_code call and no model; its turn is never in a later turn's context.",
+      "enum": [
+        "interactive",
+        "child",
+        "scheduled",
+        "workflow_code",
+        "authoring",
+        "command"
+      ]
+    },
+    "Via": {
+      "description": "How the actor reached the run: a browser session, a personal access token, an OAuth app, a trigger, or a service (the Slack bot, a service account). Node derives it from the credential, never from a request body.",
+      "enum": [
+        "session",
+        "pat",
+        "oauth_app",
+        "trigger",
+        "service"
+      ]
+    },
+    "AccessAccountKind": {
+      "description": "Whose account a model call uses and how it is held (ARCHITECTURE §4.6.1 AccountKind).",
+      "x-constant": "ACCOUNT_KINDS",
+      "enum": [
+        "org_api_key",
+        "org_cloud",
+        "user_api_key",
+        "user_plan_injected",
+        "user_plan_sandbox_login"
+      ]
+    },
+    "AccessRouteKind": {
+      "description": "How a model call reaches the vendor (ARCHITECTURE §4.6.1 RouteKind).",
+      "x-constant": "ROUTE_KINDS",
+      "enum": [
+        "gateway",
+        "vendor_injected",
+        "vendor_sandbox_login"
+      ]
+    },
+    "Writer": {
+      "description": "Who appends a journal event: Node (admission, decisions, run transitions) or the worker.",
+      "x-constant": "WRITERS",
+      "enum": [
+        "node",
+        "worker"
+      ]
+    },
+    "Visibility": {
+      "description": "Who may read a journal event: the run's owner, every participant, or audit only.",
+      "x-constant": "VISIBILITIES",
+      "enum": [
+        "owner",
+        "shared",
+        "audit"
+      ]
+    },
+    "RunStatus": {
+      "description": "A run's lifecycle state; completed, failed, cancelled and quarantined are terminal.",
+      "x-constant": "RUN_STATUSES",
+      "enum": [
+        "queued",
+        "running",
+        "suspended",
+        "completed",
+        "failed",
+        "cancelled",
+        "quarantined"
+      ]
+    },
+    "SuspendReason": {
+      "description": "Why a run is suspended (run.suspended). retired: an operator retired the run's engine version (ADR-OPS-01 D6); Node suspends it and resumes it when the version is allowed again or the release declares a successor.",
+      "x-constant": "SUSPEND_REASONS",
+      "enum": [
+        "approval",
+        "input",
+        "timer",
+        "event",
+        "capability_lost",
+        "join",
+        "retired"
+      ]
+    },
+    "YieldReason": {
+      "description": "Why a run yielded its slot until notBefore (run.yielded); payload_store_unavailable is written by Node only; sandbox_wait: the sandbox broker could not make or reach a sandbox; store_wait: a store an engine run saves to (its blob objects, or the workspace store) could not be reached; preempted: a lower priority class gave its slot to a higher one at a step boundary (G-45), written only to a Node that names priority_preemption.",
+      "x-constant": "YIELD_REASONS",
+      "enum": [
+        "drain",
+        "promotion",
+        "llm_backoff",
+        "lease_expired",
+        "capability_wait",
+        "payload_store_unavailable",
+        "sandbox_wait",
+        "store_wait",
+        "preempted"
+      ]
+    },
+    "PriorityClass": {
+      "description": "Which runs go first when work waits for a slot (G-45), highest first: interactive (a person waits on it), approval_resume (a lower-class run a person just answered), background (a schedule or workflow), batch (bulk work nobody waits on). Applied to the run claim queue, the model gateway's concurrency and the shared vendor rate budget; every lower class is owed a floor share, so none starves.",
+      "x-constant": "PRIORITY_CLASSES",
+      "enum": [
+        "interactive",
+        "approval_resume",
+        "background",
+        "batch"
+      ]
+    },
+    "CompletedOutcome": {
+      "description": "How a completed run ended (run.completed).",
+      "x-constant": "COMPLETED_OUTCOMES",
+      "enum": [
+        "answered",
+        "needs_input"
+      ]
+    },
+    "CutShortReason": {
+      "description": "Which limit cut a completed run's work short (run.completed.truncatedBy): its spending limit (budget), its turn limit (turns), its working time (time), its steps repeating without progress (stall, BU-06), a model provider that stayed unavailable past the run's bounded wait (provider, WP-77), a coding engine that ended its turn on an error of its own, not a PipesHub refusal (engine_error, WP-84), or a model request PipesHub blocked because it looked like it carried a secret (secret_blocked, WP-103). The run still answered, from what it had gathered, on one answer-only final turn.",
+      "x-constant": "CUT_SHORT_REASONS",
+      "enum": [
+        "budget",
+        "turns",
+        "time",
+        "stall",
+        "provider",
+        "engine_error",
+        "secret_blocked"
+      ]
+    },
+    "InteractionDecision": {
+      "description": "How an interaction was resolved (interaction.resolved).",
+      "x-constant": "INTERACTION_DECISIONS",
+      "enum": [
+        "approved",
+        "denied",
+        "answered",
+        "expired",
+        "cancelled"
+      ]
+    },
+    "InteractionChannel": {
+      "description": "Where an interaction was resolved (interaction.resolved).",
+      "x-constant": "INTERACTION_CHANNELS",
+      "enum": [
+        "web",
+        "slack",
+        "api",
+        "mcp",
+        "system"
+      ]
+    },
+    "VendorRuleStatus": {
+      "description": "A vendor rule's standing under the vendor's terms (A1).",
+      "x-constant": "RULE_STATUSES",
+      "enum": [
+        "allowed",
+        "prohibited",
+        "pending_vendor"
+      ]
+    },
+    "ToolErrorCode": {
+      "description": "Why a tool call failed, as the person reads it (ERR-UX): the code beside the redacted detail the model reads (the tool outcome's result document `errorCode`). unavailable: the tool's service could not be reached or is down; timeout: it did not answer in time; rate_limited: it is limiting requests; auth: it refused the connection's credentials; not_found: what the call named does not exist; invalid_call: the model called the tool wrongly; failed: anything else.",
+      "x-constant": "TOOL_ERROR_CODES",
+      "enum": [
+        "unavailable",
+        "timeout",
+        "rate_limited",
+        "auth",
+        "not_found",
+        "invalid_call",
+        "failed"
+      ]
+    },
+    "RequestedEffort": {
+      "description": "The reasoning effort a run's model policy asks for (run-spec `modelPolicy.reasoningEffort`, kept inline there); every engine profile effort (ProfileEffort) is one, and `minimal` narrows a profile to `low`.",
+      "x-constant": "REQUESTED_EFFORTS",
+      "enum": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ]
+    },
+    "Offering": {
+      "description": "Which offering an install is (A1, AGENT_HARNESS_OFFERING); vendor rules allow some routes only in some offerings. An edition may add its own offerings (x-extensible-enum).",
+      "x-constant": "OFFERINGS",
+      "enum": [
+        "oss",
+        "managed"
+      ],
+      "x-extensible-enum": true
+    }
+  }
+}

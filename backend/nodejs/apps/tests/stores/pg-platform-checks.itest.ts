@@ -10,6 +10,10 @@ import { PgOutboxRepository } from '../../src/libs/repositories/outbox/pg';
 import type { NewOutboxEvent } from '../../src/libs/repositories/outbox';
 import { PgUnitOfWork, kernelTx } from '../../src/libs/repositories/pg';
 import { TtlSweeper } from '../../src/libs/services/ttl-sweeper.service';
+import {
+  PgActivityRepository,
+  trimActivitiesPage,
+} from '../../src/libs/repositories/activity/pg';
 import { NOTIFICATION_RETENTION_DAYS } from '../../src/modules/notification/utils/notification-api.utils';
 import {
   PG_BINS,
@@ -58,6 +62,58 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
     });
     after(async () => {
       await stack?.stop();
+    });
+
+    describe('visibility inside one reused unit', () => {
+      it('a scheduled row is hidden before visibleAt and visible after it within the same open transaction (the app clock decides, not the transaction start)', async () => {
+        const user = newId();
+        const scope = { orgId: A, userId: user };
+        // the operation's clock is held by the test: nothing here depends on how long the setup or the statements take
+        const t0 = Date.now();
+        const lead = 60_000;
+        const insertScheduled = () =>
+          inOrg(A, () =>
+            notifications.insert({ orgId: A, assignedTo: user, type: 't', visibleAt: new Date(t0 + lead) }),
+          );
+        await insertScheduled();
+        const clock = sinon.useFakeTimers({ now: t0, toFake: ['Date'] });
+        try {
+          const seen = await run(
+            A,
+            async () => {
+              const before = await notifications.list(scope, { status: null, limit: 10 });
+              const beforeCount = await notifications.counts(scope);
+              clock.setSystemTime(t0 + lead + 1_000); // past visibleAt, the unit stays open
+              const after = await notifications.list(scope, { status: null, limit: 10 });
+              const afterCount = await notifications.counts(scope);
+              const marked = await notifications.markAllRead(scope);
+              return { before, beforeCount, after, afterCount, marked };
+            },
+            true,
+          );
+          expect(seen.before).to.deep.equal([]);
+          expect(seen.beforeCount.unread).to.equal(0);
+          expect(seen.after).to.have.length(1);
+          expect(seen.afterCount.unread).to.equal(1);
+          expect(seen.marked).to.equal(1);
+          clock.setSystemTime(t0);
+          const row = await insertScheduled();
+          const changed = await run(
+            A,
+            async () => {
+              const early = await notifications.setStatus(scope, row._id, 'read');
+              clock.setSystemTime(t0 + lead + 1_000);
+              const late = await notifications.setStatus(scope, row._id, 'read');
+              return { early, late };
+            },
+            true,
+          );
+          expect(changed.early).to.equal(null);
+          expect(changed.late?.status).to.equal('read');
+        } finally {
+          clock.restore();
+        }
+      });
     });
 
     describe('row policies and grants', () => {
@@ -455,6 +511,127 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
         } finally {
           await sql('ALTER TABLE platform.outbox_away RENAME TO outbox');
         }
+      });
+    });
+
+    describe('the sign-in history trim', () => {
+      const logger = { info: sinon.stub(), error: sinon.stub() };
+      const activities = new PgActivityRepository();
+      const org = async (deleted = false): Promise<string> => {
+        const id = newId();
+        await sql(
+          `INSERT INTO identity.orgs (org_id, domain, contact_email, account_type, is_deleted, created_at, updated_at)
+             VALUES ($1, 'x.test', 'a@x.test', 'business', $2, now(), now())`,
+          [id, deleted],
+        );
+        return id;
+      };
+      // [user, type, days old, removed]; returns the row ids in the same order
+      const plant = async (
+        o: string,
+        rows: Array<[string | null, string, number, boolean?]>,
+      ): Promise<string[]> => {
+        const ids: string[] = [];
+        for (const [user, type, days, deleted] of rows) {
+          const id = newId();
+          ids.push(id);
+          await sql(
+            `INSERT INTO identity.user_activities (org_id, id, user_id, email, activity_type, ip_address, is_deleted, created_at, updated_at)
+               VALUES ($1, $2, $3, 'a@x.test', $4, '127.0.0.1', $5, $6, $6)`,
+            [o, id, user, type, deleted ?? false, ago(days * DAY)],
+          );
+        }
+        return ids;
+      };
+      const left = async (o: string): Promise<string[]> =>
+        (
+          await sql(
+            'SELECT id FROM identity.user_activities WHERE org_id = $1 ORDER BY id',
+            [o],
+          )
+        ).map((r) => r.id as string);
+
+      it('keeps each person newest row of a type however old, and what is newer than the retention; deletes the rest', async () => {
+        const [a, b, gone] = [await org(), await org(), await org(true)];
+        const [u1, u2] = [newId(), newId()];
+        const keep = await plant(a, [
+          [u1, 'LOGOUT', 200], // u1's newest sign-out: a token issued before it must stay refused
+          [u1, 'LOGIN', 1],
+          [u2, 'PASSWORD CHANGED', 400],
+          [null, 'WRONG PASSWORD', 1],
+        ]);
+        const drop = await plant(a, [
+          [u1, 'LOGOUT', 300],
+          [u1, 'LOGIN', 100],
+          [u1, 'LOGOUT', 150, true], // removed rows are never read
+          [null, 'WRONG PASSWORD', 200], // an attempt with no person
+        ]);
+        const [bOld, bNew] = await plant(b, [
+          [u1, 'LOGIN', 120],
+          [u1, 'LOGIN', 95],
+        ]);
+        const [deletedOrgs] = await plant(gone, [[null, 'WRONG PASSWORD', 300]]); // removable if the organisation were swept
+        const before = await inOrg(a, () =>
+          activities.latestSessionEnding(u1, a),
+        );
+
+        const sweeper = new TtlSweeper(logger as never, 60_000, () => new Date(), 90);
+        const removed = await sweeper.sweepOnce();
+        expect(removed.user_activities).to.be.at.least(drop.length + 1);
+        expect(await left(a)).to.deep.equal([...keep].sort());
+        expect(await left(b)).to.deep.equal([bNew]);
+        expect(bOld).to.not.equal(bNew);
+        // the organisation list comes from the live organisations only
+        expect(await left(gone)).to.deep.equal([deletedOrgs]);
+        const after = await inOrg(a, () =>
+          activities.latestSessionEnding(u1, a),
+        );
+        expect(after?._id).to.equal(before?._id).and.to.equal(keep[0]);
+
+        // the trim runs once a day: a second pass the same day leaves new old rows alone
+        await plant(a, [[u1, 'LOGIN', 100]]);
+        expect(await sweeper.sweepOnce()).to.not.have.property('user_activities');
+      });
+
+      it('a trim that fails stays due: the next pass runs it again', async () => {
+        const a = await org();
+        await plant(a, [[null, 'WRONG PASSWORD', 200]]);
+        logger.error.resetHistory();
+        const sweeper = new TtlSweeper(logger as never, 60_000, () => new Date(), 90);
+        await sql('ALTER TABLE identity.user_activities RENAME TO user_activities_away');
+        try {
+          expect(await sweeper.sweepOnce()).to.not.have.property('user_activities');
+          expect(
+            logger.error.calledWithMatch('TTL sweep failed', sinon.match({ target: 'user_activities' })),
+          ).to.equal(true);
+        } finally {
+          await sql('ALTER TABLE identity.user_activities_away RENAME TO user_activities');
+        }
+        expect((await sweeper.sweepOnce()).user_activities).to.be.at.least(1);
+        expect(await left(a)).to.deep.equal([]);
+      });
+
+      it('pages through an organisation by id, each row read once', async () => {
+        const a = await org();
+        const u = newId();
+        await plant(a, [
+          [u, 'LOGIN', 400],
+          [u, 'LOGIN', 300],
+          [u, 'LOGIN', 200],
+          [u, 'LOGIN', 100],
+          [u, 'LOGIN', 1],
+        ]);
+        const cutoff = ago(90 * DAY);
+        let [after, pages, total] = ['', 0, 0];
+        for (;;) {
+          const p = await trimActivitiesPage(a, after, cutoff, 2);
+          total += p.removed;
+          if (p.last === null) break;
+          [after, pages] = [p.last, pages + 1];
+        }
+        expect(pages).to.equal(3);
+        expect(total).to.equal(4);
+        expect(await left(a)).to.have.length(1);
       });
     });
   });

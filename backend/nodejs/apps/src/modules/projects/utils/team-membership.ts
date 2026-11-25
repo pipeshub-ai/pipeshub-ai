@@ -82,7 +82,7 @@ async function fetchCallerTeamIds(
       ).execute();
       if (response.statusCode !== HTTP_STATUS.OK || !response.data) {
         logger.warn('Team lookup for project access did not succeed', {
-          statusCode: response.statusCode,
+          status: response.statusCode,
           page,
         });
         return teamIds;
@@ -102,7 +102,7 @@ async function fetchCallerTeamIds(
     return teamIds;
   } catch (error) {
     logger.warn('Failed to resolve caller team memberships for project access', {
-      error: error instanceof Error ? error.message : String(error),
+      error,
     });
     return [];
   }

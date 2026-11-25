@@ -55,6 +55,8 @@ from app.agents.actions.util.tool_summaries import (
 )
 from app.modules.agents.context.tool_result_extractor import ToolResultExtractor
 from app.utils.citations import extract_tiny_ref
+from app.utils.url_redaction import redact_sensitive_query_params
+from app.web.own_files import is_signed_storage_link
 
 if TYPE_CHECKING:
     from app.agent_loop_lib.core.types import ToolResult
@@ -179,6 +181,7 @@ _WEB_SEARCH_FAILURES = {
     "unknown_provider": "The configured search provider isn't available",
     "access_denied": "Web search isn't allowed here",
     "budget_exhausted": "The searches for this answer are used up",
+    "search_paused": "Paused for a while after several searches found nothing",
 }
 _FETCH_FAILURES = {
     "blocked": "The site refused the request; it may need a sign-in",
@@ -191,6 +194,7 @@ _FETCH_FAILURES = {
     "invalid_url": "That isn't a web address that can be read",
     "access_denied": "Reading this site isn't allowed",
     "budget_exhausted": "The page reads for this answer are used up",
+    "own_file": "That's a file in PipesHub, so it's read from the knowledge base instead",
 }
 
 
@@ -249,8 +253,12 @@ def _fetch_url_args(args: dict[str, Any]) -> str | None:
     url = args.get("url")
     if not isinstance(url, str) or not url.strip():
         return None
+    url = url.strip()
     # A `refN.xyz` citation alias means nothing to a person; the result names the real page.
-    return "Reading a page from the results" if extract_tiny_ref(url.strip()) else f"Reading {url.strip()}"
+    if extract_tiny_ref(url):
+        return "Reading a page from the results"
+    # The step is shown to everyone who can open the chat; a signed link opens the file without a sign-in.
+    return f"Reading {redact_sensitive_query_params(url) if is_signed_storage_link(url) else url}"
 
 
 @register_result("dynamic__fetch_url", "fetch_url", "web_scrape")
@@ -373,7 +381,17 @@ for _fetch_name in ("knowledgegraph__fetch_record", "dynamic_fetch_full_record")
 @register_args("run_code")
 def _run_code_args(args: dict[str, Any]) -> str | None:
     language = args.get("language")
-    return f"Running {language} code" if isinstance(language, str) and language.strip() else "Running code"
+    language = language.strip() if isinstance(language, str) else ""
+    code = args.get("code")
+    lines = code.splitlines() if isinstance(code, str) else []
+    # The first line that does something: a leading comment or blank says less than the call it precedes.
+    line = next((ln.strip() for ln in lines if ln.strip() and not ln.strip().startswith(("#", "//"))), "")
+    line = line or next((ln.strip() for ln in lines if ln.strip()), "")
+    if not line:
+        return f"Running {language} code" if language else "Running code"
+    if len(line) > _MAX_ARG_PREVIEW_CHARS:
+        line = line[:_MAX_ARG_PREVIEW_CHARS].rstrip() + "…"
+    return f"{language} · {line}" if language else line
 
 
 @register_args("install_packages")
@@ -384,22 +402,46 @@ def _install_packages_args(args: dict[str, Any]) -> str | None:
     return "Installing packages"
 
 
-@register_result("run_code", "install_packages")
-def _sandbox_result(args: dict[str, Any], result: "ToolResult") -> str | None:
+@register_result("run_code")
+def _run_code_result(args: dict[str, Any], result: "ToolResult") -> str | None:
     if result.is_error:
         text = _as_text(result.content) or "Unknown error"
         return f"Failed: {_first_line(text)[:_MAX_ERROR_PREVIEW_CHARS]}"
     # A failed run comes back as data, not as an error, so the model can read it and retry.
     parsed = _parse_json_maybe(result.content)
-    if isinstance(parsed, dict):
-        exit_code = parsed.get("exit_code", 0)
-        if exit_code != 0 or parsed.get("success") is False:
-            analysis = parsed.get("error_analysis")
-            message = analysis.get("message") if isinstance(analysis, dict) else None
-            text = message or _as_text(parsed.get("stderr")) or ""
-            head = f"Failed with exit code {exit_code}" if exit_code != 0 else "Failed"
-            return f"{head}: {_first_line(text)[:_MAX_ERROR_PREVIEW_CHARS]}" if text.strip() else head
-    return "Executed successfully"
+    if not isinstance(parsed, dict) or not isinstance(parsed.get("exit_code", 0), int):
+        return None
+    code = parsed.get("exit_code", 0)
+    if code != 0 or parsed.get("success") is False:
+        analysis = parsed.get("error_analysis")
+        message = analysis.get("message") if isinstance(analysis, dict) else None
+        text = message or _as_text(parsed.get("stderr")) or ""
+        head = f"Failed with exit code {code}" if code != 0 else "Failed"
+        return f"{head}: {_first_line(text)[:_MAX_ERROR_PREVIEW_CHARS]}" if text.strip() else head
+    stream = parsed.get("stdout")
+    line = _first_line(stream)[:_MAX_ERROR_PREVIEW_CHARS] if isinstance(stream, str) else ""
+    parts = [f"exit {code}", line] if line else [f"exit {code}"]
+    files = parsed.get("artifacts")
+    if isinstance(files, list) and files:
+        names = [str(f).rsplit("/", 1)[-1] for f in files[:_MAX_SUMMARY_ITEMS]]
+        parts.append(", ".join(names) + (f" (+{len(files) - len(names)} more)" if len(files) > len(names) else ""))
+    return " · ".join(parts)
+
+
+@register_result("install_packages")
+def _install_packages_result(args: dict[str, Any], result: "ToolResult") -> str | None:
+    if result.is_error:
+        text = _as_text(result.content) or "Unknown error"
+        return f"Failed: {_first_line(text)[:_MAX_ERROR_PREVIEW_CHARS]}"
+    parsed = _parse_json_maybe(result.content)
+    if isinstance(parsed, dict) and parsed.get("success") is False:
+        # A failed install comes back as data, like a failed run.
+        text = _as_text(parsed.get("stderr")) or _as_text(parsed.get("error")) or "Unknown error"
+        return f"Failed: {_first_line(text)[:_MAX_ERROR_PREVIEW_CHARS]}"
+    installed = parsed.get("installed") if isinstance(parsed, dict) else None
+    if isinstance(installed, list) and installed:
+        return f"Installed {', '.join(str(p) for p in installed[:_MAX_SUMMARY_ITEMS])}"
+    return "Installed"
 
 
 # ---------------------------------------------------------------------------

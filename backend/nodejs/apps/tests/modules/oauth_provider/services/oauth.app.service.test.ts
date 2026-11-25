@@ -16,7 +16,7 @@ import {
 import { NotFoundError, BadRequestError } from '../../../../src/libs/errors/http.errors'
 import { PAT_APP_CLIENT_ID_PREFIX, SERVICE_TOKEN_APP_CLIENT_ID_PREFIX, FIRST_PARTY_DEVICE_CLIENT_ID } from '../../../../src/modules/oauth_provider/constants/constants'
 import { Users } from '../../../../src/modules/user_management/schema/users.schema'
-import { createMockLogger } from '../../../helpers/mock-logger'
+import { createMockLogger, createSnakeCaseLogKeyGuard } from '../../../helpers/mock-logger'
 
 describe('OAuthAppService', () => {
   let service: OAuthAppService
@@ -53,7 +53,11 @@ describe('OAuthAppService', () => {
     )
   })
 
-  afterEach(() => {
+  const snakeCaseKeys = createSnakeCaseLogKeyGuard()
+  after(() => snakeCaseKeys.report())
+
+  afterEach(function () {
+    snakeCaseKeys.check(this, mockLogger)
     sinon.restore()
   })
 
@@ -274,7 +278,7 @@ describe('OAuthAppService', () => {
         updatedAt: new Date(),
       }
 
-      sinon.stub(OAuthApp, 'create').resolves(mockApp as any)
+      const create = sinon.stub(OAuthApp, 'create').resolves(mockApp as any)
 
       const result = await service.createApp(fakeOrgId, fakeUserId, true, {
         name: 'Test App',
@@ -283,6 +287,16 @@ describe('OAuthAppService', () => {
         redirectUris: ['https://example.com/callback'],
       })
 
+      // The one line for the event (the controller writes none); the app's name is a label an admin chose.
+      expect(mockLogger.info.args.map(([message, meta]: [string, any]) => [message, { ...meta, app_id: String(meta.app_id) }]))
+        .to.deep.equal([
+          ['OAuth app created', {
+            app_id: String(mockApp._id),
+            client_id: (create.firstCall.args[0] as any).clientId,
+            org_id: fakeOrgId,
+            name: 'Test App',
+          }],
+        ])
       expect(result).to.have.property('clientSecret')
       expect(result).to.have.property('clientId')
       expect(result.name).to.equal('Test App')
@@ -634,7 +648,7 @@ describe('OAuthAppService', () => {
       const first = findOne.firstCall.args[0] as Record<string, unknown>
       expect(first).to.not.have.property('createdBy')
       expect(first.orgId).to.deep.equal(new Types.ObjectId(fakeOrgId))
-      const write = findOne.secondCall.args[0] as Record<string, unknown>
+      const write = findOne.secondCall.args[0] as unknown as Record<string, unknown>
       expect(write.createdBy).to.deep.equal(new Types.ObjectId(creatorId))
       expect(app.status).to.equal(OAuthAppStatus.SUSPENDED)
       expect(mockOAuthTokenService.revokeAllTokensForApp.calledOnceWith('member-app')).to.be.true
@@ -713,7 +727,7 @@ describe('OAuthAppService', () => {
       } catch (error) {
         expect(error).to.be.instanceOf(NotFoundError)
       }
-      const filter = findOne.firstCall.args[0] as Record<string, unknown>
+      const filter = findOne.firstCall.args[0] as unknown as Record<string, unknown>
       expect(filter.createdBy).to.deep.equal(new Types.ObjectId(fakeUserId))
     })
   })
@@ -848,8 +862,8 @@ describe('OAuthAppService', () => {
       await service.listApps(fakeOrgId, fakeUserId, {})
 
       const expectedCreatedBy = new Types.ObjectId(fakeUserId)
-      const findFilter = findStub.firstCall.args[0] as Record<string, unknown>
-      const countFilter = countStub.firstCall.args[0] as Record<string, unknown>
+      const findFilter = findStub.firstCall.args[0] as unknown as Record<string, unknown>
+      const countFilter = countStub.firstCall.args[0] as unknown as Record<string, unknown>
       expect(findFilter.createdBy).to.deep.equal(expectedCreatedBy)
       expect(countFilter.createdBy).to.deep.equal(expectedCreatedBy)
     })
@@ -866,7 +880,7 @@ describe('OAuthAppService', () => {
 
       await service.listApps(fakeOrgId, fakeUserId, {})
 
-      const findFilter = findStub.firstCall.args[0] as Record<string, unknown>
+      const findFilter = findStub.firstCall.args[0] as unknown as Record<string, unknown>
       expect(findFilter.createdBy).to.deep.equal(new Types.ObjectId(fakeUserId))
     })
   })
@@ -1065,7 +1079,7 @@ describe('OAuthAppService', () => {
 
       await service.updateApp(fakeAppId, fakeOrgId, fakeUserId, false, { name: 'X' })
 
-      const filter = findStub.firstCall.args[0] as Record<string, unknown>
+      const filter = findStub.firstCall.args[0] as unknown as Record<string, unknown>
       expect(filter.createdBy).to.deep.equal(new Types.ObjectId(fakeUserId))
     })
   })
@@ -1302,6 +1316,20 @@ describe('OAuthAppService', () => {
         expect(error).to.be.instanceOf(InvalidClientError)
       }
     })
+
+    // Without the guard, hashing an absent secret throws a TypeError, which the endpoints answer as their own failure.
+    for (const secret of [undefined, null, '', 42]) {
+      it(`should refuse a client_secret of ${JSON.stringify(secret)} as invalid_client, before any read`, async () => {
+        const findOne = sinon.stub(OAuthApp, 'findOne')
+        try {
+          await service.verifyClientCredentials('cid', secret as never)
+          expect.fail('Should have thrown')
+        } catch (error) {
+          expect(error).to.be.instanceOf(InvalidClientError)
+        }
+        expect(findOne.called).to.equal(false)
+      })
+    }
   })
 
   describe('validateRedirectUriForApp', () => {
@@ -1395,7 +1423,11 @@ describe('OAuthAppService - branch coverage', () => {
     )
   })
 
-  afterEach(() => {
+  const snakeCaseKeys = createSnakeCaseLogKeyGuard()
+  after(() => snakeCaseKeys.report())
+
+  afterEach(function () {
+    snakeCaseKeys.check(this, mockLogger)
     sinon.restore()
   })
 
@@ -1500,7 +1532,7 @@ describe('OAuthAppService - branch coverage', () => {
       await service.listApps(VALID_ORG_ID, VALID_USER_ID, { status: OAuthAppStatus.ACTIVE })
       // Check the filter contains status
       const filterArg = findStub.firstCall.args[0]
-      expect(filterArg.status).to.deep.equal({ $eq: OAuthAppStatus.ACTIVE })
+      expect(filterArg!.status).to.deep.equal({ $eq: OAuthAppStatus.ACTIVE })
     })
 
     it('should apply search filter with regex escaping when provided', async () => {
@@ -1514,8 +1546,8 @@ describe('OAuthAppService - branch coverage', () => {
       await service.listApps(VALID_ORG_ID, VALID_USER_ID, { search: 'test.app' })
       // Check the filter contains $or with regex
       const filterArg = findStub.firstCall.args[0]
-      expect(filterArg.$or).to.exist
-      expect(filterArg.$or).to.have.length(2)
+      expect(filterArg!.$or).to.exist
+      expect(filterArg!.$or).to.have.length(2)
     })
 
     it('should calculate totalPages correctly', async () => {
@@ -1899,7 +1931,7 @@ describe('OAuthAppService - branch coverage', () => {
         isConfidential: false,
       })
       expect(createStub.calledOnce).to.be.true
-      expect(createStub.firstCall.args[0].isDynamic).to.be.true
+      expect(createStub.firstCall.args[0]!.isDynamic).to.be.true
     })
   })
 

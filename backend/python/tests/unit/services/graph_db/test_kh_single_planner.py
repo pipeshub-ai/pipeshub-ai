@@ -139,6 +139,19 @@ async def test_inside_a_transaction_the_statement_runs_as_before() -> None:
     assert client.calls == [{"query": "RETURN 1", "txn_id": "txn-1", "plain": True}]
 
 
+@pytest.mark.asyncio
+async def test_a_listing_statement_keeps_its_plan_unless_turned_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = FakeClient()
+    client.release.set()
+    p = provider(client)
+    await p._kh_query("MATCH (a:App) RETURN a")  # planned
+    await p._kh_query("MATCH (a:App) RETURN a")  # run
+    assert [c["query"] for c in client.calls] == ["CYPHER replan=skip MATCH (a:App) RETURN a"] * 2
+    monkeypatch.setattr(Neo4jProvider, "_KH_KEEP_PLANS", False)
+    await p._kh_query("MATCH (a:App) RETURN a")
+    assert client.calls[-1]["query"] == "MATCH (a:App) RETURN a"
+
+
 def _coded(code: str) -> Exception:
     error = RuntimeError(code)
     error.code = code  # type: ignore[attr-defined]
@@ -151,11 +164,13 @@ class StepClient:
     def __init__(self, steps: list[tuple[float, Exception | None]]) -> None:
         self.steps = steps
         self.calls = 0
+        self.finished: list[float] = []  # when each statement's step ended, on the clock the provider reads
 
     async def execute_query(self, query, parameters=None, txn_id=None, **kw) -> list[dict]:
         seconds, error = self.steps[min(self.calls, len(self.steps) - 1)]
         self.calls += 1
         await asyncio.sleep(seconds)
+        self.finished.append(time.monotonic())
         if error is not None:
             raise error
         return [{"ok": True}]
@@ -190,20 +205,23 @@ async def test_a_waiter_keeps_one_budget_across_a_failed_planner(monkeypatch: py
 
 @pytest.mark.asyncio
 async def test_a_waiters_out_of_memory_is_timed_from_its_own_run() -> None:
-    # The waiter waits 0.2 s for the plan, then its own statement finds the memory pool spent at once.
+    # The waiter waits for the plan, then its own statement finds the memory pool spent at once.
     oom = _coded("Neo.TransientError.General.MemoryPoolOutOfMemoryError")
-    p = provider(StepClient([(0.2, None), (0.0, oom)]))
+    client = StepClient([(0.5, None), (0.0, oom)])
+    p = provider(client)
     planner = asyncio.create_task(p._kh_query("MATCH (a:App) RETURN a"))
     await asyncio.sleep(0.01)
     started = time.monotonic()
     with pytest.raises(KnowledgeHubListingBusy) as busy:
         await p._kh_query("MATCH (a:App) RETURN a")
-    total = time.monotonic() - started
-    assert busy.value.out_of_memory is True
-    # The planner cannot finish before 0.19 s of this request's wait: what is left is the statement's own run,
-    # however slow the host. Counting the wait would make a 503 to retry a 422 "too large".
-    assert busy.value.ran_s is not None and busy.value.ran_s <= total - 0.18
+    answered = time.monotonic()
     await planner
+    assert busy.value.out_of_memory is True
+    planned = client.finished[0]
+    assert started < planned  # this request did wait for the plan
+    # Its wait ends no sooner than the planner's statement, so a run timed from after the wait fits between the two,
+    # however fast or slow the host. Counting the wait would make a 503 to retry a 422 "too large".
+    assert busy.value.ran_s is not None and busy.value.ran_s <= answered - planned
 
 
 @pytest.mark.asyncio

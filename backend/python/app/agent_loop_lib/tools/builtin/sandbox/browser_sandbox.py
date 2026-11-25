@@ -13,6 +13,7 @@ from app.agent_loop_lib.tools.base import (
     Tool,
     ToolOutput,
     ToolParameter,
+    error_data,
 )
 
 """The browser sandbox's toolset — every tool shares one
@@ -52,7 +53,7 @@ class BrowserNavigateTool(Tool):
         try:
             final_url = await self._sandbox.navigate(url)
         except BrowserSandboxError as e:
-            return ToolOutput(success=True, data={"error": str(e)})
+            return ToolOutput(success=True, data=error_data(e))
         return ToolOutput(success=True, data={"url": final_url})
 
 
@@ -84,7 +85,7 @@ class BrowserGetTextTool(Tool):
         try:
             text = await self._sandbox.get_text()
         except BrowserSandboxError as e:
-            return ToolOutput(success=True, data={"error": str(e)})
+            return ToolOutput(success=True, data=error_data(e))
         return ToolOutput(success=True, data={"text": text})
 
 
@@ -120,7 +121,7 @@ class BrowserClickTool(Tool):
         try:
             await self._sandbox.click(selector)
         except BrowserSandboxError as e:
-            return ToolOutput(success=True, data={"error": str(e)})
+            return ToolOutput(success=True, data=error_data(e))
         return ToolOutput(success=True, data={"status": "ok"})
 
 
@@ -159,7 +160,7 @@ class BrowserFillTool(Tool):
         try:
             await self._sandbox.fill(selector, text)
         except BrowserSandboxError as e:
-            return ToolOutput(success=True, data={"error": str(e)})
+            return ToolOutput(success=True, data=error_data(e))
         return ToolOutput(success=True, data={"status": "ok"})
 
 
@@ -191,7 +192,7 @@ class BrowserScreenshotTool(Tool):
         try:
             png_bytes = await self._sandbox.screenshot()
         except BrowserSandboxError as e:
-            return ToolOutput(success=True, data={"error": str(e)})
+            return ToolOutput(success=True, data=error_data(e))
         return ToolOutput(
             success=True,
             data={"image_base64": base64.b64encode(png_bytes).decode("ascii"), "format": "png"},

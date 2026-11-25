@@ -149,6 +149,7 @@ export class ApiDocsService {
   }
 
   private mergedSpec: Record<string, any> | null = null;
+  private specYaml: string | null = null;
   private endpoints: EndpointInfo[] = [];
   private categories: CategoryInfo[] = [];
   private modules: ModuleInfo[] = [];
@@ -196,7 +197,9 @@ export class ApiDocsService {
     ];
     const specPath = paths.find((p) => fs.existsSync(p));
     if (!specPath) {
-      this.logger.warn(`PipesHub OpenAPI spec not found in any of: ${paths.join(', ')}`);
+      this.logger.warn('PipesHub OpenAPI spec not found', {
+        path_count: paths.length,
+      });
       return;
     }
 
@@ -223,6 +226,19 @@ export class ApiDocsService {
       });
       return;
     }
+  }
+
+  /**
+   * The loaded spec with its overlays merged in, as YAML; null when no spec loaded.
+   * Its servers use the `{instance_url}` variable, so the file names no deployment.
+   */
+  getSpecYaml(): string | null {
+    if (!this.mergedSpec) return null;
+    this.specYaml ??= yaml.dump(this.mergedSpec, {
+      noRefs: true,
+      lineWidth: -1,
+    });
+    return this.specYaml;
   }
 
   /**

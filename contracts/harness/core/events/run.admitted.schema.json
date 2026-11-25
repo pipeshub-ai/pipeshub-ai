@@ -1,0 +1,110 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/core/events/run.admitted.schema.json",
+  "title": "RunAdmittedEvent",
+  "description": "Admission accepted the run (quota checked). Node sets the principal.",
+  "x-writer": [
+    "node"
+  ],
+  "allOf": [
+    {
+      "$ref": "../envelope.schema.json#/$defs/InlineEnvelope"
+    }
+  ],
+  "properties": {
+    "type": {
+      "const": "run.admitted"
+    },
+    "writer": {
+      "const": "node"
+    },
+    "data": {
+      "$ref": "#/$defs/RunAdmittedData"
+    }
+  },
+  "$defs": {
+    "RunAdmittedData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "runKind",
+        "principalRef"
+      ],
+      "properties": {
+        "runKind": {
+          "$ref": "../common.schema.json#/$defs/RunKind"
+        },
+        "principalRef": {
+          "$ref": "../common.schema.json#/$defs/PrincipalRef"
+        },
+        "parentRunId": {
+          "$ref": "../common.schema.json#/$defs/Id"
+        },
+        "via": {
+          "$ref": "../common.schema.json#/$defs/Via"
+        },
+        "sessionRole": {
+          "$ref": "../common.schema.json#/$defs/SessionRole",
+          "description": "The actor's role in the session when the run was admitted into a shared context (SS2); absent in a personal session."
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "type": "run.admitted",
+      "schemaVersion": 1,
+      "critical": true,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "node",
+      "visibility": "owner",
+      "data": {
+        "runKind": "interactive",
+        "principalRef": "p_u42",
+        "via": "session"
+      }
+    },
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "type": "run.admitted",
+      "schemaVersion": 1,
+      "critical": true,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "node",
+      "visibility": "owner",
+      "data": {
+        "runKind": "child",
+        "principalRef": "p_u42",
+        "parentRunId": "run_0"
+      }
+    },
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 9,
+      "runId": "run_2",
+      "type": "run.admitted",
+      "schemaVersion": 1,
+      "critical": true,
+      "ts": "2026-10-04T12:00:00.123Z",
+      "writer": "node",
+      "visibility": "owner",
+      "data": {
+        "runKind": "interactive",
+        "principalRef": "p_u43",
+        "via": "session",
+        "sessionRole": "collaborator"
+      }
+    }
+  ]
+}

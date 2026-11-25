@@ -47,6 +47,7 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
 from app.core.org_context import current_org_id
 from app.connectors.sources.localKB.handlers.delete_lease import hold_delete_lease
 from app.connectors.sources.localKB.push.contract import is_pushed_revision
+from app.harness.knowledge.service import KnowledgePublications, container_id
 from app.models.entities import FileRecord, RecordType, SourcePerson
 from app.models.source_dates import (
     UPLOAD_SOURCE_CREATED_FIELD,
@@ -210,7 +211,6 @@ KB_METHOD_CLASS: dict[str, Literal["write", "read", "exempt"]] = {
     "list_user_knowledge_bases": "read",
     "list_trash": "read",
     "list_kb_permissions": "read",
-    "list_kb_records": "read",
     "get_kb_children": "read",
     "get_folder_children": "read",
     "create_knowledge_base": "exempt",
@@ -1312,6 +1312,7 @@ class KnowledgeBaseService:
                     f"event(s) for KB {kb_id}; some embeddings were not cleaned up"
                 )
             await free_lane_of_deleted_connector(self.logger, kb_id)
+            await self._erase_publications(org_id, kb_id)
             return {
                 "success": True,
                 "reason": "Knowledge base and all contents deleted successfully",
@@ -1329,6 +1330,15 @@ class KnowledgeBaseService:
         _BACKGROUND_TASKS.add(task)
         task.add_done_callback(_BACKGROUND_TASKS.discard)
 
+    async def _erase_publications(self, org_id: str, kb_id: str) -> None:
+        """A deleted knowledge base takes its publications with it (P2.13, C-14 rule), flag on or off. A failure
+        here leaves orphans that grant nothing (their container is gone) and are pruned at the next read."""
+        try:
+            await KnowledgePublications(self.graph_provider, self.config_service).erase_container(
+                org_id, container_id("kb", kb_id)
+            )
+        except Exception as e:
+            self.logger.warning("publications.erase_failed errorType=%s choice=prune_on_read", type(e).__name__)
     async def _schedule_upload_removal(
         self,
         kb_id: str,
@@ -1540,7 +1550,7 @@ class KnowledgeBaseService:
                     kb_id,
                     parent_folder_id,
                     "create a folder in it",
-                    f"Parent folder {parent_folder_id} not found in KB {kb_id}",
+                    "The parent folder was not found in this knowledge base.",
                 )
 
             if await self._exceeds_folder_depth(parent_folder_id, 1):
@@ -1898,6 +1908,9 @@ class KnowledgeBaseService:
                 received_at = epoch_ms(file_metadata.get("receivedAt")) or timestamp
                 record.source_timestamp_origin = upload_origin(record.source_updated_at, received_at).value
                 record.external_revision_id = str(timestamp)
+                size = file_metadata.get("size")
+                if isinstance(size, int) and not isinstance(size, bool) and size >= 0:
+                    record.size_in_bytes = size
                 await processor.on_record_content_update(record)
             else:
                 # Metadata-only (rename): persists records.recordName + files.name, no event.
@@ -3136,99 +3149,6 @@ class KnowledgeBaseService:
                 "code": 500
             }
 
-    async def list_kb_records(
-        self,
-        kb_id: str,
-        user_id: str,
-        org_id: str,
-        page: int = 1,
-        limit: int = 20,
-        search: Optional[str] = None,
-        record_types: Optional[List[str]] = None,
-        origins: Optional[List[str]] = None,
-        connectors: Optional[List[str]] = None,
-        indexing_status: Optional[List[str]] = None,
-        date_from: Optional[int] = None,
-        date_to: Optional[int] = None,
-        sort_by: str = "createdAtTimestamp",
-        sort_order: str = "desc",
-    ) -> Dict:
-        """
-        List all records in a specific KB (including all folders and direct records), with filters.
-        The underlying provider filters results to only records the user has access to.
-        Service-level permission enforcement is intentionally NOT applied here — doing so
-        would change the historical API contract (empty list → 403) and break callers that
-        rely on receiving an empty result when the user has no access to a particular KB.
-        """
-        try:
-            user = await get_caller_user(self.graph_provider, user_id, raise_on_error=True)
-            if not user:
-                self.logger.warning(f"⚠️ User not found for user_id: {user_id}")
-                return {
-                    "success": False,
-                    "code": 404,
-                    "reason": f"User not found for user_id: {user_id}"
-                }
-            user_key = user.get('id') or user.get('_key')
-
-            skip = (page - 1) * limit
-            sort_order = sort_order.lower() if sort_order.lower() in ["asc", "desc"] else "desc"
-            sort_by = sort_by if sort_by in [
-                "recordName", "createdAtTimestamp", "updatedAtTimestamp", "recordType", "origin", "indexingStatus"
-            ] else "createdAtTimestamp"
-
-            records, total_count, available_filters = await self.graph_provider.list_kb_records(
-                kb_id=kb_id,
-                user_id=user_key,
-                org_id=org_id,
-                skip=skip,
-                limit=limit,
-                search=search,
-                record_types=record_types,
-                origins=origins,
-                connectors=connectors,
-                indexing_status=indexing_status,
-                date_from=date_from,
-                date_to=date_to,
-                sort_by=sort_by,
-                sort_order=sort_order,
-            )
-
-            total_pages = (total_count + limit - 1) // limit
-
-            applied_filters = {
-                k: v for k, v in {
-                    "search": search,
-                    "recordTypes": record_types,
-                    "origins": origins,
-                    "connectors": connectors,
-                    "indexingStatus": indexing_status,
-                    "dateRange": {"from": date_from, "to": date_to} if date_from or date_to else None,
-                }.items() if v
-            }
-
-            return {
-                "records": records,
-                "pagination": {
-                    "page": page,
-                    "limit": limit,
-                    "totalCount": total_count,
-                    "totalPages": total_pages,
-                },
-                "filters": {
-                    "applied": applied_filters,
-                    "available": available_filters,
-                }
-            }
-        except Exception as e:
-            self.logger.error(f"❌ Failed to list KB records: {str(e)}")
-            return {
-                "records": [],
-                "pagination": {"page": page, "limit": limit, "totalCount": 0, "totalPages": 0},
-                "filters": {"applied": {}, "available": {}},
-                "error": action_failed("load these files"),
-            }
-
     async def get_kb_children(
         self,
         kb_id: str,
@@ -3758,7 +3678,7 @@ class KnowledgeBaseService:
                 return {
                     "success": False,
                     "code": 404,
-                    "reason": f"Record {record_id} not found in KB {kb_id}",
+                    "reason": "The record was not found in this knowledge base.",
                 }
             self.logger.info(f"KB context: {kb_context}")
 

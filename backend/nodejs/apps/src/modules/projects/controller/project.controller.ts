@@ -4,10 +4,16 @@ import { AppConfig } from '../../tokens_manager/config/config';
 import { AIServiceCommand } from '../../../libs/commands/ai_service/ai.service.command';
 import { HttpMethod } from '../../../libs/enums/http-methods.enum';
 import { HTTP_STATUS } from '../../../libs/enums/http-status.enum';
+import { handleBackendError } from '../../../libs/errors/backend-error';
 import {
+  BadGatewayError,
   BadRequestError,
   ForbiddenError,
 } from '../../../libs/errors/http.errors';
+import {
+  markClientSafe,
+  serverFailureMessage,
+} from '../../../libs/errors/reader-friendly';
 import { getConversationRepository } from '../../../libs/repositories/conversation';
 import { withoutOwnerOnlyFields } from '../../enterprise_search/utils/utils';
 import {
@@ -371,23 +377,37 @@ export const listProjectMembers =
     }
   };
 
-/** True when `teamId` names a team that exists in this org's graph (Python `entity/team/{id}`). */
+/**
+ * True when `teamId` names a team that exists in this org's graph (Python `entity/team/{id}`). Any 4xx is "no such team",
+ * as before. An outage is not "Team not found": a 5xx is mapped like every other upstream 5xx (`upstream_5xx`), an answer
+ * that is not JSON (a proxy's error page) is a 502, and no answer reaches the error middleware as a 503 / 504.
+ */
 async function teamExists(
   appConfig: AppConfig,
   req: AuthenticatedUserRequest,
   teamId: string,
 ): Promise<boolean> {
+  const command = new AIServiceCommand<unknown>({
+    uri: `${appConfig.connectorBackend}/api/v1/entity/team/${encodeURIComponent(teamId)}`,
+    method: HttpMethod.GET,
+    headers: req.headers as Record<string, string>,
+  });
+  let response: Awaited<ReturnType<typeof command.execute>>;
   try {
-    const command = new AIServiceCommand<unknown>({
-      uri: `${appConfig.connectorBackend}/api/v1/entity/team/${encodeURIComponent(teamId)}`,
-      method: HttpMethod.GET,
-      headers: req.headers as Record<string, string>,
-    });
-    const response = await command.execute();
-    return response.statusCode === HTTP_STATUS.OK;
-  } catch {
-    return false;
+    response = await command.execute();
+  } catch (error) {
+    // The body's own text never travels: JSON.parse quotes it.
+    if (error instanceof SyntaxError) {
+      throw markClientSafe(
+        new BadGatewayError(serverFailureMessage('check the team')),
+      );
+    }
+    throw error;
   }
+  if (response.statusCode >= 500) {
+    throw handleBackendError(response, 'check the team');
+  }
+  return response.statusCode === HTTP_STATUS.OK;
 }
 
 /**

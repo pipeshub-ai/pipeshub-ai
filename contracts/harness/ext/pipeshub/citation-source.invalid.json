@@ -1,0 +1,46 @@
+[
+  {
+    "description": "unknown kind",
+    "instance": {
+      "kind": "cached",
+      "recordId": "r1"
+    }
+  },
+  {
+    "description": "a live source never names a record",
+    "instance": {
+      "kind": "live",
+      "connector": "DRIVE",
+      "externalRecordId": "f1",
+      "recordId": "live:0123456789abcdef"
+    }
+  },
+  {
+    "description": "a live source without its external id",
+    "instance": {
+      "kind": "live",
+      "connector": "DRIVE"
+    }
+  },
+  {
+    "description": "a record source without its record",
+    "instance": {
+      "kind": "indexed"
+    }
+  },
+  {
+    "description": "empty record id",
+    "instance": {
+      "kind": "attachment",
+      "recordId": ""
+    }
+  },
+  {
+    "description": "an empty publication id",
+    "instance": {
+      "kind": "indexed",
+      "recordId": "r1",
+      "publicationId": ""
+    }
+  }
+]

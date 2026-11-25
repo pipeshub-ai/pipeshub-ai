@@ -1,6 +1,7 @@
 import type { AxiosError, AxiosRequestConfig } from 'axios';
 import type { SignInResponse } from '@/lib/api/auth-public-types';
 import { publicAuthClient } from '@/lib/api/public-auth-client';
+import { sessionDeliveryHeaders } from '@/lib/auth/session-credential';
 
 export function getAuthSessionRequestConfig(): AxiosRequestConfig | undefined {
   const sessionToken =
@@ -62,6 +63,11 @@ export async function postUserAccountAuthenticate(
   body: Record<string, unknown>,
   requestConfig?: AxiosRequestConfig,
 ): Promise<SignInResponse> {
+  // The web app's refresh token comes back as an HttpOnly cookie, not in the body (ADR-WEB-02).
+  requestConfig = {
+    ...(requestConfig ?? {}),
+    headers: { ...sessionDeliveryHeaders(), ...(requestConfig?.headers ?? {}) },
+  };
   try {
     const { data } = await publicAuthClient.post<SignInResponse>(
       '/api/v1/userAccount/authenticate',

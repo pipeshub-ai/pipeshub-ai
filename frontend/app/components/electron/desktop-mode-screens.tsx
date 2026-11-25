@@ -5,7 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { Flex, Box, Text, Heading, Button } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { Spinner } from '@/app/components/ui/spinner';
-import { useAuthStore } from '@/lib/store/auth-store';
+import { useAuthStore } from '@/config';
 import {
   getDesktopApi,
   switchDesktopMode,
@@ -80,7 +80,7 @@ function ChoiceCard({
         minHeight: 44,
       }}
     >
-      <MaterialIcon name={icon} size={28} color="var(--accent-9)" />
+      <MaterialIcon name={icon} size={28} color="var(--accent-11)" />
       <Flex direction="column" gap="1">
         <Text size="3" weight="medium">{title}</Text>
         <Text size="2" color="gray">{description}</Text>

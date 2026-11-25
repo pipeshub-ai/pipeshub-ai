@@ -29,7 +29,7 @@ from app.services.vector_db.strategy_resolver import (
 from app.utils.encryption.encryption_service import DecryptionError, EncryptionService
 
 ENDPOINTS_KEY = config_node_constants.ENDPOINTS.value
-SECRET_KEY = "encstore-throwaway-test-secret"
+SECRET_KEY = "fd4753a4ed0d0b07b2764602695947595e35caf128486cfe1235561112cfb9d5"
 OTHER_HEX_KEY = "22" * 32
 REDIS_PREFIX = "t:"
 REDIS_PROVIDER = "app.config.providers.redis.redis_store.get_redis_provider"
@@ -359,9 +359,7 @@ class TestRoundTrip:
         assert await h.store.create_key(key, entry) is True
         assert await h.store.create_key("/services/platform/artifactRollout/other", entry) is True
 
-        plain = json.loads(h.raw_value(key).decode("utf-8"))
-        # Redis keeps a dict as a JSON string of JSON; Node's reader parses a string once more.
-        assert (json.loads(plain) if isinstance(plain, str) else plain) == entry
+        assert json.loads(h.raw_value(key).decode("utf-8")) == entry
         assert "indexing-0" not in h.raw_value("/services/platform/artifactRollout/other").decode("utf-8")
         assert await h.store.get_key(key) == entry
         assert await h.store.list_keys_in_directory("/services/platform/artifactRollout/membership/") == [key]
@@ -369,6 +367,60 @@ class TestRoundTrip:
     async def test_a_missing_key_is_none_even_when_asked_to_raise(self, h) -> None:
         assert await h.store.get_key("/absent") is None
         assert await h.store.get_key("/absent", raise_on_error=True) is None
+
+
+class TestUnencryptedKeysAreOneJsonLayer:
+    """Node reads these keys with a single JSON.parse, so Python must write one layer."""
+
+    UNENCRYPTED = (
+        ENDPOINTS_KEY,
+        config_node_constants.STORAGE.value,
+        config_node_constants.DEPLOYMENT.value,
+        "/services/platform/artifactRollout/membership/holder-1",
+    )
+
+    @pytest.mark.parametrize("key", UNENCRYPTED)
+    async def test_a_dict_is_stored_as_one_json_object(self, h, key) -> None:
+        value = {"frontend": {"publicEndpoint": "http://a"}, "nodejs": {"endpoint": "http://localhost:3001"}}
+
+        assert await h.store.create_key(key, value) is True
+
+        assert json.loads(h.raw_value(key).decode("utf-8")) == value
+        assert await h.store.get_key(key) == value
+
+    @pytest.mark.parametrize("key", UNENCRYPTED)
+    async def test_a_value_written_as_a_json_string_of_json_still_reads_as_the_dict(self, h, key) -> None:
+        """Installs written before the fix hold the doubled form."""
+        value = {"frontend": {"publicEndpoint": "http://a"}}
+        h.put_raw(key, json.dumps(json.dumps(value)).encode("utf-8"))
+
+        assert await h.store.get_key(key) == value
+
+    @pytest.mark.parametrize("value", [{"k": [1, 2]}, ["a", "b"], 7, 1.5, True, False, "plain", "123", "true", '{"a": 1}'])
+    async def test_scalars_and_lists_round_trip(self, h, value) -> None:
+        if isinstance(value, str) and h.kind == "etcd":
+            # Known gap, not part of this change: the etcd store writes a str as-is, so a str that is
+            # not itself JSON fails create_key's read-back (encrypted_store.py, verification step).
+            pytest.skip("str values are not round-trippable on etcd (pre-existing)")
+        assert await h.store.create_key(ENDPOINTS_KEY, value) is True
+
+        got = await h.store.get_key(ENDPOINTS_KEY)
+        assert got == value
+        assert type(got) is type(value)
+
+    async def test_rewriting_a_doubled_value_leaves_one_layer(self, h) -> None:
+        value = {"frontend": {"publicEndpoint": "http://a"}}
+        h.put_raw(ENDPOINTS_KEY, json.dumps(json.dumps(value)).encode("utf-8"))
+
+        assert await h.store.create_key(ENDPOINTS_KEY, {**value, "nodejs": {"endpoint": "http://n"}}) is True
+
+        assert isinstance(json.loads(h.raw_value(ENDPOINTS_KEY).decode("utf-8")), dict)
+
+    async def test_encrypted_keys_are_unchanged(self, h) -> None:
+        key = "/services/connectors/x/config"
+        assert await h.store.create_key(key, {"a": 1}) is True
+        assert '"a"' not in h.raw_value(key).decode("utf-8")
+        assert await h.store.get_key(key) == {"a": 1}
 
 
 class TestUnreadableValues:

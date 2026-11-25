@@ -14,6 +14,7 @@ import {
   forOrg,
   system,
   spawnDetached,
+  detachedInterval,
   MissingOrgContext,
   OrgMismatch,
   SystemContextNotAllowed,
@@ -103,6 +104,23 @@ describe('orgContext', () => {
     // the failure being guarded: a timer created inside run() inherits the request's org
     expect(await run((fn) => fn())).to.deep.equal(['org_a', 'org_a', 'org_a'])
     expect(await run(spawnDetached)).to.deep.equal(['MissingOrgContext', 'MissingOrgContext', 'MissingOrgContext'])
+  })
+
+  it('detachedInterval ticks with no org even when started inside one, and does not hold the process open', async () => {
+    const seen: string[] = []
+    let timer!: NodeJS.Timeout
+    runWithOrgContext(user('org_a'), () => {
+      timer = detachedInterval(() => {
+        try { seen.push(currentOrgContext().orgId as string) } catch (e) { seen.push((e as Error).name) }
+      }, 1)
+    })
+    while (seen.length < 2) await sleep(2)
+    clearInterval(timer)
+    expect(seen.slice(0, 2)).to.deep.equal(['MissingOrgContext', 'MissingOrgContext'])
+    expect(timer.hasRef()).to.equal(false)
+    const kept = detachedInterval(() => undefined, 1000, { keepAlive: true })
+    expect(kept.hasRef()).to.equal(true)
+    clearInterval(kept)
   })
 
   it('request-scoped child work keeps the caller context without any helper', async () => {

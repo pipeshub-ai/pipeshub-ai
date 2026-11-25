@@ -215,6 +215,53 @@ async def test_a_details_read_that_cannot_be_answered_raises_instead_of_refusing
     assert await w.p.check_record_access_with_details("uid-gm", w.org, "open1")
 
 
+def fail_document_reads_of(w: World, monkeypatch: pytest.MonkeyPatch, coll: str) -> None:
+    """Every read reaches the real database except a document read of ``coll``, which fails as a store that stopped answering would."""
+    real = w.p._q
+
+    class _Tx:
+        def __init__(self, tx: Any) -> None:  # noqa: ANN401
+            self._tx = tx
+
+        def __getattr__(self, name: str) -> Any:  # noqa: ANN401
+            return getattr(self._tx, name)
+
+        async def fetchrow(self, sql: str, *args: object) -> Any:  # noqa: ANN401
+            if "pipeshub:graph.get_document */" in sql and args[1:2] == (coll,):      # (org, coll, key)
+                raise RuntimeError("store down")      # an OSError would become the runtime's ConnectionLost and be retried
+            return await self._tx.fetchrow(sql, *args)
+
+    async def q(fn: Any, transaction: str | None, **k: Any) -> Any:  # noqa: ANN401
+        return await real(lambda tx: fn(_Tx(tx)), transaction, **k)
+
+    monkeypatch.setattr(w.p, "_q", q)
+
+
+async def test_the_type_document_is_in_the_details_when_found_and_none_when_absent(w: World) -> None:
+    await world(w)
+    await w.nodes("files", {"_key": "open1", "webUrl": "https://x/open1"})          # open2 is a FILE record without one
+    found = await w.p.check_record_access_with_details("uid-gm", w.org, "open1")
+    absent = await w.p.check_record_access_with_details("uid-gm", w.org, "open2")
+    assert found["record"]["fileRecord"]["_key"] == "open1"
+    assert absent is not None and absent["record"]["id"] == "open2" and absent["record"]["fileRecord"] is None       # still opened
+
+
+@pytest.mark.parametrize(("coll", "who", "record"), [
+    ("files", "uid-gm", "open1"),        # the record's type document
+    ("apps", "uid-kbu", "k1"),           # the collection of a KB record
+], ids=["type_document", "kb_app"])
+async def test_a_failed_optional_document_read_raises_as_an_outage(w: World, monkeypatch: pytest.MonkeyPatch, coll: str, who: str, record: str) -> None:
+    await world(w)
+    await w.nodes("files", {"_key": "open1"})
+    fail_document_reads_of(w, monkeypatch, coll)
+    with pytest.raises(RuntimeError):        # not None (a denial), and not details without the document
+        await w.p.check_record_access_with_details(who, w.org, record)
+    if coll == "apps":      # only that read failed: a connector record reads no app document
+        assert await w.p.check_record_access_with_details("uid-gm", w.org, "open1")
+    monkeypatch.undo()
+    assert await w.p.check_record_access_with_details(who, w.org, record)
+
+
 # ---- the context role --------------------------------------------------------------------------------------------------------------------
 
 async def ctx(w: World, who: str, node: str | None, kind: str | None = None, org: str | None = None) -> dict:

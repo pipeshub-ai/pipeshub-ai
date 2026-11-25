@@ -1,0 +1,13 @@
+id: approval-jira-create
+turns:
+  - expect: { last_user_contains: "create a P1 bug" }
+    reply:
+      reasoning: "User wants a Jira issue."
+      tool_calls:
+        - { id: toolu_01, name: jira_create_issue, args: { summary: "Login 500", priority: P1 } }
+      usage: { input_tokens: 120, output_tokens: 14, cache_read_tokens: 100, cache_write_tokens: 20 }
+  - expect: { tool_result_for: jira_create_issue, status: succeeded }
+    reply:
+      text: "Created PROJ-1."
+      chunks: 4
+      usage: { input_tokens: 160, output_tokens: 6, cache_read_tokens: 120 }

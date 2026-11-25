@@ -10,7 +10,7 @@ describe('loadConfigurationManagerConfig store type', () => {
   };
 
   beforeEach(() => {
-    process.env.SECRET_KEY = 'test-secret';
+    process.env.SECRET_KEY = '9caf06bb4436cdbfa20af9121a626bc1093c4f54b31c0fa937957856135345b6';
   });
 
   afterEach(() => {

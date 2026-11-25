@@ -66,3 +66,4 @@ kb_swagger.yaml
 
 # staged native launcher bundle (electron-builder extraResources)
 /resources/pipeshub-native/
+tests/e2e/qa/.ux-baselines/

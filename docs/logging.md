@@ -137,7 +137,7 @@ if log_once(f"envelope:stripped:{topic}", 30): ...          # bounded keys only,
 ```
 
 - Bindable ids (`LOG_FIELD_NAMES`): `conversation_id`, `agent_id`, `run_id`, `parent_run_id`, `agent_run_id`, `attempt`, `connector_id`,
-  `connector_type`, `record_id`, `kb_id`, `tool`, `tool_call_id`, `mcp_server_id`, `toolset_id`, `job`, and for credential
+  `connector_type`, `record_id`, `kb_id`, `tool`, `tool_call_id`, `mcp_server_id`, `toolset_id`, `job`, `template_id`, and for credential
   refresh `refresh_kind`, `trigger`, `provider`, `scheduled_by`, `owner_id`, for broker messages `topic`, `message_id`,
   `event_type`, and for the user a step acts on `target_user_id` and `source_user_id` (see "Personal data"). A module that
   needs another adds it there and here. A name with
@@ -175,6 +175,9 @@ except Exception as e:
 - `classify_error(exc_or_status)` is one of `auth_expired`, `forbidden`, `not_found`, `rate_limited`, `timeout`, `upstream_5xx`,
   `bad_request`, `conflict`, `unavailable`, `cancelled`, `misconfigured`, `internal`. `misconfigured` is **our** configuration: the
   LLM provider rejected our key, no LLM is configured, an OAuth client registration was rejected, or a service token was refused.
+  A credential refresh, and the code exchange of the connector and toolset OAuth callbacks, also class a token URL that cannot
+  be sent to (no `https://`), a token endpoint that answers 2xx without a token, or a token field that is not a timestamp or a
+  number of seconds, as `misconfigured` (see Credential refresh).
   `auth_expired` is a user's or a connector's grant that expired or was revoked. The first decisive exception in the chain wins,
   outermost first (`__cause__`, else `__context__` unless `from None`). OAuth error codes are read before the HTTP status, our
   own `HTTPException` 5xx counts as `internal`, and our programming errors (`KeyError`, `TypeError`, …) stop the walk. It never raises.
@@ -187,12 +190,19 @@ except Exception as e:
   raised `from` it, is DEBUG unless it asks for a higher level. `include_error_text=False` leaves `error_message` out and prints
   each exception in the stack as `Type: <message omitted>`, for errors whose text can echo what was sent (an MCP or OpenAPI server's
   answer quoting tool arguments). That record carries the stack as `exc_text` only, with no `exc_info`, so a handler that formats
-  `exc_info` itself cannot print the message either.
+  `exc_info` itself cannot print the message either. Tests check such a line with `tests/support/log_capture.py`:
+  `failure_line(records, event, error_class, level, *values)` and `assert_text_free(records, *values)`.
 - `logged_level(exc)` is the highest level `log_failure` already wrote `exc` (or an exception it was raised `from`) at, or `None`.
   A per-unit line that must keep its level when several units fail with one shared exception checks it: `log_failure` when it is
   `None` or lower, else `log_event` at the unit's level with the error fields (see "Tool calls and MCP").
 - A lifecycle `*.end` line that must stay at INFO when the work failed uses `log_event(..., level=level_for(cls), error_class=cls,
   outcome="failure")`. `outcome` is `success`, `failure`, `partial` or `skipped` (cancellation is `failure` with `error_class=cancelled`).
+- Outside the logs the same rule holds. A model's or a driver's error text never goes into a client frame, a tool result, a run's
+  `AgentResult.error`, the timeline or a trace: write `failure_reason(exc)` instead (`bad_request: content_filter
+  (BadRequestError, HTTP 400)`: class, the provider's code as `provider_code(exc)` reads it, the innermost type, the status).
+  The raw text a user-facing classifier needs is `AgentResult.error_detail`, a private attribute no dump carries.
+  Opik never receives the exception: a failed span or trace records `failure_reason` and a frames-only stack
+  (`stack_text_without_messages`), and the LangChain callback (`TextFreeOpikTracer`) records the same for a failed run.
 - `app.agents.agent_loop.error_classification` also has a `classify_error` (user-facing text). Where both are in scope, import this
   module qualified, as above.
 
@@ -221,6 +231,8 @@ the auth middleware bound.
   one raised `from` a failure by that failure. A request whose exception was already logged (lower down, or behind another
   request that failed with the same object) still gets its own line, WARNING at most, without the stack.
 - The client-facing `detail` is not a field. It appears only inside a 5xx line's `error_message` (the exception's text), redacted.
+- The 503 that `app/utils/user_lookup.py` answers for a failed user, org, document or record read stamps its cause
+  `hide_text`, so that line has no `error_message`: a driver's text can quote what was sent.
 - **Auth refusals** in `app/api/middlewares/auth.py` and `admin_gate.py` raise `AuthRejected` (an `HTTPException`; the client
   gets the same status, detail and headers), whose `reason` this line carries: `missing_header`, `bad_scheme`, `missing_token`,
   `no_scopes`, `expired`, `invalid_token`, `scope_not_accepted`, `missing_org`, `session_ended`, `token_revoked`, `unconfirmed`
@@ -245,7 +257,8 @@ the auth middleware bound.
   a thread, and the route's own lines would lose the binding). A route marks the `HTTPException` it raises, not its cause, then
   raises it `from` the cause. `add_request_log_fields(request, oauth_error=…)` adds a bounded event field to this line only.
 - `cause_type` is the type name of the innermost cause (`__cause__`, else `__context__` unless suppressed; a group counts as its
-  first leaf), on a failure line whose exception has a chain; it is a type name only, so it stays with
+  first leaf), on a failure line whose exception has a chain (`error_class.has_chain`; omitted otherwise, since it would repeat
+  `error_type`; `http.request.end` and `index.end` follow this rule); it is a type name only, so it stays with
   `include_error_text=False`. For `HTTPException from MCPOAuthError from httpx.ConnectError` the line has
   `error_type=HTTPException cause_type=ConnectError`: the middle domain error is not on the line. A route that needs its domain
   code there marks it with `reason=`.
@@ -282,9 +295,34 @@ the auth middleware bound.
   is still cancelled before it reads.
 - Node writes the same event and fields (`HttpAccess`, `access-log.middleware.ts`). Node also logs the error on its own
   `http.request.error` line; Python logs it on this one.
+- Node: a request a route's schema refuses (`ValidationMiddleware`: the zod schema, the array/key/depth guard, the
+  stack-overflow net, and a value a schema callback can't read, which gets a fixed message and no field) writes no line
+  of its own. `http.request.error` (WARNING, `bad_request`) names each issue in
+  `error.metadata.errors` as `field`, `code` and `message`, never the issue's `value`; the route's `params` are on the line
+  as on every `http.request.error`. A key the caller made up (an unknown field, a record key) is named, and a few rules quote
+  an enum-like value the caller sent in `message` (a duplicate model id), as the 400 body does.
+  `POST /oauth2/token` answers its own refusals (see the OAuth provider below).
+- Node: `params` on `http.request.error` names the route's params: an id as sent (letters, digits, `._:-`, at most
+  128), any other value (an email, a name, a file path) as `[not an id]`. A path param bound to a request field is
+  bound only when it fits: an id field (`connector_id`, `kb_id`, …) takes an id, `connector_type` a name (letters,
+  digits, spaces, `_.:-`). This covers `params` and the bound fields: a one-word value (`ada`, `report.pdf`) or a
+  first-and-last name still fits, and an error message the connector service wrote is passed on as written.
+- Node: `Rate limit exceeded` and `XSS sanitization middleware error` carry `path`: the request path (mount included, no
+  query) with each segment that is not an id as `[not an id]`, by the same rule as `params`, cut at a `/` so that it is
+  at most 256 characters, `…` included, and no segment is split. `Rejected client-supplied conversation history` carries no path (the
+  request's `http.request.error` has the route).
+  A segment made only of letters, digits and `._:-` is shown, so a single-word name, a dotted name, a number or a name
+  split across segments still appears.
 - Node: a 401 for a credential the request submitted (a sign-in code, a password, a CAPTCHA, an identity-provider token) that
   is wrong, expired or already used is a `WrongCredentialError`, logged `error_class=bad_request`; the request's own session or
   token refused stays `auth_expired`. `status=401 error_class=bad_request` on `http.request.end` selects credential guessing.
+- `connector.route.failed` (`log_failure`, no text), `op=rollback`: a connector create (`connectors/api/router.py`) that fails
+  after its instance write takes back its config and then the instance (an OAuth app it created or updated is left as it is).
+  `step` is the one it could not undo, `config` or `instance` (also when the instance's own org edge was not written), with
+  `connector_id`. It stops there, and the instance stays for the admin to finish or delete. After a failed `step=instance` the
+  org edge is put back when the graph answers. Where it did not (ArangoDB removes a connector's edges before its node), the
+  instance is missing from the connector list but still holds its name: `DELETE /api/v1/connectors/<connector_id>` with the
+  logged id starts its removal. The request's failure is on its own line.
 
 ## Connector sync runs
 
@@ -335,6 +373,41 @@ although some of it stayed; batch writes still run in a real transaction. Record
 the processor are not counted. A rename or move that the connector sends through `on_records_moved` rewrites the
 stored record in place and is not counted either, unless the old record is missing and the move falls back to a plain add.
 
+## Crawling jobs (Node)
+
+The crawling manager (`backend/nodejs/apps/src/modules/crawling_manager`) schedules each connector's sync and starts it on each
+tick.
+
+- **A schedule request** (`/api/v1/crawlingManager/:connector/:connectorId/...`) binds `connector_id` and `connector_type` once
+  access is decided, so the request's lines, the access line included, carry them. A change writes one INFO line from the
+  scheduler (`Crawling job scheduled successfully`, `Successfully removed crawling job`, `Job paused successfully`,
+  `Job resumed successfully`, `All jobs removed successfully`) and the access line; its steps are DEBUG. A failure is logged once,
+  by the error middleware; the scheduler and the controller only throw.
+- **A tick** writes one `crawling_job.end`, with `connector_id`, `connector_type` and the job's `org_id` bound for the run. Every
+  failure of the run is that line, a failed org lookup before the crawl included; a job whose org is gone or not an id writes a
+  WARNING `Skipping crawling job: …` instead:
+
+| Field | Value |
+| --- | --- |
+| `outcome` | `success`, `skipped` (`reason=desktop_offline`: a Local FS connector with no desktop connected), or `failure` |
+| `error_class`, `error` | on failure; the level is `levelFor(error_class)`, so a broker outage is WARNING and our bug ERROR with the stack |
+| `attempt` | BullMQ's attempt for this run, 1-based; each retry is its own run with its own line |
+| `duration_ms`, `job_id` | the run's time; the queue's job id |
+
+  A success or skip is INFO. BullMQ's own `failed` event is DEBUG: it repeats the end line, or follows a stall, which the
+  `Job stalled` WARNING reports.
+- **A reconcile** (a connector's saved sync settings applied to its schedule) writes one `connector schedule reconcile` line with
+  `connector_id`, `connector_type`, `duration_ms` and `outcome` `success` or `failure`; the case is `reason`:
+
+| `reason` | `outcome` | Level |
+| --- | --- | --- |
+| `scheduled`, `unchanged`, `removed`, `noop` | `success` | INFO |
+| `invalid_input`, `invalid_config` (also a schedule the scheduler refuses) | `failure` | WARNING |
+| `queue_failed` (after its retries; with `error_class` and the error) | `failure` | `levelFor(error_class)` |
+
+  Each retry before that is a WARNING `connector schedule reconcile: retrying after error` with `attempt`. `is_active`,
+  `selected_strategy` and `interval_minutes` are metadata.
+
 ## Messaging consumers
 
 The Redis Streams and Kafka consumers handle each delivery inside `message_log.delivery`
@@ -343,7 +416,7 @@ or `<topic>-<partition>-<offset>` on Kafka); then the producer's request id, bef
 verified, the envelope's org and user, `event_type`, and the payload's `record_id` and `connector_id`. Every line of the delivery
 carries them: the handler's own, and the ack, retry or dead-letter decision. Before verification, and on a rejected envelope,
 `org_id` is the org the producer claims, not a verified one. The indexing consumers bind the same for a record's whole run
-(`message_log.bound_message`), the main-loop recovery and dead-letter path included; their end line is the indexing summary.
+(`message_log.bound_message`), the main-loop recovery and dead-letter path included; their end line is `index.end` (see "Indexing").
 
 | Event | Level | Fields |
 | --- | --- | --- |
@@ -376,6 +449,116 @@ carries them: the handler's own, and the ack, retry or dead-letter decision. Bef
 - Work a handler starts in its own context (the sync task manager) keeps the message's ids; `message.end` is written when the
   delivery ends, not when that work does. The connector link passes started by `userAdded` run as an org job instead
   (`ctx_kind=job ctx_source=job:connector_link`), with only `connector_id`.
+
+## Indexing
+
+The indexing consumers (Redis Streams and Kafka, `app/services/messaging/*/indexing_consumer.py`, and the PostgreSQL broker's
+`PgMessagingConsumer(indexing=True)`) open a `RecordTimeline` (`app/utils/indexing_timing.py`) for each delivery that reaches a
+record, and write **one** `index.end` line when it ends, in the `finally` after the releases. P8's `bound_message` gives it the
+delivery's ids on Redis and Kafka; on PostgreSQL the line is written in the root the delivery ran in (the envelope's request id,
+or the one minted for an envelope without one), binds its org and notes `record_id`, `event_type` and `connector_id` from the payload.
+
+| Event | Level | Fields |
+| --- | --- | --- |
+| `index.end` | see below | `outcome` (`success`, `skipped`, `failure`), `disposition` (`ack`, `retry`, `dead_letter`), `reason`, `attempt`, `tier`, `duration_ms`, `record_id`, `event_type`; timings `wait_slot_ms`, `held_ms`, `pre_parse_ms`, `parse_wait_ms`, `parse_ms`, `post_parse_ms`, `stages` (busy time per step, largest first, steps under 50 ms left out), `slow_steps`; what was learned on the way: `extension`, `mime_type` (as the file-type registry knows them, else `unknown`: never the text of a name or a MIME parameter), `size_bytes`, `blocks`, `chunks`, `failed_batches`, `page` (an OCR page), `block_group` (the block group a failure was in), `duplicate_of` (the shared virtual record id; absent while the twin is still being indexed), `timeout_s`, `phase` (`enrichment`, `after_indexing_complete`), `code` (a hand-back's type), `pool` (the slot a parse-slot wait ran out on), and for a stage job `stage`, `job`, `stage_outcome` (`completed`, `retry`, `paused`, `failed`), `stage_attempt` and, for a superseded run, `owner_attempt` (the attempt that owns the state now), and for a state a newer release owns, `foreign_status` (the status it wrote); for an exception, the `log_failure` fields and `cause_type` |
+
+Levels and outcome:
+- `ack`: `success`, or `skipped` when the handler noted a skip (`reason`: `duplicate`, `already_indexed`, `replayed` (an exact
+  replay of a delivery that completed the record), `not_found`, `in_trash`, `stage_moved`, `no_stage_state`, `connector_missing`,
+  `connector_inactive`, `parse_now_refused`, `folder`, `unsupported_type`, `too_large` (a file too large to read), `metadata_file`, `code_file_skipped` (a generated or oversized code file), `no_virtual_record_id`, `stored_content_missing` (a vector-only reindex whose stored blocks could not be read; the
+  record is marked failed, and `index.blob_read_failed` says why), `nothing_to_rerun` (a stage re-run that dispatched no job: a
+  newer release owns the revision, or every stage was current), `duplicate_envelope` (PostgreSQL)). INFO.
+- A stage delivery that did no work is `skipped` with `reason`: `stale` (its revision is gone), `unchanged` (inputs and output already
+  current), `duplicate` (the job was already settled), `not_applicable` (the stage did not apply), `foreign_state` (a newer release
+  owns its state), `superseded` (another run took the state over; the run's result was not recorded). INFO.
+- Handed back without an attempt counted: `skipped`, `retry`; `reason=requeued` is WARNING (waiting on capacity), or the level the
+  hand-back asks for (a paused stage job that wakes into the same outage is DEBUG), `contended` INFO.
+- A failure that will be retried: `failure`, `retry`, at WARNING, or ERROR for `internal`/`misconfigured`.
+- Dead-lettered: `reason=terminal` (the content: a corrupt, password-protected or unsupported file) at the class's level, WARNING for
+  a user's file; `attempts_exhausted`, `backstop` (handed back too many times) and `unfinished_attempts` (a crash loop) are ERROR:
+  a human reindexes the record. Kafka with no retry tracker commits the failure: `dead_letter`, `reason=no_retry_tracker`.
+  On PostgreSQL the hand-back backstop does not drop the row: it nacks it as a failed attempt (`retry`, `reason=backstop`,
+  WARNING), and the delivery limit dead-letters it later (`attempts_exhausted`, ERROR). A hand-back that names itself
+  (`give_up_label`, a same-bytes skip that cannot finish) is the exception: it is dead-lettered at the backstop
+  (`dead_letter`, `reason=backstop`, ERROR), with no later retry. A terminal failure there keeps the
+  specific reason `_process` found (`envelope_rejected` with `code`, `unparseable`, `no_handler`) instead of `terminal`, at ERROR
+  like the other non-content dead-letters.
+- `shutdown` and `cancelled` are INFO, and so is a record deleted while it was being indexed. A delivery cancelled before a
+  broker call confirmed its settlement is `disposition=retry` (it is redelivered), `success` when the record was already
+  indexed; one cancelled after a confirmed ack keeps `ack`. A source that refused the item
+  (its 4xx with a stored reason) and ended the record as terminal is `reason=source_refused` at its class's level, WARNING; a
+  retried or exhausted refusal keeps its retry reason.
+- A branch that leaves the entry pending (`requeue_failed`, `count_failed`, Redis's `no_retry_tracker`, and `ack_failed` when the
+  replacement was sent but the original's ack failed) is `disposition=retry` whatever the handler reached.
+- `disposition=ack` on Kafka under fair scheduling records the local settlement (the offset marked done on the commit
+  watermark), not that Kafka committed that offset: an earlier offset still in flight holds the watermark back, and a restart
+  before it advances can read the offset again (the redelivery is deduped).
+- `reason=claim_lost`: the delivery no longer owns its message, so nothing was settled. On PostgreSQL the ack, nack or dead
+  update matched no row (a newer claim of it exists); on Kafka the partition was revoked under it (also after a hand-back's
+  replacement was published, or when a give-up had already told the sink: then it is not `dead_letter`).
+- `reason=nack_failed` / `dead_letter_failed` (PostgreSQL): the nack or dead update raised, so nothing was settled; the error
+  propagates and the expired claim hands the row out again. `index.end` keeps the record's own exception. WARNING; an indexed record
+  stays `success`.
+- `reason=queued_copies_release_failed`: the record finished (or was already indexed), but its queued copies could not be
+  released; the delivery is retried so the redelivery can release them.
+- `phase=after_indexing_complete`: a timeout in the bookkeeping after `INDEXING_COMPLETE`, not the record's budget (`timeout_s` is
+  only written when that budget ran out). A timeout raised inside the handler before `INDEXING_COMPLETE` has neither.
+- `timeout_s` is the record's configured processing budget. The embedding stall timer (`RecordProgress`) can end the same
+  budget earlier; its `embed cut (stall)` line says so, and `duration_ms` is the time the attempt ran.
+- The ack or commit failed after the record was indexed (`reason=ack_failed` or `commit_failed`): `success` (or `skipped`,
+  for a delivery the handler skipped), `retry`, WARNING; the redelivery is deduped. No attempt is counted and nothing is
+  re-published for it. A handler that raised after `INDEXING_COMPLETE` is still a `failure` when the settlement of its retry then fails. An ack that fails while dead-lettering leaves the entry pending: `retry`, `reason=ack_failed`.
+  On Kafka in FIFO mode, a dead-letter whose commit fails (`reason=commit_failed`) is read again, so the sink can be told twice,
+  which is harmless; an `attempts_exhausted` one comes back with a fresh attempt count. Under fair scheduling it is not
+  read again: the next commit covers its offset.
+- A failure with no exception and no class is WARNING, except the dead-letters above (`unfinished_attempts`, `backstop`),
+  which stay ERROR.
+- `error_class` is `classify_error`'s, except that a `DocumentProcessingError` whose direct cause is a programming error
+  (`KeyError`, `AttributeError`, `TypeError`, `NameError`, `AssertionError`) is `internal`: a bug in our parse code. A library that
+  wraps its own `KeyError` (docling on a zip renamed `.docx`) stays the user's content, `bad_request`. Retries do not read this.
+- No `error_message` when a link of the chain, or a member of an exception group in it, is a content error or a pydantic
+  `ValidationError` (`error_class.quotes_content`): the processor copies the parser's text, which quotes the file name, and a
+  validation error quotes the message's values. A page fan-out keeps the `page` of the first page that failed. The stack written at ERROR then shows each exception as `Type: <message omitted>`.
+- `INDEXING_TIMING_LOGS=false` silences only `index.slow_step`; the timing fields stay on `index.end`.
+
+Rules for the code on the path:
+- Inner layers (the record handler, the event processor, the processor, the sinks, the stage worker) raise what they cannot handle
+  without logging it, and `indexing_timing.note(...)` what the line should say. The consumer notes `disposition` and `attempt`
+  only after the broker call (XACK, re-queue, commit) returns, and reason codes, never free text.
+- `tests/unit/core/test_indexing_log_once.py` lists the `except` blocks on the path that may still log and raise.
+- A stage job (`StageJobHandler`) notes `stage`, `job` and `record_id` on the delivery's timeline: one `index.end` per stage delivery.
+- A double failure (the status write fails after the record failed) re-raises the record's error `from` the status-write error, so
+  that line's `cause_type` and stack come from the status write.
+
+Other lines on the path, each once:
+
+| Event | Level | When |
+| --- | --- | --- |
+| `index.slow_step` | WARNING | a step ran past `INDEXING_SLOW_STEP_SECONDS`; `step`, `duration_ms`, `threshold_ms`, `detail`, `record_id`; at most three per step per record |
+| `index.parse_fallback` | its class's level: WARNING; ERROR for `misconfigured` (an API mismatch between indexing and Docling, or a refused service token) | Docling could not parse the PDF or could not be asked, and the PdfPlumber path runs next. `parser=docling`, `reason` (Docling's `errorCode` in lower case such as `parse_failed`, `parse_timeout`; `invalid_input`, `too_large`, `unreadable`; `unavailable`), `status` (Docling's HTTP status, when it answered), and the `log_failure` fields without `error_message`. `unavailable` also covers a 5xx or a 429 without `Retry-After` that outlived the retries and a connection lost mid-answer (Docling answers a file it cannot parse with a 422 and its code, never a 5xx); `error_class` then says which. Only a client-side request error (ours, such as a wrong URL scheme) has no `reason` |
+| `index.download_fallback` | WARNING | the signed-URL download failed; the connector stream is tried next (no text: it can carry the URL) |
+| `index.requeue_failed` | WARNING | the re-queue of a failed or handed-back record failed; it stays pending (no text) |
+| `index.ack_failed` | WARNING | Redis: the replacement was sent, but the original's ack failed; it stays pending and is deduped when redelivered (no text) |
+| `index.count_failed` | WARNING | Redis: the retry tracker could not count the failed attempt; the entry stays pending (no text) |
+| `index.commit_failed` | WARNING | Kafka: the offset commit failed (no text) |
+| `index.status_write_failed` | WARNING | the record's FAILED or QUEUED status could not be written; the record's own error is still raised |
+| `index.post_ack_failed` | WARNING | Redis: cleanup after a successful record's XACK raised |
+| `index.retry_clear_failed` | WARNING | the retry tracker could not clear a settled delivery's count; the settlement stands (`tracking_id`) |
+| `index.blob_read_failed` | WARNING | a vector-only reindex could not read the stored blocks; the record is marked failed |
+| `index.ack_failed` | WARNING | Redis: the XACK of a dead-letter failed; the entry stays pending (no text; `index.end` keeps the record's own exception) |
+| `index.dedup_normalize_failed` | WARNING | HTML could not be normalised for duplicate detection; the raw bytes are hashed instead (no text: it can carry the document) |
+| `index.task_failed` | per class | a processing task ended with an exception nobody handled; DEBUG for one already written (by `index.end`, `index.requeue_failed` or `index.commit_failed`) |
+| `stage.abandon_failed` | WARNING | a dead-lettered stage job could not be marked FAILED (no text when it quotes content) |
+| `stage.follow_up_failed` | WARNING | a failed stage's follow-up hook (releasing queued copies) could not run |
+| `stage.run_failed` | WARNING | a stage failed after another worker took its job over (`reason=superseded`): the failure's only trace |
+
+On Redis and Kafka, deliveries that end before the timeline opens write no `index.end`: an unparseable message (a WARNING, the
+sink's `Discarded an unparseable message` ERROR, and on Kafka also `Dead-lettered`), a backoff wait cut short by shutdown, a pending
+entry that is no longer ours, a record already claimed in this process (DEBUG). PostgreSQL opens the timeline before it decodes the
+message, so an unparseable message there is one `index.end` (`dead_letter`, `reason=unparseable`); the sink's line is DEBUG.
+
+Known limitation: failures raised inside `blob_storage.py`, the parsers and `docling_processor` can still log their own lines
+before `index.end` (P6b). docling's own loggers can print the file name.
 
 ## Agent loop events (Python)
 
@@ -431,6 +614,35 @@ the calls are dispatched, bind their own call's `tool` and `tool_call_id`.
   turn's. `toolset.route.failed op=load_instances` also appears on agent chat requests (`get_authenticated_toolsets`). An OAuth
   callback's failure is on the line with `outcome=failure` and the body's `error` code as `reason`; a provider's `error=` is
   `reason=provider_error` with `oauth_error` (a code RFC 6749 or OpenID Connect defines, else `other`) and is never ERROR.
+  The connector OAuth callback (`connectors/api/router.py`) does the same for its token exchange (`reason=server_error`, no text:
+  the error can quote the token URL's query or the provider's answer), a provider's `error=`, and an unknown connector
+  (`reason=instance_not_found`). Once the caller is allowed the connector, the line carries `connector_id` and `connector_type`;
+  a missing or unreadable OAuth configuration is then `misconfigured` (`reason=config_not_found`, `oauth_config_fetch_error`).
+  A callback that is not for the sign-in in progress (a stale or replayed state, a used code, or a code another callback
+  claimed: `OAuthStateError`) is `bad_request` at WARNING on both the connector and the toolset callback, as on the MCP
+  one; so are the connector callback's missing `code` or `state` (`reason=missing_parameters`) and a state it cannot
+  decode or that is not a string `state` and `connector_id` (`reason=invalid_state`, no text).
+  Both callbacks class their token exchange's failure as a refresh classes the same answer
+  (`credential_refresh_log.token_endpoint_error_class`): an unusable token URL, a 2xx answer that is not a token or whose
+  `error` is neither a dead grant nor busy, and a token field that cannot be parsed are ERROR `misconfigured`. A 2xx answer
+  that refuses the code itself (Slack `invalid_code`, `code_already_used`; GitHub `bad_verification_code`), which only a code
+  exchange can get, is the user's stale or wrong code: WARNING `bad_request`.
+  A successful sign-in is that line with `outcome=success` and `has_refresh_token`. No field of the provider's token answer
+  (scopes, `uid`, `account_id`, `team_id`, `token_type`) is logged: the route serves every connector and can't tell an opaque
+  id from a login.
+- **Agent routes** (`api/routes/agent.py`, everything but chat): the request's line carries `agent_id` (the path's, or the new
+  agent's on create) or `template_id`, and `shared_with_org=true|false` when a create or an update shares or unshares the agent.
+  A failure of ours is a 500 raised from its cause (`_route_failure`), classed by the cause and without the store's text. The store
+  refusing the caller's values is a 400 at INFO: a schema rejection of the agent or template document a create or an update writes
+  from the body (`reason=schema_rejected`, counted by `record_schema_rejection`), or a cause classed `bad_request` (a database data
+  error). A schema rejection of a document the route built (a permission edge, a tool node, a template's copy) is our drift: a 500
+  at ERROR, `reason=schema_rejected`, counted too.
+  `agent.route.failed` (`log_failure`, no text) is a step the route goes on without: `op=attach_mcp_server` (`mcp_server_id`; the
+  create answers `partial_success`), `cleanup` (`collection`, `nodes`; tidy-up after a failed save), `rollback`, `enrich_models`,
+  `size_knowledge_limit`, `remove_mcp_credentials`, `cancel_refresh`. `agent.skill.skipped` (INFO, `reason` unknown, not_owned or
+  inactive, `skill`) is a skill a save named but could not link; `agent.model.unknown` (DEBUG, `model_key`) and
+  `agent.model.default_effort_ignored` (INFO, `model_key`, `error_type`) are read-time notes. A graph provider that answers an
+  outage with None or `[]` still reads as "not found" or an empty list there.
 
 - Every tool call has exactly one `tool_call.end` at INFO or above, whatever the exit: run, raised, denied, blocked, malformed,
   duplicate, skipped by Stop before it ran, or a parked call once its card is settled. A card never answered leaves only the DEBUG line.
@@ -442,7 +654,12 @@ the calls are dispatched, bind their own call's `tool` and `tool_call_id`.
   shared exception (a shared MCP listing, a memoised lookup) each keep their line at their own level, and the stack prints once:
   when `error_class.logged_level(exc)` says it was already written at that level, the line is a `log_event` with the error fields.
 - Tool, MCP, OpenAPI and OAuth failures never log the error's text (`include_error_text=False`): a server's answer can quote the
-  arguments. A refused redirect logs only the target's host, and an ended MCP session only the cause's type. Nor a STDIO server's stderr: it can echo earlier calls' arguments and its environment. What the model sees (`ToolOutput.error`, an `isError` result, an HTTP body) is never a field.
+  arguments. A refused redirect logs only the target's host, and an ended MCP session only the cause's type. Nor a STDIO server's stderr: it can echo earlier calls' arguments and its environment. What the model sees (`ToolOutput.error`, an `isError` result, an HTTP body) is never a field. That text keeps the API's own words, which the model needs to correct its call. Before the model, the tool card, the
+  transcript and the trace get a failed output, `ToolExecutor` masks what it can recognise as a credential, on a best-effort
+  basis: known token shapes and `name: value` pairs in its text (`redact_secrets_in_text`), and the value under a
+  credential-named key in its data (`password`, `apiKey`: the same name rule). A credential with no known shape, outside
+  such a name, is not caught. A tool that answers a soft failure as a success builds its payload with `error_data(exc)`, which
+  masks its text the same way.
 - `mcp.connect.end` (like `llm_call.end`) is an operation record: it stays at INFO when it failed, and the layer that retries or
   gives up (`mcp.retry`, `mcp.discover.end`, `tool_call.end`) logs the severity.
 - `app.agents.mcp.failure.mcp_error_class` maps an MCP failure: `classify_error` first, then what its `MCPFailureReason` means; a
@@ -471,6 +688,8 @@ whole spawn tree, `agent_run_id=C` one child, and `parent_run_id` rebuilds the t
 | `middleware.failed` | `log_failure`, no error text | `middleware`, `context` (the hook context's type); a fail-closed pipeline also denies with `deny_reason=middleware_error` |
 | `orchestrator.dispatch.end` | INFO; `orchestrator.dispatch.failed` `log_failure` (falls back to LLM dispatch) | `steps`, `outcome` |
 | `turn_scope.check_failed`, `prefetch.failed` (no error text), `agent_turn.cleanup_failed` (`step`) | `log_failure` | the turn carries on |
+| `repo_instructions.resolve_failed` | `log_failure`, no error text; a timeout is `timeout` | the repo-instructions refresh failed or timed out and is retried on the next refresh, at most 3 times per run |
+| `repo_instructions.fetch_failed` | `log_failure`, no error text; content that is unavailable is `unavailable` (WARNING), at most 3 times per file per run | `record_id` |
 
 - An approval answer is logged once whatever happens next: on the decided path the line is written first in `_settle`'s `finally`,
   before the outcome is kept and before the card's row is shown, so Stop or a client disconnect while the approved call runs is
@@ -485,6 +704,33 @@ whole spawn tree, `agent_run_id=C` one child, and `parent_run_id` rebuilds the t
   child's call opened) (inferred). Programmatic dispatch binds its synthetic call ids (`programmatic_spawn_<step>_<hex>`) as the
   children's `tool_call_id`; they have no `tool_call.end`.
 
+## Model calls outside the agent loop (Python)
+
+A model provider puts its response body in the exception message, and the body can echo the prompt, the document or the
+account's email. So a failed model or embedding call is never logged with its text: the line that handles it calls
+`log_failure(..., include_error_text=False)` (class, type, the site's ids, a text-free stack at ERROR), and a retry or skip note
+names `error_type` instead of the error; some notes add `cause_type` (the innermost cause), so a missing `cause_type` does not
+mean the error had no cause. Lines that only relay the error (log, then raise)
+are not written: the handler above logs it once. An answer that does not fit the schema is `bad_request` (WARNING), not `internal`.
+
+| Event | Level | Fields |
+|---|---|---|
+| `structured_llm.failed` | `log_failure` policy; a reply that does not fit the schema `bad_request` | `schema`, `attempt` (0 = the first call, n = reflection n) |
+| `llm_stream.failed` | `log_failure` policy | the no-tools chat answer; the SSE error event is still sent |
+| `table_summary.failed` | `log_failure` policy | `parser` (`csv`, `excel`); a plain summary is used |
+| `document_extraction.failed` | `log_failure` policy; a failure with no cause: `bad_request` (no usable answer) or `unavailable` (open circuit) | `record_id` |
+| `extraction.fallback_failed` | `log_failure` policy | `kind` (`document`, `code`) |
+| `document_classify.failed` | as `document_extraction.failed` | the extraction service's route; `org_id` from the call scope |
+| `vlm_ocr.page_failed` | `log_failure` policy | `page`, `attempts`; the page is indexed empty, unless no page was read: then the document fails with the last error |
+| `grep_generation.failed` | `log_failure` policy | `attempt`; an answer that does not parse is an INFO note with the parser error's `error_type`, and its commands are recovered from the raw answer |
+| `record_extract.failed` | `log_failure` policy | `record_id`; the plain read is returned |
+| `image_generation.failed` | `log_failure` policy | `provider`, `model`, `mode` (`generate`, `edit`) |
+| `skill_index.embed_failed` | `log_failure` policy | `step` (`skill`, `bulk`, `query`), `count`, `total`; keyword search is used |
+| `entity_index.upsert_failed` | `log_failure` policy | `batch_start`, `count` |
+| `search.failed` | `log_failure` policy | the search's catch-all (a refused query embedding lands here) |
+| `parse.failed` | `log_failure` policy | `provider`, `parse_ms`; the parsing service's catch-all. An error VLM OCR already logged (no page read) keeps this line at its level, without a second stack |
+| `title_lookup.failed` | `log_failure` policy | the lookup of records by name beside a search (route and knowledge-graph tool); the search answers without it |
+
 ## Credential refresh
 
 The connector, toolset and MCP token refresh services log through `app/utils/credential_refresh_log.py`, so one
@@ -494,12 +740,13 @@ refresh of one credential reads the same everywhere:
 | --- | --- | --- |
 | `credential_refresh.scheduled` | INFO when the refresh time is new, DEBUG when a scan re-arms the same one | `next_refresh_at` (UTC), `delay_s` |
 | `credential_refresh.start` | DEBUG | |
-| `credential_refresh.end` | INFO on success; a failure at its class's level | `outcome`, `reason` (`adopted`, `superseded`, `invalid_grant`, `config_missing`, `save_failed`, `recursion`; MCP also `no_credential`, `invalid_token_record`, `no_refresh_token`, `no_token_url`, `credential_removed`, `lock_contention`, `url_blocked`, `host_unresolved`), `duration_ms`, and on failure `error_class`, `error_type`, `error_message`, `http_status`, `oauth_error`. Toolsets add `oauth_app` (`linked` to an admin OAuth app, or `unlinked`: a fact, not a warning; it is normal for a personal instance) |
+| `credential_refresh.end` | INFO on success; a failure at its class's level | `outcome`, `reason` (`adopted`, `superseded`, `invalid_grant`, `config_missing`, `no_access_token`, `malformed_token`, `save_failed`, `recursion`; MCP also `no_credential`, `invalid_token_record`, `no_refresh_token`, `no_token_url`, `credential_removed`, `lock_contention`, `url_blocked`, `host_unresolved`), `duration_ms`, and on failure `error_class`, `error_type`, `error_message`, `http_status`, `oauth_error`. Toolsets add `oauth_app` (`linked` to an admin OAuth app, or `unlinked`: a fact, not a warning; it is normal for a personal instance) |
 | `credential_refresh.check_failed` | the failure's level; DEBUG when the attempt's `end` already logged it | as a failed `end` |
-| `credential_refresh.strike` | INFO | `strike` (`2/3`), `counted` (false: the rejected token was already rotated), the cause's `error_class` and `oauth_error` |
-| `credential_refresh.deauthenticated` | WARNING | `reason`, `strikes`, `app_disabled_event` (connectors: `sent`, `direct_write`), `path` (MCP: `background` after 3 rejections, `route` after one) |
-| `credential_refresh.not_scheduled`, `.deauthenticate_failed`, `.app_disabled_event_failed` | WARNING, ERROR, by class | `reason` / failure fields; `deauthenticate_failed` has `reason=not_updated` when the write changed nothing, `not_found` when the record is gone |
+| `credential_refresh.strike` | INFO | `strike` (`2/3`), `counted` (false: the rejected token was already rotated; MCP adds `reason`: `rotated`, `within_window`, `not_saved`), the cause's `error_class` and `oauth_error` |
+| `credential_refresh.deauthenticated` | WARNING | `reason` (`refresh_token_invalid`; MCP also `oauth_client_rejected`), `strikes`, `app_disabled_event` (connectors: `sent`, `direct_write`) |
+| `credential_refresh.not_scheduled`, `.deauthenticate_failed`, `.app_disabled_event_failed` | WARNING, ERROR, by class | `reason` / failure fields; `deauthenticate_failed` has `reason=not_updated` when the write changed nothing, `not_found` when the record is gone; MCP adds `strike` |
 | `credential_refresh.skipped` | WARNING | `outcome=skipped`, `reason` (`lock_wait_timeout`: another refresh of the same credential holds its lock) |
+| `oauth_token.field_ignored` | WARNING, at most once an hour per process | `field` (`refresh_token_expires_in`): a value that is not a number of seconds was dropped to none. Nothing reads it, so the token still works |
 
 Every line in a refresh carries `refresh_kind` (`connector`, `toolset`, `mcp`), `trigger` (`scan`, `scheduled`, `on_demand`), the
 kind's ids (connectors: `connector_id`, `connector_type`; toolsets: `toolset_id` and `owner_id`, the user id or agent key the
@@ -507,21 +754,32 @@ sign-in belongs to; MCP: `mcp_server_id` and `owner_id`), `provider` (the connec
 `provider`), and the org as a job context when nothing else bound one. A timer
 firing gets its own `sys-credential_refresh-` root, with `scheduled_by` naming the root that armed it. Exactly one `end` is
 written per attempt, by the code that calls the token endpoint. A misconfigured credential (no OAuth client, the provider
-rejected our client) is ERROR with a stack once per credential per hour and DEBUG in between. `trigger` is set by the refresh
+rejected our client, a token URL that cannot be sent to, a 2xx answer with no token, or a token field that cannot be
+parsed, `reason=malformed_token`: `created_at` or `expires_in` for connectors and toolsets, any token field for MCP) is ERROR with a stack once per credential
+per hour and DEBUG in between. A 2xx answer whose `error` is a dead-grant code (`invalid_grant`, `bad_refresh_token`, ...) is
+`auth_expired`, like the same code on a 400: the user signs in again. A 2xx answer whose `error` says the provider is busy or down is `unavailable`, `rate_limited` or `upstream_5xx`,
+and a programming error raised while handling one stays `internal`. `trigger` is set by the refresh
 scope and never inherited from a sync's own `trigger`. The toolset service has no on-demand refresh: its lines say `trigger=scan`
 or `scheduled`, and `on_demand` only on the `scheduled` line written when a sign-in completes.
 
 Every MCP refresh, whoever starts it (the background service, the refresh route, tool listing or discovery, an agent's 401), goes
 through `app/agents/mcp/token_refresh.py`, which writes its `end`; `duration_ms` includes waiting for another process's refresh lock.
+A refusal that says the sign-in can't be renewed (a dead grant, or the provider refusing our client) is a strike on the
+credential record, whichever path saw it, at most one per 5 minutes; the third signs it out with `deauthReason`, and a
+success clears the count. A refused request shape (`invalid_request`, `invalid_scope`, `unsupported_grant_type`) is no
+such strike; only the background service counts it, in process. The refresh route signs nobody out itself.
 The tool call and discovery lines of the same failure carry the same `error_class` and keep their own level. Per-turn MCP lines
 classed `misconfigured` share one hourly ERROR per server and class (`tool_call.end`, `mcp.discover.end` turn and listing); the
 others in that hour are DEBUG. A token host that does not resolve is `host_unresolved` (`unavailable`, WARNING); only a URL the
 guard refuses by policy is `url_blocked` (`misconfigured`).
 
 Nothing a token endpoint answered is logged as text: its body, and the token URL and redirect URI in the exception message, can
-quote the refresh token in prose no redactor recognises. When the exception chain holds such an answer, every failure line of
+quote the refresh token in prose no redactor recognises. When the exception chain holds such an answer, or an unusable token URL
+(aiohttp's error text is the URL, query included), every failure line of
 a refresh service (`log_refresh_failure`) leaves the text out of `error_message` and the stack (each exception shows as
-`Type: <message omitted>`) and logs `http_status` and `oauth_error` instead.
+`Type: <message omitted>`) and logs `http_status` and `oauth_error` instead. A `created_at` or `expires_in` that cannot be parsed,
+or whose sum leaves the range of a date, is named (`OAuth token field 'created_at' is malformed`), never quoted, and the token is
+not saved. A `refresh_token_expires_in` that cannot be parsed is dropped and the token is saved (`oauth_token.field_ignored` above).
 
 ## Database queries (Python)
 
@@ -531,10 +789,33 @@ which every Postgres graph provider runs through) write one record per call that
 
 | Event | Level | Fields |
 | --- | --- | --- |
-| `db.query.failed` | `level_for(error_class)`: WARNING, except `internal` and `misconfigured` (ERROR) | `backend` (`arango`, `neo4j`, `postgres`), `op` (the client method, or `fetch`/`execute`/... and `begin`, `prologue`, `check_alive`, `commit`, `copy`, `rollback_to` on Postgres), `site` (Postgres `/* pipeshub:<site> */` tag), `caller`, `code` (ArangoDB errorNum, Neo4j code, SQLSTATE), `status` (ArangoDB HTTP status), `error_class`, `error_type`, `duration_ms`, `outcome`; Neo4j memory limit adds `bulk`, `size`; Postgres adds `db_request_id` |
+| `db.query.failed` | `level_for(error_class)`: WARNING, except `internal` and `misconfigured` (ERROR), and DEBUG for a code the caller declared expected with `db_query_log.expecting` (claiming an existing stage state: unique-constraint violation) | `backend` (`arango`, `neo4j`, `postgres`), `op` (the client method, or `fetch`/`execute`/... and `begin`, `prologue`, `check_alive`, `commit`, `copy`, `rollback_to` on Postgres), `site` (Postgres `/* pipeshub:<site> */` tag), `caller`, `code` (ArangoDB errorNum, Neo4j code, SQLSTATE), `status` (ArangoDB HTTP status), `error_class`, `error_type`, `duration_ms`, `outcome`; Neo4j memory limit adds `bulk`, `size`; Postgres adds `db_request_id` |
 | `db.query.slow` | WARNING | `backend`, `op`, `site`, `caller`, `duration_ms`, `threshold_ms`; Postgres `db_request_id` |
 | `db.query.retry` | WARNING | `backend=neo4j`, `op`, `reason=connection_lost`, `error_type` |
 | `db.connect.failed`, `db.disconnect.failed`, `db.schema.failed`, `db.edge.failed` | `log_failure` | `backend`, `op` (schema or edge) |
+| `graph.provider.step_failed` | `log_failure` with `include_error_text=False`; an explicit level where the step says so (DEBUG for an expected fallback such as full-text search being unavailable); the PostgreSQL code-graph sweep's per-org line is a `log_event` at WARNING, with `error_class` and `error_type` and no stack, because the pass raises its first failure after the loop and that handler logs it | `op` (the provider method), `step` (snake_case: `departments_seed`, `kh_scope_page_enrichment`, `rollback`, `batch_delete`, ...; Neo4j schema setup names the statement group, such as `unique id constraints`, and adds `statement`, our own DDL), and the step's id fields (`connector_id`, `record_id`, `agent_id`, `kb_id`, `collection`, `target_org_id`, `attempt`) |
+| `graph.provider.failed` | `log_failure` with `include_error_text=False`; DEBUG for Neo4j's edition read (`op=_supports_existence_constraints`: an edition that cannot be read is tried as Enterprise) | `op` (the provider method that answered its default instead of raising), and the id fields its old message named (`connector_id`, `record_id`, `agent_id`, `kb_id`, `collection`); `service_type` on ArangoDB `update_user_sync_state` |
+| `graph.provider.duplicates_removed` | WARNING | `op=ensure_pipeline_schema`, `removed` (stage states removed so their unique constraint could be created) |
+
+- **A graph provider that re-raises writes nothing.** A Neo4j, ArangoDB or PostgreSQL provider method whose handler re-raises
+  (as is, or `raise … from e`) has no log line of its own: `db.query.failed` (with `caller`, the provider line) and the handler
+  that catches the exception are the record of that failure. A Neo4j knowledge-hub listing that ran out of transaction memory
+  still writes `kh.listing.out_of_memory` (WARNING, `connector_id`, `duration_ms`, no error) before it is refused as too large or
+  busy.
+- **A graph provider step that fails and carries on writes one text-free line.** A handler that goes on (a best-effort step,
+  a fallback, a rollback after a failure, one batch of several) writes `graph.provider.step_failed` with `op` and `step`
+  through `log_failure(..., include_error_text=False)`, never a logger call of its own: the provider also catches errors that are
+  not the driver's (a row's validation, a `KeyError` naming a value), so the text is left out even when nothing stamped it.
+  Where such a handler can also re-raise (`if raise_on_error: raise`), the raise comes first, so a re-raised failure is logged
+  once, by the handler that catches it. A public method whose whole body is the `try` writes `graph.provider.failed`.
+- **A graph provider that answers a default writes one text-free line.** A handler that answers `None`, `[]`, `False`, `0` or a
+  failure dict instead of raising writes `graph.provider.failed` with `op` through `log_failure(..., include_error_text=False)`.
+  Where it can also re-raise (`if raise_on_error: raise`, ArangoDB's `if transaction: raise`), the raise comes first. No other
+  log call sits in a provider `except` handler. A handler that falls back and answers anyway is a step, not the method's
+  failure: a cached or batched read that falls back to the live or per-record query (`step=cache_lookup`, `batch_query`), a
+  Neo4j knowledge-hub shadow or verify read that fails (`shadow_split`, `scope_query`), and a Neo4j hinted read whose index is
+  still being built (`op=_execute_hinted`, `step=unhinted_fallback`, `index`, WARNING, once per index). A shadow browse that
+  split cannot decide writes `kh.browse.shadow_skipped` (INFO, `reason=split_undecided`).
 
 - **One record per call, outside the client's own retries.** A write conflict the ArangoDB or Neo4j client retries and wins
   writes nothing; one it gives up on writes one record. Retries above the client (`KernelDB.run`, the KB push, a provider
@@ -550,8 +831,22 @@ which every Postgres graph provider runs through) write one record per call that
   hides the text and leaves the class to `classify_error`), so `classify_error` returns its class and `log_failure` leaves `error_message` out and
   prints the stack as `Type: <message omitted>` for any chain, or exception group member, that holds it. This also hides the
   server's own text for our bugs (an ArangoDB 1501 "syntax error … near …" reads `code=1501 caller=…`): diagnose from `code`,
-  `caller` and `site`, and never add a database error's `{e}` or `str(e)` back to a log line. Our own texts stay visible (the
-  Neo4j memory-limit hint).
+  `caller` and `site`, and never add a database error's `{e}` or `str(e)` back to a log line. Our own texts stay visible when
+  they chain no stamped error (raised outside its `except`, as the Neo4j memory-limit hint is, or `from None`); an exception
+  raised `from` a stamped error, or while handling one, loses its message too, and keeps its type and frames. A
+  `logger.exception` or `exc_info=True` record of such a chain prints the same text-free stack, exception-group members
+  included: its `exc_info` is None and its `exc_text` holds the stack, and a filter reads the exception with
+  `error_class.record_exception(record)`. A message that embeds the error's text is not covered: `traceback.format_exc()`
+  (log with `exc_info=True` instead), `%s` of the error, and asyncio's "Task exception was never retrieved", whose message holds
+  the task's `repr` with the exception's text.
+- **A PostgreSQL connection the pool could not open writes no record**: no statement exists yet. Its error is stamped text-hidden
+  all the same. An outage is `ConnectionLost("cannot connect")`, class `unavailable`: an OS error, a connection exception
+  (08xxx, PgBouncer's own refusals included, even a permanent one such as its auth misconfiguration), a shutdown or start-up
+  (57P01-57P03) or a full server (53300). `KernelDB.run` retries it, except 53300 (`TooManyConnections`), which neither `run` nor the
+  vector search retries (every attempt would fork a backend on a full server). Any other server refusal is the asyncpg error itself (28P01 names the database user). Diagnose from `cause_type`:
+  `ConnectionRefusedError` (the host answered, the port is closed), `gaierror` (DNS), `OSError` (no route),
+  `InvalidPasswordError`, `CannotConnectNowError`, `TooManyConnectionsError`. The configured DSN names the host. What is lost
+  is a plain `OSError`'s errno and which host of a multi-host DSN failed.
 - **Classes.** Only our bugs and our configuration are ERROR classes. Conflicts and lost races (ArangoDB 1200, 1210, 29, 1654,
   1655; Neo4j constraint, deadlock, entity lost to a delete; Postgres 23xxx, 40001, 40P01) are `conflict`; ArangoDB 18 and 1500,
   Neo4j transaction timeouts and Postgres 57014/55P03 are `timeout`; Postgres 22xxx, 54xxx, 23502 and 23514, and Neo4j data
@@ -559,6 +854,29 @@ which every Postgres graph provider runs through) write one record per call that
 - **`caller` and `[file:line]`** are the first frame outside the client: the provider line that called it. In a Postgres provider
   transaction the statement runs in another task, so `_Txn.run` finds the caller while its stack is live and hands it over; the
   unit's own `begin` and `prologue` there have `caller=unknown`.
+
+## Search access reads (Python)
+
+A search that cannot read what its user may access, or a graph read around it, writes one `log_failure` line where it handles the
+failure, without the error's text (`include_error_text=False`): the graph's text can carry the database host, the query and the
+record content. Like any `log_failure` line it is DEBUG when the same exception, or its cause, was already logged at its level or
+higher, so at a WARNING threshold a handled failure can leave no event. The user is the bound `user_id`; the graph key is never
+logged. Diagnose from `error_class`, `error_type` and the `db.query.failed` record of the same call. When the batch access read
+fails and no graph client recorded it (no `db.query.failed` for it or for an exception it was raised `from`: a PostgreSQL
+connection the pool could not open, or our own bug), `check_access` first logs a `check_access failed …` line with only the
+counts and the error's class name, at that class's level (WARNING for `unavailable`, ERROR for `internal`). The
+`PermissionVerificationUnavailableError` it raises has a fixed message and keeps the driver's error as its cause; its chain
+is always text-hidden, so an `exc_info` record of it prints each exception as `Type: <message omitted>`.
+
+| Event | What the search does next | Fields |
+| --- | --- | --- |
+| `search.access_unreadable`, `search.selection_unreadable`, `search.entity_filter_unavailable`, `search.hit_check_failed` | answers that access could not be checked (an entity lookup: a search error) | the `log_failure` fields |
+| `search.remembered_scope_unreadable`, `search.record_id_retry_failed` | clears the memo and retries normal scope resolution / keeps the container results | the `log_failure` fields |
+| `container_search.verification_unavailable` | marks the attempt degraded | `vrid_count` |
+| `search.notice_gate_failed`, `search.demo_setting_failed`, `demo_data.list_failed`, `record_open.demo_setting_failed` | no access notices / excludes no demo connector / opens the record by id (a record route) | the `log_failure` fields |
+| `search.batch_fetch_failed` | fetches the records one by one | `collection` (`files`, `mails`) |
+| `search.diversity_read_failed`, `search.connector_types_unreadable` | keeps the plain result / searches every collection | the `log_failure` fields |
+| `search.location_access_failed`, `search.location_failed` | shows an App-only Location when permitted and available; otherwise omits it | the `log_failure` fields |
 
 ## Auth audit events (Node)
 
@@ -584,6 +902,7 @@ access line has `client_ip` and the same `request_id`.
 | `auth.session.refresh` | `failure` only | `no_token`, `token_invalid`, `token_expired`, `session_ended`, `account_inactive`, `no_credentials`, `locked` | |
 | `auth.policy.update` | `success`, `failure` | `not_admin` | |
 | `auth.jit_provision` | `success` | | `google`, `microsoft` |
+| `auth.email.verify` | `failure` only | `no_token`, `token_invalid`, `token_expired` (the `org:email:verify` and `email:verified` scopes; EE mounts their routes) | |
 
 How a refusal gets its line: the code that refuses throws its error tagged with `refusal(error, reason)` (`authRefusal` in
 `modules/auth/utils/sign-in-audit.ts` checks the code). The tag is invisible to the client and to the logs. The handler, or the
@@ -593,12 +912,176 @@ scopes only), calls `auditRefusal` once in its catch; it writes a line only for 
 Not audited: body validation 400s, rate limits, regular-JWT failures on authenticated routes, and service-to-service scoped tokens.
 Each still has its `http.request.error` (or the limiter's) line.
 
+## User and group audit events (Node)
+
+Every change to a user account, a group or a group membership is one INFO line on the `audit` logger, written right after the
+store write that makes it, with the same fields as the auth events: `org_id`, `actor` (the admin or user who made the change),
+`target` (the account; the group for `group.create`, `group.update` and `group.delete`; the affected user on membership lines),
+`outcome`, `reason`, and `group_id` (the group) on membership lines. Never an email, name,
+role name, group name or field value: a role change is told by the event and its reason.
+
+| Event | Outcome | `reason` | Notes |
+| --- | --- | --- | --- |
+| `user.create` | `success`, `partial`, `failure` | success: `demo_password` (a demo account got a starting password), else none; partial: `kept_after_failure` (the create failed after the account was saved, and the account was kept because removing it could have left the organisation without an admin, the removal itself failed, or an invite restored it meanwhile; followed by `user.role.change` `new_admin` when it is kept as the admin it was created as); failure: `email_taken`, `password_not_allowed`, `admin_limit` (created as admin past the organisation's admin limit) | |
+| `user.invite` | `success`, `failure` | success: `new`, `reinvite`, `resend`; failure: `not_admin`, `admin_limit` | `new` is written when the account is created, even if its mail then fails; `reinvite` and `resend` only after the mail was accepted |
+| `user.restore` | `success` | `invite` | a removed account brought back by an invite, as a member; an admin invite then logs `user.role.change promote` |
+| `user.role.change` | `success`, `failure` | success: `promote`, `demote`, `new_admin` (created or invited as admin); failure: `not_admin`, `last_admin`, `admin_limit` | "who made U an admin" is this one event |
+| `user.update` | `success`, `failure` | success: `profile`, `sign_in_state` (an admin set whether the user has signed in); failure: `not_admin` | a user's own first sign-in is `auth.sign_in`, not this |
+| `user.email_change.request` | `success`, `failure` | failure: `not_self`, `email_taken` | the verification link was sent; the change itself is `auth.email.change reason=link` when the link is opened |
+| `user.delete` | `success`, `failure` | failure: `not_member` (only members can be deleted) | |
+| `group.create` | `success` only | | `target` = the group; a reserved name or type is refused as a validation 400, before any audit line |
+| `group.update`, `group.delete` | `success`, `failure` | failure: `protected_group` (the everyone/admin groups) | `target` = the group |
+| `group.member.add`, `group.member.remove` | `success`, `failure` | success: `already_member` / `not_member` on every found pair when the store reports no group changed (also when other requested groups are missing); failure: `not_found` | one line per user × group; invites with groups write `group.member.add` too. On Postgres the store counts live groups, not changed ones, so a no-op is a plain success and `already_member` / `not_member` never fire |
+| `org.create` | `success` | | `actor` = the first admin, `org_id` = the new org |
+
+Refusals use the same tags as the auth events (`userRefusal` / `auditUserRefusal` in `modules/user_management/utils/user-audit.ts`,
+lists in `USER_AUDIT_REASONS`). Not audited: route-guard refusals (`userAdminCheck`, `userAdminOrSelfCheck`, …), validation 400s,
+display-picture changes, and system failures (the error middleware logs those once).
+
+## Org settings, team and service-account audit events (Node)
+
+The same mechanism and fields for changes to the org's own settings (`/api/v1/org`), to teams and to service accounts and their
+keys. Three more fields, each only on the lines it applies to:
+
+- `team_id`: the team, on team membership lines (the target is the user). The org's default All team is `all_<org id>`.
+- `key_id`: a service-account key's record id, never the key itself. It is the `id` that the mint answer and the key list show.
+- `scopes`: the scopes a key was issued with, sorted and comma-joined (`kb:read,semantic:write`).
+
+Team decisions are made by the team service (Python). Node writes the line from that service's answer: 2xx is a success, 403 is
+`not_owner`, 404 is `not_found` (the team, or the caller, is unknown to the team service), and 409 is `name_taken`.
+
+| Event | Outcome | `reason` | Notes |
+| --- | --- | --- | --- |
+| `org.update`, `org.delete` | `success` | | the org is `org_id`; an update that names no known field is still written |
+| `org.logo.update` | `success` | `set`, `removed` | |
+| `org.onboarding.update` | `success` | `configured`, `not_configured`, `skipped` | |
+| `team.create` | `success`, `failure` | success: `no_team_id` (the team service's answer named no team: no target and no member lines); failure: `name_taken` | `target` = the new team; one `team.member.add` per member listed (the creator, who joins as owner, is not) |
+| `team.update` | `success`, `failure` | failure: `not_owner`, `not_found`, `name_taken` | success only when the name or description was sent (an empty description counts); a refused PUT writes one `team.update` failure, whatever it asked for |
+| `team.delete` | `success`, `failure` | failure: `not_owner`, `not_found`, `protected_team` (the All team) | |
+| `team.member.add`, `team.member.remove`, `team.member.role.change` | `success` | | one line per user; written from the request after the team service accepted it, so an owner's own add and an owner-to-owner role change, which the team service skips, still get a line |
+| `service_account.create` | `success`, `failure` | success: `restore` (a deleted account brought back under its name); failure: `name_taken` | written at the write, so it is there even when the request then fails publishing the change |
+| `service_account.update` | `success`, `failure` | success: `profile`, `disable`, `enable`; failure: `restoring` (enable during a restore), `not_found` | one PATCH can write two lines (`profile` and `disable`; or `enable` and then a `not_found` failure when the account is deleted between the two writes, since the enable was already saved); enabling an enabled account still writes `enable` |
+| `service_account.delete` | `success`, `failure` | failure: `not_found` | the key revocations it causes are part of this line |
+| `service_account.token.create` | `success`, `failure` | failure: `account_disabled`, `scope_denied` (`agent:execute`), `token_limit`, `not_found` | `key_id` and `scopes` on success |
+| `service_account.token.revoke` | `success`, `failure` | failure: `not_found` | `key_id` on both |
+
+A key rotation is a `service_account.token.create` followed by a `service_account.token.revoke` of the old `key_id` on the same
+target: no endpoint changes a key's scopes after it is minted. `not_found` on a service account also covers an id from another
+org, so a probe across orgs is audited.
+
+Not audited: route-guard refusals (`userAdminCheck`, `requireScopes`), validation 400s (including an unknown scope and the team
+service's 400s: no name, the last owner, people who are gone), and system failures. **Known gap:** the team service's
+`update_team` is not atomic. It saves a rename and member removals before checks that can still answer 400 or 500, and those
+saved changes get no line here; the team service's own log has them.
+
+## Configuration audit events (Node)
+
+Every settings change an admin saves through the configuration manager (`/api/v1/configurationManager`) is one INFO line on
+the `audit` logger, written right after the key-value store accepted the write: `config.<section>.update`, or
+`config.<section>.delete` when a whole setting is removed (today only the SMTP settings; removing one model, provider or Slack
+bot rewrites its list, so it is an update). The admin routes write through an audited store
+(`modules/configuration_manager/utils/config-audit.ts`), so an admin route that saves a setting gets its line without code
+of its own, as long as it is given that store (`adminStore` in `cm_routes.ts`, not the unaudited `serviceStore`). Fields as
+the other audit events: `org_id`, `actor` (the admin), `outcome=success`; `target` and `reason` are null. Never the stored
+key, a field name or a value: the event names the settings, nothing else.
+
+| Section | Settings |
+| --- | --- |
+| `storage` | file storage (local, S3, Azure Blob) |
+| `smtp` | mail server settings, turning mail on or off, removing them |
+| `auth_microsoft`, `auth_google` | sign-in with Microsoft and Google |
+| `platform` | platform settings and feature flags |
+| `slack_bot` | Slack bots (add, change, remove) |
+| `system_prompt` | the custom system prompts |
+| `ai_models` | AI models, their providers, defaults, roles, connection credentials and identity forwarding |
+| `ai_identity_policy` | the identity policy for an AI gateway |
+| `mcp_access` | what the org's `/mcp` endpoint allows |
+| `web_search` | web search providers and settings |
+| `public_urls` | the frontend and connector public URLs |
+| `metrics` | metrics collection |
+| `connector_google_workspace`, `connector_atlassian`, `connector_onedrive`, `connector_sharepoint` | connector OAuth apps and credentials saved from the admin settings |
+
+`auth_azure_ad`, `auth_sso`, `auth_oauth`, `auth_github` and `inheritance` name settings that only the enterprise
+edition's admin routes save; a path no section names is `other`.
+One action that saves several settings writes one line per saved setting. A compare-and-set retry writes a line only for the
+write that took. A save whose later step fails (the mail service did not reload the new SMTP settings) still has its line:
+the setting was stored.
+
+Settings the connector service saves (Node proxies the request to it) are written the same way by the route's handler, once
+Node read the service's 2xx answer: `config.<section>.create`, `config.<section>.update` or `config.<section>.delete`, with
+`target` the object's id and `reason` saying which part changed. The handler writes the line, not a middleware on the
+response, so a save whose browser left before the answer still has its line. The object's id is also on every line of the
+request (`connector_id`, `toolset_id`, `mcp_server_id`); `target` is it only when it is a PipesHub id (otherwise `target`
+is null and `reason` is `invalid_id`). An API toolset's id is not one, so its lines have no `target` and name it only in
+`toolset_id`. The connector, toolset and MCP server routes are open to members for their own (a personal connector,
+toolset or MCP server), so `config.connector.*`, `config.toolset.*` and `config.mcp_server.*` lines include a member's own;
+Node cannot tell personal from org-wide, and `actor` says who.
+
+| Event | Route | `reason` | `target` |
+| --- | --- | --- | --- |
+| `config.connector.create` | `POST /api/v1/connectors/` | | the new connector's id, from the service's answer |
+| `config.connector.update` | `PUT /:connectorId/config` | `settings` | the connector |
+| `config.connector.update` | `PUT /:connectorId/config/auth` | `auth` | the connector |
+| `config.connector.update` | `PUT /:connectorId/config/filters-sync`, `POST /:connectorId/filters` | `filters_sync` | the connector |
+| `config.connector.update` | `PUT /:connectorId/name` | `rename` | the connector |
+| `config.connector.update` | `POST /:connectorId/toggle` | `sync_enable`, `sync_disable`, `agent_enable`, `agent_disable`; `toggle` when the request flips the current state (no `enabled`), which Node does not know | the connector |
+| `config.connector.update` | `PATCH /:connectorId/permissions/filter` | `permission_filter` | the connector |
+| `config.connector.delete` | `DELETE /:connectorId` | | the connector |
+| `config.connector_oauth_app.create` | `POST /api/v1/oauth/:connectorType` | | the new OAuth app's id, from the service's answer |
+| `config.connector_oauth_app.update` | `PUT /api/v1/oauth/:connectorType/:configId` | | the OAuth app |
+| `config.connector_oauth_app.delete` | `DELETE /api/v1/oauth/:connectorType/:configId` | | the OAuth app |
+| `config.toolset.create` | `POST /api/v1/toolsets/instances` | | the new toolset's id, from the service's answer |
+| `config.toolset.update` | `PUT /api/v1/toolsets/instances/:instanceId` | `settings` | the toolset |
+| `config.toolset.update` | `PUT /api/v1/toolsets/instances/:instanceId/tool-rules` | `tool_rules` | the toolset |
+| `config.toolset.delete` | `DELETE /api/v1/toolsets/instances/:instanceId` | | the toolset |
+| `config.toolset_oauth_app.update` | `PUT /api/v1/toolsets/oauth-configs/:toolsetType/:oauthConfigId` | | the OAuth app |
+| `config.toolset_oauth_app.delete` | `DELETE /api/v1/toolsets/oauth-configs/:toolsetType/:oauthConfigId` | | the OAuth app |
+| `config.mcp_server.create` | `POST /api/v1/mcp-servers/instances` | | the new MCP server's id, from the service's answer |
+| `config.mcp_server.update` | `PUT /api/v1/mcp-servers/instances/:instanceId` | `settings` | the MCP server |
+| `config.mcp_server.update` | `PUT`, `DELETE /api/v1/mcp-servers/instances/:instanceId/logo` | `logo` | the MCP server |
+| `config.mcp_server.update` | `PUT /api/v1/mcp-servers/instances/:instanceId/oauth-config` | `oauth_app` | the MCP server |
+| `config.mcp_server.delete` | `DELETE /api/v1/mcp-servers/instances/:instanceId` | | the MCP server |
+| `config.api_toolset.create` | `POST /api/v1/api-toolsets/instances` | | none |
+| `config.api_toolset.update` | `PUT /api/v1/api-toolsets/instances/:instanceId` | `settings` | none (`toolset_id`) |
+| `config.api_toolset.update` | `PUT /api/v1/api-toolsets/instances/:instanceId/shared-credentials` | `shared_credential_set` | none (`toolset_id`) |
+| `config.api_toolset.update` | `DELETE /api/v1/api-toolsets/instances/:instanceId/shared-credentials` | `shared_credential_removed` | none (`toolset_id`) |
+| `config.api_toolset.delete` | `DELETE /api/v1/api-toolsets/instances/:instanceId` | | none (`toolset_id`) |
+
+The line means Node read the service's 2xx. A save the service made whose answer Node did not get (a timeout, a connection
+cut after the service committed, a 2xx whose body does not parse) has no audit line; its error and access lines, and the
+connector service's own line with the same `request_id`, record the attempt. A create resent after a cut connection (the
+connector, connector OAuth app and toolset creates are sent up to three times) may have been made twice with one line.
+
+OAuth clients (Developer Settings, `/api/v1/oauth-clients`) are saved by Node itself: the controller writes
+`config.oauth_client.*` once the OAuth app service returned (it throws on a refusal or a failure, which then has no line),
+with `target` the app's id (as above, an id that is not a PipesHub id gives `target` null and `reason` `invalid_id`
+instead of the table's reason). Any member registers and manages their own apps, so these lines include a member's own apps;
+`actor` says who. The service's own INFO lines (`OAuth app created`, `OAuth app suspended`, …, with `app_id`, and
+`client_id` where the service has it) stay next to the audit line.
+
+| Event | Route | `reason` | `target` |
+| --- | --- | --- | --- |
+| `config.oauth_client.create` | `POST /api/v1/oauth-clients/` | | the new app's id |
+| `config.oauth_client.update` | `PUT /:appId` | `settings` | the app |
+| `config.oauth_client.update` | `PUT /:appId/token-identity` | `token_identity` | the app |
+| `config.oauth_client.update` | `POST /:appId/regenerate-secret` | `secret_rotate` | the app |
+| `config.oauth_client.update` | `POST /:appId/suspend`, `POST /:appId/activate` | `suspend`, `activate` | the app |
+| `config.oauth_client.update` | `POST /:appId/revoke-all-tokens` | `tokens_revoked` | the app |
+| `config.oauth_client.delete` | `DELETE /:appId` | | the app |
+
+Not audited: writes by other services on the configuration manager's `/internal/` routes (service tokens), reads,
+validation 400s and other refusals before the write, system failures (the error middleware logs those once), boot-time
+migrations, and writes that are not settings: a member's own credentials and sign-ins, OAuth callbacks, agent
+credentials, and operations such as sync, reindex and test.
+
 ## Upstream calls (Node)
 
 Every call through a service command or an instrumented axios instance writes one `upstream.call.end` line **per attempt**,
 from `backend/nodejs/apps/src/libs/http/upstream-call.ts`: the service commands in `libs/commands` (through `upstreamFetch`)
 and every call on the default axios instance (instrumented in `index.ts`) or the knowledge base's own instance. A retry,
-`fetchWithRetry`'s or axios-retry's, is a new line. Not covered, so they write no line: the raw `fetch` to a signed upload URL
+`fetchWithRetry`'s or axios-retry's, is a new line. The default instance's retries (`libs/http/retry-policy.ts`,
+installed in `index.ts`) cover reads only (GET, HEAD, OPTIONS): a write (POST, PATCH, PUT, DELETE) is sent once, and a
+call we cancelled is not retried. Not covered, so they write no line: the raw `fetch` to a signed upload URL
 (`knowledge_base/utils/utils.ts`, `uploadFileToSignedUrl`), the S3 health check's signed GET
 (`storage/utils/s3-health-check.util.ts`), the Slack events proxy in `app.ts` (an `http.request` to the local Slack bot that
 passes the client's headers, its `x-request-id` included, on as they came), and the cloud SDKs (AWS, Azure, Google), which use
@@ -625,7 +1108,7 @@ their own HTTP clients.
   call, not the error report: the request's `http.request.error` still logs the failure once. `handleBackendError` logs
   nothing; a 5xx it maps carries `{ status }` as its cause, so an upstream 500 is `upstream_5xx` (WARNING) on the request's
   lines too, and a 4xx it passes on keeps the service's words in its message. A 5xx's own detail stays in the service's log.
-  About 30 controller catch blocks still log `error.response?.data` themselves; they are being removed module by module.
+  A controller that passes a failure to `next` does not log it itself (see "Connector proxy (Node)").
 - **Request id.** A call to a PipesHub service always carries the request's sanitised root id, replacing an `x-request-id`
   copied from the client (`injectRequestHeaders`, and the axios adapter). The gateway never adds one for a third party.
 - **Streams.** The chat stream's line is written when the body ends (DEBUG), fails midway (`unavailable`, with the 200), or
@@ -635,10 +1118,85 @@ their own HTTP clients.
   caller's signal, is spent, no further attempt starts, so a timed-out call writes one `timeout` line.
 - **Known gaps.** A caller that expects a 404 (an existence check) still gets a WARNING `not_found` line: the transport
   cannot know what the caller expects.
+- **Destination.** `upstreamFetch` (and so every service command) sends only to a registered PipesHub service
+  (`checkUpstreamUrl`): an `http:`/`https:` URL without credentials, on a registered origin and under its base path by whole
+  segments. A command checks in `buildUrl`, before its retry loop. A refused URL is never sent and writes no
+  `upstream.call.end`; the request's `http.request.error` reports it once (500, `internal`), without the URL. A redirect is
+  followed only to a URL that passes the same check. The registry is `registerAppUpstreams` in `loadAppConfig`; a reload adds
+  its bases and keeps the earlier ones, so a container built before it still reaches its service. Calls on an axios instance
+  are not checked; a third-party call uses axios or an SDK.
 - **New calls** use a command or axios, so they get the line; do not log the call again at the call site. A new raw `fetch`
-  goes through `upstreamFetch`, and adds `injectRequestHeaders` only when the target is a PipesHub service: it does not
-  check the destination, and the request id and MCP relay header must not reach a third party (the axios adapter adds them
+  to a PipesHub service goes through `upstreamFetch` and adds `injectRequestHeaders`; a third party is reached with axios
+  or an SDK, never `upstreamFetch`, and the request id and MCP relay header must not reach it (the axios adapter adds them
   only for registered internal targets).
+
+## Toolset and MCP server proxies (Node)
+
+The toolset (`/api/v1/toolsets`), MCP server (`/api/v1/mcp-servers`) and API toolset (`/api/v1/api-toolsets`) routes pass each
+request on to the connector service and write no line of their own for a failure they pass on: the error middleware's
+`http.request.error` is the one failure line, at its class's level, each call has its `upstream.call.end`, and a read or a
+change is told by the access line. `toolset_id` (a toolset or API toolset instance), `mcp_server_id` and `agent_id` are bound
+from the path (`bindPathLogFields`, after `guardPathParams`), the names the connector service uses, so every line of a request
+about one instance carries it. An OAuth callback's outcome is the connector service's line, under the same request id.
+
+## Routes that answer their own errors (Node)
+
+Some routes write their error answer themselves instead of passing it to the error middleware, so `http.request.error` does not
+run. Each says why it failed on the request's lines:
+
+- **The OpenAI-compatible API** (`modules/openai_compat`) answers in OpenAI's error shape, before or inside its stream.
+  `noteRunFailure` marks the access line with the failure's class (`markRequestError`), so a failure inside a 200 stream is
+  `outcome=failure`, and a client that went away (an abort, "stop generating") is `cancelled`. Our own bug is one ERROR
+  `openai_compat.request.failed` with the stack. A failure no HTTP answer stands behind, whatever its status (a `RUN_ERROR` frame, a stream
+  that ended without an answer, a 204 with no body, an upload with no result), is one WARNING `openai_compat.request.failed` with `code` (a snake_case code, else
+  `unknown_error`). So is our API unreachable, slow, or dropping the connection midway: `code` is `upstream_disconnected` for a
+  connection dropped after the answer started, else the class, with `network_code` (`UND_ERR_SOCKET`, `ECONNREFUSED`). A failure our own API
+  answered (a 404, a 500) adds no line: that request logged it, and it carries this request's id, because these calls go
+  through `upstreamFetch` with `injectRequestHeaders` and so also write `upstream.call.end`.
+- **The skills proxy** passes the skills service's answer through as it came. A 5xx there marks the access line `upstream_5xx`,
+  as its `upstream.call.end` says, not `internal`.
+- **The desktop proxy** answers a desktop that is offline (409), slow (504) or refusing (502) itself; the access line's class
+  comes from that status.
+- **The OAuth provider** (`/oauth2/token`, `/device_authorization`, `/revoke`, `/introspect`, the `/authorize` redirect, and
+  the OIDC bearer check) answers in RFC 6749 shape (`modules/oauth_provider/utils/oauth-failure.ts`). A refusal (an OAuth
+  error, or a deliberate `BadRequestError`, `NotFoundError`, `UnauthorizedError` or `ForbiddenError`) keeps its 4xx and its
+  RFC code: a dead, rotated or unknown refresh token is `invalid_grant`. It writes one DEBUG `oauth.request.refused` with
+  `code` (a `/token` request its schema refuses adds `errors`, each issue's `field` and `code`, never a value), and a wrong
+  client credential marks the access line `bad_request`. Anything else is ours, whatever its status (a
+  stored secret that no longer decrypts, a lock timeout's 409, a driver error): one `oauth.request.failed` at
+  `levelFor(classifyRequestError(error, 500))` with the error, the access line marked with that class, and the answer
+  `500 server_error` (`/revoke` and the bearer check: `503 temporarily_unavailable`, so the client keeps the token and
+  retries; `/authorize`: a `server_error` redirect; `/introspect`: `active: false`, as before) with a fixed description.
+  `server_error` is never a refusal's code. A change that succeeds (an OAuth app, a personal access token, a code or token
+  grant, an agent registration) is written by the service that made the write, never also by the controller (an OAuth
+  client's controller adds only its `config.oauth_client.*` audit line); a step the change runs keeps its own line
+  (`OAuth tokens generated`, `All tokens revoked for app`). The lines carry `client_id`, `app_id`, `pat_id` or
+  `registration_id`; `user_id` is the request's user (the request's own identity wins; on the token endpoint, the user the
+  grant acts for), and the user a token is minted for or revoked from is `target_user_id`. A delegation's user (whom a
+  service account may act for) is `subject_user_id`, and the admin who granted or revoked it is `granted_by` / `revoked_by`.
+  A personal access token's name is not logged.
+
+The MCP endpoint (`modules/mcp`) passes its failures to the error middleware, and writes one INFO `mcp.tool_call.end` per tool
+call: `tool`, `duration_ms`, `outcome` (`failure` when the tool answered an error), `client_id` (the OAuth app) and
+`argument_names` (never the values), with the caller's `org_id` and `user_id` from the request. `MCP request completed` is DEBUG,
+with `jsonrpc_method`.
+
+## Knowledge base (Node)
+
+The knowledge base routes (`/api/v1/knowledgeBase`) pass each request on to the connector service and write no line of their
+own for a failure they pass on: the error middleware's `http.request.error` is the one failure line, at its class's level, each
+call has its `upstream.call.end`, and a read or a change is told by the access line. `kb_id` and `record_id` are bound from the
+path (`bindPathLogFields`, after `guardPathParams`). The record stream answers its own errors: a status the connector service
+answered is relayed with no line of its own; no answer is 504 (timeout) or 503 (unreachable), and a stream that breaks
+midway is one WARNING. A refused signed-URL upload is one WARNING with `status`; the storage vendor's body is never read.
+
+An upload batch writes one `kb.upload.batch.end` line when it ends, with `outcome` (`success`, `partial` or `failure`),
+`duration_ms`, and `files`, `succeeded` and `failed` (counts, the same as the stream's `done` summary: a file the processor
+rejected or storage refused counts as failed). It is INFO, unless the indexing step failed: then it is at
+the level of its `error_class`, with `status` when the service answered and `error` when it threw (our own failure is ERROR,
+with the stack). A batch that stops on our own error before its `done` summary (for example, the upload token cannot be
+made) writes ERROR `Streaming upload failed` with the stack in its place, so every batch still ends in one line. Each file's
+outcome is its own event on the upload's stream, not a line; a file's failure is DEBUG with `error_class`.
 
 ## Chat streams (Node)
 
@@ -682,12 +1240,153 @@ The level, by the first matching row:
   stream's headers, and regenerate's checks before its stream. The request's own `http.request.error` line covers them.
 - **Known duplicate.** A failed save still logs ERROR twice: the persistence helper's own line and the end line.
 
+## Configuration manager (Node)
+
+The configuration manager routes (`/api/v1/configurationManager`) write no line of their own for a failure they pass on: the
+error middleware's `http.request.error` is the one failure line, at its class's level (a refused setting is WARNING
+`bad_request`, a key-value store outage ERROR `internal` with one stack), and the access line records the request. A failure
+Node wraps keeps what caused it as the error's `cause`: the AI model registry unreachable (503), a container reload that
+failed, unreadable Slack bot settings (a `JSON.parse` failure reads `response was not valid JSON`, never the stored text).
+
+- **AI model health check.** A model the AI service's health check refuses, when it is added or updated, is answered with the
+  reason for the admin's dialog and one WARNING `ai_model.health_check.failed` with `status` (the check's), `model_type` and
+  `provider` in its metadata; never the provider's text, which can quote part of the key. A bulk save whose check fails with
+  a 5xx is a 500 whose cause is `{ status }`, never the check's body.
+- **Embedding model download.** A progress stream that loses the embedding server is one WARNING
+  (`Lost connection to embedding server`); the stream tells the browser.
+- **Events.** The config event producers write DEBUG `broker.event.published` with `event_type` and `topic`, and ERROR
+  `broker.event.publish_failed` when a publish fails (the save already succeeded, so this is the only line).
+
+## Mail delivery (Node)
+
+Each mail job the mail consumer takes from the broker writes exactly one `mail.send.end` line
+(`backend/nodejs/apps/src/modules/mail/services/mail.consumer.ts`), after its last attempt. `org_id` comes from the job's envelope.
+
+| Field | Value |
+| --- | --- |
+| `outcome` | `success`, `failure`, or `skipped` (not attempted) |
+| `reason` | failure: `permanent` (the server refused the message), `indeterminate` (the send deadline passed while the server may still deliver it, so it is not retried), `unavailable` (sending is paused after repeated connection failures), `attempts_exhausted`, `budget_exhausted` (no time left for another attempt), `link_failed`, `exception`; skipped: `smtp_not_configured`, `invalid_payload`, `smtp_optional` (a mail sent only if SMTP is set, at INFO) |
+| `error_class` | from `mailErrorClass` (`modules/mail/types/mail-event.types.ts`), below |
+| `attempt` | turns of the retry loop (0 when none ran). A turn that could not read the SMTP settings counts, though nothing was sent: a job whose settings were unreadable and then missing ends `smtp_not_configured` with `attempt=1` |
+| `smtp_code` | the server's reply code (`550`), when it answered |
+| `email_template_type`, `duration_ms` | the template (`loginWithOTP`); the job's start to the line |
+
+`mailErrorClass` reads the reply code first, whatever nodemailer's own `code` says:
+
+| Failure | `error_class` | Level |
+| --- | --- | --- |
+| any 4xx reply (greylisting `450`, `421`, `454`) | `unavailable` | WARNING |
+| `530` / `535`, `EAUTH`, a 5xx to `MAIL FROM` (`553` sender rejected, `550` relaying denied), nodemailer's `Invalid sender`, an untrusted TLS certificate or a failed TLS upgrade (`ETLS`) | `misconfigured`: our SMTP settings, every mail fails | ERROR |
+| a 5xx to `RCPT TO` or `DATA`, no or invalid recipients, a message larger than the server allows | `bad_request`: this message or recipient | WARNING |
+| a 5xx to another command, `EPROTOCOL` | `upstream_5xx` | WARNING |
+| a refused or lost connection | `unavailable` | WARNING |
+| a connection or send timeout | `timeout` | WARNING |
+| an unknown template, anything else | `internal` | ERROR, with the stack when an exception caused it |
+
+A sent mail is INFO; a skipped one is WARNING (`invalid_payload`) or ERROR (`smtp_not_configured`, `misconfigured`). Each retry is
+DEBUG `mail.send.retry` (`attempt`, `error_class`, `smtp_code`, `next_retry_ms`).
+
+- **Never logged:** the server's reply (it quotes the recipient: `550 5.1.1 <alice@…>: Recipient address rejected`), recipients,
+  the subject, template data (sign-in codes, links) or the message value. A failed write of the mail's audit record logs only
+  `error_class` and `error_type`: a store's message can quote the record. The admin notification for a failed mail still names
+  the recipients and the reply; that is product text, not a log line.
+- **The direct route** (`POST /api/v1/mail/emails/sendEmail`) writes no line of its own: the request's `http.request.error` is
+  the one line. A failure the server caused carries a text-free `{ status }` cause, so it is `upstream_5xx`, `unavailable` or
+  `timeout` (WARNING) while the client still gets the same 500; our own failures (an unknown template, our sender refused,
+  email turned off) stay `internal` (ERROR). A refused login or an unreachable server is answered 502 and is `upstream_5xx`.
+- The notification consumer logs a skipped or failed message with its `type` and `size_bytes`, never its value (a
+  `mail.deliveryFailed` notification quotes the recipients). Producers log each publish at DEBUG (`broker.event.published`,
+  `event_type`, `topic`).
+
+## Storage (Node)
+
+The storage routes (`/api/v1/document`) write no line of their own for a failure they pass on: the error middleware's
+`http.request.error` is the one failure line. When the storage vendor fails a write, a removal or a read check, the answer is
+503 (WARNING `unavailable`) and the error's `cause` is `{ status, code }`: the vendor's HTTP status and its error code
+(`AccessDenied`, `NoSuchBucket`, `SlowDown`, Azure's `AuthorizationFailure`, a local disk's `ENOENT` or `EACCES`), so a
+misconfigured bucket and a throttle read differently. A read the vendor fails still answers 500 (ERROR `internal`), with the
+vendor's status and code in the error's `metadata`. The vendor's text is never logged: it can quote the bucket, the object
+path and the file name. The providers (`storage/providers/*.ts`) read the status and code through `vendorFailure`
+(`storage/providers/vendor-failure.ts`) and hand the text to the error as `vendorText`, never its metadata; a local read's
+disk failure is wrapped the same way. Only the S3 settings check reads `vendorText`, for the admin's dialog; its WARNING lines
+still carry it.
+
+- Each upload, update, read, copy, rename and removal is DEBUG, with the object path and never its URL.
+- The S3 settings check (run when an admin saves the storage settings) writes one INFO `S3 health check completed` with each
+  check's result; a failed check is WARNING (the admin's settings), a passed one DEBUG.
+- A document whose blob moved but whose record did not is ERROR (`moveTree: blob relocated but the record update failed`): it
+  needs a human. Ids go in fields (`document_id`, `connector_id`), never in the message.
+
+## Connector proxy (Node)
+
+The connector routes (`/api/v1/connectors`, `backend/nodejs/apps/src/modules/tokens_manager`) and the OAuth app config routes
+pass each request on to the connector service. They write no line of their own for a failure they pass on: the error
+middleware's `http.request.error` is the one failure line, at its class's level, and each call has its `upstream.call.end`.
+A read or a change is told by the access line; the connector service logs the change it made under the same request id.
+`connector_id`, `connector_type` and `record_id` are bound from the path (`bindConnectorLogFields`, after `guardPathParams`), so
+the call, error and access lines of a request about one connector all carry it.
+
+After a sync toggle or a sync-settings save, the schedule is brought in line in the background, and that reconcile writes one
+`connector schedule reconcile` line:
+
+| Case | Level | `outcome` | `reason` | Other fields |
+| --- | --- | --- | --- | --- |
+| one read of the connector's settings failed | DEBUG (its call line already warned); ERROR for a 2xx without the settings or our own bug | `failure` | `non_2xx`, `no_envelope`, `no_type`, `request_failed` | `status`, `error` |
+| every read failed (3 tries); the hourly repair applies the settings | WARNING | `failure` | `snapshot_failed` | `attempt` |
+| every read failed, and recording the change for the hourly repair failed too | ERROR `Could not record a schedule change for the hourly repair` (with `error`), before the WARNING above | | | |
+
+When that ERROR appears and no earlier change of the connector is still pending, the hourly repair does not pick this
+change up: save the connector's sync settings again once the connector service answers.
+| the reconcile itself | the orchestrator's line (crawling manager) | | | |
+
+A failure after the reconcile (recording it for the hourly repair, or our own bug) is `Background schedule reconcile failed …`
+at its class's level; when the orchestrator threw, it already logged the failure and this line is WARNING. `Access explanation
+requested` (an admin asking why a person can or cannot read a record) is one INFO line with `record_id`, `status`, `code`,
+`outcome`, and `target_user_id` and `admitted` in the metadata.
+
+### Legacy Google Workspace routes (Node)
+
+`POST /api/v1/connectors/getTokenFromCode` and `POST /api/v1/connectors/internal/refreshIndividualConnectorToken` write no line of
+their own for a failure: each call to Google's token endpoint has its `upstream.call.end` (with Google's `status`), and the
+request has its one `http.request.error`. A failed call to the configuration manager is answered 500 as before. A 5xx's status is the
+error's cause, so it is the service's class (`upstream_5xx`, `unavailable`, `timeout`; WARNING); any other answer, a 408 included,
+stays `internal` (ERROR). Its body is never logged (it can hold stored credentials). A Google
+client id or secret that is not configured is ours: 500 `internal` (ERROR). A refresh that succeeds writes `Access token refreshed
+successfully` (INFO); a config reload writes `Connector configuration updated successfully`. A repeat consent that Google answers
+without a refresh token keeps the user's stored one and writes `Google sent no refresh token; keeping the stored one` (INFO, no
+token values); when none is stored, or the stored one has expired, the request answers 400 (`bad_request`, WARNING) and writes
+nothing. The `appEnabled` event the code
+exchange publishes is `broker.event.published` (DEBUG, with `event_type` and `topic`). When it cannot be published, the request
+answers 503 and its one `http.request.error` (`unavailable`, WARNING) carries the broker error as the cause; the producer writes no
+line of its own.
+
+### Health probe (Node)
+
+`GET /api/v1/health` (the Helm probe) checks the graph and vector databases through the connector service and writes one
+`health.check.changed` line when a check's state changes: WARNING when it turns `unhealthy` or `unknown` (the connector service
+refused the connection), INFO when it is `healthy` again, DEBUG while a probe finds the state the last one found. The first probe
+of a healthy check is DEBUG; a pod that starts before the connector service writes one WARNING `unknown` and then one INFO. The
+line has `status` (the check's HTTP status), `error_class` and `reason` (`timeout`, `request_failed`, `connector_refused`), with
+`check` (`graph_db`, `vector_db`), `state` and `previous` in the metadata. The state is kept per process. A store type the Python
+services have not written yet is DEBUG (the answer says `pending`). An unexpected failure of the probe goes to the error
+middleware: one `http.request.error` and a 500.
+
+### Stored configuration (Node)
+
+At start-up the Node services read their broker, cache and database settings from the key-value store. When a stored value
+cannot be read or decrypted, the environment's defaults are used, as before, and one WARNING `Stored config unreadable; using
+the environment defaults` names the `path`. An unreadable deployment record is rewritten with the Node-owned keys only, with one
+WARNING. Neither line logs the error's message for a parse failure: it would quote the decrypted value.
+
 ## Redaction
 
-Both formats redact: the whole text line (message, fields, traceback), and in JSON every string value. Credentials (bearer and
-basic tokens, JWTs, known key shapes, URL passwords and query secrets, private keys, this process's secret env values, and
-`name=value` pairs whose name is a credential) are replaced by `[REDACTED]`. In text (the message, a traceback, the text format's
-field list, and any JSON string value that holds such pairs), a pair value that only describes the credential is kept: a bare
+Both formats redact: the whole text line (message, fields, traceback; in Node, the message, metadata and traceback, not the
+typed fields such as `route`), and in JSON every string value. Credentials (bearer and basic tokens, JWTs, known key shapes, URL
+passwords and query secrets, private keys, this process's secret env values, and `name=value` pairs whose name is a credential)
+are replaced by `[REDACTED]`. In Node, the text a `JSON.parse` error quotes (`Unexpected token 'x', "…" is not valid JSON`) is
+`[REDACTED]`, offending character included, in the message, the metadata and a traceback: it is the start of what failed to
+parse, which may be a stored setting or a request body. In text (the message, a traceback, the text format's field list, and any
+JSON string value that holds such pairs), a pair value that only describes the credential is kept: a bare
 `None`, `null`, `true`, `false`, `undefined`, `present` or `missing`; a time under a time name (`token_expires_at=1730000000`,
 `refresh_token_expires_in: 7776000`, also with a fraction, but not a negative number such as `token_ttl=-1` and not
 `updated_password=…`); and an `http(s)` URL with no query, fragment or userinfo under `token_url`, `token_uri`, `token_endpoint`,
@@ -734,10 +1433,11 @@ Node, drop the address from the thrown message.
 
 **Finding a user's lines (support).** Get the PipesHub id from the admin console (Users, open the user: the profile URL has
 `userId=<id>`) or `GET /api/v1/users?search=<email>` (`_id`), then filter on `user_id=<id>` (requests made by that user) or
-`target_user_id=<id>` (sign-in, user management and connector-creator lines). A connector's per-user lines carry
-`source_user_id`: find that id for the email in the provider's admin console (Google Admin user id, Entra object id, Atlassian
-account id, Box or Salesforce user id). For a connector with no opaque id (the list above), per-user lines carry only
-`connector_id` and counts: reproduce with a one-user sync, or read the run's `sync_run.end` stats.
+`target_user_id=<id>` (sign-in, user management, connector-creator, notification socket and queue, and OAuth token mint and
+revoke lines); a delegation's grant and revoke lines carry the person as `subject_user_id=<id>`. A connector's per-user
+lines carry `source_user_id`: find that id for the email in the provider's admin console (Google Admin user id, Entra object
+id, Atlassian account id, Box or Salesforce user id). For a connector with no opaque id (the list above), per-user lines carry
+only `connector_id` and counts: reproduce with a one-user sync, or read the run's `sync_run.end` stats.
 
 **CI.** `.github/scripts/new_lint_findings.py log-pii` (scanner `scripts/log_pii.py`, which reads TypeScript through
 `scripts/log_pii_ts.cjs`) fails a pull request that adds an email or a person's name to a log call under `backend/python/app` or
@@ -761,11 +1461,14 @@ with `TS_MODULE=backend/nodejs/apps/node_modules/typescript python3 -m unittest 
 - **Event names** are dotted lowercase: `sync_run.end`, `tool_call.end`, `http.request.end`.
 - **Field names** are snake_case and the same in Python and Node: `org_id`, `user_id`, `request_id`, `conversation_id`, `agent_id`,
   `run_id`, `parent_run_id`, `attempt`, `connector_id`, `connector_type`, `record_id`, `kb_id`, `tool`, `tool_call_id`,
-  `mcp_server_id`, `toolset_id`, `job`, `workload`, `target_user_id`, `source_user_id`, `duration_ms`, `status`, `error_class`,
-  `error_type`, `outcome`, `method`, `route`, `client_ip`, `reason`, `topic`, `message_id`, `event_type`, `disposition`. Python
-  also has `ctx_kind`, `ctx_source`, `error_message` and `cause_type`; Node's `error` is an object (`error.message`). Node also
-  has `upstream` and `network_code` (on `upstream.call.end`), and `code`, `events`, `bytes`, `ttfb_ms` and `frame` (on
-  `chat_stream.*`).
+  `mcp_server_id`, `toolset_id`, `job`, `template_id`, `workload`, `target_user_id`, `source_user_id`, `duration_ms`, `status`, `error_class`,
+  `error_type`, `outcome`, `method`, `route`, `client_ip`, `reason`, `topic`, `message_id`, `event_type`, `disposition`. Node
+  audit lines also have `actor`, `target`, `group_id` and `auth_method`. Python also has `ctx_kind`, `ctx_source`, `target_org_id` (the org a cross-org job acted on, outside its bound context), `error_message`
+  and `cause_type`; Node's `error` is an object (`error.message`). Node also has `smtp_code` and `email_template_type` (on `mail.send.end`), `upstream` and `network_code` (on
+  `upstream.call.end`), and `code`, `events`, `bytes`, `ttfb_ms` and `frame` (on `chat_stream.*`). A Node name that is not a
+  typed field (`target_user_id` and `admitted` on the connector explain line; `files`, `succeeded` and `failed` on
+  `kb.upload.batch.end`) is kept in the JSON `metadata`, not the ` | k=v`
+  suffix; `outcome` is a field only as `success`, `failure`, `partial` or `skipped`.
 - **Fields are scalars**: ids, sizes, counts, enums. Never pass a config, a request, a response or a document as a field.
 - **Log an error once**, at the layer that handles it, with `error_class.log_failure` (see "Failures"). Lower layers raise
   (`raise … from e`), they do not log and re-raise.

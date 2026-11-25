@@ -3,11 +3,14 @@ import { DistributedKeyValueStore } from '../keyValueStore';
 import { ConfigurationManagerStoreConfig } from '../../../modules/configuration_manager/config/config';
 import { KeyAlreadyExistsError, KeyNotFoundError } from '../../errors/etcd.errors';
 import { Logger } from '../../services/logger.service';
+import { etcdCredentials } from '../etcd-tls';
+import { Etcd3AuthAdmin, EtcdAuthAdmin, etcdClientUser } from '../etcd-auth';
 export class Etcd3DistributedKeyValueStore<T> implements DistributedKeyValueStore<T>
 {
   private client: Etcd3;
   private serializer;
   private deserializer;
+  private readonly clientUser: string | null;
 
   constructor(
     config: ConfigurationManagerStoreConfig,
@@ -16,12 +19,22 @@ export class Etcd3DistributedKeyValueStore<T> implements DistributedKeyValueStor
   ) {
     const hostWithPort = config.port ? `${config.host}:${config.port}` : config.host;
 
+    const credentials = etcdCredentials(config.tls);
     this.client = new Etcd3({
       hosts: [hostWithPort],
       dialTimeout: config.dialTimeout,
+      ...(credentials ? { credentials } : {}),
     });
     this.serializer = serializer;
     this.deserializer = deserializer;
+    this.clientUser = etcdClientUser(config.tls);
+  }
+
+  /** Role-based auth administration, as the user this client's certificate names; null without a certificate. */
+  authAdmin(): EtcdAuthAdmin | null {
+    return this.clientUser === null
+      ? null
+      : new Etcd3AuthAdmin(this.client.auth, this.clientUser);
   }
 
   async createKey(key: string, value: T): Promise<void> {
@@ -70,32 +83,31 @@ export class Etcd3DistributedKeyValueStore<T> implements DistributedKeyValueStor
 
   async compareAndSet(key: string, expectedValue: T | null, newValue: T): Promise<boolean> {
     const newBuffer = this.serializer(newValue);
-    const expectedBuffer = expectedValue !== null ? this.serializer(expectedValue) : null;
-
     try {
-      // Get current value
-      const currentValue = await this.client.get(key).buffer();
-
-      // Compare buffers directly for exact match
-      const valuesMatch =
-        (expectedValue === null && currentValue === null) ||
-        (expectedBuffer !== null && currentValue !== null && expectedBuffer.equals(currentValue));
-
-      if (!valuesMatch) {
-        // Values don't match, CAS failed
-        return false;
-      }
-
-      await this.client.put(key).value(newBuffer);
-      
-      // Verify the update succeeded by reading back
-      const updatedValue = await this.client.get(key).buffer();
-      return updatedValue !== null && updatedValue.equals(newBuffer);
+      // One transaction: a read then a put would overwrite a write made in between (UX2 LC-6).
+      // A replace keeps the key's lease (its expiry), as the other stores do (ADR-KEY-01).
+      const result =
+        expectedValue === null
+          ? await this.client
+              .if(key, 'Create', '==', 0)
+              .then(this.client.put(key).value(newBuffer))
+              .commit()
+          : await this.client
+              .if(key, 'Value', '==', this.serializer(expectedValue))
+              .then(this.client.put(key).value(newBuffer).ignoreLease())
+              .commit();
+      // proto3 leaves a false `succeeded` out of the answer, whatever etcd3's types say.
+      const answer: { succeeded?: boolean } = result;
+      return answer.succeeded === true;
     } catch (error) {
-      // If update fails, return false
+      Logger.getInstance().error(
+        `Error in compareAndSet for key ${key}:`,
+        error,
+      );
       return false;
     }
   }
+
 
   /**
    * Health check for etcd store.

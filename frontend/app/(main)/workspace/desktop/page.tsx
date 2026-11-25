@@ -6,7 +6,7 @@ import { Box, Flex, Text, Heading, Button, Switch } from '@radix-ui/themes';
 import { SettingsSection, SettingsRow } from '../components';
 import { SettingsPageContainer } from '@/app/(main)/workspace/components/settings-page-container';
 import { useToastStore } from '@/lib/store/toast-store';
-import { useAuthStore } from '@/lib/store/auth-store';
+import { useAuthStore } from '@/config';
 import {
   getDesktopApi,
   getLocalRepoApi,
@@ -79,7 +79,7 @@ export default function DesktopSettingsPage() {
           <Heading size="5" weight="medium" style={{ color: 'var(--gray-12)' }}>
             {t('workspace.desktop.title')}
           </Heading>
-          <Text size="2" style={{ color: 'var(--gray-10)', marginTop: 'var(--space-1)', display: 'block' }}>
+          <Text size="2" style={{ color: 'var(--gray-11)', marginTop: 'var(--space-1)', display: 'block' }}>
             {t('workspace.desktop.subtitle')}
           </Text>
         </Box>

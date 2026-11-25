@@ -19,6 +19,7 @@ import fakeredis.aioredis
 import pytest
 
 from app.config.constants.ai_models import DEFAULT_EMBEDDING_MODEL
+from app.config.constants.service import config_node_constants
 from app.exceptions.indexing_exceptions import VectorStoreError
 from app.models.entities import EntityRecord, EntityType, EntityTypeCategory
 from app.modules.transformers import entity_vectorstore as module
@@ -27,6 +28,7 @@ from app.modules.transformers.entity_vectorstore import (
     EntityVectorStore,
 )
 from app.services.vector_db.models import ScrollWindowExceededError, VectorPoint
+from app.services.vector_db.precision_guard import PrecisionUnreadable
 from tests.support.embedding_config import (
     another_process,
     config_service,
@@ -86,7 +88,7 @@ MODELS: dict[str, FakeEmbeddingModel] = {
 
 @pytest.fixture(autouse=True)
 def _models() -> Iterator[None]:
-    with embedding_models(MODELS), patch.object(module, "get_default_embedding_model", return_value=BGE):
+    with embedding_models(MODELS), patch("app.utils.llm.get_default_embedding_model", return_value=BGE):
         yield
 
 
@@ -368,9 +370,9 @@ class TestReplicas:
         await leader.upsert_entities_batch([_topic()], merge_membership=False)
 
         with patch.object(config_b.store, "get_key", side_effect=RuntimeError("kv store timed out")):
-            outcome = await other.upsert_entities_batch([_topic()], merge_membership=False)
+            with pytest.raises(PrecisionUnreadable):  # nobody knows what the index holds: raised for a retry, not counted
+                await other.upsert_entities_batch([_topic()], merge_membership=False)
 
-        assert (outcome.written, outcome.failed) == (0, 1)
         assert _models_of(db) == {"t1": (ADA_FP, ADA.value)}
 
 
@@ -542,12 +544,12 @@ class TestOneRecreateAtATime:
         db, config = FakeEntityVectorDB(BGE.dimension), config_service(SMALL_CONFIG)
         with recreate_lock_redis() as server:
             redis = fakeredis.aioredis.FakeRedis(server=server)
-            monkeypatch.setattr(db, "create_collection", AsyncMock(side_effect=RuntimeError("create failed")))
-            with pytest.raises(RuntimeError, match="create failed"):
+            # Scoped to the failing write alone: ``monkeypatch.undo()`` would also undo the suite's defaults.
+            with patch.object(db, "create_collection", AsyncMock(side_effect=RuntimeError("create failed"))), \
+                    pytest.raises(RuntimeError, match="create failed"):
                 await _store(db, config).upsert_entities_batch([_topic()], merge_membership=False)
             assert await redis.get(module._recreate_lock_key("entities")) is None
 
-            monkeypatch.undo()
             assert (await _store(db, config).upsert_entities_batch([_topic()], merge_membership=False)).written == 1
             assert await redis.get(module._recreate_lock_key("entities")) is None
         assert db.dimension == SMALL.dimension
@@ -599,17 +601,24 @@ class TestConfigReads:
 
         async def _counting_get_key(key: str, **kwargs: object) -> object:
             nonlocal reads
-            reads += 1
+            # The embedding config, the epoch pointer and the precision pin; the region pin (MG-15) is a document of
+            # its own and not counted.
+            if key == config_node_constants.AI_MODELS.value or key.startswith("/services/vectordb/embedding_"):
+                reads += 1
             return await real_get_key(key, **kwargs)
 
         with patch.object(config.store, "get_key", side_effect=_counting_get_key):
             for _ in range(3):
                 await store.search_entities("pricing", ORG, set(), {"c1"})
             assert reads == 1
-            # A write re-reads the store once per batch, before it upserts.
+            # A write reads the store a few times per batch, before it upserts.
+            per_batch = []
             for entity_id in ("t1", "t2", "t3"):
+                before = reads
                 await store.upsert_entities_batch([_topic(entity_id)], merge_membership=False)
-            assert reads == 4
+                per_batch.append(reads - before)
+            # The config re-read, the epoch pointer and the pin, each fresh; the first batch also creates the epoch.
+            assert per_batch == [4, 3, 3]
 
     async def test_a_missed_notification_is_caught_by_the_periodic_read(self, monkeypatch) -> None:
         db, config = FakeEntityVectorDB(), config_service(SMALL_CONFIG)
@@ -634,9 +643,9 @@ class TestConfigReads:
         with patch.object(config.store, "get_key", side_effect=RuntimeError("kv store down")):
             assert await store.embedding_fingerprint() == SMALL_FP
             await store.search_entities("pricing", ORG, set(), {"c1"})
-            outcome = await store.upsert_entities_batch([_topic("t2")], merge_membership=False)
+            with pytest.raises(PrecisionUnreadable):
+                await store.upsert_entities_batch([_topic("t2")], merge_membership=False)
 
-        assert (outcome.written, outcome.failed) == (0, 1)
         assert db.deletions == 0
         assert _models_of(db) == {"t1": (SMALL_FP, SMALL.value)}
         await store.upsert_entities_batch([_topic("t2")], merge_membership=False)

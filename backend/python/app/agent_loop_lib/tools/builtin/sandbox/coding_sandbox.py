@@ -1,13 +1,22 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import logging
+import math
 import os
 import re
-from typing import TYPE_CHECKING, Any
+import time
+from typing import TYPE_CHECKING, Any, Literal, Protocol
 
-from app.agent_loop_lib.sandbox.coding.base import CodeRequest
+from app.agent_loop_lib.sandbox.coding.base import (
+    CodeRequest,
+    CodeResult,
+    CodingSandboxBackend,
+    ErrorCategory,
+)
 from app.agent_loop_lib.sandbox.manager import (
+    SandboxCallStopped,
     SandboxLimitExceeded,
     SandboxManager,
     SandboxType,
@@ -19,12 +28,23 @@ from app.agent_loop_lib.tools.base import (
     Tool,
     ToolOutput,
     ToolParameter,
+    error_data,
 )
 from app.agent_loop_lib.tools.builtin.sandbox.input_staging import (
     PARENT_RESULTS_INPUT_PATH,
     peek_staged_input_files,
     peek_staged_skill_resources,
+    peek_staged_workspace_files,
 )
+from app.agent_loop_lib.tools.tags import (
+    TAG_EFFECT_EXECUTE,
+    TAG_EFFECT_READ,
+    TAG_SINK_NONE,
+)
+from harness_core.tools.time_bound import DEFAULT_WALL_S
+
+if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable, Mapping
 
 if TYPE_CHECKING:
     from app.agent_loop_lib.core.types import ToolResult
@@ -49,6 +69,7 @@ __all__ = [
     "InstallPackagesTool",
     "ReadSandboxFileTool",
     "detect_language_mismatch",
+    "stopped_output",
 ]
 
 _LANGUAGE_ENUM = ["typescript", "python"]
@@ -94,6 +115,81 @@ def _reuse_id(sandbox_id: str | None) -> str | None:
     return stripped or None
 
 
+def _resolve_timeout(timeout: Any, default: float, cap: float | None) -> tuple[float, float, bool]:
+    """`(requested, effective, capped)` for the model's `timeout` argument.
+
+    Missing, non-numeric or NaN → `default`; zero or negative → 1 s; above
+    `cap` → `cap`. The cap holds for every backend because it is applied
+    here, before the backend sees the request.
+    """
+    try:
+        requested = float(default if timeout is None else timeout)
+    except (TypeError, ValueError):
+        requested = float(default)
+    if math.isnan(requested):
+        requested = float(default)
+    if requested <= 0:
+        requested = 1.0
+    if cap is not None and requested > cap:
+        return requested, cap, True
+    return requested, requested, False
+
+
+def _at_cap_suggestion(cap: float) -> str:
+    return (
+        f"The run hit the maximum run time of {cap:g}s. A larger timeout will not be "
+        "accepted: make the code faster, process less data per run, or split the work "
+        "across several runs (files written to the sandbox persist between runs with "
+        "the same sandbox_id)."
+    )
+
+
+_STOPPED_ERROR = (
+    "Stopped by the user before this run finished. The run was ended; files it "
+    "was writing may be incomplete."
+)
+_STOPPED_BEFORE_START_ERROR = "Stopped by the user before this call started. Nothing ran."
+
+
+def stopped_output(*, started: bool = True) -> ToolOutput:
+    """The result of a sandbox call the user stopped mid-way. The run then
+    ends as cancelled at its next turn, so the model does not act on it in
+    this run; the wording is safe for it to read in a later turn.
+    `started` is False when the stop came while the call was still waiting
+    for a sandbox or a slot, so nothing ran."""
+    return ToolOutput(
+        success=False,
+        error=_STOPPED_ERROR if started else _STOPPED_BEFORE_START_ERROR,
+        end_fields={"reason": "stopped", "error_class": "cancelled"},
+    )
+
+
+def _run_outcome(result: CodeResult) -> str:
+    """The `outcome=` value of the `run_code finished` log line."""
+    if result.success:
+        return "ok"
+    category = result.error_analysis.category if result.error_analysis else None
+    if category == ErrorCategory.TIMEOUT:
+        return "timeout"
+    if category == ErrorCategory.OUT_OF_MEMORY:
+        return "out_of_memory"
+    return "error"
+
+
+def _log_run_finished(
+    outcome: str, *, exit_code: int, duration_ms: float, timeout_s: float,
+    timeout_capped: bool, backend: Any,
+) -> None:
+    """One line per `run_code` call, whatever its outcome: the record that
+    run-outcome counts (timeouts, out-of-memory kills, stops) are read from."""
+    _logger.info(
+        "run_code finished: outcome=%s exit_code=%d duration_ms=%.0f timeout_s=%g "
+        "timeout_capped=%s backend=%s",
+        outcome, exit_code, duration_ms, timeout_s, timeout_capped,
+        "-" if backend is None else getattr(backend, "backend_name", type(backend).__name__),
+    )
+
+
 def unknown_sandbox_guidance(error: Exception) -> str:
     """Turn a bare `UnknownSandboxError` into something the model can act on.
 
@@ -112,17 +208,26 @@ def unknown_sandbox_guidance(error: Exception) -> str:
     )
 
 
-def sandbox_limit_guidance(error: Exception) -> str:
+def sandbox_limit_guidance(error: Exception, *, reuse_helps: bool = True) -> str:
     """Turn a capacity denial into a retryable instruction.
 
     Capacity is transient — another request finishing frees a slot — so the
-    model should reuse a sandbox it already has, or wait, rather than
-    treating this as a permanent failure and abandoning the task.
+    model should wait and retry rather than treat this as a permanent
+    failure and abandon the task. `reuse_helps` is True when the denial was
+    for a new sandbox (a backend that keeps its slot for life, or the
+    sandbox count): an existing sandbox then avoids it. It is False when
+    every call takes a slot while it runs, reused sandbox or not.
     """
+    if reuse_helps:
+        return (
+            f"{error}. This is a temporary capacity limit, not a problem with your "
+            "code. Reuse an existing sandbox_id from earlier in this turn if you "
+            "have one, or retry this call shortly."
+        )
     return (
         f"{error}. This is a temporary capacity limit, not a problem with your "
-        "code. Reuse an existing sandbox_id from earlier in this turn if you "
-        "have one, or retry this call shortly."
+        "code. Every call needs a free slot while it runs, even on an existing "
+        "sandbox, so retry this call shortly and run one call at a time."
     )
 
 
@@ -238,6 +343,21 @@ _PARENT_RESULTS_NOTE = (
 # `factory.py`'s `set_advertise_parent_results` call site) — the
 # parent-results handoff mechanism never runs for that grant, so promising
 # the file would be actively false, not merely optimistic.
+# QA-FP12 B1: told only about $OUTPUT_DIR, a model asked to keep notes wrote them to its working directory, and they
+# were gone with the sandbox. The workspace is named, with a path to write to and what happens to the files.
+_SESSION_WORKSPACE_NOTE = (
+    "$WORKSPACE_DIR is this chat's workspace (`workspace/` under the working directory). Files you write "
+    "there are saved to the chat after each call and are there again in every later call and later turn, "
+    "even in a new sandbox; the user sees them too. Keep notes, data and code you or the user will come back "
+    "to there (e.g. os.path.join(os.environ['WORKSPACE_DIR'], 'notes', 'themes.md')). A file the user names by "
+    "a path in the workspace (data/clean.csv, wiki/summary.md) goes at that path under $WORKSPACE_DIR; copy it "
+    "to $OUTPUT_DIR as well only when they want it attached. Files written anywhere else outside $OUTPUT_DIR are "
+    "not kept once the sandbox goes. "
+)
+_SANDBOX_WORKSPACE_NOTE = (
+    "$WORKSPACE_DIR is a scratch folder in this sandbox: it is not kept once the sandbox goes. "
+)
+
 _NO_PARENT_RESULTS_NOTE = (
     f"This sandbox never has `{PARENT_RESULTS_INPUT_PATH}` or any other "
     "automatic pre-loading of data the calling agent already fetched — do "
@@ -278,6 +398,7 @@ async def _upload_staged_files(backend: Any) -> list[str]:
     be the first to see `is_fresh_sandbox=True`."""
     staged_input = peek_staged_input_files()
     staged_skill = peek_staged_skill_resources()
+    staged_workspace = peek_staged_workspace_files()
     _logger.info(
         "_upload_staged_files: staged_input_files=%d (%s) staged_skill_resources=%d (%s) "
         "backend=%s",
@@ -288,6 +409,7 @@ async def _upload_staged_files(backend: Any) -> list[str]:
         type(backend).__name__,
     )
     to_upload: dict[str, bytes] = {}
+    to_upload.update(staged_workspace or {})
     to_upload.update(staged_input or {})
     to_upload.update(staged_skill or {})
     uploaded: list[str] = []
@@ -301,6 +423,37 @@ async def _upload_staged_files(backend: Any) -> list[str]:
     if not uploaded:
         _logger.info("_upload_staged_files: nothing to upload (no staged files in context)")
     return uploaded
+
+
+_READ_MAX_BYTES = 1_000_000
+
+
+def _clamp_read_bytes(value: Any) -> int:
+    """`max_bytes` from the model, held to 0..`_READ_MAX_BYTES`; anything
+    that is not a number gets the maximum."""
+    try:
+        n = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return _READ_MAX_BYTES
+    return min(max(n, 0), _READ_MAX_BYTES)
+
+
+async def _read_head(backend: Any, path: str, max_bytes: int) -> tuple[bytes, bool]:
+    """At most `max_bytes` of `path`, and whether the file has more."""
+    if isinstance(backend, CodingSandboxBackend):
+        return await backend.read_file_head(path, max_bytes)
+    content = await backend.download_file(path)
+    return content[:max_bytes], len(content) > max_bytes
+
+
+# Provisioning (60 s by default), input staging and output collection around the program's run.
+_RUN_CODE_HEADROOM_S = 180.0
+
+
+class SessionWorkspaceCalls(Protocol):
+    """Runs one `run_code` call with the chat's workspace: staged before the program runs, saved after it."""
+
+    async def run(self, execute: Callable[[], Awaitable[ToolOutput]]) -> ToolOutput: ...
 
 
 class CodingSandboxTool(Tool):
@@ -321,6 +474,18 @@ class CodingSandboxTool(Tool):
         self._allow_network = allow_network
         self._advertise_parent_results = advertise_parent_results
         self._web_tool_names: tuple[str, ...] = _DEFAULT_WEB_TOOL_NAMES
+        self._session_workspace = False
+        self._workspace_calls: SessionWorkspaceCalls | None = None
+
+    def time_bound_s(self, arguments: Mapping[str, Any]) -> float | None | Literal["default"]:
+        # The program's own `timeout` is the model's to choose; the bound sits above it by the
+        # sandbox's provisioning, staging and output collection, and never below the default.
+        try:
+            timeout = float(arguments.get("timeout") or self._default_timeout)
+        except (TypeError, ValueError):
+            return "default"
+        bound = timeout + _RUN_CODE_HEADROOM_S
+        return bound if bound > DEFAULT_WALL_S else "default"
 
     def set_web_tool_names(self, names: tuple[str, ...]) -> None:
         """Flip which web-fetching tool(s) `description` names as the
@@ -333,6 +498,14 @@ class CodingSandboxTool(Tool):
         knows the granted tool surface for this request. Left at the
         library default (`_DEFAULT_WEB_TOOL_NAMES`) when never called."""
         self._web_tool_names = names
+
+    def set_session_workspace(self, kept: bool, calls: SessionWorkspaceCalls | None = None) -> None:
+        """Whether what a call leaves under `$WORKSPACE_DIR` is saved to the chat's workspace (a durable run with a
+        session workspace), so `description` promises it only where it holds. `calls` stages and saves it around
+        every call, whoever makes it: the run's own loop or a delegate such as `coding_agent`, whose loop reaches
+        this tool without the durable route."""
+        self._session_workspace = kept
+        self._workspace_calls = calls if kept else None
 
     def set_advertise_parent_results(self, advertise: bool) -> None:
         """Flip whether `description` promises `PARENT_RESULTS_INPUT_PATH`.
@@ -372,7 +545,8 @@ class CodingSandboxTool(Tool):
             "generation unless a Python library would produce significantly better results "
             "(e.g. data science with numpy/pandas, ML with torch/sklearn, image processing "
             "with Pillow, scientific computing with scipy) — when Python is chosen, briefly "
-            "note why. Failures (syntax/type/runtime errors, timeouts) are returned as "
+            "note why. TypeScript has no top-level await: put async code in an "
+            "`async function main()` and call `main()`. Failures (syntax/type/runtime errors, timeouts) are returned as "
             "structured data with a category and suggestion for you to fix and retry — they "
             "are not exceptions. $OUTPUT_DIR is always set: to produce a downloadable file "
             "(PDF, chart, spreadsheet, image, document, ...), write ONLY that final file to "
@@ -380,8 +554,10 @@ class CodingSandboxTool(Tool):
             "are captured, returned in the result's `artifacts` list, and delivered to the "
             "user automatically; do NOT print file paths or download links in your answer. "
             "Write intermediates (page renders, scratch data, anything the program itself "
-            "doesn't consider the deliverable) anywhere OUTSIDE $OUTPUT_DIR — those stay "
-            "sandbox-local and are never shown to the user. Pass the returned sandbox_id on a later "
+            "doesn't consider the deliverable) anywhere OUTSIDE $OUTPUT_DIR — those are not "
+            "delivered to the user. "
+            + (_SESSION_WORKSPACE_NOTE if self._session_workspace else _SANDBOX_WORKSPACE_NOTE)
+            + "Pass the returned sandbox_id on a later "
             "call to reuse the same environment: installed packages and files persist "
             "across calls, but variables/imports do NOT (each call is a fresh process). "
             + (_PARENT_RESULTS_NOTE if self._advertise_parent_results else _NO_PARENT_RESULTS_NOTE)
@@ -400,10 +576,24 @@ class CodingSandboxTool(Tool):
 
     @property
     def tags(self) -> list[Tag]:
-        return [Tag("risk", "high"), Tag("category", "execute")]
+        tags = [Tag("risk", "high"), Tag("category", "execute"), TAG_EFFECT_EXECUTE]
+        # Without network the code's output stays in the sandbox and the user's artifacts (UX1). The backend must take
+        # the network away too: the local backend's host subprocess keeps the host's (SINK2), so it stays external.
+        offline = not self._allow_network and not (
+            isinstance(self._manager, SandboxManager) and self._manager.reaches_network(SandboxType.CODING)
+        )
+        return [*tags, TAG_SINK_NONE] if offline else tags
 
     @property
     def parameters(self) -> list[ToolParameter]:
+        # A tool listed without a sandbox manager (a catalog of the tools) describes no cap.
+        cap = self._manager.run_timeout_cap(SandboxType.CODING) if isinstance(self._manager, SandboxManager) else None
+        timeout_description = "Maximum seconds to let the program run before it is killed"
+        if cap is not None:
+            timeout_description += (
+                f" (default {self._default_timeout:g}, at most {cap:g}; "
+                f"larger values are lowered to {cap:g})"
+            )
         return [
             ToolParameter(
                 name="code", type=ParameterType.STRING, required=True,
@@ -425,12 +615,23 @@ class CodingSandboxTool(Tool):
             ),
             ToolParameter(
                 name="timeout", type=ParameterType.FLOAT, required=False, default=self._default_timeout,
-                description="Maximum seconds to let the program run before it is killed.",
+                description=timeout_description + ".",
             ),
         ]
 
     def result_failed(self, args: dict[str, Any], result: ToolResult) -> bool:
         return isinstance(result.content, dict) and result.content.get("exit_code", 0) != 0
+
+    def summarize_result(self, args: dict[str, Any], result: ToolResult) -> str | None:
+        """A run its sandbox's memory limit ended says so with the limit (R32SECCOMP-FU-1); others as the loop words
+        them."""
+        content = result.content
+        limit = content.get("out_of_memory_mb") if isinstance(content, dict) else None
+        if not isinstance(limit, int) or isinstance(limit, bool) or limit <= 0:
+            return None
+        from harness_core.sandbox.errors import memory_limit_text
+
+        return f"Ran out of memory (limit {memory_limit_text(limit)})"
 
     async def execute(
         self,
@@ -441,6 +642,27 @@ class CodingSandboxTool(Tool):
         timeout: float | None = None,
         **kwargs: Any,
     ) -> ToolOutput:
+        held: list[str] = []
+        try:
+            if self._workspace_calls is None:
+                return await self._run(code, language, packages, sandbox_id, timeout, held)
+            return await self._workspace_calls.run(
+                lambda: self._run(code, language, packages, sandbox_id, timeout, held)
+            )
+        finally:
+            # Held until the workspace is saved from it: a parallel call must not evict it first.
+            for resolved in held:
+                self._manager.release(SandboxType.CODING, resolved)
+
+    async def _run(
+        self,
+        code: str,
+        language: str,
+        packages: list[str] | None,
+        sandbox_id: str | None,
+        timeout: float | None,
+        held: list[str],
+    ) -> ToolOutput:
         sandbox_id = _reuse_id(sandbox_id)
         is_fresh_sandbox = sandbox_id is None
         _logger.info(
@@ -449,14 +671,26 @@ class CodingSandboxTool(Tool):
             language, packages, sandbox_id, is_fresh_sandbox,
             self._allow_network, len(code),
         )
+        # Raced against Stop: for a metered backend this is where the slot
+        # wait and the VM creation happen.
         try:
-            resolved_id, backend = await self._manager.get_or_create(SandboxType.CODING, sandbox_id)
+            resolved_id, backend = await self._manager.unless_stopped(
+                lambda: self._manager.acquire(SandboxType.CODING, sandbox_id, tool=self.name),
+                tool=self.name,
+            )
+            held.append(resolved_id)
         except UnknownSandboxError as e:
             _logger.error("CodingSandboxTool.execute: unknown sandbox %s: %s", sandbox_id, e)
             return ToolOutput(success=False, error=unknown_sandbox_guidance(e))
         except SandboxLimitExceeded as e:
             _logger.warning("CodingSandboxTool.execute: capacity denied: %s", e)
             return ToolOutput(success=False, error=sandbox_limit_guidance(e))
+        except SandboxCallStopped:
+            _log_run_finished(
+                "stopped", exit_code=-1, duration_ms=0.0, timeout_s=0.0,
+                timeout_capped=False, backend=None,
+            )
+            return stopped_output(started=False)
 
         _logger.info(
             "CodingSandboxTool.execute: resolved sandbox_id=%s backend=%s "
@@ -480,7 +714,10 @@ class CodingSandboxTool(Tool):
             _logger.info("run_code: corrected declared language %r -> %r", language, detected)
             language = detected
 
-        resolved_timeout = timeout if timeout is not None else self._default_timeout
+        cap = self._manager.run_timeout_cap(SandboxType.CODING)
+        requested_timeout, resolved_timeout, timeout_capped = _resolve_timeout(
+            timeout, self._default_timeout, cap,
+        )
         request = CodeRequest(
             code=code,
             language=language,
@@ -488,13 +725,54 @@ class CodingSandboxTool(Tool):
             packages=packages or [],
             allow_network=self._allow_network,
         )
-        result = await backend.execute(request)
+        ran = False
+
+        async def _run() -> CodeResult:
+            nonlocal ran
+            async with self._manager.slot(SandboxType.CODING, resolved_id, tool=self.name):
+                ran = True
+                return await backend.execute(request)
+
+        started = time.monotonic()
+        try:
+            # Raced against Stop: covers the slot wait and the run itself.
+            result = await self._manager.unless_stopped(_run, tool=self.name)
+        except SandboxLimitExceeded as e:
+            _logger.warning("CodingSandboxTool.execute: no free slot: %s", e)
+            await _drop_unused_sandbox(self._manager, resolved_id, is_fresh_sandbox)
+            return ToolOutput(success=False, error=sandbox_limit_guidance(e, reuse_helps=False))
+        except SandboxCallStopped:
+            _log_run_finished(
+                "stopped", exit_code=-1, duration_ms=(time.monotonic() - started) * 1000,
+                timeout_s=request.timeout, timeout_capped=timeout_capped, backend=backend,
+            )
+            return stopped_output(started=ran)
+        except asyncio.CancelledError:
+            _log_run_finished(
+                "cancelled", exit_code=-1, duration_ms=(time.monotonic() - started) * 1000,
+                timeout_s=request.timeout, timeout_capped=timeout_capped, backend=backend,
+            )
+            raise
+        _log_run_finished(
+            _run_outcome(result), exit_code=result.exit_code, duration_ms=result.duration_ms,
+            timeout_s=request.timeout, timeout_capped=timeout_capped, backend=backend,
+        )
+        analysis = result.error_analysis
+        if (
+            cap is not None and resolved_timeout >= cap and result.exit_code == -1
+            and analysis is not None and analysis.category == ErrorCategory.TIMEOUT
+        ):
+            # A wall-clock timeout at the cap (exit -1). The local backend's
+            # CPU-time kill is also TIMEOUT but has its own suggestion. A
+            # larger timeout is refused, so the same call cannot succeed.
+            result = result.model_copy(update={
+                "error_analysis": analysis.model_copy(
+                    update={"suggestion": _at_cap_suggestion(cap), "is_retryable": False},
+                ),
+            })
         _logger.info(
-            "CodingSandboxTool.execute: result exit_code=%d artifacts=%s "
-            "duration_ms=%.1f stderr_len=%d",
-            result.exit_code,
+            "CodingSandboxTool.execute: result artifacts=%s stderr_len=%d",
             result.artifacts,
-            result.duration_ms,
             len(result.stderr) if result.stderr else 0,
         )
 
@@ -503,6 +781,11 @@ class CodingSandboxTool(Tool):
             data["input_files"] = sorted(uploaded_inputs)
         if language_correction is not None:
             data["language_correction"] = language_correction
+        if timeout_capped:
+            data["timeout_note"] = (
+                f"Requested timeout of {requested_timeout:g}s is above this deployment's "
+                f"maximum of {cap:g}s; the run was given {cap:g}s."
+            )
 
         if self._artifact_output_dir and result.artifacts:
             saved = await _save_artifacts(backend, resolved_id, result.artifacts, self._artifact_output_dir)
@@ -549,7 +832,7 @@ class InstallPackagesTool(Tool):
 
     @property
     def tags(self) -> list[Tag]:
-        return [Tag("risk", "medium"), Tag("category", "execute")]
+        return [Tag("risk", "medium"), Tag("category", "execute"), TAG_EFFECT_EXECUTE]
 
     @property
     def parameters(self) -> list[ToolParameter]:
@@ -583,12 +866,24 @@ class InstallPackagesTool(Tool):
         sandbox_id = _reuse_id(sandbox_id)
         is_fresh_sandbox = sandbox_id is None
         try:
-            resolved_id, backend = await self._manager.get_or_create(SandboxType.CODING, sandbox_id)
+            resolved_id, backend = await self._manager.unless_stopped(
+                lambda: self._manager.acquire(SandboxType.CODING, sandbox_id, tool=self.name),
+                tool=self.name,
+            )
         except UnknownSandboxError as e:
             return ToolOutput(success=False, error=unknown_sandbox_guidance(e))
         except SandboxLimitExceeded as e:
             return ToolOutput(success=False, error=sandbox_limit_guidance(e))
+        except SandboxCallStopped:
+            return stopped_output(started=False)
+        try:
+            return await self._installed(backend, resolved_id, packages, language, is_fresh_sandbox)
+        finally:
+            self._manager.release(SandboxType.CODING, resolved_id)
 
+    async def _installed(
+        self, backend: Any, resolved_id: str, packages: list[str], language: str, is_fresh_sandbox: bool
+    ) -> ToolOutput:
         # Same staged-input upload `run_code` does on a fresh sandbox —
         # a child that pre-warms its environment with install_packages
         # FIRST creates its sandbox HERE, and every later run_code call
@@ -600,11 +895,33 @@ class InstallPackagesTool(Tool):
         if is_fresh_sandbox:
             uploaded_inputs = await _upload_staged_files(backend)
 
-        result = await backend.install_packages(packages, language)
+        ran = False
+
+        async def _install() -> Any:
+            nonlocal ran
+            async with self._manager.slot(SandboxType.CODING, resolved_id, tool=self.name):
+                ran = True
+                return await backend.install_packages(packages, language)
+
+        try:
+            result = await self._manager.unless_stopped(_install, tool=self.name)
+        except SandboxLimitExceeded as e:
+            await _drop_unused_sandbox(self._manager, resolved_id, is_fresh_sandbox)
+            return ToolOutput(success=False, error=sandbox_limit_guidance(e, reuse_helps=False))
+        except SandboxCallStopped:
+            return stopped_output(started=ran)
         data = {**result.model_dump(), "sandbox_id": resolved_id}
         if uploaded_inputs:
             data["input_files"] = sorted(uploaded_inputs)
         return ToolOutput(success=True, data=data)
+
+
+async def _drop_unused_sandbox(manager: SandboxManager, sandbox_id: str, fresh: bool) -> None:
+    """Tear down a sandbox this call created but could not run on (no free
+    slot). Its id is not returned to the model, so nothing could reuse it,
+    and it would hold one of this request's sandboxes until the request ends."""
+    if fresh:
+        await manager.destroy(SandboxType.CODING, sandbox_id)
 
 
 class ReadSandboxFileTool(Tool):
@@ -647,7 +964,7 @@ class ReadSandboxFileTool(Tool):
 
     @property
     def tags(self) -> list[Tag]:
-        return [Tag("risk", "low"), Tag("category", "read")]
+        return [Tag("risk", "low"), Tag("category", "read"), TAG_EFFECT_READ]
 
     @property
     def parameters(self) -> list[ToolParameter]:
@@ -664,8 +981,8 @@ class ReadSandboxFileTool(Tool):
                 ),
             ),
             ToolParameter(
-                name="max_bytes", type=ParameterType.INTEGER, required=False, default=1_000_000,
-                description="Maximum number of bytes to read.",
+                name="max_bytes", type=ParameterType.INTEGER, required=False, default=_READ_MAX_BYTES,
+                description=f"Maximum number of bytes to read (at most {_READ_MAX_BYTES}).",
             ),
         ]
 
@@ -673,9 +990,10 @@ class ReadSandboxFileTool(Tool):
         self,
         sandbox_id: str,
         path: str,
-        max_bytes: int = 1_000_000,
+        max_bytes: int = _READ_MAX_BYTES,
         **kwargs: Any,
     ) -> ToolOutput:
+        max_bytes = _clamp_read_bytes(max_bytes)
         try:
             backend = self._manager.get(SandboxType.CODING, sandbox_id)
         except UnknownSandboxError as e:
@@ -684,15 +1002,15 @@ class ReadSandboxFileTool(Tool):
             return ToolOutput(success=False, error=sandbox_limit_guidance(e))
 
         try:
-            content = await backend.download_file(path)
+            # Reads only `max_bytes` (plus one) where the backend can, so a
+            # large file is never read whole to return its first bytes.
+            content, truncated = await _read_head(backend, path, max_bytes)
         except ValueError as e:
             # Path traversal — a rejected request, not an infra failure.
-            return ToolOutput(success=True, data={"error": str(e)})
+            return ToolOutput(success=True, data=error_data(e))
         except (FileNotFoundError, IsADirectoryError) as e:
-            return ToolOutput(success=True, data={"error": str(e)})
+            return ToolOutput(success=True, data=error_data(e))
 
-        truncated = len(content) > max_bytes
-        content = content[:max_bytes]
         try:
             return ToolOutput(success=True, data={
                 "content": content.decode("utf-8"), "encoding": "utf-8", "truncated": truncated,

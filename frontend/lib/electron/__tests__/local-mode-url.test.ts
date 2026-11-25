@@ -50,8 +50,11 @@ describe('local mode URL', () => {
     expect(fetchMock).not.toHaveBeenCalled();
     storage.setLocalModeApiBaseUrl('http://127.0.0.1:52000');
     expect(await refreshed).toBe(true);
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(String(fetchMock.mock.calls[0]![0])).toMatch(/^http:\/\/127\.0\.0\.1:52000\//);
+    // Keeping the sign-in's refresh token and the refresh itself both wait, and both go to this launch's server.
+    expect(fetchMock).toHaveBeenCalled();
+    for (const [url] of fetchMock.mock.calls as unknown as [string][]) {
+      expect(String(url)).toMatch(/^http:\/\/127\.0\.0\.1:52000\//);
+    }
     vi.unstubAllGlobals();
   });
 
