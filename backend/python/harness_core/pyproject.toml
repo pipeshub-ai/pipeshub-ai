@@ -1,0 +1,88 @@
+# Standalone distribution of harness_core, for embedding the harness outside
+# PipesHub (e.g. Loom). The package directory is the project root; the package
+# list is checked against the tree by tests/unit/harness_core/test_packaging.py.
+[build-system]
+requires = ["setuptools>=70"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "harness-core"
+version = "0.1.0"
+description = "Product-neutral agent harness core: journal, kernel, tools, engine and sandbox ports."
+requires-python = ">=3.12"
+dependencies = ["pydantic>=2.6", "jsonschema>=4.18"]
+
+[project.optional-dependencies]
+telemetry = ["opentelemetry-api>=1.30", "opentelemetry-sdk>=1.30"]
+transports = ["openai>=1.40", "httpx>=0.27", "anthropic>=0.40", "langchain-core>=0.3", "google-genai>=1.0", "opik>=1.0", "orjson>=3.9"]
+testing = ["pytest>=8", "pyyaml>=6"]
+# workspace.sealing (AES-GCM objects, P3.2), gateway tokens (Ed25519, E2) and sandbox.remote (the broker's /v1 HTTP API, P5.1).
+sealing = ["cryptography>=42"]
+broker-http = ["aiohttp>=3.9"]
+
+[tool.setuptools]
+package-dir = { "harness_core" = "." }
+packages = [
+    "harness_core",
+    "harness_core.access",
+    "harness_core.activity",
+    "harness_core.artifacts",
+    "harness_core.audit",
+    "harness_core.budget",
+    "harness_core.contracts",
+    "harness_core.contracts.generated",
+    "harness_core.contracts.generated.events",
+    "harness_core.contracts.generated.policy",
+    "harness_core.contracts.vectors",
+    "harness_core.context",
+    "harness_core.credentials",
+    "harness_core.driver",
+    "harness_core.effects",
+    "harness_core.engines",
+    "harness_core.engines.durable",
+    "harness_core.engines.outcome",
+    "harness_core.engines.outcome.locales",
+    "harness_core.gates",
+    "harness_core.gateway",
+    "harness_core.interactions",
+    "harness_core.invoker",
+    "harness_core.journal",
+    "harness_core.kernel",
+    "harness_core.kernel.agent",
+    "harness_core.kernel.budget",
+    "harness_core.kernel.context",
+    "harness_core.kernel.core",
+    "harness_core.kernel.durable",
+    "harness_core.kernel.hooks",
+    "harness_core.kernel.hooks.builtin",
+    "harness_core.kernel.hooks.middleware",
+    "harness_core.kernel.ports",
+    "harness_core.knowledge",
+    "harness_core.mcp_hub",
+    "harness_core.memories",
+    "harness_core.models",
+    "harness_core.models.transports",
+    "harness_core.policy",
+    "harness_core.provenance",
+    "harness_core.repos",
+    "harness_core.sandbox",
+    "harness_core.sandbox.egress",
+    "harness_core.sandbox.mcp_runner",
+    "harness_core.sandbox.remote",
+    "harness_core.security",
+    "harness_core.skills",
+    "harness_core.supply_chain",
+    "harness_core.telemetry",
+    "harness_core.testing",
+    "harness_core.testing.contracts",
+    "harness_core.testing.engines",
+    "harness_core.testing.replay",
+    "harness_core.testing.sandbox",
+    "harness_core.tool_identity",
+    "harness_core.tools",
+    "harness_core.workspace",
+    "harness_core.workspace.sync",
+]
+
+[tool.setuptools.package-data]
+harness_core = ["py.typed"]

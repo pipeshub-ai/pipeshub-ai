@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/ext/pipeshub/api/conversation-seen.schema.json",
+  "title": "ConversationSeen",
+  "description": "`PUT /api/v1/conversations/{conversationId}/seen` and `PUT /api/v1/agents/{agentKey}/conversations/{conversationId}/seen` (ADR-UI-01 D2): the caller opened the conversation; their mark moves to the server's time unless it already is later. The answer is the mark held (ms).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "seenUpTo"
+  ],
+  "properties": {
+    "seenUpTo": {
+      "$ref": "../../../core/common.schema.json#/$defs/UInt"
+    }
+  },
+  "examples": [
+    {
+      "seenUpTo": 1762678800000
+    }
+  ]
+}

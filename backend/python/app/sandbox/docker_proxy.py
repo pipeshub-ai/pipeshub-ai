@@ -1,11 +1,14 @@
-"""Policy-enforcing proxy between the coding sandbox and the Docker daemon.
+"""Policy-enforcing proxy between the Docker daemon and everything that starts sandboxes.
 
-The app used to mount ``/var/run/docker.sock`` directly, so anything that
-compromised the app process was root on the host: one ``POST
+Whatever holds ``/var/run/docker.sock`` is root on the host: one ``POST
 /containers/create`` with ``Privileged`` and a bind of ``/`` is enough. This
-proxy is the only process that touches the socket. The app reaches it over
+proxy is the only process that touches the socket. Its callers reach it over
 TCP (``DOCKER_HOST=tcp://docker-socket-proxy:2375``) and the Docker SDK works
-unchanged, but only the calls the sandbox makes get through:
+unchanged, but each caller's credential holds it to a profile: the sandbox
+broker's (``DOCKER_PROXY_BROKER_TOKEN``, ``app.sandbox.docker_proxy_broker``,
+R38IDENT-FU-1) and, while an install still runs ``SANDBOX_MODE=docker``, the
+legacy executor's (``DOCKER_PROXY_TOKEN``, ``DockerApiPolicy`` below). The legacy
+profile lets through only the calls the coding sandbox makes:
 
 - ping / version, and a filtered daemon ``/info`` (only the fields that size
   the sandbox ceiling: no labels, proxy settings, registry config or
@@ -30,26 +33,38 @@ unchanged, but only the calls the sandbox makes get through:
 - inspect / pull of the allowed sandbox images, by an explicit tag or digest;
 - list and inspect the sandbox egress network (other networks are left out
   of the list, and only this stack's containers are shown attached to it),
-  create it with inter-container traffic off, and remove it only when this
-  proxy created it (the egress firewall recreates it when it predates its
-  required options).
+  create it with inter-container traffic off, on a subnet of
+  ``SANDBOX_OPEN_EGRESS_SUBNETS`` or the daemon's choice, and remove it only
+  when this proxy created it (the egress firewall recreates it when it
+  predates its required options).
 
 Request bodies are bounded: a create body by size and nesting depth, an
 archive upload by ``DOCKER_PROXY_MAX_UPLOAD_MB`` and by idle and total
 timeouts. Each client address may hold at most
 ``DOCKER_PROXY_MAX_CONNECTIONS_PER_CLIENT`` connections at once. It listens
 on ``DOCKER_PROXY_HOST`` (default 127.0.0.1; Compose sets 0.0.0.0 on its
-internal control network) and has no client authentication of its own, so
-keep it off any network a user can reach.
+internal control network). Its callers' credentials are its only client
+authentication, so keep it off any network a user can reach.
 
 Path-only proxies cannot express the create rules: they allow
 ``/containers/create`` or they don't. That is why this one reads the body.
 
+SEC-A-04: every create must also have the floor the sandbox broker holds its
+own containers to (``app.sandbox.sandbox_floor``: limits on pids, memory and
+CPU with no swap, a read-only root, every capability dropped,
+``no-new-privileges``, a non-root user), the firewall's install step being the
+one root container, and only with the firewall script. Writable directories
+are tmpfs or anonymous volumes, removed with their container. And every call
+but ``/_ping`` and ``/version`` carries the caller's credential
+(``Authorization: Bearer``, ``caller_token``): reaching ``sandbox-control`` is
+not enough to create a container.
+
 It also removes its own sandbox containers that outlive any run (a worker
 that crashed mid-run leaves its container behind), see ``Reaper``.
 
-Stdlib only, so the proxy starts without importing the app's dependencies.
-Run with ``python -m app.sandbox.docker_proxy``.
+The transport and the legacy profile are stdlib only, so the legacy proxy starts
+without importing the app's dependencies; the broker's profile is imported only
+when its credential is configured. Run with ``python -m app.docker_proxy_main``.
 """
 
 from __future__ import annotations
@@ -57,6 +72,8 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import hashlib
+import hmac
+import ipaddress
 import itertools
 import json
 import logging
@@ -70,8 +87,16 @@ import time
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, TypeVar
-from urllib.parse import parse_qs, quote, unquote, urlsplit
+from typing import TYPE_CHECKING, Any, Protocol, TypeVar
+from urllib.parse import parse_qs, quote, unquote, urlencode, urlsplit
+
+from app.sandbox.sandbox_floor import (
+    FIREWALL_SETUP_CAPS,
+    firewall_install,
+    floor_violations,
+    root_user,
+)
+from app.utils.security_profile import hardened_profile
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Mapping
@@ -86,6 +111,9 @@ MANAGED_LABEL = "ai.pipeshub.docker-proxy.managed"
 # keeps one stack's proxy (and its reaper) away from another's containers.
 INSTANCE_LABEL = "ai.pipeshub.docker-proxy.instance"
 DEFAULT_INSTANCE = "default"
+# What the sandbox broker's profile stamps on the containers it admits (``docker_proxy_broker``). Its engine
+# sandboxes live as long as their run, so the reaper, which ages the legacy executor's runs, never touches them.
+BROKER_STAMP_LABEL = "ai.pipeshub.docker-proxy.install"
 _INSTANCE_RE = re.compile(r"[A-Za-z0-9_.:/-]{1,128}")
 _UPSTREAM_TIMEOUT_S = 30.0
 _DEFAULT_HOST = "127.0.0.1"
@@ -98,8 +126,21 @@ _DEFAULT_EGRESS_NETWORK = "pipeshub_sandbox_egress"
 # The egress firewall (agent_loop_lib/sandbox/coding/egress.py) installs
 # iptables rules as root inside the container's own network namespace, then
 # drops to an unprivileged user. Nothing here reaches the host: NET_ADMIN is
-# scoped to the container's netns because host networking is refused.
-_ALLOWED_CAPS = frozenset({"NET_ADMIN", "NET_RAW", "SETUID", "SETGID", "SETPCAP"})
+# scoped to the container's netns because host networking is refused. Only its
+# install step adds them (``sandbox_floor.firewall_install``).
+_ALLOWED_CAPS = FIREWALL_SETUP_CAPS
+# The caller's credential (SEC-A-04): ``DOCKER_PROXY_TOKEN``, which install.sh generates and gives the app and this
+# proxy alike. The proxy holds the Docker socket, so it never holds the platform's root key (ADR-KEY-02).
+ENV_CALLER_TOKEN = "DOCKER_PROXY_TOKEN"
+# The sandbox broker's credential (R38IDENT-FU-1): the broker reaches the daemon only through this proxy, held to its
+# own profile, so a foothold in the broker is not the host.
+ENV_BROKER_CALLER_TOKEN = "DOCKER_PROXY_BROKER_TOKEN"
+# By value or by file (R38IDENT-FU-8): kept literal, the proxy starts without the app's dependencies.
+_PLATFORM_KEYS = (
+    "SECRET_KEY", "SECRET_KEY_PREVIOUS", "SECRET_KEY_NEXT",
+    "SECRET_KEY_FILE", "SECRET_KEY_PREVIOUS_FILE", "SECRET_KEY_NEXT_FILE",
+)
+_OPEN_PATHS = frozenset({"/_ping", "/version"})
 _ALLOWED_SECURITY_OPTS = frozenset(
     {"no-new-privileges", "no-new-privileges:true", "no-new-privileges=true"}
 )
@@ -142,12 +183,14 @@ _HOST_CONFIG_FIELDS = frozenset({
     "PublishAllPorts", "CgroupParent", "MaskedPaths", "ReadonlyPaths", "Mounts",
     "CapAdd", "SecurityOpt", "PidMode", "UTSMode", "UsernsMode", "IpcMode",
     "CgroupnsMode", "Runtime", "RestartPolicy", "NetworkMode", "LogConfig",
-    "CapDrop", "Memory", "NanoCpus", "PidsLimit", "ReadonlyRootfs", "Tmpfs",
-    "StorageOpt", "MemorySwap", "OomScoreAdj",
+    "CapDrop", "Memory", "MemorySwap", "NanoCpus", "PidsLimit", "ReadonlyRootfs", "Tmpfs",
+    "StorageOpt", "Init", "OomScoreAdj",
 })
 _LOG_CONFIG_FIELDS = frozenset({"Type", "Config"})
 _RESTART_POLICY_FIELDS = frozenset({"Name"})
-_MOUNT_FIELDS = frozenset({"Type"})
+_MOUNT_FIELDS = frozenset({"Type", "Target", "Source", "ReadOnly", "Consistency", "VolumeOptions", "TmpfsOptions"})
+# An anonymous volume (a writable directory under a read-only root): no source, no driver, no subpath.
+_VOLUME_OPTION_FIELDS = frozenset({"NoCopy", "Labels"})
 _NETWORKING_CONFIG_FIELDS = frozenset({"EndpointsConfig"})
 # What docker-py's EndpointConfig can send. Closed: the daemon attaches a
 # user-defined network's endpoint by its NetworkID when one is given, not by
@@ -163,6 +206,12 @@ _NETWORK_CREATE_FIELDS = frozenset({
     "Name", "CheckDuplicate", "Driver", "Options", "IPAM", "Internal", "Labels",
     "Attachable", "Ingress", "Scope", "ConfigOnly", "ConfigFrom", "EnableIPv6",
 })
+_IPAM_FIELDS = frozenset({"Driver", "Config", "Options"})
+_IPAM_POOL_FIELDS = frozenset({"Subnet", "IPRange", "Gateway", "AuxiliaryAddresses"})
+_ENV_OPEN_EGRESS_SUBNETS = "SANDBOX_OPEN_EGRESS_SUBNETS"
+# egress_firewall.DEFAULT_OPEN_EGRESS_POOL, repeated because this module imports only the stdlib; a test keeps
+# the two equal.
+_DEFAULT_OPEN_EGRESS_POOL = "10.212.0.0/16"
 _ICC_OPTION = "com.docker.network.bridge.enable_icc"
 # Network inspect keys that describe other endpoints on the network (swarm
 # peers and services); "Containers" is narrowed to this stack's instead.
@@ -252,7 +301,143 @@ class Route:
     kind: str
     container: str | None = None
     network: str | None = None
+    # The id or name the route acts on when it is neither a container nor a network (an exec, a volume).
+    ident: str | None = None
+    # The JSON body is read and checked before anything goes upstream.
+    reads_body: bool = False
+    # Docker hijacks the connection (an attached exec): both directions are piped once the daemon answers.
+    hijack: bool = False
+
+    # What a local route reports on (``/_pipeshub/usage?scope=``).
     scope: str | None = None
+
+
+class Absent(Exception):
+    """The object a request names does not exist: answered 404, as the daemon would, so a caller's not-found handling
+    works through the proxy."""
+
+
+class Daemon:
+    """The Docker daemon behind the proxy, for the lookups a policy makes before it lets a request through."""
+
+    def __init__(self, socket_path: str) -> None:
+        self.socket_path = socket_path
+
+    async def open(self) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
+        return await asyncio.open_unix_connection(self.socket_path)
+
+    async def json(self, path: str) -> tuple[int, Any]:
+        reader, writer = await self.open()
+        try:
+            writer.write(_serialize_head(
+                f"GET {path} HTTP/1.1", [("Host", "docker"), ("Connection", "close")]
+            ))
+            await writer.drain()
+            raw = await reader.read()
+        finally:
+            writer.close()
+        head, _, body = raw.partition(b"\r\n\r\n")
+        status_line, *header_lines = head.decode("latin-1").split("\r\n")
+        status = int(status_line.split(" ")[1])
+        if any(h.lower().startswith("transfer-encoding:") and "chunked" in h.lower()
+               for h in header_lines):
+            body = _dechunk(body)
+        try:
+            return status, json.loads(body or b"null")
+        except ValueError:
+            return status, None
+
+
+def with_container_id(target: str, full_id: str) -> str:
+    """``target`` addressing the container by the id the policy checked, so a name reused between the check and the
+    call cannot redirect it."""
+    return _CONTAINER_IN_TARGET.sub(rf"\g<1>{full_id}", target, count=1)
+
+
+def removing_volumes(target: str) -> str:
+    """A container DELETE that takes its anonymous volumes with it, whatever the client asked."""
+    split = urlsplit(target)
+    query = {k: v[-1] for k, v in parse_qs(split.query).items()}
+    return f"{split.path}?{urlencode({**query, 'v': '1'})}"
+
+
+def refuse_host_reach(host: dict[str, Any]) -> None:
+    """The HostConfig rules every profile holds a create to: nothing of the host (privileged mode, binds, devices,
+    published ports, host namespaces, unconfined profiles, a restart policy, another runtime), whatever else the
+    profile allows. ``host`` has passed ``_struct_object``."""
+    if host.get("Privileged"):
+        raise PolicyDenied("privileged containers are not permitted")
+    for key in ("Binds", "VolumesFrom", "Devices", "DeviceRequests",
+                "DeviceCgroupRules", "Links", "Sysctls", "PortBindings",
+                "VolumeDriver"):
+        if host.get(key):
+            raise PolicyDenied(f"HostConfig.{key} is not permitted")
+    if host.get("PublishAllPorts"):
+        raise PolicyDenied("HostConfig.PublishAllPorts is not permitted")
+    if host.get("CgroupParent"):
+        raise PolicyDenied("HostConfig.CgroupParent is not permitted")
+    for key in ("MaskedPaths", "ReadonlyPaths"):
+        if host.get(key) is not None:
+            raise PolicyDenied(f"HostConfig.{key} is not permitted")
+    # Init runs the daemon's own init as PID 1 to reap zombies under the pids limit. Docker
+    # reads it as a boolean; refuse any other shape rather than let the daemon interpret it.
+    if "Init" in host and host["Init"] is not None and not isinstance(host["Init"], bool):
+        raise PolicyDenied("HostConfig.Init may only be true or false")
+    # StorageOpt caps the container's writable layer (the per-run disk
+    # quota). Only the size cap is a resource limit; refuse anything else.
+    storage_opt = host.get("StorageOpt")
+    if storage_opt is not None and (not isinstance(storage_opt, dict) or set(storage_opt) - {"size"}):
+        raise PolicyDenied("HostConfig.StorageOpt may only set 'size'")
+    for opt in host.get("SecurityOpt") or []:
+        if str(opt).strip().lower() not in _ALLOWED_SECURITY_OPTS:
+            raise PolicyDenied(f"security option {opt!r} is not permitted")
+    for key in ("PidMode", "UTSMode", "UsernsMode"):
+        if host.get(key):
+            raise PolicyDenied(f"HostConfig.{key} is not permitted")
+    if (host.get("IpcMode") or "private") not in ("private", "none"):
+        raise PolicyDenied("HostConfig.IpcMode is not permitted")
+    if (host.get("CgroupnsMode") or "private") != "private":
+        raise PolicyDenied("HostConfig.CgroupnsMode is not permitted")
+    if (host.get("Runtime") or "") not in _ALLOWED_RUNTIMES:
+        raise PolicyDenied(f"runtime {host.get('Runtime')!r} is not permitted")
+    restart_policy = _struct_object(
+        host.get("RestartPolicy"), _RESTART_POLICY_FIELDS, "HostConfig.RestartPolicy",
+    )
+    restart = restart_policy.get("Name") or "no"
+    if restart != "no":
+        raise PolicyDenied("restart policies are not permitted")
+
+
+def pinned_log_config(host: dict[str, Any]) -> dict[str, Any]:
+    """The create's LogConfig, pinned to a local driver.
+
+    Network log drivers (syslog, gelf, fluentd, ...) connect from the daemon's network, whatever the container's
+    NetworkMode is. An unset Type takes the daemon's default driver, which may be one of them, so it is pinned;
+    "local" also rotates by default, bounding a chatty sandbox's disk use.
+    """
+    log_config = _struct_object(
+        host.get("LogConfig"), _LOG_CONFIG_FIELDS, "HostConfig.LogConfig", closed=True,
+    )
+    log_driver = log_config.get("Type") or "local"
+    if log_driver not in _ALLOWED_LOG_DRIVERS:
+        raise PolicyDenied(f"log driver {log_driver!r} is not permitted")
+    if log_config.get("Config"):
+        raise PolicyDenied("HostConfig.LogConfig.Config is not permitted")
+    return {"Type": log_driver, "Config": {}}
+
+
+def labelled(body: dict[str, Any], host: dict[str, Any], stamp: dict[str, str]) -> dict[str, Any]:
+    """The checked create body with its log driver pinned and the proxy's ownership ``stamp`` among its labels."""
+    raw_labels = body.get("Labels")
+    if raw_labels is None:
+        raw_labels = {}
+    if not isinstance(raw_labels, dict):
+        raise PolicyDenied("Labels must be an object")
+    return {
+        **body,
+        "HostConfig": {**host, "LogConfig": pinned_log_config(host)},
+        "Labels": {**raw_labels, **stamp},
+    }
 
 
 def normalize_image(ref: str) -> str:
@@ -337,6 +522,9 @@ def _json_int(value: object) -> bool:
 class DockerApiPolicy:
     allowed_images: frozenset[str]
     allowed_networks: frozenset[str]
+    # The only addresses an egress network may be given: anything else could put the bridge on a range the
+    # host routes to (its LAN, a VPC peer), which the sandbox would then reach through the bridge gateway.
+    egress_pool: ipaddress.IPv4Network = ipaddress.IPv4Network(_DEFAULT_OPEN_EGRESS_POOL)
     # Per-container ceilings. A create must set all three, within them.
     max_memory_bytes: int = _DEFAULT_MAX_MEMORY_MB * 1024 * 1024
     max_nano_cpus: int = int(_DEFAULT_MAX_CPUS * 1e9)
@@ -355,11 +543,16 @@ class DockerApiPolicy:
         networks = _split_csv(env.get("DOCKER_PROXY_ALLOWED_NETWORKS")) or [
             env.get("SANDBOX_EGRESS_NETWORK") or _DEFAULT_EGRESS_NETWORK
         ]
+        pool = ipaddress.ip_network(
+            (env.get(_ENV_OPEN_EGRESS_SUBNETS) or "").strip() or _DEFAULT_OPEN_EGRESS_POOL, strict=True,
+        )
+        if not isinstance(pool, ipaddress.IPv4Network):
+            raise ValueError(f"{_ENV_OPEN_EGRESS_SUBNETS} must be an IPv4 network")
         max_mb = _positive_env(env, "DOCKER_PROXY_MAX_MEMORY_MB", _DEFAULT_MAX_MEMORY_MB, int)
         max_cpus = _positive_env(env, "DOCKER_PROXY_MAX_CPUS", _DEFAULT_MAX_CPUS, float)
         max_pids = _positive_env(env, "DOCKER_PROXY_MAX_PIDS", _DEFAULT_MAX_PIDS, int)
         return cls(
-            allowed_images=frozenset(images), allowed_networks=frozenset(networks),
+            allowed_images=frozenset(images), allowed_networks=frozenset(networks), egress_pool=pool,
             max_memory_bytes=int(max_mb) * 1024 * 1024, max_nano_cpus=int(max_cpus * 1e9),
             max_pids=int(max_pids),
         )
@@ -398,7 +591,7 @@ class DockerApiPolicy:
             extra = set(query) - _CREATE_QUERY
             if extra:
                 raise PolicyDenied(f"container create parameters {sorted(extra)} are not permitted")
-            return Route("container_create")
+            return Route("container_create", reads_body=True)
         m = re.fullmatch(r"/containers/([^/]+)(/[a-z]+)?", path)
         if m:
             ident, action = unquote(m.group(1)), m.group(2) or ""
@@ -438,7 +631,7 @@ class DockerApiPolicy:
         if path == "/networks" and method == "GET":
             return Route("network_list")
         if path == "/networks/create" and method == "POST":
-            return Route("network_create")
+            return Route("network_create", reads_body=True)
         m = re.fullmatch(r"/networks/([^/]+)", path)
         if m and method in ("GET", "DELETE"):
             return Route("network_allowed", network=unquote(m.group(1)))
@@ -463,58 +656,31 @@ class DockerApiPolicy:
         host = _struct_object(
             body.get("HostConfig"), _HOST_CONFIG_FIELDS, "HostConfig", closed=True,
         )
-
-        if host.get("Privileged"):
-            raise PolicyDenied("privileged containers are not permitted")
-        for key in ("Binds", "VolumesFrom", "Devices", "DeviceRequests",
-                    "DeviceCgroupRules", "Links", "Sysctls", "PortBindings",
-                    "VolumeDriver"):
-            if host.get(key):
-                raise PolicyDenied(f"HostConfig.{key} is not permitted")
-        if host.get("PublishAllPorts"):
-            raise PolicyDenied("HostConfig.PublishAllPorts is not permitted")
-        if host.get("CgroupParent"):
-            raise PolicyDenied("HostConfig.CgroupParent is not permitted")
-        for key in ("MaskedPaths", "ReadonlyPaths"):
-            if host.get(key) is not None:
-                raise PolicyDenied(f"HostConfig.{key} is not permitted")
+        refuse_host_reach(host)
 
         for raw_mount in host.get("Mounts") or []:
-            mount = _struct_object(raw_mount, _MOUNT_FIELDS, "HostConfig.Mounts[]")
-            if mount.get("Type") != "tmpfs":
-                raise PolicyDenied("only tmpfs mounts are permitted")
-
-        # StorageOpt caps the container's writable layer (the per-run disk
-        # quota). Only the size cap is a resource limit; refuse anything else.
-        storage_opt = host.get("StorageOpt")
-        if storage_opt is not None and (not isinstance(storage_opt, dict) or set(storage_opt) - {"size"}):
-            raise PolicyDenied("HostConfig.StorageOpt may only set 'size'")
+            mount = _struct_object(raw_mount, _MOUNT_FIELDS, "HostConfig.Mounts[]", closed=True)
+            kind = mount.get("Type")
+            if kind == "volume":
+                # A named source could be another container's data or a local-driver bind of the host.
+                if mount.get("Source"):
+                    raise PolicyDenied("only anonymous volumes are permitted")
+                _struct_object(mount.get("VolumeOptions"), _VOLUME_OPTION_FIELDS, "HostConfig.Mounts[].VolumeOptions", closed=True)
+            elif kind != "tmpfs":
+                raise PolicyDenied("only tmpfs mounts and anonymous volumes are permitted")
 
 
         cap_add = {str(c).upper().removeprefix("CAP_") for c in host.get("CapAdd") or []}
         extra = cap_add - _ALLOWED_CAPS
         if extra:
             raise PolicyDenied(f"capabilities {sorted(extra)} are not permitted")
+        # SEC-A-04: the broker's floor; the firewall's install step is the one root container with capabilities.
+        installs_firewall = firewall_install(body.get("User"), body.get("Cmd"), sorted(cap_add))
+        if not installs_firewall and (root_user(body.get("User")) or cap_add):
+            raise PolicyDenied("a sandbox runs as a non-root user with no added capabilities")
+        if installs_firewall and (host.get("NetworkMode") or "none") == "none":
+            raise PolicyDenied("the egress firewall installs only on the egress network")
 
-        for opt in host.get("SecurityOpt") or []:
-            if str(opt).strip().lower() not in _ALLOWED_SECURITY_OPTS:
-                raise PolicyDenied(f"security option {opt!r} is not permitted")
-
-        for key in ("PidMode", "UTSMode", "UsernsMode"):
-            if host.get(key):
-                raise PolicyDenied(f"HostConfig.{key} is not permitted")
-        if (host.get("IpcMode") or "private") not in ("private", "none"):
-            raise PolicyDenied("HostConfig.IpcMode is not permitted")
-        if (host.get("CgroupnsMode") or "private") != "private":
-            raise PolicyDenied("HostConfig.CgroupnsMode is not permitted")
-        if (host.get("Runtime") or "") not in _ALLOWED_RUNTIMES:
-            raise PolicyDenied(f"runtime {host.get('Runtime')!r} is not permitted")
-        restart_policy = _struct_object(
-            host.get("RestartPolicy"), _RESTART_POLICY_FIELDS, "HostConfig.RestartPolicy",
-        )
-        restart = restart_policy.get("Name") or "no"
-        if restart != "no":
-            raise PolicyDenied("restart policies are not permitted")
         # Network log drivers (syslog, gelf, fluentd, ...) connect from the
         # daemon's network, whatever the container's NetworkMode is. An unset
         # Type takes the daemon's default driver, which may be one of them, so
@@ -550,6 +716,10 @@ class DockerApiPolicy:
                     raise PolicyDenied(f"EndpointsConfig[{name!r}].{key} is not permitted")
 
         swap = self._check_resources(host)
+        # Read with the swap the create is sent with: an unset one is forwarded as equal to the memory.
+        floor = floor_violations({**host, "MemorySwap": swap})
+        if floor:
+            raise PolicyDenied(f"the sandbox floor is not met: {'; '.join(floor)}")
 
         raw_labels = body.get("Labels")
         if raw_labels is None:
@@ -633,9 +803,11 @@ class DockerApiPolicy:
         if options.get(_ICC_OPTION) != "false":
             raise PolicyDenied(f"network option {_ICC_OPTION} must be \"false\"")
         # EnableIPv6: the sandbox egress firewall only installs IPv4 rules.
-        for key in ("IPAM", "ConfigFrom", "ConfigOnly", "Ingress", "Scope", "EnableIPv6", "Attachable"):
+        for key in ("ConfigFrom", "ConfigOnly", "Ingress", "Scope", "EnableIPv6", "Attachable"):
             if body.get(key):
                 raise PolicyDenied(f"network {key} is not permitted")
+        if body.get("IPAM"):
+            self._check_ipam(body["IPAM"])
         raw_labels = body.get("Labels")
         if raw_labels is None:
             raw_labels = {}
@@ -647,6 +819,9 @@ class DockerApiPolicy:
         # An explicit false: docker-py omits a false EnableIPv6, and newer
         # daemons then apply their default-network-opts, which may turn it on.
         return {**body, "EnableIPv6": False, "Labels": labels}
+
+    def _check_ipam(self, ipam: object) -> None:
+        check_ipam(ipam, self.egress_pool)
 
 
 def _local_route(method: str, path: str, query: Mapping[str, list[str]]) -> Route:
@@ -823,6 +998,28 @@ class SidecarStats:
             "dockerdRssBytes": None if dockerd is None else int(dockerd * 1024),
             "containerdRssBytes": None if containerd is None else int(containerd * 1024),
         }
+
+
+def check_ipam(ipam: object, pool: ipaddress.IPv4Network) -> None:
+    """One IPv4 subnet of ``pool`` with the default driver, its gateway inside it, nothing else."""
+    ipam = _struct_object(ipam, _IPAM_FIELDS, "network IPAM", closed=True)
+    if (ipam.get("Driver") or "default") != "default" or ipam.get("Options"):
+        raise PolicyDenied("network IPAM driver and options are not permitted")
+    configs = ipam.get("Config")
+    if not isinstance(configs, list) or len(configs) != 1:
+        raise PolicyDenied("network IPAM must name exactly one subnet")
+    config = _struct_object(configs[0], _IPAM_POOL_FIELDS, "network IPAM pool", closed=True)
+    if config.get("IPRange") or config.get("AuxiliaryAddresses"):
+        raise PolicyDenied("network IPAM ranges and auxiliary addresses are not permitted")
+    try:
+        subnet = ipaddress.ip_network(str(config.get("Subnet") or ""), strict=True)
+        gateway = ipaddress.ip_address(str(config["Gateway"])) if config.get("Gateway") else None
+    except ValueError as exc:
+        raise PolicyDenied(f"network IPAM address is not valid: {exc}") from None
+    if not isinstance(subnet, ipaddress.IPv4Network) or not subnet.subnet_of(pool):
+        raise PolicyDenied(f"network subnet {subnet} is outside {pool}")
+    if gateway is not None and gateway not in subnet:
+        raise PolicyDenied(f"network gateway {gateway} is outside {subnet}")
 
 
 def _split_csv(value: str | None) -> list[str]:
@@ -1113,6 +1310,21 @@ def _error_response(status: int, reason: str, message: str) -> bytes:
     return head + body
 
 
+class ProxyProfile(Protocol):
+    """What one caller may ask of the daemon: the legacy executor's calls (``DockerApiPolicy``) or the sandbox
+    broker's (``app.sandbox.docker_proxy_broker.BrokerApiPolicy``). The proxy picks the profile by the caller's
+    credential; everything else (parsing, framing, forwarding) is the same code for both."""
+
+    def route(self, method: str, target: str) -> Route: ...
+
+    async def admit(self, route: Route, method: str, target: str, payload: object, daemon: Daemon) -> tuple[str, Any]: ...
+
+
+# A caller's profile: the legacy executor's (``DockerApiPolicy``, checked by the proxy itself against this stack's
+# containers and networks) or one that admits its own calls (``ProxyProfile``).
+CallerProfile = ProxyProfile | DockerApiPolicy
+
+
 # The /info fields the app sizes the sandbox ceiling from, and the storage
 # driver it decides disk-quota enforcement from. Raw /info also carries daemon
 # labels, registry mirrors and HTTP(S)_PROXY settings (which can hold
@@ -1172,10 +1384,35 @@ def _json_response(payload: object, status: int = 200) -> bytes:
 
 class DockerSocketProxy:
     def __init__(
-        self, policy: DockerApiPolicy, upstream_socket: str, *, instance: str = DEFAULT_INSTANCE,
-        sidecar_stats_file: str | None = None, limits: ProxyLimits | None = None,
+        self,
+        policy: CallerProfile | None,
+        upstream_socket: str,
+        *,
+        caller_token: str | None = None,
+        callers: Mapping[str, CallerProfile] | None = None,
+        anonymous: DockerApiPolicy | None = None,
+        instance: str = DEFAULT_INSTANCE,
+        sidecar_stats_file: str | None = None,
+        limits: ProxyLimits | None = None,
     ) -> None:
-        self._policy = policy
+        profiles = dict(callers or {})
+        if policy is not None:
+            if caller_token is None:
+                raise ValueError("a profile needs its caller's credential")
+            profiles[caller_token] = policy
+        if anonymous is not None and profiles:
+            raise ValueError("a proxy with a credentialed caller admits no caller without one")
+        if not profiles and anonymous is None:
+            raise ValueError("the proxy has no caller")
+        if any(len(token) < 32 for token in profiles):
+            raise ValueError("the caller token is too short to be a credential")
+        self._callers = [(f"Bearer {token}".encode(), profile) for token, profile in profiles.items()]
+        # R51-COMPAT: the compatibility profile with no credential configured, as a release before SEC-A-04 ran.
+        self._anonymous = anonymous
+        self._daemon = Daemon(upstream_socket)
+        # The legacy executor's profile: the networks this proxy lists and lets through are read against it.
+        legacy = [p for p in (*profiles.values(), anonymous) if isinstance(p, DockerApiPolicy)]
+        self._policy = legacy[0] if legacy else DockerApiPolicy(frozenset(), frozenset())
         self._upstream = upstream_socket
         self.instance = instance
         self.limits = limits or ProxyLimits()
@@ -1191,6 +1428,16 @@ class DockerSocketProxy:
         # arriving during the ownership lookup); a GC pass then collects the
         # request mid-flight and the client sees an empty reply.
         self._inflight: set[asyncio.Task[None]] = set()
+
+    def _profile(self, authorization: str | None) -> ProxyProfile | None:
+        """The profile whose credential the request carries. Every credential is compared, so the time taken does
+        not say which one matched."""
+        sent = (authorization or "").encode()
+        found: ProxyProfile | None = None
+        for expected, profile in self._callers:
+            if hmac.compare_digest(sent, expected) and found is None:
+                found = profile
+        return found
 
     async def _upstream_json(self, path: str) -> tuple[int, Any]:
         return await self._upstream_call("GET", path)
@@ -1406,6 +1653,8 @@ class DockerSocketProxy:
         except PolicyDenied as exc:
             logger.warning("denied: %s", exc)
             await _safe_write(client_w, _error_response(403, "Forbidden", f"docker-proxy: {exc}"))
+        except Absent as exc:
+            await _safe_write(client_w, _error_response(404, "Not Found", str(exc)))
         except (asyncio.IncompleteReadError, ConnectionError, asyncio.TimeoutError):
             pass
         except Exception:
@@ -1422,24 +1671,33 @@ class DockerSocketProxy:
     async def _handle(self, client_r: asyncio.StreamReader, client_w: asyncio.StreamWriter) -> None:
         raw_head = await asyncio.wait_for(_read_head(client_r), _HEAD_TIMEOUT_S)
         req = _parse_request_head(raw_head)
-        route = self._policy.route(req.method, req.target)
+        profile = self._profile(req.header("authorization")) or self._anonymous
+        if profile is None:
+            if _VERSION_PREFIX.sub("", urlsplit(req.target).path) not in _OPEN_PATHS:
+                raise PolicyDenied("the caller's credential is missing or wrong")
+            profile = self._callers[0][1]
+        # The legacy executor's calls are checked here, against this stack's containers and networks; another
+        # profile (the sandbox broker's) admits its own calls (``ProxyProfile.admit``).
+        legacy = profile if isinstance(profile, DockerApiPolicy) else None
+        route = profile.route(req.method, req.target)
         target = req.target
         if req.form_body:
             raise PolicyDenied("form-encoded request bodies are not permitted")
-        # Only the create routes and an archive upload carry a body; the
-        # daemon would read one on /images/create.
-        takes_body = route.kind in ("container_create", "network_create") or (
-            route.kind == "container_owned" and req.method == "PUT"
-        )
-        if not takes_body and (req.chunked or req.content_length):
-            raise PolicyDenied("a request body is not permitted on this endpoint")
-        if route.kind == "container_owned" and req.content_length > self.limits.max_upload_bytes:
-            raise BodyTooLarge(
-                f"request body is larger than {self.limits.max_upload_bytes // (1024 * 1024)} MB "
-                "(DOCKER_PROXY_MAX_UPLOAD_MB)"
+        if legacy is not None:
+            # Only the create routes and an archive upload carry a body; the
+            # daemon would read one on /images/create.
+            takes_body = route.kind in ("container_create", "network_create") or (
+                route.kind == "container_owned" and req.method == "PUT"
             )
+            if not takes_body and (req.chunked or req.content_length):
+                raise PolicyDenied("a request body is not permitted on this endpoint")
+            if route.kind == "container_owned" and req.content_length > self.limits.max_upload_bytes:
+                raise BodyTooLarge(
+                    f"request body is larger than {self.limits.max_upload_bytes // (1024 * 1024)} MB "
+                    "(DOCKER_PROXY_MAX_UPLOAD_MB)"
+                )
         # Clients that sent Expect hold the body back until told to continue,
-        # and the create routes read it before going upstream.
+        # and the checked routes read it before going upstream.
         expects_continue = (req.header("expect") or "").lower() == "100-continue"
 
         if route.kind == "local_host_id":
@@ -1469,7 +1727,8 @@ class DockerSocketProxy:
             return
 
         body: bytes | None = None
-        if route.kind in ("container_create", "network_create"):
+        payload: Any = None
+        if route.reads_body:
             if expects_continue:
                 client_w.write(b"HTTP/1.1 100 Continue\r\n\r\n")
                 await client_w.drain()
@@ -1480,17 +1739,23 @@ class DockerSocketProxy:
                     raise PolicyDenied("request body too large")
                 raw = await asyncio.wait_for(client_r.readexactly(req.content_length), _HEAD_TIMEOUT_S)
             payload = _parse_policy_body(raw)
+        if legacy is None:
+            target, checked = await profile.admit(route, req.method, target, payload, self._daemon)
+            if route.reads_body:
+                body = json.dumps(checked).encode()
+        elif route.reads_body:
             if route.kind == "container_create":
-                payload = self._policy.check_container_create(payload, self.instance)
+                payload = legacy.check_container_create(payload, self.instance)
             else:
-                payload = self._policy.check_network_create(payload, self.instance)
+                payload = legacy.check_network_create(payload, self.instance)
             body = json.dumps(payload).encode()
         elif route.kind == "container_owned":
             assert route.container is not None
-            full_id = await self._owned_container_id(route.container)
             # Address the container by the id we checked, so a name reused
             # between the check and the call cannot redirect it.
-            target = _CONTAINER_IN_TARGET.sub(rf"\g<1>{full_id}", target, count=1)
+            target = with_container_id(target, await self._owned_container_id(route.container))
+            if req.method == "DELETE":
+                target = removing_volumes(target)
         elif route.kind == "image_inspect":
             status, image = await self._upstream_call_capped(target)
             await _safe_write(client_w, _json_response(filter_image(image) if status == 200 else image, status))
@@ -1509,18 +1774,20 @@ class DockerSocketProxy:
                 return
 
         logger.debug("allow %s %s", req.method, target)
-        headers = [(k, v) for k, v in req.headers if k.lower() not in _HOP_BY_HOP]
+        dropped = _HOP_BY_HOP - {"connection", "upgrade"} if route.hijack else _HOP_BY_HOP
+        headers = [(k, v) for k, v in req.headers if k.lower() not in dropped and k.lower() != "authorization"]
         if body is not None:
             headers = [(k, v) for k, v in headers
                        if k.lower() not in ("content-length", "transfer-encoding")]
             headers.append(("Content-Length", str(len(body))))
-        headers.append(("Connection", "close"))
+        if not route.hijack:
+            headers.append(("Connection", "close"))
 
         if expects_continue and body is None:
             client_w.write(b"HTTP/1.1 100 Continue\r\n\r\n")
             await client_w.drain()
 
-        up_r, up_w = await asyncio.open_unix_connection(self._upstream)
+        up_r, up_w = await self._daemon.open()
         try:
             up_w.write(_serialize_head(f"{req.method} {target} {req.version}", headers))
             if body is not None:
@@ -1529,10 +1796,13 @@ class DockerSocketProxy:
                 await self._forward_body(req, client_r, up_w)
             await up_w.drain()
 
-            resp_head = _parse_response_head(await up_r.readuntil(b"\r\n\r\n"))
-            client_w.write(resp_head)
+            raw_response = await up_r.readuntil(b"\r\n\r\n")
+            client_w.write(raw_response if route.hijack else _parse_response_head(raw_response))
             await client_w.drain()
-            await _pipe_to_eof(up_r, client_w)
+            if route.hijack:
+                await _pipe_both(client_r, client_w, up_r, up_w)
+            else:
+                await _pipe_to_eof(up_r, client_w)
         finally:
             up_w.close()
 
@@ -1555,6 +1825,29 @@ class DockerSocketProxy:
         except asyncio.TimeoutError:
             logger.warning("dropped a request body: the client stalled or took too long")
             raise
+
+
+async def _pipe_both(
+    client_r: asyncio.StreamReader, client_w: asyncio.StreamWriter,
+    up_r: asyncio.StreamReader, up_w: asyncio.StreamWriter,
+) -> None:
+    """A hijacked stream: the client's bytes (an exec's stdin) go up and its half-close is passed on, the daemon's come
+    down until it closes, which ends the exchange."""
+
+    async def upward() -> None:
+        with contextlib.suppress(ConnectionError, RuntimeError):
+            await _pipe_to_eof(client_r, up_w)
+            if up_w.can_write_eof():
+                up_w.write_eof()
+
+    async def downward() -> None:
+        try:
+            await _pipe_to_eof(up_r, client_w)
+        finally:
+            # The daemon is done: closing the client's connection ends its reader, so the upward copy stops too.
+            client_w.close()
+
+    await asyncio.gather(upward(), downward())
 
 
 def _parse_response_head(raw: bytes) -> bytes:
@@ -1594,6 +1887,92 @@ def _upstream_path(value: str) -> str:
     return value.removeprefix("unix://") if value.startswith("unix://") else value
 
 
+def caller_token(env: dict[str, str] | None = None, name: str = ENV_CALLER_TOKEN) -> str:
+    """A caller's credential for the proxy, ``name`` (``DOCKER_PROXY_TOKEN`` for the legacy executor,
+    ``DOCKER_PROXY_BROKER_TOKEN`` for the sandbox broker); ``RuntimeError`` when it is missing or weak, so neither side
+    runs with a guessable one."""
+    from app.utils.encryption.secret_strength import weak_secret_reason
+
+    env = dict(os.environ) if env is None else env
+    token = env.get(name) or ""
+    if not token.strip():
+        raise RuntimeError(
+            f"{name} is not set: the Docker API proxy and its caller share it, and install.sh generates it"
+        )
+    reason = weak_secret_reason(token)
+    if reason is not None:
+        raise RuntimeError(
+            f"{name} is not random enough ({reason}): run install.sh, which generates one, or set "
+            "`openssl rand -hex 32` for both the caller and the Docker API proxy"
+        )
+    return token
+
+
+def _refuse_platform_keys(env: Mapping[str, str]) -> None:
+    held = [name for name in _PLATFORM_KEYS if (env.get(name) or "").strip()]
+    if held:
+        raise RuntimeError(
+            f"the Docker API proxy was given {', '.join(held)}; it needs only its callers' credentials (ADR-KEY-02): "
+            "remove the others from its environment"
+        )
+
+
+def proxy_caller_token(env: dict[str, str] | None = None) -> str:
+    """The legacy profile's start check: its caller credential, and no platform root key beside the Docker socket."""
+    env = dict(os.environ) if env is None else env
+    _refuse_platform_keys(env)
+    return caller_token(env)
+
+
+def proxy_callers(env: dict[str, str] | None = None) -> dict[str, ProxyProfile]:
+    """Each configured caller's credential and the profile it is held to: ``DOCKER_PROXY_BROKER_TOKEN`` for the sandbox
+    broker (the default mode), ``DOCKER_PROXY_TOKEN`` for the legacy executor while an install still runs
+    ``SANDBOX_MODE=docker``. One is needed on a hardened install (the compatibility profile may have none:
+    ``anonymous_caller``), the two must differ, and no platform root key may sit beside the socket."""
+    env = dict(os.environ) if env is None else env
+    _refuse_platform_keys(env)
+    callers: dict[str, ProxyProfile] = {}
+    if (env.get(ENV_CALLER_TOKEN) or "").strip():
+        callers[caller_token(env)] = DockerApiPolicy.from_env(env)
+    if (env.get(ENV_BROKER_CALLER_TOKEN) or "").strip():
+        # Imported only here: the broker's profile shares the broker's rules (app.harness.sandbox.docker_policy).
+        from app.sandbox.docker_proxy_broker import BrokerApiPolicy
+
+        broker = caller_token(env, ENV_BROKER_CALLER_TOKEN)
+        if broker in callers:
+            raise RuntimeError(f"{ENV_BROKER_CALLER_TOKEN} and {ENV_CALLER_TOKEN} must be different credentials")
+        callers[broker] = BrokerApiPolicy.from_env(env)
+    if not callers and hardened_profile():
+        raise RuntimeError(
+            f"the Docker API proxy has no caller: set {ENV_BROKER_CALLER_TOKEN} (the sandbox broker) or "
+            f"{ENV_CALLER_TOKEN} (SANDBOX_MODE=docker); install.sh generates both"
+        )
+    return callers
+
+
+def anonymous_caller(env: dict[str, str] | None = None) -> ProxyProfile | None:
+    """R51-COMPAT (ADR-OPS-07): the profile a caller without a credential is held to. Only the compatibility profile
+    with no caller credential configured has one: the app's legacy executor, as a release before SEC-A-04 ran it (an
+    ``.env`` from such a release under a plain ``docker compose up``). Every create still meets the legacy floor."""
+    env = dict(os.environ) if env is None else env
+    configured = any((env.get(name) or "").strip() for name in (ENV_CALLER_TOKEN, ENV_BROKER_CALLER_TOKEN))
+    if configured or hardened_profile():
+        return None
+    logger.warning(
+        "The Docker API proxy has no caller credential (%s, %s), so it admits the app's code sandbox without one, "
+        "as releases before SEC-A-04 did (PIPESHUB_HARDENED is not true). Run ./install.sh --upgrade once to "
+        "generate the credentials; the hardened profile refuses to start without them.",
+        ENV_CALLER_TOKEN, ENV_BROKER_CALLER_TOKEN,
+    )
+    return DockerApiPolicy.from_env(env)
+
+
+def executor_calls_anonymously() -> bool:
+    """R51-COMPAT: whether the app's legacy executor calls the proxy with no credential (the compatibility profile with
+    ``DOCKER_PROXY_TOKEN`` unset), as a release before SEC-A-04 did."""
+    return not (os.environ.get(ENV_CALLER_TOKEN) or "").strip() and not hardened_profile()
+
+
 # --- Which stack this proxy serves ------------------------------------------
 
 
@@ -1614,7 +1993,8 @@ async def resolve_instance(env: Mapping[str, str], upstream: str) -> str:
                 "DOCKER_PROXY_INSTANCE must be 1-128 characters from A-Z a-z 0-9 _ . : / -"
             )
         return raw
-    probe = DockerSocketProxy(DockerApiPolicy(frozenset(), frozenset()), upstream)
+    # A proxy only to ask the daemon; it serves no caller.
+    probe = DockerSocketProxy(None, upstream, anonymous=DockerApiPolicy(frozenset(), frozenset()))
     try:
         status, info = await probe._upstream_call(
             "GET", f"/containers/{quote(socket.gethostname(), safe='')}/json", timeout=10,
@@ -1904,7 +2284,10 @@ def _owned_by(item: object, instance: str) -> bool:
     if not isinstance(item, dict):
         return False
     labels = item.get("Labels") or {}
-    return isinstance(labels, dict) and labels.get(MANAGED_LABEL) == "true" and labels.get(INSTANCE_LABEL) == instance
+    return (
+        isinstance(labels, dict) and labels.get(MANAGED_LABEL) == "true" and labels.get(INSTANCE_LABEL) == instance
+        and BROKER_STAMP_LABEL not in labels
+    )
 
 
 def _legacy(item: object) -> bool:
@@ -1912,7 +2295,10 @@ def _legacy(item: object) -> bool:
     if not isinstance(item, dict):
         return False
     labels = item.get("Labels") or {}
-    return isinstance(labels, dict) and labels.get(MANAGED_LABEL) == "true" and INSTANCE_LABEL not in labels
+    return (
+        isinstance(labels, dict) and labels.get(MANAGED_LABEL) == "true" and INSTANCE_LABEL not in labels
+        and BROKER_STAMP_LABEL not in labels
+    )
 
 
 def _containers_query(label: str) -> str:
@@ -1921,24 +2307,37 @@ def _containers_query(label: str) -> str:
 
 
 async def serve(
-    host: str, port: int, upstream: str, policy: DockerApiPolicy, *,
-    instance: str | None = None, reaper: ReaperSettings | None = None,
+    host: str,
+    port: int,
+    upstream: str,
+    callers: Mapping[str, CallerProfile],
+    anonymous: DockerApiPolicy | None = None,
+    *,
+    instance: str | None = None,
+    reaper: ReaperSettings | None = None,
     limits: ProxyLimits | None = None,
 ) -> None:
     if instance is None:
         instance = await resolve_instance(os.environ, upstream)
     limits = limits or ProxyLimits.from_env()
     proxy = DockerSocketProxy(
-        policy, upstream, instance=instance,
+        None, upstream, callers=callers, anonymous=anonymous, instance=instance,
         sidecar_stats_file=os.environ.get("DOCKER_PROXY_SIDECAR_STATS_FILE") or None,
         limits=limits,
     )
     server = await asyncio.start_server(proxy.handle, host, port, limit=_MAX_HEAD_BYTES)
+    profiles = [*callers.values(), *([anonymous] if anonymous else [])]
     logger.info(
-        "docker proxy listening on %s:%d -> %s (instance=%s images=%s networks=%s)",
-        host, port, upstream, instance, sorted(policy.allowed_images), sorted(policy.allowed_networks),
+        "docker proxy listening on %s:%d -> %s (instance=%s profiles=%s)",
+        host, port, upstream, instance, sorted(type(profile).__name__ for profile in profiles),
     )
-    logger.info("docker proxy limits: %s; %s", policy.limits_text(), limits.text())
+    for profile in profiles:
+        if isinstance(profile, DockerApiPolicy):
+            logger.info(
+                "docker proxy legacy profile: images=%s networks=%s; %s",
+                sorted(profile.allowed_images), sorted(profile.allowed_networks), profile.limits_text(),
+            )
+    logger.info("docker proxy limits: %s", limits.text())
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):
@@ -1954,18 +2353,41 @@ async def serve(
         await asyncio.gather(reaper_task, return_exceptions=True)
 
 
+PROXY_UID = 1000
+
+
+def drop_root(socket_path: str, ops: Any = os) -> int | None:  # noqa: ANN401
+    """Started as root (Compose without DOCKER_GID: an .env from a release that ran this proxy as root), take the
+    socket's group and become uid 1000 before serving, so a compatibility install keeps code execution and the proxy
+    still runs unprivileged. Returns the group taken, or None when already unprivileged."""
+    if ops.getuid() != 0:
+        return None
+    gid = ops.stat(socket_path).st_gid
+    ops.setgroups([gid])
+    ops.setgid(PROXY_UID)
+    ops.setuid(PROXY_UID)
+    logger.warning(
+        "started as root (DOCKER_GID is not set): now uid %d with the Docker socket's group %d. "
+        "./install.sh --upgrade writes DOCKER_GID so the proxy starts unprivileged.", PROXY_UID, gid,
+    )
+    return gid
+
+
 def main() -> None:
     logging.basicConfig(
         level=os.environ.get("DOCKER_PROXY_LOG_LEVEL", "INFO").upper(),
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
+    upstream = os.environ.get("DOCKER_PROXY_UPSTREAM", "/var/run/docker.sock")
+    if upstream.startswith(("/", "unix://")):
+        drop_root(upstream.removeprefix("unix://"))
     asyncio.run(serve(
-        # Loopback unless told otherwise: the proxy has no client
-        # authentication, so listening on every interface must be a choice.
+        # Loopback unless told otherwise: listening on every interface must be a choice.
         os.environ.get("DOCKER_PROXY_HOST") or _DEFAULT_HOST,
         int(os.environ.get("DOCKER_PROXY_PORT", "2375")),
         _upstream_path(os.environ.get("DOCKER_PROXY_UPSTREAM", "/var/run/docker.sock")),
-        DockerApiPolicy.from_env(),
+        proxy_callers(),
+        anonymous_caller(),
     ))
 
 
