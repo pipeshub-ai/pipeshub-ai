@@ -5,8 +5,9 @@ import logging
 from functools import lru_cache
 from typing import TYPE_CHECKING, Any, Literal, Optional
 
+from langchain_core.exceptions import OutputParserException
 from langchain_core.messages import HumanMessage
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator
 from pydantic_core import to_jsonable_python
 
 from app.agents.agent_loop.error_classification import classify_error
@@ -783,6 +784,10 @@ class DocumentExtraction(Transformer):
                     )
             except (NonRetryableError, LLMUnavailableError):
                 raise
+            except (ValidationError, OutputParserException):
+                # The model answered, but not in the schema (prose, not JSON). That is a reply, not a
+                # call failure: None takes the plain-summary fallback below instead of a dead-letter.
+                return None
             except Exception as e:
                 # The model did not answer. The fallback would resend the whole
                 # document to the same model, doubling every record's cost while

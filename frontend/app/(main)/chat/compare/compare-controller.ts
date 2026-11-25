@@ -379,6 +379,8 @@ export async function restoreCompare(slotId: string): Promise<void> {
   const slot = useChatStore.getState().slots[slotId];
   const convId = slot?.convId;
   if (!slot || !convId || slot.isTemp || !slot.isInitialized || slot.isStreaming || turnOf(slotId)) return;
+  // Compare is for plain chats only; the server answers 400 for an agent chat.
+  if (slot.threadAgentId) return;
   if (!selectChatCompareEnabled(useFeatureFlagsStore.getState()) || restoring.has(convId)) return;
   restoring.add(convId);
   try {

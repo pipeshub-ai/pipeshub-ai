@@ -980,6 +980,7 @@
     "agentSidebarLabel": "智能体",
     "agentNameLoading": "正在加载…",
     "sharedAgentChat": "共享的智能体聊天",
+    "sharedAgentChatNotice": "你分享此聊天的对象可以阅读聊天内容，但除非你也与他们共享该智能体，否则无法打开该智能体。",
     "myAgents": "我的智能体",
     "moreAgents": "更多智能体",
     "agentHeaderMenuAria": "智能体选项",

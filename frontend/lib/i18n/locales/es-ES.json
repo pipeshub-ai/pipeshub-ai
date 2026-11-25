@@ -904,6 +904,7 @@
     "agentSidebarLabel": "Agente",
     "agentNameLoading": "Cargando…",
     "sharedAgentChat": "Chat de agente compartido",
+    "sharedAgentChatNotice": "Las personas con las que compartas este chat podrán leerlo, pero no podrán abrir el agente a menos que también compartas el agente con ellas.",
     "myAgents": "Mis agentes",
     "moreAgents": "Más agentes",
     "agentHeaderMenuAria": "Opciones del agente",

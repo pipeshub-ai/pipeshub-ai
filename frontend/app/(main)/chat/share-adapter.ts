@@ -125,6 +125,8 @@ export function createChatShareAdapter(
     sidebarTitle: 'Share Chat',
     supportsRoles: false,
     supportsTeams: false,
+    // The agent itself is not shared with the chat: a recipient reads the chat but cannot open the agent.
+    notice: agentId ? i18next.t('chat.sharedAgentChatNotice') : undefined,
 
     async getSharedMembers(): Promise<SharedMember[]> {
       return toChatSharedMembers(await loadSharedWith());
