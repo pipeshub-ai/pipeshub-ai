@@ -6,15 +6,35 @@ holds what it declares and this tree's virtualenv no longer has, from a lock in 
 
 from __future__ import annotations
 
+import importlib
 import subprocess
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "harness" / "fault"))
+if TYPE_CHECKING:
+    from types import ModuleType
 
-import release_tree  # noqa: E402
+
+def _import_release_tree() -> ModuleType:
+    """``perf/stack.py`` and ``harness/fault/stack.py`` share a name and the perf tests import theirs in the same
+    session, so the fault ``stack`` is imported here alone and whatever ``stack`` was loaded before is put back.
+    """
+    fault = str(Path(__file__).resolve().parents[1] / "harness" / "fault")
+    perf_stack = sys.modules.pop("stack", None)
+    sys.path.insert(0, fault)
+    try:
+        return importlib.import_module("release_tree")
+    finally:
+        sys.path.remove(fault)
+        sys.modules.pop("stack", None)
+        if perf_stack is not None:
+            sys.modules["stack"] = perf_stack
+
+
+release_tree = _import_release_tree()
 
 REPO = Path(__file__).resolve().parents[2]
 
