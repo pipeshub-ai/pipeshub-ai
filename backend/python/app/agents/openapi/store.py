@@ -99,16 +99,16 @@ class ApiToolsetStore:
         return await self._for_each_instance(org_id, lambda instance_id: self.delete_credentials(instance_id, owner_id))
 
     async def _for_each_instance(self, org_id: str, delete: Callable[[str], Awaitable[None]]) -> int:
-        """Runs ``delete`` for every toolset of the org, the rest too when one fails (see :func:`_attempt_each`)."""
+        """Runs ``delete`` for every toolset of the org, the rest too when one fails (see :func:`error_class.attempt_each`)."""
         instances = await self.list_instances(org_id)
-        await _attempt_each([instance.id for instance in instances], delete, "toolsets")
+        await error_class.attempt_each([instance.id for instance in instances], delete, "toolsets")
         return len(instances)
 
     async def delete_instance_credentials(self, instance_id: str) -> None:
         """Every user's and the shared credential for one instance, the rest too when one fails; raises when any may
         still be stored."""
         keys = await self._config.list_keys_in_directory(get_credentials_prefix(instance_id))
-        await _attempt_each(keys, lambda key: delete_config_or_raise(self._config, key), "credentials")
+        await error_class.attempt_each(keys, lambda key: delete_config_or_raise(self._config, key), "credentials")
 
     # -- OAuth app and sign-in state ----------------------------------------
 
@@ -135,18 +135,3 @@ class ApiToolsetStore:
             return False
         await self._config.delete_config(get_oauth_state_path(state))
         return True
-
-
-async def _attempt_each(items: list[str], delete: Callable[[str], Awaitable[None]], what: str) -> None:
-    """Runs ``delete`` on every item, the rest too when one fails; then raises the first failure that is not an outage
-    (a bug of ours stays one), else the first."""
-    failures: list[Exception] = []
-    for item in items:
-        try:
-            await delete(item)
-        except Exception as e:
-            failures.append(e)
-    if failures:
-        first = next((e for e in failures if not error_class.retry_later(e)), failures[0])
-        first.add_note(f"{len(failures)} of {len(items)} {what} failed")
-        raise first

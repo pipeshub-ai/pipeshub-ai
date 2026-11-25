@@ -71421,7 +71421,9 @@ paths:
         arguments, auth mode or token URL), every stored credential for the instance is
         removed first and the response has `credentialsReset: true`: the old credentials were
         given for the old target. A catalog server's target is its template's, so for one only
-        a change of auth mode or catalog type counts.
+        a change of auth mode or catalog type counts, and of URL when the template lets it be
+        typed (Okta). When a credential can't be confirmed removed, nothing is saved: a store
+        that kept it or could not answer gives 503 with `Retry-After`, any other failure 500.
       operationId: updateMcpInstance
       security:
         - bearerAuth: []
@@ -71512,9 +71514,12 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '503':
           description: |
-            Switching `useAdminAuth` removes the shared admin credential first, and the config store kept it or could
-            not answer: the instance was not changed. Retry after `Retry-After` seconds. The body's detail is "We
-            couldn't reach PipesHub's database just now. Please try again in a few seconds."
+            A new connection target (URL, token URL, transport, command, args, auth mode, egress hosts or type; for a
+            catalog server whose template lets the URL be typed, such as Okta, its URL) removes every stored credential
+            of the instance first, and switching `useAdminAuth` removes the shared admin credential first. The config
+            store kept one of them or could not answer: the instance was not changed, though some credentials may
+            already be removed. Retry after `Retry-After` seconds. The body's detail is "We couldn't reach PipesHub's
+            database just now. Please try again in a few seconds."
           headers:
             Retry-After:
               description: Seconds to wait before retrying (5).
