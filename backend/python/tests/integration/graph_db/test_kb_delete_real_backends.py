@@ -13,6 +13,7 @@ PUSH_IT_SEEDS="a,b" (default 0) and PUSH_IT_RUNS_PER_SEED (default 3) scale the 
 - a delete that failed, then pushes (before and after the cascade started), and the create-only fallback;
 - the finisher completes a delete the owner can no longer retry;
 - two deleters at once (the finisher and an owner retry, and two owner retries);
+- a delete the store could not confirm for a KB that is gone (a rival finished it first, the store's answer was lost);
 - KB rename while pushes are open.
 """
 from __future__ import annotations
@@ -641,6 +642,21 @@ async def _two_deleters(env, deleting, kind: str, *, stagger: bool = False) -> t
         return result
 
     env.graph.delete_connector_instance = meet
+    # Each cascade's first call is its read of the app: neither goes on until both have read it, or the
+    # later read could miss an app the other cascade already removed ("not found", success False).
+    reads, both_read = {"n": 0}, asyncio.Event()
+    read_app = env.graph.get_document
+
+    async def read_together(*a: object, **kw: object) -> dict | None:
+        result = await read_app(*a, **kw)
+        if both.is_set() and reads["n"] < 2:
+            reads["n"] += 1
+            if reads["n"] == 2:
+                both_read.set()
+            await asyncio.wait_for(both_read.wait(), 30)
+        return result
+
+    env.graph.get_document = read_together
     if stagger:
         steps = {"n": 0}
         step = env.graph._delete_isoftype_targets_from_collected
@@ -677,6 +693,8 @@ async def test_concurrent_deleters(env, deleting, kind, seed, run) -> None:
     finally:
         undo()
     assert (a["success"], b["success"]) == (True, True), (a, b)
+    # the service answers 200 for a KB that is gone, so a cascade that failed would not show in its answers
+    assert len(deleting.cascade_results) == 2 and all(r["success"] for r in deleting.cascade_results), deleting.cascade_results
     assert keys and keys[RECORDS], keys
     for collection, ids in keys.items():
         assert await env.graph.get_existing_keys(collection, ids) == set(), f"{collection} nodes remain"
@@ -687,7 +705,7 @@ async def test_concurrent_deleters(env, deleting, kind, seed, run) -> None:
 
 
 async def test_concurrent_deleters_with_the_count_rule_on_the_type_docs_fail(env, deleting) -> None:
-    """Negative control: the isOfType step measured by a count makes the second deleter 500."""
+    """Negative control: the isOfType step measured by a count makes the second deleter's cascade fail."""
     graph = env.graph
 
     async def count_rule(transaction: str, targets: list[dict], *args: object, **kw: object) -> tuple:
@@ -704,15 +722,123 @@ async def test_concurrent_deleters_with_the_count_rule_on_the_type_docs_fail(env
         return (total, [])
 
     graph._delete_isoftype_targets_from_collected = count_rule
-    a, b = await _two_deleters(env, deleting, "two_owner_retries", stagger=True)
-    assert (a["success"], b["success"]) != (True, True), "the count rule must break the second deleter"
+    await _two_deleters(env, deleting, "two_owner_retries", stagger=True)
+    assert [r["success"] for r in deleting.cascade_results] == [True, False], deleting.cascade_results
 
 
 async def test_a_second_deleter_that_meets_the_type_documents_already_gone_succeeds(env, deleting) -> None:
     """The same schedule as the control above, with the real rule: none of the keys remain, so it is done."""
     a, b = await _two_deleters(env, deleting, "two_owner_retries", stagger=True)
     assert (a["success"], b["success"]) == (True, True), (a, b)
+    assert [r["success"] for r in deleting.cascade_results] == [True, True], deleting.cascade_results
     assert await kb_doc(env) is None and await survivors(env) == []
+
+
+# ---- a delete the store could not confirm, of a KB that is gone ------------------------------------------------
+
+async def _seed(env_: IT.Env) -> None:
+    IT.record_keys(env_, "r-1", "r-2")
+    for ext in ("r-1", "r-2"):
+        await env_.push(env_.body(ext=ext, name=ext, text=f"content {ext}"))
+
+
+async def one_after_the_other(deleting: Deleting, first: Callable[[], Awaitable[dict]],
+                               second: Callable[[], Awaitable[dict]]) -> tuple[dict, dict]:
+    """Both deleters are past their marker; the second one's cascade starts only once the first one's has returned."""
+    real = deleting.real_cascade
+    first_in, second_in, first_done = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    async def gated(**kw: object) -> dict:
+        if not first_in.is_set():
+            first_in.set()
+            await asyncio.wait_for(second_in.wait(), 60)
+            result = await real(**kw)
+            first_done.set()
+        else:
+            second_in.set()
+            await asyncio.wait_for(first_done.wait(), 120)
+            result = await real(**kw)
+        deleting.cascade_results.append(result)
+        return result
+
+    deleting.env.graph.delete_connector_instance = gated
+    first_task = asyncio.ensure_future(first())
+    await asyncio.wait_for(first_in.wait(), 60)
+    second_result = await second()
+    first_result = await first_task
+    deleting.env.graph.delete_connector_instance = real
+    return first_result, second_result
+
+
+@pytest.mark.parametrize("first,second", [("owner", "owner"), ("finisher", "owner"), ("owner", "finisher")])
+async def test_a_delete_whose_kb_a_rival_delete_removed_first_succeeds(env, deleting, first, second) -> None:
+    """The rival runs the whole cascade between this delete's marker and its own: the store answers "not found"."""
+    await _seed(env)
+    if "finisher" in (first, second):
+        await env.kb_service._mark_deleting(env.kb_id)  # the finisher only acts on a KB that is DELETING
+    run = {"owner": deleting.delete, "finisher": deleting.finish}
+    a, b = await one_after_the_other(deleting, run[first], run[second])
+
+    assert [r["success"] for r in deleting.cascade_results] == [True, False], deleting.cascade_results
+    assert await kb_doc(env) is None and await survivors(env) == []
+    assert a["success"] is True, a
+    retry = await deleting.delete()
+    assert b["success"] is True and b.get("code", 200) == 200, (f"a 500 for a KB that is gone; a retry got {retry.get('code')}", b)
+
+
+async def _lost_answer(env, deleting) -> None:
+    """The fault is armed (after seeding: the pushes commit too); the owner deletes, then retries."""
+    owner = await deleting.delete()
+    retry = await deleting.delete()
+    assert await kb_doc(env) is None and await survivors(env) == [], "the store applied the delete"
+    assert deleting.cascade_results[0]["success"] is False, deleting.cascade_results
+    assert (owner["success"], owner["code"]) == (True, 200), (f"a 500 for a KB that is gone; a retry got {retry.get('code')}", owner)
+    assert {e["eventType"] for e in deleting.events} <= {"deleteStoredDocuments"}, "the gone path publishes no cleanup"
+
+
+@pytest.mark.neo4j_only  # each node batch and then the app go in auto-committed statements; the app is read back, the session closed
+@pytest.mark.parametrize("fault", ["app_read_back", "session_close", "commit_fails"])
+async def test_a_neo4j_delete_whose_answer_was_lost_after_the_app_went_succeeds(env, deleting, monkeypatch, fault) -> None:
+    await _seed(env)
+    graph = env.graph
+    if fault == "commit_fails":
+        # Nothing is left to commit: the records went before the app, so a gone app means gone records.
+        async def commit_fails(txn: object) -> None:
+            raise ConnectionError("connection reset during the commit")
+
+        monkeypatch.setattr(graph.client, "commit_transaction", commit_fails)
+    elif fault == "app_read_back":
+        real_assert = graph._assert_none_remain
+
+        async def read_fails(transaction: object, collection: str, keys: list[str]) -> None:
+            if collection == APPS:
+                raise ConnectionError("connection reset while reading the app back")
+            await real_assert(transaction, collection, keys)
+
+        monkeypatch.setattr(graph, "_assert_none_remain", read_fails)
+    else:
+        real_commit = graph.client.commit_transaction
+
+        async def reply_lost(txn: object) -> None:
+            await real_commit(txn)
+            raise ConnectionError("connection reset before the commit reply")
+
+        monkeypatch.setattr(graph.client, "commit_transaction", reply_lost)
+    await _lost_answer(env, deleting)
+
+
+@pytest.mark.arango_only  # one stream transaction, committed over HTTP
+async def test_an_arango_delete_whose_commit_reply_was_lost_succeeds(env, deleting, monkeypatch) -> None:
+    await _seed(env)
+    client = env.graph.http_client
+    real_commit = client.commit_transaction
+
+    async def reply_lost(txn: object) -> None:
+        await real_commit(txn)
+        raise ConnectionError("connection reset before the commit reply")
+
+    monkeypatch.setattr(client, "commit_transaction", reply_lost)
+    await _lost_answer(env, deleting)
 
 
 # ---- KB rename while pushes are open -------------------------------------------------------------------------
