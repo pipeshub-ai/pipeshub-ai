@@ -95,8 +95,8 @@ function describeField(path: string): string {
 function xssRejectionMessage(value: string, field: string): string {
   if (value.length > XSS_CHECK_MAX_LENGTH) {
     return (
-      `The value of ${field} is longer than ${XSS_CHECK_MAX_LENGTH.toLocaleString('en-US')} characters, ` +
-      `which is too long to check for HTML tags and scripts. Please shorten it and try again.`
+      `The value of ${field} is too long: it has more than ${XSS_CHECK_MAX_LENGTH.toLocaleString('en-US')} characters, ` +
+      `the most a value may have. Please shorten it and try again.`
     );
   }
   if (containsHTMLTag(value)) {
