@@ -6,6 +6,7 @@ import { emitPlatformEvent } from '../../../src/libs/platform-events';
 import type { McpCaller } from '../../../src/libs/platform-events/events';
 import { loadPlugins, resetPlugins } from '../../../src/libs/plugins';
 import {
+  classifyCaller,
   emailDomain,
   requestClient,
   signupSource,
@@ -14,6 +15,7 @@ import { inboxFailed } from '../../../src/libs/context/envelope';
 import telemetryPlugin from '../../../src/plugins/telemetry';
 import { eventBuffer } from '../../../src/plugins/telemetry/event-buffer';
 import { metricsBackend } from '../../../src/plugins/telemetry/metrics-backend';
+import { resetClientMetrics } from '../../../src/plugins/telemetry/modules/client-metrics';
 
 /**
  * `fixtures/direct-calls.golden.json` was captured from commit 81c0496b38, the
@@ -116,6 +118,24 @@ function announceEverything(): void {
   emitPlatformEvent('notification.event.refused', { reason: 'id_with_many_recipients' });
 }
 
+/** Metrics added after the golden file was captured; everything else must match it line for line. */
+const ADDED_SINCE = /^(# (HELP|TYPE) )?pipeshub_usage_sdk_requests_total[ {]/;
+
+/** Finished requests from a browser, a script, an SDK and the MCP server. */
+function announceClientRequests(): void {
+  const done = (requestHeaders: Record<string, string>, status = 200): void =>
+    emitPlatformEvent('http.request.completed', {
+      method: 'GET', route: '/api/v1/kb/:kbId', status, durationSeconds: 0.02,
+      outcome: status < 400 ? 'success' : 'failure',
+      orgId: 'org-1', emailDomain: 'example.com', client: classifyCaller(requestHeaders),
+    });
+  done({ 'user-agent': 'Mozilla/5.0 (X11; Linux x86_64)' });
+  done({ 'user-agent': 'curl/8.4.0' }, 404);
+  done({ 'user-agent': 'speakeasy-sdk/python 2.0.1 2.946.0 1.0.0 pipeshub-sdk' });
+  done({ 'user-agent': 'speakeasy-sdk/python 2.0.1 2.946.0 1.0.0 pipeshub-sdk' });
+  done({ 'x-pipeshub-client': 'pipeshub-mcp/1.4.2', 'x-request-id': 'mcp-1' }, 500);
+}
+
 describe('telemetry plug-in: platform events produce what the direct calls produced', () => {
   let clock: sinon.SinonFakeTimers;
 
@@ -124,6 +144,7 @@ describe('telemetry plug-in: platform events produce what the direct calls produ
     await loadPlugins([telemetryPlugin]);
     metricsBackend.reset();
     eventBuffer.drain();
+    resetClientMetrics();
     clock = sinon.useFakeTimers({
       now: Date.parse('2026-01-02T03:04:05.000Z'),
       toFake: ['Date'],
@@ -148,7 +169,37 @@ describe('telemetry plug-in: platform events produce what the direct calls produ
     announceEverything();
     const text = await metricsBackend.serialize();
     const lines = text.split('\n').filter((line) => line !== '').sort();
-    expect(lines).to.deep.equal(golden.metrics);
+    expect(lines.filter((line) => !ADDED_SINCE.test(line))).to.deep.equal(golden.metrics);
+    // What the golden file does not know is exactly the metrics added since, with no sample yet.
+    expect(lines.filter((line) => ADDED_SINCE.test(line))).to.deep.equal([
+      '# HELP pipeshub_usage_sdk_requests_total API requests made through a PipesHub SDK or the PipesHub MCP server',
+      '# TYPE pipeshub_usage_sdk_requests_total counter',
+    ]);
+  });
+
+  it('counting SDK and MCP requests changes no metric and no event that existed before', async () => {
+    announceEverything();
+    announceClientRequests();
+    const text = await metricsBackend.serialize();
+    const lines = text.split('\n').filter((line) => line !== '').sort();
+    expect(lines.filter((line) => !ADDED_SINCE.test(line))).to.deep.equal(golden.metrics);
+    expect(lines.filter((line) => ADDED_SINCE.test(line) && !line.startsWith('#'))).to.deep.equal([
+      'pipeshub_usage_sdk_requests_total{service="node_api",channel="mcp",sdk_language="other",sdk_version="1.4.2",outcome="failure",org="org-1",domain="example.com"} 1',
+      'pipeshub_usage_sdk_requests_total{service="node_api",channel="sdk",sdk_language="python",sdk_version="2.0.1",outcome="success",org="org-1",domain="example.com"} 2',
+    ]);
+
+    const events = JSON.parse(JSON.stringify(eventBuffer.drain())) as { event: string }[];
+    expect(events.filter((e) => e.event !== 'sdk.client.seen')).to.deep.equal(golden.events);
+    expect(events.filter((e) => e.event === 'sdk.client.seen')).to.deep.equal([
+      {
+        event: 'sdk.client.seen', timestamp: '2026-01-02T03:04:05.000Z',
+        props: { orgId: 'org-1', domain: 'example.com', channel: 'sdk', sdk_language: 'python', sdk_version: '2.0.1' },
+      },
+      {
+        event: 'sdk.client.seen', timestamp: '2026-01-02T03:04:05.000Z',
+        props: { orgId: 'org-1', domain: 'example.com', channel: 'mcp', mcp_server_version: '1.4.2' },
+      },
+    ]);
   });
 
   it('records nothing once the plug-in is unloaded', async () => {

@@ -15,6 +15,7 @@ import { isTelemetryEnabled, TELEMETRY_COLLECTION_FLAG } from './flag';
 import { clientTags, domainFromEmail, normalizeOrgId } from './identity';
 import { startOrgMetricsRefresh } from './metrics.refresh.service';
 import { recordServiceActivity } from './modules/activity-metrics';
+import { recordClientRequest } from './modules/client-metrics';
 import { setMetricCollectionEnabled } from './modules/collection-metrics';
 import { dbMetrics } from './modules/db-metrics';
 import { docstoreMetrics } from './modules/docstore-metrics';
@@ -78,6 +79,7 @@ function subscribeProductEvents(ctx: PluginContext): void {
     }
     return undefined;
   });
+  ctx.onEvent('http.request.completed', recordClientRequest);
   ctx.onEvent('personal_access_token.created', (e) => {
     recordEvent('pat_created', {
       orgId: e.orgId,
