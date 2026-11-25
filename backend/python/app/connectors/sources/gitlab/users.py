@@ -33,6 +33,12 @@ def _filter_op_val(f: Any) -> str:
     return (op.value if hasattr(op, "value") else str(op)).lower()
 
 
+def _shown_emails(*members: Any) -> list[str]:
+    """Every address GitLab shows on these objects of one user, account and public ones alike."""
+    values = [getattr(member, field, None) for member in members for field in ("public_email", "email")]
+    return list(dict.fromkeys(v.strip() for v in values if isinstance(v, str) and v.strip()))
+
+
 class UsersSync:
     """Handles all GitLab user-synchronisation steps for ``GitLabConnector``."""
 
@@ -350,8 +356,8 @@ class UsersSync:
             "project(s) (avg %.2f rows/project)",
             len(dict_member), total_member_rows_seen, total_projects_synced, avg_rows_per_project,
         )
-        dict_member = await self._enrich_members_with_full_user(dict_member)
-        await self._sync_users_from_projects_groups(dict_member)
+        enriched = await self._enrich_members_with_full_user(dict_member)
+        await self._sync_users_from_projects_groups(enriched, dict_member)
         self.logger.info("Users sync and migration of pseudo groups complete")
 
     # ------------------------------------------------------------------
@@ -480,8 +486,8 @@ class UsersSync:
             "Total projects synced: %s, Total projects skipped: %s",
             total_projects_synced, total_projects_skipped,
         )
-        dict_member = await self._enrich_members_with_full_user(dict_member)
-        await self._sync_users_from_projects_groups(dict_member)
+        enriched = await self._enrich_members_with_full_user(dict_member)
+        await self._sync_users_from_projects_groups(enriched, dict_member)
         self.logger.info("Users sync and migration of pseudo groups complete")
 
     # ------------------------------------------------------------------
@@ -509,9 +515,9 @@ class UsersSync:
         async def fetch_full_user(member_id: int, member: Any) -> tuple[int, Any]:
             attributes = getattr(member, "attributes", None)
             listed = attributes.get("public_email") if isinstance(attributes, dict) else None
-            if isinstance(listed, str) and listed.strip():
-                # GitLab 16+ members payloads carry public_email. When it is empty the
-                # profile is still read: with an admin token it holds the private email.
+            if isinstance(listed, str) and listed.strip() and not c._is_admin:
+                # GitLab 16+ members payloads carry public_email. The profile is still read when
+                # it is empty, and with an admin token, which is shown the account's own email there.
                 return member_id, member
             async with sem:
                 try:
@@ -594,9 +600,10 @@ class UsersSync:
     # ------------------------------------------------------------------
 
     async def _sync_users_from_projects_groups(
-        self, dict_member: dict[int, Any]
+        self, dict_member: dict[int, Any], listed: dict[int, Any] | None = None
     ) -> None:
-        """Create ``AppUser`` rows from the enriched member dict.
+        """Create ``AppUser`` rows from the enriched member dict. ``listed`` holds the rows as the
+        member listings gave them, before a profile replaced some.
 
         Special case: the token account's own row becomes an ``AppUser`` using
         ``creator_email`` when GitLab shows it no email, but only when the
@@ -605,8 +612,8 @@ class UsersSync:
         by a numeric id their PipesHub identity never matches. Anyone else's
         token account row stays a member whose identity is unknown.
 
-        Every row GitLab listed goes into this sync's user listing, which
-        is then finished. Only after that is the creator stub added (an
+        Every row GitLab listed goes into this sync's user listing, under every
+        address GitLab shows for it; the listing is then finished. Only after that is the creator stub added (an
         ``AppUser`` under the token account's GitLab id, for an Admin or
         Auditor persona GitLab lists no row for): it is never a row, and
         only a creator who gets the token's view has it, since its user
@@ -639,7 +646,11 @@ class UsersSync:
                     user_email, member_id,
                 )
 
-            listing.add_row(user_email or None, str(member_id))
+            shown = _shown_emails(member, (listed or {}).get(member_id))
+            if user_email and user_email not in shown:
+                shown.append(user_email)
+            for email in shown or [None]:
+                listing.add_row(email, str(member_id))
             if not user_email:
                 total_users_skipped += 1
                 self.logger.debug(
