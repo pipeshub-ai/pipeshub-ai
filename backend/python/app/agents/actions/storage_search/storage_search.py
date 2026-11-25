@@ -2145,7 +2145,7 @@ async def sweep_orphan_views_at_startup(config_service: Any, graph_provider: IGr
         storage_cfg = await config_service.get_config(config_node_constants.STORAGE.value)
         if is_local_storage(storage_cfg):
             mount = str((storage_cfg or {}).get("mountName") or "PipesHub")
-            if mount in (".", "..") or re.search(r"[/\\]", mount):
+            if mount in (".", "..") or re.search(r"[/\\:]", mount):  # ":" is a Windows drive
                 logger.warning("[storage_pattern_match] record views not swept: the mount name is not a directory name")
                 return
             roots.add(_resolve_mount_root(mount))

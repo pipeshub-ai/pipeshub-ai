@@ -35,13 +35,19 @@ class PgLikeApps:
         return self.apps.get((ctx.org_id, key))
 
 
+# What each release was given to delete the connector's credentials with; None keeps them.
+credentials_of: list[object] = []
+
+
 @pytest.fixture
 def released(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, object]]:
     """The connectors whose storage the tick released, with the org context bound at the time."""
     seen: list[tuple[str, object]] = []
+    credentials_of.clear()
 
-    async def release(*_a: object, connector_id: str, **_kw: object) -> bool:
+    async def release(*_a: object, connector_id: str, org_config_service: object = None, **_kw: object) -> bool:
         seen.append((connector_id, peek()))
+        credentials_of.append(org_config_service)
         return True
 
     monkeypatch.setattr(storage_release, "release_connector_storage", release)
@@ -70,11 +76,13 @@ async def test_an_id_only_another_org_holds_is_gone_for_this_org_and_released_in
     """A system read would answer org B's copy and keep org A's storage forever."""
     assert await tick({(ORG_B, "y"): {"_key": "y", "type": "DRIVE"}}, "y") == "released"
     assert [c for c, _ in released] == ["y"] and bound_to(released[0][1], ORG_A)
+    assert credentials_of == [None]  # keyed by the id alone: they are org B's
 
 
 async def test_a_gone_app_is_released_in_the_intents_org(released: list) -> None:
     assert await tick({}, "z") == "released"
     assert [c for c, _ in released] == ["z"] and bound_to(released[0][1], ORG_A)
+    assert credentials_of[0] is not None
     assert peek() is None
 
 

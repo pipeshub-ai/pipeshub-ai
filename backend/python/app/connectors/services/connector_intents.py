@@ -59,6 +59,16 @@ class ConnectorIntentStore:
             **fields,
             "requestedAt": get_epoch_timestamp_in_ms() if now_ms is None else now_ms,
         }
+        if earlier is None:
+            try:
+                if await config_service.create_config_if_absent(self.key(connector_id), intent):
+                    return
+                # Created since the read: whose it is decides.
+                earlier = await config_service.get_config(self.key(connector_id), use_cache=False, raise_on_error=True)
+            except Exception as e:
+                raise self.error_type(f"could not record {self.what} for connector {connector_id}") from e
+            if isinstance(earlier, dict) and owner_of(earlier) not in (None, org_id):
+                raise self.error_type(f"the {self.what} of connector {connector_id} is recorded for another org")
         if not await config_service.set_config(self.key(connector_id), intent):
             raise self.error_type(f"could not record {self.what} for connector {connector_id}")
 
@@ -69,7 +79,10 @@ class ConnectorIntentStore:
         and every cleanup behind one is idempotent. With ``org_id``, an intent of another org is left."""
         # Absent for deletes made before intents existed and for ones already
         # settled; Redis reports deleting a missing key as a failure.
-        current = await config_service.get_config(self.key(connector_id), use_cache=False)
+        try:
+            current = await config_service.get_config(self.key(connector_id), use_cache=False, raise_on_error=True)
+        except Exception:
+            return False
         if current is None:
             return True
         if org_id is not None and isinstance(current, dict) and owner_of(current) not in (None, org_id):
@@ -81,7 +94,8 @@ class ConnectorIntentStore:
     ) -> bool:
         """Count a failed attempt on ``intent`` and hold it until ``next_attempt_at``. Another org's intent is left."""
         key = self.key(str(intent["connectorId"]))
-        current = await config_service.get_config(key, use_cache=False)
+        # Raised, not None: a failed read must never pass for an absent intent and be written over.
+        current = await config_service.get_config(key, use_cache=False, raise_on_error=True)
         if isinstance(current, dict):
             if owner_of(current) not in (None, owner_of(intent)):
                 return False

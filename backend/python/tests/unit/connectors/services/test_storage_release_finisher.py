@@ -32,6 +32,12 @@ class Config:
         self.kv[key] = value
         return True
 
+    async def create_config_if_absent(self, key, value, **_kw) -> bool:
+        if key in self.kv:
+            return False
+        self.kv[key] = value
+        return True
+
     async def delete_config(self, key) -> bool:
         return self.kv.pop(key, None) is not None
 

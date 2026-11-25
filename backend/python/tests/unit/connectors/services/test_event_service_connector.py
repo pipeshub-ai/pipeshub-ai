@@ -1674,6 +1674,7 @@ class TestHandleDelete:
         config_svc = AsyncMock()
         config_svc.get_config = AsyncMock(return_value=None)
         config_svc.set_config = AsyncMock(side_effect=lambda key, value: written.__setitem__(key, value) or True)
+        config_svc.create_config_if_absent = config_svc.set_config
         service.graph_provider.get_nodes_by_filters = AsyncMock(return_value=[{"_key": "rg-1"}, {"_key": "rg-2"}])
         service.graph_provider.delete_connector_instance = AsyncMock(return_value={"success": True, "virtual_record_ids": []})
         service.app_container.config_service.return_value = config_svc
@@ -1692,6 +1693,7 @@ class TestHandleDelete:
         config_svc = AsyncMock()
         config_svc.get_config = AsyncMock(return_value=None)
         config_svc.set_config = AsyncMock(side_effect=lambda key, value: written.__setitem__(key, value) or True)
+        config_svc.create_config_if_absent = config_svc.set_config
         service.graph_provider.get_nodes_by_filters = AsyncMock(side_effect=RuntimeError("timeout"))
         service.graph_provider.delete_connector_instance = AsyncMock()
         service.app_container.config_service.return_value = config_svc

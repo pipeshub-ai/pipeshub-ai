@@ -64,3 +64,26 @@ async def test_groups_added_since_the_intent_was_read_survive_a_reschedule() -> 
         config, {"orgId": "org-a", "connectorId": "c1", "recordGroupIds": ["g1"]}, next_attempt_at=9,
     )
     assert config.kv[KEY]["recordGroupIds"] == ["g1", "g2"]
+
+
+async def test_an_intent_another_org_creates_between_the_read_and_the_write_is_kept() -> None:
+    class Racing(Config):
+        async def create_config_if_absent(self, key: str, value: object, **_kw: object) -> bool:
+            self.kv[key] = {"orgId": "org-b", "connectorId": "c1"}
+            return False
+
+    config = Racing()
+    with pytest.raises(RefusedError):
+        await STORE.record(config, org_id="org-a", connector_id="c1", now_ms=1)
+    assert config.kv[KEY]["orgId"] == "org-b"
+
+
+async def test_an_intent_that_cannot_be_read_is_not_rescheduled_over_or_taken_for_cleared() -> None:
+    config = Config()
+    await STORE.record(config, org_id="org-b", connector_id="c1", now_ms=1)
+    before = dict(config.kv)
+    config.read_error = ConnectionError("down")
+    with pytest.raises(ConnectionError):
+        await STORE.reschedule(config, {"orgId": "org-a", "connectorId": "c1"}, next_attempt_at=9)
+    assert not await STORE.clear(config, "c1", org_id="org-a")
+    assert config.kv == before

@@ -159,7 +159,8 @@ def _network_share(connector_type: str) -> bool:
 async def _disabled_types(
     config_service: ConfigurationService, org_ids: set[str], logger: Logger,
 ) -> dict[str, frozenset[str]]:
-    """The types turned off, by org, read as the indexer reads them: in the org. An org whose setting cannot be read is
+    """The types turned off, by org. Read as the indexer reads them, with the org bound, so the configuration service decides
+    whether an org has its own setting; with one shared setting every org gets the same set. An org whose setting cannot be read is
     left out, so its records wait; raises when that is every org."""
     failure: Exception | None = None
     disabled: dict[str, frozenset[str]] = {}

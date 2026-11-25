@@ -2736,7 +2736,7 @@ async def test_startup_sweep_reads_each_orgs_storage_in_its_own_context(monkeypa
     assert org_context.peek() is None
 
 
-@pytest.mark.parametrize("mount", ["..", "/etc", "a/b", "a\\b"])
+@pytest.mark.parametrize("mount", ["..", "/etc", "a/b", "a\\b", "C:..", "D:x"])
 async def test_startup_sweep_walks_no_mount_that_is_not_a_directory_name(monkeypatch: pytest.MonkeyPatch, mount: str) -> None:
     from app.agents.actions.storage_search import storage_search as ss
 

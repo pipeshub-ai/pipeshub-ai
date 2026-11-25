@@ -30,7 +30,7 @@ from app.connectors.services.vector_cleanup_events import (
     log_cleanup_publish_failure,
 )
 from app.connectors.sources.localKB.handlers.delete_lease import lease_is_held
-from app.core.org_context import for_org, spawn_in_request
+from app.core.org_context import for_org, spawn_in_request, system
 from app.modules.indexing.vector_membership_backfill import (
     VectorMembershipBackfillLeaderLock,
 )
@@ -213,6 +213,13 @@ class StorageReleaseReconciler:
             try:
                 with for_org(org_id, job="storage_release"):
                     app = await self.graph.get_document(connector_id, CollectionNames.APPS.value, raise_on_error=True)
+                if app is None:
+                    # Credentials are keyed by the connector alone, so an id another org holds keeps them: the read
+                    # above answers None for it in a store that scopes reads by org. Only whether it exists is used.
+                    with system("storage_release"):
+                        elsewhere = await self.graph.get_document(
+                            connector_id, CollectionNames.APPS.value, raise_on_error=True
+                        ) is not None
             except Exception as e:
                 # Kept, and no other org's release waits for it.
                 unread = e
@@ -253,7 +260,7 @@ class StorageReleaseReconciler:
                 org_id, connector_id, int(intent.get("attempts") or 0),
             )
             try:
-                org_config = (
+                org_config = None if elsewhere else (
                     await self.config_service_for(org_id) if self.config_service_for else self.config_service
                 )
             except Exception:
@@ -261,10 +268,7 @@ class StorageReleaseReconciler:
                     "Storage release kept for retry; the org's config is unavailable | org=%s connector=%s",
                     org_id, connector_id, exc_info=True,
                 )
-                await _STORE.reschedule(
-                    self.config_service, intent,
-                    next_attempt_at=now + retry_delay_ms(int(intent.get("attempts") or 0)),
-                )
+                await self._reschedule(intent, now)
                 return "retrying"
             helper = StorageCleanupHelper(self.logger, self.graph, self.config_service)
             try:
@@ -313,11 +317,17 @@ class StorageReleaseReconciler:
         if result.get("success"):
             # The storage release is owed still; the next pass finds the KB gone and runs it.
             return "deleted"
-        await _STORE.reschedule(
-            self.config_service, intent,
-            next_attempt_at=self.now_ms() + retry_delay_ms(int(intent.get("attempts") or 0)),
-        )
+        await self._reschedule(intent, self.now_ms())
         return "retrying"
+
+    async def _reschedule(self, intent: dict[str, Any], now: int) -> None:
+        """An intent that cannot be updated stays as it is, and is tried again at the next tick."""
+        try:
+            await _STORE.reschedule(
+                self.config_service, intent, next_attempt_at=now + retry_delay_ms(int(intent.get("attempts") or 0)),
+            )
+        except Exception:
+            self.logger.warning("Storage release intent not updated | connector=%s", intent.get("connectorId"), exc_info=True)
 
 
 def _kb_finisher(

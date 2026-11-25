@@ -28,6 +28,12 @@ class FakeConfig:
         assert use_cache is False  # another process wrote it
         return self.kv.get(key, default)
 
+    async def create_config_if_absent(self, key: str, value: object, **_: object) -> bool:
+        if self.fail_set or key in self.kv:
+            return False
+        self.kv[key] = value
+        return True
+
     async def delete_config(self, key: str) -> bool:
         if self.fail_delete:
             return False
