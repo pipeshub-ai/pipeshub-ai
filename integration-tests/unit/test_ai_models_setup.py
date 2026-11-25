@@ -261,3 +261,20 @@ def test_a_gateway_missing_a_setting_is_not_tried(monkeypatch: pytest.MonkeyPatc
         assert setup._embedding_provider_candidates(model_name=None) == []
     else:
         assert setup.llm_configuration() is None
+
+
+def test_a_caller_s_model_name_stands_in_for_the_gateway_s_env_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Unnamed, the gateway is still found when the caller names the model itself."""
+    for name, value in _GATEWAY.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.delenv("TEST_OPENAI_COMPATIBLE_LLM_MODEL")
+    monkeypatch.delenv("TEST_OPENAI_COMPATIBLE_EMBEDDING_MODEL")
+    monkeypatch.delenv("TEST_AZURE_OPENAI_API_KEY")
+
+    assert setup.llm_configuration(model_name="openai/gpt-5.6-luna") == (
+        "openAICompatible",
+        "openai/gpt-5.6-luna",
+        {"model": "openai/gpt-5.6-luna", "apiKey": "gateway-key", "endpoint": "https://gateway.example.com/v1"},
+    )
+    assert [c.model_name for c in setup._embedding_provider_candidates(model_name="openai/e")] == ["openai/e"]
+    assert setup.llm_configuration() is None

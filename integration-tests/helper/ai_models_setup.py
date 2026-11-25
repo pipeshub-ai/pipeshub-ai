@@ -241,14 +241,17 @@ def _build_openai_compatible_candidate(
     )
 
 
-def _provider_credentials_available(provider: str, *, for_embedding: bool) -> bool:
+def _provider_credentials_available(
+    provider: str, *, for_embedding: bool, model_name: str | None = None
+) -> bool:
     if provider == _PROVIDER_OPENAI:
         return bool(_openai_api_key())
     if provider == _PROVIDER_OPENAI_COMPATIBLE:
+        # A caller's model_name stands in for the env model, as it does in the builder.
         return bool(
             _env("TEST_OPENAI_COMPATIBLE_API_KEY")
             and _env("TEST_OPENAI_COMPATIBLE_ENDPOINT")
-            and _openai_compatible_model_name(for_embedding=for_embedding)
+            and (model_name or _openai_compatible_model_name(for_embedding=for_embedding))
         )
     if provider == _PROVIDER_AZURE_OPENAI:
         return _azure_credentials_complete(for_embedding=for_embedding)
@@ -263,7 +266,7 @@ def _provider_credentials_available(provider: str, *, for_embedding: bool) -> bo
     return False
 
 
-def _provider_order(*, for_embedding: bool) -> List[str]:
+def _provider_order(*, for_embedding: bool, model_name: str | None = None) -> List[str]:
     forced = _forced_provider()
     if forced:
         return [forced]
@@ -271,7 +274,9 @@ def _provider_order(*, for_embedding: bool) -> List[str]:
     return [
         provider
         for provider in base_order
-        if _provider_credentials_available(provider, for_embedding=for_embedding)
+        if _provider_credentials_available(
+            provider, for_embedding=for_embedding, model_name=model_name
+        )
     ]
 
 
@@ -422,7 +427,7 @@ def _llm_provider_candidates(
     model_name: str | None,
 ) -> List[_ProviderCandidate]:
     candidates: List[_ProviderCandidate] = []
-    for provider in _provider_order(for_embedding=False):
+    for provider in _provider_order(for_embedding=False, model_name=model_name):
         candidate = _build_llm_candidate(
             provider,
             is_reasoning=is_reasoning,
@@ -438,7 +443,7 @@ def _embedding_provider_candidates(
     model_name: str | None,
 ) -> List[_ProviderCandidate]:
     candidates: List[_ProviderCandidate] = []
-    for provider in _provider_order(for_embedding=True):
+    for provider in _provider_order(for_embedding=True, model_name=model_name):
         candidate = _build_embedding_candidate(provider, model_name=model_name)
         if candidate is not None:
             candidates.append(candidate)
