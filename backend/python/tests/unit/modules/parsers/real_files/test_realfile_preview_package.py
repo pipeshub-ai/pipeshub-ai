@@ -19,6 +19,7 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, patch
 
+import anyio
 import pytest
 from fastapi import HTTPException
 from lxml import etree
@@ -367,6 +368,21 @@ async def test_the_conversion_slot_is_held_until_the_rebuild_thread_ends(
     assert ended.is_set()
     assert in_use_at_end == [1]
     assert slots.in_use == 0
+
+
+async def test_a_cancel_scope_recognises_its_cancel_while_the_thread_ends(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def slow(_source: Path, _target: Path, stopped: Callable[[], bool]) -> bool:
+        while not stopped():
+            threading.Event().wait(0.01)
+        threading.Event().wait(0.6)
+        return False
+
+    monkeypatch.setattr(pdf_stream_conversion, "rebuild_package", slow)
+    with anyio.move_on_after(0.4) as scope:
+        await pdf_stream_conversion._rebuild_package(str(tmp_path / "a"), str(tmp_path / "b"), timeout=0.1)
+    assert scope.cancelled_caught
 
 
 async def test_files_that_fail_together_share_one_probe(monkeypatch: pytest.MonkeyPatch) -> None:

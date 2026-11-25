@@ -174,14 +174,15 @@ async def _rebuild_package(source: str, target: str, *, timeout: float) -> bool:
         finally:
             # The caller removes the directory next; the thread must not outlive it.
             stop.set()
-            cancelled = False
+            cancelled: asyncio.CancelledError | None = None
             while not worker.done():
                 try:
                     await asyncio.wait([worker])
-                except asyncio.CancelledError:
-                    cancelled = True
-            if cancelled:
-                raise asyncio.CancelledError
+                except asyncio.CancelledError as error:
+                    cancelled = error
+            if cancelled is not None:
+                # The same object: a cancel scope recognises its own.
+                raise cancelled
 
 
 async def libreoffice_to_pdf(
