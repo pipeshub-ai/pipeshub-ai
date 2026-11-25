@@ -7,8 +7,10 @@ the daemon never compresses one, so a compressed stream (a bomb's shape) is refu
 
 from __future__ import annotations
 
+import bz2
 import gzip
 import io
+import lzma
 import tarfile
 
 import pytest
@@ -34,6 +36,26 @@ def test_sec_fs_03_c6_40_a_folder_archive_over_the_cap_is_refused_while_spooling
         _ = _copy(tar_of({"cache/big": b"x" * 20_000}), max_bytes=16_384)
 
 
-def test_sec_fs_03_c6_40_a_compressed_folder_archive_is_refused_not_inflated() -> None:
+def _plain_tar_with_gzip_magic() -> bytes:
+    """A plain tar whose first header starts with gzip's signature: what tar sees when a gzip stream's bytes happen to
+    pass its header checksum, as about 1 in 450 gzip mtimes do."""
+    out = io.BytesIO()
+    with tarfile.open(fileobj=out, mode="w", format=tarfile.GNU_FORMAT, encoding="latin-1") as archive:
+        info = tarfile.TarInfo("\x1f\x8b\x08/zeros")
+        info.size = 1_000
+        archive.addfile(info, io.BytesIO(b"\0" * 1_000))
+    return out.getvalue()
+
+
+@pytest.mark.parametrize(
+    "stream",
+    [
+        pytest.param(lambda: gzip.compress(tar_of({"cache/zeros": b"\0" * 1_000_000}), mtime=0), id="gzip"),
+        pytest.param(lambda: bz2.compress(tar_of({"cache/zeros": b"\0" * 1_000_000})), id="bzip2"),
+        pytest.param(lambda: lzma.compress(tar_of({"cache/zeros": b"\0" * 1_000_000})), id="xz"),
+        pytest.param(_plain_tar_with_gzip_magic, id="gzip-signature-that-reads-as-tar"),
+    ],
+)
+def test_sec_fs_03_c6_40_a_compressed_folder_archive_is_refused_not_inflated(stream) -> None:
     with pytest.raises(tarfile.ReadError):
-        _ = _copy(gzip.compress(tar_of({"cache/zeros": b"\0" * 1_000_000})))
+        _ = _copy(stream())

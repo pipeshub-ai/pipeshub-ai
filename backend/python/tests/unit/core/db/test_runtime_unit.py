@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 from contextlib import asynccontextmanager
 from pathlib import Path
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, ClassVar
 
 import asyncpg
@@ -1109,3 +1110,38 @@ async def test_a_pool_timeout_is_unchanged() -> None:
     from app.core.db.errors import PoolTimeout
 
     assert isinstance(await _open_with(_refusing_pool(TimeoutError())), PoolTimeout)
+
+
+def _on(closed: bool) -> Tx:
+    tx = _tx()
+    tx._con = SimpleNamespace(is_closed=lambda: closed)  # type: ignore[assignment]
+    return tx
+
+
+def test_a_driver_state_clash_is_a_lost_connection_by_its_message_alone_even_on_a_connection_not_yet_closed() -> None:
+    """The protocol-state prefix alone: the pooler cut the connection mid-operation and asyncpg has not closed it yet."""
+    for msg in ("cannot switch to state 11; another operation (2) is in progress", "not connected"):
+        assert isinstance(_db().map_error(asyncpg.InternalClientError(msg), _on(closed=False)), ConnectionLost), msg
+
+
+def test_any_driver_error_of_that_type_on_a_closed_connection_is_a_lost_connection() -> None:
+    """The closed connection alone: a backend the server ended as a statement started, whatever the driver's message."""
+    err = asyncpg.InternalClientError("unexpected message while the backend was ended")
+    assert isinstance(_db().map_error(err, _on(closed=True)), ConnectionLost)
+
+
+def test_a_codec_error_on_a_live_connection_still_passes_through() -> None:
+    codec = asyncpg.InternalClientError("missing codec information for OID 1234")
+    assert _db().map_error(codec, _on(closed=False)) is codec
+
+
+def test_a_driver_error_on_a_connection_the_pool_already_took_back_is_a_lost_connection() -> None:
+    """asyncpg's pool proxy of a dead connection it already released raises InterfaceError from is_closed(): that is a closed
+    connection too, and the check must not replace the original error."""
+    def released() -> bool:
+        raise asyncpg.InterfaceError("cannot call Connection.is_closed(): connection has been released back to the pool")
+
+    tx = _tx()
+    tx._con = SimpleNamespace(is_closed=released)  # type: ignore[assignment]
+    err = asyncpg.InternalClientError("unexpected message while the backend was ended")
+    assert isinstance(_db().map_error(err, tx), ConnectionLost)
