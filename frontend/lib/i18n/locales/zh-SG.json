@@ -5769,6 +5769,8 @@
     "mcpServerNodeSubtitle": "来自 MCP 服务器的工具",
     "webSearchLocked": "此智能体的网络搜索无法更改",
     "webSearchLoading": "正在加载网络搜索提供方…",
+    "webSearchNotSetUp": "网页搜索尚未设置。请联系管理员在 Workspace → 网页搜索 中选择提供方。",
+    "webSearchLoadFailed": "无法加载网络搜索提供方。",
     "webSearchConfigureFirst": "请先配置 {{name}}",
     "webSearch": "网络搜索",
     "toolsetOAuthServerError": "认证失败。请重试或联系您的管理员。",

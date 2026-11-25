@@ -5776,6 +5776,8 @@
     "mcpServerNodeSubtitle": "Herramientas de un servidor MCP",
     "webSearchLocked": "La búsqueda web no se puede cambiar para este agente",
     "webSearchLoading": "Cargando proveedores de búsqueda web…",
+    "webSearchNotSetUp": "La búsqueda web aún no está configurada. Pide a tu administrador que elija un proveedor en Workspace → Búsqueda web.",
+    "webSearchLoadFailed": "No se pudieron cargar los proveedores de búsqueda web.",
     "webSearchConfigureFirst": "Configure primero {{name}}",
     "webSearch": "Búsqueda web",
     "toolsetOAuthServerError": "Error de autenticación. Inténtelo de nuevo o póngase en contacto con su administrador.",
