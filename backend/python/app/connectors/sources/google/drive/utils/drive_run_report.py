@@ -134,9 +134,9 @@ class DriveRunReport:
     def note_unreadable_folders(self, folder_ids: list[str]) -> None:
         self.unreadable_folders = sorted(set(folder_ids))
 
-    def note_nobody_to_sync(self) -> None:
-        """No active user of this deployment has an account in the Workspace, so there is nobody to read as."""
-        self.nobody_to_sync = True
+    def note_nobody_to_sync(self, nobody: bool) -> None:
+        """Whether no active user of this deployment has an account in the Workspace. The last selection counts."""
+        self.nobody_to_sync = nobody
 
     async def finish(self, *, complete: bool) -> None:
         """Send what this run calls for. Never raises: telling people must not change the run's outcome."""
@@ -174,9 +174,11 @@ class DriveRunReport:
             if runs:
                 await self._sync_point.update_sync_point(RUN_HEALTH_SYNC_POINT_KEY, {"incompleteRuns": 0})
             return
+        if self.nobody_to_sync:
+            return  # not an outage: it neither counts towards nor uses up the warning about one
         runs += 1
         await self._sync_point.update_sync_point(RUN_HEALTH_SYNC_POINT_KEY, {"incompleteRuns": runs})
-        if runs == PERSISTENT_RUNS and self.problem is None and not self.nobody_to_sync:
+        if runs == PERSISTENT_RUNS and self.problem is None:
             await self._send(DriveNotice(
                 NotificationType.CONNECTOR_SYNC_ERROR, NotificationSeverity.WARNING,
                 "some of Google Drive is not syncing",

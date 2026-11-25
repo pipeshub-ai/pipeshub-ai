@@ -1043,7 +1043,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                 # Files under a selected folder nobody could list fail the folder
                 # filter without being seen, so cleanup would read them as deleted.
                 self._sync_ledger.note_incomplete(
-                    "no active user has an account in this Google Workspace" if self._run_report.nobody_to_sync
+                    "no active user has an account in this Google Workspace" if self._run_report is not None and self._run_report.nobody_to_sync
                     else "a selected folder could not be listed by any synced user"
                 )
             await self._keep_records_no_listing_may_show()
@@ -7590,9 +7590,12 @@ class GoogleDriveTeamConnector(BaseConnector):
             user for user in users
             if user.email and user.email.lower() in active_user_emails and user.is_active is not False
         ]
-        # No active users at all is a read that failed: whoever set the connector up is one.
-        if users and active_user_emails and not matching:
-            self._run_report.note_nobody_to_sync()
+        # No active users at all is a read that failed: whoever set the connector up is one. A cut listing may
+        # leave out the one account that matches.
+        if self._run_report is not None:  # also called outside a run
+            self._run_report.note_nobody_to_sync(
+                bool(users and active_user_emails) and not matching and not self._listing_cut
+            )
         return matching
 
     async def _process_users_in_batches(self, users: List[AppUser]) -> None:
