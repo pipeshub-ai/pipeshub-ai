@@ -166,6 +166,7 @@ from app.utils.llm import (
     load_ai_models,
     require_embeddings_placement,
 )
+from app.utils.model_call_events import embedding_call
 from app.utils.openai_hosts import is_openai_api_url
 from app.utils.precision_witness import get_precision_witness
 
@@ -2761,7 +2762,12 @@ class VectorStore(Transformer):
             )
             return []
 
-        results = await provider.embed_images(image_base64s)
+        if provider.announces_model_calls:
+            results = await provider.embed_images(image_base64s)
+        else:
+            # The provider's own SDK or endpoint is called, past the embeddings client the model factory wraps.
+            with embedding_call(self.embedding_provider or "unknown", self.model_name or "other", len(image_base64s)):
+                results = await provider.embed_images(image_base64s)
         return self._build_image_points(image_chunks, results)
 
     async def _store_image_points(

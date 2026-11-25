@@ -36,7 +36,9 @@ from tenacity import (
 )
 from typing_extensions import Self
 
+from app.utils import http_client_events
 from app.utils.logger import create_logger
+from app.utils.model_call_events import note_usage
 from app.utils.threaded import to_thread_settled
 
 logger = create_logger("custom_embeddings")
@@ -102,7 +104,9 @@ def embed_with_retry(embeddings: VoyageEmbeddings, **kwargs: dict[str, Any]) -> 
         wire.admit_request()
         wire.note_request_sent()
         try:
-            response = requests.post(**kwargs)
+            with http_client_events.request("voyage", "POST", library="requests") as call:
+                response = requests.post(**kwargs)
+                call.status = response.status_code
         except requests.exceptions.RequestException as exc:
             wire.note_error(type(exc).__name__)
             raise
@@ -111,7 +115,9 @@ def embed_with_retry(embeddings: VoyageEmbeddings, **kwargs: dict[str, Any]) -> 
             payload = response.json()
         except ValueError:  # an outage page is not JSON: the status still says what it was
             payload = {"error": (response.text or "")[:200]}
-        return _check_response(payload, response)
+        checked = _check_response(payload, response)
+        note_usage(checked)
+        return checked
 
     return _embed_with_retry(**kwargs)
 
@@ -485,6 +491,7 @@ class TogetherEmbeddings(BaseModel, Embeddings):
 
             if not isinstance(response, dict):
                 response = response.model_dump()
+                note_usage(response)
                 embeddings.extend([i["embedding"] for i in response["data"]])
         return embeddings
 
@@ -504,6 +511,7 @@ class TogetherEmbeddings(BaseModel, Embeddings):
 
         if not isinstance(response, dict):
             response = response.model_dump()
+        note_usage(response)
         return response["data"][0]["embedding"]
 
     async def aembed_documents(self, texts: list[str]) -> list[list[float]]:
@@ -524,6 +532,7 @@ class TogetherEmbeddings(BaseModel, Embeddings):
 
             if not isinstance(response, dict):
                 response = response.model_dump()
+                note_usage(response)
                 embeddings.extend([i["embedding"] for i in response["data"]])
         return embeddings
 
@@ -543,6 +552,7 @@ class TogetherEmbeddings(BaseModel, Embeddings):
 
         if not isinstance(response, dict):
             response = response.model_dump()
+        note_usage(response)
         return response["data"][0]["embedding"]
 
 
@@ -574,11 +584,13 @@ def _build_jina_embeddings() -> type:
             wire.admit_request()
             wire.note_request_sent()
             try:
-                response = self.session.post(
-                JINA_API_URL,
-                json={"input": input, "model": self.model_name},
-                timeout=JINA_REQUEST_TIMEOUT_S,
-            )
+                with http_client_events.request("jina", "POST", library="requests") as call:
+                    response = self.session.post(
+                        JINA_API_URL,
+                        json={"input": input, "model": self.model_name},
+                        timeout=JINA_REQUEST_TIMEOUT_S,
+                    )
+                    call.status = response.status_code
             except requests.exceptions.RequestException as exc:
                 wire.note_error(type(exc).__name__)
                 raise
@@ -595,6 +607,7 @@ def _build_jina_embeddings() -> type:
                     status_code=response.status_code,
                     response=response,
                 )
+            note_usage(payload)
             return [item["embedding"] for item in sorted(payload["data"], key=lambda e: e["index"])]
 
         async def aembed_documents(self, texts: list[str]) -> list[list[float]]:

@@ -9,12 +9,19 @@ reported. Never a prompt, a completion, a tool argument or an embedded text.
 * A chat model gets a LangChain callback on the instance, which LangChain calls for
   every invocation of it (``invoke``, ``astream``, a structured-output chain).
 * An embeddings client is wrapped by :class:`AnnouncedEmbeddings`. The local embedding
-  server's client announces its own calls with :func:`embedding_call`.
+  server's client announces its own calls with :func:`embedding_call`, and so does the
+  vector store for images sent through a provider's own SDK.
+* An embeddings client returns vectors, not the provider's response. Code that does see
+  the response hands the token count in it to :func:`note_usage` (or :func:`note_tokens`),
+  and the call being announced carries it as ``tokens_in``. A provider whose response is
+  never seen here is announced without one: nothing is estimated.
 """
 
 from __future__ import annotations
 
+import contextlib
 import time
+from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any
 
 from langchain_core.callbacks import BaseCallbackHandler
@@ -35,6 +42,10 @@ COMPLETED = "llm.call.completed"
 OTHER_MODEL = "other"
 # Calls whose end LangChain never reported (it reports every one; this only bounds a bug).
 _MAX_OPEN_CALLS = 10_000
+# Token counts the provider reported for the embeddings call being made; a list so tasks and threads the call starts share it.
+_reported_tokens: ContextVar[list[int] | None] = ContextVar("embedding_call_tokens", default=None)
+# Where an OpenAI-compatible embeddings response says how many tokens it read, in the order they are tried.
+_USAGE_KEYS = ("prompt_tokens", "input_tokens", "total_tokens")
 
 
 def configured_model(model_name: str | None, config: Mapping[str, Any] | None) -> str:
@@ -49,11 +60,40 @@ def configured_model(model_name: str | None, config: Mapping[str, Any] | None) -
 
 
 def _call_site() -> str | None:
-    """Which indexing step is calling, inside a record's indexing; None anywhere else."""
+    """Which indexing step is calling, inside a record's indexing. Anywhere else, what the call is for when the
+    caller bound a model call context (``chat``, ``agent``, ``search``, ...: the ``Workload`` names); else None."""
     from app.services.llm_gateway.gateway import current_call_site
+    from app.services.model_identity.call_context import peek_call_context
     from app.utils.indexing_timing import current_timeline
 
-    return current_call_site() if current_timeline() is not None else None
+    if current_timeline() is not None:
+        return current_call_site()
+    bound = peek_call_context()
+    return bound.workload.value if bound is not None else None
+
+
+def note_tokens(count: object) -> None:
+    """The provider's response to the embeddings call being made counted ``count`` input tokens. Counts of several
+    requests of one call add up. Outside an announced call, or for anything but a count, this does nothing."""
+    reported = _reported_tokens.get()
+    if reported is not None and isinstance(count, int) and not isinstance(count, bool) and count >= 0:
+        reported.append(count)
+
+
+def awaits_tokens() -> bool:
+    """True inside an embeddings call that will be announced: reading a token count out of its response is worth it."""
+    return _reported_tokens.get() is not None
+
+
+def note_usage(payload: object) -> None:
+    """``note_tokens`` for an OpenAI-compatible embeddings response body: its ``usage`` object, when it has one."""
+    usage = payload.get("usage") if isinstance(payload, dict) else None
+    if not isinstance(usage, dict):
+        return
+    for key in _USAGE_KEYS:
+        if key in usage:
+            note_tokens(usage[key])
+            return
 
 
 def announce(
@@ -152,7 +192,7 @@ def announce_chat_model(model: BaseChatModel, provider: str, model_name: str | N
 class embedding_call:
     """Times the enclosed embeddings call and announces it, failed or not. ``count``: texts sent."""
 
-    __slots__ = ("provider", "model", "count", "started")
+    __slots__ = ("provider", "model", "count", "started", "_reported", "_token")
 
     def __init__(self, provider: str, model: str, count: int) -> None:
         self.provider = provider
@@ -160,10 +200,15 @@ class embedding_call:
         self.count = count
 
     def __enter__(self) -> None:
+        self._reported: list[int] | None = [] if platform_events.has_listeners(COMPLETED) else None
+        self._token = _reported_tokens.set(self._reported)
         self.started = time.perf_counter()
 
     def __exit__(self, _kind: object, error: BaseException | None, _trace: object) -> None:
-        announce(self.provider, self.model, "embedding", self.started, error=error, count=self.count)
+        with contextlib.suppress(ValueError):  # left in another context than it was entered in: nothing to restore there
+            _reported_tokens.reset(self._token)
+        tokens = sum(self._reported) if self._reported else None
+        announce(self.provider, self.model, "embedding", self.started, error=error, tokens_in=tokens, count=self.count)
 
 
 class AnnouncedEmbeddings(Embeddings):

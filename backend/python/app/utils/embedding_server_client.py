@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import time
 from contextvars import ContextVar
 from typing import TYPE_CHECKING
@@ -27,7 +28,7 @@ from app.services.messaging.backpressure import get_default_backpressure_coordin
 from app.utils.embedding_gate import BulkGate, get_bulk_gate
 from app.utils.embedding_retry import await_with_retry, call_with_retry
 from app.utils.logger import create_logger
-from app.utils.model_call_events import embedding_call
+from app.utils.model_call_events import awaits_tokens, embedding_call, note_tokens
 from app.utils.precision_witness import get_precision_witness
 from harness_core.deadline import CONNECT_TIMEOUT_S, bounded_read
 
@@ -74,6 +75,9 @@ def _embedding_server_timeout() -> float:
 PRECISION_HEADER = "x-embedding-precision"
 PRECISION_FALLBACK_HEADER = "x-embedding-precision-fallback"
 _ANNOUNCEMENT_TTL_SECONDS = 30.0
+# ``"usage": {"prompt_tokens": N, ...}``, the last field of an embeddings response.
+_USAGE = re.compile(rb'"usage"\s*:\s*\{\s*"prompt_tokens"\s*:\s*(\d+)')
+_USAGE_TAIL_BYTES = 256
 # The precision headers of every response of the call being made; a list so tasks the call spawns share it.
 _responses: ContextVar[list[tuple[str | None, bool]] | None] = ContextVar("embedding_responses", default=None)
 
@@ -86,10 +90,22 @@ def _note_response(response: httpx.Response) -> None:
     seen = _responses.get()
     if seen is not None:
         seen.append((response.headers.get(PRECISION_HEADER), response.headers.get(PRECISION_FALLBACK_HEADER) == "1"))
+    if awaits_tokens():
+        _note_usage(response.read())
 
 
 async def _note_response_async(response: httpx.Response) -> None:
+    if response.is_success and awaits_tokens():
+        await response.aread()
     _note_response(response)
+
+
+def _note_usage(body: bytes) -> None:
+    """The token count an embeddings response ends with. The embeddings client keeps the vectors and drops ``usage``,
+    and the body is megabytes of vectors: only its tail is looked at, and it is not parsed a second time."""
+    found = _USAGE.search(body[-_USAGE_TAIL_BYTES:])
+    if found is not None:
+        note_tokens(int(found.group(1)))
 
 
 def _begin_attempt() -> None:

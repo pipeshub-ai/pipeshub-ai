@@ -26,6 +26,7 @@ from app.services.embeddings.multimodal.interface import (
     ImageEmbeddingResult,
     IMultimodalEmbeddingProvider,
 )
+from app.utils.model_call_events import note_tokens
 from app.utils.model_egress import guarded_async_client
 
 _CONCURRENCY_LIMIT = 5
@@ -64,6 +65,7 @@ class OllamaMultimodalProvider(IMultimodalEmbeddingProvider):
                     )
                     resp.raise_for_status()
                     data = resp.json()
+                    note_tokens(data.get("prompt_eval_count"))
                     embeddings = data.get("embeddings") or []
                     if not embeddings:
                         return ImageEmbeddingResult(

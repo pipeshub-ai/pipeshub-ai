@@ -1178,7 +1178,7 @@ _event(
 )
 _event(
     "document.indexed",
-    "A record's vector indexing finished (ok) or the vector store did not index it (failed)",
+    "A record's vector indexing finished (status ok) or the vector store did not index it (failed): one per record, with its organisation (org_id) and its connector type (connector), so indexed documents can be counted per organisation",
     "status",
     "connector",
     "org_id",
@@ -1331,7 +1331,7 @@ _event(
 )
 _event(
     "llm.call.completed",
-    "One call of a chat model (operation chat) or an embeddings model (embedding) ended: success or failure. count: texts sent to an embeddings model. Never a prompt, a completion, a tool argument or an embedded text",
+    "One call of a chat model (operation chat) or an embeddings model (embedding) ended: success or failure. call_site: the indexing step inside a record's indexing, else what the call is for when its caller said (chat, agent, search, query_embedding, ...), else absent. count: texts or images sent to an embeddings model; tokens_in of an embeddings call: the count in the provider's response where the application sees it, never an estimate. Never a prompt, a completion, a tool argument or an embedded text",
     "provider",
     "model",
     "operation",
@@ -1376,7 +1376,7 @@ _event(
 )
 _event(
     "http.client.request.completed",
-    "An outbound HTTP request of a shared client (a connector's or external source's HTTPClient or GraphQLClient, an internal service client, make_api_call) was answered or failed. Never a URL, a header or a body",
+    "An outbound HTTP request of a shared client (a connector's or external source's HTTPClient or GraphQLClient, an internal service client, make_api_call), of an aiohttp session a module opened for itself, or of a requests call was answered or failed. upstream: a short name set by code. Never a URL, a header or a body",
     "upstream",
     "method",
     "status_class",

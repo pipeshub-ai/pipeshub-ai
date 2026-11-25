@@ -180,3 +180,114 @@ class TestEmbeddings:
 
 def test_the_event_has_no_field_for_content() -> None:
     assert not {"prompt", "messages", "completion", "content", "text", "arguments", "input", "output"} & FIELDS
+
+
+class _Reporting(Embeddings):
+    """An embeddings client that sees its provider's responses, as the application's own clients do."""
+
+    def __init__(self, usages: list[object]) -> None:
+        self.usages = usages
+
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        for usage in self.usages:
+            model_call_events.note_usage({"data": [], "usage": usage})
+        return [[0.0] for _ in texts]
+
+    def embed_query(self, text: str) -> list[float]:
+        return [0.0]
+
+
+class TestEmbeddingTokens:
+    def test_the_tokens_a_provider_reported_are_on_the_call_and_add_up_over_its_requests(self) -> None:
+        with captured_events("llm.call.completed") as events:
+            wrapped = model_call_events.announce_embeddings(
+                _Reporting([{"prompt_tokens": 40, "total_tokens": 40}, {"total_tokens": 2}]), "voyage", None, CONFIG)
+            wrapped.embed_documents([SECRET, SECRET])
+            wrapped.embed_query(SECRET)
+
+        first, second = facts(events, "llm.call.completed")
+        assert (first["tokens_in"], first["tokens_out"], first["count"]) == (42, None, 2)
+        assert second["tokens_in"] is None  # that call's response was not seen: nothing is estimated
+
+    @pytest.mark.parametrize("usage", [None, {}, {"prompt_tokens": "12"}, {"prompt_tokens": -1}, {"prompt_tokens": True}, "12"])
+    def test_anything_but_a_count_is_not_a_token_count(self, usage: object) -> None:
+        with captured_events("llm.call.completed") as events:
+            model_call_events.announce_embeddings(_Reporting([usage]), "voyage", None, CONFIG).embed_documents([SECRET])
+
+        assert facts(events, "llm.call.completed")[0]["tokens_in"] is None
+
+    def test_a_count_noted_outside_an_announced_call_goes_nowhere(self) -> None:
+        assert model_call_events.awaits_tokens() is False
+        model_call_events.note_tokens(7)
+        with captured_events("llm.call.completed") as events:
+            with model_call_events.embedding_call("p", "m", 1):
+                assert model_call_events.awaits_tokens() is True
+            assert model_call_events.awaits_tokens() is False
+
+        assert facts(events, "llm.call.completed")[0]["tokens_in"] is None
+
+    async def test_requests_sent_from_tasks_of_the_call_are_added_to_it(self) -> None:
+        import asyncio
+
+        async def one(count: int) -> None:
+            model_call_events.note_tokens(count)
+
+        with captured_events("llm.call.completed") as events:
+            with model_call_events.embedding_call("p", "m", 3):
+                await asyncio.gather(one(1), one(2), asyncio.to_thread(model_call_events.note_tokens, 4))
+
+        assert facts(events, "llm.call.completed")[0]["tokens_in"] == 7
+
+    def test_the_embedding_server_response_is_read_for_its_count_without_parsing_the_vectors(self) -> None:
+        import httpx
+
+        from app.utils import embedding_server_client as server_client
+
+        body = b'{"object":"list","data":[{"embedding":[' + b"0.1," * 5000 + b'0.1]}],"model":"m","usage":{"prompt_tokens":17,"total_tokens":17}}'
+        answers = {"/v1/embeddings": httpx.Response(200, content=body), "/down": httpx.Response(503, content=body)}
+        transport = httpx.MockTransport(lambda request: answers[request.url.path])
+        with captured_events("llm.call.completed") as events:
+            with httpx.Client(transport=transport, event_hooks={"response": [server_client._note_response]}) as http:
+                with model_call_events.embedding_call("default", "m", 1):
+                    assert http.post("http://embedding.invalid/v1/embeddings").json()["model"] == "m"
+                    http.post("http://embedding.invalid/down")
+                http.post("http://embedding.invalid/v1/embeddings")  # outside a call: not read
+
+        assert [c["tokens_in"] for c in facts(events, "llm.call.completed")] == [17]
+
+    async def test_the_async_embedding_server_response_is_read_the_same_way(self) -> None:
+        import httpx
+
+        from app.utils import embedding_server_client as server_client
+
+        body = b'{"data":[],"usage": {"prompt_tokens": 5, "total_tokens": 5}}'
+        transport = httpx.MockTransport(lambda _request: httpx.Response(200, content=body))
+        with captured_events("llm.call.completed") as events:
+            async with httpx.AsyncClient(transport=transport, event_hooks={"response": [server_client._note_response_async]}) as http:
+                with model_call_events.embedding_call("default", "m", 1):
+                    assert (await http.post("http://embedding.invalid/v1/embeddings")).json()["data"] == []
+
+        assert facts(events, "llm.call.completed")[0]["tokens_in"] == 5
+
+
+class TestCallSite:
+    def test_outside_indexing_a_call_says_what_it_is_for_when_a_call_context_is_bound(self) -> None:
+        from app.services.model_identity.call_context import (
+            ModelCallContext,
+            bind_call_context,
+        )
+        from app.services.model_identity.principal import service_principal
+        from app.services.model_identity.workload import Workload
+
+        with captured_events("llm.call.completed") as events:
+            _chat().invoke(SECRET)
+            for workload in (Workload.CHAT, Workload.QUERY_EMBEDDING):
+                with bind_call_context(ModelCallContext(principal=service_principal(), workload=workload)):
+                    _chat().invoke(SECRET)
+
+        assert [c["call_site"] for c in facts(events, "llm.call.completed")] == [None, "chat", "query_embedding"]
+
+    def test_every_value_it_can_take_outside_indexing_is_a_workload_name(self) -> None:
+        from app.services.model_identity.workload import Workload
+
+        assert all(w.value.replace("_", "").isalpha() and w.value.islower() for w in Workload) and len(Workload) < 32
