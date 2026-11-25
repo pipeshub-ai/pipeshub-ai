@@ -1,5 +1,9 @@
 import { AsyncLocalStorage } from 'async_hooks';
 import { randomUUID } from 'crypto';
+import {
+  applyOutboundContextCarriers,
+  hasOutboundContextCarriers,
+} from './outbound-carriers';
 
 /**
  * Ambient request-id context (AsyncLocalStorage). Mirrors the Python side
@@ -147,6 +151,7 @@ export function currentDisplayId(suffix = ''): string {
 
 /**
  * Add the root id and any /mcp relay header to outbound HTTP headers (returns a copy, never mutates).
+ * Registered outbound context carriers (`./outbound-carriers`) then add their headers to the copy.
  * With a context the root id replaces any request id already there (in any case): callers pass the
  * inbound headers on, and the service must get the sanitised root, not the client's raw id.
  */
@@ -167,20 +172,25 @@ export function injectRequestHeaders(
   if (ctx?.mcpRelay && !hasHeader(out, HEADER_MCP_RELAY)) {
     out[HEADER_MCP_RELAY] = ctx.mcpRelay;
   }
+  applyOutboundContextCarriers(out, 'http');
   return out;
 }
 
-/** Stamp root id and org onto an outbound broker envelope (returns a copy). */
+/**
+ * Stamp root id and org onto an outbound broker envelope (returns a copy).
+ * Registered outbound context carriers add their fields to the same copy.
+ */
 export function injectEnvelope<T extends Record<string, unknown>>(message: T): T {
   const ctx = storage.getStore();
-  if (!ctx) return message;
+  if (!ctx && !hasOutboundContextCarriers()) return message;
   const out: Record<string, unknown> = { ...message };
-  if (out[ENVELOPE_REQUEST_ID] === undefined) {
+  if (ctx && out[ENVELOPE_REQUEST_ID] === undefined) {
     out[ENVELOPE_REQUEST_ID] = ctx.rootId;
   }
-  if (ctx.orgId && out[ENVELOPE_ORG_ID] === undefined) {
+  if (ctx?.orgId && out[ENVELOPE_ORG_ID] === undefined) {
     out[ENVELOPE_ORG_ID] = ctx.orgId;
   }
+  applyOutboundContextCarriers(out, 'message');
   return out as T;
 }
 
