@@ -233,13 +233,13 @@ def arango() -> ArangoHTTPProvider:
 
 async def _neo4j_written(provider: Neo4jProvider, updates: dict[str, Any]) -> dict[str, Any]:
     provider.client.execute_query = AsyncMock(return_value=[{"n": {"id": "a1"}}])
-    assert await provider.update_agent("a1", updates, "u1", "o1") is True
+    assert await provider.update_agent("a1", updates, "u1", ORG) is True
     return provider.client.execute_query.await_args.kwargs["parameters"]["updates"]
 
 
 async def _arango_written(provider: ArangoHTTPProvider, updates: dict[str, Any]) -> dict[str, Any]:
     provider.http_client.update_document = AsyncMock(return_value={"_key": "a1"})
-    assert await provider.update_agent("a1", updates, "u1", "o1") is True
+    assert await provider.update_agent("a1", updates, "u1", ORG) is True
     return provider.http_client.update_document.await_args.args[2]
 
 
@@ -259,14 +259,14 @@ class TestBothGraphBackends:
         neo4j._project_agents_toolsets_and_knowledge = AsyncMock(return_value={})  # type: ignore[method-assign]
         neo4j._project_agent_skills = AsyncMock(return_value=[])  # type: ignore[method-assign]
 
-        agent = await neo4j.get_agent("a1", "o1")
+        agent = await neo4j.get_agent("a1", ORG)
 
         assert agent is not None and agent["roleModels"] == ROLES
 
     async def test_qa37_u10_arango_get_agent_reads_the_map_back(self, arango: ArangoHTTPProvider) -> None:
         arango.http_client.execute_aql = AsyncMock(return_value=[{"_key": "a1", "name": "A", "roleModels": STORED}])
 
-        agent = await arango.get_agent("a1", "o1")
+        agent = await arango.get_agent("a1", ORG)
 
         assert agent is not None and agent["roleModels"] == ROLES
 

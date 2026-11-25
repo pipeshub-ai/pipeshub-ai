@@ -185,12 +185,12 @@ class TestBothGraphBackends:
     ) -> None:
         async def neo(updates: dict[str, Any]) -> dict[str, Any]:
             neo4j.client.execute_query = AsyncMock(return_value=[{"n": {"id": "a1"}}])
-            assert await neo4j.update_agent("a1", updates, "u1", "o1") is True
+            assert await neo4j.update_agent("a1", updates, "u1", ORG) is True
             return neo4j.client.execute_query.await_args.kwargs["parameters"]["updates"]
 
         async def aran(updates: dict[str, Any]) -> dict[str, Any]:
             arango.http_client.update_document = AsyncMock(return_value={"_key": "a1"})
-            assert await arango.update_agent("a1", updates, "u1", "o1") is True
+            assert await arango.update_agent("a1", updates, "u1", ORG) is True
             return arango.http_client.update_document.await_args.args[2]
 
         for written in (await neo({"gates": GATES}), await aran({"gates": GATES})):
@@ -201,7 +201,7 @@ class TestBothGraphBackends:
     async def test_wp51_arango_get_agent_reads_the_gates_back(self, arango: ArangoHTTPProvider) -> None:
         arango.http_client.execute_aql = AsyncMock(return_value=[{"_key": "a1", "name": "A", "gates": STORED}])
 
-        agent = await arango.get_agent("a1", "o1")
+        agent = await arango.get_agent("a1", ORG)
 
         assert agent is not None and agent["gates"] == GATES
 

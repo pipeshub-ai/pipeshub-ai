@@ -7,6 +7,7 @@ mocked, so the tests exercise the actual authorization decision rather than a
 stubbed provider result.
 """
 
+from collections.abc import Iterator
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -14,6 +15,7 @@ from fastapi import HTTPException
 
 from app.config.constants.arangodb import CollectionNames
 from app.connectors.api.router import delete_record
+from app.core.org_context import OrgContext, bind
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
 from tests.support.record_access import InMemoryRecordAccess
 
@@ -23,6 +25,13 @@ RECORD_ID = "rec-1"
 
 CONNECTOR = {"connectorName": "DRIVE", "origin": "CONNECTOR"}
 KB = {"connectorName": "KB", "origin": "UPLOAD"}
+
+
+@pytest.fixture(autouse=True)
+def _caller_org_bound() -> Iterator[None]:
+    """The auth middleware binds the caller's verified org before the route runs; every request here is ORG_A's."""
+    with bind(OrgContext(ORG_A, "user-a", "user", "jwt", "t")):
+        yield
 
 
 def _request(user_id: str = "user-a", org_id: str | None = ORG_A) -> MagicMock:
