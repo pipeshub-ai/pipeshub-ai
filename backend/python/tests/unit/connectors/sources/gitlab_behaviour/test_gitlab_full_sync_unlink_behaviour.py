@@ -17,14 +17,13 @@ from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
 from app.connectors.sources.gitlab.connector import GitLabSyncIncompleteError
 
 if TYPE_CHECKING:
-    from conftest import GitLabHarness
     from gitlab_store_fakes import FakeCheckpointStore, FakeRecordsDb
 
 ERIN = 6
 API_MAIN = blob("main.go", "acme/platform/api")
 
 
-async def full_sync(harness: GitLabHarness, checkpoints: FakeCheckpointStore, db: FakeRecordsDb) -> set[str]:
+async def full_sync(harness, checkpoints: FakeCheckpointStore, db: FakeRecordsDb) -> set[str]:
     """A full sync as ``run_sync_task`` runs it: sync points reset first, the unlink after.
 
     Returns the external ids it removes: deleted by the connector during the run, or
