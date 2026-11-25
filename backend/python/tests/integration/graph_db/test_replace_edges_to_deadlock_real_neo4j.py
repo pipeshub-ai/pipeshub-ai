@@ -33,6 +33,8 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.models.entities import AppUser, AppUserGroup
 from tests.integration.graph_db.replace_edges_support import (
+    GROUPS,
+    RECORDS,
     permissions,
     replace,
     seed_nodes,
@@ -116,6 +118,47 @@ async def test_concurrent_group_replaces_sharing_dense_members_do_not_deadlock(p
 
         assert not deadlocks, (
             f"{len(deadlocks)} of {ROUNDS * GROUP_COUNT} concurrent replaces deadlocked; "
+            f"locks: {dict(_lock_types(deadlocks))}; first: {deadlocks[0][:400]}"
+        )
+    finally:
+        await _cleanup(provider, run_id)
+
+
+async def test_concurrent_group_and_record_permission_replaces_do_not_deadlock(provider: Neo4jProvider) -> None:
+    """A record's permissions come from users and from groups, so a record replace locks groups as
+    members while a group replace holds its group and locks the same users. The target is locked
+    in the same order as the members, or the two hold what the other waits for."""
+    run_id = f"dl-{uuid.uuid4().hex[:8]}"
+    try:
+        members, groups = await _seed(provider, run_id)
+        records = [f"{run_id}-r{i:03d}" for i in range(GROUP_COUNT)]
+        share = int(MEMBERS * SHARE)
+
+        def record_edges(record: str, users: list[str]) -> list[dict]:
+            return permissions(users, record, to_collection=RECORDS) + permissions(
+                groups, record, from_collection=GROUPS, to_collection=RECORDS,
+            )
+
+        await asyncio.gather(*[replace(provider, g, permissions(members[:share], g)) for g in groups])
+        await asyncio.gather(*[replace(provider, r, record_edges(r, members[:share]), to_collection=RECORDS) for r in records])
+        rng = random.Random(13)
+        deadlocks: list[str] = []
+
+        async def one(target: str, edges: list[dict], to_collection: str) -> None:
+            try:
+                await replace(provider, target, edges, to_collection=to_collection)
+            except TransientError as e:
+                if "DeadlockDetected" not in str(e):
+                    raise
+                deadlocks.append(str(e))
+
+        for _ in range(ROUNDS):
+            writes = [one(g, permissions(rng.sample(members, share), g), GROUPS) for g in groups]
+            writes += [one(r, record_edges(r, rng.sample(members, share)), RECORDS) for r in records]
+            await asyncio.gather(*writes)
+
+        assert not deadlocks, (
+            f"{len(deadlocks)} of {ROUNDS * GROUP_COUNT * 2} concurrent replaces deadlocked; "
             f"locks: {dict(_lock_types(deadlocks))}; first: {deadlocks[0][:400]}"
         )
     finally:

@@ -2852,11 +2852,18 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         parameters: dict[str, Any] = {"to_id": to_id, "time_keys": list(_EDGE_TIME_KEYS)}
         keep: list[str] = []
         creates = []
-        # Every member, old and new, is locked before any edge is touched (below), so that
-        # replaces sharing members take turns per member instead of each holding a share of
-        # its relationship-group lock and waiting on the other to give it up.
+        # The target and every member whose edge this replace deletes or creates are locked in one
+        # order before any edge is touched (below), so that replaces sharing nodes take turns per
+        # node instead of each holding a share of a relationship-group lock, or one node, and
+        # waiting on the other. The target is no exception: a record's members include groups that
+        # are themselves the targets of group replaces. A member whose edge stays is only read
+        # (MERGE of an existing edge takes no lock), so it is not locked: an unchanged resync of a
+        # large group writes nothing for its members.
         member_sources = [f"""
+                OPTIONAL MATCH (member:{to_node_label} {{id: $to_id}})
+                RETURN member""", f"""
                 OPTIONAL MATCH (member)-[:{relationship_type}]->(:{to_node_label} {{id: $to_id}})
+                WHERE NOT any(l IN labels(member) WHERE (l + '|' + member.id) IN $keep)
                 RETURN member"""]
         for i, ((from_label, to_label), rows) in enumerate(self._edges_by_labels(edges).items()):
             # Duplicate members: the last row wins (the rows keep the order of the input per key).
@@ -2870,6 +2877,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             member_sources.append(f"""
                 UNWIND $edges_{i} AS edge
                 MATCH (member:{from_label} {{id: edge.from_key}})
+                WHERE NOT EXISTS {{ MATCH (member)-[:{relationship_type}]->(:{to_label} {{id: edge.to_key}}) }}
                 RETURN member""")
             creates.append(f"""
             CALL {{
@@ -2894,10 +2902,6 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         parameters["keep"] = keep
         member_union = "\n                UNION".join(member_sources)
         return f"""
-            OPTIONAL MATCH (target:{to_node_label} {{id: $to_id}})
-            SET target.{_MATCH_LOCK} = true
-            REMOVE target.{_MATCH_LOCK}
-            WITH count(*) AS _
             CALL {{{member_union}
             }}
             WITH DISTINCT member WHERE member IS NOT NULL
