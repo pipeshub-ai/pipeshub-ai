@@ -3175,7 +3175,8 @@ class SlackIndividualConnector(BaseConnector):
             if not ts:
                 if record.source_created_at is None:
                     return False
-                return record.source_created_at >= float(read_from) * 1000
+                # Whole milliseconds, as source_created_at is stored.
+                return record.source_created_at >= int(float(read_from) * 1000)
         return float(ts) >= float(read_from)
 
     # =========================================================================
