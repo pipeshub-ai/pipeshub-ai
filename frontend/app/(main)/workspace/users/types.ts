@@ -18,7 +18,7 @@ export interface User {
    * the group and team pickers show only when they ask for it and label when
    * they do, so it cannot pass for a colleague.
    */
-  kind?: 'human' | 'service';
+  kind?: 'human' | 'service' | 'slack';
   /** Whether the user is currently active */
   isActive: boolean;
   /** Unix timestamp in milliseconds (absent for pending users) */

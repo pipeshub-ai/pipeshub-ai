@@ -78,10 +78,44 @@ export interface SlackUserProfile {
 
 export interface SlackUserRecord {
   id?: string;
+  team_id?: string;
   name?: string;
   real_name?: string;
   profile?: SlackUserProfile;
   tz?: string;
+  deleted?: boolean;
+  is_bot?: boolean;
+  is_restricted?: boolean;
+  is_ultra_restricted?: boolean;
+  is_stranger?: boolean;
+  is_email_confirmed?: boolean;
+}
+
+/**
+ * Whether `users.info` shows a full member of the bot's own workspace with a
+ * confirmed email: not a bot, not deactivated, not a guest, not someone from
+ * another workspace in a shared channel. Missing fields count against: both
+ * guest flags must be present and false.
+ */
+export function isSlackFullMemberOfTeam(
+  user: SlackUserRecord | undefined,
+  botTeamId: string | undefined,
+): boolean {
+  const email = user?.profile?.email;
+  return (
+    user !== undefined &&
+    botTeamId !== undefined &&
+    botTeamId !== '' &&
+    user.team_id === botTeamId &&
+    user.is_bot !== true &&
+    user.deleted !== true &&
+    user.is_restricted === false &&
+    user.is_ultra_restricted === false &&
+    user.is_stranger !== true &&
+    user.is_email_confirmed === true &&
+    typeof email === 'string' &&
+    email !== ''
+  );
 }
 
 export interface TypedSlackClient {
@@ -390,6 +424,8 @@ export const SLACK_THREAD_REPLIES_LIMIT = 101;
 export interface SlackOwnBotIdentity {
   userId?: string;
   botId?: string;
+  /** The workspace the bot token belongs to. */
+  teamId?: string;
 }
 
 function isSet(value: string | undefined): value is string {
@@ -1927,12 +1963,17 @@ export async function resolveOwnBotIdentity(
     pending = typedClient.apiCall('auth.test').then((result) => ({
       userId: typeof result.user_id === 'string' ? result.user_id : undefined,
       botId: typeof result.bot_id === 'string' ? result.bot_id : undefined,
+      teamId: typeof result.team_id === 'string' ? result.team_id : undefined,
     }));
     ownBotIdentityByKey.set(cacheKey, pending);
   }
   try {
     const identity = await pending;
-    return { userId: identity.userId ?? knownUserId, botId: identity.botId };
+    return {
+      userId: identity.userId ?? knownUserId,
+      botId: identity.botId,
+      teamId: identity.teamId,
+    };
   } catch (error) {
     ownBotIdentityByKey.delete(cacheKey);
     console.error(
@@ -1941,6 +1982,39 @@ export async function resolveOwnBotIdentity(
     );
     return { userId: knownUserId };
   }
+}
+
+/**
+ * The Slack-membership claims for the caller's token, or none. The workspace
+ * compared against is the bot token's own (`auth.test`), never one read from
+ * the event, so a person from another workspace in a shared channel is not
+ * vouched for. Unknown (auth.test failed) counts against.
+ */
+export async function slackFullMemberClaims(
+  typedClient: TypedSlackClient,
+  cacheKey: string,
+  knownBotUserId: string | undefined,
+  slackUserId: string,
+  user: SlackUserRecord | undefined,
+  displayName: string,
+): Promise<{
+  slackFullMember?: true;
+  slackUserId?: string;
+  slackTeamId?: string;
+  slackFullName?: string;
+}> {
+  const { teamId } = await resolveOwnBotIdentity(
+    typedClient,
+    cacheKey,
+    knownBotUserId,
+  );
+  if (!isSlackFullMemberOfTeam(user, teamId)) return {};
+  return {
+    slackFullMember: true,
+    slackUserId,
+    slackTeamId: teamId,
+    slackFullName: displayName !== '' ? displayName : undefined,
+  };
 }
 
 /**

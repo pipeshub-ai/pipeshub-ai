@@ -306,7 +306,7 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
       it('the store epoch is read through the kernel reader at boot and the empty branches are at epoch 1', async () => {
         const rt = runtime()
         expect(await readStoreEpoch(rt)).to.equal(1)
-        const branches = { platform: { requires: 1, code: 1 }, identity: { requires: 1, code: 1 }, conversation: { requires: 1, code: 1 }, content: { requires: 1, code: 1 }, oauth: { requires: 1, code: 4 }, integrations: { requires: 1, code: 1 }, platform_data: { requires: 1, code: 1 } }
+        const branches = { platform: { requires: 1, code: 1 }, identity: { requires: 1, code: 7 }, conversation: { requires: 1, code: 1 }, content: { requires: 1, code: 1 }, oauth: { requires: 1, code: 4 }, integrations: { requires: 1, code: 1 }, platform_data: { requires: 1, code: 1 } }
         await waitForSchema(rt, branches)
         await setFence('mongo', 1, false)
         expect(await readStoreEpoch(rt).catch((x) => x)).to.have.property('problems')

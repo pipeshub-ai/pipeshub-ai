@@ -1,6 +1,8 @@
 import 'reflect-metadata';
 import { expect } from 'chai';
 import sinon from 'sinon';
+import { getUserRepository } from '../../../../src/libs/repositories/user'
+import { getGroupRepository } from '../../../../src/libs/repositories/group'
 import {
   JitProvisioningService,
   JitUserDetails,
@@ -9,6 +11,12 @@ import { Users } from '../../../../src/modules/user_management/schema/users.sche
 import { UserGroups } from '../../../../src/modules/user_management/schema/userGroup.schema';
 import { BadRequestError } from '../../../../src/libs/errors/http.errors';
 import { JitProvider } from '../../../../src/modules/auth/services/jit-provisioning.service';
+import { getCredentialRepository } from '../../../../src/libs/repositories/credential';
+import { getCurrentOrgId } from '../../../../src/libs/context/orgContext';
+import { ForbiddenError } from '../../../../src/libs/errors/http.errors';
+import { SLACK_ACCOUNT_UNAVAILABLE_MESSAGE } from '../../../../src/modules/user_management/services/slack-only-accounts.service';
+import { DISABLED_ACCOUNT_SIGN_IN_MESSAGE } from '../../../../src/modules/auth/utils/generateAuthToken';
+import { REMOVED_ACCOUNT_SIGN_IN_MESSAGE } from '../../../../src/modules/auth/services/jit-provisioning.service';
 
 describe('JitProvisioningService', () => {
   let jitService: JitProvisioningService;
@@ -357,6 +365,147 @@ describe('JitProvisioningService - additional coverage', () => {
     it('should accept saml as a valid provider', () => {
       const provider: JitProvider = 'saml'
       expect(provider).to.equal('saml')
+    })
+  })
+
+  describe('upgradeSlackOnlyUser', () => {
+    const user = { _id: '65a000000000000000000001', orgId: '65a000000000000000000002', email: 'sam@acme.test' }
+    let blocked: sinon.SinonStub
+    beforeEach(() => {
+      blocked = sinon.stub(getCredentialRepository(), 'blockedUserIds').resolves([])
+    })
+    afterEach(() => sinon.restore())
+
+    it('upgrades the same record, joins everyone and announces the new user', async () => {
+      const users = getUserRepository()
+      const upgrade = sinon.stub(users, 'upgradeSlackOnly').resolves(true)
+      sinon.stub(users, 'getLive').resolves({ ...user, fullName: '' } as any)
+      const profile = sinon.stub(users, 'updateProfile').resolves(null)
+      const everyone = sinon.stub(getGroupRepository(), 'addToEveryone').resolves()
+      const publish = sinon.stub().resolves()
+      jitService = new JitProvisioningService(mockLogger, { start: sinon.stub().resolves(), stop: sinon.stub().resolves(), publishEvent: publish } as any)
+
+      await jitService.upgradeSlackOnlyUser(user, { fullName: 'Sam Smith' }, 'google')
+
+      expect(upgrade.firstCall.args).to.deep.equal([user.orgId, user._id])
+      expect(profile.firstCall.args).to.deep.equal([user.orgId, user._id, { fullName: 'Sam Smith' }])
+      expect(everyone.firstCall.args).to.deep.equal([user.orgId, user._id, { liveOnly: true }])
+      expect(publish.firstCall.args[0].payload).to.include({ userId: user._id, email: user.email })
+    })
+
+    it('puts the account back to Slack-only and rethrows when joining everyone fails', async () => {
+      const users = getUserRepository()
+      sinon.stub(users, 'upgradeSlackOnly').resolves(true)
+      sinon.stub(users, 'getLive').resolves({ ...user, fullName: '' } as any)
+      const profile = sinon.stub(users, 'updateProfile').resolves(null)
+      sinon.stub(getGroupRepository(), 'addToEveryone').rejects(new Error('groups down'))
+      const leave = sinon.stub(getGroupRepository(), 'removeFromAll').resolves()
+
+      let caught: unknown
+      try {
+        await jitService.upgradeSlackOnlyUser(user, { fullName: 'Sam Smith' }, 'google')
+      } catch (error) {
+        caught = error
+      }
+
+      expect((caught as Error).message).to.equal('groups down')
+      expect(leave.firstCall.args).to.deep.equal([user.orgId, user._id, { everyGroup: true }])
+      expect(profile.lastCall.args).to.deep.equal([user.orgId, user._id, { fullName: '', kind: 'slack' }])
+    })
+
+    it('still restores the record when leaving the groups fails too', async () => {
+      const users = getUserRepository()
+      sinon.stub(users, 'upgradeSlackOnly').resolves(true)
+      sinon.stub(users, 'getLive').resolves({ ...user, fullName: 'Sam' } as any)
+      const profile = sinon.stub(users, 'updateProfile').resolves(null)
+      sinon.stub(getGroupRepository(), 'addToEveryone').rejects(new Error('groups down'))
+      sinon.stub(getGroupRepository(), 'removeFromAll').rejects(new Error('still down'))
+
+      let caught: unknown
+      try {
+        await jitService.upgradeSlackOnlyUser(user, { fullName: 'Sam' }, 'google')
+      } catch (error) {
+        caught = error
+      }
+
+      expect((caught as Error).message).to.equal('groups down')
+      expect(profile.calledOnceWithExactly(user.orgId, user._id, { kind: 'slack' })).to.equal(true)
+    })
+
+    it('does nothing more when another sign-in already upgraded it', async () => {
+      sinon.stub(getUserRepository(), 'getLive').resolves({ ...user, fullName: 'Sam' } as any)
+      sinon.stub(getUserRepository(), 'upgradeSlackOnly').resolves(false)
+      const everyone = sinon.stub(getGroupRepository(), 'addToEveryone').resolves()
+      mockEventService.publishEvent.resetHistory()
+
+      await jitService.upgradeSlackOnlyUser(user, { fullName: 'Sam' }, 'microsoft')
+
+      expect(everyone.called).to.equal(false)
+      expect(mockEventService.publishEvent.called).to.equal(false)
+    })
+
+    // On PostgreSQL a read or write outside an org context fails closed, and the Google or Microsoft
+    // sign-in has none bound when it gets here: the account's own org must be bound for every step.
+    it('runs every step inside the org context of the account', async () => {
+      const users = getUserRepository()
+      const seen: Array<[string, string | undefined]> = []
+      const note = (name: string) => seen.push([name, getCurrentOrgId()])
+      sinon.stub(users, 'getLive').callsFake(async () => (note('getLive'), { ...user, fullName: '' } as any))
+      blocked.callsFake(async () => (note('blockedUserIds'), []))
+      sinon.stub(users, 'upgradeSlackOnly').callsFake(async () => (note('upgradeSlackOnly'), true))
+      sinon.stub(users, 'updateProfile').callsFake(async () => (note('updateProfile'), null))
+      sinon.stub(getGroupRepository(), 'addToEveryone').callsFake(async () => void note('addToEveryone'))
+
+      await jitService.upgradeSlackOnlyUser(user, { fullName: 'Sam Smith' }, 'google')
+
+      expect(seen.map(([n]) => n)).to.include.members(['blockedUserIds', 'upgradeSlackOnly', 'updateProfile', 'addToEveryone'])
+      for (const [n, org] of seen) expect(org, n).to.equal(user.orgId)
+    })
+
+    describe('an account that is blocked, disabled or removed', () => {
+      const refuse = async (): Promise<unknown> => {
+        try {
+          await jitService.upgradeSlackOnlyUser(user, { fullName: 'Sam' }, 'google')
+        } catch (error) {
+          return error
+        }
+        return undefined
+      }
+      let upgrade: sinon.SinonStub
+      let everyone: sinon.SinonStub
+      beforeEach(() => {
+        upgrade = sinon.stub(getUserRepository(), 'upgradeSlackOnly').resolves(true)
+        everyone = sinon.stub(getGroupRepository(), 'addToEveryone').resolves()
+        mockEventService.publishEvent.resetHistory()
+      })
+      afterEach(() => {
+        expect(upgrade.called).to.equal(false)
+        expect(everyone.called).to.equal(false)
+        expect(mockEventService.publishEvent.called).to.equal(false)
+      })
+
+      it('is left alone when blocked', async () => {
+        sinon.stub(getUserRepository(), 'getLive').resolves({ ...user, isDeleted: false } as any)
+        blocked.resolves([user._id])
+        const error = await refuse()
+        expect(error).to.be.instanceOf(ForbiddenError)
+        expect((error as Error).message).to.equal(DISABLED_ACCOUNT_SIGN_IN_MESSAGE)
+        expect((error as Error).message).to.not.equal(SLACK_ACCOUNT_UNAVAILABLE_MESSAGE)
+      })
+
+      it('is left alone when disabled', async () => {
+        sinon.stub(getUserRepository(), 'getLive').resolves({ ...user, isDisabled: true } as any)
+        const error = await refuse()
+        expect(error).to.be.instanceOf(ForbiddenError)
+        expect((error as Error).message).to.equal(DISABLED_ACCOUNT_SIGN_IN_MESSAGE)
+      })
+
+      it('is left alone when removed', async () => {
+        sinon.stub(getUserRepository(), 'getLive').resolves(null)
+        const error = await refuse()
+        expect(error).to.be.instanceOf(ForbiddenError)
+        expect((error as Error).message).to.equal(REMOVED_ACCOUNT_SIGN_IN_MESSAGE)
+      })
     })
   })
 })

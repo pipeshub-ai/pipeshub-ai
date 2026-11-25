@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   collectImportCandidates,
+  inviteAvailability,
   inviteOutcome,
   isSupportedInviteImportFile,
   validateEmail,
@@ -73,5 +74,18 @@ describe('inviteOutcome', () => {
 
   it('assumes every address was invited when the server sends no counts', () => {
     expect(inviteOutcome(4, {})).toEqual({ sent: 4, alreadyMembers: 0 });
+  });
+});
+
+describe('inviteAvailability', () => {
+  it('greys out an invite action and says why when SMTP is not set up', () => {
+    expect(inviteAvailability(true, 'Set up email first')).toEqual({
+      disabled: true,
+      tooltip: 'Set up email first',
+    });
+  });
+
+  it('leaves an invite action available when SMTP is set up', () => {
+    expect(inviteAvailability(false, 'Set up email first')).toEqual({ disabled: false });
   });
 });

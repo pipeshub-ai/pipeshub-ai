@@ -191,7 +191,10 @@ import {
   buildAiChatRequest,
   parseChatMode,
 } from '../utils/ai-chat-payload';
-import { hydrateScopedRequestAsUser } from '../utils/scoped-request';
+import {
+  hydrateScopedRequestAsUser,
+  runAsHydratedCaller,
+} from '../utils/scoped-request';
 const logger = Logger.getInstance({ service: 'Enterprise Search Service' });
 
 /** Node hand-builds the AI request body, so the protocol has to ride in it: a header alone never reaches Python. */
@@ -1228,7 +1231,7 @@ export const streamChatInternal =
   ) => {
     try {
       await hydrateScopedRequestAsUser(req, appConfig);
-      await streamChat(appConfig)(req, res);
+      await runAsHydratedCaller(req, () => streamChat(appConfig)(req, res));
     } catch (error) {
       next(error);
     }
@@ -1744,7 +1747,9 @@ export const addMessageStreamInternal =
   ) => {
     try {
       await hydrateScopedRequestAsUser(req, appConfig);
-      await addMessageStream(appConfig)(req, res);
+      await runAsHydratedCaller(req, () =>
+        addMessageStream(appConfig)(req, res),
+      );
     } catch (error) {
       next(error);
     }
@@ -6433,7 +6438,9 @@ export const streamAgentConversationInternal =
   ) => {
     try {
       await hydrateScopedRequestAsUser(req, appConfig, keyValueStoreService);
-      await streamAgentConversation(appConfig)(req, res);
+      await runAsHydratedCaller(req, () =>
+        streamAgentConversation(appConfig)(req, res),
+      );
     } catch (error) {
       next(error);
     }
@@ -6924,7 +6931,9 @@ export const addMessageStreamToAgentConversationInternal =
   ) => {
     try {
       await hydrateScopedRequestAsUser(req, appConfig, keyValueStoreService);
-      await addMessageStreamToAgentConversation(appConfig)(req, res);
+      await runAsHydratedCaller(req, () =>
+        addMessageStreamToAgentConversation(appConfig)(req, res),
+      );
     } catch (error) {
       next(error);
     }

@@ -191,6 +191,7 @@ describe('user and group audit lines (HTTP)', function () {
       getAny: async (o: string, id: string) => users.find((u) => u._id === id && u.orgId === o) ?? null,
       getRoleSnapshot: async (o: string, id: string) => { const u = live(o, id); return u ? { role: u.role, kind: u.kind } : null; },
       existsLiveEmail: async (e: string) => users.some((u) => u.email === e && !u.isDeleted),
+      getLiveByEmail: async (o: string, e: string) => users.find((u) => u.orgId === o && u.email === e && !u.isDeleted) ?? null,
       listRemovedIdsByEmail: async (o: string, e: string) => users.filter((u) => u.orgId === o && u.email === e && u.isDeleted).map((u) => u._id),
       deleteRemoved: async (o: string, id: string) => { const before = users.length; users = users.filter((u) => !(u._id === id && u.orgId === o && u.isDeleted)); return users.length < before; },
       // The unique email index covers removed accounts too, as both stores' does.

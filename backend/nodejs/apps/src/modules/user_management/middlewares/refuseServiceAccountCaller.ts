@@ -5,6 +5,7 @@ import {
   NotFoundError,
 } from '../../../libs/errors/http.errors';
 import { getUserRepository } from '../../../libs/repositories/user';
+import { SLACK_ONLY_SIGN_IN_MESSAGE } from '../services/slack-only-accounts.service';
 
 export const SERVICE_ACCOUNT_CANNOT_MINT_MESSAGE =
   'A service account cannot create credentials. Ask an administrator.';
@@ -49,6 +50,9 @@ export const refuseServiceAccountCaller = async (
     }
     if (caller.kind === 'service') {
       throw new ForbiddenError(SERVICE_ACCOUNT_CANNOT_MINT_MESSAGE);
+    }
+    if (caller.kind === 'slack') {
+      throw new ForbiddenError(SLACK_ONLY_SIGN_IN_MESSAGE);
     }
     next();
   } catch (error) {

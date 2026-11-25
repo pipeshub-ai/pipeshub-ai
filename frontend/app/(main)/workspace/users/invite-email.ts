@@ -92,3 +92,16 @@ export function inviteOutcome(
       typeof counts.alreadyActive === 'number' ? counts.alreadyActive : 0,
   };
 }
+
+/**
+ * Whether an invite action is available: without SMTP no invite can be
+ * mailed, so every invite action is greyed out with the same reason.
+ */
+export function inviteAvailability(
+  smtpBlocksInvite: boolean,
+  smtpTooltip: string,
+): { disabled: boolean; tooltip?: string } {
+  return smtpBlocksInvite
+    ? { disabled: true, tooltip: smtpTooltip }
+    : { disabled: false };
+}

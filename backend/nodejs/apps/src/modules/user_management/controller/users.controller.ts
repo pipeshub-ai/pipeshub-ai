@@ -1,5 +1,15 @@
 import { Response, NextFunction } from 'express';
 import {
+  isSlackOnlyAccount,
+  SERVICE_ACCOUNT_ADMIN_ROLE_MESSAGE,
+  SLACK_ONLY_ADMIN_ROLE_MESSAGE,
+} from '../constants/service-account.constants';
+import {
+  assertSlackOnlyAccountActive,
+  SLACK_ONLY_ADD_USER_REFUSAL,
+  upgradeSlackOnlyAccount,
+} from '../services/slack-only-accounts.service';
+import {
   AuthenticatedServiceRequest,
   AuthenticatedUserRequest,
 } from '../../../libs/middlewares/types';
@@ -123,7 +133,8 @@ import { ProjectKnowledgeBaseService } from '../../projects/services/project-kb.
 
 // What the auth service reads from an email lookup: the session and refresh
 // tokens it issues, the sign-in checks, and the first-login update.
-export const USER_LOOKUP_FIELDS = '_id orgId email fullName role hasLoggedIn';
+export const USER_LOOKUP_FIELDS =
+  '_id orgId email fullName role hasLoggedIn kind';
 
 /**
  * With HIDE_EMAIL=true no read of other users carries their email: the single read, the
@@ -286,6 +297,7 @@ export class UserController {
       isBlocked,
       groupIds,
       includeServiceAccounts,
+      includeSlackOnlyAccounts,
       joinedFrom,
       joinedTo,
       lastActiveFrom,
@@ -331,10 +343,18 @@ export class UserController {
       req.user?.userId !== undefined &&
       (await isUserOrgAdmin(req.user.userId as string, orgId));
 
+    // Slack-only accounts are not colleagues anyone can share with or pick,
+    // so they are left out too unless an admin's users screen asks for them.
+    const maySeeSlackOnlyAccounts =
+      includeSlackOnlyAccounts === 'true' &&
+      req.user?.userId !== undefined &&
+      (maySeeServiceAccounts ||
+        (await isUserOrgAdmin(req.user.userId as string, orgId)));
     const query: DirectoryQuery = {
       skip,
       limit,
       includeServiceAccounts: maySeeServiceAccounts,
+      includeSlackOnlyAccounts: maySeeSlackOnlyAccounts,
     };
 
     if (search) {
@@ -732,6 +752,24 @@ export class UserController {
           : '';
       if (email !== '') {
         if (await users.existsLiveEmail(email)) {
+          // A Slack-only account at the address is upgraded, not refused.
+          const existing = await users.getLiveByEmail(orgId, email);
+          if (
+            existing &&
+            isSlackOnlyAccount(existing) &&
+            password === undefined
+          ) {
+            // A blocked or switched-off account is not brought back by adding its address, as an
+            // invite leaves it alone: refused before anything is written.
+            await assertSlackOnlyAccountActive(
+              existing,
+              SLACK_ONLY_ADD_USER_REFUSAL,
+            );
+            res
+              .status(201)
+              .json(await this.addSlackOnlyAccountAsUser(existing, fields));
+            return;
+          }
           throw userRefusal(
             new BadRequestError('A user with this email already exists'),
             'email_taken',
@@ -966,6 +1004,161 @@ export class UserController {
     } catch (error) {
       auditUserRefusal('user.create', error);
       next(error);
+    }
+  }
+
+  /**
+   * "Add user" for an address that already has a Slack-only account: the same
+   * record becomes an ordinary member (so its Slack threads stay its own),
+   * takes the fields the admin entered, joins the everyone group and is
+   * announced to the graph like any new user.
+   */
+  protected async addSlackOnlyAccountAsUser(
+    existing: UserDto,
+    entered: Record<string, unknown>,
+  ): Promise<UserDto | null> {
+    const role = entered.role === 'admin' ? 'admin' : 'member';
+    if (role === 'admin') {
+      await assertCanPromoteAdmin(existing.orgId, 1);
+    }
+    const profileKeys = [
+      'fullName',
+      'firstName',
+      'lastName',
+      'designation',
+      'mobile',
+    ] as const;
+    const fields: Record<string, unknown> = { role };
+    const previous: Record<string, unknown> = {
+      role: existing.role ?? 'member',
+    };
+    for (const key of profileKeys) {
+      if (entered[key] !== undefined) fields[key] = entered[key];
+      previous[key] = existing[key];
+    }
+    if (!(await upgradeSlackOnlyAccount(existing._id, existing.orgId))) {
+      throw new BadRequestError('A user with this email already exists');
+    }
+    let groupWriteAttempted = false;
+    try {
+      const upgraded = await getUserRepository().updateProfile(
+        existing.orgId,
+        existing._id,
+        fields,
+      );
+      groupWriteAttempted = true;
+      await getGroupRepository().addToEveryone(existing.orgId, existing._id);
+      const payload: UserAddedEvent = {
+        orgId: existing.orgId,
+        userId: existing._id,
+        fullName: upgraded?.fullName,
+        email: existing.email,
+        syncAction: SyncAction.Immediate,
+      };
+      await this.eventService.start();
+      try {
+        await this.eventService.publishEvent({
+          eventType: EventType.NewUserEvent,
+          timestamp: Date.now(),
+          payload,
+        });
+      } finally {
+        await this.eventService.stop();
+      }
+      return upgraded;
+    } catch (error) {
+      await this.undoSlackOnlyUpgrade(
+        existing._id,
+        existing.orgId,
+        groupWriteAttempted,
+        previous,
+      );
+      throw error;
+    }
+  }
+
+  /**
+   * Puts an account whose upgrade failed part way back to Slack-only, so a
+   * retry finds it again instead of a half-made member. It held no group
+   * before, so it leaves every group. Each step is best effort on its own:
+   * a failed membership undo must not stop the record from being restored.
+   */
+  protected async undoSlackOnlyUpgrade(
+    userId: string,
+    orgId: string,
+    groupWriteAttempted: boolean,
+    previous: Record<string, unknown> = {},
+  ): Promise<void> {
+    const logFailure = (step: string, error: unknown): void => {
+      this.logger.error(`Undoing a failed Slack-only upgrade: ${step} failed`, {
+        userId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    };
+    if (groupWriteAttempted) {
+      try {
+        await getGroupRepository().removeFromAll(orgId, userId, {
+          everyGroup: true,
+        });
+      } catch (membershipError) {
+        logFailure('leaving the groups', membershipError);
+      }
+    }
+    try {
+      // A field present and undefined is cleared, as it was before.
+      await getUserRepository().updateProfile(orgId, userId, {
+        ...previous,
+        kind: 'slack',
+      });
+    } catch (restoreError) {
+      logFailure('restoring the record', restoreError);
+    }
+  }
+
+  /**
+   * Upgrades one invited Slack-only account and finishes the job (groups,
+   * everyone, the new-user event) before anything else in the batch, undoing
+   * the upgrade if a step fails. Returns whether it upgraded the account.
+   */
+  protected async completeSlackOnlyInvite(
+    userId: string,
+    email: string,
+    orgId: string,
+    groupIds: string[] | undefined,
+    // Runs once the account is a person, before it joins anything: the role
+    // of an account created from Slack cannot be written until then.
+    promote?: () => Promise<void>,
+  ): Promise<boolean> {
+    if (!(await upgradeSlackOnlyAccount(userId, orgId))) return false;
+    let groupWriteAttempted = false;
+    try {
+      if (promote) await promote();
+      groupWriteAttempted = true;
+      if (groupIds && groupIds.length > 0) {
+        await getGroupRepository().addMemberToGroups(orgId, groupIds, userId);
+      }
+      await getGroupRepository().addToEveryone(orgId, userId);
+      const payload: UserAddedEvent = {
+        orgId,
+        userId,
+        email,
+        syncAction: SyncAction.Immediate,
+      };
+      await this.eventService.start();
+      await this.eventService.publishEvent({
+        eventType: EventType.NewUserEvent,
+        timestamp: Date.now(),
+        payload,
+      });
+      return true;
+    } catch (error) {
+      await this.undoSlackOnlyUpgrade(
+        userId,
+        orgId,
+        groupWriteAttempted,
+        promote ? { role: 'member' } : {},
+      );
+      throw error;
     }
   }
 
@@ -1228,6 +1421,14 @@ export class UserController {
       const promotingAdmin =
         updateFields.role === 'admin' && previousRole !== 'admin';
 
+      // The stores refuse this too, but as a server error: say it as the 400 it is.
+      if (promotingAdmin && isSlackOnlyAccount(user)) {
+        throw new BadRequestError(SLACK_ONLY_ADMIN_ROLE_MESSAGE);
+      }
+      if (promotingAdmin && user.kind === 'service') {
+        throw new BadRequestError(SERVICE_ACCOUNT_ADMIN_ROLE_MESSAGE);
+      }
+
       if (demotingAdmin && (!id || !orgId)) {
         throw new BadRequestError('User or organization not found');
       }
@@ -1360,26 +1561,7 @@ export class UserController {
         }
       }
 
-      await this.eventService.start();
-
-      const event: Event = {
-        eventType: EventType.UpdateUserEvent,
-        timestamp: Date.now(),
-        payload: {
-          orgId: updatedUser.orgId,
-          userId: updatedUser._id,
-          fullName: updatedUser.fullName,
-          ...(updatedUser.firstName && { firstName: updatedUser.firstName }),
-          ...(updatedUser.lastName && { lastName: updatedUser.lastName }),
-          ...(updatedUser.designation && {
-            designation: updatedUser.designation,
-          }),
-          email: updatedUser.email,
-        } as UserUpdatedEvent,
-      };
-
-      await this.eventService.publishEvent(event);
-      await this.eventService.stop();
+      await this.publishUserUpdated(updatedUser);
       // Save the updated user
       res.json({
         ...updatedUser,
@@ -1398,6 +1580,40 @@ export class UserController {
       next(error);
     }
   }
+  /**
+   * Tells the connector service a user's profile changed. An account created
+   * from Slack has no permission-graph user, so announcing it only makes that
+   * service log an error and dead-letter the event after its retries.
+   */
+  private async publishUserUpdated(user: {
+    kind?: string;
+    orgId: unknown;
+    _id: unknown;
+    fullName?: string;
+    firstName?: string;
+    lastName?: string;
+    designation?: string;
+    email?: string;
+  }): Promise<void> {
+    if (isSlackOnlyAccount(user)) return;
+    await this.eventService.start();
+    const event: Event = {
+      eventType: EventType.UpdateUserEvent,
+      timestamp: Date.now(),
+      payload: {
+        orgId: user.orgId,
+        userId: user._id,
+        fullName: user.fullName,
+        ...(user.firstName && { firstName: user.firstName }),
+        ...(user.lastName && { lastName: user.lastName }),
+        ...(user.designation && { designation: user.designation }),
+        email: user.email,
+      } as UserUpdatedEvent,
+    };
+    await this.eventService.publishEvent(event);
+    await this.eventService.stop();
+  }
+
   async updateFullName(
     req: AuthenticatedUserRequest,
     res: Response,
@@ -1420,23 +1636,7 @@ export class UserController {
       }
       auditUserChange('user.update', id as string, 'profile');
 
-      await this.eventService.start();
-      const event: Event = {
-        eventType: EventType.UpdateUserEvent,
-        timestamp: Date.now(),
-        payload: {
-          orgId: user.orgId,
-          userId: user._id,
-          fullName: user.fullName,
-          ...(user.firstName && { firstName: user.firstName }),
-          ...(user.lastName && { lastName: user.lastName }),
-          ...(user.designation && { designation: user.designation }),
-          email: user.email,
-        } as UserUpdatedEvent,
-      };
-
-      await this.eventService.publishEvent(event);
-      await this.eventService.stop();
+      await this.publishUserUpdated(user);
       res.json(user);
     } catch (error) {
       next(error);
@@ -1465,23 +1665,7 @@ export class UserController {
       }
       auditUserChange('user.update', id as string, 'profile');
 
-      await this.eventService.start();
-      const event: Event = {
-        eventType: EventType.UpdateUserEvent,
-        timestamp: Date.now(),
-        payload: {
-          orgId: user.orgId,
-          userId: user._id,
-          fullName: user.fullName,
-          ...(user.firstName && { firstName: user.firstName }),
-          ...(user.lastName && { lastName: user.lastName }),
-          ...(user.designation && { designation: user.designation }),
-          email: user.email,
-        } as UserUpdatedEvent,
-      };
-
-      await this.eventService.publishEvent(event);
-      await this.eventService.stop();
+      await this.publishUserUpdated(user);
       res.json(user);
     } catch (error) {
       next(error);
@@ -1510,23 +1694,7 @@ export class UserController {
       }
       auditUserChange('user.update', id as string, 'profile');
 
-      await this.eventService.start();
-      const event: Event = {
-        eventType: EventType.UpdateUserEvent,
-        timestamp: Date.now(),
-        payload: {
-          orgId: user.orgId,
-          userId: user._id,
-          fullName: user.fullName,
-          ...(user.firstName && { firstName: user.firstName }),
-          ...(user.lastName && { lastName: user.lastName }),
-          ...(user.designation && { designation: user.designation }),
-          email: user.email,
-        } as UserUpdatedEvent,
-      };
-
-      await this.eventService.publishEvent(event);
-      await this.eventService.stop();
+      await this.publishUserUpdated(user);
       res.json(user);
     } catch (error) {
       next(error);
@@ -1555,23 +1723,7 @@ export class UserController {
       }
       auditUserChange('user.update', id as string, 'profile');
 
-      await this.eventService.start();
-      const event: Event = {
-        eventType: EventType.UpdateUserEvent,
-        timestamp: Date.now(),
-        payload: {
-          orgId: user.orgId,
-          userId: user._id,
-          fullName: user.fullName,
-          ...(user.firstName && { firstName: user.firstName }),
-          ...(user.lastName && { lastName: user.lastName }),
-          ...(user.designation && { designation: user.designation }),
-          email: user.email,
-        } as UserUpdatedEvent,
-      };
-
-      await this.eventService.publishEvent(event);
-      await this.eventService.stop();
+      await this.publishUserUpdated(user);
       res.json(user);
     } catch (error) {
       next(error);
@@ -1792,18 +1944,23 @@ export class UserController {
       }
       auditUserChange('user.delete', userId);
 
-      await this.eventService.start();
-      const event: Event = {
-        eventType: EventType.DeleteUserEvent,
-        timestamp: Date.now(),
-        payload: {
-          orgId: user.orgId,
-          userId: user._id,
-          email: user.email,
-        } as UserDeletedEvent,
-      };
-      await this.eventService.publishEvent(event);
-      await this.eventService.stop();
+      // An account created from Slack never got a permission-graph user, so
+      // there is nothing for the connector service to remove: announcing it
+      // only makes that service log an error and dead-letter the event.
+      if (!isSlackOnlyAccount(user)) {
+        await this.eventService.start();
+        const event: Event = {
+          eventType: EventType.DeleteUserEvent,
+          timestamp: Date.now(),
+          payload: {
+            orgId: user.orgId,
+            userId: user._id,
+            email: user.email,
+          } as UserDeletedEvent,
+        };
+        await this.eventService.publishEvent(event);
+        await this.eventService.stop();
+      }
 
       res.json({ message: 'User deleted successfully' });
     } catch (error) {
@@ -1942,6 +2099,13 @@ export class UserController {
       }
       if (user?.hasLoggedIn) {
         throw new BadRequestError('User has already accepted the invite');
+      }
+      // Its invite would set a password on an account that cannot sign in.
+      // Inviting the address upgrades it instead.
+      if (isSlackOnlyAccount(user)) {
+        throw new BadRequestError(
+          'This account was created from Slack. Invite the address to make it a member.',
+        );
       }
 
       const email = user?.email;
@@ -2340,8 +2504,13 @@ export class UserController {
         ? await getCredentialRepository().blockedUserIds(orgId, pendingUserIds)
         : [],
     );
+    // A blocked pending account is left alone, and so is a switched-off account
+    // created from Slack (a switched-off person keeps being re-invited as before).
     const pendingUsersToReinvite = pendingUsers.filter(
-      (user) => user._id && !blockedPendingUserIds.has(user._id),
+      (user) =>
+        user._id &&
+        !blockedPendingUserIds.has(user._id) &&
+        !(isSlackOnlyAccount(user) && user.isDisabled === true),
     );
 
     const emailsForNewAccounts = emails.filter(
@@ -2405,7 +2574,10 @@ export class UserController {
             )
           : [];
       if (inviteRole === 'admin') {
+        // An account created from Slack cannot hold the role yet: it is made an
+        // administrator after it has been upgraded, below.
         const ids = [...restored, ...created, ...pendingToPromote]
+          .filter((user) => !isSlackOnlyAccount(user))
           .map((user) => user._id)
           .filter(Boolean);
         if (ids.length > 0) await users.promoteToAdmin(orgId, ids, tx);
@@ -2443,8 +2615,50 @@ export class UserController {
       auditUserChange('user.restore', restored._id, 'invite');
     }
 
+    // Inviting a Slack-only account upgrades it in place, so the Slack threads
+    // it already has stay its own. Each upgrade is finished (role, groups,
+    // event) or undone before the batch goes on, and one that fails does not
+    // stop the other addresses: they are completed too, and the first failure
+    // is raised once the whole batch has been handled. A blocked one is left
+    // as it is.
+    const upgradedIds = new Set<string>();
+    const failedSlackOnlyIds = new Set<string>();
+    let slackOnlyFailure: { error: unknown } | undefined;
+    const rsAvailable = this.config.rsAvailable === 'true';
+    for (const user of [...pendingUsersToReinvite, ...restoredUsers]) {
+      if (!isSlackOnlyAccount(user)) continue;
+      const makeAdmin =
+        inviteRole === 'admin' && normalizeUserRole(user.role) !== 'admin';
+      try {
+        const upgraded = await this.completeSlackOnlyInvite(
+          user._id,
+          user.email,
+          orgId,
+          groupIds,
+          makeAdmin
+            ? async () => {
+                await writeEnsuringAdminCap(
+                  orgId,
+                  rsAvailable,
+                  (tx) => users.promoteToAdmin(orgId, [user._id], tx),
+                  () => users.setRole(orgId, user._id, 'member'),
+                );
+              }
+            : undefined,
+        );
+        if (upgraded) upgradedIds.add(user._id);
+      } catch (error) {
+        failedSlackOnlyIds.add(user._id);
+        slackOnlyFailure ??= { error };
+      }
+    }
+
     for (let i = 0; i < existingUsers.length; ++i) {
       const userId = existingUsers[i]?._id;
+      // Slack-only accounts were either finished above or left alone.
+      if (isSlackOnlyAccount(existingUsers[i])) {
+        continue;
+      }
       if (hasGroups) {
         await groups.addMemberToGroups(orgId, groupIds, userId as string);
         auditMemberships(
@@ -2468,6 +2682,7 @@ export class UserController {
         (user) => normalizeUserRole(user.role) !== 'admin',
       );
       for (const promoted of [...restoredMembers, ...pendingToPromote]) {
+        if (failedSlackOnlyIds.has(promoted._id)) continue;
         auditUserChange('user.role.change', promoted._id, 'promote');
       }
     }
@@ -2500,7 +2715,9 @@ export class UserController {
     const pendingUserByEmail = new Map(
       pendingUsersToReinvite.map((user) => [user.email, user]),
     );
+    // An account whose upgrade was undone is back to Slack-only: it is not mailed.
     const emailsForPendingAccounts = pendingUsersToReinvite
+      .filter((user) => !failedSlackOnlyIds.has(user._id))
       .map((user) => user.email)
       .filter((email): email is string => Boolean(email));
     const emailsForInvites = [
@@ -2568,18 +2785,22 @@ export class UserController {
           'User ID missing while inviting restored user. Please ensure user restoration was successful.',
         );
       }
-      const event: Event = {
-        eventType: EventType.NewUserEvent,
-        timestamp: Date.now(),
-        payload: {
-          orgId: orgId,
-          userId: userId,
-          email,
-          syncAction: SyncAction.Immediate,
-        } as UserAddedEvent,
-      };
-      await this.eventService.start();
-      await this.eventService.publishEvent(event);
+      if (failedSlackOnlyIds.has(userId)) continue;
+      // An upgraded Slack-only account was announced when it was upgraded.
+      if (!upgradedIds.has(userId)) {
+        const event: Event = {
+          eventType: EventType.NewUserEvent,
+          timestamp: Date.now(),
+          payload: {
+            orgId: orgId,
+            userId: userId,
+            email,
+            syncAction: SyncAction.Immediate,
+          } as UserAddedEvent,
+        };
+        await this.eventService.start();
+        await this.eventService.publishEvent(event);
+      }
 
       const statusCode = await this.sendInviteMail(
         email,
@@ -2595,6 +2816,10 @@ export class UserController {
         mailErrorCode = statusCode;
       }
     }
+
+    // The rest of the batch is whole; the account that could not be upgraded
+    // was put back as it was, so the same invite can be sent again.
+    if (slackOnlyFailure) throw slackOnlyFailure.error;
 
     return {
       invited: newUsers.length,

@@ -24,8 +24,11 @@ import * as oauthTokenServiceProvider from '../../../../src/libs/services/oauth-
 import * as XLSX from 'xlsx';
 import { UniqueConstraintError } from '../../../../src/libs/repositories/errors';
 import { getUserRepository, setUserRepository } from '../../../../src/libs/repositories/user';
+import { getGroupRepository, setGroupRepository } from '../../../../src/libs/repositories/group';
+import { getCredentialRepository } from '../../../../src/libs/repositories/credential';
+import { SLACK_ONLY_ADD_USER_REFUSAL } from '../../../../src/modules/user_management/services/slack-only-accounts.service';
+import { getOrgRepository } from '../../../../src/libs/repositories/org';
 import type { UserRepository } from '../../../../src/libs/repositories/user';
-import { setGroupRepository } from '../../../../src/libs/repositories/group';
 import * as auditService from '../../../../src/libs/services/audit';
 import { setOAuthTokenRepository } from '../../../../src/libs/repositories/oauth-token';
 import type { OAuthTokenRepository } from '../../../../src/libs/repositories/oauth-token';
@@ -340,7 +343,7 @@ describe('UserController', () => {
       await controller.getAllUsers(req, res);
 
       const filter = find.firstCall.args[0] as Record<string, unknown>;
-      expect(filter.kind).to.deep.equal({ $ne: 'service' });
+      expect(filter.kind).to.deep.equal({ $nin: ['service', 'slack'] });
     });
 
     it('includes them for an administrator, for the group and team pickers', async () => {
@@ -354,7 +357,7 @@ describe('UserController', () => {
       await controller.getAllUsers(req, res);
 
       const filter = find.firstCall.args[0] as Record<string, unknown>;
-      expect(filter.kind).to.equal(undefined);
+      expect(filter.kind).to.deep.equal({ $nin: ['slack'] });
     });
 
     it('ignores the flag for someone who does not administer the org', async () => {
@@ -370,7 +373,7 @@ describe('UserController', () => {
       await controller.getAllUsers(req, res);
 
       const filter = find.firstCall.args[0] as Record<string, unknown>;
-      expect(filter.kind).to.deep.equal({ $ne: 'service' });
+      expect(filter.kind).to.deep.equal({ $nin: ['service', 'slack'] });
     });
 
     it('only opens up for an explicit true, not any other value', async () => {
@@ -381,7 +384,7 @@ describe('UserController', () => {
       await controller.getAllUsers(req, res);
 
       const filter = find.firstCall.args[0] as Record<string, unknown>;
-      expect(filter.kind).to.deep.equal({ $ne: 'service' });
+      expect(filter.kind).to.deep.equal({ $nin: ['service', 'slack'] });
     });
 
     it('sends each returned record its kind, so a picker can mark a machine', async () => {
@@ -851,7 +854,7 @@ describe('UserController', () => {
       await controller.getAllUsersWithGroups(req, res);
 
       const match = (aggregate.firstCall.args[0] as any[])[0].$match;
-      expect(match.kind).to.deep.equal({ $ne: 'service' });
+      expect(match.kind).to.deep.equal({ $nin: ['service', 'slack'] });
     });
 
     it('includes them for an administrator who asks for them', async () => {
@@ -862,7 +865,7 @@ describe('UserController', () => {
       await controller.getAllUsersWithGroups(req, res);
 
       const match = (aggregate.firstCall.args[0] as any[])[0].$match;
-      expect(match.kind).to.equal(undefined);
+      expect(match.kind).to.deep.equal({ $nin: ['slack'] });
     });
 
     it('ignores the flag for someone who does not administer the org', async () => {
@@ -873,7 +876,7 @@ describe('UserController', () => {
       await controller.getAllUsersWithGroups(req, res);
 
       const match = (aggregate.firstCall.args[0] as any[])[0].$match;
-      expect(match.kind).to.deep.equal({ $ne: 'service' });
+      expect(match.kind).to.deep.equal({ $nin: ['service', 'slack'] });
     });
   });
 
@@ -4767,11 +4770,99 @@ describe('UserController', () => {
       expect((removal.firstCall.args as any[])[1].$set).to.include({ isDeleted: true, hasLoggedIn: false });
       expect(mockEventService.publishEvent.calledOnce).to.be.true;
     });
+
+    // An account created from Slack has no permission-graph user, so the
+    // connector service has nobody to remove and would log an error and
+    // dead-letter the event after its retries.
+    it('removes a Slack-only account without announcing it: it has no graph user to remove', async () => {
+      req.params = { id: '507f1f77bcf86cd799439013' };
+      const mockUser = {
+        _id: '507f1f77bcf86cd799439013',
+        orgId: new mongoose.Types.ObjectId('507f1f77bcf86cd799439012'),
+        email: 'sam@test.com',
+        isDeleted: false,
+        hasLoggedIn: false,
+        kind: 'slack',
+        role: 'member',
+        save: sinon.stub().resolves(),
+      };
+      sinon.stub(Users, 'findOne').resolves(mockUser as any);
+      sinon.stub(UserGroups, 'updateMany').resolves({} as any);
+      stubOAuthAppsForDeletedUser([]);
+      sinon.stub(UserCredentials, 'updateOne').resolves({} as any);
+      const removal = stubRemoval({ ...mockUser, isDeleted: true, hasLoggedIn: false });
+      mockEventService.publishEvent.resetHistory();
+
+      await controller.deleteUser(req, res, next);
+
+      expect(next.called, String(next.firstCall?.args[0])).to.be.false;
+      expect(res.json.firstCall.args[0].message).to.equal('User deleted successfully');
+      expect((removal.firstCall.args as any[])[1].$set).to.include({ isDeleted: true });
+      expect(mockEventService.publishEvent.called, 'no userDeleted event').to.be.false;
+    });
   });
 
   // -----------------------------------------------------------------------
   // deleteUser - what the person leaves behind in OAuth
   // -----------------------------------------------------------------------
+  // An account created from Slack has no permission-graph user, so an update
+  // event only makes the connector service log an error and dead-letter it.
+  describe('profile edits - Slack-only accounts are not announced', () => {
+    const cases: Array<[string, string, Record<string, unknown>]> = [
+      ['updateUser', 'updateUser', { fullName: 'Sam Slack' }],
+      
+      ['updateFullName', 'updateFullName', { fullName: 'Sam Slack' }],
+      ['updateFirstName', 'updateFirstName', { firstName: 'Sam' }],
+      ['updateLastName', 'updateLastName', { lastName: 'Slack' }],
+      ['updateDesignation', 'updateDesignation', { designation: 'Lead' }],
+    ];
+    const make = (kind: string) => ({
+      _id: '507f1f77bcf86cd799439011',
+      orgId: new mongoose.Types.ObjectId('507f1f77bcf86cd799439012'),
+      fullName: 'Old Name',
+      email: 'sam@test.com',
+      kind,
+      role: 'member',
+      save: sinon.stub().resolves(),
+      toObject() {
+        const rest = { ...(this as any) };
+        delete rest.save;
+        delete rest.toObject;
+        return rest;
+      },
+    });
+
+    for (const [label, method, body] of cases) {
+      it(`${label}: saves a Slack-only account and publishes no event`, async () => {
+        req.params.id = '507f1f77bcf86cd799439011';
+        req.body = body;
+        const slack = make('slack');
+        sinon.stub(Users, 'findOne').resolves(slack as any);
+        mockEventService.publishEvent.resetHistory();
+
+        await (controller as any)[method](req, res, next);
+
+        expect(next.called, String(next.firstCall?.args[0])).to.be.false;
+        expect(slack.save.calledOnce, 'saved').to.be.true;
+        expect(res.json.calledOnce, 'answered').to.be.true;
+        expect(mockEventService.publishEvent.called, 'no userUpdated event').to.be.false;
+      });
+
+      it(`${label}: still publishes for a human account`, async () => {
+        req.params.id = '507f1f77bcf86cd799439011';
+        req.body = body;
+        const human = make('human');
+        sinon.stub(Users, 'findOne').resolves(human as any);
+        mockEventService.publishEvent.resetHistory();
+
+        await (controller as any)[method](req, res, next);
+
+        expect(next.called, String(next.firstCall?.args[0])).to.be.false;
+        expect(mockEventService.publishEvent.calledOnce, 'userUpdated event').to.be.true;
+      });
+    }
+  });
+
   describe('deleteUser - OAuth hand-over', () => {
     // The deletion is recorded before anything else changes; these tests are
     // about what follows, so the record succeeds.
@@ -6851,6 +6942,392 @@ describe('UserController', () => {
       expect(next.calledOnce).to.be.true;
       expect(next.firstCall.args[0].message).to.equal('Invalid emails are found');
     });
+  });
+
+  // -----------------------------------------------------------------------
+  // Slack-only accounts (kind: 'slack')
+  // -----------------------------------------------------------------------
+  describe('Slack-only accounts', () => {
+    const orgId = '507f1f77bcf86cd799439012';
+    const slackRow = (fields: Record<string, unknown> = {}): any => ({
+      _id: new mongoose.Types.ObjectId().toHexString(),
+      orgId,
+      email: 'sam@acme.test',
+      kind: 'slack',
+      role: 'member',
+      hasLoggedIn: false,
+      isDeleted: false,
+      ...fields,
+    });
+    let users: ReturnType<typeof getUserRepository>;
+    let groups: ReturnType<typeof getGroupRepository>;
+    beforeEach(() => {
+      users = getUserRepository();
+      groups = getGroupRepository();
+    });
+    const inviteStubs = (sam: any, blocked: string[] = []) => {
+      sinon.stub(users, 'listByEmails').resolves([sam]);
+      sinon.stub(getCredentialRepository(), 'blockedUserIds').resolves(blocked);
+      return {
+        upgrade: sinon.stub(users, 'upgradeSlackOnly').resolves(true),
+        restore: sinon.stub(users, 'updateProfile').resolves(null),
+        everyone: sinon.stub(groups, 'addToEveryone').resolves(),
+        leave: sinon.stub(groups, 'removeFromAll').resolves(),
+        create: sinon.stub(users, 'createMany').resolves([]),
+      };
+    };
+    const addUserStubs = (sam: any, blocked: string[] = []) => {
+      sinon.stub(users, 'existsLiveEmail').resolves(true);
+      sinon.stub(users, 'getLiveByEmail').resolves(sam);
+      sinon.stub(getCredentialRepository(), 'blockedUserIds').resolves(blocked);
+      return {
+        upgrade: sinon.stub(users, 'upgradeSlackOnly').resolves(true),
+        profile: sinon.stub(users, 'updateProfile'),
+        everyone: sinon.stub(groups, 'addToEveryone').resolves(),
+        leave: sinon.stub(groups, 'removeFromAll').resolves(),
+        create: sinon.stub(users, 'create'),
+      };
+    };
+
+    it('an invite upgrades the same record: kind becomes human, it joins everyone, and the graph hears of it', async () => {
+      const sam = slackRow();
+      const { upgrade, everyone, create } = inviteStubs(sam);
+
+      const result = await (controller as any).processInvites(['sam@acme.test'], [], orgId, 'Admin', { registeredName: 'Acme' });
+
+      expect(create.called, 'no new record').to.be.false;
+      expect(upgrade.firstCall.args).to.deep.equal([orgId, sam._id]);
+      expect(everyone.calledWith(orgId, sam._id)).to.be.true;
+      const event = mockEventService.publishEvent.firstCall.args[0];
+      expect(event.eventType).to.equal('userAdded');
+      expect(event.payload.userId).to.equal(sam._id);
+      expect(mockEventService.publishEvent.calledOnce, 'announced once').to.be.true;
+      expect(mockMailService.sendMail.calledOnce).to.be.true;
+      expect(result.reinvited).to.equal(1);
+    });
+
+    it('an invite leaves a blocked Slack-only account alone: no upgrade, no group', async () => {
+      const sam = slackRow();
+      const { upgrade, everyone } = inviteStubs(sam, [sam._id]);
+
+      await (controller as any).processInvites(['sam@acme.test'], [], orgId, 'Admin', { registeredName: 'Acme' });
+
+      expect(upgrade.called).to.be.false;
+      expect(everyone.called).to.be.false;
+      expect(mockEventService.publishEvent.called).to.be.false;
+    });
+
+    it('an invite leaves a switched-off Slack-only account alone, as it does a blocked one', async () => {
+      const sam = slackRow({ isDisabled: true });
+      const { upgrade, everyone } = inviteStubs(sam);
+
+      const result = await (controller as any).processInvites(['sam@acme.test'], [], orgId, 'Admin', { registeredName: 'Acme' });
+
+      expect(upgrade.called, 'not upgraded').to.be.false;
+      expect(everyone.called, 'not in everyone').to.be.false;
+      expect(mockEventService.publishEvent.called).to.be.false;
+      expect(mockMailService.sendMail.called).to.be.false;
+      expect(result.reinvited).to.equal(0);
+    });
+
+    it('an invite still re-sends to a switched-off pending person who is not a Slack-only account', async () => {
+      const person = slackRow({ kind: 'human', isDisabled: true });
+      const { upgrade } = inviteStubs(person);
+
+      const result = await (controller as any).processInvites(['sam@acme.test'], [], orgId, 'Admin', { registeredName: 'Acme' });
+
+      expect(upgrade.called).to.be.false;
+      expect(result.reinvited).to.equal(1);
+    });
+
+    describe('an invite that makes administrators', () => {
+      const invite = (emails: string[]) =>
+        (controller as any).processInvites(emails, [], orgId, 'Admin', { registeredName: 'Acme' }, 'admin');
+      const adminStubs = () => ({
+        count: sinon.stub(users, 'countActiveAdmins').resolves(1),
+        promote: sinon.stub(users, 'promoteToAdmin').callsFake(async (_o: string, ids: string[]) => {
+          // The stores refuse to make an account created from Slack an administrator.
+          if (ids.includes(slackId)) throw new Error('An account created from Slack cannot be an administrator');
+        }),
+        setRole: sinon.stub(users, 'setRole').resolves(),
+        deleteById: sinon.stub(users, 'deleteById').resolves(),
+      });
+      let slackId: string;
+      let newId: string;
+      beforeEach(() => {
+        newId = new mongoose.Types.ObjectId().toHexString();
+      });
+
+      it('upgrades a Slack-only account first and only then makes it an administrator', async () => {
+        const sam = slackRow();
+        slackId = sam._id;
+        const { upgrade, everyone } = inviteStubs(sam);
+        const { promote } = adminStubs();
+        // The upgrade turns the row into a person; only then may the role be written.
+        upgrade.callsFake(async () => {
+          slackId = '';
+          return true;
+        });
+
+        await invite(['sam@acme.test']);
+
+        expect(promote.calledOnce, 'promoted once').to.be.true;
+        expect(promote.firstCall.args[1]).to.deep.equal([sam._id]);
+        expect(upgrade.calledBefore(promote), 'upgraded before promoted').to.be.true;
+        expect(everyone.calledWith(orgId, sam._id)).to.be.true;
+        expect(mockMailService.sendMail.calledOnce).to.be.true;
+      });
+
+      it('in a batch with a new address, the new address is made an administrator in the grant and the Slack-only one after its upgrade', async () => {
+        const sam = slackRow();
+        slackId = sam._id;
+        const { upgrade, create } = inviteStubs(sam);
+        const { promote } = adminStubs();
+        upgrade.callsFake(async () => {
+          slackId = '';
+          return true;
+        });
+        create.resolves([{ _id: newId, email: 'new@acme.test', orgId } as any]);
+
+        await invite(['sam@acme.test', 'new@acme.test']);
+
+        expect(promote.getCalls().map((c) => c.args[1])).to.deep.equal([[newId], [sam._id]]);
+        expect(upgrade.calledBefore(promote.secondCall)).to.be.true;
+        expect(mockMailService.sendMail.callCount, 'both are mailed').to.equal(2);
+      });
+
+      it('does not write an administrator over the cap: the Slack-only account stays as it was', async () => {
+        const sam = slackRow();
+        slackId = sam._id;
+        const { upgrade, restore } = inviteStubs(sam);
+        const { count } = adminStubs();
+        count.resolves(5);
+
+        let error: any;
+        try {
+          await invite(['sam@acme.test']);
+        } catch (e) {
+          error = e;
+        }
+
+        expect(error?.message).to.match(/at most/);
+        expect(upgrade.called, 'not upgraded').to.be.false;
+        expect(restore.called).to.be.false;
+        expect(mockMailService.sendMail.called).to.be.false;
+      });
+
+      it('undoes the upgrade when the promotion fails, and still finishes the other addresses', async () => {
+        const sam = slackRow();
+        slackId = sam._id; // stays Slack-only for the stub: the promotion fails
+        const { upgrade, restore, leave, create, everyone } = inviteStubs(sam);
+        adminStubs();
+        create.resolves([{ _id: newId, email: 'new@acme.test', orgId } as any]);
+        mockEventService.publishEvent.resetHistory();
+
+        let error: any;
+        try {
+          await invite(['sam@acme.test', 'new@acme.test']);
+        } catch (e) {
+          error = e;
+        }
+
+        expect(error?.message).to.match(/cannot be an administrator/);
+        expect(upgrade.calledOnce).to.be.true;
+        expect(restore.getCalls().some((c) => c.args[1] === sam._id && (c.args[2] as any).kind === 'slack'), 'put back').to.be.true;
+        expect(leave.called, 'it joined no group, so none to leave').to.be.false;
+        // The new address is whole: in everyone, announced, mailed. Nothing is left half done.
+        expect(everyone.calledWith(orgId, newId)).to.be.true;
+        expect(mockEventService.publishEvent.getCalls().map((c) => c.args[0].payload.userId)).to.deep.equal([newId]);
+        expect(mockMailService.sendMail.callCount).to.equal(1);
+        expect(mockMailService.sendMail.firstCall.args[0].usersMails).to.deep.equal(['new@acme.test']);
+      });
+
+      it('a plain invite that fails for the Slack-only account does not orphan the new address either', async () => {
+        const sam = slackRow();
+        const { create, everyone } = inviteStubs(sam);
+        create.resolves([{ _id: newId, email: 'new@acme.test', orgId } as any]);
+        everyone.callsFake(async (_o: string, id: string) => {
+          if (id === sam._id) throw new Error('groups down');
+        });
+        mockEventService.publishEvent.resetHistory();
+
+        let error: any;
+        try {
+          await (controller as any).processInvites(['sam@acme.test', 'new@acme.test'], [], orgId, 'Admin', { registeredName: 'Acme' });
+        } catch (e) {
+          error = e;
+        }
+
+        expect(error?.message).to.equal('groups down');
+        expect(everyone.calledWith(orgId, newId)).to.be.true;
+        expect(mockEventService.publishEvent.getCalls().map((c) => c.args[0].payload.userId)).to.deep.equal([newId]);
+        expect(mockMailService.sendMail.firstCall.args[0].usersMails).to.deep.equal(['new@acme.test']);
+      });
+    });
+
+    it('add user upgrades the same record instead of refusing the duplicate', async () => {
+      const sam = slackRow();
+      req.body = { email: 'sam@acme.test', designation: 'Engineer' };
+      const { upgrade, profile, everyone, create } = addUserStubs(sam);
+      profile.resolves({ ...sam, kind: 'human', designation: 'Engineer' });
+
+      await controller.createUser(req, res, next);
+
+      expect(next.called, String(next.firstCall?.args[0])).to.be.false;
+      expect(create.called, 'no second record').to.be.false;
+      expect(upgrade.firstCall.args).to.deep.equal([orgId, sam._id]);
+      expect(profile.firstCall.args[2]).to.include({ designation: 'Engineer', role: 'member' });
+      expect(everyone.calledOnceWith(orgId, sam._id)).to.be.true;
+      expect(mockEventService.publishEvent.firstCall.args[0].payload.userId).to.equal(sam._id);
+      expect(res.status.calledWith(201)).to.be.true;
+      expect(res.json.firstCall.args[0]._id).to.equal(sam._id);
+    });
+
+    it('add user puts a Slack-only account back as it was when a later step fails', async () => {
+      const sam = slackRow({ fullName: 'Sam' });
+      req.body = { email: 'sam@acme.test', designation: 'Engineer' };
+      const { profile, leave } = addUserStubs(sam);
+      profile.resolves({ ...sam, kind: 'human' });
+      mockEventService.publishEvent.rejects(new Error('broker down'));
+
+      await controller.createUser(req, res, next);
+
+      expect(next.firstCall.args[0].message).to.equal('broker down');
+      expect(leave.calledWith(orgId, sam._id, { everyGroup: true })).to.be.true;
+      const restore = profile.getCalls().map((c) => c.args[2] as any).find((f) => f.kind === 'slack');
+      expect(restore).to.include({ kind: 'slack', fullName: 'Sam', role: 'member' });
+      expect(restore).to.have.property('designation', undefined);
+    });
+
+    for (const [label, fields, blocked] of [
+      ['blocked', {}, true],
+      ['switched off', { isDisabled: true }, false],
+    ] as const) {
+      it(`add user leaves a ${label} Slack-only account alone, as an invite does: refused, nothing written`, async () => {
+        const sam = slackRow(fields);
+        req.body = { email: 'sam@acme.test' };
+        const { upgrade, profile, everyone, create } = addUserStubs(sam, blocked ? [sam._id] : []);
+
+        await controller.createUser(req, res, next);
+
+        const error = next.firstCall?.args[0];
+        expect(error, 'refused').to.be.instanceOf(Error);
+        expect(error.statusCode ?? error.status).to.equal(403);
+        expect(error.message).to.equal(SLACK_ONLY_ADD_USER_REFUSAL);
+        expect(upgrade.called, 'not upgraded').to.be.false;
+        expect(profile.called, 'record untouched').to.be.false;
+        expect(everyone.called, 'not in everyone').to.be.false;
+        expect(create.called, 'no new record').to.be.false;
+        expect(mockEventService.publishEvent.called, 'nothing announced').to.be.false;
+        expect(res.status.called, 'no answer but the refusal').to.be.false;
+      });
+    }
+
+    it('add user still restores the record when leaving the groups fails too', async () => {
+      const sam = slackRow();
+      req.body = { email: 'sam@acme.test' };
+      const { profile, everyone, leave } = addUserStubs(sam);
+      profile.resolves({ ...sam, kind: 'human' });
+      everyone.rejects(new Error('groups down'));
+      leave.rejects(new Error('groups down'));
+
+      await controller.createUser(req, res, next);
+
+      expect(next.firstCall.args[0].message).to.equal('groups down');
+      expect(profile.getCalls().some((c) => (c.args[2] as any).kind === 'slack')).to.be.true;
+    });
+
+    it('an invite undoes a Slack-only upgrade whose event could not be published, so a retry finds it again', async () => {
+      const sam = slackRow();
+      const { restore, leave } = inviteStubs(sam);
+      mockEventService.publishEvent.rejects(new Error('broker down'));
+
+      let error: any;
+      try {
+        await (controller as any).processInvites(['sam@acme.test'], [], orgId, 'Admin', { registeredName: 'Acme' });
+      } catch (e) {
+        error = e;
+      }
+
+      expect(error?.message).to.equal('broker down');
+      expect(leave.calledWith(orgId, sam._id, { everyGroup: true })).to.be.true;
+      expect(restore.getCalls().some((c) => (c.args[2] as any).kind === 'slack')).to.be.true;
+      expect(mockMailService.sendMail.called).to.be.false;
+    });
+
+    it('add user as admin respects the admin cap before upgrading', async () => {
+      const sam = slackRow();
+      req.body = { email: 'sam@acme.test', role: 'admin' };
+      const { upgrade } = addUserStubs(sam);
+      const cap = sinon.stub(userAdminService, 'assertCanPromoteAdmin').rejects(new Error('admin limit reached'));
+
+      await controller.createUser(req, res, next);
+
+      expect(cap.calledOnceWith(orgId, 1)).to.be.true;
+      expect(next.firstCall.args[0].message).to.equal('admin limit reached');
+      expect(upgrade.called, 'not upgraded').to.be.false;
+    });
+
+    it('add user with a starting password still refuses the address', async () => {
+      const sam = slackRow();
+      req.body = { email: 'sam@demo.pipeshub.com', password: 'Str0ng!pass' };
+      const { upgrade } = addUserStubs(sam);
+
+      await controller.createUser(req, res, next);
+
+      expect(upgrade.called).to.be.false;
+    });
+
+    for (const [label, kind, message] of [
+      ['a Slack-only account', 'slack', 'An account created from Slack cannot be an administrator'],
+      ['a service account', 'service', 'A service account cannot be an administrator'],
+    ] as const) {
+      it(`changing the role of ${label} to administrator answers 400, not a server error, and writes nothing`, async () => {
+        const target = slackRow({ kind });
+        req.params.id = target._id;
+        req.body = { role: 'admin' };
+        sinon.stub(userAdminService, 'isUserOrgAdmin').resolves(true);
+        sinon.stub(users, 'getForEdit').resolves(target);
+        const profile = sinon.stub(users, 'updateProfile').resolves(null);
+        const promote = sinon.stub(users, 'promoteToAdmin').resolves();
+
+        await controller.updateUser(req, res, next);
+
+        const error = next.firstCall?.args[0];
+        expect(error, 'refused').to.exist;
+        expect(error.statusCode).to.equal(400);
+        expect(error.message).to.equal(message);
+        expect(profile.called).to.be.false;
+        expect(promote.called).to.be.false;
+      });
+    }
+
+    it('resend-invite refuses a Slack-only account: its mail would set a password on it', async () => {
+      req.params = { id: new mongoose.Types.ObjectId().toHexString() };
+      sinon.stub(getOrgRepository(), 'getLive').resolves({ _id: orgId, registeredName: 'Acme' } as any);
+      sinon.stub(users, 'getForEdit').resolves(slackRow());
+
+      await controller.resendInvite(req, res, next);
+
+      expect(next.firstCall.args[0].message).to.match(/created from Slack/);
+      expect(mockMailService.sendMail.called).to.be.false;
+    });
+
+    for (const [label, query, admin, slackShown] of [
+      ['pickers (no flag)', {}, true, false],
+      ['a member asking for them', { includeSlackOnlyAccounts: 'true' }, false, false],
+      ['the admin users screen', { includeSlackOnlyAccounts: 'true' }, true, true],
+    ] as const) {
+      it(`the users list hides Slack-only accounts from ${label} unless an admin asks`, async () => {
+        req.query = query;
+        sinon.stub(userAdminService, 'isUserOrgAdmin').resolves(admin);
+        const list = sinon.stub(users, 'listDirectory').resolves({ rows: [], total: 0 });
+
+        await controller.getAllUsers(req, res);
+
+        expect(list.firstCall.args[1].includeSlackOnlyAccounts).to.equal(slackShown);
+      });
+    }
   });
 });
 

@@ -257,6 +257,7 @@ export interface IdentityUserActivities {
   is_deleted: Generated<boolean>;
   created_at: Date;
   updated_at: Date;
+  details: string | null;
 }
 
 export interface IdentityUserCredentials {
@@ -327,6 +328,8 @@ export interface IdentityUsers {
   version: Generated<number>;
   created_at: Date;
   updated_at: Date;
+  slack_user_id: string | null;
+  slack_team_id: string | null;
 }
 
 export interface IntegrationsSlackThreads {

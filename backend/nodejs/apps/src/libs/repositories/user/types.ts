@@ -13,6 +13,9 @@ import type { Tx } from '../uow';
 
 export type UserRole = 'admin' | 'member';
 
+/** `slack`: an account a Slack bot created, usable only from Slack until it is upgraded. */
+export type UserKind = 'human' | 'service' | 'slack';
+
 export interface UserDto {
   _id: string;
   orgId: string;
@@ -25,8 +28,11 @@ export interface UserDto {
   mobile?: string;
   hasLoggedIn?: boolean;
   designation?: string;
-  kind?: 'human' | 'service';
+  kind?: UserKind;
   description?: string;
+  /** Set on a Slack-only account (`kind: 'slack'`): the Slack user and workspace it was created for. */
+  slackUserId?: string;
+  slackTeamId?: string;
   isDisabled?: boolean;
   restoreOpId?: string;
   role?: UserRole;
@@ -54,6 +60,8 @@ export type UserFields = Partial<
     | 'address'
     | 'kind'
     | 'description'
+    | 'slackUserId'
+    | 'slackTeamId'
     | 'isDisabled'
     | 'isDeleted'
   >
@@ -66,6 +74,8 @@ export interface DirectoryQuery {
   search?: string;
   /** Service accounts are left out unless the caller may see them. */
   includeServiceAccounts: boolean;
+  /** Slack-only accounts are left out unless the caller asks for them (the admin users screen). */
+  includeSlackOnlyAccounts?: boolean;
   hasLoggedIn?: boolean;
   /** `true`: only blocked people (or, with `hasLoggedIn`, either); `false`: only the unblocked. */
   blocked?: boolean;
@@ -91,7 +101,7 @@ export interface UserWithGroupsDto {
 }
 
 export interface UserAccountState {
-  kind?: 'human' | 'service';
+  kind?: UserKind;
   isDisabled?: boolean;
 }
 
@@ -101,7 +111,7 @@ export interface UserAuthSnapshot {
   fullName?: string;
   role?: UserRole;
   isDisabled?: boolean;
-  kind?: 'human' | 'service';
+  kind?: UserKind;
 }
 
 export interface UserRoleSnapshot {
@@ -224,7 +234,7 @@ export interface UserRepository {
     orgId: string,
     q: DirectoryQuery,
   ): Promise<{ rows: UserDto[]; total: number }>;
-  /** Every live account of the org with its groups; service accounts only with `includeServiceAccounts`. */
+  /** Every live account of the org with its groups; service accounts only with `includeServiceAccounts`, Slack-only accounts never. */
   listWithGroups(
     orgId: string,
     opts?: { includeServiceAccounts?: boolean },
@@ -283,6 +293,11 @@ export interface UserRepository {
     id: string,
     extra?: { signedOut?: boolean; deletedBy?: string; onlyMember?: boolean },
   ): Promise<UserDto | null>;
+  /**
+   * Turns a Slack-only account into an ordinary one, same id. True only for the
+   * call that changed it, so of two racing upgrades one goes on to add groups.
+   */
+  upgradeSlackOnly(orgId: string, id: string): Promise<boolean>;
   /** Brings removed accounts at these addresses back as members; returns every live account at them, restored now or already live. */
   restoreByEmails(orgId: string, emails: string[], tx?: Tx): Promise<UserDto[]>;
   /** Makes these people admins (service accounts excluded). */

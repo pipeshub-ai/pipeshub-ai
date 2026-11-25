@@ -1,6 +1,10 @@
 import { injectable, inject } from 'inversify';
 import { Logger } from '../../../libs/services/logger.service';
-import { BadRequestError } from '../../../libs/errors/http.errors';
+import {
+  BadRequestError,
+  ForbiddenError,
+} from '../../../libs/errors/http.errors';
+import { forOrg } from '../../../libs/context/orgContext';
 import { audit } from '../../../libs/services/audit';
 import { authRefusal } from '../utils/sign-in-audit';
 // From the schema module, not the config barrel: the barrel re-exports the auth
@@ -15,6 +19,15 @@ import {
   UserAddedEvent,
   SyncAction,
 } from '../../user_management/services/entity_events.service';
+import {
+  assertSlackOnlyAccountActive,
+  upgradeSlackOnlyAccount,
+} from '../../user_management/services/slack-only-accounts.service';
+import { DISABLED_ACCOUNT_SIGN_IN_MESSAGE } from '../utils/generateAuthToken';
+
+/** What a person who signs in with SSO reads when their account was removed. */
+export const REMOVED_ACCOUNT_SIGN_IN_MESSAGE =
+  'User account deleted by admin. Please contact your admin to restore your account.';
 
 export interface JitUserDetails {
   firstName?: string;
@@ -50,9 +63,7 @@ export class JitProvisioningService {
     if (await getUserRepository().hasRemovedAccount(orgId, email)) {
       // The sign-in line carries this refusal; provisioning audits only what it created.
       throw authRefusal(
-        new BadRequestError(
-          'User account deleted by admin. Please contact your admin to restore your account.',
-        ),
+        new BadRequestError(REMOVED_ACCOUNT_SIGN_IN_MESSAGE),
         'account_removed',
       );
     }
@@ -64,33 +75,7 @@ export class JitProvisioningService {
       isDeleted: false,
     });
 
-    // Add to everyone group
-    await getGroupRepository().addToEveryone(orgId, newUser._id, {
-      liveOnly: true,
-    });
-
-    // Publish user creation event
-    try {
-      await this.eventService.start();
-      await this.eventService.publishEvent({
-        eventType: EventType.NewUserEvent,
-        timestamp: Date.now(),
-        payload: {
-          orgId: orgId.toString(),
-          userId: newUser._id,
-          fullName: newUser.fullName,
-          email: newUser.email,
-          syncAction: SyncAction.Immediate,
-        } as UserAddedEvent,
-      });
-    } catch (eventError) {
-      this.logger.error('Failed to publish user creation event', {
-        error: eventError,
-        userId: newUser._id,
-      });
-    } finally {
-      await this.eventService.stop();
-    }
+    await this.joinOrg(newUser);
 
     audit('auth.jit_provision', {
       actor: newUser._id,
@@ -100,6 +85,125 @@ export class JitProvisioningService {
     });
 
     return newUser;
+  }
+
+  /**
+   * Upgrades a Slack-only account the person just signed in to with SSO while
+   * just-in-time provisioning is on. Same record, so its Slack threads stay
+   * theirs; it then gets what a provisioned user gets.
+   */
+  async upgradeSlackOnlyUser(
+    user: { _id: unknown; orgId: unknown; email: string },
+    userDetails: JitUserDetails,
+    provider: JitProvider,
+  ): Promise<void> {
+    const orgId = String(user.orgId);
+    const userId = String(user._id);
+    // A sign-in carries no org context of its own at this point, and the
+    // account's org is the one the server read it from. Every repository call
+    // below runs as that org (PostgreSQL refuses a call with none).
+    return forOrg(orgId, 'jit-upgrade-slack-only', async () => {
+      const users = getUserRepository();
+      // A removed, switched-off or blocked account is never brought back by a
+      // sign-in, the same as an invite leaves it alone.
+      const existing = await users.getLive(orgId, userId);
+      if (!existing) throw new ForbiddenError(REMOVED_ACCOUNT_SIGN_IN_MESSAGE);
+      await assertSlackOnlyAccountActive(
+        existing,
+        DISABLED_ACCOUNT_SIGN_IN_MESSAGE,
+      );
+      if (!(await upgradeSlackOnlyAccount(userId, orgId))) return;
+      const previous: Record<string, unknown> = {};
+      try {
+        const current = await users.getLive(orgId, userId);
+        if (current && (current.fullName ?? '') === '') {
+          previous.fullName = current.fullName;
+          await users.updateProfile(orgId, userId, {
+            fullName: userDetails.fullName,
+          });
+        }
+        this.logger.info(`Slack-only account upgraded via ${provider}`, {
+          userId: user._id,
+        });
+        await this.joinOrg({
+          _id: user._id,
+          orgId: user.orgId,
+          email: user.email,
+          fullName: userDetails.fullName,
+        });
+      } catch (error) {
+        await this.undoSlackOnlyUpgrade(orgId, userId, previous);
+        throw error;
+      }
+    });
+  }
+
+  /**
+   * Puts a half-upgraded account back to Slack-only, so the next sign-in
+   * retries the whole upgrade. It held no group before, so it leaves every
+   * group. Each step is best effort on its own.
+   */
+  private async undoSlackOnlyUpgrade(
+    orgId: string,
+    userId: string,
+    previous: Record<string, unknown>,
+  ): Promise<void> {
+    const logFailure = (step: string, error: unknown): void => {
+      this.logger.error(`Undoing a failed Slack-only upgrade: ${step} failed`, {
+        userId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    };
+    try {
+      await getGroupRepository().removeFromAll(orgId, userId, {
+        everyGroup: true,
+      });
+    } catch (error) {
+      logFailure('leaving the groups', error);
+    }
+    try {
+      await getUserRepository().updateProfile(orgId, userId, {
+        ...previous,
+        kind: 'slack',
+      });
+    } catch (error) {
+      logFailure('restoring the record', error);
+    }
+  }
+
+  /** Adds a new member to the everyone group and tells the graph about them. */
+  private async joinOrg(user: {
+    _id: unknown;
+    orgId: unknown;
+    email: string;
+    fullName?: string;
+  }): Promise<void> {
+    await getGroupRepository().addToEveryone(
+      String(user.orgId),
+      String(user._id),
+      { liveOnly: true },
+    );
+    try {
+      await this.eventService.start();
+      await this.eventService.publishEvent({
+        eventType: EventType.NewUserEvent,
+        timestamp: Date.now(),
+        payload: {
+          orgId: String(user.orgId),
+          userId: String(user._id),
+          fullName: user.fullName,
+          email: user.email,
+          syncAction: SyncAction.Immediate,
+        } as UserAddedEvent,
+      });
+    } catch (eventError) {
+      this.logger.error('Failed to publish user creation event', {
+        error: eventError,
+        userId: user._id,
+      });
+    } finally {
+      await this.eventService.stop();
+    }
   }
 
   /**

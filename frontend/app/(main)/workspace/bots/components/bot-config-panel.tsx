@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useCallback, useContext, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Flex, Text, TextField, Select, Button, IconButton } from '@radix-ui/themes';
+import { Flex, Text, TextField, Select, Button, IconButton, Switch } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ShowStoredValuesButton } from '@/app/components/ui/show-stored-values-button';
 import { LoadingButton } from '@/app/components/ui/loading-button';
@@ -12,6 +12,7 @@ import { DestructiveTypedConfirmationDialog } from '@/app/(main)/workspace/compo
 import { toast } from '@/lib/store/toast-store';
 import { CONFIG_SECRET_PLACEHOLDER } from '@/lib/constants/config-secret-placeholder';
 import { useRevealScope, useSecretRevealAvailable } from '@/lib/hooks/use-secret-reveal-available';
+import { SLACK_ACCOUNT_CREATION_AVAILABLE } from '@/config';
 import { useBotsStore } from '../store';
 import { BotsApi } from '../api';
 import type { BotType, BotTypeInfo, SlackBotConfig } from '../types';
@@ -258,6 +259,7 @@ function SlackBotFormView({ editingConfig, agents, agentsComplete, onClose, onSa
   const [botToken, setBotToken] = useState('');
   const [signingSecret, setSigningSecret] = useState('');
   const [agentId, setAgentId] = useState<string>(DEFAULT_ASSISTANT_ID);
+  const [createAccountsForSlackUsers, setCreateAccountsForSlackUsers] = useState(false);
   const [showBotToken, setShowBotToken] = useState(false);
   const [showSigningSecret, setShowSigningSecret] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
@@ -269,11 +271,13 @@ function SlackBotFormView({ editingConfig, agents, agentsComplete, onClose, onSa
       setBotToken(editingConfig.botToken);
       setSigningSecret(editingConfig.signingSecret);
       setAgentId(editingConfig.agentId || DEFAULT_ASSISTANT_ID);
+      setCreateAccountsForSlackUsers(editingConfig.createAccountsForSlackUsers === true);
     } else {
       setName('');
       setBotToken('');
       setSigningSecret('');
       setAgentId(DEFAULT_ASSISTANT_ID);
+      setCreateAccountsForSlackUsers(false);
     }
   }, [editingConfig]);
 
@@ -331,6 +335,7 @@ function SlackBotFormView({ editingConfig, agents, agentsComplete, onClose, onSa
         botToken: botToken.trim(),
         signingSecret: signingSecret.trim(),
         ...(!isDefaultAssistant ? { agentId: selectedAgentId } : {}),
+        ...(SLACK_ACCOUNT_CREATION_AVAILABLE ? { createAccountsForSlackUsers } : {}),
       };
 
       if (isEditMode && editingConfig) {
@@ -353,7 +358,7 @@ function SlackBotFormView({ editingConfig, agents, agentsComplete, onClose, onSa
     } finally {
       setIsSaving(false);
     }
-  }, [isValid, isSaving, name, botToken, signingSecret, selectedAgentId, isEditMode, editingConfig, onSaved]);
+  }, [isValid, isSaving, name, botToken, signingSecret, selectedAgentId, createAccountsForSlackUsers, isEditMode, editingConfig, onSaved, t]);
 
   return (
     <Flex direction="column" style={{ height: '100%' }}>
@@ -462,6 +467,27 @@ function SlackBotFormView({ editingConfig, agents, agentsComplete, onClose, onSa
             </Select.Content>
           </Select.Root>
         </FormField>
+
+        {SLACK_ACCOUNT_CREATION_AVAILABLE && (
+          <Text as="label" size="2">
+            <Flex gap="3" align="start">
+              <Switch
+                color="jade"
+                checked={createAccountsForSlackUsers}
+                onCheckedChange={setCreateAccountsForSlackUsers}
+                style={{ marginTop: 2 }}
+              />
+              <Flex direction="column" gap="1">
+                <Text weight="medium" style={{ color: 'var(--slate-12)' }}>
+                  {t('workspace.bots.form.createAccountsForSlackUsers')}
+                </Text>
+                <Text size="1" style={{ color: 'var(--slate-11)' }}>
+                  {t('workspace.bots.form.createAccountsForSlackUsersHelp')}
+                </Text>
+              </Flex>
+            </Flex>
+          </Text>
+        )}
 
         {/* ── Delete zone (edit mode only) ── */}
         {isEditMode && (

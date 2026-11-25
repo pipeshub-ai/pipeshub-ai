@@ -53,8 +53,8 @@ describe('userActivities.utils', () => {
       expect(userActivitiesType.ACCOUNT_DELETED).to.equal('ACCOUNT DELETED')
     })
 
-    it('should have exactly 12 activity types', () => {
-      expect(Object.keys(userActivitiesType)).to.have.length(12)
+    it('should have exactly 13 activity types', () => {
+      expect(Object.keys(userActivitiesType)).to.have.length(13)
     })
 
     it('should have unique values for all activity types', () => {
