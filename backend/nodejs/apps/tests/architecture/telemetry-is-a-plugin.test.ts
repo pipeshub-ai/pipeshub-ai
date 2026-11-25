@@ -23,6 +23,46 @@ const PLUGIN_DIR = 'plugins/telemetry/';
 const PLUGIN_LIST = 'plugins.generated.ts';
 
 /**
+ * A build that ships more plug-ins than `src/plugins` describes them in
+ * plugins.profiles.json (see scripts/generate-plugins.mjs). Without that file
+ * the telemetry plug-in is the only optional part.
+ */
+interface BuildProfiles {
+  profiles?: Record<string, string[]>;
+  builds?: Record<string, string[]>;
+  plugins?: Record<string, { owns?: string[] }>;
+  /** More lines allowed in a tree built without any plug-in, relative to this file's directory. */
+  strippedTreeAllowList?: string;
+}
+const PROFILES_FILE = join(APP, 'plugins.profiles.json');
+const BUILD_PROFILES: BuildProfiles = existsSync(PROFILES_FILE)
+  ? (JSON.parse(readFileSync(PROFILES_FILE, 'utf8')) as BuildProfiles)
+  : {};
+
+/** Every optional directory under `src`: the plug-ins and what exists only for one. */
+const OPTIONAL_DIRS: string[] = [
+  ...new Set([
+    PLUGIN_DIR.slice(0, -1),
+    ...Object.values(BUILD_PROFILES.profiles ?? {}).flat(),
+    ...Object.values(BUILD_PROFILES.builds ?? {}).flat(),
+    ...Object.entries(BUILD_PROFILES.plugins ?? {}).flatMap(([dir, info]) => [
+      dir,
+      ...(info.owns ?? []),
+    ]),
+  ]),
+];
+const inOptionalDir = (name: string): boolean =>
+  OPTIONAL_DIRS.some((dir) => name.startsWith(`${dir}/`));
+
+/** Plug-ins a build switches on only together with telemetry may import it. */
+const WITH_TELEMETRY: string[] = [
+  PLUGIN_DIR.slice(0, -1),
+  ...Object.values(BUILD_PROFILES.builds ?? {})
+    .filter((dirs) => dirs.includes(PLUGIN_DIR.slice(0, -1)))
+    .flat(),
+];
+
+/**
  * Lines that still say "telemetry" in a tree built without the plug-in. Each is
  * product documentation, not code, and each is here for a stated reason. A new
  * hit fails the test: either remove the word or justify the line here.
@@ -50,6 +90,19 @@ const ALLOWED_IN_STRIPPED_TREE: { file: string; text: string; why: string }[] =
       why: 'Public API reference for message feedback: a field stored with the rating in the conversation. Unrelated to usage collection.',
     },
   ];
+
+/** Lines an edition's own code and API reference still need, each with its reason. */
+const ALSO_ALLOWED: { file: string; text?: string; why: string }[] =
+  BUILD_PROFILES.strippedTreeAllowList === undefined
+    ? []
+    : (
+        JSON.parse(
+          readFileSync(
+            join(APP, BUILD_PROFILES.strippedTreeAllowList),
+            'utf8',
+          ),
+        ) as { allow: { file: string; text?: string; why: string }[] }
+      ).allow;
 
 function walk(dir: string, out: string[] = []): string[] {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -110,9 +163,41 @@ describe('architecture: telemetry is a plug-in', () => {
       for (const file of walk(SRC)) {
         const name = rel(SRC, file);
         if (!name.endsWith('.ts')) continue;
-        if (name.startsWith(PLUGIN_DIR) || name === PLUGIN_LIST) continue;
+        if (name === PLUGIN_LIST) continue;
+        if (WITH_TELEMETRY.some((dir) => name.startsWith(`${dir}/`))) continue;
         for (const path of importPaths(readFileSync(file, 'utf8'))) {
           if (/telemetry/i.test(path)) offenders.push(`${name} -> ${path}`);
+        }
+      }
+      expect(offenders).to.deep.equal([]);
+    });
+
+    it('imports a plug-in, or what exists only for one, from nowhere but plug-ins and the generated list', () => {
+      const offenders: string[] = [];
+      for (const file of walk(SRC)) {
+        const name = rel(SRC, file);
+        if (!name.endsWith('.ts')) continue;
+        if (name === PLUGIN_LIST || inOptionalDir(name)) continue;
+        for (const path of importPaths(readFileSync(file, 'utf8'))) {
+          if (!path.startsWith('.')) continue;
+          const target = rel(SRC, join(file, '..', path));
+          if (OPTIONAL_DIRS.some((dir) => target === dir || target.startsWith(`${dir}/`))) {
+            offenders.push(`${name} -> ${path}`);
+          }
+        }
+      }
+      expect(offenders).to.deep.equal([]);
+    });
+
+    it('imports a Prometheus or OpenTelemetry client only inside a plug-in', () => {
+      const offenders: string[] = [];
+      for (const file of walk(SRC)) {
+        const name = rel(SRC, file);
+        if (!name.endsWith('.ts') || inOptionalDir(name)) continue;
+        for (const path of importPaths(readFileSync(file, 'utf8'))) {
+          if (/^(prom-client|@opentelemetry\/)/.test(path)) {
+            offenders.push(`${name} -> ${path}`);
+          }
         }
       }
       expect(offenders).to.deep.equal([]);
@@ -148,7 +233,9 @@ describe('architecture: telemetry is a plug-in', () => {
       cpSync(SRC, stripped, { recursive: true });
       cpSync(join(APP, 'tsconfig.json'), join(root, 'tsconfig.json'));
       symlinkSync(realpathSync(join(APP, 'node_modules')), join(root, 'node_modules'));
-      rmSync(join(stripped, 'plugins', 'telemetry'), { recursive: true });
+      for (const dir of OPTIONAL_DIRS) {
+        rmSync(join(stripped, dir), { recursive: true, force: true });
+      }
       // No arguments: the generator lists whatever plug-in directories are left.
       execFileSync(process.execPath, [GENERATOR, '--src', stripped], { stdio: 'pipe' });
     });
@@ -176,8 +263,10 @@ describe('architecture: telemetry is a plug-in', () => {
     it('says "telemetry" nowhere except the documented API reference lines', () => {
       const unexpected = telemetryHits(stripped).filter(
         (hit) =>
-          !ALLOWED_IN_STRIPPED_TREE.some(
-            (allowed) => allowed.file === hit.file && hit.text.includes(allowed.text),
+          ![...ALLOWED_IN_STRIPPED_TREE, ...ALSO_ALLOWED].some(
+            (allowed) =>
+              allowed.file === hit.file &&
+              (allowed.text === undefined || hit.text.includes(allowed.text)),
           ),
       );
       expect(unexpected).to.deep.equal([]);
