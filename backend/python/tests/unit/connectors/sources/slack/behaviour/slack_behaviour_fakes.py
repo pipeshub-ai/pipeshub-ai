@@ -660,3 +660,7 @@ class FakeConfigService:
         else:
             self.others[path] = copy.deepcopy(value)
         return True
+
+    async def delete_config(self, path: str) -> bool:
+        """False for a key that was not set, as the store answers."""
+        return self.others.pop(path, None) is not None
