@@ -976,7 +976,7 @@ class KnowledgeGraph:
         modified_before: str | None = None,
         entity_ids: list[str] | None = None,
         response_format: str | None = None,
-    ) -> str | list[Part]:
+    ) -> str | list[Part] | tuple[bool, str]:
         """Semantic search, through the stateless knowledge service (C3.17) as the run's principal and scope."""
         from app.harness.knowledge.knowledge_service import (
             KnowledgeCall,
@@ -998,9 +998,11 @@ class KnowledgeGraph:
         )
         if not self.state:
             # Answers "Tool state not initialized" as it always did.
-            return await execute_search(self.state, query=query)  # type: ignore[arg-type]
+            return _failed_if_error(await execute_search(self.state, query=query))  # type: ignore[arg-type]
         state = self.state
-        return await KnowledgeService(backends_of(state)).search(KnowledgeCall.from_state(state), request)  # type: ignore[arg-type]
+        return _failed_if_error(
+            await KnowledgeService(backends_of(state)).search(KnowledgeCall.from_state(state), request)  # type: ignore[arg-type]
+        )
 
     @tool(
         path="/tools/knowledgegraph/summarize",
@@ -1594,7 +1596,9 @@ class KnowledgeGraph:
     ) -> tuple[bool, str] | str | list[Part]:
         """Entity-linked search — calls ops/entity_search.py."""
         from .ops.entity_search import execute_search_by_entities
-        return await execute_search_by_entities(self.state, mentions=mentions, match=match, query=query)
+        return _failed_if_error(
+            await execute_search_by_entities(self.state, mentions=mentions, match=match, query=query)
+        )
 
     def tools_for_request(self, tools: list[Tool]) -> list[Tool]:
         """This request's tools: ``search_by_entities`` and the descriptions
@@ -1852,10 +1856,10 @@ class KnowledgeGraph:
         date_field: str | None = None,
         source_ids: list[str] | None = None,
         entity_ids: list[str] | None = None,
-    ) -> str | list[Part]:
+    ) -> str | list[Part] | tuple[bool, str]:
         """Date-ordered search — calls ops/timeline.py execute_timeline_search."""
         from .ops.timeline import execute_timeline_search
-        return await execute_timeline_search(
+        return _failed_if_error(await execute_timeline_search(
             self.state,
             query,
             start=start,
@@ -1863,7 +1867,7 @@ class KnowledgeGraph:
             date_field=date_field,
             source_ids=source_ids,
             entity_ids=entity_ids,
-        )
+        ))
 
     # -----------------------------------------------------------------------
     # fetch_record — full document read (dynamically granted)
@@ -1933,6 +1937,17 @@ def _find_records_by_entity_result_summary(args: dict[str, Any], result: "ToolRe
     if result.is_error:
         return f"Lookup failed: {first_line}"
     return first_line or "Found records"
+
+
+def _failed_if_error(result: Any) -> Any:  # noqa: ANN401 - passes the op's own result through
+    """The search ops report a failure as a JSON payload with status "error". Return it as a failed call
+    (the agent loop records it as an error; the model still gets the same text)."""
+    if isinstance(result, str):
+        from app.agents.actions.util.tool_summaries import parse_json_maybe
+        parsed = parse_json_maybe(result)
+        if isinstance(parsed, dict) and parsed.get("status") == "error":
+            return False, result
+    return result
 
 
 def _timeline_result_summary(args: dict[str, Any], result: "ToolResult") -> str | None:
