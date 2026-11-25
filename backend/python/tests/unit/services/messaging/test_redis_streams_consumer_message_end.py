@@ -310,3 +310,32 @@ class TestPendingEntries:
         await _drain(c, claimed=[("1-0", _signed())])
         end = _one_end(caplog)
         assert (end["disposition"], end["reason"]) == ("retry", "exception")
+
+
+class TestConsumedEvent:
+    """Each delivery is also announced as ``message.consumed`` (see message_log)."""
+
+    async def test_a_delivery_is_announced_with_the_lag_its_entry_id_gives(self) -> None:
+        import time
+
+        from tests.support.platform_event_capture import event_calls
+
+        entry_id = f"{int(time.time() * 1000) - 3000}-0"
+        with event_calls("message.consumed") as consumed:
+            await _deliver(_consumer(_handler()), (entry_id, _signed(event_type="newRecord")))
+
+        facts = consumed.call_args.kwargs
+        assert consumed.call_count == 1
+        assert (facts["broker"], facts["topic"], facts["message_type"], facts["outcome"]) == ("redis", TOPIC, "newRecord", "success")
+        assert 3000 <= facts["lag_ms"] < 60_000 and facts["duration_seconds"] >= 0
+        assert set(facts) == {"broker", "topic", "message_type", "outcome", "duration_seconds", "lag_ms"}
+
+    async def test_an_unreadable_entry_has_an_unknown_type_and_is_not_a_success(self) -> None:
+        from tests.support.platform_event_capture import event_calls
+
+        with event_calls("message.consumed") as consumed:
+            await _deliver(_consumer(_handler()), ("1-0", {"value": "{not json " + SEEDED}))
+
+        facts = consumed.call_args.kwargs
+        assert facts["message_type"] == "unknown" and facts["outcome"] != "success"
+        assert SEEDED not in repr(facts)

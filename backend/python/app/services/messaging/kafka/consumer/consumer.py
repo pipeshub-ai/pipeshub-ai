@@ -318,7 +318,10 @@ class KafkaMessagingConsumer(IMessagingConsumer):
                     for topic_partition, messages in message_batch.items():
                         for message in messages:
                             message_id = f"{message.topic}-{message.partition}-{message.offset}"
-                            with message_log.delivery(self.logger, topic=message.topic, message_id=message_id):
+                            with message_log.delivery(
+                                self.logger, topic=message.topic, message_id=message_id,
+                                broker="kafka", published_at_ms=getattr(message, "timestamp", None),
+                            ):
                                 if not await self.__handle_message(topic_partition, message, message_id):
                                     break
 

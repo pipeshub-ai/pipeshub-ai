@@ -1,11 +1,13 @@
 import asyncio
 import json
+import time
 from logging import Logger
 from typing import TYPE_CHECKING, override
 
 from pydantic import JsonValue
 
 from app.core.envelope import sign_message
+from app.services.messaging import broker_events
 from app.services.messaging.config import RedisStreamsConfig
 from app.services.messaging.interface.producer import IMessagingProducer
 from app.services.redis.config import ClientOptions, RedisConnectionConfig
@@ -122,6 +124,7 @@ class RedisStreamsProducer(IMessagingProducer):
         message: dict[str, JsonValue],
         key: str | None,
     ) -> bool:
+        started = time.perf_counter()
         try:
             if self.redis is None:
                 await self.initialize()
@@ -139,9 +142,11 @@ class RedisStreamsProducer(IMessagingProducer):
             )
 
             self.logger.debug("Message successfully published to Redis stream %s", topic)
+            broker_events.published("redis", topic, message, ok=True, started=started)
             return True
 
         except Exception as e:
+            broker_events.published("redis", topic, message, ok=False, started=started)
             self.logger.error("Failed to send message to Redis stream: %s", e)
             raise
 
@@ -173,6 +178,7 @@ class RedisStreamsProducer(IMessagingProducer):
         topic: str,
         messages: list[tuple[str | None, dict[str, JsonValue]]],
     ) -> list[bool]:
+        started = time.perf_counter()
         try:
             if self.redis is None:
                 await self.initialize()
@@ -207,9 +213,13 @@ class RedisStreamsProducer(IMessagingProducer):
                 topic,
                 e,
             )
+            for _key, message in messages:
+                broker_events.published("redis", topic, message, ok=False, started=started)
             return [False] * len(messages)
 
         results = [not isinstance(outcome, Exception) for outcome in outcomes]
+        for (_key, message), ok in zip(messages, results, strict=True):
+            broker_events.published("redis", topic, message, ok=ok, started=started)
         failed = results.count(False)
         if failed:
             first_error = next(

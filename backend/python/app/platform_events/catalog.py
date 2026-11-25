@@ -38,7 +38,7 @@ FIELDS: dict[str, str] = {
     "age_seconds": "age of the oldest item, in seconds",
     "ambiguous_references": "references with several candidates, skipped rather than guessed",
     "answer": "who answered: kg, walk, or why the walk did",
-    "broker": "message broker of the consumer: kafka or redis",
+    "broker": "message broker: kafka or redis",
     "call_site": "which indexing step made the model call",
     "capability": "the database capability concerned",
     "change": "what happened to the kept request: written, cleared, resent, expired, ...",
@@ -73,12 +73,14 @@ FIELDS: dict[str, str] = {
     "key_field": "name of the message field that was absent",
     "kind": "which kind, from a closed set named in the event's summary",
     "lag": "offsets read but not yet committed past",
+    "lag_ms": "milliseconds between the broker's timestamp of the message and its delivery; None when the broker gave none",
     "lane": "lane name",
     "layout": "stored-record layout of the write",
     "leg": "which leg of the search",
     "leg_size": "number of results the search leg was asked for",
     "lookup": "which lookup",
     "mentions_by_grounding": "mentions written, by grounding status",
+    "message_type": "event type of the broker message from a bounded set; unknown without one, other past the bound",
     "method": "provider method name",
     "mime_type": "the record's MIME type, or none",
     "mode": "which mode, from a closed set named in the event's summary",
@@ -644,6 +646,25 @@ _event(
     "operation",
 )
 
+_event(
+    "message.published",
+    "A producer handed one message to the broker (success) or the broker did not take it (failure)",
+    "broker",
+    "topic",
+    "message_type",
+    "outcome",
+    "duration_seconds",
+)
+_event(
+    "message.consumed",
+    "One delivery of a broker message ended: success, skipped (acknowledged without work), retry or dead_letter",
+    "broker",
+    "topic",
+    "message_type",
+    "outcome",
+    "duration_seconds",
+    "lag_ms",
+)
 _event(
     "message.sent_unsigned",
     "Messages sent unsigned while signing is enabled",

@@ -28,6 +28,7 @@ import {
 } from '../repositories/errors';
 import { mongoStoreMoving, untilMongoWritable } from '../repositories/fence';
 import { spawnDetached } from '../context/orgContext';
+import { announcePublished, consumeAnnounced } from './broker-events';
 
 /** Sign (when enabled) only where the topic is known. */
 function signIfTopic(
@@ -126,7 +127,11 @@ export abstract class BaseKafkaProducerConnection
 
   async publish<T>(topic: string, message: StreamMessage<T>): Promise<void> {
     await this.ensureConnection();
-    await this.sendToKafka(topic, [this.formatMessage(message, topic)]);
+    await this.sendToKafka(
+      topic,
+      [this.formatMessage(message, topic)],
+      [message.value],
+    );
   }
 
   async publishBatch<T>(
@@ -137,6 +142,7 @@ export abstract class BaseKafkaProducerConnection
     await this.sendToKafka(
       topic,
       messages.map((msg) => this.formatMessage(msg, topic)),
+      messages.map((msg) => msg.value),
     );
   }
 
@@ -184,17 +190,25 @@ export abstract class BaseKafkaProducerConnection
     };
   }
 
-  private async sendToKafka(topic: string, messages: Message[]): Promise<void> {
+  /** `values`: the unformatted value of each message, read only for its type. */
+  private async sendToKafka(
+    topic: string,
+    messages: Message[],
+    values: readonly unknown[],
+  ): Promise<void> {
+    const startedAt = process.hrtime.bigint();
     try {
       await this.producer.send({
         topic,
         messages,
       });
+      announcePublished('kafka', topic, values, true, startedAt);
       this.logger.debug('Successfully published to Kafka', {
         topic,
         messageCount: messages.length,
       });
     } catch (error) {
+      announcePublished('kafka', topic, values, false, startedAt);
       throw new KafkaError(`Error publishing to Kafka topic ${topic}`, {
         topic,
         messageCount: messages.length,
@@ -309,14 +323,24 @@ export abstract class BaseKafkaConsumerConnection
               };
 
               // Carry the producer's trace id and org into consumer-side logs.
-              await runWithRequestContext(
-                contextFromEnvelope(parsedValue, newSystemRoot),
+              await consumeAnnounced(
+                {
+                  broker: 'kafka',
+                  topic,
+                  value: parsedValue as unknown,
+                  publishedAtMs: message.timestamp,
+                  retried: isRetryableStoreError,
+                },
                 () =>
-                  runWithEnvelope<T, unknown>(
-                    topic,
-                    parsedValue as T,
-                    (value) => handler({ ...parsedMessage, value }),
-                    this.groupId,
+                  runWithRequestContext(
+                    contextFromEnvelope(parsedValue, newSystemRoot),
+                    () =>
+                      runWithEnvelope<T, unknown>(
+                        topic,
+                        parsedValue as T,
+                        (value) => handler({ ...parsedMessage, value }),
+                        this.groupId,
+                      ),
                   ),
               );
             } catch (error) {

@@ -241,6 +241,34 @@ export interface PlatformEvents {
   /** A redelivered broker message was acknowledged without running again. */
   'consumer.delivery.skipped': { consumer: string };
 
+  /**
+   * A producer handed one message to the broker (`success`) or the broker did
+   * not take it (`failure`). `messageType` is from a bounded set. No payload,
+   * no key.
+   */
+  'message.published': {
+    broker: 'kafka' | 'redis';
+    topic: string;
+    messageType: string;
+    outcome: 'success' | 'failure';
+    durationSeconds: number;
+  };
+
+  /**
+   * One delivery of a broker message ended: `success`, `failure` (the handler
+   * threw and the message was dropped), `rejected` (its envelope was refused)
+   * or `retry` (it will be delivered again). `lagMs` is the time between the
+   * broker's timestamp of the message and its delivery, when the broker gave one.
+   */
+  'message.consumed': {
+    broker: 'kafka' | 'redis';
+    topic: string;
+    messageType: string;
+    outcome: 'success' | 'failure' | 'rejected' | 'retry';
+    durationSeconds: number;
+    lagMs?: number;
+  };
+
   /** A notification event was refused before any write. */
   'notification.event.refused': { reason: string };
 }

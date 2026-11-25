@@ -35,6 +35,11 @@ import {
 import { spawnDetached } from '../context/orgContext';
 import { untilMongoWritable } from '../repositories/fence';
 import {
+  announcePublished,
+  consumeAnnounced,
+  streamEntryMs,
+} from './broker-events';
+import {
   MESSAGING_HEALTH_MESSAGE_KEY,
   MESSAGING_HEALTH_MESSAGE_TYPE,
   MESSAGING_HEALTH_TOPIC,
@@ -252,6 +257,7 @@ export abstract class BaseRedisStreamsProducerConnection
 
   async publish<T>(topic: string, message: StreamMessage<T>): Promise<void> {
     await this.ensureConnection();
+    const startedAt = process.hrtime.bigint();
     try {
       const fields: string[] = [
         REDIS_STREAM_FIELDS.key,
@@ -268,11 +274,13 @@ export abstract class BaseRedisStreamsProducerConnection
       }
 
       await this.redis.xadd(topic, ...this.trimArgs(topic), '*', ...fields);
+      announcePublished('redis', topic, [message.value], true, startedAt);
 
       this.logger.debug('Successfully published to Redis stream', {
         topic,
       });
     } catch (error) {
+      announcePublished('redis', topic, [message.value], false, startedAt);
       throw new MessageBrokerError(
         `Error publishing to Redis stream ${topic}`,
         {
@@ -288,6 +296,8 @@ export abstract class BaseRedisStreamsProducerConnection
     messages: StreamMessage<T>[],
   ): Promise<void> {
     await this.ensureConnection();
+    const startedAt = process.hrtime.bigint();
+    const values = messages.map((message) => message.value);
     const pipeline = this.redis.pipeline();
 
     for (const message of messages) {
@@ -318,11 +328,14 @@ export abstract class BaseRedisStreamsProducerConnection
           );
         }
       }
+      announcePublished('redis', topic, values, true, startedAt);
       this.logger.debug('Successfully published batch to Redis stream', {
         topic,
         messageCount: messages.length,
       });
     } catch (error) {
+      // the caller is told the whole batch failed, so every message is announced as not taken
+      announcePublished('redis', topic, values, false, startedAt);
       throw new MessageBrokerError(
         `Error publishing batch to Redis stream ${topic}`,
         {
@@ -508,13 +521,22 @@ export abstract class BaseRedisStreamsConsumerConnection
     handler: (message: StreamMessage<T>) => Promise<void>,
   ): Promise<void> {
     try {
-      await runWithRequestContext(contextFromEnvelope(message.value), () =>
-        runWithEnvelope(
-          stream,
-          message.value,
-          (value) => handler({ ...message, value }),
-          this.groupId,
-        ),
+      await consumeAnnounced(
+        {
+          broker: 'redis',
+          topic: stream,
+          value: message.value,
+          publishedAtMs: streamEntryMs(entryId),
+        },
+        () =>
+          runWithRequestContext(contextFromEnvelope(message.value), () =>
+            runWithEnvelope(
+              stream,
+              message.value,
+              (value) => handler({ ...message, value }),
+              this.groupId,
+            ),
+          ),
       );
     } catch (error) {
       if (!(error instanceof EnvelopeRejected)) throw error;

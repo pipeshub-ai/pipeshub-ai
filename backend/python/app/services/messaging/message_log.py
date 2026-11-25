@@ -11,6 +11,8 @@
   cancellation): an un-acked entry stays pending and an uncommitted offset is read again.
 - The indexing consumers use :func:`bound_message`: the same binding, no end line (theirs is the
   indexing summary).
+- A delivery opened with its ``broker`` is also announced as the ``message.consumed`` platform event when
+  it ends, with the lag the broker's own timestamp (``published_at_ms``) gives.
 """
 
 import asyncio
@@ -26,6 +28,7 @@ from pydantic import ValidationError
 
 from app.core import org_context
 from app.core.envelope import ctx_of
+from app.services.messaging import broker_events
 from app.utils.error_class import classify_error, level_for, log_failure, logged_level
 from app.utils.logging_fields import log_event, log_fields
 from app.utils.request_context import (
@@ -48,18 +51,34 @@ class _Delivery:
     facts: dict[str, object]
     started: float = field(default_factory=time.perf_counter)
     ended: bool = False
+    # for the ``message.consumed`` event only; never on the log line
+    broker: str | None = None
+    topic: str = ""
+    lag_ms: int | None = None
+    event_type: object = None
 
 
 _current: ContextVar[_Delivery | None] = ContextVar("message_delivery", default=None)
 
 
 @contextmanager
-def delivery(logger: logging.Logger, *, topic: str, message_id: str, attempt: int | None = None) -> Iterator[None]:
+def delivery(
+    logger: logging.Logger,
+    *,
+    topic: str,
+    message_id: str,
+    attempt: int | None = None,
+    broker: str | None = None,
+    published_at_ms: object = None,
+) -> Iterator[None]:
     """One delivery of one message. ``attempt`` is this delivery's number when the caller knows it
-    (1 for a new read); a decision site can say it later with :func:`note` or :func:`end`."""
+    (1 for a new read); a decision site can say it later with :func:`note` or :func:`end`.
+    ``broker`` (kafka, redis) and the broker's own timestamp of the message, when the caller has them."""
     with ExitStack() as stack:
         stack.enter_context(log_fields(topic=topic, message_id=message_id))
-        current = _Delivery(logger, stack, {"attempt": attempt})
+        current = _Delivery(
+            logger, stack, {"attempt": attempt}, broker=broker, topic=topic, lag_ms=broker_events.lag_ms(published_at_ms)
+        )
         token = _current.set(current)
         try:
             yield
@@ -84,6 +103,7 @@ def bind_envelope(envelope: dict[str, Any]) -> None:
 def bind_opened(org: org_context.OrgContext | None, message: Mapping[str, object]) -> None:
     """After verification: the OrgContext (None stays unbound and fails closed) and the message's ids."""
     current = _open()
+    current.event_type = message.get("eventType")
     current.stack.enter_context(org_context.bind_optional(org))
     current.stack.enter_context(log_fields(**_ids(message.get("eventType"), message.get("payload"))))
 
@@ -173,6 +193,15 @@ def _end(current: _Delivery, disposition: str, **overrides: object) -> None:
         **facts,
         "duration_ms": round((time.perf_counter() - current.started) * 1000),
     }
+    if current.broker is not None:
+        broker_events.consumed(
+            current.broker,
+            current.topic,
+            current.event_type,
+            outcome=str(fields["outcome"]) if disposition == "ack" else disposition,
+            duration_seconds=time.perf_counter() - current.started,
+            lag=current.lag_ms,
+        )
     if not isinstance(exc, BaseException):
         log_event(current.logger, EVENT_END, level=_level(disposition, None), **fields)
         return

@@ -261,3 +261,34 @@ class TestDeliveries:
         end = _one_end(caplog)
         assert _row(end) == ("failure", "retry", "cancelled", 1, logging.INFO)
         assert len(handler.calls) == 1
+
+
+class TestConsumedEvent:
+    """Each delivery is also announced as ``message.consumed`` (see message_log)."""
+
+    async def test_a_delivery_is_announced_with_its_topic_type_outcome_and_lag(self) -> None:
+        import time
+
+        from tests.support.platform_event_capture import event_calls
+
+        record = _record(_signed())
+        record.timestamp = int(time.time() * 1000) - 5000
+        with event_calls("message.consumed") as consumed:
+            await _deliver(_consumer(_handler()), record)
+
+        facts = consumed.call_args.kwargs
+        assert consumed.call_count == 1
+        assert (facts["broker"], facts["topic"], facts["message_type"], facts["outcome"]) == ("kafka", TOPIC, "orgUpdated", "success")
+        assert 5000 <= facts["lag_ms"] < 60_000 and facts["duration_seconds"] >= 0
+        assert set(facts) == {"broker", "topic", "message_type", "outcome", "duration_seconds", "lag_ms"}
+
+    async def test_a_delivery_given_up_on_is_a_dead_letter_and_a_missing_timestamp_gives_no_lag(self) -> None:
+        from tests.support.platform_event_capture import event_calls
+
+        with event_calls("message.consumed") as consumed:
+            await _deliver(_consumer(_handler(raises=RuntimeError(SEEDED))), _record(_signed()))
+
+        facts = consumed.call_args_list[0].kwargs
+        # no retry manager: the consumer settles a failed message instead of reading it again
+        assert (facts["outcome"], facts["lag_ms"]) == ("dead_letter", None)
+        assert SEEDED not in repr(facts)

@@ -13,7 +13,7 @@ from app.services.messaging.config import (
 )
 from app.core.envelope import DuplicateEnvelope, EnvelopeRejected, Inbox, decode_message, open_configured, record_processed
 from app.core.org_context import spawn_detached
-from app.services.messaging import message_log
+from app.services.messaging import broker_events, message_log
 from app.services.messaging.error_classifier import MessageErrorClassifier, MessageErrorType
 from app.services.messaging.interface.consumer import IMessagingConsumer
 from app.services.messaging.redis_streams.stream_read_planner import StreamReadPlanner
@@ -285,7 +285,8 @@ class RedisStreamsConsumer(IMessagingConsumer):
         Raises only what the loop's own fallback raises (new reads) and CancelledError.
         """
         with message_log.delivery(
-            self.logger, topic=topic, message_id=message_id, attempt=None if recovered else 1
+            self.logger, topic=topic, message_id=message_id, attempt=None if recovered else 1,
+            broker="redis", published_at_ms=broker_events.stream_entry_ms(message_id),
         ):
             try:
                 if recovered and await self._should_dead_letter(topic, message_id):
