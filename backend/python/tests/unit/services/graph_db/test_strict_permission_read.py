@@ -48,7 +48,7 @@ class TestAGraphOutage:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("make", [_neo4j, _arango], ids=["neo4j", "arango"])
     async def test_default_read_is_unchanged(self, make) -> None:
-        """Callers that did not opt in still get {} (chat, agents, the census)."""
+        """Callers that did not opt in still get {} (chat, agents)."""
         assert await make().get_accessible_virtual_record_ids("user-1", "org-1") == {}
 
     @pytest.mark.asyncio

@@ -309,6 +309,17 @@ class TestHowTheTurnEnded:
         fields = _end_fields(caplog)
         assert (fields["stop_reason"], fields["turns"]) == ("done", 0)
 
+    async def test_a_census_answer_is_done(self, caplog: pytest.LogCaptureFixture) -> None:
+        with patch(
+            "app.modules.agents.enumeration.run.answer_census_if_asked", new=AsyncMock(return_value=True),
+        ):
+            await _run(None, build_state={
+                "org_id": "org-1", "user_id": "user-1", "query": _QUERY, "has_knowledge": True,
+            })
+
+        [record] = _end_lines(caplog)
+        assert (log_record_fields(record)["stop_reason"], record.levelno) == ("done", logging.INFO)
+
     async def test_a_crash_is_one_failure_line_and_one_end(self, caplog: pytest.LogCaptureFixture) -> None:
         async def _failing_finalizer(self, **kwargs) -> None:
             raise RuntimeError("boom")
