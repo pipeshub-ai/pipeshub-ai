@@ -200,8 +200,9 @@ class HelmUpgradeFromUpstream(unittest.TestCase):
         for field in ("policies", "app_read_only_root", "sandbox_mode", "app_kafka_sasl", "kafka_protocols",
                       "kafka_init", "mongo_pod", "mongo_keyfile", "mongo_server"):
             self.assertEqual(after[field], upstream[field], field)
-        # The earlier image ran Qdrant as root with no runAsUser; the -unprivileged image needs it said.
-        self.assertIsNone(upstream["qdrant_user"])
+        # Qdrant keeps running as root across the upgrade. Releases before the -unprivileged image ran it as root
+        # with no runAsUser; that image needs runAsUser 0 said, and later releases say it.
+        self.assertIn(upstream["qdrant_user"], (None, 0))
         self.assertEqual(after["qdrant_user"], 0)
 
 
