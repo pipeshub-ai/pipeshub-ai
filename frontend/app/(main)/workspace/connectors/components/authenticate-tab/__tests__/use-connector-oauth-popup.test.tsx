@@ -85,10 +85,11 @@ describe('useConnectorOAuthPopup', () => {
     });
     popup.closed = true;
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(1000 + 10 * 1500);
+      await vi.advanceTimersByTimeAsync(1000 + 5 * 1500);
     });
 
     expect(titles()).toEqual([]);
+    expect(useConnectorsStore.getState().authState).toBe('empty');
   });
 
   it('closes the popup and warns after the five-minute wait', async () => {
