@@ -1,6 +1,6 @@
-"""A GitHub sign-in that GitHub refuses, and that cannot be refreshed, is said once and in words the owner can act on.
+"""A GitHub sign-in that GitHub refuses, and that cannot be refreshed, is an error, and the owner is told to reconnect.
 
-Each hourly sync logged four errors for it and told nobody."""
+Each hourly sync failed and told nobody."""
 from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -39,13 +39,13 @@ async def _call(runtime: RuntimeHelper, *answers: GitHubResponse) -> GitHubRespo
         return await runtime.ds_call(AsyncMock(side_effect=answers, __name__="op"))
 
 
-async def test_a_refusal_with_no_refresh_token_is_remembered_and_not_an_error() -> None:
+async def test_a_refusal_with_no_refresh_token_is_remembered_and_an_error() -> None:
     c, runtime = _runtime({"auth": {"authType": "OAUTH"}, "credentials": {}})
 
     await _call(runtime, REFUSED)
 
     assert runtime.sign_in_refused is True
-    c.logger.error.assert_not_called()
+    c.logger.error.assert_called_once()
 
 
 async def test_a_refusal_after_a_refresh_is_remembered() -> None:
@@ -97,7 +97,7 @@ async def test_the_owner_is_told_to_reconnect_and_the_run_still_fails() -> None:
         await _run(c)
 
     assert isinstance(raised.value.__cause__, RuntimeError)
-    c.logger.error.assert_not_called()
+    assert any("sync stopped" in str(call.args[0]) for call in c.logger.error.call_args_list)
     assert c.notify.await_args.kwargs["type"] is NotificationType.CONNECTOR_AUTH_ERROR
 
 
@@ -124,8 +124,8 @@ async def test_a_run_that_works_again_is_not_judged_by_the_last_one() -> None:
     c.notify.assert_not_awaited()
 
 
-@pytest.mark.parametrize(("status", "level"), [(401, "warning"), (500, "error")])
-async def test_a_member_listing_refused_for_the_sign_in_is_not_an_error_of_its_own(status: int, level: str) -> None:
+@pytest.mark.parametrize("status", [401, 500])
+async def test_a_failed_member_listing_is_an_error(status: int) -> None:
     c = make_mock_connector()
     c.runtime.ds_call = AsyncMock(return_value=GitHubResponse(success=False, error="no", status_code=status))
     users = UsersSync(c)
@@ -133,4 +133,4 @@ async def test_a_member_listing_refused_for_the_sign_in_is_not_an_error_of_its_o
     _found, any_success = await users._discover_principals(["acme"])
 
     assert any_success is False
-    assert getattr(c.logger, level).call_count == 1
+    c.logger.error.assert_called_once()

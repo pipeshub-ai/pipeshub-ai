@@ -419,14 +419,14 @@ class GitHubTeamsConnector(BaseConnector):
                     "GitHub Teams sync did not complete: " + "; ".join(self.projects.failures[:10])
                 )
         except Exception as e:
+            self.logger.error("Error in GitHub Teams sync: %s", e, exc_info=True)
             if self.runtime.sign_in_refused is True:
                 await self._tell_to_reconnect()
                 raise ConnectorInitError(_SIGN_IN_REFUSED) from e
-            self.logger.error("Error in GitHub Teams sync: %s", e, exc_info=True)
             raise
 
     async def _tell_to_reconnect(self) -> None:
-        self.logger.warning("GitHub Teams sync stopped: GitHub refused the sign-in and it could not be refreshed")
+        self.logger.error("GitHub Teams sync stopped: GitHub refused the sign-in and it could not be refreshed")
         try:
             await self.notify(
                 type=NotificationType.CONNECTOR_AUTH_ERROR,

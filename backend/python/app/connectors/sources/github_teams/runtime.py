@@ -208,7 +208,7 @@ class RuntimeHelper:
 
             refresh_token = (config.get("credentials") or {}).get("refresh_token")
             if not refresh_token:
-                self.logger.warning("No refresh token in connector config; cannot refresh GitHub token.")
+                self.logger.error("No refresh token in connector config; cannot refresh GitHub token.")
                 return False
 
             connector_type = (

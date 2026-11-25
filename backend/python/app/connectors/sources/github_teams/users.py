@@ -35,7 +35,6 @@ from app.models.entities import AppUser
 from .constants import (
     _GITHUB_PROFILE_REUSE_SECONDS,
     _GITHUB_USER_ENRICHMENT_CONCURRENCY,
-    HTTP_UNAUTHORIZED,
     NOREPLY_EMAIL_SUFFIX,
     VERIFIED_DOMAIN_EMAIL_BATCH,
 )
@@ -260,9 +259,7 @@ class UsersSync:
                         "collaborator grants.", org,
                     )
                     continue
-                # A refused sign-in fails every call; the sync says so once.
-                log = self.logger.warning if getattr(res, "status_code", None) == HTTP_UNAUTHORIZED else self.logger.error
-                log("Failed to list members for org %s: %s", org, res.error)
+                self.logger.error("Failed to list members for org %s: %s", org, res.error)
                 continue
             any_success = True
             member_count = collect(res.data, is_member=True)
