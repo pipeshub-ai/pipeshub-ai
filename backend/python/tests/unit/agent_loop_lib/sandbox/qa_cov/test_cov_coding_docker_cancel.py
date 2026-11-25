@@ -52,17 +52,25 @@ class TestInstallCancelPoints:
             _install(DockerCodingSandbox(working_dir=str(tmp_path)), self._client(container), tmp_path, handle)
         container.put_archive.assert_not_called()
         container.start.assert_not_called()
-        container.remove.assert_called_once_with(force=True)
+        container.remove.assert_called_once_with(force=True, v=True)
         assert handle.container_id == container.id
 
-    def test_cancelled_during_the_upload(self, tmp_path) -> None:
+    def test_cancelled_while_the_container_is_created(self, tmp_path) -> None:
+        # The install container needs no upload (its writable directories are its own volumes, SEC-A-04): the last
+        # point before it starts is its create.
         container = _fake_container()
         handle = _RunHandle()
-        container.put_archive.side_effect = lambda *a, **k: handle.cancelled.set()
+        client = self._client(container)
+
+        def create(**_kwargs: object) -> MagicMock:
+            handle.cancelled.set()
+            return container
+
+        client.containers.create.side_effect = create
         with pytest.raises(_RunCancelled):
-            _install(DockerCodingSandbox(working_dir=str(tmp_path)), self._client(container), tmp_path, handle)
+            _install(DockerCodingSandbox(working_dir=str(tmp_path)), client, tmp_path, handle)
         container.start.assert_not_called()
-        container.remove.assert_called_once_with(force=True)
+        container.remove.assert_called_once_with(force=True, v=True)
 
     def test_cancel_that_breaks_the_wait_is_not_a_timeout(self, tmp_path) -> None:
         container = _fake_container()
@@ -90,7 +98,7 @@ class TestInstallCancelPoints:
         with pytest.raises(_RunCancelled):
             _install(DockerCodingSandbox(working_dir=str(tmp_path)), self._client(container), tmp_path, handle)
         container.logs.assert_not_called()
-        container.remove.assert_called_once_with(force=True)
+        container.remove.assert_called_once_with(force=True, v=True)
 
     def test_a_host_side_timeout_kills_and_says_so_even_if_kill_fails(self, tmp_path) -> None:
         container = _fake_container(stderr=b"partial")
@@ -157,6 +165,7 @@ class TestStopRun:
         started = loop.time()
         with caplog.at_level(logging.WARNING, logger=docker_mod.logger.name):
             await asyncio.wait_for(sandbox._stop_run(_RunHandle(container_id="c0ffee000000aaaa"), fut), 2)
+        # wall-clock-ok: the removal hangs for 5 s and the cleanup bound is 0.1 s; 1 s is a fifth of the hang
         assert loop.time() - started < 1.0
         assert "did not stop within 0.1s of cancel" in caplog.text
         fut.set_result(None)

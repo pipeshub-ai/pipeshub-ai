@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Box, Button, Flex, Heading, Text } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
@@ -10,7 +10,7 @@ import { useCopyText } from '@/lib/hooks/use-copy-text';
 import { useUserDirectoryEntry } from '@/lib/hooks/use-user-directory-entry';
 import { pagePaddingX } from '@/app/components/ui/responsive';
 import { MOBILE_PAGE_PADDING_TOP, PAGE_PADDING_TOP } from '@/app/(main)/workspace/components/settings-page-container';
-import { isMcpInstanceReadOnly, McpInheritedBadge, McpInheritedCallout } from '@/config';
+import { isMcpInstanceReadOnly, McpInheritedCallout, McpInstanceBadges, useMcpInstanceAdminTab } from '@/config';
 import { ConfirmationDialog } from '../../components';
 import { McpStatusBadge, mcpStatusGroup, usesSharedCredential } from '../connection-state';
 import { isOfferedForNewServers, replacementFor } from '../catalog-replacement';
@@ -18,7 +18,13 @@ import { useMcpServerTools } from '../hooks/use-mcp-server-tools';
 import { McpServerActionsMenu, type McpMenuEntry } from '../team/components/mcp-panel-header';
 import { McpToolsApprovalsTab } from '../team/components/mcp-tools-approvals-tab';
 import { ruleToolsFromInfo } from '../tool-rules';
-import { MCP_AUTH_MODE_LABELS, MCP_TRANSPORT_LABELS, type McpMyServerEntry, type McpServerTemplate } from '../types';
+import {
+  MCP_AUTH_MODE_LABELS,
+  MCP_TRANSPORT_LABELS,
+  isPersonalMcpInstance,
+  type McpMyServerEntry,
+  type McpServerTemplate,
+} from '../types';
 import { McpDisconnectDialog } from './mcp-disconnect-dialog';
 import { McpServerIcon } from './mcp-server-icon';
 import { McpDisabledBadge, isMcpInstanceDisabled } from './mcp-stdio-policy';
@@ -44,6 +50,8 @@ interface McpServerPageProps {
   /** Just added: say what is left before it can be used, until the person dismisses it. */
   justAdded?: boolean;
   onDismissAdded?: () => void;
+  /** Opened from a link to the server's admin section (`tab=hub`): scroll to it, where the build has one. */
+  focusAdminSection?: boolean;
 }
 
 /** One server: how it is doing, what fixes it, and its tools. */
@@ -61,6 +69,7 @@ export function McpServerPage({
   onDelete,
   justAdded = false,
   onDismissAdded,
+  focusAdminSection = false,
 }: McpServerPageProps) {
   const { t } = useTranslation();
   const isMobile = useIsMobile();
@@ -87,6 +96,16 @@ export function McpServerPage({
   ].filter(Boolean);
 
   const creatorHidden = isMcpInstanceReadOnly(instance);
+  const adminSection = useMcpInstanceAdminTab(
+    isAdmin && !creatorHidden && !isPersonalMcpInstance(instance)
+      ? { instanceId: instance._id, transport: instance.transport, insideOrganization: instance.insideOrganization === true }
+      : null
+  );
+  const adminSectionRef = useRef<HTMLDivElement>(null);
+  const hasAdminSection = adminSection !== null;
+  useEffect(() => {
+    if (focusAdminSection && hasAdminSection) adminSectionRef.current?.scrollIntoView?.({ block: 'start' });
+  }, [focusAdminSection, hasAdminSection]);
   const creator = useUserDirectoryEntry(creatorHidden ? null : instance.createdBy);
   const creatorName = !creatorHidden && creator ? creator.name?.trim() || instance.createdBy : null;
 
@@ -187,7 +206,7 @@ export function McpServerPage({
             {t('workspace.mcpServers.details.breadcrumbLabel')}
           </Text>
         </button>
-        <MaterialIcon name="chevron_right" size={14} color="var(--gray-9)" />
+        <MaterialIcon name="chevron_right" size={14} color="var(--gray-11)" />
         <Text size="2" weight="medium" truncate style={{ color: 'var(--gray-12)' }}>
           {instance.name}
         </Text>
@@ -215,7 +234,7 @@ export function McpServerPage({
             <span data-testid="mcp-server-status" style={{ display: 'inline-flex' }}>
               {isMcpInstanceDisabled(instance) ? <McpDisabledBadge instance={instance} /> : <McpStatusBadge state={connectionState} />}
             </span>
-            <McpInheritedBadge instance={instance} />
+            <McpInstanceBadges instance={instance} />
           </Flex>
           <Text size="2" style={{ color: 'var(--gray-11)' }}>
             {details.join(' · ')}
@@ -297,6 +316,15 @@ export function McpServerPage({
           onEditServer={onEdit}
         />
       </Box>
+
+      {adminSection !== null && (
+        <Flex ref={adminSectionRef} direction="column" gap="3" style={{ width: '100%' }} data-testid="mcp-server-admin-section">
+          <Heading as="h2" size="3" weight="medium" style={{ color: 'var(--gray-12)' }}>
+            {adminSection.label}
+          </Heading>
+          {adminSection.content}
+        </Flex>
+      )}
 
       <McpDisconnectDialog
         instance={confirmDisconnect ? instance : null}

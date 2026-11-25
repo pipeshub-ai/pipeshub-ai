@@ -1,0 +1,102 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/core/events/engine.snapshotted.schema.json",
+  "title": "EngineSnapshottedEvent",
+  "description": "A sandbox snapshot of an engine run (P5.9b): the sealed tar of the sandbox's caches and tool state outside the workspace and the engine checkpoint, in the session's object scope, taken at an autosave point or at turn end. The run's latest is what its next attempt (or the next run carrying its state) restores. Written non-critical: only the engine kernel reads it; a loop fold may ignore it.",
+  "x-writer": [
+    "worker"
+  ],
+  "allOf": [
+    {
+      "$ref": "../envelope.schema.json#/$defs/InlineEnvelope"
+    }
+  ],
+  "properties": {
+    "type": {
+      "const": "engine.snapshotted"
+    },
+    "writer": {
+      "const": "worker"
+    },
+    "data": {
+      "$ref": "#/$defs/EngineSnapshottedData"
+    }
+  },
+  "$defs": {
+    "EngineSnapshottedData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "snapshot",
+        "turnId",
+        "reason"
+      ],
+      "properties": {
+        "snapshot": {
+          "$ref": "#/$defs/SandboxSnapshotObject"
+        },
+        "turnId": {
+          "description": "The turn the snapshot was taken in.",
+          "$ref": "../common.schema.json#/$defs/Id"
+        },
+        "reason": {
+          "description": "Where in the turn it was taken.",
+          "enum": [
+            "autosave",
+            "turn_end"
+          ]
+        }
+      }
+    },
+    "SandboxSnapshotObject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "objectId",
+        "contentHash",
+        "sizeBytes"
+      ],
+      "properties": {
+        "objectId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        },
+        "contentHash": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "sizeBytes": {
+          "$ref": "../common.schema.json#/$defs/UInt"
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 9,
+      "runId": "run_1",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-04T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "attemptId": "att_1",
+      "fence": 3,
+      "type": "engine.snapshotted",
+      "data": {
+        "snapshot": {
+          "objectId": "sealed/2048/hmac-sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/obj_1",
+          "contentHash": "hmac-sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "sizeBytes": 2048
+        },
+        "turnId": "trn_0123456789abcdef0123456789abcdef",
+        "reason": "turn_end"
+      }
+    }
+  ]
+}

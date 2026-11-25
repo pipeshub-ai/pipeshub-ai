@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Any
 
 from app.agent_loop_lib.core.scope import StateSlot
 from app.agents.agent_loop.tool_approvals import TOOLS_BY_PATH
+from harness_core.effects.types import args_digest
 
 if TYPE_CHECKING:
     from app.agent_loop_lib.core.scope import RunScope
@@ -51,7 +52,28 @@ _RUNS: StateSlot[_Runs] = StateSlot(key="repeated_reads.runs", default_factory=_
 
 
 def _call_key(tool_path: str, arguments: dict[str, Any]) -> str:
-    return f"{tool_path}\n{json.dumps(arguments, sort_keys=True, default=str)}"
+    return _digest_key(tool_path, _arguments_digest(arguments))
+
+
+def _digest_key(tool_path: str, digest: str) -> str:
+    return f"{tool_path}\n{digest}"
+
+
+def _arguments_digest(arguments: dict[str, Any]) -> str:
+    # The kernel's own digest, so a resumed durable attempt rebuilds the same keys from the journal.
+    try:
+        return args_digest(arguments)
+    except (TypeError, ValueError):
+        return json.dumps(arguments, sort_keys=True, default=str)
+
+
+def _refused(runs: _Runs, key: str, turn: int) -> int:
+    """How many times this call was refused, counting this one; 0 when it may run."""
+    if sum(1 for t in runs.turns.get(key, ()) if t >= turn - _RECENT_TURNS) < _MAX_RUNS:
+        return 0
+    runs.turns[key].append(turn)
+    runs.refused[key] = runs.refused.get(key, 0) + 1
+    return runs.refused[key]
 
 
 def _refusal(tool: str, times: int) -> str:
@@ -84,11 +106,9 @@ class RepeatedReadGuard:
             return
         runs: _Runs = ctx.scope.turn.run.get(_RUNS)
         key = _call_key(ctx.tool_path, ctx.tool_input)
-        turn = ctx.scope.turn.turn_index
-        if sum(1 for t in runs.turns.get(key, ()) if t >= turn - _RECENT_TURNS) >= _MAX_RUNS:
-            runs.turns[key].append(turn)
-            runs.refused[key] = runs.refused.get(key, 0) + 1
-            ctx.deny(_refusal(adapter.display_name, runs.refused[key]))
+        times = _refused(runs, key, ctx.scope.turn.turn_index)
+        if times:
+            ctx.deny(_refusal(adapter.display_name, times))
             return
         ctx.metadata[_KEY] = key
         await next_fn()
@@ -105,6 +125,21 @@ class RepeatedReadGuard:
         adapter = self._adapter(ctx.tool_path)
         if adapter is not None and adapter.kind != "read":
             run.set(_RUNS, _Runs())
+
+    def replay(self, run: "RunScope", tool_path: str, digest: str, turn_index: int, *, ok: bool) -> None:
+        """One journaled call of a durable run, as `pre_tool_use` and `post_tool_use` saw it, so a resumed
+        attempt starts with the memory an uninterrupted run has (whether it was refused is recomputed)."""
+        adapter = self._adapter(tool_path)
+        if adapter is None:
+            return
+        if adapter.kind != "read":
+            if ok:
+                run.set(_RUNS, _Runs())
+            return
+        runs: _Runs = run.get(_RUNS)
+        key = _digest_key(tool_path, digest)
+        if not _refused(runs, key, turn_index) and ok:
+            runs.turns.setdefault(key, []).append(turn_index)
 
 
 __all__ = ["RepeatedReadGuard"]

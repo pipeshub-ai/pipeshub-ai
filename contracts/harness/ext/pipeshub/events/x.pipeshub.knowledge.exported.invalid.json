@@ -1,0 +1,76 @@
+[
+  {
+    "description": "written by Node",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 9,
+      "runId": "run_1",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-11-01T12:00:00.123Z",
+      "visibility": "owner",
+      "writer": "node",
+      "type": "x.pipeshub.knowledge.exported",
+      "data": {
+        "taskId": "exp_1",
+        "phase": "started",
+        "records": 10,
+        "requested": 10,
+        "argsDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    }
+  },
+  {
+    "description": "a phase that is not started or finished",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 9,
+      "runId": "run_1",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-11-01T12:00:00.123Z",
+      "visibility": "owner",
+      "writer": "worker",
+      "type": "x.pipeshub.knowledge.exported",
+      "data": {
+        "taskId": "exp_1",
+        "phase": "paused",
+        "records": 10,
+        "requested": 10,
+        "argsDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    }
+  },
+  {
+    "description": "a record in the event",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 9,
+      "runId": "run_1",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-11-01T12:00:00.123Z",
+      "visibility": "owner",
+      "writer": "worker",
+      "type": "x.pipeshub.knowledge.exported",
+      "data": {
+        "taskId": "exp_1",
+        "phase": "started",
+        "records": 10,
+        "requested": 10,
+        "argsDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "rows": [
+          {
+            "id": "r1"
+          }
+        ]
+      }
+    }
+  }
+]

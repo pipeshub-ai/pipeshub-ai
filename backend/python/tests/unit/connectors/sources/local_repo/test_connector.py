@@ -351,6 +351,7 @@ async def test_the_event_loop_stays_responsive_while_a_commit_holds_the_reposito
     # gap (which a busy runner stretches). A pin that waited for the lock on the loop would let these turns run only
     # after the commit gave the lock up.
     assert not freed.is_set(), "the loop was blocked until the commit freed the repository lock"
+    assert holder.is_alive() and not sync.done()
     release.set()
     holder.join()
     await sync

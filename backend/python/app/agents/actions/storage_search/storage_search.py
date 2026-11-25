@@ -45,7 +45,11 @@ from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
 from app.agent_loop_lib.tools.decorators import tool
 from app.config.constants.service import config_node_constants
 from app.connectors.core.registry.auth_builder import AuthBuilder
-from app.connectors.core.registry.tool_builder import ToolsetBuilder, ToolsetCategory
+from app.connectors.core.registry.tool_builder import (
+    ToolProvider,
+    ToolsetBuilder,
+    ToolsetCategory,
+)
 from app.modules.agents.qna.chat_state import ChatState, remember_record_ids
 from app.utils.bounded_cache import SizeBoundedCache
 
@@ -2183,7 +2187,7 @@ def _sweep_stale_views(views_root: str, max_age_secs: float = _STALE_VIEW_SECS) 
 # Toolset registration
 # ──────────────────────────────────────────────────────────────────────────────
 
-@ToolsetBuilder("Storage Pattern Match")\
+@ToolsetBuilder("Storage Pattern Match", provider=ToolProvider.PLATFORM)\
     .in_group("Internal Tools")\
     .with_description(
         "Run read-only Linux pattern matching commands on indexed record storage. "
@@ -2515,7 +2519,7 @@ class StoragePatternMatch:
             ToolParameter(name="command", type=ParameterType.STRING, description="A read-only Linux command to run inside the connector's record directory. Allowed binaries: grep, egrep, fgrep, rg, find, ls, wc, head, tail, cat, sort, uniq, xargs, file, echo. All paths must be relative (no leading /). Pipe (|) is supported; other shell operators (;, &&, ||, >, <, $()) are not.", required=True),
             ToolParameter(name="record_date", type=ParameterType.STRING, description="Optional ISO date (YYYY-MM-DD) to restrict the search to records whose stored file was written (indexed) within +/-1 day of that date; this is indexing time, not source modification time. Only supported when the first stage is grep/egrep/fgrep/rg searching '.'.", required=False),
         ],
-        tags=[Tag(key="category", value="search"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="search"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
         display_name="Searched local storage",
         description=(
             "Execute a read-only Linux command on the indexed JSON record files for a specific "
@@ -2888,7 +2892,7 @@ class StoragePatternMatch:
             ToolParameter(name="command", type=ParameterType.STRING, description="A read-only Linux command that outputs file paths (one per line). Use grep with -l (list files) or find to discover files. The same allowed binaries and security rules as run_command apply.", required=True),
             ToolParameter(name="max_results", type=ParameterType.INTEGER, description="Maximum number of records to return (1-20). Default 10.", required=False, default=10),
         ],
-        tags=[Tag(key="category", value="search"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="search"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
         display_name="Found records in local storage",
         description=(
             "Run a read-only Linux command on the connector's record directory and "

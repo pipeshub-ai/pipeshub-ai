@@ -96,14 +96,17 @@ async def test_direct_chat_completions_without_tool_images_adds_nothing() -> Non
 
 
 def test_relocated_images_are_marked_as_added_by_the_loop() -> None:
-    from app.agent_loop_lib.transport.tool_images import (
-        RELOCATED_IMAGES_NOTE,
-        relocated_tool_images,
+    from harness_core.models.transports.tool_results import (
+        RELOCATED_IMAGES_PREFIX,
+        relocated_images,
+        relocated_message,
     )
 
     context = AgentContext(org_id="o", user_id="u", user_email="u@example.com")
-    relocated = relocated_tool_images(_stored(context))
+    stored = _stored(context)
+    (moved,) = relocated_images(stored).values()
+    relocated = relocated_message(moved)
 
-    assert relocated is not None
     assert relocated.injected
-    assert relocated.content[0] == TextPart(text=RELOCATED_IMAGES_NOTE)
+    first = relocated.content[0]
+    assert isinstance(first, TextPart) and first.text.startswith(RELOCATED_IMAGES_PREFIX[:-1])

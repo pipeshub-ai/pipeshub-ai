@@ -162,6 +162,30 @@ async def test_the_virtual_record_lookup_admits_what_the_plain_statement_admitte
     assert set(new[0].records_by_vrid) == {"v3"} and new[0].records_by_vrid["v3"] in {"real", "twin"}      # only a live, readable record is cited by its virtual record id
 
 
+async def test_a_record_whose_virtual_record_id_moves_between_pages_is_returned_once(w: World, monkeypatch: pytest.MonkeyPatch) -> None:
+    """In a writable transaction each page of the vetted read is its own statement (read committed): a record moved from the first page's id to the second's,
+    committed between the two, matches both pages and must still come back once, as the one statement returned it."""
+    await w.nodes("records", rec("r", virtualRecordId="v1"))
+    await w.child(("apps", APP), ("records", "r"))
+    monkeypatch.setattr(access_module, "_VRID_IDS", 1)      # one id per page
+    fetch, moved = uow_module.Tx.fetch, []
+
+    async def moved_after_the_first_page(self, sql: str, *args: object) -> list:
+        rows = await fetch(self, sql, *args)
+        if not moved and "pipeshub:graph.records_by_virtual_id" in sql:
+            moved.append(list(args[0]))
+            await _elsewhere(lambda: w.nodes("records", rec("r", virtualRecordId="v2")))
+        return rows
+    monkeypatch.setattr(uow_module.Tx, "fetch", moved_after_the_first_page)
+    tid = await w.p.begin_transaction([], [])
+    try:
+        rows = await w.p._kh_v3_accessible_rows("u", w.org, [], ["v1", "v2"], access=None, transaction=tid)
+    finally:
+        await w.p.rollback_transaction(tid)
+    assert moved == [["v1"]]                                           # the move landed between the two pages
+    assert [r["id"] for r in rows] == ["r"]
+
+
 async def test_a_numeric_connector_id_names_its_app_as_postgresql_reads_it_on_both_arms(w: World, monkeypatch: pytest.MonkeyPatch) -> None:
     """A connectorId stored as a JSON number names the app whose id is PostgreSQL's text of it ("0.0000001", never Python's "1e-07"), on the vetted read
     and the statement alike: a member of that knowledge base opens the record, and a user who is not a member does not."""

@@ -29,7 +29,6 @@ from app.services.artifact_registry.access import (
     ArtifactNotFoundError,
 )
 from app.services.artifact_registry.versioning import compute_content_hash
-from app.services.graph_db.common.record_visibility import is_live_record
 from app.services.record_content import RecordAccessDeniedError, TieredRecordAuthorizer
 
 from ..services.artifact_registry.fakes import FakeBlobStore, FakeGraphProvider
@@ -46,26 +45,27 @@ CSV = b"id,salary\r\n1,100\r\n2,200\r\n"
 
 
 class _Graph(FakeGraphProvider):
-    """The fake plus the full ACL query, which in production also covers KB/group
-    paths; here only direct user permission edges exist, which is what artifacts use."""
+    """The fake whose full ACL query follows the permission edges the code under test writes. In production that
+    query also covers KB/group paths; here only direct user permission edges exist, which is what artifacts use."""
 
-    async def check_record_access_with_details(self, user_id: str, org_id: str, record_id: str) -> dict | None:
-        user = await self.get_user_by_user_id(user_id)
-        if not user:
-            return None
-        record = await self.get_document(record_id, CollectionNames.RECORDS.value)
-        if record is not None and not is_live_record(record):
-            return None
-        edge = await self.get_edge(
-            from_id=user["_key"], from_collection=CollectionNames.USERS.value,
-            to_id=record_id, to_collection=CollectionNames.RECORDS.value,
-            collection=CollectionNames.PERMISSION.value,
-        )
-        return {"role": edge["role"]} if edge else None
+    def _user_with_key(self, key: str) -> str | None:
+        return next((user_id for user_id, user in self.users.items() if user["_key"] == key), None)
+
+    async def batch_create_edges(self, edges: list[dict], collection: str) -> bool:
+        await super().batch_create_edges(edges, collection)
+        if collection == CollectionNames.PERMISSION.value:
+            for edge in edges:
+                if (user_id := self._user_with_key(edge["from_id"])) is not None:
+                    self.access.grant(edge["to_id"], user=user_id, role=edge["role"])
+        return True
 
     async def batch_delete_edges(self, edges: list[dict], collection: str) -> bool:
         doomed = {(e["from_id"], e["to_id"]) for e in edges}
         self.edges[collection] = [e for e in self.edges[collection] if (e["from_id"], e["to_id"]) not in doomed]
+        if collection == CollectionNames.PERMISSION.value:
+            for key, record_id in doomed:
+                if (user_id := self._user_with_key(key)) is not None:
+                    self.access.revoke(record_id, user=user_id)
         return True
 
 
@@ -73,6 +73,7 @@ def _setup(*, signs_urls: bool = False) -> tuple[_Graph, FakeBlobStore, Artifact
     graph = _Graph()
     for user_id, key in ((OWNER, "ukey-owner"), (COLLEAGUE, "ukey-colleague"), (STRANGER, "ukey-stranger")):
         graph.add_user(user_id, key=key)
+        graph.access.user(user_id, ORG)
         graph.users[user_id]["orgId"] = ORG
     blob = FakeBlobStore(signs_urls=signs_urls)
     return graph, blob, ArtifactRegistryService(graph, blob)

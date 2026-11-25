@@ -82,6 +82,7 @@ function ArchivedChatItemMenu({
     <DropdownMenu.Root open={isOpen} onOpenChange={handleOpenChange} modal={false}>
       <DropdownMenu.Trigger>
         <button
+          aria-label={t('common.moreOptions')}
           type="button"
           className="touch-hit"
           onMouseEnter={() => setIsMeatballHovered(true)}
@@ -174,7 +175,7 @@ const SectionHeader = ({ label, count }: { label: string; count?: number }) => (
       size="1"
       weight="medium"
       style={{
-        color: 'var(--slate-9)',
+        color: 'var(--slate-11)',
         textTransform: 'uppercase',
         letterSpacing: '0.06em',
       }}
@@ -182,7 +183,7 @@ const SectionHeader = ({ label, count }: { label: string; count?: number }) => (
       {label}
     </Text>
     {count != null && count > 0 && (
-      <Text size="1" style={{ color: 'var(--slate-9)' }}>
+      <Text size="1" style={{ color: 'var(--slate-11)' }}>
         {count}
       </Text>
     )}
@@ -218,8 +219,8 @@ function LoadMoreButton({
         width: '100%',
       }}
     >
-      <MaterialIcon name="expand_more" size={14} color="var(--accent-9)" />
-      <Text size="1" style={{ color: 'var(--accent-9)' }}>
+      <MaterialIcon name="expand_more" size={14} color="var(--accent-11)" />
+      <Text size="1" style={{ color: 'var(--accent-11)' }}>
         {isLoading ? t('action.loading') : label}
       </Text>
     </button>
@@ -282,13 +283,13 @@ function AgentGroupSection({
         <MaterialIcon
           name={isExpanded ? 'expand_more' : 'chevron_right'}
           size={16}
-          color="var(--slate-10)"
+          color="var(--slate-11)"
         />
         <Text
           size="1"
           weight="medium"
           style={{
-            color: 'var(--slate-10)',
+            color: 'var(--slate-11)',
             overflow: 'hidden',
             textOverflow: 'ellipsis',
             whiteSpace: 'nowrap',
@@ -298,7 +299,7 @@ function AgentGroupSection({
         >
           {displayName}
         </Text>
-        <Text size="1" style={{ color: 'var(--slate-9)', flexShrink: 0 }}>
+        <Text size="1" style={{ color: 'var(--slate-11)', flexShrink: 0 }}>
           {group.pagination.totalCount}
         </Text>
       </button>
@@ -504,7 +505,7 @@ export function ArchivedChatsSidebar({
             />
             {isLoading ? (
               <Flex align="center" justify="center" style={{ paddingTop: 'var(--space-8)' }}>
-                <Text size="1" style={{ color: 'var(--slate-9)' }}>
+                <Text size="1" style={{ color: 'var(--slate-11)' }}>
                   {t('action.loading')}
                 </Text>
               </Flex>
@@ -581,7 +582,7 @@ export function ArchivedChatsSidebar({
             />
             {isLoadingAgentGroups ? (
               <Flex align="center" justify="center" style={{ paddingTop: 'var(--space-8)' }}>
-                <Text size="1" style={{ color: 'var(--slate-9)' }}>
+                <Text size="1" style={{ color: 'var(--slate-11)' }}>
                   {t('action.loading')}
                 </Text>
               </Flex>
@@ -621,7 +622,7 @@ export function ArchivedChatsSidebar({
         {/* ── Empty state ────────────────────────────────────────── */}
         {!isLoading && !isLoadingAgentGroups && !hasNormal && !hasAgents && (
           <Flex align="center" justify="center" style={{ paddingTop: 'var(--space-8)' }}>
-            <Text size="1" style={{ color: 'var(--slate-9)' }}>
+            <Text size="1" style={{ color: 'var(--slate-11)' }}>
               {t('workspace.archivedChats.emptyList')}
             </Text>
           </Flex>

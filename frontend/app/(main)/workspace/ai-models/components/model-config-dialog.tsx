@@ -237,10 +237,10 @@ function compatIcon(fieldName: string): string {
 
 function fieldStartAdornment(fieldName: string): React.ReactNode | undefined {
   if (fieldName === 'apiKey') {
-    return <MaterialIcon name="key" size={16} color="var(--gray-10)" />;
+    return <MaterialIcon name="key" size={16} color="var(--gray-11)" />;
   }
   if (fieldName === 'model' || fieldName === 'contextLength') {
-    return <MaterialIcon name="widgets" size={16} color="var(--gray-10)" />;
+    return <MaterialIcon name="widgets" size={16} color="var(--gray-11)" />;
   }
   return undefined;
 }
@@ -1411,7 +1411,7 @@ function ModelConfigFormBody({
                         {field.displayName}
                       </Text>
                       {field.description ? (
-                        <Text size="1" style={{ color: 'var(--gray-10)' }}>
+                        <Text size="1" style={{ color: 'var(--gray-11)' }}>
                           {field.description}
                         </Text>
                       ) : null}

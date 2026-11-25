@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/core/events/workspace.committed.schema.json",
+  "title": "WorkspaceCommittedEvent",
+  "description": "Workspace HEAD moved; same transaction as the producing tool outcome.",
+  "x-writer": [
+    "worker"
+  ],
+  "allOf": [
+    {
+      "$ref": "../envelope.schema.json#/$defs/InlineEnvelope"
+    }
+  ],
+  "properties": {
+    "type": {
+      "const": "workspace.committed"
+    },
+    "writer": {
+      "const": "worker"
+    },
+    "data": {
+      "$ref": "#/$defs/WorkspaceCommittedData"
+    }
+  },
+  "$defs": {
+    "WorkspaceCommittedData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "workspaceId",
+        "revision",
+        "changed"
+      ],
+      "properties": {
+        "workspaceId": {
+          "$ref": "../common.schema.json#/$defs/Id"
+        },
+        "revision": {
+          "$ref": "../common.schema.json#/$defs/PosInt"
+        },
+        "changed": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^/"
+          }
+        },
+        "kinds": {
+          "type": "object",
+          "description": "R27REST-FU-1: how the commit changed each path of `changed`, keyed by that path. Additive: absent on events written before it, and a path it does not name is of unknown kind (a reader shows it as modified, as before).",
+          "patternProperties": {
+            "^/": {
+              "enum": [
+                "added",
+                "modified",
+                "deleted"
+              ]
+            }
+          },
+          "additionalProperties": false
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "type": "workspace.committed",
+      "schemaVersion": 1,
+      "critical": true,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "data": {
+        "workspaceId": "ws_1",
+        "revision": 5,
+        "changed": [
+          "/workspace/report.md"
+        ],
+        "kinds": {
+          "/workspace/report.md": "added"
+        }
+      },
+      "attemptId": "att_1",
+      "fence": 3
+    }
+  ]
+}

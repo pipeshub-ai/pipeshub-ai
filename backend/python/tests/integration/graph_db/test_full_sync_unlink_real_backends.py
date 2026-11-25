@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import secrets
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
@@ -992,7 +993,7 @@ async def _full_sync_owed(sync: _Sync) -> bool:
 
 
 async def _with_a_cursor(sync: _Sync, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("SECRET_KEY", "full-sync-unlink-it-secret")
+    monkeypatch.setenv("SECRET_KEY", secrets.token_hex(32))  # the key ring refuses a key under 32 characters
     await _first_sync(sync)
     await sync.processor.on_new_records([sync.message("gone", readers=(sync.alice, sync.bob))])
     await _cursor(sync).update_sync_point(_CURSOR_KEY, {"cursor": sync.now - DAY_MS})

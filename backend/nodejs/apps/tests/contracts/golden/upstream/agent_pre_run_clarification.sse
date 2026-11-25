@@ -1,0 +1,12 @@
+event: CUSTOM
+data: {"type": "CUSTOM", "name": "ask_user_question", "value": {"status": "success", "toolData": {"name": "ask_user_question", "userIntent": "The user wants a report but gave no topic.", "questions": [{"uuid": "uuid-1", "question": "Which report do you need?", "options": [{"id": "opt_sales", "label": "Sales", "isUserInput": false}, {"id": "opt_support", "label": "Support", "isUserInput": false}, {"id": "opt_finance", "label": "Finance", "isUserInput": false}], "multiSelect": false}], "expiresAt": "<timestamp>"}}, "runId": "uuid-2"}
+
+event: STATE_DELTA
+data: {"type": "STATE_DELTA", "runId": "uuid-2", "delta": [{"op": "replace", "path": "/citations", "value": []}, {"op": "replace", "path": "/normalizedAnswer", "value": "Which report do you need?"}, {"op": "replace", "path": "/rawLength", "value": 25}]}
+
+event: STATE_SNAPSHOT
+data: {"type": "STATE_SNAPSHOT", "runId": "uuid-2", "snapshot": {"final": true, "answer": "Which report do you need?", "citations": [], "confidence": null, "answerMatchType": "Clarification Needed"}}
+
+event: RUN_FINISHED
+data: {"type": "RUN_FINISHED", "runId": "uuid-2", "threadId": "conv-golden", "result": {"answer": "Which report do you need?", "citations": [], "confidence": null, "answerMatchType": "Clarification Needed"}}
+

@@ -1,10 +1,10 @@
 # src/config/configuration_service.py
 import asyncio
-import hashlib
 import logging
 import os
 import threading
 import time
+from collections.abc import Callable
 
 import dotenv
 from cachetools import LRUCache, TTLCache
@@ -16,6 +16,11 @@ from app.config.constants.service import (
 )
 from app.config.key_value_store import KeyValueStore
 from app.services.messaging.config import RedisConfig
+from app.utils.encryption.component_key import (
+    COMPONENT_DOCUMENTS,
+    component_identity,
+    process_cipher_key,
+)
 from app.utils.encryption.encryption_service import EncryptionService
 
 _ = dotenv.load_dotenv(dotenv.find_dotenv(usecwd=True))
@@ -32,15 +37,18 @@ class ConfigurationService:
         self.logger = logger
         self.logger.debug("🔧 Initializing ConfigurationService")
 
-        # Get and hash the secret key to ensure 32 bytes
-        secret_key = os.getenv("SECRET_KEY")
-        if not secret_key:
-            raise ValueError("SECRET_KEY environment variable is required")
-
-        # Hash the secret key to get exactly 32 bytes and convert to hex
-        hashed_key = hashlib.sha256(secret_key.encode()).digest()
-        hex_key = hashed_key.hex()
-        self.logger.debug("🔑 Secret key hashed to 32 bytes and converted to hex")
+        # The platform cipher's key (ADR-KEY-02): HKDF of SECRET_KEY, or of this component's own key on the
+        # sandbox plane, which never holds SECRET_KEY.
+        hex_key = process_cipher_key()
+        # On the sandbox plane the component's Redis user may read only these keys (ADR-KEY-02); any other key is
+        # answered as absent here rather than refused by Redis, so its default (an env fallback) applies quietly.
+        identity = component_identity()
+        self._component_keys: frozenset[str] | None = (
+            None if identity is None else frozenset({COMPONENT_DOCUMENTS[identity[0]]})
+        )
+        # R38IDENT-FU-10: a component's endpoints are the ones Node sealed into its document. The plain document is
+        # writable by any holder of the store's default login, which could otherwise redirect the gateways.
+        self._sealed_endpoints_in: str | None = None if identity is None else COMPONENT_DOCUMENTS[identity[0]]
 
         self.encryption_service = EncryptionService.get_instance(
             "aes-256-gcm", hex_key, logger
@@ -78,6 +86,8 @@ class ConfigurationService:
         # etcd-watch-id / Pub/Sub-task fields that used to require branching
         # on KV_STORE_TYPE to know which one to cancel (R15).
         self._change_subscription: object | None = None
+        # Called with every changed key after the cache drops it (from the watch thread): must be quick and not block.
+        self._change_listeners: list[Callable[[str], None]] = []
 
         # Start watching for cross-process invalidation, regardless of
         # backend: every KeyValueStore implements subscribe_changes(),
@@ -108,6 +118,15 @@ class ConfigurationService:
         bound covers the case where the subscription that delivers them died, for
         a key that is acted on (the artifact flags).
         """
+        sealed_in = getattr(self, "_sealed_endpoints_in", None)
+        if sealed_in is not None and key == config_node_constants.ENDPOINTS.value:
+            document = await self.get_config(
+                sealed_in, use_cache=use_cache, raise_on_error=raise_on_error, max_age_seconds=max_age_seconds
+            )
+            endpoints = document.get("endpoints") if isinstance(document, dict) else None
+            return endpoints if isinstance(endpoints, dict) else default
+        if not self._may_read(key):
+            return default
         try:
             # Check cache first
             if use_cache:
@@ -250,6 +269,18 @@ class ConfigurationService:
                 }
         return None
 
+    def _may_read(self, key: str) -> bool:
+        """On the sandbox plane only the component's own keys (ADR-KEY-02); every key elsewhere."""
+        allowed = getattr(self, "_component_keys", None)
+        return allowed is None or key in allowed
+
+    async def _migration_completed(self, key: str) -> bool:
+        if not self._may_read(key):
+            return False
+        underlying_store = getattr(self.store, "store", self.store)
+        # The deserializer parses the plain-text "true"/"false" as JSON, yielding a Python bool -- not the string.
+        return await underlying_store.get_key(key) is True
+
     def _start_watch(self) -> None:
         """Start watching for cross-process cache invalidation.
 
@@ -279,13 +310,7 @@ class ConfigurationService:
                 # Handles the race where migration completes before this
                 # service starts and subscribes to the invalidation channel.
                 try:
-                    underlying_store = getattr(self.store, "store", self.store)
-                    migration_completed = loop.run_until_complete(
-                        underlying_store.get_key(migration_flag_key)
-                    )
-                    # The deserializer parses the plain-text "true"/"false"
-                    # as JSON, yielding a Python bool -- not the string.
-                    if migration_completed is True:
+                    if loop.run_until_complete(self._migration_completed(migration_flag_key)):
                         self.clear_cache()
                         self._log_safe(
                             "📦 Cache cleared on startup - migration from etcd to Redis was completed"
@@ -302,8 +327,11 @@ class ConfigurationService:
                 with self._pubsub_state_lock:
                     if self._stopping:
                         return
+                    own_keys = getattr(self, "_component_keys", None)
                     self._change_subscription = loop.run_until_complete(
                         self.store.subscribe_changes(self._invalidation_callback)
+                        if own_keys is None
+                        else self.store.subscribe_changes(self._invalidation_callback, keys=own_keys)
                     )
                 self._log_safe("👀 Change subscription registered for cache invalidation", level="debug")
 
@@ -344,8 +372,14 @@ class ConfigurationService:
                 with self._cache_lock:
                     self.cache.pop(key, None)
                 self._log_safe("📦 Cache invalidated for key: %s" % key, level="debug")
+            for listener in self._change_listeners:
+                listener(key)
         except Exception as e:
             self._log_safe("❌ Error in cache invalidation callback: %s" % str(e), level="error")
+
+    def add_change_listener(self, listener: Callable[[str], None]) -> None:
+        """``listener(key)`` on every cross-process change notification (``__CLEAR_ALL__`` included)."""
+        self._change_listeners.append(listener)
 
     def _log_safe(self, msg: str, level: str = "info") -> None:
         """Log a message, suppressing errors from closed file handles during shutdown."""

@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any
 
 from app.agents.constants.toolset_constants import (
     get_toolset_instance_users_prefix,
+    get_toolset_instances_path,
     get_toolset_org_user_instances_prefix,
     get_toolset_personal_owner_path,
     get_toolset_tool_rules_path,
@@ -26,6 +27,7 @@ from app.agents.constants.toolset_constants import (
     get_toolset_user_instances_prefix,
 )
 from app.config.configuration_service import delete_config_confirmed
+from app.core.org_context import org_of
 from app.utils.concurrency import gather_with_concurrency
 from app.utils.env_utils import env_int
 from app.utils.url_fetcher import FetchError, resolve_public_http_target
@@ -151,15 +153,24 @@ async def save_personal_instance(config_service: ConfigurationService, instance:
 # ---------------------------------------------------------------------------
 
 
-async def delete_instance_credentials(config_service: ConfigurationService, instance_id: str) -> int:
-    """Every sign-in to `instance_id` (users' and service-account agents'), after stopping their
-    token refreshes. Returns how many were deleted; a failure is logged, not raised."""
+def _refresh_service() -> Any:  # noqa: ANN401 - ToolsetTokenRefreshService, imported lazily (it pulls in the connectors)
+    """This process's toolset token refresher, when it runs one (the connectors service does)."""
     try:
         from app.connectors.core.base.token_service.startup_service import (
             startup_service,
         )
 
-        refresh_service = startup_service.get_toolset_token_refresh_service()
+        return startup_service.get_toolset_token_refresh_service()
+    except Exception as e:
+        logger.warning(f"Could not reach the toolset token refresher: {e}")
+        return None
+
+
+async def delete_instance_credentials(config_service: ConfigurationService, instance_id: str) -> int:
+    """Every sign-in to `instance_id` (users' and service-account agents'), after stopping their
+    token refreshes. Returns how many were deleted; a failure is logged, not raised."""
+    try:
+        refresh_service = _refresh_service()
         if refresh_service:
             cancelled = refresh_service.cancel_refresh_tasks_for_instance(instance_id)
             if cancelled:
@@ -235,6 +246,111 @@ async def remove_user_personal_instances(config_service: ConfigurationService, o
 async def remove_org_personal_instances(config_service: ConfigurationService, org_id: str) -> int:
     """Every personal instance of a deleted org."""
     return await _remove_all(config_service, get_toolset_org_user_instances_prefix(org_id), org_id)
+
+
+# ---------------------------------------------------------------------------
+# Erasing a deleted user's or org's toolset data (C-14 PRINCIPAL_DATA_STORES `personalInstances`)
+# ---------------------------------------------------------------------------
+
+
+class PersonalDataRemainsError(RuntimeError):
+    """Keys of an erased user or org are still in the store; the caller retries the erasure."""
+
+    def __init__(self, remaining: list[str]) -> None:
+        super().__init__(f"{len(remaining)} key(s) of the erased principal remain")
+        self.remaining = remaining
+
+
+async def _keys_at(config_service: ConfigurationService, path: str) -> list[str]:
+    """Every key under `path` when it ends in "/"; otherwise the key itself and any nested under it."""
+    keys = await config_service.list_keys_in_directory(path)
+    if path.endswith("/"):
+        return [key for key in keys if key.startswith(path)]
+    return [key for key in keys if key == path or key.startswith(f"{path}/")]
+
+
+async def _erase_at(config_service: ConfigurationService, path: str) -> None:
+    keys = await _keys_at(config_service, path)
+    results = await asyncio.gather(*[config_service.delete_config(key) for key in keys], return_exceptions=True)
+    for key, result in zip(keys, results):
+        if isinstance(result, Exception):
+            logger.warning(f"Could not erase {key}: {result}")
+
+
+async def _personal_instance_paths(config_service: ConfigurationService, key: str, org_id: str) -> list[str]:
+    """What a personal instance at `key` stores, keyed by the id its path names (its record may be
+    unreadable): the record, every sign-in to it, its tool rules and its owner pointer."""
+    instance_id = key.rsplit("/", 1)[-1]
+    paths = [key, get_toolset_instance_users_prefix(instance_id), get_toolset_tool_rules_path(instance_id)]
+    pointer = get_toolset_personal_owner_path(instance_id)
+    owner = await config_service.get_config(pointer, default=None, use_cache=False, raise_on_error=True)
+    # Ids are generated, so a pointer naming another org is another instance's, not this erasure's.
+    if not isinstance(owner, dict) or org_of(owner) in (None, org_id):
+        paths.append(pointer)
+    return paths
+
+
+async def _org_instance_sign_ins(config_service: ConfigurationService, org_id: str, user_id: str | None) -> list[str]:
+    """`user_id`'s sign-ins to the org's own instances, or every sign-in to them when `user_id` is None."""
+    stored = await config_service.get_config(
+        get_toolset_instances_path(org_id), default=[], use_cache=False, raise_on_error=True,
+    )
+    rows = stored if isinstance(stored, list) else []
+    ids = [i["_id"] for i in rows if isinstance(i, dict) and org_of(i) == org_id and isinstance(i.get("_id"), str) and i["_id"]]
+    return [f"{get_toolset_instance_users_prefix(i)}{user_id or ''}" for i in ids]
+
+
+async def _erase_principal(
+    config_service: ConfigurationService, org_id: str, user_id: str | None, prefix: str,
+) -> dict[str, int]:
+    instances = await _keys_at(config_service, prefix)
+    paths = [prefix]
+    for key in instances:
+        paths += await _personal_instance_paths(config_service, key, org_id)
+    sign_ins = await _org_instance_sign_ins(config_service, org_id, user_id)
+    paths += sign_ins
+
+    refresh_service = _refresh_service()
+    if refresh_service:
+        for key in instances:
+            refresh_service.cancel_refresh_tasks_for_instance(key.rsplit("/", 1)[-1])
+        for path in sign_ins:
+            for key in await _keys_at(config_service, path):
+                refresh_service.cancel_refresh_task(key)
+    for path in paths:
+        await _erase_at(config_service, path)
+
+    remaining = [key for path in paths for key in await _keys_at(config_service, path)]
+    if remaining:
+        raise PersonalDataRemainsError(remaining)
+    return {"toolsetInstances": len(instances)}
+
+
+async def erase_user_toolset_data(config_service: ConfigurationService, org_id: str, user_id: str) -> dict[str, int]:
+    """A deleted user's toolset data (CLEANUP-G2): their personal instances with every sign-in to them,
+    their tool rules and owner pointers, and their own sign-ins to the org's instances. Every key under
+    their prefix goes, readable or not; another user's data is never touched. Idempotent.
+
+    Raises:
+        PersonalDataRemainsError: a key is still there afterwards (a delete failed); run it again.
+        ValueError: no org or user named: the prefixes would then reach other people's data.
+    """
+    if not org_id or "/" in org_id or not user_id or "/" in user_id:
+        raise ValueError("An org and one user are required")
+    return await _erase_principal(config_service, org_id, user_id, get_toolset_user_instances_prefix(org_id, user_id))
+
+
+async def erase_org_toolset_data(config_service: ConfigurationService, org_id: str) -> dict[str, int]:
+    """A deleted org's toolset data (CLEANUP-G1): every member's personal instances with their sign-ins,
+    rules and owner pointers, and every sign-in to the org's own instances. Another org's is never touched.
+
+    Raises:
+        PersonalDataRemainsError: a key is still there afterwards; run it again.
+        ValueError: no org named.
+    """
+    if not org_id or "/" in org_id:
+        raise ValueError("An org is required")
+    return await _erase_principal(config_service, org_id, None, get_toolset_org_user_instances_prefix(org_id))
 
 
 # ---------------------------------------------------------------------------

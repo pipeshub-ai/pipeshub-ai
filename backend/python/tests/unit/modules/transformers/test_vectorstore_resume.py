@@ -798,8 +798,12 @@ class PdfChain(Chain):
 
 
 @pytest.mark.asyncio
-async def test_a_cut_pdf_is_resumed_from_its_stored_blocks_with_the_ids_the_first_attempt_wrote() -> None:
+async def test_a_cut_pdf_is_resumed_from_its_stored_blocks_with_the_ids_the_first_attempt_wrote(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     # Kills: resuming by re-parsing (every pdfplumber block id is random), and an id-pinning shortcut.
+    # Rule-based tables only, as in tests/unit/modules/parsers: the layout model is a download a unit test may not make.
+    monkeypatch.setenv("PDF_TABLE_MODEL", "off")
     chain = await PdfChain(content=_tables_pdf()).start()
     with pytest.raises(Cut):
         await chain.attempt(cut_after=2)

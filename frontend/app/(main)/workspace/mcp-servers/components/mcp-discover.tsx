@@ -72,7 +72,7 @@ export function McpDiscover({ catalog, instances, description, highlights, onOpe
       >
         {icon && <MaterialIcon name={icon} size={15} color="currentColor" />}
         {text}
-        <Text size="1" style={{ color: on ? 'var(--accent-11)' : 'var(--gray-10)' }}>
+        <Text size="1" style={{ color: on ? 'var(--accent-11)' : 'var(--gray-11)' }}>
           {count}
         </Text>
       </Button>
@@ -109,7 +109,7 @@ export function McpDiscover({ catalog, instances, description, highlights, onOpe
         aria-label={t('workspace.mcpServers.discover.searchLabel')}
       >
         <TextField.Slot>
-          <MaterialIcon name="search" size={16} color="var(--gray-9)" />
+          <MaterialIcon name="search" size={16} color="var(--gray-11)" />
         </TextField.Slot>
         {query && (
           <TextField.Slot>
@@ -120,7 +120,7 @@ export function McpDiscover({ catalog, instances, description, highlights, onOpe
               aria-label={t('workspace.mcpServers.discover.clearSearch')}
               onClick={() => setQuery('')}
             >
-              <MaterialIcon name="close" size={16} color="var(--gray-10)" />
+              <MaterialIcon name="close" size={16} color="var(--gray-11)" />
             </IconButton>
           </TextField.Slot>
         )}

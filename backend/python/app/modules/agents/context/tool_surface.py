@@ -97,6 +97,12 @@ class ToolSurfaces:
     """Granted exact-calculation tools (expression, date difference, text
     count, in that order); `()` when none is granted."""
 
+    mcp_servers: tuple[str, ...] = ()
+    """The run's attached MCP servers by the name a person knows them by, as
+    the MCP loaders record them (`connected_sources.SOURCES_STATE_KEY`);
+    `()` when none is attached. A server's tools carry no connector prefix,
+    so `live_api_apps` never names one (R36LIVE-FU-2)."""
+
     @property
     def search_tool(self) -> str | None:
         """`retrieval` when this agent writes the search query itself; None
@@ -199,6 +205,8 @@ class ToolSurfaces:
             names_set,
         )
 
+        mcp_servers = _resolve_mcp_servers(state)
+
         return cls(
             retrieval=retrieval,
             web_names=web_names,
@@ -213,6 +221,7 @@ class ToolSurfaces:
             has_web_search=has_web_search,
             has_service_tools=has_service_tools,
             calculator_tools=calculator_tools,
+            mcp_servers=mcp_servers,
         )
 
     # ── Convenience formatters ────────────────────────────────────────────────
@@ -247,6 +256,28 @@ class ToolSurfaces:
 # ---------------------------------------------------------------------------
 # Helper
 # ---------------------------------------------------------------------------
+
+_SERVER_NAME_MAX = 60
+
+
+def _resolve_mcp_servers(state: Mapping[str, Any]) -> tuple[str, ...]:
+    """The attached MCP servers' names, in the order they were attached, each once and clipped: an admin names an
+    instance, so the name is cleaned like any other text a server brings."""
+    from app.agents.agent_loop.connected_sources import (
+        LISTED_SOURCES_MAX,
+        SOURCES_STATE_KEY,
+    )
+    from harness_core.mcp_hub.names import export_description
+
+    labels = state.get(SOURCES_STATE_KEY) or {}
+    names: list[str] = []
+    for group, label in labels.items() if isinstance(labels, Mapping) else ():
+        raw = label.get("name") if isinstance(label, Mapping) else None
+        name = export_description(" ".join(str(raw or group).split()), limit=_SERVER_NAME_MAX)
+        if name and name not in names:
+            names.append(name)
+    return tuple(names[:LISTED_SOURCES_MAX])
+
 
 _CONNECTOR_FLAG_APP_MAP: dict[str, str] = {
     "has_jira_connector": "jira",

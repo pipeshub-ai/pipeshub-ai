@@ -1,0 +1,233 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/ext/pipeshub/api/pending-approvals.schema.json",
+  "title": "PendingApprovals",
+  "description": "`GET /api/v1/agent-harness/approvals/pending` (P2.11e, G-13): the approvals across the org's runs the viewer may decide, and the questions the viewer's own runs asked them that nobody has answered. Deciding goes to the run's own decision route, or, for calls with the same pattern, `POST /api/v1/agent-harness/approvals/decisions`; a question is answered by the next message in its conversation.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["items"],
+  "properties": {
+    "items": {
+      "type": "array",
+      "maxItems": 1000,
+      "items": {
+        "$ref": "#/$defs/PendingApproval"
+      }
+    },
+    "questions": {
+      "description": "G-13: questions the viewer's runs asked them, newest first; absent where this deployment lists none.",
+      "type": "array",
+      "maxItems": 1000,
+      "items": {
+        "$ref": "#/$defs/PendingQuestion"
+      }
+    }
+  },
+  "$defs": {
+    "PendingApproval": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["runId", "sessionId", "actorId", "runStatus", "runUpdatedAt", "interactionId", "toolName", "argsHidden", "authority"],
+      "properties": {
+        "runId": {"$ref": "../../../core/common.schema.json#/$defs/Id"},
+        "sessionId": {"$ref": "../../../core/common.schema.json#/$defs/Id"},
+        "agentKey": {"type": "string", "minLength": 1, "maxLength": 128},
+        "actorId": {"type": "string", "minLength": 1, "maxLength": 128},
+        "runStatus": {"$ref": "#/$defs/ExecutionStatus"},
+        "runUpdatedAt": {"$ref": "../../../core/common.schema.json#/$defs/UInt"},
+        "interactionId": {"$ref": "../../../core/common.schema.json#/$defs/Id"},
+        "toolName": {"type": "string", "minLength": 1, "maxLength": 512},
+        "displayName": {"type": "string", "minLength": 1, "maxLength": 512},
+        "requestedAt": {"$ref": "../../../core/common.schema.json#/$defs/Timestamp", "description": "WP-100: when the run asked (its interaction.requested's journal time), which the inbox says it waits since; absent for an ask journaled without one."},
+        "args": {
+          "description": "The call's arguments as journaled JSON text; absent when `argsHidden`.",
+          "type": "string"
+        },
+        "argsSummary": {"type": "string"},
+        "argsHidden": {
+          "description": "An admin who may only deny and does not see the conversation gets no arguments, and only the reason's rule and sensitivity.",
+          "type": "boolean"
+        },
+        "reason": {"$ref": "#/$defs/ApprovalReason"},
+        "connect": {
+          "description": "G-12, WP-64: the call waits for the run's owner to connect (or reconnect) this item, not for an approval; listed only to the owner. `approved` says it is connected; `denied` skips it and the task goes on without it.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["item", "itemKind", "instanceId", "askedAt"],
+          "properties": {
+            "item": {"type": "string", "minLength": 1, "maxLength": 256},
+            "itemKind": {"enum": ["toolset", "mcp"]},
+            "instanceId": {"$ref": "../../../core/common.schema.json#/$defs/Id"},
+            "reason": {"enum": ["sign_in_rejected"]},
+            "askedAt": {"$ref": "../../../core/common.schema.json#/$defs/Timestamp", "description": "When the run asked: for `sign_in_rejected`, when the vendor rejected the saved sign-in."}
+          }
+        },
+        "pattern": {
+          "description": "G-13, GA-08: the call's tool, arguments and destination, digested. Present only when the viewer sees the arguments and the call may be decided in a batch (a layer's own write rule asks; not a data flow, not an edition's rule, not an unknown effect). Calls with the same pattern are identical.",
+          "type": "string",
+          "pattern": "^p1:[0-9a-f]{64}$"
+        },
+        "approvals": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["counted", "required"],
+          "description": "A call that a rule of the run's edition says needs several distinct approvals, which some people have approved: how many it has and needs. Counts only, never who. The viewer's own counted approval leaves authority.approve false.",
+          "properties": {
+            "counted": {"type": "integer", "minimum": 1, "maximum": 16},
+            "required": {"type": "integer", "minimum": 2, "maximum": 16}
+          }
+        },
+        "authority": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["approve", "deny"],
+          "properties": {
+            "approve": {"type": "boolean"},
+            "deny": {"type": "boolean"}
+          }
+        }
+      }
+    },
+    "PendingQuestion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["runId", "sessionId", "runUpdatedAt", "callId", "question", "options", "multiSelect", "moreQuestions"],
+      "properties": {
+        "runId": {"$ref": "../../../core/common.schema.json#/$defs/Id"},
+        "sessionId": {"$ref": "../../../core/common.schema.json#/$defs/Id"},
+        "agentKey": {"type": "string", "minLength": 1, "maxLength": 128},
+        "runUpdatedAt": {"$ref": "../../../core/common.schema.json#/$defs/UInt"},
+        "callId": {"type": "string", "minLength": 1, "maxLength": 512},
+        "question": {"type": "string", "minLength": 1, "maxLength": 2000},
+        "options": {
+          "type": "array",
+          "maxItems": 7,
+          "items": {"type": "string", "minLength": 1, "maxLength": 200}
+        },
+        "multiSelect": {"type": "boolean"},
+        "moreQuestions": {
+          "description": "Further questions on the same card; the conversation shows them all.",
+          "$ref": "../../../core/common.schema.json#/$defs/UInt"
+        }
+      }
+    },
+    "ExecutionStatus": {
+      "description": "A run document's status in Node's execution store (not the journal fold's RunStatus).",
+      "x-constant": "EXECUTION_STATUSES",
+      "enum": ["queued", "running", "waiting_approval", "paused", "recovering", "needs_reconciliation", "cancelling", "completed", "failed", "cancelled"]
+    },
+    "TerminalExecutionStatus": {
+      "description": "The run document's statuses a run never leaves.",
+      "x-constant": "TERMINAL_EXECUTION_STATUSES",
+      "enum": ["completed", "failed", "cancelled"]
+    },
+    "RunOutcome": {
+      "description": "How a completed run document ended: an answer, or a question for the person (the journal's CompletedOutcome is answered | needs_input).",
+      "x-constant": "RUN_OUTCOMES",
+      "enum": ["answer", "needs_input"]
+    },
+    "ApprovalReason": {
+      "description": "Why the run asks (interaction.explained): the rule and the layer that set it (QA6-F6), and, for a rule that reads them (UX1), what the run read and where the call would send it. Without sources, destination and the grant offer when the arguments are hidden. An edition's rule adds its own field (x-extensible), kept when the arguments are hidden.",
+      "type": "object",
+      "additionalProperties": false,
+      "x-extensible": true,
+      "required": ["rule"],
+      "properties": {
+        "rule": {"type": "string", "minLength": 1, "maxLength": 128},
+        "layer": {"$ref": "../../../core/events/interaction.explained.schema.json#/$defs/RuleLayer"},
+        "sensitivity": {"enum": ["public", "private", "unknown"]},
+        "sources": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/ApprovalSource"}
+        },
+        "moreSources": {"$ref": "../../../core/common.schema.json#/$defs/UInt"},
+        "destination": {"type": "string", "minLength": 1},
+        "conversationGrant": {"type": "boolean"},
+        "editable": {"description": "The person the run acts for may edit the arguments before approving (AP-06); absent when the arguments are hidden.", "type": "boolean"},
+        "fieldOrder": {"description": "With editable (WP-56): the tool's argument names in its input schema's order, for the edit card; absent when the arguments are hidden.", "type": "array", "maxItems": 64, "items": {"type": "string", "minLength": 1, "maxLength": 128}}
+      }
+    },
+    "ApprovalSource": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "title": {"type": "string"},
+        "recordId": {"type": "string"},
+        "url": {"type": "string"}
+      }
+    }
+  },
+  "examples": [
+    {
+      "items": [
+        {
+          "runId": "r1",
+          "sessionId": "s1",
+          "agentKey": "a7",
+          "actorId": "u1",
+          "runStatus": "waiting_approval",
+          "runUpdatedAt": 1760000000000,
+          "interactionId": "ix_1",
+          "toolName": "jira.create_issue",
+          "displayName": "Create issue",
+          "args": "{\"summary\":\"x\"}",
+          "argsSummary": "summary: x",
+          "argsHidden": false,
+          "reason": {
+            "rule": "flow",
+            "sensitivity": "private",
+            "sources": [{"title": "Q3 plan", "recordId": "rec1"}],
+            "moreSources": 2,
+            "destination": "#sales",
+            "conversationGrant": true
+          },
+          "authority": {"approve": true, "deny": true}
+        },
+        {
+          "runId": "r2",
+          "sessionId": "s2",
+          "actorId": "u3",
+          "runStatus": "waiting_approval",
+          "runUpdatedAt": 1760000000001,
+          "interactionId": "ix_2",
+          "toolName": "slack.post",
+          "argsHidden": true,
+          "reason": {"rule": "writes", "layer": "org"},
+          "authority": {"approve": false, "deny": true}
+        }
+      ]
+    },
+    {"items": []},
+    {
+      "items": [
+        {
+          "runId": "r4",
+          "sessionId": "s4",
+          "actorId": "u1",
+          "runStatus": "waiting_approval",
+          "runUpdatedAt": 1760000000003,
+          "interactionId": "ix_4",
+          "toolName": "jira.create_issue",
+          "args": "{\"summary\":\"weekly\"}",
+          "argsHidden": false,
+          "pattern": "p1:3f0c2a9d4b7e1f6a8c5d2e9b0a7f4c1d6e3b8a5f2c9d0e7b4a1f8c5d2e9b6a3f",
+          "reason": {"rule": "writes", "layer": "org"},
+          "authority": {"approve": true, "deny": true}
+        }
+      ],
+      "questions": [
+        {
+          "runId": "r3",
+          "sessionId": "s3",
+          "agentKey": "a7",
+          "runUpdatedAt": 1760000000002,
+          "callId": "ask.0123456789abcdef0123456789abcdef",
+          "question": "Which quarter should the report cover?",
+          "options": ["Q3", "Q4"],
+          "multiSelect": false,
+          "moreQuestions": 0
+        }
+      ]
+    }
+  ]
+}

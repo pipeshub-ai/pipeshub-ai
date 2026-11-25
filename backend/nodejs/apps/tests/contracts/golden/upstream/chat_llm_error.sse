@@ -1,0 +1,33 @@
+event: RUN_STARTED
+data: {"type": "RUN_STARTED", "threadId": "conv-golden", "runId": "uuid-1"}
+
+event: STATE_SNAPSHOT
+data: {"type": "STATE_SNAPSHOT", "runId": "uuid-1", "snapshot": {"run_id": "uuid-1", "agent_id": "uuid-2", "trace_id": "uuid-3", "parent_run_id": null, "role_name": "pipeshub-agent", "status": "starting", "current_turn": 0, "current_tool": null, "current_child_run_id": null, "hil_request_id": null, "goal_description": "What is the refund policy?", "started_at": "<timestamp>", "updated_at": "<timestamp>"}}
+
+event: STATE_SNAPSHOT
+data: {"type": "STATE_SNAPSHOT", "runId": "uuid-1", "snapshot": {"run_id": "uuid-1", "agent_id": "uuid-2", "trace_id": "uuid-3", "parent_run_id": null, "role_name": "pipeshub-agent", "status": "calling_llm", "current_turn": 0, "current_tool": null, "current_child_run_id": null, "hil_request_id": null, "goal_description": "What is the refund policy?", "started_at": "<timestamp>", "updated_at": "<timestamp>"}}
+
+event: TEXT_MESSAGE_START
+data: {"type": "TEXT_MESSAGE_START", "messageId": "msg-4", "role": "assistant", "runId": "uuid-1"}
+
+event: TEXT_MESSAGE_END
+data: {"type": "TEXT_MESSAGE_END", "messageId": "msg-4", "runId": "uuid-1"}
+
+event: CUSTOM
+data: {"type": "CUSTOM", "name": "message_discarded", "value": {"messageId": "msg-4"}, "runId": "uuid-1"}
+
+event: STATE_DELTA
+data: {"type": "STATE_DELTA", "runId": "uuid-1", "delta": [{"op": "replace", "path": "/citations", "value": []}, {"op": "replace", "path": "/normalizedAnswer", "value": ""}, {"op": "replace", "path": "/rawLength", "value": 0}, {"op": "replace", "path": "/discarded", "value": true}]}
+
+event: STATE_SNAPSHOT
+data: {"type": "STATE_SNAPSHOT", "runId": "uuid-1", "snapshot": {"run_id": "uuid-1", "agent_id": "uuid-2", "trace_id": "uuid-3", "parent_run_id": null, "role_name": "pipeshub-agent", "status": "failed", "current_turn": 0, "current_tool": null, "current_child_run_id": null, "hil_request_id": null, "goal_description": "What is the refund policy?", "started_at": "<timestamp>", "updated_at": "<timestamp>"}}
+
+event: STATE_DELTA
+data: {"type": "STATE_DELTA", "runId": "uuid-1", "delta": [{"op": "replace", "path": "/citations", "value": []}, {"op": "replace", "path": "/normalizedAnswer", "value": "The AI model's provider is limiting requests right now. Wait a minute, then try again."}, {"op": "replace", "path": "/rawLength", "value": 86}]}
+
+event: STATE_SNAPSHOT
+data: {"type": "STATE_SNAPSHOT", "runId": "uuid-1", "snapshot": {"final": true, "answer": "The AI model's provider is limiting requests right now. Wait a minute, then try again.", "citations": [], "confidence": "Low", "answerMatchType": "Error", "errorCode": "rate_limit", "succeeded_tool_names": [], "failed_tool_names": [], "parts": [{"type": "text", "content": "The AI model's provider is limiting requests right now. Wait a minute, then try again.", "runId": "uuid-1", "isFinal": true}]}}
+
+event: RUN_FINISHED
+data: {"type": "RUN_FINISHED", "runId": "uuid-1", "threadId": "conv-golden", "result": {"answer": "The AI model's provider is limiting requests right now. Wait a minute, then try again.", "citations": [], "confidence": "Low", "answerMatchType": "Error", "errorCode": "rate_limit", "succeeded_tool_names": [], "failed_tool_names": [], "parts": [{"type": "text", "content": "The AI model's provider is limiting requests right now. Wait a minute, then try again.", "runId": "uuid-1", "isFinal": true}]}}
+

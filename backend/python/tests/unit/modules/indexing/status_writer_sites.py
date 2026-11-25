@@ -99,7 +99,7 @@ SITES: dict[tuple[str, str, str], str] = {
 # (enclosing function suffix) -> class; the helper body carries the rule.
 HELPER_WRITERS: dict[tuple[str, str], str] = {
     # builds the record the upload route writes (a new record: it starts its run); tests/unit/events/test_record_diagnostics_call_sites.py
-    ("api/routes/chatbot.py", "attachment_record_doc"): START,
+    ("services/chat_attachments/uploads.py", "attachment_record_doc"): START,
     ("modules/transformers/sink_orchestrator.py", "sink_only_end_fields"): SINK_END,
     ("services/messaging/kafka/handlers/record.py", "requeue_updates"): QUEUE,
     ("services/messaging/kafka/handlers/record.py", "RecordEventHandler.__update_document_status"): FAILED,

@@ -1,6 +1,6 @@
 /**
  * Reverse copy of the collections whose rows are not one document each, or whose key is not the document id: credentials (per
- * account in PostgreSQL, a document of their own in MongoDB), reset-link claims, Slack links and the outbox. See reverse.ts.
+ * account in PostgreSQL, a document of their own in MongoDB), reset-link claims, Slack threads, Slack account links and the outbox. See reverse.ts.
  */
 import { ObjectId } from 'mongodb';
 import { decodeDoc } from './decode';
@@ -9,6 +9,8 @@ import type { CollectionMapping } from './mapping/types';
 import { readDecodedPage } from './pg-read';
 import type { MigrationRuntime } from './runtime';
 import { sourceDb } from './bulk';
+import { SLACK_LINKS, reverseSlackLinks } from './slack-links';
+import { keysByRow, rowKey } from './carry/keymap';
 
 type Row = Record<string, unknown>;
 type Counts = { written: number; removed: number };
@@ -18,6 +20,7 @@ export const SPECIAL = new Set([
   'userCredentials',
   'usedPasswordResetLinks',
   'slack_conversations',
+  SLACK_LINKS,
   'outbox_events',
 ]);
 
@@ -117,14 +120,22 @@ async function resetLinks(rt: MigrationRuntime): Promise<Counts> {
   return { written, removed: 0 };
 }
 
+/**
+ * Slack thread links written back by their key, `orgId` included (R45MIGR-FU-3). A link the copy carried (it is in the key map)
+ * whose row is gone was removed after the move: its document is removed too. A link the copy left out is not in the map and stays.
+ */
 async function slack(rt: MigrationRuntime): Promise<Counts> {
   const col = sourceDb(rt, mapping('slack_conversations')).collection(
     'slack_conversations',
   );
   let written = 0;
+  const live = new Set<string>();
   await pagedRows(rt, 'slack_conversations', async (d) => {
     const { _id: _unused, ...rest } = d;
     toDates(rest, ['createdAt', 'updatedAt']);
+    live.add(
+      `${String(rest.orgId)}|${rowKey([rest.threadId, rest.botId, rest.email])}`,
+    );
     await col.replaceOne(
       {
         threadId: rest.threadId,
@@ -136,7 +147,17 @@ async function slack(rt: MigrationRuntime): Promise<Counts> {
     );
     written += 1;
   });
-  return { written, removed: 0 };
+  const carried = await rt.jobs(
+    (_t, k) => keysByRow(k, 'slack_conversations'),
+    { write: false },
+  );
+  const gone = [...carried.entries()]
+    .filter(([key]) => !live.has(key))
+    .map(([, e]) => new ObjectId(e.sourceId));
+  const removed = gone.length
+    ? (await col.deleteMany({ _id: { $in: gone } })).deletedCount
+    : 0;
+  return { written, removed };
 }
 
 /** The table id the copy derived from an event's ObjectId (same arithmetic as the importer, restated for the way back). */
@@ -218,9 +239,11 @@ async function counters(rt: MigrationRuntime): Promise<Counts> {
   return { written, removed: 0 };
 }
 
+/** `skips`: the documents of `name` the copy refused and listed, by id (they stay in MongoDB). */
 export async function reverseSpecial(
   rt: MigrationRuntime,
   name: string,
+  skips: Record<string, string> = {},
 ): Promise<Counts> {
   switch (name) {
     case 'counters':
@@ -231,6 +254,12 @@ export async function reverseSpecial(
       return resetLinks(rt);
     case 'slack_conversations':
       return slack(rt);
+    case SLACK_LINKS:
+      return reverseSlackLinks(
+        rt,
+        mapping(SLACK_LINKS),
+        new Set(Object.keys(skips).map((id) => id.toLowerCase())),
+      );
     case 'outbox_events':
       return outbox(rt);
     default:

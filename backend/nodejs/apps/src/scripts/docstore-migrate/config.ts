@@ -1,6 +1,10 @@
 /** Where the migrator connects. URLs hold passwords: never print them (`redact`). */
 export interface MigrateConfig {
+  /** The tool's MongoDB login: MIGRATE_MONGO_URI when the application signs in as a user of its own (the tool then takes that user's
+   * write roles away at the switch), else the application's MONGO_URI. */
   mongoUri: string;
+  /** The application's MONGO_URI: its client options bound how long a fenced write can still be on its way. */
+  appMongoUri: string;
   mongoDb: string;
   /** Database of the Slack bot when it is not the API's. */
   slackDb?: string;
@@ -44,8 +48,10 @@ export const pgUrl = (u: string): string =>
 export function loadConfig(
   env: NodeJS.ProcessEnv = process.env,
 ): MigrateConfig {
+  const appMongoUri = env.MONGO_URI ?? env.MONGO_URL ?? need(env, 'MONGO_URI');
   return {
-    mongoUri: env.MONGO_URI ?? env.MONGO_URL ?? need(env, 'MONGO_URI'),
+    mongoUri: env.MIGRATE_MONGO_URI || appMongoUri,
+    appMongoUri,
     mongoDb: env.MONGO_DB_NAME ?? 'es',
     ...(env.MONGO_SLACK_DB_NAME ? { slackDb: env.MONGO_SLACK_DB_NAME } : {}),
     pgImportUrl: env.PG_IMPORT_URL ? pgUrl(env.PG_IMPORT_URL) : '',

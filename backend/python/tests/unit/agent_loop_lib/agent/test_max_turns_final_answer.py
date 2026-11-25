@@ -31,6 +31,7 @@ from app.agent_loop_lib.tools.base import ParameterType, Tool, ToolOutput, ToolP
 from app.agent_loop_lib.tools.builtin.planning.task_complete import TaskCompleteTool
 from app.agent_loop_lib.tools.registry import ToolRegistry
 from app.agent_loop_lib.transport.registry import TransportRegistry
+from harness_core.models.output_bound import shortened
 from tests.unit.agents.adapter.support.scripted_transport import (
     ScriptedStep,
     ScriptedTransport,
@@ -253,9 +254,9 @@ class TestFinalAnswerTurn:
         result = agent.last_stream_result
         assert tool.executions == 2
         assert result.output != reply
-        # The same tail as an empty final reply.
-        assert result.success is False
-        assert "Exceeded max_turns=2" in result.error
+        # The same tail as an empty final reply: what it gathered, flagged as cut short (BUDGETEND).
+        assert result.success is True and result.truncated_by == "turns"
+        assert "step limit" in result.output
         assert await _unanswered_tool_calls(agent) == []
 
     async def test_a_run_ending_call_in_the_final_turn_still_ends_the_run(self) -> None:
@@ -294,8 +295,8 @@ class TestFinalAnswerTurn:
 
         result = await _build(transport, _CountingTool(), max_turns=2).run(_GOAL)
 
-        assert result.success is False
-        assert "Exceeded max_turns=2" in result.error
+        assert result.success is True and result.truncated_by == "turns"
+        assert "step limit" in result.output
 
     async def test_no_final_turn_when_the_last_turn_did_not_call_tools(self) -> None:
         partial = "Here is the first part of a long answer that was cut off at the output limit"
@@ -307,7 +308,8 @@ class TestFinalAnswerTurn:
         result = await _build(transport, _CountingTool(), max_turns=2).run(_GOAL)
 
         assert len(transport.calls) == 2
-        assert result.output == partial
+        # P4.17 UX-6: a reply still cut when the turns ran out says so.
+        assert result.output == shortened(partial)
 
     async def test_cancellation_before_the_final_turn_ends_the_run_as_cancelled(self) -> None:
         token = CancellationToken()
@@ -358,3 +360,35 @@ class TestDeadlineWarningInARun:
         warning = warned[0]["messages"][-1].step_footer
         assert "task_complete" not in warning
         assert "reply with your final answer as plain text" in warning
+
+
+class TestBudgetStop:
+    """BUDGETEND: the legacy loop's PRE_TURN budget guard ends the run on one answer-only turn, never a failure."""
+
+    async def test_a_turn_the_budget_refuses_answers_from_what_was_gathered(self) -> None:
+        from app.agent_loop_lib.modules.providers.budget.tracker import BudgetTracker
+        from harness_core.kernel.core.responses import TokenUsage
+
+        spent = _tool_turn(call_id="a")
+        transport = ScriptedTransport(script=[
+            ScriptedStep(message=spent.message, usage=TokenUsage(input_tokens=500, output_tokens=10)),
+            ScriptedStep(message=AssistantMessage(content=_ANSWER), text_chunks=[_ANSWER]),
+        ])
+        tool = _CountingTool()
+        registry = ToolRegistry()
+        registry.register_tool(tool)
+        transports = TransportRegistry()
+        transports.register("scripted", lambda: transport)
+        spec = AgentSpec(
+            name="agent-under-test", system_prompt="You are a helpful assistant.",
+            model=ModelSpec(provider="scripted", model="scripted-model"), loop=ReActLoop(), max_turns=8,
+        )
+        runtime = AgentRuntime(
+            transport_registry=transports, tool_registry=registry, budget=BudgetTracker(max_input_tokens=100),
+        )
+        result = await Agent(spec, runtime).run(_GOAL)
+        assert result.success is True and result.truncated_by == "budget"
+        assert result.output == _ANSWER
+        assert tool.executions == 1
+        assert transport.calls[-1]["tool_choice"] == "none"
+        assert "spending limit" in transport.calls[-1]["messages"][-1].step_footer

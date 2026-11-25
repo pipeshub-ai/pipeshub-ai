@@ -262,6 +262,7 @@ class TestAbstractMethodInventory:
         "get_record_by_path",
         "get_records_by_file_path",
         "get_record_by_external_id",
+        "get_records_by_external_ids",
         "get_record_by_external_revision_id",
         "get_child_record_ids_by_relation_type",
         "get_parent_record_ids_by_relation_type",
@@ -427,6 +428,7 @@ class TestAbstractMethodInventory:
         # File/parent operations
         # Sync point operations
         "get_sync_point",
+        "list_sync_points",
         "upsert_sync_point",
         "update_sync_point_if",
         "backfill_block_name_folded",
@@ -506,6 +508,7 @@ class TestAbstractMethodInventory:
         # Team operations
         "get_team_with_users",
         "get_user_teams",
+        "get_user_team_roles",
         "find_team_by_name",
         "get_team_users",
         "delete_team_member_edges",

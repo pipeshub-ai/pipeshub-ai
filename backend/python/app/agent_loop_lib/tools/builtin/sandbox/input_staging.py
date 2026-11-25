@@ -58,6 +58,9 @@ __all__ = [
     "peek_staged_input_files",
     "add_staged_skill_resources",
     "peek_staged_skill_resources",
+    "stage_workspace_files",
+    "set_staged_workspace_files_for_task",
+    "peek_staged_workspace_files",
 ]
 
 # The sandbox-relative path a `share_parent_results=True` `AgentTool.handle()`
@@ -72,6 +75,9 @@ _staged_input_files: ContextVar[dict[str, bytes] | None] = ContextVar(
 )
 _staged_skill_resources: ContextVar[dict[str, bytes] | None] = ContextVar(
     "_staged_skill_resources", default=None,
+)
+_staged_workspace_files: ContextVar[dict[str, bytes] | None] = ContextVar(
+    "_staged_workspace_files", default=None,
 )
 
 
@@ -174,3 +180,34 @@ def peek_staged_skill_resources() -> dict[str, bytes] | None:
     """Read-only lookup of every skill resource staged so far in this
     context via `add_staged_skill_resources`, or `None` if none."""
     return _staged_skill_resources.get()
+
+
+@contextlib.contextmanager
+def stage_workspace_files(files: dict[str, bytes] | None) -> Iterator[None]:
+    """Expose one immutable VFS checkout to sandbox calls for an agent run."""
+    if not files:
+        yield
+        return
+    token = _staged_workspace_files.set(dict(files))
+    try:
+        yield
+    finally:
+        _staged_workspace_files.reset(token)
+
+
+def set_staged_workspace_files_for_task(files: dict[str, bytes] | None) -> None:
+    """Persist a VFS checkout across PRE_TOOL_USE until this task executes the tool.
+
+    Tool-call tasks are isolated by the turn loop in the same way described
+    for :func:`set_staged_input_files_for_task`; a later or sibling call does
+    not inherit this mutation. The durable checkout is authoritative for its
+    reserved paths, so it replaces rather than merges an older checkout.
+    """
+    if files is None:
+        return
+    _staged_workspace_files.set(dict(files))
+
+
+def peek_staged_workspace_files() -> dict[str, bytes] | None:
+    """Return the current durable workspace checkout, if one was staged."""
+    return _staged_workspace_files.get()

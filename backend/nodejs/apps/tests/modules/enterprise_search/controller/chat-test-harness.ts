@@ -79,6 +79,8 @@ const matchesCondition = (candidates: unknown[], condition: unknown): boolean =>
         return candidates.some((c) => compare(c, argument, (a, b) => a < b))
       case '$lte':
         return candidates.some((c) => compare(c, argument, (a, b) => a <= b))
+      case '$gt':
+        return candidates.some((c) => compare(c, argument, (a, b) => a > b))
       case '$regex': {
         const flags = typeof condition.$options === 'string' ? condition.$options : ''
         const pattern = new RegExp(String(argument), flags)
@@ -232,7 +234,8 @@ const applyUpdate = (doc: SessionDoc | MessageDoc, update: Doc): void => {
   }
   for (const [path, value] of Object.entries((update.$push as Doc | undefined) ?? {})) {
     const current = (doc.get(path) as unknown[] | undefined) ?? []
-    doc.set(path, [...current, value])
+    const each = isPlainObject(value) && Array.isArray(value.$each) ? value.$each : [value]
+    doc.set(path, [...current, ...each])
   }
 }
 
@@ -271,6 +274,12 @@ export class InMemoryChatStore {
     session.set('nextSeq', seq)
     const doc = new ChatSessionMessage({ sessionId: session._id, orgId: session.orgId, seq, ...fields })
     this.messages.push(doc)
+    return doc
+  }
+
+  addCitation(fields: Doc): InstanceType<typeof Citation> {
+    const doc = new Citation(fields)
+    this.citations.push(doc)
     return doc
   }
 
@@ -417,6 +426,7 @@ export class InMemoryChatStore {
     const realCitationSave = Citation.prototype.save
     sinon.stub(Citation.prototype, 'save').callsFake(function (this: InstanceType<typeof Citation>, options?: SessionOption) {
       store.writes.push('citation.save')
+      // A later populated read finds it, as it would in the database.
       store.citations.push(this)
       return realCitationSave.call(this, options as never)
     } as never)

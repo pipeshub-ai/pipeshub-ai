@@ -15,6 +15,7 @@ export function SettingsSection({ title, description, rightAction, children }: S
     <Flex
       direction="column"
       gap="4"
+      data-testid="settings-section"
       style={{
         border: '1px solid var(--olive-3)',
         borderRadius: 'var(--radius-1)',
@@ -26,8 +27,8 @@ export function SettingsSection({ title, description, rightAction, children }: S
       {/* Section header — only rendered when title is provided */}
       {title && (
         <>
-          <Flex align="center" justify="between">
-            <Flex direction="column" gap="1">
+          <Flex align="center" justify="between" wrap="wrap" gap="3">
+            <Flex direction="column" gap="1" style={{ flex: '1 1 240px', minWidth: 0 }}>
               <Text size="3" weight="medium" style={{ color: 'var(--gray-12)' }}>
                 {title}
               </Text>

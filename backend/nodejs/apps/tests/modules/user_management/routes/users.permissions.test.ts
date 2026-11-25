@@ -122,6 +122,8 @@ describe('User routes: who may do what', () => {
   let baseUrl: string;
   let events: { start: sinon.SinonStub; stop: sinon.SinonStub; publishEvent: sinon.SinonStub };
   let mail: { sendMail: sinon.SinonStub };
+  let deactivation: { deactivate: sinon.SinonStub };
+  let tokenRevoker: { revokeEveryTokenForUser: sinon.SinonStub };
   let ids: Record<
     'adminA' | 'memberA' | 'otherMemberA' | 'secondAdminA' | 'adminB' | 'memberB' | 'deletedA' | 'disabledA',
     string
@@ -249,6 +251,8 @@ describe('User routes: who may do what', () => {
       .bind('AuthMiddleware')
       .toConstantValue(new AuthMiddleware(logger, new AuthTokenService(JWT_SECRET, SCOPED_SECRET)));
     mail = { sendMail: sinon.stub().resolves({ statusCode: 200 }) };
+    deactivation = { deactivate: sinon.stub().resolves({ cancelledRuns: 2, pausedSchedules: 1 }) };
+    tokenRevoker = { revokeEveryTokenForUser: sinon.stub().resolves() };
     container.bind('MailService').toConstantValue(mail);
     container.bind('AuthService').toConstantValue({});
     container.bind('EntitiesEventProducer').toConstantValue(events);
@@ -258,7 +262,11 @@ describe('User routes: who may do what', () => {
       .bind('UserController')
       .toConstantValue(
         new UserController(
-          ...([config, mail, {}, logger, events, {}] as unknown as ConstructorParameters<
+          ...([
+            config, mail, {}, logger, events, {},
+            null, null, null, null, null, null, null,
+            deactivation, tokenRevoker,
+          ] as unknown as ConstructorParameters<
             typeof UserController
           >),
         ),
@@ -534,6 +542,95 @@ describe('User routes: who may do what', () => {
 
       expect(res.status).to.equal(200);
       expect(credentials.rows[0]).to.include({ isBlocked: false, wrongCredentialCount: 0 });
+    });
+  });
+
+  describe('deactivating and reactivating a member (SEC-AZ-08)', () => {
+    let activities: Row[];
+    beforeEach(() => {
+      activities = [];
+      sinon.stub(UserActivities, 'create').callsFake((async (row: Row) => {
+        // The real schema still validates the row: a type it refuses is what answered 503 on Mongo (R46FIX-1).
+        await new UserActivities(row).validate();
+        // What the account looked like when the activity was recorded.
+        activities.push({ ...row, disabledThen: users.get(String(row.userId))?.isDisabled === true });
+        return row;
+      }) as unknown as typeof UserActivities.create);
+    });
+
+    it('DEACT-7: only an admin of the same org may, never on themselves, another admin or a deleted account', async () => {
+      const member = await call('PUT', `/${ids.otherMemberA}/deactivate`, sessionFor(ids.memberA));
+      expect(member.status).to.equal(403);
+      const otherOrg = await call('PUT', `/${ids.memberB}/deactivate`, sessionFor(ids.adminA));
+      expect(otherOrg.status).to.equal(404);
+      const self = await call('PUT', `/${ids.adminA}/deactivate`, sessionFor(ids.adminA));
+      expect(self.status).to.equal(400);
+      const admin = await call('PUT', `/${ids.secondAdminA}/deactivate`, sessionFor(ids.adminA));
+      expect(admin.status).to.equal(400);
+      expect(errorMessage(admin)).to.match(/demote/);
+      const deleted = await call('PUT', `/${ids.deletedA}/deactivate`, sessionFor(ids.adminA));
+      expect(deleted.status).to.equal(404);
+      const reactivateByMember = await call('PUT', `/${ids.disabledA}/reactivate`, sessionFor(ids.memberA));
+      expect(reactivateByMember.status).to.equal(403);
+      const reactivateOtherOrg = await call('PUT', `/${ids.disabledA}/reactivate`, sessionFor(ids.adminB));
+      expect(reactivateOtherOrg.status).to.equal(404);
+      for (const id of [ids.otherMemberA, ids.memberB, ids.secondAdminA]) {
+        expect(users.get(id)!.isDisabled).to.equal(undefined);
+      }
+      expect(users.get(ids.disabledA)!.isDisabled).to.equal(true);
+      expect(deactivation.deactivate.called).to.equal(false);
+      expect(tokenRevoker.revokeEveryTokenForUser.called).to.equal(false);
+    });
+
+    it('DEACT-8: switches the account off first, then revokes their tokens and stops their runs and schedules; their session ends', async () => {
+      const res = await call('PUT', `/${ids.memberA}/deactivate`, sessionFor(ids.adminA));
+
+      expect(res.status).to.equal(200);
+      expect(res.body).to.deep.include({ cancelledRuns: 2, pausedSchedules: 1 });
+      expect(users.get(ids.memberA)!.isDisabled).to.equal(true);
+      expect(activities).to.have.length(1);
+      expect(activities[0]).to.include({ activityType: 'ACCOUNT DISABLED', disabledThen: false });
+      expect(tokenRevoker.revokeEveryTokenForUser.calledOnceWithExactly(ids.memberA)).to.equal(true);
+      expect(deactivation.deactivate.calledOnceWithExactly(orgA, ids.memberA, ids.adminA)).to.equal(true);
+      expect(tokenRevoker.revokeEveryTokenForUser.calledBefore(deactivation.deactivate)).to.equal(true);
+      const session = await call('GET', `/${ids.otherMemberA}`, sessionFor(ids.memberA));
+      expect(session.status).to.equal(401);
+      expect(users.get(ids.otherMemberA)!.isDisabled).to.equal(undefined);
+    });
+
+    it('DEACT-9: a cascade that fails leaves the account off and answers a retry, which finishes it', async () => {
+      deactivation.deactivate.onFirstCall().rejects(new Error('store down'));
+
+      const failed = await call('PUT', `/${ids.memberA}/deactivate`, sessionFor(ids.adminA));
+
+      expect(failed.status).to.equal(503);
+      expect(errorMessage(failed)).to.match(/Deactivate it again/);
+      expect(users.get(ids.memberA)!.isDisabled).to.equal(true);
+
+      const retried = await call('PUT', `/${ids.memberA}/deactivate`, sessionFor(ids.adminA));
+      expect(retried.status).to.equal(200);
+      expect(deactivation.deactivate.callCount).to.equal(2);
+      // The retry records nothing again: the account was already off.
+      expect(activities).to.have.length(1);
+    });
+
+    it('DEACT-10: reactivating switches the account on and resumes nothing; the admin is told schedules stay paused', async () => {
+      await call('PUT', `/${ids.memberA}/deactivate`, sessionFor(ids.adminA));
+      deactivation.deactivate.resetHistory();
+      tokenRevoker.revokeEveryTokenForUser.resetHistory();
+
+      const res = await call('PUT', `/${ids.memberA}/reactivate`, sessionFor(ids.adminA));
+
+      expect(res.status).to.equal(200);
+      expect((res.body as { message: string }).message).to.match(/schedules stay paused/);
+      expect((res.body as { message: string }).message).to.match(/tokens must be created again/);
+      expect(users.get(ids.memberA)!.isDisabled).to.equal(false);
+      expect(activities.map((a) => a.activityType)).to.deep.equal(['ACCOUNT DISABLED', 'ACCOUNT ENABLED']);
+      expect(deactivation.deactivate.called).to.equal(false);
+      expect(tokenRevoker.revokeEveryTokenForUser.called).to.equal(false);
+
+      const again = await call('PUT', `/${ids.memberA}/reactivate`, sessionFor(ids.adminA));
+      expect(again.status).to.equal(400);
     });
   });
 

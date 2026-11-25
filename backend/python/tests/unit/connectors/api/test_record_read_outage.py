@@ -26,6 +26,7 @@ from app.models.entities import RecordType
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
 from app.utils.user_messages import DATABASE_UNREACHABLE
 from tests.support.log_capture import assert_text_free
+from tests.support.record_access import InMemoryRecordAccess
 from tests.unit.services.graph_db import test_record_access_check_raise as access_stores
 
 RECORD_ID = "rec-1"
@@ -59,7 +60,7 @@ def _neo4j(*, failing: set[str], record_rows: list | None = None, app_exists: bo
     p = Neo4jProvider(logger=MagicMock(), config_service=MagicMock())
     p.client = AsyncMock()
     p.client.execute_query = AsyncMock(side_effect=execute_query)
-    p.check_record_access_with_details = AsyncMock(return_value={"id": RECORD_ID})
+    InMemoryRecordAccess().readable("u1", ORG_ID, RECORD_ID).serve(p)
     return p
 
 
@@ -263,10 +264,12 @@ def _capture_check() -> None:
 
 
 def _checked(check: object) -> Neo4jProvider:
-    graph = _with_record(_neo4j(failing=set()))
-    graph.check_record_access_with_details = AsyncMock(side_effect=check) if isinstance(check, Exception) \
-        else AsyncMock(return_value=check)
-    return graph
+    access = InMemoryRecordAccess().user("u1", ORG_ID).record(RECORD_ID, ORG_ID)
+    if isinstance(check, Exception):
+        access.fail_with(check)
+    elif check is not None:
+        access.grant(RECORD_ID, user="u1", role="OWNER")
+    return access.serve(_with_record(_neo4j(failing=set())))
 
 
 class TestTheAccessCheck:

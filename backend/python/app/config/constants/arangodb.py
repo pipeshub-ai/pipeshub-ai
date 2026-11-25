@@ -72,6 +72,7 @@ class Connectors(Enum):
     SALESFORCE = "SALESFORCE"
     S3 = "S3"
     MINIO = "MINIO"
+    CLOUDFLARE_R2 = "CLOUDFLARE R2"
     GCS = "GCS"
     AZURE_BLOB = "AZURE BLOB"
     AZURE_FILES = "AZURE FILES"
@@ -166,6 +167,7 @@ class AppGroups(Enum):
     GITHUB = "Github"
     S3 = "S3"
     MINIO = "MinIO"
+    CLOUDFLARE_R2 = "Cloudflare R2"
     GOOGLE_CLOUD = "Google Cloud"
     AZURE = "Azure"
     LINEAR = "Linear"
@@ -308,6 +310,8 @@ class CollectionNames(Enum):
     # Agent Builder collections
     AGENT_TEMPLATES = "agentTemplates"
     AGENT_INSTANCES = "agentInstances"
+    # Immutable published versions of an agent (OWD-14); the agent document is the draft.
+    AGENT_VERSIONS = "agentVersions"
 
     # Agent Builder Graph collections
     AGENT_KNOWLEDGE = "agentKnowledge"
@@ -332,6 +336,10 @@ class CollectionNames(Enum):
 
     # Agent -> Skill assignment edge (Agent Builder), mirrors AGENT_HAS_TOOLSET
     AGENT_HAS_SKILL = "agentHasSkill"
+
+    # Knowledge publications (D21): container -publishedVia-> publication
+    KNOWLEDGE_PUBLICATIONS = "knowledgePublications"
+    PUBLISHED_VIA = "publishedVia"
 
 
 class QdrantCollectionNames(Enum):

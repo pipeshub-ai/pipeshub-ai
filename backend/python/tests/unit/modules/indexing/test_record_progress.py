@@ -26,6 +26,7 @@ from app.modules.indexing.record_progress import (
     StallHistory,
     carried_counters,
 )
+from harness_core.testing.virtual_time import on_virtual_time
 
 FLOOR = 0.3
 
@@ -130,7 +131,8 @@ class TestTheStallLimit:
         assert h.stall_seconds(360, 1200) == 360
 
 
-@pytest.mark.asyncio
+# The deadlines are on the loop's clock: on virtual time they are read exactly, whatever the host is doing.
+@on_virtual_time
 class TestTheDeadline:
     async def test_a_record_that_stops_finishing_batches_is_cut_at_the_stall_limit_not_the_cap(self) -> None:
         # Kills: no stall timer (the cap alone ends it).

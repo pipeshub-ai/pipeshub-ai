@@ -2,7 +2,7 @@
 
 import type { AxiosError } from 'axios';
 import { apiClient } from '@/lib/api';
-import { useAuthStore } from '@/lib/store/auth-store';
+import { useAuthStore } from '@/config';
 
 export interface RecentError {
   method: string;

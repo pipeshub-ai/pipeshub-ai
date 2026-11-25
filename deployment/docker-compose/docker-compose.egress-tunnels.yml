@@ -1,0 +1,33 @@
+# HTTPS from sandboxes to the hosts on their own egress allowlists (P5.4b): the
+# egress proxy opens opaque CONNECT tunnels (EGRESS_CONNECT_TUNNELS) and gets one
+# network with a route off the host. Its other networks stay internal, and no other
+# service joins this one, so nothing else gains a way out (C-12).
+#
+#   docker compose -f docker-compose.yml \
+#     -f docker-compose.egress-tunnels.yml up -d
+#
+# The proxy cannot see inside a tunnel: anything a sandbox holds can reach a host it
+# is allowed to tunnel to. It is also the sign-in add-on: people's own Claude accounts
+# in Claude Code need it (GVISOR.md, "Personal Claude accounts"). Read the egress section of
+# docs/agent-harness-v2/guides/security-whitepaper.md before turning this on.
+
+services:
+  # The harness worker reads it too: it offers a person's own vendor sign-in (Claude in Claude Code) only when its
+  # sandboxes can tunnel to the vendor's hosts (SIGNGAP, worker feature `vendor_signin`).
+  pipeshub-ai:
+    environment:
+      EGRESS_CONNECT_TUNNELS: "true"
+  egress-proxy:
+    environment:
+      EGRESS_CONNECT_TUNNELS: "true"
+    networks:
+      sandbox_plane:
+        aliases:
+          - egress-proxy-control
+      sandbox_kv: {}
+      sandbox_egress: {}
+
+networks:
+  # The proxy's only route off the host; never shared with another service.
+  sandbox_egress:
+    driver: bridge
