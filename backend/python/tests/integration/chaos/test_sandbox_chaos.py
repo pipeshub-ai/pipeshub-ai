@@ -36,9 +36,9 @@ def test_capacity_invariants_hold_under_chaos(tmp_path: Path) -> None:
         fault_every_s=0.0,
         phase_script=[(0, "normal"), (3, "storm"), (10, "memory"), (15, "calm")],
         fault_script=[
-            (2, "kill"), (5, "stop_cont"), (7, "corrupt_live"), (8, "clock_fwd"),
+            (2, "kill"), (5, "stop_cont"), (7, "corrupt_live"),
             (9, "kill_leader"), (11, "corrupt_yield"), (12, "reading_gone"), (13, "kv_flaky"),
-            (16, "corrupt_load"), (18, "kill"),
+            (14.5, "clock_fwd"), (16, "corrupt_load"), (18, "kill"),
         ],
         drain_s=20.0,
     )
