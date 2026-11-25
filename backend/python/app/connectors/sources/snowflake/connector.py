@@ -1018,7 +1018,7 @@ class SnowflakeConnector(SyncLifecycleMixin, BaseConnector):
         """Backward-compatible wrapper for scope-aware app-edge creation."""
         await self._ensure_scope_app_edges()
 
-    async def _get_permissions(self) -> list[Permission]:
+    async def _get_permissions(self) -> list[Permission] | None:
         return await database_permissions(self)
 
     async def _record_identity(self, external_id: str) -> tuple[str, Record | None]:
@@ -1718,8 +1718,10 @@ class SnowflakeConnector(SyncLifecycleMixin, BaseConnector):
         return None
 
     @classmethod
-    async def check_connection(cls, auth_config: dict[str, Any], logger: Logger) -> ConnectionCheckResult:
-        return await check_connection(auth_config, logger)
+    async def check_connection(
+        cls, auth_config: dict[str, Any], logger: Logger, *, public_only: bool = True
+    ) -> ConnectionCheckResult:
+        return await check_connection(auth_config, logger, public_only=public_only)
 
     async def test_connection_and_access(self) -> bool:
         if not self.runner:

@@ -5,7 +5,8 @@ that ArangoDB's strict app and org schemas accept the rebuild's state fields.
 
   docker compose -f deployment/docker-compose/docker-compose.integration.graph-db.yml \\
     up -d --wait neo4j-graph-it arango-graph-it
-  cd backend/python && pytest tests/integration/graph_db/test_entity_index_sources_real_backends.py -m integration
+  cd backend/python && NEO4J_IT_URI=bolt://localhost:17687 ARANGO_IT_URL=http://localhost:18529 \\
+    pytest tests/integration/graph_db/test_entity_index_sources_real_backends.py -m integration
 """
 from __future__ import annotations
 
@@ -29,15 +30,14 @@ from app.models.entities import Record, RecordGroupType, RecordType
 from app.modules.indexing.entity_index_rebuild import EntityIndexState
 from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
+from tests.support import it_backends
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(300)]
 
-NEO4J_URI = os.environ.get("NEO4J_IT_URI", "bolt://localhost:17687")
 NEO4J_PASSWORD = os.environ.get("NEO4J_IT_PASSWORD", "ensure-it-pass")
-ARANGO_URL = os.environ.get("ARANGO_IT_URL", "http://localhost:18529")
 ARANGO_PASSWORD = os.environ.get("ARANGO_IT_PASSWORD", "ensure-it-pass")
 ARANGO_DB = "entity_graph_it"
 
@@ -87,7 +87,7 @@ class _Neo4j:
 
     async def clean(self, s: dict[str, str]) -> None:
         await self.run(
-            "MATCH (n) WHERE n.orgId IN [$org, $other] OR n.testRun = $run DETACH DELETE n",
+            "MATCH (n) WHERE n.orgId IN [$org, $other] OR n.parentOrgId = $org OR n.testRun = $run DETACH DELETE n",
             org=s["org"], other=s["other"], run=s["run"],
         )
 
@@ -170,7 +170,8 @@ class _Arango:
 
 
 async def _open_neo4j(monkeypatch: pytest.MonkeyPatch) -> Neo4jProvider:
-    monkeypatch.setenv("NEO4J_URI", NEO4J_URI)
+    neo4j_uri = it_backends.endpoint("NEO4J_IT_URI")
+    monkeypatch.setenv("NEO4J_URI", neo4j_uri)
     monkeypatch.setenv("NEO4J_USERNAME", "neo4j")
     monkeypatch.setenv("NEO4J_PASSWORD", NEO4J_PASSWORD)
     monkeypatch.setenv("NEO4J_DATABASE", "neo4j")
@@ -181,9 +182,10 @@ async def _open_neo4j(monkeypatch: pytest.MonkeyPatch) -> Neo4jProvider:
 
 
 async def _open_arango(monkeypatch: pytest.MonkeyPatch) -> ArangoHTTPProvider:
+    arango_url = it_backends.endpoint("ARANGO_IT_URL")
     config_service = MagicMock()
     config_service.get_config = AsyncMock(return_value={
-        "url": ARANGO_URL, "username": "root", "password": ARANGO_PASSWORD, "db": ARANGO_DB,
+        "url": arango_url, "username": "root", "password": ARANGO_PASSWORD, "db": ARANGO_DB,
     })
     provider = ArangoHTTPProvider(logger, config_service)
     if not await asyncio.wait_for(provider.connect(), timeout=60):
@@ -203,7 +205,7 @@ async def backend(
         pytest.skip(f"{request.param} not available: {exc}")
     run = uuid.uuid4().hex[:10]
     names = ("app", "deleting", "org", "other", "g1", "g2", "t1", "t2", "t_legacy", "t_other",
-             "d_org", "d_global", "r1", "r2", "r3")
+             "d_org", "d_global", "r1", "r2", "r3", "account")
     seeded = {"run": run, **{n: f"{n}-{run}" for n in names}}
     db = helper(provider)
     await db.seed(seeded)
@@ -280,6 +282,18 @@ class TestCandidatesAndState:
         found = await provider.get_entity_index_candidate(ORGS, marker, sweep_before=10**14)
         assert found["_key"] == s["org"]
         assert await provider.get_entity_index_candidate(ORGS, marker) is None
+
+    async def test_a_crm_account_is_never_an_org_candidate(self, backend) -> None:
+        """An account lives among the orgs but is a document of its org: no
+        org pass or sweep runs for it."""
+        provider, db, s = backend
+        marker = f"v1:it-{s['run']}"
+        await db.mark_all(marker, swept_at=10**15)
+        await provider.batch_upsert_nodes([{
+            "id": s["account"], "name": "Acme", "accountType": "enterprise", "isActive": True,
+            "isExternal": True, "parentOrgId": s["org"],
+        }], ORGS)
+        assert await provider.get_entity_index_candidate(ORGS, marker, sweep_before=10**14) is None
 
     async def test_every_state_field_is_accepted(self, backend) -> None:
         """ArangoDB's app and org schemas are strict: an unlisted field fails

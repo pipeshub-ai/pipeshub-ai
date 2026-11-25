@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 
 from fastapi import HTTPException
 
+from app.config.constants.arangodb import ProgressStatus
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.base.error.stream_errors import (
     connector_not_ready,
@@ -20,12 +21,20 @@ from app.connectors.core.base.sync_point.sync_point import (
     generate_record_sync_point_key,
 )
 from app.connectors.core.registry.filters import FilterCollection, IndexingFilterKey
-from app.connectors.core.registry.folder_scope import FolderScope, clean_up_scope
+from app.connectors.core.registry.folder_filter_action_item import (
+    unmatched_folder_patterns_item,
+)
+from app.connectors.core.registry.folder_scope import clean_up_scope
 from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
-from app.connectors.sources.network_share.errors import NetworkShareAuthError
+from app.connectors.sources.network_share.errors import (
+    AccessDeniedError,
+    NetworkShareAuthError,
+)
+from app.connectors.sources.network_share.filters import share_folder_scope
 from app.connectors.sources.network_share.permissions import app_level_permissions
 from app.connectors.sources.network_share.record_mapper import (
     RecordMapper,
+    is_on_disk,
     revision_id,
 )
 from app.connectors.sources.network_share.walker import ShareWalker, WalkResult
@@ -36,7 +45,10 @@ from app.models.entities import (
     RecordGroupType,
     RecordType,
 )
-from app.utils.streaming import create_stream_record_response
+from app.utils.streaming import (
+    create_stream_record_response,
+    stream_with_eager_first_chunk,
+)
 
 if TYPE_CHECKING:
     from logging import Logger
@@ -44,6 +56,7 @@ if TYPE_CHECKING:
     from fastapi.responses import StreamingResponse
 
     from app.config.constants.arangodb import Connectors
+    from app.connectors.core.base.connector.connector_service import ActionItem
     from app.connectors.core.base.data_processor.data_source_entities_processor import (
         DataSourceEntitiesProcessor,
     )
@@ -204,10 +217,22 @@ class ShareWalkReport:
     unreadable: list[str] = field(default_factory=list)
     # Ids of the folders and files that failed to be read; what was stored under them was kept.
     unread: frozenset[str] = frozenset()
+    # The folder patterns of the filter, and those that matched a folder in some share.
+    patterns: frozenset[str] = frozenset()
+    matched: frozenset[str] = frozenset()
+    exclude: bool = False
 
     @property
     def complete(self) -> bool:
         return not self.unreadable and not self.unread
+
+    def unmatched_patterns_item(self) -> ActionItem | None:
+        """The card's note of folder patterns that matched nothing in any share.
+
+        Only a complete walk knows; call it only when ``complete``.
+        """
+        unmatched = self.patterns - self.matched
+        return unmatched_folder_patterns_item(unmatched, exclude=self.exclude) if unmatched else None
 
     def coverage(self) -> FullSyncCoverage:
         """For the full-sync unlink: a walk that skipped something must unlink nothing."""
@@ -251,7 +276,8 @@ async def walk_shares(
     seen: set[str] = set()
     unread: set[str] = set()
     unreadable: list[str] = []
-    folder_scope = FolderScope.from_filters(sync_filters)
+    matched: set[str] = set()
+    folder_scope = share_folder_scope(sync_filters)
     for share_name in shares:
         if not share_name:
             continue
@@ -261,6 +287,7 @@ async def walk_shares(
             )
             seen |= result.seen
             unread |= result.unread
+            matched |= result.matched
             if not result.complete and result.seen == {share_name}:
                 unreadable.append(share_name)
             if result.complete:
@@ -295,7 +322,13 @@ async def walk_shares(
         # A folder that failed to list keeps its own records only, so one
         # unreadable folder does not stop removals everywhere else on the share.
         await prune_unseen(processor, connector_id, seen, logger, unread)
-    return ShareWalkReport(unreadable=unreadable, unread=frozenset(unread))
+    return ShareWalkReport(
+        unreadable=unreadable,
+        unread=frozenset(unread),
+        patterns=frozenset(p.raw for p in folder_scope.patterns),
+        matched=frozenset(matched),
+        exclude=folder_scope.exclude,
+    )
 
 
 def io_share_and_path(record: Record) -> tuple[str, str] | None:
@@ -326,6 +359,7 @@ async def stream_file(
     data_source: INetworkShareDataSource | None,
     record: Record,
     display_name: str,
+    logger: Logger,
 ) -> StreamingResponse:
     if isinstance(record, FileRecord) and not record.is_file:
         raise HTTPException(
@@ -342,22 +376,33 @@ async def stream_file(
         )
     share_name, file_path = path_info
     try:
-        # read_file opens the file on its first chunk, after this function has
-        # returned, where a missing file becomes a generic 500.
         if await data_source.stat(share_name, file_path) is None:
             raise not_found_at_source(display_name)
+        # read_file opens the file on its first chunk. Pulled after this function returned,
+        # a file the account may not read would become a generic 500, retried by indexing.
+        content = await stream_with_eager_first_chunk(data_source.read_file(share_name, file_path))
         return create_stream_record_response(
-            data_source.read_file(share_name, file_path),
+            content,
             filename=record.record_name,
             mime_type=record.mime_type or "application/octet-stream",
             fallback_filename=f"record_{record.id}",
         )
     except HTTPException:
         raise
-    except NetworkShareAuthError as exc:
-        # The source's 401: a reconnect message, never a 401 of our own, which signs the user out.
-        raise map_source_status(HttpStatusCode.UNAUTHORIZED.value, connector=display_name) from exc
+    except (NetworkShareAuthError, AccessDeniedError, FileNotFoundError) as exc:
+        # An expected refusal: the server's own error (the NT status the client translated), no traceback.
+        logger.warning(
+            "Streaming record %s from %s was refused: %s", record.id, display_name, exc.__cause__ or exc
+        )
+        if isinstance(exc, NetworkShareAuthError):
+            # The source's 401: a reconnect message, never a 401 of our own, which signs the user out.
+            raise map_source_status(HttpStatusCode.UNAUTHORIZED.value, connector=display_name) from exc
+        if isinstance(exc, AccessDeniedError):
+            raise map_source_status(HttpStatusCode.FORBIDDEN.value, connector=display_name) from exc
+        raise not_found_at_source(display_name) from exc
     except Exception as exc:
+        # The router logs only failures that reach it unmapped, and an open failure no longer does.
+        logger.error("Error streaming record %s from %s: %s", record.id, display_name, exc, exc_info=True)
         raise to_stream_error(exc, connector=display_name) from exc
 
 
@@ -422,3 +467,42 @@ async def reindex_records(
         await processor.on_new_records(updated)
     if unchanged:
         await processor.reindex_existing_records(unchanged)
+
+
+async def requeue_parked_records(
+    *,
+    data_source: INetworkShareDataSource,
+    processor: DataSourceEntitiesProcessor,
+    records: list[Record],
+    indexing_filters: FilterCollection,
+    logger: Logger,
+) -> list[str]:
+    """Send back to indexing the parked records (AUTO_INDEX_OFF, no reason) whose files are on disk.
+
+    A file moved to slower storage, one the share no longer lists, or one that cannot be read stays
+    parked: reading it would make the server recall it. Each file read is taken from AUTO_INDEX_OFF
+    to NOT_STARTED before its event is sent, so a lost event leaves it to the stranded-record sweep.
+    Returns the ids whose event was sent.
+    """
+    if not records or not indexing_filters.is_enabled(IndexingFilterKey.FILES, default=True):
+        return []
+    on_disk: list[Record] = []
+    for record in records:
+        try:
+            io_path = io_share_and_path(record)
+            if not io_path:
+                continue
+            entry = await data_source.stat(*io_path)
+            if entry is not None and not entry.is_directory and is_on_disk(entry):
+                on_disk.append(record)
+        except Exception:
+            logger.warning("Could not check record %s at the share; it stays for manual indexing", record.id, exc_info=True)
+    if not on_disk:
+        return []
+    moved = set(await processor.data_store_provider.compare_and_set_indexing_status(
+        [r.id for r in on_disk], ProgressStatus.AUTO_INDEX_OFF.value, ProgressStatus.NOT_STARTED.value,
+    ))
+    ready = [r for r in on_disk if r.id in moved]
+    for record in ready:
+        record.indexing_status = ProgressStatus.NOT_STARTED.value
+    return await processor.reindex_existing_records(ready) if ready else []

@@ -8,6 +8,7 @@ import { Spinner } from '@/app/components/ui/spinner';
 import { useTranslation } from 'react-i18next';
 import type { NotificationListItem, NotificationSeverity } from './api';
 import { NOTIFICATIONS_PANEL_TOOLTIP_CLASS } from './notification-filter-menu';
+import { ConnectAccountAction } from '@/app/(main)/workspace/connectors/components/user-access/connect-account';
 
 export type NotificationRowAction =
   | 'markRead'
@@ -82,15 +83,15 @@ function severityIcon(severity: NotificationSeverity): string {
 function severityColor(severity: NotificationSeverity): string {
   switch (severity) {
     case 'info':
-      return 'var(--blue-9)';
+      return 'var(--blue-11)';
     case 'warning':
-      return 'var(--amber-9)';
+      return 'var(--amber-11)';
     case 'critical':
       return 'var(--red-11)';
     case 'success':
-      return 'var(--green-9)';
+      return 'var(--green-11)';
     default:
-      return 'var(--red-9)';
+      return 'var(--red-11)';
   }
 }
 
@@ -266,6 +267,9 @@ export function NotificationRow({
   const title = shared?.title ?? n.title ?? '';
   const message = shared?.message ?? n.message ?? '';
   const href = notificationHref(n.redirectLink ?? '');
+  // An admin asked this user to connect their own account to a team connector: the row carries the button.
+  const connectId =
+    n.payload?.action === 'connect_account' && typeof n.payload.connectorId === 'string' ? n.payload.connectorId : null;
 
   const isRead = n.status === 'read' || n.status === 'archived';
   const readOpacity = isRead ? 0.65 : 1;
@@ -422,6 +426,11 @@ export function NotificationRow({
                 show less
               </span>
             )}
+            {connectId ? (
+              <Box mt="1">
+                <ConnectAccountAction connectorId={connectId} onConnected={() => !isRead && onMarkRead(n)} />
+              </Box>
+            ) : null}
           </Flex>
 
           <Box data-ph-notification-row-meta="">

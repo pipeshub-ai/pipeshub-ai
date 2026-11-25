@@ -17,13 +17,21 @@ anything when pushed past its limits (the stress run).
 | `bench_load.py` | Seeds a knowledge base, then ramps users up through searches and chat, holds them, and fails the run on errors. |
 | `bench_scale.py` | Indexes a much larger corpus, reporting how the run changed as it went. |
 | `bench_stress.py` | Uploads far faster than the stack can index, then checks nothing was lost. |
+| `bench_harness.py` | Agent harness SLO #2: the durable route's non-model latency against the legacy route, on one stack, with a scripted model. Other profiles: the latency gates per mode on the fault-stack rig (`harness_rig.py`, `harness_profiles.py`, `slo_gates.py`). |
 | `scale_metrics.py` | The arithmetic behind those two: slices of a run, drift, overload verdicts. |
 | `compare.py` | Judges a result against a committed baseline. Reports only. |
+| `bench_costclass.py` | Record event to indexed per corpus kind (small text, small PDF, office, scanned, large, huge), open-loop, on local CPU embedding with a fake chat model. |
+| `salt.py` | Per-upload content salts, so the org-wide md5 dedup never sees the same bytes twice. |
+| `fake_ai/server.py` | The fake OpenAI-compatible chat and vision provider, with an optional quota that answers 429. |
+| `tiers.py`, `run_tiers_e2e.sh` | Pick idle cores, check a tier fits, refuse a busy host, run the bench over app tiers. |
+| `../../deployment/docker-compose/docker-compose.bench.yml` | The resource-pinned stack override (cpus, disjoint cpusets, memory) the cost-class bench runs on. |
+| `../../.github/workflows/perf-costclass.yml` | Nightly smoke, weekly 4-CPU run, and dispatchable tiers. |
 | `baselines/<label>.json` | Committed results, one per environment and benchmark. |
 | `../../.github/workflows/perf-indexing.yml` | Runs the indexing benchmark every week on the CI stack. |
 | `../../.github/workflows/perf-query.yml` | Runs the query benchmark every week on the CI stack. |
 | `../../.github/workflows/perf-load.yml` | Runs the sustained-load test every week on the CI stack. |
 | `../../.github/workflows/perf-scale.yml` | Runs the scale run monthly; stress and soak on request. |
+| `../../.github/workflows/perf-harness.yml` | Runs the harness overhead benchmark every week on the `eval` stack. |
 
 It lives in `integration-tests/` rather than `loadtest/` because it drives the
 same API the integration tests do. It reuses their knowledge-base client
@@ -260,6 +268,100 @@ that is roughly 600 chat turns a week, plus the embeddings for 80 files. The
 job's time limit is two hours: about 15 minutes to build and start the stack,
 up to 30 to seed, and the load.
 
+## What the harness overhead benchmark measures
+
+`bench_harness.py` answers one question from
+`docs/agent-harness-v2/SLO.md` (#2): how much slower is an agent turn on the
+durable harness route than on the legacy route, leaving out the model?
+
+- **One stack, both routes, one job.** The org's `ENABLE_AGENT_HARNESS` Labs
+  flag is switched between blocks of samples (`--block`, 20 by default), so a
+  busy runner slows both routes alike. Legacy is
+  `POST /api/v1/agents/{agent}/conversations/stream`; the harness route is
+  what the browser does with the flag on: `POST /api/v1/agents/{agent}/runs`,
+  then the run's SSE stream.
+- **A scripted model in the benchmark process.** It is an OpenAI-compatible
+  server the stack reaches at `--model-url` (by default
+  `host.docker.internal:<port>`). Every call waits `--model-latency-ms` to its
+  first byte and streams the answer in chunks `--chunk-interval-ms` apart. Every
+  call is timed on the benchmark's clock and filed under a tag carried in the
+  question, so "minus the model" subtracts what the model actually took.
+- **The `short-turn` profile.** One question, one read tool (the toolset
+  catalog, `list_toolsets`, which every agent has), one streamed answer. That
+  is two model calls on both routes.
+
+| Measure | Meaning |
+| --- | --- |
+| TTFT, non-model | Request sent to the first `TEXT_MESSAGE_CONTENT` frame, minus the model's time until it wrote its first answer chunk. |
+| Turn done, non-model | Request sent to the root `RUN_FINISHED` frame, minus all the model's time. |
+| Gate | Absolute budget (SLO #2): harness non-model p50 ≤ legacy + `--ttft-budget-ms` (75) at TTFT and ≤ legacy + `--done-budget-ms` (100) at turn done; with `--container`, each durable commit kind's p50 ≤ `--commit-budget-ms` (25). The ratio is reported for information. `--fail-on-gate` makes the exit status say so. |
+| Breakdown | With `--container`, the harness lifecycle logs of the benchmark's runs: each event's `ms` field (commits by kind, claim, admission) and each event's offset from `admission.accepted`. |
+
+Admission is limited to 30 runs a minute per user, so the benchmark waits out a
+`429` and asks again; 200 samples per route took 10 to 20 minutes on a laptop. Run it
+against a stack started from `docker-compose.yml` plus
+`docker-compose.agent-harness.yml` (durable runs need the replica set):
+
+```bash
+python perf/bench_harness.py --base-url http://localhost:3000 \
+  --email admin@example.com --password '...' --bootstrap \
+  --samples 200 --label my-laptop-eval --container pipeshub-ai-pipeshub-ai-1 \
+  --output reports/perf/harness-short-turn.json
+python perf/compare.py --baseline perf/baselines/my-laptop-eval-harness-short-turn.json \
+  --current reports/perf/harness-short-turn.json
+```
+
+### Interactive session ready under saturation (`saturate`, SLO #20)
+
+`--profile saturate` runs on the same stack and scripted model. It fires `--background` scheduled runs (each its
+own webhook schedule, fired once; Labs `ENABLE_SCHEDULED_RUNS` is switched on for the org), whose model asks the read
+tool `--background-steps` times at `--background-latency-ms` a call. Once as many have started as the stack runs at
+once, it admits `--samples` interactive turns (default 12), one every `--turn-interval` seconds, each on its own
+thread. Session ready is admission to the turn's first model call, both on this process's clock. The gate is SLO
+#20: p95 within `--ready-slo-ms` (5000) and every scheduled run completed. The result also reports how many scheduled
+runs the model saw at once and the most calls it served at once, so a run that did not saturate the stack, or a
+provider limit that did not hold, shows in the numbers. No paid model is called.
+
+Saturate the stack on purpose: start it with a small provider limit and a small worker, for example
+`MODEL_GATEWAY_PROVIDER_CONCURRENCY=4` on the `pipeshub-ai` service and the worker's container limited to four
+slots' worth of CPU and memory. Defaults stay within the admission quota (30 runs a minute per user); a refused
+admission is waited out and is not counted in session ready.
+
+```bash
+python perf/bench_harness.py --profile saturate --base-url http://localhost:3000 \
+  --email admin@example.com --password '...' --label my-host --fail-on-gate \
+  --output reports/perf/harness-saturate.json
+```
+
+## Harness latency gates per mode (the fault-stack rig)
+
+`bench_harness.py --profile <name>` with any profile but `short-turn` runs on the fault-stack rig
+(`harness_rig.py`): the production Node harness composition (`fault-stack-server.ts`) and worker
+(`integration-tests/harness/fault/worker.py`) with a scripted model at a fixed token rate, so every number is the
+harness's. It needs Docker, `npm ci` in `backend/nodejs/apps` and the backend's Python (the worker runs
+`app.harness_main`); no stack, no secrets.
+
+| Profile | Measures | SLO |
+|---|---|---|
+| `modes` | `conversation_created`, admission, first token, each delta and the hand-off, for agent quick, auto, react, deep and the assistant's internal_search and web_search | #3, #4, #5 |
+| `cancel` | Stop at a random point of a long answer and of a slow tool, to the run's last frame | #7 |
+| `reconnect` | drop the stream mid-answer, reconnect with `Last-Event-ID`, to the first frame | #8 |
+| `code-mode-5k`, `commits-n16` | commit latency per kind, commits per turn, journal bytes per run | #1, #9, #10 |
+| `mcp-5-servers` | first token with 5 MCP servers discovered per run, against none | #12 |
+| `sandbox` | Docker broker, acquire to a finished command, cold and warm | #17 |
+| `approval`, `deep-wave` | "Allow" to the write running; a wave's spawn and join | — |
+
+```bash
+python perf/bench_harness.py --profile rig --samples 100 --label my-host \
+    --output reports/perf/harness-latency.json --fail-on-gate
+```
+
+`--profile rig` runs every profile a gate reads. The rig brings up the fault compose project (replica set and Redis)
+on `--port-base`; `--mongo-uri`, `--redis-port` and `--redis-db` use a running replica set and one Redis DB instead.
+The rig refuses a DB that already holds keys and clears only that DB when it is done. The gates are `slo_gates.py`: one row per SLO, a threshold with headroom under the SLO target
+or a written reason. A run whose load average went above the core count reports `rerun`; a missed SLO with a
+recorded finding reports `waived`. `baselines/<label>-harness-latency.json` holds a reference run's statistics.
+
 ## Scale, stress and soak runs
 
 These answer different questions from the weekly benchmark, and they cost more,
@@ -368,6 +470,12 @@ For a query run it checks these instead:
 | Searches that found a hit, filtered searches that found a hit, answers that cited a document | fall at all | An empty result is fast and counts as a success, so a run that stopped finding anything improves every latency measure above. The filtered searches get their own row because a knowledge-base filter that stopped matching would be hidden by the unfiltered ones still finding plenty. Any fall here is worth a look. |
 | Failed searches and chat turns | rise at all | The baseline should have none. |
 
+For a harness run it checks each route's TTFT p50 and p95 and turn-done p50
+(non-model, rises more than 30%) and failed turns (rises at all). These catch a
+route drifting from week to week; the SLO gate itself is the ratio inside one
+run, which `bench_harness.py --fail-on-gate` enforces. Runs with a different
+label, broker, model latency or chunk interval are not compared.
+
 Scale results are judged by the indexing checks above, against their own
 baseline (`ci-scale-neo4j-4cpu.json`), because they measure the same things on
 a larger corpus. A scale run is never compared with an indexing run, and corpus
@@ -423,3 +531,83 @@ model leaves that unfinished. A 50-file run on a developer laptop was tried
 first and did not give a usable baseline. The machine was busy with other stacks, and the laptop's LLM ran on
 its CPU. After an hour, 22 of the 47 uploaded files were indexed and the rest
 were still in progress.
+
+## The cost-class benchmark
+
+`bench_costclass.py` measures **record event to indexed** per corpus kind on the configuration that ships:
+local CPU embedding, with only the chat and vision model faked (`fake_ai/server.py`). The cost-class
+corpus (`backend/python/tests/perf/parse_bench/corpus.py`, profiles `cost-smoke`, `cost-standard`,
+`cost-huge`) labels every file with its class, which is the oracle the results are reported by.
+
+* **Latency** is `lastIndexTimestamp - scheduled_arrival_ms`. Uploads follow an open-loop schedule, so a
+  slow stack cannot slow the arrivals, and a stalled upload counts its stall. `createdAtTimestamp` and the
+  client's own timing are diagnostic columns.
+* **Salts** (`salt.py`) put `run_id:seq` into every upload's extracted content (a PDF page, a Word
+  paragraph, a slide run, a cell, a line), so no two uploads share an md5.
+* **Accepted samples**: COMPLETED, one record per upload, a `virtualRecordId` no other record of the run
+  shares, and plausible timestamps. Anything else is rejected with a reason; more than 1 % rejected makes
+  the run **invalid**. `--inject-duplicate` re-uploads one file's exact bytes as a negative control and
+  judges what the product did, not the label: the md5 dedup must give the copy the original's
+  `virtualRecordId`. The same bytes under another vrid, indexed again, **fails** the run.
+* **Invalid, failed, pass**: a sibling container above 70 % of its cpuset, or too many rejections, is
+  *invalid* (exit 3): the numbers are kept and are not a result. A FAILED, missing or timed-out probe is
+  *failed* (exit 1). Cache hits are a diagnostic and never reject a probe.
+* **Scenarios** (`--scenario`): `smoke`, `b01` (huge PDFs plus small probes), `b02`, `b03`, `b05`,
+  `b06` and `b06-knee` (small-only saturation), `calibrate`. Variants that change the run:
+  `--fake-embeddings` (the embedding model faked too), `--fake-ai-base-ms N`, `--chaos kill-app-at=N`. The
+  runner hands the first two to the fake provider's container (`BENCH_FAKE_AI_ARGS`) and the bench reads the
+  running fake's configuration back, so a flag that did not take stops the run. `--chaos` kills the
+  indexing process inside the app container (`kill -9`; `docker kill` would be a manual stop that no restart
+  policy answers) and the container's process monitor restarts it. The verdict needs the kill to have fired and a
+  new indexing process to be running by the end of the run (waited for up to a few minutes).
+  Other stores, brokers, sources and replica counts are not built (the bench stack is Neo4j, Redis, upload,
+  one app container) and have no flags.
+* **Knee:** `b06-knee` runs one indexing process (`INDEXING_UVICORN_WORKERS=1`, checked in the container; a stack
+  with more stops the run) at each tier. `--knee-from <result files>` (the runner calls it after the tiers) keeps
+  valid one-process results and prints `CELL_CPUS` with a confidence: `high` when every tier has a point and a
+  tier above the knee fell short, `medium` when the top tier still scaled (a lower bound), `low` when a tier is
+  missing, the curve recovered after falling short, or the knee is the base tier. With `BENCH_REPEATS=N` a tier
+  has several results, in any file order: its point is the **median** of its repeats, and a repeat that
+  Docling's process capped is left out of the median and listed under `docling_capped_repeats` (a tier whose
+  every repeat was capped makes the whole knee Docling-bound).
+* **Baselines and repeats:** `BENCH_REPEATS=3` runs every tier three times, each on a fresh stack, then
+  `--baseline-from <result files>` decides whether the repeats are a valid baseline: at least three, all passing,
+  the p50 of every kind (and the throughput of a saturation burst) steady with a coefficient of variation of at
+  most 10 %, and, when two burst tiers are present, throughput differing by at least 30 % between them. Anything
+  else exits 3 with the reasons and the baseline is not committed. No baselines are committed yet: they need
+  a quiet host.
+* **Upload errors:** an exception inside the harness's own upload (a file it cannot read or salt) is reported as
+  that upload's error with its cause; it fails the run.
+* **Calibration** reads each family from its own process (`/proc/<pid>/stat` utime+stime of Docling's and the
+  embedding server's process trees, sampled while one unit runs at a single worker). `s_d` is Docling's busy
+  seconds per page. Parse, inspect and raster run inside the indexing process's pools and are reported **not
+  measurable** until the pools report per-unit CPU; their design weights stay. Container CPU over a record's wall
+  time is never used.
+* **CI** (`.github/workflows/perf-costclass.yml`): the nightly `smoke`, and a Saturday `weekly` with one job per
+  run, listed in `costclass_weekly_legs.json` (the control with the embedding model faked runs first, then B-05,
+  B-03 and a scaled B-01, 4 CPUs each). Each job has its own build, start and bench limits, and
+  `integration-tests/unit/test_perf_costclass.py` computes every leg's planned duration from its schedule and
+  fails when it does not fit its step limit with 20 % to spare.
+* **Smoke gates:** `--max-p95-s`, `--max-wall-s` and `--fail-on-log-errors` (any ERROR line of the app's log
+  since the run started, minus `LOG_ERROR_ALLOW`, fails the run).
+
+Run it on a quiet host, one tier at a time:
+
+```bash
+BENCH_TIERS="T4:4:16 T16:16:64" integration-tests/perf/run_tiers_e2e.sh --scenario b05 --dry-run   # the plan
+BENCH_TIERS="T4:4:16" integration-tests/perf/run_tiers_e2e.sh --scenario smoke -- --inject-duplicate
+```
+
+The runner takes the idlest cores of the host for disjoint cpusets (app, Neo4j, Qdrant, Redis, Mongo, the fake
+provider, and mailpit with minio), skips a tier that does not fit with a message, checks the host is under 85 % CPU
+and memory before each tier, and removes each stack with `down -v`. A tier that fails does not stop the next;
+the runner exits non-zero when nothing was measured or any tier failed, and says so for each tier it skipped.
+
+**Not measurable on a 48-CPU shared host:** 48 and 96 CPU app tiers; NUMA; memory bandwidth at 96+ cores;
+256 GB+ working sets; cgroup v1; Neo4j and Qdrant beyond 8 cores; real provider rate limits; HPA and KEDA.
+Every result lists these.
+
+**Large-host recipe:** `BENCH_TIERS="T16:16:64 T32:32:128 T48:48:192 T96:96:256"`, with the siblings scaled up
+in `tiers.py` (`SIBLINGS_STANDARD`, `SIBLINGS_KNEE`) and the `--cpus`/memory of Neo4j and Qdrant raised in the
+compose override. Run `b06-knee` first: its curve sets the one-process CPU count (`knee()` in
+`bench_costclass.py`); `calibrate` measures cores per unit family and Docling's seconds per page.

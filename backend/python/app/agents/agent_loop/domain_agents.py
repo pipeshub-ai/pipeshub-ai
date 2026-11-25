@@ -51,6 +51,7 @@ from app.agent_loop_lib.tools.errors import DuplicateToolNameError, DuplicateToo
 from app.agents.agent_loop.answer_rules import multi_step_answer_rules
 from app.agents.agent_loop.search_query_guidance import keyword_search_query_rule
 from app.agents.agent_loop.sub_agent_prompt import build_sub_agent_prompt
+from app.utils.logging_fields import log_event
 
 if TYPE_CHECKING:
     from app.agent_loop_lib.runtime.runtime import AgentRuntime
@@ -366,7 +367,10 @@ DOMAIN_AGENT_DEFINITIONS: tuple[DomainAgentDefinition, ...] = (
             "fetch that data with the real tools FIRST, then delegate only the "
             "computation/file-generation step to this agent; never delegate data "
             "RETRIEVAL from a connected system to it. Returns the final result "
-            "and paths of files it generated."
+            "and paths of files it generated. A file the user names by a path "
+            "(wiki/plan.md, data/clean.csv) belongs in this chat's workspace at "
+            "that path: say so in the goal (write it under $WORKSPACE_DIR at "
+            "exactly that path); $OUTPUT_DIR only attaches a file to the reply."
         ),
         tool_names=frozenset({
             "run_code", "install_packages", "read_sandbox_file",
@@ -389,9 +393,12 @@ DOMAIN_AGENT_DEFINITIONS: tuple[DomainAgentDefinition, ...] = (
             "data. run_code always sets $OUTPUT_DIR — write ONLY the final "
             "deliverable(s) there and they are attached to the response "
             "automatically as downloadable artifacts; never re-run code to "
-            "\"attach\" or \"provide\" a file already written there. Anything "
-            "written outside $OUTPUT_DIR (intermediates, page renders, scratch "
-            "data) stays inside the sandbox and is never shown to the user."
+            "\"attach\" or \"provide\" a file already written there. Notes, "
+            "data and files you or the user will come back to in a later turn go "
+            "under $WORKSPACE_DIR when run_code's description says it is the "
+            "chat's workspace (they are kept there, not attached); a file the user "
+            "names by a workspace path goes at that path there. Anything else "
+            "(intermediates, page renders, scratch data) stays inside the sandbox."
         ),
     ),
     DomainAgentDefinition(
@@ -610,15 +617,12 @@ def register_domain_agents(
                 )
             )
         except (DuplicateToolNameError, DuplicateToolPathError):
-            logger.warning(
-                "register_domain_agents: name %r already registered — skipping this domain agent",
-                definition.name,
-            )
+            log_event(logger, "domain_agent.duplicate", level=logging.WARNING, role=definition.name)
             continue
         built.append(definition.name)
-        logger.info(
-            "register_domain_agents: built %s with %d tool(s) %s + delegates %s",
-            definition.name, len(claimed_names), claimed_names, delegate_names,
+        log_event(
+            logger, "domain_agent.built", level=logging.DEBUG, role=definition.name,
+            tools=len(claimed_names), delegates=len(delegate_names),
         )
 
     # Only tools claimed by an agent that actually got built leave the

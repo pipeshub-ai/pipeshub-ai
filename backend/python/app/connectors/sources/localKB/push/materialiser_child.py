@@ -64,6 +64,14 @@ def fetch_failed(message: str) -> Refused:
     return Refused(422, "IMAGE_FETCH_FAILED", message)
 
 
+#: ENOSPC and EDQUOT: the spool is full, which is the server's fault.
+DISK_FULL = (28, 122)
+
+
+def spool_full() -> Refused:
+    return Refused(503, "SPOOL_FULL", "The server has no space to hold the request.", retryAfter=5)
+
+
 def too_large(cap: int) -> Refused:
     return Refused(413, "PAYLOAD_TOO_LARGE", "The record is too large once its images are inlined.", limit="resolved", limitBytes=cap)
 
@@ -378,6 +386,8 @@ def _splice(task: dict[str, Any], files: dict[str, tuple[str, int]], totals: Tot
     except OSError as e:
         if e.errno == 27:  # EFBIG: RLIMIT_FSIZE, the file system's own bound
             raise too_large(cap) from None
+        if e.errno in DISK_FULL:
+            raise spool_full() from None
         raise
     return {"size": totals.written, "content_rev": digest.hexdigest()[:16]}
 
@@ -395,6 +405,8 @@ async def run_task(task: dict[str, Any]) -> dict[str, Any]:
             except (aiohttp.ClientError, TimeoutError, OSError) as e:
                 if isinstance(e, OSError) and e.errno == 27:
                     raise too_large(totals.cap) from None
+                if isinstance(e, OSError) and e.errno in DISK_FULL:
+                    raise spool_full() from None
                 # The class name and errno say what broke (refused, TLS, DNS, timeout); the text of the error can carry
                 # the URL and its signature, so it is never copied.
                 cause = type(e).__name__ + (f" errno {e.errno}" if isinstance(e, OSError) and e.errno else "")

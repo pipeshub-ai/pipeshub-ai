@@ -49,7 +49,7 @@ CALLS = {
     "get_record_group_virtual_record_ids": ("g",), "get_record_group_path": ("g",), "get_descendant_virtual_record_ids": ("a",), "get_record_parent_info": ("a",),
     "get_node_depths_batch": ("a", ["b"]), "delete_records_and_relations": ("a",), "_walk_subtree": (None, ["a"], None, [], None),
     "_inventory": (["a"], None, [], None), "_delete_events": ([], {}), "delete_records_recursive": (["a"], "c1"), "delete_single_record": ("a",),
-    "_create_deleted_record_event_payload": ({"id": "a"},),
+    "_create_deleted_record_event_payload": ({"id": "a"},), "is_record_descendant_of": ("a", "b"),
 }
 KW = {"_inventory": {"include_trashed": False, "live_only": True, "transaction": None}, "_walk_subtree": {"include_trashed": False, "live_only": True}}
 

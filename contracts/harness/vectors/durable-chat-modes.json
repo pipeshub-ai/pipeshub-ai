@@ -1,0 +1,13 @@
+{
+  "description": "Chat modes admitted to the durable harness. durableChatModes: an agent's (Node DURABLE_CHAT_MODES); Python derives the same set from MODE_CATALOG: 'auto' plus every mode and alias whose loop kind the durable kernel runs ('react', and 'orchestrator' since K-L). assistantChatModes: the built-in assistant's (Node DURABLE_ASSISTANT_CHAT_MODES); Python derives them from the canonical ChatModePolicy names that legacy serves from /chat/stream (Node sends any mode naming 'agent' to the agent route).",
+  "durableChatModes": [
+    "auto",
+    "deep",
+    "quick",
+    "react"
+  ],
+  "assistantChatModes": [
+    "internal_search",
+    "web_search"
+  ]
+}

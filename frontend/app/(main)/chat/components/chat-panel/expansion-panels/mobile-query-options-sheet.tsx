@@ -96,6 +96,7 @@ export function MobileQueryOptionsSheet({
           onModelSelect={handleModelSelect}
           hideHeader
           agentId={agentId}
+          allowCompare
         />
       )}
       {activePanel === 'connectors' && (
@@ -214,13 +215,13 @@ function ManageRow({ icon, label, subtitle, onClick, disabled }: ManageRowProps)
             {label}
           </Text>
           {subtitle && (
-            <Text size="1" style={{ color: 'var(--gray-10)' }}>
+            <Text size="1" style={{ color: 'var(--gray-11)' }}>
               {subtitle}
             </Text>
           )}
         </Flex>
       </Flex>
-      <MaterialIcon name="chevron_right" size={ICON_SIZES.PRIMARY} color="var(--gray-9)" />
+      <MaterialIcon name="chevron_right" size={ICON_SIZES.PRIMARY} color="var(--gray-11)" />
     </Flex>
   );
 }

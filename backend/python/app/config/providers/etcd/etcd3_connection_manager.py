@@ -1,4 +1,7 @@
 import asyncio
+import threading
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import List, Optional
 
@@ -7,6 +10,8 @@ import etcd3
 from app.utils.logger import create_logger
 
 logger = create_logger("etcd")
+
+_CONNECT_POLL_S = 0.01
 
 
 @dataclass
@@ -76,7 +81,11 @@ class Etcd3ConnectionManager:
         self._health_check_task: Optional[asyncio.Task] = None
         # connect() skips a second caller while one is connecting, which would
         # hand that caller no client, or the closed one during a reconnect.
-        self._connect_lock = asyncio.Lock()
+        # A thread lock, not an asyncio one: ConfigurationService's watch thread
+        # runs its own event loop on this manager, and an asyncio.Lock shared by
+        # two loops raises in one and never wakes the other (QA6-F10: every
+        # Python service hung at startup on KV_STORE_TYPE=etcd).
+        self._connect_lock = threading.Lock()
         logger.debug("✅ Connection manager initialized")
 
     async def connect(self) -> None:
@@ -104,66 +113,62 @@ class Etcd3ConnectionManager:
 
         except Exception as e:
             self.state = ConnectionState.FAILED
-            logger.error("❌ Failed to connect to ETCD: %s", str(e))
-            logger.debug("📋 Connection attempt details:")
-            logger.debug("   - Host: %s", self.config.hosts[0])
-            logger.debug("   - Port: %s", self.config.port)
-            logger.debug("   - Error type: %s", type(e).__name__)
-            logger.exception("Detailed error stack:")
-            raise ConnectionError(f"Failed to connect to ETCD: {str(e)}")
+            raise ConnectionError(f"Failed to connect to ETCD: {e}") from e
 
     def _create_client(self) -> etcd3.client:
         """Create new ETCD client instance."""
         logger.debug("🔄 Creating new ETCD client")
-        try:
-            logger.debug("📋 Client configuration:")
-            logger.debug("   - Host: %s", self.config.hosts[0])
-            logger.debug("   - Port: %s", self.config.port)
-            logger.debug("   - Timeout: %s", self.config.timeout)
+        logger.debug("📋 Client configuration:")
+        logger.debug("   - Host: %s", self.config.hosts[0])
+        logger.debug("   - Port: %s", self.config.port)
+        logger.debug("   - Timeout: %s", self.config.timeout)
 
-            client_kwargs = {
-                "host": self.config.hosts[0],
-                "port": self.config.port,
-                "timeout": self.config.timeout,
-            }
+        client_kwargs = {
+            "host": self.config.hosts[0],
+            "port": self.config.port,
+            "timeout": self.config.timeout,
+        }
 
-            if any([self.config.ca_cert, self.config.cert_key, self.config.cert_cert]):
-                client_kwargs.update(
-                    {
-                        "ca_cert": self.config.ca_cert,
-                        "cert_key": self.config.cert_key,
-                        "cert_cert": self.config.cert_cert,
-                    }
-                )
+        if any([self.config.ca_cert, self.config.cert_key, self.config.cert_cert]):
+            client_kwargs.update(
+                {
+                    "ca_cert": self.config.ca_cert,
+                    "cert_key": self.config.cert_key,
+                    "cert_cert": self.config.cert_cert,
+                }
+            )
 
-            if self.config.auth_enabled:
-                client_kwargs["user"] = self.config.username
-                client_kwargs["password"] = self.config.password
+        if self.config.auth_enabled:
+            client_kwargs["user"] = self.config.username
+            client_kwargs["password"] = self.config.password
 
-            # Create client synchronously since etcd3 doesn't support async
-            client = etcd3.client(**client_kwargs)
+        # Create client synchronously since etcd3 doesn't support async
+        client = etcd3.client(**client_kwargs)
 
-            logger.debug("🔍 Testing connection with status check")
-            status = client.status()
-            logger.debug("📋 ETCD cluster status: %s", status)
+        logger.debug("🔍 Testing connection with status check")
+        status = client.status()
+        logger.debug("📋 ETCD cluster status: %s", status)
 
-            logger.debug("✅ ETCD client created successfully")
-            return client
-
-        except Exception as e:
-            logger.error("❌ Failed to create ETCD client: %s", str(e))
-            logger.debug("📋 Creation attempt details:")
-            logger.debug("   - Error type: %s", type(e).__name__)
-            logger.debug("   - Error message: %s", str(e))
-            logger.exception("Detailed error stack:")
-            raise
+        logger.debug("✅ ETCD client created successfully")
+        return client
 
     async def reconnect(self) -> None:
         """Attempt to reconnect to ETCD cluster."""
         logger.debug("🔄 Initiating reconnection to ETCD")
         logger.debug("📋 Current state: %s", self.state)
-        async with self._connect_lock:
+        async with self._connecting():
             await self._reconnect()
+
+    @asynccontextmanager
+    async def _connecting(self) -> AsyncIterator[None]:
+        """One connect or reconnect at a time, whichever event loop asks. Polled, so a cancelled waiter
+        holds nothing and no loop blocks; connecting is rare."""
+        while not self._connect_lock.acquire(blocking=False):  # noqa: ASYNC110 - an asyncio.Event belongs to one loop too
+            await asyncio.sleep(_CONNECT_POLL_S)
+        try:
+            yield
+        finally:
+            self._connect_lock.release()
 
     async def _reconnect(self) -> None:
         self.state = ConnectionState.DISCONNECTED
@@ -195,13 +200,13 @@ class Etcd3ConnectionManager:
         logger.debug("🔍 Getting ETCD client")
         logger.debug("📋 Current state: %s", self.state)
 
-        async with self._connect_lock:
-            if self.state != ConnectionState.CONNECTED:
-                logger.debug("🔄 Client not connected, initiating connection")
-                await self.connect()
+        if self.state != ConnectionState.CONNECTED:
+            async with self._connecting():
+                if self.state != ConnectionState.CONNECTED:
+                    logger.debug("🔄 Client not connected, initiating connection")
+                    await self.connect()
 
         if not self.client:
-            logger.error("❌ No ETCD client available after connection attempt")
             raise ConnectionError("No ETCD client available")
 
         logger.debug("✅ Returning active ETCD client")

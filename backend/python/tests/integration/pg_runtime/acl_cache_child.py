@@ -2,12 +2,15 @@
 
 import asyncio
 import json
+import logging
 import sys
 import time
-from logging import getLogger
 from types import SimpleNamespace
 
-from app.services.cache.accessible_records_cache import AccessibleRecordsCache
+# Before app is imported: its log lines then go to stderr, not to the stdout this script answers on (docs/logging.md).
+logging.basicConfig()
+
+from app.services.cache.accessible_records_cache import AccessibleRecordsCache  # noqa: E402
 
 
 class Cfg:
@@ -18,7 +21,7 @@ class Cfg:
 
 
 async def main(role: str, graph_file: str) -> None:
-    cache = await AccessibleRecordsCache.create(getLogger("child"), Cfg())
+    cache = await AccessibleRecordsCache.create(logging.getLogger("child"), Cfg())
     print(json.dumps({"cache": type(cache).__name__}), flush=True)
     if role == "connectors":
         await asyncio.sleep(0.3)

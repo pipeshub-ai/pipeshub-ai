@@ -12,6 +12,13 @@ export class HttpError extends BaseError {
   }
 }
 
+/**
+ * A 4xx that normal operation produces, such as the loser of a claim race. The
+ * domain has already logged the decision with its reason, so the error
+ * middleware records it at info instead of as an error with a stack.
+ */
+export class ExpectedRefusalError extends HttpError {}
+
 export class BadRequestError extends HttpError {
   constructor(message: string, metadata?: ErrorMetadata) {
     super('BAD_REQUEST', message, HTTP_STATUS.BAD_REQUEST, metadata);
@@ -23,6 +30,12 @@ export class UnauthorizedError extends HttpError {
     super('UNAUTHORIZED', message, HTTP_STATUS.UNAUTHORIZED, metadata);
   }
 }
+/**
+ * A 401 for a credential the request submitted (a sign-in code, a password, a
+ * CAPTCHA, an identity-provider token) that is wrong, expired or already used.
+ * Answered like any 401; logged as bad_request, since no session expired.
+ */
+export class WrongCredentialError extends UnauthorizedError {}
 export class GoneError extends HttpError {
   constructor(message: string, metadata?: ErrorMetadata) {
     super('GONE', message, HTTP_STATUS.GONE, metadata);

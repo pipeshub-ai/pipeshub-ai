@@ -350,13 +350,75 @@ functions:
       checks: [privileges, catalog, shadowing, plan, timing]
       max_ms: 500
 
+  # Whether an org other than the caller's still holds a live point of this vrid, in any live collection: true or false, never which
+  # org. A delete asks it after removing the caller's own points, to keep the one mapping row (and the stored content) another org's
+  # points of a shared vrid still need. Class write only to bind the one role that may call it (the indexing service, where every
+  # delete of points runs); it changes nothing. The orgs come from org_spaces whatever the space's role: the points foreign key
+  # (org_id, space_id, embedding_dim) -> org_spaces (org_id, space_id, dim) gives every point a row there, and nothing makes it an
+  # active one. One probe of the (org, collection, vrid) index per space row and collection, stopping at the first.
+  - name: retrieval.vrid_held_elsewhere
+    class: write
+    scope: org
+    writer: pipeshub_indexing
+    custom_plan: true
+    args:
+      - {name: p_vrid, type: text, length: [1, 2000]}
+    returns: boolean
+    no_org: "true"
+    reads: [retrieval.points, retrieval.org_spaces, retrieval.collections, retrieval.point_tombstones]
+    body: |
+      -- the LATERAL ... LIMIT 1 keeps the points side a probe per (org, collection): a semi-join may scan every point for the vrid instead
+      RETURN EXISTS (SELECT 1 FROM retrieval.org_spaces s CROSS JOIN retrieval.collections c
+        CROSS JOIN LATERAL (SELECT 1 FROM retrieval.points p WHERE p.org_id = s.org_id AND p.collection_id = c.collection_id AND p.vrid = p_vrid
+                              AND NOT EXISTS (SELECT 1 FROM retrieval.point_tombstones x WHERE x.org_id = p.org_id AND x.point_sk = p.point_sk)
+                              LIMIT 1) hit
+        WHERE s.org_id <> v_org AND c.status <> 'deleting');
+    test:
+      needle: >-
+        DELETE FROM retrieval.points WHERE vrid = 'vr-held';
+        DELETE FROM retrieval.postings WHERE org_id = '{org}';
+        DELETE FROM retrieval.points WHERE org_id = '{org}';
+        DELETE FROM retrieval.collection_stats WHERE org_id = '{org}';
+        DELETE FROM retrieval.org_spaces WHERE org_id = '{org}';
+        INSERT INTO retrieval.collections (collection_id, name, sparse_enabled, sparse_idf, lexical_version) OVERRIDING SYSTEM VALUE VALUES (29997, 'needle-held', true, true, 'v-needle') ON CONFLICT DO NOTHING;
+        INSERT INTO retrieval.embedding_spaces (space_id, model, dim, metric) OVERRIDING SYSTEM VALUE VALUES (30001, 'needle-model', 4, 'cosine') ON CONFLICT DO NOTHING;
+        INSERT INTO retrieval.org_spaces (org_id, space_id, dim, role) VALUES ('{org}', 30001, 4, 'active');
+        INSERT INTO retrieval.points (org_id, collection_id, space_id, point_id, group_key, vrid, embedding, embedding_dim)
+          VALUES ('{org}', 29997, 30001, gen_random_uuid(), 'vr-held', 'vr-held', '[1,0,0,0]'::ext.halfvec, 4)
+      args: ["vr-held"]
+      own_result: [[false]]
+      other_result: [[true]]
+      no_org_result: [[true]]
+      bad_args: [[""], [null]]
+      volume: >-
+        DELETE FROM retrieval.postings WHERE org_id = '{org}';
+        DELETE FROM retrieval.points WHERE org_id = '{org}';
+        DELETE FROM retrieval.collection_stats WHERE org_id = '{org}';
+        DELETE FROM retrieval.org_spaces WHERE org_id = '{org}';
+        INSERT INTO retrieval.embedding_spaces (space_id, model, dim, metric) OVERRIDING SYSTEM VALUE VALUES (30001, 'needle-model', 4, 'cosine') ON CONFLICT DO NOTHING;
+        INSERT INTO retrieval.org_spaces (org_id, space_id, dim, role) VALUES ('{org}', 30001, 4, 'active');
+        INSERT INTO retrieval.points (org_id, collection_id, space_id, point_id, group_key, vrid, embedding, embedding_dim)
+          SELECT '{org}', 29997, 30001, gen_random_uuid(), 'vr-' || g, 'vr-' || g, '[1,0,0,0]'::ext.halfvec, 4 FROM generate_series(1, 6000) g
+      max_ms: 100
+
   # ---- the lexical leg ---------------------------------------------------------------------------------------
   # Sparse (term id, weight) query against the bound org's active space, exact BM25 as Qdrant's IDF modifier computes it:
   # sum over query terms of ln((n - df + 0.5) / (df + 0.5) + 1) * query weight * stored weight, written ln(n + 1) - ln(df + 0.5)
   # (the same number; the catalog check refuses a division in a vetted body). df is the number of the term's postings, n the folded
-  # count of points that have terms (the folded count plus the deltas not folded yet), so both are exact at once. Every posting of every
-  # query term is read (index-only scans) and summed per point; membership and tombstones are checked on the best points only, until p_leg pass.
-  # Membership: all four arms NULL = the whole org; otherwise a point passes when its group is in p_direct or has a member in an arm.
+  # count of points that have terms (the folded count plus the deltas not folded yet), so both are exact at once.
+  # The answer is the best p_leg points that pass, exactly, without summing every posting of every term:
+  # * at most 200,000 postings for the query: every posting is summed (unless the next rule is cheaper);
+  # * arms that admit few points: those points are scored on every term directly (an index probe per point and term);
+  # * otherwise max-score pruning: each term has a bound, |query weight x idf| x the largest |weight| of its postings (retrieval_0008,
+  #   kept beside its frequency; for postings written before it, not known until the fold worker has filled it in the background, or
+  #   recount has computed it, and while a delta written before it is still unfolded: such a term is summed in full). The postings of
+  #   the common terms are left
+  #   out of the candidates while the sum of their bounds stays below the last score of the answer: a point that has none of the other
+  #   terms scores at most that sum. Every candidate is still scored on the left-out terms (an index probe each), best partial sum first,
+  #   in windows, until the rest cannot reach the answer. When the sum is not below it, terms join the candidates, cheapest first, up to
+  #   all of them (the exhaustive sum).
+  # Membership: all four arms NULL = the whole org; otherwise a point passes when its group is in p_direct or has a member in an arm; a
+  # tombstoned point never passes.
   - name: retrieval.search_sparse
     class: read
     scope: org
@@ -372,9 +434,13 @@ functions:
       - {name: p_must_vrids, type: "text[]", nullable: true, max_items: 100000}
       - {name: p_leg, type: int, range: [1, 1000]}
     returns: "TABLE (point_sk bigint, score double precision)"
-    reads: [retrieval.postings, retrieval.points, retrieval.group_members, retrieval.point_tombstones, retrieval.collection_stats, retrieval.lexical_df_delta, retrieval.org_spaces]
+    reads: [retrieval.postings, retrieval.points, retrieval.group_members, retrieval.point_tombstones, retrieval.collection_stats, retrieval.lexical_df_delta, retrieval.org_spaces,
+            retrieval.lexical_df, retrieval.lexical_term_delta, retrieval.lexical_df_pending]
     body: |
-      DECLARE v_space smallint; v_n bigint; v_k int; v_sks bigint[]; v_scs double precision[]; v_total bigint;
+      DECLARE v_space smallint; v_n bigint; v_kept boolean; v_tomb boolean; v_big boolean; v_tot bigint; v_k int; v_t bigint[]; v_f double precision[];
+              v_ub double precision[]; v_df bigint[]; v_nt int; v_j int; v_i int; v_pj double precision; v_sk bigint; v_sc double precision;
+              v_bsk bigint[]; v_bsc double precision[]; v_nc int; v_w int; v_cut boolean; v_last double precision; v_sks bigint[];
+              v_scs double precision[]; v_theta double precision;
       BEGIN
         IF cardinality(p_terms) < 1 OR cardinality(p_weights) <> cardinality(p_terms) THEN
           RAISE EXCEPTION 'search_sparse: invalid arguments' USING ERRCODE = '22023';
@@ -386,47 +452,151 @@ functions:
              + coalesce((SELECT sum(d.d) FROM retrieval.lexical_df_delta d
                           WHERE d.org_id = v_org AND d.collection_id = p_collection AND d.space_id = v_space AND d.term = -1), 0)
           INTO v_n;
-          -- check the best points first (a top-N sort of the sums, not a full sort), best first, until p_leg pass: the point must exist
-          -- and carry no tombstone whatever the filter, and pass the membership arms when there are any (all four NULL: the whole org);
-          -- if the best v_k are not enough and there are more, go again over all of them
-          FOREACH v_k IN ARRAY ARRAY[p_leg * 8, NULL] LOOP          -- the last pass has no bound (LIMIT NULL)
-            WITH q AS MATERIALIZED (
-              SELECT CASE WHEN t.term > 2147483647 THEN t.term - 4294967296 ELSE t.term END AS term, t.qw
-                FROM unnest(p_terms, p_weights) AS t(term, qw) WHERE t.term IS NOT NULL AND t.qw IS NOT NULL),
-            idf AS MATERIALIZED (
-              SELECT q.term, q.qw * (ln(greatest(v_n, d.c) + 1) - ln(d.c + 0.5)) AS f
-                FROM q CROSS JOIN LATERAL (SELECT count(*) AS c FROM retrieval.postings p
-                                            WHERE p.org_id = v_org AND p.collection_id = p_collection AND p.space_id = v_space AND p.term = q.term) d
-               WHERE d.c > 0),
-            agg AS MATERIALIZED (
-              SELECT x.point_sk, sum(i.f * x.w) AS sc
-                FROM idf i CROSS JOIN LATERAL (
-                  SELECT p.point_sk, p.w FROM retrieval.postings p
-                   WHERE p.org_id = v_org AND p.collection_id = p_collection AND p.space_id = v_space AND p.term = i.term) x
-               GROUP BY x.point_sk),
-            kept AS (
-              SELECT b.point_sk, b.sc FROM (SELECT a.point_sk, a.sc FROM agg a ORDER BY a.sc DESC, a.point_sk LIMIT v_k) b JOIN LATERAL (
-                SELECT 1 AS ok FROM retrieval.points p
-                 WHERE p.org_id = v_org AND p.point_sk = b.point_sk
-                   AND (p_must_vrids IS NULL OR p.group_key = ANY(p_must_vrids))
-                   AND ((p_apps IS NULL AND p_groups IS NULL AND p_roots IS NULL AND p_direct IS NULL)
-                        OR p.group_key = ANY(p_direct)
-                        OR EXISTS (SELECT 1 FROM retrieval.group_members m
-                                    WHERE m.org_id = v_org AND m.collection_id = p_collection AND m.group_key = p.group_key
-                                      AND ((m.kind = 1 AND m.member_id = ANY(p_apps)) OR (m.kind = 2 AND m.member_id = ANY(p_groups))
-                                           OR (m.kind = 3 AND m.member_id = ANY(p_roots)))))
-                   AND NOT EXISTS (SELECT 1 FROM retrieval.point_tombstones x WHERE x.org_id = v_org AND x.point_sk = p.point_sk)
-                 LIMIT 1) m ON true
-              ORDER BY b.sc DESC, b.point_sk
-              LIMIT p_leg)
-            SELECT coalesce(array_agg(k.point_sk ORDER BY k.sc DESC, k.point_sk), '{}'), coalesce(array_agg(k.sc ORDER BY k.sc DESC, k.point_sk), '{}'),
-                   (SELECT count(*) FROM (SELECT 1 FROM agg LIMIT coalesce(v_k + 1, 2147483647)) c)   -- only 'more than v_k?' is asked
-              INTO v_sks, v_scs, v_total FROM kept k;
-            IF cardinality(v_sks) >= p_leg OR v_k IS NULL OR v_total <= v_k THEN
-              RETURN QUERY SELECT u.sk, u.sc FROM unnest(v_sks, v_scs) AS u(sk, sc) ORDER BY u.sc DESC, u.sk;
-              RETURN;
-            END IF;
+        -- a term's frequency is kept (retrieval_0005: folded + deltas, in this statement's snapshot) unless the collection's postings
+        -- predate it and recount has not run: then it is the number of the term's postings, counted, and its bound is not known
+        SELECT NOT EXISTS (SELECT 1 FROM retrieval.lexical_df_pending x
+                            WHERE x.org_id = v_org AND x.collection_id = p_collection AND x.space_id = v_space) INTO v_kept;
+        SELECT EXISTS (SELECT 1 FROM retrieval.point_tombstones x WHERE x.org_id = v_org) INTO v_tomb;
+        -- the query terms, most common first and those whose bound is not known last: f = query weight x idf, c the frequency,
+        -- ub = |f| x the largest |weight|; a bound is not known when the folded row or any delta of the term lacks it
+        SELECT coalesce(array_agg(s.term ORDER BY s.ub IS NULL, s.c DESC, s.o), '{}'), coalesce(array_agg(s.f ORDER BY s.ub IS NULL, s.c DESC, s.o), '{}'),
+               coalesce(array_agg(s.ub ORDER BY s.ub IS NULL, s.c DESC, s.o), '{}'), coalesce(array_agg(s.c ORDER BY s.ub IS NULL, s.c DESC, s.o), '{}')
+          INTO v_t, v_f, v_ub, v_df
+          FROM (SELECT q.term, q.o, d.c, q.qw * (ln(greatest(v_n, d.c) + 1) - ln(d.c + 0.5)) AS f,
+                       abs(q.qw * (ln(greatest(v_n, d.c) + 1) - ln(d.c + 0.5))) * d.wmax AS ub
+                  FROM (SELECT CASE WHEN t.term > 2147483647 THEN t.term - 4294967296 ELSE t.term END AS term, t.qw, t.o
+                          FROM unnest(p_terms, p_weights) WITH ORDINALITY AS t(term, qw, o) WHERE t.term IS NOT NULL AND t.qw IS NOT NULL) q
+                  CROSS JOIN LATERAL (
+                    SELECT CASE WHEN v_kept THEN coalesce(f.df, 0) + coalesce(x.d, 0)
+                                ELSE (SELECT count(*) FROM retrieval.postings p
+                                       WHERE p.org_id = v_org AND p.collection_id = p_collection AND p.space_id = v_space AND p.term = q.term) END AS c,
+                           CASE WHEN v_kept AND NOT coalesce(x.unknown, false) AND (f.term IS NULL OR f.wmax IS NOT NULL)
+                                THEN greatest(f.wmax, x.wmax) END AS wmax
+                      FROM (SELECT sum(t.d) AS d, max(t.wmax) AS wmax, bool_or(t.wmax IS NULL) AS unknown FROM retrieval.lexical_term_delta t
+                             WHERE t.org_id = v_org AND t.collection_id = p_collection AND t.space_id = v_space AND t.term = q.term) x
+                      LEFT JOIN retrieval.lexical_df f
+                        ON f.org_id = v_org AND f.collection_id = p_collection AND f.space_id = v_space AND f.term = q.term
+                     LIMIT 1) d       -- LIMIT keeps it from being pulled up: d.c is used three times and is read once per term
+                 WHERE d.c > 0) s;
+        v_nt := cardinality(v_t);
+        IF v_nt = 0 THEN RETURN; END IF;
+        -- at most 200,000 postings in all: the exhaustive sum below (v_j = 0) is the cheapest way, unless the arms admit so few points
+        -- (at most 100,000 divided by the number of terms, and at most twice as many probes as postings, each of which the sum would
+        -- otherwise check) that scoring those points directly is cheaper
+        -- (they are counted group by group, a duplicate twice)
+        v_k := div(100000, v_nt);
+        v_tot := (SELECT sum(u) FROM unnest(v_df) u);
+        v_big := v_tot > 200000;
+        IF NOT (p_apps IS NULL AND p_groups IS NULL AND p_roots IS NULL AND p_direct IS NULL) THEN
+          SELECT count(*) INTO v_nc FROM (SELECT 1 FROM (
+                 SELECT m.group_key FROM retrieval.group_members m
+                  WHERE m.org_id = v_org AND m.collection_id = p_collection AND m.kind = 1 AND m.member_id = ANY(p_apps)
+                 UNION ALL SELECT m.group_key FROM retrieval.group_members m
+                  WHERE m.org_id = v_org AND m.collection_id = p_collection AND m.kind = 2 AND m.member_id = ANY(p_groups)
+                 UNION ALL SELECT m.group_key FROM retrieval.group_members m
+                  WHERE m.org_id = v_org AND m.collection_id = p_collection AND m.kind = 3 AND m.member_id = ANY(p_roots)
+                 UNION ALL SELECT unnest(p_direct)) g
+               CROSS JOIN LATERAL (SELECT 1 FROM retrieval.points p
+                                    WHERE p.org_id = v_org AND p.collection_id = p_collection AND p.group_key = g.group_key LIMIT v_k + 1) x
+               LIMIT v_k + 1) c;
+        END IF;
+        IF v_nc <= v_k AND (v_big OR v_nc * v_nt <= 2 * v_tot) THEN
+          RETURN QUERY
+            SELECT a.sk, sum(e.f * x.w) AS sc
+              FROM (SELECT p.point_sk AS sk FROM (
+                      SELECT m.group_key FROM retrieval.group_members m
+                       WHERE m.org_id = v_org AND m.collection_id = p_collection AND m.kind = 1 AND m.member_id = ANY(p_apps)
+                      UNION SELECT m.group_key FROM retrieval.group_members m
+                       WHERE m.org_id = v_org AND m.collection_id = p_collection AND m.kind = 2 AND m.member_id = ANY(p_groups)
+                      UNION SELECT m.group_key FROM retrieval.group_members m
+                       WHERE m.org_id = v_org AND m.collection_id = p_collection AND m.kind = 3 AND m.member_id = ANY(p_roots)
+                      UNION SELECT unnest(p_direct)) g
+                    JOIN retrieval.points p ON p.org_id = v_org AND p.collection_id = p_collection AND p.group_key = g.group_key
+                   WHERE p.space_id = v_space AND (p_must_vrids IS NULL OR p.group_key = ANY(p_must_vrids))
+                     AND NOT (v_tomb AND EXISTS (SELECT 1 FROM retrieval.point_tombstones x WHERE x.org_id = v_org AND x.point_sk = p.point_sk))) a
+             CROSS JOIN unnest(v_t, v_f) AS e(term, f)
+             CROSS JOIN LATERAL (SELECT q.w FROM retrieval.postings q
+                                  WHERE q.org_id = v_org AND q.collection_id = p_collection AND q.space_id = v_space
+                                    AND q.term = e.term AND q.point_sk = a.sk LIMIT 1) x
+             GROUP BY a.sk ORDER BY sc DESC, a.sk LIMIT p_leg;
+          RETURN;
+        END IF;
+        -- v_j: how many of the most common terms stay out of the candidates (v_pj: the sum of their bounds). First the terms with a bound
+        -- whose postings are more than 5 percent of the points, at most 8 (each candidate is probed for each of them), keeping one term in
+        v_j := CASE WHEN v_big THEN least(v_nt - 1, 8, (SELECT count(*) FROM unnest(v_ub, v_df) AS u(ub, c) WHERE u.ub IS NOT NULL AND u.c > v_n * 0.05)) ELSE 0 END;
+        LOOP
+          v_pj := coalesce((SELECT sum(u) FROM unnest(v_ub[1:v_j]) u), 0);
+          -- the candidates by partial sum, best first, read as rows (the sort spills to disk, nothing is held here but a window): the best
+          -- p_leg * 128 (a top-N sort), then, if they do not decide, all of them. A last row with no point flushes the window: a FOR
+          -- query runs as a cursor, which never runs in parallel, so the arms of its UNION ALL come in order
+          FOREACH v_k IN ARRAY ARRAY[p_leg * 128, NULL] LOOP
+            v_sks := '{}'; v_scs := '{}'; v_theta := NULL; v_bsk := '{}'; v_bsc := '{}'; v_w := p_leg * 2; v_nc := 0; v_cut := false; v_last := NULL;
+            FOR v_sk, v_sc IN
+              SELECT a.sk, a.sc FROM (
+                SELECT x.point_sk AS sk, sum(e.f * x.w) AS sc
+                  FROM unnest(v_t[v_j + 1:v_nt], v_f[v_j + 1:v_nt]) AS e(term, f) CROSS JOIN LATERAL (
+                    SELECT p.point_sk, p.w FROM retrieval.postings p
+                     WHERE p.org_id = v_org AND p.collection_id = p_collection AND p.space_id = v_space AND p.term = e.term) x
+                 GROUP BY x.point_sk ORDER BY sc DESC, sk LIMIT v_k) a
+              UNION ALL SELECT NULL, NULL
+            LOOP
+              IF v_sk IS NOT NULL THEN
+                -- the rest score at most this partial sum plus v_pj (a margin of 1e-9 covers the rounding of the sums); with no term left
+                -- out the order is the answer's, so a full answer is final
+                IF v_theta IS NOT NULL AND (v_j = 0 OR v_sc + v_pj + 1e-9 * (abs(v_sc) + abs(v_pj) + abs(v_theta)) < v_theta) THEN
+                  v_cut := true;
+                ELSE
+                  v_bsk := v_bsk || v_sk; v_bsc := v_bsc || v_sc; v_nc := v_nc + 1; v_last := v_sc;
+                END IF;
+              END IF;
+              IF cardinality(v_bsk) > 0 AND (v_sk IS NULL OR v_cut OR cardinality(v_bsk) >= v_w) THEN
+                -- the window's points that pass (the point exists, carries no tombstone whatever the filter, passes the arms), scored on
+                -- the left-out terms too, merged into the answer
+                SELECT coalesce(array_agg(z.sk ORDER BY z.sc DESC, z.sk), '{}'), coalesce(array_agg(z.sc ORDER BY z.sc DESC, z.sk), '{}')
+                  INTO v_sks, v_scs
+                  FROM (SELECT y.sk, y.sc FROM (
+                          SELECT c.sk, c.sc + coalesce((SELECT sum(n.f * x.w) FROM unnest(v_t[1:v_j], v_f[1:v_j]) AS n(term, f)
+                                                          CROSS JOIN LATERAL (SELECT q.w FROM retrieval.postings q
+                                                            WHERE q.org_id = v_org AND q.collection_id = p_collection AND q.space_id = v_space
+                                                              AND q.term = n.term AND q.point_sk = c.sk LIMIT 1) x), 0) AS sc
+                            FROM unnest(v_bsk, v_bsc) AS c(sk, sc) JOIN LATERAL (
+                              SELECT 1 AS ok FROM retrieval.points p
+                               WHERE p.org_id = v_org AND p.point_sk = c.sk
+                                 AND (p_must_vrids IS NULL OR p.group_key = ANY(p_must_vrids))
+                                 AND ((p_apps IS NULL AND p_groups IS NULL AND p_roots IS NULL AND p_direct IS NULL)
+                                      OR p.group_key = ANY(p_direct)
+                                      OR EXISTS (SELECT 1 FROM retrieval.group_members m
+                                                  WHERE m.org_id = v_org AND m.collection_id = p_collection AND m.group_key = p.group_key
+                                                    AND ((m.kind = 1 AND m.member_id = ANY(p_apps)) OR (m.kind = 2 AND m.member_id = ANY(p_groups))
+                                                         OR (m.kind = 3 AND m.member_id = ANY(p_roots)))))
+                                 AND NOT (v_tomb AND EXISTS (SELECT 1 FROM retrieval.point_tombstones x WHERE x.org_id = v_org AND x.point_sk = p.point_sk))
+                               LIMIT 1) m ON true
+                          UNION ALL SELECT u.sk, u.sc FROM unnest(v_sks, v_scs) AS u(sk, sc)) y
+                        ORDER BY y.sc DESC, y.sk LIMIT p_leg) z;
+                IF cardinality(v_sks) >= p_leg THEN v_theta := v_scs[p_leg]; END IF;
+                v_bsk := '{}'; v_bsc := '{}'; v_w := least(v_w * 2, 4096);     -- windows grow, up to a fixed size: memory stays bounded
+              END IF;
+              EXIT WHEN v_cut;
+            END LOOP;
+            -- decided: the rest could not reach the answer, the pass held every candidate, or those it did not hold cannot reach it
+            EXIT WHEN v_cut OR v_k IS NULL OR v_nc < v_k OR (v_theta IS NOT NULL
+                   AND (v_j = 0 OR v_last + v_pj + 1e-9 * (abs(v_last) + abs(v_pj) + abs(v_theta)) < v_theta));
           END LOOP;
+          -- exact when no term is left out, or when a point that has none of the candidates' terms (it scores at most v_pj) cannot enter
+          IF v_j = 0 OR (v_theta IS NOT NULL AND v_pj + 1e-9 * (abs(v_pj) + abs(v_theta)) < v_theta) THEN
+            RETURN QUERY SELECT u.sk, u.sc FROM unnest(v_sks, v_scs) AS u(sk, sc) ORDER BY u.sc DESC, u.sk;
+            RETURN;
+          END IF;
+          -- the least common left-out terms join: with a full answer, until the bounds of the rest sum below its last score (the next pass
+          -- then decides); without one, the next one
+          v_i := v_j - 1;
+          IF v_theta IS NOT NULL THEN
+            WHILE v_i > 0 AND (SELECT sum(u) FROM unnest(v_ub[1:v_i]) u) * (1 + 1e-9) + 1e-9 * abs(v_theta) >= v_theta LOOP
+              v_i := v_i - 1;
+            END LOOP;
+          END IF;
+          v_j := v_i;
+        END LOOP;
       END;
     test:
       needle: >-

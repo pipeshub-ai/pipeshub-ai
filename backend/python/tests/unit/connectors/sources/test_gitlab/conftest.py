@@ -34,6 +34,7 @@ def make_mock_connector() -> MagicMock:
     c._is_auditor = False
     c._auditor_fallback_warned = False
     c._gitlab_user_id = None
+    c._project_reader_ids = {}
     c.creator_email = None
     c.created_by = "test-user-1"
 
@@ -58,6 +59,7 @@ def make_mock_connector() -> MagicMock:
     dep.get_user_by_user_id = AsyncMock(return_value=None)
     dep.reindex_existing_records = AsyncMock()
     dep.has_stored_permissions = AsyncMock(return_value=False)
+    dep.note_kept_user_group = AsyncMock()
     c.data_entities_processor = dep
 
     # runtime helper (used by sync helpers)
@@ -79,7 +81,9 @@ def make_mock_connector() -> MagicMock:
     c.listing.list = AsyncMock(side_effect=_listing)
     c.deleted_issues = MagicMock(reconcile=AsyncMock())
     c.deleted_merge_requests = MagicMock(reconcile=AsyncMock())
-    c.removed_projects = MagicMock(remember=AsyncMock(), moved_or_remove=AsyncMock(return_value=None))
+    c.removed_projects = MagicMock(
+        remember=AsyncMock(), moved_or_remove=AsyncMock(return_value=None), remove_unlisted=AsyncMock(),
+    )
     c.note_sync_problem = MagicMock()
     c.sync_problems = []
 

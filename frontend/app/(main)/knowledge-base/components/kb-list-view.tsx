@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useRef, useEffect, type ReactNode } from 'react';
-import { Flex, Box, Text, Checkbox, Button, DropdownMenu, IconButton, Tooltip } from '@radix-ui/themes';
+import { Flex, Box, Text, Checkbox, Button, DropdownMenu, IconButton, Tooltip, VisuallyHidden } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ConnectorIcon } from '@/app/components/ui/ConnectorIcon';
 import { formatSize, formatDate } from '@/lib/utils/formatters';
@@ -44,6 +44,7 @@ import {
   getReindexNodeForTableItem,
   mapReindexOptionsToMenuActions,
 } from '../utils/reindex-label';
+import { useCollectionGroupPermissions, isReindexPermissionLocked, type CollectionGroupPermissions } from '../hooks/use-collection-group-permissions';
 import { ColumnResizeHandle, kbCol, kbColMin, useKbColumnWidths, type KbColumn } from './kb-column-widths';
 
 /** "SOME_STATUS" → "Some Status", for statuses without a dedicated label. */
@@ -60,13 +61,23 @@ export type TableItem = KnowledgeBaseItem | KnowledgeHubNode | AllRecordItem;
 
 /** Extra columns an edition overlay can add after "Updated" (desktop only). */
 export interface KbListExtraColumns {
+  /** The column's header cell itself (a TableHeaderCell): it is not wrapped in another column header. */
   header: ReactNode;
+  /** A row's content for the column, placed inside the row's cell. */
   cell: (item: TableItem) => ReactNode;
 }
 
 // Type guard to check if item is KnowledgeHubNode
 function isKnowledgeHubNode(item: TableItem): item is KnowledgeHubNode {
   return 'nodeType' in item && 'origin' in item;
+}
+
+/** Embedding progress of a record, or null when the API sent none (older backend) or nothing usable. */
+function embedProgressOf(item: KnowledgeHubNode): { done: number; total: number } | null {
+  const { embedDone, embedTotal } = item;
+  if (typeof embedDone !== 'number' || typeof embedTotal !== 'number') return null;
+  if (!Number.isFinite(embedDone) || !Number.isFinite(embedTotal) || embedTotal < 1 || embedDone < 0) return null;
+  return { done: Math.min(Math.floor(embedDone), Math.floor(embedTotal)), total: Math.floor(embedTotal) };
 }
 
 /** Indexing status in words, with the reason when it explains something (failures, pauses). Empty when there is none to show. */
@@ -86,7 +97,14 @@ export function getKbItemStatusLabel(item: TableItem, t: TFunction, withReason =
     let showReason = true;
     switch (item.indexingStatus) {
       case 'COMPLETED': baseLabel = t('kb.indexingStatus.completed'); showReason = false; break;
-      case 'IN_PROGRESS': baseLabel = t('kb.indexingStatus.inProgress'); showReason = false; break;
+      case 'IN_PROGRESS': {
+        const progress = withReason ? embedProgressOf(item) : null;
+        baseLabel = progress
+          ? t('kb.indexingStatus.embeddingProgress', { count: progress.total, done: progress.done, total: progress.total })
+          : t('kb.indexingStatus.inProgress');
+        showReason = false;
+        break;
+      }
       case 'FAILED': baseLabel = t('kb.indexingStatus.failed'); break;
       case 'FILE_TYPE_NOT_SUPPORTED': baseLabel = t('kb.indexingStatus.fileTypeNotSupported'); break;
       case 'NOT_STARTED': baseLabel = t('kb.indexingStatus.notStarted'); break;
@@ -139,18 +157,18 @@ export function getKbItemStatusIcon(item: TableItem, isFolder: boolean): ReactNo
       case 'COMPLETED':
         return <MaterialIcon name={getIndexStatusIcon(item.indexingStatus)} size={16} color="var(--emerald-11)" />;
       case 'IN_PROGRESS':
-        return <LapTimerIcon size={20} color="var(--amber-9)" />;
+        return <LapTimerIcon size={20} color="var(--amber-11)" />;
       case 'FAILED':
-        return <MaterialIcon name={getIndexStatusIcon(item.indexingStatus)} size={16} color="var(--red-9)" />;
+        return <MaterialIcon name={getIndexStatusIcon(item.indexingStatus)} size={16} color="var(--red-11)" />;
       case 'FILE_TYPE_NOT_SUPPORTED':
-        return <MaterialIcon name={getIndexStatusIcon(item.indexingStatus)} size={16} color="var(--red-9)" />;
+        return <MaterialIcon name={getIndexStatusIcon(item.indexingStatus)} size={16} color="var(--red-11)" />;
       case 'NOT_STARTED':
         return (
           <MaterialIcon name={getIndexStatusIcon('NOT_STARTED')} size={16} color="var(--slate-11)" />
         );
       case 'QUEUED':
         return (
-          <MaterialIcon name={getIndexStatusIcon('QUEUED')} size={16} color="var(--blue-9)" />
+          <MaterialIcon name={getIndexStatusIcon('QUEUED')} size={16} color="var(--blue-11)" />
         );
       case 'AUTO_INDEX_OFF':
         return (
@@ -177,15 +195,15 @@ export function getKbItemStatusIcon(item: TableItem, isFolder: boolean): ReactNo
   // For KnowledgeBaseItem, use status
   switch (item.status) {
     case 'indexed':
-      return <MaterialIcon name="check" size={16} color="var(--accent-9)" />;
+      return <MaterialIcon name="check" size={16} color="var(--accent-11)" />;
     case 'processing':
-      return <MaterialIcon name="sync" size={16} color="var(--amber-9)" />;
+      return <MaterialIcon name="sync" size={16} color="var(--amber-11)" />;
     case 'pending':
-      return <MaterialIcon name="schedule" size={16} color="var(--blue-9)" />;
+      return <MaterialIcon name="schedule" size={16} color="var(--blue-11)" />;
     case 'failed':
-      return <MaterialIcon name="error" size={16} color="var(--red-9)" />;
+      return <MaterialIcon name="error" size={16} color="var(--red-11)" />;
     default:
-      return <MaterialIcon name="schedule" size={16} color="var(--blue-9)" />;
+      return <MaterialIcon name="schedule" size={16} color="var(--blue-11)" />;
   }
 }
 
@@ -200,6 +218,8 @@ export interface KbItemMenuHandlers {
   onReplace?: (item: TableItem) => void;
   onMove?: (item: TableItem) => void;
   onDelete?: (item: TableItem) => void;
+  /** Group permissions: an action the caller may not take stays listed, locked. */
+  groupPermissions?: CollectionGroupPermissions;
 }
 
 /** The "…" menu of one item, shared by the list rows and the grid cards so both offer the same actions. */
@@ -211,22 +231,28 @@ export function getKbItemMenuActions(item: TableItem, t: TFunction, h: KbItemMen
   // Per-item permission (Knowledge Hub nodes only): a shared item can have a lower
   // role than the folder it is listed in.
   const canEditItem = isHubNode ? (item.permission?.canEdit ?? false) : true;
+  const reindexNode = getReindexNodeForTableItem(item, isHubNode);
   const { options: reindexMenuOptions, showMenu: showReindexMenu } = getReindexMenuState(
-    getReindexNodeForTableItem(item, isHubNode),
+    reindexNode,
     !!h.onReindex,
   );
+  const gp = h.groupPermissions;
+  const editLocked = gp ? !gp.canEdit : false;
+  const reindexLocked = isReindexPermissionLocked(reindexNode, gp);
   return [
     { icon: 'folder_open', label: t('kb.rowActions.open'), onClick: h.onOpen },
     !isFolder && h.onDownload && shouldShowDownloadForTableItem(item) && { icon: 'file_download', label: t('action.download'), onClick: () => h.onDownload!(item) },
-    h.onRename && canEditItem && { icon: 'edit', label: t('menu.rename'), onClick: h.onStartRename },
+    h.onRename && canEditItem && { icon: 'edit', label: t('menu.rename'), onClick: h.onStartRename, permissionLocked: editLocked },
     ...(showReindexMenu
-      ? mapReindexOptionsToMenuActions(reindexMenuOptions, t, (statusFilters) => h.onReindex!(item, statusFilters))
+      ? mapReindexOptionsToMenuActions(reindexMenuOptions, t, (statusFilters) => h.onReindex!(item, statusFilters)).map(
+          (action) => ({ ...action, permissionLocked: reindexLocked }),
+        )
       : []),
-    !isFolder && h.onReplace && canEditItem && { icon: 'drive_folder_upload', label: t('action.replace'), onClick: () => h.onReplace!(item) },
+    !isFolder && h.onReplace && canEditItem && { icon: 'drive_folder_upload', label: t('action.replace'), onClick: () => h.onReplace!(item), permissionLocked: editLocked },
     // Move relocates an item within its collection — a collection itself has nothing to move into.
-    h.onMove && canEditItem && !(isHubNode && item.nodeType === 'app') && { icon: 'drive_file_move', label: t('action.move'), onClick: () => h.onMove!(item) },
+    h.onMove && canEditItem && !(isHubNode && item.nodeType === 'app') && { icon: 'drive_file_move', label: t('action.move'), onClick: () => h.onMove!(item), permissionLocked: editLocked },
     // Includes "a collection only by its OWNER", the same rule the bulk bar applies.
-    h.onDelete && canDeleteKbTableItem(item) && { icon: 'delete', label: t('action.delete'), onClick: () => h.onDelete!(item), color: 'red' as const },
+    h.onDelete && canDeleteKbTableItem(item) && { icon: 'delete', label: t('action.delete'), onClick: () => h.onDelete!(item), color: 'red' as const, permissionLocked: gp ? !gp.canDelete : false },
   ];
 }
 
@@ -253,6 +279,9 @@ export const ROW_ACTION_BUTTON: React.CSSProperties = {
   borderRadius: 'var(--radius-1)',
 };
 
+// Phones get the 44px touch target; the header row grows with it so the button is not clipped
+const headerHeight = (isMobile: boolean) => (isMobile ? 44 : 36);
+
 interface TableHeaderCellProps {
   label: string;
   field?: SortField;
@@ -278,6 +307,7 @@ export function TableHeaderCell({
   sort,
   onSort,
 }: TableHeaderCellProps) {
+  const isMobile = useIsMobile();
   const isActive = sortable && field && sort?.field === field;
 
   const handleClick = () => {
@@ -289,49 +319,65 @@ export function TableHeaderCell({
   };
 
   if (sortable) {
+    const ariaSort = isActive ? (sort?.order === 'asc' ? 'ascending' : 'descending') : 'none';
     return (
-      <Button
-        variant="ghost"
-        size="1"
-        color="gray"
-        onClick={handleClick}
+      // The cell carries the column semantics and sort state; the button inside only acts.
+      <Flex
+        role="columnheader"
+        aria-sort={ariaSort}
         style={{
           width,
           flex,
-          justifyContent: align === 'center' ? 'center' : 'flex-start',
-          height: 36,
-          // Radix ghost buttons pull out by their padding, which made neighbouring labels touch
-          margin: 0,
-          minWidth,
-          // Radix buttons default to flex-shrink 0; shrink like the row cells below the header
-          flexShrink: flex ? undefined : 1,
-          // Radix buttons are content-box; the padding must sit inside the column width
-          boxSizing: 'border-box',
-          padding: '0 var(--space-2)',
-          cursor: 'pointer',
-          backgroundColor: 'transparent',
+          // The flexible File name column may shrink to nothing, like its row cells
+          minWidth: flex ? 0 : minWidth,
+          overflow: flex ? 'hidden' : undefined,
+          height: headerHeight(isMobile),
         }}
       >
-        <Text size="1" style={{ color: 'var(--neutral-9)', fontWeight: 400 }}>
-          {label}
-        </Text>
-        <MaterialIcon
-          name={
-            isActive
-              ? sort?.order === 'asc'
-                ? 'arrow_drop_up'
-                : 'arrow_drop_down'
-              : 'arrow_drop_down'
-          }
-          size={16}
-          color={'var(--neutral-9)'}
-        />
-      </Button>
+        <Button
+          variant="ghost"
+          size="1"
+          color="gray"
+          onClick={handleClick}
+          style={{
+            width: '100%',
+            minWidth: 0,
+            justifyContent: align === 'center' ? 'center' : 'flex-start',
+            height: headerHeight(isMobile),
+            // Radix ghost buttons pull out by their padding, which made neighbouring labels touch
+            margin: 0,
+            // Radix buttons are content-box; the padding must sit inside the column width
+            boxSizing: 'border-box',
+            padding: '0 var(--space-2)',
+            cursor: 'pointer',
+            backgroundColor: 'transparent',
+          }}
+        >
+          <Text size="1" style={{ color: 'var(--neutral-11)', fontWeight: 400 }}>
+            {label}
+          </Text>
+          {/* The ligature name is text; hidden, the button's name is the column label alone */}
+          <span aria-hidden="true" style={{ display: 'inline-flex' }}>
+            <MaterialIcon
+              name={
+                isActive
+                  ? sort?.order === 'asc'
+                    ? 'arrow_drop_up'
+                    : 'arrow_drop_down'
+                  : 'arrow_drop_down'
+              }
+              size={16}
+              color={'var(--neutral-11)'}
+            />
+          </span>
+        </Button>
+      </Flex>
     );
   }
 
   return (
     <Flex
+      role="columnheader"
       align="center"
       justify={align === 'center' ? 'center' : 'start'}
       gap="1"
@@ -345,7 +391,7 @@ export function TableHeaderCell({
         padding: '0 var(--space-2)',
       }}
     >
-      <Text size="1" style={{ color: 'var(--neutral-9)', fontWeight: 400 }}>
+      <Text size="1" style={{ color: 'var(--neutral-11)', fontWeight: 400, ...ONE_LINE }}>
         {label}
       </Text>
     </Flex>
@@ -421,6 +467,7 @@ function TableRow({
   const canEditItem = isKnowledgeHubNode(item)
     ? (item.permission?.canEdit ?? false)
     : true;
+  const groupPermissions = useCollectionGroupPermissions();
 
   // Split name into base and extension for files
   const getNameParts = (name: string) => {
@@ -564,6 +611,8 @@ function TableRow({
     >
       {/* Checkbox column — kept as a spacer when hidden so the file name doesn't shift left */}
       <Flex
+        role={showCheckbox ? 'cell' : undefined}
+        aria-hidden={showCheckbox ? undefined : true}
         align="center"
         justify="center"
         style={{ width: '36px', padding: '0 8px', cursor: showCheckbox ? 'pointer' : 'default' }}
@@ -576,6 +625,7 @@ function TableRow({
           <Checkbox
             size="1"
             checked={isSelected}
+            aria-label={t('kb.rowActions.select', { name: item.name })}
             onCheckedChange={() => onSelect()}
             onClick={(e: React.MouseEvent) => e.stopPropagation()}
             style={{cursor: 'pointer'}}
@@ -585,6 +635,7 @@ function TableRow({
 
       {/* File Name */}
       <Flex
+        role="cell"
         align="center"
         gap="2"
         style={{ flex: 1, padding: '0 var(--space-2)', minWidth: 0 }}
@@ -655,7 +706,7 @@ function TableRow({
             <Text
               ref={nameRef}
               size="2"
-              onClick={onRename && canEditItem && canHover ? (e: React.MouseEvent) => {
+              onClick={onRename && canEditItem && groupPermissions.canEdit && canHover ? (e: React.MouseEvent) => {
                 e.stopPropagation();
                 startEditing();
               } : undefined}
@@ -668,7 +719,7 @@ function TableRow({
                 overflow: 'hidden',
                 textOverflow: 'ellipsis',
                 whiteSpace: 'nowrap',
-                cursor: onRename && canEditItem && canHover ? 'text' : 'default',
+                cursor: onRename && canEditItem && groupPermissions.canEdit && canHover ? 'text' : 'default',
               }}
             >
               {item.name}
@@ -676,7 +727,7 @@ function TableRow({
           </Tooltip>
           {/* Phones drop the Status and Source columns; their text moves under the name. */}
           {isMobile && mobileSubtitle && (
-            <Text size="1" style={{ color: 'var(--neutral-9)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            <Text size="1" style={{ color: 'var(--neutral-11)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
               {mobileSubtitle}
             </Text>
           )}
@@ -690,11 +741,11 @@ function TableRow({
 
       {/* Status — tooltip only when an icon exists (avoid empty tooltip when status is null) */}
       {!isMobile && (
-      <Flex align="center" justify="center" style={{ width: kbCol('status'), minWidth: kbColMin('status'), padding: '0 var(--space-2)' }}>
+      <Flex role="cell" align="center" justify="center" style={{ width: kbCol('status'), minWidth: kbColMin('status'), padding: '0 var(--space-2)' }}>
         {(() => {
           if (shouldHideIndexingStatusForHubRecord(item)) {
             return (
-              <Text size="1" style={{ color: 'var(--slate-9)' }}>
+              <Text size="1" style={{ color: 'var(--slate-11)' }}>
                 —
               </Text>
             );
@@ -715,11 +766,11 @@ function TableRow({
 
       {/* Source — All Records rows only; icon + source name on hover */}
       {!isMobile && showSourceColumn && isAllRecordDisplayRow(item) && (
-        <Flex align="center" justify="center" gap="2" style={{ width: kbCol('source'), minWidth: kbColMin('source'), padding: '0 var(--space-2)' }}>
+        <Flex role="cell" align="center" justify="center" gap="2" style={{ width: kbCol('source'), minWidth: kbColMin('source'), padding: '0 var(--space-2)' }}>
           <Tooltip content={item.sourceName} side="top" delayDuration={200}>
             <Box style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>
               {item.sourceType === 'collection' ? (
-                <FolderIcon variant="default" size={20} color="var(--accent-9)" />
+                <FolderIcon variant="default" size={20} color="var(--accent-11)" />
               ) : (
                 <ConnectorIcon type={item.sourceType} size={16} />
               )}
@@ -730,8 +781,8 @@ function TableRow({
 
       {/* Size — hidden on mobile to keep the row readable */}
       {!belowDesktop && (
-        <Flex align="center" justify="center" style={{ width: kbCol('size'), minWidth: kbColMin('size'), padding: '0 var(--space-2)', overflow: 'hidden' }}>
-          <Text size="2" style={{ color: 'var(--neutral-9)', fontWeight: 500, ...ONE_LINE }}>
+        <Flex role="cell" align="center" justify="center" style={{ width: kbCol('size'), minWidth: kbColMin('size'), padding: '0 var(--space-2)', overflow: 'hidden' }}>
+          <Text size="2" style={{ color: 'var(--neutral-11)', fontWeight: 500, ...ONE_LINE }}>
             {isKnowledgeHubNode(item)
               ? formatSize(item.sizeInBytes ?? undefined)
               : formatSize(item.size)
@@ -742,8 +793,8 @@ function TableRow({
 
       {/* Created — hidden on mobile. Skip when timestamp is 0 (source has no real value). */}
       {!belowDesktop && (
-        <Flex align="center" justify="center" style={{ width: kbCol('created'), minWidth: kbColMin('created'), padding: '0 var(--space-2)', overflow: 'hidden' }}>
-          <Text size="2" style={{ color: 'var(--neutral-9)', fontWeight: 500, ...ONE_LINE }}>
+        <Flex role="cell" align="center" justify="center" style={{ width: kbCol('created'), minWidth: kbColMin('created'), padding: '0 var(--space-2)', overflow: 'hidden' }}>
+          <Text size="2" style={{ color: 'var(--neutral-11)', fontWeight: 500, ...ONE_LINE }}>
             {isKnowledgeHubNode(item)
               ? (item.createdAt ? formatDate(item.createdAt) : '-')
               : (item.createdAt ? formatDate(item.createdAt) : '-')
@@ -754,8 +805,8 @@ function TableRow({
 
       {/* Updated — hidden on mobile. Skip when timestamp is 0. */}
       {!isMobile && (
-        <Flex align="center" justify="center" style={{ width: kbCol('updated'), minWidth: kbColMin('updated'), padding: '0 var(--space-2)', overflow: 'hidden' }}>
-          <Text size="2" style={{ color: 'var(--neutral-9)', fontWeight: 500, ...ONE_LINE }}>
+        <Flex role="cell" align="center" justify="center" style={{ width: kbCol('updated'), minWidth: kbColMin('updated'), padding: '0 var(--space-2)', overflow: 'hidden' }}>
+          <Text size="2" style={{ color: 'var(--neutral-11)', fontWeight: 500, ...ONE_LINE }}>
             {isKnowledgeHubNode(item)
               ? (item.updatedAt ? formatDate(item.updatedAt) : '-')
               : (item.updatedAt ? formatDate(item.updatedAt) : '-')
@@ -764,12 +815,13 @@ function TableRow({
         </Flex>
       )}
 
-      {!belowDesktop && extraColumns ? extraColumns.cell(item) : null}
+      {/* display: contents keeps the extension's own layout; the wrapper only gives it the cell role */}
+      {!belowDesktop && extraColumns ? <Box role="cell" style={{ display: 'contents' }}>{extraColumns.cell(item)}</Box> : null}
 
       {/* Actions */}
       {/* A slot per action the list offers, filled or not, so the icons line up from row to row. */}
       {/* Never shrinks: the row menu stays reachable however the columns are sized */}
-      <Flex align="center" justify="center" gap="2" style={{ width: actionsWidth(isMobile, !!onGoToParent), flexShrink: 0, padding: '0 var(--space-2)' }}>
+      <Flex role="cell" align="center" justify="center" gap="2" style={{ width: actionsWidth(isMobile, !!onGoToParent), flexShrink: 0, padding: '0 var(--space-2)' }}>
         {onPreview && !isMobile && (
           <Box style={ACTION_SLOT}>
             {canPreview && (
@@ -831,6 +883,7 @@ function TableRow({
               onReplace,
               onMove,
               onDelete,
+              groupPermissions,
             })}
           />
         </Box>
@@ -950,11 +1003,14 @@ export function KbListView({
     // display: contents keeps the header and body as the parent's flex children while the
     // column-width variables reach every cell inside.
     <div style={{ display: 'contents', ...columnWidthStyle }}>
+      {/* The table holds only its rows; the loading status and the pager sit outside it. */}
+      <div role="table" style={{ display: 'contents' }}>
       {/* Table Header */}
       <Flex
+        role="row"
         align="center"
         style={{
-          height: 36,
+          height: headerHeight(isMobile),
           borderBottom: '1px solid var(--olive-3)',
           backgroundColor: 'var(--olive-2)',
           backdropFilter: 'var(--frost-filter-subtle)',
@@ -963,6 +1019,8 @@ export function KbListView({
       >
         {/* Checkbox column — kept as a spacer when hidden so the File Name column doesn't shift left */}
         <Flex
+          role={showCheckbox ? 'columnheader' : undefined}
+          aria-hidden={showCheckbox ? undefined : true}
           align="center"
           justify="center"
           style={{ width: '36px', padding: '0 var(--space-2)', cursor: showCheckbox ? 'pointer' : 'default' }}
@@ -972,6 +1030,7 @@ export function KbListView({
             <Checkbox
               size="1"
               checked={allSelected}
+              aria-label={t('table.selectAll')}
               onCheckedChange={onSelectAll}
               style={{cursor: 'pointer'}}
             />
@@ -979,7 +1038,7 @@ export function KbListView({
         </Flex>
 
         {/* File Name */}
-        <TableHeaderCell label={t('table.fileName')} field="name" flex={1} sort={sort} onSort={onSort} />
+        <TableHeaderCell label={t('table.fileName')} field="name" sortable flex={1} sort={sort} onSort={onSort} />
         {resizeHandle('name')}
 
         {/* Status — on phones it moves under the name */}
@@ -1013,15 +1072,17 @@ export function KbListView({
         {!belowDesktop && extraColumns ? extraColumns.header : null}
 
         {/* Actions */}
-        <Box style={{ width: actionsWidth(isMobile, !!onGoToParent), flexShrink: 0 }} />
+        <Box role="columnheader" style={{ width: actionsWidth(isMobile, !!onGoToParent), flexShrink: 0 }}>
+          <VisuallyHidden>{t('table.actions')}</VisuallyHidden>
+        </Box>
       </Flex>
 
       {/* Table Body */}
       <Box style={{ position: 'relative', flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
       {(loading || revealing) && (
+        // Only a picture of rows: the loading state is announced outside the table.
         <Box
-          role={loading ? 'status' : undefined}
-          aria-label={loading ? t('common.loading', { defaultValue: 'Loading' }) : undefined}
+          aria-hidden
           onAnimationEnd={(e) => {
             if (e.target === e.currentTarget) setRevealing(false);
           }}
@@ -1051,6 +1112,7 @@ export function KbListView({
         </Box>
       )}
       <Box
+        role="rowgroup"
         className="no-scrollbar"
         style={{ position: 'relative', flex: 1, minHeight: 0, overflowY: 'auto' }}
       >
@@ -1078,11 +1140,16 @@ export function KbListView({
             onDownload={onDownload}
           />
         ))}
-        <Box style={{ height: 96 }} />
+        <Box aria-hidden style={{ height: 96 }} />
       </Box>
       {/* Rows dissolve under the floating composer dock instead of meeting it at a hard edge. */}
       <ProgressiveBlur height={104} />
       </Box>
+      </div>
+
+      {loading && (
+        <VisuallyHidden role="status">{t('common.loading', { defaultValue: 'Loading' })}</VisuallyHidden>
+      )}
 
       {/* Pagination */}
       {pagination && (

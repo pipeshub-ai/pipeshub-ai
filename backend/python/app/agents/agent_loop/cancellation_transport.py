@@ -26,7 +26,9 @@ from typing import TYPE_CHECKING, Any
 from app.agent_loop_lib.core.messages import AssistantMessage, TextPart
 from app.agent_loop_lib.core.responses import ModelResponse, StopReason, TokenUsage
 from app.agent_loop_lib.core.streaming import StreamCompleteEvent, TextDeltaEvent
+from app.agent_loop_lib.core.tasks import wait_owned
 from app.agent_loop_lib.transport.base import LLMTransport
+from harness_core.models.output_bound import output_limit
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -61,6 +63,10 @@ class CancellationAwareTransport(LLMTransport):
     def model_name(self) -> str:
         return self._inner.model_name
 
+    @property
+    def accepts_output_limit(self) -> bool:
+        return self._inner.accepts_output_limit
+
     async def complete(
         self,
         messages: "list[Message]",
@@ -70,11 +76,13 @@ class CancellationAwareTransport(LLMTransport):
         thinking_budget: int | None = None,
         effort: str | None = None,
         system_blocks: "list[str] | None" = None,
+        max_output_tokens: int | None = None,
         *,
         tool_choice: "ToolChoice | None" = None,
     ) -> "ModelResponse":
         return await self._inner.complete(
             messages, tools, system, model, thinking_budget, effort, system_blocks,
+            **output_limit(max_output_tokens),
             **({"tool_choice": tool_choice} if tool_choice else {}),
         )
 
@@ -84,9 +92,10 @@ class CancellationAwareTransport(LLMTransport):
         output_schema: dict[str, Any],
         system: str | None = None,
         model: str | None = None,
+        max_output_tokens: int | None = None,
     ) -> "StructuredResponse":
         return await self._inner.complete_structured(
-            messages, output_schema, system, model,
+            messages, output_schema, system, model, **output_limit(max_output_tokens),
         )
 
     async def stream(
@@ -98,18 +107,20 @@ class CancellationAwareTransport(LLMTransport):
         thinking_budget: int | None = None,
         effort: str | None = None,
         system_blocks: "list[str] | None" = None,
+        max_output_tokens: int | None = None,
         *,
         tool_choice: "ToolChoice | None" = None,
     ) -> "AsyncIterator[StreamEvent]":
         stream_iter = self._inner.stream(
             messages, tools, system, model, thinking_budget, effort, system_blocks,
+            **output_limit(max_output_tokens),
             **({"tool_choice": tool_choice} if tool_choice else {}),
         ).__aiter__()
         # One task for the run of this call: `CancellationToken.wait()`
         # wraps an `asyncio.Event` that, once set, stays set -- reusing the
         # same task across iterations (rather than recreating it) is both
         # cheaper and correct, since a not-yet-done task is safe to pass to
-        # `asyncio.wait()` again next iteration.
+        # `wait_owned()` again next iteration.
         cancel_task = asyncio.ensure_future(self._token.wait())
         text_parts: list[str] = []
         try:
@@ -121,7 +132,7 @@ class CancellationAwareTransport(LLMTransport):
                 if self._token.is_cancelled:
                     break
                 next_chunk_task = asyncio.ensure_future(stream_iter.__anext__())
-                await asyncio.wait(
+                await wait_owned(
                     {next_chunk_task, cancel_task}, return_when=asyncio.FIRST_COMPLETED,
                 )
                 if self._token.is_cancelled:

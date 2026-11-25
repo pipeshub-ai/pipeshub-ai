@@ -16,6 +16,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.services.messaging.kafka.handlers.entity import EntityEventService
+from app.utils.logger import log_record_fields
 
 
 def _make_service(*, strict_container: bool = False) -> EntityEventService:
@@ -44,18 +45,21 @@ class TestCreateAllTeamForOrgException:
     """Lines 523-524: exception during ``batch_upsert_nodes`` is logged and swallowed."""
 
     @pytest.mark.asyncio
-    async def test_exception_logged_and_swallowed(self):
+    async def test_exception_logged_and_swallowed(self, caplog):
         svc = _make_service()
+        svc.logger = logging.getLogger("test_entity_handler_fill")
         svc.graph_provider.batch_upsert_nodes = AsyncMock(
             side_effect=RuntimeError("arango down"),
         )
         # Must not raise
-        result = await svc._create_all_team_for_org("org-1", "u1")
+        with caplog.at_level(logging.DEBUG, logger=svc.logger.name):
+            result = await svc._create_all_team_for_org("org-1", "u1")
         assert result is None
-        svc.logger.error.assert_called_once()
-        msg = svc.logger.error.call_args[0][0]
-        assert "org-1" in msg
-        assert "arango down" in msg
+        [record] = [r for r in caplog.records if r.name == svc.logger.name]
+        fields = log_record_fields(record)
+        assert record.getMessage() == "entity_event.step_failed"
+        assert fields["step"] == "create_all_team"
+        assert "arango down" in fields["error_message"]
 
     @pytest.mark.asyncio
     async def test_defaults_created_by_to_system(self):

@@ -2,8 +2,9 @@
 # Install the command-line tools deploy.sh needs: aws (v2), eksctl, kubectl, helm.
 # macOS and Linux, amd64 and arm64. Windows: run inside WSL2.
 # Installs only what is missing or too old, into ~/.pipeshub/bin, without sudo.
-# Downloads are official releases; kubectl, helm and eksctl are checked against
-# their published SHA-256 sums, and the macOS AWS CLI package against its signature.
+# Downloads are pinned official releases, each checked against the SHA-256 this
+# script carries (never one fetched beside the download), and the macOS AWS CLI
+# package against its signature as well.
 #
 #   ./deployment/helm/aws/install-deps.sh           # install what is missing
 #   ./deployment/helm/aws/install-deps.sh --check   # only report
@@ -17,6 +18,48 @@ ASSUME_YES=false
 
 MIN_EKSCTL=0.200.0
 MIN_HELM=3.11.0
+
+# The versions installed, and their SHA-256 by platform. A checksum read from the
+# server the file comes from proves only the transfer; these prove the bytes. To
+# move a version, take the sums from the release and change the version and its
+# lines together (scripts/supply_chain.py DOWNLOAD-HASH holds this file to it).
+HELM_VERSION=v4.3.2
+EKSCTL_VERSION=v0.231.0
+AWS_CLI_VERSION=2.40.3
+# kubectl by the cluster's minor version (one minor of skew is supported).
+KUBECTL_VERSIONS="1.33:v1.33.13 1.34:v1.34.13 1.35:v1.35.10 1.36:v1.36.6"
+
+pinned_sha256() { # name -> pinned SHA-256, or empty
+  case "$1" in
+    kubectl-v1.33.13-linux-amd64)  echo 316d712726d857c20744c57cb36aa47cfc79bc0af7e82cebf3780244b654c073 ;;
+    kubectl-v1.33.13-linux-arm64)  echo 9fe8aadd5aab9421978c7ac95de6fad304a3c4c0ce9dbf4127579779e0699080 ;;
+    kubectl-v1.33.13-darwin-amd64) echo 5c55bdb8896681b6921cad3cff20a09b424887bb5bcb771de84b42e4322faeeb ;;
+    kubectl-v1.33.13-darwin-arm64) echo 17e3d0a6d9908914c67370b329b6aa9489de7ca035ecd5b7773456cdbe318bbd ;;
+    kubectl-v1.34.13-linux-amd64)  echo b4bb494e9466a7a94bb851414548bc0d3e2f8da90757e6eccc3371e648648591 ;;
+    kubectl-v1.34.13-linux-arm64)  echo 66e8283d52d9bc1f9c0e9daade7c971cd20db5a379306862897dfb25395f3e03 ;;
+    kubectl-v1.34.13-darwin-amd64) echo 7655b001c24adffac62f7905bde27ccdd2f59cc32bb947f72a8f6e984ca69cb1 ;;
+    kubectl-v1.34.13-darwin-arm64) echo c246beefae38db97fd82977864fe9253cd14a3f66325827e56082747bd72143d ;;
+    kubectl-v1.35.10-linux-amd64)  echo c49a28f1f4efc4d475ed05f47f2ce8e563bf7bef69ed77fe1b924ea6d83b6327 ;;
+    kubectl-v1.35.10-linux-arm64)  echo 283f1be6a46b3695b625e25030106b8ffe18bd0d3a900f5b65c259ca407f04f5 ;;
+    kubectl-v1.35.10-darwin-amd64) echo 4787e20d9029871845d8a57bf56f533870f5d98d9cf3b82b6f5e2ad5eaeee3a3 ;;
+    kubectl-v1.35.10-darwin-arm64) echo 77ec066f3404edb81760865c9cd812d03c25e9a89aa0349fd3c1aa60bd5fb068 ;;
+    kubectl-v1.36.6-linux-amd64)   echo 29818b6729dc9262b692307470d0558d027725e738be5dd47c760261868a2634 ;;
+    kubectl-v1.36.6-linux-arm64)   echo 35507ef408c3d38849e5d3203e18f8e861db822aa664101a9ced0869edd06046 ;;
+    kubectl-v1.36.6-darwin-amd64)  echo 2e22d382f2423c88d9d076246f860bb3d5c743dd279ca63e113474bb88382426 ;;
+    kubectl-v1.36.6-darwin-arm64)  echo 1cf735c3d35ccfec28d0618784cb06a4614d2c42aade28b6be0eab76a2ffb623 ;;
+    helm-v4.3.2-linux-amd64.tar.gz)  echo d1c0278d46beab79582d7e50f5b3dc206944ba8e577cde618513fd07daa53983 ;;
+    helm-v4.3.2-linux-arm64.tar.gz)  echo df31cb61680ef728f82c770e5280dd565617bee6b039d37e85c677288be4bbb0 ;;
+    helm-v4.3.2-darwin-amd64.tar.gz) echo 9e0068e9ae18c441d27388190ee7f53ae65eba44bfe910b40bdac44c4b51fa71 ;;
+    helm-v4.3.2-darwin-arm64.tar.gz) echo 6f3421de3a8cc2ac578c8cfb33b8edde290dde2871bc1bab12e24f2e5caeaa90 ;;
+    eksctl-v0.231.0-Linux_amd64.tar.gz)  echo 13cd1c4ae6ad3f74ea27aa1117c72e34ffa4ca8ff6d709261f7b1d7f411dc435 ;;
+    eksctl-v0.231.0-Linux_arm64.tar.gz)  echo aeb095535b4aebe308ca380d26c6a1325012fda9cd2c22b7cdffee2b5de73615 ;;
+    eksctl-v0.231.0-Darwin_amd64.tar.gz) echo 92a3ab9b04033ea69dd4f833f3c89bcefdf0cdff5f54e5bee44342b1911aa114 ;;
+    eksctl-v0.231.0-Darwin_arm64.tar.gz) echo 1e368bf18faf28bd3042bbf1ae1cc2430de8a80d60995898ccfca0423349f140 ;;
+    awscli-exe-linux-x86_64-2.40.3.zip)  echo 4770c06c4ecfc8ba94b60d89e6c7018ab7ea2cf5341b1ef05f6f93c5d6e8b705 ;;
+    awscli-exe-linux-aarch64-2.40.3.zip) echo 4c5f080c6c294eb0da77734c4520f5b5089cf45a4ee757ca34ddf7f9e512e66a ;;
+    AWSCLIV2-2.40.3.pkg)                 echo be032742ff205f7f2d7c189010bbb1f3891d0a67be0b1df0fe9d3e7f5fc5ad30 ;;
+  esac
+}
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -60,15 +103,18 @@ version_ge() { # a b -> a >= b
   return 0
 }
 
-sha256_of() {
-  if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | awk '{print $1}'
-  else shasum -a 256 "$1" | awk '{print $1}'; fi
-}
-
-verify_sha256() { # file expected
-  local got
-  got="$(sha256_of "$1")"
-  [[ "$got" == "$2" ]] || die "checksum mismatch for $(basename "$1"): expected $2, got $got"
+# Checks the file against the SHA-256 pinned for <name>; a file with no pin is refused.
+verify_pinned_sha256() { # file name
+  local expected
+  expected="$(pinned_sha256 "$2")"
+  [[ -n "$expected" ]] || die "no pinned checksum for $2 in install-deps.sh; nothing was installed"
+  if command -v sha256sum >/dev/null 2>&1; then
+    printf '%s  %s\n' "$expected" "$1" | sha256sum -c --status - \
+      || die "checksum mismatch for $2 (expected $expected); nothing was installed"
+  else
+    printf '%s  %s\n' "$expected" "$1" | shasum -a 256 -c --status - \
+      || die "checksum mismatch for $2 (expected $expected); nothing was installed"
+  fi
 }
 
 # Prints why a tool must be installed, or nothing if the installed one is fine.
@@ -99,40 +145,42 @@ k8s_minor() {
   echo "${v:-}"
 }
 
+kubectl_version() { # cluster minor -> pinned kubectl version, or empty
+  local entry
+  for entry in $KUBECTL_VERSIONS; do
+    [[ "${entry%%:*}" == "$1" ]] && { echo "${entry#*:}"; return 0; }
+  done
+  return 0
+}
+
 install_kubectl() {
   local minor version url
-  minor="$(k8s_minor)"
-  if [[ -n "$minor" ]]; then
-    version="$(curl -fsSL "https://dl.k8s.io/release/stable-${minor}.txt")"
-  else
-    version="$(curl -fsSL https://dl.k8s.io/release/stable.txt)"
-  fi
+  minor="$(k8s_minor | cut -d. -f1-2)"
+  [[ -n "$minor" ]] || { minor="${KUBECTL_VERSIONS##* }"; minor="${minor%%:*}"; }
+  version="$(kubectl_version "$minor")"
+  [[ -n "$version" ]] || die "no pinned kubectl for Kubernetes ${minor} (pinned: ${KUBECTL_VERSIONS}). Install kubectl ${minor} yourself, or add its version and checksums to install-deps.sh"
   url="https://dl.k8s.io/release/${version}/bin/${OS}/${ARCH}/kubectl"
   curl -fsSL -o "$TMP/kubectl" "$url"
-  verify_sha256 "$TMP/kubectl" "$(curl -fsSL "${url}.sha256" | awk '{print $1}')"
+  verify_pinned_sha256 "$TMP/kubectl" "kubectl-${version}-${OS}-${ARCH}"
   install -m 0755 "$TMP/kubectl" "$BIN_DIR/kubectl"
   note "kubectl ${version}"
 }
 
 install_helm() {
-  local version file
-  version="$(curl -fsSL https://get.helm.sh/helm-latest-version)"
-  [[ "$version" == v* ]] || die "could not read the latest Helm version"
-  file="helm-${version}-${OS}-${ARCH}.tar.gz"
+  local file="helm-${HELM_VERSION}-${OS}-${ARCH}.tar.gz"
   curl -fsSL -o "$TMP/$file" "https://get.helm.sh/${file}"
-  verify_sha256 "$TMP/$file" "$(curl -fsSL "https://get.helm.sh/${file}.sha256sum" | awk '{print $1}')"
+  verify_pinned_sha256 "$TMP/$file" "$file"
   tar -xzf "$TMP/$file" -C "$TMP"
   install -m 0755 "$TMP/${OS}-${ARCH}/helm" "$BIN_DIR/helm"
-  note "helm ${version}"
+  note "helm ${HELM_VERSION}"
 }
 
 install_eksctl() {
-  local platform file base
+  local platform file
   platform="$(uname -s)_${ARCH}"
   file="eksctl_${platform}.tar.gz"
-  base="https://github.com/eksctl-io/eksctl/releases/latest/download"
-  curl -fsSL -o "$TMP/$file" "${base}/${file}"
-  verify_sha256 "$TMP/$file" "$(curl -fsSL "${base}/eksctl_checksums.txt" | awk -v f="$file" '$2 == f {print $1}')"
+  curl -fsSL -o "$TMP/$file" "https://github.com/eksctl-io/eksctl/releases/download/${EKSCTL_VERSION}/${file}"
+  verify_pinned_sha256 "$TMP/$file" "eksctl-${EKSCTL_VERSION}-${platform}.tar.gz"
   tar -xzf "$TMP/$file" -C "$TMP"
   install -m 0755 "$TMP/eksctl" "$BIN_DIR/eksctl"
   note "eksctl $("$BIN_DIR/eksctl" version)"
@@ -140,7 +188,8 @@ install_eksctl() {
 
 install_aws() {
   if [[ "$OS" == darwin ]]; then
-    curl -fsSL -o "$TMP/AWSCLIV2.pkg" https://awscli.amazonaws.com/AWSCLIV2.pkg
+    curl -fsSL -o "$TMP/AWSCLIV2.pkg" "https://awscli.amazonaws.com/AWSCLIV2-${AWS_CLI_VERSION}.pkg"
+    verify_pinned_sha256 "$TMP/AWSCLIV2.pkg" "AWSCLIV2-${AWS_CLI_VERSION}.pkg"
     local signature
     signature="$(pkgutil --check-signature "$TMP/AWSCLIV2.pkg")"
     grep -q "Developer ID Installer: AMZN Mobile LLC (94KV3E626L)" <<<"$signature" \
@@ -169,7 +218,8 @@ EOF
     command -v unzip >/dev/null 2>&1 || die "unzip is required to install the AWS CLI. $(pkg_hint unzip)"
     local machine=x86_64
     [[ "$ARCH" == arm64 ]] && machine=aarch64
-    curl -fsSL -o "$TMP/awscliv2.zip" "https://awscli.amazonaws.com/awscli-exe-linux-${machine}.zip"
+    curl -fsSL -o "$TMP/awscliv2.zip" "https://awscli.amazonaws.com/awscli-exe-linux-${machine}-${AWS_CLI_VERSION}.zip"
+    verify_pinned_sha256 "$TMP/awscliv2.zip" "awscli-exe-linux-${machine}-${AWS_CLI_VERSION}.zip"
     unzip -q "$TMP/awscliv2.zip" -d "$TMP"
     "$TMP/aws/install" --install-dir "${PIPESHUB_HOME}/aws-cli" --bin-dir "$BIN_DIR" --update >/dev/null
   fi

@@ -93,6 +93,7 @@ def _make_mock_deps():
     data_entities_processor.on_user_group_deleted = AsyncMock(return_value=True)
     data_entities_processor.on_user_group_member_removed = AsyncMock(return_value=True)
     data_entities_processor.get_all_active_users = AsyncMock(return_value=[])
+    data_entities_processor.get_app_user_links = AsyncMock(return_value=[])
     data_entities_processor.reindex_existing_records = AsyncMock()
     return logger, data_entities_processor
 
@@ -1859,6 +1860,7 @@ class TestRunSyncCoverage:
         connector.msgraph_client.get_all_users = AsyncMock(return_value=[MagicMock()])
         connector._sync_user_groups = AsyncMock()
         connector._process_users_in_batches = AsyncMock()
+        connector._remove_deleted_drives = AsyncMock()
 
         with patch("app.connectors.sources.microsoft.onedrive.connector.load_connector_filters",
                     new_callable=AsyncMock, return_value=(MagicMock(), MagicMock())):
@@ -1883,6 +1885,7 @@ class TestRunIncrementalSync:
         connector.msgraph_client = MagicMock()
         connector.msgraph_client.get_all_users = AsyncMock(return_value=[MagicMock()])
         connector._process_users_in_batches = AsyncMock()
+        connector._remove_deleted_drives = AsyncMock()
 
         await connector.run_incremental_sync()
         connector._process_users_in_batches.assert_awaited_once()

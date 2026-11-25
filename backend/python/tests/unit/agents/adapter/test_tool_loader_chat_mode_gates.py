@@ -4,13 +4,13 @@ mode migration (see `app/agents/chat_modes/policy.py`'s docstring): each
 parallel `ToolPolicy` object, on the premise that `PipesHubToolLoader`
 already gates tools on exactly those flags. These tests exercise that
 premise directly against the real loader/`_build_dynamic_tools`, so a
-regression in the gate itself (not just in `bridge.py` setting the flag)
-is caught here rather than only in the mocked `test_bridge.py` suite.
+regression in the gate itself (not just in `chat_modes/setup.py` setting the flag)
+is caught here rather than only in the mocked `test_chat_turn.py` suite.
 """
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 from app.agent_loop_lib.tools.decorators import tool
 from app.agent_loop_lib.tools.tags import TAG_UI_ONLY
@@ -54,19 +54,14 @@ def _patch_retrieval_toolset_registry():
         "retrieval": {
             "class": _FakeRetrievalToolset,
             "isInternal": True,
+            "provider": "platform",
             "description": "Internal knowledge retrieval",
             "essential": False,
         },
     }
-    return (
-        patch(
-            "app.agents.registry.toolset_registry.get_toolset_registry",
-            return_value=fake_registry,
-        ),
-        patch(
-            "app.agents.agent_loop.tool_loader.ClientFactoryRegistry.get_factory",
-            return_value=None,
-        ),
+    return patch(
+        "app.agents.registry.toolset_registry.get_toolset_registry",
+        return_value=fake_registry,
     )
 
 
@@ -78,37 +73,35 @@ class TestKnowledgeToolsetGate:
 
     async def test_has_knowledge_true_registers_retrieval_toolset(self) -> None:
         context = _make_context(has_knowledge=True)
-        registry_patch, factory_patch = _patch_retrieval_toolset_registry()
-        with registry_patch, factory_patch:
+        with _patch_retrieval_toolset_registry():
             registry = await PipesHubToolLoader().load(context)
 
         assert any("search_internal_knowledge" in name for name in registry.names())
 
     async def test_has_knowledge_false_skips_retrieval_toolset(self) -> None:
         context = _make_context(has_knowledge=False)
-        registry_patch, factory_patch = _patch_retrieval_toolset_registry()
-        with registry_patch, factory_patch:
+        with _patch_retrieval_toolset_registry():
             registry = await PipesHubToolLoader().load(context)
 
         assert not any("search_internal_knowledge" in name for name in registry.names())
 
-    async def test_skipping_a_knowledge_toolset_is_logged_at_info(self) -> None:
+    async def test_skipping_a_knowledge_toolset_is_logged(self, caplog) -> None:
         """The skip is the condition behind "the agent answered as if it had
-        searched and found nothing". At `debug` it was invisible in a running
-        system; `info` makes it greppable without turning on debug logging
-        everywhere."""
+        searched and found nothing". Per toolset it is a DEBUG event, logged
+        with or without a `logger` in the state; at INFO the turn's
+        `agent.build.end has_knowledge=False` makes it greppable."""
+        import logging
+
+        from app.utils.logger import log_record_fields
+
         context = _make_context(has_knowledge=False, conversation_id="conv-1")
-        state_logger = MagicMock()
-        context.tool_state["logger"] = state_logger
-        registry_patch, factory_patch = _patch_retrieval_toolset_registry()
-        with registry_patch, factory_patch:
+        with _patch_retrieval_toolset_registry(), caplog.at_level(logging.DEBUG):
             await PipesHubToolLoader().load(context)
 
-        messages = [call.args[0] % call.args[1:] for call in state_logger.info.call_args_list]
-        assert any(
-            "retrieval" in m and "no knowledge sources attached" in m and "conv-1" in m
-            for m in messages
-        ), messages
+        skipped = [log_record_fields(r) for r in caplog.records if r.getMessage() == "toolset.skipped"]
+        assert {"toolset": "retrieval", "reason": "no_knowledge"}.items() <= next(
+            s for s in skipped if s.get("reason") == "no_knowledge"
+        ).items(), skipped
 
 
 def _patch_codegraph_toolset_registry() -> tuple:
@@ -329,8 +322,7 @@ class TestModePolicyEndToEndGating:
     async def _load_for(*, has_knowledge: bool, web_search_config: dict | None) -> set[str]:
         context = _make_context(has_knowledge=has_knowledge)
         context.tool_state["web_search_config"] = web_search_config
-        registry_patch, factory_patch = _patch_retrieval_toolset_registry()
-        with registry_patch, factory_patch:
+        with _patch_retrieval_toolset_registry():
             if web_search_config:
                 with (
                     patch("app.web.tools.web_search.create_web_search_tool", return_value=MagicMock()),
@@ -379,10 +371,7 @@ class TestUiOnlyToolGate:
         fake_registry.get_all_toolsets.return_value = {
             "internaltools": {"class": _FakeInteractiveToolset, "isInternal": True, "description": ""},
         }
-        with (
-            patch("app.agents.registry.toolset_registry.get_toolset_registry", return_value=fake_registry),
-            patch("app.agents.agent_loop.tool_loader.ClientFactoryRegistry.get_factory", return_value=None),
-        ):
+        with patch("app.agents.registry.toolset_registry.get_toolset_registry", return_value=fake_registry):
             registry = await PipesHubToolLoader().load(_make_context(has_ui_client=has_ui_client))
         return registry.names()
 

@@ -30,7 +30,7 @@ import re
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from dropbox.files import DeletedMetadata, FileMetadata, FolderMetadata
@@ -420,10 +420,9 @@ class TestHandleWebhookNotification:
     @pytest.mark.asyncio
     async def test_no_exception(self):
         c = _make_connector()
-        c.run_incremental_sync = AsyncMock()
-        with patch("asyncio.create_task") as mock_create_task:
-            c.handle_webhook_notification({"type": "test"})
-            mock_create_task.assert_called_once()
+        c.request_sync = MagicMock()
+        c.handle_webhook_notification({"type": "test"})
+        c.request_sync.assert_called_once_with()
 
 
 # ===========================================================================

@@ -3,6 +3,7 @@ import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
 import axios from 'axios'
+import { Logger } from '../../../../src/libs/services/logger.service'
 
 import {
   getSpeechCapabilities,
@@ -80,7 +81,7 @@ describe('SpeechController', () => {
       sinon.stub(axios, 'get').resolves({ status: 500, data: { detail: 'broken' } })
       const res = makeRes()
 
-      await getSpeechCapabilities(appConfig)(makeReq(), res, sinon.stub())
+      await getSpeechCapabilities(appConfig)(makeReq(), res, sinon.stub<unknown[]>())
 
       expect(res.status.calledWith(500)).to.be.true
       const body = res.json.firstCall.args[0]
@@ -95,7 +96,7 @@ describe('SpeechController', () => {
       })
       const res = makeRes()
 
-      await getSpeechCapabilities(appConfig)(makeReq(), res, sinon.stub())
+      await getSpeechCapabilities(appConfig)(makeReq(), res, sinon.stub<unknown[]>())
 
       expect(res.status.calledWith(409)).to.be.true
       expect(res.json.firstCall.args[0].detail).to.equal('No speech provider is set up yet.')
@@ -172,7 +173,7 @@ describe('SpeechController', () => {
       const stub = sinon.stub(axios, 'get').resolves({ status: 200, data: {} })
       const req = makeReq()
 
-      await getSpeechCapabilities(appConfig)(req, makeRes(), sinon.stub())
+      await getSpeechCapabilities(appConfig)(req, makeRes(), sinon.stub<unknown[]>())
 
       const headers = stub.firstCall.args[1]?.headers as Record<string, string>
       expect(headers).to.not.have.property('host')
@@ -186,7 +187,7 @@ describe('SpeechController', () => {
       const stub = sinon.stub(axios, 'get').resolves({ status: 200, data: {} })
       const req = makeReq({ headers: { 'x-multi': ['a', 'b'], authorization: 'Bearer t' } })
 
-      await getSpeechCapabilities(appConfig)(req, makeRes(), sinon.stub())
+      await getSpeechCapabilities(appConfig)(req, makeRes(), sinon.stub<unknown[]>())
 
       const headers = stub.firstCall.args[1]?.headers as Record<string, string>
       expect(headers['x-multi']).to.equal('a, b')
@@ -196,7 +197,7 @@ describe('SpeechController', () => {
       const stub = sinon.stub(axios, 'get').resolves({ status: 200, data: {} })
       const req = makeReq({ headers: { 'x-null': null, 'x-undef': undefined, authorization: 'Bearer t' } })
 
-      await getSpeechCapabilities(appConfig)(req, makeRes(), sinon.stub())
+      await getSpeechCapabilities(appConfig)(req, makeRes(), sinon.stub<unknown[]>())
 
       const headers = stub.firstCall.args[1]?.headers as Record<string, string>
       expect(headers).to.not.have.property('x-null')
@@ -242,7 +243,7 @@ describe('SpeechController', () => {
       })
       const res = makeRes()
 
-      await synthesizeSpeech(appConfig)(makeReq(), res, sinon.stub())
+      await synthesizeSpeech(appConfig)(makeReq(), res, sinon.stub<unknown[]>())
 
       expect(res.setHeader.calledWith('Content-Type', 'application/octet-stream')).to.be.true
     })
@@ -255,7 +256,7 @@ describe('SpeechController', () => {
       })
       const res = makeRes()
 
-      await synthesizeSpeech(appConfig)(makeReq(), res, sinon.stub())
+      await synthesizeSpeech(appConfig)(makeReq(), res, sinon.stub<unknown[]>())
 
       const setHeaderCalls = res.setHeader.getCalls().map((c: any) => c.args[0])
       expect(setHeaderCalls).to.not.include('X-TTS-Provider')
@@ -271,7 +272,7 @@ describe('SpeechController', () => {
       })
       const res = makeRes()
 
-      await synthesizeSpeech(appConfig)(makeReq(), res, sinon.stub())
+      await synthesizeSpeech(appConfig)(makeReq(), res, sinon.stub<unknown[]>())
 
       expect(res.status.calledWith(400)).to.be.true
       expect(res.json.calledOnce).to.be.true
@@ -286,7 +287,7 @@ describe('SpeechController', () => {
       })
       const res = makeRes()
 
-      await synthesizeSpeech(appConfig)(makeReq(), res, sinon.stub())
+      await synthesizeSpeech(appConfig)(makeReq(), res, sinon.stub<unknown[]>())
 
       expect(res.status.calledWith(500)).to.be.true
       const body = res.json.firstCall.args[0]
@@ -303,7 +304,7 @@ describe('SpeechController', () => {
       })
       const res = makeRes()
 
-      await synthesizeSpeech(appConfig)(makeReq(), res, sinon.stub())
+      await synthesizeSpeech(appConfig)(makeReq(), res, sinon.stub<unknown[]>())
 
       expect(res.status.calledWith(500)).to.be.true
       // The service's own words described its internals; the reader gets advice.
@@ -320,7 +321,7 @@ describe('SpeechController', () => {
       })
       const res = makeRes()
 
-      await synthesizeSpeech(appConfig)(makeReq(), res, sinon.stub())
+      await synthesizeSpeech(appConfig)(makeReq(), res, sinon.stub<unknown[]>())
 
       expect(res.status.calledWith(502)).to.be.true
       const body = res.json.firstCall.args[0]
@@ -336,7 +337,7 @@ describe('SpeechController', () => {
       })
       const res = makeRes()
 
-      await synthesizeSpeech(appConfig)(makeReq(), res, sinon.stub())
+      await synthesizeSpeech(appConfig)(makeReq(), res, sinon.stub<unknown[]>())
 
       expect(res.json.firstCall.args[0].detail).to.include('read this message aloud')
     })
@@ -359,7 +360,7 @@ describe('SpeechController', () => {
       })
       const body = { text: 'hello', voice: 'alloy' }
 
-      await synthesizeSpeech(appConfig)(makeReq({ body }), makeRes(), sinon.stub())
+      await synthesizeSpeech(appConfig)(makeReq({ body }), makeRes(), sinon.stub<unknown[]>())
 
       expect(stub.firstCall.args[1]).to.deep.equal(body)
     })
@@ -371,7 +372,7 @@ describe('SpeechController', () => {
         headers: {},
       })
 
-      await synthesizeSpeech(appConfig)(makeReq({ body: undefined }), makeRes(), sinon.stub())
+      await synthesizeSpeech(appConfig)(makeReq({ body: undefined }), makeRes(), sinon.stub<unknown[]>())
 
       expect(stub.firstCall.args[1]).to.deep.equal({})
     })
@@ -466,7 +467,7 @@ describe('SpeechController', () => {
         body: { language: 'es' },
       })
 
-      await transcribeAudio(appConfig)(req, makeRes(), sinon.stub())
+      await transcribeAudio(appConfig)(req, makeRes(), sinon.stub<unknown[]>())
 
       // The form data is the second arg; language should be appended
       expect(stub.calledOnce).to.be.true
@@ -479,7 +480,7 @@ describe('SpeechController', () => {
         body: { language: 42 },
       })
 
-      await transcribeAudio(appConfig)(req, makeRes(), sinon.stub())
+      await transcribeAudio(appConfig)(req, makeRes(), sinon.stub<unknown[]>())
       // No error — just verifying it doesn't crash
     })
 
@@ -490,7 +491,7 @@ describe('SpeechController', () => {
         body: {},
       })
 
-      await transcribeAudio(appConfig)(req, makeRes(), sinon.stub())
+      await transcribeAudio(appConfig)(req, makeRes(), sinon.stub<unknown[]>())
     })
 
     it('should hide a resolved 5xx service message behind plain advice', async () => {
@@ -501,7 +502,7 @@ describe('SpeechController', () => {
       })
       const res = makeRes()
 
-      await transcribeAudio(appConfig)(req, res, sinon.stub())
+      await transcribeAudio(appConfig)(req, res, sinon.stub<unknown[]>())
 
       expect(res.status.calledWith(500)).to.be.true
       const body = res.json.firstCall.args[0]
@@ -520,7 +521,7 @@ describe('SpeechController', () => {
       })
       const res = makeRes()
 
-      await transcribeAudio(appConfig)(req, res, sinon.stub())
+      await transcribeAudio(appConfig)(req, res, sinon.stub<unknown[]>())
 
       expect(res.status.calledWith(413)).to.be.true
     })
@@ -550,12 +551,43 @@ describe('SpeechController', () => {
         body: {},
       })
 
-      await transcribeAudio(appConfig)(req, makeRes(), sinon.stub())
+      await transcribeAudio(appConfig)(req, makeRes(), sinon.stub<unknown[]>())
 
       const passedHeaders = stub.firstCall.args[2]?.headers as Record<string, string>
       // The original content-type is deleted; form-data library sets its own
       expect(passedHeaders['content-type']).to.include('multipart/form-data')
       expect(passedHeaders['content-type']).to.not.include('boundary=abc')
+    })
+  })
+
+  // The call's own upstream.call.end line and the error middleware report these; the proxy only maps.
+  describe('logs no upstream answer or failure itself', () => {
+    const levels = () => (['error', 'warn', 'info', 'debug'] as const).map((level) => sinon.stub(Logger.prototype, level))
+
+    it('for a 4xx or 5xx it passes on', async () => {
+      const logs = levels()
+      sinon.stub(axios, 'post').resolves({ status: 500, data: { detail: 'tts broke for alice@example.com' }, headers: {} })
+      await synthesizeSpeech(appConfig)(makeReq(), makeRes(), sinon.stub() as any)
+      sinon.restore()
+      const logs2 = levels()
+      sinon.stub(axios, 'get').resolves({ status: 409, data: { detail: 'no provider' } })
+      await getSpeechCapabilities(appConfig)(makeReq(), makeRes(), sinon.stub() as any)
+      expect([...logs, ...logs2].map((stub) => stub.callCount)).to.deep.equal([0, 0, 0, 0, 0, 0, 0, 0])
+    })
+
+    it('for a thrown answer or a network error, which it keeps as the cause', async () => {
+      const logs = levels()
+      for (const failure of [
+        { response: { status: 500, data: { detail: 'alice@example.com' } } },
+        { code: 'ECONNREFUSED', message: 'connect fail' },
+      ]) {
+        sinon.stub(axios, 'get').rejects(failure)
+        const next = sinon.stub()
+        await getSpeechCapabilities(appConfig)(makeReq(), makeRes(), next)
+        expect(next.firstCall.args[0].cause).to.equal(failure)
+        ;(axios.get as sinon.SinonStub).restore()
+      }
+      expect(logs.map((stub) => stub.callCount)).to.deep.equal([0, 0, 0, 0])
     })
   })
 })

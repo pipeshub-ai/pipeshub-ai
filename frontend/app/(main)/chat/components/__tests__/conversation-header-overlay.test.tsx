@@ -44,6 +44,15 @@ describe('ConversationHeaderOverlay', () => {
     expect(box('chip').style.right).toBe('16px');
   });
 
+  it('puts the Background agents button first in the row, on a phone too', () => {
+    viewport.isMobile = true;
+    const agents = <button type="button" data-testid="agents">Background agents</button>;
+    render(<ConversationHeaderOverlay conversationId="c1" agentChip={chip} shareGroup={share} backgroundAgents={agents} />);
+
+    expect(box('agents').firstElementChild).toBe(screen.getByTestId('agents'));
+    expect(box('share')).toBe(box('agents'));
+  });
+
   it('renders nothing when there is neither', () => {
     const { container } = render(
       <ConversationHeaderOverlay conversationId={null} agentChip={null} shareGroup={null} />,

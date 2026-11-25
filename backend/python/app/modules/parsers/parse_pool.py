@@ -22,6 +22,8 @@ from __future__ import annotations
 
 import asyncio
 import atexit
+import contextvars
+import dataclasses
 import logging
 import os
 import pickle
@@ -38,14 +40,20 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, TypeVar
 
+from app.capacity.admission import reserve_or_adopt, reserve_or_adopt_blocking
+from app.capacity.budget_policy import Demand, Family
+from app.capacity.member_budget import AdmissionTimeout, Cancelled
 from app.exceptions.indexing_exceptions import IndexingError
-from app.modules.parsers import parse_worker
+from app.modules.parse_engine import pools as class_pools
+from app.modules.parse_engine import wiring
+from app.modules.parsers import parse_worker, worker_deaths
 from app.services.messaging.config import messaging_env
 from app.services.parsing.interface import ParseError, ParseErrorCode
 from app.services.resource_governor.lanes import parse_lanes_mode
 from app.utils.cpu_offload import DEFAULT_OFFLOAD_THRESHOLD_BYTES
 from app.utils.env_config import env_int
 from app.utils.user_errors import (
+    PARSE_WORKER_KILLED_RETRYING,
     PARSE_WORKER_OUT_OF_MEMORY,
     PARSE_WORKER_UNAVAILABLE,
     PROCESSING_TIMED_OUT,
@@ -54,6 +62,7 @@ from app.utils.user_errors import (
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from app.capacity.member_budget import Permit
     from app.modules.parsers.parse_pool_lanes import LanePool
     from app.services.resource_governor import ResourceGovernor
 
@@ -81,15 +90,24 @@ IDLE_SECONDS = 60.0
 WORKER_START_SECONDS = 120.0
 # How often a waiting lane checks whether its job was abandoned.
 _POLL_SECONDS = 0.25
+# A worker whose data segment stays this close to its own RLIMIT_DATA (the Excel load's memory
+# cap) for this long is stopped from here. At that cap a load can sit inside one C call for
+# minutes, where no signal handler runs and the worker's own watcher thread cannot allocate
+# either; the worker's watcher stops every other at-cap load within half a second.
+_AT_DATA_LIMIT_MARGIN_KB = 4096
+_AT_DATA_LIMIT_SECONDS = 3.0
 _PYTHON_ROOT = str(Path(__file__).resolve().parents[3])
 
 
 class ParseWorkerError(ParseError):
     """A parse worker died or overran. The message is the reason people see."""
 
-    def __init__(self, message: str, cause: str) -> None:
+    def __init__(self, message: str, cause: str, *, retrying: bool = False) -> None:
         super().__init__(ParseErrorCode.PARSE_FAILED, message, {"parse_worker": cause})
         self.cause = cause
+        # A worker the kernel killed, on the first death of this record's worker: the record is retried (see
+        # ``worker_deaths``), because the file may not be what ran the container out of memory.
+        self.retrying_worker_death = retrying
 
 
 class ParseAbandonedError(IndexingError):
@@ -98,6 +116,12 @@ class ParseAbandonedError(IndexingError):
     An ``IndexingError`` so that a record caught by a shutdown is retried
     rather than marked as a bad file.
     """
+
+
+def _current_record_id() -> str | None:
+    from app.utils.indexing_timing import current_record_id
+
+    return current_record_id()
 
 
 class _WorkerUnavailable(Exception):
@@ -123,6 +147,7 @@ def set_resource_governor(governor: ResourceGovernor | None) -> None:
     and query for chat attachments). A process that never calls it keeps
     parsing in threads, which is what the tests want.
     """
+    wiring.assert_compatible()  # PARSE_LANES=on with PARSE_ADMISSION=classes is refused at startup
     _State.governor = governor
 
 
@@ -138,6 +163,8 @@ def parse_pool_workers() -> int:
     if governor is None or os.name != "posix":
         return 0
     cpu_bound_ceiling = max(1, governor.ceilings.heavy)
+    if wiring.classes_enabled():
+        return wiring.pool_width(cpu_bound_ceiling)
     if parse_lanes_mode() == "on":
         from app.modules.parsers import parse_pool_lanes
 
@@ -163,6 +190,12 @@ class _Job:
     # Never run in the calling thread when no worker can be started: the job is
     # here because it must not allocate in this process.
     require_worker: bool = False
+    # What the job is, so lane admission charges the memory it holds (``ParseKind``; None is the
+    # fallback charge). ``covered`` is whether a heavy parse permit of this process covers the job.
+    kind: object | None = None
+    covered: bool = False
+    # The record this job parses for, read where the job is made (the record's own task).
+    record_id: str | None = field(default_factory=lambda: _current_record_id())
     future: Future = field(default_factory=Future)
     cancelled: threading.Event = field(default_factory=threading.Event)
 
@@ -230,6 +263,24 @@ class _Worker:
                 stream.close()
         with suppress(subprocess.TimeoutExpired):
             self.process.wait(timeout=5)
+
+
+def _at_data_limit(worker: object) -> bool:
+    """True while *worker*'s data segment is within ``_AT_DATA_LIMIT_MARGIN_KB`` of its soft
+    RLIMIT_DATA. False with no limit set, and wherever /proc cannot say."""
+    pid = getattr(getattr(worker, "process", None), "pid", None)
+    if not isinstance(pid, int):
+        return False
+    try:
+        with open(f"/proc/{pid}/limits", encoding="ascii") as limits:
+            soft = next((line.split()[3] for line in limits if line.startswith("Max data size")), "unlimited")
+        if not soft.isdigit():
+            return False
+        with open(f"/proc/{pid}/status", encoding="ascii") as status:
+            vm_data_kb = next((int(line.split()[1]) for line in status if line.startswith("VmData:")), 0)
+    except (OSError, ValueError, IndexError):
+        return False
+    return vm_data_kb >= int(soft) // 1024 - _AT_DATA_LIMIT_MARGIN_KB
 
 
 class _Lane:
@@ -326,11 +377,24 @@ class _Lane:
 
         timeout = job.timeout if job.timeout is not None else messaging_env.record_processing_timeout
         deadline = time.monotonic() + timeout
+        at_limit_since: float | None = None
         while not worker.reply_ready(_POLL_SECONDS):
             if self._abandoned(job):
                 self._drop_worker()
                 raise ParseAbandonedError("parse abandoned while it was running")
-            if time.monotonic() >= deadline:
+            now = time.monotonic()
+            if not _at_data_limit(worker):
+                at_limit_since = None
+            elif at_limit_since is None:
+                at_limit_since = now
+            elif now - at_limit_since >= _AT_DATA_LIMIT_SECONDS:
+                self._drop_worker()
+                _logger.warning(
+                    "Parsing %s (%d bytes) sat at its memory limit for %.0fs; its worker was replaced",
+                    job.label, job.size, _AT_DATA_LIMIT_SECONDS,
+                )
+                raise ParseWorkerError(PARSE_WORKER_OUT_OF_MEMORY, "at_memory_limit")
+            if now >= deadline:
                 self._drop_worker()
                 _logger.warning(
                     "Parsing %s (%d bytes) was stopped after %.0fs; its worker was replaced",
@@ -348,17 +412,44 @@ class _Lane:
         raise payload
 
     def _crashed(self, job: _Job) -> ParseWorkerError:
-        self._drop_worker()
+        worker = self._worker
+        status = None
+        if worker is not None:
+            # Read before the worker is stopped: stopping it kills it, which would read as a kill from outside.
+            with suppress(subprocess.TimeoutExpired):
+                status = worker.process.wait(timeout=1)
+        self._drop_worker()  # stops and reaps it
+        from app.services.resource_governor.kinds import ParseKind
+
+        # Only an Excel load sets that limit; any other job dying of it (an operator's `ulimit -t`) is the retryable crash below.
+        if job.kind is ParseKind.EXCEL_LOAD and worker is not None and worker.process.returncode == -signal.SIGXCPU:
+            # The job's own CPU limit ended it (workbook_model._cpu_limited): the same stop as the
+            # timeout above, and no sign of memory pressure.
+            _logger.warning(
+                "Parsing %s (%d bytes) used up its CPU time limit; its worker was replaced",
+                job.label, job.size,
+            )
+            return ParseWorkerError(PROCESSING_TIMED_OUT, "timed_out")
+        # The kernel's kill (the OOM killer, a cgroup limit) ends a worker with SIGKILL. The kill lands on the
+        # largest-looking worker, which need not be the one whose file used the memory, so the record gets one
+        # more try: only a second death of its worker is read as the file being too large. Any other end
+        # (a crash, a nonzero exit, an unknown status) is not retried.
+        killed = status == -signal.SIGKILL
+        retrying = killed and worker_deaths.deaths.is_first(job.record_id)
         _logger.warning(
-            "The parse worker died while parsing %s (%d bytes), most likely out of memory. "
-            "That record fails; a fresh worker takes the next file.",
+            "The parse worker died while parsing %s (%d bytes), most likely out of memory. %s",
             job.label, job.size,
+            "The record is retried once; a fresh worker takes the next file." if retrying
+            else "That record fails; a fresh worker takes the next file.",
         )
         governor = _State.governor
         if governor is not None:
             # Proof of memory exhaustion that the periodic sampler may not see
-            # for several seconds, same as a dead Docling or rasterizer worker.
+            # for several seconds, same as a dead Docling or rasterizer worker. It halves the heavy parse
+            # limit for a cooldown, so the retry runs with fewer large files beside it.
             governor.report_memory_incident("parse worker died (most likely OOM-killed)")
+        if retrying:
+            return ParseWorkerError(PARSE_WORKER_KILLED_RETRYING, "crashed", retrying=True)
         return ParseWorkerError(PARSE_WORKER_OUT_OF_MEMORY, "crashed")
 
 
@@ -369,11 +460,14 @@ class _ParsePool:
         self.closed = threading.Event()
         self._submit_lock = threading.Lock()
         self._threads = [
-            threading.Thread(target=_Lane(self).serve, name=f"parse-pool-{i}", daemon=True)
+            threading.Thread(target=self._make_lane().serve, name=f"parse-pool-{i}", daemon=True)
             for i in range(workers)
         ]
         for thread in self._threads:
             thread.start()
+
+    def _make_lane(self) -> _Lane:
+        return _Lane(self)
 
     def enqueue(self, job: _Job) -> None:
         with self._submit_lock:
@@ -400,11 +494,15 @@ class _ParsePool:
             thread.join(timeout=5)
 
 
-def _pool(*, interactive: bool = False) -> _ParsePool | LanePool | None:
+def _pool(*, interactive: bool = False, kind: object | None = None) -> _ParsePool | LanePool | None:
     workers = parse_pool_workers()
     if workers <= 0:
         return None
     governor = _State.governor
+    if governor is not None and wiring.classes_enabled():
+        from app.modules.parsers import parse_pool_classes
+
+        return parse_pool_classes.get_pool(class_pools.route(kind, class_pools.current_class()), governor)
     if governor is not None and parse_lanes_mode() == "on":
         from app.modules.parsers import parse_pool_lanes
 
@@ -416,6 +514,51 @@ def _pool(*, interactive: bool = False) -> _ParsePool | LanePool | None:
         return _State.pool
 
 
+_LANE_WAIT_S = 3600.0  # a wait for the member budget is always bounded
+
+
+def _lane_demand(kind: object | None = None, size: int = 0) -> Demand:
+    """What a lane reserves when its caller passed no permit: one CPU token, unclassified (big work), and the memory
+    its worker is charged for this kind of job (an Excel load grows to ``EXCEL_LOAD_MAX_MB``; it is held nowhere else
+    in the container's budget). A job of no known kind reserves no memory, as before.
+
+    With ``PARSE_ADMISSION=classes`` an inspection reserves an inspect token, and any other job the class of
+    its admission (small when it has none: an unscoped parse is a small one)."""
+    from app.services.resource_governor.kinds import ParseKind, lane_charge_bytes
+
+    demand = wiring.lane_demand(kind, class_pools.current_class()) if wiring.classes_enabled() else Demand(Family.PARSE, 1)
+    memory = lane_charge_bytes(kind, size) if isinstance(kind, ParseKind) else 0
+    # A demand that already carries its own memory (an inspection's designed 0.1 GiB) keeps it: the kind's lane charge
+    # is added only where nothing else holds that memory (an Excel load), never over a figure chosen for the demand.
+    return dataclasses.replace(demand, mem_bytes=memory) if memory and not demand.mem_bytes else demand
+
+
+class _EventToken:
+    """A ``threading.Event`` seen as the ledger's cancel token."""
+
+    def __init__(self, event: threading.Event) -> None:
+        self._event = event
+
+    def cancelled(self) -> bool:
+        return self._event.is_set()
+
+
+def _capacity_timeout(waited: float) -> Exception:
+    """The wait for the member budget ran out: the record queued, nothing failed, so it goes back uncounted."""
+    from app.services.messaging.consumer_concurrency import ParseAdmissionTimeout
+
+    return ParseAdmissionTimeout("parsing", waited)
+
+
+def _covered(kind: object | None) -> bool:
+    """Whether a heavy parse permit held by the caller covers this job's memory (read at submit time)."""
+    if kind is None or parse_lanes_mode() != "on":
+        return False
+    from app.services.resource_governor.memory_domain import permit_covers_here
+
+    return permit_covers_here()
+
+
 async def submit(
     fn: Callable[..., T],
     *args: object,
@@ -423,6 +566,9 @@ async def submit(
     size: int = 0,
     timeout: float | None = None,
     interactive: bool = False,
+    kind: object | None = None,
+    permit: Permit | None = None,
+    process_only: bool = False,
 ) -> T:
     """Run ``fn(*args)`` in a worker process and return its result.
 
@@ -438,14 +584,48 @@ async def submit(
     *interactive* (a chat attachment a person is waiting on) runs on a pool of
     its own under ``PARSE_LANES=on`` so background indexing cannot hold it up;
     it is ignored otherwise.
+
+    *process_only* never falls back to a thread (which *timeout* cannot stop): with no worker process, or a pool that
+    closed under the job, it raises ``ParseWorkerError``.
     """
-    pool = _pool(interactive=interactive)
-    if pool is not None:
-        try:
-            return await pool.submit(_Job(fn, args, label, size, timeout))
-        except _PoolClosed:
-            pass
-    return await asyncio.to_thread(fn, *args)
+    if process_only and parse_pool_workers() <= 0:
+        raise ParseWorkerError("No parse worker process is available", "no_worker")
+    # PIPESHUB_CAPACITY_PROFILE=auto only: the lane adopts the caller's permit, or reserves one when it is given none.
+    if permit is None and wiring.classes_enabled():
+        permit = class_pools.lane_permit(kind)  # the admission's own permit, never reserved twice
+    wait_s = timeout or _LANE_WAIT_S
+    try:
+        held = await reserve_or_adopt(permit, _lane_demand(kind, size), deadline_s=wait_s)
+    except AdmissionTimeout as exc:
+        raise _capacity_timeout(wait_s) from exc
+    release_here = held is not None
+    try:
+        pool = _pool(interactive=interactive, kind=kind)
+        if pool is None and process_only:
+            raise ParseWorkerError("No parse worker process is available", "no_worker")
+        if pool is not None:
+            job = _Job(fn, args, label, size, timeout, require_worker=process_only, kind=kind, covered=_covered(kind))
+            if held is not None:
+                # The lane decides when the job is over: it finishes it, kills its worker after a cancel, or drops it
+                # while still queued. The tokens go back then, not when the awaiting caller goes away.
+                job.future.add_done_callback(lambda _f, p=held: p.release())
+                release_here = False
+            try:
+                return await pool.submit(job)
+            except _PoolClosed:
+                release_here = held is not None  # never enqueued: nothing else will release it
+                if process_only:
+                    raise ParseWorkerError("The parse worker pool closed", "pool_closed") from None
+        # A thread cannot be stopped: if this coroutine is cancelled, the work goes on and keeps its tokens until it
+        # ends, so the permit is released when the thread does, not when the caller goes away.
+        future = asyncio.get_running_loop().run_in_executor(None, contextvars.copy_context().run, fn, *args)
+        if held is not None:
+            future.add_done_callback(lambda _f, p=held: p.release())
+            release_here = False
+        return await asyncio.shield(future)
+    finally:
+        if release_here and held is not None:
+            held.release()
 
 
 class _OneShotPool:
@@ -464,8 +644,14 @@ def run_blocking(
     label: str = "",
     size: int = 0,
     timeout: float | None = None,
+    cancelled: threading.Event | None = None,
+    kind: object | None = None,
+    permit: Permit | None = None,
 ) -> T:
     """Run ``fn(*args)`` in a worker process, blocking the calling thread (never the event loop's).
+
+    Setting *cancelled* makes the job stop: one still waiting for a lane never starts, and
+    a running one has its worker killed, so a caller that went away does not leave a lane held.
 
     For work that must not allocate in this process: it uses a pool lane when
     this process owns a pool, and otherwise a worker started for this one job
@@ -477,8 +663,37 @@ def run_blocking(
     """
     if os.name != "posix":
         return fn(*args)
-    job = _Job(fn, args, label, size, timeout, require_worker=True)
-    pool = _pool()
+    if permit is None and wiring.classes_enabled():
+        permit = class_pools.lane_permit(kind)
+    wait_s = timeout or _LANE_WAIT_S
+    try:
+        held = reserve_or_adopt_blocking(
+            permit, _lane_demand(kind, size), deadline_s=wait_s, cancel=_EventToken(cancelled) if cancelled is not None else None
+        )
+    except AdmissionTimeout as exc:
+        raise _capacity_timeout(wait_s) from exc
+    except Cancelled as exc:
+        raise ParseAbandonedError("parse abandoned while it waited for capacity") from exc
+    try:
+        return _run_blocking(fn, args, label, size, timeout, cancelled, kind)
+    finally:
+        if held is not None:
+            held.release()
+
+
+def _run_blocking(
+    fn: Callable[..., T],
+    args: tuple[object, ...],
+    label: str,
+    size: int,
+    timeout: float | None,
+    cancelled: threading.Event | None,
+    kind: object | None,
+) -> T:
+    job = _Job(fn, args, label, size, timeout, require_worker=True, kind=kind, covered=_covered(kind))
+    if cancelled is not None:
+        job.cancelled = cancelled
+    pool = _pool(kind=kind)
     if pool is not None:
         try:
             pool.enqueue(job)
@@ -497,19 +712,28 @@ def run_blocking(
 
 def shutdown_parse_pool() -> bool:
     """Stop the workers, killing any job still running. True if a pool existed."""
+    closed_classes = False
+    if wiring.classes_enabled():
+        from app.modules.parsers import parse_pool_classes
+
+        closed_classes = parse_pool_classes.shutdown()
     with _State.lock:
         pool, _State.pool = _State.pool, None
         interactive, _State.interactive_pool = _State.interactive_pool, None
     if interactive is not None:
         interactive.shutdown()
     if pool is None:
-        return interactive is not None
+        return interactive is not None or closed_classes
     pool.shutdown()
     return True
 
 
 def pool_stats() -> dict[str, object]:
     """The pool gauges of ``/health`` under ``PARSE_LANES=on``; empty otherwise."""
+    if wiring.classes_enabled():
+        from app.modules.parsers import parse_pool_classes
+
+        return parse_pool_classes.stats()
     if parse_lanes_mode() != "on":
         return {}
     from app.modules.parsers import parse_pool_lanes

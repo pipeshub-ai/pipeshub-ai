@@ -9,10 +9,8 @@ import { AppConfig } from '../../../../src/modules/tokens_manager/config/config'
 import { Logger } from '../../../../src/libs/services/logger.service';
 import * as appConfigModule from '../../../../src/modules/tokens_manager/config/config';
 import { AUTH_APP_CONFIG_RELOADER } from '../../../../src/modules/auth/container/authService.container';
-import {
-  authSessionMiddleware,
-  userValidator,
-} from '../../../../src/modules/auth/middlewares/userAuthentication.middleware';
+import { authSessionMiddleware } from '../../../../src/modules/auth/middlewares/userAuthentication.middleware';
+import { requireSessionAuth } from '../../../../src/libs/middlewares/require-session-auth.middleware';
 
 describe('createUserAccountRouter', () => {
   let container: Container;
@@ -37,6 +35,7 @@ describe('createUserAccountRouter', () => {
     };
 
     mockAuthMiddleware = {
+      authenticate: sinon.stub(),
       scopedTokenValidator: sinon.stub().returns(
         (_req: any, _res: any, next: any) => next(),
       ),
@@ -78,9 +77,9 @@ describe('createUserAccountRouter', () => {
     // /authenticate counts after the session lookup, which names the account.
     expect(handlers('/authenticate').slice(0, 2)).to.deep.equal([ipLimiter, authSessionMiddleware]);
     expect(handlers('/authenticate')[2]).to.be.a('function');
-    // Signed-in routes count per user, so the limiter runs after userValidator.
+    // Signed-in routes count per user, so the limiter runs after authentication.
     for (const path of ['/password/reset', '/password/setup/email']) {
-      expect(handlers(path).slice(0, 2), path).to.deep.equal([userValidator, accountLimiter]);
+      expect(handlers(path).slice(1, 3), path).to.deep.equal([requireSessionAuth, accountLimiter]);
     }
     expect(handlers('/refresh/token')).to.not.include(accountLimiter);
     // Loading the sign-in page calls /initAuth; it has its own bucket.
@@ -308,7 +307,7 @@ describe('createUserAccountRouter', () => {
       );
       expect(initAuthRoute).to.not.be.undefined;
       // validation + handler
-      expect(initAuthRoute.route.stack.length).to.be.greaterThanOrEqual(2);
+      expect(initAuthRoute!.route!.stack.length).to.be.greaterThanOrEqual(2);
     });
 
     it('should have auth session middleware on authenticate route', () => {
@@ -320,7 +319,7 @@ describe('createUserAccountRouter', () => {
       );
       expect(authenticateRoute).to.not.be.undefined;
       // authSessionMiddleware + validation + handler
-      expect(authenticateRoute.route.stack.length).to.be.greaterThanOrEqual(2);
+      expect(authenticateRoute!.route!.stack.length).to.be.greaterThanOrEqual(2);
     });
 
     it('should have scoped token validator on refresh/token route', () => {
@@ -332,19 +331,43 @@ describe('createUserAccountRouter', () => {
       );
       expect(refreshRoute).to.not.be.undefined;
       // scopedTokenValidator + handler
-      expect(refreshRoute.route.stack.length).to.be.greaterThanOrEqual(2);
+      expect(refreshRoute!.route!.stack.length).to.be.greaterThanOrEqual(2);
     });
 
-    it('should have user validator on password/reset route', () => {
+    // A PAT or OAuth token signed with the same secret as a session must not
+    // reach the password routes, and a revoked or logged-out session must not either.
+    it('should require a live interactive session on every signed-in route', () => {
       const router = createUserAccountRouter(container);
-      const routes = router.stack.filter((layer: any) => layer.route);
+      for (const [path, method] of [
+        ['/password/status', 'get'],
+        ['/password/setup/email', 'post'],
+        ['/password/reset', 'post'],
+      ]) {
+        const layer = (router.stack as any[]).find(
+          (l) => l.route?.path === path && l.route.methods[method],
+        );
+        const chain = layer.route.stack.map((l: any) => l.handle);
+        mockAuthMiddleware.authenticate.resetHistory();
+        chain[0]({}, {}, () => undefined);
+        expect(mockAuthMiddleware.authenticate.calledOnce, path).to.be.true;
+        expect(chain[1], path).to.equal(requireSessionAuth);
+      }
+    });
 
-      const resetRoute = routes.find(
-        (layer: any) => layer.route.path === '/password/reset' && layer.route.methods.post,
+    // R41OPS-FU-7: sign-out clears the session cookie first; with a bearer it is the live-session check as before.
+    it('signs out a bearer caller through the live interactive session check', () => {
+      const router = createUserAccountRouter(container);
+      const layer = (router.stack as any[]).find(
+        (l) => l.route?.path === '/logout/manual' && l.route.methods.post,
       );
-      expect(resetRoute).to.not.be.undefined;
-      // userValidator + validation + handler
-      expect(resetRoute.route.stack.length).to.be.greaterThanOrEqual(2);
+      const chain = layer.route.stack.map((l: any) => l.handle);
+      const req: any = { headers: { authorization: 'Bearer access' } };
+      const res: any = { locals: {}, clearCookie: sinon.stub() };
+      mockAuthMiddleware.authenticate.resetHistory();
+      chain[0](req, res, () => undefined);
+      expect(res.clearCookie.callCount).to.equal(2);
+      chain[1](req, res, () => undefined);
+      expect(mockAuthMiddleware.authenticate.calledOnce).to.be.true;
     });
 
     it('should have scoped token validator on internal/password/check route', () => {
@@ -356,7 +379,7 @@ describe('createUserAccountRouter', () => {
       );
       expect(checkRoute).to.not.be.undefined;
       // scopedTokenValidator + handler
-      expect(checkRoute.route.stack.length).to.be.greaterThanOrEqual(2);
+      expect(checkRoute!.route!.stack.length).to.be.greaterThanOrEqual(2);
     });
   });
 
@@ -366,7 +389,8 @@ describe('createUserAccountRouter', () => {
         (l: any) => l.route && l.route.path === path && l.route.methods[method],
       );
       if (!layer) return undefined;
-      const handlers = layer.route.stack.map((s: any) => s.handle);
+      // An error handler (four parameters) may close a chain; the route's handler is the last before it.
+      const handlers = layer.route.stack.map((s: any) => s.handle).filter((h: any) => h.length < 4);
       return handlers[handlers.length - 1];
     }
 

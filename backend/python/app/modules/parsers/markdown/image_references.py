@@ -309,6 +309,12 @@ def _iter_html_img_tags(text: str) -> Iterator[tuple[int, int]]:
             pos = m.end()
 
 
+def _add(images: list[dict[str, str]], limit: int | None, image: dict[str, str]) -> None:
+    if limit is not None and len(images) >= limit:
+        raise TooManyImages(limit)
+    images.append(image)
+
+
 def _rewrite(text: str, spans: Iterator[tuple[int, int, str]]) -> str:
     """``text`` with each ``(start, end, replacement)`` span replaced."""
     out: list[str] = []
@@ -321,13 +327,23 @@ def _rewrite(text: str, spans: Iterator[tuple[int, int, str]]) -> str:
     return "".join(out)
 
 
+class TooManyImages(ValueError):
+    """The text holds more images than the caller allowed."""
+
+
 def extract_and_replace_images(
     md_content: str,
+    *,
+    max_images: int | None = None,
 ) -> tuple[str, list[dict[str, str]]]:
     """Extract images and replace their alt-text with sequential ``Image_N`` labels.
 
     Reference-style images are numbered first, then inline ones, then ``<img>``
     tags. Time is linear in the size of ``md_content`` for any input.
+
+    With ``max_images`` the scan stops at the first image over the limit and
+    raises ``TooManyImages``, so the list stays small however many images the
+    text holds.
     """
     images: list[dict[str, str]] = []
     image_counter = 1
@@ -341,7 +357,7 @@ def extract_and_replace_images(
         for start, end, original_alt, ref_id in _iter_reference_usages(md_content):
             url = reference_map.get(ref_id.lower(), f"[unknown reference: {ref_id}]")
             new_alt = f"Image_{image_counter}"
-            images.append({
+            _add(images, max_images, {
                 "original_text": md_content[start:end],
                 "url": url,
                 "alt_text": original_alt,
@@ -357,7 +373,7 @@ def extract_and_replace_images(
         nonlocal image_counter
         for start, end, original_alt, url, angle in _InlineImageScanner(source):
             new_alt = f"Image_{image_counter}"
-            images.append({
+            _add(images, max_images, {
                 "original_text": source[start:end],
                 "url": url,
                 "alt_text": original_alt,
@@ -384,7 +400,7 @@ def extract_and_replace_images(
             if source[start + 4 : start + 6] not in ("/>", "") and source[start + 4] == "/" and not img_tag.get("src"):
                 continue  # <img/...> is only a tag worth rewriting when it has a src
             new_alt = f"Image_{image_counter}"
-            images.append({
+            _add(images, max_images, {
                 "original_text": str(img_tag),
                 "url": img_tag.get("src", ""),
                 "alt_text": img_tag.get("alt", ""),

@@ -11,8 +11,9 @@ import time
 import pytest
 
 from app.services.resource_governor.gate import AdmissionGate
-from app.services.resource_governor.models import Limits, Pool
+from app.services.resource_governor.models import Limits, Pool, PoolDemand
 from app.services.resource_governor.registry import LimitRegistry
+from tests.support.loop_clock import virtual_loop_time
 
 
 def _registry(limit: int) -> LimitRegistry:
@@ -28,34 +29,35 @@ class TestConfluenceShapedDemand:
 
     NUM_TASKS = 300
 
-    def test_blocked_acquires_and_high_utilisation_survive_to_drain(self) -> None:
-        registry = _registry(limit=2)
-        gate = AdmissionGate(Pool.LIGHT_PARSE, registry, clock=time.monotonic)
+    def test_blocked_acquires_and_high_utilisation_survive_to_drain(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # On a loop clock the test controls: on the wall clock a busy runner's scheduling delay between one
+        # release and the next admission counted as idle permit time (0.34 utilisation in CI).
+        async def scenario() -> tuple[PoolDemand, float]:
+            virtual_loop_time(monkeypatch)
+            loop = asyncio.get_running_loop()
+            gate = AdmissionGate(Pool.LIGHT_PARSE, _registry(limit=2), clock=loop.time)
 
-        async def tiny_parse() -> None:
-            async with gate.slot(timeout=60.0) as admitted:
-                assert admitted
-                await asyncio.sleep(0.005)
+            async def tiny_parse() -> None:
+                async with gate.slot(timeout=60.0) as admitted:
+                    assert admitted
+                    await asyncio.sleep(0.005)
 
-        async def scenario() -> float:
-            start = time.monotonic()
+            start = loop.time()
             await asyncio.gather(*(tiny_parse() for _ in range(self.NUM_TASKS)))
-            return time.monotonic() - start
+            elapsed = loop.time() - start
+            # At the exact instant of drain, nothing is in flight -- a naive
+            # point sampler would conclude there was never any demand.
+            assert gate.in_use == 0
+            return gate.drain_demand(), elapsed
 
-        wall_elapsed = asyncio.run(scenario())
+        demand, elapsed = asyncio.run(scenario())
 
-        # At the exact instant of drain, nothing is in flight -- a naive
-        # point sampler would conclude there was never any demand.
-        assert gate.in_use == 0
-
-        demand = gate.drain_demand()
-        assert demand.blocked_acquires > 0
-        assert demand.utilisation(limit=2, interval=wall_elapsed) >= 0.7
-        # Loose sanity bound only: under real scheduling, 300 concurrent
-        # 5ms holds against a limit of 2 take noticeably longer in wall
-        # time than the analytic minimum, but permit_seconds must still be
-        # in the right ballpark (same order of magnitude), not zero/tiny.
-        assert demand.permit_seconds > self.NUM_TASKS * 0.005 * 0.5
+        assert demand.blocked_acquires == self.NUM_TASKS - 2
+        assert demand.completions == self.NUM_TASKS
+        # Both permits are held back to back: 300 holds of 5 ms, two at a time.
+        assert elapsed == pytest.approx(self.NUM_TASKS * 0.005 / 2)
+        assert demand.permit_seconds == pytest.approx(self.NUM_TASKS * 0.005)
+        assert demand.utilisation(limit=2, interval=elapsed) == pytest.approx(1.0)
 
     def test_drain_demand_resets_so_next_interval_starts_clean(self) -> None:
         registry = _registry(limit=2)

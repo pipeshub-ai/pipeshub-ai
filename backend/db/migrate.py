@@ -7,8 +7,10 @@ Exit codes: 0 done | 1 a migration failed | 2 bad configuration | 3 lock wait ti
 4 post-run catalog check found violations.
 """
 import contextlib
+import functools
 import os
 import sys
+import threading
 import time
 from collections.abc import Iterator
 
@@ -16,11 +18,13 @@ import psycopg
 from alembic import command
 from alembic.config import Config
 from alembic.script import ScriptDirectory
+from sqlalchemy import Connection, Engine, create_engine
 from sqlalchemy.engine import make_url
-from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import DBAPIError, OperationalError
+from sqlalchemy.pool import NullPool
 
 from db import surface
-from db.lib import vetted
+from db.lib import ddl, vetted
 from db.locations import DB_DIR, version_locations
 from db.schema_requirements import heads
 
@@ -72,12 +76,13 @@ def locked(url: str, wait_s: float | None = None) -> Iterator[psycopg.Connection
         pids = {conn.execute("SELECT pg_backend_pid()").fetchone()[0] for _ in range(3)}
         if len(pids) > 1:
             raise RunnerError(EXIT_CONFIG, "PG_MIGRATE_URL points at a connection pooler; use the direct address")
-        conn.execute(f"SET lock_timeout = '{int(wait_s * 1000)}ms'")
-        try:
-            conn.execute("SELECT pg_advisory_lock(hashtext(%s))", (LOCK_KEY,))
-        except psycopg.errors.LockNotAvailable as exc:
-            raise RunnerError(EXIT_LOCK, f"another migration run held the lock for {wait_s:g}s") from exc
-        conn.execute("RESET lock_timeout")
+        # Polled, not waited for in pg_advisory_lock: a waiting statement holds a snapshot, and the holder's CREATE INDEX CONCURRENTLY waits for
+        # every older snapshot, so the two runs would stall each other until this one gave up.
+        deadline = time.monotonic() + wait_s
+        while not conn.execute("SELECT pg_try_advisory_lock(hashtext(%s))", (LOCK_KEY,)).fetchone()[0]:
+            if time.monotonic() >= deadline:
+                raise RunnerError(EXIT_LOCK, f"another migration run held the lock for {wait_s:g}s")
+            time.sleep(min(1.0, wait_s / 10))
         # A pooler can hand back the same backend and still drop a session lock at transaction end, so
         # prove the lock is held by looking at it from a separate statement. Fail closed.
         held = conn.execute("SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND granted "
@@ -103,6 +108,35 @@ def _ensure_kernel_schema(conn: psycopg.Connection) -> None:
         conn.execute("RESET ROLE")
 
 
+def kv_access_mode() -> str | None:
+    """``PG_KV_ACCESS``: ``enforce`` (the default since platform_0014) refuses key-value access outside a service role's prefixes, ``shadow`` only logs it; unset keeps the stored mode."""
+    raw = os.environ.get("PG_KV_ACCESS", "").strip()
+    if raw not in ("", "shadow", "enforce"):
+        raise RunnerError(EXIT_CONFIG, f"PG_KV_ACCESS must be shadow or enforce (or unset to keep the stored mode), got {raw!r}")
+    return raw or None
+
+
+def _set_kv_access(conn: psycopg.Connection, mode: str) -> None:
+    conn.execute(f"SET ROLE {OWNER_ROLE}")
+    try:
+        conn.execute("UPDATE platform.kv_access SET enforce = %s, updated_at = now() WHERE enforce IS DISTINCT FROM %s",
+                     (mode == "enforce", mode == "enforce"))
+    finally:
+        conn.execute("RESET ROLE")
+    log(f"key-value access by prefix: {mode}")
+
+
+def _warn_kv_shadow(conn: psycopg.Connection) -> None:
+    conn.execute(f"SET ROLE {OWNER_ROLE}")
+    try:
+        enforce = conn.execute("SELECT enforce FROM platform.kv_access").fetchone()[0]
+    finally:
+        conn.execute("RESET ROLE")
+    if enforce is False:
+        log("WARNING key-value access by prefix is in shadow mode: each service role may read and write every key, and access outside "
+            "its prefixes is only logged; set PG_KV_ACCESS=enforce and run this job again to refuse it")
+
+
 def alembic_config(url: str) -> Config:
     cfg = Config()
     cfg.set_main_option("script_location", str(DB_DIR))
@@ -126,15 +160,183 @@ def _upgrade_with_retries(cfg: Config, target: str) -> None:
     raise AssertionError("unreachable")
 
 
+def build_memory() -> str | None:
+    """``PG_INDEX_BUILD_MEMORY_MB``: ``maintenance_work_mem`` of the session that builds indexes online (the whole build's budget, workers
+    included); unset keeps the server's."""
+    raw = os.environ.get("PG_INDEX_BUILD_MEMORY_MB", "").strip()
+    if not raw:
+        return None
+    if not (raw.isascii() and raw.isdigit()) or not 1 <= int(raw) <= 2_000_000:     # "²" is a digit to isdigit(), not to int()
+        raise RunnerError(EXIT_CONFIG, f"PG_INDEX_BUILD_MEMORY_MB must be a whole number of megabytes from 1, got {raw!r}")
+    return f"{int(raw)}MB"
+
+
+def _online(url: str, memory: str | None) -> Engine:
+    """Sessions outside the upgrade's transaction, as the owner role, for index builds and drops. No statement_timeout (a build reads a whole
+    leaf) and no lock_timeout for CREATE INDEX CONCURRENTLY (its lock lets readers and writers through; it waits for older transactions, which a
+    timeout would turn into an invalid index); every statement that takes a lock writers wait for runs under ddl._retry's 2 s."""
+    opts = (f"-c role={OWNER_ROLE} -c statement_timeout=0 -c lock_timeout=0 -c client_connection_check_interval=5s"
+            + (f" -c maintenance_work_mem={memory}" if memory else ""))
+    return create_engine(url, poolclass=NullPool, isolation_level="AUTOCOMMIT", connect_args={"options": opts, **KEEPALIVES})
+
+
+def _modules(cfg: Config, conn: psycopg.Connection, *, pending: bool) -> list:
+    """The revision modules of this tree, oldest first: those the database has not applied (``pending``) or all of them. A revision
+    ``<branch>_<NNNN>`` is applied when the branch's epoch is at least NNNN (env.py writes the epoch with each revision)."""
+    epochs = dict(conn.execute("SELECT branch, epoch FROM kernel.schema_epoch").fetchall()) if pending else {}
+    revs = reversed(list(ScriptDirectory.from_config(cfg).walk_revisions()))
+    return [r.module for r in revs if int(r.revision.rsplit("_", 1)[1]) > epochs.get(r.revision.rsplit("_", 1)[0], 0)]
+
+
+PROGRESS_EVERY_S = 10.0
+
+
+@contextlib.contextmanager
+def _progress(c: Connection, qname: str) -> Iterator[None]:
+    """Log the build's ``pg_stat_progress_create_index`` row every ``PROGRESS_EVERY_S`` seconds, read from a second session."""
+    pid = c.exec_driver_sql("SELECT pg_backend_pid()").scalar()
+    stop = threading.Event()
+
+    def poll() -> None:
+        try:
+            with c.engine.connect() as p:
+                # The view shows another session's progress only to a role with its session user's rights: the login, not the owner role.
+                p.exec_driver_sql("SET ROLE NONE")
+                while not stop.wait(PROGRESS_EVERY_S):
+                    row = p.exec_driver_sql("SELECT phase, blocks_done, blocks_total, partitions_done, partitions_total "
+                                            "FROM pg_stat_progress_create_index WHERE pid = %s", (pid,)).first()
+                    if row and not stop.is_set():          # a poll that outlived the join may read the next index's build on the same pid
+                        log(f"index {qname}: {row[0]}, blocks {row[1]}/{row[2]}, partitions {row[3]}/{row[4]}")
+        except Exception as exc:                        # progress is only reported: the build goes on without it
+            log(f"index {qname}: no progress report ({type(exc).__name__})")
+    t = threading.Thread(target=poll, daemon=True)
+    t.start()
+    try:
+        yield
+    finally:
+        stop.set()
+        t.join(timeout=10)
+
+
+def _build_online(c: Connection, modules: list, started: list[str]) -> None:
+    """Build the ``ONLINE_INDEXES`` of the pending revisions before their transaction, without blocking writers (``ensure_partitioned_index``:
+    ``ON ONLY`` the parent, CREATE INDEX CONCURRENTLY per leaf, ATTACH). The revision's own call then finds them valid and does nothing. An
+    index a stopped run left invalid is rebuilt. A table a pending revision creates is skipped: that revision builds on it, empty. A table
+    that got an index with an expression key is analyzed once at the end: the planner has no statistics for an expression until then."""
+    analyze: list[str] = []
+    for ix in (ix for m in modules for ix in getattr(m, "ONLINE_INDEXES", ())):
+        schema = ix["table"].split(".")[0] if "." in ix["table"] else "public"      # where ddl puts it
+        qname = f"{schema}.{ix['name']}"
+        if c.exec_driver_sql("SELECT to_regclass(%s) IS NULL", (ix["table"],)).scalar():
+            continue
+        if not ddl._index_valid(c, qname):
+            started.append(qname)
+            t0 = time.monotonic()
+            log(f"index {qname}: building online")
+            try:
+                with _progress(c, qname):
+                    ddl.ensure_partitioned_index(c, **ix, blocking=False)
+            except DBAPIError as exc:
+                # A column, function or operator class the index names comes from an earlier pending revision (a database several releases behind).
+                # The first statement failed, so nothing was built: the revision builds it in its transaction, as before this step existed.
+                if getattr(exc.orig, "sqlstate", None) not in ("42703", "42883", "42704"):
+                    raise
+                log(f"index {qname}: built in the upgrade's transaction instead (an earlier pending revision changes {ix['table']}: "
+                    f"{str(exc.orig).strip().splitlines()[0]})")
+                continue
+            log(f"index {qname}: built in {time.monotonic() - t0:.1f}s")
+        # The catalog says which key is an expression (pg_index.indexprs), not the text of the key. Also when a stopped run built the index:
+        # it may have stopped before the ANALYZE.
+        if ix["table"] not in analyze and c.exec_driver_sql(
+                "SELECT indexprs IS NOT NULL FROM pg_index WHERE indexrelid = to_regclass(%s)", (qname,)).scalar():
+            analyze.append(ix["table"])
+    for table in analyze:
+        t0 = time.monotonic()
+        # ANALYZE of a partitioned table also analyzes each leaf, where the expression statistics of the leaves' indexes are kept.
+        c.exec_driver_sql(f"ANALYZE {ddl._ident(table)}")
+        log(f"table {table}: analyzed in {time.monotonic() - t0:.1f}s (statistics of its new expression indexes)")
+
+
+def drop_online(c: Connection, qname: str) -> None:
+    """Drop an index and every index of its tree a stopped or failed build left unattached, valid or not (dropping the parent takes only the
+    attached ones with it). ddl names a child's index after its tree path, ``<leaf>_<parent>_<name>``, so they are found by walking the table's
+    partitions from the parent index's table, never by a name pattern alone. A partitioned index (the parent, or an intermediate one such as
+    ``nodes_def_<name>``) cannot be dropped CONCURRENTLY: its drop is a catalog change of a moment, under ddl._retry's 2 s lock_timeout. A
+    leaf's index is dropped CONCURRENTLY."""
+    schema, name = ddl._ident(qname).split(".")
+    tree: list[tuple[str, str | None]] = []           # (index, the partition it must be on)
+
+    def walk(table: str, idx: str) -> None:
+        for child in c.exec_driver_sql("SELECT inhrelid::regclass::text FROM pg_inherits WHERE inhparent = %s::regclass ORDER BY 1", (table,)).scalars().all():
+            child_idx = f"{child.split('.')[-1]}_{idx}"
+            tree.append((f"{schema}.{child_idx}", child))
+            walk(child, child_idx)
+    table = c.exec_driver_sql("SELECT indrelid::regclass::text FROM pg_index WHERE indexrelid = to_regclass(%s)", (qname,)).scalar()
+    if table:
+        walk(table, name)
+    for q, on in [*reversed(tree), (qname, None)]:    # the leaves before their parents
+        row = c.exec_driver_sql("SELECT c.relkind, EXISTS (SELECT 1 FROM pg_inherits WHERE inhrelid = c.oid), "
+                                "x.indrelid = to_regclass(%s) FROM pg_class c JOIN pg_index x ON x.indexrelid = c.oid "
+                                "WHERE c.oid = to_regclass(%s) AND c.relkind IN ('i', 'I')", (on, q)).first()
+        if row is None or (row[1] and q != qname) or row[2] is False:     # not there, attached (it goes with its parent), or another table's
+            continue
+        if row[0] == "I":
+            ddl._retry(c, lambda q=q: c.exec_driver_sql(f"DROP INDEX IF EXISTS {q}"), attempts=5)
+        else:
+            c.exec_driver_sql(f"DROP INDEX CONCURRENTLY IF EXISTS {q}")
+
+
+def _retiring(cfg: Config, conn: psycopg.Connection) -> frozenset[str]:
+    """``ONLINE_DROPS`` of every revision of this tree: indexes a revision retires. They are dropped after the upgrade commits, never
+    inside it, and a run that could not drop one drops it the next time."""
+    return frozenset(q for m in _modules(cfg, conn, pending=False) for q in getattr(m, "ONLINE_DROPS", ()))
+
+
+def _drop_all(engine: Engine, names: list[str] | frozenset[str], why: str, hint: str) -> None:
+    """Drop each of these indexes that exists. A failure is logged with ``hint``: it never fails a run that committed, nor hides the error
+    of one that did not."""
+    for q in sorted(set(names)):
+        try:
+            with engine.connect() as c:
+                if c.exec_driver_sql("SELECT to_regclass(%s) IS NULL", (q,)).scalar():
+                    continue
+                drop_online(c, q)
+            log(f"index {q}: dropped ({why})")
+        except Exception as exc:
+            log(f"WARNING index {q} was not dropped ({why}): {str(exc).strip().splitlines()[0] if str(exc).strip() else type(exc).__name__}; {hint}")
+
+
+OUTCOME_WAIT_S = 60.0
+
+
+def _committed(engine: Engine, before: dict[str, int], pid: int | None) -> bool | None:
+    """Whether the upgrade's one transaction committed, after it raised: an error can reach the client after the server committed (the
+    reply to COMMIT lost with the connection). True or False once its session has ended (the epochs moved, or not); None when that is not
+    known within ``OUTCOME_WAIT_S`` or the epochs cannot be read. ``pid``: the upgrade session's backend; None when it never connected."""
+    if pid is None:
+        return False
+    try:
+        with engine.connect() as c:
+            deadline = time.monotonic() + OUTCOME_WAIT_S
+            while c.exec_driver_sql("SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE pid = %s)", (pid,)).scalar():
+                if time.monotonic() > deadline:
+                    return None
+                time.sleep(0.5)
+            return dict(c.exec_driver_sql("SELECT branch, epoch FROM kernel.schema_epoch").all()) != before
+    except Exception:
+        return None
+
+
 def _has_revisions(conn: psycopg.Connection) -> bool:
     if not conn.execute("SELECT to_regclass('kernel.alembic_version') IS NOT NULL").fetchone()[0]:
         return False
     return conn.execute("SELECT EXISTS (SELECT 1 FROM kernel.alembic_version)").fetchone()[0]
 
 
-def _report(conn: psycopg.Connection) -> None:
+def _report(conn: psycopg.Connection, retiring: frozenset[str] = frozenset()) -> None:
     """The epochs and the catalog and surface checks. On an installed database they run inside the upgrade's transaction (see
-    env.py): a violation raises before COMMIT, so nothing the run applied stays. On an empty one they run after the revisions."""
+    env.py): a violation raises before COMMIT, so nothing the run applied stays. On an empty one they run after the revisions.
+    ``retiring``: indexes a revision retires; they are dropped after the commit, so until then their lines are not unexpected."""
     for branch, epoch, min_code in conn.execute("SELECT branch, epoch, min_code_epoch FROM kernel.schema_epoch ORDER BY 1"):
         log(f"epoch {branch}={epoch} min_code={min_code}")
     rows: list[tuple[str, str]] = []
@@ -155,7 +357,8 @@ def _report(conn: psycopg.Connection) -> None:
             if conn.execute("SELECT to_regclass('kernel.surface_skips') IS NOT NULL").fetchone()[0]:
                 conn.execute("INSERT INTO kernel.surface_skips (files) VALUES (%s)", (os.pathsep.join(extra),))
         else:                                                           # deny by default: the whole security surface is compared
-            rows += surface.violations(conn, extra)
+            rows += [r for r in surface.violations(conn, extra)
+                     if not (r[0] == "50 surface: unexpected" and r[1].startswith("index ") and r[1].split(" ")[1] in retiring)]
         if conn.execute("SELECT to_regclass('kernel.surface_skips') IS NOT NULL").fetchone()[0]:
             n, last = conn.execute("SELECT count(*), max(skipped_at) FROM kernel.surface_skips").fetchone()
             if n:
@@ -164,6 +367,11 @@ def _report(conn: psycopg.Connection) -> None:
     if rows:
         for row in rows:
             log(f"VIOLATION {row}")
+        if any("sysfuncs@" in str(r) for r in rows):
+            log("HINT the built-in functions match no reviewed sysfuncs line for this PostgreSQL major; a new minor release can add one. "
+                "Start a stock server of a reviewed minor, run  PG_ADMIN_URL=<this server> python -m db.surface --sysfuncs <stock server URL>  "
+                "to print the built-ins added (+) and removed (-), and if none is SECURITY DEFINER, LEAKPROOF or has settings, add the live "
+                "sysfuncs line to backend/db/surface.snapshot.txt next to the existing ones (see backend/db/README.md)")
         if any("role pipeshub_import " in str(r) for r in rows):
             log("HINT the import login (pipeshub_import) can log in and no document-store move is running (a rollback leaves it open): "
                 "shut it with  ALTER ROLE pipeshub_import NOLOGIN  as the administrative login, then run the migration again")
@@ -199,6 +407,8 @@ def _ahead_of_this_build(conn: psycopg.Connection, cfg: Config) -> str | None:
 def run(argv: list[str]) -> None:
     cmd = argv[0] if argv else "upgrade"
     url = migrate_url()
+    kv_mode = kv_access_mode()
+    memory = build_memory()
     with locked(url) as conn:
         _ensure_kernel_schema(conn)
         cfg = alembic_config(url)
@@ -206,13 +416,44 @@ def run(argv: list[str]) -> None:
             _path["existing_install"] = _has_revisions(conn)
             if _path["existing_install"] and (ahead := _ahead_of_this_build(conn, cfg)):
                 log(ahead)
+                if kv_mode:            # the newer schema is compatible (checked above), and it holds the mode table this build knows
+                    _set_kv_access(conn, kv_mode)
+                _warn_kv_shadow(conn)
                 return
-            if _path["existing_install"]:
-                cfg.attributes["verify"] = _report
-                _upgrade_with_retries(cfg, "heads")
-            else:               # an empty database has nothing to protect, and all revisions in one transaction hold ~6,600 locks
-                _upgrade_with_retries(cfg, "heads")
-                _report(conn)
+            engine = _online(url, memory)
+            try:
+                if _path["existing_install"]:
+                    retiring = _retiring(cfg, conn)
+                    cfg.attributes["verify"] = functools.partial(_report, retiring=retiring)
+                    started: list[str] = []
+                    before = dict(conn.execute("SELECT branch, epoch FROM kernel.schema_epoch").fetchall())
+                    try:
+                        with engine.connect() as c:
+                            _build_online(c, _modules(cfg, conn, pending=True), started)
+                        _upgrade_with_retries(cfg, "heads")
+                    except Exception:
+                        committed = _committed(engine, before, cfg.attributes.get("upgrade_pid")) if started else False
+                        if committed is False:
+                            # Nothing of the upgrade stays, so neither do the indexes built for it: the build this one replaces refuses
+                            # them (unexpected surface lines) and would not start again.
+                            _drop_all(engine, started, "the upgrade did not commit",
+                                      "an earlier build refuses it as unexpected: run this build again, or drop it before going back")
+                        elif committed:     # its revisions own them now; the next run finds nothing pending and builds nothing
+                            log(f"the upgrade committed although it raised: the {len(started)} indexes built for it stay; run this build again")
+                        else:
+                            log(f"WARNING could not tell whether the upgrade committed: the {len(started)} indexes built for it stay. Run this "
+                                "build again (it finds them valid); to go back instead, check kernel.schema_epoch and drop them if it did not")
+                        raise
+                else:           # an empty database has nothing to protect, and all revisions in one transaction hold ~6,600 locks
+                    _upgrade_with_retries(cfg, "heads")
+                    retiring = _retiring(cfg, conn)
+                    _report(conn, retiring)
+                _drop_all(engine, retiring, "retired by a revision", "the next run drops it")
+            finally:
+                engine.dispose()
+            if kv_mode:
+                _set_kv_access(conn, kv_mode)
+            _warn_kv_shadow(conn)
         elif cmd == "current":
             command.current(cfg, verbose=True)
         elif cmd == "downgrade" and len(argv) == 2:

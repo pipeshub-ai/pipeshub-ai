@@ -4,6 +4,7 @@ These patch the LLM call, not ``enrich_table_grid``, so the real header-slicing 
 description-alignment logic runs — patching the latter would bypass the code under test.
 """
 
+import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -19,9 +20,13 @@ from app.models.blocks import (
     TableMetadata,
     TableRowMetadata,
 )
-from app.modules.parsers.excel.prompt_template import TableEnrichment
-from app.utils import indexing_helpers, table_enrichment
+from app.modules.parsers.excel.prompt_template import (
+    KeyedRowDescription,
+    TableEnrichment,
+)
+from app.utils import table_enrichment
 from app.utils.table_enrichment import _enhance_one_table
+from tests.support.table_model import keyed_rows
 
 ROWS = [("SEO", "New"), ("Onboarding", "Review"), ("BackToSchool", "Disc")]
 
@@ -67,38 +72,32 @@ def _build(header_at: int | None) -> tuple[BlocksContainer, BlockGroup]:
 
 
 class _Harness:
-    """Captures the rows actually sent to the LLM and answers one description each."""
+    """Captures the rows actually sent to the LLM and answers one description each, under each row's key."""
 
     def __init__(self, truncate_to: int | None = None) -> None:
         self.sent: list[list[str]] = []
         self._truncate_to = truncate_to
 
-    def format_spy(self, rows):
-        """Stands in for format_rows_with_index; the prompt text is irrelevant here."""
-        self.sent = [list(r) for r in rows]
-        return str(rows)
-
-    async def llm(self, _llm, _messages, _model, _field, count):
-        descriptions = [f"DESC<{r[0]}>" for r in self.sent]
+    async def llm(self, _llm, messages, _model, *_args, **_kwargs):
+        shown = keyed_rows(messages)
+        self.sent = [list(row) for _key, row in shown]
+        descriptions = [
+            KeyedRowDescription(key=key, description=f"DESC<{row[0]}>") for key, row in shown
+        ]
         if self._truncate_to is not None:
-            return TableEnrichment(
-                summary="s",
-                headers=["invented_a", "invented_b"],
-                header_row_count=0,
-                descriptions=descriptions[: self._truncate_to],
-            )
+            descriptions = descriptions[: self._truncate_to]
         return TableEnrichment(
             summary="s",
             headers=["invented_a", "invented_b"],
             header_row_count=0,
-            descriptions=descriptions[:count],
+            descriptions=descriptions,
         )
 
 
 async def _enrich(group, container, harness, logger=None):
-    with patch.object(indexing_helpers, "format_rows_with_index", harness.format_spy), patch.object(
+    with patch.object(
         table_enrichment,
-        "invoke_with_count_validation_and_reflection",
+        "invoke_with_structured_output_and_reflection",
         new=AsyncMock(side_effect=harness.llm),
     ):
         await _enhance_one_table(group, container, MagicMock(), logger or MagicMock())
@@ -195,7 +194,7 @@ class TestRowDescriptionAlignment:
 @pytest.mark.asyncio
 async def test_a_table_whose_model_call_failed_still_gets_a_plain_summary() -> None:
     failing = AsyncMock(side_effect=RuntimeError("provider down"))
-    with patch.object(table_enrichment, "invoke_with_count_validation_and_reflection", failing):
+    with patch.object(table_enrichment, "invoke_with_structured_output_and_reflection", failing):
         result = await table_enrichment.enrich_table_grid(
             MagicMock(), [["Name", "Age"], ["a", "1"], ["b", "2"]], logger=MagicMock(), known_header_row_count=1
         )
@@ -232,3 +231,93 @@ class TestCaptionsSurviveEnrichment:
         await _enrich(group, container, _Harness())
 
         assert group.data["table_summary"] == "s"
+
+
+# --- repeated or empty column headers must not drop a cell ---------------------------------
+
+
+def test_row_dict_keeps_every_cell_when_a_header_repeats() -> None:
+    from app.utils.table_enrichment import _row_dict
+
+    row = ["Total assets", "", "", "$ 372,168", "$ 377,325"]
+    got = _row_dict(row, ["", "", "", "At", "At"])
+    assert len(got) == 5
+    assert list(got.values()) == row
+    assert list(got)[3:] == ["At", "At (2)"]
+
+
+def test_simple_texts_keeps_both_values_of_a_repeated_header() -> None:
+    from app.utils.table_enrichment import _simple_texts
+
+    text = _simple_texts([["Total assets", "", "", "$ 372,168", "$ 377,325"]], ["", "", "", "At", "At"])[0]
+    assert "372,168" in text and "377,325" in text
+
+
+def test_row_dict_unique_headers_output_unchanged() -> None:
+    from app.utils.table_enrichment import _row_dict
+
+    assert _row_dict(["a", "b", "c"], ["Name", "", "Qty"]) == {"Name": "a", "Column_2": "b", "Qty": "c"}
+    # a row longer than the headers still gets Column_N keys for the extra cells
+    assert _row_dict(["a", "b", "c"], ["Name"]) == {"Name": "a", "Column_2": "b", "Column_3": "c"}
+
+
+def test_row_dict_generated_key_never_collides_with_a_real_header() -> None:
+    from app.utils.table_enrichment import _row_dict
+
+    got = _row_dict(["x", "y"], ["", "Column_1"])
+    assert len(got) == 2 and list(got.values()) == ["x", "y"]
+
+
+def test_unique_column_keys_is_idempotent() -> None:
+    from app.utils.indexing_helpers import unique_column_keys
+
+    once = unique_column_keys(["At", "At", "At (2)", ""])
+    assert len(set(once)) == 4
+    assert unique_column_keys(once) == once
+
+
+@pytest.mark.asyncio
+async def test_enrich_table_grid_stores_unique_headers() -> None:
+    from app.utils.table_enrichment import enrich_table_grid
+
+    grid = [["Item", "At", "At"], ["Total assets", "$ 372,168", "$ 377,325"]]
+    result = await enrich_table_grid(None, grid, logger=logging.getLogger("t"), known_header_row_count=1)
+    assert result.headers == ["Item", "At", "At (2)"]
+    assert "372,168" in result.descriptions[0] and "377,325" in result.descriptions[0]
+
+
+def test_a_literal_suffix_header_keeps_its_name() -> None:
+    from app.utils.indexing_helpers import unique_column_keys
+
+    keys = unique_column_keys(["X", "X", "X (2)"])
+    assert keys[0] == "X" and keys[2] == "X (2)"
+    assert len(set(keys)) == 3
+    assert unique_column_keys(keys) == keys
+
+
+def test_a_generated_name_never_takes_a_literal_header() -> None:
+    from app.utils.indexing_helpers import unique_column_keys
+
+    keys = unique_column_keys(["", "Column_1", "Column_1", "Column_1 (2)"])
+    assert len(set(keys)) == 4
+    assert keys[1] == "Column_1" and keys[3] == "Column_1 (2)"
+    assert unique_column_keys(keys) == keys
+
+
+def test_unique_column_keys_property() -> None:
+    import random
+
+    from app.utils.indexing_helpers import unique_column_keys
+
+    rnd = random.Random(7351)
+    pool = ["", "A", "A (2)", "A (3)", "Column_2", "B", " "]
+    for _ in range(500):
+        hs = [rnd.choice(pool) for _ in range(rnd.randint(0, 8))]
+        width = len(hs) + rnd.randint(0, 3)
+        keys = unique_column_keys(hs, width)
+        assert len(keys) == width and len(set(keys)) == width
+        # a header that is unique and non-empty keeps its own name
+        for i, h in enumerate(hs):
+            if h and hs.count(h) == 1:
+                assert keys[i] == h
+        assert unique_column_keys(keys) == keys

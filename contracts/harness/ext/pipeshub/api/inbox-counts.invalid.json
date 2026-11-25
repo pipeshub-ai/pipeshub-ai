@@ -1,0 +1,21 @@
+[
+  {
+    "description": "a negative count",
+    "instance": {
+      "unread": -1,
+      "waiting": 0,
+      "badge": 0,
+      "paused": false,
+      "pausedUntil": null
+    }
+  },
+  {
+    "description": "no badge",
+    "instance": {
+      "unread": 1,
+      "waiting": 0,
+      "paused": false,
+      "pausedUntil": null
+    }
+  }
+]

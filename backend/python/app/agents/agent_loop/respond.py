@@ -69,21 +69,26 @@ from app.agent_loop_lib.transport.opik_tracing import (
     maybe_start_named_span,
     record_named_span_output,
 )
-from app.agents.agent_loop.error_classification import (
-    classify_error,
-    redact_error_for_log,
-)
+from app.agents.agent_loop.error_classification import classify_error
 from app.agents.agent_loop import parked_turn
 from app.agents.agent_loop.hooks.ask_user_question import _ASK_USER_QUESTION_TOOL_NAMES
+from app.agents.agent_loop.hooks.flow_guard import request_label
 from app.agents.agent_loop.mcp_sign_in import sign_in_part
-from app.agents.agent_loop.reasoning_persistence import build_reasoning_payload, filter_reasoning_parts
+from app.agents.agent_loop.reasoning_persistence import (
+    build_reasoning_payload,
+    filter_reasoning_parts,
+)
 from app.agents.agent_loop.tool_approvals import PENDING_MESSAGE, RESUMING
+from app.models.citation_source import count_live_citations
 from app.modules.agents.qna.helpers import _tool_names_and_results_from_state
 from app.telemetry.event_buffer import record_event
 from app.telemetry.identity import domain_from_email
 from app.telemetry.modules.activity_metrics import record_service_activity
 from app.utils.citations import normalize_citations_and_chunks
+from app.utils.error_class import failure_reason
+from app.utils.log_redaction import redact_error_for_log
 from app.utils.streaming import parse_confidence_from_answer
+from harness_core.contracts.generated.enums import CUT_SHORT_REASONS
 
 if TYPE_CHECKING:
     from app.agents.agent_loop.context import AgentContext
@@ -93,6 +98,12 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _EMPTY_ANSWER_FALLBACK = "I wasn't able to generate a response. Please try rephrasing."
+
+
+def _log_live_citations(log: logging.Logger, citations: list[dict[str, Any]]) -> None:
+    live = count_live_citations(citations)
+    if live:
+        log.info("citations.live_resolved live=%d citations=%d", live, len(citations))
 
 
 def _tool_names_from_state(state: dict[str, Any]) -> dict[str, Any]:
@@ -156,8 +167,13 @@ class AnswerFinalizer:
         agent_confidence: str | None = None,
         agent_cancelled: bool = False,
         agent_needs_input: str | None = None,
+        truncated_by: str | None = None,
     ) -> dict[str, Any]:
         """Produce `completion_data` from the completed agent run.
+
+        `truncated_by` is `AgentResult.truncated_by` (BUDGETEND): a limit cut
+        the run's work short and the answer is what it gathered. It rides on
+        the answer as `truncatedBy`, so the chat shows the notice.
 
         `agent_success`/`agent_error`/`agent_output` come straight off
         `AgentResult.success`/`.error`/`.output` — an agent-loop run failure
@@ -198,7 +214,8 @@ class AnswerFinalizer:
 
         if not agent_success:
             error_msg = agent_error or "An error occurred"
-            log.error(
+            # The turn's `agent_turn.end` (and `llm_call.failed`) already say why, once.
+            log.debug(
                 "AnswerFinalizer: agent run failed, answering with an error message "
                 "(error_code=%s org_id=%s conversation_id=%s run_id=%s): %s",
                 classify_error(error_msg)[0], self._context.org_id,
@@ -223,10 +240,11 @@ class AnswerFinalizer:
                     streamed_answer, reasoning_turns or [],
                     agent_confidence=agent_confidence,
                     agent_needs_input=agent_needs_input,
+                    truncated_by=truncated_by,
                 )
             except Exception as exc:
                 log.error("AnswerFinalizer failed: %s", exc, exc_info=True)
-                record_named_span_output(span, {"error": str(exc)})
+                record_named_span_output(span, {"error": failure_reason(exc)})
                 return await self._emit_error_response(
                     "I encountered an issue. Please try again.", event_sink=event_sink
                 )
@@ -300,6 +318,7 @@ class AnswerFinalizer:
         reasoning_turns: list[dict[str, Any]],
         agent_confidence: str | None = None,
         agent_needs_input: str | None = None,
+        truncated_by: str | None = None,
     ) -> dict[str, Any]:
         streamed = (streamed_answer or "").strip()
         is_resume = bool(state.get("ask_user_question_resume") or state.get(RESUMING))
@@ -412,7 +431,9 @@ class AnswerFinalizer:
             )
 
         if self._context.conversation_id:
-            from app.utils.conversation_tasks import await_and_collect_results  # noqa: PLC0415
+            from app.utils.conversation_tasks import (
+                await_and_collect_results,  # noqa: PLC0415
+            )
             from app.utils.streaming import _append_task_markers  # noqa: PLC0415
 
             task_results = await await_and_collect_results(self._context.conversation_id)
@@ -463,18 +484,25 @@ class AnswerFinalizer:
         completion_data["answer"] = normalized
         completion_data["citations"] = citations
         completion_data["confidence"] = confidence
+        _log_live_citations(log, citations)
         if awaiting_approval:
             completion_data["answerMatchType"] = "Approval Needed"
         reasoning_payload = build_reasoning_payload(reasoning_turns)
         if reasoning_payload is not None:
             completion_data["reasoning"] = reasoning_payload
         completion_data.update(_tool_names_from_state(state))
+        if truncated_by in CUT_SHORT_REASONS:
+            completion_data["truncatedBy"] = truncated_by
+        label = request_label(self._context)
+        if label is not None:
+            # What this turn read, recorded on the answer so a later turn on today's loop decides from it (FG2).
+            completion_data["label"] = label
         state["response"] = normalized
         state["completion_data"] = completion_data
         await self._emit_ask_user_question_fallback(state, event_sink)
         for evt in self._context.formatter.answer_final(self._context, completion_data=completion_data):
             await event_sink.write(evt)
-        log.info(
+        log.debug(
             "AnswerFinalizer: finalized response (%d chars, %d citations)",
             len(normalized), len(citations),
         )
@@ -550,16 +578,21 @@ class AnswerFinalizer:
 
         completion_data["answer"] = normalized
         completion_data["citations"] = citations
+        _log_live_citations(log, citations)
         reasoning_payload = build_reasoning_payload(reasoning_turns)
         if reasoning_payload is not None:
             completion_data["reasoning"] = reasoning_payload
         completion_data.update(_tool_names_from_state(state))
+        label = request_label(self._context)
+        if label is not None:
+            # What this turn read, recorded on the answer so a later turn on today's loop decides from it (FG2).
+            completion_data["label"] = label
         state["response"] = normalized
         state["completion_data"] = completion_data
         await self._emit_ask_user_question_fallback(state, event_sink)
         for evt in self._context.formatter.answer_final(self._context, completion_data=completion_data):
             await event_sink.write(evt)
-        log.info(
+        log.debug(
             "AnswerFinalizer: finalized STOPPED response (%d chars, %d citations)",
             len(normalized), len(citations),
         )

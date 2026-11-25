@@ -14,6 +14,7 @@ import logging
 import os
 import random
 import re
+import sys
 import threading
 import time
 from collections.abc import Callable, Iterator, Mapping
@@ -21,22 +22,36 @@ from dataclasses import asdict, dataclass, replace
 from typing import TYPE_CHECKING, Any, TypedDict, Unpack
 
 from app.exceptions.indexing_exceptions import IndexingError
+from app.services.resource_governor.kinds import (
+    SCALES,
+    ParseKind,
+    explicit_lane_working_set_bytes,
+    lane_charge_bytes,
+    window_charge_bytes,
+)
 from app.services.resource_governor.lane_ledger import (
     BLANK,
     BRAKE_SPACING_SECONDS,
+    LEDGER_VERSION,
     LOCAL_OVERLAY_SECONDS,
+    WAITER_COOLDOWN_SECONDS,
+    WAITER_REWRITE_SECONDS,
     DomainLedger,
     LedgerRecord,
     LedgerTxn,
     Presence,
+    active_waiter,
+    add_window_bytes,
     decide_spawn,
     effective_cap,
+    live_window_bytes,
     next_lane_cap,
     pid_alive,
+    remove_window_bytes,
     spawn_allowance,
     with_plan,
 )
-from app.services.resource_governor.policy import INCIDENT_COOLDOWN_SECONDS
+from app.services.resource_governor.policy import INCIDENT_COOLDOWN_SECONDS, MEM_SOFT
 from app.services.resource_governor.shared_slots import (
     SharedSlots,
     SlotHold,
@@ -54,6 +69,11 @@ logger = logging.getLogger(__name__)
 # Upper bound on lanes in one container (the legacy pool capped itself at 4).
 MAX_LANES = 64
 LANE_SLOT_CAPACITY = MAX_LANES
+LANE_DIRECTORY_PREFIX = "pipeshub-cpu-lanes"
+# Lease weights of the local Docling conversion (CPU cores measured in 2a').
+DOCLING_PDF_WEIGHT = 3
+DOCLING_OTHER_WEIGHT = 1
+DOCLING_AUTO_LANES_PER_CHILD = 3
 # 0.85 GiB for the parse worker plus 0.40 GiB for its persistent raster child.
 DEFAULT_WORKING_SET_GB = 1.25
 DEFAULT_WARMUP_SECONDS = 20.0
@@ -91,6 +111,22 @@ THREADS_RULE: dict[tuple[int, int], int] = {
     (4, 4): 1,
     (8, 4): 2,
 }
+
+
+def docling_pdf_weight(plan: LanePlan) -> int:
+    """Lease units of a Docling PDF conversion: 3 cores' worth, but never so many that one
+    PDF takes every lane of a small plan and serialises the other conversions behind it."""
+    return min(DOCLING_PDF_WEIGHT, max(1, plan.lanes - 1))
+
+
+def docling_auto_width(plan: LanePlan) -> int:
+    """Executor children for ``LOCAL_DOCLING_PARSE_WORKERS=auto``.
+
+    A PDF conversion holds three lease units and one lane stays free of Docling at the
+    full limit, so more children than this could never run together. 0 or 1 means the
+    leased thread path.
+    """
+    return max(0, (plan.lanes - 1) // DOCLING_AUTO_LANES_PER_CHILD)
 
 
 def threads_rule(cpus: int, lanes: int) -> int:
@@ -162,9 +198,28 @@ def lanes_health(governor: ResourceGovernor | None, cpus: int) -> dict[str, Any]
         block["pool"] = gauges.get("pool")
         block["interactive_pool"] = gauges.get("interactive")
         block["explicit_private"]["parse_pool"] = gauges.get("explicit_private")
+        _add_consumer_blocks(block)
         return block
     plan = plan_for_governor(governor, cpus)
     return {"mode": LANES_MODE, "plan": asdict(plan), "in_use_domain": None}
+
+
+def _add_consumer_blocks(block: dict[str, Any]) -> None:
+    """Docling, the rasterizer and the SVG renderers, from the modules this process loaded
+    (importing them here would load Docling into a service that never uses it)."""
+    modules = sys.modules
+    docling = modules.get("app.modules.parsers.pdf.docling_processor")
+    if docling is not None:
+        block["docling"] = docling.docling_lane_stats()
+        explicit = explicit_setting(DOCLING_WORKERS_ENV)
+        block["explicit_private"]["docling"] = explicit
+    raster = modules.get("app.modules.parsers.pdf.pdf_rasterizer")
+    if raster is not None:
+        block["raster_jobs"] = raster.raster_jobs()
+        block["explicit_private"]["raster"] = explicit_setting(RASTER_WORKERS_ENV)
+    svg = modules.get("app.modules.parsers.image_parser.svg_worker")
+    live = len(getattr(getattr(svg, "_renderers", None), "_all", ())) if svg is not None else 0
+    block["unleased"]["svg_renderers_live"] = live
 
 
 # ---------------------------------------------------------------------------
@@ -318,12 +373,23 @@ class SpawnTicket:
     """
 
     def __init__(
-        self, budget: LaneBudget, token: SlotHold, window_start: float, *, local_window: bool
+        self,
+        budget: LaneBudget,
+        token: SlotHold,
+        window_start: float,
+        *,
+        local_window: bool,
+        nbytes: int = 0,
+        bytes_until: float = 0.0,
+        counted: bool = True,
     ) -> None:
         self._budget = budget
         self.token = token
         self.window_start = window_start
         self._local_window = local_window
+        self.nbytes = nbytes
+        self.bytes_until = bytes_until
+        self.counted = counted
         self._done = False
         self._lock = threading.Lock()
 
@@ -334,7 +400,13 @@ class SpawnTicket:
             self._done = True
         if not started:
             self.token.release()
-            self._budget._return_window_slot(self.window_start, local_window=self._local_window)
+            self._budget._return_window_slot(
+                self.window_start,
+                local_window=self._local_window,
+                nbytes=self.nbytes,
+                bytes_until=self.bytes_until,
+                counted=self.counted,
+            )
 
     def worker_exited(self) -> None:
         self.token.release()
@@ -474,6 +546,14 @@ class BudgetOptions(TypedDict, total=False):
 _LEDGER_OPTIONS = ("view_ttl", "lock_budget", "fallback_seconds")
 
 
+class _WaiterRequest:
+    """One weighted acquire: whether it holds the waiter flag and when it last wrote it."""
+
+    def __init__(self) -> None:
+        self.registered = False
+        self.last_write = float("-inf")
+
+
 class LaneBudget:
     """One budget of CPU lanes for every process in a memory domain.
 
@@ -510,6 +590,8 @@ class LaneBudget:
         self._clock = clock
         self._alive = alive
         self._pid = os.getpid() if pid is None else pid
+        # An operator's figure (or a test's) is one flat charge for every kind of job.
+        self._flat_ws = working_set_bytes if working_set_bytes is not None else explicit_lane_working_set_bytes()
         self._ws_bytes = (
             working_set_bytes
             if working_set_bytes is not None
@@ -528,14 +610,16 @@ class LaneBudget:
         self._state = threading.Lock()
         self._reading: tuple[float, tuple[int | None, int | None]] | None = None
         self._overlay: tuple[int, float] | None = None
-        self._pending_returns: list[float] = []
-        self._local_window = (0.0, 0)
+        self._pending_returns: list[tuple[float, int, float, bool]] = []
+        self._local_window = (0.0, 0, 0, 0.0)  # start, spawns, bytes, bytes_until
+        self._growth_by_kind: dict[str, dict[str, int]] = {}
         self._waiting = 0
         self._waits: collections.deque[float] = collections.deque(maxlen=256)
         self._degrade_logged = False
         self._mismatch_logged = False
         self._live_cache: tuple[float, int] | None = None
         self._presence_registered = False
+        self._waiter_owner: _WaiterRequest | None = None
 
     # -- construction ----------------------------------------------------------
 
@@ -690,14 +774,37 @@ class LaneBudget:
 
     # -- run leases --------------------------------------------------------------
 
-    def try_acquire(self, *, weight: int = 1) -> LaneLease | None:
+    def _waiter_limit(self, limit: int, weight: int, request: _WaiterRequest | None) -> int | None:
+        """The limit to use while a weighted request waits, or None to take nothing.
+
+        Everyone but the waiter leaves room for it: a weight-1 caller may take a unit
+        only if the waiter still fits, and nothing is taken at all when the waiter can
+        only run alone.
+        """
+        waiter = active_waiter(self._ledger.read(), self._clock())
+        if waiter is None:
+            return limit
+        waiter_weight, waiter_pid = waiter
+        if request is not None and request is self._waiter_owner and waiter_pid == self._pid:
+            return limit
+        if waiter_weight >= limit:
+            return None
+        room = limit - waiter_weight
+        return room if weight <= room else None
+
+    def try_acquire(self, *, weight: int = 1, _request: _WaiterRequest | None = None) -> LaneLease | None:
         if in_lane_scope():
             return LaneLease(None, 0)
+        weight = max(1, weight)
         limit = self.limit()
+        self._check_open()
+        limit_now = self._waiter_limit(limit, weight, _request)
+        if limit_now is None:
+            return None
         with self._guard:
             self._check_open()
-            hold = self._run.try_acquire(limit, max(1, weight))
-        return None if hold is None else LaneLease(hold, max(1, weight))
+            hold = self._run.try_acquire(limit_now, weight)
+        return None if hold is None else LaneLease(hold, weight)
 
     def _backoff(self, delay: float) -> float:
         time.sleep(delay * (0.5 + self._rng()))
@@ -706,6 +813,66 @@ class LaneBudget:
     def _wait_done(self, started: float, *, waited: bool) -> None:
         if waited:
             self._waits.append(self._clock() - started)
+
+    def _hold_place(self, request: _WaiterRequest, weight: int) -> None:
+        """Keep a denied weighted request's place in the queue: register as the waiter,
+        or rewrite the stamp, at most every ``WAITER_REWRITE_SECONDS``."""
+        now = self._clock()
+        if weight <= 1 or now - request.last_write < WAITER_REWRITE_SECONDS:
+            return
+        request.last_write = now
+        mine = False
+
+        def change(record: LedgerRecord) -> LedgerRecord | None:
+            nonlocal mine
+            if now < record.waiter_clear_at:
+                return None
+            if active_waiter(record, now) is not None and not (
+                self._waiter_owner is request and record.waiter_pid == self._pid
+            ):
+                return None
+            mine = True
+            return replace(record, waiter_at=now, waiter_weight=weight, waiter_pid=self._pid)
+
+        try:
+            self._update(change)
+        except Exception:
+            logger.warning("lane budget: could not write the waiter flag", exc_info=True)
+            return
+        if mine:
+            self._waiter_owner = request
+            request.registered = True
+            self._ledger.invalidate()
+
+    def _release_place(self, request: _WaiterRequest) -> None:
+        """Clear the flag (best effort) and start the cooldown, on admission or giving up."""
+        if not request.registered:
+            return
+        request.registered = False
+        if self._waiter_owner is request:
+            self._waiter_owner = None
+        now = self._clock()
+
+        def change(record: LedgerRecord) -> LedgerRecord | None:
+            if record.waiter_pid != self._pid:
+                return None
+            return replace(
+                record,
+                waiter_at=0.0,
+                waiter_weight=0,
+                waiter_pid=0,
+                waiter_clear_at=now + WAITER_COOLDOWN_SECONDS,
+            )
+
+        if self._closed:
+            return
+        try:
+            for _ in range(3):
+                if self._update(change):
+                    break
+        except Exception:
+            logger.warning("lane budget: could not clear the waiter flag", exc_info=True)
+        self._ledger.invalidate()
 
     def acquire(
         self,
@@ -716,9 +883,10 @@ class LaneBudget:
     ) -> LaneLease:
         """Block the calling thread (never an event loop) until a lane is free."""
         started, delay, waited = self._clock(), 0.01, False
+        request = _WaiterRequest()
         try:
             while True:
-                lease = self.try_acquire(weight=weight)
+                lease = self.try_acquire(weight=weight, _request=request)
                 if lease is not None:
                     lease.waited_seconds = self._clock() - started
                     return lease
@@ -730,8 +898,10 @@ class LaneBudget:
                     raise LaneWaitCancelled("cancelled while waiting for a lane")
                 if timeout is not None and self._clock() - started >= timeout:
                     raise LaneWaitTimeout("no lane became free in time")
+                self._hold_place(request, weight)
                 delay = self._backoff(delay)
         finally:
+            self._release_place(request)
             if waited:
                 with self._state:
                     self._waiting -= 1
@@ -745,9 +915,10 @@ class LaneBudget:
         timeout: float | None = None,
     ) -> LaneLease:
         started, delay, waited = self._clock(), 0.01, False
+        request = _WaiterRequest()
         try:
             while True:
-                lease = self.try_acquire(weight=weight)
+                lease = self.try_acquire(weight=weight, _request=request)
                 if lease is not None:
                     lease.waited_seconds = self._clock() - started
                     return lease
@@ -759,9 +930,11 @@ class LaneBudget:
                     raise LaneWaitCancelled("cancelled while waiting for a lane")
                 if timeout is not None and self._clock() - started >= timeout:
                     raise LaneWaitTimeout("no lane became free in time")
+                self._hold_place(request, weight)
                 await asyncio.sleep(delay * (0.5 + self._rng()))
                 delay = min(0.1, delay * 2)
         finally:
+            self._release_place(request)
             if waited:
                 with self._state:
                     self._waiting -= 1
@@ -781,9 +954,12 @@ class LaneBudget:
 
     def _drain_returns(self, record: LedgerRecord) -> LedgerRecord:
         pending, self._pending_returns = self._pending_returns, []
-        for window_start in pending:
-            if record.window_start == window_start and record.spawns_in_window > 0:
+        now = self._clock()
+        for window_start, nbytes, bytes_until, counted in pending:
+            if counted and record.window_start == window_start and record.spawns_in_window > 0:
                 record = replace(record, spawns_in_window=record.spawns_in_window - 1)
+            if nbytes and now < bytes_until:
+                record = remove_window_bytes(record, nbytes, now)
         return record
 
     def _update(self, change: Callable[[LedgerRecord], LedgerRecord | None]) -> bool:
@@ -854,13 +1030,35 @@ class LaneBudget:
 
     # -- spawn admission ---------------------------------------------------------
 
-    def admit_spawn(self, ws_bytes: int | None = None) -> SpawnTicket | None:
+    def shared(self) -> bool:
+        """Whether this budget protects the whole domain: shared slots and a healthy ledger."""
+        return not self._closed and self._slots_kind == "shared" and not self._ledger.degraded
+
+    def charge_for(self, kind: ParseKind | None, size: int, permit_covered: bool = False) -> tuple[int, int]:  # noqa: FBT001, FBT002
+        """``(worker charge, window charge)`` in bytes for one job of *kind*.
+
+        The first is what the worker keeps charged while it lives, the second what its spawn adds to
+        the domain's in-flight window. An operator's flat figure is both, for every kind.
+        """
+        scale = SCALES.scale(kind)
+        flat = self._flat_ws
+        return (
+            lane_charge_bytes(kind, size, permit_covered, scale=scale, flat_bytes=flat),
+            window_charge_bytes(kind, size, permit_covered, scale=scale, flat_bytes=flat),
+        )
+
+    def admit_spawn(self, ws_bytes: int | None = None, *, count_spawn: bool = True) -> SpawnTicket | None:
         """A ticket to start one worker, or ``None`` (poll again).
 
         One critical section under the ledger lock: the memory reading, the
-        resident token, the window count and the record write. The token is
+        resident token, the window count and bytes and the record write. The token is
         taken first and tells whether it is the only one in the domain, which is
         what exempts the first worker from the headroom test.
+
+        *ws_bytes* is what the spawn adds to the in-flight window (the job's charge by kind). A
+        worker that retires after its job passes ``count_spawn=False``: it counts toward the
+        resident bound and the window bytes but not toward the spawn allowance, which limits cold
+        model loads.
         """
         self._check_open()
         plan = self.plan
@@ -873,17 +1071,24 @@ class LaneBudget:
             if txn is not None:
                 with self._guard:
                     self._check_open()
-                    return self._admit_shared(txn, plan, now, ws, mem_limit, raw)
+                    return self._admit_shared(txn, plan, now, ws, mem_limit, raw, count_spawn)
         self._check_open()  # a closed ledger yields no transaction: that is not a busy lock
         if not self._ledger.degraded:
             return None
         self._log_degraded()
         with self._guard:
             self._check_open()
-            return self._admit_local(plan, now, ws, mem_limit, raw)
+            return self._admit_local(plan, now, ws, mem_limit, raw, count_spawn)
 
     def _admit_shared(
-        self, txn: LedgerTxn | _LocalTxn, plan: LanePlan, now: float, ws: int, mem_limit: int | None, raw: int | None
+        self,
+        txn: LedgerTxn | _LocalTxn,
+        plan: LanePlan,
+        now: float,
+        ws: int,
+        mem_limit: int | None,
+        raw: int | None,
+        count_spawn: bool = True,  # noqa: FBT001, FBT002
     ) -> SpawnTicket | None:
         stored = txn.read()
         record = self._drain_returns(self._apply_overlay(stored, now))
@@ -904,6 +1109,9 @@ class LaneBudget:
                 mem_limit=mem_limit,
                 ws_bytes=ws,
                 warmup_seconds=self._warmup,
+                window_bytes=record.window_bytes,
+                bytes_until=record.bytes_until,
+                count_spawn=count_spawn,
             )
             if not decision.admit:
                 token.release()
@@ -916,6 +1124,8 @@ class LaneBudget:
                         record,
                         window_start=decision.window_start,
                         spawns_in_window=decision.spawns_in_window,
+                        window_bytes=decision.window_bytes,
+                        bytes_until=decision.bytes_until,
                     ),
                     plan.lanes,
                 )
@@ -923,7 +1133,79 @@ class LaneBudget:
         except BaseException:
             token.release()
             raise
-        return SpawnTicket(self, token, decision.window_start, local_window=False)
+        return SpawnTicket(
+            self, token, decision.window_start, local_window=False,
+            nbytes=ws, bytes_until=decision.bytes_until, counted=count_spawn,
+        )
+
+    def admit_growth(self, delta_bytes: int) -> bool:
+        """Whether a warm worker may grow by *delta_bytes* (a heavier job than it has held).
+
+        One critical section under the ledger lock like ``admit_spawn``, but no token and no
+        spawn count: nothing new starts. The headroom test is the spawn's, the delta joins the
+        window for a warm-up, and a worker that is the only one resident in the domain is exempt
+        (the first-worker floor, decided under the same lock so it cannot race a first spawn).
+        A denial asks idle workers elsewhere to give their memory back. False means poll again.
+        """
+        self._check_open()
+        delta = max(0, int(delta_bytes))
+        if delta == 0:
+            return True
+        mem_limit, raw = self._memory()
+        now = self._clock()
+        with self._ledger.transaction() as txn:
+            if txn is not None:
+                with self._guard:
+                    self._check_open()
+                    return self._grow_shared(txn, now, delta, mem_limit, raw)
+        self._check_open()
+        if not self._ledger.degraded:
+            return False
+        self._log_degraded()
+        with self._guard:
+            self._check_open()
+            return self._grow_local(now, delta, mem_limit, raw)
+
+    def _grow_shared(self, txn: LedgerTxn | _LocalTxn, now: float, delta: int, mem_limit: int | None, raw: int | None) -> bool:
+        stored = txn.read()
+        record = self._drain_returns(self._apply_overlay(stored, now))
+        if self._lone_resident():
+            txn.write(with_plan(add_window_bytes(record, delta, now, self._warmup), self._plan.lanes))
+            return True
+        if mem_limit is not None and mem_limit > 0:
+            carried = live_window_bytes(record, now)
+            if raw is None or (raw + carried + delta) / mem_limit >= MEM_SOFT:
+                txn.write(with_plan(replace(record, reap_request_at=now), self._plan.lanes))
+                return False
+        txn.write(with_plan(add_window_bytes(record, delta, now, self._warmup), self._plan.lanes))
+        return True
+
+    def _lone_resident(self) -> bool:
+        """True when this is the only resident worker. A busy count (another process holds the
+        mutex) is not known to be lone, so the headroom test decides and the caller polls again."""
+        try:
+            return self._resident.held_count(0.0) <= 1
+        except TimeoutError:
+            return False
+
+    def _grow_local(self, now: float, delta: int, mem_limit: int | None, raw: int | None) -> bool:
+        start, spawns, nbytes, until = self._local_window
+        carried = nbytes if now < until else 0
+        lone = self._lone_resident()
+        if not lone and mem_limit is not None and mem_limit > 0 and (
+            raw is None or (raw + carried + delta) / mem_limit >= MEM_SOFT
+        ):
+            return False
+        self._local_window = (start, spawns, carried + delta, now + self._warmup)
+        return True
+
+    def note_growth(self, kind: ParseKind | None, nbytes: int) -> None:
+        """Count a growth admission for ``stats()['by_kind']``."""
+        key = (kind or ParseKind.UNKNOWN).value
+        with self._state:
+            entry = self._growth_by_kind.setdefault(key, {"growth": 0, "growth_bytes": 0})
+            entry["growth"] += 1
+            entry["growth_bytes"] += int(nbytes)
 
     def _maybe_request_reap(self, txn: LedgerTxn | _LocalTxn, record: LedgerRecord, plan: LanePlan, now: float) -> None:
         try:
@@ -934,12 +1216,18 @@ class LaneBudget:
             txn.write(with_plan(replace(record, reap_request_at=now), plan.lanes))
 
     def _admit_local(
-        self, plan: LanePlan, now: float, ws: int, mem_limit: int | None, raw: int | None
+        self,
+        plan: LanePlan,
+        now: float,
+        ws: int,
+        mem_limit: int | None,
+        raw: int | None,
+        count_spawn: bool = True,  # noqa: FBT001, FBT002
     ) -> SpawnTicket | None:
         token = self._resident.try_acquire(self.resident_limit())
         if token is None:
             return None
-        start, spawns = self._local_window
+        start, spawns, nbytes, until = self._local_window
         live = self._live_processes()
         decision = decide_spawn(
             held_before=token.held_before,
@@ -952,21 +1240,41 @@ class LaneBudget:
             ws_bytes=ws,
             warmup_seconds=self._warmup,
             allowance=max(1, spawn_allowance(plan.lanes) // live),
+            window_bytes=nbytes,
+            bytes_until=until,
+            count_spawn=count_spawn,
         )
         if not decision.admit:
             token.release()
             return None
-        self._local_window = (decision.window_start, decision.spawns_in_window)
-        return SpawnTicket(self, token, decision.window_start, local_window=True)
+        self._local_window = (
+            decision.window_start, decision.spawns_in_window, decision.window_bytes, decision.bytes_until
+        )
+        return SpawnTicket(
+            self, token, decision.window_start, local_window=True,
+            nbytes=ws, bytes_until=decision.bytes_until, counted=count_spawn,
+        )
 
-    def _return_window_slot(self, window_start: float, *, local_window: bool) -> None:
+    def _return_window_slot(
+        self,
+        window_start: float,
+        *,
+        local_window: bool,
+        nbytes: int = 0,
+        bytes_until: float = 0.0,
+        counted: bool = True,
+    ) -> None:
+        now = self._clock()
         if local_window:
-            start, spawns = self._local_window
-            if start == window_start and spawns > 0:
-                self._local_window = (start, spawns - 1)
+            start, spawns, held, until = self._local_window
+            if counted and start == window_start and spawns > 0:
+                spawns -= 1
+            if nbytes and now < bytes_until and now < until:
+                held = max(0, held - min(nbytes, held))
+            self._local_window = (start, spawns, held, until)
             return
 
-        self._pending_returns.append(window_start)
+        self._pending_returns.append((window_start, nbytes, bytes_until, counted))
         if self._closed:
             return
         try:
@@ -1011,7 +1319,11 @@ class LaneBudget:
             "run_in_use_domain": run,
             "resident_domain": resident,
             "spawns_in_window": record.spawns_in_window,
+            "window_bytes": live_window_bytes(record, self._clock()),
+            "growth_by_kind": {k: dict(v) for k, v in self._growth_by_kind.items()},
+            "charge_scales": SCALES.stats(),
             "waiting": self._waiting,
+            "waiter_active": active_waiter(record, self._clock()) is not None,
             "wait_seconds_p95": p95,
             "slots": self._slots_kind,
             "ledger": "none" if self._slots_kind == "local" else ("degraded" if degraded else "ok"),
@@ -1055,7 +1367,7 @@ def open_lane_budget(
             from app.services.resource_governor.probe import memory_domain_id
 
             domain = memory_domain_id()
-            name = f"pipeshub-cpu-lanes-v1-{LANE_SLOT_CAPACITY}" + (f"-{domain}" if domain else "")
+            name = f"{LANE_DIRECTORY_PREFIX}-v{LEDGER_VERSION}-{LANE_SLOT_CAPACITY}" + (f"-{domain}" if domain else "")
             directory = shared_slots_directory(name)
             if directory is None:
                 raise OSError("shared slots need POSIX file locks")

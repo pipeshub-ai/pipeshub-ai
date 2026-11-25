@@ -18,7 +18,7 @@ class InMemoryHierarchyView:
     groups_by_app: Mapping[str, frozenset[str]] = field(default_factory=lambda: dict[str, frozenset[str]]())
     scopes: tuple[ScopeNode, ...] = ()
     facts_by_app: Mapping[str, AppFacts] = field(default_factory=lambda: dict[str, AppFacts]())
-    pending: frozenset[str] = frozenset()
+    pending: Mapping[str, frozenset[str]] = field(default_factory=lambda: dict[str, frozenset[str]]())
     failure: Exception | None = None
     calls: list[tuple[str, str]] = field(default_factory=lambda: list[tuple[str, str]]())  # (kind, app) of each structure read
 
@@ -36,9 +36,9 @@ class InMemoryHierarchyView:
         self._check(org_id)
         return self.facts_by_app.get(app_id, AppFacts(False, "")) if org_id == self.org_id else AppFacts(False, "")
 
-    async def pending_scopes(self, org_id: str) -> frozenset[str]:
+    async def pending_scopes(self, org_id: str) -> Mapping[str, frozenset[str]]:
         self._check(org_id)
-        return self.pending if org_id == self.org_id else frozenset()
+        return self.pending if org_id == self.org_id else {}
 
     def _check(self, org_id: str) -> None:
         if self.failure is not None:

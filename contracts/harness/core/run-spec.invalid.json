@@ -1,0 +1,1574 @@
+[
+  {
+    "description": "schemaVersion is 2 or 3",
+    "instance": {
+      "schemaVersion": 1,
+      "harnessMajor": 2,
+      "foldVersion": 1,
+      "runKind": "interactive",
+      "principalRef": "p_u42",
+      "model": {
+        "policy": [
+          {
+            "provider": "anthropic",
+            "model": "claude-x",
+            "transport": "anthropic-native"
+          },
+          {
+            "provider": "openai",
+            "model": "gpt-x",
+            "on": [
+              "5xx",
+              "429_exhausted",
+              "content_filter"
+            ]
+          }
+        ],
+        "promptVersion": "p-2026-10-01",
+        "reasoningEffort": "medium"
+      },
+      "grants": {
+        "tools": [
+          {
+            "toolId": "jira@inst_42/search_issues",
+            "descriptorDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          }
+        ],
+        "sandboxProfile": "agent-code",
+        "egress": "allowlist:pypi"
+      },
+      "budgets": {
+        "maxTurns": 15,
+        "maxTokens": 400000,
+        "maxCostUsd": 2.0,
+        "activeTimeS": 3600,
+        "calendarDeadline": "2026-10-03T00:00:00Z",
+        "maxChildren": 4
+      },
+      "capabilitiesDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "extensions": {
+        "x.acme": {
+          "anything": [
+            "the core never interprets extension payloads"
+          ]
+        }
+      }
+    }
+  },
+  {
+    "description": "unknown run kind",
+    "instance": {
+      "schemaVersion": 2,
+      "harnessMajor": 2,
+      "foldVersion": 1,
+      "runKind": "batch",
+      "principalRef": "p_u42",
+      "model": {
+        "policy": [
+          {
+            "provider": "anthropic",
+            "model": "claude-x",
+            "transport": "anthropic-native"
+          },
+          {
+            "provider": "openai",
+            "model": "gpt-x",
+            "on": [
+              "5xx",
+              "429_exhausted",
+              "content_filter"
+            ]
+          }
+        ],
+        "promptVersion": "p-2026-10-01",
+        "reasoningEffort": "medium"
+      },
+      "grants": {
+        "tools": [
+          {
+            "toolId": "jira@inst_42/search_issues",
+            "descriptorDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          }
+        ],
+        "sandboxProfile": "agent-code",
+        "egress": "allowlist:pypi"
+      },
+      "budgets": {
+        "maxTurns": 15,
+        "maxTokens": 400000,
+        "maxCostUsd": 2.0,
+        "activeTimeS": 3600,
+        "calendarDeadline": "2026-10-03T00:00:00Z",
+        "maxChildren": 4
+      },
+      "capabilitiesDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "extensions": {
+        "x.acme": {
+          "anything": [
+            "the core never interprets extension payloads"
+          ]
+        }
+      }
+    }
+  },
+  {
+    "description": "principalRef must be a p_ reference",
+    "instance": {
+      "schemaVersion": 2,
+      "harnessMajor": 2,
+      "foldVersion": 1,
+      "runKind": "interactive",
+      "principalRef": "user_42",
+      "model": {
+        "policy": [
+          {
+            "provider": "anthropic",
+            "model": "claude-x",
+            "transport": "anthropic-native"
+          },
+          {
+            "provider": "openai",
+            "model": "gpt-x",
+            "on": [
+              "5xx",
+              "429_exhausted",
+              "content_filter"
+            ]
+          }
+        ],
+        "promptVersion": "p-2026-10-01",
+        "reasoningEffort": "medium"
+      },
+      "grants": {
+        "tools": [
+          {
+            "toolId": "jira@inst_42/search_issues",
+            "descriptorDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          }
+        ],
+        "sandboxProfile": "agent-code",
+        "egress": "allowlist:pypi"
+      },
+      "budgets": {
+        "maxTurns": 15,
+        "maxTokens": 400000,
+        "maxCostUsd": 2.0,
+        "activeTimeS": 3600,
+        "calendarDeadline": "2026-10-03T00:00:00Z",
+        "maxChildren": 4
+      },
+      "capabilitiesDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "extensions": {
+        "x.acme": {
+          "anything": [
+            "the core never interprets extension payloads"
+          ]
+        }
+      }
+    }
+  },
+  {
+    "description": "empty model policy",
+    "instance": {
+      "schemaVersion": 2,
+      "harnessMajor": 2,
+      "foldVersion": 1,
+      "runKind": "interactive",
+      "principalRef": "p_u42",
+      "model": {
+        "policy": [],
+        "promptVersion": "p1"
+      },
+      "grants": {
+        "tools": [
+          {
+            "toolId": "jira@inst_42/search_issues",
+            "descriptorDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          }
+        ],
+        "sandboxProfile": "agent-code",
+        "egress": "allowlist:pypi"
+      },
+      "budgets": {
+        "maxTurns": 15,
+        "maxTokens": 400000,
+        "maxCostUsd": 2.0,
+        "activeTimeS": 3600,
+        "calendarDeadline": "2026-10-03T00:00:00Z",
+        "maxChildren": 4
+      },
+      "capabilitiesDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "extensions": {
+        "x.acme": {
+          "anything": [
+            "the core never interprets extension payloads"
+          ]
+        }
+      }
+    }
+  },
+  {
+    "description": "unknown fallback trigger",
+    "instance": {
+      "schemaVersion": 2,
+      "harnessMajor": 2,
+      "foldVersion": 1,
+      "runKind": "interactive",
+      "principalRef": "p_u42",
+      "model": {
+        "policy": [
+          {
+            "provider": "openai",
+            "model": "m",
+            "on": [
+              "slow"
+            ]
+          }
+        ],
+        "promptVersion": "p1"
+      },
+      "grants": {
+        "tools": [
+          {
+            "toolId": "jira@inst_42/search_issues",
+            "descriptorDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          }
+        ],
+        "sandboxProfile": "agent-code",
+        "egress": "allowlist:pypi"
+      },
+      "budgets": {
+        "maxTurns": 15,
+        "maxTokens": 400000,
+        "maxCostUsd": 2.0,
+        "activeTimeS": 3600,
+        "calendarDeadline": "2026-10-03T00:00:00Z",
+        "maxChildren": 4
+      },
+      "capabilitiesDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "extensions": {
+        "x.acme": {
+          "anything": [
+            "the core never interprets extension payloads"
+          ]
+        }
+      }
+    }
+  },
+  {
+    "description": "extension key outside x.<ns>",
+    "instance": {
+      "schemaVersion": 2,
+      "harnessMajor": 2,
+      "foldVersion": 1,
+      "runKind": "interactive",
+      "principalRef": "p_u42",
+      "model": {
+        "policy": [
+          {
+            "provider": "anthropic",
+            "model": "claude-x",
+            "transport": "anthropic-native"
+          },
+          {
+            "provider": "openai",
+            "model": "gpt-x",
+            "on": [
+              "5xx",
+              "429_exhausted",
+              "content_filter"
+            ]
+          }
+        ],
+        "promptVersion": "p-2026-10-01",
+        "reasoningEffort": "medium"
+      },
+      "grants": {
+        "tools": [
+          {
+            "toolId": "jira@inst_42/search_issues",
+            "descriptorDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          }
+        ],
+        "sandboxProfile": "agent-code",
+        "egress": "allowlist:pypi"
+      },
+      "budgets": {
+        "maxTurns": 15,
+        "maxTokens": 400000,
+        "maxCostUsd": 2.0,
+        "activeTimeS": 3600,
+        "calendarDeadline": "2026-10-03T00:00:00Z",
+        "maxChildren": 4
+      },
+      "capabilitiesDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "extensions": {
+        "pipeshub": {}
+      }
+    }
+  },
+  {
+    "description": "extension payload must be an object",
+    "instance": {
+      "schemaVersion": 2,
+      "harnessMajor": 2,
+      "foldVersion": 1,
+      "runKind": "interactive",
+      "principalRef": "p_u42",
+      "model": {
+        "policy": [
+          {
+            "provider": "anthropic",
+            "model": "claude-x",
+            "transport": "anthropic-native"
+          },
+          {
+            "provider": "openai",
+            "model": "gpt-x",
+            "on": [
+              "5xx",
+              "429_exhausted",
+              "content_filter"
+            ]
+          }
+        ],
+        "promptVersion": "p-2026-10-01",
+        "reasoningEffort": "medium"
+      },
+      "grants": {
+        "tools": [
+          {
+            "toolId": "jira@inst_42/search_issues",
+            "descriptorDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          }
+        ],
+        "sandboxProfile": "agent-code",
+        "egress": "allowlist:pypi"
+      },
+      "budgets": {
+        "maxTurns": 15,
+        "maxTokens": 400000,
+        "maxCostUsd": 2.0,
+        "activeTimeS": 3600,
+        "calendarDeadline": "2026-10-03T00:00:00Z",
+        "maxChildren": 4
+      },
+      "capabilitiesDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "extensions": {
+        "x.acme": "flag"
+      }
+    }
+  },
+  {
+    "description": "negative cost budget",
+    "instance": {
+      "schemaVersion": 2,
+      "harnessMajor": 2,
+      "foldVersion": 1,
+      "runKind": "interactive",
+      "principalRef": "p_u42",
+      "model": {
+        "policy": [
+          {
+            "provider": "anthropic",
+            "model": "claude-x",
+            "transport": "anthropic-native"
+          },
+          {
+            "provider": "openai",
+            "model": "gpt-x",
+            "on": [
+              "5xx",
+              "429_exhausted",
+              "content_filter"
+            ]
+          }
+        ],
+        "promptVersion": "p-2026-10-01",
+        "reasoningEffort": "medium"
+      },
+      "grants": {
+        "tools": [
+          {
+            "toolId": "jira@inst_42/search_issues",
+            "descriptorDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          }
+        ],
+        "sandboxProfile": "agent-code",
+        "egress": "allowlist:pypi"
+      },
+      "budgets": {
+        "maxTurns": 15,
+        "maxTokens": 400000,
+        "maxCostUsd": -1,
+        "activeTimeS": 3600,
+        "calendarDeadline": "2026-10-03T00:00:00Z",
+        "maxChildren": 4
+      },
+      "capabilitiesDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "extensions": {
+        "x.acme": {
+          "anything": [
+            "the core never interprets extension payloads"
+          ]
+        }
+      }
+    }
+  },
+  {
+    "description": "unknown top-level field",
+    "instance": {
+      "schemaVersion": 2,
+      "harnessMajor": 2,
+      "foldVersion": 1,
+      "runKind": "interactive",
+      "principalRef": "p_u42",
+      "model": {
+        "policy": [
+          {
+            "provider": "anthropic",
+            "model": "claude-x",
+            "transport": "anthropic-native"
+          },
+          {
+            "provider": "openai",
+            "model": "gpt-x",
+            "on": [
+              "5xx",
+              "429_exhausted",
+              "content_filter"
+            ]
+          }
+        ],
+        "promptVersion": "p-2026-10-01",
+        "reasoningEffort": "medium"
+      },
+      "grants": {
+        "tools": [
+          {
+            "toolId": "jira@inst_42/search_issues",
+            "descriptorDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          }
+        ],
+        "sandboxProfile": "agent-code",
+        "egress": "allowlist:pypi"
+      },
+      "budgets": {
+        "maxTurns": 15,
+        "maxTokens": 400000,
+        "maxCostUsd": 2.0,
+        "activeTimeS": 3600,
+        "calendarDeadline": "2026-10-03T00:00:00Z",
+        "maxChildren": 4
+      },
+      "capabilitiesDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "extensions": {
+        "x.acme": {
+          "anything": [
+            "the core never interprets extension payloads"
+          ]
+        }
+      },
+      "agentKey": "a1"
+    }
+  },
+  {
+    "description": "egress grammar",
+    "instance": {
+      "schemaVersion": 2,
+      "harnessMajor": 2,
+      "foldVersion": 1,
+      "runKind": "interactive",
+      "principalRef": "p_u42",
+      "model": {
+        "policy": [
+          {
+            "provider": "anthropic",
+            "model": "claude-x",
+            "transport": "anthropic-native"
+          },
+          {
+            "provider": "openai",
+            "model": "gpt-x",
+            "on": [
+              "5xx",
+              "429_exhausted",
+              "content_filter"
+            ]
+          }
+        ],
+        "promptVersion": "p-2026-10-01",
+        "reasoningEffort": "medium"
+      },
+      "grants": {
+        "tools": [],
+        "sandboxProfile": "none",
+        "egress": "all"
+      },
+      "budgets": {
+        "maxTurns": 15,
+        "maxTokens": 400000,
+        "maxCostUsd": 2.0,
+        "activeTimeS": 3600,
+        "calendarDeadline": "2026-10-03T00:00:00Z",
+        "maxChildren": 4
+      },
+      "capabilitiesDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "extensions": {
+        "x.acme": {
+          "anything": [
+            "the core never interprets extension payloads"
+          ]
+        }
+      }
+    }
+  },
+  {
+    "description": "tool id grammar",
+    "instance": {
+      "schemaVersion": 2,
+      "harnessMajor": 2,
+      "foldVersion": 1,
+      "runKind": "interactive",
+      "principalRef": "p_u42",
+      "model": {
+        "policy": [
+          {
+            "provider": "anthropic",
+            "model": "claude-x",
+            "transport": "anthropic-native"
+          },
+          {
+            "provider": "openai",
+            "model": "gpt-x",
+            "on": [
+              "5xx",
+              "429_exhausted",
+              "content_filter"
+            ]
+          }
+        ],
+        "promptVersion": "p-2026-10-01",
+        "reasoningEffort": "medium"
+      },
+      "grants": {
+        "tools": [
+          {
+            "toolId": "search",
+            "descriptorDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          }
+        ],
+        "sandboxProfile": "none",
+        "egress": "none"
+      },
+      "budgets": {
+        "maxTurns": 15,
+        "maxTokens": 400000,
+        "maxCostUsd": 2.0,
+        "activeTimeS": 3600,
+        "calendarDeadline": "2026-10-03T00:00:00Z",
+        "maxChildren": 4
+      },
+      "capabilitiesDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "extensions": {
+        "x.acme": {
+          "anything": [
+            "the core never interprets extension payloads"
+          ]
+        }
+      }
+    }
+  },
+  {
+    "description": "schemaVersion 4 is not read",
+    "instance": {
+      "schemaVersion": 4,
+      "harnessMajor": 2,
+      "foldVersion": 1,
+      "runKind": "interactive",
+      "executor": {
+        "kind": "loop"
+      },
+      "principalRef": "p_u42",
+      "model": {
+        "policy": [
+          {
+            "provider": "anthropic",
+            "model": "claude-x",
+            "transport": "anthropic-native"
+          },
+          {
+            "provider": "openai",
+            "model": "gpt-x",
+            "on": [
+              "5xx",
+              "429_exhausted",
+              "content_filter"
+            ]
+          }
+        ],
+        "promptVersion": "p-2026-10-01",
+        "reasoningEffort": "medium"
+      },
+      "grants": {
+        "tools": [
+          {
+            "toolId": "jira@inst_42/search_issues",
+            "descriptorDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          }
+        ],
+        "sandboxProfile": "agent-code",
+        "egress": "allowlist:pypi"
+      },
+      "budgets": {
+        "maxTurns": 15,
+        "maxTokens": 400000,
+        "maxCostUsd": 2.0,
+        "activeTimeS": 3600,
+        "calendarDeadline": "2026-10-03T00:00:00Z",
+        "maxChildren": 4
+      },
+      "capabilitiesDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "extensions": {
+        "x.acme": {
+          "anything": [
+            "the core never interprets extension payloads"
+          ]
+        }
+      }
+    }
+  },
+  {
+    "description": "an engine executor names its engine",
+    "instance": {
+      "schemaVersion": 3,
+      "harnessMajor": 2,
+      "foldVersion": 1,
+      "runKind": "interactive",
+      "executor": {
+        "kind": "engine"
+      },
+      "principalRef": "p_u42",
+      "model": {
+        "policy": [
+          {
+            "provider": "anthropic",
+            "model": "claude-x",
+            "transport": "anthropic-native"
+          },
+          {
+            "provider": "openai",
+            "model": "gpt-x",
+            "on": [
+              "5xx",
+              "429_exhausted",
+              "content_filter"
+            ]
+          }
+        ],
+        "promptVersion": "p-2026-10-01",
+        "reasoningEffort": "medium"
+      },
+      "grants": {
+        "tools": [
+          {
+            "toolId": "jira@inst_42/search_issues",
+            "descriptorDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          }
+        ],
+        "sandboxProfile": "agent-code",
+        "egress": "allowlist:pypi"
+      },
+      "budgets": {
+        "maxTurns": 15,
+        "maxTokens": 400000,
+        "maxCostUsd": 2.0,
+        "activeTimeS": 3600,
+        "calendarDeadline": "2026-10-03T00:00:00Z",
+        "maxChildren": 4
+      },
+      "capabilitiesDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "extensions": {
+        "x.acme": {
+          "anything": [
+            "the core never interprets extension payloads"
+          ]
+        }
+      }
+    }
+  },
+  {
+    "description": "a loop executor has no engine",
+    "instance": {
+      "schemaVersion": 3,
+      "harnessMajor": 2,
+      "foldVersion": 1,
+      "runKind": "interactive",
+      "executor": {
+        "kind": "loop",
+        "engine": {
+          "kind": "engine-a",
+          "version": "1.2.3",
+          "binaryDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "profileDigest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+        }
+      },
+      "principalRef": "p_u42",
+      "model": {
+        "policy": [
+          {
+            "provider": "anthropic",
+            "model": "claude-x",
+            "transport": "anthropic-native"
+          },
+          {
+            "provider": "openai",
+            "model": "gpt-x",
+            "on": [
+              "5xx",
+              "429_exhausted",
+              "content_filter"
+            ]
+          }
+        ],
+        "promptVersion": "p-2026-10-01",
+        "reasoningEffort": "medium"
+      },
+      "grants": {
+        "tools": [
+          {
+            "toolId": "jira@inst_42/search_issues",
+            "descriptorDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          }
+        ],
+        "sandboxProfile": "agent-code",
+        "egress": "allowlist:pypi"
+      },
+      "budgets": {
+        "maxTurns": 15,
+        "maxTokens": 400000,
+        "maxCostUsd": 2.0,
+        "activeTimeS": 3600,
+        "calendarDeadline": "2026-10-03T00:00:00Z",
+        "maxChildren": 4
+      },
+      "capabilitiesDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "extensions": {
+        "x.acme": {
+          "anything": [
+            "the core never interprets extension payloads"
+          ]
+        }
+      }
+    }
+  },
+  {
+    "description": "unknown executor kind",
+    "instance": {
+      "schemaVersion": 3,
+      "harnessMajor": 2,
+      "foldVersion": 1,
+      "runKind": "interactive",
+      "executor": {
+        "kind": "remote"
+      },
+      "principalRef": "p_u42",
+      "model": {
+        "policy": [
+          {
+            "provider": "anthropic",
+            "model": "claude-x",
+            "transport": "anthropic-native"
+          },
+          {
+            "provider": "openai",
+            "model": "gpt-x",
+            "on": [
+              "5xx",
+              "429_exhausted",
+              "content_filter"
+            ]
+          }
+        ],
+        "promptVersion": "p-2026-10-01",
+        "reasoningEffort": "medium"
+      },
+      "grants": {
+        "tools": [
+          {
+            "toolId": "jira@inst_42/search_issues",
+            "descriptorDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          }
+        ],
+        "sandboxProfile": "agent-code",
+        "egress": "allowlist:pypi"
+      },
+      "budgets": {
+        "maxTurns": 15,
+        "maxTokens": 400000,
+        "maxCostUsd": 2.0,
+        "activeTimeS": 3600,
+        "calendarDeadline": "2026-10-03T00:00:00Z",
+        "maxChildren": 4
+      },
+      "capabilitiesDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "extensions": {
+        "x.acme": {
+          "anything": [
+            "the core never interprets extension payloads"
+          ]
+        }
+      }
+    }
+  },
+  {
+    "description": "an engine ref pins its profile digest",
+    "instance": {
+      "schemaVersion": 3,
+      "harnessMajor": 2,
+      "foldVersion": 1,
+      "runKind": "interactive",
+      "executor": {
+        "kind": "engine",
+        "engine": {
+          "kind": "engine-a",
+          "version": "1.2.3",
+          "binaryDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+        }
+      },
+      "principalRef": "p_u42",
+      "model": {
+        "policy": [
+          {
+            "provider": "anthropic",
+            "model": "claude-x",
+            "transport": "anthropic-native"
+          },
+          {
+            "provider": "openai",
+            "model": "gpt-x",
+            "on": [
+              "5xx",
+              "429_exhausted",
+              "content_filter"
+            ]
+          }
+        ],
+        "promptVersion": "p-2026-10-01",
+        "reasoningEffort": "medium"
+      },
+      "grants": {
+        "tools": [
+          {
+            "toolId": "jira@inst_42/search_issues",
+            "descriptorDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          }
+        ],
+        "sandboxProfile": "agent-code",
+        "egress": "allowlist:pypi"
+      },
+      "budgets": {
+        "maxTurns": 15,
+        "maxTokens": 400000,
+        "maxCostUsd": 2.0,
+        "activeTimeS": 3600,
+        "calendarDeadline": "2026-10-03T00:00:00Z",
+        "maxChildren": 4
+      },
+      "capabilitiesDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "extensions": {
+        "x.acme": {
+          "anything": [
+            "the core never interprets extension payloads"
+          ]
+        }
+      }
+    }
+  },
+  {
+    "description": "engine kind is a machine name",
+    "instance": {
+      "schemaVersion": 3,
+      "harnessMajor": 2,
+      "foldVersion": 1,
+      "runKind": "interactive",
+      "executor": {
+        "kind": "engine",
+        "engine": {
+          "kind": "Engine A",
+          "version": "1.2.3",
+          "binaryDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "profileDigest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+        }
+      },
+      "principalRef": "p_u42",
+      "model": {
+        "policy": [
+          {
+            "provider": "anthropic",
+            "model": "claude-x",
+            "transport": "anthropic-native"
+          },
+          {
+            "provider": "openai",
+            "model": "gpt-x",
+            "on": [
+              "5xx",
+              "429_exhausted",
+              "content_filter"
+            ]
+          }
+        ],
+        "promptVersion": "p-2026-10-01",
+        "reasoningEffort": "medium"
+      },
+      "grants": {
+        "tools": [
+          {
+            "toolId": "jira@inst_42/search_issues",
+            "descriptorDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          }
+        ],
+        "sandboxProfile": "agent-code",
+        "egress": "allowlist:pypi"
+      },
+      "budgets": {
+        "maxTurns": 15,
+        "maxTokens": 400000,
+        "maxCostUsd": 2.0,
+        "activeTimeS": 3600,
+        "calendarDeadline": "2026-10-03T00:00:00Z",
+        "maxChildren": 4
+      },
+      "capabilitiesDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "extensions": {
+        "x.acme": {
+          "anything": [
+            "the core never interprets extension payloads"
+          ]
+        }
+      }
+    }
+  },
+  {
+    "description": "a pinned engine profile is a valid profile",
+    "instance": {
+      "schemaVersion": 3,
+      "harnessMajor": 2,
+      "foldVersion": 1,
+      "runKind": "workflow_code",
+      "executor": {
+        "kind": "engine",
+        "engine": {
+          "kind": "engine-a",
+          "version": "1.2.3",
+          "binaryDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "profileDigest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "profile": {
+            "engine": {
+              "kind": "engine-a",
+              "version": "1.2.3",
+              "binaryDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+            },
+            "mode": "yolo",
+            "isolationMin": "docker",
+            "egress": "none",
+            "tools": {
+              "maxTools": null,
+              "effects": [
+                "execute",
+                "read",
+                "workspace",
+                "write"
+              ]
+            },
+            "limits": {
+              "maxSteps": 50,
+              "maxWallS": 1800,
+              "maxTokens": null,
+              "maxUsd": null
+            },
+            "subAgents": {
+              "enabled": false,
+              "maxDepth": 1,
+              "maxConcurrent": 1
+            },
+            "reasoningEffort": null,
+            "approvals": {
+              "read": "allow",
+              "workspace": "allow",
+              "write": "ask",
+              "execute": "ask"
+            },
+            "skills": null
+          }
+        }
+      },
+      "principalRef": "p_u42",
+      "model": {
+        "policy": [
+          {
+            "provider": "anthropic",
+            "model": "claude-x",
+            "transport": "anthropic-native"
+          },
+          {
+            "provider": "openai",
+            "model": "gpt-x",
+            "on": [
+              "5xx",
+              "429_exhausted",
+              "content_filter"
+            ]
+          }
+        ],
+        "promptVersion": "p-2026-10-01",
+        "reasoningEffort": "medium"
+      },
+      "grants": {
+        "tools": [],
+        "sandboxProfile": "none",
+        "egress": "none"
+      },
+      "budgets": {
+        "maxTurns": 15,
+        "maxTokens": 400000,
+        "maxCostUsd": 2.0,
+        "activeTimeS": 3600,
+        "calendarDeadline": "2026-10-03T00:00:00Z",
+        "maxChildren": 4
+      },
+      "capabilitiesDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "pins": {
+        "sandboxImage": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "sdk": "1.4.0",
+        "source": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    }
+  },
+  {
+    "description": "a descriptor digest version this build does not know is refused, never verified as a legacy one",
+    "instance": {
+      "schemaVersion": 3,
+      "harnessMajor": 2,
+      "foldVersion": 1,
+      "runKind": "interactive",
+      "principalRef": "p_u42",
+      "model": {
+        "policy": [
+          {
+            "provider": "anthropic",
+            "model": "claude-x",
+            "transport": "anthropic-native"
+          },
+          {
+            "provider": "openai",
+            "model": "gpt-x",
+            "on": [
+              "5xx",
+              "429_exhausted",
+              "content_filter"
+            ]
+          }
+        ],
+        "promptVersion": "p-2026-10-01",
+        "reasoningEffort": "medium"
+      },
+      "grants": {
+        "tools": [
+          {
+            "toolId": "jira@inst_42/search_issues",
+            "descriptorDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "digestVersion": 3
+          }
+        ],
+        "sandboxProfile": "agent-code",
+        "egress": "allowlist:pypi"
+      },
+      "budgets": {
+        "maxTurns": 15,
+        "maxTokens": 400000,
+        "maxCostUsd": 2.0,
+        "activeTimeS": 3600,
+        "calendarDeadline": "2026-10-03T00:00:00Z",
+        "maxChildren": 4
+      },
+      "capabilitiesDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "extensions": {
+        "x.acme": {
+          "anything": [
+            "the core never interprets extension payloads"
+          ]
+        }
+      }
+    }
+  },
+  {
+    "description": "dryRun is only ever true",
+    "instance": {
+      "schemaVersion": 3,
+      "harnessMajor": 2,
+      "foldVersion": 1,
+      "runKind": "interactive",
+      "executor": {
+        "kind": "loop"
+      },
+      "principalRef": "p_u42",
+      "model": {
+        "policy": [
+          {
+            "provider": "anthropic",
+            "model": "claude-x",
+            "transport": "anthropic-native"
+          },
+          {
+            "provider": "openai",
+            "model": "gpt-x",
+            "on": [
+              "5xx",
+              "429_exhausted",
+              "content_filter"
+            ]
+          }
+        ],
+        "promptVersion": "p-2026-10-01",
+        "reasoningEffort": "medium"
+      },
+      "grants": {
+        "tools": [
+          {
+            "toolId": "jira@inst_42/search_issues",
+            "descriptorDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          }
+        ],
+        "sandboxProfile": "agent-code",
+        "egress": "allowlist:pypi"
+      },
+      "budgets": {
+        "maxTurns": 15,
+        "maxTokens": 400000,
+        "maxCostUsd": 2.0,
+        "activeTimeS": 3600,
+        "calendarDeadline": "2026-10-03T00:00:00Z",
+        "maxChildren": 4
+      },
+      "capabilitiesDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "extensions": {
+        "x.acme": {
+          "anything": [
+            "the core never interprets extension payloads"
+          ]
+        }
+      },
+      "gates": {
+        "dryRun": false
+      }
+    }
+  },
+  {
+    "description": "an unknown plan approval",
+    "instance": {
+      "schemaVersion": 3,
+      "harnessMajor": 2,
+      "foldVersion": 1,
+      "runKind": "interactive",
+      "executor": {
+        "kind": "loop"
+      },
+      "principalRef": "p_u42",
+      "model": {
+        "policy": [
+          {
+            "provider": "anthropic",
+            "model": "claude-x",
+            "transport": "anthropic-native"
+          },
+          {
+            "provider": "openai",
+            "model": "gpt-x",
+            "on": [
+              "5xx",
+              "429_exhausted",
+              "content_filter"
+            ]
+          }
+        ],
+        "promptVersion": "p-2026-10-01",
+        "reasoningEffort": "medium"
+      },
+      "grants": {
+        "tools": [
+          {
+            "toolId": "jira@inst_42/search_issues",
+            "descriptorDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          }
+        ],
+        "sandboxProfile": "agent-code",
+        "egress": "allowlist:pypi"
+      },
+      "budgets": {
+        "maxTurns": 15,
+        "maxTokens": 400000,
+        "maxCostUsd": 2.0,
+        "activeTimeS": 3600,
+        "calendarDeadline": "2026-10-03T00:00:00Z",
+        "maxChildren": 4
+      },
+      "capabilitiesDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "extensions": {
+        "x.acme": {
+          "anything": [
+            "the core never interprets extension payloads"
+          ]
+        }
+      },
+      "gates": {
+        "planApproval": "optional"
+      }
+    }
+  },
+  {
+    "description": "a verify gate without checks",
+    "instance": {
+      "schemaVersion": 3,
+      "harnessMajor": 2,
+      "foldVersion": 1,
+      "runKind": "interactive",
+      "executor": {
+        "kind": "loop"
+      },
+      "principalRef": "p_u42",
+      "model": {
+        "policy": [
+          {
+            "provider": "anthropic",
+            "model": "claude-x",
+            "transport": "anthropic-native"
+          },
+          {
+            "provider": "openai",
+            "model": "gpt-x",
+            "on": [
+              "5xx",
+              "429_exhausted",
+              "content_filter"
+            ]
+          }
+        ],
+        "promptVersion": "p-2026-10-01",
+        "reasoningEffort": "medium"
+      },
+      "grants": {
+        "tools": [
+          {
+            "toolId": "jira@inst_42/search_issues",
+            "descriptorDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          }
+        ],
+        "sandboxProfile": "agent-code",
+        "egress": "allowlist:pypi"
+      },
+      "budgets": {
+        "maxTurns": 15,
+        "maxTokens": 400000,
+        "maxCostUsd": 2.0,
+        "activeTimeS": 3600,
+        "calendarDeadline": "2026-10-03T00:00:00Z",
+        "maxChildren": 4
+      },
+      "capabilitiesDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "extensions": {
+        "x.acme": {
+          "anything": [
+            "the core never interprets extension payloads"
+          ]
+        }
+      },
+      "gates": {
+        "verify": {
+          "checks": [],
+          "onFail": "flag"
+        }
+      }
+    }
+  },
+  {
+    "description": "a check path may not leave the workspace",
+    "instance": {
+      "schemaVersion": 3,
+      "harnessMajor": 2,
+      "foldVersion": 1,
+      "runKind": "interactive",
+      "executor": {
+        "kind": "loop"
+      },
+      "principalRef": "p_u42",
+      "model": {
+        "policy": [
+          {
+            "provider": "anthropic",
+            "model": "claude-x",
+            "transport": "anthropic-native"
+          },
+          {
+            "provider": "openai",
+            "model": "gpt-x",
+            "on": [
+              "5xx",
+              "429_exhausted",
+              "content_filter"
+            ]
+          }
+        ],
+        "promptVersion": "p-2026-10-01",
+        "reasoningEffort": "medium"
+      },
+      "grants": {
+        "tools": [
+          {
+            "toolId": "jira@inst_42/search_issues",
+            "descriptorDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          }
+        ],
+        "sandboxProfile": "agent-code",
+        "egress": "allowlist:pypi"
+      },
+      "budgets": {
+        "maxTurns": 15,
+        "maxTokens": 400000,
+        "maxCostUsd": 2.0,
+        "activeTimeS": 3600,
+        "calendarDeadline": "2026-10-03T00:00:00Z",
+        "maxChildren": 4
+      },
+      "capabilitiesDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "extensions": {
+        "x.acme": {
+          "anything": [
+            "the core never interprets extension payloads"
+          ]
+        }
+      },
+      "gates": {
+        "verify": {
+          "checks": [
+            {
+              "kind": "file",
+              "path": "../etc/passwd"
+            }
+          ],
+          "onFail": "flag"
+        }
+      }
+    }
+  },
+  {
+    "description": "an absolute check path",
+    "instance": {
+      "schemaVersion": 3,
+      "harnessMajor": 2,
+      "foldVersion": 1,
+      "runKind": "interactive",
+      "executor": {
+        "kind": "loop"
+      },
+      "principalRef": "p_u42",
+      "model": {
+        "policy": [
+          {
+            "provider": "anthropic",
+            "model": "claude-x",
+            "transport": "anthropic-native"
+          },
+          {
+            "provider": "openai",
+            "model": "gpt-x",
+            "on": [
+              "5xx",
+              "429_exhausted",
+              "content_filter"
+            ]
+          }
+        ],
+        "promptVersion": "p-2026-10-01",
+        "reasoningEffort": "medium"
+      },
+      "grants": {
+        "tools": [
+          {
+            "toolId": "jira@inst_42/search_issues",
+            "descriptorDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          }
+        ],
+        "sandboxProfile": "agent-code",
+        "egress": "allowlist:pypi"
+      },
+      "budgets": {
+        "maxTurns": 15,
+        "maxTokens": 400000,
+        "maxCostUsd": 2.0,
+        "activeTimeS": 3600,
+        "calendarDeadline": "2026-10-03T00:00:00Z",
+        "maxChildren": 4
+      },
+      "capabilitiesDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "extensions": {
+        "x.acme": {
+          "anything": [
+            "the core never interprets extension payloads"
+          ]
+        }
+      },
+      "gates": {
+        "verify": {
+          "checks": [
+            {
+              "kind": "file",
+              "path": "/etc/passwd"
+            }
+          ],
+          "onFail": "flag"
+        }
+      }
+    }
+  },
+  {
+    "description": "an unknown check kind",
+    "instance": {
+      "schemaVersion": 3,
+      "harnessMajor": 2,
+      "foldVersion": 1,
+      "runKind": "interactive",
+      "executor": {
+        "kind": "loop"
+      },
+      "principalRef": "p_u42",
+      "model": {
+        "policy": [
+          {
+            "provider": "anthropic",
+            "model": "claude-x",
+            "transport": "anthropic-native"
+          },
+          {
+            "provider": "openai",
+            "model": "gpt-x",
+            "on": [
+              "5xx",
+              "429_exhausted",
+              "content_filter"
+            ]
+          }
+        ],
+        "promptVersion": "p-2026-10-01",
+        "reasoningEffort": "medium"
+      },
+      "grants": {
+        "tools": [
+          {
+            "toolId": "jira@inst_42/search_issues",
+            "descriptorDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          }
+        ],
+        "sandboxProfile": "agent-code",
+        "egress": "allowlist:pypi"
+      },
+      "budgets": {
+        "maxTurns": 15,
+        "maxTokens": 400000,
+        "maxCostUsd": 2.0,
+        "activeTimeS": 3600,
+        "calendarDeadline": "2026-10-03T00:00:00Z",
+        "maxChildren": 4
+      },
+      "capabilitiesDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "extensions": {
+        "x.acme": {
+          "anything": [
+            "the core never interprets extension payloads"
+          ]
+        }
+      },
+      "gates": {
+        "verify": {
+          "checks": [
+            {
+              "kind": "vibes"
+            }
+          ],
+          "onFail": "flag"
+        }
+      }
+    }
+  },
+  {
+    "description": "more verify rounds than the cap",
+    "instance": {
+      "schemaVersion": 3,
+      "harnessMajor": 2,
+      "foldVersion": 1,
+      "runKind": "interactive",
+      "executor": {
+        "kind": "loop"
+      },
+      "principalRef": "p_u42",
+      "model": {
+        "policy": [
+          {
+            "provider": "anthropic",
+            "model": "claude-x",
+            "transport": "anthropic-native"
+          },
+          {
+            "provider": "openai",
+            "model": "gpt-x",
+            "on": [
+              "5xx",
+              "429_exhausted",
+              "content_filter"
+            ]
+          }
+        ],
+        "promptVersion": "p-2026-10-01",
+        "reasoningEffort": "medium"
+      },
+      "grants": {
+        "tools": [
+          {
+            "toolId": "jira@inst_42/search_issues",
+            "descriptorDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          }
+        ],
+        "sandboxProfile": "agent-code",
+        "egress": "allowlist:pypi"
+      },
+      "budgets": {
+        "maxTurns": 15,
+        "maxTokens": 400000,
+        "maxCostUsd": 2.0,
+        "activeTimeS": 3600,
+        "calendarDeadline": "2026-10-03T00:00:00Z",
+        "maxChildren": 4
+      },
+      "capabilitiesDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "extensions": {
+        "x.acme": {
+          "anything": [
+            "the core never interprets extension payloads"
+          ]
+        }
+      },
+      "gates": {
+        "verify": {
+          "checks": [
+            {
+              "kind": "citations"
+            }
+          ],
+          "onFail": "continue",
+          "maxRounds": 9
+        }
+      }
+    }
+  }
+]

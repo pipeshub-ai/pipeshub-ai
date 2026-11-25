@@ -147,10 +147,9 @@ def test_fuzzy_work_is_capped_per_run() -> None:
 
 
 async def test_a_heavy_submit_does_not_stall_the_event_loop(monkeypatch) -> None:
-    """Staging is CPU work; a fixed blocking delay per item stands in for it, so
-    the test costs the same on any machine and fails only if staging runs inline."""
-    import asyncio
-    import time
+    """Staging is CPU work; it must run off the event loop. Checked by the thread each grounding ran on, not by the
+    loop's longest gap during it, which a busy runner stretches."""
+    import threading
 
     from app.modules.named_entities.domain.kinds import EntityKind
     from app.modules.named_entities.normalizers.dates import NormalizationContext
@@ -159,34 +158,19 @@ async def test_a_heavy_submit_does_not_stall_the_event_loop(monkeypatch) -> None
         SubmitEntitiesTool,
     )
 
-    def slow_align(self, block_index, surface, *, fuzzy=True) -> None:
-        time.sleep(0.05)
+    aligned_on: list[int] = []
 
-    monkeypatch.setattr(Grounder, "align", slow_align)
+    def recording_align(self, block_index, surface, *, fuzzy=True) -> None:
+        aligned_on.append(threading.get_ident())
+
+    monkeypatch.setattr(Grounder, "align", recording_align)
     session = ExtractionSession(
         [TextUnit(0, "b", "Acme")], enabled=frozenset({EntityKind.ORGANIZATION}), norm_ctx=NormalizationContext(), seed_count=0,
     )
     items = [{"text": f"name {i}", "block": 0, "kind": "organization"} for i in range(10)]
-    gaps: list[float] = []
-    done = asyncio.Event()
-
-    async def tick() -> None:
-        last = time.perf_counter()
-        while not done.is_set():
-            await asyncio.sleep(0.005)
-            now = time.perf_counter()
-            gaps.append(now - last)
-            last = now
-
-    ticker = asyncio.create_task(tick())
-    start = time.perf_counter()
     await SubmitEntitiesTool(session).execute(entities=items)
-    elapsed = time.perf_counter() - start
-    done.set()
-    await ticker
-    assert elapsed >= 0.5
-    assert gaps, "the loop never ran while the submit was staged"
-    assert max(gaps) < elapsed / 2
+    assert aligned_on, "nothing was grounded: the test proves nothing"
+    assert threading.get_ident() not in aligned_on, "staging grounded entities on the event loop"
 
 
 def _session(*texts: str) -> ExtractionSession:

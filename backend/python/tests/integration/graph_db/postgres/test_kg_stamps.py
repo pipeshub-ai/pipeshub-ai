@@ -7,16 +7,22 @@ The compiler itself (``permissions.classes``) is held to the oracle by its own g
 from __future__ import annotations
 
 import json
+import os
 import random
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
+import asyncpg
 import pytest
 
 from app.services.graph_db.postgres.kg import project as project_mod
+from app.services.graph_db.postgres.kg import stampgraph
 from app.services.graph_db.postgres.kg.drainer import drain_org
 from app.services.graph_db.postgres.kg.locks import NeedLocks
+from app.services.graph_db.postgres.kg.model import HIERARCHY
+from app.services.graph_db.postgres.kg.reader import seeks
 from app.services.graph_db.postgres.kg.stamp import StampStats, stamp, stamp_app
 from app.services.graph_db.postgres.kg.writers import KgWriter
+from tests.support import plan_gate
 
 from .kg_fresh import fresh_with_stamps
 from .pg_support import new_org
@@ -29,7 +35,15 @@ if TYPE_CHECKING:
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(180)]
 
-STAMPS = "SELECT sk, path, class_id, self_lit, seed, own_grant, under_deleted, legacy_reason, leaf FROM kg.records WHERE org_id = $1"
+STAMPS = "SELECT sk, path, class_id, self_lit, seed, own_grant, under_deleted, legacy_reason, leaf, r13 FROM kg.records WHERE org_id = $1"
+
+
+async def _admin(sql: str, *args: object) -> None:
+    con = await asyncpg.connect(os.environ["PG_ADMIN_URL"])
+    try:
+        await con.execute(sql, *args)
+    finally:
+        await con.close()
 
 
 @pytest.fixture(autouse=True)
@@ -48,8 +62,18 @@ async def held_stamps(p, org: str) -> dict:
         out = {}
         for r in await tx.fetch(STAMPS, org):
             path = tuple(ids.get(int.from_bytes(bytes(r["path"])[i:i + 8], "big")) for i in range(0, len(r["path"]), 8)) if r["path"] is not None else None
-            out[ids[r["sk"]]] = (path, classes.get(r["class_id"]), r["self_lit"], r["seed"], r["own_grant"], r["under_deleted"], r["legacy_reason"], r["leaf"])
+            out[ids[r["sk"]]] = (path, classes.get(r["class_id"]), r["self_lit"], r["seed"], r["own_grant"], r["under_deleted"], r["legacy_reason"], r["leaf"], r["r13"])
         return out
+    with ctx(org):
+        return await p._q(go, None)
+
+
+async def held_scopes(p, org: str) -> dict:
+    """id -> (kind, connector id, restricted, rule_restricted, needs_grant, deleted) of every access list of the org."""
+    async def go(tx) -> dict:
+        ids = {r["sk"]: r["id"] for r in await tx.fetch("SELECT sk, id FROM kg.node_keys WHERE org_id = $1", org)}
+        return {ids[r["sk"]]: (r["kind"], ids[r["app_sk"]], r["restricted"], r["rule_restricted"], r["needs_grant"], r["deleted"])
+                for r in await tx.fetch("SELECT * FROM kg.scopes WHERE org_id = $1", org)}
     with ctx(org):
         return await p._q(go, None)
 
@@ -97,6 +121,7 @@ async def test_after_random_changes_the_stamps_equal_a_fresh_compile_and_those_o
     other, want = await fresh_with_stamps(p, org)
     got = await held_stamps(p, org)
     assert _norm(got, org) == _norm(want, other), seed
+    assert _norm(await held_scopes(p, org), org) == _norm(await held_scopes(p, other), other), seed
 
 
 def _norm(h: dict, org: str) -> dict:
@@ -153,6 +178,28 @@ async def test_a_stamp_that_reaches_another_connector_asks_for_its_lock_before_i
     await drain_org(pg_db, org)                                            # the projection locks both and goes on
     assert await dry_diffs(p, org, "app2") == []
     assert (await held_stamps(p, org))["x1"][0] == ("g1", "f2")
+
+
+async def test_a_restamp_cursor_older_code_wrote_in_the_records_goes_over_them_again_from_the_first(pg_db) -> None:
+    """A queued restamp job keeps its cursor across a restart. Older code paged the records in the database's collation, where '-z' sorts after 'M' and in byte order before it:
+    its 'records/M' must not go on after 'M' in byte order (it would never restamp '-z' and 'B'). This code's cursor names the byte order and goes on after it."""
+    p, org = prov(pg_db), new_org()
+    await world2(p, org)
+    rec = {"connectorId": "app1", "orgId": org, "recordType": "FILE", "origin": "CONNECTOR"}
+    with ctx(org):
+        await p.batch_upsert_nodes([{"_key": k, "recordName": k, **rec} for k in ("-z", "B", "M", "q")], "records")
+    await drain_org(pg_db, org)
+
+    async def compiled(cursor: str) -> set:
+        async def go(tx) -> set:
+            st = StampStats()
+            await stamp_app(tx, org, "app1", cursor, 100, st, dry=True)
+            return {k[1] for k in st.keys if k[0] == "records"}
+        with ctx(org):
+            return await pg_db.run(go)
+    assert {"-z", "B", "M", "q", "fold", "f1", "f2"} <= await compiled("records/M")
+    after = await compiled("records:c/M")
+    assert {"q", "fold", "f1", "f2"} <= after and not after & {"-z", "B", "M"}
 
 
 async def test_a_page_of_the_whole_connector_restamp_that_reaches_another_connector_asks_for_its_lock_and_the_restamp_takes_it(pg_db, monkeypatch) -> None:
@@ -378,3 +425,140 @@ async def test_a_parent_whose_id_kg_cannot_name_never_widens_the_class_of_its_ch
     got = (await held_stamps(p, org))["c"]
     print("L3", got)
     assert got[1] is None or got[1][2] == []              # no class wider than "nobody"; a record without one is read by the walk
+
+
+async def test_the_access_lists_are_the_records_and_groups_with_a_list_of_their_own_and_follow_the_graph(pg_db) -> None:
+    p, org = prov(pg_db), new_org()
+    await world2(p, org)
+    await drain_org(pg_db, org)
+    # g1 is granted (to a team) and inherits nothing, so it needs a grant; f2 hangs under a folder it does not inherit from (an attachment), so it restricts; f1 is granted too but is
+    # deleted with nothing below it, and fold has no list of its own
+    assert await held_scopes(p, org) == {"g1": (2, "app1", False, False, True, False), "f2": (3, "app1", True, False, True, False)}
+    await update_node(p, org, "records", "f1", accessRule="RESTRICTED")
+    await update_node(p, org, "records", "f1", isDeleted=False)
+    await drain_org(pg_db, org)
+    assert (await held_scopes(p, org))["f1"] == (3, "app1", True, True, True, False)       # a rule other than open or strict restricts and needs a grant
+    assert await dry_diffs(p, org, "app1") == []
+    await delete_node(p, org, "records", "f1")
+    await delete_node(p, org, "recordGroups", "g1")
+    await drain_org(pg_db, org)
+    assert set(await held_scopes(p, org)) == {"f2"}                                              # the list of a node that is gone goes with it
+    assert await dry_diffs(p, org, "app1") == []
+
+
+async def test_a_stale_access_list_shows_in_the_dry_run_and_a_restamp_repairs_it(pg_db) -> None:
+    p, org = prov(pg_db), new_org()
+    await world2(p, org)
+    await drain_org(pg_db, org)
+
+    async def corrupt(tx: Tx) -> None:
+        ids = {r["id"]: r["sk"] for r in await tx.fetch("SELECT id, sk FROM kg.node_keys WHERE org_id = $1", org)}
+        await KgWriter(tx).scopes_set([(ids["g1"], 2, ids["app1"], True, False, False, False), (ids["fold"], 3, ids["app1"], True, True, True, False)])
+    with ctx(org):
+        await pg_db.run(corrupt, write=True)
+    assert sorted(await dry_diffs(p, org, "app1")) == ["sc|fold", "sc|g1"]             # one list wrong, one that should not exist
+    from app.services.graph_db.postgres.kg import backfill as backfill_mod
+    await backfill_mod.restamp_app(pg_db, org, "app1")
+    assert await dry_diffs(p, org, "app1") == []
+    assert set(await held_scopes(p, org)) == {"g1", "f2"}
+
+
+async def test_a_record_of_no_connector_that_a_connector_did_not_bring_is_r13_and_nothing_else_is(pg_db) -> None:
+    p, org = prov(pg_db), new_org()
+    await world2(p, org)
+    with ctx(org):
+        await p.batch_upsert_nodes([{"_key": "own", "recordName": "Own", "orgId": org, "recordType": "FILE", "origin": "UPLOAD"},
+                                    {"_key": "alien", "recordName": "Alien", "orgId": org, "recordType": "FILE", "origin": "CONNECTOR"},
+                                    {"_key": "gone", "recordName": "Gone", "orgId": org, "recordType": "FILE", "origin": "UPLOAD", "isDeleted": True}], "records")
+    await drain_org(pg_db, org)
+    got = await held_stamps(p, org)
+    assert [got[k][8] for k in ("own", "alien", "gone")] == [True, False, False]
+    assert all(got[k][8] is False for k in ("fold", "f1", "f2", "x1", "g1"))                    # a connector's own records are never r13
+    assert got["own"][1] is None and got["own"][6] == 7                                         # and it keeps its refusal, so a reader that does not know r13 walks
+    await update_node(p, org, "records", "own", connectorId="app1")
+    await drain_org(pg_db, org)
+    assert (await held_stamps(p, org))["own"][8] is False and await dry_diffs(p, org, "app1") == []
+    await update_node(p, org, "records", "own", connectorId=None)
+    await drain_org(pg_db, org)
+    assert (await held_stamps(p, org))["own"][8] is True
+
+
+
+async def test_r13_follows_the_origin_in_the_graph_not_the_one_kg_held_before(pg_db) -> None:
+    """A restamp that runs before the record's own projection has written the new origin must still use the graph's."""
+    p, org = prov(pg_db), new_org()
+    await world2(p, org)
+    with ctx(org):
+        await p.batch_upsert_nodes([{"_key": "own", "recordName": "Own", "orgId": org, "recordType": "FILE", "origin": "UPLOAD"}], "records")
+    await drain_org(pg_db, org)
+    assert (await held_stamps(p, org))["own"][8] is True
+    await update_node(p, org, "records", "own", origin="CONNECTOR")
+
+    async def restamp_only(tx: Tx) -> None:          # the stamper alone: kg.records still says UPLOAD
+        await stamp(tx, org, {("records", "own")})
+    with ctx(org):
+        await pg_db.run(restamp_only, write=True)
+    assert (await held_stamps(p, org))["own"][8] is False
+
+
+async def test_a_restamp_page_counts_a_write_for_every_connector_it_rewrites(pg_db) -> None:
+    from app.services.graph_db.postgres.kg import locks
+
+    p, org = prov(pg_db), new_org()
+    await world2(p, org)
+    await drain_org(pg_db, org)
+    await add_edge(p, org, ("records", "f2"), ("records", "x1"), "nodeRelations", relationshipType="PARENT_CHILD")      # x1 (app2) hangs under f2 (app1)
+    await drain_org(pg_db, org)
+    before = locks.written(org, "app1")
+
+    async def page(tx) -> None:
+        await stamp_app(tx, org, "app2", None, 100, locked={"app1", "app2"})
+    with ctx(org):
+        await pg_db.run(page, write=True)
+    assert locks.written(org, "app1") > before                                # the parent of the page's child is app1's row
+
+
+async def test_the_stampers_facts_are_read_by_key_on_an_org_the_statistics_do_not_know(pg_db) -> None:
+    """The graph is analysed before this org's 20,000 records, 200 groups and 2,000 users are written (its first load, before autovacuum reaches it), so
+    the planner puts the org at a row. Each fact the stamper reads for 500 records is read by the record's key and each edge's other end by its own: joined,
+    the planner read every node of the org's collections once per edge (2.2 s for these 500 records). Plans as the connectors service runs them, under
+    reader.seeks as the stamper does; and the facts read are the graph's. The org's rows are removed after, as other tests read every org's apps."""
+    org, n = new_org(), 20_000
+    try:
+        await _stamper_plans(pg_db, org, n)
+    finally:
+        await _admin("DELETE FROM graph.edges WHERE org_id = $1", org)
+        await _admin("DELETE FROM graph.nodes WHERE org_id = $1", org)
+        await _admin("DELETE FROM kg.graph_changes WHERE org_id = $1", org)       # the capture of these writes: no drainer has this org to read
+
+
+async def _stamper_plans(pg_db, org: str, n: int) -> None:
+    await _admin("ANALYZE graph.nodes; ANALYZE graph.edges")
+    await _admin("INSERT INTO graph.nodes (org_id, coll, id, doc) SELECT $1, 'records', 'r' || g, jsonb_build_object('id', 'r' || g, 'orgId', $1::text, 'connectorId', 'app1') FROM generate_series(1, $2) g", org, n)
+    await _admin("INSERT INTO graph.nodes (org_id, coll, id, doc) SELECT $1, 'recordGroups', 'g' || g, jsonb_build_object('id', 'g' || g, 'orgId', $1::text, 'connectorId', 'app1') FROM generate_series(1, 200) g", org)
+    await _admin("INSERT INTO graph.nodes (org_id, coll, id, doc) SELECT $1, 'users', 'u' || g, jsonb_build_object('id', 'u' || g, 'orgId', $1::text) FROM generate_series(1, 2000) g", org)
+    await _admin("INSERT INTO graph.nodes (org_id, coll, id, doc) VALUES ($1, 'apps', 'app1', jsonb_build_object('id', 'app1', 'orgId', $1::text, 'type', 'DRIVE'))", org)
+    await _admin("""INSERT INTO graph.edges (org_id, coll, from_coll, from_id, to_coll, to_id, ekey, doc) SELECT $1, 'nodeRelations', 'records', 'r' || (g / 10 + 1), 'records', 'r' || g, '',
+        '{"relationshipType": "PARENT_CHILD"}'::jsonb FROM generate_series(11, $2) g""", org, n)
+    await _admin("""INSERT INTO graph.edges (org_id, coll, from_coll, from_id, to_coll, to_id, ekey, doc) SELECT $1, 'belongsTo', 'records', 'r' || g, 'recordGroups', 'g' || (g % 200 + 1), '',
+        '{}'::jsonb FROM generate_series(1, $2) g""", org, n)
+    await _admin("""INSERT INTO graph.edges (org_id, coll, from_coll, from_id, to_coll, to_id, ekey, doc) SELECT $1, 'permission', 'users', 'u' || (g % 2000 + 1), 'records', 'r' || g, '',
+        '{"type": "USER", "role": "READER"}'::jsonb FROM generate_series(1, $2) g""", org, n)
+    await _admin("""INSERT INTO graph.edges (org_id, coll, from_coll, from_id, to_coll, to_id, ekey, doc) SELECT $1, 'inheritPermissions', 'records', 'r' || g, 'recordGroups', 'g' || (g % 200 + 1), '',
+        '{}'::jsonb FROM generate_series(1, $2, 7) g""", org, n)
+    ids = [f"r{i}" for i in range(5000, 5500)]
+    keyed = {"nodes": r"\bid = ", "edges": r"\b(to_id|from_id) >= "}
+
+    async def go(tx) -> tuple[dict[str, Any], dict]:
+        plans = {}
+        async with seeks(tx):
+            for name, sql, args in (("parents", stampgraph.PARENTS, (org, ids, list(HIERARCHY), stampgraph._NODE_COLLS)), ("inherits", stampgraph.INHERITS, (org, ids)),
+                                    ("belongs", stampgraph.BELONGS, (org, ids, ["recordGroups", "apps"])), ("granted", stampgraph.GRANTED, (org, ids, list(stampgraph.PRINCIPAL_COLLS)))):
+                plans[name] = await tx.fetchval("EXPLAIN (FORMAT JSON) " + sql, *args)
+        return plans, await stampgraph.nodes(tx, org, [stampgraph.nk("records", i) for i in ids])
+    with ctx(org):
+        plans, facts = await pg_db.run(go, custom_plan=True)
+    assert not (bad := {name: v for name, plan in plans.items() if (v := plan_gate.violations(plan, keyed))}), bad
+    r = facts["records/r5006"]
+    assert (r.parents, r.groups, r.inherits, r.granted) == (("records/r501",), ("recordGroups/g7",), frozenset({"recordGroups/g7"}), True), r
+    assert len(facts) == 500 and all(f.granted and f.groups for f in facts.values())

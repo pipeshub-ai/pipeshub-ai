@@ -24,7 +24,6 @@ from app.services.graph_db.postgres.kg.registry import (
     WRITERS,
     UnclassifiedProviderWrite,
 )
-from app.services.graph_db.postgres.kg.writers import KgWriter
 
 from .kg_fresh import differences, graph_rows
 from .pg_support import new_org
@@ -201,89 +200,6 @@ async def log_rows(p, org: str) -> int:
         return await tx.fetchval("SELECT count(*) FROM kg.graph_changes WHERE org_id = $1", org)
     with ctx(org):
         return await p._q(go, None)
-
-
-async def other_roles_rows(p, org: str, monkeypatch: pytest.MonkeyPatch, n: int = 20) -> None:
-    """Rows a unit of another service would leave (committed, by an earlier transaction): made by a unit the take-back does not recognise as the connectors service's own."""
-    async def go(tx) -> None:
-        await tx.execute("/* pipeshub:test.others */ INSERT INTO kg.graph_changes (org_id, ends) SELECT $1, ARRAY['3:f1'] FROM generate_series(1, $2)", org, n)
-    with monkeypatch.context() as m:
-        m.setattr(flush, "_own_role", lambda _tx: False)
-        with ctx(org):
-            await p._q(go, None, write=True)
-
-
-async def test_with_the_projection_off_the_connectors_service_leaves_no_row_in_the_log(pg_db, monkeypatch) -> None:
-    monkeypatch.delenv("PG_KG_PROJECT", raising=False)
-    p, org = prov(pg_db), new_org()
-    await quiet_world2(p, org, monkeypatch)
-    monkeypatch.setattr(flush, "SWEEP_GAP_S", 0.0)
-    monkeypatch.setattr(flush, "_last_sweep", {})
-    assert await log_rows(p, org) == 0                                   # its own rows are taken back at commit
-    await other_roles_rows(p, org, monkeypatch)
-    assert await log_rows(p, org) == 20
-    with ctx(org):
-        await p.batch_upsert_nodes([{"_key": "f1", "orgId": org, "recordName": "Again", "connectorId": "app1"}], "records")
-    await flush.settle_sweeps()                                          # the sweep runs after the unit's commit, in a transaction of its own
-    assert await log_rows(p, org) == 0
-
-
-async def test_the_log_is_swept_by_any_write_unit_of_the_connectors_service_not_only_by_one_that_wrote_the_graph(pg_db, monkeypatch) -> None:
-    """Rows of the indexing and query roles pile up when only they write the graph: the connectors service's next write of anything takes them."""
-    monkeypatch.delenv("PG_KG_PROJECT", raising=False)
-    p, org = prov(pg_db), new_org()
-    await quiet_world2(p, org, monkeypatch)
-    await other_roles_rows(p, org, monkeypatch, n=30)
-    monkeypatch.setattr(flush, "SWEEP_GAP_S", 0.0)
-    assert await log_rows(p, org) == 30
-
-    async def writes_no_graph(tx) -> None:
-        await tx.fetchval("/* pipeshub:test.no_graph */ SELECT 1")
-    with ctx(org):
-        await pg_db.run(writes_no_graph, write=True)
-    await flush.settle_sweeps()
-    assert await log_rows(p, org) == 0
-
-
-async def broken_statement(self, *_a: object) -> int:
-    """A take-back statement that fails the way a lock wait or a statement timeout does: the database aborts the transaction."""
-    return await self.tx.fetchval("/* pipeshub:test.broken */ SELECT 1 / 0")
-
-
-async def test_an_ack_that_fails_does_not_fail_the_business_write_and_the_sweep_takes_the_rows_later(pg_db, monkeypatch) -> None:
-    monkeypatch.delenv("PG_KG_PROJECT", raising=False)
-    monkeypatch.setattr(flush, "SWEEP_GAP_S", 1e9)                      # no sweep with this unit
-    p, org = prov(pg_db), new_org()
-    monkeypatch.setattr(KgWriter, "changes_ack", broken_statement)
-    await world2(p, org)                                                # the writes commit although the ack of every unit failed
-    with ctx(org):
-        assert (await p.get_document("f1", "records")) is not None
-    assert await log_rows(p, org) > 0                                   # the rows stay
-    monkeypatch.undo()
-    monkeypatch.delenv("PG_KG_PROJECT", raising=False)
-    monkeypatch.setattr(flush, "SWEEP_GAP_S", 0.0)
-    monkeypatch.setattr(flush, "_last_sweep", {})
-    with ctx(org):
-        await p.batch_upsert_nodes([{"_key": "f1", "orgId": org, "recordName": "Later", "connectorId": "app1"}], "records")
-    await flush.settle_sweeps()
-    assert await log_rows(p, org) == 0
-
-
-async def test_a_sweep_that_fails_does_not_fail_the_business_write(pg_db, monkeypatch, caplog) -> None:
-    monkeypatch.delenv("PG_KG_PROJECT", raising=False)
-    p, org = prov(pg_db), new_org()
-    await quiet_world2(p, org, monkeypatch)
-    await other_roles_rows(p, org, monkeypatch, n=20)
-    monkeypatch.setattr(flush, "SWEEP_GAP_S", 0.0)
-    monkeypatch.setattr(flush, "_last_sweep", {})
-    monkeypatch.setattr(KgWriter, "changes_delete", broken_statement)
-    with ctx(org):
-        await p.batch_upsert_nodes([{"_key": "swept", "orgId": org, "recordName": "S", "connectorId": "app1"}], "records")
-    await flush.settle_sweeps()
-    with ctx(org):
-        assert (await p.get_document("swept", "records")) is not None   # the business write committed
-    assert await log_rows(p, org) == 20                                 # the sweep failed and left the rows
-    assert any("sweep of the change log failed" in r.message for r in caplog.records)
 
 
 MERGE_FORMS = {

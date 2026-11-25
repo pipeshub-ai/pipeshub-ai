@@ -17,13 +17,22 @@ import inspect
 import logging
 import os
 import sys
-from collections.abc import Callable, Coroutine, Iterator
+from collections.abc import Callable, Coroutine, Iterator, Mapping
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from app.telemetry.backend import METRICS_BACKEND
-from app.utils.request_context import get_context
+from app.utils.logging_fields import log_once
+from app.utils.request_context import (
+    RequestContext,
+    bind_context,
+    get_context,
+    new_system_root,
+    reset_context,
+    sanitize_root_id,
+    set_context,
+)
 
 
 class MissingOrgContext(RuntimeError):
@@ -45,6 +54,10 @@ class OrgContext:
     kind: Literal["user", "service", "job", "system"]
     source: str  # "jwt" | "scoped_jwt" | "envelope" | "legacy-payload" | "job:<name>" | "system:<reason>"
     request_id: str
+    # The producer's event id of the envelope this context came from (None for any other source). Never
+    # serialised and never an authority: the consumer copies it into the payload as ``_event_id`` so the
+    # handler can tell a redelivery of an event from a new one.
+    event_id: str | None = field(default=None, compare=False)
 
     def __post_init__(self) -> None:
         if (self.kind == "system") != (self.org_id is None):
@@ -57,6 +70,11 @@ _ctx: contextvars.ContextVar[OrgContext | None] = contextvars.ContextVar("org_ct
 def _request_id() -> str:
     rc = get_context()
     return rc.root_id if rc else "-"
+
+
+def peek() -> OrgContext | None:
+    """The bound context or None, without failing closed (the logger reads it)."""
+    return _ctx.get()
 
 
 def current_or_system() -> OrgContext:
@@ -80,6 +98,25 @@ def current_org_id() -> str:
     return org_id
 
 
+def bound_org_id() -> str | None:
+    """The bound org, or None where none is bound or the scope is cross-org: for a route whose own refusal answers
+    an unbound request (a token with no org), as its read of the claims did."""
+    ctx = _ctx.get()
+    return ctx.org_id if ctx is not None and ctx.kind != "system" else None
+
+
+def org_of(row: Mapping[str, Any] | None) -> str | None:
+    """The org a stored row, document or wire record names (``orgId``, else ``org_id``); None when it names none.
+
+    For a tenancy check of the row against the bound org, never a value to bind from: only an entry point binds."""
+    if not row:
+        return None
+    value = row.get("orgId")
+    if value is None:
+        value = row.get("org_id")
+    return None if value is None else str(value)
+
+
 def set_request_context(ctx: OrgContext) -> None:
     """Bind for the rest of the current request task (auth entry points).
 
@@ -101,12 +138,46 @@ def _check_nested(ctx: OrgContext) -> None:
 
 @contextmanager
 def bind(ctx: OrgContext) -> Iterator[OrgContext]:
+    """Bind ``ctx`` for the block. The request context gets the same org for the block too
+    (same root, or a new ``sys-`` root when there is none), so log lines and the envelopes
+    published inside carry it."""
     _check_nested(ctx)
     token = _ctx.set(ctx)
     try:
-        yield ctx
+        with _request_org(ctx.org_id):
+            yield ctx
     finally:
         _ctx.reset(token)
+
+
+@contextmanager
+def _request_org(org_id: str | None) -> Iterator[None]:
+    org = sanitize_root_id(org_id)
+    rc = get_context()
+    if rc is not None and rc.org_id == org:
+        yield
+        return
+    # A new RequestContext, never a mutation: the outer one keeps its org when the block ends.
+    token = bind_context(RequestContext(
+        root_id=rc.root_id if rc else new_system_root(), org_id=org, detached=rc.detached if rc else False,
+    ))
+    try:
+        yield
+    finally:
+        reset_context(token)
+
+
+@contextmanager
+def _ensure_root() -> Iterator[None]:
+    """A ``sys-`` root for job work that starts with none, so OrgContext.request_id is the logged root."""
+    if get_context() is not None:
+        yield
+        return
+    token = set_context(new_system_root())
+    try:
+        yield
+    finally:
+        reset_context(token)
 
 
 def push(ctx: OrgContext | None) -> contextvars.Token:
@@ -138,21 +209,23 @@ def for_org(org_id: str | None, *, job: str) -> Iterator[OrgContext]:
     """
     if not org_id:
         raise MissingOrgContext(f"job {job!r} has no org id")
-    ctx = OrgContext(org_id, None, "job", f"job:{job}", _request_id())
-    with bind(ctx):
+    with _ensure_root(), bind(OrgContext(org_id, None, "job", f"job:{job}", _request_id())) as ctx:
         yield ctx
 
 
 @contextmanager
 def system(reason: str) -> Iterator[OrgContext]:
     """Explicit cross-org scope (enumeration, boot). A read of one org's data must still be inside ``for_org``."""
-    with bind(OrgContext(None, None, "system", f"system:{reason}", _request_id())) as ctx:
+    with _ensure_root(), bind(OrgContext(None, None, "system", f"system:{reason}", _request_id())) as ctx:
         yield ctx
 
 
 def spawn_detached(coro: Coroutine[Any, Any, Any], *, name: str | None = None) -> asyncio.Task:
-    """Start long-lived work with an empty context (loops, consumers, lazily created clients)."""
-    return asyncio.get_running_loop().create_task(coro, name=name, context=contextvars.Context())
+    """Start long-lived work with an empty context (loops, consumers, lazily created clients),
+    except for a fresh ``sys-[<name>-]`` root, so its lines are not anonymous."""
+    context = contextvars.Context()
+    context.run(bind_context, RequestContext(root_id=new_system_root(name), detached=True))
+    return asyncio.get_running_loop().create_task(coro, name=name, context=context)
 
 
 def spawn_in_request(coro: Coroutine[Any, Any, Any], *, name: str | None = None) -> asyncio.Task:
@@ -161,9 +234,9 @@ def spawn_in_request(coro: Coroutine[Any, Any, Any], *, name: str | None = None)
 
 
 # --- shadow / enforce -------------------------------------------------------
-# `shadow` (default) logs and counts an access with no context, or with one for a
-# different org, and lets it through. `enforce` fails closed. Flip per deployment
-# with ORG_CONTEXT_MODE once the shadow counters stay at zero.
+# `enforce` (default) fails closed on an access with no context, or with one for a
+# different org. `shadow` is the escape hatch: it logs and counts such an access
+# and lets it through, with a warning that the mode is on.
 
 _logger = logging.getLogger(__name__)
 VIOLATIONS = METRICS_BACKEND.counter(
@@ -171,15 +244,16 @@ VIOLATIONS = METRICS_BACKEND.counter(
     "Org-scoped accesses with no ambient org (missing) or a different one (mismatch)",
     ["kind", "site"],
 )
-_logged: set[tuple[str, str]] = set()
 SYSTEM_ORG_ID = "system"
 
 
 def validate_mode() -> bool:
-    """True in enforce mode. An unknown ``ORG_CONTEXT_MODE`` raises ValueError (never silently shadow)."""
-    mode = os.getenv("ORG_CONTEXT_MODE", "shadow").strip().lower() or "shadow"
+    """True in enforce mode (the default). An unknown ``ORG_CONTEXT_MODE`` raises ValueError (never silently shadow)."""
+    mode = os.getenv("ORG_CONTEXT_MODE", "").strip().lower() or "enforce"
     if mode not in ("shadow", "enforce"):
         raise ValueError(f"ORG_CONTEXT_MODE must be 'shadow' or 'enforce', got {mode!r}")
+    if mode == "shadow" and log_once("org_context:shadow_mode"):
+        _logger.warning("ORG_CONTEXT_MODE=shadow: an org-scoped access with no org or another org's is logged and allowed, not refused")
     return mode == "enforce"
 
 
@@ -197,8 +271,8 @@ def _caller(depth: int) -> str:
 def ambient_org(explicit_org_id: str | None, *, site: str, caller: Callable[[], str] | str | None = None) -> str | None:
     """Check an explicit org argument against the ambient context at an org-scoped choke point.
 
-    Returns the explicit org (or the ambient one when none was given). Shadow mode
-    never raises; the first violation per (kind, site) is logged with the call site,
+    Returns the explicit org (or the ambient one when none was given). Enforce mode raises;
+    shadow mode never does; the first violation per (kind, site) is logged with the call site,
     every one is counted.
     """
     ctx = _ctx.get()
@@ -216,8 +290,7 @@ def ambient_org(explicit_org_id: str | None, *, site: str, caller: Callable[[], 
         raise MissingOrgContext(f"{site}: no org context") if kind == "missing" else OrgMismatch(
             f"{site}: explicit org differs from the ambient org"
         )
-    if (kind, site) not in _logged:
-        _logged.add((kind, site))
+    if log_once(f"org_context:{kind}:{site}"):
         _logger.warning("org_context_%s site=%s caller=%s", kind, site, caller() if callable(caller) else caller or _caller(2))
     return explicit_org_id
 

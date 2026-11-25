@@ -678,7 +678,7 @@ class TestSyncIssuesForTeams:
         result = await connector._sync_issues_for_teams([(team_rg, [])])
         dep.on_new_records.assert_called()
         assert result == ({"team-1"}, [])
-        assert connector.issues_sync_point.store["team_issues_team-1"]["last_sync_time"] == 1_705_400_000_000
+        assert connector.issues_sync_point.store["team_issues_v2_team-1"]["last_sync_time"] == 1_705_400_000_000
 
     @pytest.mark.asyncio
     async def test_sync_issues_empty_teams(self):

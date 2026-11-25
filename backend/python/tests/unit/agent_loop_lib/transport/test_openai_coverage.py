@@ -31,7 +31,7 @@ from app.agent_loop_lib.core.messages import (
 from app.agent_loop_lib.core.responses import StopReason
 from app.agent_loop_lib.core.streaming import StreamCompleteEvent, TextDeltaEvent
 from app.agent_loop_lib.core.tool_schema import ToolSchema
-from app.agent_loop_lib.transport.openai import OpenAITransport, RequestDefaults
+from app.agent_loop_lib.transport.openai import OpenAITransport
 from app.agents.agent_loop.converters import MALFORMED_TOOL_CALL_ARGS_KEY
 
 
@@ -148,24 +148,20 @@ class TestFormatMessage:
             step_footer=" [footer]",
         )
 
-    def test_multipart_tool_message_formats_image_url_blocks_on_responses_api(self) -> None:
-        transport = _transport(defaults=RequestDefaults(use_responses_api=True))
-        formatted = transport._format_message(self._multipart_tool_message())
-        assert formatted["content"] == [
-            {"type": "text", "text": "[ref1] (image)"},
-            {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc123"}},
-            {"type": "text", "text": " [footer]"},
-        ]
-
-    def test_multipart_tool_message_drops_images_on_chat_completions(self) -> None:
+    def test_multipart_tool_message_sends_its_images_in_a_user_message_after_it(self) -> None:
         """Chat Completions 400s on an image block in a `role: "tool"` message
-        ("Image URLs are only allowed for messages with role 'user'"); the
-        agent factory re-delivers these through a user message instead."""
+        ("Image URLs are only allowed for messages with role 'user'"), so the
+        result keeps its text and the image follows it (FIX-P3-B1)."""
         transport = _transport()
-        formatted = transport._format_message(self._multipart_tool_message())
-        assert formatted["content"] == [
-            {"type": "text", "text": "[ref1] (image)"},
-            {"type": "text", "text": " [footer]"},
+        formatted = transport._format_messages([self._multipart_tool_message()], None)
+        assert formatted == [
+            {"role": "tool", "tool_call_id": "call_1", "content": "[ref1] (image) [footer]"},
+            # Loop-added, so a context note (main's TP-01).
+            {"role": "user", "content": [
+                {"type": "text", "text": '<context_note source="agent">\nImages returned by the tool results above (call_1):'},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc123"}},
+                {"type": "text", "text": "</context_note>"},
+            ]},
         ]
 
     def test_images_only_tool_message_on_chat_completions_still_answers_the_call(self) -> None:
@@ -677,6 +673,9 @@ class TestRequestShapeRecoveryIsNotAzureOnly:
             resp_calls.append(kwargs)
             return _Empty()
 
+        # A whole stub: a real client sends Responses bodies pre-encoded,
+        # around `with_streaming_response.create`.
+        transport._client = MagicMock()
         transport._client.chat.completions.create = AsyncMock(side_effect=_chat)
         transport._client.responses.with_streaming_response.create = MagicMock(
             side_effect=_resp
@@ -704,3 +703,92 @@ class TestRequestShapeRecoveryIsNotAzureOnly:
         with pytest.raises(Exception, match="rate limit"):
             [e async for e in transport.stream([UserMessage(content="hi")])]
         assert len(calls) == 1
+
+
+def _stream_api_error(message: str, body: dict | str | None = None) -> openai_sdk.APIError:
+    """What the SDK raises for an `error` event inside a stream that opened with HTTP 200."""
+    req = httpx.Request("POST", "https://api.openai.com/v1/chat/completions")
+    return openai_sdk.APIError(message, request=req, body=body)
+
+
+class _FailingAfterChunks(_AsyncChunkIterator):
+    def __init__(self, chunks: list, exc: Exception) -> None:
+        super().__init__(chunks)
+        self._exc = exc
+
+    async def __anext__(self) -> SimpleNamespace:
+        if not self._chunks:
+            raise self._exc
+        return self._chunks.pop(0)
+
+
+class TestTransientStreamErrors:
+    @pytest.mark.parametrize("exc", [
+        _stream_api_error("upstream connect error or disconnect/reset before headers. reset reason: connection termination"),
+        _stream_api_error("The server had an error", body={"type": "server_error"}),
+        # A gateway's plain-text stream error reaches the SDK as a str body.
+        _stream_api_error(
+            "An error occurred during streaming",
+            body="upstream connect error or disconnect/reset before headers. reset reason: connection termination",
+        ),
+        _stream_api_error("Rate limited", body={"error": {"type": "rate_limit_exceeded", "message": "slow down"}}),
+        httpx.RemoteProtocolError("peer closed connection without sending complete message body (incomplete chunked read)"),
+    ])
+    def test_transient_stream_failures_are_retryable(self, exc: Exception) -> None:
+        assert _transport()._wrap_error(exc, "stream").retryable is True
+
+    @pytest.mark.parametrize("exc", [
+        _stream_api_error("Invalid prompt", body={"type": "invalid_request_error"}),
+        _stream_api_error("Quota", body={"error": {"type": "insufficient_quota", "message": "quota exceeded"}}),
+        _stream_api_error("Too long", body={"error": {"code": "context_length_exceeded", "message": "too long"}}),
+        # A label decides: the caller's bad URL stays non-retryable even if its message names a reset.
+        _stream_api_error("connection reset while fetching the image", body={"code": "invalid_image_url"}),
+    ])
+    def test_other_stream_errors_are_not_retryable(self, exc: Exception) -> None:
+        assert _transport()._wrap_error(exc, "stream").retryable is False
+
+    @pytest.mark.parametrize(("error", "transient"), [
+        ("upstream connect error or disconnect/reset before headers", True),   # Responses `error` data as a str
+        ({"code": "server_error", "message": "The server had an error"}, True),
+        (SimpleNamespace(type="error", code="server_error", message="oops"), True),
+        # A Responses `error` event: its type is the event kind, so the message decides.
+        (SimpleNamespace(type="error", code=None, message="upstream connect error or disconnect/reset"), True),
+        (SimpleNamespace(type="error", code="invalid_prompt", message="upstream connect error"), False),
+        ({"code": "invalid_prompt", "message": "upstream connect error"}, False),
+        ({"message": "something odd"}, False),
+        # LiteLLM-style gateway error: placeholder type, HTTP status as a string code.
+        ({"type": "None", "code": "500", "message": "litellm.InternalServerError: upstream connect error"}, True),
+        ({"type": None, "code": 500, "message": "upstream connect error"}, True),
+        ({"code": "429", "message": "slow down"}, True),
+        ({"code": "400", "message": "connection reset in your prompt"}, False),
+        ({"code": "InternalServerError", "message": "Azure had a problem"}, True),  # Azure casing
+        ({"code": "ServiceUnavailable", "message": "try later"}, True),
+        ({"type": "api_error", "message": "Internal server error"}, True),
+        # The code is the specific cause: a generic transient type does not override it.
+        ({"type": "api_error", "code": "invalid_image_url", "message": "bad url"}, False),
+        (None, False),
+    ])
+    def test_classifier_on_responses_payload_shapes(self, error: object, transient: bool) -> None:
+        from app.agent_loop_lib.transport.openai import _is_transient_stream_error
+
+        assert _is_transient_stream_error(error) is transient
+
+    async def test_failure_before_any_output_stays_retryable(self) -> None:
+        transport = _transport()
+        exc = _stream_api_error("upstream connect error or disconnect/reset before headers")
+        transport._client.chat.completions.create = AsyncMock(return_value=_FailingAfterChunks([], exc))
+        with pytest.raises(TransportError) as info:
+            [e async for e in transport.stream([UserMessage(content="x")])]
+        assert info.value.retryable is True and info.value.partial_output is False
+
+    async def test_failure_after_output_waits_for_the_agent_to_retract_it(self) -> None:
+        transport = _transport()
+        exc = _stream_api_error("upstream connect error or disconnect/reset before headers")
+        transport._client.chat.completions.create = AsyncMock(
+            return_value=_FailingAfterChunks([_stream_chunk(content="Hel")], exc),
+        )
+        with pytest.raises(TransportError) as info:
+            [e async for e in transport.stream([UserMessage(content="x")])]
+        assert info.value.partial_output is True and info.value.retryable is False
+        info.value.discard_partial_output()
+        assert info.value.retryable is True

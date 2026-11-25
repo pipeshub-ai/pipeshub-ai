@@ -13,6 +13,7 @@ No real database, Kafka, or HTTP calls are made.
 
 import copy
 import uuid
+from collections.abc import Collection
 from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Tuple
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -22,12 +23,14 @@ import pytest
 from app.config.constants.arangodb import (
     HIERARCHY_RELATION_TYPES,
     CollectionNames,
-    Connectors as ConnectorsEnum,
     EntityRelations,
     MimeTypes,
     OriginTypes,
     ProgressStatus,
     RecordRelations,
+)
+from app.config.constants.arangodb import (
+    Connectors as ConnectorsEnum,
 )
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
@@ -172,6 +175,18 @@ class _InMemoryGraphStore:
         edges = self.edges.get(edge_collection, [])
         before = len(edges)
         self.edges[edge_collection] = [e for e in edges if e.get("_from") != _from]
+        return before - len(self.edges[edge_collection])
+
+    def delete_edges_between_collections(
+        self, edge_collection: str, from_id: str, from_collection: str, to_collection: str,
+    ) -> int:
+        _from = f"{from_collection}/{from_id}"
+        edges = self.edges.get(edge_collection, [])
+        before = len(edges)
+        self.edges[edge_collection] = [
+            e for e in edges
+            if not (e.get("_from") == _from and str(e.get("_to", "")).startswith(f"{to_collection}/"))
+        ]
         return before - len(self.edges[edge_collection])
 
     def delete_edges_to(self, edge_collection: str, to_id: str, to_collection: str) -> int:
@@ -436,6 +451,12 @@ class MockTransactionStore:
     ) -> User | None:
         return None  # this store keeps no userAppRelation edges
 
+    def is_transient_error(self, error: BaseException) -> bool:
+        return False
+
+    async def publish_with_commit(self, producer: object, topic: str, messages: list) -> bool:
+        return False  # no broker shares this store's transaction: the processor publishes after the commit
+
     async def get_users_by_emails(
         self, emails: list[str], *, raise_on_error: bool = False, org_id: str | None = None,
     ) -> dict[str, User]:
@@ -464,13 +485,22 @@ class MockTransactionStore:
                 return Person.from_arango_person(doc)
         return None
 
+    async def get_person_by_source_key(self, source_key: str, org_id: str) -> Person | None:
+        for doc in self._s.collections.get(CollectionNames.PEOPLE.value, {}).values():
+            if doc.get("sourceKey") == source_key and doc.get("orgId") == org_id:
+                return Person.from_arango_person(doc)
+        return None
+
+    async def upsert_person_by_source_key(self, person: Person, *, raise_on_error: bool = False) -> str | None:
+        return self._s.upsert_node(CollectionNames.PEOPLE.value, person.to_arango_person())["_key"]
+
     async def upsert_person_by_email(self, person: Person, *, raise_on_error: bool = False) -> str | None:
         existing = await self.get_person_by_email(person.email, person.org_id)
         if existing:
             return existing.id
         return self._s.upsert_node(CollectionNames.PEOPLE.value, person.to_arango_person())["_key"]
 
-    async def get_users(self, org_id: str, active: bool = True) -> List[User]:
+    async def get_users(self, org_id: str, active: bool = True, *, raise_on_error: bool = False) -> List[User]:
         results = []
         for doc in self._s.collections.get(CollectionNames.USERS.value, {}).values():
             if doc.get("orgId") == org_id and (not active or doc.get("isActive", True)):
@@ -493,7 +523,7 @@ class MockTransactionStore:
                 ))
         return results
 
-    async def batch_upsert_app_users(self, users: List[AppUser]) -> None:
+    async def batch_upsert_app_users(self, users: List[AppUser], org_id: str) -> None:
         for user in users:
             doc = user.to_arango_base_user()
             doc["appName"] = user.app_name.value
@@ -631,6 +661,25 @@ class MockTransactionStore:
     async def delete_edges_from(self, from_id: str, from_collection: str, collection: str) -> int:
         return self._s.delete_edges_from(collection, from_id, from_collection)
 
+    async def delete_edges_between_collections(
+        self, from_id: str, from_collection: str, edge_collection: str, to_collection: str,
+    ) -> int:
+        return self._s.delete_edges_between_collections(edge_collection, from_id, from_collection, to_collection)
+
+    async def replace_record_entity_relations(
+        self, record_id: str, to_collections: list[str], origin: str, edges: list[dict],
+        *, keep_edge_types: Collection[str] = (),
+    ) -> None:
+        relations = CollectionNames.ENTITY_RELATIONS.value
+        source = f"{CollectionNames.RECORDS.value}/{record_id}"
+        targets = tuple(f"{c}/" for c in to_collections)
+        self._s.edges[relations] = [
+            e for e in self._s.edges.get(relations, [])
+            if not (e.get("_from") == source and str(e.get("_to", "")).startswith(targets)
+                    and e.get("edgeType") not in keep_edge_types)
+        ]
+        await self.batch_create_entity_relations(edges)
+
     async def delete_edge(self, from_id: str, from_collection: str, to_id: str,
                           to_collection: str, collection: str) -> bool:
         return self._s.delete_edge(collection, from_id, from_collection, to_id, to_collection)
@@ -691,10 +740,10 @@ class MockTransactionStore:
                 "relationshipType": RecordRelations.PARENT_CHILD.value,
             }], CollectionNames.NODE_RELATIONS.value)
 
-    async def get_edges_from_node(self, from_node_id: str, edge_collection: str) -> List[Dict]:
+    async def get_edges_from_node(self, from_node_id: str, edge_collection: str, *, raise_on_error: bool = False) -> List[Dict]:
         return self._s.get_edges_from_node(from_node_id, edge_collection)
 
-    async def get_edges_to_node(self, node_id: str, edge_collection: str) -> List[Dict]:
+    async def get_edges_to_node(self, node_id: str, edge_collection: str, *, raise_on_error: bool = False) -> List[Dict]:
         return self._s.get_edges_to_node(node_id, edge_collection)
 
     async def delete_record_by_key(self, key: str) -> None:
@@ -1460,8 +1509,9 @@ class TestJiraFullSyncWorkflow:
         assert EntityRelations.REPORTED_BY.value in edge_types
 
     @pytest.mark.asyncio
-    async def test_sync_ticket_missing_user_no_edge(self, processor, graph_store):
-        """If user doesn't exist in graph, entity relation edges are not created."""
+    async def test_sync_ticket_naming_a_non_member_links_one_person_node(self, processor, graph_store):
+        """Someone a ticket names who is not a member gets one person node
+        (decision D2), linked once per role; no user is created."""
         ticket = make_ticket_record(
             external_id="ticket-nousers-001",
             assignee_email="ghost@example.com",
@@ -1470,7 +1520,12 @@ class TestJiraFullSyncWorkflow:
         )
         await processor.on_new_records([(ticket, [])])
         entity_edges = graph_store.edges.get(CollectionNames.ENTITY_RELATIONS.value, [])
-        assert len(entity_edges) == 0
+        assert {e["_to"].split("/")[0] for e in entity_edges} == {CollectionNames.PEOPLE.value}
+        assert len({e["_to"] for e in entity_edges}) == 1
+        assert sorted(e["edgeType"] for e in entity_edges) == sorted([
+            EntityRelations.ASSIGNED_TO.value, EntityRelations.REPORTED_BY.value, EntityRelations.CREATED_BY.value,
+        ])
+        assert graph_store.count_collection(CollectionNames.USERS.value) == 0
 
     @pytest.mark.asyncio
     async def test_sync_project_lead_edge(self, processor, graph_store):

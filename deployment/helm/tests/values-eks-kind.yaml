@@ -21,6 +21,19 @@ resources:
 persistence:
   enabled: false
 
+# values-eks.yaml sizes the parsing pods for a c7i.2xlarge node group. Off in
+# the smoke run; if a run turns it on, the pods must fit a kind node.
+parsing:
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 1
+      memory: 1Gi
+  nodeSelector: null
+  tolerations: null
+
 ingress:
   enabled: false
 
@@ -112,5 +125,7 @@ neo4j:
   nodeSelector: null
   tolerations: null
 
+# Kept on (ADR-OPS-04), so a kind run on a policy-enforcing CNI checks the
+# same rules EKS gets.
 networkPolicy:
-  enabled: false
+  enabled: true

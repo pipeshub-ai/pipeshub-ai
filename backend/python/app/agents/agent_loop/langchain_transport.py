@@ -38,7 +38,7 @@ from typing import TYPE_CHECKING, Any
 
 from langchain_core.messages import AIMessage
 
-from app.agent_loop_lib.core.exceptions import TransportError
+from app.agent_loop_lib.core.exceptions import TOOLS_UNSUPPORTED_CODE, TransportError
 from app.agent_loop_lib.core.responses import (
     ModelResponse,
     StopReason,
@@ -52,6 +52,7 @@ from app.agent_loop_lib.core.streaming import (
     ThinkingDeltaEvent,
     ToolCallDeltaEvent,
 )
+from app.agent_loop_lib.core.tasks import wait_owned
 from app.agent_loop_lib.transport.base import LLMTransport
 from app.agent_loop_lib.transport.content_filter import (
     CONTENT_FILTER_STOP_REASONS,
@@ -79,15 +80,17 @@ from app.agents.agent_loop.converters import (
     output_schema_to_pydantic_model,
     token_usage_from_ai_message,
 )
-from app.agents.agent_loop.error_classification import redact_error_for_log
 from app.agents.agent_loop.image_guard import cap_images
+from app.agents.agent_loop.langchain_output_limit import limited, output_limit_field
 from app.agents.agent_loop.prompt_cache import NoCacheStrategy, cache_target
 from app.utils.llm_api_mode_store import (
     REASONING_MANDATORY_FALLBACK_EFFORT,
     LLMApiMode,
     get_llm_api_mode_store,
 )
+from app.utils.log_redaction import redact_error_for_log
 from app.utils.message_chunks import merge_message_chunks_off_loop
+from harness_core.models.transports.failures import is_retryable
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -148,15 +151,16 @@ _is_reasoning_mandatory_conflict = is_reasoning_mandatory_conflict
 _is_tool_result_image_conflict = is_tool_result_image_conflict
 
 
-def _truncate_raw_for_log(raw: Any, max_len: int = 500) -> str:  # noqa: ANN401
-    """Best-effort string preview of the raw LLM response for diagnostics."""
+def _error_type(error: object) -> str | None:
+    return type(error).__name__ if error is not None else None
+
+
+def _raw_chars(raw: Any) -> int:  # noqa: ANN401
+    """The size of a raw model response, logged instead of the response itself."""
     try:
-        text = str(raw)
+        return len(str(raw))
     except Exception:
-        return "<unrenderable>"
-    if len(text) > max_len:
-        return text[:max_len] + "... [truncated]"
-    return text
+        return 0
 
 
 def _extract_json_from_raw(raw: Any) -> dict[str, Any] | None:
@@ -364,7 +368,7 @@ class LangChainTransport(LLMTransport):
         self._opik_callbacks = build_langchain_opik_callbacks(opik_project_name)
         # Keyed on the turn's tool names; see `_bind_tools`. A transport is
         # built per request, so this can never be shared across users.
-        self._bound_by_tools: dict[tuple[str | bool, ...], BaseChatModel] = {}
+        self._bound_by_tools: dict[tuple[int | str | bool | None, ...], BaseChatModel] = {}
 
     def _langchain_config(self) -> dict[str, Any]:
         """`config=` kwarg for every `ainvoke`/`astream` call below — see
@@ -377,11 +381,15 @@ class LangChainTransport(LLMTransport):
     def provider(self) -> str:
         return "langchain"
 
+    @property
+    def accepts_output_limit(self) -> bool:
+        return output_limit_field(self._llm) is not None
+
     def _resolve_model_name(self, model: str | None) -> str:
         return model or self._model
 
     def _bind_tools(
-        self, tools: list[ToolSchema] | None, llm: BaseChatModel | None = None,
+        self, tools: list[ToolSchema] | None, llm: BaseChatModel | None = None, limit: int | None = None,
         tool_choice: ToolChoice | None = None,
     ) -> BaseChatModel:
         """Binds `tools` onto `llm` (defaults to `self._llm`), or raises a
@@ -407,7 +415,8 @@ class LangChainTransport(LLMTransport):
         `_wrap_error`'s callers, the adapter's error-response path), instead
         of a distinct silent-degradation code path nothing else knows about.
         """
-        llm = llm if llm is not None else self._llm
+        base = llm if llm is not None else self._llm
+        llm = limited(base, limit)
         if not tools:
             logger.debug("LangChainTransport: no tools offered for this turn")
             return llm
@@ -421,9 +430,9 @@ class LangChainTransport(LLMTransport):
         # API-shape fallback retrying on a differently-configured model, and
         # handing it the cached original made the retry re-raise the very error
         # it was retrying.
-        cacheable = llm is self._llm
+        cacheable = base is self._llm
         choice = _NO_TOOL_CALLS.get(self._cache_target.family) if tool_choice == "none" else None
-        cache_key = (*tool_names, choice is not None)
+        cache_key = (limit, choice is not None, *tool_names)
         if cacheable:
             cached = self._bound_by_tools.get(cache_key)
             if cached is not None:
@@ -440,16 +449,13 @@ class LangChainTransport(LLMTransport):
         try:
             bound = llm.bind_tools(lc_tools, **choice_kwargs)
         except Exception as exc:
-            logger.error(
-                "LangChainTransport: bind_tools() failed for %d tool(s) %s — "
-                "refusing to silently run this turn without them",
-                len(tool_names), tool_names, exc_info=True,
-            )
+            # Refuse to run this turn silently without its tools; the agent logs the failure once.
             raise TransportError(
                 f"bind_tools() failed for {len(tool_names)} tool(s) {tool_names}: {exc}",
                 retryable=False,
+                code=TOOLS_UNSUPPORTED_CODE,
             ) from exc
-        logger.info(
+        logger.debug(
             "LangChainTransport: bound %d tool(s) to LLM call: %s",
             len(tool_names), tool_names,
         )
@@ -514,13 +520,14 @@ class LangChainTransport(LLMTransport):
         *,
         relocate: bool | None = None,
         llm: BaseChatModel | None = None,
+        limit: int | None = None,
         tool_choice: ToolChoice | None = None,
     ) -> AIMessage:
         """One `ainvoke`, resent without each cache parameter the provider
         refuses (every pass sends fewer, so it cannot loop)."""
         while True:
             lc_messages, call_kwargs = self._request(messages, prompt, relocate=relocate)
-            bound = self._bind_tools(tools, llm=llm, tool_choice=tool_choice)
+            bound = self._bind_tools(tools, llm=llm, limit=limit, tool_choice=tool_choice)
             try:
                 return await bound.ainvoke(lc_messages, config=self._langchain_config(), **call_kwargs)
             except Exception as exc:
@@ -563,23 +570,14 @@ class LangChainTransport(LLMTransport):
         `TransportError.discard_partial_output`).
         """
         status_code = getattr(exc, "status_code", None)
-        # 529 is Anthropic's non-standard "overloaded_error" status —
-        # capacity exhaustion across all customers, not this request's
-        # fault — and in practice the single most common transient failure
-        # against the Anthropic API. `anthropic.APIStatusError` (raised
-        # directly through langchain_anthropic's `_astream`/`_agenerate`,
-        # unwrapped) carries it on `.status_code`, same as any other HTTP
-        # status. Kept in sync with `RetryConfig.retryable_status_codes`
-        # default (`transport/base.py`) and the native
-        # `AnthropicTransport._RETRYABLE_STATUS_CODES` — retryable=True
-        # here only gets a retry if that config list also allows the code.
+        # `anthropic.APIStatusError` reaches here unwrapped through langchain_anthropic, carrying 529 on
+        # `.status_code` like any other status: one classifier keeps this path in step with the direct transports.
         # Below 400 (or no status) the HTTP exchange itself succeeded or never happened, so the error came from the
         # network or from inside the stream, and its type says whether it is transient.
         http_failed = bool(status_code) and status_code >= 400
-        retryable = (
-            status_code in (429, 500, 502, 503, 504, 529)
-            if http_failed
-            else _is_network_error(exc) or _is_transient_provider_error(exc)
+        retryable = is_retryable(
+            status_code if http_failed else None,
+            network=_is_network_error(exc) or _is_transient_provider_error(exc),
         )
         # The class name keeps the cause classifiable when the provider
         # raised with an empty message (a bare `TimeoutError()` read as an
@@ -682,28 +680,6 @@ class LangChainTransport(LLMTransport):
             return
         await store.record(self._model_key, self._model, mode)
 
-    def _log_turn_outcome(
-        self, tools: list[ToolSchema] | None, ai_message: AIMessage, stop_reason: StopReason,
-    ) -> None:
-        """Correlates "how many tools were offered" with "did the model
-        call one" — the missing link needed to tell "tool wasn't available"
-        apart from "tool was available but the model didn't call it" from
-        logs alone (both looked identical before this)."""
-        if not tools:
-            return
-        tool_calls = getattr(ai_message, "tool_calls", None) or []
-        if tool_calls:
-            logger.info(
-                "LangChainTransport: model called %d tool(s): %s",
-                len(tool_calls), [tc.get("name") for tc in tool_calls],
-            )
-        else:
-            logger.info(
-                "LangChainTransport: model did NOT call any tool this turn "
-                "(%d tool(s) were offered, stop_reason=%s)",
-                len(tools), stop_reason,
-            )
-
     def _stop_reason_from(self, ai_message: AIMessage) -> StopReason:
         if ai_message.tool_calls:
             return StopReason.TOOL_USE
@@ -748,6 +724,7 @@ class LangChainTransport(LLMTransport):
         thinking_budget: int | None = None,
         effort: str | None = None,
         system_blocks: list[str] | None = None,
+        max_output_tokens: int | None = None,
         *,
         tool_choice: ToolChoice | None = None,
     ) -> ModelResponse:
@@ -759,10 +736,12 @@ class LangChainTransport(LLMTransport):
         prompt = split_system_prompt(system, system_blocks)
         # Bound up front so a bind failure surfaces as itself, not as a
         # provider error; the binding is cached for the calls below.
-        self._bind_tools(tools, tool_choice=tool_choice)
+        self._bind_tools(tools, limit=max_output_tokens, tool_choice=tool_choice)
 
         try:
-            ai_message = await self._ainvoke(messages, tools, prompt, tool_choice=tool_choice)
+            ai_message = await self._ainvoke(
+                messages, tools, prompt, limit=max_output_tokens, tool_choice=tool_choice,
+            )
         except Exception as exc:
             if self._relocates_tool_images(exc, messages):
                 logger.warning(
@@ -771,9 +750,11 @@ class LangChainTransport(LLMTransport):
                     self._model, redact_error_for_log(str(exc)),
                 )
                 try:
-                    ai_message = await self._ainvoke(messages, tools, prompt, relocate=True, tool_choice=tool_choice)
+                    ai_message = await self._ainvoke(
+                        messages, tools, prompt, relocate=True, limit=max_output_tokens, tool_choice=tool_choice,
+                    )
                 except Exception as retry_exc:
-                    logger.error(
+                    logger.warning(
                         "LangChainTransport.complete: tool-image relocation retry also "
                         "failed for model=%s: %s — raising the ORIGINAL error",
                         self._model, redact_error_for_log(str(retry_exc)),
@@ -794,10 +775,10 @@ class LangChainTransport(LLMTransport):
             )
             try:
                 ai_message = await self._ainvoke(
-                    messages, tools, prompt, llm=fallback_llm, tool_choice=tool_choice,
+                    messages, tools, prompt, llm=fallback_llm, limit=max_output_tokens, tool_choice=tool_choice,
                 )
             except Exception as retry_exc:
-                logger.error(
+                logger.warning(
                     "LangChainTransport.complete: retry with api_mode=%s also failed for "
                     "model=%s: %s — raising the ORIGINAL error",
                     mode, self._model, redact_error_for_log(str(retry_exc)),
@@ -828,7 +809,6 @@ class LangChainTransport(LLMTransport):
             StopReason.MAX_TOKENS if assistant_message.truncated
             else self._stop_reason_from(ai_message)
         )
-        self._log_turn_outcome(tools, ai_message, stop_reason)
         return ModelResponse(
             message=assistant_message,
             usage=token_usage_from_ai_message(ai_message, input_excludes_cached=self._input_excludes_cached),
@@ -842,11 +822,12 @@ class LangChainTransport(LLMTransport):
         output_schema: dict[str, Any],
         system: str | None = None,
         model: str | None = None,
+        max_output_tokens: int | None = None,
     ) -> StructuredResponse:
         lc_messages = self._to_langchain(messages, system)
         resolved_model = self._resolve_model_name(model)
 
-        parsed, raw = await self._invoke_structured(lc_messages, output_schema)
+        parsed, raw = await self._invoke_structured(lc_messages, output_schema, limit=max_output_tokens)
         usage = (
             token_usage_from_ai_message(raw, input_excludes_cached=self._input_excludes_cached)
             if isinstance(raw, AIMessage) else TokenUsage()
@@ -858,7 +839,7 @@ class LangChainTransport(LLMTransport):
         )
 
     async def _invoke_structured(
-        self, lc_messages: list, output_schema: dict[str, Any]
+        self, lc_messages: list, output_schema: dict[str, Any], *, limit: int | None = None,
     ) -> tuple[dict[str, Any] | None, Any]:
         """Try `with_structured_output()` with the raw JSON-schema dict
         first (supported by most modern LangChain chat model integrations
@@ -875,7 +856,7 @@ class LangChainTransport(LLMTransport):
         first_attempt_error: Exception | None = None
         first_raw: Any = None
         try:
-            structured_llm = self._llm.with_structured_output(output_schema, include_raw=True)
+            structured_llm = limited(self._llm, limit).with_structured_output(output_schema, include_raw=True)
             result = await structured_llm.ainvoke(lc_messages, config=self._langchain_config())
             parsed = result.get("parsed") if isinstance(result, dict) else None
             first_raw = result.get("raw") if isinstance(result, dict) else None
@@ -884,21 +865,18 @@ class LangChainTransport(LLMTransport):
             parsing_error = result.get("parsing_error") if isinstance(result, dict) else None
             logger.warning(
                 "LangChainTransport: raw-schema attempt returned parsed=None; "
-                "parsing_error=%s; raw=%s",
-                parsing_error, _truncate_raw_for_log(first_raw),
+                "parsing_error=%s; raw_chars=%d",
+                _error_type(parsing_error), _raw_chars(first_raw),
             )
         except Exception as exc:
             first_attempt_error = exc
-            logger.warning(
-                "LangChainTransport: raw-schema attempt raised %s: %s",
-                type(exc).__name__, redact_error_for_log(str(exc)),
-            )
+            logger.warning("LangChainTransport: raw-schema attempt raised %s", type(exc).__name__)
 
         second_raw: Any = None
         second_parsing_error: Exception | None = None
         try:
             args_model = output_schema_to_pydantic_model(output_schema)
-            structured_llm = self._llm.with_structured_output(args_model, include_raw=True)
+            structured_llm = limited(self._llm, limit).with_structured_output(args_model, include_raw=True)
             result = await structured_llm.ainvoke(lc_messages, config=self._langchain_config())
         except Exception as exc:
             raise self._wrap_error(exc, "complete_structured") from exc
@@ -911,8 +889,8 @@ class LangChainTransport(LLMTransport):
             return parsed, second_raw
         logger.warning(
             "LangChainTransport: Pydantic-model attempt also returned parsed=None; "
-            "parsing_error=%s; raw=%s",
-            second_parsing_error, _truncate_raw_for_log(second_raw),
+            "parsing_error=%s; raw_chars=%d",
+            _error_type(second_parsing_error), _raw_chars(second_raw),
         )
 
         best_raw = second_raw or first_raw
@@ -924,16 +902,16 @@ class LangChainTransport(LLMTransport):
             )
             return manual, best_raw
 
-        raw_preview = _truncate_raw_for_log(best_raw)
+        # Class names and a size only: parser errors and the raw response echo the completion.
         parts = [
             "LangChain structured output parsing failed for both raw-schema and "
             "Pydantic-model attempts",
         ]
         if first_attempt_error:
-            parts.append(f"first attempt error: {first_attempt_error}")
+            parts.append(f"first attempt error: {_error_type(first_attempt_error)}")
         if second_parsing_error:
-            parts.append(f"second attempt parsing_error: {second_parsing_error}")
-        parts.append(f"raw response: {raw_preview}")
+            parts.append(f"second attempt parsing_error: {_error_type(second_parsing_error)}")
+        parts.append(f"raw_chars={_raw_chars(best_raw)}")
         raise TransportError("; ".join(parts))
 
     async def stream(
@@ -945,12 +923,13 @@ class LangChainTransport(LLMTransport):
         thinking_budget: int | None = None,
         effort: str | None = None,
         system_blocks: list[str] | None = None,
+        max_output_tokens: int | None = None,
         *,
         tool_choice: ToolChoice | None = None,
     ) -> AsyncIterator[StreamEvent]:
         prompt = split_system_prompt(system, system_blocks)
         lc_messages, call_kwargs = self._request(messages, prompt)
-        lc_llm = self._bind_tools(tools, tool_choice=tool_choice)
+        lc_llm = self._bind_tools(tools, limit=max_output_tokens, tool_choice=tool_choice)
         relocate: bool | None = None
 
         chunks: list[AIMessage] = []
@@ -974,6 +953,7 @@ class LangChainTransport(LLMTransport):
         while True:
             stream_iter: AsyncIterator[AIMessage] | None = None
             cancel_task: asyncio.Task[None] | None = None
+            next_chunk_task: asyncio.Task[AIMessage] | None = None
             try:
                 stream_iter = current_llm.astream(
                     lc_messages, config=self._langchain_config(), **call_kwargs,
@@ -986,7 +966,7 @@ class LangChainTransport(LLMTransport):
                         {next_chunk_task} if cancel_task is None
                         else {next_chunk_task, cancel_task}
                     )
-                    await asyncio.wait(wait_set, return_when=asyncio.FIRST_COMPLETED)
+                    await wait_owned(wait_set, return_when=asyncio.FIRST_COMPLETED)
                     if self._cancellation_token is not None and self._cancellation_token.is_cancelled:
                         # `cancel_task` (racing `CancellationToken.wait()` against
                         # the next chunk) is what makes this fire even when the
@@ -1068,7 +1048,9 @@ class LangChainTransport(LLMTransport):
                 if not chunks and self._drop_cache_params(exc):
                     lc_messages, call_kwargs = self._request(messages, prompt, relocate=relocate)
                     try:
-                        current_llm = self._bind_tools(tools, llm=fallback_llm, tool_choice=tool_choice)
+                        current_llm = self._bind_tools(
+                            tools, llm=fallback_llm, limit=max_output_tokens, tool_choice=tool_choice,
+                        )
                     except Exception:
                         raise self._wrap_error(exc, "stream") from exc
                     continue
@@ -1079,7 +1061,7 @@ class LangChainTransport(LLMTransport):
                 # client already received, so `chunks` (and `retried`, to
                 # cap this to exactly one attempt) gate the retry.
                 if retried:
-                    logger.error(
+                    logger.warning(
                         "LangChainTransport.stream: retry (api_mode=%s, "
                         "relocated_images=%s) also failed for model=%s: %s — "
                         "raising the ORIGINAL error",
@@ -1116,7 +1098,9 @@ class LangChainTransport(LLMTransport):
                 original_exc = exc
                 fallback_llm, fallback_mode = fallback
                 try:
-                    current_llm = self._bind_tools(tools, llm=fallback_llm, tool_choice=tool_choice)
+                    current_llm = self._bind_tools(
+                        tools, llm=fallback_llm, limit=max_output_tokens, tool_choice=tool_choice,
+                    )
                 except Exception:
                     # Same rationale as `complete()`'s identical guard: a
                     # bind failure on the fallback model must not replace
@@ -1137,6 +1121,15 @@ class LangChainTransport(LLMTransport):
                     cancel_task.cancel()
                     with contextlib.suppress(asyncio.CancelledError):
                         await cancel_task
+                if next_chunk_task is not None and not next_chunk_task.done():
+                    # The caller gave up on this stream (its stall watch, P4.9) while a read was
+                    # pending, and `aclose` cannot close an iterator that a task is still reading.
+                    # One cancel only (`wait_owned` may already have sent it): a second one reaching
+                    # the read's cleanup stops httpx from closing the provider connection (#5584).
+                    if not next_chunk_task.cancelling():
+                        next_chunk_task.cancel()
+                    with contextlib.suppress(BaseException):
+                        await asyncio.shield(next_chunk_task)
                 if stream_iter is not None:
                     # Explicit close, not left to GC: this is what actually
                     # stops the provider from continuing to generate/bill
@@ -1189,7 +1182,6 @@ class LangChainTransport(LLMTransport):
                 StopReason.MAX_TOKENS if assistant_message.truncated
                 else self._stop_reason_from(final_ai_message)
             )
-        self._log_turn_outcome(tools, final_ai_message, stop_reason)
         yield StreamCompleteEvent(
             response=ModelResponse(
                 message=assistant_message,

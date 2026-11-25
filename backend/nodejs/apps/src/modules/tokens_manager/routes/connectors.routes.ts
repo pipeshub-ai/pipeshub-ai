@@ -8,15 +8,24 @@
  * @module connectors/routes
  */
 
-import { Router, Response, NextFunction } from 'express';
+import {
+  Router,
+  Request,
+  RequestHandler,
+  Response,
+  NextFunction,
+} from 'express';
+import { createHash } from 'node:crypto';
 import { Container } from 'inversify';
 import { z } from 'zod';
 import axios from 'axios';
-import axiosRetry, { retryAfter } from 'axios-retry';
 import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
 import { ValidationMiddleware } from '../../../libs/middlewares/validation.middleware';
 import { guardPathParams } from '../../../libs/middlewares/safe-path-params.middleware';
+import { bindConnectorLogFields } from '../utils/connector.utils';
 import { userAdminCheck } from '../../user_management/middlewares/userAdminCheck';
+import { isUserOrgAdmin } from '../../user_management/services/user-admin.service';
+import { createKeyedRateLimiter } from '../../../libs/middlewares/rate-limit.middleware';
 import { 
   AuthenticatedUserRequest,
   AuthenticatedServiceRequest 
@@ -26,7 +35,10 @@ import {
   ForbiddenError,
   InternalServerError,
   NotFoundError,
+  ServiceUnavailableError,
 } from '../../../libs/errors/http.errors';
+import { withCause } from '../../../libs/errors/base.error';
+import { markClientSafe } from '../../../libs/errors/reader-friendly';
 import { VECTOR_STORE_REBUILD_AVAILABLE } from '../../../edition';
 import { AppConfig, loadAppConfig } from '../config/config';
 import { Logger } from '../../../libs/services/logger.service';
@@ -56,6 +68,19 @@ import {
   getConnectorEgressIps,
   getActiveAgentInstances,
   getConnectorStats,
+  getPermissionStatus,
+  setPermissionFilter,
+  listMyPerUserConnectors,
+  getMyConnectorConnection,
+  connectMyConnectorAccount,
+  startMyConnectorSignIn,
+  disconnectMyConnectorAccount,
+  listConnectorUserConnections,
+  removeConnectorUserConnection,
+  getConnectorUserRoster,
+  inviteConnectorUsers,
+  setMyConnectorReminders,
+  proxyUserAccessLink,
   getRecordContent,
   navigateKnowledgeGraph,
   lookupRecord,
@@ -64,6 +89,7 @@ import {
   reindexConnector,
   resyncConnectorRecords,
   stopConnectorSync,
+  explainPermission,
 } from '../controllers/connector.controllers';
 import { RecordRelationService } from '../../knowledge_base/services/kb.relation.service';
 import { SyncEventProducer } from '../../knowledge_base/services/sync_events.service';
@@ -76,6 +102,7 @@ import {
 } from '../consts/constants';
 import {
   getGoogleWorkspaceConfig,
+  getGoogleWorkspaceIndividualCredentials,
   setGoogleWorkspaceIndividualCredentials,
   getRefreshTokenCredentials,
   getRefreshTokenConfig,
@@ -98,28 +125,97 @@ const logger = Logger.getInstance({
   service: 'ConnectorRoutes',
 });
 
-// A 429 whose Retry-After is longer than this goes straight back to the caller
-// with its Retry-After: waiting it out would hold the request open (a preview
-// would hang for the length of a source's rate limit).
-const MAX_RETRY_AFTER_MS = 5000;
+const GOOGLE_CLIENT_NOT_CONFIGURED =
+  'Google Workspace client id or secret is not configured';
 
-// Configure axios retry logic
-axiosRetry(axios, {
-  retries: 3,
-  retryDelay: axiosRetry.exponentialDelay,
-  retryCondition: (error) => {
-    if (
-      error.response?.status === 429 &&
-      retryAfter(error) > MAX_RETRY_AFTER_MS
-    ) {
-      return false;
-    }
-    return !!(
-      axiosRetry.isNetworkOrIdempotentRequestError(error) ||
-      (error.response && error.response.status >= 500)
+/** The sign-in code was used up by the exchange, so the reader starts the connect again rather than resending. */
+export const SYNC_NOT_STARTED_MESSAGE =
+  "We couldn't start syncing Google Workspace because PipesHub couldn't queue it. Nothing was synced. Connect Google Workspace again in a minute; if it keeps happening, ask your admin to check the services page.";
+
+/** Asks the sync service to start; a lost event is the request's failure (503), never a silent success. */
+const publishSyncStart = async (
+  eventService: EntitiesEventProducer,
+  event: Event,
+): Promise<void> => {
+  try {
+    await eventService.publishEvent(event);
+  } catch (error) {
+    throw withCause(
+      markClientSafe(new ServiceUnavailableError(SYNC_NOT_STARTED_MESSAGE)),
+      error,
     );
-  },
-});
+  }
+};
+
+/**
+ * A configuration-manager call that did not answer 200. A 5xx's status is the cause, so the error line
+ * classes it as the service's (`upstream_5xx`, `unavailable`, `timeout`); any other answer stays our
+ * `internal` failure (a 408 cause would read as `timeout`). Its body is never kept, since it can hold
+ * stored credentials. The client still gets our 500.
+ */
+const failedCall = (
+  message: string,
+  response: { statusCode?: number },
+): Error =>
+  response.statusCode !== undefined && response.statusCode >= 500
+    ? withCause(new InternalServerError(message), { status: response.statusCode })
+    : new InternalServerError(message);
+
+/** No refresh token from Google and none usable stored: only a new grant brings one. The app is the org's own Google client. */
+export const NO_REFRESH_TOKEN_MESSAGE =
+  "Google didn't send a refresh token, and PipesHub has no usable one saved for you. Remove this app's access in your Google account's third-party access settings (https://myaccount.google.com/permissions; it is listed under your organisation's Google app name), then connect Google Workspace again.";
+
+/**
+ * The refresh token to store with this consent's access token. Google sends one only on the first offline consent
+ * for this client, so a repeat consent keeps the one stored for this PipesHub user, unless it has expired.
+ */
+const refreshTokenFor = async (
+  req: AuthenticatedUserRequest,
+  tokenData: { refresh_token?: string; refresh_token_expires_in?: number },
+  config: AppConfig,
+): Promise<{ refreshToken: string; refreshTokenExpiry?: number }> => {
+  // Google's lifetime describes the grant's refresh token: the new one, or the stored one it did not resend.
+  const googleExpiry = tokenData.refresh_token_expires_in
+    ? tokenData.refresh_token_expires_in * 1000 + Date.now()
+    : undefined;
+  if (tokenData.refresh_token) {
+    return {
+      refreshToken: tokenData.refresh_token,
+      refreshTokenExpiry: googleExpiry,
+    };
+  }
+  const stored = await getGoogleWorkspaceIndividualCredentials(
+    req,
+    config.cmBackend,
+    config.scopedJwtSecret,
+  );
+  if (stored.statusCode !== 200) {
+    throw failedCall(
+      'Error reading the stored Google Workspace credentials',
+      stored,
+    );
+  }
+  const {
+    refresh_token: storedToken,
+    refresh_token_expiry_time: storedExpiry,
+  } = (stored.data ?? {}) as {
+    refresh_token?: string;
+    refresh_token_expiry_time?: unknown;
+  };
+  // Only an absent expiry means "does not expire"; 0, NaN or a non-number is not a time still ahead.
+  const expiryAhead =
+    typeof storedExpiry === 'number' && storedExpiry > Date.now();
+  const expiryAbsent = storedExpiry === undefined || storedExpiry === null;
+  if (!storedToken || !(expiryAbsent || expiryAhead)) {
+    throw new BadRequestError(NO_REFRESH_TOKEN_MESSAGE);
+  }
+  logger.info('Google sent no refresh token; keeping the stored one');
+  return {
+    refreshToken: storedToken,
+    refreshTokenExpiry:
+      googleExpiry ?? (expiryAhead ? storedExpiry : undefined),
+  };
+};
 
 // ============================================================================
 // Validation Schemas
@@ -161,6 +257,84 @@ const connectorIdParamSchema = z.object({
       ),
   }),
 });
+
+const permissionFilterSchema = connectorIdParamSchema.extend({
+  body: z.object({ mode: z.enum(['inherit', 'legacy', 'scopes']) }).strict(),
+});
+
+/** A user connecting their own source account to a per-user team connector. */
+const connectMyAccountSchema = connectorIdParamSchema.extend({
+  body: z.object({ token: z.string().trim().min(1).max(2000) }),
+});
+
+const connectorUserParamSchema = z.object({
+  params: connectorIdParamSchema.shape.params.extend({
+    userId: z
+      .string()
+      .regex(
+        /^[A-Za-z0-9_-]{1,64}$/,
+        'User ID must be 1-64 chars of letters, digits, underscore, or hyphen',
+      ),
+  }),
+});
+
+const inviteConnectorUsersSchema = connectorIdParamSchema.extend({
+  body: z.union([
+    z.strictObject({
+      userIds: z.array(z.string().trim().min(1).max(128)).min(1).max(500),
+    }),
+    z.strictObject({ all: z.literal(true) }),
+  ]),
+});
+
+const toNumber = (arg: unknown): unknown =>
+  arg === '' || arg === undefined ? undefined : Number(arg);
+
+/** One page of the roster, optionally only people whose name or email contains `q`. */
+const connectorRosterSchema = connectorIdParamSchema.extend({
+  query: z.object({
+    q: z.string().max(200).optional(),
+    offset: z
+      .preprocess(toNumber, z.number().check(integerCheck()).min(0))
+      .optional(),
+    limit: z
+      .preprocess(toNumber, z.number().check(integerCheck()).min(1).max(100))
+      .optional(),
+  }),
+});
+
+const connectorRemindersSchema = connectorIdParamSchema.extend({
+  body: z.object({ optedOut: z.boolean() }),
+});
+
+/** The emailed connect link: its token is the only credential these public routes take. */
+const connectLinkTokenSchema = z.object({
+  body: z.object({ token: z.string().min(1).max(300) }),
+});
+
+const connectLinkCompleteSchema = z.object({
+  body: z.object({
+    code: z.string().min(1).max(4000),
+    state: z.string().min(1).max(4000),
+  }),
+});
+
+// Per link, so a team behind one address can all open their emails at once; the per-address
+// ceiling bounds someone trying many links.
+const CONNECT_LINK_PER_LINK_PER_MINUTE = 20;
+const CONNECT_LINK_PER_IP_PER_MINUTE = 300;
+
+/** The link a public connect-link call is about (token, or OAuth state), hashed so no key or log holds it. */
+const connectLinkSubKey =
+  (field: 'token' | 'state') =>
+  (req: Request): string | undefined => {
+    const value: unknown = (req.body as Record<string, unknown> | undefined)?.[
+      field
+    ];
+    return typeof value === 'string' && value !== ''
+      ? createHash('sha256').update(value).digest('hex').slice(0, 32)
+      : undefined;
+  };
 
 /**
  * Schema for updating connector instance configuration
@@ -283,6 +457,9 @@ const getFilterFieldOptionsSchema = z.object({
 const connectorToggleSchema = z.object({
   body: z.object({
     type: z.enum(['sync', 'agent']),
+    // The state wanted. Without it the connector service flips the current
+    // state, which a retried request undoes.
+    enabled: z.boolean().optional(),
     fullSync: z.boolean().optional(),
     deviceId: z.string().min(1).max(255).optional(),
     deviceName: z.string().max(255).optional(),
@@ -446,6 +623,7 @@ const navigateKnowledgeGraphSchema = z.object({
     createdBefore: z.string().min(1).optional(),
     modifiedAfter: z.string().min(1).optional(),
     modifiedBefore: z.string().min(1).optional(),
+    cursor: z.string().min(1).max(4096).optional(),
   }),
 });
 
@@ -463,6 +641,38 @@ const lookupRecordSchema = z.object({
     connectorName: z.string().min(1).optional(),
   }),
 });
+
+/**
+ * Why a person can or cannot read a record. Ids only: no search through titles.
+ */
+const explainPermissionSchema = z.object({
+  params: z.object({ connectorId: z.string().min(1).max(128) }),
+  query: z.object({
+    userId: z.string().min(1).max(128),
+    recordId: z.string().min(1).max(256),
+  }),
+});
+
+/** An admin-only route a non-admin cannot tell from one that does not exist: the 404 of any unknown route. */
+const adminOrNotFound = async (
+  req: AuthenticatedUserRequest,
+  _res: Response,
+  next: NextFunction,
+): Promise<void> => {
+  try {
+    const user = req.user as { userId?: string; orgId?: string } | undefined;
+    const userId = user?.userId;
+    const orgId = user?.orgId;
+    if (!userId || !orgId || !(await isUserOrgAdmin(userId, orgId))) {
+      throw new NotFoundError('Route not found');
+    }
+    next();
+  } catch (error) {
+    next(error);
+  }
+};
+
+const EXPLAIN_PER_ADMIN_PER_MINUTE = 30;
 
 const testConnectorConnectionSchema = z.object({
   params: z.object({
@@ -530,6 +740,7 @@ export function createConnectorRouter(
     'filterKey',
     'recordId',
   );
+  bindConnectorLogFields(router);
   let config = container.get<AppConfig>('AppConfig');
   const authMiddleware = container.get<AuthMiddleware>('AuthMiddleware');
   const eventService = container.get<EntitiesEventProducer>('EntitiesEventProducer');
@@ -700,6 +911,24 @@ export function createConnectorRouter(
   );
 
   /**
+   * GET /:connectorId/permissions/explain
+   * Why a person can or cannot read a record. Org admins only; anyone else gets a 404.
+   */
+  router.get(
+    '/:connectorId/permissions/explain',
+    (req, res, next) => authMiddleware.authenticate(req, res, next),
+    requireScopes(OAuthScopeNames.CONNECTOR_READ),
+    adminOrNotFound,
+    createKeyedRateLimiter(logger, {
+      prefix: 'permission-explain',
+      maxRequestsPerMinute: EXPLAIN_PER_ADMIN_PER_MINUTE,
+      message: 'Too many access checks. Try again in a minute.',
+    }),
+    ValidationMiddleware.validate(explainPermissionSchema),
+    explainPermission(config),
+  );
+
+  /**
    * GET /instances/:connectorId
    * Get a specific connector instance
    */
@@ -737,6 +966,158 @@ export function createConnectorRouter(
     requireScopes(OAuthScopeNames.CONNECTOR_READ, OAuthScopeNames.KB_READ),
     ValidationMiddleware.validate(getConnectorStatsSchema),
     getConnectorStats(config),
+  );
+
+  /**
+   * GET /:connectorId/permissions/status
+   * How fresh the connector's permissions are. Admin only: the connector service answers
+   * anyone else with the 404 of a missing connector.
+   */
+  router.get(
+    '/:connectorId/permissions/status',
+    authMiddleware.authenticate.bind(authMiddleware),
+    requireScopes(OAuthScopeNames.CONNECTOR_READ),
+    ValidationMiddleware.validate(connectorIdParamSchema),
+    getPermissionStatus(config),
+  );
+
+  /**
+   * PATCH /:connectorId/permissions/filter
+   * The connector's own permission filter mode (inherit, legacy or scopes). Admin only, decided by the
+   * connector service as for the status.
+   */
+  router.patch(
+    '/:connectorId/permissions/filter',
+    authMiddleware.authenticate.bind(authMiddleware),
+    requireScopes(OAuthScopeNames.CONNECTOR_WRITE),
+    ValidationMiddleware.validate(permissionFilterSchema),
+    setPermissionFilter(config),
+  );
+
+  /**
+   * Per-user access: each user connects their own source account to a team connector in
+   * per-user mode. Any member of the organisation may manage their own connection; the
+   * connector service answers anyone else, and any other connector, with a 404.
+   */
+  router.get(
+    '/user-access/mine',
+    authMiddleware.authenticate.bind(authMiddleware),
+    requireScopes(OAuthScopeNames.CONNECTOR_READ),
+    listMyPerUserConnectors(config),
+  );
+
+  /**
+   * Public: the page behind an emailed connect link. No login; the link token is the
+   * credential, checked by the connector service. Counted per link and per address on top
+   * of the global limit, since anyone can call these.
+   */
+  const connectLinkPerIp = createKeyedRateLimiter(logger, {
+    prefix: 'connector-connect-link-ip',
+    maxRequestsPerMinute: CONNECT_LINK_PER_IP_PER_MINUTE,
+    message: 'Too many requests. Try again in a minute.',
+  });
+  const connectLinkPerLink = (field: 'token' | 'state'): RequestHandler =>
+    createKeyedRateLimiter(logger, {
+      prefix: `connector-connect-link-${field}`,
+      maxRequestsPerMinute: CONNECT_LINK_PER_LINK_PER_MINUTE,
+      message: 'Too many requests for this link. Try again in a minute.',
+      anonymousSubKey: connectLinkSubKey(field),
+    });
+  const connectLinkPerToken = connectLinkPerLink('token');
+  for (const name of ['info', 'authorize', 'opt-out'] as const) {
+    router.post(
+      `/user-access/link/${name}`,
+      connectLinkPerIp,
+      connectLinkPerToken,
+      ValidationMiddleware.validate(connectLinkTokenSchema),
+      proxyUserAccessLink(config, name),
+    );
+  }
+  router.post(
+    '/user-access/link/complete',
+    connectLinkPerIp,
+    connectLinkPerLink('state'),
+    ValidationMiddleware.validate(connectLinkCompleteSchema),
+    proxyUserAccessLink(config, 'complete'),
+  );
+
+  router.get(
+    '/:connectorId/user-access',
+    authMiddleware.authenticate.bind(authMiddleware),
+    requireScopes(OAuthScopeNames.CONNECTOR_READ),
+    ValidationMiddleware.validate(connectorIdParamSchema),
+    getMyConnectorConnection(config),
+  );
+
+  router.post(
+    '/:connectorId/user-access',
+    authMiddleware.authenticate.bind(authMiddleware),
+    requireScopes(OAuthScopeNames.CONNECTOR_WRITE),
+    ValidationMiddleware.validate(connectMyAccountSchema),
+    connectMyConnectorAccount(config),
+  );
+
+  router.get(
+    '/:connectorId/user-access/oauth/authorize',
+    authMiddleware.authenticate.bind(authMiddleware),
+    requireScopes(OAuthScopeNames.CONNECTOR_WRITE),
+    ValidationMiddleware.validate(connectorIdParamSchema),
+    startMyConnectorSignIn(config),
+  );
+
+  router.delete(
+    '/:connectorId/user-access',
+    authMiddleware.authenticate.bind(authMiddleware),
+    requireScopes(OAuthScopeNames.CONNECTOR_WRITE),
+    ValidationMiddleware.validate(connectorIdParamSchema),
+    disconnectMyConnectorAccount(config),
+  );
+
+  /** Admin only: who has connected, and removing someone's connection. A non-admin gets a 404. */
+  router.get(
+    '/:connectorId/user-access/users',
+    authMiddleware.authenticate.bind(authMiddleware),
+    requireScopes(OAuthScopeNames.CONNECTOR_READ),
+    adminOrNotFound,
+    ValidationMiddleware.validate(connectorIdParamSchema),
+    listConnectorUserConnections(config),
+  );
+
+  router.delete(
+    '/:connectorId/user-access/users/:userId',
+    authMiddleware.authenticate.bind(authMiddleware),
+    requireScopes(OAuthScopeNames.CONNECTOR_WRITE),
+    adminOrNotFound,
+    ValidationMiddleware.validate(connectorUserParamSchema),
+    removeConnectorUserConnection(config),
+  );
+
+  /** Admin only: everyone who could connect, and asking them to. A non-admin gets a 404. */
+  router.get(
+    '/:connectorId/user-access/roster',
+    authMiddleware.authenticate.bind(authMiddleware),
+    requireScopes(OAuthScopeNames.CONNECTOR_READ),
+    adminOrNotFound,
+    ValidationMiddleware.validate(connectorRosterSchema),
+    getConnectorUserRoster(config),
+  );
+
+  router.post(
+    '/:connectorId/user-access/invites',
+    authMiddleware.authenticate.bind(authMiddleware),
+    requireScopes(OAuthScopeNames.CONNECTOR_WRITE),
+    adminOrNotFound,
+    ValidationMiddleware.validate(inviteConnectorUsersSchema),
+    inviteConnectorUsers(config),
+  );
+
+  /** The caller's own "don't remind me" for this connector. */
+  router.post(
+    '/:connectorId/user-access/reminders',
+    authMiddleware.authenticate.bind(authMiddleware),
+    requireScopes(OAuthScopeNames.CONNECTOR_WRITE),
+    ValidationMiddleware.validate(connectorRemindersSchema),
+    setMyConnectorReminders(config),
   );
 
   /**
@@ -1033,11 +1414,6 @@ export function createConnectorRouter(
           throw new NotFoundError('User not found');
         }
 
-        logger.info('Processing Google Workspace token exchange', {
-          userId: req.user.userId,
-          orgId: req.user.orgId,
-        });
-
         // Get Google Workspace configuration
         const configResponse = await getGoogleWorkspaceConfig(
           req,
@@ -1046,18 +1422,12 @@ export function createConnectorRouter(
         );
 
         if (configResponse.statusCode !== 200) {
-          throw new InternalServerError(
-            'Error getting Google Workspace config',
-            configResponse?.data
-          );
+          throw failedCall('Error getting Google Workspace config', configResponse);
         }
 
         const configData = configResponse.data;
-        if (!configData.clientId) {
-          throw new NotFoundError('Client ID is missing');
-        }
-        if (!configData.clientSecret) {
-          throw new NotFoundError('Client secret is missing');
+        if (!configData.clientId || !configData.clientSecret) {
+          throw new InternalServerError(GOOGLE_CLIENT_NOT_CONFIGURED);
         }
 
         const enableRealTimeUpdates = configData?.enableRealTimeUpdates;
@@ -1091,10 +1461,11 @@ export function createConnectorRouter(
         // Verify ID token
         verifyGoogleWorkspaceToken(req, tokenData?.id_token);
 
-        // Calculate refresh token expiry
-        const refreshTokenExpiryDate = tokenData.refresh_token_expires_in
-          ? tokenData.refresh_token_expires_in * 1000 + Date.now()
-          : undefined;
+        const { refreshToken, refreshTokenExpiry } = await refreshTokenFor(
+          req,
+          tokenData,
+          config,
+        );
 
         // Store credentials
         const credentialsResponse = await setGoogleWorkspaceIndividualCredentials(
@@ -1102,18 +1473,15 @@ export function createConnectorRouter(
           config.cmBackend,
           config.scopedJwtSecret,
           tokenData.access_token,
-          tokenData.refresh_token,
+          refreshToken,
           tokenData.expires_in * 1000 + Date.now(),
-          refreshTokenExpiryDate,
+          refreshTokenExpiry,
           enableRealTimeUpdates,
           topicName,
         );
 
         if (credentialsResponse.statusCode !== 200) {
-          throw new InternalServerError(
-            'Error storing access token',
-            credentialsResponse?.data,
-          );
+          throw failedCall('Error storing access token', credentialsResponse);
         }
 
         const connectorId = ConnectorId.GOOGLE_WORKSPACE;
@@ -1135,10 +1503,11 @@ export function createConnectorRouter(
         const receivedScopes = tokenData.scope.split(' ');
         const enabledApps = Object.keys(scopeToAppMap)
           .filter((scope) => receivedScopes.includes(scope))
-          .map((scope) => scopeToAppMap[scope]);
+          .map((scope) => scopeToAppMap[scope])
+          .filter((app): app is GoogleWorkspaceApp => app !== undefined);
 
-        // Prepare event for sync service
-        await eventService.start();
+        // Prepare event for sync service. The producer is the container's shared one, connected at start-up and
+        // reconnected by publish itself: it is neither started nor stopped here.
         let event: Event;
 
         if (connector) {
@@ -1157,8 +1526,7 @@ export function createConnectorRouter(
             } as AppEnabledEvent,
           };
 
-          await eventService.publishEvent(event);
-          await eventService.stop();
+          await publishSyncStart(eventService, event);
           connector =
             (await connectorsConfig.enable(
               req.user.orgId as string,
@@ -1167,7 +1535,7 @@ export function createConnectorRouter(
             )) ?? connector;
 
           logger.info('Google Workspace connector enabled', {
-            connectorId: connector._id,
+            connector_config_id: connector._id,
             apps: enabledApps,
           });
 
@@ -1205,11 +1573,10 @@ export function createConnectorRouter(
             } as AppEnabledEvent,
           };
 
-          await eventService.publishEvent(event);
-          await eventService.stop();
+          await publishSyncStart(eventService, event);
 
           logger.info('Google Workspace connector created and enabled', {
-            connectorId: connector._id,
+            connector_config_id: connector._id,
           });
 
           res.status(201).json({
@@ -1218,10 +1585,6 @@ export function createConnectorRouter(
           });
         }
       } catch (error) {
-        logger.error('Error in Google Workspace token exchange', {
-          error: error instanceof Error ? error.message : String(error),
-          userId: req.user?.userId,
-        });
         next(error);
       }
     },
@@ -1241,8 +1604,6 @@ export function createConnectorRouter(
       next: NextFunction,
     ): Promise<void> => {
       try {
-        logger.info('Refreshing individual connector token');
-
         // Get refresh token from storage
         const refreshTokenResponse = await getRefreshTokenCredentials(
           req,
@@ -1253,28 +1614,19 @@ export function createConnectorRouter(
           refreshTokenResponse.statusCode !== 200 ||
           !refreshTokenResponse.data.refresh_token
         ) {
-          throw new InternalServerError(
-            'Error getting refresh token from storage',
-            refreshTokenResponse?.data,
-          );
+          throw failedCall('Error getting refresh token from storage', refreshTokenResponse);
         }
 
         // Get connector configuration
         const configResponse = await getRefreshTokenConfig(req, config.cmBackend);
 
         if (configResponse.statusCode !== 200) {
-          throw new InternalServerError(
-            'Error getting connector config',
-            configResponse?.data
-          );
+          throw failedCall('Error getting connector config', configResponse);
         }
 
         const configData = configResponse.data;
-        if (!configData.clientId) {
-          throw new NotFoundError('Client ID is missing');
-        }
-        if (!configData.clientSecret) {
-          throw new NotFoundError('Client secret is missing');
+        if (!configData.clientId || !configData.clientSecret) {
+          throw new InternalServerError(GOOGLE_CLIENT_NOT_CONFIGURED);
         }
 
         const enableRealTimeUpdates = configData?.enableRealTimeUpdates;
@@ -1300,20 +1652,8 @@ export function createConnectorRouter(
             tokenData = data;
             tokenExchangeSuccessful = true;
           } catch (error) {
+            // Each attempt already has its upstream.call.end line.
             retryCount++;
-            
-            if (error instanceof Error) {
-              logger.error('Error refreshing individual connector token', {
-                error: error.message,
-                stack: error.stack,
-                retryCount,
-              });
-            } else {
-              logger.error('Error refreshing individual connector token', {
-                unknownError: String(error),
-                retryCount,
-              });
-            }
 
             if (retryCount < 3) {
               // Exponential backoff with jitter
@@ -1343,10 +1683,7 @@ export function createConnectorRouter(
         );
 
         if (updateResponse.statusCode !== 200) {
-          throw new InternalServerError(
-            'Error updating access token',
-            updateResponse?.data,
-          );
+          throw failedCall('Error updating access token', updateResponse);
         }
 
         logger.info('Access token refreshed successfully');
@@ -1355,9 +1692,6 @@ export function createConnectorRouter(
           message: 'Access token updated successfully',
         });
       } catch (error) {
-        logger.error('Error refreshing individual connector token', {
-          error: error instanceof Error ? error.message : String(error),
-        });
         next(error);
       }
     },
@@ -1377,8 +1711,6 @@ export function createConnectorRouter(
       next: NextFunction,
     ): Promise<void> => {
       try {
-        logger.info('Updating connector configuration');
-
         config = await loadAppConfig();
         container.rebind<AppConfig>('AppConfig').toDynamicValue(() => config);
 
@@ -1388,9 +1720,6 @@ export function createConnectorRouter(
           message: 'Connectors configuration updated successfully',
         });
       } catch (error) {
-        logger.error('Error updating connector configuration', {
-          error: error instanceof Error ? error.message : String(error),
-        });
         next(error);
       }
     },

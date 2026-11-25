@@ -105,6 +105,39 @@ async def test_a_statement_that_lost_a_conflict_runs_again(conflict) -> None:
     assert _ran(sessions) == 2
 
 
+def lost_node(message: str = "Unable to load NODE 4:db:6904.") -> Exception:
+    return ClientError._hydrate_neo4j(code="Neo.ClientError.Statement.EntityNotFound", message=message)
+
+
+@pytest.mark.asyncio
+async def test_a_write_that_lost_its_endpoint_to_a_concurrent_delete_runs_again() -> None:
+    """B3: an edge MERGE matched a block, waited on the lock of the delete removing it, then
+    found it gone. Rolled back whole; run again, the MATCH skips the deleted block."""
+    client, sessions = _client([lost_node()])
+
+    assert await client.execute_query("MATCH (a {id: 1}) MATCH (b {id: 2}) MERGE (a)-[:R]->(b)") == [{"ok": True}]
+    assert _ran(sessions) == 2
+
+
+@pytest.mark.asyncio
+async def test_a_node_the_statement_deleted_itself_is_not_run_again() -> None:
+    client, sessions = _client([lost_node("Node with id 4:db:1 has been deleted in this transaction")])
+
+    with pytest.raises(ClientError, match="deleted in this transaction"):
+        await client.execute_query("MATCH (a) DETACH DELETE a RETURN a.id")
+    assert _ran(sessions) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_lost_endpoint_in_an_explicit_transaction_is_left_to_its_owner() -> None:
+    client, sessions = _client([lost_node()], explicit_transactions=True)
+    txn = await client.begin_transaction([], [])
+
+    with pytest.raises(ClientError, match="EntityNotFound"):
+        await client.execute_query("MERGE (a)-[:R]->(b)", txn_id=txn)
+    assert _ran(sessions) == 1
+
+
 @pytest.mark.asyncio
 async def test_a_conflict_that_persists_is_raised() -> None:
     client, sessions = _client([deadlock() for _ in range(WRITE_CONFLICT_ATTEMPTS)])
@@ -183,11 +216,17 @@ def _sent(execute: AsyncMock, name: str) -> list[dict]:
 async def test_nodes_are_written_in_one_lock_order() -> None:
     provider, execute = _provider()
 
-    await provider.batch_upsert_nodes(
-        [{"_key": "c", "v": 1}, {"_key": "a", "v": 1}, {"_key": "c", "v": 2}, {"_key": "b", "v": 1}], "apps",
-    )
+    def app(key: str, created_at: int) -> dict:
+        return {
+            "_key": key, "name": "n", "type": "t", "appGroup": "g", "scope": "team", "isActive": True,
+            "createdAtTimestamp": created_at,
+        }
 
-    assert [(n["id"], n["v"]) for n in _sent(execute, "nodes")] == [("a", 1), ("b", 1), ("c", 1), ("c", 2)], (
+    await provider.batch_upsert_nodes([app("c", 1), app("a", 1), app("c", 2), app("b", 1)], "apps")
+
+    assert [(n["id"], n["createdAtTimestamp"]) for n in _sent(execute, "nodes")] == [
+        ("a", 1), ("b", 1), ("c", 1), ("c", 2)
+    ], (
         "sorted by id, and a node written twice keeps its last write last"
     )
 
@@ -231,7 +270,9 @@ async def test_a_people_upsert_that_lost_a_conflict_raises_for_its_block_to_re_r
     provider, execute = _provider()
     execute.side_effect = deadlock()
     person = MagicMock()
-    person.to_arango_person.return_value = {"_key": "p1", "email": "a@example.com"}
+    person.to_arango_person.return_value = {
+        "_key": "p1", "email": "a@example.com", "createdAtTimestamp": 1, "updatedAtTimestamp": 1,
+    }
 
     with pytest.raises(TransientError, match="DeadlockDetected"):
         await provider.batch_upsert_people([person])

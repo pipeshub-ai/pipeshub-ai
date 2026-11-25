@@ -24,10 +24,12 @@ from app.connectors.core.sync.sync_coordinator import LocalSyncCoordinator
 from app.connectors.core.sync.task_manager import reindex_task_manager
 from app.connectors.services import event_service as event_service_module
 from app.connectors.services.event_service import EventService, evict_cached_connector
+from app.exceptions.non_retryable import NonRetryableError
 
 from app.config.constants.arangodb import CollectionNames
 from app.connectors.core.constants import ConnectorStateKeys
 from app.services.graph_db.interface.graph_db_provider import AccessCheck
+from app.utils.logger import log_record_fields
 from tests.unit.connectors.services.local_run_stub import end_local_run, local_run
 from tests.unit.connectors.services.coordinator_stub import (
     at_capacity,
@@ -571,8 +573,8 @@ class TestEnsureConnector:
     async def test_exception(self, service):
         service.graph_provider.get_document = AsyncMock(side_effect=Exception("db fail"))
         with patch.object(service, "_get_connector", return_value=None):
-            result = await service._ensure_connector("gmail", "conn1")
-            assert result is None
+            with pytest.raises(Exception, match="db fail"):
+                await service._ensure_connector("gmail", "conn1")
 
 
 class TestGetOrInitConnector:
@@ -598,8 +600,8 @@ class TestGetOrInitConnector:
 class TestProcessEvent:
     @pytest.mark.asyncio
     async def test_invalid_format(self, service):
-        result = await service.process_event("nodotshere", {})
-        assert result is False
+        with pytest.raises(NonRetryableError, match="nodotshere"):
+            await service.process_event("nodotshere", {})
 
     @pytest.mark.asyncio
     async def test_init_event(self, service):
@@ -634,23 +636,23 @@ class TestProcessEvent:
 
     @pytest.mark.asyncio
     async def test_unknown_action(self, service):
-        result = await service.process_event("gmail.unknown_action", {})
-        assert result is False
+        with pytest.raises(NonRetryableError, match="unknown_action"):
+            await service.process_event("gmail.unknown_action", {})
 
     @pytest.mark.asyncio
     async def test_extra_segment_cannot_pick_the_action(self, service):
         with patch.object(service, "_handle_delete", new_callable=AsyncMock) as mock_delete, \
              patch.object(service, "_handle_start_sync", new_callable=AsyncMock) as mock_sync:
-            result = await service.process_event("web.delete.resync", {"orgId": "org1", "connectorId": "c1"})
-        assert result is False
+            with pytest.raises(NonRetryableError):
+                await service.process_event("web.delete.resync", {"orgId": "org1", "connectorId": "c1"})
         mock_delete.assert_not_awaited()
         mock_sync.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_exception(self, service):
         with patch.object(service, "_handle_init", new_callable=AsyncMock, side_effect=Exception("boom")):
-            result = await service.process_event("gmail.init", {})
-            assert result is False
+            with pytest.raises(Exception, match="boom"):
+                await service.process_event("gmail.init", {})
 
     @pytest.mark.asyncio
     async def test_connector_name_with_spaces(self, service):
@@ -720,9 +722,12 @@ class TestHandleInit:
              patch("app.connectors.services.event_service.dispose_connector",
                    new_callable=AsyncMock) as dispose:
             mock_factory.create_connector = AsyncMock(return_value=mock_conn)
-            result = await service._handle_init("gmail", {"orgId": "org1", "connectorId": "c1"})
+            if init.side_effect is None:
+                assert await service._handle_init("gmail", {"orgId": "org1", "connectorId": "c1"}) is False
+            else:
+                with pytest.raises(OSError):
+                    await service._handle_init("gmail", {"orgId": "org1", "connectorId": "c1"})
 
-        assert result is False
         dispose.assert_awaited_once_with(mock_conn)
 
     @pytest.mark.asyncio
@@ -748,9 +753,9 @@ class TestHandleInit:
              patch("app.connectors.services.event_service.dispose_connector",
                    new_callable=AsyncMock) as dispose:
             mock_factory.create_connector = AsyncMock(return_value=mock_conn)
-            result = await service._handle_init("gmail", {"orgId": "org1", "connectorId": "c1"})
+            with pytest.raises(RuntimeError, match="cache"):
+                await service._handle_init("gmail", {"orgId": "org1", "connectorId": "c1"})
 
-        assert result is False
         if inserted:
             dispose.assert_not_awaited()
         else:
@@ -1157,7 +1162,7 @@ class TestRunSyncTask:
         assert written[-1] == AppStatus.IDLE.value
 
     @pytest.mark.asyncio
-    async def test_status_write_failure_is_not_fatal(self):
+    async def test_an_unrecorded_start_stops_the_run(self):
         from app.connectors.core.sync.sync_runner import run_sync_task
 
         gp, logger = AsyncMock(), MagicMock()
@@ -1165,9 +1170,10 @@ class TestRunSyncTask:
         conn = AsyncMock()
         conn.run_sync = AsyncMock()
 
-        # A status write is bookkeeping; losing it must not fail the sync.
-        await run_sync_task(conn, "c1", gp, logger)
-        conn.run_sync.assert_awaited_once()
+        # A reindex sees a sync by its start time, so a run whose start is not recorded must not write.
+        with patch("app.connectors.core.sync.sync_runner.asyncio.sleep", new=AsyncMock()), pytest.raises(RuntimeError):
+            await run_sync_task(conn, "c1", gp, logger)
+        conn.run_sync.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_cancellation_still_writes_idle(self):
@@ -1198,7 +1204,7 @@ class TestRunSyncTask:
         assert AppStatus.IDLE.value in written
 
     @pytest.mark.asyncio
-    async def test_skipped_sync_clears_status_without_persisting_error(self):
+    async def test_skipped_sync_clears_status_without_persisting_error(self, caplog):
         from app.config.constants.arangodb import AppStatus
         from app.connectors.core.base.connector.connector_service import (
             ConnectorSyncSkippedError,
@@ -1206,7 +1212,8 @@ class TestRunSyncTask:
         from app.connectors.core.constants import ConnectorErrorCodes
         from app.connectors.core.sync.sync_runner import run_sync_task
 
-        gp, logger = AsyncMock(), MagicMock()
+        gp, logger = AsyncMock(), logging.getLogger("test.skipped_sync")
+        caplog.set_level(logging.DEBUG, logger="test.skipped_sync")
         conn = AsyncMock()
         conn.run_sync = AsyncMock(
             side_effect=ConnectorSyncSkippedError(
@@ -1222,10 +1229,11 @@ class TestRunSyncTask:
             AppStatus.SYNCING.value,
             AppStatus.IDLE.value,
         ]
-        infos = " ".join(str(c.args[0]) for c in logger.info.call_args_list)
-        assert "Sync skipped" in infos and ConnectorErrorCodes.DESKTOP_OFFLINE in infos
-        errors = " ".join(str(c.args[0]) for c in logger.error.call_args_list)
-        assert "Sync failed" not in errors
+        ends = [r for r in caplog.records if r.getMessage() == "sync_run.end"]
+        assert len(ends) == 1 and ends[0].levelno == logging.INFO
+        fields = log_record_fields(ends[0])
+        assert fields["outcome"] == "skipped" and fields["reason"] == ConnectorErrorCodes.DESKTOP_OFFLINE
+        assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
 
 
 # ===========================================================================
@@ -1236,8 +1244,8 @@ class TestRunSyncTask:
 class TestHandleReindex:
     @pytest.mark.asyncio
     async def test_missing_org_id(self, service):
-        result = await service._handle_reindex("gmail", {"connectorId": "c1"})
-        assert result is False
+        with pytest.raises(NonRetryableError):
+            await service._handle_reindex("gmail", {"connectorId": "c1"})
 
     @pytest.mark.asyncio
     async def test_missing_connector_id(self, service):
@@ -1526,6 +1534,18 @@ class TestHandleDelete:
             assert service.graph_provider.batch_upsert_nodes.await_count >= 1
 
     @pytest.mark.asyncio
+    async def test_a_delete_that_stopped_part_way_stays_deleting(self, service) -> None:
+        """Part of the connector and its grants are gone: reverting the status would show an active connector nobody can open."""
+        service.graph_provider.get_document = AsyncMock(return_value={"_key": "c1", "status": "DELETING"})
+        service.graph_provider.delete_connector_instance = AsyncMock(return_value={"success": False, "partial": True, "error": "worker killed"})
+        with current_coordinator() as mock_stm:
+            mock_stm.cancel_sync = AsyncMock()
+            result = await service._handle_delete("gmail", {"orgId": "org1", "connectorId": "c1", "previousIsActive": True})
+        assert result is False
+        service.graph_provider.batch_upsert_nodes.assert_not_awaited()
+        service.app_container.messaging_producer.send_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_a_connector_the_graph_delete_already_removed_is_acked_not_recreated(self, service):
         service.graph_provider.delete_connector_instance = AsyncMock(return_value={
             "success": False, "error": "Connector instance c1 not found"
@@ -1541,6 +1561,60 @@ class TestHandleDelete:
         service.graph_provider.batch_upsert_nodes.assert_not_awaited()
         # Its credentials and storage are left to the release its intent keeps.
         config_svc.delete_config.assert_not_awaited()
+
+    async def _delete_gone(self, service, pre_read: dict | None) -> tuple[bool, AsyncMock]:
+        """The cascade's answer is lost and the connector then reads as gone; *pre_read* is the app read before it."""
+        service.graph_provider.get_document = AsyncMock(side_effect=[pre_read, None])
+        service.graph_provider.delete_connector_instance = AsyncMock(return_value={"success": False, "error": "reply lost"})
+        with current_coordinator() as mock_stm, patch.object(
+            event_service_module, "free_lane_of_deleted_connector", new_callable=AsyncMock,
+        ) as free:
+            mock_stm.cancel_sync = AsyncMock()
+            result = await service._handle_delete("drive", {"orgId": "org1", "connectorId": "c1"})
+        return result, free
+
+    @pytest.mark.parametrize("pre_read,name", [
+        ({"type": "Drive", "vectorMembershipBackfilled": True}, "Drive"),
+        (None, None),  # a redelivery whose first delivery removed the app
+    ])
+    @pytest.mark.asyncio
+    async def test_a_connector_that_is_gone_still_has_its_vectors_cleaned(self, service, pre_read, name) -> None:
+        result, free = await self._delete_gone(service, pre_read)
+        assert result is True
+        sent = [(c.kwargs["message"]["eventType"], c.kwargs["message"]["payload"])
+                for c in service.app_container.messaging_producer.send_message.await_args_list]
+        assert sent == [
+            ("deleteConnectorEmbeddings", {"orgId": "org1", "connectorId": "c1", "connectorName": name, "recordGroupIds": []}),
+            ("deleteConnectorEntities", {"orgId": "org1", "connectorId": "c1", "connectorName": name, "recordGroupIds": None}),
+        ]
+        free.assert_awaited_once_with(service.logger, "c1")
+        service.logger.error.assert_not_called()
+
+    @pytest.mark.parametrize("flags", [{}, {"vectorMembershipBackfilled": True, "vectorMembershipBackfillExhausted": True}])
+    @pytest.mark.asyncio
+    async def test_a_gone_connector_whose_points_are_untagged_says_they_persist(self, service, flags) -> None:
+        result, _ = await self._delete_gone(service, {"type": "Drive", **flags})
+        assert result is True
+        errors = [c.args[0] for c in service.logger.error.call_args_list]
+        assert errors == ["Connector predates the membership arrays; its untagged embeddings may persist"]
+
+    @pytest.mark.asyncio
+    async def test_a_failed_pre_read_still_cleans_a_gone_connector(self, service) -> None:
+        service.graph_provider.get_document = AsyncMock(side_effect=[ConnectionError("store down"), None])
+        service.graph_provider.delete_connector_instance = AsyncMock(return_value={"success": False, "error": "reply lost"})
+        with current_coordinator() as mock_stm, patch.object(event_service_module, "free_lane_of_deleted_connector", new_callable=AsyncMock):
+            mock_stm.cancel_sync = AsyncMock()
+            assert await service._handle_delete("drive", {"orgId": "org1", "connectorId": "c1"}) is True
+        calls = service.app_container.messaging_producer.send_message.await_args_list
+        assert [(c.kwargs["topic"], c.kwargs["message"]["eventType"]) for c in calls] == [
+            ("record-events", "deleteConnectorEmbeddings"), ("record-events", "deleteConnectorEntities")]
+
+    @pytest.mark.asyncio
+    async def test_a_gone_connector_whose_cleanup_publish_fails_is_still_acked(self, service) -> None:
+        service.app_container.messaging_producer.send_message = AsyncMock(side_effect=RuntimeError("broker down"))
+        result, free = await self._delete_gone(service, {"type": "Drive", "vectorMembershipBackfilled": True})
+        assert result is True
+        free.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_a_failure_after_the_graph_delete_committed_is_acked_without_a_revert(self, service):
@@ -1629,11 +1703,47 @@ class TestHandleDelete:
         with current_coordinator() as mock_stm:
             mock_stm.cancel_sync = AsyncMock()
             assert await service._handle_delete("gmail", {"orgId": "org1", "connectorId": "c1"}) is True
-        assert calls[:3] == [
+        assert calls[:4] == [
             "intent:/services/entityCleanup/pending/c1:org1",
             "intent:/services/storageRelease/pending/c1:org1",
+            "intent:/services/lateWriteSweep/pending/c1:org1",
             "graph-delete",
         ]
+
+    @pytest.mark.asyncio
+    async def test_the_late_write_intent_keeps_the_groups_read_before_the_graph_delete(self, service) -> None:
+        """Late links carry a record group and no connector, and the groups go with the delete."""
+        written: dict[str, dict] = {}
+        config_svc = AsyncMock()
+        config_svc.get_config = AsyncMock(return_value=None)
+        config_svc.set_config = AsyncMock(side_effect=lambda key, value: written.__setitem__(key, value) or True)
+        service.graph_provider.get_nodes_by_filters = AsyncMock(return_value=[{"_key": "rg-1"}, {"_key": "rg-2"}])
+        service.graph_provider.delete_connector_instance = AsyncMock(return_value={"success": True, "virtual_record_ids": []})
+        service.app_container.config_service.return_value = config_svc
+        with current_coordinator() as mock_stm:
+            mock_stm.cancel_sync = AsyncMock()
+            assert await service._handle_delete("gmail", {"orgId": "org1", "connectorId": "c1"}) is True
+
+        assert written["/services/lateWriteSweep/pending/c1"]["recordGroupIds"] == ["rg-1", "rg-2"]
+        assert service.graph_provider.get_nodes_by_filters.await_args.kwargs["filters"] == {"connectorId": "c1"}
+
+    @pytest.mark.asyncio
+    async def test_groups_that_cannot_be_read_refuse_the_delete(self, service) -> None:
+        """Deleted without them, the links indexing writes late would never be swept."""
+        written: dict[str, dict] = {}
+        service.graph_provider.get_document = AsyncMock(return_value={"_key": "c1", "status": "DELETING"})
+        config_svc = AsyncMock()
+        config_svc.get_config = AsyncMock(return_value=None)
+        config_svc.set_config = AsyncMock(side_effect=lambda key, value: written.__setitem__(key, value) or True)
+        service.graph_provider.get_nodes_by_filters = AsyncMock(side_effect=RuntimeError("timeout"))
+        service.graph_provider.delete_connector_instance = AsyncMock()
+        service.app_container.config_service.return_value = config_svc
+        with current_coordinator() as mock_stm:
+            mock_stm.cancel_sync = AsyncMock()
+            assert await service._handle_delete("gmail", {"orgId": "org1", "connectorId": "c1"}) is False
+
+        assert "/services/lateWriteSweep/pending/c1" not in written
+        service.graph_provider.delete_connector_instance.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_no_graph_delete_without_a_recorded_intent(self, service):

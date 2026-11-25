@@ -182,6 +182,66 @@ async def test_a_sync_that_skipped_part_of_the_source_unlinks_nothing_and_owes_o
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("complete", [True, False])
+async def test_a_source_that_lists_only_part_of_itself_unlinks_nothing_and_owes_nothing(
+    complete: bool, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A feed, say: not seeing a node is normal, so it is no error and a retry would see no more.
+    It overrides ``complete``. Group members read in full are still replaced, so a member
+    removed at the source loses the group's access."""
+    monkeypatch.setattr(sync_runner, "_INCOMPLETE_FULL_SYNC_RETRYING", set())
+    for _ in range(3):
+        gp = _graph_provider()
+        connector = _connector(None, FullSyncCoverage(complete=complete, lists_everything=False))
+        connector.run_sync = _writes_one_record(connector)
+        connector.data_entities_processor.finish_full_sync_memberships = AsyncMock()
+        caplog.clear()
+
+        with caplog.at_level(logging.WARNING, logger=_LOG.name):
+            await run_sync_task(connector, "c1", gp, _LOG, start_status=AppStatus.FULL_SYNCING.value)
+
+        gp.unlink_nodes_missed_by_full_sync.assert_not_awaited()
+        finish = connector.data_entities_processor.finish_full_sync_memberships
+        assert finish.await_count == (1 if complete else 0)
+        if complete:
+            assert finish.await_args.args[1].by_collection[RECORDS] == {"r1"}
+        assert not _owed(gp)
+        assert not [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+    assert sync_runner._INCOMPLETE_FULL_SYNC_RETRYING == set()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("lists_everything", [True, False])
+async def test_a_full_sync_owes_another_when_replacing_members_failed(lists_everything: bool) -> None:
+    gp = _graph_provider()
+    connector = _connector(None, FullSyncCoverage(lists_everything=lists_everything))
+    connector.run_sync = _writes_one_record(connector)
+    connector.data_entities_processor.finish_full_sync_memberships = AsyncMock(side_effect=RuntimeError("db down"))
+
+    await run_sync_task(connector, "c1", gp, _LOG, start_status=AppStatus.FULL_SYNCING.value)
+
+    gp.unlink_nodes_missed_by_full_sync.assert_not_awaited()
+    assert _owed(gp)
+
+
+@pytest.mark.asyncio
+async def test_a_source_that_lists_only_part_of_itself_still_owes_a_full_sync_when_it_raised() -> None:
+    gp = _graph_provider()
+    connector = _connector(None, FullSyncCoverage(lists_everything=False))
+
+    async def run_sync() -> None:
+        connector.data_entities_processor._note_full_sync_seen("c1", RECORDS, "r1")
+        raise RuntimeError("no feed could be read")
+
+    connector.run_sync = run_sync
+    with pytest.raises(RuntimeError):
+        await run_sync_task(connector, "c1", gp, _LOG, start_status=AppStatus.FULL_SYNCING.value)
+
+    gp.unlink_nodes_missed_by_full_sync.assert_not_awaited()
+    assert _owed(gp)
+
+
+@pytest.mark.asyncio
 async def test_a_sync_that_wrote_nothing_unlinks_nothing() -> None:
     """Most likely a sync that failed without raising: unlinking everything
     would empty the connector."""
@@ -231,6 +291,31 @@ async def test_a_tracking_failure_still_finalizes(step: str) -> None:
     statuses = [c.args[2].get("status") for c in gp.update_node.await_args_list]
     assert AppStatus.IDLE.value in statuses
     coordinator.end.assert_awaited_once_with(lease)
+
+
+@pytest.mark.asyncio
+async def test_the_viewer_scope_version_moves_before_the_connector_is_written_idle(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A served search reads the connector's stamps once it is IDLE, so what the sync wrote must already be behind the cached viewer scopes."""
+    from app.services.cache import invalidation_hooks
+
+    calls: list[str] = []
+    gp = _graph_provider()
+
+    async def update_node(key, collection, updates, *a) -> None:
+        calls.append("idle" if updates.get("status") == AppStatus.IDLE.value else "other")
+
+    async def moved(org_id=None) -> None:
+        calls.append("version")
+
+    gp.update_node = AsyncMock(side_effect=update_node)
+    monkeypatch.setattr(invalidation_hooks, "notify_principals_changed", moved)
+    monkeypatch.setattr(invalidation_hooks, "notify_connector_sync_completed", AsyncMock())
+    connector = _connector(None)
+    connector.run_sync = _writes_one_record(connector)
+
+    await run_sync_task(connector, "c1", gp, _LOG, start_status=AppStatus.FULL_SYNCING.value)
+
+    assert calls.index("version") < calls.index("idle")
 
 
 class TestWhatTheProcessorNotes:
@@ -534,3 +619,115 @@ async def test_repeated_incomplete_full_syncs_stop_owing_a_full_sync() -> None:
         owed.append(_owed(gp))
 
     assert owed == [True, False, True], "one retry is owed, then the count starts again"
+
+
+async def _full_sync_without_reset(connector: MagicMock, gp: AsyncMock, **kwargs: object) -> None:
+    await run_sync_task(
+        connector, "c1", gp, _LOG, start_status=AppStatus.FULL_SYNCING.value, sync_points_reset=False, **kwargs
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_full_sync_whose_sync_points_were_not_reset_unlinks_nothing_and_owes_one(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The cursor survived, so the connector read only what changed and the rest looks unseen.
+    The owed full sync waits for the next scheduled or manual sync: no pendingResync, so no re-dispatch loop."""
+    gp = _graph_provider()
+    connector = _connector(None)
+    connector.run_sync = _writes_one_record(connector)
+
+    with caplog.at_level(logging.INFO, logger=_LOG.name):
+        await _full_sync_without_reset(connector, gp)
+
+    gp.unlink_nodes_missed_by_full_sync.assert_not_awaited()
+    idle = gp.update_node.await_args_list[-1].args[2]
+    assert idle["status"] == AppStatus.IDLE.value
+    assert idle[_OWED] is True
+    assert not any(c.args[2].get(ConnectorStateKeys.PENDING_RESYNC) for c in gp.update_node.await_args_list)
+    end = next(r for r in caplog.records if r.getMessage() == "sync_run.end")
+    assert end.levelno == logging.WARNING
+    assert (end.outcome, end.full_sync_cut_short) == ("partial", True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("coverage", [FullSyncCoverage(), FullSyncCoverage(complete=True, lists_everything=False)])
+async def test_a_full_sync_whose_sync_points_were_not_reset_finishes_no_memberships(coverage: FullSyncCoverage) -> None:
+    gp = _graph_provider()
+    connector = _connector(None, coverage)
+    connector.run_sync = _writes_one_record(connector)
+    connector.data_entities_processor.finish_full_sync_memberships = AsyncMock()
+
+    await _full_sync_without_reset(connector, gp)
+
+    connector.data_entities_processor.finish_full_sync_memberships.assert_not_awaited()
+    gp.unlink_nodes_missed_by_full_sync.assert_not_awaited()
+    assert _owed(gp)
+
+
+@pytest.mark.asyncio
+async def test_a_reset_failure_leaves_the_incomplete_retry_state_alone(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sync_runner, "_INCOMPLETE_FULL_SYNC_RETRYING", {"c1"})
+    for expected in ({"c1"}, set()):
+        sync_runner._INCOMPLETE_FULL_SYNC_RETRYING.clear()
+        sync_runner._INCOMPLETE_FULL_SYNC_RETRYING.update(expected)
+        gp = _graph_provider()
+        connector = _connector(None, FullSyncCoverage(complete=False))
+        connector.run_sync = _writes_one_record(connector)
+
+        await _full_sync_without_reset(connector, gp)
+
+        assert sync_runner._INCOMPLETE_FULL_SYNC_RETRYING == expected
+        assert _owed(gp)
+
+
+@pytest.mark.asyncio
+async def test_an_incremental_run_ignores_sync_points_reset() -> None:
+    gp = _graph_provider()
+    connector = _connector(None)
+    connector.run_sync = _writes_one_record(connector)
+
+    await run_sync_task(connector, "c1", gp, _LOG, sync_points_reset=False)
+
+    gp.unlink_nodes_missed_by_full_sync.assert_not_awaited()
+    assert not any(_OWED in c.args[2] for c in gp.update_node.await_args_list)
+
+
+@pytest.mark.asyncio
+async def test_a_full_sync_without_seen_tracking_whose_reset_failed_still_owes_one() -> None:
+    gp = _graph_provider()
+    connector = _connector(None)
+    connector.data_entities_processor = MagicMock(spec=[])
+
+    async def run_sync() -> None:
+        return None
+
+    connector.run_sync = run_sync
+
+    await _full_sync_without_reset(connector, gp)
+
+    gp.unlink_nodes_missed_by_full_sync.assert_not_awaited()
+    idle = gp.update_node.await_args_list[-1].args[2]
+    assert idle["status"] == AppStatus.IDLE.value and idle[_OWED] is True
+
+
+@pytest.mark.asyncio
+async def test_a_stopped_full_sync_whose_reset_failed_owes_one_and_unlinks_nothing() -> None:
+    gp = _graph_provider()
+    connector = _connector(None)
+    lease = SyncLease("c1", "tok", 1)
+    started = asyncio.Event()
+
+    async def run_sync() -> None:
+        connector.data_entities_processor._note_full_sync_seen("c1", RECORDS, "r1")
+        started.set()
+        await asyncio.sleep(3600)
+
+    connector.run_sync = run_sync
+    task = asyncio.create_task(_full_sync_without_reset(connector, gp, lease=lease, coordinator=AsyncMock()))
+    await started.wait()
+    lease.stop_requested.set()
+    await task
+
+    gp.unlink_nodes_missed_by_full_sync.assert_not_awaited()
+    assert _owed(gp)

@@ -16,7 +16,7 @@ import {
 import { NotFoundError, BadRequestError } from '../../../../src/libs/errors/http.errors'
 import { PAT_APP_CLIENT_ID_PREFIX, SERVICE_TOKEN_APP_CLIENT_ID_PREFIX, FIRST_PARTY_DEVICE_CLIENT_ID } from '../../../../src/modules/oauth_provider/constants/constants'
 import { Users } from '../../../../src/modules/user_management/schema/users.schema'
-import { createMockLogger } from '../../../helpers/mock-logger'
+import { createMockLogger, createSnakeCaseLogKeyGuard } from '../../../helpers/mock-logger'
 
 describe('OAuthAppService', () => {
   let service: OAuthAppService
@@ -53,7 +53,11 @@ describe('OAuthAppService', () => {
     )
   })
 
-  afterEach(() => {
+  const snakeCaseKeys = createSnakeCaseLogKeyGuard()
+  after(() => snakeCaseKeys.report())
+
+  afterEach(function () {
+    snakeCaseKeys.check(this, mockLogger)
     sinon.restore()
   })
 
@@ -274,7 +278,7 @@ describe('OAuthAppService', () => {
         updatedAt: new Date(),
       }
 
-      sinon.stub(OAuthApp, 'create').resolves(mockApp as any)
+      const create = sinon.stub(OAuthApp, 'create').resolves(mockApp as any)
 
       const result = await service.createApp(fakeOrgId, fakeUserId, true, {
         name: 'Test App',
@@ -283,6 +287,16 @@ describe('OAuthAppService', () => {
         redirectUris: ['https://example.com/callback'],
       })
 
+      // The one line for the event (the controller writes none); the app's name is a label an admin chose.
+      expect(mockLogger.info.args.map(([message, meta]: [string, any]) => [message, { ...meta, app_id: String(meta.app_id) }]))
+        .to.deep.equal([
+          ['OAuth app created', {
+            app_id: String(mockApp._id),
+            client_id: (create.firstCall.args[0] as any).clientId,
+            org_id: fakeOrgId,
+            name: 'Test App',
+          }],
+        ])
       expect(result).to.have.property('clientSecret')
       expect(result).to.have.property('clientId')
       expect(result.name).to.equal('Test App')
@@ -541,6 +555,183 @@ describe('OAuthAppService', () => {
     })
   })
 
+  describe('an org admin manages every app of the org', () => {
+    const creatorId = new Types.ObjectId().toString()
+    const adminId = new Types.ObjectId().toString()
+
+    function membersApp(): any {
+      return {
+        _id: new Types.ObjectId(fakeAppId),
+        slug: 'x',
+        clientId: 'member-app',
+        name: 'Look-alike',
+        orgId: new Types.ObjectId(fakeOrgId),
+        createdBy: new Types.ObjectId(creatorId),
+        redirectUris: [],
+        allowedGrantTypes: [],
+        allowedScopes: [],
+        status: OAuthAppStatus.ACTIVE,
+        isConfidential: true,
+        accessTokenLifetime: 3600,
+        refreshTokenLifetime: 2592000,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        save: sinon.stub().resolves(),
+      }
+    }
+
+    function stubFind(apps: unknown[]) {
+      const chainable = {
+        sort: sinon.stub().returnsThis(),
+        skip: sinon.stub().returnsThis(),
+        limit: sinon.stub().returnsThis(),
+        exec: sinon.stub().resolves(apps),
+      }
+      const findStub = sinon.stub(OAuthApp, 'find').returns(chainable as any)
+      sinon.stub(OAuthApp, 'countDocuments').resolves(apps.length)
+      return findStub
+    }
+
+    it('lists apps of every creator in the caller\'s org, with who created each', async () => {
+      const findStub = stubFind([membersApp()])
+      sinon.stub(Users, 'find').returns({
+        select: sinon.stub().returns({
+          lean: sinon.stub().returns({
+            exec: sinon.stub().resolves([
+              { _id: new Types.ObjectId(creatorId), fullName: 'Mallory', email: 'mallory@example.com' },
+            ]),
+          }),
+        }),
+      } as any)
+
+      const result = await service.listApps(fakeOrgId, adminId, {}, true)
+
+      const filter = findStub.firstCall.args[0] as Record<string, unknown>
+      expect(filter).to.not.have.property('createdBy')
+      expect(filter.orgId).to.deep.equal(new Types.ObjectId(fakeOrgId))
+      expect(result.data[0]).to.include({
+        createdBy: creatorId,
+        createdByName: 'Mallory',
+        createdByEmail: 'mallory@example.com',
+      })
+    })
+
+    it('narrows to one person\'s apps with createdBy', async () => {
+      const findStub = stubFind([])
+      await service.listApps(fakeOrgId, adminId, { createdBy: creatorId }, true)
+      const filter = findStub.firstCall.args[0] as Record<string, unknown>
+      expect(filter.createdBy).to.deep.equal(new Types.ObjectId(creatorId))
+    })
+
+    it('gives a member nothing for someone else\'s createdBy', async () => {
+      const findStub = stubFind([membersApp()])
+      const result = await service.listApps(fakeOrgId, fakeUserId, { createdBy: creatorId })
+      expect(findStub.called).to.equal(false)
+      expect(result.data).to.deep.equal([])
+      expect(result.pagination.total).to.equal(0)
+    })
+
+    it('still lists only a member\'s own apps', async () => {
+      const findStub = stubFind([])
+      await service.listApps(fakeOrgId, fakeUserId, {})
+      const filter = findStub.firstCall.args[0] as Record<string, unknown>
+      expect(filter.createdBy).to.deep.equal(new Types.ObjectId(fakeUserId))
+    })
+
+    it('suspends a member\'s app and revokes its tokens', async () => {
+      const app = membersApp()
+      const findOne = sinon.stub(OAuthApp, 'findOne').resolves(app)
+
+      await service.suspendApp(fakeAppId, fakeOrgId, adminId, true)
+
+      // Found by org alone, then written as the app's own creator: the admin is not the owner.
+      const first = findOne.firstCall.args[0] as Record<string, unknown>
+      expect(first).to.not.have.property('createdBy')
+      expect(first.orgId).to.deep.equal(new Types.ObjectId(fakeOrgId))
+      const write = findOne.secondCall.args[0] as unknown as Record<string, unknown>
+      expect(write.createdBy).to.deep.equal(new Types.ObjectId(creatorId))
+      expect(app.status).to.equal(OAuthAppStatus.SUSPENDED)
+      expect(mockOAuthTokenService.revokeAllTokensForApp.calledOnceWith('member-app')).to.be.true
+    })
+
+    it('deletes a member\'s app, recording the admin as who deleted it', async () => {
+      const app = membersApp()
+      sinon.stub(OAuthApp, 'findOne').resolves(app)
+
+      await service.deleteApp(fakeAppId, fakeOrgId, adminId, true)
+
+      expect(app.isDeleted).to.equal(true)
+      expect(String(app.deletedBy)).to.equal(adminId)
+      expect(mockOAuthTokenService.revokeAllTokensForApp.calledWith('member-app')).to.be.true
+    })
+
+    /** A store that holds the member's app: found by org alone, or by its own creator, never by anyone else as owner. */
+    function storeWithMembersApp() {
+      const app = membersApp()
+      sinon.stub(OAuthApp, 'findOne').callsFake(((filter: Record<string, unknown>) => {
+        const owner = filter.createdBy
+        const found = owner === undefined || (owner as { toString(): string }).toString() === creatorId
+        return Promise.resolve(found ? app : null)
+      }) as any)
+      return app
+    }
+
+    async function expectNotFound(call: () => Promise<unknown>) {
+      try {
+        await call()
+        expect.fail('Should have thrown')
+      } catch (error) {
+        expect(error).to.be.instanceOf(NotFoundError)
+      }
+    }
+
+    it('refuses an admin editing a member\'s app (redirect URIs would capture codes)', async () => {
+      const app = storeWithMembersApp()
+      await expectNotFound(() =>
+        service.updateApp(fakeAppId, fakeOrgId, adminId, true, {
+          redirectUris: ['https://attacker.example/cb'],
+        }),
+      )
+      expect(app.save.called).to.equal(false)
+      expect(mockOAuthTokenService.revokeAllTokensForApp.called).to.equal(false)
+    })
+
+    it('refuses an admin regenerating a member\'s secret', async () => {
+      const app = storeWithMembersApp()
+      await expectNotFound(() => service.regenerateSecret(fakeAppId, fakeOrgId, adminId))
+      expect(app.save.called).to.equal(false)
+    })
+
+    it('refuses an admin re-pointing a member\'s app at another identity', async () => {
+      const app = storeWithMembersApp()
+      await expectNotFound(() =>
+        service.setTokenIdentity(fakeAppId, fakeOrgId, adminId, new Types.ObjectId().toString()),
+      )
+      expect(app.save.called).to.equal(false)
+      expect(mockOAuthTokenService.revokeAllTokensForApp.called).to.equal(false)
+    })
+
+    it('lets an admin view and reactivate a member\'s app', async () => {
+      const app = storeWithMembersApp()
+      expect((await service.getAppById(fakeAppId, fakeOrgId, adminId, true)).clientId).to.equal('member-app')
+      app.status = OAuthAppStatus.SUSPENDED
+      await service.activateApp(fakeAppId, fakeOrgId, adminId, true)
+      expect(app.status).to.equal(OAuthAppStatus.ACTIVE)
+    })
+
+    it('does not let a member reach another member\'s app', async () => {
+      const findOne = sinon.stub(OAuthApp, 'findOne').resolves(null)
+      try {
+        await service.suspendApp(fakeAppId, fakeOrgId, fakeUserId, false)
+        expect.fail('Should have thrown')
+      } catch (error) {
+        expect(error).to.be.instanceOf(NotFoundError)
+      }
+      const filter = findOne.firstCall.args[0] as unknown as Record<string, unknown>
+      expect(filter.createdBy).to.deep.equal(new Types.ObjectId(fakeUserId))
+    })
+  })
+
   describe('getAppByClientId', () => {
     it('should return app when found and active', async () => {
       const mockApp = {
@@ -671,8 +862,8 @@ describe('OAuthAppService', () => {
       await service.listApps(fakeOrgId, fakeUserId, {})
 
       const expectedCreatedBy = new Types.ObjectId(fakeUserId)
-      const findFilter = findStub.firstCall.args[0] as Record<string, unknown>
-      const countFilter = countStub.firstCall.args[0] as Record<string, unknown>
+      const findFilter = findStub.firstCall.args[0] as unknown as Record<string, unknown>
+      const countFilter = countStub.firstCall.args[0] as unknown as Record<string, unknown>
       expect(findFilter.createdBy).to.deep.equal(expectedCreatedBy)
       expect(countFilter.createdBy).to.deep.equal(expectedCreatedBy)
     })
@@ -689,7 +880,7 @@ describe('OAuthAppService', () => {
 
       await service.listApps(fakeOrgId, fakeUserId, {})
 
-      const findFilter = findStub.firstCall.args[0] as Record<string, unknown>
+      const findFilter = findStub.firstCall.args[0] as unknown as Record<string, unknown>
       expect(findFilter.createdBy).to.deep.equal(new Types.ObjectId(fakeUserId))
     })
   })
@@ -740,6 +931,28 @@ describe('OAuthAppService', () => {
 
         expect(message).to.contain('service account')
         expect(app.save.called).to.equal(false)
+      })
+
+      it('refuses an instance app, even for an admin with a usable bound account', async () => {
+        for (const extra of [{ isDynamic: true, clientId: 'dcr-client' }, { clientId: FIRST_PARTY_DEVICE_CLIENT_ID }]) {
+          const app: any = {
+            ...appAllowing([OAuthGrantType.AUTHORIZATION_CODE], new Types.ObjectId().toString()),
+            ...extra,
+          }
+          const users = sinon.stub(Users, 'findOne').returns({
+            select: sinon.stub().returns({
+              lean: sinon.stub().returns({ exec: sinon.stub().resolves({ isDisabled: false }) }),
+            }),
+          } as any)
+
+          const message = await failureFrom(true, app)
+
+          expect(message, extra.clientId).to.contain('cannot use client_credentials')
+          expect(users.called, extra.clientId).to.equal(false)
+          expect(app.save.called, extra.clientId).to.equal(false)
+          users.restore()
+          ;(OAuthApp.findOne as sinon.SinonStub).restore()
+        }
       })
 
       it('refuses when the bound account has since been disabled', async () => {
@@ -866,7 +1079,7 @@ describe('OAuthAppService', () => {
 
       await service.updateApp(fakeAppId, fakeOrgId, fakeUserId, false, { name: 'X' })
 
-      const filter = findStub.firstCall.args[0] as Record<string, unknown>
+      const filter = findStub.firstCall.args[0] as unknown as Record<string, unknown>
       expect(filter.createdBy).to.deep.equal(new Types.ObjectId(fakeUserId))
     })
   })
@@ -1103,6 +1316,20 @@ describe('OAuthAppService', () => {
         expect(error).to.be.instanceOf(InvalidClientError)
       }
     })
+
+    // Without the guard, hashing an absent secret throws a TypeError, which the endpoints answer as their own failure.
+    for (const secret of [undefined, null, '', 42]) {
+      it(`should refuse a client_secret of ${JSON.stringify(secret)} as invalid_client, before any read`, async () => {
+        const findOne = sinon.stub(OAuthApp, 'findOne')
+        try {
+          await service.verifyClientCredentials('cid', secret as never)
+          expect.fail('Should have thrown')
+        } catch (error) {
+          expect(error).to.be.instanceOf(InvalidClientError)
+        }
+        expect(findOne.called).to.equal(false)
+      })
+    }
   })
 
   describe('validateRedirectUriForApp', () => {
@@ -1153,6 +1380,18 @@ describe('OAuthAppService', () => {
       const app = { allowedGrantTypes: [OAuthGrantType.AUTHORIZATION_CODE] } as any
       expect(service.isGrantTypeAllowed(app, 'client_credentials')).to.be.false
     })
+
+    it('refuses client_credentials to an instance app that holds it from before', () => {
+      const grants = [OAuthGrantType.CLIENT_CREDENTIALS, OAuthGrantType.AUTHORIZATION_CODE]
+      for (const app of [
+        { allowedGrantTypes: grants, isDynamic: true, clientId: 'dcr-client' },
+        { allowedGrantTypes: grants, clientId: FIRST_PARTY_DEVICE_CLIENT_ID },
+      ] as any[]) {
+        expect(service.isGrantTypeAllowed(app, 'client_credentials'), app.clientId).to.be.false
+        expect(service.isGrantTypeAllowed(app, 'authorization_code'), app.clientId).to.be.true
+      }
+      expect(service.isGrantTypeAllowed({ allowedGrantTypes: grants, clientId: 'own' } as any, 'client_credentials')).to.be.true
+    })
   })
 })
 
@@ -1184,7 +1423,11 @@ describe('OAuthAppService - branch coverage', () => {
     )
   })
 
-  afterEach(() => {
+  const snakeCaseKeys = createSnakeCaseLogKeyGuard()
+  after(() => snakeCaseKeys.report())
+
+  afterEach(function () {
+    snakeCaseKeys.check(this, mockLogger)
     sinon.restore()
   })
 
@@ -1289,7 +1532,7 @@ describe('OAuthAppService - branch coverage', () => {
       await service.listApps(VALID_ORG_ID, VALID_USER_ID, { status: OAuthAppStatus.ACTIVE })
       // Check the filter contains status
       const filterArg = findStub.firstCall.args[0]
-      expect(filterArg.status).to.deep.equal({ $eq: OAuthAppStatus.ACTIVE })
+      expect(filterArg!.status).to.deep.equal({ $eq: OAuthAppStatus.ACTIVE })
     })
 
     it('should apply search filter with regex escaping when provided', async () => {
@@ -1303,8 +1546,8 @@ describe('OAuthAppService - branch coverage', () => {
       await service.listApps(VALID_ORG_ID, VALID_USER_ID, { search: 'test.app' })
       // Check the filter contains $or with regex
       const filterArg = findStub.firstCall.args[0]
-      expect(filterArg.$or).to.exist
-      expect(filterArg.$or).to.have.length(2)
+      expect(filterArg!.$or).to.exist
+      expect(filterArg!.$or).to.have.length(2)
     })
 
     it('should calculate totalPages correctly', async () => {
@@ -1688,7 +1931,7 @@ describe('OAuthAppService - branch coverage', () => {
         isConfidential: false,
       })
       expect(createStub.calledOnce).to.be.true
-      expect(createStub.firstCall.args[0].isDynamic).to.be.true
+      expect(createStub.firstCall.args[0]!.isDynamic).to.be.true
     })
   })
 

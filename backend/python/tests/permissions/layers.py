@@ -8,12 +8,15 @@ under different id prefixes, so a whole corpus costs one load per backend.
 from __future__ import annotations
 
 import itertools
-from collections.abc import Awaitable, Callable, Iterable
+from collections.abc import Awaitable, Callable, Iterable, Iterator
+from contextlib import contextmanager
 from typing import TYPE_CHECKING
 
 import aiohttp
 from neo4j import AsyncGraphDatabase
 
+from app.core import org_context
+from app.core.org_context import OrgContext, for_org
 from tests.integration.graph_permissions.loaders import (
     EDGE_TARGETS,
     NODE_TARGETS,
@@ -25,9 +28,11 @@ from tests.integration.graph_permissions.loaders import (
 from .graph import Graph, Namespace, compile_world
 
 if TYPE_CHECKING:
+    from contextlib import AbstractContextManager
+
     from .model import World
 
-KNOWN_RULES = (None, "OPEN", "STRICT", "RESTRICTED")
+KNOWN_RULES = (None, "OPEN", "STRICT", "RESTRICTED", "PARENT_AND_GRANT")
 # The permission-type values Arango's edge schema accepts (schema/arango/edges.py); ANYONE is not one of them.
 ARANGO_GRANT_TYPES = {None, "USER", "GROUP", "DOMAIN", "TEAM", "ORG", "ROLE", "ORGANIZATION"}
 LoadFn = Callable[[list, list], Awaitable[None]]
@@ -44,6 +49,22 @@ def arango_graph(graph: Graph) -> Graph:
         "edges": [e for e in edges if e["from"] not in bad and e["to"] not in bad
                   and not (e["type"] == "PERMISSION" and e["props"].get("type") not in ARANGO_GRANT_TYPES)],
     }
+
+
+def world_org(ns: Namespace) -> AbstractContextManager[OrgContext]:
+    """The world's org bound, as the request of one of its viewers binds it: every provider call of the layers runs inside it."""
+    return for_org(ns.org, job="permission-conformance")
+
+
+@contextmanager
+def as_org(org_id: str) -> Iterator[OrgContext]:
+    """Another org's own job, for a probe that it cannot read this org's data: its org bound in place of the test's."""
+    token = org_context.push(None)
+    try:
+        with for_org(org_id, job="permission-conformance") as ctx:
+            yield ctx
+    finally:
+        org_context.pop(token)
 
 
 def _same(graph: Graph) -> Graph:
@@ -83,7 +104,10 @@ class GraphCheckLayer:
         so long runs load and release in chunks."""
         gone = [w for w in dict.fromkeys(worlds) if w in self._prefix]
         if gone:
-            await self._unload([f"{self._prefix.pop(w)}-" for w in gone])
+            # forgotten only once deleted: a delete cut short leaves records that a later release must still find
+            await self._unload([f"{self._prefix[w]}-" for w in gone])
+            for w in gone:
+                del self._prefix[w]
 
     async def _ns(self, world: World) -> Namespace:
         if world not in self._prefix:
@@ -92,8 +116,9 @@ class GraphCheckLayer:
 
     async def admitted(self, world: World, viewer: str, node_ids: list[str]) -> set[str]:
         ns = await self._ns(world)
-        found = await self._provider.check_access(  # type: ignore[attr-defined]
-            ns.id(viewer), ns.org, node_ids=[ns.id(n) for n in node_ids])
+        with world_org(ns):
+            found = await self._provider.check_access(  # type: ignore[attr-defined]
+                ns.id(viewer), ns.org, node_ids=[ns.id(n) for n in node_ids])
         # A placeholder stub is navigable, not readable content: check_access lists it among the reachable ids but not as access
         return {ns.local(n) for n in found.node_ids if n not in found.placeholder_ids}
 
@@ -102,8 +127,9 @@ class GraphCheckLayer:
     ) -> dict[str, str | None]:
         ns = await self._ns(world)
         stored = [ns.id(v) for v in vrids]
-        found = await self._provider.check_access(  # type: ignore[attr-defined]
-            ns.id(viewer), ns.org, virtual_record_ids=stored, indexed_only=indexed_only)
+        with world_org(ns):
+            found = await self._provider.check_access(  # type: ignore[attr-defined]
+                ns.id(viewer), ns.org, virtual_record_ids=stored, indexed_only=indexed_only)
         by_vrid = found.records_by_vrid
         return {v: (None if by_vrid.get(s) is None else ns.local(by_vrid[s])) for v, s in zip(vrids, stored, strict=True)}
 

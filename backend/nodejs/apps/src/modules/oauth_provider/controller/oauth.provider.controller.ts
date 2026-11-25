@@ -17,9 +17,7 @@ import {
   InvalidGrantError,
   InvalidClientError,
   UnsupportedGrantTypeError,
-  TokenExchangeError,
   InvalidScopeError,
-  InvalidTargetError,
   AccessDeniedError,
   InvalidRedirectUriError,
   DeviceGrantError,
@@ -29,14 +27,26 @@ import {
   ForbiddenError,
   NotFoundError,
 } from '../../../libs/errors/http.errors';
+import { BaseError } from '../../../libs/errors/base.error';
 import {
   AuthorizeRequest,
   TokenRequest,
   TokenResponse,
   ConsentData,
-  OAuthErrorResponse,
 } from '../types/oauth.types';
+import {
+  answerOAuthServerFailure,
+  isOAuthRefusal,
+  logOAuthRefusal,
+  logOAuthServerFailure,
+  OAUTH_SERVER_FAILURE,
+  oauthErrorBody,
+  oauthErrorCode,
+} from '../utils/oauth-failure';
+import { markRequestError } from '../../../libs/middlewares/access-log.middleware';
+import { NO_CONTROL_CHARACTERS } from '../validators/oauth.validators';
 import { getUserRepository } from '../../../libs/repositories/user';
+import { idOf, isValidId } from '../../../libs/repositories/ids';
 import { getOrgRepository } from '../../../libs/repositories/org';
 import {
   isKnowledgeLimitWithin,
@@ -177,6 +187,17 @@ export class OAuthProviderController {
         }));
       const org = await getOrgRepository().getNames(user.orgId);
       const workspaceName = org?.shortName || org?.registeredName;
+      // Any member may register an app under any name, so the consent page
+      // says who did. A dynamically registered client has no such person.
+      const registeredBy =
+        app.isDynamic === true || !isValidId(idOf(app.createdBy))
+          ? undefined
+          : (
+              await getUserRepository().listNamesByIds(user.orgId, [
+                idOf(app.createdBy),
+              ])
+            )[0];
+      const registeredByLabel = registeredBy?.fullName || registeredBy?.email;
 
       const consentData: ConsentData = {
         app: {
@@ -189,6 +210,7 @@ export class OAuthProviderController {
           ...(isClientIdMetadataUrl(app.clientId)
             ? { clientIdHost: new URL(app.clientId).host }
             : {}),
+          ...(registeredByLabel ? { registeredBy: registeredByLabel } : {}),
           knowledgeLimit: toKnowledgeLimit(app.knowledgeLimit),
         },
         scopes: toScopeInfo(granted),
@@ -213,10 +235,16 @@ export class OAuthProviderController {
       });
     } catch (error) {
       // Now we can safely redirect errors since redirect_uri is validated
-      const errorResponse = this.buildErrorResponse(
-        error as Error,
-        query.state,
-      );
+      const refused = isOAuthRefusal(error);
+      if (refused) this.logRefusal(error);
+      else logOAuthServerFailure(this.logger, res, error);
+      const errorResponse = refused
+        ? oauthErrorBody(error, query.state)
+        : {
+            error: 'server_error',
+            error_description: OAUTH_SERVER_FAILURE,
+            state: query.state,
+          };
       const redirectUrl = new URL(validatedRedirectUri);
       redirectUrl.searchParams.set('error', errorResponse.error);
       if (errorResponse.error_description) {
@@ -304,7 +332,7 @@ export class OAuthProviderController {
       );
 
       // A metadata document client is stored only now, once the person has consented.
-      await client.store();
+      await client.store({ orgId: user.orgId, userId: user.userId });
 
       // Generate authorization code
       const code = await this.authorizationCodeService.generateCode(
@@ -322,12 +350,6 @@ export class OAuthProviderController {
       const redirectUrl = new URL(redirect_uri);
       redirectUrl.searchParams.set('code', code);
       redirectUrl.searchParams.set('state', state);
-
-      this.logger.info('Authorization code issued', {
-        clientId: client_id,
-        userId: user.userId,
-        scopes: granted,
-      });
 
       res.json({ redirectUrl: redirectUrl.toString() });
     } catch (error) {
@@ -356,6 +378,15 @@ export class OAuthProviderController {
         if (colonIndex !== -1) {
           clientId = credentials.substring(0, colonIndex);
           clientSecret = credentials.substring(colonIndex + 1);
+          // The header is not schema-checked: refuse what the body schema refuses, before any store read.
+          if (
+            !NO_CONTROL_CHARACTERS.test(clientId) ||
+            !NO_CONTROL_CHARACTERS.test(clientSecret)
+          ) {
+            throw new InvalidClientError(
+              'Client credentials must not contain control characters',
+            );
+          }
         }
       }
 
@@ -468,9 +499,7 @@ export class OAuthProviderController {
         });
       }
     } catch (error) {
-      // OAuth errors should return 400 with JSON body
-      const oauthError = this.buildErrorResponse(error as Error);
-      res.status(this.getErrorStatusCode(error as Error)).json(oauthError);
+      this.answerFailure(res, error);
     }
   }
 
@@ -554,13 +583,17 @@ export class OAuthProviderController {
       // RFC 7009: Always return 200 OK, even if token was invalid/already revoked
       res.status(200).send();
     } catch (error) {
-      // Even on error, RFC 7009 recommends returning 200 for security
-      // Only return error if client authentication fails
       if (error instanceof InvalidClientError) {
-        res.status(401).json(this.buildErrorResponse(error));
+        this.answerRefusal(res, error);
         return;
       }
-      res.status(200).send();
+      // RFC 7009 2.2: an invalid token is not an error. 2.2.1: when we could not
+      // revoke, 503, so the client keeps treating the token as live and retries.
+      if (isOAuthRefusal(error)) {
+        res.status(200).send();
+        return;
+      }
+      answerOAuthServerFailure(this.logger, res, error, 503);
     }
   }
 
@@ -592,9 +625,11 @@ export class OAuthProviderController {
       res.json(result);
     } catch (error) {
       if (error instanceof InvalidClientError) {
-        res.status(401).json(this.buildErrorResponse(error));
+        this.answerRefusal(res, error);
         return;
       }
+      if (!isOAuthRefusal(error))
+        logOAuthServerFailure(this.logger, res, error);
       // RFC 7662: For other errors, return inactive token to prevent information disclosure
       res.json({ active: false });
     }
@@ -656,8 +691,7 @@ export class OAuthProviderController {
       );
       res.status(200).json(result);
     } catch (error) {
-      const oauthError = this.buildErrorResponse(error as Error);
-      res.status(this.getErrorStatusCode(error as Error)).json(oauthError);
+      this.answerFailure(res, error);
     }
   }
 
@@ -688,7 +722,7 @@ export class OAuthProviderController {
         return;
       }
       if (error instanceof DeviceGrantError) {
-        res.status(400).json(this.buildErrorResponse(error));
+        res.status(400).json(oauthErrorBody(error));
         return;
       }
       next(error);
@@ -722,7 +756,7 @@ export class OAuthProviderController {
         return;
       }
       if (error instanceof DeviceGrantError) {
-        res.status(400).json(this.buildErrorResponse(error));
+        res.status(400).json(oauthErrorBody(error));
         return;
       }
       next(error);
@@ -851,11 +885,6 @@ export class OAuthProviderController {
       throw new InvalidGrantError('Authorization code has already been used');
     }
 
-    this.logger.info('Authorization code grant completed', {
-      clientId,
-      userId: codeResult.userId,
-    });
-
     return {
       access_token: tokens.accessToken,
       token_type: tokens.tokenType,
@@ -956,8 +985,6 @@ export class OAuthProviderController {
       { recheckAppScopes: true },
     );
 
-    this.logger.info('Client credentials grant completed', { clientId });
-
     return {
       access_token: tokens.accessToken,
       token_type: tokens.tokenType,
@@ -1007,15 +1034,14 @@ export class OAuthProviderController {
       ? this.scopeValidatorService.parseScopes(request.scope)
       : undefined;
 
-    // Refresh tokens (implements token rotation per RFC 9700)
+    // Refresh tokens (implements token rotation per RFC 9700). The agent app's tokens are cut to the current
+    // MCP_SCOPES as every other grant of it is: its stored list only ever grows.
     const tokens = await this.oauthTokenService.refreshTokens(
-      app,
+      { ...app, allowedScopes: this.oauthDeviceService.allowedScopesOf(app) },
       request.refresh_token,
       requestedScopes,
       this.oauthTokenService.audienceFor(request.resource),
     );
-
-    this.logger.info('Refresh token grant completed', { clientId });
 
     return {
       access_token: tokens.accessToken,
@@ -1026,38 +1052,26 @@ export class OAuthProviderController {
     };
   }
 
-  private buildErrorResponse(error: Error, state?: string): OAuthErrorResponse {
-    let errorCode = 'server_error';
-    const description = error.message;
-
-    if (error instanceof InvalidGrantError) {
-      errorCode = 'invalid_grant';
-    } else if (error instanceof DeviceGrantError) {
-      errorCode = error.oauthError;
-    } else if (error instanceof TokenExchangeError) {
-      errorCode = error.oauthError;
-    } else if (error instanceof InvalidClientError) {
-      errorCode = 'invalid_client';
-    } else if (error instanceof UnsupportedGrantTypeError) {
-      errorCode = 'unsupported_grant_type';
-    } else if (error instanceof InvalidScopeError) {
-      errorCode = 'invalid_scope';
-    } else if (error instanceof InvalidTargetError) {
-      errorCode = 'invalid_target';
-    } else if (error instanceof AccessDeniedError) {
-      errorCode = 'access_denied';
+  /** Answers a failed RFC 6749 endpoint: a refusal with its code, anything else as our failure. */
+  private answerFailure(res: Response, error: unknown): void {
+    if (isOAuthRefusal(error)) {
+      this.answerRefusal(res, error);
+      return;
     }
+    answerOAuthServerFailure(this.logger, res, error);
+  }
 
-    const response: OAuthErrorResponse = {
-      error: errorCode,
-      error_description: description,
-    };
+  private logRefusal(error: BaseError): void {
+    logOAuthRefusal(this.logger, oauthErrorCode(error));
+  }
 
-    if (state) {
-      response.state = state;
-    }
-
-    return response;
+  private answerRefusal(res: Response, error: BaseError): void {
+    this.logRefusal(error);
+    // A submitted client credential that is wrong is the caller's bad request, not an expired session.
+    if (error instanceof InvalidClientError)
+      markRequestError(res, 'bad_request');
+    if (res.headersSent) return;
+    res.status(this.getErrorStatusCode(error)).json(oauthErrorBody(error));
   }
 
   private getErrorStatusCode(error: Error): number {

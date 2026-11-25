@@ -143,7 +143,7 @@ class TestLayering:
 
     def test_custom_instructions_included_when_set(self) -> None:
         """Org-level "Custom Instructions" (workspace settings, mode-resolved
-        by `chat_modes.bridge`) must render as its own section, distinct
+        by `chat_modes.setup`) must render as its own section, distinct
         from the per-agent `## Agent Instructions`."""
         context = make_context(custom_instructions="Always respond in Spanish.")
         result = _build(context)
@@ -476,6 +476,23 @@ class TestFindingInformation:
         assert "## Finding Information" in result
         section = result.split("## Finding Information", 1)[1]
         assert "web_search" in section or "fetch_url" in section
+
+    def test_unset_web_search_is_told_to_the_model_with_the_settings_link(self) -> None:
+        context = make_context(has_knowledge=True, web_search_unset=True)
+        result = _build(context, tool_names=["retrieval__search_internal_knowledge"])
+        section = result.split("## Finding Information", 1)[1]
+        assert "Web search is not set up" in section
+        assert "(/workspace/web-search)" in section
+
+    @pytest.mark.parametrize("unset", [False, True], ids=["set-up-or-chosen-off", "set-up-now"])
+    def test_no_notice_when_a_provider_is_available_or_the_org_is_not_unset(self, unset: bool) -> None:
+        context = make_context(has_knowledge=True, web_search_unset=unset)
+        if unset:
+            context.tool_state["web_search_config"] = {"provider": "serper"}
+            tool_names = ["web_search", "fetch_url"]
+        else:
+            tool_names = ["retrieval__search_internal_knowledge"]
+        assert "Web search is not set up" not in _build(context, tool_names=tool_names)
 
     def test_parallelism_rule_only_with_two_or_more_surfaces(self) -> None:
         single = make_context(has_knowledge=True)

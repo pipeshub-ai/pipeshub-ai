@@ -467,33 +467,25 @@
      }
     ]
    },
-   "limit": 5,
-   "prefetch": [
-    {
-     "limit": 6,
-     "params": {
-      "exact": false,
-      "hnsw_ef": 256,
-      "indexed_only": false,
-      "quantization": {
-       "ignore": false,
-       "oversampling": 1.5,
-       "rescore": true
-      }
-     },
-     "query": [
-      0.1,
-      0.2,
-      0.3,
-      0.4
-     ],
-     "using": "dense"
+   "limit": 8,
+   "params": {
+    "exact": false,
+    "hnsw_ef": 256,
+    "indexed_only": false,
+    "quantization": {
+     "ignore": false,
+     "oversampling": 1.5,
+     "rescore": true
     }
-   ],
-   "query": {
-    "fusion": "rrf"
    },
-   "with_payload": true
+   "query": [
+    0.1,
+    0.2,
+    0.3,
+    0.4
+   ],
+   "using": "dense",
+   "with_payload": false
   }
  ],
  "qdrant/dense_text_arms": [
@@ -527,33 +519,25 @@
      }
     ]
    },
-   "limit": 7,
-   "prefetch": [
-    {
-     "limit": 10,
-     "params": {
-      "exact": false,
-      "hnsw_ef": 256,
-      "indexed_only": false,
-      "quantization": {
-       "ignore": false,
-       "oversampling": 1.5,
-       "rescore": true
-      }
-     },
-     "query": [
-      0.1,
-      0.2,
-      0.3,
-      0.4
-     ],
-     "using": "dense"
+   "limit": 12,
+   "params": {
+    "exact": false,
+    "hnsw_ef": 256,
+    "indexed_only": false,
+    "quantization": {
+     "ignore": false,
+     "oversampling": 1.5,
+     "rescore": true
     }
-   ],
-   "query": {
-    "fusion": "rrf"
    },
-   "with_payload": true
+   "query": [
+    0.1,
+    0.2,
+    0.3,
+    0.4
+   ],
+   "using": "dense",
+   "with_payload": false
   }
  ],
  "qdrant/dense_text_org": [
@@ -568,33 +552,25 @@
      }
     ]
    },
-   "limit": 9,
-   "prefetch": [
-    {
-     "limit": 14,
-     "params": {
-      "exact": false,
-      "hnsw_ef": 256,
-      "indexed_only": false,
-      "quantization": {
-       "ignore": false,
-       "oversampling": 1.5,
-       "rescore": true
-      }
-     },
-     "query": [
-      0.1,
-      0.2,
-      0.3,
-      0.4
-     ],
-     "using": "dense"
+   "limit": 16,
+   "params": {
+    "exact": false,
+    "hnsw_ef": 256,
+    "indexed_only": false,
+    "quantization": {
+     "ignore": false,
+     "oversampling": 1.5,
+     "rescore": true
     }
-   ],
-   "query": {
-    "fusion": "rrf"
    },
-   "with_payload": true
+   "query": [
+    0.1,
+    0.2,
+    0.3,
+    0.4
+   ],
+   "using": "dense",
+   "with_payload": false
   }
  ],
  "qdrant/empty_filter": [
@@ -602,64 +578,48 @@
    "filter": {
     "should": []
    },
-   "limit": 4,
-   "prefetch": [
-    {
-     "limit": 4,
-     "params": {
-      "exact": false,
-      "hnsw_ef": 256,
-      "indexed_only": false,
-      "quantization": {
-       "ignore": false,
-       "oversampling": 1.5,
-       "rescore": true
-      }
-     },
-     "query": [
-      0.1,
-      0.2,
-      0.3,
-      0.4
-     ],
-     "using": "dense"
+   "limit": 6,
+   "params": {
+    "exact": false,
+    "hnsw_ef": 256,
+    "indexed_only": false,
+    "quantization": {
+     "ignore": false,
+     "oversampling": 1.5,
+     "rescore": true
     }
-   ],
-   "query": {
-    "fusion": "rrf"
    },
-   "with_payload": true
+   "query": [
+    0.1,
+    0.2,
+    0.3,
+    0.4
+   ],
+   "using": "dense",
+   "with_payload": false
   }
  ],
  "qdrant/no_filter": [
   {
-   "limit": 4,
-   "prefetch": [
-    {
-     "limit": 4,
-     "params": {
-      "exact": false,
-      "hnsw_ef": 256,
-      "indexed_only": false,
-      "quantization": {
-       "ignore": false,
-       "oversampling": 1.5,
-       "rescore": true
-      }
-     },
-     "query": [
-      0.1,
-      0.2,
-      0.3,
-      0.4
-     ],
-     "using": "dense"
+   "limit": 6,
+   "params": {
+    "exact": false,
+    "hnsw_ef": 256,
+    "indexed_only": false,
+    "quantization": {
+     "ignore": false,
+     "oversampling": 1.5,
+     "rescore": true
     }
-   ],
-   "query": {
-    "fusion": "rrf"
    },
-   "with_payload": true
+   "query": [
+    0.1,
+    0.2,
+    0.3,
+    0.4
+   ],
+   "using": "dense",
+   "with_payload": false
   }
  ],
  "qdrant/sparse_dense": [
@@ -693,50 +653,26 @@
      }
     ]
    },
-   "limit": 8,
-   "prefetch": [
-    {
-     "limit": 12,
-     "params": {
-      "exact": false,
-      "hnsw_ef": 256,
-      "indexed_only": false,
-      "quantization": {
-       "ignore": false,
-       "oversampling": 1.5,
-       "rescore": true
-      }
-     },
-     "query": [
-      0.1,
-      0.2,
-      0.3,
-      0.4
-     ],
-     "using": "dense"
-    },
-    {
-     "limit": 12,
-     "query": {
-      "indices": [
-       3,
-       9
-      ],
-      "values": [
-       0.5,
-       0.25
-      ]
-     },
-     "using": "sparse"
+   "limit": 14,
+   "params": {
+    "exact": false,
+    "hnsw_ef": 256,
+    "indexed_only": false,
+    "quantization": {
+     "ignore": false,
+     "oversampling": 1.5,
+     "rescore": true
     }
-   ],
-   "query": {
-    "fusion": "rrf"
    },
-   "with_payload": true
-  }
- ],
- "qdrant/text_only": [
+   "query": [
+    0.1,
+    0.2,
+    0.3,
+    0.4
+   ],
+   "using": "dense",
+   "with_payload": false
+  },
   {
    "filter": {
     "must": [
@@ -746,16 +682,43 @@
        "value": "aaaaaaaaaaaaaaaaaaaaaaaa"
       }
      }
+    ],
+    "should": [
+     {
+      "key": "recordGroupIds",
+      "match": {
+       "any": [
+        "g1",
+        "g2"
+       ]
+      }
+     },
+     {
+      "key": "connectorIds",
+      "match": {
+       "any": [
+        "c1"
+       ]
+      }
+     }
     ]
    },
-   "limit": 6,
-   "prefetch": [],
+   "limit": 14,
    "query": {
-    "fusion": "rrf"
+    "indices": [
+     3,
+     9
+    ],
+    "values": [
+     0.5,
+     0.25
+    ]
    },
-   "with_payload": true
+   "using": "sparse",
+   "with_payload": false
   }
  ],
+ "qdrant/text_only": [],
  "redis/dense_only": [
   [
    "FT.HYBRID",
@@ -967,6 +930,8 @@
    "FT.SEARCH",
    "col_idx",
    "(only | words) @metadata_orgId:{aaaaaaaaaaaaaaaaaaaaaaaa}",
+   "DIALECT",
+   "2",
    "LIMIT",
    "0",
    "4"

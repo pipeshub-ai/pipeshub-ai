@@ -307,6 +307,10 @@ class FakeNextcloud:
                     raise answer
                 return answer
         if request.method == "POST" and path[len(self.base_path):] in (WIPE_CHECK_PATH, WIPE_SUCCESS_PATH):
+            # Nextcloud signs in with any credentials sent before the public page runs: a
+            # rejected password gets 401 there too, and counts as a failed sign-in.
+            if "authorization" in request.headers and not self._authorised(request):
+                return httpx.Response(401, content=b'{"message":"Current user is not logged in"}')
             return self._wipe(request, path[len(self.base_path):])
         if not self._authorised(request):
             return httpx.Response(401, content=b'{"message":"Current user is not logged in"}')

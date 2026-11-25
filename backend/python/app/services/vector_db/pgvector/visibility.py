@@ -8,8 +8,8 @@ change to this file and to the vetted function, nowhere else.
 
 SQL parameter numbers are fixed so the fragments can be dropped into any statement: ``$1`` org, ``$2`` collection, and ``$5`` apps,
 ``$6`` groups, ``$7`` roots, ``$8`` direct records, ``$9`` the tool's narrowing list (``$3`` is the space and ``$4`` the query vector
-of the dense statements, ``$10`` the number of rows and ``$11`` the rerank depth). Conditions on the promoted point columns (entity type, kind,
-level, block, ...) are ``extra``: the dense leg binds them from ``$12``; the lexical function cannot apply them, so the lexical leg asks it for
+of the dense statements, ``$10`` the number of rows, ``$11`` the rerank depth and ``$12`` the arms as membership keys, :meth:`Scope.keys`).
+Conditions on the promoted point columns (entity type, kind, level, block, ...) are ``extra``: the dense leg binds them from ``$13``; the lexical function cannot apply them, so the lexical leg asks it for
 more rows and keeps those that satisfy them (``sparse.leg``).
 """
 
@@ -64,7 +64,7 @@ class Scope:
     def key(self) -> str:
         """A cache key: a digest of a canonical encoding, equal for equal scopes (lists and extra conditions) and, unlike ``hash()``, the
         same in every process and without collisions to speak of."""
-        flt = None if self.scope_filter is None else [*self.scope_filter.lists(), self.scope_filter.version, self.scope_filter.generation]
+        flt = None if self.scope_filter is None else [*self.scope_filter.lists(), self.scope_filter.version, self.scope_filter.generation, self.scope_filter.defer]
         canon = json.dumps([self.args(), repr(self.extra), flt], separators=(",", ":"))
         return hashlib.sha256(canon.encode()).hexdigest()
 
@@ -76,9 +76,9 @@ class Scope:
     @property
     def matches_nothing(self) -> bool:
         """Whether the scope filter can trust nothing, so every statement renders ``AND false``: the answer is empty and nothing needs asking."""
-        return self.scope_filter is not None and self.scope_filter.trusts_nothing
+        return self.scope_filter is not None and self.scope_filter.matches_nothing
 
-    def extra_sql(self, first_param: int = 12) -> tuple[str, list]:
+    def extra_sql(self, first_param: int = 13) -> tuple[str, list]:
         """``(" AND (...)", parameters from first_param)`` for the extra conditions and the scope filter, or ``("", [])``."""
         sql, params = "", []
         if self.extra is not None:
@@ -105,19 +105,28 @@ class Scope:
         """Everything a statement adds to its WHERE besides org, collection, space and the membership arms."""
         return self.must() + self.extra_sql()[0]
 
+    @staticmethod
+    def admitted() -> str:
+        """The groups the arms admit, one row each (column ``group_key``)."""
+        return (f"SELECT m.group_key {_GM} AND m.kind = 1 AND m.member_id = ANY($5::text[]) "
+                f"UNION SELECT m.group_key {_GM} AND m.kind = 2 AND m.member_id = ANY($6::text[]) "
+                f"UNION SELECT m.group_key {_GM} AND m.kind = 3 AND m.member_id = ANY($7::text[]) "
+                "UNION SELECT unnest($8::text[])")
+
     def candidates(self) -> str:
         """For the exact tiers: ``AND p.group_key IN (the groups the arms admit)`` plus the narrowing list. Cheap when the arms are
         narrow (index probes), which is when this form is used."""
         if self.whole_org:
             return self.tail()
-        arms = (f"SELECT m.group_key {_GM} AND m.kind = 1 AND m.member_id = ANY($5::text[]) "
-                f"UNION SELECT m.group_key {_GM} AND m.kind = 2 AND m.member_id = ANY($6::text[]) "
-                f"UNION SELECT m.group_key {_GM} AND m.kind = 3 AND m.member_id = ANY($7::text[]) "
-                "UNION SELECT unnest($8::text[])")
-        return f" AND p.group_key IN ({arms}){self.tail()}"
+        return f" AND p.group_key IN ({self.admitted()}){self.tail()}"
+
+    def keys(self) -> list[str]:
+        """The arms as the membership keys a point row carries (``points.member_keys``, retrieval_0006: ``kind:member_id``)."""
+        return [f"{kind}:{m}" for kind, arm in ((1, self.apps), (2, self.groups), (3, self.roots)) for m in arm or ()]
 
     def probe(self) -> str:
-        """For the vector index: ``AND EXISTS (...)`` checked on each row the graph walk returns (a primary-key prefix probe)."""
+        """For the vector index: the arms tested on each row the graph walk returns, by the membership keys the row carries (an array
+        overlap, no read), or for a row whose keys are not known (NULL: written before they were kept) by a primary-key prefix probe."""
         if self.whole_org:
             return self.tail()
         arms = ("(m.kind = 1 AND m.member_id = ANY($5::text[])) OR (m.kind = 2 AND m.member_id = ANY($6::text[])) "
@@ -126,8 +135,9 @@ class Scope:
         # statement (57,640 rows, 7+ ms, for a user who reaches a big share of an org where each record is one chunk): the index tier asks
         # for a few hundred rows, so a primary-key probe per row it returns costs less, and its cost does not grow with the user's reach.
         barrier = " OFFSET 0" if PER_ROW_PROBE else ""
-        return (f" AND (p.group_key = ANY($8::text[]) OR EXISTS (SELECT 1 {_GM} AND m.group_key = p.group_key AND ({arms}){barrier}))"
-                f"{self.tail()}")
+        return (f" AND (p.group_key = ANY($8::text[]) OR CASE WHEN p.member_keys IS NULL"
+                f" THEN EXISTS (SELECT 1 {_GM} AND m.group_key = p.group_key AND ({arms}){barrier})"
+                f" ELSE p.member_keys OPERATOR(pg_catalog.&&) $12::text[] END){self.tail()}")
 
 
 def scope_of(expr: FilterExpression, scope_filter: ScopeFilter | None = None) -> Scope:

@@ -2,7 +2,8 @@ import 'reflect-metadata';
 import { expect } from 'chai';
 import sinon from 'sinon';
 import { ServiceUnavailableError } from '../../../src/libs/errors/http.errors';
-import { configureEnvelope, deriveKey, sign } from '../../../src/libs/context/envelope';
+import { configureEnvelope, configureInbox, deriveKey, sign } from '../../../src/libs/context/envelope';
+import { MemInbox } from '../../helpers/memory-inbox';
 import { currentOrgContext, makeOrgContext, orgContextStorage, runWithOrgContext } from '../../../src/libs/context/orgContext';
 import { KafkaError } from '../../../src/libs/errors/kafka.errors';
 import { createMockLogger, MockLogger } from '../../helpers/mock-logger';
@@ -265,7 +266,10 @@ describe('Kafka Service', () => {
         expect(sendArg.topic).to.equal('test-topic');
         expect(sendArg.messages).to.have.length(1);
         expect(sendArg.messages[0].key).to.equal('msg-key');
-        expect(JSON.parse(sendArg.messages[0].value)).to.deep.equal({ type: 'TEST' });
+        // Every published event carries an event id (a UUID at publish), signed or not.
+        const { eventId, ...body } = JSON.parse(sendArg.messages[0].value);
+        expect(body).to.deep.equal({ type: 'TEST' });
+        expect(eventId).to.match(/^[0-9a-f-]{36}$/);
       });
 
       it('should include headers in the formatted message', async () => {
@@ -596,6 +600,25 @@ describe('Kafka Service', () => {
           const handler = sinon.stub().callsFake(async () => { org = currentOrgContext().orgId as string; });
           await deliver({ payload: { orgId: 'org_z' } }, handler);
           expect(org).to.equal('org_z');
+        });
+
+        it('an event delivered twice runs once for the group (durable inbox)', async () => {
+          configureEnvelope(async () => [KEY]);
+          const inbox = new MemInbox();
+          configureInbox(inbox);
+          try {
+            const handler = sinon.stub().resolves();
+            const m = sign(KEY, 'test-topic', { orgId: 'org_a' }, makeOrgContext({ orgId: 'org_a', userId: 'u', kind: 'user', source: 'jwt' }));
+            mockCons.run.callsFake(async ({ eachMessage }: any) => {
+              for (let i = 0; i < 2; i++)
+                await eachMessage({ topic: 'test-topic', partition: 0, message: { key: null, value: Buffer.from(JSON.stringify(m)), headers: {} } });
+            });
+            await consumer.consume(handler);
+            expect(handler.callCount).to.equal(1);
+            expect([...inbox.rows]).to.deep.equal([`org_a|test-group|${m.ctx.eventId}`]);
+          } finally {
+            configureInbox(null);
+          }
         });
 
         it('the consumer runner does not keep the caller org context', async () => {

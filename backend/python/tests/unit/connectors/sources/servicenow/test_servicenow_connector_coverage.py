@@ -69,6 +69,8 @@ def mock_data_entities_processor():
     proc.on_new_app_users = AsyncMock()
     proc.on_new_record_groups = AsyncMock()
     proc.on_new_records = AsyncMock()
+    proc.on_record_content_update = AsyncMock()
+    proc.get_record_by_external_id = AsyncMock(return_value=None)
     proc.on_new_user_groups = AsyncMock()
     proc.on_record_deleted = AsyncMock()
     proc.full_sync_running = MagicMock(return_value=False)

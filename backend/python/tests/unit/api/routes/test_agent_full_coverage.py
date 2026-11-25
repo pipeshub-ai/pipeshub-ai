@@ -1,10 +1,19 @@
 import json
 import logging
 import uuid
+from collections.abc import Iterator
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import HTTPException
+
+from tests.support.bound_org import bind_test_org
+
+
+@pytest.fixture(autouse=True)
+def _bound_org() -> Iterator[str]:
+    """``authMiddleware`` binds the caller's org; these tests call the route functions directly, as that caller."""
+    yield from bind_test_org("o1")
 
 
 class TestParseKnowledgeSourcesEdgeCases:
@@ -245,12 +254,12 @@ class TestParseRequestBody:
         assert result == {"name": "test"}
 
     def test_empty_body(self):
-        from app.api.routes.agent import _parse_request_body, InvalidRequestError
+        from app.api.routes.agent import InvalidRequestError, _parse_request_body
         with pytest.raises(InvalidRequestError):
             _parse_request_body(b"")
 
     def test_invalid_json(self):
-        from app.api.routes.agent import _parse_request_body, InvalidRequestError
+        from app.api.routes.agent import InvalidRequestError, _parse_request_body
         with pytest.raises(InvalidRequestError):
             _parse_request_body(b"not json")
 
@@ -283,8 +292,8 @@ class TestCreateToolsetEdges:
         gp.batch_upsert_nodes = AsyncMock(side_effect=Exception("db err"))
         toolsets = {"jira": {"displayName": "Jira", "type": "app", "tools": [], "instanceId": None, "instanceName": None}}
         user_info = {"userId": "u1"}
-        created, failed = await _create_toolset_edges("ak1", toolsets, user_info, "uk1", gp, log)
-        assert len(failed) == 1
+        with pytest.raises(Exception, match="db err"):
+            await _create_toolset_edges("ak1", toolsets, user_info, "uk1", gp, log)
 
 
 class TestCreateKnowledgeEdges:
@@ -502,7 +511,9 @@ class TestResolveServiceAccountCallerIdentity:
 class TestEnrichUserInfoForServiceAccountChat:
     @pytest.mark.asyncio
     async def test_missing_created_by(self):
-        from app.api.routes.agent import _enrich_user_info_for_service_account_agent_chat
+        from app.api.routes.agent import (
+            _enrich_user_info_for_service_account_agent_chat,
+        )
         with pytest.raises(HTTPException) as exc_info:
             await _enrich_user_info_for_service_account_agent_chat(
                 {}, AsyncMock(), MagicMock(), "o1"
@@ -512,7 +523,9 @@ class TestEnrichUserInfoForServiceAccountChat:
 
     @pytest.mark.asyncio
     async def test_creator_doc_not_found(self):
-        from app.api.routes.agent import _enrich_user_info_for_service_account_agent_chat
+        from app.api.routes.agent import (
+            _enrich_user_info_for_service_account_agent_chat,
+        )
         gp = AsyncMock()
         gp.get_document = AsyncMock(return_value=None)
         with pytest.raises(HTTPException) as exc_info:
@@ -524,7 +537,9 @@ class TestEnrichUserInfoForServiceAccountChat:
 
     @pytest.mark.asyncio
     async def test_creator_doc_no_user_id(self):
-        from app.api.routes.agent import _enrich_user_info_for_service_account_agent_chat
+        from app.api.routes.agent import (
+            _enrich_user_info_for_service_account_agent_chat,
+        )
         gp = AsyncMock()
         gp.get_document = AsyncMock(return_value={"email": "a@b.com"})
         with pytest.raises(HTTPException) as exc_info:
@@ -536,7 +551,9 @@ class TestEnrichUserInfoForServiceAccountChat:
 
     @pytest.mark.asyncio
     async def test_success(self):
-        from app.api.routes.agent import _enrich_user_info_for_service_account_agent_chat
+        from app.api.routes.agent import (
+            _enrich_user_info_for_service_account_agent_chat,
+        )
         gp = AsyncMock()
         gp.get_document = AsyncMock(return_value={
             "userId": "u1", "orgId": "o1", "email": "creator@co.com"
@@ -794,7 +811,7 @@ class TestUpdateAgentServiceAccountGuards:
     @pytest.mark.asyncio
     async def test_no_reasoning_model(self):
         """Line 2621-2622 — missing reasoning model."""
-        from app.api.routes.agent import update_agent, InvalidRequestError
+        from app.api.routes.agent import InvalidRequestError, update_agent
         request = MagicMock()
         request.body = AsyncMock(return_value=json.dumps({
             "models": [{"modelKey": "mk1", "isReasoning": False}],
@@ -814,7 +831,7 @@ class TestUpdateAgentServiceAccountGuards:
     @pytest.mark.asyncio
     async def test_sa_downgrade_blocked(self):
         """Line 2648 — SA → regular blocked."""
-        from app.api.routes.agent import update_agent, InvalidRequestError
+        from app.api.routes.agent import InvalidRequestError, update_agent
         request = MagicMock()
         request.body = AsyncMock(return_value=json.dumps({
             "isServiceAccount": False,
@@ -851,7 +868,7 @@ class TestUpdateAgentServiceAccountGuards:
             "logger": MagicMock(),
         }
         services["graph_provider"].check_agent_permission = AsyncMock(
-            return_value={"can_edit": True}
+            return_value={"can_edit": True, "can_share": True, "user_role": "OWNER"}
         )
         services["graph_provider"].get_agent = AsyncMock(
             return_value={"isServiceAccount": False, "shareWithOrg": False}
@@ -899,7 +916,7 @@ class TestUpdateAgentServiceAccountGuards:
     @pytest.mark.asyncio
     async def test_sa_cannot_unshare(self):
         """Line 2682-2686 — SA agent cannot disable org sharing."""
-        from app.api.routes.agent import update_agent, InvalidRequestError
+        from app.api.routes.agent import InvalidRequestError, update_agent
         request = MagicMock()
         request.body = AsyncMock(return_value=json.dumps({
             "shareWithOrg": False,
@@ -961,9 +978,7 @@ class TestDeleteAgentServiceAccountCleanup:
         with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
              patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}), \
              patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"_key": "uk1"}), \
-             patch.dict("sys.modules", {
-                 "app.connectors.core.base.token_service.startup_service": MagicMock(startup_service=mock_startup),
-             }):
+             patch("app.connectors.core.base.token_service.startup_service.startup_service", mock_startup):
             result = await delete_agent(request, "a1")
 
         assert result.status_code == 200
@@ -995,7 +1010,9 @@ class TestDeleteAgentServiceAccountCleanup:
              patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"_key": "uk1"}):
             with pytest.raises(HTTPException) as exc_info:
                 await delete_agent(request, "a1")
-            assert exc_info.value.status_code == 400
+            # Our failure, not the caller's: a 500 raised from it, which the request's line classes.
+            assert exc_info.value.status_code == 500
+            assert isinstance(exc_info.value.__cause__, RuntimeError)
 
         services["graph_provider"].rollback_transaction.assert_called_once()
 
@@ -1124,8 +1141,9 @@ class TestMarkDeprecatedToolsEdgeCases:
 
     def test_noop_on_normal_agent(self):
         """No-op must not mutate the agent or raise."""
-        from app.api.routes.agent import _mark_deprecated_tools
         import copy
+
+        from app.api.routes.agent import _mark_deprecated_tools
         agent = {"toolsets": [{"tools": [
             {"fullName": "jira.search"},
             {"fullName": "old.tool"},
@@ -1169,7 +1187,7 @@ class TestGetAgentTemplatesEdgeCases:
              patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"_key": "uk1"}):
             with pytest.raises(HTTPException) as exc_info:
                 await get_agent_templates(request)
-            assert exc_info.value.status_code == 400
+            assert exc_info.value.status_code == 500
 
 
 # ============================================================================

@@ -48,3 +48,27 @@ def test_reads_the_environment_on_every_call(monkeypatch: pytest.MonkeyPatch) ->
 
     monkeypatch.setenv(_FEATURE, "false")
     assert accuracy_feature_enabled(_FEATURE) is False
+
+
+@pytest.mark.parametrize(
+    ("hf", "tf", "expected"),
+    [
+        (None, None, False),
+        ("1", None, True),
+        ("on", None, True),
+        (" 1 ", None, False),
+        (None, "1", True),
+        ("", "true", True),
+        ("0", "1", False),
+        (None, " 1 ", False),
+    ],
+)
+def test_hf_hub_offline_mirrors_huggingface_hub(monkeypatch, hf, tf, expected) -> None:
+    from app.utils.env_utils import hf_hub_offline
+
+    for name, value in (("HF_HUB_OFFLINE", hf), ("TRANSFORMERS_OFFLINE", tf)):
+        if value is None:
+            monkeypatch.delenv(name, raising=False)
+        else:
+            monkeypatch.setenv(name, value)
+    assert hf_hub_offline() is expected

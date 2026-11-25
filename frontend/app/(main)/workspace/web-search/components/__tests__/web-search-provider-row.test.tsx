@@ -47,3 +47,26 @@ describe('WebSearchProviderRow — the default', () => {
     expect(screen.queryByText('workspace.webSearch.actions.setDefault')).toBeNull();
   });
 });
+
+describe('WebSearchProviderRow — DuckDuckGo', () => {
+  it('warns that it is unofficial scraping', () => {
+    row('duckduckgo', false);
+    expect(screen.getByText('workspace.webSearch.duckduckgoWarning')).toBeTruthy();
+  });
+
+  it('can be chosen before it is stored, since it needs no settings', () => {
+    row('duckduckgo', false);
+    expect(screen.getByText('workspace.webSearch.actions.setDefault')).toBeTruthy();
+    expect(screen.queryByLabelText(/deleteConfiguration/)).toBeNull();
+  });
+
+  it('can be removed once an admin has chosen it', () => {
+    row('duckduckgo', true);
+    expect(screen.getByLabelText(/deleteConfiguration/)).toBeTruthy();
+  });
+
+  it('is the only provider with the warning', () => {
+    row('serper');
+    expect(screen.queryByText('workspace.webSearch.duckduckgoWarning')).toBeNull();
+  });
+});

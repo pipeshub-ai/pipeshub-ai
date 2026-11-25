@@ -99,7 +99,7 @@ export function KbNodeNameIcon({
         <MaterialIcon
           name="extension"
           size={size}
-          color={isSelected ? 'var(--accent-9)' : 'var(--slate-11)'}
+          color={isSelected ? 'var(--accent-11)' : 'var(--slate-11)'}
         />
       );
     }
@@ -108,7 +108,7 @@ export function KbNodeNameIcon({
 
   if (isFolder) {
     return withAppMark(
-      <FolderIcon variant="default" size={size} color="var(--accent-9)" />,
+      <FolderIcon variant="default" size={size} color="var(--accent-11)" />,
       connector,
       size,
     );
@@ -118,7 +118,7 @@ export function KbNodeNameIcon({
   // show a muted document icon so they read as distinct from real synced records.
   if (isPlaceholder) {
     return withAppMark(
-      <MaterialIcon name="description" size={size} color="var(--slate-9)" />,
+      <MaterialIcon name="description" size={size} color="var(--slate-11)" />,
       connector,
       size,
     );

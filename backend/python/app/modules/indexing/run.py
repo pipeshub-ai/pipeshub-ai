@@ -169,14 +169,22 @@ class IndexingPipeline:
             raise EmbeddingDeletionError(
                 "Refusing to delete vector points without an organisation", record_id=virtual_record_id
             )
+        from app.modules.transformers.vectorstore import (
+            fenced_delete,
+            hold_virtual_record,
+        )
+
         collection_name = self.collection_registry.resolve_write_collection(ctx)
         filter_dict = await self.vector_db_service.filter_collection(
             must={"orgId": ctx.org_id, "virtualRecordId": virtual_record_id}
         )
-        await self.vector_db_service.delete_points(
-            collection_name=collection_name,
-            filter=filter_dict,
-        )
+        # Under the virtual record's lease, like every other write of its points: a sibling record that holds it is writing them.
+        async with hold_virtual_record(f"reindex-delete:{virtual_record_id}", ctx.org_id, virtual_record_id):
+            async with fenced_delete("the delete before a vector-only reindex"):
+                await self.vector_db_service.delete_points(
+                    collection_name=collection_name,
+                    filter=filter_dict,
+                )
         self.logger.info(
             "Deleted existing vector points for virtual_record_id %s in %s before re-embed",
             virtual_record_id,

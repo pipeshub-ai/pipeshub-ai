@@ -464,11 +464,17 @@ class TestGraphTransactionStore:
 
     @pytest.mark.asyncio
     async def test_get_user_by_email(self, tx_store, mock_graph_provider) -> None:
-        result = await tx_store.get_user_by_email("test@example.com")
+        result = await tx_store.get_user_by_email("test@example.com", org_id="org-1")
         assert result is None
         mock_graph_provider.get_user_by_email.assert_awaited_once_with(
-            "test@example.com", transaction="txn-123", raise_on_error=False
+            "test@example.com", transaction="txn-123", raise_on_error=False, org_id="org-1"
         )
+        await tx_store.get_user_by_email("other@example.com", raise_on_error=True, org_id="org-1")
+        assert mock_graph_provider.get_user_by_email.await_args == call(
+            "other@example.com", transaction="txn-123", raise_on_error=True, org_id="org-1"
+        )
+        with pytest.raises(TypeError):      # no unscoped read: an address is unique only within an org
+            await tx_store.get_user_by_email("test@example.com")  # type: ignore[call-arg]
 
     @pytest.mark.asyncio
     async def test_get_users_by_emails_asks_once_and_remembers_the_members(self, tx_store, mock_graph_provider) -> None:
@@ -499,7 +505,6 @@ class TestGraphTransactionStore:
     @pytest.mark.parametrize(
         ("method", "args"),
         [
-            ("get_user_by_email", ("test@example.com",)),
             ("get_person_by_email", ("test@example.com", "org-1")),
             ("upsert_person_by_email", (Person(email="test@example.com", org_id="org-1"),)),
         ],
@@ -819,8 +824,8 @@ class TestGraphTransactionStore:
 
     @pytest.mark.asyncio
     async def test_batch_upsert_app_users(self, tx_store, mock_graph_provider) -> None:
-        await tx_store.batch_upsert_app_users([])
-        mock_graph_provider.batch_upsert_app_users.assert_awaited_once_with([], transaction="txn-123")
+        await tx_store.batch_upsert_app_users([], "org-1")
+        mock_graph_provider.batch_upsert_app_users.assert_awaited_once_with([], transaction="txn-123", org_id="org-1")
 
     @pytest.mark.asyncio
     async def test_get_first_user_with_permission_to_node(self, tx_store, mock_graph_provider) -> None:
@@ -923,6 +928,13 @@ class TestGraphTransactionStore:
         mock_graph_provider.get_all_orgs.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_get_all_orgs_passes_raise_on_error(self, tx_store, mock_graph_provider) -> None:
+        await tx_store.get_all_orgs(is_external=True, raise_on_error=True)
+        mock_graph_provider.get_all_orgs.assert_awaited_once_with(
+            active=True, is_external=True, transaction="txn-123", raise_on_error=True
+        )
+
+    @pytest.mark.asyncio
     async def test_create_user_groups(self, tx_store, mock_graph_provider) -> None:
         group = MagicMock()
         group.to_arango_base_user_group.return_value = {"_key": "g1"}
@@ -994,7 +1006,14 @@ class TestGraphTransactionStore:
     async def test_get_edges_from_node(self, tx_store, mock_graph_provider) -> None:
         await tx_store.get_edges_from_node("node1", "edge_coll")
         mock_graph_provider.get_edges_from_node.assert_awaited_once_with(
-            "node1", "edge_coll", transaction="txn-123"
+            "node1", "edge_coll", transaction="txn-123", raise_on_error=False
+        )
+
+    @pytest.mark.asyncio
+    async def test_get_edges_from_node_passes_raise_on_error(self, tx_store, mock_graph_provider) -> None:
+        await tx_store.get_edges_from_node("node1", "edge_coll", raise_on_error=True)
+        mock_graph_provider.get_edges_from_node.assert_awaited_once_with(
+            "node1", "edge_coll", transaction="txn-123", raise_on_error=True
         )
 
     @pytest.mark.asyncio
@@ -1046,8 +1065,13 @@ class TestGraphTransactionStore:
     async def test_get_nodes_by_field_in(self, tx_store, mock_graph_provider) -> None:
         await tx_store.get_nodes_by_field_in("records", "status", ["active"], return_fields=["_key"])
         mock_graph_provider.get_nodes_by_field_in.assert_awaited_once_with(
-            "records", "status", ["active"], ["_key"], transaction="txn-123"
+            "records", "status", ["active"], ["_key"], transaction="txn-123", raise_on_error=False
         )
+
+    @pytest.mark.asyncio
+    async def test_get_nodes_by_field_in_forwards_raise_on_error(self, tx_store, mock_graph_provider) -> None:
+        await tx_store.get_nodes_by_field_in("records", "status", ["active"], raise_on_error=True)
+        assert mock_graph_provider.get_nodes_by_field_in.await_args.kwargs["raise_on_error"] is True
 
     @pytest.mark.asyncio
     async def test_remove_nodes_by_field(self, tx_store, mock_graph_provider) -> None:
@@ -1160,7 +1184,7 @@ class TestGraphTransactionStoreRecordGroupPermissions:
 
     @pytest.mark.asyncio
     async def test_empty_permissions_returns_early(self, tx_store, mock_graph_provider) -> None:
-        await tx_store.batch_upsert_record_group_permissions("grp1", [], "conn1")
+        await tx_store.batch_upsert_record_group_permissions("grp1", [], "conn1", "org-1")
         mock_graph_provider.batch_create_edges.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -1170,7 +1194,7 @@ class TestGraphTransactionStoreRecordGroupPermissions:
         perm.email = "missing@example.com"
         mock_graph_provider.get_user_by_email.return_value = None
 
-        await tx_store.batch_upsert_record_group_permissions("grp1", [perm], "conn1")
+        await tx_store.batch_upsert_record_group_permissions("grp1", [perm], "conn1", "org-1")
         mock_graph_provider.batch_create_edges.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -1183,7 +1207,7 @@ class TestGraphTransactionStoreRecordGroupPermissions:
         perm.email = "user@example.com"
         perm.to_arango_permission = MagicMock(return_value={"edge": "data"})
 
-        await tx_store.batch_upsert_record_group_permissions("grp1", [perm], "conn1")
+        await tx_store.batch_upsert_record_group_permissions("grp1", [perm], "conn1", "org-1")
         mock_graph_provider.batch_create_edges.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -1193,7 +1217,7 @@ class TestGraphTransactionStoreRecordGroupPermissions:
         perm.external_id = "missing_group"
         mock_graph_provider.get_user_group_by_external_id.return_value = None
 
-        await tx_store.batch_upsert_record_group_permissions("grp1", [perm], "conn1")
+        await tx_store.batch_upsert_record_group_permissions("grp1", [perm], "conn1", "org-1")
         mock_graph_provider.batch_create_edges.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -1206,7 +1230,7 @@ class TestGraphTransactionStoreRecordGroupPermissions:
         perm.external_id = "ext_group_1"
         perm.to_arango_permission = MagicMock(return_value={"edge": "data"})
 
-        await tx_store.batch_upsert_record_group_permissions("grp1", [perm], "conn1")
+        await tx_store.batch_upsert_record_group_permissions("grp1", [perm], "conn1", "org-1")
         mock_graph_provider.batch_create_edges.assert_awaited_once()
 
 

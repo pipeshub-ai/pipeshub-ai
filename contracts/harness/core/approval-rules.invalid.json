@@ -1,0 +1,78 @@
+[
+  {
+    "description": "no unknown key",
+    "instance": {
+      "network": "deny"
+    }
+  },
+  {
+    "description": "a level is allow, ask or deny",
+    "instance": {
+      "writes": "maybe"
+    }
+  },
+  {
+    "description": "no unknown effect class",
+    "instance": {
+      "classes": {
+        "network": "deny"
+      }
+    }
+  },
+  {
+    "description": "a tool rule is a level",
+    "instance": {
+      "tools": {
+        "jira.create_issue": true
+      }
+    }
+  },
+  {
+    "description": "classes is an object",
+    "instance": {
+      "classes": [
+        "write"
+      ]
+    }
+  },
+  {
+    "description": "a flow level is off, ask or deny",
+    "instance": {
+      "flow": {
+        "level": "maybe"
+      }
+    }
+  },
+  {
+    "description": "a flow rule names its level",
+    "instance": {
+      "flow": {
+        "above": "private"
+      }
+    }
+  },
+  {
+    "description": "a flow threshold is public or private",
+    "instance": {
+      "flow": {
+        "level": "ask",
+        "above": "secret"
+      }
+    }
+  },
+  {
+    "description": "no unknown flow key",
+    "instance": {
+      "flow": {
+        "level": "ask",
+        "sink": "external"
+      }
+    }
+  },
+  {
+    "description": "flow is an object",
+    "instance": {
+      "flow": "ask"
+    }
+  }
+]

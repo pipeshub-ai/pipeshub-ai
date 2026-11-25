@@ -11,6 +11,7 @@ from __future__ import annotations
 import ast
 import asyncio
 import builtins
+import contextlib
 import errno
 import io
 import json
@@ -19,10 +20,12 @@ import signal
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 import pytest
 
+from app.services.resource_governor import lane_ledger
 from app.services.resource_governor import lanes as lanes_module
 from app.services.resource_governor.lanes import (
     LaneBudget,
@@ -39,13 +42,14 @@ from tests.unit.lane_gauge import (
     first_line,
     gauge_job,
     max_overlap,
-    now,
     reap,
     start_role,
+    start_together,
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    import subprocess
+    from collections.abc import Callable, Iterator
 
 GIB = 2**30
 
@@ -176,12 +180,11 @@ class TestOneBudget:
 class TestAcrossProcesses:
     def test_processes_in_one_domain_share_the_limit(self, lane_dir: Path, tmp_path: Path) -> None:
         gauge = tmp_path / "gauge"
-        start_at = now() + 1.0
         args = {
             "dir": str(lane_dir), "lanes": 2, "gauge": str(gauge), "seconds": 3.0,
-            "job_seconds": 0.05, "threads": 4, "start_at": start_at,
+            "job_seconds": 0.05, "threads": 4,
         }
-        procs = [start_role("run", args) for _ in range(3)]
+        procs, _ = start_together("run", args, 3)
         try:
             results = []
             for proc in procs:
@@ -200,13 +203,14 @@ class TestAcrossProcesses:
         for round_no in range(3):
             directory = lane_dir / f"r{round_no}"
             directory.mkdir(parents=True, mode=0o700)
-            start_at = now() + 1.2
             args = {
                 "dir": str(directory), "lanes": 8, "mem_limit": 10 * GIB, "mem_raw": int(9.5 * GIB),
-                "ws": int(0.75 * GIB), "start_at": start_at, "stop_at": start_at + 1.0, "calls": 40,
+                "ws": int(0.75 * GIB), "stop_after": 1.0, "calls": 40,
             }
-            blip = start_role("lock_blip", {"dir": str(directory), "start_at": start_at - 0.05, "seconds": 0.15})
-            procs = [start_role("admit", args) for _ in range(6)]
+            procs, blip = start_together(
+                "admit", args, 6, blip={"dir": str(directory), "before": 0.05, "seconds": 0.15}
+            )
+            assert blip is not None
             try:
                 admitted = sum(sum(first_line(p)["admitted"]) for p in procs)
                 for p in procs:
@@ -245,12 +249,11 @@ class TestAcrossProcesses:
         )
         try:
             assert first_line(holder)["admitted"] is True  # a resident exists: nobody is exempt
-            start_at = now() + 1.2
             args = {
                 "dir": str(lane_dir), "lanes": 16, "mem_limit": 10 * GIB, "mem_raw": GIB,
-                "ws": int(0.01 * GIB), "start_at": start_at, "stop_at": start_at + 0.6,
+                "ws": int(0.01 * GIB), "stop_after": 0.6,
             }
-            procs = [start_role("admit", args) for _ in range(8)]
+            procs, _ = start_together("admit", args, 8)
             try:
                 admitted = sum(first_line(p)["admitted"][0] for p in procs)
                 for p in procs:
@@ -406,29 +409,92 @@ class TestAcrossProcesses:
 # ---------------------------------------------------------------------------
 
 
-class TestStoppedHolder:
-    @staticmethod
-    def _p99_ms(budget: LaneBudget, seconds: float) -> tuple[float, float]:
-        lease_ms, count_ms = [], []
-        end = time.monotonic() + seconds
-        while time.monotonic() < end:
-            start = time.perf_counter()
-            lease = budget.try_acquire()
-            lease_ms.append((time.perf_counter() - start) * 1000)
-            if lease is not None:
-                lease.release()
-            start = time.perf_counter()
-            budget.held_count()
-            count_ms.append((time.perf_counter() - start) * 1000)
-            time.sleep(0.005)
-        lease_ms.sort()
-        count_ms.sort()
-        return lease_ms[int(0.99 * (len(lease_ms) - 1))], count_ms[int(0.99 * (len(count_ms) - 1))]
+class TestStartTogether:
+    """The barrier helper itself: a failed start must not leave children behind."""
 
-    def test_pollers_behind_a_stopped_holder_do_not_stall_leases(self, lane_dir: Path) -> None:
+    def test_a_child_that_dies_before_ready_takes_its_siblings_with_it(
+        self, lane_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import tests.unit.lane_gauge as gauge_module
+
+        started: list = []
+        real = gauge_module.start_role
+
+        def recording(*a: object, **k: object) -> subprocess.Popen:
+            proc = real(*a, **k)
+            started.append(proc)
+            return proc
+
+        monkeypatch.setattr(gauge_module, "start_role", recording)
+        args = {"dir": str(lane_dir), "lanes": 4, "mem_limit": 10 * GIB, "mem_raw": GIB, "stop_after": 0.1}
+        try:
+            # The blip has no "dir", so it dies before it reports ready.
+            with pytest.raises(json.JSONDecodeError):
+                start_together("admit", args, 2, blip={"seconds": 0.1})
+            assert len(started) == 3
+            assert all(proc.poll() is not None for proc in started)
+        finally:
+            reap(*started)
+
+    def test_a_child_gives_up_when_the_go_file_never_comes(self, lane_dir: Path, tmp_path: Path) -> None:
+        args = {
+            "dir": str(lane_dir), "lanes": 4, "mem_limit": 10 * GIB, "mem_raw": GIB, "stop_after": 0.1,
+            "go": str(tmp_path / "never.go"), "go_timeout": 0.5,
+        }
+        proc = start_role("admit", args)
+        try:
+            assert first_line(proc) == {"ready": True}
+            assert proc.wait(timeout=15) != 0
+        finally:
+            reap(proc)
+
+
+class TestStoppedHolder:
+    """Counted, not timed: a ledger transaction tries the lock once, then once more after each 1 ms sleep until its
+    budget is spent, so one that waits only for its budget makes at most budget / 1 ms retries however slowly the host
+    runs it; a wall-clock p99 would also hold the time the host kept this thread off the CPU."""
+
+    def test_pollers_behind_a_stopped_holder_do_not_stall_leases(
+        self, lane_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         budget = LaneBudget.open(plan(8), lane_dir, memory_reader=Mem(10 * GIB, GIB), fallback_seconds=0.5)
         holder = start_role("hold_lock", {"dir": str(lane_dir)})
         stop = threading.Event()
+        caller = threading.get_ident()
+        retries = 0
+        most: list[int] = []
+        real_transaction = lane_ledger.DomainLedger.transaction
+
+        def retry_sleep(seconds: float) -> None:
+            nonlocal retries
+            if threading.get_ident() == caller:
+                retries += 1
+            time.sleep(seconds)
+
+        @contextlib.contextmanager
+        def counted_transaction(ledger: lane_ledger.DomainLedger) -> Iterator[lane_ledger.LedgerTxn | None]:
+            nonlocal retries
+            mine = threading.get_ident() == caller
+            if mine:
+                retries = 0
+            with real_transaction(ledger) as txn:
+                if mine:
+                    most.append(retries)
+                yield txn
+
+        monkeypatch.setattr(lane_ledger, "time", SimpleNamespace(monotonic=time.monotonic, sleep=retry_sleep))
+        monkeypatch.setattr(lane_ledger.DomainLedger, "transaction", counted_transaction)
+
+        def calls(seconds: float) -> list[int]:
+            most.clear()
+            end = time.monotonic() + seconds
+            while time.monotonic() < end:
+                lease = budget.try_acquire()
+                if lease is not None:
+                    lease.release()
+                budget.held_count()
+                time.sleep(0.005)
+            return list(most)
 
         def poll() -> None:
             while not stop.is_set():
@@ -441,10 +507,10 @@ class TestStoppedHolder:
             os.kill(holder.pid, signal.SIGSTOP)
             for t in pollers:
                 t.start()
-            lease_before, count_before = self._p99_ms(budget, 0.4)  # not yet degraded
+            before = calls(0.4)  # not yet degraded
             time.sleep(0.8)
             assert budget.stats()["ledger"] == "degraded"
-            lease_after, count_after = self._p99_ms(budget, 0.8)
+            after = calls(0.8)
         finally:
             stop.set()
             for t in pollers:
@@ -452,11 +518,13 @@ class TestStoppedHolder:
             os.kill(holder.pid, signal.SIGCONT)
             reap(holder)
             budget.close()
-        # The lock budget is 20 ms; an unrelated caller must not wait for it at all.
-        for value in (lease_before, count_before, lease_after, count_after):
-            assert value < 80, (lease_before, count_before, lease_after, count_after)
+        # The lock budget is 20 ms: a transaction waits for no more than it, and once degraded not at all.
+        assert before and max(before) <= round(lane_ledger.LEDGER_LOCK_BUDGET / 0.001), before
+        assert after and max(after) == 0, after
 
-    def test_a_degraded_process_tries_the_lock_once_per_call(self, lane_dir: Path) -> None:
+    def test_a_degraded_process_tries_the_lock_once_per_call(
+        self, lane_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         budget = LaneBudget.open(plan(8), lane_dir, memory_reader=Mem(10 * GIB, GIB), fallback_seconds=0.0)
         holder = start_role("hold_lock", {"dir": str(lane_dir)})
         try:
@@ -464,10 +532,13 @@ class TestStoppedHolder:
             os.kill(holder.pid, signal.SIGSTOP)
             budget.admit_spawn(0)  # fails the lock: now degraded
             assert budget._ledger.degraded
-            start = time.perf_counter()
+            retry_sleeps: list[float] = []
+            monkeypatch.setattr(
+                lane_ledger, "time", SimpleNamespace(monotonic=time.monotonic, sleep=retry_sleeps.append)
+            )
             for _ in range(20):
                 budget.admit_spawn(0)
-            assert (time.perf_counter() - start) / 20 < 0.01  # no 20 ms retry loop per call
+            assert retry_sleeps == []  # no 20 ms retry loop per call
         finally:
             os.kill(holder.pid, signal.SIGCONT)
             reap(holder)
@@ -549,11 +620,12 @@ class TestClose:
         for t in threads:
             t.start()
         time.sleep(0.1)
-        start = time.monotonic()
         budget.close()
         for t in threads:
-            t.join(timeout=2)
-        assert time.monotonic() - start < 1.0
+            t.join(timeout=30)  # bounds a hang only
+        # Ended by the close, not timed: close() only marks the budget closed, and each waiter raises LaneBudgetClosed
+        # at its next poll (try_acquire checks it first). A budget left open would keep them polling to their own 10 s
+        # timeout and LaneWaitTimeout. (It was "closed within 1 s", which a busy runner can stretch.)
         assert len(outcome) == 4
         assert all(isinstance(o, LaneBudgetClosed) for o in outcome), outcome
         held.release()  # after close: no EBADF
@@ -732,7 +804,7 @@ class TestModes:
         try:
             stats = budget.stats()
             assert stats["slots"] == "shared" and stats["ledger"] == "ok"
-            (directory,) = [p for p in tmp_path.iterdir() if p.name.startswith("pipeshub-cpu-lanes-v1-64")]
+            (directory,) = [p for p in tmp_path.iterdir() if p.name.startswith("pipeshub-cpu-lanes-v3-64")]
             assert {"run", "resident", "ledger", "ledger.lock"} <= {p.name for p in directory.iterdir()}
             assert "presence" not in {p.name for p in directory.iterdir()}  # taken by the first pool, not by open()
         finally:

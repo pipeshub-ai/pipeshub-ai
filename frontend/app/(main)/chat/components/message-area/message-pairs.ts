@@ -1,7 +1,11 @@
 import type { AppliedFilters, AskUserQuestionAnswer, AskUserQuestionPayload, AttachmentRef, MessagePart } from '../../types';
-import type { ConfidenceLevel, ModelInfo } from '../../types';
+import type { ConfidenceLevel, ConversationMessage, ModelInfo, BudgetScope } from '../../types';
 import type { CitationMaps } from './response-tabs/citations';
+import { messageRunId } from '../../activity';
+import type { SentCommand } from '../../commands';
 import type { ChatStreamErrorInfo } from '../../stream-error';
+import type { CutShortReason } from '@/lib/contracts/harness/generated/core/enums';
+import type { AccessNotice } from '@/app/components/feedback/access-notice';
 
 export interface MessagePair {
   key: string;
@@ -12,6 +16,7 @@ export interface MessagePair {
   citationMaps: CitationMaps;
   confidence?: ConfidenceLevel;
   searchDegraded?: boolean;
+  accessNotices?: AccessNotice[];
   isStreaming: boolean;
   modelInfo?: ModelInfo;
   feedbackInfo?: { value?: 'like' | 'dislike' };
@@ -22,15 +27,31 @@ export interface MessagePair {
   createdAt?: string;
   /** Attachments uploaded with this user query (PDF / JPEG / PNG). */
   attachments?: AttachmentRef[];
+  /** The /command the question was sent as (SLASH1). */
+  command?: SentCommand;
   /** Persisted ask_user_question payload from a historical tool_call (read-only display) */
   persistedAskUserQuestion?: AskUserQuestionPayload;
   persistedAskUserQuestionAnswers?: Record<string, AskUserQuestionAnswer>;
   /** Persisted agent-activity transcript (absent for older / legacy-protocol messages) */
   persistedParts?: MessagePart[];
+  /** The durable run that wrote this answer, when it is known. */
+  runId?: string;
+  /** Copied from another conversation by a fork: its run views stay with the original. */
+  copied?: boolean;
   /** Set when this response was cut short by a user-initiated Stop. */
   status?: 'stopped';
+  /** The limit that cut the run's work short (BUDGETEND): the answer shows a notice. */
+  truncatedBy?: CutShortReason;
+  /** With `truncatedBy` `budget`: which budget beyond the run's own ran out (C9.06, WP-51). */
+  budgetScope?: BudgetScope;
+  /** ANSWER-CONTRACT-FU-2: the saved message's not-found fact (its final part may be a live one). */
+  notFound?: unknown;
+  /** R32REPO-FU-1: the saved message's "could not do" fact. */
+  limits?: unknown;
   /** The server's error code and details when this reply is a failed run (live turns only). */
   streamError?: ChatStreamErrorInfo;
+  /** The server withheld this answer (a record it used is no longer readable, or access was not confirmed). */
+  answerHidden?: ConversationMessage['answerHidden'];
   /** No assistant row follows this question — render the question alone, no answer area. */
   unanswered?: boolean;
 }
@@ -54,9 +75,16 @@ type AssistantCustom = {
   persistedAskUserQuestionAnswers?: Record<string, AskUserQuestionAnswer>;
   persistedParts?: MessagePart[];
   status?: 'stopped';
+  truncatedBy?: CutShortReason;
+  budgetScope?: BudgetScope;
+  notFound?: unknown;
+  limits?: unknown;
   streamError?: ChatStreamErrorInfo;
+  copied?: boolean;
+  answerHidden?: ConversationMessage['answerHidden'];
   /** A search behind this answer was answered from a partial search. */
   searchDegraded?: boolean;
+  accessNotices?: AccessNotice[];
 };
 
 type UserCustom = {
@@ -64,6 +92,7 @@ type UserCustom = {
   appliedFilters?: AppliedFilters;
   createdAt?: string;
   attachments?: AttachmentRef[];
+  command?: SentCommand;
 };
 
 export interface BuildMessagePairsOptions {
@@ -131,6 +160,7 @@ export function buildMessagePairs(
         appliedFilters: userCustom?.appliedFilters,
         createdAt: userCustom?.createdAt,
         attachments: userCustom?.attachments,
+        command: userCustom?.command,
         unanswered: true,
       });
       continue;
@@ -178,6 +208,7 @@ export function buildMessagePairs(
           : (metadata?.citationMaps || emptyCitationMaps),
         confidence: metadata?.confidence,
         searchDegraded: metadata?.searchDegraded === true,
+        ...(metadata?.accessNotices?.length ? { accessNotices: metadata.accessNotices } : {}),
         isStreaming: isCurrentlyStreaming || isBeingRegenerated,
         modelInfo: metadata?.modelInfo,
         feedbackInfo: metadata?.feedbackInfo,
@@ -187,11 +218,19 @@ export function buildMessagePairs(
         appliedFilters: userMsgCustom?.appliedFilters,
         createdAt: userMsgCustom?.createdAt,
         attachments: userMsgCustom?.attachments,
+        command: userMsgCustom?.command,
         persistedAskUserQuestion: metadata?.persistedAskUserQuestion,
         persistedAskUserQuestionAnswers: metadata?.persistedAskUserQuestionAnswers,
         persistedParts: metadata?.persistedParts,
+        runId: messageRunId(msg.metadata?.custom) ?? undefined,
+        ...(metadata?.copied === true ? { copied: true } : {}),
         status: metadata?.status,
+        truncatedBy: metadata?.truncatedBy,
+        budgetScope: metadata?.budgetScope,
+        notFound: metadata?.notFound,
+        limits: metadata?.limits,
         streamError: metadata?.streamError,
+        answerHidden: metadata?.answerHidden,
       });
     }
   }

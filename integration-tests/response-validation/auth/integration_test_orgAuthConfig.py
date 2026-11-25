@@ -19,8 +19,8 @@ via :func:`openapi_schema_validator.assert_request_body_matches_openapi_operatio
 :func:`openapi_schema_validator.assert_response_matches_openapi_operation`).
 
 Notes:
-  - These routes use session-based JWT auth (userValidator / adminValidator),
-    NOT OAuth tokens.  The tests obtain an access token via the
+  - These routes need an interactive session JWT and an admin (authenticate,
+    requireSessionAuth, userAdminCheck); OAuth tokens and PATs get 403.  The tests obtain an access token via the
     initAuth -> authenticate flow using PIPESHUB_TEST_USER_EMAIL and
     PIPESHUB_TEST_USER_PASSWORD.
 
@@ -104,15 +104,15 @@ class TestGetAuthMethods(OrgAuthConfigTestBase):
     def test_get_auth_methods_negative_tests(self) -> None:
         """Missing auth, error-vs-success schema"""
         resp = self.auth.get_auth_methods(auth=False)
-        assert resp.status_code == 400, (
-            f"Expected 400 (missing Authorization), got {resp.status_code}: {resp.text}"
+        assert resp.status_code == 401, (
+            f"Expected 401 (missing Authorization), got {resp.status_code}: {resp.text}"
         )
         body = resp.json()
         err = body.get("error", {})
         assert err.get("message"), f"Expected error envelope: {resp.text}"
-        # userAuthentication → validateJwt: no Authorization header
-        assert err["message"] == "Authorization header not found", (
-            f"Expected BadRequest from JWT helper; got message={err.get('message')!r}"
+        # authMiddleware.authenticate: no Authorization header
+        assert err["message"] == "No token provided", (
+            f"Expected Unauthorized from authenticate; got message={err.get('message')!r}"
         )
 
         # Documented success response must not accept an error-shaped body
@@ -121,7 +121,7 @@ class TestGetAuthMethods(OrgAuthConfigTestBase):
                 body, "getAuthMethods"
             )
 
-        # Must match components/schemas/ErrorResponse (e.g. 400 on this operation)
+        # Must match components/schemas/ErrorResponse (e.g. 401 on this operation)
         assert_response_matches_openapi_ref(
             body, "#/components/schemas/ErrorResponse"
         )
@@ -151,14 +151,14 @@ class TestSetUpAuthConfig(OrgAuthConfigTestBase):
     def test_set_up_auth_config_negative_tests(self) -> None:
         """Missing auth: exact message, success schema rejection, ErrorResponse shape."""
         resp = self.auth.setup_auth_config(auth=False, json={})
-        assert resp.status_code == 400, (
-            f"Expected 400 (missing Authorization), got {resp.status_code}: {resp.text}"
+        assert resp.status_code == 401, (
+            f"Expected 401 (missing Authorization), got {resp.status_code}: {resp.text}"
         )
         body = resp.json()
         err = body.get("error", {})
         assert err.get("message"), f"Expected error envelope: {resp.text}"
-        assert err["message"] == "Authorization header not found", (
-            f"Expected BadRequest from JWT helper; got message={err.get('message')!r}"
+        assert err["message"] == "No token provided", (
+            f"Expected Unauthorized from authenticate; got message={err.get('message')!r}"
         )
 
         with pytest.raises(AssertionError):
@@ -246,14 +246,14 @@ class TestUpdateAuthMethod(OrgAuthConfigTestBase):
             auth=False,
             json={"authMethod": [{"order": 1, "allowedMethods": [{"type": "password"}]}]},
         )
-        assert resp.status_code == 400, (
-            f"Expected 400 (missing Authorization), got {resp.status_code}: {resp.text}"
+        assert resp.status_code == 401, (
+            f"Expected 401 (missing Authorization), got {resp.status_code}: {resp.text}"
         )
         missing_auth_body = resp.json()
         err = missing_auth_body.get("error", {})
         assert err.get("message"), f"Expected error envelope: {resp.text}"
-        assert err["message"] == "Authorization header not found", (
-            f"Expected BadRequest from JWT helper; got message={err.get('message')!r}"
+        assert err["message"] == "No token provided", (
+            f"Expected Unauthorized from authenticate; got message={err.get('message')!r}"
         )
 
         with pytest.raises(AssertionError):

@@ -1,0 +1,5 @@
+# What sdk-tests.yml's provisioning helpers import (provision_sdk_test_env.py, with_oauth_app.py and the
+# integration-tests/helper modules they load). Resolved into helpers.lock by `python3 scripts/supply_chain.py lock`;
+# the job installs only that lock.
+requests
+pydantic

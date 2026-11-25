@@ -11,6 +11,7 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 from app.config.configuration_service import ConfigurationService
+from app.config.constants.arangodb import CollectionNames
 from app.models.blocks import BlocksContainer
 from app.modules.artifacts.sidecars import ENTITIES, ArtifactSidecars
 from app.modules.named_entities.domain.config import load_named_entity_config
@@ -19,11 +20,16 @@ from app.modules.pipeline.leases import RecordLeases, RevisionSuperseded
 from app.modules.pipeline.models import StageJob
 from app.modules.pipeline.policy import PipelinePolicy
 from app.modules.pipeline.stage import Deadline
-from app.modules.pipeline.stages.record_io import RecordFromDocument, RecordStageIO
+from app.modules.pipeline.stages.record_io import (
+    ConnectorDeleting,
+    RecordFromDocument,
+    RecordStageIO,
+)
 from app.services.featureflag.platform_settings import (
     is_named_entity_extraction_enabled,
 )
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.services.messaging.precision_flip import PrecisionFlip
 from app.utils.indexing_timing import stage
 from app.utils.llm import indexing_model_identity, load_ai_models
 
@@ -48,6 +54,7 @@ class GraphEntitiesIO(RecordStageIO):
         config_service: ConfigurationService,
         record_from_document: RecordFromDocument,
         record_leases: RecordLeases,
+        connector_deleting: ConnectorDeleting | None = None,
         extraction_client: "ExtractionClient | None" = None,
         logger: logging.Logger | None = None,
         sidecars: ArtifactSidecars | None = None,
@@ -60,6 +67,7 @@ class GraphEntitiesIO(RecordStageIO):
             blob_storage=blob_storage,
             record_from_document=record_from_document,
             record_leases=record_leases,
+            connector_deleting=connector_deleting,
         )
         self._sink = sink
         self._config_service = config_service
@@ -67,6 +75,14 @@ class GraphEntitiesIO(RecordStageIO):
         self._sidecars = sidecars
         self._logger = logger or logging.getLogger(__name__)
         self._enabled: bool | None = None
+
+    async def _stored_run(self, job: StageJob) -> str | None:
+        """The stored write holding the job's revision now: the sidecar goes into its set. None when the
+        stored record holds another revision (nothing of this one would read it)."""
+        mapping = await self._graph.get_document(
+            job.virtual_record_id, CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value,
+        ) or {}
+        return mapping.get("storedRun") if mapping.get("storedRev") == job.rev else None
 
     async def enabled(self) -> bool:
         if self._enabled is None:
@@ -123,7 +139,7 @@ class GraphEntitiesIO(RecordStageIO):
             if outcomes.get(owner) == "written" and self._sidecars is not None:
                 _ = await self._sidecars.write(
                     job.org_id, job.virtual_record_id, job.rev, ENTITIES, job.stage_version,
-                    extraction.model_dump(mode="json"),
+                    extraction.model_dump(mode="json"), stored_run=await self._stored_run(job),
                 )
         for record_id in record_ids[1:]:
             _ = await self._for_bound_record(job, record_id, lambda rid=record_id: persist(rid))
@@ -150,6 +166,8 @@ class GraphEntitiesIO(RecordStageIO):
                     continue
                 await self._graph.copy_named_entity_mentions(owner, sibling)
                 await self._sink.sync_entities_for_duplicate(document)
+            except PrecisionFlip:
+                raise
             except Exception as exc:
                 self._logger.warning(
                     "Named entities of record %s not copied to its copy %s: %s", owner, sibling, type(exc).__name__

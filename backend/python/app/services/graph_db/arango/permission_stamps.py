@@ -60,13 +60,12 @@ FOR r IN {_REC} FILTER r.connectorId == @app AND r.orgId == @org AND (@after == 
 SUBTREE = f"""
 LET starts = (FOR id IN @ids
   LET d = FIRST(FOR c IN [DOCUMENT("{_REC}", id), DOCUMENT("{_GRP}", id)] FILTER c != null RETURN c)
-  FILTER d != null AND d.orgId == @org RETURN d)
-LET walked = (FOR s IN starts FOR v, e, p IN 1..@limit OUTBOUND s._id {_REL} OPTIONS {{bfs: true, uniqueVertices: "global"}}
+  FILTER d != null AND d.orgId == @org RETURN {{id: d._id, rec: IS_SAME_COLLECTION("{_REC}", d), vrid: d.virtualRecordId}})
+LET walked = (FOR s IN starts FOR v, e, p IN 1..@limit OUTBOUND s.id {_REL} OPTIONS {{bfs: true, uniqueVertices: "global"}}
   FILTER p.edges[*].relationshipType ALL IN {_HIER} AND p.vertices[*].orgId ALL == @org
-  RETURN {{v: v, depth: LENGTH(p.edges)}})
+  RETURN {{rec: IS_SAME_COLLECTION("{_REC}", v), vrid: v.virtualRecordId, depth: LENGTH(p.edges)}})
 RETURN {{deep: LENGTH(FOR w IN walked FILTER w.depth > @depth LIMIT 1 RETURN 1) > 0,
-        vrids: (FOR r IN UNION_DISTINCT(starts, (FOR w IN walked FILTER w.depth <= @depth RETURN w.v))
-                FILTER IS_SAME_COLLECTION("{_REC}", r) AND r.virtualRecordId != null RETURN DISTINCT r.virtualRecordId)}}
+        vrids: (FOR r IN APPEND(starts, (FOR w IN walked FILTER w.depth <= @depth RETURN w)) FILTER r.rec AND r.vrid != null RETURN DISTINCT r.vrid)}}
 """
 
 

@@ -50,7 +50,7 @@ jobs:
           # and the suite side of each guard with the helpers it imports.
           # integration-tests/unit/test_guard_scope.py fails when a guard reads a
           # file this does not match.
-          WATCHED_PATHS: '^(backend/python/app/|backend/python/pyproject\.toml$|backend/python/pytest\.ini$|backend/nodejs/apps/src/|integration-tests/(unit|validation|connectors|helper|retrieval)/|integration-tests/response-validation/helper/|integration-tests/[^/]+/suite_extensions/|\.github/workflows/integration-suite-guards\.yml$)'
+          WATCHED_PATHS: '^(backend/python/app/|backend/python/pyproject\.toml$|backend/python/pytest\.ini$|backend/nodejs/apps/src/|integration-tests/(unit|validation|connectors|helper|retrieval|perf)/|backend/python/tests/perf/parse_bench/|deployment/docker-compose/docker-compose\.bench\.yml$|integration-tests/response-validation/helper/|integration-tests/[^/]+/suite_extensions/|\.github/workflows/integration-suite-guards\.yml$|\.github/workflows/perf-costclass\.yml$)'
         run: |
           if [ "$EVENT" != "pull_request" ]; then
             echo "run=true" >> "$GITHUB_OUTPUT"
@@ -59,7 +59,8 @@ jobs:
           # A renamed file counts under its old path too: moving a guard or a model
           # out of a watched path is a change to it.
           files=$(gh api --paginate "repos/$REPO/pulls/$PR/files" --jq '.[] | .filename, (.previous_filename // empty)')
-          if printf '%s\n' "$files" | grep -qE "$WATCHED_PATHS"; then
+          # A here-string, not a pipe: grep -q stops at the first match and the writer would log a broken pipe.
+          if grep -qE "$WATCHED_PATHS" <<< "$files"; then
             echo "run=true" >> "$GITHUB_OUTPUT"
           else
             echo "No file the guards read changed; nothing to check."
@@ -81,13 +82,10 @@ jobs:
       - name: Install dependencies
         if: steps.scope.outputs.run == 'true'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libmariadb-dev
-          pip install uv
           cd backend/python
           # The guards import the backend's models and connector registry; the
           # same install as the unit-test job they used to run in.
-          uv pip install --system pytest pyyaml -e ".[dev]"
+          requirements/install.sh dev --project . --editable
 
       - name: Run the integration-suite guards
         if: steps.scope.outputs.run == 'true'
@@ -100,6 +98,9 @@ jobs:
             integration-tests/unit/test_admin_route_conditional_world.py
             integration-tests/unit/test_guard_scope.py
             integration-tests/unit/test_suite_extensions.py
+            integration-tests/unit/test_citation_viewer_stats.py
+            integration-tests/unit/test_perf_costclass.py
+            integration-tests/unit/test_perf_costclass_driver.py
         run: |
           # `-c` and `--noconftest` because the files sit inside integration-tests,
           # whose pytest.ini asks for pytest-order and whose conftest expects a

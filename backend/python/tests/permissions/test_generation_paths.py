@@ -8,12 +8,14 @@ Real processor on Neo4j and ArangoDB. Needs the stores of the graph-permissions 
 from __future__ import annotations
 
 import asyncio
+from typing import TYPE_CHECKING
 from unittest.mock import MagicMock
 
 import pytest
 
 from app.config.constants.arangodb import CollectionNames, DeleteSource
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
+from app.core.org_context import for_org
 from app.models.entities import AccessRule
 from app.models.permission import EntityType, Permission, PermissionType
 from app.services.permissions.structure_generation import GENERATION_KEY
@@ -28,6 +30,9 @@ from tests.integration.graph_permissions.write_path_support import (
     _suffix,
 )
 
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(300)]
 
 
@@ -38,10 +43,13 @@ def _scope_fields_on(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(params=["neo4j", "arango"])
-def backend(request, arango_provider, arango_settings, neo4j_provider, neo4j_settings) -> object:
-    if request.param == "arango":
-        return _ArangoBackend(arango_provider, arango_settings)
-    return _Neo4jBackend(neo4j_provider, neo4j_settings)
+def backend(request, arango_provider, arango_settings, neo4j_provider, neo4j_settings) -> Iterator[object]:
+    """The store a connector of ORG syncs into, inside ORG's context, as its sync job runs (`for_org`)."""
+    with for_org(ORG, job="permission-conformance"):
+        if request.param == "arango":
+            yield _ArangoBackend(arango_provider, arango_settings)
+        else:
+            yield _Neo4jBackend(neo4j_provider, neo4j_settings)
 
 
 async def _gen(provider, conn: str) -> int:
@@ -98,7 +106,7 @@ async def test_a_failed_bump_rolls_the_sync_back_instead_of_committing_a_change_
     processor, conn, space, page, *_ = await _world(backend)
     g0 = await _gen(backend.provider, conn)
 
-    async def refuse(tx_store, connector_id) -> None:
+    async def refuse(tx_store, connector_id, roots=None) -> None:
         raise RuntimeError("no bump")
 
     monkeypatch.setattr(module, "bump_generation_in", refuse)
@@ -567,8 +575,8 @@ async def test_a_grant_on_a_record_group_moves_the_generation_when_it_flips_the_
     _, conn, space, _, page, *_ = await _writers_world(backend)
     group = await _group_id(backend, conn, space)
     first = await _grant(backend)
-    assert await _in_tx(backend, conn, lambda tx: tx.batch_upsert_record_group_permissions(group, [first], conn))
-    assert not await _in_tx(backend, conn, lambda tx: tx.batch_upsert_record_group_permissions(group, [first], conn))
+    assert await _in_tx(backend, conn, lambda tx: tx.batch_upsert_record_group_permissions(group, [first], conn, ORG))
+    assert not await _in_tx(backend, conn, lambda tx: tx.batch_upsert_record_group_permissions(group, [first], conn, ORG))
 
 
 # ---- a structural write made outside the transaction store: a full sync that misses a node ---------------------------------------

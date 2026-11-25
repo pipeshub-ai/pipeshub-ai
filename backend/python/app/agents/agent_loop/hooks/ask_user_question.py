@@ -23,6 +23,7 @@ from app.agent_loop_lib.core.messages import AssistantMessage, UserMessage
 from app.agent_loop_lib.core.scope import StateSlot
 from app.agents.agent_loop.hooks._tool_naming import resolve_tool_name
 from app.agents.agent_loop.parked_turn import with_expiry
+from app.utils.logging_fields import log_event
 from app.utils.streaming import parse_confidence_from_answer
 
 if TYPE_CHECKING:
@@ -261,10 +262,7 @@ def ask_in_text_recovery(context: AgentContext) -> "Middleware[ModelResponseCont
         if not asks_user_in_text(text):
             return
         run.set(_ASK_IN_TEXT_NUDGED, True)
-        logger.info(
-            "ask_in_text_recovery: reply asked the user in text (turn %d); re-prompting once to use the card",
-            ctx.turn_index,
-        )
+        log_event(logger, "ask_card.recovery", turn=ctx.turn_index)
         ctx.recovery_message = UserMessage(content=_ASK_IN_TEXT_NUDGE, injected=True)
 
     return _middleware

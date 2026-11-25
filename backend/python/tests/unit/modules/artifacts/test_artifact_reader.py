@@ -50,7 +50,9 @@ from app.modules.transformers.blob_storage import (
     BlobStorage,
     clean_stored_record,
 )
+from app.modules.transformers.stored_write import write_id
 from app.modules.transformers.transformer import TransformContext
+from harness_core.testing.virtual_time import run_on_virtual_time
 from tests.unit.modules.artifacts.fake_storage import FakeStorage
 
 if TYPE_CHECKING:
@@ -125,7 +127,7 @@ def _fresh_membership(monkeypatch: pytest.MonkeyPatch) -> None:
     from app.services.messaging import membership
 
     async def fresh(_config_service: object) -> list[dict[str, object]]:
-        return [{"checkedAt": int(time.time() * 1000), "untagged": []}]
+        return [{"checkedAt": int(time.time() * 1000), "untagged": [], "groupsChecked": ["g"], "groupsExpected": ["g"]}]
 
     monkeypatch.setattr(membership, "read_entries_from_config", fresh)
     membership._READERS.clear()
@@ -178,7 +180,8 @@ async def _write_sidecar(
 ) -> dict[str, Any]:
     """File a classification sidecar the way a copy-on-write metadata write does; the lookup update that names it."""
     store = NodeArtifactStore(storage.blob_storage())
-    plan = await store.presign_revision(ORG, VRID, REV, [(path, "application/json")])
+    # Into the set the lookup names whatever the envelope says, so the reader's own checks are what is tested.
+    plan = await store.presign_revision(ORG, VRID, REV, [(path, "application/json")], write_id=write_id(RUN))
     body = {"storedRun": run, "storedMeta": named_path or path, "classification": payload}
     await store.put(plan.files[path], canonical_json(body), "application/json")
     return {"storedMeta": path}
@@ -189,7 +192,7 @@ def _backend(storage: FakeStorage, mappings: _Mappings) -> ArtifactRecordBackend
 
 
 def _key(path: str) -> str:
-    return f"{FakeStorage.root(VRID, REV)}/{path}"
+    return f"{FakeStorage.root(VRID, REV, write_id(RUN))}/{path}"
 
 
 class TestArtifactRecordBackend:
@@ -301,7 +304,7 @@ class TestArtifactRecordBackend:
     ) -> None:
         lookup = {**await _write(storage, _record()), "currentRev": "fedcba9876543210", "storedRev": "fedcba9876543210"}
         # The pointer names a revision the document does not hold.
-        storage.roots[lookup["manifestDocId"]] = FakeStorage.root(VRID, REV)
+        storage.roots[lookup["manifestDocId"]] = FakeStorage.root(VRID, REV, write_id(RUN))
 
         assert await _backend(storage, _Mappings({})).read_record(VRID, ORG, lookup=lookup) is None
         assert outcomes == ["invalid"]
@@ -586,30 +589,37 @@ class TestShadowReader:
         assert served is STORED
         assert shadow_outcomes == [("unavailable", None)]
 
-    async def test_a_slow_artifact_read_is_cut_off_at_the_grace(
+    def test_a_slow_artifact_read_is_cut_off_at_the_grace(
         self, shadow_outcomes: list[tuple[str, str | None]],
     ) -> None:
         artifact = _Artifact(STORED, delay=5)
-        loop = asyncio.get_running_loop()
-        start = loop.time()
 
-        served = await _shadow(_Legacy(STORED), artifact, grace_seconds=0.05).read_record(VRID, ORG)
-        await asyncio.sleep(0)
+        async def main() -> tuple[dict[str, Any] | None, float]:
+            loop = asyncio.get_running_loop()
+            start = loop.time()
+            served = await _shadow(_Legacy(STORED), artifact, grace_seconds=0.05).read_record(VRID, ORG)
+            await asyncio.sleep(0)
+            return served, loop.time() - start
+
+        served, elapsed = run_on_virtual_time(main)
 
         assert served is STORED
-        assert loop.time() - start < 1
+        assert elapsed == pytest.approx(0.05)
         assert shadow_outcomes == [("timeout", None)]
         assert artifact.cancelled
 
-    async def test_the_artifact_read_runs_beside_the_stored_record_read(
+    def test_the_artifact_read_runs_beside_the_stored_record_read(
         self, shadow_outcomes: list[tuple[str, str | None]],
     ) -> None:
-        loop = asyncio.get_running_loop()
-        start = loop.time()
+        async def main() -> float:
+            loop = asyncio.get_running_loop()
+            start = loop.time()
+            await _shadow(_Legacy(STORED, delay=0.2), _Artifact(STORED, delay=0.2), grace_seconds=0.05).read_record(
+                VRID, ORG,
+            )
+            return loop.time() - start
 
-        await _shadow(_Legacy(STORED, delay=0.2), _Artifact(STORED, delay=0.2), grace_seconds=0.05).read_record(VRID, ORG)
-
-        assert loop.time() - start < 0.35
+        assert run_on_virtual_time(main) == pytest.approx(0.2)
         assert shadow_outcomes == [("match", None)]
 
     async def test_a_failing_stored_record_read_still_fails(

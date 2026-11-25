@@ -417,12 +417,12 @@ export function EntityRowActionMenu({ actions }: EntityRowActionMenuProps) {
                 <MaterialIcon
                   name={action.icon}
                   size={16}
-                  color={isDanger ? 'var(--red-10)' : 'var(--slate-11)'}
+                  color={isDanger ? 'var(--red-11)' : 'var(--slate-11)'}
                 />
                 <Text
                   size="1"
                   style={{
-                    color: isDanger ? 'var(--red-10)' : 'var(--slate-11)',
+                    color: isDanger ? 'var(--red-11)' : 'var(--slate-11)',
                   }}
                 >
                   {action.label}

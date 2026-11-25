@@ -7,12 +7,13 @@ off sends the connectors back to the walk, because the take-back deletes the onl
 from __future__ import annotations
 
 import asyncio
+import os
 
+import asyncpg
 import pytest
 
-from app.core.org_context import spawn_detached
 from app.services.graph_db.postgres.kg import backfill as bf
-from app.services.graph_db.postgres.kg import drainer, flush, modes
+from app.services.graph_db.postgres.kg import drainer, modes
 from app.services.graph_db.postgres.kg.drainer import drain_org
 from app.services.graph_db.postgres.kg.locks import lock_apps
 from app.services.graph_db.postgres.kg.model import CODE_EPOCH
@@ -28,6 +29,7 @@ from .pg_support import new_org
 from .test_kg_derivation import ctx, prov
 from .test_kg_projection import add_edge, delete_edge
 from .test_kg_projection_races import OPS, world2
+from .test_kg_read import _admin
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(180)]
 
@@ -37,6 +39,14 @@ def projection_on(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("PG_KG_PROJECT", "1")
     monkeypatch.delenv("PG_KG_FLUSH", raising=False)
     monkeypatch.setenv("PG_KG_STRICT", "1")
+
+
+async def analyze_requests(org: str) -> list[int]:
+    con = await asyncpg.connect(os.environ["PG_ADMIN_URL"])
+    try:
+        return [r["app_sk"] for r in await con.fetch("SELECT app_sk FROM kg.analyze_requests WHERE org_id = $1", org)]
+    finally:
+        await con.close()
 
 
 async def run_in(db, org: str, fn, *, write: bool = False) -> object:
@@ -126,7 +136,7 @@ async def test_a_connector_copied_after_its_neighbour_gives_the_neighbours_child
 async def test_a_backfill_that_is_cut_resumes_at_its_last_committed_batch(pg_db, monkeypatch) -> None:
     p, org = await fresh_world(pg_db)
     part = await bf.backfill(pg_db, org, "app1", page=2, max_batches=1)
-    assert not part.flipped and part.result.missing                         # only some nodes are in kg: the flip is refused, nothing is promised
+    assert not part.flipped and part.reason == "unfinished"                 # only some nodes are in kg: the copy stops at its budget, nothing is verified or promised
     assert (await state(pg_db, org, "app1"))[1] == "legacy"
     real, calls = bf.project, {"n": 0}
 
@@ -143,6 +153,54 @@ async def test_a_backfill_that_is_cut_resumes_at_its_last_committed_batch(pg_db,
     monkeypatch.setattr(bf, "project", real)
     done = await bf.backfill(pg_db, org, "app1", page=2)
     assert done.flipped and (await state(pg_db, org, "app1"))[1] == "shadow"
+
+
+async def _fetched(tx) -> int:
+    """Rows of graph.nodes this transaction has read so far."""
+    return await tx.fetchval("SELECT coalesce(sum(seq_tup_read + coalesce(idx_tup_fetch, 0)), 0) FROM pg_stat_xact_user_tables WHERE schemaname = 'graph' AND relname LIKE 'nodes%'")
+
+
+async def test_a_copy_page_of_records_reads_the_page_not_the_records_after_its_cursor(pg_db) -> None:
+    """3,000 records of another connector sort between the cursor and app1's next records: a page of 10 of app1's records reads about 10 rows, fresh and analysed (the role's own statement cannot seek
+    the connector's index under row-level security, and read every record after the cursor). The page is app1's next records in byte order."""
+    p, org = await fresh_world(pg_db)
+    rec = {"connectorId": "app1", "orgId": org, "recordType": "FILE", "origin": "CONNECTOR"}
+    with ctx(org):
+        await p.batch_upsert_nodes([{"_key": f"m{i:02d}", "recordName": f"M{i}", **rec} for i in range(30)], "records")
+    await _admin("""INSERT INTO graph.nodes (org_id, coll, id, doc) SELECT $1::text, 'records', 'm09x' || g, jsonb_build_object('_key', 'm09x' || g, 'orgId', $1::text,
+          'connectorId', 'app9', 'recordName', 'N' || g) FROM generate_series(1, 3000) g""", org)
+    for state in ("fresh", "analysed"):
+        if state == "analysed":
+            await _admin("ANALYZE graph.nodes")
+
+        async def go(tx) -> tuple[list, int]:
+            before = await _fetched(tx)
+            page = await bf.app_nodes(tx, org, "app1", ("records", "m09"), 10)
+            return page, await _fetched(tx) - before
+        page, read = await run_in(pg_db, org, go)
+        assert page == [("records", f"m{i:02d}") for i in range(10, 20)]
+        assert read <= 20, f"{state}: {read} rows of graph.nodes read for a page of 10"
+
+
+async def test_a_copy_whose_cursor_older_code_wrote_in_the_records_copies_them_again_from_the_first(pg_db) -> None:
+    """Older code paged a connector's records in the database's collation, where '-z' sorts after 'M' (the dash is ignored) and in byte order before it. A copy left at
+    'records|M' by that code must not go on after 'M' in byte order (it would never copy '-z'): it copies the records again from the first and ends verified."""
+    p, org = await fresh_world(pg_db)
+    rec = {"connectorId": "app1", "orgId": org, "recordType": "FILE", "origin": "CONNECTOR"}
+    with ctx(org):
+        await p.batch_upsert_nodes([{"_key": k, "recordName": k, **rec} for k in ("-z", "B", "M", "q")], "records")
+
+    async def clear(tx) -> None:
+        await KgWriter(tx).changes_delete([r["id"] for r in await tx.fetch("SELECT id FROM kg.graph_changes WHERE org_id = $1", org)])
+    await run_in(pg_db, org, clear, write=True)
+    await bf.backfill_scope(pg_db, org, None)
+    await bf.backfill_scope(pg_db, org, "app1", page=2, max_batches=2)      # the app and its two groups: no record copied yet
+
+    async def older(tx) -> None:
+        await KgWriter(tx).projection_set((await load_sks(tx, org, {("apps", "app1")}))[("apps", "app1")], epoch=0, mode="legacy", digest=None, cursor="records|M", verified_at=None)
+    await run_in(pg_db, org, older, write=True)
+    out = await bf.backfill(pg_db, org, "app1", page=2)
+    assert out.flipped and out.result.ok, out.result.summary() if out.result else out.reason
 
 
 async def test_writes_during_a_backfill_are_drained_before_the_verify(pg_db) -> None:
@@ -195,6 +253,77 @@ async def test_the_verify_names_a_row_no_node_explains(pg_db) -> None:
     await corrupt(pg_db, org, lambda tx, w: w.records_upsert([row(ghost, "ghost", app_sk=app, name="ghost")]))
     res = await verify(pg_db, org, "app1")
     assert not res.ok and any(m.startswith(f"r|{ghost}") for m in res.extra)
+
+
+async def test_a_restart_removes_a_row_no_node_explains_with_its_access_list(pg_db) -> None:
+    p, org = await shadowed(pg_db)
+    app = await sk_of(pg_db, org, ("apps", "app1"))
+    ghost = await KgWriterNodes.make(pg_db, org, ("records", "ghost"))
+
+    async def plant(tx, w) -> None:
+        await w.records_upsert([row(ghost, "ghost", app_sk=app, name="ghost")])
+        await w.scopes_set([(ghost, 3, app, True, False, False, False)])
+    await corrupt(pg_db, org, plant)
+
+    async def held(tx) -> tuple[int, int]:
+        return (await tx.fetchval("SELECT count(*) FROM kg.records WHERE org_id = $1 AND sk = $2", org, ghost), await tx.fetchval("SELECT count(*) FROM kg.scopes WHERE org_id = $1 AND sk = $2", org, ghost))
+    assert await run_in(pg_db, org, held) == (1, 1)
+    await bf.backfill(pg_db, org, "app1", page=4, restart=True)
+    assert await run_in(pg_db, org, held) == (0, 0)
+
+
+async def test_an_access_list_whose_record_row_is_gone_fails_only_its_own_connector_stays_hidden_and_a_restart_removes_it(pg_db) -> None:
+    from app.services.graph_db.postgres.kg import restamp
+    p, org = await shadowed(pg_db)
+    assert (await bf.backfill(pg_db, org, "app2", page=4)).flipped
+    app = await sk_of(pg_db, org, ("apps", "app1"))
+    orphan = await KgWriterNodes.make(pg_db, org, ("records", "orphan"))
+    await corrupt(pg_db, org, lambda tx, w: w.scopes_set([(orphan, 3, app, False, False, False, False)]))        # what an older process leaves when it deletes the record alone
+
+    async def visible(tx) -> set[int]:
+        return {r["sk"] for r in await tx.fetch("SELECT s.sk FROM kg.scopes s WHERE s.org_id = $1 AND NOT (" + restamp.HIDDEN_SCOPE + ")", org)}
+    assert orphan not in await run_in(pg_db, org, visible) and await run_in(pg_db, org, visible)             # the orphan is not counted; the others are
+    res = await verify(pg_db, org, "app1")
+    assert not res.ok and any(m.startswith(f"sc|{orphan}") for m in res.extra)
+    other = await verify(pg_db, org, "app2")
+    assert other.ok and not any(m.startswith("sc|") for m in other.extra)                                   # another connector is not held up by it
+    assert (await bf.backfill(pg_db, org, "app1", page=4, restart=True)).flipped                            # the restart removes it, and the connector verifies again
+    assert (await verify(pg_db, org, "app1")).ok
+
+    async def held(tx) -> int:
+        return await tx.fetchval("SELECT count(*) FROM kg.scopes WHERE org_id = $1 AND sk = $2", org, orphan)
+    assert await run_in(pg_db, org, held) == 0
+
+
+async def test_the_restart_keeps_an_orphan_scope_another_connector_takes_over_meanwhile(pg_db) -> None:
+    """An orphan has no record row, so the connector that takes its key over locks only itself: the restart waits for it and then sees no orphan."""
+    p, org = await shadowed(pg_db)
+    assert (await bf.backfill(pg_db, org, "app2", page=4)).flipped
+    app1, app2 = await sk_of(pg_db, org, ("apps", "app1")), await sk_of(pg_db, org, ("apps", "app2"))
+    orphan = await KgWriterNodes.make(pg_db, org, ("records", "orphan"))
+    await corrupt(pg_db, org, lambda tx, w: w.scopes_set([(orphan, 3, app1, False, False, False, False)]))
+    written, commit = asyncio.Event(), asyncio.Event()
+
+    async def takes_over(tx) -> None:
+        await lock_apps(tx, org, {"app2"}, org_wide=False)
+        w = KgWriter(tx)
+        await w.records_upsert([row(orphan, "orphan", app_sk=app2)])
+        await w.scopes_set([(orphan, 3, app2, False, False, False, False)])
+        written.set()
+        await commit.wait()
+
+    writer = asyncio.create_task(run_in(pg_db, org, takes_over, write=True))
+    await asyncio.wait_for(written.wait(), 30)
+    restart = asyncio.create_task(bf.backfill_scope(pg_db, org, "app1", restart=True, max_batches=0))
+    await asyncio.sleep(0.5)
+    assert not restart.done()
+    commit.set()
+    await writer
+    await restart
+
+    async def scope_app(tx) -> int | None:
+        return await tx.fetchval("SELECT app_sk FROM kg.scopes WHERE org_id = $1 AND sk = $2", org, orphan)
+    assert await run_in(pg_db, org, scope_app) == app2
 
 
 class KgWriterNodes:
@@ -273,55 +402,14 @@ async def test_promotion_needs_shadow_a_clean_verify_and_an_empty_log_and_demoti
     with pytest.raises(bf.Refused, match="waiting in the log"):
         await bf.promote(pg_db, org, "app1")
     await drain_org(pg_db, org)
+    assert await analyze_requests(org) == []                                 # a backfill alone asks nothing: the connector is not served yet
     res = await bf.promote(pg_db, org, "app1")
     assert res.ok and (await state(pg_db, org, "app1"))[1] == "enforce"
+    sks = await run_in(pg_db, org, lambda tx: load_sks(tx, org, {("apps", "app1")}))
+    assert await analyze_requests(org) == [sks[("apps", "app1")]]            # the first load asks the worker to analyze kg (kg.analyze_requests)
     again = await bf.backfill(pg_db, org, "app1", page=4)                    # a second backfill of an enforced connector keeps it enforced
     assert again.flipped and (await state(pg_db, org, "app1"))[1] == "enforce"
     await bf.demote(pg_db, org, "app1")
-    assert (await state(pg_db, org, "app1"))[:2] == (None, "legacy")
-
-
-async def test_a_backfill_and_a_promotion_refuse_to_run_with_the_projection_off(pg_db, monkeypatch) -> None:
-    p, org = await fresh_world(pg_db)
-    monkeypatch.setenv("PG_KG_PROJECT", "0")
-    with pytest.raises(bf.ProjectionOff):
-        await bf.backfill(pg_db, org, "app1")
-    with pytest.raises(bf.ProjectionOff):
-        await bf.promote(pg_db, org, "app1")
-
-
-async def test_turning_the_projection_off_sends_the_connectors_back_to_the_walk_and_a_new_backfill_starts_over(pg_db, monkeypatch) -> None:
-    p, org = await shadowed(pg_db)
-    await bf.promote(pg_db, org, "app1")
-    monkeypatch.setenv("PG_KG_PROJECT", "0")
-    with ctx(org):
-        await p.batch_upsert_nodes([{"_key": "off1", "orgId": org, "recordName": "While off", "connectorId": "app1", "recordType": "FILE", "origin": "CONNECTOR"}], "records")
-    cursor, mode, _ = await state(pg_db, org, "app1")
-    assert (cursor, mode) == (None, "legacy")                               # the unit took its own log rows back and demoted
-    assert (await state(pg_db, org, None))[:2] == (None, "legacy")
-    monkeypatch.setenv("PG_KG_PROJECT", "1")
-    out = await bf.backfill(pg_db, org, "app1", page=4)
-    assert out.flipped and out.batches > 0                                  # from the first node, and it covers the write made while off
-    async def has_it(tx) -> bool:
-        return bool(await tx.fetchval("SELECT 1 FROM kg.node_keys WHERE org_id = $1 AND id = 'off1'", org))
-    assert await run_in(pg_db, org, has_it)
-
-
-async def test_the_sweep_of_other_roles_rows_also_sends_the_connectors_back(pg_db, monkeypatch) -> None:
-    p, org = await shadowed(pg_db)
-    monkeypatch.setenv("PG_KG_PROJECT", "0")
-    monkeypatch.setattr(flush, "SWEEP_GAP_S", 0.0)
-    monkeypatch.setattr(flush, "_last_sweep", {})
-
-    async def others(tx) -> None:
-        await tx.execute("/* pipeshub:test.others */ INSERT INTO kg.graph_changes (org_id, ends) VALUES ($1, ARRAY['3:f1'])", org)
-    with monkeypatch.context() as m:
-        m.setattr(flush, "_own_role", lambda _tx: False)
-        await run_in(pg_db, org, others, write=True)
-    async def no_graph(tx) -> None:
-        await tx.fetchval("/* pipeshub:test.no_graph */ SELECT 1")
-    await run_in(pg_db, org, no_graph, write=True)
-    await flush.settle_sweeps()
     assert (await state(pg_db, org, "app1"))[:2] == (None, "legacy")
 
 
@@ -350,9 +438,7 @@ async def test_a_connector_is_current_only_when_verified_and_nothing_waits_that_
     await drain_org(pg_db, org)
     assert await is_current(pg_db, org, "app1")
 
-    async def poison(tx) -> None:
-        await tx.execute("/* pipeshub:test.poison */ INSERT INTO kg.graph_changes (org_id, ends) VALUES ($1, ARRAY['nope'])", org)
-    await run_in(pg_db, org, poison, write=True)
+    await _admin("INSERT INTO kg.graph_changes (org_id, ends) VALUES ($1, ARRAY['nope'])", org)      # no service can log it (kg_0022): the administrator plants it
     assert not await is_current(pg_db, org, "app1")                           # a row that cannot be read may name anything
 
 
@@ -385,60 +471,6 @@ async def test_writers_running_while_a_backfill_copies_leave_kg_equal_to_the_gra
     assert final.flipped and (await verify(pg_db, org, "app1")).ok
 
 
-# ---- a take-back in another process while a flip or a promotion verifies ----------------------------------------------------------------------------------------------------------
-async def interleave(p, org: str) -> None:
-    """What a process whose projection is off does while the flip runs: a change commits (its log row is written), and the sweep tries to take the row back and demote."""
-    await OPS[5](p, org)                                   # a record moves into app2
-    await flush._sweep(p._db, org)
-
-
-@pytest.mark.parametrize("where", ["after_verify", "after_state_read"])
-@pytest.mark.parametrize("which", ["promote", "flip"])
-async def test_a_take_back_cannot_slip_between_a_verify_and_the_write_that_trusts_it(pg_db, monkeypatch, which: str, where: str) -> None:
-    """The flip holds the connector's lock from before its verify to its write: a take-back that would delete a change's log row and demote must leave the row (so the flip sees a
-    change is waiting) or wait; it must never demote between the verify and the write and be overwritten by ``shadow`` or ``enforce`` while the log is empty."""
-    p, org = await fresh_world(pg_db)
-    if which == "promote":
-        assert (await bf.backfill(pg_db, org, "app1", page=4)).flipped
-    real_verify, real_state, hit = bf.verify_app, modes.state, {"verified": False, "fired": False}
-
-    async def verify_then(tx, o, a) -> Result:
-        res = await real_verify(tx, o, a)
-        hit["verified"] = True
-        if where == "after_verify" and not hit["fired"]:
-            hit["fired"] = True
-            await spawn_detached(interleave(p, org))         # another process: its own context, its own units
-        return res
-
-    async def state_then(tx, o, sk) -> tuple:
-        got = await real_state(tx, o, sk)
-        if where == "after_state_read" and hit["verified"] and not hit["fired"]:
-            hit["fired"] = True
-            await spawn_detached(interleave(p, org))
-        return got
-    monkeypatch.setattr(bf, "verify_app", verify_then)
-    monkeypatch.setattr(modes, "state", state_then)
-    try:
-        if which == "promote":
-            if where == "after_verify":          # the change is in the log when the flip counts it: refused
-                with pytest.raises(bf.Refused):
-                    await bf.promote(pg_db, org, "app1")
-            else:                                # it commits after the count: the state may be written, with the change still in the log (not current until drained)
-                await bf.promote(pg_db, org, "app1")
-        else:
-            out = await bf.backfill(pg_db, org, "app1", page=4)
-            assert out.flipped is (where == "after_state_read")
-    finally:
-        monkeypatch.undo()
-        monkeypatch.setenv("PG_KG_PROJECT", "1")
-    assert hit["fired"]
-    cursor, mode, _ = await state(pg_db, org, "app1")
-    waiting = await run_in(pg_db, org, lambda tx: tx.fetchval("SELECT count(*) FROM kg.graph_changes WHERE org_id = $1", org))
-    res = await verify(pg_db, org, "app1")
-    assert mode == "legacy" or res.ok or waiting, f"{mode} with {waiting} rows in the log while kg differs from the graph: {res.summary()}"
-    assert waiting or mode == "legacy"                      # either the change is still visible in the log, or the connector went back to the walk
-
-
 # ---- T1: the verify names an extra grant and an extra closure row; an unreadable row makes the connector not current --------------------------------------------------------------
 async def test_the_verify_names_a_grant_no_node_explains_and_a_closure_row_no_user_explains(pg_db) -> None:
     p, org = await shadowed(pg_db)
@@ -461,11 +493,10 @@ async def test_a_row_of_the_log_that_cannot_be_read_makes_the_connector_not_curr
     p, org = await fresh_world(pg_db)
     assert (await bf.backfill(pg_db, org, "app1", page=4)).flipped and (await bf.backfill(pg_db, org, "app2", page=4)).flipped
 
-    async def log_row(tx, ends: str) -> None:
-        await tx.execute("/* pipeshub:test.row */ INSERT INTO kg.graph_changes (org_id, app_id, ends) VALUES ($1, 'app2', ARRAY[$2])", org, ends)
-    await run_in(pg_db, org, lambda tx: log_row(tx, "3:x1"), write=True)
+    log_row = "INSERT INTO kg.graph_changes (org_id, app_id, ends) VALUES ($1, 'app2', ARRAY[$2])"
+    await _admin(log_row, org, "3:x1")
     assert await is_current(pg_db, org, "app1")                               # a readable change of another known connector that links nothing
-    await run_in(pg_db, org, lambda tx: log_row(tx, "nope"), write=True)
+    await _admin(log_row, org, "nope")
     assert not await is_current(pg_db, org, "app1")
 
 
@@ -537,6 +568,74 @@ async def test_a_demotion_made_while_a_backfill_is_ending_is_not_undone_by_its_f
     assert (await state(pg_db, org, "app1"))[:2] == (None, "legacy")
 
 
+@pytest.mark.parametrize("last", [True, False], ids=["finishing_batch", "copying_batch"])
+async def test_a_restart_that_demotes_the_copy_while_a_batch_runs_is_not_overwritten_by_its_cursor(pg_db, monkeypatch, last: bool) -> None:
+    """A batch reads the copy cursor before it takes the connector's lock. A restart that demoted the copy in between (its reset holds the org key exclusively) wins: the batch
+    writes no cursor over it (not "done" with this code's epoch, which the listing would read from, nor a cursor past the start), and the copy starts again from the first node."""
+    p, org = await fresh_world(pg_db)
+    real, seen, demoted = bf.app_nodes, [], []
+
+    async def nodes(tx, o, app, after, limit) -> list:
+        got = await real(tx, o, app, after, limit)
+        seen.append(after)
+        if not demoted and after is not None and (not got if last else bool(got)):
+            demoted.append(len(seen))
+            await _admin("""UPDATE kg.projection_state s SET backfill_cursor = NULL, mode = 'legacy', code_epoch = 0, verified_at = NULL FROM kg.node_keys k
+                WHERE k.org_id = s.org_id AND k.sk = s.app_sk AND k.coll = 1 AND s.org_id = $1 AND k.id = 'app1'""", org)
+        return got
+    monkeypatch.setattr(bf, "app_nodes", nodes)
+    await bf.backfill_scope(pg_db, org, None)
+    await bf.backfill_scope(pg_db, org, "app1", page=3)
+    assert demoted, "the batch the restart was meant to race never ran"
+    assert None in seen[demoted[0]:], f"the copy did not start again after the restart: {seen}"      # on main: the batch wrote its cursor over the demotion
+    assert await state(pg_db, org, "app1") == ("done", "legacy", CODE_EPOCH)
+
+
+async def test_a_finishing_batch_does_not_clear_an_inexact_mark_set_after_it_read_the_copy_state(pg_db, monkeypatch) -> None:
+    """Another copy marks the copy inexact at the same cursor between the finishing batch's read and its lock: the batch writes nothing over it, and the copy ends
+    not listed from (epoch 0), never at this code's epoch with the mark cleared."""
+    p, org = await fresh_world(pg_db)
+    real, marked = bf.app_nodes, []
+
+    async def nodes(tx, o: str, app: str, after: tuple | None, limit: int) -> list:
+        got = await real(tx, o, app, after, limit)
+        if not got and after is not None and not marked:
+            marked.append(after)
+            await _admin("""UPDATE kg.projection_state s SET verify_digest = $2 FROM kg.node_keys k
+                WHERE k.org_id = s.org_id AND k.sk = s.app_sk AND k.coll = 1 AND s.org_id = $1 AND k.id = 'app1'""", org, bf.INEXACT)
+        return got
+    monkeypatch.setattr(bf, "app_nodes", nodes)
+    await bf.backfill_scope(pg_db, org, None)
+    await bf.backfill_scope(pg_db, org, "app1", page=3)
+    assert marked, "the finishing batch never ran"
+    assert await state(pg_db, org, "app1") == ("done", "legacy", 0)      # on main: ("done", "legacy", CODE_EPOCH), the mark cleared
+
+
+@pytest.mark.parametrize("calls", ["one_call", "a_batch_per_call"])
+async def test_a_copy_that_meets_a_value_kg_refuses_goes_on_past_it_and_ends_not_listed_from(pg_db, calls: str) -> None:
+    """The projection takes a connector off the readers when it writes a row without a value kg refuses, and clears its copy cursor with it. A copy that meets such a
+    record after earlier batches have committed goes on past it and ends, not listed from (epoch 0), in one call or a batch per call as the bootstrap copies; it never
+    starts again from the first node (where it would meet the same record every time)."""
+    p, org = await fresh_world(pg_db)
+    with ctx(org):
+        await p.batch_upsert_nodes([{"_key": "zz-refused", "recordName": "Z", "connectorId": "app1", "orgId": org, "recordType": "FILE", "origin": "CONNECTOR",
+                                     "accessRule": "INHERITED"}], "records")
+    await bf.backfill_scope(pg_db, org, None)
+
+    async def copy() -> int:
+        if calls == "one_call":
+            return await bf.backfill_scope(pg_db, org, "app1", page=2)
+        n = 0
+        for _ in range(50):
+            n += await bf.backfill_scope(pg_db, org, "app1", page=2, max_batches=1)
+            if (await state(pg_db, org, "app1"))[0] == "done":
+                return n
+        raise AssertionError("the copy did not end in 50 calls")
+    batches = await asyncio.wait_for(copy(), timeout=60)      # on main the copy starts again from the first node at the refused record, forever
+    assert batches >= 3
+    assert await state(pg_db, org, "app1") == ("done", "legacy", 0)
+
+
 async def test_the_verify_names_a_stale_stamp_and_a_backfill_repairs_it(pg_db) -> None:
     p, org = await shadowed(pg_db)
     async def stamped(tx) -> int:
@@ -549,41 +648,3 @@ async def test_the_verify_names_a_stale_stamp_and_a_backfill_repairs_it(pg_db) -
     assert not res.ok and any(m.startswith("s|fold") for m in res.changed), res.changed
     again = await bf.backfill(pg_db, org, "app1", page=4)                          # the backfill restamps the connector whole: the stale stamp is repaired
     assert again.flipped and (await verify(pg_db, org, "app1")).ok
-
-
-async def test_a_take_back_leaves_the_rows_of_a_connector_whose_first_backfill_batch_has_not_committed(pg_db, monkeypatch) -> None:
-    """A first batch holds its connector's lock but has no mode and no cursor until it commits, so the connectors on a copy do not name it: the take-back has to try the lock of the connector of
-    the rows it acknowledges, or it deletes the rows, demotes nothing, and the batch then commits a copy with no row in the log to show it is behind."""
-    p, org = await fresh_world(pg_db)
-    held, release = asyncio.Event(), asyncio.Event()
-
-    async def first_batch(tx) -> None:
-        await lock_apps(tx, org, {"app1"}, org_wide=False)
-        held.set()
-        await release.wait()
-        w = KgWriter(tx)
-        sk = (await w.nodes_upsert({("apps", "app1")}))[("apps", "app1")]
-        await w.projection_set(sk, epoch=0, mode="legacy", digest=None, cursor="2:x", verified_at=None)
-    batch = asyncio.create_task(run_in(pg_db, org, first_batch, write=True))
-    try:
-        waiter = asyncio.ensure_future(held.wait())
-        await asyncio.wait({waiter, batch}, timeout=30, return_when=asyncio.FIRST_COMPLETED)       # the batch failing before it holds the lock ends the wait with its own error
-        if batch.done():
-            batch.result()
-        assert held.is_set(), "the first batch never took its lock"
-        monkeypatch.setenv("PG_KG_PROJECT", "0")
-        await OPS[5](p, org)                                      # a record moves into app2: rows of app1 and app2, taken back at the commit of the unit that wrote them
-        rows = await run_in(pg_db, org, lambda tx: tx.fetchval("SELECT count(*) FROM kg.graph_changes WHERE org_id = $1", org))
-        release.set()
-        await batch
-        assert rows > 0                                            # the lock of app1 was held: the rows were left for the sweep
-        assert (await state(pg_db, org, "app1"))[0] == "2:x"       # the batch committed its cursor
-        await flush._sweep(pg_db, org)
-        left = await run_in(pg_db, org, lambda tx: tx.fetchval("SELECT count(*) FROM kg.graph_changes WHERE org_id = $1", org))
-        assert left == 0 and (await state(pg_db, org, "app1"))[:2] == (None, "legacy")       # the sweep took them and sent the connector back to the walk
-    finally:
-        release.set()                                              # whatever failed above, the batch is let go and awaited, so it never holds its connection
-        if not batch.done():
-            await asyncio.wait({batch}, timeout=30)
-            batch.cancel()
-        waiter.cancel()

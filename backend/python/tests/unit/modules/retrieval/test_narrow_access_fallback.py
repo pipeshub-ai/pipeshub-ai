@@ -174,6 +174,8 @@ def _graph(access: _Access) -> AsyncMock:
 def _service(store: _FakeStore, graph: AsyncMock, *, containers: bool = True) -> mod.RetrievalService:
     service = mod.RetrievalService.__new__(mod.RetrievalService)
     service.logger = MagicMock()
+    # Knowledge publications (harness P2.13) off: the reader's own access decides, as on main.
+    service.publications = MagicMock(enabled=AsyncMock(return_value=False))
     service.config_service = AsyncMock()
     service.graph_provider = graph
     service.blob_store = MagicMock()
@@ -725,3 +727,56 @@ class TestTheRule:
         else:
             monkeypatch.setenv("SEARCH_NARROW_ACCESS_FALLBACK", value)
         assert mod.narrow_access_fallback_enabled() is on
+
+
+@dataclass
+class _PartialStore(_FakeStore):
+    """Answers in full, but says the record-id searches (``ids``) or the container searches (not ``ids``) stopped short of their time budget."""
+
+    ids: bool = True
+
+    async def query_nearest_points(
+        self, collection_name: str, requests: list[HybridSearchRequest]
+    ) -> list[list[SearchResult]]:
+        from app.modules.retrieval import degraded_notice
+
+        if any("virtualRecordId" in req.filter["must"] for req in requests) == self.ids:
+            degraded_notice.note("timeout")
+        return await super().query_nearest_points(collection_name, requests)
+
+
+class TestThePartialSearchIsThePagesOwn:
+    """The record-id replacement's partial search is its own: the page that is served says only what its own search said."""
+
+    async def test_a_replacement_that_stopped_short_and_was_dropped_leaves_the_kept_page_unmarked(self) -> None:
+        corpus = _corpus(15, records=400)
+        rnd = random.Random(15)
+        readable = set(rnd.sample(corpus.vrids, 120))
+        stale = set(rnd.sample(sorted(set(corpus.vrids) - readable), 40))
+        store = _PartialStore(list(corpus.points))
+
+        response = await _search(_service(store, _graph(_Access(readable, stale))), 10)
+
+        assert store.used_record_ids() == [False, True]                # the replacement ran, admitted nothing and was dropped
+        assert response["searchResults"]
+        assert "searchIncomplete" not in response and "searchDegraded" not in response
+
+    async def test_a_replacement_that_stopped_short_and_was_taken_says_so(self) -> None:
+        corpus = _corpus(17, records=600)
+        readable = set(random.Random(17).sample(corpus.vrids, 420))
+        store = _PartialStore(list(corpus.points))
+
+        response = await _search(_service(store, _graph(_Access(readable, set(readable)))), 10)
+
+        assert True in store.used_record_ids() and response["searchResults"]
+        assert response["searchIncomplete"] == mod.SEARCH_DEGRADED_MESSAGE
+
+    async def test_a_replacement_taken_in_full_is_not_marked_by_the_container_page_it_replaced(self) -> None:
+        corpus = _corpus(17, records=600)
+        readable = set(random.Random(17).sample(corpus.vrids, 420))
+        store = _PartialStore(list(corpus.points), ids=False)
+
+        response = await _search(_service(store, _graph(_Access(readable, set(readable)))), 10)
+
+        assert True in store.used_record_ids() and response["searchResults"]
+        assert "searchIncomplete" not in response and "searchDegraded" not in response

@@ -9,7 +9,13 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING, Any
 
-from app.config.constants.arangodb import CollectionNames
+from app.config.constants.arangodb import (
+    FOLDER_MIME_TYPES,
+    CollectionNames,
+    Connectors,
+    OriginTypes,
+    ProgressStatus,
+)
 from app.core.org_context import current_or_system, current_org_id
 from app.exceptions.graph_db_exceptions import (
     GraphQueryError,
@@ -19,11 +25,16 @@ from app.models.entities import FileRecord, Record
 from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.services.graph_db.common.typed_record import typed_record
 from app.services.graph_db.common.utils import (
+    CANONICAL_PARENT_RELATION_TYPES,
+    build_connector_stats_response,
     jira_issue_browse_url_regex,
     record_status_field,
 )
+from app.services.graph_db.interface.graph_db_provider import REF_LINKS_PER_DOC
+from app.services.graph_db.postgres import connector_stats
 from app.services.graph_db.postgres.base import (
     _LINK_COLLS,
+    _VALIDATOR,
     PgBase,
     _arango,
     _doc,
@@ -31,12 +42,46 @@ from app.services.graph_db.postgres.base import (
     _node,
 )
 from app.services.graph_db.postgres.hierarchy import _EDGE_COLLS, _remove_records
+from app.services.graph_db.postgres.kg import hierarchy as kg_hier
 from app.services.graph_db.postgres.records import _rec, _uniq, _vis
 from app.services.graph_db.postgres.trash import _sweep_edges
+from app.services.graph_db.vector_membership_queries import PAGE_RECORD_FIELDS
+from app.utils import error_class
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
     from app.core.db import Tx
+
+
+# The records at web addresses come from graph.records_by_weburl (graph_0017): one index probe per address, at most 10,000 records per address (a
+# vetted read has a hard limit) and 1,000 addresses per call, so one statement slices a longer list (a STABLE function reads the snapshot of the
+# statement that calls it: one snapshot, with or without the caller's transaction). Each statement also answers `capped`: an address filled its
+# 10,000 and may hold more. Then the plain statement below answers alone (it reads every record of the org; kept out of the first statement, whose
+# plan would otherwise carry the scan's cost and be compiled by JIT on every call).
+PLAIN_BY_WEBURL = """/* pipeshub:graph.get_record_by_weburl */ SELECT doc FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = 'records'
+    AND n.doc->>'webUrl' = $2 AND ($3::text IS NULL OR n.doc->>'orgId' = $3) AND n.doc->>'recordType' <> 'LINK' AND coalesce((n.doc->>'isDeleted')::boolean, false) = false LIMIT 1"""
+PLAIN_BY_WEBURLS = """/* pipeshub:graph.get_records_by_weburls */ SELECT id, "recordType", "connectorName", "webUrl", "isDependentNode" FROM (
+      SELECT n.id, n.doc->>'recordType' AS "recordType", n.doc->>'connectorName' AS "connectorName", n.doc->>'webUrl' AS "webUrl",
+             coalesce((n.doc->>'isDependentNode')::boolean, false) AS "isDependentNode",
+             row_number() OVER (PARTITION BY n.doc->>'webUrl' ORDER BY coalesce((n.doc->>'isDependentNode')::boolean, false), n.id) AS rn
+      FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = 'records' AND n.doc->>'webUrl' = ANY($2::text[]) AND n.doc->>'orgId' = $3
+        AND n.doc->>'recordType' <> 'LINK' AND NOT coalesce((n.doc->>'isPlaceholder')::boolean, false) AND ($5 OR coalesce((n.doc->>'isDeleted')::boolean, false) = false)) q
+    WHERE rn <= $4"""
+# The link records' holders: each link's edges, then each edge's holder, read by their keys. Joined, on an org that the statistics do not know
+# yet (put at a row) the planner crossed every record of the org with every link record of it: 86 million rows for 10,000 links, 12 s, or past
+# the statement timeout. OFFSET 0 keeps each probe its own subquery, run per row in this order; the collections come from ``k`` because a
+# literal implies the predicate of every partial index on them, and a scan of one bounded by the org alone costs as little as the key probe.
+PLAIN_LINKING = """/* pipeshub:graph.get_records_linking_to_weburls */ SELECT DISTINCT h.id FROM graph.nodes link
+    CROSS JOIN (SELECT 'records'::text AS rec, 'nodeRelations'::text AS rel OFFSET 0) k
+    CROSS JOIN LATERAL (SELECT e.from_id FROM graph.edges e WHERE e.org_id = $1 AND e.coll = k.rel AND e.to_coll = 'records' AND e.to_id = link.id
+        AND e.doc->>'relationshipType' = 'PARENT_CHILD' AND e.from_coll = 'records' OFFSET 0) e
+    CROSS JOIN LATERAL (SELECT h.id FROM graph.nodes h WHERE h.org_id = $1 AND h.coll = k.rec AND h.id = e.from_id
+        AND h.doc->>'orgId' = $3 AND coalesce((h.doc->>'isDeleted')::boolean, false) = false AND ($5::text IS NULL OR h.id > $5) OFFSET 0) h
+    WHERE link.org_id = $1 AND link.coll = 'records' AND link.doc->>'webUrl' = ANY($2::text[]) AND link.doc->>'orgId' = $3
+      AND link.doc->>'recordType' = 'LINK' AND link.doc->>'connectorName' = ANY($4::text[]) AND coalesce((link.doc->>'isDeleted')::boolean, false) = false
+    ORDER BY h.id LIMIT $6"""
 
 
 def _typed(rec_raw: Any, typ_raw: Any) -> Record:  # noqa: ANN401
@@ -55,31 +100,88 @@ def _vis_code(v: RecordVisibility) -> int:
     return _vis(v)
 
 
+
+# The record counts of ``get_connector_stats``, one statement per kind: a collection's records belong to its app; a connector's, to the record groups that chain up to
+# its app (10 hops at most). Written as one statement with the kind as a parameter, ``e.to_id IN (SELECT id FROM g)`` sat inside an OR: a sublink is pulled up into a
+# semi-join only at the top level of WHERE, so it stayed a filter and the plan read every records->belongsTo edge of the organisation (624 ms at 1M records for a
+# connector with no groups, 0.2 ms as its own statement). Each record and its stage state are read by their keys (a LIMIT subquery is not flattened into a join):
+# joined, the planner hashed a scan of every record (or stage state) of the organisation whenever it guessed the connector held many. A connector's record edges are
+# read group by group for the same reason (OFFSET 0 keeps each group's read its own subquery): as ``to_id IN (SELECT id FROM g)`` the planner hashed every
+# records->belongsTo edge of the organisation whenever it guessed the groups were many, and a recursive CTE's estimate is a guess (ten times its recursive step).
+# The collections come from ``k`` (OFFSET 0 keeps it a subquery) and not from literals: ``coll = 'stageStates'`` implies the predicate of every partial index on
+# that collection (nodes_stage_page, _revision, _status, and the records ones for 'records'), each leads with org_id, and on an organisation the statistics put at a
+# row or two a scan of such an index bounded by the org alone cost the same as the key probe. A collection known only at run time leaves the primary key.
+# The stage state's key is computed with the record (``n.sid``) and compared as a plain value: written as ``x.id = (n.doc->>...) || ...`` inside the lateral,
+# PostgreSQL 17.12 and 18.7 kept it as a filter on graph.nodes (row security; ``->>`` and ``||`` are not leakproof) and read every stage state of the org.
+STATS_KB = """/* pipeshub:graph.get_connector_stats */ WITH r AS (SELECT DISTINCT e.from_id AS id FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'belongsTo'
+        AND e.from_coll = 'records' AND e.to_coll = 'apps' AND e.to_id = $2)
+    SELECT n.doc->>'recordType' AS "recordType", n.doc->>'indexingStatus' AS "indexingStatus", n.doc->>'extractionStatus' AS "extractionStatus",
+           s.doc->>'status' AS "entitiesStatus", count(*) AS cnt
+    FROM r CROSS JOIN (SELECT 'records'::text AS rec, 'stageStates'::text AS st OFFSET 0) k
+    CROSS JOIN LATERAL (SELECT x.doc, (x.doc->>'virtualRecordId') || ':' || (x.doc->>'contentRev') || ':entities' AS sid FROM graph.nodes x
+        WHERE x.org_id = $1 AND x.coll = k.rec AND x.id = r.id LIMIT 1) n
+    LEFT JOIN LATERAL (SELECT x.doc FROM graph.nodes x WHERE x.org_id = $1 AND x.coll = k.st AND x.id = n.sid LIMIT 1) s ON true
+    WHERE coalesce((n.doc->>'isInternal')::boolean, false) = false AND coalesce((n.doc->>'isPlaceholder')::boolean, false) = false
+      AND coalesce((n.doc->>'isDeleted')::boolean, false) = false AND NOT coalesce(n.doc->>'mimeType', '') = ANY($3::text[])
+    GROUP BY 1, 2, 3, 4"""
+STATS_CONNECTOR = """/* pipeshub:graph.get_connector_stats */ WITH RECURSIVE g(id, depth) AS (
+      SELECT e.from_id, 1 FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'belongsTo' AND e.from_coll = 'recordGroups' AND e.to_coll = 'apps' AND e.to_id = $2
+      UNION SELECT e.from_id, g.depth + 1 FROM g JOIN graph.edges e ON e.org_id = $1 AND e.coll = 'belongsTo' AND e.from_coll = 'recordGroups'
+        AND e.to_coll = 'recordGroups' AND e.to_id = g.id WHERE g.depth < 10),
+    r AS (SELECT DISTINCT e.from_id AS id FROM (SELECT DISTINCT id FROM g) g CROSS JOIN LATERAL (SELECT e.from_id FROM graph.edges e WHERE e.org_id = $1
+        AND e.coll = 'belongsTo' AND e.from_coll = 'records' AND e.to_coll = 'recordGroups' AND e.to_id = g.id OFFSET 0) e)
+    SELECT n.doc->>'recordType' AS "recordType", n.doc->>'indexingStatus' AS "indexingStatus", n.doc->>'extractionStatus' AS "extractionStatus",
+           s.doc->>'status' AS "entitiesStatus", count(*) AS cnt
+    FROM r CROSS JOIN (SELECT 'records'::text AS rec, 'stageStates'::text AS st OFFSET 0) k
+    CROSS JOIN LATERAL (SELECT x.doc, (x.doc->>'virtualRecordId') || ':' || (x.doc->>'contentRev') || ':entities' AS sid FROM graph.nodes x
+        WHERE x.org_id = $1 AND x.coll = k.rec AND x.id = r.id LIMIT 1) n
+    LEFT JOIN LATERAL (SELECT x.doc FROM graph.nodes x WHERE x.org_id = $1 AND x.coll = k.st AND x.id = n.sid LIMIT 1) s ON true
+    WHERE coalesce((n.doc->>'isInternal')::boolean, false) = false AND coalesce((n.doc->>'isPlaceholder')::boolean, false) = false
+      AND coalesce((n.doc->>'isDeleted')::boolean, false) = false AND NOT coalesce(n.doc->>'mimeType', '') = ANY($3::text[])
+    GROUP BY 1, 2, 3, 4"""
+
 class LookupsMixin(PgBase):
     async def _lrows(self, sql: str, *args: Any, transaction: str | None = None, write: bool = False) -> list:  # noqa: ANN401
         return await self._q(lambda tx: tx.fetch(sql, *args), transaction, write=write)
 
+    async def _at_addresses(self, sql: str, args: tuple, plain: str, plain_args: tuple, transaction: str | None) -> list:
+        """The rows of ``sql`` (over graph.records_by_weburl; it answers ``capped`` on its first row); when an address filled the function's
+        limit, the rows of the plain statement alone."""
+        rows = await self._lrows(sql, *args, transaction=transaction)
+        if rows and rows[0].get("capped"):
+            return await self._lrows(plain, *plain_args, transaction=transaction)
+        return rows
+
     async def get_record_by_weburl(self, weburl: str, org_id: str | None = None, transaction: str | None = None) -> Record | None:
         """By exact web URL; LINK records are skipped."""
-        org = current_org_id()
+        org = current_org_id()      # the vetted read answers for the org of the unit of work; a missing org raises here, before the try
+        if weburl is None:
+            return None
         try:
-            d = await self._one("""/* pipeshub:graph.get_record_by_weburl */ SELECT doc FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = 'records'
-                AND n.doc->>'webUrl' = $2 AND ($3::text IS NULL OR n.doc->>'orgId' = $3) AND n.doc->>'recordType' <> 'LINK' AND coalesce((n.doc->>'isDeleted')::boolean, false) = false LIMIT 1""",
-                                org, weburl, org_id or None, transaction=transaction)
+            # graph_0017: a plain statement under row security reaches no index on the address, so it read every record of the org
+            rows = await self._at_addresses("""/* pipeshub:graph.get_record_by_weburl */ WITH f AS MATERIALIZED (SELECT r.doc FROM graph.records_by_weburl(ARRAY[$1]::text[]) r),
+                  q AS (SELECT f.doc FROM f WHERE ($2::text IS NULL OR f.doc->>'orgId' = $2) AND f.doc->>'recordType' <> 'LINK'
+                    AND coalesce((f.doc->>'isDeleted')::boolean, false) = false LIMIT 1)
+                SELECT c.capped, q.doc FROM (SELECT count(*) >= 10000 AS capped FROM f) c LEFT JOIN q ON true""",
+                                            (weburl, org_id or None), PLAIN_BY_WEBURL, (org, weburl, org_id or None), transaction)
+            d = _doc(rows[0]["doc"]) if rows and rows[0]["doc"] is not None else None
             return Record.from_arango_base_record(_arango(d, "records")) if d else None
         except Exception as e:
-            self.logger.error(f"❌ Get record by web URL failed: {e}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="get_record_by_weburl")
             return None
 
     async def get_record_by_issue_key(self, connector_id: str, issue_key: str, transaction: str | None = None) -> Record | None:
-        org = current_org_id()
+        current_org_id()      # the vetted read answers for the org of the unit of work; a missing org raises here, before the try
+        if not connector_id:
+            return None
         try:
-            d = await self._one("""/* pipeshub:graph.get_record_by_issue_key */ SELECT doc FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = 'records'
-                AND n.doc->>'connectorId' = $2 AND n.doc->>'recordType' = 'TICKET' AND n.doc->>'webUrl' ~ $3 LIMIT 1""",
-                                org, connector_id, jira_issue_browse_url_regex(issue_key), transaction=transaction)
+            # graph_0014: a plain statement under row security reaches no index on the address, so it read every record of the org
+            d = await self._one("/* pipeshub:graph.record_by_issue_url */ SELECT doc FROM graph.record_by_issue_url($1, $2)",
+                                connector_id, jira_issue_browse_url_regex(issue_key), transaction=transaction)
             return Record.from_arango_base_record(_arango(d, "records")) if d else None
         except Exception as e:
-            self.logger.error(f"❌ Failed to retrieve record for issue key {connector_id} {issue_key}: {e}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_record_by_issue_key", connector_id=connector_id)
             return None
 
     async def get_record_by_conversation_index(self, connector_id: str, conversation_index: str, thread_id: str, org_id: str, user_id: str,
@@ -103,7 +205,8 @@ class LookupsMixin(PgBase):
                                 org, connector_id, org_id, conversation_index, thread_id, user_id, transaction=transaction)
             return Record.from_arango_base_record(_arango(d, "records")) if d else None
         except Exception as e:
-            self.logger.error(f"❌ Get record by conversation index failed: {e}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_record_by_conversation_index")
             return None
 
     async def get_record_by_path(self, connector_id: str, path: list[str], external_record_group_id: str, transaction: str | None = None) -> dict | None:
@@ -131,7 +234,6 @@ class LookupsMixin(PgBase):
                                 org, connector_id, external_record_group_id, list(path), transaction=transaction)
             return _arango(d, "records") if d else None
         except Exception as e:
-            self.logger.error(f"❌ Get record by path failed: {e}")
             raise GraphQueryError(f"Could not look up the record at path {path}: {e}") from e
 
     async def get_records_by_file_path(self, connector_id: str, path: str, transaction: str | None = None) -> list[Record]:
@@ -142,7 +244,6 @@ class LookupsMixin(PgBase):
                                     org, path, connector_id, transaction=transaction)
             return [Record.from_arango_base_record(_rec(r["doc"])) for r in rows]
         except Exception as e:
-            self.logger.error(f"❌ Get records by file path failed: {e}")
             raise GraphQueryError(f"Could not look up records at path {path}: {e}") from e
 
     async def get_records_by_record_type(self, connector_id: str, record_type: str, transaction: str | None = None) -> list[Record]:
@@ -169,45 +270,55 @@ class LookupsMixin(PgBase):
                 ORDER BY r.id OFFSET $9 LIMIT $10""", org, org_id, connector_id, status_filters, record_group_id, is_placeholder,
                                     exclude_statuses, after_key, offset if limit is not None else 0, limit, attr, _vis_code(visibility), transaction=transaction)
         except Exception as e:
-            self.logger.error(f"❌ Get records by status failed: {e}")
             raise GraphQueryError(f"Could not list records for connector {connector_id}: {e}") from e
         return [_typed(r["rec"], r["typ"]) for r in rows]
 
-    async def get_records_by_weburls(self, weburls: list[str], org_id: str, per_address: int = 2, transaction: str | None = None) -> list[dict[str, Any]]:
+    async def get_records_by_weburls(self, weburls: list[str], org_id: str, per_address: int = 2, transaction: str | None = None, *, include_deleted: bool = False) -> list[dict[str, Any]]:
         if not weburls or not org_id:
             return []
-        rows = await self._lrows("""/* pipeshub:graph.get_records_by_weburls */ SELECT id, "recordType", "connectorName", "webUrl", "isDependentNode" FROM (
-              SELECT n.id, n.doc->>'recordType' AS "recordType", n.doc->>'connectorName' AS "connectorName", n.doc->>'webUrl' AS "webUrl",
-                     coalesce((n.doc->>'isDependentNode')::boolean, false) AS "isDependentNode",
-                     row_number() OVER (PARTITION BY n.doc->>'webUrl' ORDER BY coalesce((n.doc->>'isDependentNode')::boolean, false), n.id) AS rn
-              FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = 'records' AND n.doc->>'webUrl' = ANY($2::text[]) AND n.doc->>'orgId' = $3
-                AND n.doc->>'recordType' <> 'LINK' AND NOT coalesce((n.doc->>'isPlaceholder')::boolean, false) AND coalesce((n.doc->>'isDeleted')::boolean, false) = false) q
-            WHERE rn <= $4""", current_org_id(), _uniq(weburls), org_id, per_address, transaction=transaction)
-        return [dict(r) for r in rows]
+        org, urls = current_org_id(), _uniq(weburls)
+        rows = await self._at_addresses("""/* pipeshub:graph.get_records_by_weburls */ WITH f AS MATERIALIZED (SELECT r.node_id AS id, r.doc
+                FROM generate_series(1, cardinality($1::text[]), 1000) g(i) CROSS JOIN LATERAL graph.records_by_weburl(($1::text[])[g.i:g.i + 999]) r),
+              q AS (SELECT id, "recordType", "connectorName", "webUrl", "isDependentNode" FROM (
+                SELECT f.id, f.doc->>'recordType' AS "recordType", f.doc->>'connectorName' AS "connectorName", f.doc->>'webUrl' AS "webUrl",
+                       coalesce((f.doc->>'isDependentNode')::boolean, false) AS "isDependentNode",
+                       row_number() OVER (PARTITION BY f.doc->>'webUrl' ORDER BY coalesce((f.doc->>'isDependentNode')::boolean, false), f.id) AS rn
+                FROM f WHERE f.doc->>'orgId' = $2
+                  AND f.doc->>'recordType' <> 'LINK' AND NOT coalesce((f.doc->>'isPlaceholder')::boolean, false) AND ($4 OR coalesce((f.doc->>'isDeleted')::boolean, false) = false)) x
+                WHERE rn <= $3)
+            SELECT c.capped, q.* FROM (SELECT EXISTS (SELECT 1 FROM f GROUP BY f.doc->>'webUrl' HAVING count(*) >= 10000) AS capped) c LEFT JOIN q ON true""",
+                                        (urls, org_id, per_address, include_deleted), PLAIN_BY_WEBURLS, (org, urls, org_id, per_address, include_deleted), transaction)
+        return [{k: r[k] for k in ("id", "recordType", "connectorName", "webUrl", "isDependentNode")} for r in rows if r["id"] is not None]
 
     async def get_records_linking_to_weburls(self, weburls: list[str], org_id: str, connector_names: list[str], limit: int = 100, after: str | None = None,
                                              transaction: str | None = None) -> list[str]:
         if not weburls or not org_id or not connector_names:
             return []
-        rows = await self._lrows("""/* pipeshub:graph.get_records_linking_to_weburls */ SELECT DISTINCT h.id FROM graph.nodes link
-            JOIN graph.edges e ON e.org_id = link.org_id AND e.coll = 'nodeRelations' AND e.to_coll = 'records' AND e.to_id = link.id
-              AND e.doc->>'relationshipType' = 'PARENT_CHILD' AND e.from_coll = 'records'
-            JOIN graph.nodes h ON h.org_id = e.org_id AND h.coll = 'records' AND h.id = e.from_id
-            WHERE link.org_id = $1 AND link.coll = 'records' AND link.doc->>'webUrl' = ANY($2::text[]) AND link.doc->>'orgId' = $3
-              AND link.doc->>'recordType' = 'LINK' AND link.doc->>'connectorName' = ANY($4::text[]) AND coalesce((link.doc->>'isDeleted')::boolean, false) = false
-              AND h.doc->>'orgId' = $3 AND coalesce((h.doc->>'isDeleted')::boolean, false) = false AND ($5::text IS NULL OR h.id > $5)
-            ORDER BY h.id LIMIT $6""", current_org_id(), list(weburls), org_id, list(connector_names), after, limit, transaction=transaction)
-        return [r["id"] for r in rows]
+        args = (current_org_id(), [u for u in weburls if isinstance(u, str)], org_id, list(connector_names), after, limit)
+        # the holders are read by the probes of PLAIN_LINKING, for its reason
+        rows = await self._at_addresses("""/* pipeshub:graph.get_records_linking_to_weburls */ WITH f AS MATERIALIZED (SELECT r.node_id AS id, r.doc FROM graph.records_by_weburl($2::text[]) r),
+              q AS (SELECT DISTINCT h.id FROM f link CROSS JOIN (SELECT 'records'::text AS rec, 'nodeRelations'::text AS rel OFFSET 0) k
+                CROSS JOIN LATERAL (SELECT e.from_id FROM graph.edges e WHERE e.org_id = $1 AND e.coll = k.rel AND e.to_coll = 'records' AND e.to_id = link.id
+                    AND e.doc->>'relationshipType' = 'PARENT_CHILD' AND e.from_coll = 'records' OFFSET 0) e
+                CROSS JOIN LATERAL (SELECT h.id FROM graph.nodes h WHERE h.org_id = $1 AND h.coll = k.rec AND h.id = e.from_id
+                    AND h.doc->>'orgId' = $3 AND coalesce((h.doc->>'isDeleted')::boolean, false) = false AND ($5::text IS NULL OR h.id > $5) OFFSET 0) h
+                WHERE link.doc->>'orgId' = $3
+                  AND link.doc->>'recordType' = 'LINK' AND link.doc->>'connectorName' = ANY($4::text[]) AND coalesce((link.doc->>'isDeleted')::boolean, false) = false
+                ORDER BY h.id LIMIT $6)
+            SELECT c.capped, q.id FROM (SELECT EXISTS (SELECT 1 FROM f GROUP BY f.doc->>'webUrl' HAVING count(*) >= 10000) AS capped) c LEFT JOIN q ON true
+            ORDER BY q.id""", args, PLAIN_LINKING, args, transaction)
+        return [r["id"] for r in rows if r["id"] is not None]
 
     async def get_issue_sites(self, org_id: str, connector_names: list[str], limit: int | None = None, transaction: str | None = None) -> list[str]:
         if not org_id or not connector_names:
             return []
-        rows = await self._lrows("""/* pipeshub:graph.get_issue_sites */ SELECT site FROM (
-              SELECT DISTINCT (regexp_match(n.doc->>'webUrl', '^(.*)/browse/'))[1] AS site FROM graph.nodes n
-              WHERE n.org_id = $1 AND n.coll = 'records' AND n.doc->>'orgId' = $2 AND n.doc->>'recordType' = 'TICKET'
-                AND n.doc->>'connectorName' = ANY($3::text[]) AND n.doc->>'webUrl' LIKE '%/browse/%' AND coalesce((n.doc->>'isDeleted')::boolean, false) = false) q
-            WHERE site <> '' ORDER BY site LIMIT $4""", current_org_id(), org_id, list(connector_names), limit, transaction=transaction)
-        return [r["site"] for r in rows if r["site"]]
+        current_org_id()
+        names = _uniq(connector_names)        # a null or empty name matched no ticket; the function refuses one
+        if not names:
+            return []
+        rows = await self._lrows("/* pipeshub:graph.get_issue_sites */ SELECT site_url FROM graph.ticket_sites($1, $2::text[], $3)",
+                                 org_id, names, limit, transaction=transaction)
+        return [r["site_url"] for r in rows if r["site_url"]]
 
     async def find_duplicate_records(self, record_key: str, md5_checksum: str, org_id: str, record_type: str | None = None, size_in_bytes: int | None = None,
                                      transaction: str | None = None) -> list[dict]:
@@ -220,7 +331,8 @@ class LookupsMixin(PgBase):
                                     org, md5_checksum, record_key, org_id, record_type, size_in_bytes, transaction=transaction)
             return [_rec(r["doc"]) for r in rows]
         except Exception as e:
-            self.logger.error(f"❌ Error finding duplicate records: {e}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="find_duplicate_records")
             return []
 
     async def get_records_pending_duplicate_reconcile(self, due_before_ms: int, limit: int, transaction: str | None = None) -> list[dict]:
@@ -268,7 +380,8 @@ class LookupsMixin(PgBase):
                   AND ($5::text IS NULL OR r.id <> $5) LIMIT 1""", org, parent_folder_id, file_name, str(mime_type or ""), exclude_record_id, transaction=transaction)
             return {"_key": rows[0]["id"], "name": rows[0]["name"], "mimeType": rows[0]["mime"]} if rows else None
         except Exception as e:
-            self.logger.error(f"❌ Failed to find file by name: {e}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="find_file_by_name_in_parent")
             return None
 
     async def find_slack_burst_record_by_ts(self, connector_id: str, channel_id: str, ts: str, transaction: str | None = None) -> Record | None:
@@ -283,7 +396,8 @@ class LookupsMixin(PgBase):
                   AND m.doc->>'startTs' <> m.doc->>'endTs' LIMIT 1""", org, connector_id, channel_id, ts, transaction=transaction)
             return _typed(rows[0]["rec"], rows[0]["typ"]) if rows else None
         except Exception as e:
-            self.logger.error(f"❌ find_slack_burst_record_by_ts({ts}) failed: {e}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="find_slack_burst_record_by_ts")
             return None
 
     async def get_related_node_field(self, node_id: str, edge_collection: str, target_collection: str, field_name: str, direction: str = "inbound",
@@ -304,7 +418,8 @@ class LookupsMixin(PgBase):
                                         org, edge_collection, coll, key, field_name, target_collection, transaction=transaction)
             return [json.loads(r["v"]) if isinstance(r["v"], str) else r["v"] for r in rows]
         except Exception as e:
-            self.logger.error(f"❌ Get related node field failed: {e}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_related_node_field")
             return []
 
     async def get_edges_from_node_with_target_name(self, node_id: str, edge_collection: str, transaction: str | None = None, *,
@@ -318,9 +433,10 @@ class LookupsMixin(PgBase):
                 FROM graph.edges e LEFT JOIN graph.nodes t ON t.org_id = e.org_id AND t.coll = e.to_coll AND t.id = e.to_id
                 WHERE e.org_id = $1 AND e.coll = ANY($2::text[]) AND e.from_coll = $3 AND e.from_id = $4""", org, colls, coll, key, transaction=transaction)
         except Exception as e:
-            self.logger.error(f"❌ Get edges from node failed: {e}")
             if raise_on_error:
                 raise
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_edges_from_node_with_target_name")
             return []
         return [{**_doc(r["doc"]), "_from": node_id, "_to": f"{r['to_coll']}/{r['to_id']}", "name": r["name"]} for r in rows]
 
@@ -335,7 +451,8 @@ class LookupsMixin(PgBase):
             return [{"record_id": r["rid"], "childTable": _doc(r["doc"]).get("childTableName") or "", "sourceColumn": _doc(r["doc"]).get("sourceColumn") or "",
                      "targetColumn": _doc(r["doc"]).get("targetColumn") or ""} for r in rows]
         except Exception as e:
-            self.logger.warning("Failed to get child record IDs by relation type for record %s: %s", record_id, e)
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_child_record_ids_by_relation_type", record_id=record_id)
             return []
 
     async def get_parent_record_ids_by_relation_type(self, record_id: str, relation_type: str, transaction: str | None = None,
@@ -348,7 +465,8 @@ class LookupsMixin(PgBase):
             return [{"record_id": r["rid"], "parentTable": _doc(r["doc"]).get("parentTableName") or "", "sourceColumn": _doc(r["doc"]).get("sourceColumn") or "",
                      "targetColumn": _doc(r["doc"]).get("targetColumn") or ""} for r in rows]
         except Exception as e:
-            self.logger.warning("Failed to get parent record IDs by relation type for record %s: %s", record_id, e)
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_parent_record_ids_by_relation_type", record_id=record_id)
             return []
 
     async def get_address_links_batch(self, record_ids: list[str], org_id: str, limit_per_record: int | None = None,
@@ -402,7 +520,7 @@ class LookupsMixin(PgBase):
         except PermissionVerificationUnavailableError:
             raise
         except Exception as e:
-            self.logger.error(f"❌ get_linked_records failed: {e}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="get_linked_records")
             return []
 
     async def get_record_parent_adjacency(self, record_ids: list[str], org_id: str, *, max_depth: int = 20, transaction: str | None = None) -> dict[str, Any]:
@@ -441,7 +559,8 @@ class LookupsMixin(PgBase):
                 LEFT JOIN graph.nodes app ON app.org_id = $1 AND app.coll = 'apps' AND app.id = k.id AND (app.doc->>'orgId' IS NULL OR app.doc->>'orgId' = $3)
                 WHERE rec.id IS NOT NULL OR rg.id IS NOT NULL OR app.id IS NOT NULL""", org, keys, org_id, transaction=transaction)
         except Exception as e:
-            self.logger.warning("get_record_parent_adjacency failed: %s", e)
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_record_parent_adjacency")
             return {"nodes": {}, "parents": {}}
         nodes: dict[str, Any] = {}
         parents: dict[str, Any] = {}
@@ -466,13 +585,22 @@ class LookupsMixin(PgBase):
         by_id = {r["id"]: r for r in rows}
         return [_typed(by_id[i]["rec"], by_id[i]["typ"]) for i in ids if i in by_id]
 
-    async def _page_ids(self, sql: str, args: tuple, user_key: str | None, org_id: str, limit: int | None, offset: int, transaction: str | None) -> list[str]:
+    async def _page_ids(self, sql: str, args: tuple, user_key: str | None, org_id: str, limit: int | None, offset: int, transaction: str | None,
+                        kg: tuple[str, Callable[[Tx, int, int | None], Awaitable[list[str]]]] | None = None) -> list[str]:
         """``sql`` (a literal ending in ``OFFSET $n LIMIT $m``) selects the candidate ids in id order; without a user the page is cut in SQL, with one the
-        whole candidate list is read, the user's access applied, then the page cut."""
+        whole candidate list is read, the user's access applied, then the page cut. ``kg``: (what, read) the same ids from the typed graph, the walk's when it does not answer."""
+        async def walk(tx: Tx, off: int, lim: int | None) -> list[str]:
+            return [r["id"] for r in await tx.fetch(sql, *args, off, lim)]
+
+        async def ids_at(off: int, lim: int | None) -> list[str]:
+            if kg is not None:
+                got = await kg_hier.answer(self, kg[0], transaction, lambda tx: kg[1](tx, off, lim), walk=lambda tx: walk(tx, off, lim))
+                if got is not None:
+                    return got
+            return [r["id"] for r in await self._lrows(sql, *args, off, lim, transaction=transaction)]
         if not user_key:
-            rows = await self._lrows(sql, *args, offset if limit is not None else 0, limit, transaction=transaction)
-            return [r["id"] for r in rows]
-        ids = [r["id"] for r in await self._lrows(sql, *args, 0, None, transaction=transaction)]
+            return await ids_at(offset if limit is not None else 0, limit)
+        ids = await ids_at(0, None)
         allowed = await self._permitted(user_key, org_id, ids, transaction)
         ids = [i for i in ids if i in allowed]
         return ids[offset:offset + limit] if limit is not None else ids
@@ -491,13 +619,17 @@ class LookupsMixin(PgBase):
                   WHERE w.d < $3)
                 SELECT DISTINCT r.id FROM w JOIN graph.nodes r ON r.org_id = $1 AND r.coll = 'records' AND r.id = w.id
                 WHERE r.doc->>'connectorId' = $4 AND (r.doc->>'orgId' = $5 OR r.doc->>'orgId' IS NULL) AND coalesce((r.doc->>'isDeleted')::boolean, false) = false AND ($6::text[] IS NULL OR r.doc->>'indexingStatus' = ANY($6::text[])) AND ($7::text[] IS NULL OR NOT coalesce(r.doc->>'indexingStatus', '') = ANY($7::text[])) AND ($8::text IS NULL OR r.id > $8) ORDER BY r.id OFFSET $9 LIMIT $10"""
-            ids = await self._page_ids(sql, (org, parent_record_id, 100 if depth == -1 else depth, connector_id, org_id, status_filters or None, exclude_statuses or None, after_key), user_key, org_id,
-                                       limit, offset, transaction)
+            bound = 100 if depth == -1 else depth
+            ids = await self._page_ids(sql, (org, parent_record_id, bound, connector_id, org_id, status_filters or None, exclude_statuses or None, after_key), user_key, org_id,
+                                       limit, offset, transaction,
+                                       kg=("by_parent", lambda tx, off, lim: kg_hier.below(tx, org, parent_record_id, connector_id, org_id, bound, status_filters or None,
+                                                                                           exclude_statuses or None, after_key, off, lim)))
             return await self._records_page(ids, transaction)
         except PermissionVerificationUnavailableError:
             raise
         except Exception as e:
-            self.logger.error(f"❌ Failed to retrieve records by parent record {parent_record_id}: {e}", exc_info=True)
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_records_by_parent_record")
             return []
 
     async def get_records_by_record_group(self, record_group_id: str, connector_id: str, org_id: str, depth: int, user_key: str | None = None,
@@ -508,12 +640,20 @@ class LookupsMixin(PgBase):
         try:
             if depth < -1:
                 raise ValueError(f"Depth must be >= -1 (where -1 means unlimited). Got: {depth}")
-            groups = [r["id"] for r in await self._lrows("""/* pipeshub:graph.record_group_nested */ WITH RECURSIVE nest(id, d) AS (
+            bound = 100 if depth == -1 else depth
+            nest_sql = """/* pipeshub:graph.record_group_nested */ WITH RECURSIVE nest(id, d) AS (
                   SELECT g.id, 0 FROM graph.nodes g WHERE g.org_id = $1 AND g.coll = 'recordGroups' AND g.id = $2 AND g.doc->>'orgId' = $3
                   UNION SELECT c.id, nest.d + 1 FROM nest JOIN graph.edges e ON e.org_id = $1 AND e.coll = 'belongsTo' AND e.to_coll = 'recordGroups' AND e.to_id = nest.id
                     AND e.from_coll = 'recordGroups' JOIN graph.nodes c ON c.org_id = $1 AND c.coll = 'recordGroups' AND c.id = e.from_id
                     AND (c.doc->>'orgId' = $3 OR c.doc->>'orgId' IS NULL) WHERE nest.d < $4)
-                SELECT DISTINCT id FROM nest""", org, record_group_id, org_id, 100 if depth == -1 else depth, transaction=transaction)]
+                SELECT DISTINCT id FROM nest"""
+
+            async def walk_nest(tx: Tx) -> list[str]:
+                return sorted(r["id"] for r in await tx.fetch(nest_sql, org, record_group_id, org_id, bound))
+            nested = await kg_hier.answer(self, "by_group_nest", transaction, lambda tx: kg_hier.nested_groups(tx, org, record_group_id, connector_id, org_id, bound),
+                                          walk=walk_nest, shape=lambda got: sorted(i for _, i in got))
+            sk_of = {i: sk for sk, i in nested or []}
+            groups = [i for _, i in nested] if nested is not None else [r["id"] for r in await self._lrows(nest_sql, org, record_group_id, org_id, bound, transaction=transaction)]
             if groups and user_key:
                 allowed = await self._permitted(user_key, org_id, groups, transaction)
                 groups = [g for g in groups if g in allowed]
@@ -535,12 +675,16 @@ class LookupsMixin(PgBase):
                   SELECT e.to_id, reach.d + 1 FROM reach JOIN graph.edges e ON e.org_id = $1 AND e.coll = 'nodeRelations' AND e.from_coll = 'records' AND e.from_id = reach.id
                     AND e.to_coll = 'records' AND e.doc->>'relationshipType' IN ('PARENT_CHILD', 'ATTACHMENT') AND e.to_id IN (SELECT id FROM cand) WHERE reach.d < 100)
                 SELECT DISTINCT id FROM reach ORDER BY id OFFSET $8 LIMIT $9"""
-            ids = await self._page_ids(sql, (org, groups, connector_id, org_id, status_filters or None, exclude_statuses or None, after_key), user_key, org_id, limit, offset, transaction)
+            kg = ("by_group", lambda tx, off, lim: kg_hier.group_records(tx, org, [sk_of[g] for g in groups], connector_id, org_id, status_filters or None, exclude_statuses or None,
+                                                                    after_key, off, lim)) if nested is not None else None
+            ids = await self._page_ids(sql, (org, groups, connector_id, org_id, status_filters or None, exclude_statuses or None, after_key), user_key, org_id, limit, offset, transaction,
+                                       kg=kg)
             return await self._records_page(ids, transaction)
         except PermissionVerificationUnavailableError:
             raise
         except Exception as e:
-            self.logger.error(f"❌ Failed to retrieve records by record group {record_group_id}: {e}", exc_info=True)
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_records_by_record_group")
             return []
 
     async def link_record_to_group(self, record_id: str, record_group_id: str | None, *, inherit: bool | None, leaving_group_id: str | None = None,
@@ -552,7 +696,15 @@ class LookupsMixin(PgBase):
             return 0
         org = current_org_id()
         now = get_epoch_timestamp_in_ms()
-        props = _j({"createdAtTimestamp": now, "updatedAtTimestamp": now})
+        stamps = {"createdAtTimestamp": now, "updatedAtTimestamp": now}
+        browse = {"relationshipType": "PARENT_CHILD", **stamps}
+        if record_group_id:      # the edges it will write, checked before the first statement
+            _VALIDATOR.validate_edge("belongsTo", stamps)
+            if inherit:
+                _VALIDATOR.validate_edge("inheritPermissions", stamps)
+            if browse_root:
+                _VALIDATOR.validate_edge("nodeRelations", browse)
+        props = _j(stamps)
 
         async def link(tx: Tx, coll: str) -> None:
             await tx.execute("""/* pipeshub:graph.link_record_to_group_edge */ INSERT INTO graph.edges (org_id, coll, from_coll, from_id, to_coll, to_id, ekey, doc)
@@ -581,7 +733,7 @@ class LookupsMixin(PgBase):
                         SELECT $1, 'nodeRelations', 'recordGroups', g.id, 'records', r.id, '', $4::jsonb FROM graph.nodes r, graph.nodes g
                         WHERE r.org_id = $1 AND r.coll = 'records' AND r.id = $2 AND g.org_id = $1 AND g.coll = 'recordGroups' AND g.id = $3
                         ON CONFLICT (org_id, coll, from_coll, from_id, to_coll, to_id, ekey) DO UPDATE SET doc = EXCLUDED.doc""", org, record_id, record_group_id,
-                                     _j({"relationshipType": "PARENT_CHILD", "createdAtTimestamp": now, "updatedAtTimestamp": now}))
+                                     _j(browse))
                 elif browse_root is False:
                     await tx.execute("""/* pipeshub:graph.link_record_to_group_unroot */ DELETE FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'nodeRelations' AND e.doc->>'relationshipType' IN ('PARENT_CHILD', 'ATTACHMENT')
                         AND e.from_coll = 'recordGroups' AND e.from_id = $3 AND e.to_coll = 'records' AND e.to_id = $2""", org, record_id, record_group_id)
@@ -593,8 +745,7 @@ class LookupsMixin(PgBase):
         try:
             if people:
                 await self.batch_upsert_nodes([p.to_arango_person() for p in people], CollectionNames.PEOPLE.value, transaction)
-        except Exception as e:
-            self.logger.error(f"❌ Batch upsert people failed: {e}")
+        except Exception:
             raise      # as the Neo4j and Arango providers: the caller must not add edges for people that were not written
 
     async def update_node_if_match(self, key: str, collection: str, node: dict, match_field: str, match_value: Any,  # noqa: ANN401
@@ -606,6 +757,7 @@ class LookupsMixin(PgBase):
             return False
         doc = _node(node, collection)
         doc["id"] = key
+        _VALIDATOR.validate_node(collection, doc)
         r = await self._q(lambda tx: tx.fetchval("""/* pipeshub:graph.update_node_if_match */ WITH u AS (UPDATE graph.nodes n SET doc = jsonb_strip_nulls($5::jsonb)
             WHERE n.org_id = $1 AND n.coll = $2 AND n.id = $3 AND n.doc->$4::text = $6::jsonb RETURNING 1) SELECT count(*) FROM u""",
                                                  org, collection, key, match_field, _j(doc), _j(match_value)), transaction, write=True)
@@ -654,5 +806,297 @@ class LookupsMixin(PgBase):
             return FileRecord.from_arango_record(file, record)
 
         except Exception as e:
-            self.logger.error(f"❌ Get file record by ID failed: {str(e)}")
             raise GraphQueryError(f"Could not read file record {record_id}: {e}") from e
+
+    async def get_record_owner_source_user_email(self, record_id: str, transaction: str | None = None, *, raise_on_error: bool = False) -> str | None:
+        """The email of a user holding an OWNER grant of type USER on the record or on what it inherits permissions from (8 hops), the nearest first."""
+        org = current_org_id()
+        try:
+            rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.get_record_owner_source_user_email */ WITH RECURSIVE anc(coll, id, depth) AS (
+                  SELECT n.coll, n.id, 0 FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = 'records' AND n.id = $2
+                  UNION
+                  SELECT i.to_coll, i.to_id, a.depth + 1 FROM anc a JOIN graph.edges i ON i.org_id = $1 AND i.coll = 'inheritPermissions'
+                    AND i.from_coll = a.coll AND i.from_id = a.id WHERE a.depth < 8)
+                SELECT u.doc->>'email' AS email FROM anc JOIN graph.edges p ON p.org_id = $1 AND p.coll = 'permission' AND p.from_coll = 'users' AND p.to_coll = anc.coll
+                  AND p.to_id = anc.id AND p.doc->>'role' = 'OWNER' AND p.doc->>'type' = 'USER'
+                  JOIN graph.nodes u ON u.org_id = $1 AND u.coll = 'users' AND u.id = p.from_id AND u.doc->>'email' IS NOT NULL ORDER BY anc.depth, u.id LIMIT 1""", org, record_id), transaction)
+            return rows[0]["email"] if rows else None
+        except Exception as e:
+            if raise_on_error:
+                raise
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_record_owner_source_user_email")
+            return None
+
+    async def get_message_id_header_by_key(self, record_key: str, collection: str, transaction: str | None = None) -> str | None:
+        org = current_org_id()
+        try:
+            return await self._q(lambda tx: tx.fetchval("/* pipeshub:graph.get_message_id_header_by_key */ SELECT doc->>'messageIdHeader' FROM graph.nodes WHERE org_id = $1 AND coll = $2 AND id = $3",
+                                                        org, collection, record_key), transaction)
+        except Exception as e:
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_message_id_header_by_key", record_id=record_key)
+            return None
+
+
+    # ---- linked records, failed records, documents by status, departments, and what is left of a connector's sync ----
+    async def filter_linked_record_ids(self, record_ids: list[str], transaction: str | None = None) -> list[str]:
+        """The records among ``record_ids`` that belong to a record group or have a canonical hierarchy parent, in the order asked."""
+        org = current_org_id()
+        ids = list(dict.fromkeys(record_ids))
+        if not ids:
+            return []
+        found = {r["id"] for r in await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.filter_linked_record_ids */ SELECT r.id FROM graph.nodes r
+            WHERE r.org_id = $1 AND r.coll = 'records' AND r.id = ANY($2::text[])
+              AND (EXISTS (SELECT 1 FROM graph.edges b JOIN graph.nodes g ON g.org_id = b.org_id AND g.coll = 'recordGroups' AND g.id = b.to_id
+                           WHERE b.org_id = r.org_id AND b.coll = 'belongsTo' AND b.from_coll = 'records' AND b.from_id = r.id AND b.to_coll = 'recordGroups')
+                   OR EXISTS (SELECT 1 FROM graph.edges p WHERE p.org_id = r.org_id AND p.coll = 'nodeRelations' AND p.to_coll = 'records' AND p.to_id = r.id
+                              AND p.doc->>'relationshipType' = ANY($3::text[])))""", org, ids, list(CANONICAL_PARENT_RELATION_TYPES)), transaction)}
+        return [i for i in ids if i in found]
+
+    async def _key_by_external(self, external_id: str, connector_id: str | None, transaction: str | None) -> str | None:
+        org = current_org_id()
+        try:
+            return await self._q(lambda tx: tx.fetchval("""/* pipeshub:graph.key_by_external_id */ SELECT id FROM graph.nodes WHERE org_id = $1 AND coll = 'records'
+                AND doc->>'externalRecordId' = $2 AND ($3::text IS NULL OR doc->>'connectorId' = $3) ORDER BY id LIMIT 1""", org, external_id, connector_id), transaction)
+        except Exception as e:
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="_key_by_external")
+            return None
+
+    async def _ref_link_rows(self, doc_ids: list[str]) -> list[dict[str, Any]]:
+        # The org's links only: a storage document belongs to one org (the storage service reads it by org and id, and the push asks it in the
+        # caller's org first), and a record of another org naming its id is not a link the platform wrote to it.
+        current_org_id()      # no org or a system context is an error, not the jobs role's refusal
+        rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.ref_links */ SELECT doc_id, kind, node_id, origin, connector_name, connector_id
+            FROM graph.ref_links($1::text[], $2, $3, $4)""", doc_ids, OriginTypes.UPLOAD.value, Connectors.KNOWLEDGE_BASE.value, REF_LINKS_PER_DOC), None)
+        return [{"docId": r["doc_id"], "recordId": r["node_id"], "kind": r["kind"], "origin": r["origin"],
+                 "connectorName": r["connector_name"], "connectorId": r["connector_id"]} for r in rows]
+
+    async def get_record_key_by_external_id(self, external_id: str, connector_id: str, transaction: str | None = None) -> str | None:
+        return await self._key_by_external(external_id, connector_id, transaction)
+
+    async def get_failed_records_by_org(self, org_id: str, connector_id: str, transaction: str | None = None) -> list[dict]:
+        """The live records of the connector whose indexing failed; another org's id reads as none."""
+        org = current_org_id()
+        try:
+            if org_id != org:
+                return []
+            rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.get_failed_records_by_org */ SELECT doc FROM graph.nodes WHERE org_id = $1 AND coll = 'records'
+                AND doc->>'connectorId' = $2 AND doc->>'indexingStatus' = 'FAILED' AND doc->>'orgId' = $1 AND doc->>'isDeleted' IS DISTINCT FROM 'true' ORDER BY id""", org, connector_id), transaction)
+            return [_arango(_doc(r["doc"]), "records") for r in rows]
+        except Exception as e:
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_failed_records_by_org")
+            return []
+
+    async def get_documents_by_status(self, collection: str, status: str, transaction: str | None = None) -> list[dict]:
+        """Every document of the collection in this org with this indexing status. A read by a document field of a whole collection: there is no index for it."""
+        org = current_org_id()
+        try:
+            rows = await self._q(lambda tx: tx.fetch("/* pipeshub:graph.get_documents_by_status */ SELECT doc FROM graph.nodes WHERE org_id = $1 AND coll = $2 AND doc->>'indexingStatus' = $3 ORDER BY id",
+                                                     org, collection, status), transaction)
+            return [_arango(_doc(r["doc"]), collection) for r in rows]
+        except Exception as e:
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_documents_by_status")
+            return []
+
+    async def get_departments(self, org_id: str | None = None, transaction: str | None = None) -> list[str]:
+        """The names of the departments with no org or the given one. Another org's id reads as none; a department without a name is left out."""
+        org = current_org_id()
+        try:
+            if org_id and org_id != org:
+                return []
+            rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.get_departments */ SELECT doc->>'departmentName' AS name FROM graph.nodes WHERE org_id = $1 AND coll = 'departments'
+                AND doc->>'departmentName' IS NOT NULL AND ($2::text IS NULL OR doc->>'orgId' IS NULL OR doc->>'orgId' = $2) ORDER BY id""", org, org_id or None), transaction)
+            return [r["name"] for r in rows]
+        except Exception as e:
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="get_departments")
+            return []
+
+    async def delete_sync_points_by_connector_id(self, connector_id: str, transaction: str | None = None) -> tuple[int, bool]:
+        """Deletes the connector's sync points: (how many, whether all went)."""
+        current_org_id()
+        try:
+            return (await self.remove_nodes_by_field("syncPoints", "connectorId", field_value=connector_id, transaction=transaction), True)
+        except Exception as e:
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="delete_sync_points_by_connector_id", connector_id=connector_id)
+            return (0, False)
+
+    async def delete_connector_sync_edges(self, connector_id: str, transaction: str | None = None) -> tuple[int, bool]:
+        """Deletes the edges a sync made around the connector's records, groups, roles and groups of users and its app, all or none; the nodes and type links stay."""
+        current_org_id()
+        try:
+            node_ids = (await self._collect_connector_entities(connector_id, transaction)).get("all_node_ids") or []
+            if not node_ids:
+                return (0, True)
+            n, failed = await self._delete_all_edges_for_nodes(transaction or "", node_ids, [
+                "belongsTo", "nodeRelations", "permission", "inheritPermissions", "userAppRelation", "entityRelations", "anyone"])
+            return (n, not failed)
+        except Exception as e:
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="delete_connector_sync_edges", connector_id=connector_id)
+            return (0, False)
+
+    async def reap_stale_external_app_relations(self, connector_id: str, transaction: str | None = None) -> int:
+        """Drops the external-collaborator membership edges of the app whose grant is gone (a USER grant on a live record or group of the connector, directly or
+        through a group, role or team), then the persons left with no edge at all; returns how many persons went. A member who is not flagged external is never touched."""
+        org = current_org_id()
+
+        async def go(tx: Tx) -> int:
+            gone = await tx.fetch("""/* pipeshub:graph.reap_stale_external_edges */ DELETE FROM graph.edges d USING (
+                  SELECT u.from_coll, u.from_id FROM graph.edges u WHERE u.org_id = $1 AND u.coll = 'userAppRelation' AND u.to_coll = 'apps' AND u.to_id = $2
+                    AND u.doc->>'isExternalUser' = 'true'
+                    AND NOT EXISTS (SELECT 1 FROM graph.edges g JOIN graph.nodes t ON t.org_id = g.org_id AND t.coll = g.to_coll AND t.id = g.to_id
+                                    WHERE g.org_id = $1 AND g.coll = 'permission' AND g.from_coll = u.from_coll AND g.from_id = u.from_id AND g.doc->>'type' = 'USER'
+                                      AND g.to_coll IN ('records', 'recordGroups') AND t.doc->>'connectorId' = $2 AND t.doc->>'isDeleted' IS DISTINCT FROM 'true')
+                    AND NOT EXISTS (SELECT 1 FROM graph.edges m JOIN graph.edges g ON g.org_id = m.org_id AND g.coll = 'permission' AND g.from_coll = m.to_coll AND g.from_id = m.to_id
+                                      AND g.to_coll IN ('records', 'recordGroups')
+                                    JOIN graph.nodes t ON t.org_id = g.org_id AND t.coll = g.to_coll AND t.id = g.to_id
+                                    WHERE m.org_id = $1 AND m.coll = 'permission' AND m.from_coll = u.from_coll AND m.from_id = u.from_id AND m.doc->>'type' = 'USER'
+                                      AND m.to_coll IN ('groups', 'roles', 'teams') AND t.doc->>'connectorId' = $2 AND t.doc->>'isDeleted' IS DISTINCT FROM 'true')) s
+                WHERE d.org_id = $1 AND d.coll = 'userAppRelation' AND d.to_coll = 'apps' AND d.to_id = $2 AND d.from_coll = s.from_coll AND d.from_id = s.from_id
+                RETURNING d.from_coll, d.from_id""", org, connector_id)
+            people = sorted({r["from_id"] for r in gone if r["from_coll"] == "person"})
+            if not people:
+                return 0
+            return await tx.fetchval("""/* pipeshub:graph.reap_stranded_persons */ WITH d AS (DELETE FROM graph.nodes p WHERE p.org_id = $1 AND p.coll = 'person' AND p.id = ANY($2::text[])
+                AND NOT EXISTS (SELECT 1 FROM graph.edges e WHERE e.org_id = p.org_id AND ((e.from_coll = 'person' AND e.from_id = p.id) OR (e.to_coll = 'person' AND e.to_id = p.id)))
+                RETURNING 1) SELECT count(*) FROM d""", org, people)
+        try:
+            return await self._q(go, transaction, write=True)
+        except Exception as e:
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="reap_stale_external_app_relations", connector_id=connector_id)
+            return 0
+
+    async def find_next_queued_duplicate(self, record_id: str, transaction: str | None = None, *, raise_on_error: bool = False) -> dict | None:
+        """A queued, live record with the same md5 (and the same size when the reference has one) in the reference record's own org; none when the
+        reference has no md5 or no org (the comparison is then null and matches nothing). Reads the md5 by document field, which no index covers: a scan of the org's records."""
+        org = current_org_id()
+        try:
+            d = await self._one("""/* pipeshub:graph.find_next_queued_duplicate */ SELECT n.doc FROM graph.nodes r JOIN graph.nodes n ON n.org_id = r.org_id AND n.coll = 'records'
+                AND n.doc->>'md5Checksum' = r.doc->>'md5Checksum' AND n.doc->>'orgId' = r.doc->>'orgId' AND n.id <> r.id AND n.doc->>'indexingStatus' = 'QUEUED'
+                AND coalesce((n.doc->>'isDeleted')::boolean, false) = false AND n.doc->>'refreshIntentId' IS NULL AND (r.doc->>'sizeInBytes' IS NULL OR n.doc->>'sizeInBytes' = r.doc->>'sizeInBytes')
+                WHERE r.org_id = $1 AND r.coll = 'records' AND r.id = $2 ORDER BY n.id LIMIT 1""", org, record_id, transaction=transaction)
+            return _arango(d, "records") if d else None
+        except Exception as e:
+            if raise_on_error:
+                raise
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="find_next_queued_duplicate")
+            return None
+
+    async def get_connector_instances_with_filters(self, collection: str, scope: str | None = None, user_id: str | None = None, *, is_admin: bool = False,
+                                                   search: str | None = None, page: int = 1, limit: int = 20, transaction: str | None = None) -> tuple[list[dict], int]:
+        """One page of the instances the user may see, newest first, and the total. An admin sees the team's and their own; anyone else only their own (with no user: an admin sees the team's, anyone else nothing). ``search`` is a literal, case-insensitive "contains" on name, type and group (the Neo4j provider reads it as a regular expression)."""
+        org = current_org_id()
+        pattern = None if not search else "%" + search.lower().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+        try:
+            rows = await self._lrows("""/* pipeshub:graph.get_connector_instances_with_filters */ SELECT n.doc, count(*) OVER () AS total FROM graph.nodes n
+                WHERE n.org_id = $1 AND n.coll = $2 AND ($3::text IS NULL OR n.doc->>'scope' = $3)
+                  AND CASE WHEN $4 THEN (n.doc->>'scope' = 'team' OR n.doc->>'createdBy' = $5::text) ELSE n.doc->>'createdBy' = $5::text END
+                  AND ($6::text IS NULL OR lower(n.doc->>'name') LIKE $6 OR lower(n.doc->>'type') LIKE $6 OR lower(n.doc->>'appGroup') LIKE $6)
+                ORDER BY CASE WHEN jsonb_typeof(n.doc->'createdAtTimestamp') = 'number' THEN (n.doc->>'createdAtTimestamp')::numeric END DESC NULLS LAST, n.id OFFSET $7 LIMIT $8""",
+                                  org, collection, scope or None, is_admin, user_id, pattern, (max(page, 1) - 1) * limit, limit, transaction=transaction)
+            if rows:
+                return [_arango(_doc(r["doc"]), collection) for r in rows], rows[0]["total"]
+            total = await self._lrows("""/* pipeshub:graph.get_connector_instances_with_filters_total */ SELECT count(*) AS n FROM graph.nodes n
+                WHERE n.org_id = $1 AND n.coll = $2 AND ($3::text IS NULL OR n.doc->>'scope' = $3)
+                  AND CASE WHEN $4 THEN (n.doc->>'scope' = 'team' OR n.doc->>'createdBy' = $5::text) ELSE n.doc->>'createdBy' = $5::text END
+                  AND ($6::text IS NULL OR lower(n.doc->>'name') LIKE $6 OR lower(n.doc->>'type') LIKE $6 OR lower(n.doc->>'appGroup') LIKE $6)""",
+                                      org, collection, scope or None, is_admin, user_id, pattern, transaction=transaction)
+            return [], total[0]["n"]
+        except Exception as e:
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_connector_instances_with_filters")
+            return [], 0
+
+    async def get_connector_stats(self, org_id: str, connector_id: str, transaction: str | None = None) -> dict:
+        """Record counts of a collection (records that belong to its app) or a connector (records of the record groups that chain up to its app, up to 10 hops),
+        by type, indexing, extraction and entities state; a record in several groups counts once; internal, placeholder, deleted and folder records stay out."""
+        org = current_org_id()
+        statuses = [s.value for s in ProgressStatus]
+        try:
+            app = await self._one("/* pipeshub:graph.get_connector_stats_app */ SELECT doc FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = 'apps' AND n.id = $2",
+                                  org, connector_id, transaction=transaction)
+            is_kb = bool(app) and app.get("type") == Connectors.KNOWLEDGE_BASE.value
+            rows = []
+            if org_id == org:
+                # the kept counts, in one snapshot (a caller's transaction reads statement by statement, so it walks); None: the walk answers
+                kept = None if transaction else await self._q(lambda tx: connector_stats.read(tx, org, connector_id), None, isolation="repeatable_read")
+                rows = kept if kept is not None else await self._lrows(STATS_KB if is_kb else STATS_CONNECTOR, org, connector_id, FOLDER_MIME_TYPES,
+                                                                       transaction=transaction)
+            result = build_connector_stats_response([dict(r) for r in rows], statuses, org_id, connector_id, origin="COLLECTION" if is_kb else "CONNECTOR")
+            return {"success": True, "data": result}
+        except Exception as e:
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="get_connector_stats")
+            return {"success": False, "message": str(e), "data": None}
+
+    # ---- the vector membership backfill: the next app to walk, and its records a page at a time ------------------------------------------------
+    async def get_app_needing_vector_membership_backfill(self, transaction: str | None = None) -> dict | None:
+        """The first connector instance (lowest id, byte order) not marked backfilled and not being deleted: under an org context that org's, under a system
+        context (the indexing loop) any org's, through the vetted cross-org read of instances. Neo4j picks an arbitrary one; the order makes the walk repeatable."""
+        if current_or_system().kind == "system":
+            # every instance is read, a page at a time to the end: a capped read would answer None while apps past the cap still need the walk.
+            # graph.system_apps orders by the database collation; the walk's order is byte order, as under an org context (ORDER BY n.id COLLATE "C").
+            # a strict < keeps the first of equal ids, so apps sharing an id across orgs keep the read's (id, org) order.
+            best, best_id = None, b""
+            async for page in self._system_app_pages():
+                for a in page:
+                    key = str(a["_key"]).encode()
+                    if a.get("vectorMembershipBackfilled") in (None, False) and (a.get("status") or "") != "DELETING" and (best is None or key < best_id):
+                        best, best_id = a, key
+            return best
+        d = await self._one("""/* pipeshub:graph.get_app_needing_vector_membership_backfill */ SELECT doc FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = 'apps'
+            AND coalesce(n.doc->'vectorMembershipBackfilled', 'null'::jsonb) IN ('null'::jsonb, 'false'::jsonb) AND coalesce(n.doc->>'status', '') <> 'DELETING'
+            ORDER BY n.id COLLATE "C" LIMIT 1""", current_org_id(), transaction=transaction)
+        return _arango(d, "apps") if d else None
+
+    async def page_records_for_vector_membership_backfill(self, connector_id: str, after_key: str | None, limit: int, transaction: str | None = None) -> list[dict]:
+        """The connector's records after ``after_key`` in key order (byte order, as the cursor compares), as ``PAGE_RECORD_FIELDS``. A failure raises: an empty page
+        reads as "finished" to the backfill, which would then mark the connector done having processed nothing. The ambient org's records only: the job binds the connector's own org."""
+        n = max(1, int(limit))
+        org = current_org_id()      # one org: a system scope raises, no org is guessed
+        if isinstance(connector_id, str) and 0 < len(connector_id) <= 200 and len(after_key or "") <= 200 and n <= 1000:      # the vetted read of graph_0006
+            rows = await self._lrows("/* pipeshub:graph.records_page_by_connector */ SELECT node_id AS id, doc FROM graph.records_page_by_connector($1, $2, $3)",
+                                     connector_id, after_key or "", n, transaction=transaction)
+        else:
+            rows = await self._lrows("""/* pipeshub:graph.page_records_for_vector_membership_backfill */ SELECT n.id, n.doc FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = 'records'
+                AND n.doc->>'connectorId' = $2 AND ($3::text IS NULL OR n.id COLLATE "C" > $3::text COLLATE "C") ORDER BY n.id COLLATE "C" LIMIT $4""",
+                                     org, connector_id, after_key or None, n, transaction=transaction)
+        return [{"_key": r["id"], **{f: _doc(r["doc"]).get(f) for f in PAGE_RECORD_FIELDS if f != "_key"}} for r in rows]
+
+    async def _fetch_existing_file_names_in_parent(self, kb_id: str, parent_folder_id: str | None, transaction: str | None = None, *,
+                                                   raise_on_error: bool = False) -> set[tuple[str, str]]:
+        """``(lower name, mime type)`` of the live files directly under the folder, or at the root of the knowledge base (its records that have no parent
+        record and are not folders). A failure answers an empty set unless ``raise_on_error``."""
+        org = current_org_id()
+        try:
+            if parent_folder_id is None:
+                rows = await self._lrows("""/* pipeshub:graph.existing_file_names_in_kb_root */ SELECT r.doc->>'recordName' AS name, m.mime AS mime
+                    FROM graph.edges b JOIN graph.nodes kb ON kb.org_id = b.org_id AND kb.coll = 'apps' AND kb.id = b.to_id AND kb.doc->>'type' = 'KB'
+                    JOIN graph.nodes r ON r.org_id = b.org_id AND r.coll = 'records' AND r.id = b.from_id
+                    CROSS JOIN LATERAL (SELECT coalesce(r.doc->>'mimeType', (SELECT f.doc->>'mimeType' FROM graph.edges t JOIN graph.nodes f ON f.org_id = t.org_id
+                        AND f.coll = 'files' AND f.id = t.to_id AND f.doc->>'isFile' = 'true' WHERE t.org_id = b.org_id AND t.coll = 'isOfType' AND t.from_coll = 'records'
+                        AND t.from_id = r.id AND t.to_coll = 'files' ORDER BY f.id LIMIT 1)) AS mime) m
+                    WHERE b.org_id = $1 AND b.coll = 'belongsTo' AND b.from_coll = 'records' AND b.to_coll = 'apps' AND b.to_id = $2
+                      AND coalesce((r.doc->>'isDeleted')::boolean, false) = false AND NOT m.mime = ANY($3::text[])
+                      AND NOT EXISTS (SELECT 1 FROM graph.edges p WHERE p.org_id = b.org_id AND p.coll = 'nodeRelations' AND p.doc->>'relationshipType' = 'PARENT_CHILD'
+                        AND p.from_coll = 'records' AND p.to_coll = 'records' AND p.to_id = r.id)""", org, kb_id, FOLDER_MIME_TYPES, transaction=transaction)
+            else:
+                rows = await self._lrows("""/* pipeshub:graph.existing_file_names_in_folder */ SELECT r.doc->>'recordName' AS name,
+                        coalesce(r.doc->>'mimeType', f.doc->>'mimeType') AS mime
+                    FROM graph.edges p JOIN graph.nodes r ON r.org_id = p.org_id AND r.coll = 'records' AND r.id = p.to_id
+                    JOIN graph.edges t ON t.org_id = p.org_id AND t.coll = 'isOfType' AND t.from_coll = 'records' AND t.from_id = r.id AND t.to_coll = 'files'
+                    JOIN graph.nodes f ON f.org_id = p.org_id AND f.coll = 'files' AND f.id = t.to_id AND f.doc->>'isFile' = 'true'
+                    WHERE p.org_id = $1 AND p.coll = 'nodeRelations' AND p.doc->>'relationshipType' = 'PARENT_CHILD' AND p.from_coll = 'records' AND p.from_id = $2
+                      AND p.to_coll = 'records' AND coalesce((r.doc->>'isDeleted')::boolean, false) = false""", org, parent_folder_id, transaction=transaction)
+            return {(r["name"].lower(), str(r["mime"] or "")) for r in rows if r["name"]}
+        except Exception as e:
+            if raise_on_error:
+                raise
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="_fetch_existing_file_names_in_parent")
+            return set()

@@ -7,6 +7,8 @@ const BROKER_ONLY_FIELDS = new Set(['recipientUserIds', 'recipientRoles']);
 export interface NotificationBrokerMessage {
   orgId: string;
   type: string;
+  /** A supplied id: the stored row keeps it, so the event may name only one recipient. */
+  _id?: string;
   severity?: string;
   status?: string;
   originService?: string;

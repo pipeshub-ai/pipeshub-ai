@@ -25,7 +25,8 @@ from dataclasses import dataclass
 from functools import cached_property
 from typing import TYPE_CHECKING, Callable, Dict, List, Optional, Union
 
-from app.services.permissions.scope_fields import SCOPE_KEYS
+from app.exceptions.non_retryable import NonRetryableError
+from app.services.permissions.scope_fields import SCOPE_FENCE_FIELD, SCOPE_KEYS
 from app.services.vector_db.const.const import (
     CONNECTOR_IDS_FIELD,
     RECORD_GROUP_IDS_FIELD,
@@ -132,6 +133,12 @@ def forbid_org_in_payload(payload: dict) -> None:
     """A payload merge must not change which org a point belongs to (the org is what every write filter pins)."""
     if _org_in_payload(payload)[0]:
         raise OrgMismatch("a payload update may not name orgId: it would move points to another organisation")
+
+
+def forbid_fence_in_payload(payload: dict) -> None:
+    """The fence is set by the fenced write alone; a payload that names it could set it to anything (a later duplicate field wins on Redis)."""
+    if SCOPE_FENCE_FIELD in payload:
+        raise ValueError(f"a payload may not name {SCOPE_FENCE_FIELD}: the fenced write sets it")
 
 
 def keep_org_in_overwrite(payload: dict, expr: FilterExpression) -> None:
@@ -276,16 +283,29 @@ def build_filter_expression(
     )
 
 
+class BlankFilterValue(NonRetryableError, ValueError):
+    """A filter names an identifying field (a record, a block) with no value. Dropping the clause would select everything the other clauses allow."""
+
+
+#: Fields that say *which* record or block a filter is about. A filter that names one without a value is a caller's bug, never "no restriction":
+#: ``delete_embeddings("")`` would otherwise become "delete everything of the org".
+REQUIRED_VALUE_KEYS = frozenset({"virtualRecordId", "blockId"})
+_REQUIRED_VALUE_FIELDS = frozenset(canonical_filter_key(k) for k in REQUIRED_VALUE_KEYS)
+
+
 def build_generic_conditions(filters: dict[str, FilterValue]) -> list[FieldCondition]:
     """Backend-neutral ``FieldCondition`` list from a key -> value dict.
 
     Keys are canonicalised to ``metadata.x``; None and blank-string values are
-    skipped. A list is kept even when empty (after dropping None): an empty list
-    matches nothing, it is not the absence of a filter. Providers translate the
-    conditions into their own query syntax.
+    skipped, except for the identifying fields in ``REQUIRED_VALUE_KEYS``, where
+    they raise :class:`BlankFilterValue`. A list is kept even when empty (after
+    dropping None): an empty list matches nothing, it is not the absence of a
+    filter. Providers translate the conditions into their own query syntax.
     """
     conditions: list[FieldCondition] = []
     for key, value in filters.items():
+        if is_missing(value) and canonical_filter_key(key) in _REQUIRED_VALUE_FIELDS:
+            raise BlankFilterValue(f"'{key}' in the filter has no value; the clause would be dropped and the filter widened")
         if value is None:
             continue
         field_key = canonical_filter_key(key)
@@ -328,6 +348,10 @@ class ScopeFilter:
 
     Every other point (never stamped, a ``legacy`` or unknown stamp, an untrusted one, a connector not in ``current``) is **not** admitted:
     an empty list admits nothing, never everything. ``reach`` is ``readable_groups | readable_scopes | open_apps``.
+
+    ``defer`` turns that into a filter that serves a search beside the request's own arms: a point the stamps do not decide (never stamped,
+    ``legacy`` or unknown, another version or generation, a connector not in ``current``, or no connector) is left to the request's own
+    arms and the post-check as before, and only a point a trusted stamp of a current connector decides is admitted or hidden by it.
     """
 
     current: frozenset[str] = frozenset()
@@ -344,12 +368,13 @@ class ScopeFilter:
     #: positional order of the fields before them is unchanged.
     pending: frozenset[str] = frozenset()
     blocked: frozenset[str] = frozenset()
+    defer: bool = False
 
     @classmethod
     def of(cls, scopes: ViewerScopes, current_connectors: Iterable[str] | Mapping[str, int], *, version: int, generation: int,
-           blocked: Iterable[str] = ()) -> ScopeFilter:
+           blocked: Iterable[str] = (), defer: bool = False) -> ScopeFilter:
         return cls(frozenset(current_connectors), scopes.open_apps, scopes.readable_groups, scopes.readable_scopes,
-                   scopes.unreadable_restricted, version, generation, scopes.pending, frozenset(blocked))
+                   scopes.unreadable_restricted, version, generation, scopes.pending, frozenset(blocked) | scopes.blocked, defer)
 
     @property
     def reach(self) -> frozenset[str]:
@@ -358,6 +383,11 @@ class ScopeFilter:
     @property
     def trusts_nothing(self) -> bool:
         return self.generation < 0 or not self.current
+
+    @property
+    def matches_nothing(self) -> bool:
+        """Whether no point can pass: nothing is trusted and nothing is left to the request's own arms."""
+        return self.trusts_nothing and not self.defer
 
     def lists(self) -> tuple[list[str], list[str], list[str], list[str], list[str], list[str], list[str]]:
         """``(current, open_apps, readable_groups, reach, excluded, pending, blocked)``, sorted, for a store that binds arrays. Computed once per

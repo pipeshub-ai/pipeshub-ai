@@ -78,14 +78,12 @@ export class SyncEventProducer {
       },
     };
 
-    try {
-      await this.producer.publish(this.syncTopic, message);
-      this.logger.info(`Published event: ${event.eventType} to topic ${this.syncTopic}`);
-    } catch (error) {
-      this.logger.error(`Failed to publish event: ${event.eventType}`, error);
-      // Callers must learn the sync was never queued: a resync answers with an
-      // error, and a scheduled run fails so BullMQ retries it.
-      throw error;
-    }
+    // A failure propagates unlogged: callers must learn the sync was never queued (a resync answers with an
+    // error, and a scheduled run fails so BullMQ retries it), and they report it once.
+    await this.producer.publish(this.syncTopic, message);
+    this.logger.debug('broker.event.published', {
+      event_type: event.eventType,
+      topic: this.syncTopic,
+    });
   }
 }

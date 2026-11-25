@@ -2,6 +2,10 @@
 import httpx
 import httpx2
 
+from app.utils.error_class import (
+    first_leaf as first_leaf,  # re-exported: the MCP modules import it from here
+)
+
 _HTTP_UNAUTHORIZED = 401
 
 
@@ -20,6 +24,12 @@ class MCPConnectionError(Exception):
     @property
     def detail(self) -> str:
         return f"{self} | subprocess stderr: {self.stderr_tail}" if self.stderr_tail else str(self)
+
+
+class MCPConnectTimeoutError(MCPConnectionError, TimeoutError):
+    """The server took the connection but did not finish the handshake within the connect timeout. It did not
+    answer in time, so it reads as a timeout (`classify_mcp_failure`), not as a server that could not be reached;
+    the handshake sent no call, so nothing ran."""
 
 
 class MCPHttpStatusError(MCPConnectionError):
@@ -86,6 +96,20 @@ class MCPLaunchRefusedError(MCPConnectionError):
     """This deployment's local-command policy won't start the server. The message says why."""
 
 
+class MCPServerCircuitOpenError(MCPConnectionError):
+    """The server failed too many times in a row (MX-08), so nothing is sent to it until a probe
+    after the cooldown answers. Nothing ran; the message says when to try again."""
+
+    reason_code = "mcp_server_circuit_open"
+
+    def __init__(self, server: str, retry_after_seconds: float | None) -> None:
+        wait = f" Try again in about {max(1, round(retry_after_seconds))} seconds." if retry_after_seconds else ""
+        super().__init__(
+            f"The {server} MCP server failed several times in a row, so PipesHub is not calling it for now.{wait}"
+        )
+        self.retry_after_seconds = retry_after_seconds
+
+
 def is_http_unauthorized(exc: BaseException) -> bool:
     """Whether `exc`, its `__cause__` chain or any exception in a group is an HTTP 401
     response. The client restores the status of a rejected request as `MCPHttpStatusError`;
@@ -142,10 +166,3 @@ def request_may_have_run(exc: BaseException) -> bool:
     """The connection failed after the request went out, so the server may have run it."""
     found = _first_of(exc, (MCPRequestLostError, MCPConnectionLostError))
     return found is not None and not isinstance(found, MCPSessionExpiredError) and not request_never_reached_server(exc)
-
-
-def first_leaf(exc: BaseException) -> BaseException:
-    """The first exception in `exc` that isn't a group: what a task group's failure was."""
-    while isinstance(exc, BaseExceptionGroup) and exc.exceptions:
-        exc = exc.exceptions[0]
-    return exc

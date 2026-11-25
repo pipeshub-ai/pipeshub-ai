@@ -7,6 +7,7 @@ do for real requests, so the error mapping is tested on what the client actually
 from __future__ import annotations
 
 import asyncio
+import logging
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
@@ -43,6 +44,8 @@ from app.agents.mcp.errors import (
     is_http_unauthorized,
 )
 from app.agents.mcp.models import MCPAuthMode, MCPServerConfig, MCPTransport
+from app.utils.logger import log_record_fields
+from harness_core.testing.virtual_time import on_virtual_time, run_on_virtual_time
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Iterator
@@ -181,7 +184,7 @@ def sdk() -> Iterator[_Script]:
     script.stderr_paths: list[Path | None] = []  # type: ignore[attr-defined]
     script.transports: list[_Transport] = []  # type: ignore[attr-defined]
 
-    def _build(config: MCPServerConfig, *, env: Any = None, headers: Any = None, stderr_log_file: Path | None = None) -> _Transport:  # noqa: ANN401
+    def _build(config: MCPServerConfig, *, env: Any = None, headers: Any = None, stderr_log_file: Path | None = None, runner: Any = None) -> _Transport:  # noqa: ANN401
         script.stderr_paths.append(stderr_log_file)  # type: ignore[attr-defined]
         transport = _Transport("streams", http_clients=[MagicMock(headers={})])
         script.transports.append(transport)  # type: ignore[attr-defined]
@@ -788,6 +791,87 @@ class TestTheHandshakeIsRemembered:
         assert len(sdk.clients) == 2
 
 
+class TestTheConnectRecord:
+    """`mcp.connect.end`: what one connect did, as a record (INFO on failure, DEBUG on success);
+    the layer that retries or gives up says how bad it was."""
+
+    @staticmethod
+    def _ends(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
+        return [r for r in caplog.records if r.getMessage() == "mcp.connect.end"]
+
+    async def _fail_with(self, sdk: _Script, caplog: pytest.LogCaptureFixture, fail: Callable[[], Awaitable[None]]) -> dict[str, object]:
+        async def _enter(_client: _FakeClient) -> None:
+            await fail()
+
+        sdk.enter = _enter
+        with caplog.at_level(logging.DEBUG), pytest.raises(MCPConnectionError):
+            await MCPClientManager(_http_config()).open()
+        (record,) = self._ends(caplog)
+        assert record.levelno == logging.INFO
+        assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
+        fields = log_record_fields(record)
+        assert isinstance(fields.pop("duration_ms"), int)
+        return fields
+
+    async def test_a_refused_sign_in_is_an_info_record_and_no_error(self, sdk: _Script, caplog: pytest.LogCaptureFixture) -> None:
+        async def _refused() -> None:
+            await _answered(401)
+            await _answered(401)
+            raise MCPError(INTERNAL_ERROR, "Server returned an error response sentinel-s")
+
+        fields = await self._fail_with(sdk, caplog, _refused)
+
+        assert fields == {
+            "mcp_server_id": "inst-1", "transport": "streamable_http", "mode": "auto", "outcome": "failure",
+            "error_class": "auth_expired", "mcp_reason": "unauthorized", "status": 401,
+            "error_type": "MCPHttpStatusError", "cause_type": "MCPError",
+        }
+        assert "sentinel-s" not in caplog.text
+
+    async def test_a_refused_connection_names_the_kind_of_failure(self, sdk: _Script, caplog: pytest.LogCaptureFixture) -> None:
+        async def _refused() -> None:
+            raise ExceptionGroup("tg", [httpx2.ConnectError("All connection attempts failed")])
+
+        fields = await self._fail_with(sdk, caplog, _refused)
+
+        assert (fields["error_class"], fields["mcp_reason"], fields["cause_type"]) == ("unavailable", "unreachable", "ConnectError")
+        assert "status" not in fields
+
+    async def test_a_connect_timeout_is_classed_by_its_cause(self, sdk: _Script, caplog: pytest.LogCaptureFixture) -> None:
+        async def _slow() -> None:
+            raise TimeoutError("slow")
+
+        fields = await self._fail_with(sdk, caplog, _slow)
+
+        assert (fields["error_class"], fields["cause_type"]) == ("timeout", "TimeoutError")
+
+    async def test_a_connect_is_a_debug_record_with_the_protocol_version(self, sdk: _Script, caplog: pytest.LogCaptureFixture) -> None:
+        with caplog.at_level(logging.DEBUG):
+            await MCPClientManager(_http_config()).open()
+
+        (record,) = self._ends(caplog)
+        assert record.levelno == logging.DEBUG
+        fields = log_record_fields(record)
+        assert (fields["outcome"], fields["protocol_version"], fields["mode"]) == ("success", "2025-11-25", "auto")
+        assert not [r for r in caplog.records if r.levelno >= logging.INFO and r.name == "app.agents.mcp.client"]
+
+    async def test_probing_a_remembered_server_again_is_an_info_retry(self, sdk: _Script, caplog: pytest.LogCaptureFixture) -> None:
+        await MCPClientManager(_http_config()).open()
+
+        async def _refuse_initialize(client: _FakeClient) -> None:
+            if client.kwargs["mode"] == "legacy":
+                raise MCPError(-32022, "Unsupported protocol version")
+
+        sdk.enter = _refuse_initialize
+        with caplog.at_level(logging.DEBUG):
+            await MCPClientManager(_http_config()).open()
+
+        (retry,) = [r for r in caplog.records if r.getMessage() == "mcp.retry"]
+        assert retry.levelno == logging.INFO
+        assert log_record_fields(retry) == {"mcp_server_id": "inst-1", "op": "connect", "reason": "renegotiate"}
+        assert [log_record_fields(r)["outcome"] for r in self._ends(caplog)] == ["failure", "success"]
+
+
 async def _open(sdk: _Script, config: MCPServerConfig | None = None) -> MCPClientManager:
     manager = MCPClientManager(config or _http_config())
     await manager.open()
@@ -1122,38 +1206,49 @@ class TestProgressKeepsACallAlive:
 
         sdk.answer = _answer
 
+    @on_virtual_time
     async def test_progress_carries_a_call_past_its_timeout(self, sdk: _Script) -> None:
         self._reporting(sdk, every=0.05, then_answer_after=0.6)
         manager = await _open(sdk, _config(call_timeout_seconds=0.25))
 
         assert await manager.call_tool_in_session("export", {}) == {"result": "export ok"}
 
-    async def test_without_progress_it_still_ends_at_the_call_timeout(self, sdk: _Script) -> None:
+    def test_without_progress_it_still_ends_at_the_call_timeout(self, sdk: _Script) -> None:
         async def _hang(*_args: object) -> Any:  # noqa: ANN401
             await asyncio.sleep(3600)
 
         sdk.answer = _hang
-        manager = await _open(sdk, _config(call_timeout_seconds=0.1))
-        started = asyncio.get_running_loop().time()
 
-        with pytest.raises(TimeoutError, match="didn't finish within") as caught:
-            await manager.call_tool_in_session("export", {})
-        assert not isinstance(caught.value, client_module.MCPCallTooLongError)
-        assert asyncio.get_running_loop().time() - started < 2
+        async def main() -> tuple[BaseException, float]:
+            manager = await _open(sdk, _config(call_timeout_seconds=0.1))
+            started = asyncio.get_running_loop().time()
+            with pytest.raises(TimeoutError, match="didn't finish within") as caught:
+                await manager.call_tool_in_session("export", {})
+            return caught.value, asyncio.get_running_loop().time() - started
 
-    async def test_the_limit_for_one_call_holds_against_endless_progress(
+        error, elapsed = run_on_virtual_time(main)
+
+        assert not isinstance(error, client_module.MCPCallTooLongError)
+        assert elapsed == pytest.approx(0.1)
+
+    def test_the_limit_for_one_call_holds_against_endless_progress(
         self, sdk: _Script, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.delenv(client_module.MAX_CALL_SECONDS_ENV, raising=False)
         monkeypatch.setattr(client_module, "DEFAULT_MAX_CALL_SECONDS", 0.4)
         self._reporting(sdk, every=0.05)
-        manager = await _open(sdk, _config(call_timeout_seconds=0.15))
-        started = asyncio.get_running_loop().time()
 
-        with pytest.raises(client_module.MCPCallTooLongError, match="the limit for one call") as caught:
-            await manager.call_tool_in_session("export", {})
-        assert caught.value.limit_seconds == 0.4
-        assert 0.35 < asyncio.get_running_loop().time() - started < 2
+        async def main() -> tuple[client_module.MCPCallTooLongError, float]:
+            manager = await _open(sdk, _config(call_timeout_seconds=0.15))
+            started = asyncio.get_running_loop().time()
+            with pytest.raises(client_module.MCPCallTooLongError, match="the limit for one call") as caught:
+                await manager.call_tool_in_session("export", {})
+            return caught.value, asyncio.get_running_loop().time() - started
+
+        error, elapsed = run_on_virtual_time(main)
+
+        assert error.limit_seconds == 0.4
+        assert elapsed == pytest.approx(0.4)
 
     async def test_whoever_asked_hears_each_report(self, sdk: _Script) -> None:
         self._reporting(sdk, every=0.01, then_answer_after=0.03, message="page 1")
@@ -1232,18 +1327,20 @@ class TestTheOpenSession:
         assert manager.headers["Authorization"] == "Bearer fresh"
         assert sdk.transports[0].http_clients[0].headers == {"Authorization": "Bearer fresh"}  # type: ignore[attr-defined]
 
-    async def test_a_failed_calls_stderr_is_logged_but_kept_out_of_the_error(
+    async def test_a_failed_calls_stderr_and_text_stay_out_of_the_log_and_the_error(
         self, sdk: _Script, caplog: pytest.LogCaptureFixture,
     ) -> None:
+        """A STDIO server's stderr holds earlier calls' arguments and its environment; the
+        executor's `tool_call.end` is the call's one failure line."""
         manager = await _open(sdk, _config())
-        sdk.stderr_paths[-1].write_text("exa-mcp-server crashed: SECRET_TOKEN=abc\n")  # type: ignore[attr-defined]
-        sdk.answer = _answer_with(error=MCPError(-32603, "boom"))
+        sdk.stderr_paths[-1].write_text("exa-mcp-server crashed on query sentinel-q\n")  # type: ignore[attr-defined]
+        sdk.answer = _answer_with(error=MCPError(-32603, "boom sentinel-e"))
 
-        with pytest.raises(MCPError) as caught:
+        with caplog.at_level(logging.DEBUG), pytest.raises(MCPError) as caught:
             await manager.call_tool_in_session("search", {})
 
-        assert "SECRET_TOKEN" not in str(caught.value)
-        assert "SECRET_TOKEN=abc" in caplog.text
+        assert "sentinel-q" not in str(caught.value)
+        assert "sentinel-q" not in caplog.text and "sentinel-e" not in caplog.text
         await manager.aclose()
 
     async def test_aclose_closes_the_session_and_removes_the_stderr_file(self, sdk: _Script) -> None:
@@ -1360,22 +1457,37 @@ class TestResultsThatMissTheirSchemaAreKept:
         session = self._session()
         _keep_results_that_miss_their_schema(SimpleNamespace(session=session))  # type: ignore[arg-type]
 
+        with caplog.at_level(logging.DEBUG):
+            await session.validate_tool_result("search", CallToolResult(content=[], structured_content={"b": "sentinel-v"}))
+
+        (record,) = [r for r in caplog.records if r.getMessage() == "mcp.result.schema_mismatch"]
+        assert record.levelno == logging.WARNING
+        assert log_record_fields(record) == {"error_type": "RuntimeError"}
+        assert "sentinel-v" not in caplog.text
+
+    async def test_the_installed_sdk_lists_the_server_to_check_a_tool_its_session_never_listed(self) -> None:
+        from mcp.types import CallToolResult, ListToolsResult
+
+        session = self._session()
+        session._tool_output_schemas = {}
+        session.list_tools = AsyncMock(return_value=ListToolsResult(tools=[]))
         await session.validate_tool_result("search", CallToolResult(content=[], structured_content={"b": 1}))
+        session.list_tools.assert_awaited_once()
 
-        assert "declared schema" in caplog.text
-
-    async def test_a_failing_validation_listing_does_not_fail_the_call(self) -> None:
+    async def test_r31journey_fu9_a_call_on_a_session_that_never_listed_the_tool_lists_nothing(self) -> None:
+        """R31JOURNEY-FU-9: the job's first call on a new pooled session made the SDK list its parent's server again,
+        the one listing the carried pin exists to save."""
         from mcp.types import CallToolResult
 
         from app.agents.mcp.client import _keep_results_that_miss_their_schema
 
         session = self._session()
-        # Not listed yet: the SDK lists tools first.
         session._tool_output_schemas = {}
         session.list_tools = AsyncMock(side_effect=MCPError(CONNECTION_CLOSED, "Connection closed"))
         _keep_results_that_miss_their_schema(SimpleNamespace(session=session))  # type: ignore[arg-type]
 
         await session.validate_tool_result("search", CallToolResult(content=[], structured_content={"b": 1}))
+        session.list_tools.assert_not_awaited()
 
     async def test_open_installs_it(self, sdk: _Script) -> None:
         manager = await _open(sdk, _config())
@@ -1389,3 +1501,54 @@ class TestHttpReadTimeout:
     @pytest.mark.parametrize(("call_timeout", "read_timeout"), [(None, 300.0), (60, 300.0), (280, 310.0), (600, 630.0)])
     def test_never_shorter_than_the_call_or_the_sdk_default(self, call_timeout: float | None, read_timeout: float) -> None:
         assert http_read_timeout(_http_config(call_timeout_seconds=call_timeout)) == read_timeout
+
+
+class TestNoServerTextInTheLog:
+    """A refused redirect and an ended session log fields, not the server's or the SDK's text."""
+
+    async def test_a_refused_redirect_logs_its_target_host_only(self, sdk: _Script, caplog: pytest.LogCaptureFixture) -> None:
+        caplog.set_level(logging.DEBUG)
+        manager = await _open(sdk)
+        sdk.answer = _answer_with(error=MCPError(-32600, "Redirect to https://other.example.net/p?k=S3CRET not followed; S3CRET-TEXT"))
+
+        with pytest.raises(MCPUrlBlockedError):
+            await manager.call_tool_in_session("search", {})
+        (record,) = [r for r in caplog.records if r.getMessage() == "mcp.redirect_refused"]
+        assert record.levelno == logging.WARNING
+        assert log_record_fields(record)["target_host"] == "other.example.net"
+        assert "S3CRET" not in caplog.text
+
+    async def test_a_refused_redirect_while_opening_logs_its_target_host_only(
+        self, sdk: _Script, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        caplog.set_level(logging.DEBUG)
+        await TestWhatAFailedConnectSays._open_failing(
+            self, sdk, lambda: _answered(307), MCPError(-32600, "Redirect to https://elsewhere.example.net/mcp not followed; S3CRET-TEXT"),
+        )
+        (record,) = [r for r in caplog.records if r.getMessage() == "mcp.redirect_refused"]
+        assert log_record_fields(record)["target_host"] == "elsewhere.example.net"
+        assert "S3CRET" not in caplog.text
+
+    async def test_an_ended_session_logs_the_failures_type_only(self, sdk: _Script, caplog: pytest.LogCaptureFixture) -> None:
+        caplog.set_level(logging.DEBUG)
+        manager = await _open(sdk, _config())
+        assert manager._session is not None
+        manager._session.runner.failure = RuntimeError("server said S3CRET-TEXT")
+        sdk.answer = _answer_with(error=MCPError(CONNECTION_CLOSED, "Connection closed"))
+
+        with pytest.raises(MCPConnectionLostError):
+            await manager.call_tool_in_session("create_issue", {})
+        (record,) = [r for r in caplog.records if r.getMessage() == "mcp.session.ended"]
+        assert record.levelno == logging.WARNING
+        assert log_record_fields(record)["error_type"] == "RuntimeError"
+        assert "S3CRET" not in caplog.text
+
+    async def test_a_malformed_redirect_target_is_still_blocked(self, sdk: _Script, caplog: pytest.LogCaptureFixture) -> None:
+        caplog.set_level(logging.DEBUG)
+        manager = await _open(sdk)
+        sdk.answer = _answer_with(error=MCPError(-32600, "Redirect to https://[broken not followed"))
+
+        with pytest.raises(MCPUrlBlockedError):
+            await manager.call_tool_in_session("search", {})
+        (record,) = [r for r in caplog.records if r.getMessage() == "mcp.redirect_refused"]
+        assert log_record_fields(record)["target_host"] == "unknown"

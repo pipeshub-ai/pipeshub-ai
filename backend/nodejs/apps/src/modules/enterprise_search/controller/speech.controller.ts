@@ -3,7 +3,6 @@ import axios, { AxiosRequestConfig, AxiosResponse } from 'axios';
 import FormData from 'form-data';
 
 import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
-import { Logger } from '../../../libs/services/logger.service';
 import {
   BadGatewayError,
   BadRequestError,
@@ -17,9 +16,8 @@ import {
   UnprocessableEntityError,
 } from '../../../libs/errors/http.errors';
 import { serverFailureMessage } from '../../../libs/errors/reader-friendly';
+import { withCause } from '../../../libs/errors/base.error';
 import { AppConfig } from '../../tokens_manager/config/config';
-
-const logger = Logger.getInstance({ service: 'Chat Speech Proxy' });
 
 // Headers that cause issues when blindly forwarded through the node proxy to
 // the Python backend (hop-by-hop, content-length mismatches after re-encoding,
@@ -91,8 +89,8 @@ const readerText = (data: unknown): string | undefined => {
  * Every route here forwards the upstream status as-is, so this decides only
  * what the reader is told. A 4xx keeps the service's own words — those are
  * written for the person who made the request. A 5xx does not: its words
- * describe the machine that broke, so they go to the log and plain advice
- * goes to the person.
+ * describe the machine that broke, so plain advice goes to the person. Not
+ * logged here: the call's upstream.call.end line has the status.
  */
 function bodyForUpstreamError(
   status: number,
@@ -102,10 +100,8 @@ function bodyForUpstreamError(
   if (status < 400) return data;
   const ownWords = readerText(data);
   if (status < 500) {
-    logger.info(`${action} upstream returned ${status}`, { status });
     return ownWords !== undefined ? { detail: ownWords } : data;
   }
-  logger.error(`${action} upstream returned ${status}`, { status, data });
   return { detail: serverFailureMessage(action) };
 }
 
@@ -114,8 +110,14 @@ function bodyForUpstreamError(
  * to the error middleware. These routes accept any status without throwing,
  * so this runs for transport failures — an unreachable service, a timeout —
  * and keeps the status meaningful if a response ever does come with one.
+ * Not logged here: the call line and the error middleware's line (which shows
+ * the axios error as the cause, without its body) report it.
  */
 function mapAxiosError(error: unknown, action: string): Error {
+  return withCause(mappedAxiosError(error, action), error);
+}
+
+function mappedAxiosError(error: unknown, action: string): Error {
   const err = error as {
     response?: { status: number; data: unknown };
     code?: string;
@@ -123,7 +125,6 @@ function mapAxiosError(error: unknown, action: string): Error {
   };
   if (err?.response) {
     const { status, data } = err.response;
-    logger.error(`${action} upstream returned ${status}`, { status, data });
     const ownWords = readerText(data);
     if (status >= 400 && status < 500) {
       // Keep the status the service chose: 404 must not read as 502, and an
@@ -139,10 +140,6 @@ function mapAxiosError(error: unknown, action: string): Error {
     }
     return new BadGatewayError(serverFailureMessage(action));
   }
-  logger.error(`${action} upstream unreachable`, {
-    code: err?.code,
-    message: err?.message,
-  });
   return new ServiceUnavailableError(SERVICE_UNAVAILABLE_MESSAGE);
 }
 

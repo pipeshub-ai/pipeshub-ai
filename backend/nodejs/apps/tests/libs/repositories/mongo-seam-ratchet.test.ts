@@ -8,7 +8,8 @@
  *
  *   SEAM_RATCHET_UPDATE=1 npx cross-env TS_NODE_PROJECT=tsconfig.test.json mocha --no-config --require ts-node/register --exit tests/libs/repositories/mongo-seam-ratchet.test.ts
  *
- * Exempt entirely: libs/repositories/**\/mongo.ts, the boot migrations and the
+ * Exempt entirely: any libs/repositories/**\/mongo.ts (an edition keeps its stores under its own
+ * libs/repositories), the boot migrations and the
  * connection service (libs/services/mongo.service.ts). Schema definition files
  * (`**\/schema/**`, `*.schema.ts`, enterprise_search/types/conversation.interfaces.ts)
  * may import Mongoose, but a `.save()`, `new Model()` or model query in them counts.
@@ -29,7 +30,7 @@ interface Baseline {
 
 /** Files that may use Mongoose freely: the Mongo repositories, the connection, the boot migrations. */
 const isExempt = (rel: string): boolean =>
-  /^libs\/repositories\/(.*\/)?mongo\.ts$/.test(rel) ||
+  /(^|\/)libs\/repositories\/(.*\/)?mongo\.ts$/.test(rel) ||
   rel === 'libs/services/mongo.service.ts' ||
   // the migration tool: the collection list loads every model
   rel === 'scripts/docstore-migrate/mongo-collections.ts' ||
@@ -164,7 +165,8 @@ const baselineFilesUnder = (dir: string, out: string[] = []): string[] => {
 /**
  * The committed baseline plus every `*baseline*.json` found under the directories
  * in `dirs` (env `SEAM_BASELINE_DIRS`, separated by the path delimiter; default none),
- * for code kept outside this tree. Lists are united and per-file counts added.
+ * for source files a downstream build adds under `src/` (they are scanned like any other).
+ * Lists are united and per-file counts added.
  */
 export function loadBaseline(dirs: string[] = []): Baseline {
   const merged: Baseline = JSON.parse(fs.readFileSync(BASELINE, 'utf8'));
@@ -261,14 +263,29 @@ describe('repository seam ratchet: Mongoose use outside the Mongo repositories',
 
   it('scans the whole source tree and exempts the seam', () => {
     // Every aggregate has moved behind a repository, so the committed baseline is empty;
-    // an empty scan must mean "clean", not "the walker saw nothing".
+    // an empty scan must mean "clean", not "the walker saw nothing". Uses in source files that a
+    // downstream build adds under src/ are recorded under SEAM_BASELINE_DIRS; the scan walks those
+    // files too, so it must match that record exactly (a stale entry fails as well as a new use).
     expect(walk(SRC).length).to.be.greaterThan(500);
     expect(isExempt('libs/repositories/org/mongo.ts')).to.equal(true);
     expect(isExempt('modules/oauth_provider/services/pat.service.ts')).to.equal(false);
+    // an edition's own stores, under its own libs/repositories
+    expect(isExempt('ext/libs/repositories/approvals/mongo.ts')).to.equal(true);
+    expect(isExempt('ext/libs/repositories/mongo.ts')).to.equal(true);
+    expect(isExempt('ext/mylibs/repositories/approvals/mongo.ts')).to.equal(false);
+    expect(isExempt('ext/libs/repositories/approvals/service.ts')).to.equal(false);
+    expect(isExempt('ext/libs/repositories/approvals/notmongo.ts')).to.equal(false);
+    // The file committed here must stay empty: only the extra directories record uses, so a new
+    // use in this repository's own files can't be authorised by editing the committed baseline.
+    const committed = loadBaseline([]);
+    expect(committed.imports).to.deep.equal([]);
+    expect(committed.saves).to.deep.equal({});
+    expect(committed.newModels).to.deep.equal({});
     const now = scan();
-    expect(now.imports).to.deep.equal([]);
-    expect(now.saves).to.deep.equal({});
-    expect(now.newModels).to.deep.equal({});
+    const recorded = loadBaseline(extraDirs());
+    expect(now.imports).to.deep.equal(recorded.imports);
+    expect(now.saves).to.deep.equal(recorded.saves);
+    expect(now.newModels).to.deep.equal(recorded.newModels);
   });
 });
 

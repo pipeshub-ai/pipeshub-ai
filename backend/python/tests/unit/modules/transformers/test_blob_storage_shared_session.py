@@ -6,10 +6,13 @@ stamped fresh on every call (it must never be cached alongside the token).
 """
 
 import contextlib
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import jwt
 import pytest
 
+from app.config.constants.service import TokenScopes
 from app.modules.transformers import blob_storage as bs_mod
 from app.modules.transformers.blob_storage import (
     DOWNLOAD_CONNECTION_LIMIT_DEFAULT,
@@ -167,7 +170,7 @@ class TestSharedSession:
         record = {"id": "rec-1"}
         resp = AsyncMock()
         resp.status = 200
-        resp.json = AsyncMock(return_value={"record": record})
+        resp.read = AsyncMock(return_value=json.dumps({"record": record}).encode())
         resp.__aenter__ = AsyncMock(return_value=resp)
         resp.__aexit__ = AsyncMock(return_value=False)
 
@@ -182,6 +185,12 @@ class TestSharedSession:
         assert out == record
         session.close.assert_not_called()
         assert bs_mod._shared_sessions, "session should stay pooled for the next record"
+
+
+def _grant(headers: dict) -> dict:
+    """The bearer token's claims without its issue and expiry times."""
+    claims = jwt.decode(headers["Authorization"].removeprefix("Bearer "), options={"verify_signature": False})
+    return {k: v for k, v in claims.items() if k not in ("iat", "exp")}
 
 
 class TestAuthAndConfigCaching:
@@ -223,8 +232,9 @@ class TestAuthAndConfigCaching:
 
         assert headers_a[HEADER_REQUEST_ID] == "request-aaa"
         assert headers_b[HEADER_REQUEST_ID] == "request-bbb"
-        # Same org ⇒ same scoped token, but distinct header dicts.
-        assert headers_a["Authorization"] == headers_b["Authorization"]
+        # Same org ⇒ same scoped grant, but distinct header dicts. Compared without iat/exp: each call mints with
+        # whole-second timestamps, so two calls either side of a second boundary give different token strings.
+        assert _grant(headers_a) == _grant(headers_b) == {"orgId": "org-1", "scopes": [TokenScopes.STORAGE_TOKEN.value]}
         assert headers_a is not headers_b
 
 
@@ -237,7 +247,7 @@ class TestLookupPassthrough:
         record = {"id": "rec-1"}
         resp = AsyncMock()
         resp.status = 200
-        resp.json = AsyncMock(return_value={"record": record})
+        resp.read = AsyncMock(return_value=json.dumps({"record": record}).encode())
         resp.__aenter__ = AsyncMock(return_value=resp)
         resp.__aexit__ = AsyncMock(return_value=False)
 
@@ -263,7 +273,7 @@ class TestLookupPassthrough:
         record = {"id": "rec-1"}
         resp = AsyncMock()
         resp.status = 200
-        resp.json = AsyncMock(return_value={"record": record})
+        resp.read = AsyncMock(return_value=json.dumps({"record": record}).encode())
         resp.__aenter__ = AsyncMock(return_value=resp)
         resp.__aexit__ = AsyncMock(return_value=False)
 
@@ -310,12 +320,18 @@ class TestEnvelopeDecoding:
         ).encode()
         assert bs_mod._decode_json(raw) == _json.loads(raw.decode("utf-8"))
 
+    def test_decodes_unescaped_non_ascii_bytes(self) -> None:
+        """Records are stored with ensure_ascii=False and decoded from the raw body."""
+        record = {"record": {"text": "Borgartún 日本語 😀"}}
+        raw = json.dumps(record, ensure_ascii=False).encode("utf-8")
+        assert bs_mod._decode_json(raw) == record
+
     def test_falls_back_to_stdlib_when_msgspec_rejects(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """A record msgspec cannot parse is still worth trying to read."""
         def _boom(_raw) -> None:
             raise ValueError("nope")
 
-        monkeypatch.setattr(bs_mod.msgspec.json, "decode", _boom)
+        monkeypatch.setattr(bs_mod, "_JSON_DECODER", MagicMock(decode=_boom))
         assert bs_mod._decode_json(b'{"record": {"x": 1}}') == {"record": {"x": 1}}
 
 

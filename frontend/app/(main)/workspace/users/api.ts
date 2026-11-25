@@ -119,6 +119,25 @@ export const UsersApi = {
   },
 
   /**
+   * Deactivate a member: their running work stops, schedules pause, tokens are revoked.
+   * PUT /api/v1/users/:userId/deactivate (admin)
+   */
+  async deactivateUser(userId: string): Promise<{ cancelledRuns: number; pausedSchedules: number }> {
+    const { data } = await apiClient.put<{ cancelledRuns: number; pausedSchedules: number }>(
+      `${BASE_URL}/${userId}/deactivate`,
+    );
+    return data;
+  },
+
+  /**
+   * Reactivate a deactivated member; nothing they had restarts.
+   * PUT /api/v1/users/:userId/reactivate (admin)
+   */
+  async reactivateUser(userId: string): Promise<void> {
+    await apiClient.put(`${BASE_URL}/${userId}/reactivate`);
+  },
+
+  /**
    * Fetch users with all enrichment (groups, blocked status, profile pictures).
    * Single call to GET /api/v1/users — backend returns everything.
    */
@@ -228,6 +247,19 @@ export const UsersApi = {
   async deleteUser(userId: string): Promise<void> {
     await apiClient.delete(`${BASE_URL}/${userId}`);
     revalidateSwrNamespace(SWR_NS.userDirectory);
+  },
+
+  /**
+   * How many OAuth apps this person created. Deleting them moves those apps
+   * to the admin who deletes them.
+   * GET /api/v1/oauth-clients?createdBy=:userId&limit=1
+   */
+  async countOAuthAppsCreatedBy(userId: string): Promise<number> {
+    const { data } = await apiClient.get<{ pagination?: { total?: number } }>(
+      '/api/v1/oauth-clients',
+      { params: { createdBy: userId, limit: 1 }, suppressErrorToast: true }
+    );
+    return data.pagination?.total ?? 0;
   },
 
   /**

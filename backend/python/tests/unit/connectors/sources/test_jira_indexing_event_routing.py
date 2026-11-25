@@ -142,10 +142,21 @@ class TestIndexingEventRouting:
         assert stats == {"new_count": 0, "updated_count": 0}
 
     @pytest.mark.asyncio
-    async def test_full_sync_unchanged_but_never_indexed_is_requeued(self):
-        """A record that failed indexing must still be retried by a full sync."""
+    async def test_full_sync_keeps_an_unchanged_failed_record_failed(self) -> None:
+        """A sync is not a retry: the same content would fail the same way, and
+        "Reindex failed" is the retry. A changed issue is indexed again."""
         existing = _ticket(
             ext_id="5", version=3, revision="100", status=ProgressStatus.FAILED.value
+        )
+        record = _ticket(ext_id="5", version=3, revision="100")
+        published, _stats = await _route({"5": existing}, [(record, [], False)])
+
+        assert published == []
+
+    @pytest.mark.asyncio
+    async def test_full_sync_requeues_a_record_whose_event_was_never_acknowledged(self) -> None:
+        existing = _ticket(
+            ext_id="5", version=3, revision="100", status=ProgressStatus.NOT_STARTED.value
         )
         record = _ticket(ext_id="5", version=3, revision="100")
         published, _stats = await _route({"5": existing}, [(record, [], False)])

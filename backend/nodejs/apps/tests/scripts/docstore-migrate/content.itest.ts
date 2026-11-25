@@ -15,19 +15,20 @@ import { REPOSITORIES } from '../../../src/libs/repositories/all';
 import type { Importable } from '../../../src/libs/repositories/import';
 import { SourceReport, prepareSource, toNeutral } from '../../../src/scripts/docstore-migrate/source';
 import { decodeDoc } from '../../../src/scripts/docstore-migrate/decode';
-import { readDecoded } from '../../../src/scripts/docstore-migrate/pg-read';
+import { countByOrg, readDecoded } from '../../../src/scripts/docstore-migrate/pg-read';
 import { compareDocs } from '../../../src/scripts/docstore-migrate/compare';
+import { compareSlackLinks } from '../../../src/scripts/docstore-migrate/slack-links';
 import { copyAgainInserts, copyAndCompare, jobsUnit, oid } from './roundtrip';
-import { ORG_A, ORG_B, SESSION_1, SESSION_2, USER_1, contentDocs, ids } from './fixtures/content';
+import { ORG_A, ORG_B, SESSION_1, SESSION_2, USER_1, USER_2, contentDocs, ids } from './fixtures/content';
 
 const suite = haveStack ? describe : describe.skip;
 const sha = (s: string): string => createHash('sha256').update(s).digest('hex');
 
 describe('docstore-migrate: content mappings (no database)', () => {
-  it('lists every collection of the group once and ignores one with a reason', () => {
+  it('lists every collection of the group once and gives each ignored one a reason', () => {
     const names = CONTENT_MAPPINGS.map((m) => m.collection);
     expect(new Set(names).size).to.equal(names.length);
-    expect(CONTENT_IGNORED.map((i) => i.collection).sort()).to.deep.equal(['crawlingManagerConfigs']);
+    expect(CONTENT_IGNORED.map((i) => i.collection).sort()).to.deep.equal(['agentCallEvents', 'crawlingManagerConfigs']);
     for (const i of CONTENT_IGNORED) expect(i.reason.length).to.be.greaterThan(20);
   });
   it('mapping files import no repository code', () => {
@@ -118,10 +119,13 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
     });
 
     it('copies every other collection and reads back identical documents (zero diffs)', async () => {
-      const r = await copyAndCompare(withoutOutbox(), MAPPINGS);
-      for (const m of CONTENT_MAPPINGS.filter((x) => x.collection !== 'outbox_events' && !INSTALL_WIDE.includes(x.collection))) expect(r.diffs[m.collection], m.collection).to.deep.equal([]);
+      // the verifier reads a Slack link without orgId as holding its conversation's organisation (R45MIGR-FU-3)
+      const r = await copyAndCompare(withoutOutbox(), MAPPINGS, { chatSessions: [{ _id: SESSION_1, orgId: ORG_A }, { _id: SESSION_2, orgId: ORG_B }] });
+      // a custom mapping is compared by its own verifier (Slack account links: the test below)
+      for (const m of CONTENT_MAPPINGS.filter((x) => x.collection !== 'outbox_events' && !INSTALL_WIDE.includes(x.collection) && !x.custom)) expect(r.diffs[m.collection], m.collection).to.deep.equal([]);
       // the listed transforms the report carries
       expect(r.report.skipped.get('mail log entry without an organisation (the table is per organisation)')).to.equal(1);
+      expect(r.report.applied.get("absent orgId read as its conversation's organisation")).to.equal(2);
       expect([...r.report.nul.keys()].some((k) => k.startsWith('documents.documentName'))).to.equal(true);
     });
 
@@ -168,7 +172,7 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
     it('counts: what was copied, and what was left out, add up', async () => {
       expect(await count('content.documents')).to.equal(3);
       expect(await count('content.project_members')).to.equal(3);
-      expect(await count('platform.notifications')).to.equal(3);
+      expect(await count('platform.notifications')).to.equal(4);
       expect(await count('platform.mail_log')).to.equal(2);
       expect(await count('oauth.access_tokens')).to.equal(3);
       expect(await count('integrations.slack_threads')).to.equal(2);
@@ -183,6 +187,22 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
       expect(rows[2].last_error).to.equal('broker down');
     });
 
+    it('outbox: the verifier counts only the rows a copy holds, not the delivered rows the dispatcher keeps for a week', async () => {
+      const m = CONTENT_MAPPINGS.find((x) => x.collection === 'outbox_events')!;
+      const before = await jobsUnit((_tx, k) => countByOrg(k, m));
+      await stack.admin((c) => c.query(
+        "INSERT INTO platform.outbox (org_id, topic, msg_key, value, status, next_attempt_at, published_at, created_at, updated_at) VALUES ($1, 'entity-events', 'k', '{}', 'published', now(), now(), now(), now())",
+        [String(ORG_A)],
+      ));
+      try {
+        // published events are skipped on the MongoDB side (history, not copied); counting them here failed every verify after the
+        // application had delivered an event from PostgreSQL, which is what `rollback --online` runs
+        expect(await jobsUnit((_tx, k) => countByOrg(k, m))).to.deep.equal(before);
+      } finally {
+        await stack.admin((c) => c.query("DELETE FROM platform.outbox WHERE status = 'published'"));
+      }
+    });
+
     it('authorization codes are stored hashed and the plain code is nowhere', async () => {
       const rows = (await stack.admin((c) => c.query('SELECT code_hash FROM oauth.authorization_codes ORDER BY created_at'))).rows;
       expect(rows.map((r: { code_hash: string }) => r.code_hash).sort()).to.deep.equal([sha('plain-code-1'), sha('plain-code-2')].sort());
@@ -193,6 +213,25 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
     it('notifications from months with no partition land in the default partition and read back', async () => {
       const r = (await stack.admin((c) => c.query("SELECT tableoid::regclass::text AS p FROM platform.notifications WHERE created_at < '2020-01-01'"))).rows;
       expect(r.map((x: { p: string }) => x.p)).to.deep.equal(['platform.notifications_def']);
+    });
+
+    it('a scheduled notification keeps its visible_at, and the others have none', async () => {
+      const r = (await stack.admin((c) => c.query('SELECT type, visible_at, updated_at FROM platform.notifications ORDER BY type'))).rows as Array<{ type: string; visible_at: Date | null; updated_at: Date }>;
+      const by = new Map(r.map((x) => [x.type, x]));
+      expect(by.get('scheduled')?.visible_at?.toISOString()).to.equal('2026-10-02T10:00:00.000Z');
+      expect(by.get('sync')?.visible_at).to.equal(null);
+    });
+
+    it('a notification changed in MongoDB is written in place by the follower (a partitioned table: no system column in the upsert)', async () => {
+      const m = CONTENT_MAPPINGS.find((x) => x.collection === 'notifications')!;
+      const repo = REPOSITORIES[m.repository]!() as Importable;
+      const neutral = docs.notifications!.map((d) => toNeutral(d, new SourceReport(), m.collection));
+      const before = await count('platform.notifications');
+      const changed = neutral.map((d, i) => (i === 0 ? { ...d, status: 'read' } : d));
+      const st = await jobsUnit((tx) => withUpsert(['platform.notifications'], () => repo.importBatch(m.collection, changed, tx)));
+      expect(st.inserted['platform.notifications'] ?? 0, 'every row was there: none counts as inserted').to.equal(0);
+      expect(await count('platform.notifications')).to.equal(before);
+      expect(await count('platform.notifications', `id = '${String(neutral[0]!._id)}' AND status = 'read'`)).to.equal(1);
     });
 
     it('connector_id follows the customMetadata entry', async () => {
@@ -221,6 +260,53 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
       const st = await jobsUnit((tx) => repo.importBatch('slack_conversations', [orphan], tx));
       expect(st.skipped).to.have.length(1);
       expect(st.inserted['integrations.slack_threads']).to.equal(0);
+    });
+
+    it("R45-MIGR, R45MIGR-FU-3: a Slack link's orgId is its conversation's organisation: the same one is copied and verified as org_id, another one is refused", async () => {
+      const org = (await stack.admin((c) => c.query('SELECT org_id FROM conversation.chat_sessions WHERE id = $1', [String(SESSION_1)]))).rows[0]?.org_id as string;
+      expect(org, 'the fixture conversation was copied').to.be.a('string');
+      const m = MAPPINGS.find((x) => x.collection === 'slack_conversations')!;
+      const repo = REPOSITORIES[m.repository]!() as Importable;
+      const link = (threadId: string, orgId: string) => ({ _id: oid(), threadId, botId: 'B7', email: 'o@example.test', conversationId: SESSION_1, orgId, createdAt: new Date('2026-11-01T10:00:00.000Z'), updatedAt: new Date('2026-11-01T10:00:00.000Z'), __v: 0 });
+      const same = link('1700000000.000700', org);
+      const other = link('1700000000.000800', 'f'.repeat(24));
+      const st = await jobsUnit((tx) => repo.importBatch(m.collection, [same, other].map((d) => toNeutral(d, new SourceReport(), m.collection)), tx));
+      expect(st.inserted['integrations.slack_threads']).to.equal(1);
+      expect(st.skipped).to.deep.equal([{ id: String(other._id), reason: 'Slack link whose orgId names another organisation than its conversation' }]);
+      const rep = new SourceReport();
+      const src = prepareSource(m, same, rep)!;
+      const decoded = await jobsUnit((_tx, k) => readDecoded(k, m, [String(src._id)]));
+      expect(compareDocs([src], decoded)).to.deep.equal([]);
+      // carried as org_id (a rollback writes it back), no longer dropped
+      expect(src.orgId).to.equal(org);
+      expect(decoded[0]?.orgId).to.equal(org);
+      expect(rep.applied.get('dropped orgId')).to.equal(undefined);
+    });
+
+    it('Slack account links (R40SLACK-FU-1): each organisation keeps its own, a link to another organisation\'s person is reported, a second copy writes nothing, verify reads them back equal', async () => {
+      await stack.admin(async (c) => {
+        for (const [org, domain] of [[ORG_A, 'a.example'], [ORG_B, 'b.example']] as const)
+          await c.query("INSERT INTO identity.orgs (org_id, domain, contact_email, account_type, created_at, updated_at) VALUES ($1, $2, 'o@' || $2, 'business', now(), now()) ON CONFLICT DO NOTHING", [String(org), domain]);
+        for (const [org, user, slug] of [[ORG_A, USER_1, 'user-71'], [ORG_B, USER_2, 'user-72']] as const)
+          await c.query("INSERT INTO identity.users (org_id, id, slug, email, role, is_deleted, created_at, updated_at) VALUES ($1, $2, $3, $3 || '@example.test', 'member', false, now(), now()) ON CONFLICT DO NOTHING", [String(org), String(user), slug]);
+      });
+      const m = MAPPINGS.find((x) => x.collection === 'slack_user_links')!;
+      const repo = REPOSITORIES[m.repository]!() as Importable;
+      const link = (over: Record<string, unknown>) => ({ _id: oid(), orgId: String(ORG_A), workspaceId: 'E1', slackUserId: 'U1', teamId: 'T1', userId: String(USER_1), email: 'a@example.test', slackName: 'ada', linkedAt: new Date('2026-11-01T10:00:00.000Z'), createdAt: new Date('2026-11-01T10:00:00.000Z'), updatedAt: new Date('2026-11-01T10:00:00.000Z'), __v: 0, ...over });
+      const good = [link({}), link({ orgId: String(ORG_B), userId: String(USER_2), email: 'b@example.test' })];
+      const foreign = link({ slackUserId: 'U9', userId: String(USER_2) });
+      const neutral = [...good, foreign].map((d) => toNeutral(d, new SourceReport(), m.collection));
+      const st = await jobsUnit((tx) => repo.importBatch(m.collection, neutral, tx));
+      expect(st.inserted['integrations.slack_user_links']).to.equal(2);
+      expect(st.skipped.map((x) => x.id)).to.deep.equal([String(foreign._id)]);
+      expect((await jobsUnit((tx) => repo.importBatch(m.collection, neutral, tx))).inserted['integrations.slack_user_links']).to.equal(0);
+      const rows = (await stack.admin((c) => c.query('SELECT to_jsonb(l) AS r FROM integrations.slack_user_links l ORDER BY org_id'))).rows.map((x: { r: Record<string, unknown> }) => x.r);
+      expect(rows.map((r: Record<string, unknown>) => [r.org_id, r.user_id])).to.have.deep.members([[String(ORG_A), String(USER_1)], [String(ORG_B), String(USER_2)]]);
+      expect(compareSlackLinks(m, good, rows).diffs).to.deep.equal([]);
+      // the follower replaces a link in place when MongoDB changes it
+      const renamed = neutral.slice(0, 1).map((d) => ({ ...d, slackName: 'ada l.' }));
+      await jobsUnit((tx) => withUpsert(['integrations.slack_user_links'], () => repo.importBatch(m.collection, renamed, tx)));
+      expect((await stack.admin((c) => c.query('SELECT slack_name FROM integrations.slack_user_links WHERE org_id = $1', [String(ORG_A)]))).rows[0].slack_name).to.equal('ada l.');
     });
   });
 }

@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fastapi import HTTPException
 
 from app.modules.demo_data import access
 from app.modules.demo_data.access import (
@@ -14,8 +16,12 @@ from app.modules.demo_data.access import (
     org_has_real_data,
     org_real_data_state,
     preference_key,
+    refuse_hidden_demo_record,
     write_preference,
 )
+from app.utils.error_class import classify_error, level_for
+from tests.support.graph_read_errors import SENTINELS, marked_internal, unmarked
+from tests.support.log_capture import failure_line
 
 DEMO = {"_key": "demo-1", "type": "Demo"}
 JIRA = {"_key": "jira-1", "type": "JIRA"}
@@ -112,6 +118,26 @@ async def test_saving_and_clearing_the_choice() -> None:
     # Back to the default when nothing is saved is not an error.
     await write_preference(config, "org", "u1", include=None)
     config.delete_config.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_clearing_a_choice_that_went_although_the_store_answered_false_is_saved() -> None:
+    """etcd: a delete retried after its answer was lost finds nothing and answers False."""
+    config = _config({"include": False})
+    config.delete_config = AsyncMock(side_effect=lambda key: config.store.pop(key) and False)
+
+    await write_preference(config, "org", "u1", include=None)
+
+    assert preference_key("org", "u1") not in config.store
+
+
+@pytest.mark.asyncio
+async def test_clearing_a_choice_that_is_still_there_is_reported() -> None:
+    config = _config({"include": False})
+    config.delete_config = AsyncMock(return_value=False)
+
+    with pytest.raises(RuntimeError):
+        await write_preference(config, "org", "u1", include=None)
 
 
 @pytest.mark.asyncio
@@ -256,3 +282,38 @@ async def test_a_failed_listing_is_unknown_not_no_real_data() -> None:
     graph = _graph([])
     assert await org_real_data_state(graph, "org") is None
     assert await org_has_real_data(graph, "org") is False
+
+
+# ---- Opening a switched-off demo record by id (refuse_hidden_demo_record, shared by both services' record routes) ----
+
+@pytest.mark.parametrize("error", [unmarked, marked_internal], ids=["unrecorded", "client_recorded"])
+async def test_an_unreadable_setting_hides_nothing_and_is_logged_once_without_its_text(
+    error: Any, caplog: pytest.LogCaptureFixture,  # noqa: ANN401
+) -> None:
+    cause = error()
+    with patch.object(access, "is_hidden_demo_record", AsyncMock(side_effect=cause)), \
+         caplog.at_level(logging.DEBUG, logger=access.__name__):
+        assert await refuse_hidden_demo_record(MagicMock(), MagicMock(), "org", "u1", "demo-1") is None
+    failure_line(caplog.records, "record_open.demo_setting_failed", classify_error(cause), level_for(classify_error(cause)),
+                 *SENTINELS)
+
+
+async def test_a_switched_off_demo_record_is_not_found() -> None:
+    with patch.object(access, "is_hidden_demo_record", AsyncMock(return_value=True)):
+        with pytest.raises(HTTPException) as refused:
+            await refuse_hidden_demo_record(MagicMock(), MagicMock(), "org", "u1", "demo-1")
+    assert (refused.value.status_code, refused.value.detail) == (404, "Record not found")
+
+
+async def test_a_record_shown_to_the_person_is_not_refused() -> None:
+    check = AsyncMock(return_value=False)
+    with patch.object(access, "is_hidden_demo_record", check):
+        assert await refuse_hidden_demo_record(MagicMock(), MagicMock(), "org", "u1", "jira-1") is None
+    check.assert_awaited_once()
+
+
+async def test_a_record_without_a_connector_reads_no_setting() -> None:
+    graph, config = _graph([DEMO]), _config()
+    assert await refuse_hidden_demo_record(graph, config, "org", "u1", None) is None
+    graph.get_org_apps.assert_not_awaited()
+    config.get_config.assert_not_awaited()

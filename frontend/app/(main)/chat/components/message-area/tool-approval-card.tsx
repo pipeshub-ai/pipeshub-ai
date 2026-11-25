@@ -7,6 +7,7 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { streamMessageForSlot } from '../../streaming';
 import { buildStreamChatRequestForSlot } from '../../runtime';
 import { useChatStore } from '../../store';
+import { useRenderSlotId } from './render-slot';
 import { approvalArgumentLines, approvalToolLabel, toolApprovalResumeQuery, type SettledToolApproval } from '../../tool-approval';
 import type { ToolApprovalDecision, ToolApprovalDetails } from '../../types';
 
@@ -39,7 +40,8 @@ export function ToolApprovalCard({ approval, isLatest, rowId }: ToolApprovalCard
   const [remember, setRemember] = useState(false);
   const [showAll, setShowAll] = useState(false);
   // Someone viewing a conversation shared with them can't send in it.
-  const canSend = useChatStore((s) => (s.activeSlotId ? s.slots[s.activeSlotId]?.isOwner ?? null : null)) !== false;
+  const renderSlotId = useRenderSlotId();
+  const canSend = useChatStore((s) => (renderSlotId ? s.slots[renderSlotId]?.isOwner ?? null : null)) !== false;
 
   const tool = approvalToolLabel(approval);
   const server = approval.serverName;
@@ -49,7 +51,7 @@ export function ToolApprovalCard({ approval, isLatest, rowId }: ToolApprovalCard
     const notice = expired ? 'expired' : canSend ? 'passed' : 'waiting';
     return (
       <Flex data-testid="tool-approval-card" align="start" gap="2" style={{ color: 'var(--slate-11)' }}>
-        <MaterialIcon name={expired ? 'timer_off' : 'pending_actions'} size={16} color="var(--slate-9)" style={{ marginTop: 3 }} />
+        <MaterialIcon name={expired ? 'timer_off' : 'pending_actions'} size={16} color="var(--slate-11)" style={{ marginTop: 3 }} />
         <Text size="2">{t(`chat.toolApproval.notice.${notice}`, { tool, server })}</Text>
       </Flex>
     );
@@ -59,7 +61,7 @@ export function ToolApprovalCard({ approval, isLatest, rowId }: ToolApprovalCard
   const anyCut = !showAll && lines.some((line) => line.cut);
 
   const answer = (decision: ToolApprovalDecision) => {
-    const slotId = useChatStore.getState().activeSlotId;
+    const slotId = renderSlotId;
     if (!slotId || useChatStore.getState().slots[slotId]?.isStreaming) return;
     const query = toolApprovalResumeQuery(decision);
     const request = buildStreamChatRequestForSlot(slotId, query, undefined, {
@@ -127,19 +129,19 @@ export function ToolApprovalCard({ approval, isLatest, rowId }: ToolApprovalCard
             <Text as="p" size="1" style={{ fontFamily: 'var(--code-font-family)', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>
               {approval.argumentsPreview}
             </Text>
-            <Text as="p" size="1" mt="1" style={{ color: 'var(--slate-10)' }}>
+            <Text as="p" size="1" mt="1" style={{ color: 'var(--slate-11)' }}>
               {t('chat.toolApproval.partial')}
             </Text>
           </>
         ) : lines.length === 0 ? (
-          <Text size="1" style={{ color: 'var(--slate-10)' }}>
+          <Text size="1" style={{ color: 'var(--slate-11)' }}>
             {t('chat.toolApproval.noArguments')}
           </Text>
         ) : (
           <Box style={{ display: 'grid', gridTemplateColumns: 'minmax(72px, max-content) 1fr', columnGap: 'var(--space-4)', rowGap: 'var(--space-1)' }}>
             {lines.map((line) => (
               <React.Fragment key={line.name}>
-                <Text size="1" style={{ color: 'var(--slate-10)', fontFamily: 'var(--code-font-family)', lineHeight: '20px' }}>
+                <Text size="1" style={{ color: 'var(--slate-11)', fontFamily: 'var(--code-font-family)', lineHeight: '20px' }}>
                   {line.name}
                 </Text>
                 <Text size="2" style={{ color: 'var(--slate-12)', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', lineHeight: '20px' }}>
@@ -179,10 +181,10 @@ export function ToolApprovalCard({ approval, isLatest, rowId }: ToolApprovalCard
 }
 
 const RECEIPT_ICON: Record<SettledToolApproval['answer'], { name: string; color: string }> = {
-  allowed: { name: 'check_circle', color: 'var(--green-9)' },
-  allowedNotRun: { name: 'block', color: 'var(--amber-9)' },
-  declined: { name: 'block', color: 'var(--slate-9)' },
-  expired: { name: 'timer_off', color: 'var(--slate-9)' },
+  allowed: { name: 'check_circle', color: 'var(--green-11)' },
+  allowedNotRun: { name: 'block', color: 'var(--amber-11)' },
+  declined: { name: 'block', color: 'var(--slate-11)' },
+  expired: { name: 'timer_off', color: 'var(--slate-11)' },
 };
 
 /** What was answered on this reply's cards, one line each, so the answer reads in order even

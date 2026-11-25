@@ -27,31 +27,53 @@ without re-deriving.
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
+from app.agent_loop_lib.tools.base import Tag
 from app.agent_loop_lib.tools.decorators import TOOL_META_ATTR
 from app.agent_loop_lib.tools.errors import (
     DuplicateToolNameError,
     DuplicateToolPathError,
 )
 from app.agent_loop_lib.tools.registry import ToolRegistry
-from app.agent_loop_lib.tools.tags import TAG_UI_ONLY
+from app.agent_loop_lib.tools.tags import (
+    PROVIDER_TAG_KEY,
+    TAG_EFFECT_READ,
+    TAG_EFFECT_WRITE,
+    TAG_PROVIDER_PLATFORM,
+    TAG_SINK_NONE,
+    TAG_UI_ONLY,
+)
 from app.agent_loop_lib.tools.toolset import ToolsetBuilder as AgentLoopToolsetBuilder
-from app.agents.agent_loop.instance_creator import ToolInstanceCreator, configured_name_matches
-from app.agents.agent_loop.tool_adapter import PipesHubStructuredToolAdapter, split_original_tool_name
+from app.agents.agent_loop.instance_creator import (
+    ToolInstanceCreator,
+    configured_name_matches,
+)
+from app.agents.agent_loop.tool_adapter import (
+    PipesHubStructuredToolAdapter,
+    split_original_tool_name,
+)
 from app.agents.agent_loop.tool_approvals import TOOLSET_TOOLS_BY_PATH, ApprovalTarget
 from app.agents.agent_loop.web_tool_adapter import WebToolAdapter
 from app.agents.mcp.tool_kind import toolset_tool_kind
 from app.agents.tools.factories.base import ToolsetAuthError
 from app.agents.tools.factories.registry import ClientFactoryRegistry
+from app.connectors.core.registry.tool_builder import ToolProvider
+from app.harness.tool_identity.settings import instance_tool_ids_enabled
 from app.services.artifact_registry.models import artifact_owner_id
 from app.services.graph_db.interface.graph_db_provider import CONNECTION_APPS_FILTER_KEY
+from app.utils.error_class import log_failure
+from app.utils.logging_fields import log_event, log_once
+from harness_core.mcp_hub.names import export_description
+from harness_core.tool_identity import ToolBinding, scoped_group, scoped_tool
 
 if TYPE_CHECKING:
-    from langchain_core.tools import StructuredTool
+    from collections.abc import Mapping
 
     from app.agent_loop_lib.tools.base import Tool
     from app.agents.agent_loop.context import AgentContext
+    from app.web.models import CallerContext
+    from app.web.services import WebFetchService
 
 logger = logging.getLogger(__name__)
 
@@ -148,7 +170,14 @@ def _infer_path_prefix(cls: type, *, fallback_name: str) -> str:
     return f"/tools/{fallback_name}"
 
 
-def _sandbox_executor_available(state_logger: logging.Logger | None) -> bool:
+def note_sandbox_unavailable(exc: Exception) -> None:
+    """Code execution is off because of the deployment's sandbox env (`SandboxUnavailableError`): a
+    process fact, warned once per process rather than on every turn."""
+    if log_once("agent_wiring.sandbox_unavailable"):
+        log_event(logger, "code_execution.unavailable", level=logging.WARNING, error_type=type(exc).__name__)
+
+
+def _sandbox_executor_available() -> bool:
     """Whether `SANDBOX_MODE` names a backend the legacy executor can build.
 
     Only resolves the mode; nothing is instantiated. A missing or unknown
@@ -161,10 +190,14 @@ def _sandbox_executor_available(state_logger: logging.Logger | None) -> bool:
     try:
         get_sandbox_mode()
     except SandboxUnavailableError as exc:
-        log = state_logger or logger
-        log.warning("Skipping sandbox toolsets: %s", exc)
+        note_sandbox_unavailable(exc)
         return False
     return True
+
+
+_SLACK_CONTEXT_TAGS: dict[str, Tag] = {
+    "effect": TAG_EFFECT_READ, "sink": TAG_SINK_NONE, "provider": TAG_PROVIDER_PLATFORM,
+}
 
 
 def _build_dynamic_tools(context: "AgentContext") -> list["Tool"]:
@@ -174,7 +207,6 @@ def _build_dynamic_tools(context: "AgentContext") -> list["Tool"]:
     factory functions, wrapped with ``PipesHubStructuredToolAdapter``.
     """
     state = context.tool_state
-    state_logger = state.get("logger")
     tools: list[Tool] = []
 
     config_service = state.get("config_service")
@@ -205,16 +237,19 @@ def _build_dynamic_tools(context: "AgentContext") -> list["Tool"]:
             )
             setattr(execute_query_tool, "_original_name", "sql.execute_sql_query")
             app_name, tool_name = split_original_tool_name(execute_query_tool)
-            tools.append(PipesHubStructuredToolAdapter(execute_query_tool, app_name, tool_name))
-            if state_logger:
-                state_logger.debug("Added execute_sql_query tool")
+            # Saves a CSV of the result to conversation storage.
+            tools.append(PipesHubStructuredToolAdapter(
+                execute_query_tool, app_name, tool_name, effect=TAG_EFFECT_WRITE, provider=TAG_PROVIDER_PLATFORM,
+            ))
         except Exception as e:
-            if state_logger:
-                state_logger.warning("Failed to add execute_sql_query tool: %s", e)
+            log_failure(logger, "tool.build_failed", e, tool="execute_sql_query", include_error_text=False)
 
     if config_service and state.get("has_slack_connector") and state.get("has_slack_knowledge"):
         try:
-            from app.utils.fetch_slack_nearby_messages import create_fetch_slack_nearby_messages_tool
+            from app.harness.knowledge.caller import caller_user_id_of
+            from app.utils.fetch_slack_nearby_messages import (
+                create_fetch_slack_nearby_messages_tool,
+            )
             from app.utils.fetch_slack_thread import create_fetch_slack_thread_tool
 
             slack_thread_tool = create_fetch_slack_thread_tool(
@@ -225,27 +260,27 @@ def _build_dynamic_tools(context: "AgentContext") -> list["Tool"]:
                 config_service=config_service,
                 tool_state=state,
                 user_id=state.get("user_id"),
+                caller_user_id=caller_user_id_of(state.get("user_info")),
             )
             setattr(slack_thread_tool, "_original_name", "slack.fetch_slack_thread")
             a, t = split_original_tool_name(slack_thread_tool)
-            tools.append(PipesHubStructuredToolAdapter(slack_thread_tool, a, t))
+            # Platform knowledge reads behind the record-access gate (QA27-F1): both only call conversations.* reads,
+            # on the indexed record's own connector, and send nothing the model chose anywhere.
+            tools.append(PipesHubStructuredToolAdapter(slack_thread_tool, a, t, **_SLACK_CONTEXT_TAGS))
 
             slack_nearby_tool = create_fetch_slack_nearby_messages_tool(
                 config_service=config_service,
                 graph_provider=state.get("graph_provider"),
-                org_id=state.get("org_id"),
+                org_id=state.get("org_id", ""),
                 user_id=state.get("user_id"),
+                caller_user_id=caller_user_id_of(state.get("user_info")),
                 tool_state=state,
             )
             setattr(slack_nearby_tool, "_original_name", "slack.fetch_slack_nearby_messages")
             a, t = split_original_tool_name(slack_nearby_tool)
-            tools.append(PipesHubStructuredToolAdapter(slack_nearby_tool, a, t))
-
-            if state_logger:
-                state_logger.debug("Added Slack context tools (fetch_slack_thread, fetch_slack_nearby_messages)")
+            tools.append(PipesHubStructuredToolAdapter(slack_nearby_tool, a, t, **_SLACK_CONTEXT_TAGS))
         except Exception as e:
-            if state_logger:
-                state_logger.warning("Failed to add Slack context tools: %s", e)
+            log_failure(logger, "tool.build_failed", e, tool="slack_context", include_error_text=False)
 
     web_search_config = state.get("web_search_config")
     if web_search_config:
@@ -257,29 +292,57 @@ def _build_dynamic_tools(context: "AgentContext") -> list["Tool"]:
 
         try:
             from app.edition_services import get_web_access_gate
-            from app.web.budget import WebBudget
+            from app.web.budget import WEB_BUDGET_KEY, WebBudget
             from app.web.container import build_web_services
             from app.web.models import CallerContext
+            from app.web.own_files import ISSUED_DOWNLOAD_LINKS_KEY
             from app.web.tools.fetch_url import create_fetch_url_tool
             from app.web.tools.web_search import create_web_search_tool
 
-            services = build_web_services(
-                web_search_config, get_web_access_gate(), WebBudget.for_answer(deep_research=context.deep_research),
+            budget = WebBudget.for_context(
+                scope=getattr(context, "web_scope", "answer"), deep_research=context.deep_research,
             )
+            # The web tools' adapter reads what is left, so a long run's model sees its allowance (WP-62).
+            state[WEB_BUDGET_KEY] = budget
+            services = build_web_services(web_search_config, get_web_access_gate(), budget)
             caller = CallerContext(org_id=context.org_id, user_id=context.user_id, conversation_id=context.conversation_id)
-            web_tools = [
-                create_web_search_tool(services.search, caller),
-                create_fetch_url_tool(services.fetch, caller, ref_mapper=ref_mapper),
-            ]
+            fetch_url = create_fetch_url_tool(
+                services.fetch, caller, ref_mapper=ref_mapper,
+                issued_links=state.setdefault(ISSUED_DOWNLOAD_LINKS_KEY, {}),
+            )
+            web_tools = [create_web_search_tool(services.search, caller, scope=budget.scope), fetch_url]
+            image_options = _page_image_options(web_search_config, services.fetch, caller)
         except Exception as e:
-            web_tools = []
-            if state_logger:
-                state_logger.warning("Failed to create web tools: %s", e)
+            web_tools, fetch_url, image_options = [], None, {}
+            log_failure(logger, "tool.build_failed", e, tool="web", include_error_text=False)
         for web_tool in web_tools:
             a, t = split_original_tool_name(web_tool)
-            tools.append(WebToolAdapter(web_tool, a, t, context))
+            tools.append(WebToolAdapter(web_tool, a, t, context, **(image_options if web_tool is fetch_url else {})))
 
     return tools
+
+
+def toolset_provider_tags(ts_meta: Mapping[str, object]) -> tuple[Tag, ...]:
+    """The provider a toolset's registration declares, as the tag each of its tools is registered with; none when it
+    declares none (such a tool is granted to no durable or engine run)."""
+    provider = ts_meta.get("provider")
+    return (Tag(PROVIDER_TAG_KEY, str(provider)),) if provider else ()
+
+
+def _page_image_options(web_search_config: dict, fetch_service: "WebFetchService", caller: "CallerContext") -> dict:
+    """``WebToolAdapter`` options that send a fetched page's images to the model: none unless an
+    admin turned "Send images to LLM" on (``settings.includeImages``), then up to
+    ``settings.maxImages`` per page, read through the run's gated fetch service."""
+    from app.web.config import image_settings
+
+    settings = image_settings(web_search_config.get("settings"))
+    if not settings["includeImages"]:
+        return {}
+
+    async def load(urls: list[str]) -> list[str | None]:
+        return await fetch_service.fetch_images(urls, caller)
+
+    return {"image_loader": load, "max_images": settings["maxImages"]}
 
 
 def _normalized_toolset_name(toolset: dict) -> str:
@@ -305,7 +368,6 @@ class PipesHubToolLoader:
         skip_apps = skip_apps or set()
 
         state = context.tool_state
-        state_logger = state.get("logger")
 
         state.setdefault("tool_results", [])
         state.setdefault("all_tool_results", [])
@@ -339,100 +401,49 @@ class PipesHubToolLoader:
             if ts_name in skip_apps or group_name in skip_apps:
                 continue
 
-            is_internal = ts_meta.get("isInternal", False)
-            has_factory = ClientFactoryRegistry.get_factory(ts_name) is not None
+            external = ts_meta.get("provider") == ToolProvider.CONNECTOR.value
 
-            if has_factory and not is_internal and not self._is_configured(ts_name, configured_apps):
-                if state_logger:
-                    state_logger.debug("Skipping unconfigured external toolset: %s", ts_name)
+            if external and not self._is_configured(ts_name, configured_apps):
+                log_event(logger, "toolset.skipped", level=logging.DEBUG, toolset=ts_name, reason="unconfigured")
                 continue
 
-            if group_name in _SANDBOX_TOOLSETS and not _sandbox_executor_available(state_logger):
+            if group_name in _SANDBOX_TOOLSETS and not _sandbox_executor_available():
                 continue
 
             if ts_name in _KNOWLEDGE_TOOLSETS and not context.has_knowledge:
-                if state_logger:
-                    # `info`, not `debug`: this is the condition behind "the agent
-                    # answered as if it had searched and found nothing" (the prompt
-                    # says so explicitly — see `prompt_builder._NO_KNOWLEDGE_SOURCES`),
-                    # and it needs to be greppable in a running system without
-                    # turning debug logging on for everything else.
-                    state_logger.info(
-                        "Skipping knowledge toolset %s: no knowledge sources attached "
-                        "(conversation=%s)", ts_name, context.conversation_id,
-                    )
+                # The condition behind "the agent answered as if it had searched and found nothing"
+                # (`prompt_builder._NO_KNOWLEDGE_SOURCES`): greppable at INFO as the turn's
+                # `agent.build.end has_knowledge=False`; per toolset at DEBUG.
+                log_event(logger, "toolset.skipped", level=logging.DEBUG, toolset=ts_name, reason="no_knowledge")
                 continue
 
             if ts_name in _CODE_GRAPH_TOOLSETS and not (
                 context.has_code_connector and context.has_code_knowledge
             ):
-                if state_logger:
-                    state_logger.debug("Skipping code graph toolset: no code connector/knowledge: %s", ts_name)
+                log_event(logger, "toolset.skipped", level=logging.DEBUG, toolset=ts_name, reason="no_code_knowledge")
                 continue
 
+            # One toolset per configured instance when the agent binds several of this type (P2.2).
+            instances = (
+                instance_creator.bindings_for_app(ts_name)
+                if external and instance_tool_ids_enabled()
+                else []
+            )
+            targets: list[dict | None] = list(instances) if len(instances) > 1 else [None]
             try:
-                instance = await instance_creator.create_instance_async(ts_class, ts_name)
-
-                ts_description = ts_meta.get("description", "")
-
-                toolset = AgentLoopToolsetBuilder(
-                    instance,
-                    name=group_name,
-                    description=ts_description,
-                    path_prefix=ts_path_prefix,
-                )
-
-                tools = toolset.tools
-                if callable(getattr(ts_class, "tools_for_request", None)):
-                    # A toolset may narrow or specialize its tools for this
-                    # request (KnowledgeGraph: tools a deployment switch adds).
-                    tools = instance.tools_for_request(tools)
-                if not context.has_ui_client:
-                    # With no UI to render the question, the model's filler
-                    # text becomes the final answer and the run just ends.
-                    ui_only = [t.name for t in tools if TAG_UI_ONLY in t.tags]
-                    if ui_only:
-                        tools = [t for t in tools if TAG_UI_ONLY not in t.tags]
-                        if state_logger:
-                            state_logger.info(
-                                "No UI client, withholding %s (conversation=%s)",
-                                ui_only, context.conversation_id,
-                            )
-                selected = None if is_internal else self._selected_tool_names(ts_name, context.agent_toolsets)
-                if selected is not None:
-                    # Same name the agent builder lists and saves: the last segment of the @tool path.
-                    tools = [t for t in tools if t.path.rsplit("/", 1)[-1] in selected]
-                    # Agents saved before a tool was renamed still pick the old name,
-                    # and the builder shows it as picked.
-                    stale = selected - {t.path.rsplit("/", 1)[-1] for t in toolset.tools}
-                    if stale and state_logger:
-                        state_logger.warning(
-                            "Tools picked for toolset %s no longer exist: %s", ts_name, sorted(stale),
-                        )
-                # An external toolset's calls pass the approval gate, under its instance's rules.
-                gated = has_factory and not is_internal
-                approval_instance = instance_creator.instance_for_app(ts_name) if gated else None
-                personal = bool(approval_instance) and instance_creator.instance_is_personal(approval_instance[0])
-                for t in tools:
-                    try:
-                        registry.register_tool(t)
-                        tool_count += 1
-                    except (DuplicateToolPathError, DuplicateToolNameError):
-                        if state_logger:
-                            state_logger.warning("Skipping duplicate: %s", t.name)
-                        continue
-                    if gated:
-                        _record_for_approvals(context, t, approval_instance, fallback_owner=group_name, personal=personal)
-
-                registered_names = [t.name for t in toolset.tools if registry.has(t.name)]
-                if registered_names:
-                    try:
-                        registry.register_toolset(group_name, ts_description, registered_names)
-                        if ts_meta.get("essential", False) and group_name not in context.essential_toolset_names:
-                            context.essential_toolset_names.append(group_name)
-                    except Exception:
-                        pass
-
+                for target in targets:
+                    tool_count += await self._load_toolset(
+                        context,
+                        registry,
+                        instance_creator,
+                        ts_class,
+                        ts_name,
+                        ts_meta,
+                        group_name,
+                        ts_path_prefix,
+                        target=target,
+                        external=external,
+                    )
                 loaded_apps.add(ts_name)
             except Exception as e:
                 # Distinguish "configured but not authenticated" (the
@@ -444,12 +455,11 @@ class PipesHubToolLoader:
                 # (see AgentContext.toolset_load_failures's docstring).
                 reason = "not_authenticated" if _is_auth_error(e) else "error"
                 context.toolset_load_failures[ts_name] = reason
-                if state_logger:
-                    log_fn = state_logger.warning if reason == "not_authenticated" else state_logger.error
-                    log_fn(
-                        "Failed to load toolset %s (reason=%s): %s", ts_name, reason, e,
-                        exc_info=reason != "not_authenticated",
-                    )
+                # Once, here (the instance creator raises): no error text, a provider's answer can quote the request.
+                log_failure(
+                    logger, "toolset.load_failed", e, toolset=ts_name, outcome="failure", reason=reason,
+                    error_class="auth_expired" if reason == "not_authenticated" else None, include_error_text=False,
+                )
                 continue
 
         # ── Dynamic tools ─────────────────────────────────────────────────
@@ -460,16 +470,146 @@ class PipesHubToolLoader:
                 registry.register_tool(dt)
                 dynamic_count += 1
             except (DuplicateToolPathError, DuplicateToolNameError):
-                if state_logger:
-                    state_logger.warning("Skipping duplicate dynamic tool: %s", dt.name)
+                log_event(logger, "tool.duplicate", level=logging.DEBUG, tool=dt.name)
 
-        logger.info(
-            "PipesHubToolLoader: %d connector tool(s) from %d toolset(s) + "
-            "%d dynamic tool(s) = %d total (skip_apps=%s)",
-            tool_count, len(loaded_apps), dynamic_count,
-            len(registry.names()), sorted(skip_apps),
+        log_event(
+            logger, "toolset.load.summary", level=logging.DEBUG, tools=tool_count, toolsets=len(loaded_apps),
+            dynamic_tools=dynamic_count, skipped_apps=len(skip_apps),
         )
         return registry
+
+    @staticmethod
+    async def _load_toolset(
+        context: "AgentContext",
+        registry: ToolRegistry,
+        instance_creator: ToolInstanceCreator,
+        ts_class: type,
+        ts_name: str,
+        ts_meta: dict[str, Any],
+        group_name: str,
+        ts_path_prefix: str,
+        *,
+        target: dict | None,
+        external: bool,
+    ) -> int:
+        """Registers one toolset: the type's (``target`` None, today's names) or one configured
+        instance's, under its own group and paths; records each tool's binding. Returns the count."""
+        ts_description = ts_meta.get("description", "")
+        if target is None:
+            instance_id = None
+            group, prefix, rebase, label = group_name, ts_path_prefix, None, None
+            binding = instance_creator.binding_for_app(ts_name) if external else None
+        else:
+            instance_id = str(target["instanceId"])
+            group = scoped_group(group_name, instance_id, shared=True)
+            parent = ts_path_prefix.rsplit("/", 1)[0]
+            prefix = f"{parent}/{group}"
+
+            def rebase(path: str, instance: str = instance_id) -> str:
+                scoped, method = scoped_tool(group_name, instance, path.rsplit("/", 1)[-1])
+                return f"{parent}/{scoped}/{method}"
+
+            label = export_description(
+                str(target.get("instanceName") or target.get("displayName") or instance_id), limit=64
+            )
+            ts_description = f"{ts_description} ({label})" if ts_description else label
+            binding = target
+        instance = await instance_creator.create_instance_async(
+            ts_class, ts_name, instance_id=instance_id
+        )
+        provider_tags = toolset_provider_tags(ts_meta)
+        toolset = AgentLoopToolsetBuilder(
+            instance,
+            name=group,
+            description=ts_description,
+            path_prefix=prefix,
+            rebase=rebase,
+            label=label,
+            gate=instance_creator.call_gate(ts_name, binding.get("instanceId") if binding is not None else None),
+            call_scope=instance_creator.call_scope(
+                ts_name, binding.get("instanceId") if binding is not None else None
+            ),
+        )
+        tools = toolset.tools
+        if callable(getattr(ts_class, "tools_for_request", None)):
+            # A toolset may narrow or specialize its tools for this
+            # request (KnowledgeGraph: tools a deployment switch adds).
+            tools = instance.tools_for_request(tools)
+        if not context.has_ui_client:
+            # With no UI to render the question, the model's filler
+            # text becomes the final answer and the run just ends.
+            ui_only = [t.name for t in tools if TAG_UI_ONLY in t.tags]
+            if ui_only:
+                tools = [t for t in tools if TAG_UI_ONLY not in t.tags]
+                log_event(logger, "toolset.ui_tools_withheld", level=logging.DEBUG, toolset=ts_name, tools=len(ui_only))
+        is_internal = ts_meta.get("isInternal", False)
+        selected = None if is_internal else PipesHubToolLoader._selected_tool_names(ts_name, context.agent_toolsets)
+        if selected is not None:
+            # Same name the agent builder lists and saves: the last segment of the @tool path.
+            tools = [t for t in tools if t.declared_path.rsplit("/", 1)[-1] in selected]
+            # Agents saved before a tool was renamed still pick the old name,
+            # and the builder shows it as picked.
+            stale = selected - {t.declared_path.rsplit("/", 1)[-1] for t in toolset.tools}
+            if stale:
+                log_event(logger, "toolset.tools_missing", level=logging.WARNING, toolset=ts_name, missing=len(stale))
+        bound_instance = binding.get("instanceId") if binding is not None else None
+        if bound_instance:
+            from app.harness.write_identity.ports import write_identity_port
+
+            # OWD-18: who this instance's writes are from is the write identity port's (this build: the user's own).
+            tools = await write_identity_port().tools(
+                context,
+                instance_creator,
+                ts_class,
+                ts_name,
+                str(bound_instance),
+                tools,
+                lambda client, gate: AgentLoopToolsetBuilder(
+                    client,
+                    name=group,
+                    description=ts_description,
+                    path_prefix=prefix,
+                    rebase=rebase,
+                    label=label,
+                    gate=gate,
+                    call_scope=instance_creator.call_scope(ts_name, str(bound_instance)),
+                ).tools,
+            )
+        # A toolset with a client factory (an external service) passes the approval gate, under its instance's rules.
+        gated = ClientFactoryRegistry.get_factory(ts_name) is not None and not is_internal
+        approval_instance = (
+            None if not gated
+            else (instance_id, label or instance_id) if instance_id is not None
+            else instance_creator.instance_for_app(ts_name)
+        )
+        personal = bool(approval_instance) and instance_creator.instance_is_personal(approval_instance[0])
+        count = 0
+        for t in tools:
+            try:
+                registry.register_tool(t, extra_tags=provider_tags)
+                count += 1
+            except (DuplicateToolPathError, DuplicateToolNameError):
+                log_event(logger, "tool.duplicate", level=logging.DEBUG, tool=t.name)
+                continue
+            if gated:
+                _record_for_approvals(context, t, approval_instance, fallback_owner=group, personal=personal)
+            if binding is not None:
+                context.tool_bindings[t.name] = ToolBinding(
+                    str(binding.get("name") or ts_name),
+                    binding.get("instanceId") or None,
+                    t.declared_path.rsplit("/", 1)[-1],
+                )
+
+        registered_names = [t.name for t in toolset.tools if registry.has(t.name)]
+        if registered_names:
+            try:
+                registry.register_toolset(group, ts_description, registered_names)
+                if ts_meta.get("essential", False) and group not in context.essential_toolset_names:
+                    context.essential_toolset_names.append(group)
+            except Exception as e:
+                # The toolset still loads; it just drops out of lazy `fetch_tools`.
+                log_failure(logger, "toolset.group_failed", e, toolset=ts_name, include_error_text=False)
+        return count
 
     @staticmethod
     def _build_configured_apps_set(agent_toolsets: list[dict]) -> set[str]:
@@ -512,4 +652,4 @@ class PipesHubToolLoader:
         return selected or None
 
 
-__all__ = ["PipesHubToolLoader"]
+__all__ = ["PipesHubToolLoader", "toolset_provider_tags"]

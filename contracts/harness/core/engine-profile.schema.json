@@ -1,0 +1,372 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/core/engine-profile.schema.json",
+  "title": "PinnedEngineProfile",
+  "description": "What an engine run may do, every dimension explicit: release defaults narrowed by the org ceiling, the agent and the request (E4a). Pinned on the run as executor.engine.profile; its canonical digest is executor.engine.profileDigest. Engine ids are opaque release data.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "engine",
+    "mode",
+    "isolationMin",
+    "egress",
+    "tools",
+    "limits",
+    "subAgents",
+    "reasoningEffort",
+    "approvals",
+    "skills",
+    "accountKinds"
+  ],
+  "properties": {
+    "engine": {
+      "$ref": "#/$defs/ProfileEngine"
+    },
+    "mode": {
+      "$ref": "#/$defs/EngineModeName"
+    },
+    "isolationMin": {
+      "$ref": "#/$defs/IsolationModeName"
+    },
+    "egress": {
+      "$ref": "#/$defs/ProfileEgress"
+    },
+    "tools": {
+      "$ref": "#/$defs/ProfileTools"
+    },
+    "limits": {
+      "$ref": "#/$defs/ProfileLimits"
+    },
+    "subAgents": {
+      "$ref": "#/$defs/ProfileSubAgents"
+    },
+    "reasoningEffort": {
+      "description": "The highest reasoning effort the run may use; null: any.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ProfileEffort"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "approvals": {
+      "$ref": "#/$defs/ProfileApprovals"
+    },
+    "skills": {
+      "description": "The skills the run may mount, by name, sorted; null: any the agent pins.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ProfileSkillNames"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "accountKinds": {
+      "description": "The account kinds an engine run under this profile may reach models with (A1), sorted.",
+      "$ref": "#/$defs/ProfileAccountKinds"
+    }
+  },
+  "$defs": {
+    "ProfileEngine": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "version",
+        "binaryDigest"
+      ],
+      "properties": {
+        "kind": {
+          "$ref": "common.schema.json#/$defs/Name"
+        },
+        "version": {
+          "$ref": "common.schema.json#/$defs/Text"
+        },
+        "binaryDigest": {
+          "$ref": "common.schema.json#/$defs/Digest"
+        }
+      }
+    },
+    "EngineModeName": {
+      "description": "plan and review read and report; build edits the workspace. build narrows to either; plan and review narrow only to themselves.",
+      "x-constant": "ENGINE_MODES",
+      "enum": [
+        "plan",
+        "build",
+        "review"
+      ]
+    },
+    "IsolationModeName": {
+      "description": "The weakest sandbox runtime the run accepts. Ranked docker < gvisor = k8s = managed < microvm; a narrowing may only raise it.",
+      "x-constant": "ISOLATION_MODES",
+      "enum": [
+        "docker",
+        "gvisor",
+        "k8s",
+        "managed",
+        "microvm"
+      ]
+    },
+    "ProfileEgress": {
+      "description": "Network beyond the model and tool gateways: none, or one named allowlist.",
+      "type": "string",
+      "pattern": "^(?:none|allowlist:[A-Za-z0-9_-]{1,64})$"
+    },
+    "ProfileEffort": {
+      "x-constant": "REASONING_EFFORTS",
+      "enum": [
+        "low",
+        "medium",
+        "high"
+      ]
+    },
+    "ProfileTools": {
+      "description": "The tool grant ceiling: how many gateway tools, and of which effect classes.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "maxTools",
+        "effects"
+      ],
+      "properties": {
+        "maxTools": {
+          "anyOf": [
+            {
+              "$ref": "common.schema.json#/$defs/PosInt"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "effects": {
+          "$ref": "#/$defs/ProfileEffects"
+        }
+      }
+    },
+    "ProfileEffects": {
+      "description": "Effect classes, sorted, no repeats.",
+      "type": "array",
+      "uniqueItems": true,
+      "maxItems": 4,
+      "items": {
+        "$ref": "common.schema.json#/$defs/Effect"
+      }
+    },
+    "ProfileLimits": {
+      "description": "Ceilings for the run; null is unlimited. USD only on routes the operator pays.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "maxSteps",
+        "maxWallS",
+        "maxTokens",
+        "maxUsd"
+      ],
+      "properties": {
+        "maxSteps": {
+          "anyOf": [
+            {
+              "$ref": "common.schema.json#/$defs/PosInt"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "maxWallS": {
+          "anyOf": [
+            {
+              "$ref": "common.schema.json#/$defs/PosInt"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "maxTokens": {
+          "anyOf": [
+            {
+              "$ref": "common.schema.json#/$defs/PosInt"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "maxUsd": {
+          "anyOf": [
+            {
+              "$ref": "common.schema.json#/$defs/Usd"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "ProfileSubAgents": {
+      "description": "The engine's own sub-agents: off, or on with a depth and concurrency bound.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "enabled",
+        "maxDepth",
+        "maxConcurrent"
+      ],
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "maxDepth": {
+          "$ref": "common.schema.json#/$defs/PosInt"
+        },
+        "maxConcurrent": {
+          "$ref": "common.schema.json#/$defs/PosInt"
+        }
+      }
+    },
+    "ApprovalLevel": {
+      "description": "Ranked allow < ask < deny; a narrowing may only make a class stricter.",
+      "x-constant": "APPROVAL_LEVELS",
+      "enum": [
+        "allow",
+        "ask",
+        "deny"
+      ]
+    },
+    "ProfileApprovals": {
+      "description": "The decision per effect class before a gateway tool runs.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "read",
+        "workspace",
+        "write",
+        "execute"
+      ],
+      "properties": {
+        "read": {
+          "$ref": "#/$defs/ApprovalLevel"
+        },
+        "workspace": {
+          "$ref": "#/$defs/ApprovalLevel"
+        },
+        "write": {
+          "$ref": "#/$defs/ApprovalLevel"
+        },
+        "execute": {
+          "$ref": "#/$defs/ApprovalLevel"
+        }
+      }
+    },
+    "ProfileSkillNames": {
+      "type": "array",
+      "uniqueItems": true,
+      "maxItems": 256,
+      "items": {
+        "$ref": "common.schema.json#/$defs/Name"
+      }
+    },
+    "ProfileAccountKinds": {
+      "type": "array",
+      "uniqueItems": true,
+      "minItems": 1,
+      "maxItems": 5,
+      "items": {
+        "$ref": "common.schema.json#/$defs/AccessAccountKind"
+      }
+    }
+  },
+  "examples": [
+    {
+      "engine": {
+        "kind": "engine-a",
+        "version": "1.2.3",
+        "binaryDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+      },
+      "mode": "build",
+      "isolationMin": "docker",
+      "egress": "none",
+      "tools": {
+        "maxTools": null,
+        "effects": [
+          "execute",
+          "read",
+          "workspace",
+          "write"
+        ]
+      },
+      "limits": {
+        "maxSteps": 50,
+        "maxWallS": 1800,
+        "maxTokens": null,
+        "maxUsd": null
+      },
+      "subAgents": {
+        "enabled": false,
+        "maxDepth": 1,
+        "maxConcurrent": 1
+      },
+      "reasoningEffort": null,
+      "approvals": {
+        "read": "allow",
+        "workspace": "allow",
+        "write": "ask",
+        "execute": "ask"
+      },
+      "skills": null,
+      "accountKinds": [
+        "org_api_key",
+        "org_cloud",
+        "user_api_key"
+      ]
+    },
+    {
+      "engine": {
+        "kind": "engine-a",
+        "version": "1.2.3",
+        "binaryDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+      },
+      "mode": "plan",
+      "isolationMin": "gvisor",
+      "egress": "none",
+      "tools": {
+        "maxTools": 20,
+        "effects": [
+          "read"
+        ]
+      },
+      "limits": {
+        "maxSteps": 10,
+        "maxWallS": 600,
+        "maxTokens": 200000,
+        "maxUsd": 1.5
+      },
+      "subAgents": {
+        "enabled": true,
+        "maxDepth": 1,
+        "maxConcurrent": 2
+      },
+      "reasoningEffort": "medium",
+      "approvals": {
+        "read": "allow",
+        "workspace": "allow",
+        "write": "deny",
+        "execute": "deny"
+      },
+      "skills": [
+        "pdf",
+        "xlsx"
+      ],
+      "accountKinds": [
+        "org_api_key"
+      ]
+    }
+  ]
+}

@@ -11,22 +11,49 @@ import json
 from typing import TYPE_CHECKING, Any
 
 from app.models.permission import ORG_SHARE_PERMISSION_TYPES
-from app.services.graph_db.postgres.base import NotImplementedInPostgres
+from app.services.graph_db.postgres.base import _pgbool
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Iterable
 
     from app.core.db import Tx
 
 MAX_HOPS = 50  # ACCESS_WALK_MAX_DEPTH of the interface
+PAG = "PARENT_AND_GRANT"
 # The nodes a PERMISSION edge can come from and grant to a user: Neo4j matches a grantee by these labels, so an edge out of any other node is not one.
 PRINCIPALS = ["users", "groups", "roles", "teams", "organizations"]
 
 
 
 
+_DECLARED_BOUND = 100000        # the rows of graph.declared_record_groups: a read that reaches it may be partial
+
+
+async def _declared_groups(tx: Tx, org: str, app_id: str) -> list[str]:
+    """The ids of the connector's live record groups that declare their own permission model: the vetted read of graph_0009, or the statement for a connector id out of
+    its bounds or a read that reached its bound."""
+    if 0 < len(app_id) <= 200:
+        row = await tx.fetchrow("""/* pipeshub:graph.declared_record_groups */ WITH f AS MATERIALIZED (SELECT node_id, is_deleted FROM graph.declared_record_groups($1))
+            SELECT (SELECT count(*) FROM f) AS read, array(SELECT node_id FROM f WHERE NOT coalesce(is_deleted::boolean, false) ORDER BY node_id) AS ids""", app_id)
+        if row["read"] < _DECLARED_BOUND:
+            return list(row["ids"])
+    return [r["id"] for r in await tx.fetch("""/* pipeshub:graph.access_declared_groups */ SELECT id FROM graph.nodes WHERE org_id = $1 AND coll = 'recordGroups'
+        AND doc->>'connectorId' = $2 AND doc->>'permissionModel' = 'RECORD_GROUP_LEVEL' AND NOT coalesce((doc->>'isDeleted')::boolean, false)""", org, app_id)]
+
+
+_VRID_SQL = "/* pipeshub:graph.records_by_virtual_id */ SELECT node_id, doc, doc->>'connectorId' AS app_id FROM graph.records_by_virtual_id($1::text[])"       # the vetted read of graph_0004
+_VRID_PAGE = 5000
+_VRID_IDS = 1000        # the most ids the vetted read takes in one call
+_TARGETS_SQL = """/* pipeshub:graph.access_targets */ SELECT t.coll, t.id, t.doc, CASE WHEN t.coll = 'apps' THEN t.id ELSE t.doc->>'connectorId' END AS app_id
+    FROM graph.nodes t
+    WHERE t.org_id = $1 AND t.doc->>'orgId' = $1 AND NOT coalesce((t.doc->>'isDeleted')::boolean, false)
+      AND (NOT coalesce((t.doc->>'isPlaceholder')::boolean, false) OR t.id = ANY($2::text[]))
+      AND t.coll IN ('records', 'recordGroups', 'apps') AND t.id = ANY($2::text[])"""
 _HIER_TYPES = ["PARENT_CHILD", "ATTACHMENT"]
 _CHUNK = 10_000
+# On a large org the planner prices these key lookups (an id list, a principal's edges filtered past the key) far above jit_above_cost, and compiling
+# each one (~100 ms) costs more than the read. Local to the transaction; it changes no answer, so it may outlive the walk in a caller's transaction.
+NO_JIT = "/* pipeshub:graph.access_no_jit */ SELECT set_config('jit', 'off', true)"
 
 
 async def _info(tx: Tx, org: str, nodes: list[tuple[str, str]]) -> dict[tuple[str, str], dict[str, Any]]:
@@ -41,6 +68,50 @@ async def _info(tx: Tx, org: str, nodes: list[tuple[str, str]]) -> dict[tuple[st
                 coalesce(doc->>'accessRule', 'OPEN') AS rule, doc->>'permissionModel' AS model FROM graph.nodes WHERE org_id = $1 AND coll = $2 AND id = ANY($3::text[])""", org, coll, ids[k:k + _CHUNK]):
                 out[(coll, r["id"])] = {"coll": coll, "cid": r["cid"], "deleted": r["deleted"], "rule": r["rule"], "model": r["model"]}
     return out
+
+
+class Grants(set):
+    """The ids of the records and groups granted to the viewer, as the check tests them. Built from ``by_connector`` it holds every grant. Built from a gate alone
+    (``linked`` in the access, no ``by_connector``) it starts empty and :meth:`see` reads the permission edges of the nodes the check meets, so a check costs the nodes
+    it decides, not every grant the viewer holds. It then answers only for nodes it has seen; every membership test of the check follows a :meth:`see` of that node."""
+
+    def __init__(self, ids: Iterable[str] = (), *, grantees: list[str] | None = None, gated: list[str] = (), linked: dict[str, list[str]] | None = None) -> None:
+        super().__init__(ids)
+        self.probing = grantees is not None
+        self._grantees, self._gated, self._linked = set(grantees or ()), set(gated), linked or {}
+        self._seen: set[str] = set()
+
+    async def see(self, tx: Tx, org: str, ids: Iterable[str]) -> None:
+        """Read whether these nodes are granted (``granted_targets``'s rules per node: a live record or group of a gated connector, an organisation's edge only when its
+        type shares with the organisation, a source account's grants only inside its own connector)."""
+        if not self.probing:
+            return
+        new = [i for i in dict.fromkeys(ids) if i not in self._seen]
+        self._seen.update(new)
+        holders = sorted({*self._grantees, *(h for hs in self._linked.values() for h in hs)})
+        if not new or not holders:
+            return
+        hits: dict[Node, set[str]] = {}         # node -> the connectors it may be granted in
+        for k in range(0, len(new), _CHUNK):
+            for r in await tx.fetch("""/* pipeshub:graph.access_grants_of */ SELECT e.from_coll, e.from_id, e.to_coll, e.to_id, e.doc->>'type' AS t FROM graph.edges e
+                WHERE e.org_id = $1 AND e.coll = 'permission' AND e.to_id = ANY($2::text[]) AND e.from_id = ANY($3::text[]) AND e.from_coll = ANY($4::text[])
+                  AND e.to_coll IN ('records', 'recordGroups')""", org, new[k:k + _CHUNK], holders, PRINCIPALS):
+                org_edge = r["from_coll"] == "organizations"
+                cids = hits.setdefault((r["to_coll"], r["to_id"]), set())
+                if r["from_id"] in self._grantees and (not org_edge or r["t"] in ORG_SHARE_PERMISSION_TYPES):
+                    cids |= self._gated
+                if not org_edge:
+                    cids |= {c for c, hs in self._linked.items() if r["from_id"] in hs}
+        for (_, i), v in (await _info(tx, org, [n for n, cids in hits.items() if cids])).items():
+            if v["cid"] and not v["deleted"] and v["cid"] in hits[(v["coll"], i)]:
+                self.add(i)
+
+
+def grants_of(access: dict[str, Any]) -> Grants:
+    """The check's grants for this access: every grant of ``by_connector``, or read per node for a gate that carries ``linked`` (the source accounts' holders by connector)."""
+    if access.get("by_connector") is not None:
+        return Grants(g for ids in access["by_connector"].values() for g in ids)
+    return Grants(grantees=list(access["grantee_ids"]), gated=list(access["gated_app_ids"]), linked=access["linked"])
 
 
 async def granted_targets(tx: Tx, org: str, from_ids: list[str], org_types: list[str]) -> dict[str, list[str]]:
@@ -66,13 +137,14 @@ def _walk_app(*, opens: bool, granted: set[str]) -> Callable[[str, bool, dict[st
     def ok(cid: str, inh: bool, info: dict[str, Any]) -> bool:
         rule = info["rule"]
         return not info["deleted"] and (opens or (inh and rule in ("STRICT", "OPEN"))
-                                        or (cid in granted and ((inh and rule == "RESTRICTED") or rule in ("STRICT", "OPEN"))))
+                                        or (cid in granted and ((inh and rule in ("RESTRICTED", PAG)) or rule in ("STRICT", "OPEN"))))
     return ok
 
 
 def _walk_seed(granted: set[str]) -> Callable[[str, bool, dict[str, Any]], bool]:
     def ok(cid: str, inh: bool, info: dict[str, Any]) -> bool:
-        return not info["deleted"] and info["rule"] == "OPEN" and (inh or cid in granted)
+        rule = info["rule"]
+        return not info["deleted"] and ((rule == "OPEN" and (inh or cid in granted)) or (rule == PAG and inh and cid in granted))
     return ok
 
 
@@ -108,9 +180,9 @@ async def _inherit_pairs(tx: Tx, org: str, curs: list[Node]) -> set[tuple[Node, 
 
 
 async def _up(tx: Tx, org: str, starts: list[tuple[str, Node]], step: Callable[..., bool], visit: Callable[[str, Node, int], None],
-              only: tuple[str, str] | None = None, *, parents_must_exist: bool = True) -> None:
+              only: tuple[str, str] | None = None, *, parents_must_exist: bool = True, grants: Grants | None = None) -> None:
     """From each start (sid, node) up the hierarchy. ``step(sid, cur, cur_info, inherits, parent, parent_info)`` says whether to go from ``cur`` to
-    ``parent``; ``visit(sid, node, depth)`` sees every node reached, the start included."""
+    ``parent``; ``visit(sid, node, depth)`` sees every node reached, the start included. ``grants`` sees each level's nodes before they are stepped or visited."""
     seen: set[tuple[str, Node]] = set(starts)
     for sid, n in starts:
         visit(sid, n, 0)
@@ -123,6 +195,8 @@ async def _up(tx: Tx, org: str, starts: list[tuple[str, Node]], step: Callable[.
         every = list({*curs, *(p for ps in parents.values() for p in ps)})
         info = await _info(tx, org, every)
         inh = await _inherit_pairs(tx, org, curs)
+        if grants is not None:
+            await grants.see(tx, org, [i for _, i in every])
         nxt = []
         for sid, cur in frontier:
             ci = info.get(cur)
@@ -138,9 +212,8 @@ async def _up(tx: Tx, org: str, starts: list[tuple[str, Node]], step: Callable[.
         frontier = nxt
 
 
-async def from_app(tx: Tx, org: str, ids: list[str], colls: list[str], appids: list[str], opens: list[bool], granted_l: list[str]) -> list[dict[str, str]]:
+async def from_app(tx: Tx, org: str, ids: list[str], colls: list[str], appids: list[str], opens: list[bool], granted: Grants) -> list[dict[str, str]]:
     """The starts that reach their app over hops the granted-hop rule admits."""
-    granted = set(granted_l)
     app_of = dict(zip(ids, appids, strict=True))
     opens_of = dict(zip(ids, opens, strict=True))
     hit: set[str] = set()
@@ -155,7 +228,7 @@ async def from_app(tx: Tx, org: str, ids: list[str], colls: list[str], appids: l
         if depth and n == ("apps", app_of[sid]):
             hit.add(sid)
 
-    await _up(tx, org, [(i, (c, i)) for i, c in zip(ids, colls, strict=True)], step, visit)
+    await _up(tx, org, [(i, (c, i)) for i, c in zip(ids, colls, strict=True)], step, visit, grants=granted)
     return [{"sid": s} for s in hit]
 
 
@@ -184,9 +257,8 @@ async def declared_groups(tx: Tx, org: str, ids: list[str], colls: list[str], ap
             if (v := info.get(("recordGroups", g))) and v["cid"] == app_of[s] and v["model"] == "RECORD_GROUP_LEVEL" and not v["deleted"]]
 
 
-async def below_seed(tx: Tx, org: str, ids: list[str], colls: list[str], appids: list[str], granted_l: list[str]) -> list[dict[str, str]]:
-    """(start, seed): a granted open record or group of the start's connector above it, every hop open and inheriting (or granted)."""
-    granted = set(granted_l)
+async def below_seed(tx: Tx, org: str, ids: list[str], colls: list[str], appids: list[str], granted: Grants) -> list[dict[str, str]]:
+    """(start, seed): a granted open record or group of the start's connector above it, every hop taken by ``_walk_seed``."""
     app_of = dict(zip(ids, appids, strict=True))
     reached: set[tuple[str, Node]] = set()
     walk = _walk_seed(granted)
@@ -195,11 +267,93 @@ async def below_seed(tx: Tx, org: str, ids: list[str], colls: list[str], appids:
         if depth >= 1 and n[1] in granted and n[0] in ("records", "recordGroups"):
             reached.add((sid, n))
 
-    await _up(tx, org, [(i, (c, i)) for i, c in zip(ids, colls, strict=True)], lambda _s, cur, ci, inh, _p, _pi: walk(cur[1], inh, ci), visit)
+    await _up(tx, org, [(i, (c, i)) for i, c in zip(ids, colls, strict=True)], lambda _s, cur, ci, inh, _p, _pi: walk(cur[1], inh, ci), visit, grants=granted)
     info = await _info(tx, org, list({n for _, n in reached}))
     return [{"sid": s, "seed": n[1], "seed_coll": n[0]} for s, n in reached
             if (v := info.get(n)) and v["cid"] == app_of[s] and not v["deleted"] and v["rule"] == "OPEN"]
 
+
+
+async def _down(tx: Tx, org: str, starts: list[Node], mode: str, granted_l: list[str], app_id: str = "") -> set[Node]:
+    """The nodes below ``starts`` over hierarchy edges, a level at a time (``MAX_HOPS``, as the walks up). The statement holds the whole hop rule of
+    ``mode`` (the child's rule, whether it inherits from its parent, whether it is granted), so a child the walk cannot take is never read back:
+    ``app`` is ``_walk_app`` (not opened by the app), ``open`` is ``_walk_app`` of an app that opens everything (every live node),
+    ``seed`` is ``_walk_seed``, ``group`` takes the live groups. A declared group of ``app_id`` is
+    taken but not followed (its children do not reach the app through it)."""
+    seen, frontier = set(starts), list(starts)
+    reached: set[Node] = set()
+    for _ in range(MAX_HOPS):
+        if not frontier:
+            break
+        ids = [i for _, i in frontier]
+        found: list[tuple[Node, Node, str | None, str | None]] = []
+        for k in range(0, len(ids), _CHUNK):
+            if mode == "open":      # nothing to test on the child, so no join to its inherit edge (without statistics that join is planned by the parent, a scan per child)
+                rows = await tx.fetch("""/* pipeshub:graph.access_children_open */ SELECT e.from_coll, e.from_id, e.to_coll, e.to_id, n.doc->>'permissionModel' AS model,
+                      n.doc->>'connectorId' AS cid
+                    FROM graph.edges e JOIN graph.nodes n ON n.org_id = e.org_id AND n.coll = e.to_coll AND n.id = e.to_id
+                    WHERE e.org_id = $1 AND e.coll = 'nodeRelations' AND e.from_coll = ANY($4::text[]) AND e.from_id = ANY($2::text[]) AND e.doc->>'relationshipType' = ANY($3::text[])
+                      AND NOT coalesce((n.doc->>'isDeleted')::boolean, false)""", org, ids[k:k + _CHUNK], _HIER_TYPES, sorted({c for c, _ in frontier}))
+            else:
+                rows = await tx.fetch("""/* pipeshub:graph.access_children */ SELECT e.from_coll, e.from_id, e.to_coll, e.to_id, n.doc->>'permissionModel' AS model,
+                      n.doc->>'connectorId' AS cid
+                    FROM graph.edges e JOIN graph.nodes n ON n.org_id = e.org_id AND n.coll = e.to_coll AND n.id = e.to_id
+                    LEFT JOIN graph.edges i ON i.org_id = e.org_id AND i.coll = 'inheritPermissions' AND i.from_coll = e.to_coll AND i.from_id = e.to_id
+                      AND i.to_coll = e.from_coll AND i.to_id = e.from_id
+                    WHERE e.org_id = $1 AND e.coll = 'nodeRelations' AND e.from_coll = ANY($6::text[]) AND e.from_id = ANY($2::text[]) AND e.doc->>'relationshipType' = ANY($3::text[])
+                      AND NOT coalesce((n.doc->>'isDeleted')::boolean, false)
+                      AND CASE $4 WHEN 'app' THEN (i.from_id IS NOT NULL AND coalesce(n.doc->>'accessRule', 'OPEN') IN ('STRICT', 'OPEN'))
+                                    OR (n.id = ANY($5::text[]) AND ((i.from_id IS NOT NULL AND coalesce(n.doc->>'accessRule', 'OPEN') IN ('RESTRICTED', 'PARENT_AND_GRANT'))
+                                                                     OR coalesce(n.doc->>'accessRule', 'OPEN') IN ('STRICT', 'OPEN')))
+                                  WHEN 'seed' THEN (coalesce(n.doc->>'accessRule', 'OPEN') = 'OPEN' AND (i.from_id IS NOT NULL OR n.id = ANY($5::text[])))
+                                    OR (n.doc->>'accessRule' = 'PARENT_AND_GRANT' AND i.from_id IS NOT NULL AND n.id = ANY($5::text[]))
+                                  ELSE e.to_coll = 'recordGroups' END""", org, ids[k:k + _CHUNK], _HIER_TYPES, mode, granted_l, sorted({c for c, _ in frontier}))
+            found += [((r["from_coll"], r["from_id"]), (r["to_coll"], r["to_id"]), r["model"], r["cid"]) for r in rows]
+        frontier = []
+        for p, c, model, cid in found:
+            if p in seen and c not in seen:
+                seen.add(c)
+                reached.add(c)
+                if not (model == "RECORD_GROUP_LEVEL" and cid == app_id):
+                    frontier.append(c)
+    return reached
+
+
+async def records_below_app(tx: Tx, org: str, app_id: str, granted: set[str], *, opens: bool) -> set[str]:
+    """Ids of the records ``from_app`` would take up to ``app_id`` (so ``accessible_rows`` admits them): the walk down from the app, with the hop rule
+    of an app that opens everything (``opens``) or of one that does not. A record of another connector below it is only this app's to the caller to drop."""
+    return {i for c, i in await _down(tx, org, [("apps", app_id)], "open" if opens else "app", sorted(granted), app_id) if c == "records"}
+
+
+async def reachable_records(tx: Tx, org: str, access: dict[str, Any], app_ids: list[str]) -> tuple[set[str], dict[str, set[str]]]:
+    """Ids of the records of the record-level apps ``app_ids`` that an arm of ``accessible_rows`` could admit, found by walking down from what the
+    user reaches: the app itself, the records and groups granted to them, and the groups that declare a scope. Never more than the arms: the final decision
+    stays with ``accessible_rows``; this only keeps the candidates to what the user can reach, not to everything in the app. Also, per app, the part
+    that ``from_app`` itself reaches (``records_below_app``), which needs no further check."""
+    granted = Grants(g for ids in access["by_connector"].values() for g in ids)
+    out: set[str] = set()
+    sure: dict[str, set[str]] = {}
+    for app_id in app_ids:
+        gids = access["by_connector"].get(app_id) or []
+        seeds: list[Node] = [(r["coll"], r["id"]) for r in await tx.fetch("""/* pipeshub:graph.access_seed_nodes */ SELECT coll, id FROM graph.nodes WHERE org_id = $1
+            AND coll IN ('records', 'recordGroups') AND id = ANY($2::text[])""", org, gids)] if gids else []
+        info = await _info(tx, org, seeds)
+        open_seeds = [n for n in seeds if (v := info.get(n)) and v["cid"] == app_id and not v["deleted"] and v["rule"] == "OPEN"]
+        declared = await _declared_groups(tx, org, app_id)
+        sure[app_id] = await records_below_app(tx, org, app_id, granted, opens=False)
+        reached = {*open_seeds, *(("records", i) for i in sure[app_id]), *await _down(tx, org, open_seeds, "seed", sorted(granted))}
+        if declared:     # a declared group that is granted, or that the app reaches, opens the groups below it and what belongs to them
+            ok = {g for g in declared if g in granted}
+            rest = [g for g in declared if g not in ok]
+            if rest:
+                ok |= {r["sid"] for r in await from_app(tx, org, rest, ["recordGroups"] * len(rest), [app_id] * len(rest), [False] * len(rest), granted)}
+            below = await _down(tx, org, [("recordGroups", g) for g in sorted(ok)], "group", [])
+            groups = sorted({*ok, *(i for _, i in below)})
+            for r in await tx.fetch("""/* pipeshub:graph.access_group_members */ SELECT e.from_id FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'belongsTo'
+                AND e.from_coll = 'records' AND e.to_coll = 'recordGroups' AND e.to_id = ANY($2::text[])""", org, groups):
+                reached.add(("records", r["from_id"]))
+        out |= {i for c, i in reached if c == "records"}
+    return out, sure
 
 
 def _is_seed(doc: dict, coll: str, app_id: str, granted: set[str], node_id: str) -> bool:
@@ -208,29 +362,63 @@ def _is_seed(doc: dict, coll: str, app_id: str, granted: set[str], node_id: str)
             and (rule is None or rule == "OPEN") and node_id in granted)
 
 
+async def probe_grants(tx: Tx, org: str, probe: dict[str, Any], cross: list[str] | dict[str, Any] | None) -> dict[str, list[str]]:
+    """``by_connector`` for an access whose grants are tested from the node (``probe``), as ``Neo4jProvider._kh_grants_by_probe`` tests them: a live record or group of the probe's
+    connector that one of its grantees holds a permission on (an organisation's when its type shares with the organisation), and the other connectors' grants of ``cross``: a list
+    of ids, or the holders to test on each node (``_kh_cross_by_probe``: ``common`` on any connector of ``probe``, ``scoped`` on its own)."""
+    out = {probe["connector_id"]: (await granted_targets(tx, org, list(probe["grantees"]), list(ORG_SHARE_PERMISSION_TYPES))).get(probe["connector_id"], [])}
+    if isinstance(cross, dict):
+        common = await granted_targets(tx, org, list(cross.get("common") or []), list(ORG_SHARE_PERMISSION_TYPES))
+        for cid in cross.get("probe") or []:
+            scoped = await granted_targets(tx, org, list((cross.get("scoped") or {}).get(cid) or []), list(ORG_SHARE_PERMISSION_TYPES))
+            out[cid] = [*out.get(cid, []), *common.get(cid, []), *scoped.get(cid, [])]
+    elif cross:
+        out[""] = list(cross)      # granted on nodes of other connectors: a grant counts on a node of any gated connector
+    return out
+
+
 async def accessible_rows(tx: Tx, org: str, node_ids: list[str], vrids: list[str], access: dict[str, Any]) -> list[dict[str, Any]]:
-    if access.get("probe"):      # a browse that tests grants from the node: its grants are not in ``by_connector``, so it is not answered by guessing
-        raise NotImplementedInPostgres("an access check with a grant probe is not implemented")
+    await tx.fetchval(NO_JIT)
+    if access.get("probe"):      # a browse that tests grants from the node: its grants are read here, by the test Neo4j makes on the node
+        access = {**access, "by_connector": await probe_grants(tx, org, access["probe"], access.get("cross"))}
     gated = set(access["gated_app_ids"])
-    granted = {g for ids in access["by_connector"].values() for g in ids}
-    granted_l = sorted(granted)
+    granted = grants_of(access)
     # two statements, each served by one index, instead of one with an OR across them (which plans badly without statistics)
-    rows = await tx.fetch("""/* pipeshub:graph.access_targets */ SELECT t.coll, t.id, t.doc, CASE WHEN t.coll = 'apps' THEN t.id ELSE t.doc->>'connectorId' END AS app_id
-        FROM graph.nodes t
-        WHERE t.org_id = $1 AND t.doc->>'orgId' = $1 AND NOT coalesce((t.doc->>'isDeleted')::boolean, false)
-          AND (NOT coalesce((t.doc->>'isPlaceholder')::boolean, false) OR t.id = ANY($2::text[]))
-          AND t.coll IN ('records', 'recordGroups', 'apps') AND t.id = ANY($2::text[])""", org, node_ids)
+    rows = await tx.fetch(_TARGETS_SQL, org, node_ids)
     if vrids:
         seen_ids = {r["id"] for r in rows}
-        rows = [*rows, *(r for r in await tx.fetch("""/* pipeshub:graph.access_targets_vrid */ SELECT t.coll, t.id, t.doc, CASE WHEN t.coll = 'apps' THEN t.id ELSE t.doc->>'connectorId' END AS app_id
+        found = None
+        uniq = list(dict.fromkeys(vrids))
+        if all(0 < len(v) <= 200 for v in uniq):      # the vetted read of graph_0004, a page of ids per call: the deleted and placeholder records are dropped here
+            # The statement below cannot use the key's index under row security (`->>` is not leakproof) and reads the whole org at any size;
+            # the vetted read probes the index once per id, so a batch of any size costs its ids.
+            asked = set(node_ids)
+            found = []
+            taken: set[str] = set()
+            for k in range(0, len(uniq), _VRID_IDS):
+                raw = await tx.fetch(_VRID_SQL, uniq[k:k + _VRID_IDS])
+                if len(raw) >= _VRID_PAGE:
+                    found = None
+                    break
+                for r in raw:
+                    if r["node_id"] in taken:      # a record whose virtual record id moved between two pages (read committed) matches both
+                        continue
+                    d = json.loads(r["doc"]) if isinstance(r["doc"], str) else r["doc"]
+                    if not _pgbool(d.get("isDeleted")) and (not _pgbool(d.get("isPlaceholder")) or r["node_id"] in asked):
+                        found.append({"coll": "records", "id": r["node_id"], "doc": r["doc"], "app_id": r["app_id"]})      # PostgreSQL's text of the id, as the other arms compare it
+                        taken.add(r["node_id"])
+        if found is None:      # shortcut: reads the whole org; only for an id over 200 characters or a page reaching 5000 records, split the page if those occur
+            found = await tx.fetch("""/* pipeshub:graph.access_targets_vrid */ SELECT t.coll, t.id, t.doc, CASE WHEN t.coll = 'apps' THEN t.id ELSE t.doc->>'connectorId' END AS app_id
             FROM graph.nodes t
             WHERE t.org_id = $1 AND t.doc->>'orgId' = $1 AND NOT coalesce((t.doc->>'isDeleted')::boolean, false)
               AND (NOT coalesce((t.doc->>'isPlaceholder')::boolean, false) OR t.id = ANY($2::text[]))
-              AND t.coll = 'records' AND t.doc->>'virtualRecordId' = ANY($3::text[])""", org, node_ids, vrids) if r["id"] not in seen_ids)]
+              AND t.coll = 'records' AND t.doc->>'virtualRecordId' = ANY($3::text[])""", org, node_ids, vrids)
+        rows = [*rows, *(r for r in found if r["id"] not in seen_ids)]
     targets = []
     for r in rows:
         doc = json.loads(r["doc"]) if isinstance(r["doc"], str) else dict(r["doc"])
         targets.append((r["coll"], r["id"], doc, r["app_id"]))
+    await granted.see(tx, org, [t[1] for t in targets])
     apps = {}
     if gated:
         for a in await tx.fetch("/* pipeshub:graph.access_apps */ SELECT id, doc FROM graph.nodes WHERE org_id = $1 AND coll = 'apps' AND id = ANY($2::text[])",
@@ -249,7 +437,8 @@ async def accessible_rows(tx: Tx, org: str, node_ids: list[str], vrids: list[str
     kb = [(c, i, a) for c, i, d, a in pending if apps[a] and c == "records"]
     if kb:
         app_of_kb = {i: a for _, i, a in kb}
-        for r in await tx.fetch("/* pipeshub:graph.access_kb */ SELECT e.from_id, e.to_id FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'belongsTo' AND e.from_coll = 'records' AND e.from_id = ANY($2::text[]) AND e.to_coll = 'apps' AND e.to_id = ANY($3::text[])",
+        # custom plan: the generic one reads every membership edge of the app (edges_by_target) instead of the asked records by key
+        for r in await tx.fetch_custom_plan("/* pipeshub:graph.access_kb */ SELECT e.from_id, e.to_id FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'belongsTo' AND e.from_coll = 'records' AND e.from_id = ANY($2::text[]) AND e.to_coll = 'apps' AND e.to_id = ANY($3::text[])",
                                 org, [i for _, i, _ in kb], sorted({a for _, _, a in kb})):
             if app_of_kb[r["from_id"]] == r["to_id"]:      # a member of its own app, not of another that also opens everything
                 ok.add(r["from_id"])
@@ -264,36 +453,38 @@ async def accessible_rows(tx: Tx, org: str, node_ids: list[str], vrids: list[str
         app_of = {p[1]: p[3] for p in pending}
         # a declaration counts when granted or reachable from its app
         dgs = sorted({g for gs in dg_by_sid.values() for g in gs})
+        await granted.see(tx, org, dgs)
         dg_ok = {g for g in dgs if g in granted}
         rest = [g for g in dgs if g not in dg_ok]
         if rest:
             a_of = {g: app_of[s] for s, gs in dg_by_sid.items() for g in gs}
-            reach = await from_app(tx, org, rest, ["recordGroups"] * len(rest), [a_of[g] for g in rest], [apps[a_of[g]] for g in rest], granted_l)
+            reach = await from_app(tx, org, rest, ["recordGroups"] * len(rest), [a_of[g] for g in rest], [apps[a_of[g]] for g in rest], granted)
             dg_ok |= {r["sid"] for r in reach}
         declared_ok = {s for s, gs in dg_by_sid.items() if gs & dg_ok}
         ok |= declared_ok
         left = [(i, c, a, o) for i, c, a, o in zip(ids, colls, appids, opens, strict=True) if i not in ok]
         if left:
-            reach = await from_app(tx, org, [x[0] for x in left], [x[1] for x in left], [x[2] for x in left], [x[3] for x in left], granted_l)
+            reach = await from_app(tx, org, [x[0] for x in left], [x[1] for x in left], [x[2] for x in left], [x[3] for x in left], granted)
             ok |= {r["sid"] for r in reach}
         left = [x for x in left if x[0] not in ok]
-        if left and granted_l:
-            pairs = await below_seed(tx, org, [x[0] for x in left], [x[1] for x in left], [x[2] for x in left], granted_l)
+        if left and (granted or granted.probing):
+            pairs = await below_seed(tx, org, [x[0] for x in left], [x[1] for x in left], [x[2] for x in left], granted)
             seeds = sorted({r["seed"] for r in pairs})
             if seeds:
                 seed_app = {r["seed"]: app_of[r["sid"]] for r in pairs}
                 # a seed another arm admits is not a seed: its hierarchy-only children stay out
                 seed_coll = {r["seed"]: r["seed_coll"] for r in pairs}
                 bad = {r["sid"] for r in await from_app(tx, org, seeds, [seed_coll[s] for s in seeds],
-                                                       [seed_app[s] for s in seeds], [apps[seed_app[s]] for s in seeds], granted_l)}
+                                                       [seed_app[s] for s in seeds], [apps[seed_app[s]] for s in seeds], granted)}
                 dd = await declared_groups(tx, org, seeds, [seed_coll[s] for s in seeds], [seed_app[s] for s in seeds])
                 dgs2 = sorted({r["gid"] for r in dd})
+                await granted.see(tx, org, dgs2)
                 dg2_ok = {g for g in dgs2 if g in granted}
                 rest2 = [g for g in dgs2 if g not in dg2_ok]
                 if rest2:
                     a2 = {r["gid"]: seed_app[r["sid"]] for r in dd}
                     dg2_ok |= {r["sid"] for r in await from_app(tx, org, rest2, ["recordGroups"] * len(rest2), [a2[g] for g in rest2],
-                                                                 [apps[a2[g]] for g in rest2], granted_l)}
+                                                                 [apps[a2[g]] for g in rest2], granted)}
                 bad |= {r["sid"] for r in dd if r["gid"] in dg2_ok}
                 good = {(r["sid"]) for r in pairs if r["seed"] not in bad}
                 ok |= good
@@ -308,6 +499,17 @@ async def accessible_rows(tx: Tx, org: str, node_ids: list[str], vrids: list[str
                 WHERE e.org_id = $1 AND e.coll = 'permission' AND e.to_coll = 'records' AND e.to_id = ANY($2::text[]) AND e.from_id = ANY($3::text[])
                   AND (e.from_coll <> 'organizations' OR e.doc->>'type' = ANY($4::text[]))""", org, cand, access["grantee_ids"], list(ORG_SHARE_PERMISSION_TYPES)):
                 ok.add(r["to_id"])
+    return await _shape(tx, org, targets, ok)
+
+
+async def admitted_rows(tx: Tx, org: str, ids: list[str]) -> list[dict[str, Any]]:
+    """The rows ``accessible_rows`` returns for ids that something else (the typed graph) has already admitted: read by the same statement, so a node the walk would not even look at
+    (another org's document, a deleted one) is dropped here too, and shaped the same way."""
+    targets = [(r["coll"], r["id"], json.loads(r["doc"]) if isinstance(r["doc"], str) else dict(r["doc"]), r["app_id"]) for r in await tx.fetch(_TARGETS_SQL, org, ids)]
+    return await _shape(tx, org, targets, {t[1] for t in targets})
+
+
+async def _shape(tx: Tx, org: str, targets: list[tuple[str, str, dict[str, Any], str | None]], ok: set[str]) -> list[dict[str, Any]]:
     out = []
     groups: dict[tuple[str, str], list[str]] = {}
     admitted = [(c, i) for c, i, d, a in targets if i in ok]

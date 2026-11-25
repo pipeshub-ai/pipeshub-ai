@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.util
 import sys
 import threading
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -16,6 +17,8 @@ from app.agent_loop_lib.tools.registry import ToolRegistry
 from app.agents.agent_loop.openapi_tool_adapter import OpenAPIToolAdapter
 from app.agents.agent_loop.openapi_tool_loader import OpenAPIToolProvider
 from app.agents.agent_loop.tool_approvals import TOOLSET_TOOLS_BY_PATH
+from app.agents.mcp.models import OAuthTokens
+from app.agents.openapi import auth as auth_module
 from app.agents.openapi import executor as executor_module
 from app.agents.openapi import service
 from app.agents.openapi.auth import ApiToolsetAuthError
@@ -23,9 +26,10 @@ from app.agents.openapi.models import ApiToolsetCredentials
 from app.agents.openapi.store import ApiToolsetStore
 from tests.support.in_memory_config import InMemoryConfigService
 from tests.unit.agents.adapter.conftest import make_context
+from tests.unit.agents.mcp.refresh_failures import BODY_SECRET, token_endpoint_error
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Awaitable, Callable, Iterator
 
     from app.agents.agent_loop.context import AgentContext
     from app.agents.openapi.models import ApiToolsetInstance
@@ -274,3 +278,66 @@ async def test_a_refused_sign_in_names_who_can_reconnect_as_the_ui_does(
     adapter = OpenAPIToolAdapter(instance, instance.operations[0], _SignInExpired(), name="api_acme_list_tickets")
     output = await adapter.execute()
     assert not output.success and output.error.endswith(hint)
+
+
+# A person's own sign-in refreshes; a client-credentials toolset is always the shared credential.
+# (scheme, token function it calls, who the refusal text sends the user to)
+SIGN_IN_FLOWS = [("oauth2SignIn", "refresh", "Connect it under Workspace → Your actions."),
+                 ("oauth2ClientCredentials", "client_credentials", "Ask an administrator to connect it under Workspace → Actions.")]
+
+
+@pytest.mark.parametrize(("scheme", "token_call"), [(scheme, call) for scheme, call, _ in SIGN_IN_FLOWS])
+@pytest.mark.parametrize(("status", "body"), [(503, {"error": "temporarily_unavailable"}), (429, {"error": "slow_down"})])
+async def test_an_oauth_outage_tells_the_model_to_retry_not_to_reconnect(
+    config: InMemoryConfigService, monkeypatch: pytest.MonkeyPatch, scheme: str, token_call: str, status: int, body: dict[str, Any],
+) -> None:
+    output, token_calls, api_calls = await _call_with_token_endpoint_error(config, monkeypatch, scheme, status, body)
+    assert token_calls == [token_call]
+    assert not output.success and "Try again" in output.error
+    for advice in ("sign in", "Connect it", "Ask an administrator", BODY_SECRET):
+        assert advice not in output.error
+    assert not api_calls
+
+
+@pytest.mark.parametrize(("scheme", "token_call", "hint"), SIGN_IN_FLOWS)
+async def test_an_oauth_refusal_still_asks_to_sign_in_again(
+    config: InMemoryConfigService, monkeypatch: pytest.MonkeyPatch, scheme: str, token_call: str, hint: str,
+) -> None:
+    output, token_calls, _ = await _call_with_token_endpoint_error(config, monkeypatch, scheme, 400, {"error": "invalid_grant"})
+    assert token_calls == [token_call]
+    assert not output.success and "or sign in again" in output.error and output.error.endswith(hint)
+    assert BODY_SECRET not in output.error
+
+
+async def _call_with_token_endpoint_error(
+    config: InMemoryConfigService, monkeypatch: pytest.MonkeyPatch, scheme: str, status: int, body: dict[str, Any],
+) -> tuple[Any, list[str], list[str]]:
+    """One tool call with an expired stored token whose token endpoint answers `status` with `body`.
+    Returns the output, the token functions called and the API URLs called."""
+    error = await token_endpoint_error(status, {**body, "error_description": BODY_SECRET})
+    token_calls: list[str] = []
+
+    def token_endpoint(kind: str) -> Callable[..., Awaitable[None]]:
+        async def fail(*_a: object, **_kw: object) -> None:
+            token_calls.append(kind)
+            raise error
+        return fail
+
+    api_calls: list[str] = []
+
+    def api(request: httpx.Request) -> httpx.Response:
+        api_calls.append(str(request.url))
+        return httpx.Response(200, json=[])
+
+    monkeypatch.setattr(auth_module, "refresh_access_token", token_endpoint("refresh"))
+    monkeypatch.setattr(auth_module, "request_client_credentials_token", token_endpoint("client_credentials"))
+    monkeypatch.setattr(executor_module, "GuardedTransport", lambda url, allow_private: httpx.MockTransport(api))
+    instance = await _add_toolset(config, scheme=scheme)
+    store = ApiToolsetStore(config)
+    owner = service.credential_owner(instance, "user-1")
+    expired = OAuthTokens(access_token="old", refresh_token="r1", expires_in=60,
+                          created_at=datetime.now(timezone.utc) - timedelta(hours=1))
+    await store.save_credentials(instance.id, owner, ApiToolsetCredentials(client_id="acme-client", client_secret="s", oauth=expired))
+    executor = await service.build_executor(store, instance, owner)
+    adapter = OpenAPIToolAdapter(instance, instance.operations[0], executor, name="api_acme_list_tickets")
+    return await adapter.execute(), token_calls, api_calls

@@ -1,9 +1,10 @@
 import React from 'react';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, screen } from '@testing-library/react';
+import { cleanup, screen, within } from '@testing-library/react';
 import '@/lib/__tests__/test-i18n';
 import { FolderTreeItem } from '../sidebar/section-element/folder-tree-item';
 import { KbGridView } from '../components/kb-grid-view';
+import { KbListView } from '../components/kb-list-view';
 import { hubNode, installBrowserShims, renderInTheme } from './kb-page-harness';
 
 const canHover = vi.hoisted(() => ({ value: true }));
@@ -79,5 +80,25 @@ describe('grid card checkbox', () => {
     canHover.value = false;
     renderGrid();
     expect(screen.getByRole('checkbox').parentElement?.style.visibility).toBe('visible');
+  });
+});
+
+describe('list column header', () => {
+  it('gives the sort button a 44px touch target on a phone, inside a header row as tall', () => {
+    renderInTheme(
+      <KbListView
+        items={[hubNode({ id: 'r1', name: 'Runbook' })]}
+        selectedItems={new Set()}
+        allSelected={false}
+        sort={{ field: 'name', order: 'asc' }}
+        onSelectAll={() => {}}
+        onSelectItem={() => {}}
+        onItemClick={() => {}}
+        onSort={() => {}}
+      />,
+    );
+    const header = screen.getByRole('columnheader', { name: 'File name' });
+    expect(within(header).getByRole('button').style.height).toBe('44px');
+    expect(header.closest<HTMLElement>('[role="row"]')?.style.height).toBe('44px');
   });
 });

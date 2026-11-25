@@ -14,6 +14,8 @@ interface TextRendererProps {
   fileType?: string;
   citations?: PreviewCitation[];
   activeCitationId?: string | null;
+  /** Increments on every click on a citation, so a repeat click on the active one scrolls again. */
+  citationClickVersion?: number;
   onHighlightClick?: (citationId: string) => void;
 }
 
@@ -86,7 +88,7 @@ function getLanguageFromExtension(fileName: string): string {
   return languageMap[ext] || 'text';
 }
 
-export function TextRenderer({ fileUrl, fileName, fileType: _fileType, citations, activeCitationId, onHighlightClick }: TextRendererProps) {
+export function TextRenderer({ fileUrl, fileName, fileType: _fileType, citations, activeCitationId, citationClickVersion, onHighlightClick }: TextRendererProps) {
   const { appearance } = useThemeAppearance();
   const isDark = appearance === 'dark';
   const [content, setContent] = useState<string>('');
@@ -213,7 +215,7 @@ export function TextRenderer({ fileUrl, fileName, fileType: _fileType, citations
     }, 150);
 
     return clearAll;
-  }, [activeCitationId, textDomReady, scrollToHighlight, citations, applyHighlights]);
+  }, [activeCitationId, citationClickVersion, textDomReady, scrollToHighlight, citations, applyHighlights]);
 
   if (isLoading) {
     return (
@@ -228,7 +230,7 @@ export function TextRenderer({ fileUrl, fileName, fileType: _fileType, citations
   if (error) {
     return (
       <Flex direction="column" align="center" justify="center" gap="3" style={{ height: '100%', padding: 'var(--space-6)' }}>
-        <span className="material-icons-outlined" style={{ fontSize: '48px', color: 'var(--red-9)' }}>
+        <span className="material-icons-outlined" style={{ fontSize: '48px', color: 'var(--red-11)' }}>
           error_outline
         </span>
         <Text size="3" weight="medium" color="red">

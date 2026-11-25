@@ -636,7 +636,9 @@ class TestSharePointSyncUserGroups:
         mock_http = AsyncMock()
         mock_http.__aenter__ = AsyncMock(return_value=mock_http)
         mock_http.__aexit__ = AsyncMock(return_value=False)
+        # _get_sharepoint_access_token imports the credential itself, so it is patched where that import reads it
         with patch(f"{MODULE}.ClientSecretCredential", return_value=cred_ctx), \
+             patch("azure.identity.aio.ClientSecretCredential", return_value=cred_ctx), \
              patch(f"{MODULE}.httpx.AsyncClient", return_value=mock_http):
             await c._sync_user_groups()
         dep.on_new_user_groups.assert_not_awaited()
@@ -667,7 +669,9 @@ class TestSharePointSyncUserGroups:
         cred_ctx = MagicMock()
         cred_ctx.__aenter__ = AsyncMock(return_value=AsyncMock())
         cred_ctx.__aexit__ = AsyncMock(return_value=False)
+        # _get_sharepoint_access_token imports the credential itself, so it is patched where that import reads it
         with patch(f"{MODULE}.ClientSecretCredential", return_value=cred_ctx), \
+             patch("azure.identity.aio.ClientSecretCredential", return_value=cred_ctx), \
              patch(f"{MODULE}.httpx.AsyncClient", return_value=mock_http):
             await c._sync_user_groups()
         dep.on_new_user_groups.assert_not_awaited()
@@ -1525,7 +1529,7 @@ class TestSharePointRunSyncMultiBatch:
         c.certificate_path = None
         c.client = MagicMock()
         c.msgraph_client = MagicMock()
-        c.msgraph_client.get_all_users = AsyncMock(return_value=[])
+        c._sync_users = AsyncMock()  # the users are not what this run test is about
 
         def _site(suffix: str):
             site = MagicMock()

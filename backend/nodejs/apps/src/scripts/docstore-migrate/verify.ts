@@ -18,6 +18,10 @@ import { SourceReport, prepareSource } from './source';
 import { fill } from '../../libs/repositories/pg-util';
 import { counterViolations } from './verify-identity';
 import { verifyCredentials, verifyCredentialsFor } from './credentials';
+import { SLACK_LINKS, verifySlackLinks } from './slack-links';
+import { CarryVerify, carriersFor, verifyCarried } from './carry/run';
+import { carryMongo, carryPg } from './carry/steps';
+import { refusedIds } from './refusals';
 
 export interface CollectionVerify {
   collection: string;
@@ -45,6 +49,8 @@ export interface VerifyReport {
   collections: CollectionVerify[];
   global: Array<{ name: string; ok: boolean; detail?: unknown }>;
   isolation: { probed: number; failures: string[] } | null;
+  /** The carriers' store groups (R45-CARRY), compared by key; a differing value is named by its fields only. */
+  carried: CarryVerify[];
   diffs: number;
 }
 
@@ -85,6 +91,7 @@ async function verifyCustom(
   m: CollectionMapping,
   log: Log,
   scope: VerifyScope = {},
+  listedSkips: Record<string, string> = {},
 ): Promise<CollectionVerify> {
   const db = sourceDb(rt, m);
   const empty: CollectionVerify = {
@@ -216,6 +223,26 @@ async function verifyCustom(
       diffCount: diffs.length,
     };
   }
+  if (m.collection === SLACK_LINKS) {
+    const v = await verifySlackLinks(rt, m, listedSkips);
+    log('verified', {
+      collection: m.collection,
+      docs: v.sourceDocs,
+      diffs: v.diffs.length,
+    });
+    for (const d of v.diffs) scope.onDiff?.(m.collection, d);
+    return {
+      ...empty,
+      sourceDocs: v.sourceDocs,
+      comparedDocs: v.sourceDocs - v.skippedListed.length,
+      pgRows: v.pgRows,
+      diffs: v.diffs.slice(0, MAX_DIFFS_KEPT),
+      diffCount: v.diffs.length,
+      perOrg: v.perOrg,
+      countMismatches: v.countMismatches,
+      skippedListed: v.skippedListed,
+    };
+  }
   if (m.collection === 'counters') {
     const problems = await counterViolations(
       async (sql) => (await rt.migratePool.query(sql)).rows,
@@ -267,7 +294,7 @@ async function verifyIds(
         promoteLongs: false,
       })
       .toArray();
-    await m.beforeTransforms?.(db, raw);
+    await m.beforeTransforms?.(rt.db(), raw);
     const src = raw
       .filter((r) => listedSkips[String(r._id).toLowerCase()] === undefined)
       .map((r) => prepareSource(m, r, report, false))
@@ -326,7 +353,7 @@ export async function verifyCollection(
   alreadyHashed = false,
   scope: VerifyScope = {},
 ): Promise<CollectionVerify> {
-  if (m.custom) return verifyCustom(rt, m, log, scope);
+  if (m.custom) return verifyCustom(rt, m, log, scope, listedSkips);
   listedSkips = await openSkips(rt, m, listedSkips);
   if (scope.ids && !m.sourceKey)
     return verifyIds(rt, m, scope.ids, scope, listedSkips);
@@ -360,7 +387,7 @@ export async function verifyCollection(
     rt.cfg.batchBytes,
   )) {
     const src: Array<Record<string, unknown>> = [];
-    await m.beforeTransforms?.(db, b.docs);
+    await m.beforeTransforms?.(rt.db(), b.docs);
     for (const raw of b.docs) {
       census.add(raw);
       sourceDocs += 1;
@@ -622,7 +649,11 @@ export async function verifyAll(
         rt,
         m,
         opts.log,
-        job?.progress.collections[m.collection]?.skippedIds ?? {},
+        await refusedIds(
+          rt,
+          m.collection,
+          job?.progress.collections[m.collection]?.skippedIds,
+        ),
         opts.afterReverse === true,
         {
           ...(opts.sample !== undefined ? { sample: opts.sample } : {}),
@@ -635,16 +666,46 @@ export async function verifyAll(
   const global = await globalChecks(rt, !opts.ids);
   // the probe compares per-organisation counts of a full read; a changed-ids run has none
   const isolation = opts.ids ? null : await isolationProbe(rt, collections);
-  const diffs = collections.reduce(
-    (a, c) =>
-      a +
-      c.diffCount +
-      c.countMismatches.length +
-      c.unmappedPaths.length +
-      c.nullInOmitField.length +
-      c.invariantViolations.length,
-    0,
+  // a carrier is compared whole whenever a collection it reads is in the run (its rows are keyed by more than the document id)
+  const scope = opts.ids
+    ? Object.keys(opts.ids).filter((c) => opts.ids?.[c]?.length)
+    : opts.only;
+  const carried = await verifyCarried(
+    carryPg(rt),
+    carryMongo(rt),
+    carriersFor(scope),
   );
+  for (const c of carried)
+    if (!c.ok)
+      opts.log('carried_diff', {
+        carrier: c.carrier,
+        collection: c.collection,
+        missing: c.missing.length,
+        extra: c.extra.length,
+        differing: c.differing.length,
+        refused: c.refused.length,
+      });
+  const diffs =
+    carried.reduce(
+      (a, c) =>
+        a +
+        c.missing.length +
+        c.extra.length +
+        c.differing.length +
+        c.duplicates.length +
+        c.refused.length,
+      0,
+    ) +
+    collections.reduce(
+      (a, c) =>
+        a +
+        c.diffCount +
+        c.countMismatches.length +
+        c.unmappedPaths.length +
+        c.nullInOmitField.length +
+        c.invariantViolations.length,
+      0,
+    );
   const ok =
     diffs === 0 &&
     global.every((g) => g.ok) &&
@@ -655,6 +716,7 @@ export async function verifyAll(
     collections,
     global,
     isolation,
+    carried,
     diffs,
   };
 }

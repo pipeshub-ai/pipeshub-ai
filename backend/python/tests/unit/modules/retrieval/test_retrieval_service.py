@@ -1,6 +1,7 @@
 """Unit tests for app.modules.retrieval.retrieval_service.RetrievalService."""
 
 import asyncio
+import logging
 import time
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -19,6 +20,8 @@ from app.modules.retrieval.retrieval_service import (
 from app.services.graph_db.interface.graph_db_provider import AccessCheck
 from app.services.vector_db.search_retry import VectorSearchUnavailableError
 from app.utils.chat_helpers import attach_connector_instance_names
+from tests.support.log_capture import assert_text_free, failure_line
+from tests.support.provider_errors import SENTINELS, httpx_error, openai_error
 
 # ---------------------------------------------------------------------------
 # Helpers to build a RetrievalService without real FastEmbedSparse / model load
@@ -340,7 +343,7 @@ class TestGetEmbeddingModelName:
 class TestGetLlmInstance:
     @pytest.mark.asyncio
     async def test_returns_default_llm(self, retrieval_service, mock_config_service):
-        with patch("app.modules.retrieval.retrieval_service.get_generator_model") as mock_gen:
+        with patch("app.utils.llm.get_generator_model") as mock_gen:
             mock_gen.return_value = MagicMock()
             result = await retrieval_service.get_llm_instance()
             assert result is not None
@@ -352,7 +355,7 @@ class TestGetLlmInstance:
                 {"provider": "openai", "isDefault": False, "configuration": {"model": "gpt-4"}},
             ]
         }
-        with patch("app.modules.retrieval.retrieval_service.get_generator_model") as mock_gen:
+        with patch("app.utils.llm.get_generator_model") as mock_gen:
             mock_gen.return_value = MagicMock()
             result = await retrieval_service.get_llm_instance()
             assert result is not None
@@ -366,7 +369,7 @@ class TestGetLlmInstance:
     @pytest.mark.asyncio
     async def test_no_supported_provider_returns_none(self, retrieval_service, mock_config_service):
         mock_config_service.get_config.return_value = {"llm": []}
-        with patch("app.modules.retrieval.retrieval_service.get_generator_model", return_value=None):
+        with patch("app.utils.llm.get_generator_model", return_value=None):
             result = await retrieval_service.get_llm_instance()
             assert result is None
 
@@ -389,7 +392,7 @@ class TestGetEmbeddingModelInstance:
     async def test_uses_default_when_no_embedding_config(self, retrieval_service, mock_config_service):
         """With no embedding config present, falls back to the built-in default model."""
         mock_config_service.get_config.return_value = {"embedding": []}
-        with patch("app.modules.retrieval.retrieval_service.get_default_embedding_model") as mock_def:
+        with patch("app.utils.llm.get_default_embedding_model") as mock_def:
             mock_def.return_value = MagicMock()
             result = await retrieval_service.get_embedding_model_instance()
             assert result is not None
@@ -404,7 +407,7 @@ class TestGetEmbeddingModelInstance:
                  "configuration": {"model": "text-embedding-3-small"}}
             ]
         }
-        with patch("app.modules.retrieval.retrieval_service.get_embedding_model") as mock_emb:
+        with patch("app.utils.llm.get_embedding_model") as mock_emb:
             mock_emb.return_value = MagicMock()
             first = await retrieval_service.get_embedding_model_instance()
             second = await retrieval_service.get_embedding_model_instance()
@@ -422,7 +425,7 @@ class TestGetEmbeddingModelInstance:
                  "configuration": {"model": "text-embedding-3-small"}}
             ]
         }
-        with patch("app.modules.retrieval.retrieval_service.get_embedding_model") as mock_emb:
+        with patch("app.utils.llm.get_embedding_model") as mock_emb:
             model_a = MagicMock()
             model_b = MagicMock()
             mock_emb.side_effect = [model_a, model_b]
@@ -451,7 +454,7 @@ class TestGetEmbeddingModelInstance:
                  "configuration": {"model": "default-model"}},
             ]
         }
-        with patch("app.modules.retrieval.retrieval_service.get_embedding_model") as mock_emb:
+        with patch("app.utils.llm.get_embedding_model") as mock_emb:
             mock_emb.return_value = MagicMock()
             await retrieval_service.get_embedding_model_instance()
             provider_arg = mock_emb.call_args[0][0]
@@ -473,7 +476,7 @@ class TestGetEmbeddingModelInstance:
                  "configuration": {"model": "custom-embed-model"}}
             ]
         }
-        with patch("app.modules.retrieval.retrieval_service.get_embedding_model") as mock_emb:
+        with patch("app.utils.llm.get_embedding_model") as mock_emb:
             mock_emb.return_value = MagicMock()
             result = await retrieval_service.get_embedding_model_instance()
             assert result is not None
@@ -483,19 +486,19 @@ class TestQueryEmbeddingAttemptBound:
     """A stalled request to a hosted embedding API is retried well inside a search's budget."""
 
     @pytest.mark.asyncio
-    async def test_a_hosted_model_is_bounded_and_a_local_one_is_not(
+    async def test_a_hosted_model_and_a_local_one_are_told_apart(
         self, retrieval_service, mock_config_service
     ) -> None:
         mock_config_service.get_config.return_value = {
             "embedding": [{"provider": "azureOpenAI", "isDefault": True,
                            "configuration": {"model": "text-embedding-3-small"}}]
         }
-        with patch("app.modules.retrieval.retrieval_service.get_embedding_model", return_value=MagicMock()):
+        with patch("app.utils.llm.get_embedding_model", return_value=MagicMock()):
             await retrieval_service.get_embedding_model_instance()
         assert retrieval_service._cached_embedding_is_local is False
 
         mock_config_service.get_config.return_value = {"embedding": []}
-        with patch("app.modules.retrieval.retrieval_service.get_default_embedding_model",
+        with patch("app.utils.llm.get_default_embedding_model",
                    return_value=MagicMock()):
             await retrieval_service.get_embedding_model_instance()
         assert retrieval_service._cached_embedding_is_local is True
@@ -537,7 +540,8 @@ class TestQueryEmbeddingAttemptBound:
     async def test_a_local_model_is_given_the_time_it_needs(
         self, retrieval_service, mock_vector_db_service
     ) -> None:
-        """A local model may still be loading; cutting it off would only start the load again."""
+        """A local model may still be loading (first use, or after an idle unload), so it gets far longer
+        than a hosted API."""
         async def slow(_query: str) -> list[float]:
             await asyncio.sleep(0.2)
             return [0.1]
@@ -551,6 +555,57 @@ class TestQueryEmbeddingAttemptBound:
             await retrieval_service._execute_parallel_searches(["q"], models.Filter(must=[]), 10, "org-1")
 
         assert dense.aembed_query.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_a_stalled_local_model_gives_up_at_the_deadline(
+        self, retrieval_service, mock_vector_db_service
+    ) -> None:
+        """A local embedding server that accepts the connection and never answers must not hold the search
+        for the client's own timeout (600 s per attempt, retried): the search fails at the deadline."""
+        async def never(_query: str) -> list[float]:
+            await asyncio.Event().wait()
+            return [0.1]
+
+        dense = AsyncMock()
+        dense.aembed_query = AsyncMock(side_effect=never)
+        retrieval_service.get_embedding_model_instance = AsyncMock(return_value=dense)
+        mock_vector_db_service.query_nearest_points.return_value = [[]]
+
+        async def search_fails_at_the_deadline() -> None:
+            with pytest.raises(TimeoutError):
+                await retrieval_service._execute_parallel_searches(["q"], models.Filter(must=[]), 10, "org-1")
+
+        with patch("app.modules.retrieval.retrieval_service.LOCAL_QUERY_EMBEDDING_DEADLINE_SECONDS", 0.05):
+            # Outside pytest.raises: if the deadline were gone, this watchdog's own TimeoutError fails the test.
+            await asyncio.wait_for(search_fails_at_the_deadline(), timeout=5)
+
+        assert dense.aembed_query.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_a_transient_local_error_is_retried_within_the_deadline(
+        self, retrieval_service, mock_vector_db_service
+    ) -> None:
+        """Some local clients (an OpenAI-compatible server on an internal address) don't retry themselves."""
+        calls = {"n": 0}
+
+        async def flaky(_query: str) -> list[float]:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise TimeoutError("transient")
+            return [0.1]
+
+        dense = AsyncMock()
+        dense.aembed_query = AsyncMock(side_effect=flaky)
+        retrieval_service.get_embedding_model_instance = AsyncMock(return_value=dense)
+        mock_vector_db_service.query_nearest_points.return_value = [[]]
+
+        with patch("app.utils.embedding_retry.retry_delay_seconds", return_value=0):
+            await asyncio.wait_for(
+                retrieval_service._execute_parallel_searches(["q"], models.Filter(must=[]), 10, "org-1"),
+                timeout=5,
+            )
+
+        assert dense.aembed_query.await_count == 2
 
 
 # ============================================================================
@@ -1365,6 +1420,28 @@ class TestSearchWithFilters:
         key, org = mock_graph_provider.check_access.await_args.args
         ids = mock_graph_provider.check_access.await_args.kwargs["node_ids"]
         assert (key, org, sorted(ids)) == ("user-key", "o1", ["rec-open", "rec-restricted"])
+
+    @pytest.mark.asyncio
+    async def test_a_class_unit_hit_in_a_file_the_user_cannot_read_is_dropped(
+        self, retrieval_service, mock_graph_provider
+    ) -> None:
+        """A class header unit is a group point; it is checked by its record like any other hit,
+        so a hidden class reaches no chat answer and no code-graph tool."""
+        self._two_hits(mock_graph_provider, retrieval_service)
+        class_unit = {"blockGroupIndex": 0, "isBlockGroup": True, "isBlock": False, "unitKind": "class"}
+        retrieval_service._execute_parallel_searches = AsyncMock(return_value=[
+            {"score": 0.9, "content": "class Open:", "metadata": {"virtualRecordId": "vr-open", "orgId": "o1",
+                                                                  **class_unit}},
+            {"score": 0.8, "content": "class Hidden:", "metadata": {"virtualRecordId": "vr-restricted",
+                                                                    "orgId": "o1", **class_unit}},
+        ])
+        mock_graph_provider.check_access = AsyncMock(
+            return_value=AccessCheck(node_ids=frozenset({"rec-open"})),
+        )
+
+        result = await retrieval_service.search_with_filters(queries=["q"], user_id="u1", org_id="o1")
+
+        assert [r["content"] for r in result["searchResults"]] == ["class Open:"]
 
     @pytest.mark.asyncio
     async def test_a_failed_hit_check_says_so_instead_of_answering_empty(
@@ -2680,6 +2757,36 @@ class TestSearchWithFiltersBranches:
         assert len(result["searchResults"]) == 1
 
     @pytest.mark.asyncio
+    async def test_a_point_without_metadata_is_normalised_then_dropped_silently(
+        self, retrieval_service, mock_graph_provider, mock_vector_db_service, caplog
+    ) -> None:
+        """Through the real _run_searches: the point gains metadata ({"point_id"}),
+        so no "no metadata" branch can see it; it has no record and is dropped,
+        and no WARNING reports it; its content is never logged."""
+        mock_graph_provider.get_accessible_virtual_record_ids.return_value = {"vr1": "rec1"}
+        mock_graph_provider.get_records_by_record_ids.return_value = [
+            {"_key": "rec1", "virtualRecordId": "vr1", "origin": "drive", "recordName": "Doc", "mimeType": "text/plain"}
+        ]
+        dense = AsyncMock()
+        dense.aembed_query = AsyncMock(return_value=[0.1])
+        retrieval_service.get_embedding_model_instance = AsyncMock(return_value=dense)
+        bare = MagicMock(id="p-bare", score=0.95, payload={"page_content": "content-sentinel"})
+        good = MagicMock(id="p-good", score=0.9, payload={
+            "page_content": "with metadata", "metadata": {"virtualRecordId": "vr1", "orgId": "o1"},
+        })
+        mock_vector_db_service.query_nearest_points.return_value = [[bare, good]]
+        retrieval_service.logger = logging.getLogger("tests.retrieval")
+
+        with caplog.at_level(logging.DEBUG, logger="tests.retrieval"):
+            result = await retrieval_service.search_with_filters(queries=["test"], user_id="u1", org_id="o1")
+
+        assert result["status"] == "success"
+        assert [r["content"] for r in result["searchResults"]] == ["with metadata"]
+        warned = [r for r in caplog.records if r.levelno >= logging.WARNING]
+        assert not [r for r in warned if "metadata" in r.getMessage() or "results_skipped" in r.getMessage()]
+        assert not [r for r in caplog.records if "sentinel" in r.getMessage()]
+
+    @pytest.mark.asyncio
     async def test_virtual_id_not_in_record_map_goes_to_final(
         self, retrieval_service, mock_graph_provider
     ):
@@ -3342,3 +3449,26 @@ async def test_retrieval_embeds_instructed_query_only_for_bge(retrieval_service,
         retrieval_service._cached_embedding_is_local = True
         await retrieval_service._execute_parallel_searches(["hi"], None, 5, "org")
         emb.aembed_query.assert_awaited_once_with(expected)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("error", "error_class"),
+    [(lambda: openai_error(401), "misconfigured"), (lambda: httpx_error(400), "bad_request")],
+    ids=["openai-401", "httpx-400"],
+)
+async def test_a_refused_query_embedding_is_one_text_free_line(
+    retrieval_service, mock_graph_provider, caplog, error, error_class,
+) -> None:
+    """The search's catch-all also catches a refused query embedding, whose text is the provider's body."""
+    caplog.set_level(logging.DEBUG)
+    mock_graph_provider.get_accessible_virtual_record_ids.return_value = {"vr1": "rec1"}
+    retrieval_service.logger = logging.getLogger("f24b.retrieval")
+    retrieval_service._execute_parallel_searches = AsyncMock(side_effect=error())
+
+    result = await retrieval_service.search_with_filters(queries=["test"], user_id="u1", org_id="o1")
+
+    assert (result["status"], result["message"]) == (Status.ERROR.value, "Unexpected server error during search.")
+    level = logging.ERROR if error_class == "misconfigured" else logging.WARNING
+    failure_line(caplog.records, "search.failed", error_class, level, *SENTINELS)
+    assert_text_free(caplog.records, *SENTINELS)

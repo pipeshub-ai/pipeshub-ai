@@ -23,9 +23,10 @@ from typing import Any, Optional
 
 from app.agents.mcp.models import MCPServerConfig, MCPTransport
 from app.agents.mcp.registry import MCPRegistry, get_mcp_registry
+from app.utils.env_flags import MCP_ALLOW_CUSTOM_STDIO, env_flag
 
 ALLOWED_COMMANDS_ENV = "MCP_STDIO_ALLOWED_COMMANDS"
-CUSTOM_STDIO_ENV = "MCP_ALLOW_CUSTOM_STDIO"
+CUSTOM_STDIO_ENV = MCP_ALLOW_CUSTOM_STDIO
 CUSTOM_STDIO_DISABLED_REASON = "custom_stdio_disabled"
 CUSTOM_STDIO_DISABLED_MESSAGE = (
     "Custom STDIO MCP servers are disabled on this deployment because they run a command on the "
@@ -85,7 +86,7 @@ class StdioPolicyError(ValueError):
 
 def custom_stdio_allowed() -> bool:
     # Process env only: ConfigurationService keys are writable by org admins.
-    return os.getenv(CUSTOM_STDIO_ENV, "false").strip().lower() == "true"
+    return env_flag(MCP_ALLOW_CUSTOM_STDIO)
 
 
 def allowed_stdio_commands() -> frozenset[str]:

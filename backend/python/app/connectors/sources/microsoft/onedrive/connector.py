@@ -39,6 +39,12 @@ from app.config.constants.arangodb import (
     OriginTypes,
     ProgressStatus,
 )
+from app.connectors.core.base.source_metadata import (
+    ItemMetadata,
+    apply_source_metadata,
+    held_metadata,
+    source_metadata,
+)
 from app.connectors.core.constants import IconPaths
 from app.connectors.core.base.connector.connector_service import ActionItem, BaseConnector, ConnectionCheckResult
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
@@ -71,7 +77,9 @@ from app.connectors.core.registry.filters import (
     load_connector_filters,
 )
 from app.connectors.core.registry.types import FileContentValidationRule, ValidationRuleType
+from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
 from app.connectors.sources.microsoft.common.apps import OneDriveApp
+from app.connectors.sources.microsoft.common.graph_people import source_person
 from app.connectors.sources.microsoft.common.msgraph_client import (
     MSGraphClient,
     RecordUpdate,
@@ -86,6 +94,7 @@ from app.connectors.sources.microsoft.common.sharepoint_permission_scope import 
     drive_item_unique_id,
     etag_unique_id,
 )
+from app.connectors.sources.microsoft.sharepoint_online.container_tracker import ContainerTracker
 from app.exceptions.graph_db_exceptions import GraphQueryError
 from app.models.entities import (
     AppUser,
@@ -97,6 +106,8 @@ from app.models.entities import (
     RecordType,
 )
 from app.models.permission import EntityType, Permission, PermissionType
+from app.sources.client.microsoft.send_safe_middleware import credential_graph_adapter
+from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.services.notification.types import NotificationOutcome, NotificationSeverity, NotificationType
 from app.utils.streaming import create_stream_record_response, stream_content
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -197,6 +208,11 @@ class _FolderWalk:
     @property
     def complete(self) -> bool:
         return not self.unread_items and not self.unlisted_folders
+
+
+# The owner of each OneDrive synced so far, as "<drive id>|<owner's user id>", so a drive that no user's sync
+# reaches any more can be checked for deletion.
+KNOWN_DRIVES_KEY = "onedrive-known-drives"
 
 
 def _drive_permissions_key(drive_id: str) -> str:
@@ -424,6 +440,13 @@ ONEDRIVE_USER_FAILURE_NOTIFICATIONS: Dict[OneDriveUserStatus, Tuple[str, str]] =
     .with_description("Sync files and folders from OneDrive")\
     .with_categories(["Storage"])\
     .with_scopes([ConnectorScope.TEAM.value])\
+    .with_resilience_config(
+        # The vendor's quota is the org's shared budget (app.services.rate_budget.families), which this policy
+        # takes from; the rate is this process's own cap when that budget is unreachable. Retries stay the
+        # connector's own (max_retries 0), as before.
+        rate_limit=10,
+        max_retries=0,
+    )\
     .with_auth([
         AuthBuilder.type(AuthType.OAUTH_ADMIN_CONSENT).fields([
             AuthField(
@@ -579,6 +602,11 @@ class OneDriveConnector(BaseConnector):
         self.msgraph_client: MSGraphClient | None = None
         self.scope_reader: SharePointPermissionScopeReader | None = None
         self._user_drive_ids: dict[str, str] = {}
+        self._drives_read: dict[str, str] = {}  # drive id -> owner's user id, for the drives synced in this run
+        self._full_sync_incomplete = False
+        self._unsynced_drive_owners: set[str] = set()  # source user ids whose drive this run skipped or failed
+        # Source user ids of the active users this run synced drives for; None until the run reads them.
+        self._drive_owners_in_scope: set[str] | None = None
         # Per drive, items written without knowing whether they inherit, until saved to be read again.
         # Kept across a run reset: a reindex running beside the sync may still be filling them.
         self._items_without_known_inheritance: dict[str, set[str]] = {}
@@ -623,7 +651,9 @@ class OneDriveConnector(BaseConnector):
             )
             raise ValueError(f"Failed to initialize OneDrive credential: {sanitize_azure_error(token_error)}")
 
-        self.client = GraphServiceClient(self.credential, scopes=["https://graph.microsoft.com/.default"])
+        self.client = GraphServiceClient(
+            request_adapter=credential_graph_adapter(self.credential, resilience=self.resilience)
+        )
         self.msgraph_client = MSGraphClient(self.connector_name, self.connector_id, self.client, self.logger)
         self.scope_reader = self._build_scope_reader(auth_config)
         return True
@@ -1015,9 +1045,21 @@ class OneDriveConnector(BaseConnector):
                 crc32_hash=item.file.hashes.crc32_hash if item.file and item.file.hashes else None,
                 sha1_hash=item.file.hashes.sha1_hash if item.file and item.file.hashes else None,
                 sha256_hash=item.file.hashes.sha256_hash if item.file and item.file.hashes else None,
+                authored_by=source_person(item.created_by),
+                last_modified_by=source_person(item.last_modified_by),
             )
             if file_record.is_file and file_record.extension is None:
                 return None
+            held = held_metadata(existing_record)
+            fields = await self._metadata_reader().fields_for(
+                item.parent_reference.drive_id if item.parent_reference else "",
+                item.id,
+                held,
+                changed=file_record.is_file and (is_new or metadata_changed or content_changed),
+            )
+            if apply_source_metadata(file_record, existing_record, fields):
+                is_updated = True
+                metadata_changed = True
 
             permission_failure = None
             # An item that inherits has no grants of its own: Graph would list its parent's.
@@ -1116,6 +1158,7 @@ class OneDriveConnector(BaseConnector):
             self.logger.error(f"❌ Error processing delta item {item.id}: {ex}", exc_info=True)
             # Whatever access it has stored is read again, so a rewrite of the drive can't skip it.
             self._queue_unknown_inheritance(item.parent_reference.drive_id if item.parent_reference else None, item.id)
+            await self._keep_stored_item(getattr(item, "id", None))
             return None
 
     async def _convert_to_permissions(self, msgraph_permissions: List) -> List[Permission]:
@@ -1335,6 +1378,7 @@ class OneDriveConnector(BaseConnector):
                 raise
             except Exception as e:
                 self.logger.error(f"❌ Error processing item in generator: {e}", exc_info=True)
+                await self._keep_stored_item(getattr(item, "id", None))
                 continue
 
     async def _update_folder_children_permissions(
@@ -1517,6 +1561,8 @@ class OneDriveConnector(BaseConnector):
                 self._queue_unknown_inheritance(
                     record_update.record.external_record_group_id, record_update.record.external_record_id
                 )
+                if record_update.record.id:
+                    self._keep_stored_record(record_update.record.id)
 
     async def _sync_user_groups(self) -> None:
         """
@@ -1665,14 +1711,17 @@ class OneDriveConnector(BaseConnector):
 
         group_with_members = []
         all_groups_read = True
-        for result in results:
+        for group, result in zip(groups, results):
             if isinstance(result, GraphReadFailedError) and result.permanent:
                 self.logger.warning(f"Skipping group: {result}; it keeps its stored members")
+                await self._keep_stored_group(group.id)
             elif isinstance(result, Exception):
                 self.logger.error(f"❌ Error processing group: {result}", exc_info=True)
                 all_groups_read = False
+                await self._keep_stored_group(group.id)
             elif result is None:
                 all_groups_read = False
+                await self._keep_stored_group(group.id)
             else:
                 group_with_members.append(result)
 
@@ -2035,6 +2084,7 @@ class OneDriveConnector(BaseConnector):
 
             # Create RecordGroup if sync_point doesn't exist (first sync)
             if not sync_point:
+                drive = None
                 try:
                     # Get user drive information
                     drive = await self.msgraph_client.get_user_drive(user_id)
@@ -2072,9 +2122,11 @@ class OneDriveConnector(BaseConnector):
                         self.logger.info(f"Created RecordGroup for user {user_id} with drive ID {drive.id}")
                     else:
                         self.logger.warning(f"Could not fetch user info for {user_id}, skipping RecordGroup creation")
+                        await self._keep_stored_record_group(getattr(drive, "id", None))
                 except Exception as e:
                     self.logger.error(f"Error creating RecordGroup for user {user_id}: {e}", exc_info=True)
                     # Continue with sync even if RecordGroup creation fails
+                    await self._keep_stored_record_group(getattr(drive, "id", None) or self._user_drive_ids.get(user_id))
 
             url = sync_point.get('deltaLink') or sync_point.get('nextLink') if sync_point else None
             enumerates_drive = not url
@@ -2088,6 +2140,8 @@ class OneDriveConnector(BaseConnector):
                 await self.drive_delta_sync_point.update_sync_point(sync_point_key, {"sharingChanges": True})
 
             drive_id = await self._user_drive_id(user_id)
+            if drive_id:
+                self._drives_read[drive_id] = user_id
             permission_state: dict[str, Any] = {}
             if drive_id:
                 try:
@@ -2534,7 +2588,8 @@ class OneDriveConnector(BaseConnector):
             users: List of users to process
         """
         try:
-            all_active_users = await self.data_entities_processor.get_all_active_users()
+            # A failed read raises: an empty answer would put every user out of scope.
+            all_active_users = await self.data_entities_processor.get_all_active_users(raise_on_error=True)
             active_user_emails = {active_user.email.lower() for active_user in all_active_users}
 
             # Filter users to sync (only active users)
@@ -2544,6 +2599,7 @@ class OneDriveConnector(BaseConnector):
             ]
 
             self.logger.info(f"Found {len(active_users)} active users out of {len(users)} total users")
+            self._drive_owners_in_scope = {user.source_user_id for user in active_users if user.source_user_id}
 
             users_to_sync = []
             failed_users: List[Tuple[str, OneDriveUserStatus]] = []
@@ -2553,12 +2609,15 @@ class OneDriveConnector(BaseConnector):
                 except Exception as e:
                     self.logger.error(f"❌ Error checking OneDrive for user {user.email}, skipping: {e}", exc_info=True)
                     failed_users.append((user.email, OneDriveUserStatus.UNKNOWN_ERROR))
+                    self._unsynced_drive_owners.add(user.source_user_id)
                     continue
 
                 if onedrive_status is OneDriveUserStatus.AVAILABLE:
                     users_to_sync.append(user)
                 else:
                     failed_users.append((user.email, onedrive_status))
+                    if onedrive_status is OneDriveUserStatus.LOCKED:
+                        self._unsynced_drive_owners.add(user.source_user_id)
                     self.logger.info(
                         "Skipping user %s: OneDrive status is %s",
                         user.email,
@@ -2593,7 +2652,15 @@ class OneDriveConnector(BaseConnector):
                     for user in batch
                 ]
 
-                await asyncio.gather(*sync_tasks, return_exceptions=True)
+                results = await asyncio.gather(*sync_tasks, return_exceptions=True)
+                for user, result in zip(batch, results):
+                    if not isinstance(result, BaseException):
+                        continue
+                    drive_id = self._user_drive_ids.get(user.source_user_id)
+                    if drive_id:
+                        await self._keep_stored_drive(drive_id)
+                    else:
+                        self._unsynced_drive_owners.add(user.source_user_id)
                 await asyncio.sleep(1)
 
             self.logger.info("Completed processing all user batches")
@@ -2601,6 +2668,91 @@ class OneDriveConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"❌ Error processing users in batches: {e}")
             raise
+
+    async def _keep_stored_drive(self, drive_id: str) -> None:
+        """Note a drive's stored record group and records as seen by a full sync in progress:
+        the drive was not read through, so what is stored stays and must survive the unlink
+        after it. Soft-deleted records too, so a restored item comes back with its edges. When
+        they cannot be noted, the run is marked incomplete so nothing is unlinked."""
+        try:
+            if self.data_entities_processor.full_sync_running(self.connector_id) is not True:
+                return
+            await self.data_entities_processor.note_kept_record_group(self.connector_id, drive_id)
+            page_size = 1000
+            after_key: str | None = None
+            while True:
+                page = await self.data_entities_processor.get_records_in_record_group(
+                    self.connector_id, drive_id, page_size, after_key, visibility=RecordVisibility.ALL,
+                )
+                self.data_entities_processor.note_kept_records(self.connector_id, [record.id for record in page])
+                if len(page) < page_size:
+                    return
+                after_key = page[-1].id
+        except Exception as e:
+            self.logger.warning(
+                "Could not keep the stored records of OneDrive %s; the full sync is incomplete: %s",
+                drive_id,
+                type(e).__name__,
+            )
+            self._full_sync_incomplete = True
+
+    async def _keep_stored_record_group(self, drive_id: str | None) -> None:
+        """Note a drive's stored record group that could not be rewritten as seen by a full sync
+        in progress: an empty drive writes no record that would note it."""
+        if not drive_id:
+            return
+        try:
+            if self.data_entities_processor.full_sync_running(self.connector_id) is True:
+                await self.data_entities_processor.note_kept_record_group(self.connector_id, drive_id)
+        except Exception as e:
+            self.logger.warning(
+                "Could not keep the stored record group of OneDrive %s; the full sync is incomplete: %s",
+                drive_id,
+                type(e).__name__,
+            )
+            self._full_sync_incomplete = True
+
+    async def _keep_stored_item(self, item_id: str | None) -> None:
+        """Note a stored item that failed to process as seen by a full sync in progress: it is
+        still in the drive. A new item has nothing stored to keep."""
+        if not item_id:
+            return
+        try:
+            if self.data_entities_processor.full_sync_running(self.connector_id) is not True:
+                return
+            record = await self.data_entities_processor.get_record_by_external_id(self.connector_id, item_id)
+            if record is not None:
+                self.data_entities_processor.note_kept_records(self.connector_id, [record.id])
+        except Exception as e:
+            self.logger.warning(
+                "Could not keep the stored record of OneDrive item %s; the full sync is incomplete: %s",
+                item_id,
+                type(e).__name__,
+            )
+            self._full_sync_incomplete = True
+
+    def _keep_stored_record(self, record_id: str) -> None:
+        """Note a stored record whose update failed to save as seen by a full sync in progress."""
+        try:
+            if self.data_entities_processor.full_sync_running(self.connector_id) is True:
+                self.data_entities_processor.note_kept_records(self.connector_id, [record_id])
+        except Exception as e:
+            self.logger.warning(
+                "Could not keep stored record %s; the full sync is incomplete: %s", record_id, type(e).__name__,
+            )
+            self._full_sync_incomplete = True
+
+    async def _keep_stored_group(self, group_id: str) -> None:
+        """Note a stored user group whose members could not be read as seen by a full sync in
+        progress: it is still in the directory, so its stored members and grants stay."""
+        try:
+            if self.data_entities_processor.full_sync_running(self.connector_id) is True:
+                await self.data_entities_processor.note_kept_user_group(self.connector_id, group_id)
+        except Exception as e:
+            self.logger.warning(
+                "Could not keep stored user group %s; the full sync is incomplete: %s", group_id, type(e).__name__,
+            )
+            self._full_sync_incomplete = True
 
     async def _notify_onedrive_user_failures(
         self,
@@ -2671,13 +2823,176 @@ class OneDriveConnector(BaseConnector):
             self.logger.error("❌ Error checking if user has OneDrive: %s", e)
             raise
     
+    def _cached_drive_owner(self, drive_id: str) -> str:
+        """The user whose drive this run's availability checks resolved to ``drive_id``, or ``""``."""
+        return next((user for user, drive in self._user_drive_ids.items() if drive == drive_id), "")
+
+    def _keeps_unreadable_drive(self, drive_id: str, owner: str) -> bool:
+        """Whether a stored drive that could not be read is kept: when this run could not verify its
+        owner's drives (an active user whose OneDrive was skipped or failed, or any owner while the active
+        users are not read) or cannot tell its owner. A drive of an owner outside the active users is not
+        synced, so it is left unseen, as when it can be read. Without a remembered owner, a drive that is
+        none of the active users' known drives is theirs only if some active user's drive is not known."""
+        scope = self._drive_owners_in_scope
+        if scope is None:
+            return True
+        owner = owner or self._cached_drive_owner(drive_id)
+        if not owner:
+            return any(user not in self._user_drive_ids for user in scope)
+        if owner in self._unsynced_drive_owners:
+            return True
+        return owner in scope and owner not in set(self._drives_read.values())
+
+    async def _remove_deleted_drives(self) -> None:
+        """Remove the OneDrives no user's sync reached this run whose owner was deleted and which Graph no longer has.
+
+        A deleted user's OneDrive is no longer synced, but what it shares stays readable until its retention period
+        ends; then it goes to the recycle bin and "users will no longer be able to access any shared content in the
+        OneDrive" (https://learn.microsoft.com/en-us/sharepoint/retention-and-deletion). Graph answers 404 for a
+        drive that doesn't exist (https://learn.microsoft.com/en-us/graph/api/drive-get), but also, in practice,
+        for one the app can no longer read. So a drive goes only when all of these agree: it answers 404, its owner
+        is gone from the directory (404 on the user: a deleted user is moved to deleted items,
+        https://learn.microsoft.com/en-us/graph/api/user-delete), and a drive synced in this run still answers, so
+        the app can read drives. Anything else keeps the drive, and it is read again on the next run. A drive kept
+        for an error is noted kept for a full sync in progress, unless its owner is outside the active users this
+        run synced: such a drive is left unseen, as when it can be read.
+        """
+        tracker = ContainerTracker(self.drive_delta_sync_point, KNOWN_DRIVES_KEY)
+        owners = {drive_id: owner for drive_id, _, owner in (entry.partition("|") for entry in await tracker.known())}
+        try:
+            # Drives stored before the tracker was kept, or whose tracker a resync deleted, are checked too.
+            stored = await self.data_entities_processor.get_nodes_by_filters(
+                CollectionNames.RECORD_GROUPS.value,
+                {"connectorId": self.connector_id, "groupType": RecordGroupType.DRIVE.value},
+                return_fields=["externalGroupId"],
+                raise_on_error=True,
+            )
+        except Exception as e:
+            self.logger.warning(f"Could not read the stored OneDrives; only the remembered ones are checked: {e}")
+            # The drives to keep cannot be found, and a full sync has already dropped the remembered ones.
+            self._full_sync_incomplete = True
+            stored = []
+        for group in stored:
+            owners.setdefault(group.get("externalGroupId") or "", "")
+        owners.pop("", None)
+        keep = dict(self._drives_read)
+        app_reads_drives: bool | None = None
+        for drive_id in sorted(set(owners) - set(keep)):
+            owner = owners[drive_id]
+            keep[drive_id] = owner
+            try:
+                async with self.msgraph_client.rate_limiter:
+                    drive = await self.msgraph_client.client.drives.by_drive_id(drive_id).get()
+                user = getattr(getattr(drive, "owner", None), "user", None)
+                keep[drive_id] = getattr(user, "id", None) or owner
+                if keep[drive_id] in self._unsynced_drive_owners:
+                    await self._keep_stored_drive(drive_id)
+                continue
+            except Exception as e:
+                if getattr(e, "response_status_code", None) != HTTPStatus.NOT_FOUND:
+                    if self._keeps_unreadable_drive(drive_id, owner):
+                        self.logger.warning(f"Could not read OneDrive {drive_id}; keeping its records this run: {e}")
+                        await self._keep_stored_drive(drive_id)
+                    continue
+            # A full sync drops the remembered owners; the drive ids this run resolved still name them.
+            owner = owner or self._cached_drive_owner(drive_id)
+            if not owner:
+                self.logger.warning(f"OneDrive {drive_id} answers 404 and its owner is not known; keeping its records")
+                continue
+            try:
+                owner_status = await self.msgraph_client.get_user_status(owner)
+            except Exception as e:
+                self.logger.warning(f"Could not read the owner of OneDrive {drive_id}; keeping its records: {e}")
+                await self._keep_stored_drive(drive_id)
+                continue
+            if owner_status != "gone":
+                self.logger.warning(
+                    f"OneDrive {drive_id} answers 404 but its owner is still in the directory; keeping its records "
+                    "(the app may have lost access to it)"
+                )
+                await self._keep_stored_drive(drive_id)
+                continue
+            if app_reads_drives is None:
+                app_reads_drives = await self._app_reads_a_drive()
+            if not app_reads_drives:
+                self.logger.warning(f"No synced OneDrive answers either; keeping OneDrive {drive_id} this run")
+                await self._keep_stored_drive(drive_id)
+                continue
+            self.logger.info(f"OneDrive {drive_id} of a deleted user is gone at the source; removing its records")
+            if await self._delete_drive_records(drive_id):
+                del keep[drive_id]
+        await tracker.remember({f"{drive_id}|{owner}" for drive_id, owner in keep.items()})
+
+    async def _app_reads_a_drive(self) -> bool:
+        """Whether some drive synced in this run answers now: a 404 on another drive is then not the app's own access.
+        False only when every synced drive fails, or none was synced."""
+        for drive_id in sorted(self._drives_read):
+            try:
+                async with self.msgraph_client.rate_limiter:
+                    await self.msgraph_client.client.drives.by_drive_id(drive_id).get()
+                return True
+            except Exception as e:
+                self.logger.warning(f"Synced OneDrive {drive_id} does not answer: {e}")
+        return False
+
+    async def _delete_drive_records(self, drive_id: str) -> bool:
+        """Delete a drive's record group with its records. True once it is gone (also when it already was); False
+        keeps it for the next run."""
+        if await self.data_entities_processor.on_record_group_deleted(drive_id, self.connector_id):
+            return True
+        if await self.data_entities_processor.get_record_group_by_external_id(self.connector_id, drive_id) is None:
+            return True
+        self.logger.error(f"Deleting the records of OneDrive {drive_id} failed; it is retried on the next run")
+        return False
+
+    async def _withdraw_unlisted_app_users(self, users: list[AppUser]) -> None:
+        """Take the connector away from stored users (guest accounts included) that the
+        complete user read lists as disabled, and from those it does not list that Microsoft
+        then confirms are gone (a 404 on the user itself) or disabled; a stale listing
+        cannot withdraw anyone, nor can a failed or throttled read of the user. Only called
+        after a complete read; an empty list withdraws nobody (the directory always has
+        users), and so does a failed read of the stored users."""
+        enabled = {u.source_user_id for u in users if u.is_active is not False}
+        if not enabled:
+            return
+        listed = {u.source_user_id for u in users}
+        try:
+            stored = await self.data_entities_processor.get_app_user_links(self.connector_id)
+        except Exception as e:
+            self.logger.error(f"Could not read the stored users; no user loses access this run: {e}")
+            return
+        gone = []
+        for u in stored:
+            if not u.source_user_id or u.source_user_id in enabled:
+                continue
+            if u.source_user_id not in listed:
+                try:
+                    if await self.msgraph_client.get_user_status(u.source_user_id) == "present":
+                        continue
+                except Exception as e:
+                    self.logger.error(f"Could not confirm user {u.source_user_id} is gone; keeping the access: {e}")
+                    continue
+            gone.append(u)
+        if gone:
+            await self.data_entities_processor.withdraw_app_user_access(self.connector_id, gone)
+
     async def _sync_users(self) -> List[AppUser]:
         """
         Syncs OneDrive users.
         """
         try:
             users = await self.msgraph_client.get_all_users()
-            await self.data_entities_processor.on_new_app_users(users)
+            # A disabled account is not saved, so it has no connector access (enabling it
+            # saves the user, and the access, again); its drive is still synced, because
+            # what it shared with others stays visible to them.
+            enabled = [u for u in users if u.is_active is not False]
+            await self.data_entities_processor.on_new_app_users(enabled)
+            if getattr(users, "complete", True):
+                await self._withdraw_unlisted_app_users(users)
+            else:
+                self.logger.warning("User listing is incomplete; no user loses access this run")
+                # The unlisted users' drives are not synced, so a full sync must not unlink them.
+                self._full_sync_incomplete = True
             self.logger.info(f"✅ Successfully synced {len(users)} users")
             return users
         except ODataError as e:
@@ -2782,11 +3097,20 @@ class OneDriveConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"❌ Error handling webhook notification: {e}")
 
+    def _metadata_reader(self) -> ItemMetadata:
+        """The source metadata reads of this connector's files, through its current Graph client."""
+        reader = getattr(self, "_item_metadata", None)
+        if reader is None:
+            reader = source_metadata().item_metadata(lambda: self.msgraph_client, self.logger)
+            self._item_metadata = reader
+        return reader
+
     async def run_sync(self) -> None:
         """
         Main entry point for the OneDrive connector.
         Implements non-blocking sync with all requested features.
         """
+        self._metadata_reader().new_sync()
         try:
             self.logger.info("Starting OneDrive connector sync")
 
@@ -2795,6 +3119,7 @@ class OneDriveConnector(BaseConnector):
             # scheduled runs that are days apart, causing the HTTP session to timeout
             await self._reinitialize_credential_if_needed()
             self.onedrive_users_synced = 0
+            self._full_sync_incomplete = False
             self._reset_permission_scopes()
 
             self.sync_filters, self.indexing_filters = await load_connector_filters(
@@ -2812,7 +3137,11 @@ class OneDriveConnector(BaseConnector):
 
             # Step 3: Process user drives with yielding for non-blocking operation
             self.logger.info("Syncing user drives...")
+            self._drives_read = {}
+            self._unsynced_drive_owners = set()
+            self._drive_owners_in_scope = None
             await self._process_users_in_batches(users)
+            await self._remove_deleted_drives()
 
             self.logger.info("OneDrive connector sync completed successfully")
             if self.onedrive_users_synced > 0:
@@ -2834,6 +3163,13 @@ class OneDriveConnector(BaseConnector):
             raise
         finally:
             await self._collect_action_items()
+
+    def full_sync_coverage(self) -> FullSyncCoverage:
+        """A full sync that skipped a stored drive, item or group it could not note kept did
+        not see it, so nothing is unlinked after it. A skipped node that could be noted kept
+        does not make the run incomplete."""
+        # No window_start_ms: what the date and extension filters exclude is meant to be unlinked.
+        return FullSyncCoverage(complete=not self._full_sync_incomplete)
 
     async def _reinitialize_credential_if_needed(self) -> None:
         """
@@ -2889,8 +3225,7 @@ class OneDriveConnector(BaseConnector):
 
         # Recreate Graph client with new credential
         self.client = GraphServiceClient(
-            self.credential,
-            scopes=["https://graph.microsoft.com/.default"]
+            request_adapter=credential_graph_adapter(self.credential, resilience=self.resilience)
         )
         self.msgraph_client = MSGraphClient(self.connector_name, self.connector_id, self.client, self.logger)
 
@@ -2914,7 +3249,11 @@ class OneDriveConnector(BaseConnector):
 
             # Sync all active users
             users = await self.msgraph_client.get_all_users()
+            self._drives_read = {}
+            self._unsynced_drive_owners = set()
+            self._drive_owners_in_scope = None
             await self._process_users_in_batches(users)
+            await self._remove_deleted_drives()
 
             self.logger.info("Incremental sync completed")
 

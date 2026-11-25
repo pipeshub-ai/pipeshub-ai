@@ -1,0 +1,129 @@
+{
+  "format": "pipeshub.harness.recording/v1",
+  "manifest": {
+    "scenario": "quick-ask-user-question",
+    "source": "legacy",
+    "harness": "legacy-agent-loop",
+    "model": "scripted-model",
+    "scrub_version": "1"
+  },
+  "inputs": {
+    "route": "agent",
+    "chat_mode": "quick",
+    "query": "Build me the sales report",
+    "fixtures": {
+      "knowledge": [],
+      "tickets": [],
+      "slack": {},
+      "emails": [],
+      "files": [],
+      "web": {}
+    }
+  },
+  "steps": [
+    {
+      "kind": "model",
+      "request": {
+        "message_count": 2,
+        "last_user": "Build me the sales report",
+        "last_tool": null,
+        "last_tool_status": null,
+        "tools": [
+          "drive__read_file",
+          "drive__share_file",
+          "gmail__read_email",
+          "gmail__search_emails",
+          "gmail__send_email",
+          "internaltools__ask_user_question",
+          "jira__add_comment",
+          "jira__create_issue",
+          "jira__get_issue",
+          "jira__search_issues",
+          "knowledge__read_document",
+          "knowledge__search",
+          "knowledgegraph__fetch_record",
+          "retrieve_artifact_content",
+          "search_tools",
+          "slack__read_channel",
+          "slack__send_message",
+          "web__fetch_url"
+        ],
+        "digest": "c0ffbe868f911030"
+      },
+      "response": {
+        "text": "",
+        "reasoning": "",
+        "tool_calls": [
+          {
+            "id": "call-ask",
+            "name": "internaltools__ask_user_question",
+            "args": {
+              "user_intent": "The user wants a sales report but did not say which region.",
+              "questions": [
+                {
+                  "question": "Which region should the report cover?",
+                  "options": [
+                    {
+                      "label": "North America"
+                    },
+                    {
+                      "label": "Europe"
+                    },
+                    {
+                      "label": "Enter a region",
+                      "isUserInput": true
+                    }
+                  ],
+                  "multiSelect": false
+                }
+              ]
+            }
+          }
+        ],
+        "usage": {
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0
+        },
+        "stop_reason": "tool_use"
+      },
+      "error": null
+    },
+    {
+      "kind": "tool",
+      "call_id": "call-ask",
+      "name": "internaltools__ask_user_question",
+      "args": {
+        "user_intent": "The user wants a sales report but did not say which region.",
+        "questions": [
+          {
+            "question": "Which region should the report cover?",
+            "options": [
+              {
+                "label": "North America"
+              },
+              {
+                "label": "Europe"
+              },
+              {
+                "label": "Enter a region",
+                "isUserInput": true
+              }
+            ],
+            "multiSelect": false
+          }
+        ]
+      },
+      "status": "succeeded",
+      "result": "{\"name\": \"ask_user_question\", \"userIntent\": \"The user wants a sales report but did not say which region.\", \"questions\": [{\"uuid\": \"3beafda7-e4a7-42ae-98d4-f8d1851e9ab5\", \"question\": \"Which region should the report cover?\", \"options\": [{\"id\": \"opt_north_america\", \"label\": \"North America\", \"isUserInput\": false}, {\"id\": \"opt_europe\", \"label\": \"Europe\", \"isUserInput\": false}, {\"id\": \"opt_enter_a_region\", \"label\": \"Enter a region\", \"isUserInput\": true}], \"multiSelect\": false}]}",
+      "error": null,
+      "sources": []
+    }
+  ],
+  "effects": [],
+  "final": {
+    "answer": "",
+    "status": "needs_input"
+  }
+}

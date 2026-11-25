@@ -93,6 +93,13 @@ def _excludes(project_keys_operator: FilterOperatorType | None) -> bool:
     )
     .with_categories(["IT Service Management", "Storage"])
     .with_scopes([ConnectorScope.PERSONAL.value])
+    .with_resilience_config(
+        # The vendor's quota is the org's shared budget (app.services.rate_budget.families), which this policy
+        # takes from; the rate is this process's own cap when that budget is unreachable. Retries stay the
+        # connector's own (max_retries 0), as before.
+        rate_limit=10,
+        max_retries=0,
+    )
     .with_permission_model(PermissionModel.APP_LEVEL)
     .with_auth(
         [
@@ -311,6 +318,7 @@ class JiraCloudPersonalConnector(JiraConnector):
             # The creator's user-app link is the gate. Projects inherit from the
             # app, so this does not stamp a grant on them.
             await self.ensure_creator_user_app_relation()
+            await self.withdraw_app_users_except_creator()
 
             self.sync_filters, self.indexing_filters = await load_connector_filters(
                 self.config_service,

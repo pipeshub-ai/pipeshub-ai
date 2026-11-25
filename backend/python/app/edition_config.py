@@ -7,6 +7,24 @@ allowed_connector_list_scopes: set[str] = {"personal", "team"}
 # Organization-wide rules for toolset tools (the "Tool approvals" editor). Off: a toolset tool
 # starts from what it does to data, and the person in the chat answers its approval card.
 organization_toolset_tool_rules = False
+# D-MCP-5: an edition's McpToolAdmission (app/harness/mcp_hub/tool_admission.py). None: no admin approval of MCP tools.
+mcp_tool_admission = None
+# An edition's OrgNetworkLayers (app/harness/org_network_layers.py). None: no org or agent list of websites or git
+# hosts; a run reaches no website and clones from the release's public presets on a run with web access.
+org_network_layers = None
+# An edition's rule layers in the approvals document (app/harness/approvals.py OrgApprovalRules). None: the
+# deployment's rules alone.
+org_approval_rules = None
+# An edition's SkillAdmission (app/harness/supply_chain/skills.py). None: an imported skill is used unless the
+# content scanner flags it.
+skill_admission = None
+# An edition's per-server MCP runner settings (app/agents/mcp/runner_fields.py McpRunnerSettings). None: a STDIO
+# server's runner reaches the hosts it declares, in the deployment's runner image.
+mcp_runner_settings = None
+# An edition's LayerAskAnswers (app/harness/approvals.py): which rule layers' asks hold the platform's web tools and which
+# a person may answer for the conversation or for good. None: no layer governs web search or page opening, and every
+# other layer's ask is answered once, as each card asks it.
+layer_ask_answers = None
 from app.config.redaction import can_reveal_secrets, hide_secrets_by_default
 from app.api.routes.search_llm_resolver import resolve_llm_for_search
 from app.api.routes.toolset_resolvers import (
@@ -25,6 +43,7 @@ from app.api.routes.mcp_resolvers import (
     get_mcp_instance as get_mcp_instance_resolved,
     load_mcp_instances,
     mask_mcp_instance_for_response,
+    mcp_instance_visible_to_org,  # noqa: F401 - edition seam, read at call time by app.agents.mcp.instance_scope
     resolve_instance_owner_config_service,
     resolve_mcp_instances_with_inheritance,
 )
@@ -38,9 +57,6 @@ from app.api.middlewares.auth import (
     require_scopes,
     require_service_token,
 )
-from app.api.routes.agent import router as agent_router
-from app.api.routes.chatbot import router as chatbot_router
-from app.api.routes.entity import router as entity_router
 # Resolvers must be bound before importing connector_router: the router module
 # imports these symbols from edition_config (circular). Bind first so a
 # mid-load re-entry finds them on this partially initialized module.
@@ -68,8 +84,24 @@ from app.edition_services import TokenRefreshService, ToolsetTokenRefreshService
 from app.edition_services import get_data_entities_processor_cls
 
 
+# Routers served by one service each. They are read on attribute access, so a service
+# that never mounts one does not load its module (the connector service would otherwise
+# load the whole chat and agent layer, and with it the parsers). Several also import this
+# module at load, which a module-level import here would turn into a cycle.
+# ``tests/unit/test_import_boundaries.py`` reads this table.
+_LAZY_ATTRS: dict[str, str] = {
+    "connector_router": "app.connectors.api.router",
+    "search_router": "app.api.routes.search",
+    "toolsets_router": "app.api.routes.toolsets",
+    "ai_models_registry_router": "app.api.routes.ai_models_registry",
+    "agent_router": "app.api.routes.agent",
+    "chatbot_router": "app.api.routes.chatbot",
+    "entity_router": "app.api.routes.entity",
+}
+
+
 def __getattr__(name: str):
-    """Re-export `connector_router` without importing it at module load.
+    """Re-export the routers in ``_LAZY_ATTRS`` without importing them at module load.
 
     `app.connectors.api.router` imports the resolvers above from this module,
     so importing it here made the two modules mutually dependent. That held
@@ -82,22 +114,14 @@ def __getattr__(name: str):
     ordering the resolvers need is then satisfied for free: by the time anyone
     can read this attribute, the module is fully bound.
     """
-    if name == "connector_router":
-        from app.connectors.api.router import router
+    module = _LAZY_ATTRS.get(name)
+    if module is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    import importlib
 
-        return router
-    # Same cycle: each of these route modules imports this one at load.
-    if name == "search_router":
-        from app.api.routes.search import router
-
-        return router
-    if name == "toolsets_router":
-        from app.api.routes.toolsets import router
-
-        return router
-    # Loaded on use so services that never serve it skip the provider registry.
-    if name == "ai_models_registry_router":
-        from app.api.routes.ai_models_registry import router
-
-        return router
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    try:
+        return importlib.import_module(module).router
+    except AttributeError as exc:
+        # `from app.edition_config import <name>` reports an AttributeError raised here as "cannot import
+        # name" and drops it, hiding which import in the router actually failed.
+        raise ImportError(f"{name}: importing {module} failed: {exc!r}") from exc

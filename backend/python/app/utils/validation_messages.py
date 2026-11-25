@@ -3,11 +3,16 @@
 Pydantic's stock messages ("Field required", "Input should be a valid integer")
 name no field, and clients show ``msg`` as is, so each entry keeps its shape
 (``loc``, ``type``, ``ctx``) and only ``msg`` is reworded.
+
+Nothing here gives back the rejected input: the caller's gateway logs and relays
+these bodies, and the value can be anything the person typed or uploaded.
 """
 
 import re
-from collections.abc import Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
+
+from pydantic import ValidationError
 
 _REQUEST_PARTS = {"body", "query", "path", "header", "cookie"}
 _CUSTOM_PREFIXES = ("Value error, ", "Assertion failed, ")
@@ -30,15 +35,37 @@ def _plural(count: object, noun: str) -> str:
     return f"{count} {noun}" if str(count) == "1" else f"{count} {noun}s"
 
 
+def _without_custom_prefix(msg: str) -> str:
+    for prefix in _CUSTOM_PREFIXES:
+        if msg.startswith(prefix):
+            return msg[len(prefix):]
+    return msg
+
+
+def _located(error: Mapping[str, Any]) -> str:
+    where = ".".join(map(str, error["loc"]))
+    msg = _without_custom_prefix(error["msg"])
+    return f"{where}: {msg}" if where else msg
+
+
+def validation_error_text(exc: ValidationError) -> str:
+    """Each error as ``loc: msg``, joined by ``; ``. ``str(exc)`` would also quote each rejected input."""
+    return "; ".join(_located(error) for error in exc.errors(include_url=False))
+
+
+def without_input(errors: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Validation errors as a client gets them: every key but ``input``, the rejected value itself."""
+    return [{k: v for k, v in error.items() if k != "input"} for error in errors]
+
+
 def friendly_message(error: dict[str, Any]) -> str:
     kind = error.get("type", "")
     ctx = error.get("ctx") or {}
     msg = str(error.get("msg", ""))
     label = field_label(error.get("loc") or ())
 
-    for prefix in _CUSTOM_PREFIXES:
-        if msg.startswith(prefix):
-            return msg[len(prefix):]
+    if msg.startswith(_CUSTOM_PREFIXES):
+        return _without_custom_prefix(msg)
 
     if kind == "missing":
         return f"{label} is required."
@@ -83,7 +110,7 @@ def friendly_message(error: dict[str, Any]) -> str:
 
 def friendly_validation_errors(errors: Sequence[dict[str, Any]]) -> tuple[str, list[dict[str, Any]]]:
     """Return a one-line summary and the errors with each ``msg`` reworded."""
-    reworded = [{**error, "msg": friendly_message(error)} for error in errors]
+    reworded = [{**error, "msg": friendly_message(error)} for error in without_input(errors)]
     messages = list(dict.fromkeys(error["msg"] for error in reworded))
     summary = " ".join(messages) if messages else GENERIC_SUMMARY
     return summary, reworded

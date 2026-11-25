@@ -11,6 +11,7 @@ import signal
 import threading
 import time
 from dataclasses import replace
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 import pytest
@@ -18,6 +19,7 @@ import pytest
 from app.services.resource_governor import lane_ledger
 from app.services.resource_governor.lane_ledger import (
     BLANK,
+    LEDGER_LOCK_BUDGET,
     NO_CAP,
     RECORD_SIZE,
     DomainLedger,
@@ -37,6 +39,13 @@ if TYPE_CHECKING:
 
 GIB = 2**30
 WS = int(0.75 * GIB)
+
+
+def _lock_waits_on(monkeypatch: pytest.MonkeyPatch, clock: FakeClock) -> FakeClock:
+    """The ledger's lock-try loop reads and sleeps on ``clock``: its budget is counted in the sleeps it took, not in
+    how long a loaded host kept this process off the CPU between them."""
+    monkeypatch.setattr(lane_ledger, "time", SimpleNamespace(monotonic=clock, sleep=clock.advance))
+    return clock
 
 
 def record_on_disk(directory: Path) -> LedgerRecord | None:
@@ -129,7 +138,7 @@ class TestInitialisation:
         budget.report_incident()
         good = bytearray((lane_dir / "ledger").read_bytes())
         other_version = bytearray(good)
-        other_version[8] = 2
+        other_version[8] = 1
         assert LedgerRecord.decode(bytes(other_version)) is None
         other_magic = bytearray(good)
         other_magic[0] = ord("Q")
@@ -188,22 +197,21 @@ class TestTornReads:
 
 class TestLockBudget:
     def test_stopped_lock_holder_does_not_block(
-        self, make_budget: Callable[..., LaneBudget], lane_dir: Path
+        self, make_budget: Callable[..., LaneBudget], lane_dir: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         budget = make_budget(8)
         budget.cap()
+        lock_clock = _lock_waits_on(monkeypatch, FakeClock())
         holder = start_role("hold_lock", {"dir": str(lane_dir)})
         try:
             first_line(holder)
             os.kill(holder.pid, signal.SIGSTOP)
             took = []
             for _ in range(7):
-                start = time.perf_counter()
+                start = lock_clock()
                 assert budget.admit_spawn(0) is None
-                took.append(time.perf_counter() - start)
-            took.sort()
-            assert took[len(took) // 2] < 0.025, took
-            assert took[-1] < 0.12, took
+                took.append(lock_clock() - start)
+            assert max(took) < LEDGER_LOCK_BUDGET + 0.005, took
         finally:
             os.kill(holder.pid, signal.SIGCONT)
             reap(holder)
@@ -286,21 +294,27 @@ class TestLockBudget:
             reap(writer)
             budget.close()
 
-    def test_real_stopped_holder_does_degrade_within_2_5_seconds(self, lane_dir: Path) -> None:
+    def test_real_stopped_holder_does_degrade_within_2_5_seconds(
+        self, lane_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         from app.services.resource_governor.lanes import LaneBudget, plan_lanes
 
-        budget = LaneBudget.open(plan_lanes(cpus=16, heavy=16), lane_dir, memory_reader=Mem(10 * GIB, GIB))
+        clock = _lock_waits_on(monkeypatch, FakeClock())
+        budget = LaneBudget.open(
+            plan_lanes(cpus=16, heavy=16), lane_dir, memory_reader=Mem(10 * GIB, GIB), clock=clock
+        )
         holder = start_role("hold_lock", {"dir": str(lane_dir)})
         try:
             first_line(holder)
             os.kill(holder.pid, signal.SIGSTOP)
-            start = time.monotonic()
-            while time.monotonic() - start < 2.5:
+            start = clock()
+            while clock() - start < 2.5:
                 budget.admit_spawn(0)
                 if budget._ledger.degraded:
                     break
-                time.sleep(0.05)
-            assert 2.0 <= time.monotonic() - start <= 2.5
+                clock.advance(0.05)
+            assert budget._ledger.degraded
+            assert 2.0 <= clock() - start <= 2.5
         finally:
             os.kill(holder.pid, signal.SIGCONT)
             reap(holder)
@@ -897,3 +911,51 @@ class TestAtomicRecord:
             txn.write(replace(good, cap=3))
         assert record_on_disk(lane_dir) == replace(good, cap=3)
         ledger.close()
+
+
+class TestWaiterFields:
+    """Ledger v2 (T65): the waiter flag lives in the record, and the version in the directory name."""
+
+    def test_waiter_fields_roundtrip(self) -> None:
+        record = LedgerRecord(
+            cap=3, waiter_at=1234.5, waiter_weight=3, waiter_pid=4242, waiter_clear_at=1237.0, reap_request_at=9.0
+        )
+        again = LedgerRecord.decode(record.encode())
+        assert again == record
+        assert len(record.encode()) == RECORD_SIZE
+
+    def test_a_v1_record_is_not_accepted(self) -> None:
+        import zlib
+
+        raw = bytearray(LedgerRecord(cap=3).encode())
+        lane_ledger._HEADER.pack_into(raw, 0, lane_ledger._MAGIC, 1, 0)
+        lane_ledger._HEADER.pack_into(raw, 0, lane_ledger._MAGIC, 1, zlib.crc32(bytes(raw)))  # a whole, valid v1 record
+        assert LedgerRecord.decode(bytes(raw)) is None
+
+    def test_directory_name_carries_ledger_version(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        from app.services.resource_governor import lanes
+
+        monkeypatch.setattr("tempfile.gettempdir", lambda: str(tmp_path))
+        monkeypatch.setattr(lanes, "LEDGER_VERSION", 7)  # the name follows the constant, not a literal
+        budget = lanes.open_lane_budget(
+            lanes.plan_lanes(cpus=4, heavy=4), local_share=1, environ={"PARSE_LANES": "on"}, memory_reader=Mem()
+        )
+        assert budget is not None
+        budget.close()
+        assert [p.name.split("-")[3] for p in tmp_path.iterdir() if "cpu-lanes" in p.name] == ["v7"]
+        assert lane_ledger.LEDGER_VERSION == 3
+
+    def test_v3_never_opens_a_v1_directory(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        from app.services.resource_governor import lanes
+
+        old = tmp_path / "pipeshub-cpu-lanes-v1-64"
+        old.mkdir(mode=0o700)
+        (old / "marker").write_text("v1")
+        monkeypatch.setattr("tempfile.gettempdir", lambda: str(tmp_path))
+        budget = lanes.open_lane_budget(
+            lanes.plan_lanes(cpus=4, heavy=4), local_share=1, environ={"PARSE_LANES": "on"}, memory_reader=Mem()
+        )
+        assert budget is not None
+        budget.close()
+        assert sorted(p.name for p in old.iterdir()) == ["marker"]  # untouched
+        assert any(p.name.startswith("pipeshub-cpu-lanes-v3-64") for p in tmp_path.iterdir())

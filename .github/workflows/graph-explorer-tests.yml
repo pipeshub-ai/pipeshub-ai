@@ -1,0 +1,58 @@
+name: Graph explorer tests
+
+# The graph explorer's own tests, on every pull request that touches it: the unit tests, and real Chromium
+# against the explorer with an in-browser fake backend (frontend/tests/graph-explorer). No stack, no secrets.
+on:
+  pull_request:
+    branches:
+      - 'main'
+    paths:
+      - 'frontend/app/(main)/graph/**'
+      - 'frontend/tests/graph-explorer/**'
+      - 'frontend/playwright.graph.config.ts'
+      - 'frontend/lib/i18n/locales/*.json'
+      - 'frontend/app/globals.css'
+      - 'frontend/package.json'
+      - 'frontend/package-lock.json'
+      - '.github/workflows/graph-explorer-tests.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: graph-explorer-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  graph-explorer:
+    name: Graph explorer (unit and browser)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci --ignore-scripts
+      - name: Unit tests
+        run: npx vitest run "app/(main)/graph"
+      - name: Locale parity
+        run: npm run i18n:check && npm run i18n:keys
+      - run: npx playwright install chromium --with-deps
+      - name: Browser tests
+        run: npm run test:graph-e2e
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: failure()
+        with:
+          name: graph-explorer-report
+          path: |
+            frontend/test-results
+          retention-days: 7

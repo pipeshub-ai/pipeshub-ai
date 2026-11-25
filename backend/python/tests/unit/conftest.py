@@ -1,12 +1,58 @@
+"""Unit-test defaults for the whole tree."""
+
+from __future__ import annotations
+
 import contextlib
 import gc
 import os
 import shutil
 import sys
 import tempfile
-from collections.abc import Iterator
+from typing import TYPE_CHECKING
 
 import pytest
+
+from app.sandbox.roots import SANDBOX_ROOT_ENV
+from tests.support.edition_defaults import unit_test_fixtures
+from tests.support.mock_config_epoch import (
+    _epoch_of_a_collection_whose_config_is_a_mock,  # noqa: F401  (autouse)
+)
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
+
+@pytest.fixture(autouse=True)
+def _no_table_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every PDF parse runs the rule-based table path. The learned detector downloads its model from the Hub in a
+    worker thread: a stalled download outlived the test's timeout and kept the pytest worker from exiting."""
+    monkeypatch.setenv("PDF_TABLE_MODEL", "off")
+
+
+@pytest.fixture(autouse=True)
+def _paid_cache_writes_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The paid-result cache stores nothing unless ``PAID_CACHE_WRITE`` is on (its default for the release that
+    first ships it is off). The cache's own tests run with writes on; the off behaviour deletes the variable."""
+    monkeypatch.setenv("PAID_CACHE_WRITE", "true")
+
+
+@pytest.fixture(autouse=True)
+def _record_and_org_deletes_do_not_reach_storage(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The delete handlers purge a record's (or org's) stored model outputs through the storage service; a unit
+    test of them must not open a connection. Tests of the purge itself bind their own cache over the same name."""
+    from app.services.paid_cache import access
+    from app.services.paid_cache.cache import NullPaidResultCache
+
+    monkeypatch.setattr(access, "paid_cache_for", lambda *_a, **_k: NullPaidResultCache())
+
+
+@pytest.fixture(autouse=True)
+def _no_neo4j_restart_check(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A knowledge-hub listing on Neo4j first reads the server's start time (`_kh_server_restarted`); unit tests script
+    and count the statements a client is sent, so the read is off unless a test turns it on."""
+    neo4j_provider = sys.modules.get("app.services.graph_db.neo4j.neo4j_provider")
+    if neo4j_provider is not None:
+        monkeypatch.setattr(neo4j_provider.Neo4jProvider, "_KH_SERVER_CHECK_S", 0)
 
 
 @pytest.fixture(autouse=True)
@@ -16,6 +62,38 @@ def _fresh_connector_name_cache() -> None:
     if chat_helpers is not None:
         chat_helpers._connector_name_cache.clear()
         chat_helpers._connector_name_misses.clear()
+
+
+@pytest.fixture(autouse=True)
+def _no_registered_caller_node_ensurer() -> None:
+    """Building the entity message handler registers its caller-node ensurer process-wide; a test must not see
+    another's (a mocked one would answer every missing-user lookup)."""
+    user_lookup = sys.modules.get("app.utils.user_lookup")
+    if user_lookup is not None:
+        user_lookup._ensurer.clear()
+
+
+@pytest.fixture(autouse=True)
+def _service_container_leaves_no_wiring() -> Iterator[None]:
+    """Unwire the connector service's container after each test.
+
+    Importing ``app.connectors_main`` builds its container, and building it wires the
+    router, the signed-URL module and the others in its ``wiring_config`` (it wires again
+    on first use). A wired route function takes its injected arguments itself, so a test
+    that calls it directly with ``config_service=...`` fails with "got multiple values
+    for argument" (or reads an unset provider), and which tests failed depended on
+    whether an earlier file in the process had imported the service. Wiring is process
+    state, so it is undone here: before a test too, for a module imported at collection.
+    """
+    _unwire_connector_service()
+    yield
+    _unwire_connector_service()
+
+
+def _unwire_connector_service() -> None:
+    container = getattr(sys.modules.get("app.connectors_main"), "container", None)
+    if container is not None:
+        container.unwire()
 
 
 @pytest.fixture
@@ -52,9 +130,16 @@ def _private_temp_dir(tmp_path_factory: pytest.TempPathFactory) -> Iterator[str]
     # AF_UNIX socket paths that tests build below it keep their headroom (107 chars).
     private = tempfile.mkdtemp(prefix="pt")
     tempfile.tempdir = private
+    # run_code's executors keep a lasting ``pipeshub_sandbox*`` root under the temp folder by design (R13-ROOT);
+    # an operator root keeps those out of the leak check without hiding what a run leaves in them.
+    sandbox_root_set = SANDBOX_ROOT_ENV in os.environ
+    if not sandbox_root_set:
+        os.environ[SANDBOX_ROOT_ENV] = os.path.join(private, "sandbox-roots")
     try:
         yield private
     finally:
+        if not sandbox_root_set:
+            os.environ.pop(SANDBOX_ROOT_ENV, None)
         tempfile.tempdir = previous
         shutil.rmtree(private, ignore_errors=True)
 
@@ -84,3 +169,45 @@ def _no_leaked_pipeshub_temp_files(_private_temp_dir: str) -> Iterator[None]:
         f"test left temp files behind: {leaked}. Remove them in the test "
         "(or fix the code that creates them)."
     )
+
+
+# Where ``@pytest.fixture`` keeps its marker: pytest >= 8.4 uses the first, older pytest
+# the second. Both markers carry the ``name=`` the decorator was given.
+_FIXTURE_MARKER_ATTRIBUTES = ("_fixture_function_marker", "_pytestfixturefunction")
+
+
+def _registered_name(attribute: str, value: object) -> str | None:
+    """The name pytest registers ``value`` under when it finds it as ``attribute``; None if no fixture."""
+    for marker_attribute in _FIXTURE_MARKER_ATTRIBUTES:
+        marker = getattr(value, marker_attribute, None)
+        if marker is not None:
+            return marker.name or attribute
+    return None
+
+
+def _bind_unit_test_fixtures() -> None:
+    fixtures = unit_test_fixtures()
+    registered = {
+        name
+        for attribute, value in globals().items()
+        if (name := _registered_name(attribute, value))
+    }
+    added = [
+        name
+        for attribute, value in fixtures.items()
+        if (name := _registered_name(attribute, value))
+    ]
+    # A second fixture of one name silently replaces the first for every test; so does
+    # binding over a name defined above. ``name=`` sets the name, not the mapping key.
+    clashes = sorted(
+        (fixtures.keys() & globals().keys())
+        | (registered & set(added))
+        | {name for name in added if added.count(name) > 1}
+    )
+    assert not clashes, (
+        f"unit_test_fixtures() redefines names in this conftest: {clashes}"
+    )
+    globals().update(fixtures)
+
+
+_bind_unit_test_fixtures()

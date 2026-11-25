@@ -17,7 +17,7 @@ import {
   type WebSearchProviderMeta,
 } from '../../../workspace/web-search/types';
 import { SidebarCategoryRow } from './sidebar-category-row';
-import { TapAddButton, usePaletteTapAdd } from './sidebar-draggable-row';
+import { PALETTE_ROW_DISABLED_OPACITY, TapAddButton, usePaletteTapAdd } from './sidebar-draggable-row';
 import type { UseWebSearchConfigResult } from '../hooks/use-web-search-config';
 import type { AgentWebSearchAttachment } from '../types';
 import { filterPaletteGroup } from '../sidebar-utils';
@@ -35,7 +35,7 @@ export interface AgentBuilderWebSearchSectionProps {
 
 /**
  * Providers an agent can attach that this user may see: searching providers only (Crawl4AI just
- * reads pages), and for non-admins only those that need no setup or are already configured.
+ * reads pages), and for non-admins only those an admin has already set up (DuckDuckGo too).
  */
 export function visibleWebSearchProviders(
   isAdmin: boolean,
@@ -44,7 +44,7 @@ export function visibleWebSearchProviders(
   const searchers = WEB_SEARCH_PROVIDER_META.filter((meta) => meta.searches);
   if (isAdmin) return searchers;
   const configured = new Set(configuredProviders.map((p) => p.provider));
-  return searchers.filter((meta) => !meta.configurable || configured.has(meta.type));
+  return searchers.filter((meta) => configured.has(meta.type));
 }
 
 function buildWebSearchDragData(
@@ -76,7 +76,7 @@ export function AgentBuilderWebSearchSection({
   } | null>(null);
 
   const isAdmin = useUserStore(selectIsAdmin);
-  const { configuredProviders, loading, reload } = config;
+  const { configuredProviders, loading, error, reload } = config;
 
   const providerMap = useMemo(() => {
     const map = new Map<string, ConfiguredWebSearchProvider>();
@@ -138,14 +138,16 @@ export function AgentBuilderWebSearchSection({
       <SidebarCategoryRow
         groupLabel={groupLabel}
         groupMaterialIcon="public"
-        groupMaterialIconColor="var(--blue-9)"
+        groupMaterialIconColor="var(--blue-11)"
         itemCount={shownProviders.length}
         isExpanded={expanded}
         onToggle={handleToggle}
         toolsetStatus={parentStatus}
       >
-        {loading ? (
+        {loading || shownProviders.length === 0 ? (
+          // A member sees only providers an admin has set up: say why the list is empty.
           <Text
+            as="p"
             size="1"
             style={{
               color: 'var(--slate-11)',
@@ -153,7 +155,11 @@ export function AgentBuilderWebSearchSection({
               fontStyle: 'italic',
             }}
           >
-            {t('agentBuilder.webSearchLoading')}
+            {loading
+              ? t('agentBuilder.webSearchLoading')
+              : error
+                ? t('agentBuilder.webSearchLoadFailed')
+                : t('agentBuilder.webSearchNotSetUp')}
           </Text>
         ) : (
           shownProviders.map((meta) => {
@@ -267,7 +273,7 @@ function ProviderRow({
               ? 'default'
               : 'not-allowed'
             : 'grab',
-          opacity: dimmed ? 0.55 : 1,
+          opacity: dimmed ? PALETTE_ROW_DISABLED_OPACITY : 1,
         }}
         className={
           dragBlocked
@@ -332,7 +338,7 @@ function ProviderRow({
               <MaterialIcon
                 name="check_circle"
                 size={16}
-                color="var(--green-9)"
+                color="var(--green-11)"
               />
             </span>
           </Tooltip>
@@ -358,6 +364,7 @@ function ProviderRow({
               }
             >
               <IconButton
+                aria-label={isConfigured ? t('action.edit') : t('agentBuilder.configureShort')}
                 type="button"
                 size="1"
                 variant="ghost"

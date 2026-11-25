@@ -6,6 +6,7 @@
  *   2. @pipeshub-ai/mcp/esm/core.js                (ESM-only — would ERR_REQUIRE_ESM)
  *   3. @modelcontextprotocol/sdk/server/streamableHttp.js  (needs mock for unit tests)
  *   4. @pipeshub-ai/mcp/esm/lib/http.js            (ESM-only — would ERR_REQUIRE_ESM)
+ *   5. @pipeshub-ai/mcp/esm/mcp-server/oauth-scopes.js  (ESM-only — would ERR_REQUIRE_ESM)
  *
  * Tests can mutate the exports on the cached modules to override behaviour
  * (e.g. make createMCPServer throw) — the controller destructures from the
@@ -67,6 +68,23 @@ const mcpCoreExports = {
 patchRequireCache(mcpCorePath, mcpCoreExports);
 
 // ---------------------------------------------------------------------------
+// 2b. @pipeshub-ai/mcp  — HTTPClient (the SDK's fetch wrapper, with hooks)
+// ---------------------------------------------------------------------------
+const mcpHttpPath = require.resolve('@pipeshub-ai/mcp/esm/lib/http.js');
+
+const mcpHttpExports = {
+  HTTPClient: class FakeHTTPClient {
+    readonly hooks: Array<(req: Request) => unknown> = [];
+    addHook(_name: string, fn: (req: Request) => unknown) {
+      this.hooks.push(fn);
+      return this;
+    }
+  },
+};
+
+patchRequireCache(mcpHttpPath, mcpHttpExports);
+
+// ---------------------------------------------------------------------------
 // 3. @modelcontextprotocol/sdk — StreamableHTTPServerTransport
 // ---------------------------------------------------------------------------
 const sdkTransportPath = require.resolve(
@@ -90,16 +108,10 @@ const sdkTransportExports = {
 patchRequireCache(sdkTransportPath, sdkTransportExports);
 
 // ---------------------------------------------------------------------------
-// 4. @pipeshub-ai/mcp  — HTTPClient (keeps its hooks so tests can run them)
+// 5. @pipeshub-ai/mcp  — requiredOAuthScopes (tests set the map they need)
 // ---------------------------------------------------------------------------
-const mcpHttpPath = require.resolve('@pipeshub-ai/mcp/esm/lib/http.js');
+const mcpOAuthScopesPath = require.resolve('@pipeshub-ai/mcp/esm/mcp-server/oauth-scopes.js');
 
-class FakeHTTPClient {
-  hooks: Array<(req: Request) => unknown> = [];
-  addHook(_kind: string, fn: (req: Request) => unknown) {
-    this.hooks.push(fn);
-    return this;
-  }
-}
-
-patchRequireCache(mcpHttpPath, { HTTPClient: FakeHTTPClient });
+patchRequireCache(mcpOAuthScopesPath, {
+  requiredOAuthScopes: (): readonly string[] | undefined => undefined,
+});

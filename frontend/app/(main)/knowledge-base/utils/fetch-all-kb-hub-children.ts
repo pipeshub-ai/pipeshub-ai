@@ -46,8 +46,9 @@ export async function fetchAllKbAppContainerChildren(appId: string): Promise<Kno
     // to ask with, and looping on the flag alone would spin forever.
     const nextCursor = response.pagination?.nextCursor;
     if (!nextCursor) break;
-    if (response.items.length === 0) {
-      console.error('[fetchAllKbAppContainerChildren] empty page with a next cursor; stopping', { appId, pages });
+    // An empty page is not the end: the server may have stopped looking for the moment and hands back where it got to. It is stuck only when the cursor did not move.
+    if (response.items.length === 0 && nextCursor === cursor) {
+      console.error('[fetchAllKbAppContainerChildren] empty page with the cursor it was asked with; stopping', { appId, pages });
       break;
     }
     cursor = nextCursor;

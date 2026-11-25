@@ -15,16 +15,26 @@ import asyncio
 import hashlib
 import json
 import logging
+import re
 import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from app.config.constants.arangodb import CollectionNames, RecordRelations
-from app.modules.code_graph.module_refs import module_ref
+from app.modules.code_graph.family_rules import rules_for
+from app.modules.code_graph.guards import lang_family
+from app.modules.code_graph.module_refs import includes_changed_ref, module_ref
 from app.modules.code_graph.version import PARSER_VERSION
+from app.modules.parsers.code_parser.languages.csharp import GLOBAL_USING
+from app.modules.parsers.code_parser.models import (
+    DECLARATION,
+    FIXTURE_MARK,
+    RETURNS,
+    STATIC,
+)
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable, Iterator
+    from collections.abc import Awaitable, Callable, Iterable, Iterator
 
     from app.models.blocks import Block, BlockGroup, BlocksContainer
     from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
@@ -34,6 +44,9 @@ __all__ = [
     "FILE_SUMMARY_QUALIFIED_NAME",
     "RESIDENT_RELATIONS",
     "block_key_for",
+    "changed_folder_scope",
+    "changed_includes",
+    "changed_macros",
     "drop_code_file_blocks",
     "serialize_block_for_graph",
     "write_code_file_blocks_to_graph",
@@ -161,15 +174,25 @@ def serialize_block_for_graph(
         # property, and the schema admits it for all of these.
         "subType": item.sub_type.value if item.sub_type is not None else None,
         "kind": ((meta.kind or "").lower() or None) if meta else None,
+        "modifiers": (meta.modifiers or None) if meta else None,
+        # The edge builder drops a member value landing on one: `self.text` reads a property.
+        "isAccessor": True if meta and meta.is_accessor else None,
         "qualifiedName": meta.qualified_name if meta else None,
+        "typeParamCount": (meta.type_param_count or None) if meta else None,
         "startLine": meta.start_line if meta else None,
         "endLine": meta.end_line if meta else None,
         "language": (meta.language or ctx.language) if meta else None,
-        "pendingEdges": (_resident_facts(meta.pending_edges, package_init=_is_package_init(ctx.file_path)) or None)
+        "pendingEdges": (_resident_facts(meta.pending_edges, package_init=_is_package_init(ctx.file_path),
+                                         imports=rules_for(lang_family(meta.language or ctx.language,
+                                                                       ctx.file_path)).resident_imports)
+                         or None)
         if meta else None,
         # Both moved to the blob. Still written, as None, so a node projected
         # before that change is cleared instead of keeping a stale copy.
         "typeTable": None,
+        # Unlike typeTable, read for every file on every build: a header's macros expand in files it is not
+        # re-resolving.
+        "macroTable": (meta.macro_table or None) if meta else None,
         # Moved to codeFiles node. Still written as None so nodes projected
         # before that change are cleared.
         "referencedNames": None,
@@ -178,14 +201,45 @@ def serialize_block_for_graph(
 
 
 def _is_package_init(file_path: str | None) -> bool:
-    return bool(file_path) and (file_path == "__init__.py" or file_path.endswith("/__init__.py"))
+    # Any Rust module can re-export with `pub use` (`time.rs` beside `time/`), not only mod.rs and lib.rs.
+    return bool(file_path) and (file_path.rsplit("/", 1)[-1] == "__init__.py" or file_path.endswith(".rs"))
 
 
-def _resident_facts(facts: list[dict] | None, *, package_init: bool = False) -> list[dict]:
+def _resident_facts(facts: list[dict] | None, *, package_init: bool = False, imports: bool = False) -> list[dict]:
     """A package `__init__.py`'s imports are its re-exports (`from .base import
-    Model` makes `models.Model`), which every build follows, so they stay too."""
-    keep = RESIDENT_RELATIONS | ({RecordRelations.IMPORTS.value} if package_init else frozenset())
-    return [fact for fact in facts or () if fact.get("relation") in keep]
+    Model` makes `models.Model`), which every build follows, so they stay too; so
+    do the IMPORTS_FROM of a family whose rules keep them (`resident_imports`: a
+    C/C++ file sees what its includes include, through headers an incremental
+    build is not re-resolving), and a C# `global using`, which scopes every file
+    of its project."""
+    keep = RESIDENT_RELATIONS | ({RecordRelations.IMPORTS.value} if package_init else frozenset()) \
+        | ({RecordRelations.IMPORTS_FROM.value} if imports else frozenset())
+    return [fact for fact in facts or () if fact.get("relation") in keep or fact.get("context") == GLOBAL_USING]
+
+
+
+def _folder_scope(folder: str) -> str:
+    """The name a file under *folder* references so a change to the folder's `global using`s re-resolves it."""
+    return f"folder-scope:{folder}"
+
+
+def _folder_scopes(file_path: str | None) -> set[str]:
+    if not file_path or not file_path.endswith(".cs"):
+        return set()
+    parts = file_path.split("/")[:-1]
+    return {_folder_scope("/".join(parts[:i])) for i in range(len(parts) + 1)}
+
+
+def _global_usings(rows: Iterable[dict]) -> set[str]:
+    return {fact.get("toName") for row in rows for fact in row.get("pendingEdges") or ()
+            if fact.get("context") == GLOBAL_USING}
+
+
+def changed_folder_scope(file_path: str | None, before: Iterable[dict], after: Iterable[dict]) -> set[str]:
+    """The file's folder scope when its `global using`s changed (added, edited or removed)."""
+    if not file_path or _global_usings(before) == _global_usings(after):
+        return set()
+    return {_folder_scope(file_path.rpartition("/")[0])}
 
 
 def _referenced_names(container: BlocksContainer, file_path: str | None = None) -> list[str] | None:
@@ -196,10 +250,29 @@ def _referenced_names(container: BlocksContainer, file_path: str | None = None) 
     without the facts themselves. Modules go in as ``module:<path>``
     (``module_refs``), resolved against *file_path* where relative.
     """
-    names: set[str] = set()
+    names: set[str] = _folder_scopes(file_path)
+    # A C++ receiver is typed by declarations elsewhere: its class (`Conn* c; c->open()`, which a second Conn or a
+    # forward declaration given a body makes ambiguous) and, for a field (`m_list.notify()`), the field's own
+    # declaration (_changed_member_types). Either changing re-resolves this file.
+    receivers = rules_for(lang_family(None, file_path)).implicit_member_receivers
     for item in (*container.block_groups, *container.blocks):
         meta = item.code_metadata
         for fact in (meta.pending_edges if meta else None) or ():
+            receiver_type = fact.get("receiverType")
+            if isinstance(receiver_type, str) and receiver_type.startswith("=") \
+                    and rules_for(lang_family(meta.language, file_path)).typed_receiver_chains:
+                # `=self.config().colors` is typed through `config` and `colors` wherever they are declared, so a
+                # file changing one re-resolves this one.
+                names.update(re.findall(r"\w+", receiver_type))
+            if receivers and fact.get("isMemberCall"):
+                names.update(n for n in (fact.get("receiver"), fact.get("receiverType"))
+                             if isinstance(n, str) and n.isidentifier())
+            if isinstance(receiver_type, str) and receiver_type.startswith(FIXTURE_MARK):
+                # `def test_x(svc): svc.run()` is typed by the fixture `svc` (here or a conftest.py above), so a
+                # fixture added, removed or renamed there re-resolves this file.
+                # shortcut: an edit that changes only the fixture's return type keeps its name, so it does not;
+                # add the fixture's file to the referencer set if stale fixture types show up.
+                names.add(receiver_type[len(FIXTURE_MARK):])
             name = fact.get("toName")
             if not isinstance(name, str) or not name:
                 continue
@@ -225,6 +298,69 @@ def _referenced_names(container: BlocksContainer, file_path: str | None = None) 
 # again within the TTL re-selects their referencers; clear them conditionally
 # (on changedNamesAt) after a successful build if that shows up in build sizes.
 _CHANGED_NAMES_TTL_MS = 7 * 24 * 3600 * 1000
+
+
+def changed_macros(before: Iterable[dict[str, Any]], after: Iterable[dict[str, Any]]) -> set[str]:
+    """The macros the file added, removed or gave other callees: every file calling one expands it anew.
+    Only the callees count, so a line inserted above a macro re-selects no caller elsewhere."""
+    def callees(docs: Iterable[dict[str, Any]]) -> dict[str, Any]:
+        out: dict[str, Any] = {}
+        for doc in docs:
+            table = _decoded(doc.get("macroTable"))
+            for name, entry in (table if isinstance(table, dict) else {}).items():
+                out[name] = entry[1] if isinstance(entry, list) and len(entry) > 1 else entry
+        return out
+
+    old, new = callees(before), callees(after)
+    return {name for name in old.keys() | new.keys() if old.get(name) != new.get(name)}
+
+
+def changed_includes(file_path: str | None, before: Iterable[dict[str, Any]],
+                     after: Iterable[dict[str, Any]]) -> set[str]:
+    """The file's include-change mark when its `#include` list changed (added, edited, emptied or deleted), for a
+    family whose include facts stay on its nodes: every file including it, transitively, sees through it."""
+    if not file_path or not rules_for(lang_family(None, file_path)).resident_imports:
+        return set()
+
+    def includes(rows: Iterable[dict[str, Any]]) -> set[str]:
+        return {fact.get("toName") for row in rows for fact in _decoded(row.get("pendingEdges")) or ()
+                if isinstance(fact, dict) and fact.get("relation") == RecordRelations.IMPORTS_FROM.value}
+
+    return {includes_changed_ref(file_path)} if includes(before) != includes(after) else set()
+
+
+def _decoded(value: Any) -> Any:  # noqa: ANN401 -- a stored map or list, or its JSON
+    """A stored map or list; Neo4j keeps one as JSON."""
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except ValueError:
+            return None
+    return value
+
+
+def _changed_linkage(before: Iterable[dict[str, Any]], after: Iterable[dict[str, Any]]) -> set[str]:
+    """Blocks kept under one id that gained or lost STATIC or DECLARATION, or changed the class they return (C++
+    RETURNS): a call in another file may now reach one, or no longer may (a forward declaration `class Conn;` given
+    a body is a second Conn), or a chain through one (`pool.get()->open()`) now types another class."""
+    def marks(row: dict[str, Any]) -> tuple[bool, bool, tuple[str, ...]]:
+        words = row.get("modifiers") or ()
+        return STATIC in words, DECLARATION in words, tuple(w for w in words if w.startswith(RETURNS))
+    was = {row.get("_key") or row.get("id"): marks(row) for row in before}
+    return {doc["name"] for doc in after if doc.get("name") and doc["id"] in was and was[doc["id"]] != marks(doc)}
+
+
+def _changed_member_types(before: Iterable[dict[str, Any]], after: Iterable[dict[str, Any]]) -> set[str]:
+    """Fields kept under one id whose text changed, where a field's declared type types a receiver in another file
+    (`typed_receiver_chains`, `implicit_member_receivers`): Rust's `colors: Colors` becoming `colors: Paint` retypes
+    `a.config.colors.matched()` elsewhere; C++'s `CoroutineWaitList m_list;` becoming `Other m_list;` in foo.hpp
+    retypes `m_list.notify()` in foo.cpp."""
+    def typed_by_fields(language: str | None) -> bool:
+        rules = rules_for(lang_family(language, None))
+        return rules.typed_receiver_chains or rules.implicit_member_receivers
+    was = {row.get("_key") or row.get("id"): row.get("contentHash") for row in before if row.get("kind") == "field"}
+    return {doc["name"] for doc in after if doc.get("name") and doc["id"] in was
+            and was[doc["id"]] != doc.get("contentHash") and typed_by_fields(doc.get("language"))}
 
 
 def _merge_changed_names(code_file: dict[str, Any], changed: set[str]) -> dict[str, Any]:
@@ -369,7 +505,7 @@ async def write_code_file_blocks_to_graph(
             lambda: graph_provider.get_nodes_by_filters(
                 collection=CollectionNames.BLOCKS.value,
                 filters={"recordId": context.record_id},
-                return_fields=["_key", "name", "kind"],
+                return_fields=["_key", "name", "kind", "pendingEdges", "macroTable", "modifiers", "contentHash"],
             ),
             what="load existing blocks", log=log,
         ),
@@ -390,7 +526,8 @@ async def write_code_file_blocks_to_graph(
     changed = {
         name for key, name in (*before.items(), *after.items())
         if name and key[1] != "file_summary" and (key not in before or key not in after)
-    }
+    } | changed_macros(existing, docs) | _changed_linkage(existing, docs) | _changed_member_types(existing, docs) \
+        | changed_includes(context.file_path, existing, docs) | changed_folder_scope(context.file_path, existing, docs)
 
     # referencedNames is written to the codeFiles node, not a block. The edge
     # builder queries it alongside filePath, avoiding a block-scan join.
@@ -468,22 +605,24 @@ async def drop_code_file_blocks(
         lambda: graph_provider.get_nodes_by_filters(
             collection=CollectionNames.BLOCKS.value,
             filters={"recordId": record_id},
-            return_fields=["name", "kind"],
+            return_fields=["name", "kind", "pendingEdges", "macroTable"],
         ),
         what="load existing blocks", log=log,
     ) or []
     removed = {
         row.get("name") for row in existing
         if row.get("name") and row.get("kind") != "file_summary"
-    }
-    if removed:
+    } | changed_macros(existing, ())
+    if removed or any(row.get("pendingEdges") for row in existing):
         code_file = await _with_retry(
             lambda: graph_provider.get_document(
                 record_id, CollectionNames.CODE_FILES.value, raise_on_error=True
             ),
             what="load codeFiles node", log=log,
         )
-        if code_file:
+        removed |= changed_includes((code_file or {}).get("filePath"), existing, ()) \
+            | changed_folder_scope((code_file or {}).get("filePath"), existing, ())
+        if code_file and removed:
             await _with_retry(
                 lambda: graph_provider.update_node(
                     record_id, CollectionNames.CODE_FILES.value,

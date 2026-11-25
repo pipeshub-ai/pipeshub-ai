@@ -2,8 +2,9 @@ import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
 import {
-  InProcessCacheService, getSharedRedisService, usesInProcessCache,
+  InProcessCacheService, getSharedRedisService, usesInProcessCache, usesPostgresCache,
 } from '../../../src/libs/services/redis.service'
+import { PostgresCacheService } from '../../../src/libs/services/cache/postgresCache.service'
 import { Logger } from '../../../src/libs/services/logger.service'
 
 describe('InProcessCacheService', () => {
@@ -68,7 +69,7 @@ describe('InProcessCacheService', () => {
     expect(size()).to.be.lessThan(10)
   })
 
-  it('is chosen when no Redis is configured', () => {
+  it('is chosen when no Redis and no PostgreSQL cache is configured', () => {
     const saved = { ...process.env }
     try {
       delete process.env.REDIS_MODE
@@ -83,7 +84,15 @@ describe('InProcessCacheService', () => {
       expect(usesInProcessCache()).to.equal(false)
       process.env.REDIS_MODE = 'postgres'                       // the mode the Python side defaults to: no Redis server either
       expect(usesInProcessCache()).to.equal(true)
+      expect(usesPostgresCache()).to.equal(true)
+      // shared by every API process and kept across a restart, as Redis is; building it opens no connection
+      const pg = getSharedRedisService({ host: 'x', port: 1 }, Logger.getInstance({ service: 't' }))
+      expect(pg).to.be.instanceOf(PostgresCacheService)
+      expect(getSharedRedisService({ host: 'y', port: 2 }, Logger.getInstance({ service: 't' }))).to.equal(pg)
+      delete process.env.REDIS_MODE                              // the key-value store and the broker both PostgreSQL: the same
+      expect(getSharedRedisService({ host: 'x', port: 1 }, Logger.getInstance({ service: 't' }))).to.equal(pg)
       process.env.REDIS_MODE = 'inprocess'
+      expect(usesPostgresCache()).to.equal(false)
       const svc = getSharedRedisService({ host: 'x', port: 1 }, Logger.getInstance({ service: 't' }))
       expect(svc).to.be.instanceOf(InProcessCacheService)
       expect(getSharedRedisService({ host: 'y', port: 2 }, Logger.getInstance({ service: 't' }))).to.equal(svc)

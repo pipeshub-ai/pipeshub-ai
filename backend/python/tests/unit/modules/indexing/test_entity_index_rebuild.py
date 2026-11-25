@@ -71,6 +71,8 @@ class FakeGraph:
         self.lookup_error: Exception | None = None
         self.page_calls: list[tuple[str, str, str | None, int]] = []
         self.updates: list[tuple[str, str, dict[str, Any]]] = []
+        # Organisations not listed are CRM accounts a connector knows.
+        self.org_reach: dict[str, dict[str, Any]] = {}
 
     async def get_entity_index_candidate(
         self, collection: str, marker: str, *, sweep_before: int | None = None,
@@ -119,6 +121,11 @@ class FakeGraph:
             )
             for r in refs
         }
+
+    async def get_organization_record_reach(
+        self, org_id: str, keys: list[str], transaction: str | None = None, *, record_cap: int | None = None,
+    ) -> dict[str, dict[str, Any]]:
+        return {k: self.org_reach.get(k, {"records": 0, "inferred": True}) for k in keys}
 
     async def get_nodes_by_field_in(
         self, collection: str, field_name: str, field_values: list[Any],
@@ -280,7 +287,7 @@ class TestMarker:
     def test_people_rerun_the_org_pass_only(self) -> None:
         """People joined the org pass: orgs already done project them, and no
         connector is re-scanned for it."""
-        assert ORG_PASS_VERSION >= 3  # 2 is the marker orgs carried before the passes split
+        assert ORG_PASS_VERSION >= 4  # 2: the marker orgs carried before the split; 3: people; 4: organisations
         assert ENTITY_INDEX_VERSION == 2  # its own bump (unindexed and trashed records), not people
 
     async def test_an_org_done_before_people_reruns_and_projects_them(self) -> None:
@@ -304,6 +311,12 @@ class TestMarker:
     @pytest.mark.parametrize("value", [None, "", "garbage", 7, "v:x", "v@s1:x", "v1@:x", "v1:"])
     def test_unreadable_marker_has_no_fingerprint(self, value: object) -> None:
         assert fingerprint_of(value) is None
+
+    def test_marker_carries_the_page_order_only_when_a_store_sets_one(self) -> None:
+        assert entity_index_marker(FP, "s1", order="") == entity_index_marker(FP, "s1")          # a store paging as before keeps its marker
+        assert entity_index_marker(FP, "s1", order="c") == f"v{ENTITY_INDEX_VERSION}@s1.c:{FP}"
+        assert fingerprint_of(entity_index_marker(FP, "s1", order="c")) == FP
+        assert fingerprint_of(entity_index_marker(FP, order="c")) == FP
 
     def test_marker_carries_the_collection_stamp(self) -> None:
         assert entity_index_marker(FP, "s3fa9c21b7d0") == f"v{ENTITY_INDEX_VERSION}@s3fa9c21b7d0:{FP}"
@@ -606,6 +619,28 @@ class TestMarkerChangeMidPass:
         assert app[EntityIndexState.PHASE] == RECORDS and app[EntityIndexState.AFTER_KEY] is None
         assert app[EntityIndexState.FAILURES] == 0
 
+    async def test_a_cursor_saved_before_the_store_changed_its_page_order_restarts_the_pass(self) -> None:
+        """A store whose records now page in another order: a cursor saved under the old one could skip rows."""
+        graph, store = FakeGraph(), FakeStore()
+        graph.ENTITY_INDEX_PAGE_ORDER = "c"
+        graph.docs[APPS]["app-1"] = _app(**{
+            EntityIndexState.TARGET: MARKER, EntityIndexState.PHASE: RECORDS, EntityIndexState.AFTER_KEY: "r2",
+        })
+        graph.sources[(GROUPS, "app-1")] = [{"_key": "g1", "name": "Eng", "orgId": "org-1"}]
+        graph.sources[(RECORDS, "app-1")] = [_rec("r1"), _rec("r2"), _rec("r3")]
+        await _rebuilder(graph, store, page_size=10).tick()
+        assert graph.page_calls[0][:3] == (GROUPS, "app-1", None)                                  # from the start, not after "r2"
+        assert graph.docs[APPS]["app-1"][EntityIndexState.TARGET] == entity_index_marker(FP, order="c")
+
+    async def test_a_store_that_kept_its_page_order_resumes_its_cursor(self) -> None:
+        graph, store = FakeGraph(), FakeStore()
+        graph.docs[APPS]["app-1"] = _app(**{
+            EntityIndexState.TARGET: MARKER, EntityIndexState.PHASE: RECORDS, EntityIndexState.AFTER_KEY: "r2",
+        })
+        graph.sources[(RECORDS, "app-1")] = [_rec("r1"), _rec("r2"), _rec("r3")]
+        await _rebuilder(graph, store, page_size=10).tick()
+        assert graph.page_calls[0][:3] == (RECORDS, "app-1", "r2")
+
     async def test_exhausted_document_gets_full_attempts_under_a_new_marker(self) -> None:
         graph, store = FakeGraph(), FakeStore()
         old = entity_index_marker("old:model:768")
@@ -635,7 +670,7 @@ class TestTaxonomyPass:
         assert set(ENTITY_INDEX_TAXONOMY_SOURCES) == {
             CATEGORIES, DEPARTMENTS, CollectionNames.LANGUAGES.value,
             CollectionNames.SUBCATEGORIES1.value, SUB2,
-            CollectionNames.SUBCATEGORIES3.value, TOPICS, USERS,
+            CollectionNames.SUBCATEGORIES3.value, TOPICS, USERS, ORGS,
         }
 
     async def test_walks_each_collection_once_and_completes(self) -> None:
@@ -699,6 +734,34 @@ class TestTaxonomyPass:
         assert written == EntityRecord.for_person("u1", "Ann Lee", "org-1", "c1", "g1")
         assert store.deletes == [("org-1", "person", ["u2"])]
 
+    async def test_accounts_are_projected_as_indexing_writes_them(self) -> None:
+        from app.models.entities import EntityRecord
+
+        graph, store = FakeGraph(), FakeStore()
+        graph.docs[ORGS]["org-1"] = _org(**{EntityIndexState.TARGET: ORG_MARKER, EntityIndexState.PHASE: ORGS})
+        graph.sources[(ORGS, "org-1")] = [{"_key": "acme", "name": "Acme"}, {"_key": "idle", "name": "Idle Co"}]
+        graph.membership[("organization", "acme")] = {"connectorIds": ["sf"], "recordGroupIds": ["rg-acme"]}
+        await _rebuilder(graph, store).tick()
+        (written,) = store.written()
+        assert written == EntityRecord.for_linked(EntityType.ORGANIZATION, "acme", "Acme", "org-1", "sf", "rg-acme")
+        assert store.deletes == [("org-1", "organization", ["idle"])]
+
+    async def test_an_extracted_organisation_needs_two_records(self) -> None:
+        """KG-13 3b: one mention is not enough to be searchable, though the
+        mentioning record gives the organisation a connector."""
+        from app.models.entities import EntityRecord
+
+        graph, store = FakeGraph(), FakeStore()
+        graph.docs[ORGS]["org-1"] = _org(**{EntityIndexState.TARGET: ORG_MARKER, EntityIndexState.PHASE: ORGS})
+        graph.sources[(ORGS, "org-1")] = [{"_key": "once", "name": "Once"}, {"_key": "twice", "name": "Twice"}]
+        for key in ("once", "twice"):
+            graph.membership[("organization", key)] = {"connectorIds": ["drive"], "recordGroupIds": []}
+        graph.org_reach = {"once": {"records": 1, "inferred": False}, "twice": {"records": 2, "inferred": False}}
+        await _rebuilder(graph, store).tick()
+        (written,) = store.written()
+        assert written == EntityRecord.for_linked(EntityType.ORGANIZATION, "twice", "Twice", "org-1", "drive", None)
+        assert store.deletes == [("org-1", "organization", ["once"])]
+
     async def test_membership_lookup_failure_counts_the_page_and_deletes_nothing(self) -> None:
         graph, store = FakeGraph(), FakeStore()
         graph.docs[ORGS]["org-1"] = _org(**{EntityIndexState.TARGET: ORG_MARKER, EntityIndexState.PHASE: TOPICS})
@@ -738,6 +801,7 @@ class TestSweep:
             GROUPS: {"g-live": {"orgId": "org-1"}, "g-other": {"orgId": "org-2"}},
             SUB2: {"s-live": {"orgId": "org-1"}},
             USERS: {"u-live": {"orgId": "org-1"}, "u-other": {"orgId": "org-2"}},
+            ORGS: {"o-live": {"parentOrgId": "org-1"}, "o-other": {"parentOrgId": "org-2"}},
         }
         store.points = [
             _point("topic", "t-live"), _point("topic", "t-legacy"), _point("topic", "t-other"),
@@ -749,11 +813,13 @@ class TestSweep:
             _point("subcategory", "s-live", "2"), _point("subcategory", "s-gone", "2"),
             _point("subcategory", "s-nolevel", None),
             _point("person", "u-live"), _point("person", "u-other"), _point("person", "u-gone"),
+            _point("organization", "o-live"), _point("organization", "o-other"), _point("organization", "o-gone"),
         ]
         assert await _rebuilder(graph, store).tick() == "sweep"
 
         assert sorted(store.deletes) == [
             ("org-1", "department", ["d-gone"]),
+            ("org-1", "organization", ["o-gone", "o-other"]),
             ("org-1", "person", ["u-gone", "u-other"]),
             ("org-1", "record_group", ["g-gone", "g-other"]),
             ("org-1", "subcategory", ["s-gone"]),
@@ -769,7 +835,7 @@ class TestSweep:
         await _rebuilder(graph, store).tick()
         (call,) = store.page_calls
         assert "record" not in call[1]
-        assert {"topic", "category", "subcategory", "language", "department", "record_group", "person"} <= set(call[1])
+        assert {"topic", "category", "subcategory", "language", "department", "record_group", "person", "organization"} <= set(call[1])
 
     async def test_sweep_is_resumable_across_ticks(self) -> None:
         graph, store = FakeGraph(), FakeStore()
@@ -1013,7 +1079,6 @@ class TestAModelSwitchReRunsThePasses:
 
     async def test_points_are_rewritten_with_the_new_model(self) -> None:
         from app.config.constants.ai_models import DEFAULT_EMBEDDING_MODEL
-        from app.modules.transformers import entity_vectorstore
         from app.modules.transformers.entity_vectorstore import (
             EMBEDDING_MODEL_FIELD,
             EntityVectorStore,
@@ -1040,7 +1105,7 @@ class TestAModelSwitchReRunsThePasses:
         graph.sources[(RECORDS, "app-1")] = [_rec("r1", name="Q3 plan", group=None)]
 
         with embedding_models({"text-embedding-3-small": small}), \
-                patch.object(entity_vectorstore, "get_default_embedding_model", return_value=bge):
+                patch("app.utils.llm.get_default_embedding_model", return_value=bge):
             await _run_until_idle(_rebuilder(graph, store))
             first_stamp = db.stamp
             old = entity_index_marker(f"default:{DEFAULT_EMBEDDING_MODEL}:4", first_stamp)
@@ -1064,7 +1129,6 @@ class TestAModelSwitchReRunsThePasses:
         embeds with the old model. Its write lands after the pass has moved
         past the row, so the pass would never repair it."""
         from app.models.entities import EntityRecord
-        from app.modules.transformers import entity_vectorstore
         from app.modules.transformers.entity_vectorstore import (
             EMBEDDING_MODEL_FIELD,
             EntityVectorStore,
@@ -1096,7 +1160,7 @@ class TestAModelSwitchReRunsThePasses:
         graph.docs[APPS]["app-1"] = _app()
         graph.sources[(RECORDS, "app-1")] = [_rec("r1", name="Q3 plan", group=None)]
         models = {"text-embedding-3-small": small, "text-embedding-ada-002": ada}
-        with embedding_models(models), patch.object(entity_vectorstore, "get_default_embedding_model"):
+        with embedding_models(models), patch("app.utils.llm.get_default_embedding_model"):
             await _run_until_idle(_rebuilder(graph, leader))
             await other.embedding_fingerprint()
 
@@ -1232,11 +1296,9 @@ class TestACollectionEmptiedFromOutside:
 
     @staticmethod
     def _default_model() -> Any:  # noqa: ANN401
-        from app.modules.transformers import entity_vectorstore
         from tests.support.entity_vector_db import FakeEmbeddingModel
 
-        return patch.object(
-            entity_vectorstore, "get_default_embedding_model", return_value=FakeEmbeddingModel(1.0, 4),
+        return patch("app.utils.llm.get_default_embedding_model", return_value=FakeEmbeddingModel(1.0, 4),
         )
 
     @staticmethod

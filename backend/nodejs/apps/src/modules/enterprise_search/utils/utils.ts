@@ -1,3 +1,21 @@
+import { parseTurnLabel } from '../../agent-harness/domain/turn-labels';
+import {
+  couldNotDoOf,
+  budgetScopeField,
+  notFoundOf,
+} from '../../agent-harness/projection/timeline';
+import { withSavedEngineLines } from '../../agent-harness/projection/legacy-engine-lines';
+import type { OutcomeView } from '../../agent-harness/projection/outcome-view';
+import {
+  SessionRole,
+  sessionRoleOf,
+} from '../../agent-harness/domain/session-roles';
+import {
+  historySender,
+  ownerHistoryTurns,
+} from '../../agent-harness/domain/session-audience';
+import type { AppConfig } from '../../tokens_manager/config/config';
+import { redactConversationFor, viewerOf } from './viewer-redaction';
 import {
   AIServiceResponse,
   IAIModel,
@@ -8,6 +26,14 @@ import {
   IMessageDocument,
   IMessagePart,
 } from '../types/conversation.interfaces';
+import {
+  storedQuestion,
+  type RunCommand,
+} from '../../agent-harness/domain/commands';
+import {
+  CUT_SHORT_REASONS,
+  type CutShortReason,
+} from '../../agent-harness/contracts/generated/core/enums';
 import {
   getConversationRepository,
   type ChatSessionDto,
@@ -51,11 +77,12 @@ import {
   SSEProtocol,
 } from './agui';
 import { StreamedContentAccumulator } from './stream-lifecycle';
-import {
-  CHAT_ERROR_MESSAGES,
-  userFacingChatError,
-} from './chat-error-messages';
+import { readAIStreamChunk } from './chat-stream-reader';
+import { userFacingChatError } from './chat-error-messages';
 import { stripModelAuthoredMarkers } from './answer-markers';
+import { envFlag } from '../../../libs/utils/env-flags';
+import { createUnitOfWork } from '../../../libs/repositories/doc-store';
+import { markErasureRequested } from '../../../libs/repositories/agent-harness/session-fields';
 
 const logger = new Logger({
   service: 'enterprise-search',
@@ -98,18 +125,22 @@ export const extractModelInfo = (
   };
 };
 
+export { conversationTitleFromQuery } from './quoted-selection';
+
 export const buildUserQueryMessage = (
   query: string,
   appliedFilters?: IAppliedFilters,
   chatMode?: string,
   attachments?: IChatAttachmentRef[],
+  command?: RunCommand,
 ): NewMessage => ({
   messageType: 'user_query',
-  content: query,
+  content: storedQuestion(query, command),
   contentFormat: 'MARKDOWN',
   ...(appliedFilters ? { appliedFilters } : {}),
   modelInfo: chatMode ? ({ chatMode } as IAIModel) : undefined,
   ...(attachments && attachments.length > 0 ? { attachments } : {}),
+  ...(command !== undefined ? { command } : {}),
   createdAt: new Date(),
   updatedAt: new Date(),
 });
@@ -190,6 +221,17 @@ export const findSessionIdsMatchingContent = async (
   return ids;
 };
 
+/** A durable run's failure as its error message stores it (LC2FIX): its run, and its code for the web app to word. */
+export interface RunFailureFields {
+  runId: string;
+  errorCode?: string;
+  errorServers?: string[];
+  /** ADR-OPS-01 D5: an `operator_stopped` run's control scope and reason. */
+  errorStop?: { scope: string; reason: string };
+  /** WP-89: the failure as the typed outcome an answered run carries. */
+  runOutcome?: OutcomeView;
+}
+
 /**
  * A regeneration that edits the chat's first question moves the title with it, in memory, and whatever saves the chat's
  * state next (the answer, a partial answer, a failure) writes that title with it; restoring the title drops the entry.
@@ -203,10 +245,20 @@ const editedTitleOf = (conversation: object): { title?: string } => {
 
 export const buildAIFailureResponseMessage = (
   content?: string,
+  parts?: IMessagePart[],
+  run?: RunFailureFields,
 ): NewMessage => ({
   messageType: 'error',
   content: content ?? 'Error Generating Response, Please try again',
   contentFormat: 'MARKDOWN',
+  ...(parts !== undefined && parts.length > 0 ? { parts } : {}),
+  ...(run !== undefined ? { runId: run.runId } : {}),
+  ...(run?.errorCode !== undefined ? { errorCode: run.errorCode } : {}),
+  ...(run?.errorServers !== undefined && run.errorServers.length > 0
+    ? { errorServers: run.errorServers }
+    : {}),
+  ...(run?.errorStop !== undefined ? { errorStop: run.errorStop } : {}),
+  ...(run?.runOutcome !== undefined ? { runOutcome: run.runOutcome } : {}),
   createdAt: new Date(),
   updatedAt: new Date(),
 });
@@ -338,9 +390,13 @@ export const appendMessageFeedback = (
     tx ?? undefined,
   );
 
+/** How far back regenerate looks for the conversation's last answer (question rows may follow it). */
+export const REGENERATE_TAIL_MESSAGES = 50;
+
 /**
  * Fetch a session's messages, `seq`-ordered (ascending = chronological).
  */
+
 export const getMessages = async (
   sessionId: string,
   options: {
@@ -349,6 +405,8 @@ export const getMessages = async (
     limit?: number;
     populateCitations?: boolean;
     sort?: 1 | -1;
+    /** A durable answer's label (P2.5a) is never read unless asked for by name: it names sources a reader may not see. */
+    withLabels?: boolean;
   },
   tx?: Tx | null,
 ): Promise<any[]> => {
@@ -360,6 +418,7 @@ export const getMessages = async (
       limit: options.limit,
       withCitations: options.populateCitations,
       order: options.sort === -1 ? 'desc' : 'asc',
+      withLabels: options.withLabels,
     },
     tx ?? undefined,
   );
@@ -399,6 +458,16 @@ export const withoutErrorStacks = <T extends object>(conversation: T): T => {
   };
 };
 
+/** Erasure bookkeeping (E7B) is not part of a conversation's response shape. */
+export const withoutErasureMarker = <T extends object>(
+  conversation: T,
+): Omit<T, 'erasureRequestedAt'> => {
+  const { erasureRequestedAt: _marker, ...rest } = conversation as T & {
+    erasureRequestedAt?: unknown;
+  };
+  return rest;
+};
+
 /**
  * Error text, the failure reason and the compacted summary are written from the
  * owner's runs and can quote what they read; other people listing the chat get none.
@@ -420,8 +489,13 @@ export const attachMessages = (session: any, messages: any[]): any => {
   return {
     ...withoutErrorStacks(cleanSession as object),
     messages: (messages || []).map((message: any) => {
-      const { sessionId, orgId, seq, ...rest } = message;
-      return rest;
+      const { sessionId, orgId, seq, ...rest } = message as Record<
+        string,
+        unknown
+      >;
+      return rest.parts === undefined
+        ? rest
+        : { ...rest, parts: withSavedEngineLines(rest.parts) };
     }),
   };
 };
@@ -593,6 +667,20 @@ export const answeredModelInfo = (
   };
 };
 
+/** The limit that cut an answer short (BUDGETEND), when the completion names one this build knows. */
+const cutShortBy = (
+  data: IAIResponse,
+): Pick<IMessage, 'truncatedBy' | 'budgetScope'> =>
+  !isClassifiedFailureAnswer(data) &&
+  typeof data.truncatedBy === 'string' &&
+  (CUT_SHORT_REASONS as readonly string[]).includes(data.truncatedBy)
+    ? {
+        truncatedBy: data.truncatedBy as CutShortReason,
+        // C9.06 (WP-51): which shared budget ran out, so an extension's stop line can name it.
+        ...budgetScopeField(data as unknown as Record<string, unknown>),
+      }
+    : {};
+
 export const buildAIResponseMessage = (
   aiResponse: AIServiceResponse<IAIResponse>,
   citations: CitationDto[] = [],
@@ -603,14 +691,20 @@ export const buildAIResponseMessage = (
   // an empty answer is valid there (see AnswerFinalizer's cancelled branch).
   // `waiting_input` is the ask_user_question pause: the card is the turn,
   // not a prose answer.
+  // WP-89: a run whose outcome the web app words (a file it still owes, nothing gathered) may have no prose.
   const allowsEmptyAnswer =
-    data?.status === 'stopped' || data?.status === 'waiting_input';
+    data?.status === 'stopped' ||
+    data?.status === 'waiting_input' ||
+    data?.runOutcome !== undefined;
   if (!data || (!data.answer && !allowsEmptyAnswer)) {
     throw new InternalServerError('AI response must include an answer');
   }
 
   const message: NewMessage = {
     messageType: isClassifiedFailureAnswer(data) ? 'error' : 'bot_response',
+    ...(isClassifiedFailureAnswer(data) && data.errorCode
+      ? { errorCode: data.errorCode }
+      : {}),
     createdAt: new Date(),
     updatedAt: new Date(),
     content: data.answer ?? '',
@@ -619,6 +713,10 @@ export const buildAIResponseMessage = (
       citationId: citation._id,
     })),
     confidence: data.confidence,
+    ...cutShortBy(data),
+    ...(data.runOutcome !== undefined ? { runOutcome: data.runOutcome } : {}),
+    ...notFoundOf(data as unknown as Record<string, unknown>),
+    ...couldNotDoOf(data as unknown as Record<string, unknown>),
     followUpQuestions:
       data.followUpQuestions?.map((q) => ({
         question: q.question,
@@ -666,6 +764,12 @@ export const buildAIResponseMessage = (
 
   if (data.status === 'stopped') {
     message.status = 'stopped';
+  }
+
+  // FG2: what the turn read, so the next turn's flow guard (and a durable import) can decide from it.
+  const label = parseTurnLabel(data.label);
+  if (label !== null) {
+    message.label = label;
   }
 
   return message;
@@ -805,16 +909,89 @@ const askResultsForTurn = (
     : [];
 };
 
-const withTurnAskToolResults = (
+/**
+ * The questions a bot turn asked that its own `parts` do not already carry
+ * (#3592: the questions row is a sibling of the answer; a resume needs it on
+ * this turn).
+ */
+const turnAskToolResults = (
   messages: IMessage[],
   botIndex: number,
-  existing: PreviousToolResult[],
 ): PreviousToolResult[] => {
-  if (existing.some((row) => row.tool_name?.includes('ask_user_question'))) {
-    return existing;
+  const msg = messages[botIndex];
+  if (msg?.messageType !== 'bot_response') return [];
+  const own = toolResultsFromParts(msg.parts);
+  if (own.some((row) => row.tool_name?.includes('ask_user_question'))) {
+    return [];
   }
-  const extra = askResultsForTurn(messages, botIndex);
-  return extra.length ? [...existing, ...extra] : existing;
+  return askResultsForTurn(messages, botIndex);
+};
+
+/** Why a history turn is not a whole answer: the user stopped it, or the turn failed before one. */
+type HistoryTurnStatus = 'stopped' | 'failed';
+
+/** One turn of the history sent to the AI service; a type alias, not an interface, so it stays assignable to a plain record. */
+export type HistoryTurn = {
+  content: IMessage['content'];
+  role: IMessage['messageType'];
+  sender?: string;
+  attachments?: NonNullable<IMessage['attachments']>;
+  referenceData?: NonNullable<IMessage['referenceData']>;
+  tool_results?: PreviousToolResult[];
+  status?: HistoryTurnStatus;
+  modelKey?: string;
+  modelName?: string;
+  reasoningEffort?: IAIModel['reasoningEffort'];
+  modelNote?: string;
+};
+
+const historyTurn = (
+  msg: IMessage,
+  parts: IMessagePart[] | undefined,
+  askResults: PreviousToolResult[] = [],
+): HistoryTurn => {
+  const toolResults =
+    msg.messageType === 'bot_response'
+      ? [...toolResultsFromParts(parts), ...askResults]
+      : [];
+  return {
+    content: msg.content,
+    role: msg.messageType,
+    // Whose turn it is when not the owner's (SS2): history read for another
+    // actor stubs it.
+    // A stored row may carry a null sender, which the message type does not admit.
+    ...(msg.senderId != null && {
+      sender: historySender(String(msg.senderId)),
+    }),
+    ...(msg.attachments &&
+      msg.attachments.length > 0 && {
+        attachments: msg.attachments,
+      }),
+    // Include referenceData for follow-up queries (IDs from tool responses)
+    ...(msg.referenceData &&
+      msg.referenceData.length > 0 && {
+        referenceData: msg.referenceData,
+      }),
+    // Prior tool calls/results for this turn — lets the rebuilt agent
+    // see HOW a past answer was produced instead of text-only history
+    // (see `_convert_conversation_turn`, factory.py).
+    ...(toolResults.length > 0 && { tool_results: toolResults }),
+    // A reply the user stopped did not finish its card's work, so the card can be answered again.
+    ...(msg.messageType === 'bot_response' &&
+      msg.status === 'stopped' && { status: 'stopped' }),
+    // Which model wrote each answer, for the AI service.
+    ...(msg.messageType === 'bot_response' &&
+      msg.modelInfo?.modelKey && {
+        modelKey: msg.modelInfo.modelKey,
+        modelName: msg.modelInfo.modelName,
+        ...(msg.modelInfo.reasoningEffort && {
+          reasoningEffort: msg.modelInfo.reasoningEffort,
+        }),
+        ...(msg.modelInfo.modelNote && {
+          modelNote: msg.modelInfo.modelNote,
+        }),
+      }),
+  };
 };
 
 /** Whether the turn at `index` still gets an answer before the next question. */
@@ -827,8 +1004,67 @@ const answerFollows = (messages: IMessage[], index: number): boolean => {
   return false;
 };
 
+/** A steering message the run took (P1b T2); one it never took reached no model. */
+const isTakenInput = (part: IMessagePart): boolean =>
+  part.type === 'user_input' && part.consumed !== false;
+
 /**
- * Prior turns for the AI service, oldest first.
+ * What the model answered before a steering message: the segment's last text
+ * when no tool call follows it. Narration before a tool call is left out, as
+ * history leaves it out of every tool-calling turn.
+ */
+const segmentAnswer = (segment: IMessagePart[]): string => {
+  let answer = '';
+  for (const part of segment) {
+    if (part.type === 'text') answer = part.content ?? '';
+    else if (part.type === 'tool_call') answer = '';
+  }
+  return answer;
+};
+
+/**
+ * One message's `previousConversations` entries (none for the types history
+ * leaves out). A durable answer that took steering messages is split where it
+ * took them, so a later model sees each one after the tool calls before it,
+ * as the run's own model did.
+ */
+export const historyTurns = (
+  msg: IMessage,
+  askResults: PreviousToolResult[] = [],
+): HistoryTurn[] => {
+  if (msg.messageType === 'error' || msg.messageType === 'tool_call') {
+    return [];
+  }
+  const parts = msg.parts;
+  if (msg.messageType !== 'bot_response' || !parts?.some(isTakenInput)) {
+    return [historyTurn(msg, parts, askResults)];
+  }
+  const turns: HistoryTurn[] = [];
+  let segment: IMessagePart[] = [];
+  for (const part of parts) {
+    if (!isTakenInput(part)) {
+      segment.push(part);
+      continue;
+    }
+    const answered = segmentAnswer(segment);
+    if (answered !== '' || toolResultsFromParts(segment).length > 0) {
+      turns.push(
+        historyTurn(
+          { messageType: 'bot_response', content: answered },
+          segment,
+        ),
+      );
+    }
+    turns.push({ content: part.content ?? '', role: 'user_query' });
+    segment = [];
+  }
+  turns.push(historyTurn(msg, segment, askResults));
+  return turns;
+};
+
+/**
+ * Prior turns for the AI service, oldest first. Legacy routes run the owner's
+ * turns only: anyone else's turns reach the model as a stub (SS2).
  *
  * A turn that failed before an answer leaves an `error` row in place of one.
  * It is sent as an answer with `status: 'failed'`: dropped, its question
@@ -837,65 +1073,34 @@ const answerFollows = (messages: IMessage[], index: number): boolean => {
  * `status: 'stopped'`. The AI service renders both as short markers.
  */
 export const formatPreviousConversations = (messages: IMessage[]) => {
-  const result: Array<Record<string, unknown>> = [];
+  const turns: HistoryTurn[] = [];
   // Tracked, not read off the last entry: a fork keeps stored `system` rows,
   // which can sit between a question and its error.
-  let questionOpen = false;
+  let openQuestion: IMessage | undefined;
   for (let i = 0; i < messages.length; i++) {
     const msg = messages[i];
     if (!msg || msg.messageType === 'tool_call') {
       continue;
     }
     if (msg.messageType === 'error') {
-      if (questionOpen && !answerFollows(messages, i)) {
-        result.push({ role: 'bot_response', content: '', status: 'failed' });
-        questionOpen = false;
+      if (openQuestion !== undefined && !answerFollows(messages, i)) {
+        // The marker is the open question's answer, so it goes wherever that question's turn goes (SS2).
+        const asker = openQuestion.senderId;
+        turns.push({
+          role: 'bot_response',
+          content: '',
+          status: 'failed',
+          ...(asker != null && { sender: historySender(String(asker)) }),
+        });
+        openQuestion = undefined;
       }
       continue;
     }
-    if (msg.messageType === 'user_query') questionOpen = true;
-    if (msg.messageType === 'bot_response') questionOpen = false;
-    let toolResults: PreviousToolResult[] =
-      msg.messageType === 'bot_response' ? toolResultsFromParts(msg.parts) : [];
-    if (msg.messageType === 'bot_response') {
-      // The questions row is a sibling of the answer, not part of its `parts`;
-      // a resume needs it on this turn.
-      toolResults = withTurnAskToolResults(messages, i, toolResults);
-    }
-    result.push({
-      content: msg.content,
-      role: msg.messageType,
-      ...(msg.attachments &&
-        msg.attachments.length > 0 && {
-          attachments: msg.attachments,
-        }),
-      // Include referenceData for follow-up queries (IDs from tool responses)
-      ...(msg.referenceData &&
-        msg.referenceData.length > 0 && {
-          referenceData: msg.referenceData,
-        }),
-      // Prior tool calls/results for this turn — lets the rebuilt agent
-      // see HOW a past answer was produced instead of text-only history
-      // (see `_convert_conversation_turn`, factory.py).
-      ...(toolResults.length > 0 && { tool_results: toolResults }),
-      // A reply the user stopped did not finish its card's work, so the card can be answered again.
-      ...(msg.messageType === 'bot_response' &&
-        msg.status === 'stopped' && { status: 'stopped' }),
-      // Which model wrote each answer, for the AI service.
-      ...(msg.messageType === 'bot_response' &&
-        msg.modelInfo?.modelKey && {
-          modelKey: msg.modelInfo.modelKey,
-          modelName: msg.modelInfo.modelName,
-          ...(msg.modelInfo.reasoningEffort && {
-            reasoningEffort: msg.modelInfo.reasoningEffort,
-          }),
-          ...(msg.modelInfo.modelNote && {
-            modelNote: msg.modelInfo.modelNote,
-          }),
-        }),
-    });
+    if (msg.messageType === 'user_query') openQuestion = msg;
+    if (msg.messageType === 'bot_response') openQuestion = undefined;
+    turns.push(...historyTurns(msg, turnAskToolResults(messages, i)));
   }
-  return result;
+  return ownerHistoryTurns(turns) as HistoryTurn[];
 };
 
 export const getPaginationParams = (req: AuthenticatedUserRequest) => {
@@ -943,6 +1148,7 @@ export const buildSortOptions = (
 export const addComputedFields = <
   T extends {
     initiator: { toString(): string };
+    isShared?: boolean;
     sharedWith?: Array<{ userId: { toString(): string }; accessLevel: string }>;
   },
 >(
@@ -957,11 +1163,42 @@ export const addComputedFields = <
     ...withoutErrorStacks(
       isOwner ? conversation : withoutOwnerOnlyFields(conversation),
     ),
-    isOwner,
+    ...viewerAccess(conversation, viewerId),
+  };
+};
+
+/**
+ * What the reader of a conversation is to it (SS0): `role` is the explicit
+ * meaning of `accessLevel` (`read` → viewer, `write` → collaborator); a reader
+ * with no share (a project member) is a viewer.
+ */
+export const viewerAccess = (
+  conversation: {
+    initiator: { toString(): string };
+    isShared?: boolean;
+    sharedWith?: Array<{ userId: { toString(): string }; accessLevel: string }>;
+  },
+  userId: string | { toString(): string },
+): { isOwner: boolean; accessLevel: string; role: SessionRole } => {
+  // Callers may hand over an ObjectId where a string is typed.
+  const viewerId = String(userId);
+  const shares = (conversation.sharedWith ?? []).map((share) => ({
+    userId: share.userId.toString(),
+    accessLevel: share.accessLevel,
+  }));
+  return {
+    isOwner: conversation.initiator.toString() === viewerId,
     accessLevel:
-      conversation.sharedWith?.find(
-        (share) => share.userId.toString() === viewerId,
-      )?.accessLevel || 'read',
+      shares.find((share) => share.userId === viewerId)?.accessLevel || 'read',
+    role:
+      sessionRoleOf(
+        {
+          ownerId: conversation.initiator.toString(),
+          isShared: conversation.isShared === true,
+          shares,
+        },
+        viewerId,
+      ) ?? 'viewer',
   };
 };
 
@@ -1464,7 +1701,8 @@ export const buildMessageSortOptions = (
 };
 
 export const buildConversationResponse = (
-  conversation: ChatSessionDto,
+  // `harnessVersion` is read beside the repository's row (harness-session-fields).
+  conversation: ChatSessionDto & { harnessVersion?: string },
   userId: string,
   pagination: {
     page: number;
@@ -1495,6 +1733,8 @@ export const buildConversationResponse = (
     failReason: conversation.failReason,
     projectId: conversation.projectId,
     projectVisibility: conversation.projectVisibility,
+    // Runs on the durable harness (LC2FIX): the chat's commands follow the session, not its latest answer.
+    durable: conversation.harnessVersion === 'durable-v1',
     messages: messages.map((message) => ({
       ...message,
       citations:
@@ -1516,13 +1756,7 @@ export const buildConversationResponse = (
         end: totalMessages - skip,
       },
     },
-    access: {
-      isOwner: idOf(conversation.initiator) === idOf(userId),
-      accessLevel:
-        conversation.sharedWith?.find(
-          (share) => idOf(share.userId) === idOf(userId),
-        )?.accessLevel || 'read',
-    },
+    access: viewerAccess(conversation, userId),
   };
 };
 
@@ -1764,8 +1998,10 @@ const failConversation = async (
   stack: string | undefined,
   metadata: Map<string, any> | undefined,
   noun: string,
+  parts?: IMessagePart[],
+  run?: RunFailureFields,
 ): Promise<void> => {
-  const failedMessage = buildAIFailureResponseMessage(failReason);
+  const failedMessage = buildAIFailureResponseMessage(failReason, parts, run);
   await appendMessages(
     conversation._id,
     conversation.orgId,
@@ -1795,7 +2031,6 @@ const failConversation = async (
     logger.error(`Failed to save ${noun} error state`, {
       conversationId: conversation._id,
       agentKey: conversation.agentKey,
-      failReason,
     });
   }
 };
@@ -1807,6 +2042,8 @@ export const markConversationFailed = async (
   errorType?: string,
   stack?: string,
   metadata?: Map<string, any>,
+  parts?: IMessagePart[],
+  run?: RunFailureFields,
 ): Promise<void> => {
   try {
     await failConversation(
@@ -1817,10 +2054,11 @@ export const markConversationFailed = async (
       stack,
       metadata,
       'conversation',
+      parts,
+      run,
     );
     logger.debug('Conversation marked as failed', {
       conversationId: conversation._id,
-      failReason,
     });
   } catch (error: any) {
     logger.error('Error marking conversation as failed', {
@@ -1954,14 +2192,12 @@ export const replaceMessageWithError = async (
       logger.error('Failed to replace message with error', {
         conversationId: conversation._id,
         messageId,
-        errorMessage,
       });
     }
 
     logger.debug('Message replaced with error', {
       conversationId: conversation._id,
       messageId,
-      errorMessage,
     });
   } catch (error: any) {
     logger.error('Error replacing message with error', {
@@ -2012,6 +2248,8 @@ export const markAgentConversationFailed = async (
   errorType?: string,
   stack?: string,
   metadata?: Map<string, any>,
+  parts?: IMessagePart[],
+  runId?: string,
 ): Promise<void> => {
   try {
     await failConversation(
@@ -2022,11 +2260,17 @@ export const markAgentConversationFailed = async (
       stack,
       metadata,
       'agent conversation',
+      parts,
+      runId !== undefined
+        ? {
+            runId,
+            ...(errorType !== undefined ? { errorCode: errorType } : {}),
+          }
+        : undefined,
     );
     logger.debug('Agent conversation marked as failed', {
       conversationId: conversation._id,
       agentKey: conversation.agentKey,
-      failReason,
     });
   } catch (error: any) {
     logger.error('Failed to mark agent conversation as failed', {
@@ -2050,9 +2294,6 @@ export const buildAgentConversationSortOptions = (req: any) => {
   return sortOptions;
 };
 
-/**
- * Validate agent conversation access
- */
 export const validateAgentConversationAccess = (
   conversationId: string,
   agentKey: string,
@@ -2075,28 +2316,48 @@ export const deleteAgentConversation = async (
   agentKey: string,
   userId: string,
   orgId: string,
-  // Runs once access is confirmed and before the delete; a throw keeps the conversation.
+  /** Runs with the delete, in its unit of work (E7 enqueues erasure here). */
+  onDeleted?: (tx: Tx) => Promise<void>,
+  // Runs once access is confirmed and before the delete, outside any unit of work; a throw keeps the conversation.
   beforeDelete?: () => Promise<void>,
 ): Promise<ChatSessionDto | null> => {
   try {
-    const conversation = await validateAgentConversationAccess(
-      conversationId,
-      agentKey,
-      userId,
-      orgId,
-      'write',
-    );
+    const scope: SessionScope = { kind: 'agent', agentKey };
+    const actor: SessionActor = { orgId, userId };
+    // Owner only: a share of any level never deletes (SS0). A malformed id matches nothing.
+    const findOwned = (tx?: Tx): Promise<ChatSessionDto | null> =>
+      isValidId(conversationId)
+        ? repo().findOwned(scope, conversationId, actor, tx)
+        : Promise.resolve(null);
 
-    if (!conversation) {
-      return null;
+    if (beforeDelete !== undefined) {
+      if (!(await findOwned())) {
+        return null;
+      }
+      await beforeDelete();
     }
 
-    await beforeDelete?.();
+    const remove = async (tx?: Tx): Promise<ChatSessionDto | null> => {
+      const conversation = await findOwned(tx);
+      if (!conversation) {
+        return null;
+      }
+      const saved = await repo().softDeleteAgent(conversation._id, userId, tx);
+      if (saved && onDeleted !== undefined && tx !== undefined) {
+        // Written with the delete, so a lost enqueue is still found (E7B).
+        await markErasureRequested(conversation._id, orgId, Date.now(), tx);
+        await onDeleted(tx);
+      }
+      return saved;
+    };
 
-    const updatedConversation = await repo().softDeleteAgent(
-      conversation._id,
-      userId,
-    );
+    const updatedConversation =
+      onDeleted !== undefined
+        ? await createUnitOfWork(envFlag('REPLICA_SET_AVAILABLE')).run(remove)
+        : await remove();
+    if (!updatedConversation) {
+      return null;
+    }
 
     logger.debug('Agent conversation deleted', {
       conversationId,
@@ -2181,9 +2442,15 @@ export const sendSSEErrorEvent = async (
 
 /** The answer's search was served with less than the full search (the query service says so): the UI shows a note. */
 export const searchDegradedMeta = (
-  data: Pick<IAIResponse, 'searchDegraded'> | null | undefined,
-): { searchDegraded?: true } =>
-  data?.searchDegraded === true ? { searchDegraded: true } : {};
+  data:
+    Pick<IAIResponse, 'searchDegraded' | 'accessNotices'> | null | undefined,
+): {
+  searchDegraded?: true;
+  accessNotices?: NonNullable<IAIResponse['accessNotices']>;
+} => ({
+  ...(data?.searchDegraded === true ? { searchDegraded: true as const } : {}),
+  ...(data?.accessNotices?.length ? { accessNotices: data.accessNotices } : {}),
+});
 
 /**
  * Send complete event to client with conversation data — `RUN_FINISHED`
@@ -2220,7 +2487,8 @@ export const sendSSECompleteEvent = (
 };
 
 /**
- * Handle regeneration stream data events
+ * Regenerate's hooks on the shared AI-stream reader: an error replaces the regenerated message,
+ * and a question is handed back to be attached to the answer when it is saved.
  */
 export const handleRegenerationStreamData = (
   chunk: Buffer,
@@ -2228,228 +2496,33 @@ export const handleRegenerationStreamData = (
   existingConversation: ChatSessionDto | null,
   messageId: string | null,
   session: Tx | null,
-  requestId: string,
   res: Response,
   onCompleteData: (data: IAIResponse) => void,
-  protocol?: SSEProtocol,
   accumulator?: StreamedContentAccumulator,
-  onUpstreamError?: () => void,
+  onUpstreamError?: (code: unknown) => void,
   onAskUserQuestion?: (payload: unknown) => void,
-): string => {
-  const chunkStr = chunk.toString();
-  let newBuffer = buffer + chunkStr;
-
-  const events = newBuffer.split('\n\n');
-  newBuffer = events.pop() || '';
-
-  let filteredChunk = '';
-  const agui = isAGUI(protocol);
-
-  for (const event of events) {
-    if (event.trim()) {
-      const lines = event.split('\n');
-      const eventType = lines
-        .find((line) => line.startsWith('event:'))
-        ?.replace('event:', '')
-        .trim();
-      const dataLines = lines
-        .filter((line) => line.startsWith('data:'))
-        .map((line) => line.replace(/^data: ?/, ''));
-      const dataLine = dataLines.join('\n');
-      if (agui && eventType === AGUIEventType.TOOL_CALL_START && dataLine) {
-        accumulator?.feedToolCallStart(dataLine);
+): string =>
+  readAIStreamChunk(chunk, buffer, res, accumulator, {
+    onAnswer: onCompleteData,
+    onRunError: (error) => {
+      onUpstreamError?.(error.data.code);
+      if (existingConversation && messageId) {
+        replaceMessageWithError(
+          existingConversation,
+          messageId,
+          error.message,
+          session,
+          'streaming_error',
+          error.stack,
+        ).catch((err: unknown) => {
+          logger.error('Failed to replace message with error', { error: err });
+        });
       }
-
-      if (agui && eventType === AGUIEventType.RUN_FINISHED && dataLine) {
-        // Mirrors the legacy `complete` branch below — `result` on
-        // Python's RUN_FINISHED IS the same completion_data shape
-        // `complete.data` carries today (see `AGUIFormatter.answer_final`).
-        try {
-          const parsed = JSON.parse(dataLine);
-          onCompleteData(parsed.result ?? parsed);
-        } catch (parseError: any) {
-          logger.error('Failed to parse RUN_FINISHED event data', {
-            requestId,
-            parseError: parseError.message,
-            dataLine,
-          });
-          filteredChunk += event + '\n\n';
-        }
-      } else if (
-        agui &&
-        eventType === AGUIEventType.TEXT_MESSAGE_CONTENT &&
-        dataLine
-      ) {
-        // Feed the passive-disconnect accumulator so a partial answer
-        // survives a dropped connection — see savePartialConversation.
-        try {
-          accumulator?.feedTextMessageContent(JSON.parse(dataLine));
-        } catch {
-          // Non-fatal: still forward the frame below.
-        }
-        filteredChunk += event + '\n\n';
-      } else if (agui && eventType === AGUIEventType.RUN_ERROR && dataLine) {
-        try {
-          const errorData = JSON.parse(dataLine);
-          onUpstreamError?.();
-          if (existingConversation && messageId) {
-            const errorMessage =
-              errorData.message || CHAT_ERROR_MESSAGES.failed;
-            replaceMessageWithError(
-              existingConversation,
-              messageId,
-              errorMessage,
-              session,
-              'streaming_error',
-              errorData.stack,
-            ).catch((err) => {
-              logger.error('Failed to replace message with error', {
-                requestId,
-                error: err.message,
-              });
-            });
-          }
-          filteredChunk += event + '\n\n';
-        } catch (parseError: any) {
-          logger.error('Failed to parse RUN_ERROR event data', {
-            requestId,
-            parseError: parseError.message,
-            dataLine,
-          });
-          filteredChunk += event + '\n\n';
-        }
-      } else if (
-        agui &&
-        eventType === AGUIEventType.CUSTOM &&
-        dataLine &&
-        existingConversation
-      ) {
-        try {
-          const eventData = JSON.parse(dataLine);
-          if (eventData?.name === 'ask_user_question' && eventData.value) {
-            const payload = eventData.value.toolData ?? eventData.value;
-            onAskUserQuestion?.(payload);
-          }
-        } catch (parseErr: any) {
-          logger.warn('Failed to parse CUSTOM event data during regenerate', {
-            requestId,
-            error: parseErr?.message,
-          });
-        }
-        filteredChunk += event + '\n\n';
-      } else if (!agui && eventType === 'complete' && dataLine) {
-        try {
-          const completeData = JSON.parse(dataLine);
-          onCompleteData(completeData);
-        } catch (parseError: any) {
-          logger.error('Failed to parse complete event data', {
-            requestId,
-            parseError: parseError.message,
-            dataLine,
-          });
-          filteredChunk += event + '\n\n';
-        }
-      } else if (!agui && eventType === 'answer_chunk' && dataLine) {
-        // `accumulated` is the running full text, not a delta — see
-        // LegacyFormatter.answer_delta.
-        try {
-          const parsed = JSON.parse(dataLine) as Record<string, unknown>;
-          if (typeof parsed.accumulated === 'string') {
-            accumulator?.setAccumulatedText(parsed.accumulated);
-          }
-        } catch {
-          // Non-fatal: still forward the frame below.
-        }
-        filteredChunk += event + '\n\n';
-      } else if (!agui && eventType === 'error' && dataLine) {
-        onUpstreamError?.();
-        try {
-          const errorData = JSON.parse(dataLine);
-          if (existingConversation && messageId) {
-            const errorMessage =
-              errorData.error ||
-              errorData.message ||
-              CHAT_ERROR_MESSAGES.failed;
-            replaceMessageWithError(
-              existingConversation,
-              messageId,
-              errorMessage,
-              session,
-              'streaming_error',
-              errorData.stack,
-              errorData.metadata
-                ? new Map(Object.entries(errorData.metadata))
-                : undefined,
-            ).catch((err) => {
-              logger.error('Failed to replace message with error', {
-                requestId,
-                error: err.message,
-              });
-            });
-          }
-          filteredChunk += event + '\n\n';
-        } catch (parseError: any) {
-          logger.error('Failed to parse error event data', {
-            requestId,
-            parseError: parseError.message,
-            dataLine,
-          });
-          if (existingConversation && messageId) {
-            const errorMessage = CHAT_ERROR_MESSAGES.failed;
-            replaceMessageWithError(
-              existingConversation,
-              messageId,
-              errorMessage,
-              session,
-              'parse_error',
-              parseError.stack,
-            ).catch((err) => {
-              logger.error('Failed to replace message with error', {
-                requestId,
-                error: err.message,
-              });
-            });
-          }
-          filteredChunk += event + '\n\n';
-        }
-      } else if (
-        eventType === 'ask_user_question' &&
-        dataLine &&
-        existingConversation
-      ) {
-        try {
-          const eventData = JSON.parse(dataLine);
-          if (
-            eventData &&
-            typeof eventData === 'object' &&
-            eventData.status === 'success'
-          ) {
-            const payload = eventData.toolData ?? eventData;
-            onAskUserQuestion?.(payload);
-          }
-        } catch (parseErr: any) {
-          logger.warn(
-            'Failed to parse ask_user_question event data during regenerate',
-            {
-              requestId,
-              error: parseErr?.message,
-            },
-          );
-        }
-        filteredChunk += event + '\n\n';
-      } else {
-        filteredChunk += event + '\n\n';
-      }
-    }
-  }
-
-  if (filteredChunk) {
-    res.write(filteredChunk);
-    (res as any).flush?.();
-  }
-
-  return newBuffer;
-};
+    },
+    onAskUserQuestion: (payload) => {
+      if (existingConversation) onAskUserQuestion?.(payload);
+    },
+  });
 
 /**
  * Handle successful regeneration completion
@@ -2569,8 +2642,10 @@ export const handleRegenerationError = async (
   conversationId: string,
   session: Tx | null,
   requestId: string,
-  errorType: string = 'regeneration_error',
-  protocol?: SSEProtocol,
+  errorType: string,
+  protocol: SSEProtocol | undefined,
+  /** Who the error event goes to: the conversation it carries is hidden for them as in a fetch. */
+  reader: { appConfig: AppConfig; userId: unknown; orgId: unknown },
 ): Promise<void> => {
   const errorMessage = userFacingChatError(error);
 
@@ -2593,7 +2668,11 @@ export const handleRegenerationError = async (
           { orgId: updatedConversation.orgId },
           session,
         );
-        const plainConversation = attachMessages(updatedConversation, messages);
+        const plainConversation = await redactConversationFor(
+          reader.appConfig,
+          viewerOf(reader.userId, reader.orgId),
+          attachMessages(updatedConversation, messages),
+        );
         await sendSSEErrorEvent(
           res,
           errorMessage,
@@ -2633,38 +2712,3 @@ export const handleRegenerationError = async (
     );
   }
 };
-
-/**
- * Monotonic stage timings for one streaming chat request, emitted as a single
- * log line. Pairs with the Python `StageTimer` so the Node and Python halves of
- * a request can be read side by side.
- */
-export class StageTimer {
-  private readonly t0 = process.hrtime.bigint();
-  private last = this.t0;
-  private readonly marks: Array<[string, number]> = [];
-  private emitted = false;
-
-  mark(stage: string): void {
-    const now = process.hrtime.bigint();
-    this.marks.push([stage, Number(now - this.last) / 1e6]);
-    this.last = now;
-  }
-
-  get totalMs(): number {
-    return Number(process.hrtime.bigint() - this.t0) / 1e6;
-  }
-
-  /** Safe to call more than once; only the first call logs. */
-  emit(label: string, extra: Record<string, unknown> = {}): void {
-    if (this.emitted) return;
-    this.emitted = true;
-    const stages = this.marks
-      .map(([n, ms]) => `${n}=${ms.toFixed(0)}ms`)
-      .join(' ');
-    logger.info(
-      `⏱ ${label} total=${this.totalMs.toFixed(0)}ms | ${stages}`,
-      extra,
-    );
-  }
-}

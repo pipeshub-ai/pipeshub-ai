@@ -14,6 +14,7 @@ _CODE = "code graph and block collections (codeFiles, blocks): not part of the a
 _SYNC = "sync points hold a connector's cursor"
 _STATUS = "indexing and extraction status fields: kg.record_state, written by the indexing role"
 _ENTITY = "entity and taxonomy collections and their enrichment edges"
+_NAMED = "entityRelations edges (a record and the people and organizations it names): not part of the access data"
 
 WRITERS: dict[str, tuple[str, str]] = {
     "backfill_block_name_folded": (NO_PROJECTION, _CODE),
@@ -26,6 +27,7 @@ WRITERS: dict[str, tuple[str, str]] = {
     "batch_upsert_nodes": (PROJECTED, ""),
     "batch_upsert_records": (PROJECTED, ""),
     "compare_and_set_indexing_status": (NO_PROJECTION, _STATUS),
+    "transition_unsupported": (NO_PROJECTION, _STATUS),
     "compare_and_set_record_fields": (PROJECTED, ""),
     "copy_document_relationships": (NO_PROJECTION, _ENTITY),
     "create_edges_if_absent": (PROJECTED, ""),
@@ -39,6 +41,7 @@ WRITERS: dict[str, tuple[str, str]] = {
     "delete_edges_to": (PROJECTED, ""),
     "delete_edges_to_groups": (PROJECTED, ""),
     "delete_edges_touching_nodes": (PROJECTED, ""),
+    "delete_node_if_match": (PROJECTED, ""),
     "delete_nodes": (PROJECTED, ""),
     "delete_parent_child_edge_to_record": (PROJECTED, ""),
     "delete_records_and_relations": (PROJECTED, ""),
@@ -55,13 +58,19 @@ WRITERS: dict[str, tuple[str, str]] = {
     "stage_state_create": (NO_PROJECTION, "stage states of the indexing pipeline"),
     "stage_states_delete_for_virtual_records": (NO_PROJECTION, "stage states of the indexing pipeline"),
     "stage_states_delete_unheld_revisions": (NO_PROJECTION, "stage states of the indexing pipeline"),
+    "sweep_deleted_connector_writes": (NO_PROJECTION, "blocks, stage states and code links, written after a connector's delete"),
     "update_indexing_status_for_record_ids": (NO_PROJECTION, _STATUS),
+    "update_queued_duplicates_status": (NO_PROJECTION, _STATUS),
+    "update_record_fields_for_ids": (NO_PROJECTION, "the Force reindex request of a record (refreshIntentId, refreshIntentAtMs): not an access field"),
     "update_knowledge_base": (PROJECTED, ""),
     "update_node": (PROJECTED, ""),
+    "update_node_fields_if": (PROJECTED, ""),
     "update_node_fields_if_match": (PROJECTED, ""),
     "update_sync_point_if": (NO_PROJECTION, _SYNC),
     "upsert_authenticated_as": (PROJECTED, ""),
     "upsert_sync_point": (NO_PROJECTION, _SYNC),
+    # the attempt-start write takes any record fields, as the update_node it replaces did
+    "write_attempt_start": (PROJECTED, ""),
     # trash.py
     "soft_delete_records": (PROJECTED, ""), "restore_records": (PROJECTED, ""), "purge_trashed_records": (PROJECTED, ""), "purge_trash_kept_record_groups": (PROJECTED, ""),
     "take_back_kept_record_group": (PROJECTED, ""), "claim_push_record": (PROJECTED, ""),
@@ -70,6 +79,48 @@ WRITERS: dict[str, tuple[str, str]] = {
     # delete.py, lookups.py
     "delete_record": (PROJECTED, ""), "unlink_nodes_missed_by_full_sync": (PROJECTED, ""), "link_record_to_group": (PROJECTED, ""), "update_node_if_match": (PROJECTED, ""),
     "remove_nodes_by_field": (PROJECTED, ""),
+    # kb.py
+    "update_kb_permission": (PROJECTED, ""), "remove_kb_permission": (PROJECTED, ""),
+    "delete_kb_hub_app": (PROJECTED, ""),
+    # legacy_migrations.py: a knowledge base that was a record group becomes an app, the hierarchy edge moves onto its current collection
+    "migrate_legacy_kb_to_app": (PROJECTED, ""), "migrate_legacy_relation_edge": (PROJECTED, ""),
+    "migrate_agent_hub_knowledge": (NO_PROJECTION, "agent knowledge sources and their edges to the agents: kg holds no agent data"),
+    # permissions.py
+    "batch_update_team_member_roles": (PROJECTED, ""), "delete_all_team_permissions": (PROJECTED, ""), "remove_user_access_to_connector": (PROJECTED, ""),
+    "remove_unlinked_user_access_to_connector": (PROJECTED, ""),
+    # core.py, lookups.py: an edge's document changes (a grant's role or type is what the projection reads of it), and the sync's edges and the stale external memberships go
+    "update_edge": (PROJECTED, ""), "delete_connector_sync_edges": (PROJECTED, ""), "reap_stale_external_app_relations": (PROJECTED, ""),
+    # delete.py: a connector instance and everything of it goes in one unit
+    "delete_connector_instance": (PROJECTED, ""),
+    # sync_state.py
+    "update_user_sync_state": (NO_PROJECTION, "the sync state of a user's relation to an app is not an access field"), "update_drive_sync_state": (NO_PROJECTION, "the sync state of a drive node, not an access field"),
+    "backfill_indexed_copy_flags": (NO_PROJECTION, _STATUS), "reset_indexing_status_for_connector": (NO_PROJECTION, _STATUS),
+    # entities.py
+    "create_named_entities_if_absent": (NO_PROJECTION, _ENTITY),
+    "add_named_entity_aliases": (NO_PROJECTION, _ENTITY),
+    "replace_named_entity_values": (NO_PROJECTION, _ENTITY),
+    "copy_named_entity_mentions": (NO_PROJECTION, _ENTITY),
+    "delete_dangling_named_entity_mentions": (NO_PROJECTION, _ENTITY),
+    "delete_dangling_named_entity_values": (NO_PROJECTION, _ENTITY),
+    "delete_orphan_named_entities": (NO_PROJECTION, _ENTITY),
+    "mark_orphan_named_entities": (NO_PROJECTION, _ENTITY),
+    "clear_orphan_named_entity_marks": (NO_PROJECTION, _ENTITY),
+    "schedule_named_entity_persist_retry": (NO_PROJECTION, _ENTITY),
+    "schedule_named_entity_reextract": (NO_PROJECTION, _ENTITY),
+    "schedule_named_entity_reproject": (NO_PROJECTION, _ENTITY),
+    "clear_named_entity_persist_retry": (NO_PROJECTION, _ENTITY),
+    # taxonomy.py: taxonomy nodes, their belongsToCategory / belongsToTopic / belongsToLanguage edges and interCategoryRelations
+    "create_taxonomy_node_if_absent": (NO_PROJECTION, _ENTITY),
+    "add_taxonomy_aliases": (NO_PROJECTION, _ENTITY),
+    "ensure_taxonomy_hierarchy_edge": (NO_PROJECTION, _ENTITY),
+    "move_taxonomy_edges": (NO_PROJECTION, _ENTITY),
+    # people.py, organizations.py: a person's grants and memberships become the user's; the edges from records to the people and organisations they name,
+    # and the owning org of an external organisation, are not held
+    "migrate_person_to_user": (PROJECTED, ""),
+    "batch_create_entity_relations": (NO_PROJECTION, _NAMED),
+    "delete_record_entity_relations": (NO_PROJECTION, _NAMED),
+    "replace_record_entity_relations": (NO_PROJECTION, _NAMED),
+    "stamp_external_org_parents": (NO_PROJECTION, "parentOrgId of an external organization: kg holds that an organization exists, no field of its document"),
 }
 
 

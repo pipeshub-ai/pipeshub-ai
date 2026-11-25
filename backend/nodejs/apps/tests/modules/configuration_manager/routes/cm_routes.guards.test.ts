@@ -29,6 +29,9 @@ import { UserActivities } from '../../../../src/modules/auth/schema/userActiviti
 // returns nothing a member must not see. GET /web-search masks API keys for
 // members; the HTTP test below checks it.
 const MEMBER_ROUTES = new Set([
+  // A person approves linking their own Slack identity (ADR-SLACKID-01).
+  'POST /slack-bot/identity-links/requests/inspect',
+  'POST /slack-bot/identity-links/requests/decide',
   'GET /smtpConfig/status',
   'GET /platform/feature-flags/effective',
   'GET /ai-models/available/:modelType',
@@ -221,7 +224,7 @@ describe('GET /configurationManager/web-search over HTTP', () => {
   beforeEach(async () => {
     savedSecretKey = process.env.SECRET_KEY;
     savedHideSecrets = process.env.HIDE_SECRET_CONFIG;
-    process.env.SECRET_KEY = process.env.SECRET_KEY || 'cm-web-search-secret';
+    process.env.SECRET_KEY = process.env.SECRET_KEY || 'bebe4bcfae5282d8e801761bb8acf01feb1080daa1d12f0fb516bb12861487e6';
     delete process.env.HIDE_SECRET_CONFIG;
 
     const cmConfig = loadConfigurationManagerConfig();
@@ -282,11 +285,10 @@ describe('GET /configurationManager/web-search over HTTP', () => {
     expect(asMember.status).to.equal(200);
     expect(asMember.raw).to.not.include('real-key');
     expect(asMember.providers.map((p) => [p.provider, p.isDefault])).to.deep.equal([
-      ['duckduckgo', false],
       ['serper', true],
       ['tavily', false],
     ]);
-    expect(asMember.providers.slice(1).map((p) => p.configuration.apiKey)).to.deep.equal([
+    expect(asMember.providers.map((p) => p.configuration.apiKey)).to.deep.equal([
       CONFIG_SECRET_PLACEHOLDER,
       CONFIG_SECRET_PLACEHOLDER,
     ]);
@@ -294,7 +296,7 @@ describe('GET /configurationManager/web-search over HTTP', () => {
     const asAdmin = await listProviders(sessionFor(admin));
 
     expect(asAdmin.status).to.equal(200);
-    expect(asAdmin.providers.slice(1).map((p) => p.configuration.apiKey)).to.deep.equal([
+    expect(asAdmin.providers.map((p) => p.configuration.apiKey)).to.deep.equal([
       'serper-real-key',
       'tavily-real-key',
     ]);

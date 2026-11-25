@@ -9,12 +9,18 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 __all__ = [
+    "CONSTRUCT",
+    "DECLARATION",
+    "EXPLICIT",
     "FILLER_KINDS",
     "HEADER_KIND",
+    "INITIALIZER",
     "ParsedFile",
     "ParsedSymbol",
     "PendingEdgeFact",
+    "RETURNS",
     "Relation",
+    "STATIC",
 ]
 
 
@@ -31,6 +37,7 @@ class Relation:
 
     # Cross-file -- target is a bare name, deferred to the resolver.
     CALLS = "CALLS"
+    INDIRECT_CALL = "INDIRECT_CALL"
     IMPORTS = "IMPORTS"
     IMPORTS_FROM = "IMPORTS_FROM"
     RE_EXPORTS = "RE_EXPORTS"
@@ -43,6 +50,25 @@ class Relation:
 # file tile it exactly -- without them, imports, module-level code, comments and
 # whitespace are simply dropped.
 FILLER_KINDS = frozenset({"imports", "statements", "comment", "header"})
+# The modifier of a function or method declared without a body: what runs is elsewhere.
+DECLARATION = "declaration"
+# The modifier of a C/C++ free function with internal linkage (`static`): callable only from its translation unit.
+STATIC = "static"
+# The modifier prefix of a C++ function or method returning a class (`returns:Conn` for `Conn* Pool::get()`): what
+# `pool.get()->open()` and `auto c = pool.get()` are typed by.
+RETURNS = "returns:"
+# The context of a CALLS fact a C++ construction makes (`new Conn(..)`, `Conn c(..)`, `: Base(..)`): it names a type.
+CONSTRUCT = "construct"
+# The context of a CALLS fact from a C++ constructor's `: Name(..)` initializer: a base (constructed) or a member.
+INITIALIZER = "initializer"
+# The modifier prefix of an explicit interface implementation (`explicit:IHandler` on C#'s
+# `Task IHandler.Handle(..)`): it implements IHandler.Handle and is no member of its own type by that name.
+EXPLICIT = "explicit:"
+# The receiver type the parser gives an untyped parameter of a pytest test or fixture: `=fixture:<name>`, for the
+# builder to type from the fixture of that name.
+FIXTURE_MARK = "=fixture:"
+# A Python module's literal `__all__`, as its type table keeps it under "__all__": `=all:a,b`.
+STAR_EXPORTS_MARK = "=all:"
 
 # A container's members are what its children tile around; `header` covers the
 # span from the container's start to its first member.
@@ -69,12 +95,22 @@ class ParsedSymbol:
     parent_chain: tuple[str, ...] = ()
     text: str = ""
     decorators: tuple[str, ...] = ()
+    # Words resolution reads, from the language's handler (languages.MODIFIER_HANDLERS; C/C++: STATIC; C#:
+    # "partial", "extension", "this:<Type>", EXPLICIT), after DECLARATION for a callable with no body.
+    modifiers: tuple[str, ...] = ()
     is_exported: bool = False
     # Index into ParsedFile.symbols of the immediately enclosing container, or
     # None at file level. Drives both block nesting and the tiling invariant.
     parent: int | None = None
     # True when this container has members that tile it.
     is_container: bool = False
+    # A `@property`/`cached_property` method or a `get` accessor: `self.x` reads it, nothing is handed over.
+    is_accessor: bool = False
+    # Type parameters the declaration takes (`class Foo<T, U>`: 2).
+    type_param_count: int = 0
+    # False for a JS/TS module-level value (`export const X = f()`): its initializer runs as module code, so
+    # the facts inside it are the file's, not the value's.
+    owns_facts: bool = True
 
     @property
     def is_filler(self) -> bool:
@@ -99,6 +135,8 @@ class PendingEdgeFact:
     from_kind: str = "block"
     to_kind: str = "block"
     is_member_call: bool = False
+    # C++ `p->f()`: the call goes through `->`, which a class with an `operator->` (optional_ptr<T>) forwards to T.
+    arrow: bool = False
     receiver: str | None = None
     receiver_type: str | None = None
     qualified_prefix: str | None = None
@@ -110,7 +148,14 @@ class PendingEdgeFact:
     # imported one: `b` in `from m import a as b` and `import { a as b }`, `ns`
     # in `import * as ns`. Calls are written against this name.
     local_name: str | None = None
+    # CALLS: "construct" for a C++ construction (`new Conn(..)`, `Conn c(..)`), which names a type, never a
+    # function; "initializer" for a constructor's `: Name(..)`, which names a base or a member. IMPORTS:
+    # "default" for a JS default import, whose local name is the importer's choice, not the module's.
+    # INDIRECT_CALL: the value position ("argument", "collection", "assignment", "return", "prop" for a JSX
+    # prop handler `onClick={f}`, "dispatch" for each value of a table called as `TABLE[k]()`).
     context: str | None = None
+    # A type reference's type-argument count (`IHandler<int>`: 1), where the language reads it (C# bases).
+    type_args: int | None = None
     # EXPORTS names a symbol in *this* file; resolving it against the whole repo
     # would happily bind to a same-named symbol elsewhere.
     restrict_to_file: bool = False
@@ -129,6 +174,8 @@ class PendingEdgeFact:
         }
         if self.is_member_call:
             out["isMemberCall"] = True
+        if self.arrow:
+            out["arrow"] = True
         if self.receiver:
             out["receiver"] = self.receiver
         if self.receiver_type:
@@ -143,6 +190,8 @@ class PendingEdgeFact:
             out["localName"] = self.local_name
         if self.context:
             out["context"] = self.context
+        if self.type_args is not None:
+            out["typeArgs"] = self.type_args
         if self.restrict_to_file:
             out["restrictToFile"] = True
         return out
@@ -157,5 +206,8 @@ class ParsedFile:
     # Cannot be reconstructed later without re-parsing, so it is captured here
     # and carried to the resolver on the file-summary block.
     type_table: dict[str, str] = field(default_factory=dict)
+    # C/C++ function-like macro -> [line, names its body calls], so a wrapper's call reaches what it wraps.
+    macro_table: dict[str, list] = field(default_factory=dict)
+    macros_dropped: int = 0
     parse_error_line: int | None = None
     skipped_reason: str | None = None

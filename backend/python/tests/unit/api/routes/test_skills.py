@@ -17,6 +17,16 @@ from app.agent_loop_lib.modules.providers.skills.base import (
 from app.agent_loop_lib.modules.providers.skills.validator import SkillFormatError
 
 
+def _caller_ctx(**extra: object) -> dict:
+    """What `_build_manager` adds for SLASH1 S4: a store that sees no shared skill, and no shared-skill rights."""
+    from app.agents.agent_loop.skills.graph_store import SharedSkillRights
+
+    store = MagicMock()
+    store.sharing = AsyncMock(return_value=None)
+    store.sharings = AsyncMock(return_value={})
+    return {"store": store, "rights": SharedSkillRights(), "teams": {}, "userKey": "uk1", **extra}
+
+
 def _metadata(**overrides: object) -> SkillMetadata:
     defaults = {"name": "pdf-extractor", "description": "Extracts tables from PDFs"}
     defaults.update(overrides)
@@ -250,7 +260,7 @@ class TestCheckUsage:
 
 class TestDeleteSkillRoute:
     def _ctx(self, graph_provider: AsyncMock) -> dict:
-        return {"graph_provider": graph_provider, "orgId": "org1", "logger": MagicMock()}
+        return _caller_ctx(graph_provider=graph_provider, orgId="org1", logger=MagicMock())
 
     @pytest.mark.asyncio
     async def test_blocks_delete_when_required_by_other_skills(self) -> None:
@@ -339,7 +349,7 @@ class TestCreateSkillRoute:
         manager = AsyncMock()
         manager.create = AsyncMock(side_effect=RegistryError("Skill 'pdf-extractor' already exists"))
         payload = SkillWriteRequest(name="pdf-extractor", description="d", body="b")
-        with patch("app.api.routes.skills._build_manager", new=AsyncMock(return_value=(manager, {}))):
+        with patch("app.api.routes.skills._build_manager", new=AsyncMock(return_value=(manager, _caller_ctx()))):
             with pytest.raises(HTTPException) as exc_info:
                 await create_skill(MagicMock(), payload)
         assert exc_info.value.status_code == 409
@@ -351,7 +361,7 @@ class TestCreateSkillRoute:
         manager = AsyncMock()
         manager.create = AsyncMock(return_value=_metadata())
         payload = SkillWriteRequest(name="pdf-extractor", description="d", body="b")
-        with patch("app.api.routes.skills._build_manager", new=AsyncMock(return_value=(manager, {}))):
+        with patch("app.api.routes.skills._build_manager", new=AsyncMock(return_value=(manager, _caller_ctx()))):
             response = await create_skill(MagicMock(), payload)
         assert response.status_code == 201
 
@@ -363,7 +373,7 @@ class TestFinalizeImportRoute:
 
         payload = FinalizeImportRequest(content="not frontmatter at all")
         manager = AsyncMock()
-        with patch("app.api.routes.skills._build_manager", new=AsyncMock(return_value=(manager, {}))):
+        with patch("app.api.routes.skills._build_manager", new=AsyncMock(return_value=(manager, _caller_ctx()))):
             with pytest.raises(HTTPException) as exc_info:
                 await finalize_import(MagicMock(), payload)
         assert exc_info.value.status_code == 400
@@ -377,7 +387,10 @@ class TestFinalizeImportRoute:
         manager.write_resource = AsyncMock(return_value=True)
         content = "---\nname: pdf-extractor\ndescription: d\n---\nbody"
         payload = FinalizeImportRequest(content=content, resources={"scripts/run.py": "print(1)"})
-        with patch("app.api.routes.skills._build_manager", new=AsyncMock(return_value=(manager, {}))):
+        with (
+            patch("app.api.routes.skills._build_manager", new=AsyncMock(return_value=(manager, _caller_ctx()))),
+            patch("app.api.routes.skills._import_review", new=AsyncMock(return_value=None)),
+        ):
             response = await finalize_import(MagicMock(), payload)
         manager.create.assert_awaited_once()
         manager.write_resource.assert_awaited_once_with("pdf-extractor", "scripts/run.py", "print(1)")
@@ -420,7 +433,7 @@ class TestUpdateSkillConflict:
         ))
         payload = SkillWriteRequest(description="d", body="body")
         with (
-            patch("app.api.routes.skills._build_manager", new=AsyncMock(return_value=(manager, {}))),
+            patch("app.api.routes.skills._build_manager", new=AsyncMock(return_value=(manager, _caller_ctx()))),
             patch("app.api.routes.skills._build_content", return_value="content"),
         ):
             with pytest.raises(HTTPException) as exc:
@@ -450,7 +463,7 @@ class TestPatchSkillBodyConflict:
             "pdf-extractor", current_updated_at=42, current_version="1.0.1",
         ))
         payload = PatchBodyRequest(old_string="old", new_string="new")
-        with patch("app.api.routes.skills._build_manager", new=AsyncMock(return_value=(manager, {}))):
+        with patch("app.api.routes.skills._build_manager", new=AsyncMock(return_value=(manager, _caller_ctx()))):
             with pytest.raises(HTTPException) as exc:
                 await patch_skill_body(MagicMock(), "pdf-extractor", payload, if_match="1")
         assert exc.value.status_code == 409

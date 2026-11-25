@@ -1233,9 +1233,9 @@ class TestHandleWebhookNotification:
         c.rate_limiter.__aexit__ = AsyncMock()
         c.client = MagicMock()
         c._safe_api_call = AsyncMock(return_value=MagicMock())
-        c.run_sync = AsyncMock()
+        c.request_sync = AsyncMock()
         await c.handle_webhook_notification({"resource": "sites/site-1/stuff"})
-        c.run_sync.assert_awaited_once()
+        c.request_sync.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_without_site_resource(self):

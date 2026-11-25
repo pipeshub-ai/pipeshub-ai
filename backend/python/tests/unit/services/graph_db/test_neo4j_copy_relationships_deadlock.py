@@ -73,7 +73,7 @@ class TestEdgeOrder:
         p.client.execute_query = AsyncMock(return_value=[])
         edges = [
             {"from_id": "dup", "from_collection": CollectionNames.RECORDS.value,
-             "to_id": hub, "to_collection": CollectionNames.TOPICS.value}
+             "to_id": hub, "to_collection": CollectionNames.TOPICS.value, "createdAtTimestamp": 1}
             for hub in ("t-c", "t-a", "t-b")
         ]
 

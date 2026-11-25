@@ -16,14 +16,17 @@ from typing import TYPE_CHECKING, Any
 from app.agent_loop_lib.tools.base import (
     _PYTHON_TYPES,
     ParameterType,
+    Tag,
     Tool,
     ToolOutput,
     ToolParameter,
-    _fuzzy_match_enum,
+    fuzzy_match_enum,
 )
 from app.agent_loop_lib.tools.decorators import (
     accepted_argument_names,
+    reject_missing_arguments,
     reject_unknown_arguments,
+    required_argument_names,
 )
 from app.agent_loop_lib.tools.errors import ToolValidationError
 from app.modules.agents.context.tool_descriptions import _extract_parameters_from_schema
@@ -573,7 +576,7 @@ def _checked_value(
             value = coerced
 
     if enum_is_authoritative and param.enum is not None and value not in param.enum:
-        matched = _fuzzy_match_enum(value, param.enum)
+        matched = fuzzy_match_enum(value, param.enum)
         if matched is None:
             raise ToolValidationError(f"argument '{param.name}' must be one of {param.enum}, got {value!r}")
         value = matched
@@ -686,11 +689,16 @@ class PipesHubStructuredToolAdapter(Tool):
         app_name: str,
         tool_name: str,
         *,
+        effect: Tag | None = None,
+        sink: Tag | None = None,
+        provider: Tag | None = None,
+        flow: tuple[Tag, ...] = (),
         short_description: str | None = None,
     ) -> None:
         self._structured_tool = structured_tool
         self._app_name = app_name
         self._tool_name = tool_name
+        self._tags = [*(tag for tag in (effect, sink, provider) if tag is not None), *flow]
         self._short_description = short_description
 
     @property
@@ -722,18 +730,30 @@ class PipesHubStructuredToolAdapter(Tool):
         return f"/dynamic/{self._app_name}/{self._tool_name}"
 
     @property
+    def tags(self) -> list[Tag]:
+        return list(self._tags)
+
+    @property
     def parameters(self) -> list[ToolParameter]:
         return _params_from_schema(getattr(self._structured_tool, "args_schema", None), self.name)
 
     def validate(self, kwargs: dict[str, Any]) -> None:
-        """Only unknown argument names are rejected; dynamic tools normalize
-        loosely typed values themselves."""
+        """Only argument names are checked, unknown ones and missing required
+        ones; dynamic tools normalize loosely typed values themselves."""
         reject_unknown_arguments(self._accepted_args, kwargs)
+        reject_missing_arguments(self._required_args, kwargs)
+
+    @functools.cached_property
+    def _target(self) -> Any:  # noqa: ANN401
+        return getattr(self._structured_tool, "coroutine", None) or getattr(self._structured_tool, "func", None)
 
     @functools.cached_property
     def _accepted_args(self) -> frozenset[str] | None:
-        target = getattr(self._structured_tool, "coroutine", None) or getattr(self._structured_tool, "func", None)
-        return accepted_argument_names(target) if target is not None else None
+        return accepted_argument_names(self._target) if self._target is not None else None
+
+    @functools.cached_property
+    def _required_args(self) -> frozenset[str]:
+        return required_argument_names(self._target) if self._target is not None else frozenset()
 
     async def execute(self, **kwargs: Any) -> ToolOutput:  # noqa: ANN401
         coroutine = getattr(self._structured_tool, "coroutine", None)
@@ -743,8 +763,8 @@ class PipesHubStructuredToolAdapter(Tool):
             else:
                 result = self._structured_tool.func(**kwargs)
         except Exception as exc:
-            logger.exception("Dynamic tool %s failed", self.name)
-            return ToolOutput(success=False, error=str(exc))
+            # The executor logs it once, with its stack.
+            return ToolOutput(success=False, error=str(exc), cause=exc, end_fields={"reason": "exception"})
         return _to_tool_output(result)
 
 

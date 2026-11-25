@@ -1,98 +1,13 @@
 import { Response, NextFunction } from 'express';
-import { isJwtTokenValid } from '../utils/validateJwt';
 import { AuthSessionRequest } from './types';
 import { SessionService } from '../services/session.service';
 import {
-  ForbiddenError,
   NotFoundError,
   UnauthorizedError,
 } from '../../../libs/errors/http.errors';
-import {
-  ADMIN_ACCESS_REQUIRED_MESSAGE,
-  isUserOrgAdmin,
-} from '../../user_management/services/user-admin.service';
-import { AppConfig } from '../../tokens_manager/config/config';
-import {
-  asAccount,
-  makeOrgContext,
-  runWithOrgContext,
-} from '../../../libs/context/orgContext';
-
-export const userValidator = (
-  req: AuthSessionRequest,
-  _res: Response,
-  next: NextFunction,
-) => {
-  try {
-    const container = req.container;
-    if (!container) {
-      throw new NotFoundError('Auth Container not found');
-    }
-    const config = container.get<AppConfig>('AppConfig');
-
-    const decodedData = isJwtTokenValid(req, config.jwtSecret);
-    if (!decodedData) {
-      throw new UnauthorizedError('Invalid Token');
-    }
-    req.user = decodedData;
-    bindVerified(decodedData as { orgId?: string; userId?: string }, next);
-  } catch (error) {
-    next(error);
-  }
-};
-
-/** The token's signature is verified: its organisation and user are the ones the rest of the request runs as. */
-const bindVerified = (
-  claims: { orgId?: string; userId?: string },
-  next: NextFunction,
-): void => {
-  if (!claims.orgId || !claims.userId) return next();
-  runWithOrgContext(
-    makeOrgContext({
-      orgId: claims.orgId,
-      userId: claims.userId,
-      kind: 'user',
-      source: 'jwt',
-    }),
-    next,
-  );
-};
-
-export const adminValidator = async (
-  req: AuthSessionRequest,
-  _res: Response,
-  next: NextFunction,
-) => {
-  try {
-    const container = req.container;
-    if (!container) {
-      throw new NotFoundError('Auth Container not found');
-    }
-    const config = container.get<AppConfig>('AppConfig');
-    const decodedData = isJwtTokenValid(req, config.jwtSecret);
-    if (!decodedData) {
-      throw new UnauthorizedError('Invalid Token');
-    }
-    req.user = decodedData;
-    const userId = req.user?.userId;
-    const orgId = req.user?.orgId;
-    if (!userId || !orgId) {
-      throw new NotFoundError('Account not found');
-    }
-
-    const isAdmin = await asAccount(String(orgId), String(userId), 'jwt', () =>
-      isUserOrgAdmin(userId, orgId),
-    );
-
-    if (!isAdmin) {
-      throw new ForbiddenError(ADMIN_ACCESS_REQUIRED_MESSAGE);
-    }
-
-    bindVerified(decodedData as { orgId?: string; userId?: string }, next);
-  } catch (error) {
-    next(error);
-  }
-};
+import { asAccount } from '../../../libs/context/orgContext';
+import { setContextIdentity } from '../../../libs/context/request-context';
+import { auditAuthRefusal, authRefusal } from '../utils/sign-in-audit';
 
 export const authSessionMiddleware = async (
   req: AuthSessionRequest,
@@ -107,19 +22,34 @@ export const authSessionMiddleware = async (
     const sessionService = container.get<SessionService>('SessionService');
     const sessionToken = req.headers['x-session-token'] as string;
     if (!sessionToken) {
-      throw new UnauthorizedError('Invalid session token');
+      throw authRefusal(
+        new UnauthorizedError('Invalid session token'),
+        'no_session',
+      );
     }
     const session = await sessionService.getSession(sessionToken);
     if (!session) {
-      throw new UnauthorizedError('Invalid session');
+      throw authRefusal(
+        new UnauthorizedError('Invalid session'),
+        'session_expired',
+      );
     }
     req.sessionInfo = session;
     // A stored session names the account once the address was matched; before that there is no organisation to bind.
     if (session.orgId && session.userId && session.userId !== 'NOT_FOUND') {
+      setContextIdentity({
+        orgId: String(session.orgId),
+        userId: session.userId,
+      });
       return asAccount(String(session.orgId), session.userId, 'session', next);
     }
     next();
   } catch (error) {
+    const method: unknown = (req.body as { method?: unknown } | undefined)
+      ?.method;
+    auditAuthRefusal('auth.sign_in', error, {
+      authMethod: typeof method === 'string' ? method : undefined,
+    });
     next(error);
   }
 };

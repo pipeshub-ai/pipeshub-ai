@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any
 from app.config.constants.arangodb import CollectionNames
 from app.models.blocks import BlocksContainer
 from app.models.entities import Record
+from app.modules.pipeline.connector_gate import ConnectorBeingDeleted
 from app.modules.pipeline.leases import RecordBusy, RecordLeases, RevisionSuperseded
 from app.modules.pipeline.models import StageJob
 from app.modules.pipeline.policy import PipelinePolicy
@@ -28,6 +29,8 @@ if TYPE_CHECKING:
     from app.modules.transformers.stored_write import SidecarWrite
 
 RecordFromDocument = Callable[[dict[str, Any]], Record]
+# Whether a connector is being deleted (``ConnectorDeletingCheck``).
+ConnectorDeleting = Callable[[str], Awaitable[bool]]
 StoredMetadata = dict[str, Any]
 # Given the stored record's current semantic_metadata (None when it has none), the new one.
 SectionUpdate = Callable[[StoredMetadata | None], StoredMetadata | None]
@@ -61,6 +64,7 @@ class RecordStageIO:
         blob_storage: "BlobStorage",
         record_from_document: RecordFromDocument,
         record_leases: RecordLeases,
+        connector_deleting: ConnectorDeleting | None = None,
     ) -> None:
         super().__init__()
         self._job = job
@@ -70,6 +74,7 @@ class RecordStageIO:
         self._blob_storage = blob_storage
         self._record_from_document = record_from_document
         self._record_leases = record_leases
+        self._connector_deleting = connector_deleting
         self._stored: dict[str, Any] | None = None
         self._stored_loaded = False
         self._documents: dict[str, dict[str, Any]] = {}
@@ -82,7 +87,19 @@ class RecordStageIO:
     def deadline(self) -> Deadline:
         return self._deadline
 
+    async def connector_deleting(self, job: StageJob) -> bool:
+        """Whether the job's connector is being deleted: its records are the delete's to remove,
+        and a write to one makes the delete's batch lose a write conflict."""
+        return self._connector_deleting is not None and await self._connector_deleting(job.connector_id)
+
+    async def _not_being_deleted(self, job: StageJob) -> None:
+        # Raised rather than answered as "no record is current": that would end the run STALE,
+        # which is terminal, and a delete that is put back must leave the job runnable.
+        if await self.connector_deleting(job):
+            raise ConnectorBeingDeleted(job.connector_id)
+
     async def current_record_ids(self, job: StageJob) -> list[str]:
+        await self._not_being_deleted(job)
         current: list[str] = []
         for record_id in job.record_ids:
             # Raising: a failed read answering None would read as "the record is gone".
@@ -127,6 +144,8 @@ class RecordStageIO:
         return TransformContext(record=record)
 
     async def _on_revision(self, job: StageJob, record_id: str) -> bool:
+        # Checked under the lease before every write, so a delete that starts mid-run stops the rest.
+        await self._not_being_deleted(job)
         document = await self._graph.get_document(record_id, CollectionNames.RECORDS.value)
         return document is not None and document.get("contentRev") == job.rev
 

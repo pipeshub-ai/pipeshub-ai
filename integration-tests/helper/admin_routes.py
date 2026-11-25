@@ -32,13 +32,16 @@ PYTHON_APP = REPO / "backend" / "python" / "app"
 
 # Every middleware that refuses a signed-in member for not being an org admin.
 # userAdminOrSelfCheck is left out on purpose: members pass it for their own id.
-ADMIN_MIDDLEWARES = frozenset({"userAdminCheck", "adminValidator"})
+ADMIN_MIDDLEWARES = frozenset({"userAdminCheck"})
 
 _METHODS = ("get", "post", "put", "patch", "delete")
 _ROUTE_CALL = re.compile(r"\brouter\s*\.\s*(get|post|put|patch|delete|use)\s*\(")
 _FACTORY = re.compile(r"export\s+(?:function\s+|const\s+)(create\w+Router)\b")
-# The prefix is a string literal or the name of a string constant.
-_MOUNT = re.compile(r"\bapp\.use\(\s*(?:'([^']+)'|([A-Z][A-Z0-9_]*))\s*,\s*(create\w+Router)\s*\(", re.S)
+# The prefix is a string literal or the name of a string constant. The router may be
+# handed through one wrapper that decides whether it serves (``whenHarnessSwitchedOn``):
+# it is still mounted at that prefix.
+_MOUNT = re.compile(
+    r"\bapp\.use\(\s*(?:'([^']+)'|([A-Z][A-Z0-9_]*))\s*,\s*(?:\w+\(\s*)?(create\w+Router)\s*\(", re.S)
 _PATH_CONST = re.compile(r"\b(?:export\s+)?const\s+([A-Z][A-Z0-9_]*)\s*=\s*'([^']+)'\s*;")
 _CONST_ARRAY = re.compile(r"\bconst\s+(\w+)\s*=\s*\[")
 _STRING = re.compile(r"""^\s*(['"`])(.*?)\1\s*$""", re.S)

@@ -6,12 +6,14 @@ Neo4j and ArangoDB for the agreed rules.
 Start the throwaway stores, then run:
 
     docker compose -p kh-perm -f backend/python/tests/integration/graph_permissions/docker-compose.yml up -d
-    pytest tests/integration/graph_permissions -m integration --timeout=300
+    KH_PERM_NEO4J_URI=bolt://localhost:7688 KH_PERM_ARANGO_URL=http://localhost:8530 \\
+      pytest tests/integration/graph_permissions -m integration --timeout=300
 
 Environment variables are deliberately harness-scoped. The production names
 (``NEO4J_URI``, ``ARANGO_URL``, ...) are **not** read: a developer shell
 routinely exports them pointing at a real stack, and this suite wipes whatever
-it connects to. Override these instead, defaulted to the compose file above:
+it connects to. Set these instead; the two URLs have no default (a test skips
+without them), the rest are defaulted to the compose file above:
 
     KH_PERM_NEO4J_URI        bolt://localhost:7688
     KH_PERM_NEO4J_USERNAME   neo4j
@@ -44,13 +46,42 @@ from urllib.parse import urlparse
 
 import pytest
 
+from tests.support import it_backends
+
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncIterator, Iterator
 
     from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
     from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
 
-pytestmark = pytest.mark.integration
+
+
+#: These suites write through the real processor (the harness runs the connector write path), so they stay strict.
+_REAL_WRITER_MODULES = frozenset({"test_write_path", "test_record_property_projection"})
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _neo4j_schema_notifications_quiet() -> "Iterator[None]":
+    """The synthetic worlds leave most labels, relationship types and properties unused, so Neo4j attaches a
+    notification quoting the whole query to nearly every read: tens of thousands per name-search test, each
+    formatted and redacted by the console handler the suite's logging installs, which pushed one test past its
+    timeout. The app silences them only under DATA_STORE=neo4j, which this two-store suite does not set."""
+    notifications = logging.getLogger("neo4j.notifications")
+    level = notifications.level
+    notifications.setLevel(logging.ERROR)
+    yield
+    notifications.setLevel(level)
+
+
+@pytest.fixture(autouse=True)
+def _synthetic_worlds_skip_schema_validation(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The parity harness seeds sparse, synthetic graphs to compare traversals, not payloads the application
+    writes, so graph schema validation is off for it. The write-path suites (this folder's ``connectors``
+    package and ``_REAL_WRITER_MODULES``) exercise real writes and stay strict."""
+    name = request.module.__name__
+    if name.rsplit(".", 1)[-1] not in _REAL_WRITER_MODULES and ".connectors." not in name:
+        monkeypatch.setenv("GRAPH_SCHEMA_ENFORCEMENT", "off")
+
 
 def pytest_collection_modifyitems(items) -> None:
     """Give these tests the timeout their containers need.
@@ -90,6 +121,18 @@ def _assert_disposable(url: str, label: str) -> None:
         )
 
 
+def _assert_one_worker() -> None:
+    """The stores are one Neo4j database and one Arango database for the whole run, wiped when a module starts. Under
+    pytest-xdist each worker would wipe and refill them while the others read them, so a world vanishes mid-check and
+    reads as an under-admit (or "database not found"): refuse it rather than report results that are not true."""
+    workers = os.environ.get("PYTEST_XDIST_WORKER_COUNT")
+    if workers and workers != "1":
+        raise RuntimeError(
+            f"{workers} pytest-xdist workers would share the KH_PERM_* stores, which each module wipes. Run the "
+            f"store-backed tests without -n, or the store-free ones with -m 'not integration'."
+        )
+
+
 def _logger() -> logging.Logger:
     return logging.getLogger("kh_perm_harness")
 
@@ -119,7 +162,7 @@ class _StubConfigService:
 
 def _neo4j_settings() -> dict:
     return {
-        "uri": os.environ.get("KH_PERM_NEO4J_URI", "bolt://localhost:7688"),
+        "uri": it_backends.endpoint("KH_PERM_NEO4J_URI"),
         "username": os.environ.get("KH_PERM_NEO4J_USERNAME", "neo4j"),
         "password": os.environ.get("KH_PERM_NEO4J_PASSWORD", "khpermpass"),
         "database": os.environ.get("KH_PERM_NEO4J_DATABASE", "neo4j"),
@@ -128,7 +171,7 @@ def _neo4j_settings() -> dict:
 
 def _arango_settings() -> dict:
     return {
-        "url": os.environ.get("KH_PERM_ARANGO_URL", "http://localhost:8530"),
+        "url": it_backends.endpoint("KH_PERM_ARANGO_URL"),
         "username": os.environ.get("KH_PERM_ARANGO_USERNAME", "root"),
         "password": os.environ.get("KH_PERM_ARANGO_PASSWORD", "khpermpass"),
         "db": os.environ.get("KH_PERM_ARANGO_DB", "kh_perm_test"),
@@ -172,6 +215,7 @@ async def _wipe_neo4j(settings: dict) -> None:
     """
     from neo4j import AsyncGraphDatabase
 
+    _assert_one_worker()
     _assert_disposable(settings["uri"], "NEO4J_URI")
     driver = AsyncGraphDatabase.driver(
         settings["uri"], auth=(settings["username"], settings["password"])
@@ -188,6 +232,7 @@ async def _drop_arango_db(settings: dict) -> None:
     """Drop the test database so provider.connect() recreates it empty."""
     import aiohttp
 
+    _assert_one_worker()
     _assert_disposable(settings["url"], "ARANGO_URL")
     # The URL check is not enough on its own: this drops whatever database the
     # env var names, so KH_PERM_ARANGO_DB=pipeshub against a local Arango on a

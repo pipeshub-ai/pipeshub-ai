@@ -1,6 +1,7 @@
 import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from enum import Enum
 from typing import Any
 
 from app.models.blocks import BlockType, GroupType
@@ -25,7 +26,12 @@ logger = create_logger(__name__)
 #   - legacy full block web URL (/record/<id>/preview#blockIndex=N)
 #   - any http(s):// URL used as a web citation target
 # Kept permissive because web citations are arbitrary external URLs.
-_MD_LINK_PATTERN = r'\[([^\]]*?)\]\((ref\d+|https?://[^)]+)\)'
+# Link text may hold a few "[", but a scan gives up past them. Answers carry model output, and
+# scanning from every "[" of a long run to the next "]" takes quadratic time.
+_LINK_TEXT = r'[^\[\]]*(?:\[[^\[\]]*){0,8}'
+# The same for a target, whose unclosed "(" would otherwise be scanned from every link start.
+_LINK_URL = r'https?://(?!\))[^)\[]*(?:\[[^)\[]*){0,8}'
+_MD_LINK_PATTERN = rf'\[({_LINK_TEXT})\]\((ref\d+|{_LINK_URL})\)'
 
 # Tiny web-ref URL format exposed to the LLM when the real URL exceeds TINY_URL_THRESHOLD.
 # The embedded refN resolves through the shared CitationRefMapper, same as internal-search refs.
@@ -40,7 +46,7 @@ TINY_URL_THRESHOLD = 0
 #   [source](https://example.com/page) (https://ref123.xyz)
 #   [source](ref5) (https://example.com/page)
 _TRAILING_PAREN_URL_RE = re.compile(
-    r'(\[[^\]]+\]\((ref\d+|https?://[^)]+)\))'   # Grp 1: md link; Grp 2: target
+    rf'(\[(?!\]){_LINK_TEXT}\]\((ref\d+|{_LINK_URL})\))'   # Grp 1: md link; Grp 2: target
     r'\s*'
     r'\((https?://[^\s)]+|ref\d+)\)'              # Grp 3: trailing URL/ref
 )
@@ -49,25 +55,26 @@ _TRAILING_PAREN_URL_RE = re.compile(
 #   [Bellandur Restaurants](https://ref6.xyz) [source](https://ref6.xyz)
 #   [Title](ref3)[source](ref3)
 _CONSECUTIVE_MD_LINKS_RE = re.compile(
-    r'(\[[^\]]+\]\((ref\d+|https?://[^)]+)\))'   # Grp 1: first md link; Grp 2: first target
+    rf'(\[(?!\]){_LINK_TEXT}\]\((ref\d+|{_LINK_URL})\))'   # Grp 1: first md link; Grp 2: first target
     r'(\s*)'                                       # Grp 3: optional whitespace between links
-    r'(\[[^\]]+\]\((ref\d+|https?://[^)]+)\))'   # Grp 4: second md link; Grp 5: second target
+    rf'(\[(?!\]){_LINK_TEXT}\]\((ref\d+|{_LINK_URL})\))'   # Grp 4: second md link; Grp 5: second target
 )
 
 # ── Malformed citation normalization ──────────────────────────────────────────
 # Matches a markdown link whose target is a comma- or whitespace-separated list
 # of two or more refs/URLs — a common LLM slip-up e.g. [source](ref1, ref2).
+_LIST_URL = r'https?://(?![\s,)])[^\s,)\[]*(?:\[[^\s,)\[]*){0,8}'
 _MULTI_REF_IN_LINK_RE = re.compile(
-    r'\[([^\]]*?)\]\(('
-    r'(?:ref\d+|https?://[^\s,)]+)'
-    r'(?:(?:\s*,\s*|\s+)(?:ref\d+|https?://[^\s,)]+))+'
+    rf'\[({_LINK_TEXT})\]\(('
+    rf'(?:ref\d+|{_LIST_URL})'
+    rf'(?:(?:\s*,\s*|\s+)(?:ref\d+|{_LIST_URL}))+'
     r')\)'
 )
 
 # Any markdown link, whatever its target. Matched first by the bare-ref passes
 # so a ref inside an existing link's text or URL is never rewritten into a
 # nested link.
-_ANY_MD_LINK = r'\[[^\]]*?\]\([^)\n]*\)'
+_ANY_MD_LINK = rf'\[{_LINK_TEXT}\]\([^)\n\[]*(?:\[[^)\n\[]*){{0,8}}\)'
 
 # Matches [refN] — a bracketed bare ref without a link target — which LLMs
 # commonly emit instead of proper [source](refN).  Must run BEFORE
@@ -107,7 +114,8 @@ _REF_TOKEN = rf'(?:https?://ref\d+\.xyz/?|{_ANY_REF_TARGET})'
 # e.g. [source]([ref2]], [source](<ref2>), [source](ref1, [source](ref2)),
 # [[source](ref2)]. Parsed by _parse_cited_link, not one regex, because the
 # wrapping nests to any depth and a sentence paren after it must be kept.
-_CITED_LINK_START_RE = re.compile(r'(\[*)\[[^\[\]\n]*\]\(')
+# Only the first "[" of a run can start a match: a later one has the same tail to fail on.
+_CITED_LINK_START_RE = re.compile(r'(?<!\[)(\[*)\[[^\[\]\n]*\]\(')
 _CITED_LINK_HEAD_RE = re.compile(r'\[([^\[\]\n]*)\]\(')
 _TARGET_GAP_RE = re.compile(r'[ \t.,;:]*')
 _TARGET_SEP_RE = re.compile(r'[ \t]*[,;]?[ \t]*')
@@ -179,17 +187,19 @@ def rewrite_request_refs(text: str, ref_to_url: Mapping[str, str] | None) -> tup
 
 
 def _expand_multi_ref_links(text: str) -> str:
-    """Split ``[label](ref1, ref2)`` style links into separate ``[label](ref1) [label](ref2)`` links.
+    """Split ``[label](ref1, ref2)`` style links into separate ``[label](ref1) [source](ref2)`` links.
 
     Handles comma-separated and whitespace-separated ref lists inside a single
-    markdown link target — a common LLM formatting mistake.
+    markdown link target — a common LLM formatting mistake. The label is the
+    sentence's once, so only the first link keeps it (renumbering keeps a
+    meaningful label beside its number).
     """
     def _replacer(m: re.Match) -> str:
         link_text = m.group(1)
         targets = [t.strip() for t in re.split(r'[\s,]+', m.group(2)) if t.strip()]
         if len(targets) <= 1:
             return m.group(0)
-        return ' '.join(f'[{link_text}]({t})' for t in targets)
+        return ' '.join(f'[{link_text if i == 0 else "source"}]({t})' for i, t in enumerate(targets))
 
     return _MULTI_REF_IN_LINK_RE.sub(_replacer, text)
 
@@ -346,6 +356,28 @@ def _normalize_context_label_refs(text: str) -> str:
     )
 
 
+class WebCitationStyle(str, Enum):
+    """How a web result's link and its Citation ID reach a model (``tool_state[WEB_CITATION_STYLE]``).
+
+    ``ALIAS``: one ``url/Citation ID: https://refN.xyz`` line, token-cheap, for the chat loop, whose answer
+    pipeline maps every ``refN`` back. ``SEPARATE``: ``url: <page>`` and ``Citation ID: refN`` as two fields,
+    for a coding engine: only its final answer is mapped back, so an alias it fetched, wrote into a file or
+    passed to a tool stayed a dead link (ENGCITE)."""
+
+    ALIAS = "alias"
+    SEPARATE = "separate"
+
+
+WEB_CITATION_STYLE = "web_citation_style"
+
+
+def citation_ref_for_llm(url: str, ref_mapper: "object | None") -> str | None:
+    """The ``refN`` that cites ``url`` (registered in ``ref_mapper``), or None without a mapper."""
+    if not url or ref_mapper is None:
+        return None
+    return ref_mapper.get_or_create_ref(url)
+
+
 def display_url_for_llm(url: str, ref_mapper: "object | None") -> str:
     """Return the citation form the LLM should see for a web URL.
 
@@ -357,8 +389,7 @@ def display_url_for_llm(url: str, ref_mapper: "object | None") -> str:
         return url
     if len(url) <= TINY_URL_THRESHOLD or ref_mapper is None:
         return url
-    ref = ref_mapper.get_or_create_ref(url)
-    return build_tiny_web_ref_url(ref)
+    return build_tiny_web_ref_url(citation_ref_for_llm(url, ref_mapper))
 
 def _link_label(md_link: str) -> str:
     return md_link[1:md_link.index('](')]
@@ -492,9 +523,14 @@ def _resolve_ref(target: str, ref_to_url: dict[str, str] | None) -> str:
 # A ``[text](ref…)`` or ``[text](https://refN.xyz)`` link.  Resolvable refs were already
 # rewritten to ``[N](url)`` by the time this runs, so whatever still matches is dead.  One
 # pattern, so a later link sees every earlier one already stripped.
-_UNRESOLVED_REF_LINK_RE = re.compile(r'\[([^\]]*?)\]\(' + _REF_TOKEN + r'\)')
+_UNRESOLVED_REF_LINK_RE = re.compile(rf'\[({_LINK_TEXT})\]\(' + _REF_TOKEN + r'\)')
+# Matched against stripped text, and no two whitespace runs here can reach the same spaces:
+# overlapping runs make a failed match cubic in the length of the text.
+# Also the harness's generic forms (P4.11 CR-2): "src", "cite", "reference" and a footnote-style "[^3]".
 _CITATION_LABEL_RE = re.compile(
-    r'^\s*(?:(?:sources?|refs?|links?|citations?)\s*#?\s*\d*|\d+(?:\s*[,;]\s*\d+)*)?\s*$', re.IGNORECASE,
+    r'(?:(?:sources?|src|refs?|references?|links?|citations?|cite)(?:\s*#)?(?:\s*\d+)?'
+    r'|\[?\^?\d+\]?(?:\s*[,;]\s*\d+)*)?',
+    re.IGNORECASE,
 )
 # Link text that only names the target: a ref token or a record id.  Meaningless to a reader,
 # so it goes even when the link is dead and no badge replaces it.
@@ -512,7 +548,7 @@ _LINK_TEXT_ECHO_WINDOW = 2000
 
 
 def _is_label_or_id(link_text: str) -> bool:
-    return bool(_CITATION_LABEL_RE.match(link_text) or _LINK_ID_TEXT_RE.match(link_text.strip(_LINK_TEXT_WRAPPERS)))
+    return bool(_CITATION_LABEL_RE.fullmatch(link_text.strip()) or _LINK_ID_TEXT_RE.match(link_text.strip(_LINK_TEXT_WRAPPERS)))
 
 
 def _is_url_text(link_text: str) -> bool:
@@ -550,6 +586,13 @@ def kept_citation_link_text(link_text: str, preceding: str) -> str:
     return '' if _already_written(kept, preceding) else kept
 
 
+def _spaced(kept: str, written: str) -> str:
+    """``kept`` set apart from the word it would otherwise run into: two link texts side by side
+    (``[NW-112](ref3)[NW-114](ref4)``) stay two words (P4.11 CR-1)."""
+    joined = bool(kept) and bool(written) and not written[-1].isspace() and written[-1] not in "([{"
+    return f" {kept}" if joined else kept
+
+
 def sub_in_order(pattern: re.Pattern[str], text: str, replace: Callable[[re.Match[str], str], str]) -> str:
     """``pattern.sub`` whose ``replace(match, written)`` also gets the output
     written so far, so it sees earlier replacements rather than the raw text."""
@@ -579,8 +622,8 @@ def _renumber_citation_links(
     Resolves tiny refs to full URLs in the output so the frontend receives full URLs.
 
     A generic label ("source", "3") is replaced by the badge.  Descriptive text
-    ("the Velora renewal") is part of the sentence, so it stays as plain text
-    in front of the badge: ``the Velora renewal [1](url)``.
+    ("the Velora renewal", a ticket id such as ``NW-118``) is part of the sentence,
+    so it stays as plain text in front of the badge: ``the Velora renewal [1](url)``.
     """
     out = ''
     pos = 0
@@ -598,14 +641,14 @@ def _renumber_citation_links(
             # the window the echo check reads, so their kept text counts as written.
             written = _strip_unresolved_ref_citations(out[-(len(match.group(1)) + _LINK_TEXT_ECHO_WINDOW):])
             kept = kept_citation_link_text(match.group(1), written)
-            out += f"{kept} [{new_num}]({full_url})" if kept else f"[{new_num}]({full_url})"
+            out += f"{_spaced(kept, out)} [{new_num}]({full_url})" if kept else f"[{new_num}]({full_url})"
         pos = match.end()
     out += text[pos:]
     return _strip_unresolved_ref_citations(out)
 
 
 def _strip_unresolved_ref_citations(text: str) -> str:
-    """Remove ``[text](ref…)`` links that survived renumbering.
+    """Remove the ``(ref…)`` link of ``[text](ref…)`` citations that survived renumbering, keeping meaningful text.
 
     These are dead references — typically carried over from a prior
     conversation turn whose ``CitationRefMapper`` no longer exists, or
@@ -618,7 +661,7 @@ def _strip_unresolved_ref_citations(text: str) -> str:
         if _is_label_or_id(m.group(1)):
             return ''
         kept = m.group(1).strip()
-        return '' if _already_written(kept, written) else kept
+        return '' if _already_written(kept, written) else _spaced(kept, written)
 
     return sub_in_order(_UNRESOLVED_REF_LINK_RE, text, _keep_text)
 
@@ -816,21 +859,24 @@ def _try_append_web_citation(
     if not web_content:
         return True, citation_num
     page = _page_of(url)
+    # A file of a repository the run fetched (ADR-RUN-01 D3): public as a page is, named as the repository and path.
+    repository = web_rec.get("sourceKind") == "repository"
     new_citations.append({
         "content": _safe_stringify_content(value=web_content),
         "chunkIndex": citation_num,
         "metadata": {
             "recordId": page,
-            "mimeType": "text/html",
+            "mimeType": "text/plain" if repository else "text/html",
             # The page's title, else its site: the URL itself is what the UI showed before.
             "recordName": web_rec.get("title") or display_domain(page) or page,
             "webUrl": url,
-            "origin": "WEB_SEARCH",
+            "origin": "REPOSITORY" if repository else "WEB_SEARCH",
             "orgId": web_rec.get("org_id", ""),
-            "connector": "WEB",
+            "connector": "REPOSITORY" if repository else "WEB",
             "recordType": "WEBPAGE",
+            **({"sourceKind": "web"} if repository else {}),
         },
-        "citationType": "web|url",
+        "citationType": "web|repository" if repository else "web|url",
     })
     url_to_citation_num[url] = citation_num
     return True, citation_num + 1

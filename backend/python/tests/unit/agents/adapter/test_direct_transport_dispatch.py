@@ -8,6 +8,8 @@ the turn.
 
 from __future__ import annotations
 
+import logging
+
 import pytest
 from pydantic import SecretStr
 
@@ -160,6 +162,20 @@ class TestCapturedConfigReachesTheTransport:
         optimisation."""
         monkeypatch.setenv("PIPESHUB_AGENT_TRANSPORT", "typo-transport")
         assert _transport_provider() == LANGCHAIN_TRANSPORT
+
+    def test_unknown_value_is_warned_once_per_process(self, monkeypatch, caplog) -> None:
+        """A deployment fact, not a per-turn event: every turn reads the switch."""
+        from app.utils import logging_fields
+
+        monkeypatch.setattr(logging_fields, "_log_once_last", {})
+        monkeypatch.setenv("PIPESHUB_AGENT_TRANSPORT", "typo-transport")
+
+        with caplog.at_level(logging.DEBUG):
+            for _turn in range(2):
+                assert _transport_provider() == LANGCHAIN_TRANSPORT
+
+        lines = [(r.levelno, r.getMessage()) for r in caplog.records if r.name == "app.agents.agent_loop.factory"]
+        assert lines == [(logging.WARNING, "agent_transport.unknown")]
 
     def test_case_is_normalised(self, monkeypatch) -> None:
         monkeypatch.setenv("PIPESHUB_AGENT_TRANSPORT", "DIRECT")

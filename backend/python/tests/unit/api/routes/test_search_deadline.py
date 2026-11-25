@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import time
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -47,7 +46,7 @@ async def _search(search_with_filters: Any) -> tuple[int, dict[str, Any], MagicM
 
 def _timing_line(logger: MagicMock) -> str:
     for call in logger.info.call_args_list:
-        if call.args and str(call.args[0]).startswith("⏱"):
+        if call.args and str(call.args[0]).startswith("%s total="):
             return call.args[0] % call.args[1:]
     raise AssertionError("no timing line logged")
 
@@ -55,14 +54,19 @@ def _timing_line(logger: MagicMock) -> str:
 async def test_a_search_past_its_deadline_answers_with_why(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SEARCH_DEADLINE_SECONDS", "0.2")
 
+    stopped = asyncio.Event()
+
     async def stuck(**_: Any) -> dict[str, Any]:  # noqa: ANN401
-        await asyncio.Event().wait()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            stopped.set()
+            raise
         return _FOUND
 
-    started = time.monotonic()
     status, body, logger = await _search(stuck)
 
-    assert time.monotonic() - started < 5
+    assert stopped.is_set()
     assert status == 503
     assert body["status"] == "search_timed_out"
     assert body["message"] == SEARCH_TIMED_OUT_MESSAGE

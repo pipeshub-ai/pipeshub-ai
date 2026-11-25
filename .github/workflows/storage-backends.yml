@@ -69,12 +69,12 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 20
+          node-version: 24
           cache: 'npm'
           cache-dependency-path: backend/nodejs/apps/package-lock.json
 
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
 
       - name: Start MinIO
         if: matrix.backend == 's3'
@@ -139,21 +139,21 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 20
+          node-version: 24
           cache: 'npm'
           cache-dependency-path: backend/nodejs/apps/package-lock.json
 
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
 
       - name: Start MongoDB
         env:
           TOPOLOGY: ${{ matrix.topology }}
         run: |
           if [ "$TOPOLOGY" = "replica-set" ]; then
-            docker run -d --name mongo -p 27017:27017 "$MONGO_IMAGE" mongod --replSet rs0 --bind_ip_all
+            docker run -d --name mongo --ulimit nofile=64000:64000 -p 27017:27017 "$MONGO_IMAGE" mongod --replSet rs0 --bind_ip_all
           else
-            docker run -d --name mongo -p 27017:27017 "$MONGO_IMAGE"
+            docker run -d --name mongo --ulimit nofile=64000:64000 -p 27017:27017 "$MONGO_IMAGE"
           fi
           for _ in $(seq 1 30); do
             docker exec mongo mongosh --quiet --eval 'db.runCommand({ ping: 1 }).ok' >/dev/null 2>&1 && break
@@ -175,7 +175,7 @@ jobs:
           MONGO_IT_URI: ${{ matrix.uri }}
           REPLICA_SET_AVAILABLE: ${{ matrix.rs_available }}
           TS_NODE_PROJECT: tsconfig.test.json
-        run: npx mocha --no-config --require ts-node/register --exit --reporter xunit --reporter-option output="$RUNNER_TEMP/mongo-junit.xml" tests/stores/mongo-transactions.itest.ts tests/stores/mongoose-hooks.itest.ts tests/stores/mongo-document.itest.ts
+        run: npx mocha --no-config --require ts-node/register --exit --reporter xunit --reporter-option output="$RUNNER_TEMP/mongo-junit.xml" tests/stores/mongo-transactions.itest.ts tests/stores/mongoose-hooks.itest.ts tests/stores/mongo-document.itest.ts tests/stores/mongo-notification.itest.ts
 
       - name: No unexpected skips, and the document store contract ran
         if: ${{ always() }}

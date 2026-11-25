@@ -29,6 +29,7 @@ resumable cursor on the document, bounded attempts, backoff on failure.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import inspect
 import re
 from dataclasses import dataclass
@@ -42,6 +43,7 @@ from app.connectors.services.entity_cleanup_intents import (
     record_pending_entity_cleanup,
     reschedule_pending_entity_cleanup,
 )
+from app.core.org_context import for_org, system
 from app.models.entities import EntityRecord, EntityType
 from app.modules.entity_resolution.models import KINDS_BY_COLLECTION
 from app.modules.indexing.entity_projection import project_taxonomy_nodes
@@ -71,8 +73,8 @@ if TYPE_CHECKING:
 # 2: records that are not indexed yet get a point too, and trashed ones lose theirs.
 ENTITY_INDEX_VERSION = 2
 # Orgs carried ENTITY_INDEX_VERSION's marker before the passes split, so 2 is
-# taken. 3: people.
-ORG_PASS_VERSION = 3
+# taken. 3: people, 4: CRM accounts as organisations.
+ORG_PASS_VERSION = 4
 
 LEADER_KEY = "entity_index_rebuild:leader"
 PAGE_SIZE = 200
@@ -130,6 +132,7 @@ ENTITY_INDEX_TAXONOMY_SOURCES: tuple[str, ...] = (
     CollectionNames.SUBCATEGORIES3.value,
     CollectionNames.TOPICS.value,
     _USERS,
+    _ORGS,
 )
 
 _SWEPT_TYPES: tuple[str, ...] = (
@@ -140,6 +143,7 @@ _SWEPT_TYPES: tuple[str, ...] = (
     EntityType.DEPARTMENT.value,
     EntityType.RECORD_GROUP.value,
     EntityType.PERSON.value,
+    EntityType.ORGANIZATION.value,
 )
 # Node collection of a swept point; subcategories are resolved by level.
 _SWEPT_COLLECTIONS: dict[str, str] = {
@@ -149,7 +153,10 @@ _SWEPT_COLLECTIONS: dict[str, str] = {
     EntityType.DEPARTMENT.value: _DEPARTMENTS,
     EntityType.RECORD_GROUP.value: _RECORD_GROUPS,
     EntityType.PERSON.value: _USERS,
+    EntityType.ORGANIZATION.value: _ORGS,
 }
+# The field naming a swept node's org, where it is not orgId.
+_SWEPT_OWNER_FIELDS: dict[str, str] = {_ORGS: "parentOrgId"}
 _SUBCATEGORY_COLLECTIONS: dict[str, str] = {
     kind.level: collection for collection, kind in KINDS_BY_COLLECTION.items() if kind.level
 }
@@ -174,14 +181,17 @@ class EntityIndexState:
 
 
 def entity_index_marker(
-    fingerprint: str, stamp: str = "", *, version: int = ENTITY_INDEX_VERSION,
+    fingerprint: str, stamp: str = "", *, version: int = ENTITY_INDEX_VERSION, order: str = "",
 ) -> str:
     """``stamp`` is ``EntityVectorStore.collection_stamp``: a document done
-    under another stamp was projected into a collection that is gone."""
-    return f"v{version}{'@' + stamp if stamp else ''}:{fingerprint}"
+    under another stamp was projected into a collection that is gone.
+    ``order`` is the graph store's page order (``IGraphDBProvider.ENTITY_INDEX_PAGE_ORDER``):
+    a cursor saved under another order may skip rows, so its pass starts over.
+    Empty for a store that pages as it always has, so its marker is unchanged."""
+    return f"v{version}{'@' + stamp if stamp else ''}{'.' + order if order else ''}:{fingerprint}"
 
 
-_MARKER = re.compile(r"v\d+(?:@[0-9a-z]+)?:(.+)", re.DOTALL)
+_MARKER = re.compile(r"v\d+(?:@[0-9a-z]+)?(?:\.[0-9a-z]+)?:(.+)", re.DOTALL)
 
 
 def fingerprint_of(marker: object) -> str | None:
@@ -249,6 +259,11 @@ class _Pass:
         return _int(self._progress(EntityIndexState.ERRORS))
 
 
+def _in_org(org_id: str) -> contextlib.AbstractContextManager:
+    """The org a pass runs in; an app that names none keeps the caller's scope (the stores that do not need one)."""
+    return for_org(org_id, job="entity_index_rebuild") if org_id else contextlib.nullcontext()
+
+
 class EntityIndexRebuilder:
     """One tick does one unit of work: a page of a connector's pass, else a
     page of an org's taxonomy pass, else a chunk of an org's sweep."""
@@ -290,24 +305,29 @@ class EntityIndexRebuilder:
         # collection: a collection without its stamp gets a new one, which no
         # document has reached, so every pass runs again.
         stamp = await self.store.collection_stamp()
-        marker = entity_index_marker(fingerprint, stamp)
+        marker = entity_index_marker(fingerprint, stamp, order=getattr(self.graph, "ENTITY_INDEX_PAGE_ORDER", ""))
 
-        app = await self.graph.get_entity_index_candidate(_APPS, marker)
+        # The candidate is read across orgs; the rest of its work runs in the org that owns it.
+        with system("entity_index_rebuild"):
+            app = await self.graph.get_entity_index_candidate(_APPS, marker)
         if app and (key := _key_of(app)):
-            await self._run_page(_Pass(_APPS, key, app, CONNECTOR_SOURCES, marker))
+            with _in_org(_text(app.get("orgId"))):      # the app's stored owner, not the pass key
+                await self._run_page(_Pass(_APPS, key, app, CONNECTOR_SOURCES, marker))
             return "connector"
 
         marker = entity_index_marker(fingerprint, stamp, version=ORG_PASS_VERSION)
         sweep_before = self.now_ms() - SWEEP_INTERVAL_MS
-        org = await self.graph.get_entity_index_candidate(
-            _ORGS, marker, sweep_before=sweep_before,
-        )
+        with system("entity_index_rebuild"):
+            org = await self.graph.get_entity_index_candidate(
+                _ORGS, marker, sweep_before=sweep_before,
+            )
         if not org or not (key := _key_of(org)):
             return "idle"
-        if org.get(EntityIndexState.STATE) != marker:
-            await self._run_page(_Pass(_ORGS, key, org, ENTITY_INDEX_TAXONOMY_SOURCES, marker))
-            return "taxonomy"
-        await self._sweep_chunk(key, org)
+        with _in_org(key):
+            if org.get(EntityIndexState.STATE) != marker:
+                await self._run_page(_Pass(_ORGS, key, org, ENTITY_INDEX_TAXONOMY_SOURCES, marker))
+                return "taxonomy"
+            await self._sweep_chunk(key, org)
         return "sweep"
 
     # ------------------------------------------------------------------
@@ -742,12 +762,13 @@ class EntityIndexRebuilder:
         for collection, group in by_collection.items():
             for start in range(0, len(group), _SWEEP_LOOKUP_BATCH):
                 batch = group[start:start + _SWEEP_LOOKUP_BATCH]
+                owner_field = _SWEPT_OWNER_FIELDS.get(collection, "orgId")
                 rows = await self.graph.get_nodes_by_field_in(
                     collection, "id", sorted({r.entity_id for r in batch}),
-                    return_fields=["id", "orgId", "mergedInto"], raise_on_error=True,
+                    return_fields=["id", owner_field, "mergedInto"], raise_on_error=True,
                 )
                 owner = {
-                    _key_of(row): row.get("orgId") for row in rows or [] if not row.get("mergedInto")
+                    _key_of(row): row.get(owner_field) for row in rows or [] if not row.get("mergedInto")
                 }
                 for ref in batch:
                     if ref.entity_id not in owner or owner[ref.entity_id] not in (None, org_id):

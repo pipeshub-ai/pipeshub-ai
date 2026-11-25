@@ -57,6 +57,8 @@ Does the code do what the PR claims? Trace the happy path and the failure paths.
 
 - Single responsibility: retrieval + transformation + I/O in one function is three things.
 - Depend on abstractions (`IGraphDBProvider`, `IVectorDBService`, `MessagingFactory`), not concrete clients.
+- A new or changed Node repository method lands in both `mongo.ts` and `pg.ts` with the shared contract suite passing on both, and a new collection has its PostgreSQL migration. A new or changed `IVectorDBService` method covers Qdrant, OpenSearch, Redis and pgvector, or the PR names the store that refuses it; that store must still construct, so the method is either a concrete default on the interface or the refusing store raises an explicit, tested error (an unimplemented `@abstractmethod` breaks startup). Changing one store alone is blocking.
+- A new or changed `IGraphDBProvider` method or graph query lands in all three graph stores (Neo4j, ArangoDB, PostgreSQL) with tests on each. Where PostgreSQL cannot serve it yet, the PostgreSQL side raises `NotImplementedInPostgres`, a test pins that it raises, the other two stores are still tested, and the PR says why. One store changed alone is blocking.
 - New code fits the existing factory, repository and DI patterns (`inversify` in Node, `dependency-injector` in Python) instead of inventing a parallel structure.
 - Connector-specific shapes do not leak into shared domain models.
 

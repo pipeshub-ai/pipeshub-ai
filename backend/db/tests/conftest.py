@@ -76,8 +76,10 @@ def cluster(request, tmp_path_factory):
     b = request.param
     subprocess.run([f"{b}/initdb", "-D", str(root / "data"), "-U", "postgres", "--auth=trust", "-E", "UTF8"],
                    check=True, capture_output=True)
+    # jit=off as CI's server (db-migrations.yml) and migrate.py's catalog check run it: the catalog views' estimates cross the
+    # JIT thresholds, and compiling one such plan costs about 20 s of CPU per read of kernel.rls_violations
     subprocess.run([f"{b}/pg_ctl", "-D", str(root / "data"), "-w", "-l", str(root / "log"), "-o",
-                    f"-p {port} -k {root} -c listen_addresses=127.0.0.1", "start"], check=True, capture_output=True)
+                    f"-p {port} -k {root} -c listen_addresses=127.0.0.1 -c jit=off", "start"], check=True, capture_output=True)
     try:
         yield Cluster(b, root, port)
     finally:

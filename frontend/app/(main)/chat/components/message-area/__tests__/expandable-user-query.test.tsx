@@ -7,6 +7,7 @@ import {
   QUESTION_CHAR_LIMIT,
   EXPANDED_MAX_HEIGHT_PX,
 } from '../expandable-user-query';
+import { formatQuotedSelection } from '@/chat/utils/quoted-selection';
 
 afterEach(() => cleanup());
 
@@ -170,7 +171,9 @@ describe('ExpandableUserQuery', () => {
     const url = 'https://example.com/docs/guide';
     const q = 'x'.repeat(QUESTION_CHAR_LIMIT - 10) + ' ' + url + ' ' + 'y'.repeat(40);
     renderQuery({ question: q });
-    expect(screen.getByRole('link').getAttribute('href')).toBe(url);
+    // Our "save as command" action is a link too (to the skills page); the question's own links are external.
+    const external = screen.getAllByRole('link').map((a) => a.getAttribute('href')).filter((href) => href?.startsWith('http'));
+    expect(external).toEqual([url]);
   });
 
   it('copies the original URL, not its short label', () => {
@@ -180,6 +183,25 @@ describe('ExpandableUserQuery', () => {
     renderQuery({ question: q, messageId: 'msg-1', onEdit: vi.fn() });
     fireEvent.click(screen.getByRole('button', { name: /copy/i }));
     expect(writeText).toHaveBeenCalledWith(q);
+  });
+});
+
+describe('ExpandableUserQuery quoted excerpt', () => {
+  it('shows the excerpt as a quote card and the follow-up as the heading', () => {
+    const stored = formatQuotedSelection('the SLA is 99.9%', 'What does this cover?');
+    renderQuery({ question: stored });
+    expect(screen.getByTestId('user-query-quote').textContent).toBe('the SLA is 99.9%');
+    expect(screen.getByTestId('user-query-heading').textContent).toContain('What does this cover?');
+    expect(screen.queryByText(/Quoted excerpt/)).toBeNull();
+  });
+
+  it('copies a readable quote plus the question', () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+    const stored = formatQuotedSelection('line one\nline two', 'Explain');
+    renderQuery({ question: stored, isMobile: true });
+    fireEvent.click(screen.getByRole('button', { name: /copy/i }));
+    expect(writeText).toHaveBeenCalledWith('> line one\n> line two\n\nExplain');
   });
 });
 

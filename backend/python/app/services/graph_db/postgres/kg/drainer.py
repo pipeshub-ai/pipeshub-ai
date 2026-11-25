@@ -17,8 +17,9 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from app.core.org_context import OrgContext, bind
+from app.services.graph_db.postgres.kg.locks import LOCK_CLASS
 from app.services.graph_db.postgres.kg.model import CODE_EPOCH, COLL_CODE
-from app.services.graph_db.postgres.kg.project import decode, project
+from app.services.graph_db.postgres.kg.project import decode, grant_only, project
 from app.services.graph_db.postgres.kg.writers import KgWriter
 from app.telemetry.backend import METRICS_BACKEND
 
@@ -56,20 +57,26 @@ async def drain(db: KernelDB, org: str, *, limit: int = 25000) -> int:
     flush), up to ``limit`` node keys (the first row is always taken). Runs as the connectors service in an org unit; returns the number of keys taken.
     A ``RuntimeError`` from the projection leaves the rows where they are and propagates: the caller retries later."""
     async def go(tx: Tx) -> int:
-        rows = await tx.fetch(r"""/* pipeshub:kg.drain_read */ SELECT id, ends FROM (
-            SELECT id, ends, sum(cardinality(ends)) OVER (ORDER BY txid, id) AS run FROM (
-              SELECT id, txid, ends FROM kg.graph_changes WHERE org_id = $1 AND txid <> pg_current_xact_id() AND NOT EXISTS (SELECT 1 FROM unnest(ends) AS e WHERE e IS NULL OR e !~ '^[1-8]:[\s\S]+$' OR length(e) > 258) ORDER BY txid, id LIMIT 1000) q) r
+        # One page of an org at a time across every process that drains (a second worker, a backfill): the lock is held to the end of the unit, so the page is projected and acknowledged
+        # by one of them, and a caller that does not get it takes nothing (its rows are still in the log and it looks again).
+        if not await tx.fetchval("/* pipeshub:kg.drain_lock */ SELECT pg_try_advisory_xact_lock($1::int, hashtext($2))", LOCK_CLASS, f"{org}|drain"):
+            return 0
+        rows = await tx.fetch(r"""/* pipeshub:kg.drain_read */ SELECT id, ends, grant_only FROM (
+            SELECT id, ends, grant_only, sum(cardinality(ends)) OVER (ORDER BY txid, id) AS run FROM (
+              SELECT id, txid, ends, grant_only FROM kg.graph_changes WHERE org_id = $1 AND txid <> pg_current_xact_id() AND NOT (ends @> ARRAY['3:@demote']::text[]) AND NOT EXISTS (SELECT 1 FROM unnest(ends) AS e WHERE e IS NULL OR e !~ '^[1-8]:[\s\S]+$' OR length(e) > 258) ORDER BY txid, id LIMIT 1000) q) r
             WHERE run - cardinality(ends) < $2 ORDER BY id""", org, limit)
         if not rows:
             return 0
         # The rows behind this page, as they are now: a row whose nodes this projection re-derives from the graph is satisfied by it (it was committed, with its graph change,
         # before the projection reads), so it is acknowledged with the page instead of projecting the same nodes again later. A group that appears pulls all its members in
         # (expansion), which in a bulk import is most of the log.
-        ahead = await tx.fetch(r"""/* pipeshub:kg.drain_ahead */ SELECT id, ends FROM kg.graph_changes WHERE org_id = $1 AND txid <> pg_current_xact_id() AND NOT (id = ANY($2::bigint[])) AND NOT EXISTS (SELECT 1 FROM unnest(ends) AS e WHERE e IS NULL OR e !~ '^[1-8]:[\s\S]+$' OR length(e) > 258)
+        ahead = await tx.fetch(r"""/* pipeshub:kg.drain_ahead */ SELECT id, ends, grant_only FROM kg.graph_changes WHERE org_id = $1 AND txid <> pg_current_xact_id() AND NOT (id = ANY($2::bigint[])) AND NOT (ends @> ARRAY['3:@demote']::text[]) AND NOT EXISTS (SELECT 1 FROM unnest(ends) AS e WHERE e IS NULL OR e !~ '^[1-8]:[\s\S]+$' OR length(e) > 258)
             ORDER BY id LIMIT $3""", org, [r["id"] for r in rows], AHEAD)
-        st = await project(tx, org, decode(rows))
+        st = await project(tx, org, decode(rows), grant_only=grant_only(rows))
         covered = {(COLL_CODE[k[0]], k[1]) for k in st.keys}
-        done = [r["id"] for r in rows] + [r["id"] for r in ahead if all(_code_key(e) in covered for e in r["ends"])]
+        # a node restamped alone satisfies a row of a grant change on it, never another change of it (that one restamps what is below the node, when its own page comes)
+        deep = covered - {(COLL_CODE[k[0]], k[1]) for k in st.shallow}
+        done = [r["id"] for r in rows] + [r["id"] for r in ahead if all(_code_key(e) in (covered if r["grant_only"] else deep) for e in r["ends"])]
         await KgWriter(tx).changes_delete(done)
         return sum(len(r["ends"]) for r in rows)
     return await db.run(go, write=True)
@@ -98,7 +105,7 @@ async def drain_org(db: KernelDB, org: str, *, page: int = PAGE, max_rows: int |
 
 async def lag_in(tx: Tx, org: str) -> int:
     """Committed change-log keys not yet projected for the org, in the caller's unit (rows the drain cannot read are counted by ``quarantined``, not here)."""
-    return int(await tx.fetchval(r"/* pipeshub:kg.lag */ SELECT COALESCE(sum(cardinality(ends)), 0) FROM kg.graph_changes WHERE org_id = $1 AND NOT EXISTS (SELECT 1 FROM unnest(ends) AS e WHERE e IS NULL OR e !~ '^[1-8]:[\s\S]+$' OR length(e) > 258)", org))
+    return int(await tx.fetchval(r"/* pipeshub:kg.lag */ SELECT COALESCE(sum(cardinality(ends)), 0) FROM kg.graph_changes WHERE org_id = $1 AND NOT (ends @> ARRAY['3:@demote']::text[]) AND NOT EXISTS (SELECT 1 FROM unnest(ends) AS e WHERE e IS NULL OR e !~ '^[1-8]:[\s\S]+$' OR length(e) > 258)", org))
 
 
 async def lag(db: KernelDB, org: str) -> int:
@@ -122,19 +129,25 @@ async def purge_quarantined(db: KernelDB, org: str) -> int:
         return await db.run(go, write=True)
 
 
+async def fenced(tx: Tx, org: str, app_id: str) -> set[str]:
+    """The kinds (``app``, ``rows``) of the restamp jobs queued for the connector that hide what they will restamp."""
+    return {r["kind"] for r in await tx.fetch("""/* pipeshub:kg.app_fenced */ SELECT DISTINCT q.kind FROM kg.restamp_queue q JOIN kg.node_keys k ON k.org_id = q.org_id AND k.sk = q.app_sk
+        WHERE q.org_id = $1 AND k.coll = 1 AND k.id = $2 AND q.fenced""", org, app_id)}
+
+
 async def is_current(tx: Tx, org: str, app_id: str) -> bool:
     """May a reader trust kg for this connector? Its copy is verified (``shadow`` or ``enforce``), no row of the log is unreadable, and no change is waiting that can alter it: none logged
     for it or for the org as a whole (edges, principals), and none logged for another connector while either of the two links records across connectors (``cross_app``: a record's
     parent or group belongs to the other, so a change there reaches this one). A pending connector kg has never seen may link anything, so it is not current either. A node that changed
-    connector is logged under both, so neither is current. A connector with a queued restamp job that hides (``fenced``) is not current until the job is done: the stamps of what the change reached are outdated and hidden, and a connector
-    answered from them would be wrong for those records. The marks on single records are the reader's own predicate as well (restamp.HIDDEN); the connector-level check is the stricter one."""
+    connector is logged under both, so neither is current. A connector hidden whole by a restamp job (kind ``app``) is not current until the job is done. A ``rows`` job does not
+    take the connector off: it marks every row whose stamp the change outdated, and every reader takes a marked row to the walk (``fence_job``, restamp.HIDDEN), so the rest of
+    the connector is answered from stamps that are up to date."""
     st = await tx.fetchrow("""/* pipeshub:kg.current_mode */ SELECT s.mode, s.cross_app FROM kg.projection_state s JOIN kg.node_keys k ON k.org_id = s.org_id AND k.sk = s.app_sk
         WHERE s.org_id = $1 AND k.coll = 1 AND k.id = $2""", org, app_id)
     if st is None or st["mode"] not in ("shadow", "enforce"):
         return False
-    if await tx.fetchval("""/* pipeshub:kg.app_fenced */ SELECT EXISTS (SELECT 1 FROM kg.restamp_queue q JOIN kg.node_keys k ON k.org_id = q.org_id AND k.sk = q.app_sk
-            WHERE q.org_id = $1 AND k.coll = 1 AND k.id = $2 AND q.fenced)""", org, app_id):
-        return False                                  # a restamp job hides what the connector's stamps no longer say
+    if "app" in await fenced(tx, org, app_id):
+        return False                                  # the connector's stamps are hidden whole
     if await tx.fetchval(r"/* pipeshub:kg.poison_any */ SELECT EXISTS (SELECT 1 FROM kg.graph_changes WHERE org_id = $1 AND EXISTS (SELECT 1 FROM unnest(ends) AS e WHERE e IS NULL OR e !~ '^[1-8]:[\s\S]+$' OR length(e) > 258))", org):
         return False                                  # a row that cannot be read may name anything
     pending = [r["app_id"] for r in await tx.fetch("/* pipeshub:kg.pending_apps */ SELECT DISTINCT app_id FROM kg.graph_changes WHERE org_id = $1", org)]

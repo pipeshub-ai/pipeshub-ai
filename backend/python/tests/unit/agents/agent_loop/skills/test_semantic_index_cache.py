@@ -2,6 +2,8 @@
 service on every chat request — a fresh `SkillManager` is built per request and
 calls `rebuild()` each time."""
 
+import asyncio
+import logging
 import os
 from collections.abc import Iterator
 from unittest.mock import AsyncMock, MagicMock
@@ -10,6 +12,8 @@ import pytest
 
 from app.agent_loop_lib.modules.providers.skills.base import SkillMetadata, SkillStatus
 from app.agents.agent_loop.skills import semantic_index as si
+from tests.support.log_capture import assert_text_free, failure_line
+from tests.support.provider_errors import SENTINELS, openai_error
 
 
 def _skill(name: str, description: str = "does a thing") -> SkillMetadata:
@@ -35,8 +39,10 @@ def _embedder(dim: int = 3, model: str = "test-model") -> MagicMock:
 @pytest.fixture(autouse=True)
 def _clear_cache() -> Iterator[None]:
     si._vector_cache.clear()
+    si._bulk_embeds.clear()
     yield
     si._vector_cache.clear()
+    si._bulk_embeds.clear()
 
 
 class TestVectorCache:
@@ -162,3 +168,105 @@ class TestVectorCacheSizing:
     def test_unset_uses_the_default(self, monkeypatch) -> None:
         module = self._reload(monkeypatch, None)
         assert module._VECTOR_CACHE_MAX == 4096
+
+
+class TestEmbeddingFailures:
+    """A failed embedding falls back to keyword search with one line that has the class but not the provider's
+    text, which can echo the skill text or the user's query."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("step", ["skill", "bulk", "query"])
+    async def test_a_failed_embedding_is_one_text_free_line(self, caplog, step) -> None:
+        caplog.set_level(logging.DEBUG)
+        embedder = _embedder()
+        error = openai_error(400)
+        index = _index_with(embedder)
+        if step == "skill":
+            embedder.aembed_query = AsyncMock(side_effect=error)
+            await index._embed_one(_skill("a"))
+        elif step == "bulk":
+            embedder.aembed_documents = AsyncMock(side_effect=error)
+            await index.rebuild([_skill("a"), _skill("b")])
+        else:
+            await index.rebuild([_skill("a")])
+            embedder.aembed_query = AsyncMock(side_effect=error)
+            assert [m.skill.name for m in await index.search("does a thing")] == ["a"]  # keyword fallback
+
+        fields = failure_line(caplog.records, "skill_index.embed_failed", "bad_request", logging.WARNING, *SENTINELS)
+        assert fields["step"] == step
+        assert_text_free(caplog.records, *SENTINELS)
+
+
+async def _never(*_args: object) -> list:
+    await asyncio.Event().wait()
+    return []
+
+
+class TestStalledEmbedderDoesNotHoldTheTurn:
+    """Skill matching runs before the model's first call on every agent turn. An embedding server that
+    accepts the connection and never answers must cost a bounded wait, then keyword matching."""
+
+    @pytest.mark.asyncio
+    async def test_rebuild_gives_up_and_keeps_keyword_matching(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(si, "SKILL_BULK_EMBED_TIMEOUT_SECONDS", 0.05)
+        embedder = _embedder()
+        embedder.aembed_documents = AsyncMock(side_effect=_never)
+        index = _index_with(embedder)
+
+        await asyncio.wait_for(index.rebuild([_skill("a"), _skill("b")]), timeout=2)
+
+        assert index._vectors == {}
+
+    @pytest.mark.asyncio
+    async def test_search_falls_back_to_keywords(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(si, "SKILL_QUERY_EMBED_TIMEOUT_SECONDS", 0.05)
+        embedder = _embedder()
+        index = _index_with(embedder)
+        await index.rebuild([_skill("invoice", "summarise an invoice"), _skill("other")])
+        embedder.aembed_query = AsyncMock(side_effect=_never)
+
+        matches = await asyncio.wait_for(index.search("invoice"), timeout=2)
+
+        assert [m.skill.name for m in matches][:1] == ["invoice"]
+
+    @pytest.mark.asyncio
+    async def test_adding_a_skill_gives_up(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(si, "SKILL_QUERY_EMBED_TIMEOUT_SECONDS", 0.05)
+        embedder = _embedder()
+        embedder.aembed_query = AsyncMock(side_effect=_never)
+        index = _index_with(embedder)
+
+        await asyncio.wait_for(index.add_entry(_skill("a")), timeout=2)
+
+        assert "a" not in index._vectors
+
+    @pytest.mark.asyncio
+    async def test_a_slow_catalog_embed_still_fills_the_cache(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """This turn falls back to keywords; the embed finishes in the background, so the next turn
+        finds the vectors cached and embeds nothing."""
+        monkeypatch.setattr(si, "SKILL_BULK_EMBED_TIMEOUT_SECONDS", 0.01)
+        embedder = _embedder()
+        fast = embedder.aembed_documents.side_effect
+        release = asyncio.Event()
+
+        async def slow(texts: list[str]) -> list[list[float]]:
+            await release.wait()
+            return fast(texts)
+
+        embedder.aembed_documents = AsyncMock(side_effect=slow)
+        skills = [_skill("a"), _skill("b")]
+
+        first = _index_with(embedder)
+        await first.rebuild(skills)
+        assert first._vectors == {}
+        pending = list(si._bulk_embeds.values())
+        assert len(pending) == 1
+
+        release.set()
+        await asyncio.gather(*pending)
+        await asyncio.sleep(0)  # let the done-callback store the vectors
+
+        second = _index_with(embedder)
+        await second.rebuild(skills)
+        assert set(second._vectors) == {"a", "b"}
+        assert embedder.aembed_documents.await_count == 1

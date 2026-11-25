@@ -38,6 +38,8 @@ interface AppInfo {
   privacyPolicyUrl?: string;
   isDynamic?: boolean;
   clientIdHost?: string;
+  /** Who registered an app that was not dynamically registered. */
+  registeredBy?: string;
   knowledgeLimit?: KnowledgeLimit;
 }
 
@@ -492,7 +494,7 @@ export function OAuthAuthorizeView() {
                     className="material-icons-outlined"
                     style={{
                       fontSize: 16,
-                      color: 'var(--gray-10)',
+                      color: 'var(--gray-11)',
                       marginTop: 1,
                       flexShrink: 0,
                     }}
@@ -641,6 +643,12 @@ export function OAuthAuthorizeView() {
           {consentData.app.clientIdHost ? (
             <Text as="p" size="2" color="gray" style={{ wordBreak: 'break-all' }}>
               {t('oauthConsent.clientIdHost', { host: consentData.app.clientIdHost })}
+            </Text>
+          ) : null}
+
+          {consentData.app.registeredBy ? (
+            <Text as="p" size="2" color="gray" style={{ wordBreak: 'break-word' }}>
+              {t('oauthConsent.registeredBy', { name: consentData.app.registeredBy })}
             </Text>
           ) : null}
 

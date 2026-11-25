@@ -135,7 +135,7 @@ export function ChatSection({
             /* Empty state: plain text, since the sidebar's New chat already starts one */
             <Text
               size="1"
-              style={{ padding: 'var(--space-2) var(--space-3)', color: 'var(--slate-10)' }}
+              style={{ padding: 'var(--space-2) var(--space-3)', color: 'var(--slate-11)' }}
             >
               {emptyStateText ?? t('chat.noChatsYet')}
             </Text>

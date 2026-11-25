@@ -12,12 +12,17 @@ import {
   ExpiredTokenError,
 } from '../../../libs/errors/oauth.errors';
 import { UnauthorizedError } from '../../../libs/errors/http.errors';
+import {
+  answerOAuthServerFailure,
+  logOAuthServerFailure,
+} from '../utils/oauth-failure';
 import { getUserRepository } from '../../../libs/repositories/user';
 import { assertDelegationStillHolds } from '../services/delegation-guard';
 import {
   makeOrgContext,
   runWithOrgContext,
 } from '../../../libs/context/orgContext';
+import { setContextIdentity } from '../../../libs/context/request-context';
 
 /**
  * A delegated token has to satisfy the rules that issued it on every request,
@@ -77,7 +82,7 @@ async function assertDelegatedTokenStillHolds(
     // Only the guard's own refusals become `invalid_token` with their reason.
     // Anything else — a failed read, a dropped connection — is rethrown so it
     // lands in the generic branch of `authenticate`, which logs it and answers
-    // `Token validation failed`. Dressing a driver error up as an invalid
+    // 503. Dressing a driver error up as an invalid
     // token would hand its text to the caller and skip the log, leaving an
     // outage looking like a withdrawn permission.
     if (error instanceof UnauthorizedError) {
@@ -180,6 +185,7 @@ export class OAuthAuthMiddleware {
         scopes,
         payload,
       };
+      setContextIdentity(payload);
 
       // The handlers after this one run in the token's organisation.
       asToken(payload, next);
@@ -212,18 +218,9 @@ export class OAuthAuthMiddleware {
         return;
       }
 
-      this.logger.error('OAuth authentication error', {
-        error: error instanceof Error ? error.message : 'Unknown error',
-      });
-
-      res.setHeader(
-        'WWW-Authenticate',
-        buildWwwAuthenticateHeader('invalid_token', 'Token validation failed'),
-      );
-      res.status(401).json({
-        error: 'invalid_token',
-        error_description: 'Token validation failed',
-      });
+      // Our failure (a store read, a dropped connection), not the token's: a 401 would
+      // tell the client to drop a token that may be fine.
+      answerOAuthServerFailure(this.logger, res, error, 503);
     }
   };
 
@@ -276,9 +273,7 @@ export class OAuthAuthMiddleware {
 
         next();
       } catch (error) {
-        this.logger.error('Scope check error', {
-          error: error instanceof Error ? error.message : 'Unknown error',
-        });
+        logOAuthServerFailure(this.logger, res, error);
 
         res.status(500).json({
           error: 'server_error',
@@ -337,9 +332,7 @@ export class OAuthAuthMiddleware {
 
         next();
       } catch (error) {
-        this.logger.error('Scope check error', {
-          error: error instanceof Error ? error.message : 'Unknown error',
-        });
+        logOAuthServerFailure(this.logger, res, error);
 
         res.status(500).json({
           error: 'server_error',
@@ -442,6 +435,7 @@ export function scopeCheck(
             scopes: tokenScopes,
             payload,
           };
+          setContextIdentity(payload);
 
           next();
           return;

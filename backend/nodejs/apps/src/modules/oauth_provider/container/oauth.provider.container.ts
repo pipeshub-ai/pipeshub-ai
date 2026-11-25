@@ -1,7 +1,11 @@
 import { Container } from 'inversify';
 import { Logger } from '../../../libs/services/logger.service';
 import { AuthTokenService } from '../../../libs/services/authtoken.service';
-import { AuthMiddleware, DELEGATION_AVAILABLE } from '../../../config';
+import {
+  AuthMiddleware,
+  DELEGATION_AVAILABLE,
+  dynamicClientOrg,
+} from '../../../config';
 import { EncryptionService } from '../../../libs/encryptor/encryptor';
 import { ConfigurationManagerConfig } from '../../configuration_manager/config/config';
 import { AppConfig } from '../../tokens_manager/config/config';
@@ -218,6 +222,7 @@ export class OAuthProviderContainer {
         oauthAppService,
         scopeValidatorService,
         appConfig,
+        dynamicClientOrg,
       );
       container
         .bind<OAuthDcrService>('OAuthDcrService')
@@ -266,7 +271,6 @@ export class OAuthProviderContainer {
         .bind<OAuthAppController>('OAuthAppController')
         .toDynamicValue(() => {
           return new OAuthAppController(
-            logger,
             oauthAppService,
             oauthTokenService,
             scopeValidatorService,
@@ -274,7 +278,7 @@ export class OAuthProviderContainer {
         });
 
       container.bind<PatController>('PatController').toDynamicValue(() => {
-        return new PatController(logger, patService, scopeValidatorService);
+        return new PatController(patService, scopeValidatorService);
       });
 
       container

@@ -3,7 +3,11 @@
 import React, { Suspense, useCallback, useEffect, useState } from 'react';
 import { Flex, Grid, Text, Button } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
-import { useUserStore, selectIsProfileInitialized } from '@/lib/store/user-store';
+import {
+  useUserStore,
+  selectIsAdmin,
+  selectIsProfileInitialized,
+} from '@/lib/store/user-store';
 import { pagePaddingX } from '@/app/components/ui/responsive';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { EntityEmptyState, EntityPagination } from '../../components';
@@ -18,6 +22,7 @@ import { PAGE_PADDING_TOP } from '@/app/(main)/workspace/components/settings-pag
 function Oauth2PageContent() {
   const { t } = useTranslation();
   const isProfileInitialized = useUserStore(selectIsProfileInitialized);
+  const isAdmin = useUserStore(selectIsAdmin);
 
   const [clients, setClients] = useState<OAuthClient[]>([]);
   const [pagination, setPagination] = useState<OAuthClientsPagination | null>(null);
@@ -127,7 +132,7 @@ function Oauth2PageContent() {
     >
       <Oauth2PageHeader
         title={t('workspace.oauth2.title')}
-        subtitle={t('workspace.oauth2.subtitle')}
+        subtitle={t(isAdmin ? 'workspace.oauth2.subtitleAdmin' : 'workspace.oauth2.subtitle')}
         searchPlaceholder={t('workspace.oauth2.searchPlaceholder')}
         searchValue={searchQuery}
         onSearchChange={setSearchQuery}

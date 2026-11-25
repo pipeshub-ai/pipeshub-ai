@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from app.agent_loop_lib.tools.decorators import TOOL_META_ATTR, BoundMethodTool
 from app.agents.actions.knowledge_graph.knowledge_graph import (
     KnowledgeGraph,
     _find_records_by_entity_result_summary,
@@ -128,3 +129,80 @@ def test_people_are_named_in_the_entity_tool_descriptions() -> None:
     assert "people" in search.short_description and "people" in search.description
     assert "'person'" in params["entity_types"]
     assert "person" in KnowledgeGraph.find_records_by_entity._agent_tool_meta.description
+
+
+def test_organizations_are_named_in_the_entity_tool_descriptions() -> None:
+    from app.agents.actions.knowledge_graph.knowledge_graph import KnowledgeGraph
+
+    search = KnowledgeGraph.search_entities._agent_tool_meta
+    params = {p.name: p.description for p in search.parameters}
+    assert "organizations" in search.short_description and "organizations" in search.description
+    assert "'organization'" in params["entity_types"]
+    find = KnowledgeGraph.find_records_by_entity._agent_tool_meta
+    assert "organization" in find.description
+    assert "'organization'" in {p.name: p.description for p in find.parameters}["entity_type"]
+
+
+
+def _wrapped_search(tool: KnowledgeGraph) -> BoundMethodTool:
+    # The wrapper the agent loop calls; its ToolOutput.success becomes tool_call.end outcome and is_error.
+    return BoundMethodTool(tool.search, getattr(tool.search, TOOL_META_ATTR))
+
+
+@pytest.mark.asyncio
+class TestKnowledgeGraphSearchReportsFailures:
+    """A failed search is a failed tool call, not a success holding an error payload."""
+
+    @pytest.mark.parametrize("payload", [
+        json.dumps({"status": "error", "status_code": 500, "message": "Unexpected server error during search."}),
+        json.dumps({"status": "error", "message": "Retrieval services not available"}),
+        json.dumps({"status": "error", "message": "No search query provided"}),
+    ])
+    async def test_error_payload_is_a_failed_call_with_the_same_text(self, payload: str) -> None:
+        tool = KnowledgeGraph(state={"org_id": "o1"})
+        with patch(
+            "app.agents.actions.knowledge_graph.ops.search.execute_search",
+            new_callable=AsyncMock, return_value=payload,
+        ):
+            out = await _wrapped_search(tool).execute(query="pricing")
+        assert out.success is False
+        assert out.error == payload
+
+    @pytest.mark.parametrize("result", [
+        "<record>pricing sheet</record>",
+        json.dumps({"status": "success", "message": "No results found", "results": []}),
+        [],
+    ])
+    async def test_results_and_empty_results_stay_successful(self, result: object) -> None:
+        tool = KnowledgeGraph(state={"org_id": "o1"})
+        with patch(
+            "app.agents.actions.knowledge_graph.ops.search.execute_search",
+            new_callable=AsyncMock, return_value=result,
+        ):
+            out = await _wrapped_search(tool).execute(query="pricing")
+        assert out.success is True
+        assert out.data == result
+
+    async def test_timeline_error_is_a_failed_call(self) -> None:
+        payload = json.dumps({"status": "error", "message": "Timeline search failed. Try again."})
+        tool = KnowledgeGraph(state={"org_id": "o1"})
+        with patch(
+            "app.agents.actions.knowledge_graph.ops.timeline.execute_timeline_search",
+            new_callable=AsyncMock, return_value=payload,
+        ):
+            out = await BoundMethodTool(tool.search_timeline, getattr(tool.search_timeline, TOOL_META_ATTR)).execute(query="q")
+        assert out.success is False
+        assert out.error == payload
+
+    @pytest.mark.parametrize("result, success", [
+        (json.dumps({"entities": "Acme", "status": "error", "message": "Search error: boom"}), False),
+        ((True, '{"status": "success", "results": []}'), True),
+    ])
+    async def test_entity_search_error_with_preamble_is_a_failed_call(self, result: object, success: bool) -> None:
+        tool = KnowledgeGraph(state={"org_id": "o1"})
+        with patch(
+            "app.agents.actions.knowledge_graph.ops.entity_search.execute_search_by_entities",
+            new_callable=AsyncMock, return_value=result,
+        ):
+            out = await BoundMethodTool(tool.search_by_entities, getattr(tool.search_by_entities, TOOL_META_ATTR)).execute(query="q")
+        assert out.success is success

@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, cast
 from app.config.constants.arangodb import CollectionNames
 from app.core.org_context import instrument_org_methods
 from app.services.permissions.errors import ViewerScopesUnavailable
+from app.services.permissions.pending import PendingUnreadable, parse
 from app.services.permissions.ports import AppFacts, ScopeNode
 
 if TYPE_CHECKING:
@@ -60,6 +61,8 @@ LET rgl = mine AND LENGTH(
     FILTER g.connectorId == @app AND g.orgId == @org AND g.permissionModel == "RECORD_GROUP_LEVEL" LIMIT 1 RETURN 1) > 0
 RETURN {{opens: mine AND (a.permissionModel == "APP_LEVEL" OR a.type == "KB"), type: mine ? (a.type || "") : "", rgl: rgl}}
 """
+# The roots registered on the org's connectors (`permissions.pending`), as stored.
+PENDING = f"FOR a IN {CollectionNames.APPS.value} FILTER a.orgId == @org AND a.scopeProjectionPendingRoots != null RETURN {{app: a._key, raw: a.scopeProjectionPendingRoots}}"
 SCOPE_QUERIES = tuple(_SCOPES.replace("{collection}", c.value) for c in (CollectionNames.RECORDS, CollectionNames.RECORD_GROUPS))
 
 
@@ -94,8 +97,12 @@ class ArangoHierarchyView:
         row = cast("dict[str, object]", (await self._rows(APP, {"app": app_id, "org": org_id}))[0])
         return AppFacts(bool(row["opens"]), str(row["type"]), bool(row["rgl"]))
 
-    async def pending_scopes(self, org_id: str) -> frozenset[str]:
-        return frozenset()  # there is no pending registry yet
+    async def pending_scopes(self, org_id: str) -> dict[str, frozenset[str]]:
+        try:
+            held = {str(r["app"]): frozenset(parse(r["raw"])) for r in cast("list[dict[str, object]]", await self._rows(PENDING, {"org": org_id}))}
+            return {app: roots for app, roots in held.items() if roots}
+        except PendingUnreadable as exc:  # roots that cannot be read cannot be hidden: the viewer falls back to the legacy filter
+            raise ViewerScopesUnavailable("pending_unreadable") from exc
 
 
 instrument_org_methods(ArangoHierarchyView)  # shadow/enforce check of every org_id argument, as for the providers

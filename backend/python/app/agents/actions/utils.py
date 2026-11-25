@@ -8,6 +8,7 @@ agent action classes.
 
 import asyncio
 import concurrent.futures
+import contextvars
 import logging
 from typing import Coroutine, TypeVar
 
@@ -38,7 +39,8 @@ def run_async(coro: Coroutine[None, None, T]) -> T:
             # We're in an async context - schedule on the same loop
             # This shouldn't happen for sync tools, but handle it gracefully
             with concurrent.futures.ThreadPoolExecutor() as executor:
-                future = executor.submit(asyncio.run, coro)
+                # In the caller's context: its log fields and org context reach the coroutine.
+                future = executor.submit(contextvars.copy_context().run, asyncio.run, coro)
                 return future.result()
         except RuntimeError:
             # No running loop - we're in sync context

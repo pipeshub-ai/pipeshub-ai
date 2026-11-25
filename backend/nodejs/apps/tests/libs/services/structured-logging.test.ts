@@ -1,6 +1,7 @@
 import 'reflect-metadata';
 import { expect } from 'chai';
 import sinon from 'sinon';
+import { FileSink } from '../../../src/libs/services/log-file-sink';
 import winston from 'winston';
 import * as edition from '../../../src/edition';
 import * as seam from '../../../src/libs/services/structured-logging';
@@ -36,8 +37,9 @@ describe('libs/services/structured-logging', () => {
       expect(new DefaultLoggingProvider().fileLoggingEnabled()).to.equal(true);
     });
 
-    it('leaves the org off the record', () => {
-      expect(new DefaultLoggingProvider().hashOrgId('org-1')).to.equal(null);
+    it('shows the org and user ids as they are', () => {
+      const ids = { org_id: 'org-1', user_id: 'user-1' };
+      expect(new DefaultLoggingProvider().logIdentity(ids)).to.deep.equal(ids);
     });
   });
 
@@ -64,6 +66,17 @@ describe('libs/services/structured-logging', () => {
       sinon.stub(edition, 'structuredLoggingProvider').returns({ consoleFormat: () => null });
       expect(() => getProvider()).to.throw(TypeError, /StructuredLoggingProvider/);
     });
+
+    it('rejects an override with neither identity hook', () => {
+      sinon.stub(edition, 'structuredLoggingProvider').returns({ consoleFormat: (f: unknown) => f, fileLoggingEnabled: () => true });
+      expect(() => getProvider()).to.throw(TypeError, /StructuredLoggingProvider/);
+    });
+
+    it('accepts a legacy override that only hashes the org', () => {
+      const legacy = { consoleFormat: (f: unknown) => f, fileLoggingEnabled: () => true, hashOrgId: () => 'h' };
+      sinon.stub(edition, 'structuredLoggingProvider').returns(legacy);
+      expect(getProvider()).to.equal(legacy);
+    });
   });
 
   describe('Logger wiring', () => {
@@ -81,7 +94,8 @@ describe('libs/services/structured-logging', () => {
     it('keeps the file transports by default', () => {
       sinon.stub(seam, 'getProvider').returns(fakeProvider());
       const transports = transportsOf(new Logger({ service: 't' }));
-      expect(transports.filter((t) => t instanceof winston.transports.File)).to.have.length(2);
+      // error.log and combined.log, through the harness's FileSink (it reports a sink that cannot be written).
+      expect(transports.filter((t) => t instanceof FileSink)).to.have.length(2);
     });
 
     it('gives the console transport the provider format', () => {
@@ -101,6 +115,72 @@ describe('libs/services/structured-logging', () => {
       const log = sinon.stub((logger as any).logger, 'log');
       runWithRequestContext({ rootId: 'root-1', orgId: 'org-1' }, () => logger.info('m'));
       expect(log.firstCall.args[0].organization_id_hash).to.equal('h:org-1');
+    });
+
+    it('a legacy provider keeps both raw ids off the record', () => {
+      sinon.stub(seam, 'getProvider').returns(
+        fakeProvider({ fileLoggingEnabled: () => false, hashOrgId: (o) => `h:${o}` }),
+      );
+      const logger = new Logger({ service: 't' });
+      const log = sinon.stub((logger as any).logger, 'log');
+      runWithRequestContext({ rootId: 'root-1', orgId: 'org-1', userId: 'user-1' }, () => logger.info('m'));
+      const record = log.firstCall.args[0];
+      expect(record.organization_id_hash).to.equal('h:org-1');
+      expect(record).to.not.have.any.keys('org_id', 'user_id');
+      // Neither the file JSON nor the text line shows a raw id: an EE build that only hashes keeps hiding them.
+      const formatted = (logger as any).logger.format.transform({ ...record }, {});
+      const fileLine = (winston.format.json().transform({ ...formatted }, {}) as any)[Symbol.for('message')];
+      for (const rendered of [String(formatted[Symbol.for('message')]), String(fileLine)]) {
+        expect(rendered.replace('h:org-1', '')).to.not.contain('org-1').and.not.contain('user-1');
+        expect(rendered).to.not.match(/org_id|user_id/);
+      }
+      expect(JSON.parse(String(fileLine)).organization_id_hash).to.equal('h:org-1');
+    });
+
+    it('a legacy provider whose hash is null shows no org at all, as before', () => {
+      sinon.stub(seam, 'getProvider').returns(fakeProvider({ fileLoggingEnabled: () => false }));
+      const logger = new Logger({ service: 't' });
+      const log = sinon.stub((logger as any).logger, 'log');
+      runWithRequestContext({ rootId: 'root-1', orgId: 'org-1', userId: 'user-1' }, () => logger.info('m'));
+      expect(log.firstCall.args[0]).to.not.have.any.keys('org_id', 'user_id', 'organization_id_hash');
+      expect(JSON.stringify(log.firstCall.args[0])).to.not.contain('org-1').and.not.contain('user-1');
+    });
+
+    it('stamps raw ids with the default provider', () => {
+      sinon.stub(seam, 'getProvider').returns(
+        Object.assign(new DefaultLoggingProvider(), { fileLoggingEnabled: () => false }),
+      );
+      const logger = new Logger({ service: 't' });
+      const log = sinon.stub((logger as any).logger, 'log');
+      runWithRequestContext({ rootId: 'root-1', orgId: 'org-1', userId: 'user-1' }, () => logger.info('m'));
+      expect(log.firstCall.args[0]).to.include({ org_id: 'org-1', user_id: 'user-1' });
+      expect(log.firstCall.args[0]).to.not.have.property('organization_id_hash');
+    });
+
+    it('lets logIdentity hash one id and hide the other, ahead of hashOrgId', () => {
+      sinon.stub(seam, 'getProvider').returns(
+        fakeProvider({
+          fileLoggingEnabled: () => false,
+          hashOrgId: () => 'legacy',
+          logIdentity: (ids) => ({ org_id: `h:${ids.org_id}` }),
+        }),
+      );
+      const logger = new Logger({ service: 't' });
+      const log = sinon.stub((logger as any).logger, 'log');
+      runWithRequestContext({ rootId: 'root-1', orgId: 'org-1', userId: 'user-1' }, () => logger.info('m'));
+      const record = log.firstCall.args[0];
+      expect(record.org_id).to.equal('h:org-1');
+      expect(record).to.not.have.any.keys('user_id', 'organization_id_hash');
+    });
+
+    it('puts no identity on a line outside a request', () => {
+      sinon.stub(seam, 'getProvider').returns(
+        Object.assign(new DefaultLoggingProvider(), { fileLoggingEnabled: () => false }),
+      );
+      const logger = new Logger({ service: 't' });
+      const log = sinon.stub((logger as any).logger, 'log');
+      logger.info('m');
+      expect(log.firstCall.args[0]).to.not.have.any.keys('org_id', 'user_id', 'request_id');
     });
 
     it('leaves the org off when the provider returns null', () => {

@@ -126,16 +126,29 @@ def _get_segmenter(language: str) -> "pysbd.Segmenter":
 def split_into_sentences(text: str, language: str = "en") -> list[str]:
     """Split *text* into sentences using rule-based segmentation.
 
-    Falls back to a regex splitter if pysbd raises on pathological input —
-    indexing must never fail solely because sentence sub-chunking errored.
+    Text longer than ``MAX_TEXT_BLOCK_CHARS`` goes to a regex splitter instead,
+    as does text pysbd raises on — indexing must never fail or stall solely
+    because sentence sub-chunking did.
     """
     if not text or not text.strip():
         return []
+    # pysbd runs one substitution over the whole text for each word that starts
+    # like one of its abbreviations, so its time grows with the square of the
+    # length: a 14 MB block of flattened JSON took hours, in a thread the
+    # caller's timeout cannot stop. Text this long only reaches the indexer's
+    # oversized-block path, which packs sentences into windows, so a missed
+    # abbreviation there just moves a window boundary.
+    if len(text) > MAX_TEXT_BLOCK_CHARS:
+        return _split_at_sentence_punctuation(text)
     try:
         segmenter = _get_segmenter(language)
         return [s for s in segmenter.segment(text) if s and s.strip()]
     except Exception:
-        return [s for s in _SENTENCE_BOUNDARY_RE.split(text) if s and s.strip()]
+        return _split_at_sentence_punctuation(text)
+
+
+def _split_at_sentence_punctuation(text: str) -> list[str]:
+    return [s for s in _SENTENCE_BOUNDARY_RE.split(text) if s and s.strip()]
 
 
 # ---------------------------------------------------------------------------

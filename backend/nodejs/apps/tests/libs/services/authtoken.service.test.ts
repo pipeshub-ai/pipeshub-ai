@@ -113,11 +113,17 @@ describe('AuthTokenService', () => {
     it('should throw UnauthorizedError for an expired token', async () => {
       const payload = { userId: 'user1' };
       const token = service.generateToken(payload, '-1s'); // already expired
+      const logError = sinon.stub(Logger.prototype, 'error');
       try {
         await service.verifyToken(token);
         expect.fail('Should have thrown');
       } catch (error) {
         expect(error).to.be.instanceOf(UnauthorizedError);
+        // Why, for the one line the 401's handler writes; nothing logged here.
+        expect((error as { cause?: unknown }).cause).to.be.instanceOf(jwt.TokenExpiredError);
+        expect(logError.called).to.be.false;
+      } finally {
+        logError.restore();
       }
     });
 
@@ -139,6 +145,35 @@ describe('AuthTokenService', () => {
         expect.fail('Should have thrown');
       } catch (error) {
         expect(error).to.be.instanceOf(UnauthorizedError);
+      }
+    });
+  });
+
+  describe('verifyUserActionToken', () => {
+    const scope = 'limited:only';
+
+    it('accepts a token signed with the user-action key that holds the scope', async () => {
+      const token = jwt.sign({ userId: 'user1', scopes: [scope] }, deriveUserActionSecret(scopedJwtSecret));
+      expect((await service.verifyUserActionToken(token, scope)).userId).to.equal('user1');
+    });
+
+    it('refuses one signed with the scoped secret, which a service holds, whatever its scope', async () => {
+      const token = service.generateScopedToken({ userId: 'user1', scopes: [scope] });
+      try {
+        await service.verifyUserActionToken(token, scope);
+        expect.fail('Should have thrown');
+      } catch (error) {
+        expect(error).to.be.instanceOf(UnauthorizedError);
+      }
+    });
+
+    it('refuses a genuine token without the scope', async () => {
+      const token = jwt.sign({ userId: 'user1', scopes: ['other:scope'] }, deriveUserActionSecret(scopedJwtSecret));
+      try {
+        await service.verifyUserActionToken(token, scope);
+        expect.fail('Should have thrown');
+      } catch (error) {
+        expect((error as UnauthorizedError).message).to.equal('Invalid scope');
       }
     });
   });
@@ -206,6 +241,26 @@ describe('AuthTokenService', () => {
         expect(error).to.be.instanceOf(UnauthorizedError);
       }
     });
+
+    it('requires the configured audience when one is supplied', async () => {
+      const token = service.generateScopedToken({
+        scopes: ['agent-run:claim'],
+        aud: 'pipeshub-agent-harness',
+      });
+      const decoded = await service.verifyScopedToken(
+        token,
+        'agent-run:claim',
+        'pipeshub-agent-harness',
+      );
+      expect(decoded.aud).to.equal('pipeshub-agent-harness');
+
+      try {
+        await service.verifyScopedToken(token, 'agent-run:claim', 'another-service');
+        expect.fail('Should have thrown');
+      } catch (error) {
+        expect(error).to.be.instanceOf(UnauthorizedError);
+      }
+    });
   });
   // User-held tokens are signed with a key derived from the scoped secret so
   // services holding only the raw secret cannot accept them.
@@ -257,34 +312,40 @@ describe('AuthTokenService', () => {
       await expectRejected(token, TokenScopes.PASSWORD_RESET, 'Invalid scope');
     });
 
-    it('should reject an expired derived-key token and log why', async () => {
+    // Not logged here: the error middleware (or the socket handler) logs the 401 once, with this cause.
+    const rejection = async (token: string): Promise<Error & { cause?: unknown }> => {
+      try {
+        await service.verifyScopedToken(token, TokenScopes.TOKEN_REFRESH)
+      } catch (error) {
+        return error as Error & { cause?: unknown }
+      }
+      throw new Error('expected a rejection')
+    }
+
+    it('should reject an expired derived-key token, with the expiry as the cause and no log line', async () => {
       const token = jwt.sign(
         { userId: 'user1', scopes: [TokenScopes.TOKEN_REFRESH] },
         userActionSecret,
         { expiresIn: '-1s' },
       );
-      const logError = sinon.stub(Logger.getInstance(), 'error');
+      const logError = sinon.stub(Logger.prototype, 'error');
       try {
         await expectRejected(token, TokenScopes.TOKEN_REFRESH, 'Invalid token');
-        expect(logError.calledOnce).to.be.true;
-        expect(logError.firstCall.args[1].error).to.be.instanceOf(jwt.TokenExpiredError);
+        expect((await rejection(token)).cause).to.be.instanceOf(jwt.TokenExpiredError);
+        expect(logError.called).to.be.false;
       } finally {
         logError.restore();
       }
     });
 
-    it('should log the expiry, not the signature mismatch, for an expired legacy token', async () => {
+    it('should give the expiry, not the signature mismatch, as the cause for an expired legacy token', async () => {
       const token = service.generateScopedToken(
         { userId: 'user1', scopes: [TokenScopes.TOKEN_REFRESH] },
         '-1s',
       );
-      const logError = sinon.stub(Logger.getInstance(), 'error');
-      try {
-        await expectRejected(token, TokenScopes.TOKEN_REFRESH, 'Invalid token');
-        expect(logError.firstCall.args[1].error).to.be.instanceOf(jwt.TokenExpiredError);
-      } finally {
-        logError.restore();
-      }
+      const error = await rejection(token);
+      expect(error).to.be.instanceOf(UnauthorizedError);
+      expect(error.cause).to.be.instanceOf(jwt.TokenExpiredError);
     });
   });
 

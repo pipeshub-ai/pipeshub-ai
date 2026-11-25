@@ -42,3 +42,23 @@ describe('ChatResponse search-degraded note', () => {
     expect(screen.queryByText('Results may be incomplete.')).toBeNull();
   });
 });
+
+describe('ChatResponse access notices', () => {
+  const notices = [{ code: 'connector_syncing' as const, connectorId: 'c1', connectorName: 'Jira' }];
+
+  it('says a source is still syncing, below the answer', () => {
+    renderRow({ accessNotices: notices });
+
+    const note = screen.getByText('Jira is still syncing, so results from it may be incomplete.');
+    expect(Boolean(screen.getByText('Two open issues.').compareDocumentPosition(note) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true);
+  });
+
+  it('shows nothing without notices or while the answer is still streaming', () => {
+    renderRow();
+    expect(screen.queryByTestId('access-notices')).toBeNull();
+    cleanup();
+
+    renderRow({ accessNotices: notices, isStreaming: true });
+    expect(screen.queryByTestId('access-notices')).toBeNull();
+  });
+});

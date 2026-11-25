@@ -20,6 +20,7 @@ from app.connectors.sources.localKB.push.contract import PushRefusal
 from app.connectors.sources.localKB.push.service import KbPushService, PushResult
 from app.core import org_context
 from app.modules.record_metadata.schemas import MetadataSchemaRegistry
+from harness_core.testing.virtual_time import run_on_virtual_time
 
 from .bodies import envelope, raw
 
@@ -71,11 +72,12 @@ class Harness:
         self.schemas = MetadataSchemaRegistry(FakeConfig())
         self.user = "writer"
         self.kb = FakeKb()
+        self.ledger = None
 
     def service(self) -> KbPushService:
         svc = KbPushService(
             graph_provider=MagicMock(), kb_service=self.kb, processor_for_kb=AsyncMock(), schema_registry=self.schemas,
-            storage=MagicMock(upload_limit=AsyncMock(return_value=30 << 20)), worker=self.worker, spool=self.spool, publish_event=AsyncMock(),
+            storage=MagicMock(upload_limit=AsyncMock(return_value=30 << 20)), worker=self.worker, spool=self.spool, publish_event=AsyncMock(), ledger=self.ledger,
         )
 
         async def push(**kw) -> PushResult:
@@ -459,26 +461,35 @@ async def never_more() -> AsyncIterator[bytes]:
     await asyncio.Event().wait()
 
 
-async def test_a_sender_that_stalls_after_one_byte_is_cut_at_the_deadline_and_frees_its_slot() -> None:
-    adm = A.Admission(read_slots=1, grace_s=0.2, min_rate_bps=1000, max_read_s=1.0, slot_wait_s=0.1)
-    started = asyncio.get_running_loop().time()
-    with pytest.raises(PushRefusal) as e:
-        await adm.read_body({"content-type": "application/json", "content-length": "1000"}, never_more())
-    waited = asyncio.get_running_loop().time() - started
-    assert (e.value.status, e.value.reason) == (408, "BODY_TIMEOUT") and 0.15 < waited < 1.0, waited
+def test_a_sender_that_stalls_after_one_byte_is_cut_at_the_deadline_and_frees_its_slot() -> None:
+    async def main() -> None:
+        loop = asyncio.get_running_loop()
+        adm = A.Admission(read_slots=1, grace_s=0.2, min_rate_bps=1000, max_read_s=1.0, slot_wait_s=0.1, clock=loop.time)
+        started = loop.time()
+        with pytest.raises(PushRefusal) as e:
+            await adm.read_body({"content-type": "application/json", "content-length": "1000"}, never_more())
+        waited = loop.time() - started
+        # The rate rule's 0.2 s grace, not the 1.0 s deadline the declared length allows.
+        assert (e.value.status, e.value.reason, waited) == (408, "BODY_TIMEOUT", pytest.approx(0.2))
 
-    async def ok() -> AsyncIterator[bytes]:
-        yield b"{}"
+        async def ok() -> AsyncIterator[bytes]:
+            yield b"{}"
 
-    assert await adm.read_body({"content-type": "application/json"}, ok()) == b"{}"  # the slot came back
+        assert await adm.read_body({"content-type": "application/json"}, ok()) == b"{}"  # the slot came back
+
+    run_on_virtual_time(main)
 
 
-async def test_a_stall_without_a_content_length_is_cut_by_the_rate_rule_not_only_the_cap() -> None:
-    adm = A.Admission(grace_s=0.2, min_rate_bps=1000, max_read_s=60.0)
-    started = asyncio.get_running_loop().time()
-    with pytest.raises(PushRefusal) as e:
-        await adm.read_body({"content-type": "application/json"}, never_more())
-    assert e.value.reason == "BODY_TIMEOUT" and asyncio.get_running_loop().time() - started < 2.0
+def test_a_stall_without_a_content_length_is_cut_by_the_rate_rule_not_only_the_cap() -> None:
+    async def main() -> None:
+        loop = asyncio.get_running_loop()
+        adm = A.Admission(grace_s=0.2, min_rate_bps=1000, max_read_s=60.0, clock=loop.time)
+        started = loop.time()
+        with pytest.raises(PushRefusal) as e:
+            await adm.read_body({"content-type": "application/json"}, never_more())
+        assert (e.value.reason, loop.time() - started) == ("BODY_TIMEOUT", pytest.approx(0.2))
+
+    run_on_virtual_time(main)
 
 
 async def test_four_stalled_senders_do_not_starve_the_next_push_for_long() -> None:
@@ -652,3 +663,33 @@ async def test_a_content_length_in_non_ascii_digits_is_ignored_and_the_body_stil
     with pytest.raises(PushRefusal) as e:
         await A.read_bounded({"content-length": declared}, too_big(), 1000)
     assert (e.value.status, e.value.reason) == (413, "PAYLOAD_TOO_LARGE")
+
+
+# ---- suspension is answered before the body is read ------------------------------------------------------
+
+def test_a_suspended_caller_is_refused_before_the_body_is_read(client, h) -> None:
+    from app.connectors.sources.localKB.push import ledger as L
+
+    h.ledger = L.PushLedger()
+    for i in range(3):
+        h.ledger.strike(("org1", "writer"), f"b:{i}", L.TEXT)
+    spy = AsyncMock(wraps=h.admission.read_body)
+    h.admission.read_body = spy
+    r = client.post("/api/v1/kb/kb1/records", content=raw(envelope()), headers=JSON)
+    assert (r.status_code, error(r)["reason"]) == (429, "PUSH_SUSPENDED")
+    assert 0 < int(r.headers["retry-after"]) <= 600
+    assert spy.await_count == 0 and not h.pushed and h.worker.validate.await_count == 0
+    h.user = "owner"  # another caller, same service: served
+    assert client.post("/api/v1/kb/kb1/records", content=raw(envelope()), headers=JSON).status_code == 201
+
+
+def test_a_caller_over_the_shared_worker_budget_is_refused_before_the_body_is_read(client, h) -> None:
+    from app.connectors.sources.localKB.push import ledger as L
+
+    h.ledger = L.PushLedger()
+    h.ledger.lease(("org1", "writer"), 151.0)
+    spy = AsyncMock(wraps=h.admission.read_body)
+    h.admission.read_body = spy
+    r = client.post("/api/v1/kb/kb1/records", content=raw(envelope()), headers=JSON)
+    assert (r.status_code, error(r)["reason"]) == (503, "PUSH_TIMEOUT") and int(r.headers["retry-after"]) > 0
+    assert spy.await_count == 0 and not h.pushed

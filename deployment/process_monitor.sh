@@ -11,7 +11,6 @@ if [ "$(id -u)" = "0" ]; then
         /root/.cache/huggingface/.pipeshub-ownership-v1 || true
 fi
 
-LOG_FILE="/app/process_monitor.log"
 CHECK_INTERVAL=${CHECK_INTERVAL:-20}
 NODEJS_PORT=${NODEJS_PORT:-3000}
 EMBEDDING_PORT=${EMBEDDING_SERVER_PORT:-8002}
@@ -24,19 +23,156 @@ DOCLING_PID=""
 INDEXING_PID=""
 CONNECTOR_PID=""
 QUERY_PID=""
+AGENT_HARNESS_WORKER_PID=""
+MODEL_GATEWAY_PID=""
 PARSING_PID=""
 EXTRACTION_PID=""
+# The monitoring loop's sleep, which cleanup stops so its final wait does not sit it out.
+IDLE_PID=""
 
 PARSING_PORT=${PARSING_SERVICE_PORT:-8092}
 EXTRACTION_PORT=${EXTRACTION_SERVICE_PORT:-8093}
 
 log() {
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_FILE"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1"
+}
+
+# The container's CPU and memory facts, read once here and inherited by every Python process, so
+# each sizes itself from the same values instead of probing on its own. A failure here is not
+# fatal: a process without them reads the cgroup itself. The helper's output is never evaluated:
+# only a `KEY=value` line whose key is on the list and whose value is plain JSON text is exported,
+# so a banner a library prints, or any other line, cannot stop the boot or run anything.
+capacity_facts=$(cd /app/python 2>/dev/null && timeout 30 python -m app.capacity facts --export 2>/dev/null) || capacity_facts=""
+while IFS= read -r capacity_line; do
+    case "$capacity_line" in
+        PIPESHUB_CAPACITY_FACTS=*)
+            capacity_value=${capacity_line#PIPESHUB_CAPACITY_FACTS=}
+            if [ "${#capacity_value}" -le 16384 ] && [[ "$capacity_value" =~ ^[][{}A-Za-z0-9_.,:\"\ +-]+$ ]]; then
+                export "PIPESHUB_CAPACITY_FACTS=$capacity_value"
+            fi
+            ;;
+    esac
+done <<< "$capacity_facts"
+unset capacity_facts capacity_line capacity_value
+
+# Startup limits. A service is waited on while it is alive and using CPU, because on a slow machine
+# importing the Python services takes minutes and a fixed window kills them half way through. It is
+# given up on when it died, when it used no CPU for STARTUP_STALL_SECONDS (hung), or when
+# STARTUP_MAX_SECONDS passed (bounded even if something spins).
+STARTUP_STALL_SECONDS=${STARTUP_STALL_SECONDS:-120}
+STARTUP_MAX_SECONDS=${STARTUP_MAX_SECONDS:-900}
+STARTUP_POLL_SECONDS=${STARTUP_POLL_SECONDS:-2}
+
+# A mistyped limit must not disable the wait or turn it into a busy loop, so anything unusable falls back to the default.
+check_startup_limits() {
+    local name default floor value
+    # Each limit is checked against the one before it, which has already been repaired.
+    for spec in "STARTUP_POLL_SECONDS 2 1" "STARTUP_STALL_SECONDS 120 STARTUP_POLL_SECONDS" "STARTUP_MAX_SECONDS 900 STARTUP_STALL_SECONDS"; do
+        read -r name default floor <<< "$spec"
+        [ "$floor" = "1" ] || floor=${!floor}
+        value=${!name}
+        case $value in
+            ''|*[!0-9]*) value=bad ;;
+        esac
+        if [ "$value" = "bad" ] || [ "$value" -lt "$floor" ]; then
+            log "WARNING: ${name}=${!name} is not an integer of at least ${floor}; using ${default}"
+            printf -v "$name" '%s' "$default"
+        fi
+    done
+}
+check_startup_limits
+
+# CPU ticks (user + system, including reaped children) used by a process and all its live descendants; empty
+# when it is gone. Descendants count because a service may sit in a wrapper while a child does the work.
+cpu_ticks() {
+    # The command name may contain spaces and parentheses, so cut up to the last ") " before splitting fields.
+    cat /proc/[0-9]*/stat 2>/dev/null | sed 's/^\([0-9]*\) (.*) \(.*\)/\1 \2/' | awk -v root="$1" '
+        { ppid[$1] = $3; t[$1] = $13 + $14 + $15 + $16 }
+        END {
+            if (!(root in t)) exit
+            mark[root] = 1
+            do {
+                grew = 0
+                for (p in ppid) if (!(p in mark) && (ppid[p] in mark)) { mark[p] = 1; grew = 1 }
+            } while (grew)
+            for (p in mark) sum += t[p]
+            print sum
+        }'
+}
+
+# wait_ready <name> <pid> <health url>: 0 once the URL answers, 1 if the process died, hung or took too long.
+wait_ready() {
+    local name=$1 pid=$2 url=$3
+    local began=$SECONDS last_move=$SECONDS last_ticks="" ticks request_limit
+
+    log "Waiting for $name health check..."
+    while true; do
+        # A service that takes the connection and never answers must not hold this past the limits below.
+        request_limit=$((STARTUP_MAX_SECONDS - (SECONDS - began)))
+        [ "$request_limit" -le "$STARTUP_STALL_SECONDS" ] || request_limit=$STARTUP_STALL_SECONDS
+        [ "$request_limit" -ge 1 ] || request_limit=1
+        if curl -s -f --max-time "$request_limit" "$url" > /dev/null 2>&1; then
+            log "$name health check passed after $((SECONDS - began))s!"
+            return 0
+        fi
+        if ! kill -0 "$pid" 2>/dev/null; then
+            log "ERROR: $name (PID: $pid) exited before it became healthy"
+            return 1
+        fi
+        ticks=$(cpu_ticks "$pid")
+        # Unreadable CPU counters count as progress: only the overall bound applies then.
+        if [ -z "$ticks" ] || [ "$ticks" != "$last_ticks" ]; then
+            last_ticks=$ticks
+            last_move=$SECONDS
+        fi
+        if [ $((SECONDS - last_move)) -ge "$STARTUP_STALL_SECONDS" ]; then
+            log "ERROR: $name (PID: $pid) used no CPU for ${STARTUP_STALL_SECONDS}s and is not healthy"
+            return 1
+        fi
+        if [ $((SECONDS - began)) -ge "$STARTUP_MAX_SECONDS" ]; then
+            log "ERROR: $name (PID: $pid) not healthy after ${STARTUP_MAX_SECONDS}s"
+            return 1
+        fi
+        sleep "$STARTUP_POLL_SECONDS"
+    done
+}
+
+# await_services <name> <pid> <url> ...: waits for every service at once. Returns 1 as soon as one fails, without
+# waiting for the others; only the waiters started here are stopped.
+await_services() {
+    local dir i=0 pids=() names=() done_count=0 total result
+    dir=$(mktemp -d)
+    while [ $# -ge 3 ]; do
+        ( set +e; wait_ready "$1" "$2" "$3"; echo $? > "$dir/$i" ) &      # errexit would end the waiter at its failure, before the status is written
+        pids+=($!)
+        i=$((i + 1))
+        shift 3
+    done
+    total=$i
+    while [ "$done_count" -lt "$total" ]; do
+        done_count=0
+        for ((i = 0; i < total; i++)); do
+            [ -s "$dir/$i" ] || continue
+            done_count=$((done_count + 1))
+            read -r result < "$dir/$i"
+            if [ "$result" != "0" ]; then
+                kill "${pids[@]}" 2>/dev/null || true
+                wait "${pids[@]}" 2>/dev/null || true
+                rm -rf "$dir"
+                return 1
+            fi
+        done
+        [ "$done_count" -lt "$total" ] && sleep 0.5
+    done
+    rm -rf "$dir"
+    return 0
 }
 
 start_nodejs() {
     log "Starting Node.js service..."
     cd /app/backend
+    # AsyncLocalStorage without async hooks (PERF-E3) is Node 24's default, and Node 24
+    # refuses --experimental-async-context-frame ("bad option"), so the image starts Node with no flag.
     node dist/index.js &
     NODEJS_PID=$!
     log "Node.js started with PID: $NODEJS_PID"
@@ -70,38 +206,23 @@ start_slackbot() {
     log "Slack Bot started with PID: $SLACKBOT_PID"
 }
 
-start_embedding() {
+spawn_embedding() {
     log "Starting Embedding service..."
     cd /app/python
-    python -m app.embedding_main &
+    (use_own_pg_login kv; PIPESHUB_SERVICE=embedding exec python -m app.embedding_main) &
     EMBEDDING_PID=$!
     log "Embedding service started with PID: $EMBEDDING_PID"
+}
 
-    log "Waiting for Embedding service health check..."
-    local MAX_RETRIES=120
-    local RETRY_COUNT=0
-    local HEALTH_CHECK_URL="http://localhost:${EMBEDDING_PORT}/health"
-
-    while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-        if curl -s -f "$HEALTH_CHECK_URL" > /dev/null 2>&1; then
-            log "Embedding service health check passed!"
-            break
-        fi
-        RETRY_COUNT=$((RETRY_COUNT + 1))
-        log "Health check attempt $RETRY_COUNT/$MAX_RETRIES failed, retrying in 2 seconds..."
-        sleep 2
-    done
-
-    if [ $RETRY_COUNT -eq $MAX_RETRIES ]; then
-        log "ERROR: Embedding service health check failed after $MAX_RETRIES attempts"
-        return 1
-    fi
+start_embedding() {
+    spawn_embedding
+    wait_ready "Embedding service" "$EMBEDDING_PID" "http://localhost:${EMBEDDING_PORT}/health"
 }
 
 start_docling() {
     log "Starting Docling service..."
     cd /app/python
-    python -m app.docling_main &
+    (use_own_pg_login kv; PIPESHUB_SERVICE=docling exec python -m app.docling_main) &
     DOCLING_PID=$!
     log "Docling started with PID: $DOCLING_PID"
 }
@@ -109,17 +230,21 @@ start_docling() {
 # The per-service logins stay in this shell but are not inherited: a child gets only its own, as PG_CORE_URL.
 # All processes here share one user, so this limits what a bug in one service can reach; isolating a compromised
 # process from another's login needs separate containers, where each one is given only its own URL.
-export -n PG_CORE_QUERY_URL PG_CORE_INDEXING_URL PG_CORE_CONNECTORS_URL
+export -n PG_CORE_QUERY_URL PG_CORE_INDEXING_URL PG_CORE_CONNECTORS_URL PG_CORE_KV_URL
 # A process whose own login is set (PG_CORE_<SERVICE>_URL, e.g. PG_CORE_QUERY_URL) connects with it, as its own role,
 # with PG_<SERVICE>_POOL_MAX as its pool size when set. Chosen by the process, not the role: a process without its own
 # login keeps the shared PG_CORE_URL and role exactly as before. Call it in the subshell that execs the service.
+# embedding, docling, parsing and extraction only read their configuration: they take the key-value login (PG_CORE_KV_URL).
 use_own_pg_login() {
     local up url_var pool_var
+    # Names the process for its capacity plan (app/capacity); the services on the key-value login (kv) set their own on their start line.
+    export PIPESHUB_SERVICE="$1"
     up=$(printf '%s' "$1" | tr '[:lower:]' '[:upper:]')
     url_var="PG_CORE_${up}_URL"
     pool_var="PG_${up}_POOL_MAX"
     [ -n "${!url_var:-}" ] || return 0
-    export PG_RUNTIME_SERVICE="$1" PG_CORE_URL="${!url_var}"
+    # The pgvector store connects with the same login (it reads PGVECTOR_DSN, else a DSN in the configuration store, which every service would share).
+    export PG_RUNTIME_SERVICE="$1" PG_CORE_URL="${!url_var}" PGVECTOR_DSN="${!url_var}"
     if [ -n "${!pool_var:-}" ]; then export PG_POOL_MAX="${!pool_var}"; fi
 }
 
@@ -131,32 +256,17 @@ start_indexing() {
     log "Indexing started with PID: $INDEXING_PID"
 }
 
-start_connector() {
+spawn_connector() {
     log "Starting Connector service..."
     cd /app/python
     (use_own_pg_login connectors; exec python -m app.connectors_main) &
     CONNECTOR_PID=$!
     log "Connector started with PID: $CONNECTOR_PID"
-    
-    log "Waiting for Connector health check..."
-    local MAX_RETRIES=60
-    local RETRY_COUNT=0
-    local HEALTH_CHECK_URL="http://localhost:8088/health"
-    
-    while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-        if curl -s -f "$HEALTH_CHECK_URL" > /dev/null 2>&1; then
-            log "Connector health check passed!"
-            break
-        fi
-        RETRY_COUNT=$((RETRY_COUNT + 1))
-        log "Health check attempt $RETRY_COUNT/$MAX_RETRIES failed, retrying in 2 seconds..."
-        sleep 2
-    done
-    
-    if [ $RETRY_COUNT -eq $MAX_RETRIES ]; then
-        log "ERROR: Connector health check failed after $MAX_RETRIES attempts"
-        return 1
-    fi
+}
+
+start_connector() {
+    spawn_connector
+    wait_ready "Connector" "$CONNECTOR_PID" "http://localhost:8088/health"
 }
 
 start_query() {
@@ -167,56 +277,73 @@ start_query() {
     log "Query started with PID: $QUERY_PID"
 }
 
-start_parsing() {
+start_agent_harness_worker() {
+    log "Starting durable agent harness worker..."
+    cd /app/python
+    # The worker and the model gateway connect as the connectors role (PG_CORE_CONNECTORS_URL when set): platform_0012 grants that
+    # role the harness keys they write; there is no harness role. Each keeps its own capacity name.
+    (use_own_pg_login connectors; PIPESHUB_SERVICE=harness exec python -m app.harness_main) &
+    AGENT_HARNESS_WORKER_PID=$!
+    log "Agent harness worker started with PID: $AGENT_HARNESS_WORKER_PID"
+}
+
+# The harness's one boolean parse (F3; backend/python/app/utils/env_flags.py is the same):
+# 1/true/yes/on or 0/false/no/off in any case; unset or blank is the default ($2);
+# anything else stops the container rather than reading as the default.
+env_flag() {
+    local value="${!1:-}"
+    case "${value,,}" in
+        "") [ "$2" = "true" ] ;;
+        1|true|yes|on) return 0 ;;
+        0|false|no|off) return 1 ;;
+        *) log "ERROR: $1='$value' is not a boolean: use one of 1/true/yes/on or 0/false/no/off"; exit 1 ;;
+    esac
+}
+
+harness_worker_enabled() {
+    env_flag AGENT_HARNESS_WORKER_ENABLED true
+}
+
+# Engines reach models only through this gateway (E3); it follows the worker
+# unless MODEL_GATEWAY_ENABLED says otherwise.
+model_gateway_enabled() {
+    local follows=false
+    harness_worker_enabled && follows=true
+    env_flag MODEL_GATEWAY_ENABLED "$follows"
+}
+
+start_model_gateway() {
+    log "Starting model gateway (port ${MODEL_GATEWAY_PORT:-8096})..."
+    cd /app/python
+    (use_own_pg_login connectors; PIPESHUB_SERVICE=model_gateway exec python -m app.model_gateway_main) &
+    MODEL_GATEWAY_PID=$!
+    log "Model gateway started with PID: $MODEL_GATEWAY_PID"
+}
+
+spawn_parsing() {
     log "Starting Parsing service (port ${PARSING_PORT})..."
     cd /app/python
-    PARSING_SERVICE_PORT=${PARSING_PORT} python -m app.parsing_main &
+    (use_own_pg_login kv; PIPESHUB_SERVICE=parsing PARSING_SERVICE_PORT=${PARSING_PORT} exec python -m app.parsing_main) &
     PARSING_PID=$!
     log "Parsing service started with PID: $PARSING_PID"
+}
 
-    log "Waiting for Parsing service health check..."
-    local MAX_RETRIES=60
-    local RETRY_COUNT=0
-    while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-        if curl -s -f "http://localhost:${PARSING_PORT}/health" > /dev/null 2>&1; then
-            log "Parsing service health check passed!"
-            break
-        fi
-        RETRY_COUNT=$((RETRY_COUNT + 1))
-        log "Health check attempt $RETRY_COUNT/$MAX_RETRIES failed, retrying in 2 seconds..."
-        sleep 2
-    done
+start_parsing() {
+    spawn_parsing
+    wait_ready "Parsing service" "$PARSING_PID" "http://localhost:${PARSING_PORT}/health"
+}
 
-    if [ $RETRY_COUNT -eq $MAX_RETRIES ]; then
-        log "ERROR: Parsing service health check failed after $MAX_RETRIES attempts"
-        return 1
-    fi
+spawn_extraction() {
+    log "Starting Extraction service (port ${EXTRACTION_PORT})..."
+    cd /app/python
+    (use_own_pg_login kv; PIPESHUB_SERVICE=extraction EXTRACTION_SERVICE_PORT=${EXTRACTION_PORT} exec python -m app.extraction_main) &
+    EXTRACTION_PID=$!
+    log "Extraction service started with PID: $EXTRACTION_PID"
 }
 
 start_extraction() {
-    log "Starting Extraction service (port ${EXTRACTION_PORT})..."
-    cd /app/python
-    EXTRACTION_SERVICE_PORT=${EXTRACTION_PORT} python -m app.extraction_main &
-    EXTRACTION_PID=$!
-    log "Extraction service started with PID: $EXTRACTION_PID"
-
-    log "Waiting for Extraction service health check..."
-    local MAX_RETRIES=60
-    local RETRY_COUNT=0
-    while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-        if curl -s -f "http://localhost:${EXTRACTION_PORT}/health" > /dev/null 2>&1; then
-            log "Extraction service health check passed!"
-            break
-        fi
-        RETRY_COUNT=$((RETRY_COUNT + 1))
-        log "Health check attempt $RETRY_COUNT/$MAX_RETRIES failed, retrying in 2 seconds..."
-        sleep 2
-    done
-
-    if [ $RETRY_COUNT -eq $MAX_RETRIES ]; then
-        log "ERROR: Extraction service health check failed after $MAX_RETRIES attempts"
-        return 1
-    fi
+    spawn_extraction
+    wait_ready "Extraction service" "$EXTRACTION_PID" "http://localhost:${EXTRACTION_PORT}/health"
 }
 
 check_process() {
@@ -230,18 +357,42 @@ check_process() {
     return 0
 }
 
+# Durable agent runs drain on SIGTERM (finish the boundary, commit, yield) and
+# commit through Node, so their processes stop first and Node after them. The
+# worker's drain is bounded at 30 s plus a release; the app's stop grace
+# (compose stop_grace_period, Helm terminationGracePeriodSeconds) covers this.
+DRAIN_WAIT_S=40
+
+stop_and_wait() {
+    local pid live i
+    for pid in "$@"; do
+        [ -n "$pid" ] && kill "$pid" 2>/dev/null || true
+    done
+    for ((i = 0; i < DRAIN_WAIT_S * 2; i++)); do
+        live=0
+        for pid in "$@"; do
+            if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then live=1; fi
+        done
+        [ "$live" -eq 0 ] && return 0
+        sleep 0.5
+    done
+    log "Drain wait of ${DRAIN_WAIT_S}s over; stopping the other services"
+}
+
 cleanup() {
     log "Shutting down all services..."
-    
+    [ -n "$IDLE_PID" ] && kill "$IDLE_PID" 2>/dev/null || true
+    stop_and_wait "$AGENT_HARNESS_WORKER_PID" "$QUERY_PID"
+
     [ -n "$NODEJS_PID" ] && kill "$NODEJS_PID" 2>/dev/null || true
     [ -n "$SLACKBOT_PID" ] && kill "$SLACKBOT_PID" 2>/dev/null || true
     [ -n "$EMBEDDING_PID" ] && kill "$EMBEDDING_PID" 2>/dev/null || true
     [ -n "$DOCLING_PID" ] && kill "$DOCLING_PID" 2>/dev/null || true
     [ -n "$INDEXING_PID" ] && kill "$INDEXING_PID" 2>/dev/null || true
     [ -n "$CONNECTOR_PID" ] && kill "$CONNECTOR_PID" 2>/dev/null || true
-    [ -n "$QUERY_PID" ] && kill "$QUERY_PID" 2>/dev/null || true
     [ -n "$PARSING_PID" ] && kill "$PARSING_PID" 2>/dev/null || true
     [ -n "$EXTRACTION_PID" ] && kill "$EXTRACTION_PID" 2>/dev/null || true
+    [ -n "$MODEL_GATEWAY_PID" ] && kill "$MODEL_GATEWAY_PID" 2>/dev/null || true
     
     wait
     log "All services stopped."
@@ -250,6 +401,62 @@ cleanup() {
 
 trap cleanup SIGTERM SIGINT SIGQUIT
 
+# PIPESHUB_ROLE picks what this container runs. "all" (the default) is the full
+# application below. "parsing" runs only the stateless Parsing service and the
+# Docling service it calls on localhost, so a parse pod can be sized on its own: it
+# never starts Node.js, the connectors, query, indexing, the embedding server
+# or the UI. Anything else is refused rather than guessed at.
+PIPESHUB_ROLE=${PIPESHUB_ROLE:-all}
+
+# SIGTERM on a parse pod: stop the parsing process first and wait for it to
+# finish its in-flight requests (it drains on SIGTERM), and only then stop
+# Docling, which those requests call. The orchestrator's grace period bounds
+# the wait.
+cleanup_parsing_role() {
+    log "Parsing role: draining in-flight parses..."
+    [ -n "$TICK_PID" ] && kill "$TICK_PID" 2>/dev/null || true
+    [ -n "$PARSING_PID" ] && kill "$PARSING_PID" 2>/dev/null || true
+    [ -n "$PARSING_PID" ] && wait "$PARSING_PID" 2>/dev/null || true
+    [ -n "$DOCLING_PID" ] && kill "$DOCLING_PID" 2>/dev/null || true
+    [ -n "$DOCLING_PID" ] && wait "$DOCLING_PID" 2>/dev/null || true
+    log "All services stopped."
+    exit 0
+}
+
+run_parsing_role() {
+    log "=== Parsing role starting ==="
+    trap cleanup_parsing_role SIGTERM SIGINT SIGQUIT
+    start_docling
+    spawn_parsing
+    # Docling is waited for too: a parse pod that cannot reach it would take parses and fail them.
+    await_services \
+        "Docling" "$DOCLING_PID" "http://localhost:8081/health" \
+        "Parsing service" "$PARSING_PID" "http://localhost:${PARSING_PORT}/health" || exit 1
+    log "Parsing role started. Monitoring (checking every ${CHECK_INTERVAL}s)..."
+    while true; do
+        # Sleep in the background so a signal is handled at once, not after
+        # the interval.
+        sleep "$CHECK_INTERVAL" &
+        TICK_PID=$!
+        wait "$TICK_PID" || true
+        if ! check_process "$DOCLING_PID" "Docling"; then
+            start_docling
+        fi
+        if ! check_process "$PARSING_PID" "Parsing"; then
+            start_parsing
+        fi
+    done
+}
+
+case "$PIPESHUB_ROLE" in
+    all) ;;
+    parsing) run_parsing_role ;;
+    *)
+        log "ERROR: unknown PIPESHUB_ROLE='${PIPESHUB_ROLE}' (expected all or parsing)"
+        exit 1
+        ;;
+esac
+
 log "=== Process Monitor Starting ==="
 start_nodejs
 if [ "${PIPESHUB_SKIP_SLACKBOT:-false}" = "true" ]; then
@@ -257,22 +464,84 @@ if [ "${PIPESHUB_SKIP_SLACKBOT:-false}" = "true" ]; then
 else
     start_slackbot
 fi
-start_embedding
-start_connector
+# Python services import for minutes on a small machine and the embedding server also loads its model
+# before it listens, so start them all first and wait for them together instead of one behind another.
+spawn_embedding
+spawn_connector
 start_query
+# Both flags are parsed before anything starts, so a malformed value stops the container now.
+model_gateway_enabled || true
+if harness_worker_enabled; then
+    start_agent_harness_worker
+else
+    log "AGENT_HARNESS_WORKER_ENABLED=false — skipping durable agent worker"
+fi
+if model_gateway_enabled; then
+    start_model_gateway
+fi
 start_docling
 # Conditionally start the standalone Parsing and Extraction services.
 # Set USE_PARSING_SERVICE=true in the environment to enable them.
-# Must start (and pass health checks) *before* Indexing: on startup Indexing
+# Must be healthy *before* Indexing: on startup Indexing
 # recovers in-progress records immediately and, when USE_PARSING_SERVICE=true,
 # routes them through the Parsing service — if that service isn't up yet those
 # recovery calls fail with connection errors / 503s.
+# When PARSING_SERVICE_URL names another host (a separate parsing deployment), the
+# local Parsing service would only sit idle, so it is not started; Extraction still is.
+RUN_LOCAL_PARSING=true
+case "${PARSING_SERVICE_URL:-}" in
+    ""|http://localhost[:/]*|http://localhost|http://127.0.0.1[:/]*|http://127.0.0.1) ;;
+    *) RUN_LOCAL_PARSING=false ;;
+esac
 if [ "${USE_PARSING_SERVICE:-false}" = "true" ]; then
     log "USE_PARSING_SERVICE=true — starting Parsing and Extraction services"
-    start_parsing
-    start_extraction
+    if [ "$RUN_LOCAL_PARSING" = "true" ]; then
+        spawn_parsing
+    else
+        log "PARSING_SERVICE_URL is remote — not starting a local Parsing service"
+    fi
+    spawn_extraction
 else
     log "USE_PARSING_SERVICE not set — skipping Parsing and Extraction services"
+fi
+
+# A remote Parsing service has no PID here, so it is polled by URL under the same overall bound. Indexing
+# recovers in-progress records the moment it starts, and a recovery call to an unready service would use up
+# a delivery attempt of each record.
+wait_url_ready() {
+    local name=$1 url=$2 began=$SECONDS limit
+    log "Waiting for $name health check..."
+    while true; do
+        limit=$((STARTUP_MAX_SECONDS - (SECONDS - began)))
+        [ "$limit" -le "$STARTUP_STALL_SECONDS" ] || limit=$STARTUP_STALL_SECONDS
+        [ "$limit" -ge 1 ] || limit=1
+        if curl -s -f --max-time "$limit" "$url" > /dev/null 2>&1; then
+            log "$name health check passed after $((SECONDS - began))s!"
+            return 0
+        fi
+        if [ $((SECONDS - began)) -ge "$STARTUP_MAX_SECONDS" ]; then
+            log "ERROR: $name did not become healthy within ${STARTUP_MAX_SECONDS}s"
+            return 1
+        fi
+        sleep "${STARTUP_POLL_SECONDS:-2}"
+    done
+}
+
+# The first failed wait ends the monitor, as it did when the waits were serial.
+if [ "${USE_PARSING_SERVICE:-false}" = "true" ]; then
+    await_services \
+        "Embedding service" "$EMBEDDING_PID" "http://localhost:${EMBEDDING_PORT}/health" \
+        "Connector" "$CONNECTOR_PID" "http://localhost:8088/health" \
+        ${PARSING_PID:+"Parsing service" "$PARSING_PID" "http://localhost:${PARSING_PORT}/health"} \
+        "Extraction service" "$EXTRACTION_PID" "http://localhost:${EXTRACTION_PORT}/health" || exit 1
+else
+    await_services \
+        "Embedding service" "$EMBEDDING_PID" "http://localhost:${EMBEDDING_PORT}/health" \
+        "Connector" "$CONNECTOR_PID" "http://localhost:8088/health" || exit 1
+fi
+
+if [ "${USE_PARSING_SERVICE:-false}" = "true" ] && [ "$RUN_LOCAL_PARSING" != "true" ]; then
+    wait_url_ready "Remote Parsing service" "${PARSING_SERVICE_URL%/}/health/ready" || exit 1
 fi
 
 start_indexing
@@ -280,8 +549,13 @@ start_indexing
 
 log "All services started. Beginning monitoring cycle (checking every ${CHECK_INTERVAL}s)..."
 
+# Bash runs a trap only once its foreground command returns, so a stop that landed in a foreground sleep began its
+# drain up to CHECK_INTERVAL late, out of the stop grace the drain needs. A wait returns as the signal arrives.
 while true; do
-    sleep "$CHECK_INTERVAL"
+    sleep "$CHECK_INTERVAL" &
+    IDLE_PID=$!
+    wait "$IDLE_PID" || true
+    IDLE_PID=""
     
     if ! check_process "$NODEJS_PID" "Node.js"; then
         start_nodejs
@@ -311,8 +585,16 @@ while true; do
         start_query
     fi
 
+    if harness_worker_enabled && ! check_process "$AGENT_HARNESS_WORKER_PID" "Agent harness worker"; then
+        start_agent_harness_worker
+    fi
+
+    if model_gateway_enabled && ! check_process "$MODEL_GATEWAY_PID" "Model gateway"; then
+        start_model_gateway
+    fi
+
     if [ "${USE_PARSING_SERVICE:-false}" = "true" ]; then
-        if ! check_process "$PARSING_PID" "Parsing"; then
+        if [ "$RUN_LOCAL_PARSING" = "true" ] && ! check_process "$PARSING_PID" "Parsing"; then
             start_parsing
         fi
         if ! check_process "$EXTRACTION_PID" "Extraction"; then

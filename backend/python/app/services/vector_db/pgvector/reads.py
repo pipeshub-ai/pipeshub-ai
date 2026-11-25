@@ -18,7 +18,7 @@ from app.services.permissions.scope_fields import (
     SCOPE_STAMP_FIELD,
     SCOPE_VERSION_FIELD,
 )
-from app.services.vector_db.models import VectorPoint
+from app.services.vector_db.models import SparseVector, VectorPoint
 from app.services.vector_db.pgvector.errors import OrgMismatch
 from app.services.vector_db.pgvector.sql_filters import PROMOTED, Compiled
 
@@ -110,9 +110,10 @@ def _needs(with_payload: list[str] | None) -> tuple[bool, bool]:
 
 
 async def scroll(tx: Tx, org: str, collection_id: int, space_id: int, c: Compiled, limit: int, offset: str | None,
-                 with_payload: list[str] | None) -> tuple[list[VectorPoint], str | None]:
+                 with_payload: list[str] | None, *, vectors: bool = False) -> tuple[list[VectorPoint], str | None]:
     """One page of points ordered by ``point_sk``; ``c`` is compiled with ``first_param=5``. Fetches one extra row to know
-    whether another page exists."""
+    whether another page exists. With ``vectors`` each point also carries its stored dense vector and its sparse terms and weights
+    (the postings), so it can be written again under another id."""
     after = decode_offset(org, offset) if offset else 0
     need_json, need_text = _needs(with_payload)
     join_text = need_json or need_text or c.needs_text
@@ -122,15 +123,54 @@ async def scroll(tx: Tx, org: str, collection_id: int, space_id: int, c: Compile
                {'pt.payload' if need_json else 'NULL::jsonb'} AS payload, {'pt.page_content' if need_text else 'NULL::text'} AS page_content,
                coalesce(g.connector_ids, '{{}}') AS connector_ids, coalesce(g.record_group_ids, '{{}}') AS record_group_ids,
                coalesce(g.root_record_group_ids, '{{}}') AS root_record_group_ids, {_SCOPE_COLUMNS}
+               {', p.embedding::text AS embedding, pq.terms AS post_terms, pq.weights AS post_weights' if vectors else ''}
         FROM retrieval.points p
         {'JOIN retrieval.point_text pt ON pt.org_id = $1 AND pt.point_sk = p.point_sk' if join_text else ''}
         LEFT JOIN retrieval.point_groups g ON g.org_id = $1 AND g.collection_id = p.collection_id AND g.group_key = p.group_key
+        {_POSTINGS if vectors else ''}
         WHERE p.org_id = $1 AND p.collection_id = $2 AND p.space_id = $3 AND p.point_sk > $4 AND {_ALIVE} AND ({c.where})
         ORDER BY p.point_sk LIMIT ${len(c.params) + 5}""",
         org, collection_id, space_id, after, *c.params, limit + 1,
     )
     page = rows[:limit]
-    return [to_point(r, with_payload, org) for r in page], (encode_offset(org, page[-1]["point_sk"]) if len(rows) > limit else None)
+    points = [to_point(r, with_payload, org) for r in page]
+    if vectors:
+        for row, point in zip(page, points, strict=True):
+            _set_vectors(row, point)
+    return points, (encode_offset(org, page[-1]["point_sk"]) if len(rows) > limit else None)
+
+
+# The point's postings (its sparse terms and weights) in the same statement as the point, so both come from one snapshot: a write that
+# commits between two statements could leave a point's dense vector and its terms out of step. The terms are the ids ``lex_terms`` holds,
+# wrapped the way the postings store them.
+_POSTINGS = """LEFT JOIN LATERAL (
+          SELECT array_agg(q.term ORDER BY q.term) AS terms, array_agg(q.w ORDER BY q.term) AS weights
+          FROM retrieval.postings q
+          WHERE q.org_id = $1 AND q.collection_id = p.collection_id AND q.space_id = p.space_id AND q.point_sk = p.point_sk
+            AND q.term = ANY(ARRAY(SELECT (CASE WHEN t > 2147483647 THEN t - 4294967296 ELSE t END)::int FROM unnest(p.lex_terms) t))
+        ) pq ON true"""
+
+
+def _set_vectors(row: asyncpg.Record, point: VectorPoint) -> None:
+    """The point's dense vector (the halfvec column) and sparse vector (its postings; a term stored wrapped is given back as written)."""
+    point.dense_vector = [float(x) for x in json.loads(row["embedding"])]
+    terms = row["post_terms"] or []
+    if terms:
+        point.sparse_vector = SparseVector(
+            indices=[t + 4294967296 if t < 0 else t for t in terms], values=[float(w) for w in row["post_weights"]],
+        )
+
+
+async def count_filtered(tx: Tx, org: str, collection_id: int, space_id: int, c: Compiled) -> int:
+    """Exact count of the org's live points of one collection and space that match ``c`` (compiled with ``first_param=4``)."""
+    return await tx.fetchval(
+        f"""/* pipeshub:pgvector.count_filtered */
+        SELECT count(*) FROM retrieval.points p
+        {'JOIN retrieval.point_text pt ON pt.org_id = $1 AND pt.point_sk = p.point_sk' if c.needs_text else ''}
+        LEFT JOIN retrieval.point_groups g ON g.org_id = $1 AND g.collection_id = p.collection_id AND g.group_key = p.group_key
+        WHERE p.org_id = $1 AND p.collection_id = $2 AND p.space_id = $3 AND {_ALIVE} AND ({c.where})""",
+        org, collection_id, space_id, *c.params,
+    )
 
 
 async def retrieve(tx: Tx, org: str, collection_id: int, space_id: int, ids: list[uuid.UUID]) -> list[VectorPoint]:
@@ -147,6 +187,19 @@ async def retrieve(tx: Tx, org: str, collection_id: int, space_id: int, ids: lis
         org, collection_id, space_id, ids,
     )
     return [to_point(r, None, org) for r in rows]
+
+
+async def existing_ids(tx: Tx, org: str, collection_id: int, space_id: int, ids: list[uuid.UUID]) -> set[str]:
+    """The ids that have a live point; no payload or text is joined."""
+    rows = await tx.fetch(
+        """/* pipeshub:pgvector.existing_ids */
+        SELECT p.point_id
+        FROM retrieval.points p
+        WHERE p.org_id = $1 AND p.collection_id = $2 AND p.space_id = $3 AND p.point_id = ANY($4::uuid[])
+          AND NOT EXISTS (SELECT 1 FROM retrieval.point_tombstones t WHERE t.org_id = $1 AND t.point_sk = p.point_sk)""",
+        org, collection_id, space_id, ids,
+    )
+    return {str(r["point_id"]) for r in rows}
 
 
 async def count(tx: Tx, org: str, collection_id: int, space_id: int) -> int:

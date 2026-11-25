@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 
 #: Bumped when the meaning of a field changes; the backfill rewrites every point stamped with an older version.
-SCOPE_FIELDS_VERSION = 5
+SCOPE_FIELDS_VERSION = 6
 
 PATH_IDS_FIELD = "pathIds"
 ACL_SCOPE_FIELD = "aclScope"
@@ -30,6 +30,19 @@ SCOPE_VERSION_FIELD = "scopeFieldsVersion"
 SCOPE_GENERATION_FIELD = "scopeGeneration"
 SCOPE_KEYS = (SCOPE_STAMP_FIELD, PATH_IDS_FIELD, ACL_SCOPE_FIELD, SCOPE_VERSION_FIELD, SCOPE_GENERATION_FIELD)
 SCOPE_LIST_KEYS = (PATH_IDS_FIELD, ACL_SCOPE_FIELD)
+#: Not a scope field (not in SCOPE_KEYS, read by no filter): the time, in microseconds, taken just before the graph read that a payload write was
+#: computed from. A store with ``generation_fence`` refuses a write whose fence is below the one stored; a point with none counts as the oldest.
+SCOPE_FENCE_FIELD = "scopeFence"
+#: Qdrant's range filter and Redis's script compare a fence as a double: exact only below this.
+MAX_FENCE = 2**53
+
+
+def checked_fence(fence: object) -> int:
+    """The fence as given, or ValueError: a non-negative int (not a bool) below ``MAX_FENCE``. A fenced write calls it before anything is
+    sent, so a bad fence is an error and never an unconditional write."""
+    if isinstance(fence, bool) or not isinstance(fence, int) or not 0 <= fence < MAX_FENCE:
+        raise ValueError(f"a fence must be an int from 0 to {MAX_FENCE - 1}, got {fence!r}")
+    return fence
 ENV_SCOPE_GENERATION = "ACL_SCOPE_GENERATION"
 
 

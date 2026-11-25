@@ -7,6 +7,7 @@ These tests go through the real routes and lookups against one in-memory store.
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -22,6 +23,7 @@ from app.api.routes.toolset_resolvers import (
     get_toolset_by_id,
 )
 from app.utils.url_fetcher import FetchError
+from tests.support.bound_org import bind_test_org
 from tests.unit.api.routes.mcp_route_fakes import FakeConfigService
 
 if TYPE_CHECKING:
@@ -103,6 +105,31 @@ def _as(store: FakeConfigService, user_id: str, body: dict[str, Any] | None = No
     request.app.state.toolset_registry = _registry()
     request.app.state.graph_provider = MagicMock(check_toolset_instance_in_use=AsyncMock(return_value=in_use or []))
     return request
+
+
+class _RecordDeleteAnswersFalse(FakeConfigService):
+    """Deleting alice-jira's record answers False: ``removed`` says whether it really went (etcd: a delete
+    retried after its answer was lost); ``unreadable`` fails the read-back that checks."""
+
+    RECORD = USER_PATH.format("u-alice", "alice-jira")
+
+    def __init__(self, store: FakeConfigService, *, removed: bool, unreadable: bool = False) -> None:
+        super().__init__(store.data)
+        self.removed, self.unreadable = removed, unreadable
+
+    async def delete_config(self, key: str) -> bool:
+        if key != self.RECORD:
+            return await super().delete_config(key)
+        self.deletes.append(key)
+        if self.removed:
+            self.data.pop(key, None)
+        return False
+
+    async def get_config(self, key: str, default: Any = None, use_cache: bool = False, *,  # noqa: ANN401
+                         raise_on_error: bool = False, keep_in_cache: bool = True) -> Any:  # noqa: ANN401
+        if key == self.RECORD and raise_on_error and self.unreadable:
+            raise ConnectionError("store down")
+        return await super().get_config(key, default, use_cache, raise_on_error=raise_on_error, keep_in_cache=keep_in_cache)
 
 
 async def _status(coro: Any) -> int:  # noqa: ANN401
@@ -335,6 +362,29 @@ class TestTheOwnerManagesIt:
         ):
             assert key not in store.data
 
+    async def test_deleting_it_when_the_store_answers_false_but_it_is_gone_succeeds_and_takes_its_rules(self) -> None:
+        store = _RecordDeleteAnswersFalse(_store(**{RULES_PATH.format("alice-jira"): {"tools": {}}}), removed=True)
+
+        result = await toolsets.delete_toolset_instance("alice-jira", _as(store, "u-alice"), config_service=store)
+
+        assert result["status"] == "success"
+        assert RULES_PATH.format("alice-jira") not in store.data
+
+    async def test_deleting_it_when_it_is_still_there_is_500_and_keeps_its_rules(self) -> None:
+        store = _RecordDeleteAnswersFalse(_store(**{RULES_PATH.format("alice-jira"): {"tools": {}}}), removed=False)
+
+        assert await _status(toolsets.delete_toolset_instance("alice-jira", _as(store, "u-alice"), config_service=store)) == 500
+        assert RULES_PATH.format("alice-jira") in store.data
+
+    async def test_deleting_it_when_the_check_cannot_read_raises_and_keeps_its_rules(self) -> None:
+        store = _RecordDeleteAnswersFalse(
+            _store(**{RULES_PATH.format("alice-jira"): {"tools": {}}}), removed=False, unreadable=True,
+        )
+
+        with pytest.raises(ConnectionError):
+            await toolsets.delete_toolset_instance("alice-jira", _as(store, "u-alice"), config_service=store)
+        assert RULES_PATH.format("alice-jira") in store.data
+
     async def test_a_new_one_is_found_by_its_id_without_listing_anyones(self) -> None:
         # Tool clients and token refresh have only the id; listing keys is a full scan on Redis.
         store = _store()
@@ -484,3 +534,55 @@ class TestCleanup:
         assert await toolset_store.remove_org_personal_instances(store, "org-1") == 3  # type: ignore[arg-type]
         assert not [key for key in store.data if key.startswith("/services/toolset-user-instances/")]
         assert [i["_id"] for i in store.data[ORG_LIST]] == ["org-jira"]
+
+
+class TestTheControlPlaneFollows:
+    """SYNCFIX1: like an org instance, a personal one is synced into the control plane on every change,
+    and the facts it is synced from name its owner, so it installs as theirs alone."""
+
+    @staticmethod
+    async def _owners(store: FakeConfigService) -> dict[str, str | None]:
+        from app.agents.legacy_capabilities import LegacyCapabilityReader
+
+        async def none(*_args: object) -> list[Any]:
+            return []
+
+        reader = LegacyCapabilityReader(
+            MagicMock(), store,  # type: ignore[arg-type]
+            provider_of=lambda _kind: None, mcp_instances=none, read_manifest=none, skill_digest=none,  # type: ignore[arg-type]
+        )
+        facts = await reader.read("org-1", agents=False)
+        dumped = facts.model_dump(mode="json", by_alias=True)["toolsetInstances"]
+        return {i["instanceId"]: i["ownerId"] for i in dumped}
+
+    async def test_creating_editing_and_deleting_one_syncs_the_org_and_the_facts_name_its_owner(self) -> None:
+        store = _store()
+        sync = AsyncMock(return_value=True)
+        with patch.object(toolsets, "sync_capabilities", sync):
+            created = await toolsets.create_toolset_instance(_as(store, "u-carol", _jira()), config_service=store)
+            mine = created["instance"]["_id"]
+            assert (await self._owners(store))[mine] == "u-carol"
+            assert await self._owners(store) == {
+                "org-jira": None, "alice-jira": "u-alice", "alice-gmail": "u-alice", "bob-jira": "u-bob", mine: "u-carol",
+            }
+
+            await toolsets.update_toolset_instance(mine, _as(store, "u-carol", {"instanceName": "Renamed"}), config_service=store)
+            await toolsets.delete_toolset_instance(mine, _as(store, "u-carol"), config_service=store)
+
+        assert [c.args for c in sync.await_args_list] == [(store, "org-1")] * 3
+        assert mine not in await self._owners(store)
+
+    async def test_a_refused_change_syncs_nothing(self) -> None:
+        store = _store()
+        sync = AsyncMock(return_value=True)
+        with patch.object(toolsets, "sync_capabilities", sync):
+            body = _jira(authConfig={"baseUrl": "https://jira.corp.internal"})
+            assert await _status(toolsets.create_toolset_instance(_as(store, "u-carol", body), config_service=store)) == 400
+            assert await _status(toolsets.delete_toolset_instance("alice-jira", _as(store, "u-bob"), config_service=store)) == 403
+        sync.assert_not_awaited()
+
+
+@pytest.fixture(autouse=True)
+def _bound_org() -> Iterator[str]:
+    """The auth middleware binds the verified token's org; these tests call the route functions directly."""
+    yield from bind_test_org("org-1")

@@ -1,0 +1,110 @@
+[
+  {
+    "description": "wrong type for this schema",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 9,
+      "runId": "run_1",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-22T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "type": "turn.aborted",
+      "data": {
+        "trigger": "upfront",
+        "reason": "research"
+      },
+      "attemptId": "att_1",
+      "fence": 1
+    }
+  },
+  {
+    "description": "writer allowlist: only worker writes x.pipeshub.run.handoff",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 9,
+      "runId": "run_1",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-22T12:00:00.123Z",
+      "writer": "node",
+      "visibility": "owner",
+      "type": "x.pipeshub.run.handoff",
+      "data": {
+        "trigger": "upfront",
+        "reason": "research"
+      }
+    }
+  },
+  {
+    "description": "unknown data field",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 9,
+      "runId": "run_1",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-22T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "type": "x.pipeshub.run.handoff",
+      "data": {
+        "trigger": "upfront",
+        "reason": "research",
+        "goal": "x"
+      },
+      "attemptId": "att_1",
+      "fence": 1
+    }
+  },
+  {
+    "description": "an unknown reason",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 9,
+      "runId": "run_1",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-22T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "type": "x.pipeshub.run.handoff",
+      "data": {
+        "trigger": "upfront",
+        "reason": "vibes"
+      },
+      "attemptId": "att_1",
+      "fence": 1
+    }
+  },
+  {
+    "description": "trigger is required",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 9,
+      "runId": "run_1",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-22T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "type": "x.pipeshub.run.handoff",
+      "data": {
+        "reason": "research"
+      },
+      "attemptId": "att_1",
+      "fence": 1
+    }
+  }
+]

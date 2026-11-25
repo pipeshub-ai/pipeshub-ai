@@ -242,7 +242,7 @@ class TestNeo4jAllRecordsExcludesArtifacts:
             "app-1", "org-1", ["user-key"], ["app-1"], ["rec-1", "art-1"],
         )
         listing = _queries(provider)[-1]
-        assert listing.lstrip().startswith("MATCH (app:App {id: $app_id})")
+        assert listing.lstrip().removeprefix("CYPHER replan=skip ").startswith("MATCH (app:App {id: $app_id})")
         # The two arms that read the grant list rather than walk from the App (and the row's child test).
         assert re.search(r"MATCH \(sd:Record\|RecordGroup\)\s+WHERE sd\.connectorId = app\.id", listing)
         assert re.search(r"MATCH \(dg:RecordGroup\)\s+WHERE dg\.connectorId = app\.id", listing)
@@ -250,4 +250,6 @@ class TestNeo4jAllRecordsExcludesArtifacts:
             "dg.id IN $kh_lists.grantedIds"
         ) + listing.count("ca.id IN $kh_lists.grantedIds") + listing.count("cc.id IN $kh_lists.grantedIds") + listing.count(
             "kh_ch.id IN $kh_lists.grantedIds"
-        ) + listing.count("node.id IN $kh_lists.grantedIds") + listing.count("kh_bg.id IN $kh_lists.grantedIds")
+        ) + listing.count("node.id IN $kh_lists.grantedIds") + listing.count("kh_bg.id IN $kh_lists.grantedIds") + listing.count(
+            "kh_oc.id IN $kh_lists.grantedIds"      # a child's own walk from the App, where a group that hides its children lies above it
+        )

@@ -67,7 +67,44 @@ export const shapeAttachment = (a: unknown): Obj =>
     'extension',
     'virtualRecordId',
     'source',
+    'removed',
   ]);
+
+/** The agent harness's fields of a message besides its sender and label (WP109-FU-2), as the document schema kept them. */
+export function shapeHarnessFields(m: unknown): Obj | null {
+  const out = pick(m, [
+    'foreignTurn',
+    'copied',
+    'runId',
+    'errorCode',
+    'errorServers',
+    'truncatedBy',
+    'budgetScope',
+    'runOutcome',
+    'notFound',
+    'limits',
+  ]);
+  const v = isObj(m) ? m : {};
+  if (isObj(v.errorStop))
+    out.errorStop = pick(v.errorStop, ['scope', 'reason']);
+  if (isObj(v.command)) {
+    const command = pick(v.command, [
+      'name',
+      'version',
+      'contentDigest',
+      'args',
+      'typed',
+      'owner',
+      'authorId',
+      'authorFormer',
+      'teamId',
+      'files',
+    ]);
+    command.args ??= {};
+    out.command = command;
+  }
+  return nonEmpty(out) ?? null;
+}
 
 export const shapeReference = (r: unknown): Obj =>
   pick(r, ['name', 'id', 'type', 'app', 'webUrl', 'metadata']);

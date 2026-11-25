@@ -1,10 +1,11 @@
 """One versioned pass over every connector's records, one page per tick.
 
 Shared by ``record_label_repair`` and ``stored_content_heal``: one Redis
-leader, connectors in key order, a resumable cursor and per-pass counters on
-the app document, a bounded number of passes for a connector that hit
-failures, and a version stamp so a finished connector is not swept again
-until the version is bumped. A subclass decides what one page does.
+leader, each org under its own org context with its connectors in key
+order, a resumable cursor and per-pass counters on the app document, a
+bounded number of passes for a connector that hit failures, and a version
+stamp so a finished connector is not swept again until the version is
+bumped. A subclass decides what one page does.
 """
 
 from __future__ import annotations
@@ -15,6 +16,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from app.config.constants.arangodb import CollectionNames
+from app.core.org_jobs import for_each_org, of_org
 from app.services.graph_db.entity_index_queries import APP_STATUS_DELETING
 
 if TYPE_CHECKING:
@@ -25,6 +27,7 @@ if TYPE_CHECKING:
     from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
 _APPS = CollectionNames.APPS.value
+_APPS_PAGE = 1000
 _BACKOFF_FACTOR = 2
 _MAX_BACKOFF_MULTIPLIER = 16
 
@@ -92,26 +95,63 @@ class ConnectorSweep(ABC):
         self, app: dict[str, Any], app_key: str, rows: list[dict[str, Any]],
     ) -> PageResult: ...
 
+    async def before_org(self, org_id: str) -> None:
+        """Every tick, under each listed org's own context, before any page of that org."""
+
     async def tick(self) -> str:
         """``not_leader``, ``no_apps``, ``idle`` (every connector done), ``page``,
-        ``waiting`` or ``deferred``."""
+        ``waiting`` or ``deferred``. Orgs one at a time, each under its own org
+        context; a failed org is skipped for this tick."""
         if not await self.lock.try_acquire():
             return "not_leader"
-        apps = await self.graph.get_all_documents(_APPS)
-        if not apps:
-            return "no_apps"
-        pending = sorted(
-            (
-                app for app in apps
-                if key_of(app)
-                and app.get(self.fields.state) != self.version
-                and app.get("status") != APP_STATUS_DELETING
-            ),
-            key=lambda app: key_of(app) or "",
-        )
-        if not pending:
-            return "idle"
-        return await self._page(pending[0])
+        outcome: list[str] = []
+        any_apps = False
+
+        async def one_org(org_id: str) -> None:
+            nonlocal any_apps
+            try:
+                await self.before_org(org_id)
+                if outcome:
+                    return
+                apps = of_org(await self._connectors(), org_id)
+                any_apps = any_apps or bool(apps)
+                pending = sorted(
+                    (
+                        app for app in apps
+                        if key_of(app)
+                        and app.get(self.fields.state) != self.version
+                        and app.get("status") != APP_STATUS_DELETING
+                    ),
+                    key=lambda app: key_of(app) or "",
+                )
+                if pending:
+                    outcome.append(await self._page(pending[0]))
+            except Exception:
+                self.logger.exception("%s: org %s failed; the other orgs still run", self.name, org_id)
+                raise
+
+        failed = await for_each_org(self.graph, self.name, one_org, self.logger, raise_on_error=True)
+        if outcome:
+            return outcome[0]
+        if failed:
+            # Never "idle": that would end the loop with these orgs' connectors not done.
+            raise RuntimeError(f"{self.name}: {len(failed)} org(s) failed this tick")
+        return "idle" if any_apps else "no_apps"
+
+    async def _connectors(self) -> list[dict[str, Any]]:
+        """Every connector the bound org reads. A failed read raises: Neo4j and ArangoDB answer
+        ``get_all_documents`` with no rows on a failure, which would read as an org with
+        nothing left to sweep and could end the sweep as idle."""
+        apps: list[dict[str, Any]] = []
+        after: str | None = None
+        while True:
+            page = await self.graph.get_documents_paginated(
+                _APPS, limit=_APPS_PAGE, sort_field="_key", after_key=after, raise_on_error=True,
+            )
+            apps.extend(page)
+            after = key_of(page[-1]) if page else None
+            if len(page) < _APPS_PAGE or after is None:
+                return apps
 
     async def _page(self, app: dict[str, Any]) -> str:
         fields = self.fields

@@ -7,6 +7,8 @@
 
 import { createHash } from 'crypto';
 import { KeyObject } from 'node:crypto';
+import { getCurrentOrgId } from '../../../libs/context/orgContext';
+import { getRequestContext } from '../../../libs/context/request-context';
 import { Response, NextFunction } from 'express';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
@@ -17,6 +19,8 @@ import {
   relayKey,
   signMcpRelay,
 } from '../../../libs/middlewares/mcp-relay';
+import { sendMcpError } from '../middlewares/mcp-guard.middleware';
+import { insufficientScopeChallenge, missingToolScopes } from '../step-up';
 import { recordEvent } from '../../../libs/services/telemetry/event-buffer';
 import {
   clientTags,
@@ -27,6 +31,8 @@ import {
   PAT_APP_CLIENT_ID_PREFIX,
   SERVICE_TOKEN_APP_CLIENT_ID_PREFIX,
 } from '../../oauth_provider/constants/constants';
+import { PUBLIC_MCP_TOOLS } from '../constants/allowed-tools';
+import { SURFACE_HEADER } from '../../agent-harness/transport/surface-header';
 import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
 import {
   CODE_GRAPH_INSTRUCTIONS,
@@ -35,6 +41,20 @@ import {
   registerCodeGraphTools,
   ToolRegistrar,
 } from '../code-graph.tools';
+import {
+  ENTITY_TOOL_NAMES,
+  callerEntityCapabilities,
+  withoutDisabledEntityTools,
+  entityInstructions,
+  registerEntityTools,
+} from '../entity.tools';
+import {
+  mcpAccessPolicyOf,
+  toolTurnedOff,
+  toolTurnedOffMessage,
+} from '../access-policy';
+import { McpToolCatalog, registeredTools } from '../tool-catalog';
+import { mcpLinkRouting } from '../public-links';
 
 const logger = Logger.getInstance({
   service: 'MCPController',
@@ -44,6 +64,8 @@ const logger = Logger.getInstance({
 const mcpServerModule = import('@pipeshub-ai/mcp/esm/mcp-server/server.js');
 const coreModule = import('@pipeshub-ai/mcp/esm/core.js');
 const httpModule = import('@pipeshub-ai/mcp/esm/lib/http.js');
+const oauthScopesModule =
+  import('@pipeshub-ai/mcp/esm/mcp-server/oauth-scopes.js');
 
 /**
  * Activation signals for the MCP path. The transport is stateless, so every
@@ -131,6 +153,51 @@ function reachesCodeTools(body: unknown): boolean {
   );
 }
 
+/** Whether this request can reach an entity tool: initialize (whose
+ *  instructions name them), a listing, or a call to one. Anything else skips
+ *  the capabilities check the entity tools cost. */
+function reachesEntityTools(body: unknown): boolean {
+  if (Array.isArray(body)) return body.some(reachesEntityTools);
+  const message = body as
+    { method?: unknown; params?: { name?: unknown } } | undefined;
+  if (message?.method === 'tools/list' || message?.method === 'initialize') {
+    return true;
+  }
+  return (
+    message?.method === 'tools/call' &&
+    (ENTITY_TOOL_NAMES as readonly unknown[]).includes(message.params?.name)
+  );
+}
+
+/** Session users pass, as in requireScopes; an OAuth token or PAT needs semantic:read or semantic:write. */
+function maySearch(user: Record<string, unknown> | undefined): boolean {
+  if (!user?.isOAuth) return true;
+  const scopes: unknown = user.oauthScopes;
+  return (
+    Array.isArray(scopes) &&
+    (scopes.includes(OAuthScopeNames.SEMANTIC_READ) ||
+      scopes.includes(OAuthScopeNames.SEMANTIC_WRITE))
+  );
+}
+
+/**
+ * The scopes a tool needs, as the package states them for its own tools. The
+ * entity tools are this app's: a token holding neither search scope is asked
+ * for semantic:read, the one the query service's entity routes need.
+ */
+export function toolScopes(
+  held: readonly string[],
+  packageScopes: (tool: string) => readonly string[] | undefined,
+): (tool: string) => readonly string[] | undefined {
+  return (tool) => {
+    if (!(ENTITY_TOOL_NAMES as readonly string[]).includes(tool))
+      return packageScopes(tool);
+    return held.includes(OAuthScopeNames.SEMANTIC_WRITE)
+      ? []
+      : [OAuthScopeNames.SEMANTIC_READ];
+  };
+}
+
 /** Whether a JSON-RPC message or batch calls a tool. */
 function callsATool(body: unknown): boolean {
   if (Array.isArray(body)) return body.some(callsATool);
@@ -167,6 +234,44 @@ export function mcpToolScopes(
     : ['read', 'write'];
 }
 
+/** The scopes an OAuth token or PAT holds; undefined for a caller that is not scope-limited. */
+function heldOAuthScopes(
+  user: Record<string, unknown> | undefined,
+): string[] | undefined {
+  if (user?.isOAuth !== true) return undefined;
+  const scopes: unknown = user.oauthScopes;
+  return Array.isArray(scopes)
+    ? scopes.filter((s): s is string => typeof s === 'string')
+    : [];
+}
+
+/**
+ * The audit trail of tool calls: who called which tool through which app, for how long and
+ * whether it failed. Argument names only, never their values or what the tool returned.
+ */
+function auditToolCall(
+  req: AuthenticatedUserRequest,
+  call: {
+    tool: string;
+    durationMs: number;
+    isError: boolean;
+    argumentNames: string[];
+  },
+): void {
+  const user: Record<string, unknown> | undefined = req.user;
+  // org and user fill the line only when the request's context has none.
+  logger.info('mcp.tool_call.end', {
+    org_id: getCurrentOrgId(),
+    user_id: typeof user?.userId === 'string' ? user.userId : undefined,
+    tool: call.tool,
+    duration_ms: Math.round(call.durationMs),
+    outcome: call.isError ? 'failure' : 'success',
+    client_id: user?.oauthClientId,
+    argument_names: call.argumentNames,
+    event_name: 'mcp.tool_call.end',
+  });
+}
+
 /** The Grafana counter for the same step: org and domain only. */
 function recordActivityFromProps(
   activityName: string,
@@ -199,6 +304,42 @@ export const handleMCPRequest = (appConfig: AppConfig) => {
       const { createMCPServer } = await mcpServerModule;
       const { PipeshubCore } = await coreModule;
       const { HTTPClient } = await httpModule;
+      const { requiredOAuthScopes } = await oauthScopesModule;
+
+      const policy = mcpAccessPolicyOf(res);
+      // Before the step-up: a tool an admin turned off must not send the client asking for scopes.
+      const turnedOff = await toolTurnedOff(req.body, policy, () =>
+        McpToolCatalog.isWriteTool(),
+      );
+      if (turnedOff) {
+        sendMcpError(res, 403, toolTurnedOffMessage(turnedOff));
+        return;
+      }
+
+      const held = heldOAuthScopes(req.user);
+      if (held) {
+        const missing = missingToolScopes(
+          req.body,
+          held,
+          toolScopes(held, requiredOAuthScopes),
+        );
+        if (missing.length > 0) {
+          res.set(
+            'WWW-Authenticate',
+            insufficientScopeChallenge(
+              held,
+              missing,
+              `${appConfig.oauthIssuer}/.well-known/oauth-protected-resource/mcp`,
+            ),
+          );
+          sendMcpError(
+            res,
+            403,
+            `This needs the ${missing.join(', ')} permission, which this connection was not given. Connect again and allow it.`,
+          );
+          return;
+        }
+      }
 
       const transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: undefined,
@@ -206,11 +347,16 @@ export const handleMCPRequest = (appConfig: AppConfig) => {
       // The tools call the REST API over loopback; the header tells it those calls belong to this one.
       relaySigningKey ??= relayKey(appConfig.scopedJwtSecret);
       const relay = signMcpRelay(relaySigningKey, token);
+      const requestContext = getRequestContext();
+      if (requestContext) requestContext.mcpRelay = relay;
+      const links = mcpLinkRouting(serverURL, appConfig.frontendUrl);
       const httpClient = new HTTPClient().addHook(
         'beforeRequest',
         (request) => {
           request.headers.set(MCP_RELAY_HEADER, relay);
-          return request;
+          // The chat routes stream an MCP client the answer-only view (P1b C-5).
+          request.headers.set(SURFACE_HEADER, 'mcp');
+          return links.toLoopback(request);
         },
       );
 
@@ -223,12 +369,32 @@ export const handleMCPRequest = (appConfig: AppConfig) => {
           error: logger.error.bind(logger),
         },
         dynamic: false,
-        scopes: mcpToolScopes(req.user),
+        allowedTools: [...PUBLIC_MCP_TOOLS],
+        // Always offer the citations card. This server is built per request, so it never
+        // sees the client's `initialize` and the package would guess from the last one
+        // made with this token. Claude's tool loader and its chat share a token and
+        // disagree, so the guess flips mid-chat. A client without MCP Apps gets the
+        // sources as text from the same call.
+        apps: true,
+        scopes: policy.allowWriteTools ? mcpToolScopes(req.user) : ['read'],
+        // Tools are listed only when the token holds every scope they need.
+        grantedOAuthScopes: held,
+        // Chat runs the person's connected actions only for a token allowed to run agents.
+        allowChatActions:
+          policy.allowWriteTools &&
+          (held === undefined || held.includes(OAuthScopeNames.AGENT_EXECUTE)),
+        // Without chat the package also cuts the instructions and descriptions that point at it.
+        ...(policy.disabledTools.includes('pipeshub_chat')
+          ? { chat: false }
+          : {}),
+        onToolCall: (call) => {
+          auditToolCall(req, call);
+        },
         serverURL,
         getSDK: () =>
           new PipeshubCore({
             security: { bearerAuth: token },
-            serverURL,
+            serverURL: links.serverURL,
             httpClient,
           }),
       });
@@ -239,6 +405,9 @@ export const handleMCPRequest = (appConfig: AppConfig) => {
       };
       if (
         reachesCodeTools(req.body) &&
+        CODE_GRAPH_TOOL_NAMES.some(
+          (name) => !policy.disabledTools.includes(name),
+        ) &&
         mayReadCode(req.user) &&
         (await callerHasCodeRepos(
           codeDeps,
@@ -251,12 +420,7 @@ export const handleMCPRequest = (appConfig: AppConfig) => {
         const codeOnly = req.query.tools === 'code';
         // Only listings are narrowed: a batch that also calls a document tool keeps it.
         if (codeOnly && !callsATool(req.body)) {
-          const tools = (
-            mcpServer as unknown as {
-              _registeredTools?: Record<string, { remove(): void }>;
-            }
-          )._registeredTools;
-          Object.values(tools ?? {}).forEach((tool) => {
+          Object.values(registeredTools(mcpServer)).forEach((tool) => {
             tool.remove();
           });
         }
@@ -272,6 +436,41 @@ export const handleMCPRequest = (appConfig: AppConfig) => {
           ? CODE_GRAPH_INSTRUCTIONS.trimStart()
           : (server._instructions ?? '') + CODE_GRAPH_INSTRUCTIONS;
       }
+
+      if (
+        req.query.tools !== 'code' &&
+        reachesEntityTools(req.body) &&
+        ENTITY_TOOL_NAMES.some(
+          (name) => !policy.disabledTools.includes(name),
+        ) &&
+        maySearch(req.user)
+      ) {
+        // The flags behind each action are the deployment's and the org's:
+        // only the actions this caller is served are mounted.
+        const capabilities = withoutDisabledEntityTools(
+          await callerEntityCapabilities(
+            codeDeps,
+            `${getCurrentOrgId()}:${req.user?.userId}:${createHash('sha256').update(codeDeps.authorization).digest('hex')}`,
+          ),
+          policy.disabledTools,
+        );
+        const entityTools = registerEntityTools(
+          // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion -- as for the code tools above: without it tsc exceeds its instantiation depth
+          mcpServer as unknown as ToolRegistrar,
+          codeDeps,
+          capabilities,
+        );
+        if (entityTools.length) {
+          const server = mcpServer.server as unknown as {
+            _instructions?: string;
+          };
+          server._instructions =
+            (server._instructions ?? '') + entityInstructions(capabilities);
+        }
+      }
+
+      const mounted = registeredTools(mcpServer);
+      for (const name of policy.disabledTools) mounted[name]?.remove();
 
       // A client that hangs up cancels the call: closing aborts the running handlers' signals.
       res.on('close', () => {
@@ -308,17 +507,10 @@ export const handleMCPRequest = (appConfig: AppConfig) => {
       const body = req.body as { method?: unknown } | undefined;
       const jsonRpcMethod =
         typeof body?.method === 'string' ? body.method : undefined;
-      logger.info('MCP request completed', {
-        method: jsonRpcMethod,
-        requestId: req.context?.requestId,
-      });
+      // The access line is the request's line; it lacks the JSON-RPC method.
+      logger.debug('MCP request completed', { jsonrpc_method: jsonRpcMethod });
     } catch (error: any) {
-      logger.error('MCP request failed', {
-        error: error.message,
-        method: req.method,
-        userId: req.user?.userId,
-        requestId: req.context?.requestId,
-      });
+      // Logged once, by the error middleware.
       next(error);
     }
   };

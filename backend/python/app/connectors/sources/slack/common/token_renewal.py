@@ -17,6 +17,7 @@ import logging
 import time
 from collections.abc import Awaitable, Callable
 from concurrent.futures import Executor
+from contextvars import ContextVar
 from datetime import timedelta
 from typing import Any
 
@@ -29,12 +30,13 @@ from app.connectors.core.base.token_service.oauth_service import (
 from app.sources.client.resilience import ResiliencePolicy
 from app.sources.client.slack.slack import SlackClient
 from app.sources.external.slack.slack import SlackDataSource
+from app.utils.credential_refresh_log import EVENT_CHECK_FAILED, log_refresh_failure
+from app.utils.oauth_errors import RATE_LIMITED_ERROR_CODES
 
 # What Slack answers when an access token has expired or was replaced.
 RENEWABLE_ERRORS = frozenset({"token_expired", "invalid_auth"})
 
-# Slack throttles with a real HTTP 429 whose body says "ratelimited".
-_RATE_LIMITED_ERRORS = frozenset({"ratelimited", "rate_limited"})
+# Slack throttles with a real HTTP 429 whose body says "ratelimited" (RATE_LIMITED_ERROR_CODES).
 _HTTP_TOO_MANY_REQUESTS = 429
 
 # Shorter than the refresh service's own 10-minute lead, so the schedule normally
@@ -65,6 +67,9 @@ PASTED_ROTATING_TOKEN_MESSAGE = (
 
 TokenSource = Callable[[], Awaitable[tuple[dict[str, Any], str]]]
 
+# Per task: parallel syncs share one SlackTokenRenewal, and each must read its own call's outcome.
+_refresh_failed_transiently: ContextVar[bool] = ContextVar("slack_refresh_failed_transiently", default=False)
+
 
 def _datasource_for(
     external_client: SlackClient, token: str, executor: Executor | None = None,
@@ -79,7 +84,7 @@ def _rate_limited(response: Any) -> bool:  # noqa: ANN401 - any SlackResponse-li
     return (
         getattr(response, "success", True) is False
         and (
-            getattr(response, "error", None) in _RATE_LIMITED_ERRORS
+            getattr(response, "error", None) in RATE_LIMITED_ERROR_CODES
             or getattr(response, "status_code", None) == _HTTP_TOO_MANY_REQUESTS
         )
     )
@@ -196,6 +201,14 @@ class SlackTokenRenewal:
         # from putting a spent token back on the shared Slack client.
         self._replaced_by: dict[str, str] = {}
 
+    @property
+    def refresh_failed_transiently(self) -> bool:
+        """Whether this task's last renewal failed for a reason a later try may not meet.
+
+        The refresh service was down or erroring, so the token Slack refused is not yet final.
+        """
+        return _refresh_failed_transiently.get()
+
     async def datasource(
         self, external_client: SlackClient, current_token: TokenSource, *, retry_rate_limits: bool = True,
     ) -> RenewingSlackDataSource:
@@ -246,6 +259,7 @@ class SlackTokenRenewal:
 
     async def renew(self, token_in_use: str, reason: str) -> str | None:
         """A newer access token than ``token_in_use``, or None when there is none to use."""
+        _refresh_failed_transiently.set(False)
         if not token_in_use.startswith(_ROTATING_TOKEN_PREFIX):
             return None
         async with self._lock:
@@ -278,6 +292,7 @@ class SlackTokenRenewal:
         refresh_service = startup_service.get_token_refresh_service()
         if refresh_service is None:
             self._logger.warning("Slack token refresh service is not running; cannot renew the Slack token")
+            _refresh_failed_transiently.set(True)
             return None
 
         try:
@@ -287,7 +302,8 @@ class SlackTokenRenewal:
             self._logger.error(RECONNECT_MESSAGE)
             return None
         except Exception as exc:
-            self._logger.warning("Could not renew the Slack token (%s); the next call will try again", exc)
+            log_refresh_failure(self._logger, EVENT_CHECK_FAILED, exc)
+            _refresh_failed_transiently.set(True)
             return None
         self._last_renewed_at = time.monotonic()
         self._logger.info("Renewed the Slack token for connector %s (%s)", self._connector_id, reason)

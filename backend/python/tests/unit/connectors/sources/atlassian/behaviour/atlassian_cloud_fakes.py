@@ -87,7 +87,7 @@ class CloudRecordsDb(FakeRecordsDb):
     async def get_placeholder_records(self, connector_id: str) -> list[Any]:
         return list(self.placeholders)
 
-    async def get_all_active_users(self) -> list[Any]:
+    async def get_all_active_users(self, *, raise_on_error: bool = False) -> list[Any]:
         return list(self.active_users)
 
     async def get_all_app_users(self, connector_id: str, *, raise_on_error: bool = False) -> list[Any]:

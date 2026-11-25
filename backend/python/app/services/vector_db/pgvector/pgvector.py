@@ -11,7 +11,6 @@ import asyncio
 import dataclasses
 import time
 import uuid
-from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 import asyncpg
@@ -21,6 +20,10 @@ from app.core import org_context
 from app.core.db import CapabilityError, DbError
 from app.core.db.shared import acquire_db, release_db
 from app.modules.retrieval import degraded_notice
+from app.services.permissions.scope_fields import (
+    SCOPE_FIELDS_VERSION,
+    current_scope_generation,
+)
 from app.services.vector_db.filters import (
     build_filter_expression,
     build_generic_conditions,
@@ -68,6 +71,7 @@ from app.services.vector_db.pgvector.sampler import Sample, Sampler
 from app.services.vector_db.pgvector.scope import (
     ambient_or_required,
     ambient_org,
+    current_statement_timeout_ms,
     org_scope,
     require_org,
 )
@@ -76,6 +80,9 @@ from app.services.vector_db.pgvector.visibility import Scope, scope_of
 from app.utils.logger import create_logger
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+    from datetime import datetime
+
     from app.config.configuration_service import ConfigurationService
     from app.core.db import KernelDB, Tx
 
@@ -195,6 +202,8 @@ class PgVectorService(IVectorDBService):
                 task.cancel()
             if self._sampler is not None:
                 await self._sampler.close()
+            if self._sizer is not None:
+                self._sizer.close()
             self._sizer = self._sampler = None
             if self._own_placement:
                 self.placement, self._own_placement = None, False
@@ -234,6 +243,16 @@ class PgVectorService(IVectorDBService):
     async def orgs_of_virtual_records(self, virtual_record_ids: list[str]) -> dict[str, set[str]] | None:
         _, catalog = self._assert_connected()
         return await catalog.orgs_of_vrids(virtual_record_ids)
+
+    async def other_orgs_hold_virtual_record(self, virtual_record_id: str, org_id: str) -> bool:
+        """A vetted function answers it (true or false, never which org): a scroll here reads one org only."""
+        db, _ = self._assert_connected()
+
+        async def read(tx: Tx) -> bool:
+            return await tx.fetchval("/* pipeshub:pgvector.vrid_held_elsewhere */ SELECT retrieval.vrid_held_elsewhere($1)", virtual_record_id)
+
+        with org_scope(org_id):
+            return bool(await db.run(read, custom_plan=True))
 
     def transient_search_error(self, error: BaseException) -> SearchFailureKind | None:
         return classify_pg_search_error(error)
@@ -308,7 +327,10 @@ class PgVectorService(IVectorDBService):
         space = await catalog.active_space(org, real_time=True) if org else None
         if space is None:
             return VectorCollectionInfo(name=collection_name, exists=True)
-        points = await db.run(lambda tx: reads.count(tx, org, row.collection_id, space.space_id), custom_plan=True)
+        points = await db.run(
+            lambda tx: reads.count(tx, org, row.collection_id, space.space_id),
+            custom_plan=True, timeout_ms=current_statement_timeout_ms(),
+        )
         return VectorCollectionInfo(
             name=collection_name, exists=True, dense_dimension=space.dim, points_count=points
         )
@@ -368,7 +390,9 @@ class PgVectorService(IVectorDBService):
         if any(s.role == "active" for s in spaces):
             # The org's space is another model's or dimension: while the org holds no point it takes the space this write defines,
             # named as a first write names it (the database decides; a point that exists or lands meanwhile makes it refuse).
-            await catalog.replace_empty_space(org, model or UNKNOWN_MODEL, dim)
+            observed_empty_at = time.time()
+            if await catalog.replace_empty_space(org, model or UNKNOWN_MODEL, dim):
+                await self._announce_space_replaced(org, model, observed_empty_at)
             # Whatever the answer, read the spaces again: a concurrent writer of this very model may have won the replacement.
             catalog.forget(org=org)
             found = _match(await catalog.org_spaces(org), dim, model)
@@ -386,6 +410,20 @@ class PgVectorService(IVectorDBService):
                 f"the organisation's embedding space is {space.effective_model} with dimension {space.dim}, not {model or 'unnamed'}-model vectors of dimension {dim}"
             )
         return found
+
+    def add_space_replaced_listener(self, listener: Callable[[str, str | None, float], Awaitable[object]]) -> None:
+        """Call ``listener(org, model, observed_empty_at)`` after an org's empty space was replaced by a write's own.
+
+        The holder of the configuration store (not this provider) uses it to drop a pin that described the old space.
+        """
+        self.__dict__.setdefault("_space_replaced_listeners", []).append(listener)
+
+    async def _announce_space_replaced(self, org: str, model: str | None, observed_empty_at: float) -> None:
+        for listener in self.__dict__.get("_space_replaced_listeners", []):
+            try:
+                await listener(org, model, observed_empty_at)
+            except Exception:  # a pin that could not be checked is claimed or refused by the write that follows
+                logger.warning("a space-replaced listener failed", exc_info=True)
 
     @staticmethod
     async def _claim_name(catalog: Catalog, org: str, space: OrgSpace, model: str | None) -> OrgSpace:
@@ -430,6 +468,62 @@ class PgVectorService(IVectorDBService):
             )
         return ScrollResult(points=points, next_offset=nxt)
 
+    async def fence_time(self) -> datetime:
+        """The database's clock: what the compare-and-set fence of the group rows is measured in for a writer that asks, so that the clocks of
+        the hosts that write do not have to agree."""
+        db, _ = self._assert_connected()
+        return await db.run(lambda tx: tx.fetchval("/* pipeshub:pgvector.fence_time */ SELECT clock_timestamp()"), idempotent=True, custom_plan=True)
+
+    async def group_clock_skew(self, org_id: str, *, min_ahead_seconds: float = 30.0) -> tuple[int, float]:
+        """``(rows, seconds)``: how many of the org's group rows were computed more than ``min_ahead_seconds`` after the database's clock, and by how
+        much the furthest is: rows a writer timed with its own clock, which was ahead (a write that names no time takes the database's). A row more
+        than 30 s ahead orders against nothing: the next write of its group, a rewrite included, replaces it (`writes.write_groups`). A row less far
+        ahead refuses an earlier writer, a rewrite included, until the clock passes it, which takes at most 30 s.
+
+        shortcut: reads the org's group rows without an index on ``computed_at``; it is an operator command, so run it when asked, not per request."""
+        db, _ = self._assert_connected()
+        org = require_org(org_id)
+        with org_scope(org):
+            row = await db.run(lambda tx: tx.fetchrow(
+                """/* pipeshub:pgvector.group_clock_skew */
+                SELECT count(*) AS n, coalesce(extract(epoch FROM max(computed_at) - clock_timestamp()), 0) AS ahead
+                FROM retrieval.point_groups WHERE org_id = $1 AND computed_at > clock_timestamp() + make_interval(secs => $2::float8)""",
+                org, float(min_ahead_seconds)), idempotent=True, custom_plan=True)
+        return int(row["n"]), float(row["ahead"])
+
+    async def unreadable_group_rows(self, org_id: str) -> int:
+        """How many of the org's group rows hold a stamp a served search trusts (this version and generation, with connectors) of a deciding kind but a
+        NULL list its rule reads (a data fault): such a list admits nothing on its own, so a served search can hide their points (a union or
+        intersection row may still pass on its other list). A stale stamp is left to the request's arms, and a container stamp reads only lists that
+        cannot be NULL, so neither is counted.
+
+        shortcut: reads the org's group rows without an index on the stamp; an operator command, run it when asked, not per request."""
+        db, _ = self._assert_connected()
+        org = require_org(org_id)
+        with org_scope(org):
+            n = await db.run(lambda tx: tx.fetchval(
+                """/* pipeshub:pgvector.unreadable_group_rows */
+                SELECT count(*) FROM retrieval.point_groups
+                WHERE org_id = $1 AND scope_stamp IN ('container', 'union', 'intersection', 'override') AND scope_version = $2::int
+                  AND scope_generation = $3::int AND cardinality(connector_ids) > 0
+                  AND ((scope_stamp <> 'container' AND acl_scope IS NULL) OR (scope_stamp IN ('union', 'intersection') AND path_ids IS NULL))""",
+                org, SCOPE_FIELDS_VERSION, current_scope_generation()), idempotent=True, custom_plan=True)
+        return int(n)
+
+    async def count_points(self, collection_name: str, count_filter: FilterExpression) -> int:
+        db, catalog = self._assert_connected()
+        org = _filter_org(count_filter)
+        coll = await catalog.require_collection(collection_name)
+        with org_scope(org):
+            space = await catalog.active_space(org, real_time=True)
+            if space is None:
+                return 0
+            compiled = compile_filter(count_filter, first_param=4)
+            return int(await db.run(
+                lambda tx: reads.count_filtered(tx, org, coll.collection_id, space.space_id, compiled),
+                custom_plan=True, timeout_ms=current_statement_timeout_ms(),
+            ))
+
     async def retrieve_points(self, collection_name: str, ids: list[str]) -> list[VectorPoint]:
         """The points with these ids in the request's org, in the order asked; ids that name no point (or are no UUID) are left out.
         The interface carries no org: it is the request's."""
@@ -443,6 +537,35 @@ class PgVectorService(IVectorDBService):
         found = await db.run(lambda tx: reads.retrieve(tx, org, coll.collection_id, space.space_id, wanted), custom_plan=True)
         position = {str(i): n for n, i in enumerate(wanted)}
         return sorted(found, key=lambda p: position.get(str(p.id), len(position)))
+
+    async def scroll_with_vectors(self, collection_name: str, scroll_filter: FilterExpression, limit: int, offset: str | None = None) -> ScrollResult:
+        """``scroll`` returning each point whole: its payload, its dense vector (the halfvec column) and its sparse terms (the postings)."""
+        db, catalog = self._assert_connected()
+        org = _filter_org(scroll_filter)
+        if not 1 <= limit <= MAX_SCROLL_LIMIT:
+            raise ValueError(f"scroll limit must be between 1 and {MAX_SCROLL_LIMIT}")
+        coll = await catalog.require_collection(collection_name)
+        with org_scope(org):
+            space = await catalog.active_space(org, real_time=True)
+            if space is None:
+                return ScrollResult(points=[], next_offset=None)
+            compiled = compile_filter(scroll_filter, first_param=5)
+            points, nxt = await db.run(
+                lambda tx: reads.scroll(tx, org, coll.collection_id, space.space_id, compiled, limit, offset, None, vectors=True),
+                custom_plan=True,
+            )
+        return ScrollResult(points=points, next_offset=nxt)
+
+    async def existing_point_ids(self, collection_name: str, ids: list[str]) -> set[str]:
+        """Which of these ids have a live point in the request's org, reading no payload; real time like ``retrieve_points``."""
+        db, catalog = self._assert_connected()
+        org = ambient_or_required()
+        coll = await catalog.require_collection(collection_name)
+        space = await catalog.active_space(org, real_time=True)
+        wanted = _ids(ids)
+        if space is None or not wanted:
+            return set()
+        return await db.run(lambda tx: reads.existing_ids(tx, org, coll.collection_id, space.space_id, wanted), custom_plan=True)
 
     # Search ----------------------------------------------------------------------------------------------------------
 
@@ -507,13 +630,13 @@ class PgVectorService(IVectorDBService):
                     t.cancel()
                 await asyncio.gather(*legs, return_exceptions=True)
                 raise
-            dense_rows, degraded = answers[0]
-            rows = [[pid for _, pid in dense_rows]]
-            if sparse is not None:
-                rows.append([pid for _, pid in answers[1][0]])
-                degraded = degraded or answers[1][1]
-            if degraded:
-                degraded_notice.note(degraded)          # the provider contract: an empty answer is flagged too
+            rows = [[pid for _, pid in leg_rows] for leg_rows, _ in answers]
+            # the provider contract: an empty answer is flagged too. Every leg's reason is noted: an exact dense leg (quantization, complete) must not hide a
+            # word search that ran out of time beside it. The hits carry the first one.
+            reasons = [reason for _, reason in answers if reason]
+            for reason in reasons:
+                degraded_notice.note(reason)
+            degraded = reasons[0] if reasons else None
             ranked = fusion.rrf(rows, req.limit)
             if not req.with_payload:
                 return [SearchResult(id=pid, score=score, degraded=degraded) for pid, score in ranked]
@@ -603,10 +726,11 @@ class PgVectorService(IVectorDBService):
     async def upsert_points(
         self, collection_name: str, points: list[VectorPoint], *, computed_at: datetime | None = None
     ) -> None:
-        """``computed_at``: when the membership arrays the points carry were read from the graph (default: now). A group's arrays are
-        replaced only by a writer with a later time, so an index run that read its arrays before the membership sync wrote newer ones
-        passes the time it read them and loses to the sync; without it the call time is used, which is right for a run that reads the
-        graph and writes at once and makes the last writer win otherwise."""
+        """``computed_at``: when the membership arrays the points carry were read from the graph (default: the database's clock when the call starts,
+        never a host's). A group's arrays are replaced only by a writer with a later time, so an index run that read its arrays before the membership
+        sync wrote newer ones passes the time it read them and loses to the sync; without it the call time is used, which is right for a run that
+        reads the graph and writes at once and makes the last writer win otherwise. Every batch of the call writes at that one time: a sync that
+        commits between two batches keeps its newer arrays."""
         if not points:
             return
         db, catalog = self._assert_connected()
@@ -614,7 +738,9 @@ class PgVectorService(IVectorDBService):
         if len(orgs) != 1:
             raise OrgMismatch("a batch of points must belong to one organisation")
         coll = await catalog.require_collection(collection_name)
-        computed_at = computed_at or datetime.now(UTC)
+        if computed_at is None:
+            with org_scope(next(iter(orgs))):
+                computed_at = await self.fence_time()
         for start in range(0, len(points), writes.UPSERT_BATCH):
             batch = writes.prepare(points[start:start + writes.UPSERT_BATCH])
             if len(set(batch.dims)) != 1:
@@ -672,7 +798,6 @@ class PgVectorService(IVectorDBService):
         payload. One transaction."""
         db, catalog = self._assert_connected()
         coll = await catalog.require_collection(collection_name)
-        t = computed_at or datetime.now(UTC)
         membership = writes.membership_of(payload)
         group_filter = compile_filter(expr, first_param=3) if expr is not None else None
         merge_filter = compile_filter(expr, first_param=5) if expr is not None else None
@@ -687,7 +812,7 @@ class PgVectorService(IVectorDBService):
             if membership and selected:
                 keys = await writes.group_keys_of_ids(tx, org, coll.collection_id, selected)
                 if keys:
-                    await writes.write_groups(tx, org, coll.collection_id, dict.fromkeys(keys, membership), t, allow_empty=True)
+                    await writes.write_groups(tx, org, coll.collection_id, dict.fromkeys(keys, membership), computed_at, allow_empty=True)
             if merge_ids is not None and not merge_ids:
                 return                                           # the filter matched no point
             await writes.merge_payload(tx, org, coll.collection_id, payload, None if merge_ids is not None else merge_filter, merge_ids, replace=replace)

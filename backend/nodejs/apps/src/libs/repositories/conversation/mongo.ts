@@ -44,6 +44,13 @@ import type {
   SessionScope,
   SessionShareDto,
   SessionSummary,
+  HarnessSessionRow,
+  HarnessSessionPatch,
+  HarnessVersionDto,
+  HarnessLedgerDto,
+  ErasureRequestDto,
+  SessionDeletionDto,
+  UserSessionDto,
 } from './types';
 
 const logger = new Logger({ service: 'conversation-repository' });
@@ -155,6 +162,8 @@ export function buildSessionFilter(
         };
   if (q.scope.kind === 'chat') Object.assign(filter, { isArchived: false });
   if (q.id) filter._id = oid(q.id);
+  // A Compare models branch is opened by its id, never listed.
+  else filter.compareOf = { $exists: false };
   if (q.projectFilter?.kind === 'unassigned')
     filter.projectId = { $exists: false };
   else if (q.projectFilter) filter.projectId = oid(q.projectFilter.id);
@@ -236,6 +245,8 @@ const SUMMARY_FIELDS = {
   modelInfo: 1,
   projectId: 1,
   projectVisibility: 1,
+  metadata: 1,
+  agentKey: 1,
 };
 
 const msgOf = (doc: unknown): MessageDto => toPlain<MessageDto>(doc);
@@ -373,6 +384,25 @@ export class MongoConversationRepository implements ConversationRepository {
       tx ? opts(tx) : {},
     );
     return doc ? toPlain<ChatSessionDto>(doc) : null;
+  }
+
+  async listForksOf(
+    scope: SessionScope,
+    sourceId: string,
+    actor: SessionActor,
+  ): Promise<ChatSessionDto[]> {
+    const docs = await ChatSession.find({
+      orgId: actor.orgId,
+      userId: actor.userId,
+      isDeleted: false,
+      isArchived: { $ne: true },
+      'metadata.forkedFromConversationId': sourceId,
+      ...scopeFilter(scope),
+    })
+      .select(SUMMARY_FIELDS)
+      .sort({ createdAt: 1 })
+      .limit(50);
+    return docs.map((d) => toPlain<ChatSessionDto>(d));
   }
 
   async findForShare(
@@ -577,6 +607,7 @@ export class MongoConversationRepository implements ConversationRepository {
       isDeleted: false,
       isArchived: true,
       archivedBy: { $exists: true },
+      compareOf: { $exists: false },
       $and: [titleOrContentMatch],
     };
     const [rows, assistantCount, agentCount] = await Promise.all([
@@ -698,6 +729,7 @@ export class MongoConversationRepository implements ConversationRepository {
         _id: { $in: oids(ids) },
         orgId: oid(orgId),
         isDeleted: { $ne: true },
+        compareOf: { $exists: false },
         $or: [
           { userId: userObjectId },
           {
@@ -748,6 +780,7 @@ export class MongoConversationRepository implements ConversationRepository {
       orgId: oid(q.orgId),
       projectId: oid(q.projectId),
       isDeleted: false,
+      compareOf: { $exists: false },
       $or: [{ userId: oid(q.userId) }, { projectVisibility: 'project' }],
     };
     const [rows, total] = await Promise.all([
@@ -778,12 +811,96 @@ export class MongoConversationRepository implements ConversationRepository {
           orgId: oid(orgId),
           projectId: { $in: oids(projectIds) },
           isDeleted: false,
+          compareOf: { $exists: false },
           $or: [{ userId: oid(userId) }, { projectVisibility: 'project' }],
         },
       },
       { $group: { _id: '$projectId', count: { $sum: 1 } } },
     ]);
     return new Map(counts.map((c) => [c._id.toString(), c.count]));
+  }
+
+  async listBranches(
+    orgId: string,
+    parentId: string,
+    userId: string,
+    tx?: Tx,
+  ): Promise<ChatSessionDto[]> {
+    const rows = await ChatSession.find(
+      {
+        compareOf: oid(parentId),
+        orgId: oid(orgId),
+        userId: oid(userId),
+        isDeleted: false,
+      },
+      null,
+      opts(tx),
+    )
+      .sort({ _id: 1 })
+      .lean()
+      .exec();
+    return toPlain<ChatSessionDto[]>(rows);
+  }
+
+  async listStaleBranches(
+    orgId: string,
+    userId: string,
+    beforeMs: number,
+  ): Promise<ChatSessionDto[]> {
+    const rows = await ChatSession.find({
+      compareOf: { $exists: true },
+      orgId: oid(orgId),
+      userId: oid(userId),
+      // Last touched, not created: a branch kept open for a day is still live. A branch never run has no activity yet.
+      $or: [
+        { lastActivityAt: { $lt: beforeMs } },
+        { lastActivityAt: null, createdAt: { $lt: new Date(beforeMs) } },
+      ],
+    })
+      .lean()
+      .exec();
+    return toPlain<ChatSessionDto[]>(rows);
+  }
+
+  async discardBranches(
+    orgId: string,
+    parentId: string,
+    ids?: string[],
+    tx?: Tx,
+  ): Promise<void> {
+    const branches = await ChatSession.find(
+      {
+        compareOf: oid(parentId),
+        orgId: oid(orgId),
+        ...(ids && { _id: { $in: oids(ids) } }),
+      },
+      { _id: 1 },
+      opts(tx),
+    )
+      .lean()
+      .exec();
+    for (const branch of branches) {
+      await this.discardSession(String(branch._id), orgId, tx);
+    }
+  }
+
+  /**
+   * The cascade of a parent's delete or archive. Branches are hidden everywhere, so one left behind by a failure here
+   * is invisible, and it must not fail (or abort the transaction of) the delete itself.
+   */
+  private async discardBranchesQuietly(
+    orgId: string,
+    parentId: string,
+    tx?: Tx,
+  ): Promise<void> {
+    try {
+      await this.discardBranches(orgId, parentId, undefined, tx);
+    } catch (error) {
+      logger.warn('Could not remove the Compare branches of a conversation', {
+        parentId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 
   async unlinkProject(projectId: string, tx?: Tx): Promise<void> {
@@ -910,12 +1027,26 @@ export class MongoConversationRepository implements ConversationRepository {
         : { $set: set },
       { returnDocument: 'after', session: sessionOf(tx), runValidators: true },
     ).exec();
+    if (updated && archived) {
+      await this.discardBranchesQuietly(String(updated.orgId), id, tx);
+    }
     return updated ? toPlain<ChatSessionDto>(updated) : null;
   }
 
-  async discardSession(id: string, orgId: string, tx?: Tx): Promise<void> {
-    await ChatSessionMessage.deleteMany({ sessionId: id, orgId }, opts(tx));
-    await ChatSession.deleteOne({ _id: id, orgId }, opts(tx));
+  async discardSession(
+    id: string,
+    orgId: string,
+    tx?: Tx,
+  ): Promise<{ sessions: number; messages: number }> {
+    const messages = await ChatSessionMessage.deleteMany(
+      { sessionId: id, orgId },
+      opts(tx),
+    );
+    const sessions = await ChatSession.deleteOne({ _id: id, orgId }, opts(tx));
+    return {
+      sessions: sessions.deletedCount,
+      messages: messages.deletedCount,
+    };
   }
 
   async setPinned(
@@ -964,6 +1095,7 @@ export class MongoConversationRepository implements ConversationRepository {
     );
     if (!updatedConversation)
       throw new InternalServerError('Failed to delete conversation');
+    await this.discardBranchesQuietly(actor.orgId, id, tx);
 
     const sessionMessages = await ChatSessionMessage.find(
       { sessionId: id },
@@ -994,13 +1126,17 @@ export class MongoConversationRepository implements ConversationRepository {
   async softDeleteAgent(
     id: string,
     userId: string,
+    tx?: Tx,
   ): Promise<ChatSessionDto | null> {
-    const conversation = await ChatSession.findOne({ _id: id });
+    const session = sessionOf(tx);
+    const conversation = await ChatSession.findOne({ _id: id }, null, {
+      session,
+    });
     if (!conversation) return null;
     conversation.isDeleted = true;
     conversation.deletedBy = userId as never;
     conversation.lastActivityAt = Date.now();
-    const updated = await conversation.save();
+    const updated = await conversation.save({ session });
     return toPlain<ChatSessionDto>(updated, { json: true });
   }
 
@@ -1274,14 +1410,29 @@ export class MongoConversationRepository implements ConversationRepository {
       limit?: number;
       withCitations?: boolean;
       order?: 'asc' | 'desc';
+      withLabels?: boolean;
+      afterSeq?: number;
     },
     tx?: Tx,
   ): Promise<MessageRow[]> {
-    const { orgId, skip = 0, limit, withCitations = false, order = 'asc' } = q;
+    const {
+      orgId,
+      skip = 0,
+      limit,
+      withCitations = false,
+      order = 'asc',
+      withLabels = false,
+      afterSeq,
+    } = q;
     if (limit !== undefined && limit <= 0) return [];
-    let query = ChatSessionMessage.find({ sessionId, orgId }).sort({
+    let query = ChatSessionMessage.find({
+      sessionId,
+      orgId,
+      ...(afterSeq !== undefined ? { seq: { $gt: afterSeq } } : {}),
+    }).sort({
       seq: order === 'desc' ? -1 : 1,
     });
+    if (withLabels) query = query.select('+label') as typeof query;
     if (skip) query = query.skip(skip);
     if (limit !== undefined) query = query.limit(limit);
     if (withCitations) {
@@ -1385,4 +1536,514 @@ export class MongoConversationRepository implements ConversationRepository {
       .lean();
     return toPlain<CitationDto[]>(docs);
   }
+
+  async deleteCitations(
+    ids: string[],
+    orgId: string,
+    tx?: Tx,
+  ): Promise<number> {
+    const valid = ids.filter((id) => mongoose.Types.ObjectId.isValid(id));
+    if (valid.length === 0) return 0;
+    // Citations carry their org only in metadata; it still pins the delete to the tenant.
+    const deleted = await Citation.deleteMany(
+      { _id: { $in: oids(valid) }, 'metadata.orgId': orgId },
+      opts(tx),
+    );
+    return deleted.deletedCount;
+  }
+
+  // ---- the agent harness's fields and sweeps
+  async findHarnessSession(
+    id: string,
+    orgId: string,
+    _opts?: { forUpdate?: boolean },
+    tx?: Tx,
+  ): Promise<HarnessSessionRow | null> {
+    if (!validIds(id, orgId)) return null;
+    const query = ChatSession.findOne({ _id: id, orgId }).select(
+      '+sessionType +nextSeq +harnessVersion +harnessLedger +erasureRequestedAt',
+    );
+    const session = sessionOf(tx);
+    const row = await (session ? query.session(session) : query).lean().exec();
+    if (row === null) return null;
+    const {
+      sessionType,
+      nextSeq,
+      harnessVersion,
+      harnessLedger,
+      erasureRequestedAt,
+      ...rest
+    } = toPlain<
+      ChatSessionDto & {
+        harnessVersion?: HarnessVersionDto;
+        harnessLedger?: HarnessLedgerDto | null;
+        erasureRequestedAt?: number | null;
+      }
+    >(row);
+    return {
+      session: rest,
+      sessionType: sessionType ?? 'chat',
+      nextSeq: nextSeq ?? 0,
+      ...(harnessVersion ? { harnessVersion } : {}),
+      ...(harnessLedger
+        ? {
+            harnessLedger: {
+              seq: harnessLedger.seq,
+              digest: harnessLedger.digest,
+              ...(harnessLedger.diverged === true ? { diverged: true } : {}),
+            },
+          }
+        : {}),
+      ...(typeof erasureRequestedAt === 'number' ? { erasureRequestedAt } : {}),
+    };
+  }
+
+  async setHarnessFields(
+    id: string,
+    orgId: string,
+    patch: HarnessSessionPatch,
+    tx?: Tx,
+  ): Promise<boolean> {
+    if (!validIds(id, orgId)) return false;
+    const $set = Object.fromEntries(
+      Object.entries(patch).filter(([, value]) => value !== undefined),
+    );
+    const result = await ChatSession.updateOne(
+      { _id: id, orgId },
+      Object.keys($set).length > 0 ? { $set } : {},
+      opts(tx),
+    );
+    return result.matchedCount === 1;
+  }
+
+  async markHarnessSeen(
+    id: string,
+    orgId: string,
+    userId: string,
+    at: number,
+    tx?: Tx,
+  ): Promise<number | null> {
+    if (!validIds(id, orgId) || !SEEN_KEY.test(userId)) return null;
+    const field = `harnessSeen.${userId}`;
+    // The mark is the person's, not a change to the conversation: its `updatedAt` (the list's order) stays.
+    const row = (await ChatSession.findOneAndUpdate(
+      { _id: id, orgId },
+      { $max: { [field]: at } },
+      {
+        ...opts(tx),
+        returnDocument: 'after',
+        timestamps: false,
+        projection: { [field]: 1 },
+      },
+    ).lean()) as { harnessSeen?: Record<string, number> } | null;
+    return row === null ? null : (row.harnessSeen?.[userId] ?? null);
+  }
+
+  async harnessSeenMarks(
+    orgId: string,
+    userId: string,
+    ids: readonly string[],
+  ): Promise<Map<string, number>> {
+    const valid = ids.filter((id) => validIds(id));
+    if (!validIds(orgId) || !SEEN_KEY.test(userId) || valid.length === 0) {
+      return new Map();
+    }
+    const field = `harnessSeen.${userId}`;
+    const rows = (await ChatSession.find(
+      { _id: { $in: oids(valid) }, orgId, [field]: { $exists: true } },
+      { _id: 1, [field]: 1 },
+    ).lean()) as Array<{
+      _id: mongoose.Types.ObjectId;
+      harnessSeen?: Record<string, number>;
+    }>;
+    const marks = new Map<string, number>();
+    for (const row of rows) {
+      const mark = row.harnessSeen?.[userId];
+      if (typeof mark === 'number') marks.set(String(row._id), mark);
+    }
+    return marks;
+  }
+
+  async listIdleSessions(
+    orgId: string,
+    before: number,
+    limit: number,
+  ): Promise<string[]> {
+    if (!validIds(orgId)) return [];
+    const sessions = await ChatSession.find(
+      { orgId: oid(orgId), isDeleted: false, lastActivityAt: { $lt: before } },
+      { _id: 1 },
+    )
+      .sort({ lastActivityAt: 1 })
+      .limit(limit)
+      .read('primary')
+      .lean();
+    return sessions.map((session) => String(session._id));
+  }
+
+  async expireIdleSession(
+    orgId: string,
+    id: string,
+    before: number,
+    at: number,
+    tx?: Tx,
+  ): Promise<boolean> {
+    if (!validIds(id, orgId)) return false;
+    const expired = await ChatSession.updateOne(
+      {
+        _id: oid(id),
+        orgId: oid(orgId),
+        isDeleted: false,
+        lastActivityAt: { $lt: before },
+      },
+      { $set: { isDeleted: true, erasureRequestedAt: at } },
+      opts(tx),
+    );
+    return expired.modifiedCount === 1;
+  }
+
+  async listErasureRequests(
+    after: { requestedAt: number; sessionId: string } | null,
+    limit: number,
+  ): Promise<ErasureRequestDto[]> {
+    const afterFilter =
+      after !== null && validIds(after.sessionId)
+        ? {
+            $or: [
+              { erasureRequestedAt: { $gt: after.requestedAt } },
+              {
+                erasureRequestedAt: after.requestedAt,
+                _id: { $gt: oid(after.sessionId) },
+              },
+            ],
+          }
+        : {};
+    const sessions = await ChatSession.find(
+      {
+        // `$exists` keeps the query on the partial `erasure_requested` index.
+        erasureRequestedAt: { $exists: true },
+        isDeleted: true,
+        ...afterFilter,
+      },
+      { _id: 1, orgId: 1, deletedBy: 1, erasureRequestedAt: 1 },
+    )
+      .sort({ erasureRequestedAt: 1, _id: 1 })
+      .limit(limit)
+      .read('primary')
+      .lean();
+    return sessions.map((session) => ({
+      orgId: String(session.orgId),
+      sessionId: String(session._id),
+      requestedAt: Number(session.erasureRequestedAt),
+      ...(session.deletedBy != null
+        ? { deletedBy: String(session.deletedBy) }
+        : {}),
+    }));
+  }
+
+  async listDeletedSessions(
+    after: string | null,
+    limit: number,
+    orgId: string | null,
+  ): Promise<SessionDeletionDto[]> {
+    if (orgId !== null && !validIds(orgId)) return [];
+    const rows = await ChatSession.find(
+      {
+        isDeleted: true,
+        ...(orgId !== null ? { orgId: oid(orgId) } : {}),
+        ...(after !== null && validIds(after)
+          ? { _id: { $gt: oid(after) } }
+          : {}),
+      },
+      DELETION_PROJECTION,
+    )
+      .sort({ _id: 1 })
+      .limit(limit)
+      .read('primary')
+      .lean<DeletionRow[]>();
+    return deletionStates(rows);
+  }
+
+  async sessionDeletionStates(
+    orgId: string,
+    ids: readonly string[],
+  ): Promise<SessionDeletionDto[]> {
+    const valid = ids.filter((id) => validIds(id));
+    if (!validIds(orgId) || valid.length === 0) return [];
+    const rows = await ChatSession.find(
+      { _id: { $in: oids(valid) }, orgId: oid(orgId) },
+      DELETION_PROJECTION,
+    )
+      .sort({ _id: 1 })
+      .read('primary')
+      .lean<DeletionRow[]>();
+    return deletionStates(rows);
+  }
+
+  async listUserSessionsAfter(
+    orgId: string,
+    userId: string,
+    after: string | null,
+    limit: number,
+  ): Promise<UserSessionDto[]> {
+    if (!validIds(orgId, userId) || (after !== null && !validIds(after)))
+      return [];
+    const rows = await ChatSession.find(
+      {
+        orgId: oid(orgId),
+        userId: oid(userId),
+        isDeleted: { $ne: true },
+        ...(after !== null ? { _id: { $gt: oid(after) } } : {}),
+      },
+      {
+        _id: 1,
+        sessionType: 1,
+        title: 1,
+        agentKey: 1,
+        createdAt: 1,
+        updatedAt: 1,
+      },
+    )
+      .select('+sessionType')
+      .sort({ _id: 1 })
+      .limit(limit)
+      .lean()
+      .exec();
+    return toPlain<UserSessionDto[]>(rows);
+  }
+
+  async markAttachmentsRemoved(
+    orgId: string,
+    exceptSessionId: string,
+    recordIds: readonly string[],
+  ): Promise<number> {
+    if (!validIds(orgId, exceptSessionId) || recordIds.length === 0) return 0;
+    const ids = [...recordIds];
+    const marked = await ChatSessionMessage.updateMany(
+      {
+        orgId: oid(orgId),
+        sessionId: { $ne: oid(exceptSessionId) },
+        attachments: {
+          $elemMatch: { recordId: { $in: ids }, removed: { $ne: true } },
+        },
+      },
+      { $set: { 'attachments.$[gone].removed': true } },
+      {
+        arrayFilters: [{ 'gone.recordId': { $in: ids } }],
+        writeConcern: { w: 'majority' },
+      },
+    );
+    return marked.modifiedCount;
+  }
+
+  async findAttachmentCarriers(
+    orgId: string,
+    recordIds: readonly string[],
+  ): Promise<Map<string, string>> {
+    const carried = new Map<string, string>();
+    if (!validIds(orgId) || recordIds.length === 0) return carried;
+    const wanted = new Set(recordIds);
+    const messages = await ChatSessionMessage.find(
+      { orgId: oid(orgId), 'attachments.recordId': { $in: [...wanted] } },
+      { sessionId: 1, 'attachments.recordId': 1 },
+    )
+      .read('primary')
+      .lean<
+        Array<{
+          sessionId: mongoose.Types.ObjectId;
+          attachments?: Array<{ recordId: string }>;
+        }>
+      >();
+    for (const message of messages) {
+      for (const attachment of message.attachments ?? []) {
+        const id = attachment.recordId;
+        if (wanted.has(id) && !carried.has(id))
+          carried.set(id, String(message.sessionId));
+      }
+    }
+    return carried;
+  }
+
+  async listTitles(
+    orgId: string,
+    ids: readonly string[],
+  ): Promise<Map<string, string>> {
+    const wanted = [
+      ...new Set(ids.filter((id) => mongoose.Types.ObjectId.isValid(id))),
+    ];
+    const found = new Map<string, string>();
+    if (wanted.length === 0 || !validIds(orgId)) return found;
+    const sessions = await ChatSession.find({
+      _id: { $in: wanted },
+      orgId,
+      isDeleted: false,
+    })
+      .select('title')
+      .lean<Array<{ _id: unknown; title?: string }>>();
+    for (const session of sessions)
+      found.set(String(session._id), session.title ?? '');
+    return found;
+  }
+
+  async listOwnedForHandover(
+    orgId: string,
+    userId: string,
+  ): Promise<Array<{ sessionId: string; shared: boolean }>> {
+    if (!validIds(orgId, userId)) return [];
+    const owned = await ChatSession.find(
+      { orgId: oid(orgId), userId: oid(userId), isDeleted: { $ne: true } },
+      { _id: 1, isShared: 1, sharedWith: 1 },
+    )
+      .sort({ _id: 1 })
+      .read('primary')
+      .lean<
+        Array<{ _id: unknown; isShared?: boolean; sharedWith?: unknown[] }>
+      >();
+    return owned.map((session) => ({
+      sessionId: String(session._id),
+      shared:
+        session.isShared === true && (session.sharedWith ?? []).length > 0,
+    }));
+  }
+
+  async transferOwners(
+    orgId: string,
+    ids: readonly string[],
+    fromUserId: string,
+    toUserId: string,
+    tx?: Tx,
+  ): Promise<number> {
+    const valid = ids.filter((id) => mongoose.Types.ObjectId.isValid(id));
+    if (valid.length === 0 || !validIds(orgId, fromUserId, toUserId)) return 0;
+    const to = oid(toUserId);
+    const result = await ChatSession.updateMany(
+      { _id: { $in: oids(valid) }, orgId: oid(orgId), userId: oid(fromUserId) },
+      {
+        $set: { userId: to, initiator: to },
+        $pull: { sharedWith: { userId: to } },
+      },
+      opts(tx),
+    );
+    return result.matchedCount;
+  }
+
+  async markDeletedForErasure(
+    orgId: string,
+    ids: readonly string[],
+    at: number,
+    tx?: Tx,
+  ): Promise<number> {
+    const valid = ids.filter((id) => mongoose.Types.ObjectId.isValid(id));
+    if (valid.length === 0 || !validIds(orgId)) return 0;
+    const result = await ChatSession.updateMany(
+      { _id: { $in: oids(valid) }, orgId: oid(orgId) },
+      [
+        {
+          $set: {
+            isDeleted: true,
+            erasureRequestedAt: { $ifNull: ['$erasureRequestedAt', at] },
+          },
+        },
+      ],
+      { ...opts(tx), updatePipeline: true },
+    );
+    return result.matchedCount;
+  }
+
+  async listSessionIdsAfter(
+    orgId: string,
+    after: string | null,
+    limit: number,
+  ): Promise<string[]> {
+    if (!validIds(orgId) || limit <= 0) return [];
+    if (after !== null && !mongoose.Types.ObjectId.isValid(after)) return [];
+    const sessions = await ChatSession.find(
+      {
+        orgId: oid(orgId),
+        ...(after !== null ? { _id: { $gt: oid(after) } } : {}),
+      },
+      { _id: 1 },
+    )
+      .sort({ _id: 1 })
+      .limit(limit)
+      .read('primary')
+      .lean<Array<{ _id: unknown }>>();
+    return sessions.map((session) => String(session._id));
+  }
+
+  async deleteOrgCitations(orgId: string, limit: number): Promise<number> {
+    if (limit <= 0) return 0;
+    const batch = await Citation.find({ 'metadata.orgId': orgId }, { _id: 1 })
+      .limit(limit)
+      .lean<Array<{ _id: mongoose.Types.ObjectId }>>();
+    if (batch.length === 0) return 0;
+    const deleted = await Citation.deleteMany({
+      _id: { $in: batch.map((c) => c._id) },
+      'metadata.orgId': orgId,
+    });
+    return deleted.deletedCount;
+  }
+}
+
+const validIds = (...ids: string[]): boolean =>
+  ids.every((id) => mongoose.Types.ObjectId.isValid(id));
+
+/** A user id as a field name of the seen map: never a path separator or an operator. */
+const SEEN_KEY = /^[A-Za-z0-9_-]{1,128}$/;
+
+interface DeletionRow {
+  _id: mongoose.Types.ObjectId;
+  orgId: mongoose.Types.ObjectId;
+  isDeleted?: boolean;
+  deletedBy?: mongoose.Types.ObjectId | null;
+  erasureRequestedAt?: number | null;
+  updatedAt?: Date;
+}
+
+const DELETION_PROJECTION = {
+  _id: 1,
+  orgId: 1,
+  isDeleted: 1,
+  deletedBy: 1,
+  erasureRequestedAt: 1,
+  updatedAt: 1,
+} as const;
+
+/** The rows with their message and citation-link counts, in one aggregate. */
+async function deletionStates(
+  rows: readonly DeletionRow[],
+): Promise<SessionDeletionDto[]> {
+  if (rows.length === 0) return [];
+  const counts = await ChatSessionMessage.aggregate<{
+    _id: mongoose.Types.ObjectId;
+    messages: number;
+    citations: number;
+  }>([
+    { $match: { sessionId: { $in: rows.map((row) => row._id) } } },
+    {
+      $group: {
+        _id: '$sessionId',
+        messages: { $sum: 1 },
+        citations: { $sum: { $size: { $ifNull: ['$citations', []] } } },
+      },
+    },
+  ]).read('primary');
+  const by = new Map(counts.map((row) => [String(row._id), row]));
+  return rows.map((row) => {
+    const sessionId = String(row._id);
+    return {
+      orgId: String(row.orgId),
+      sessionId,
+      isDeleted: row.isDeleted === true,
+      ...(row.deletedBy !== undefined && row.deletedBy !== null
+        ? { deletedBy: String(row.deletedBy) }
+        : {}),
+      ...(typeof row.erasureRequestedAt === 'number'
+        ? { erasureRequestedAt: row.erasureRequestedAt }
+        : {}),
+      ...(row.updatedAt instanceof Date ? { updatedAt: row.updatedAt } : {}),
+      messages: by.get(sessionId)?.messages ?? 0,
+      citations: by.get(sessionId)?.citations ?? 0,
+    };
+  });
 }

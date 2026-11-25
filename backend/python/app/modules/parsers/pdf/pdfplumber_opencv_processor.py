@@ -31,7 +31,10 @@ from app.modules.parsers.pdf.opencv_layout_analyzer import (
     LayoutRegionType,
 )
 from app.services.messaging.config import messaging_env
-from app.utils.indexing_helpers import generate_simple_row_text
+from app.services.paid_cache.access import remember_cache
+from app.services.resource_governor.kinds import ParseKind
+from app.utils.aimodels import INDEXING_SDK_RETRIES
+from app.utils.indexing_helpers import generate_simple_row_text, unique_column_keys
 from app.utils.indexing_metrics import track_indexing_enrichment
 from app.utils.llm import get_llm_for_role
 from app.utils.table_enrichment import (
@@ -39,9 +42,10 @@ from app.utils.table_enrichment import (
     enrich_table_grid,
     enrich_tables,
 )
+from app.utils.table_row_memory import with_row_digest
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Sequence
 
     from app.config.configuration_service import ConfigurationService
 
@@ -98,7 +102,10 @@ def running_noise(pages: list[ParsedPageData]) -> set[int]:
                 continue
             # A page number follows the page's last line, wherever that falls
             # (3M_2022_10K p.49 prints "49" a third of the way down a short page).
-            in_margin = region.bbox[1] <= pd.height * _MARGIN_BAND or region.bbox[3] >= pd.height * (1 - _MARGIN_BAND)
+            # OCR text has no position of its own, so only the edge rule can mark it.
+            in_margin = not region.from_ocr and (
+                region.bbox[1] <= pd.height * _MARGIN_BAND or region.bbox[3] >= pd.height * (1 - _MARGIN_BAND)
+            )
             at_edge = (region is texts[0] or region is texts[-1]) and _PAGE_NUMBER_RE.match(text)
             if in_margin or at_edge:
                 norm = re.sub(r"\d+", "#", " ".join(text.lower().split()))
@@ -161,11 +168,13 @@ async def _run_sized(fn: Callable[..., T], n_rows: int, *args: object) -> T:
 def _plain_row_texts(raw_headers: list[str], data_rows: list[list]) -> list[str]:
     """``column: value`` text for each row, with the first row's cells as column names."""
     texts: list[str] = []
+    keys_by_width: dict[int, list[str]] = {}
     for row in data_rows:
+        keys = keys_by_width.get(len(row))
+        if keys is None:
+            keys = keys_by_width[len(row)] = unique_column_keys(raw_headers, len(row))
         row_dict = {
-            (raw_headers[i] if i < len(raw_headers) else f"Column_{i + 1}"): (
-                cell.get("text", "") if isinstance(cell, dict) else str(cell or "")
-            )
+            keys[i]: (cell.get("text", "") if isinstance(cell, dict) else str(cell or ""))
             for i, cell in enumerate(row)
         }
         texts.append(generate_simple_row_text(row_dict))
@@ -173,9 +182,13 @@ def _plain_row_texts(raw_headers: list[str], data_rows: list[list]) -> list[str]
 
 
 def _table_row_blocks(
-    row_texts: list[str], first_index: int, parent_index: int, citation: CitationMetadata
+    row_texts: list[str],
+    first_index: int,
+    parent_index: int,
+    citation: CitationMetadata,
+    row_digests: Sequence[Optional[str]] = (),
 ) -> list[Block]:
-    """One TABLE_ROW block per non-empty row text, indexed from ``first_index``."""
+    """One TABLE_ROW block per non-empty row text, indexed from ``first_index``, with the row's digest when it has one."""
     out: list[Block] = []
     for i, row_text in enumerate(row_texts):
         if not row_text:
@@ -188,10 +201,10 @@ def _table_row_blocks(
                 format=DataFormat.JSON,
                 comments=[],
                 parent_index=parent_index,
-                data={
+                data=with_row_digest({
                     "row_natural_language_text": row_text,
                     "row_number": i + 1,
-                },
+                }, row_digests, i),
                 citation_metadata=citation,
             )
         )
@@ -227,6 +240,7 @@ class PDFPlumberOpenCVProcessor:
             label=doc_name,
             size=len(pdf_bytes),
             timeout=messaging_env.pdf_record_processing_timeout,
+            kind=ParseKind.PDF_LAYOUT,
         )
         for pd in pages_data:
             self.logger.debug(
@@ -262,13 +276,17 @@ class PDFPlumberOpenCVProcessor:
         if table_regions:
             with track_indexing_enrichment(self.logger, label="pdfplumber"):
                 try:
-                    llm, _ = await get_llm_for_role(self.config, "indexing", reasoning_effort="low")
+                    llm, _ = await get_llm_for_role(
+                    self.config, "indexing", reasoning_effort="low", sdk_retries=INDEXING_SDK_RETRIES,
+                )
                 except Exception as e:
                     # Without an LLM the tables still index as plain rows; failing the
                     # parse would send the whole document to OCR, which needs one too.
                     self.logger.warning("No indexing LLM for table enrichment, keeping plain rows: %s", e)
                     skip_llm_enrichment = True
                 else:
+                    # The table calls reach the paid-result cache through the ambient cache, as on the Docling path.
+                    remember_cache(self.config, self.logger)
                     results = await enrich_tables(
                         llm,
                         [region.table_grid for region in table_regions],
@@ -395,13 +413,17 @@ class PDFPlumberOpenCVProcessor:
             table_rows_text = await _run_sized(
                 _plain_row_texts, len(data_rows), raw_headers, data_rows
             )
+            row_digests: list[Optional[str]] = []
         else:
             if enrichment is None:
                 # The pre-pass and this walk are meant to visit the same table
                 # regions; a miss means they drifted apart. Enrich inline so
                 # correctness never depends on the two walks staying in sync.
                 self.logger.warning("Table missed pre-enrichment; enriching inline")
-                llm, _ = await get_llm_for_role(self.config, "indexing", reasoning_effort="low")
+                llm, _ = await get_llm_for_role(
+                    self.config, "indexing", reasoning_effort="low", sdk_retries=INDEXING_SDK_RETRIES,
+                )
+                remember_cache(self.config, self.logger)
                 # Outside the pre-pass's row budget: summary and headers only.
                 enrichment = await enrich_table_grid(
                     llm, grid, logger=self.logger, describe_rows=False
@@ -410,6 +432,7 @@ class PDFPlumberOpenCVProcessor:
             table_summary = enrichment.summary
             column_headers = enrichment.headers
             table_rows_text = enrichment.descriptions
+            row_digests = enrichment.row_digests
 
         num_rows = len(grid)
         num_cols = len(grid[0]) if grid else 0
@@ -437,7 +460,7 @@ class PDFPlumberOpenCVProcessor:
         )
 
         row_blocks = await _run_sized(
-            _table_row_blocks, len(table_rows_text), table_rows_text, len(blocks), bg.index, citation
+            _table_row_blocks, len(table_rows_text), table_rows_text, len(blocks), bg.index, citation, row_digests
         )
         row_indices = [b.index for b in row_blocks]
         blocks.extend(row_blocks)

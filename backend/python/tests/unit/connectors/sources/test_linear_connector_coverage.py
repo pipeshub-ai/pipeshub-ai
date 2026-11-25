@@ -925,7 +925,7 @@ class TestLinearSyncIssuesForTeams:
         assert failed == []
         # ...and once its whole list is stored, the checkpoint (kept under the team's
         # id) moves to the moment the run started.
-        assert c.issues_sync_point.store["team_issues_team-1"]["last_sync_time"] == 1_700_000_000_000
+        assert c.issues_sync_point.store["team_issues_v2_team-1"]["last_sync_time"] == 1_700_000_000_000
 
     @pytest.mark.asyncio
     async def test_sync_issues_error_continues(self):
@@ -935,7 +935,7 @@ class TestLinearSyncIssuesForTeams:
         team_rg2, perms2 = _make_team_record_group("team-2", "DES")
 
         async def read(key) -> dict:
-            if key == "team_issues_team-1":
+            if key == "team_issues_v2_team-1":
                 raise Exception("checkpoint error")
             return {}
 
@@ -953,8 +953,8 @@ class TestLinearSyncIssuesForTeams:
         assert full_sync_team_ids == {"team-2"}
         assert fetch.call_count == 1
         assert fetch.call_args.kwargs["team_id"] == "team-2"
-        assert "team_issues_team-1" not in c.issues_sync_point.store
-        assert c.issues_sync_point.store["team_issues_team-2"]["last_sync_time"] == 1_700_000_000_000
+        assert "team_issues_v2_team-1" not in c.issues_sync_point.store
+        assert c.issues_sync_point.store["team_issues_v2_team-2"]["last_sync_time"] == 1_700_000_000_000
 
     @pytest.mark.asyncio
     async def test_sync_issues_auth_error_stops_the_sync(self) -> None:
@@ -2437,7 +2437,7 @@ class TestLinearPlaceholderSweep:
         team_rg, perms = _make_team_record_group()
         team_rg2, perms2 = _make_team_record_group("team-2", "DES")
         # team-2 completed a run before; team-1 never did.
-        c.issues_sync_point.store["team_issues_team-2"] = {"last_sync_time": 1_700_000_000_000}
+        c.issues_sync_point.store["team_issues_v2_team-2"] = {"last_sync_time": 1_700_000_000_000}
 
         async def fake_fetch(*args, **kwargs):
             if False:

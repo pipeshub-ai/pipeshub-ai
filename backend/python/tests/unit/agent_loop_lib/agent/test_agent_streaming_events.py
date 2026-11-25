@@ -66,6 +66,8 @@ class _TokenStream(ScriptedTransport):
         thinking_budget: int | None = None,
         effort: str | None = None,
         system_blocks: list[str] | None = None,
+        *,
+        tool_choice: object = None,
     ) -> AsyncIterator[StreamEvent]:
         for event in self._turns.pop(0):
             yield event
@@ -190,7 +192,8 @@ class TestBrokenStream:
 
         result = agent.last_stream_result
         assert result.success is False
-        assert result.error == "LLM call failed: Model.stream() completed without a StreamCompleteEvent"
+        assert result.error == "LLM call failed: internal (AgentError)"
+        assert result.error_detail == "LLM call failed: Model.stream() completed without a StreamCompleteEvent"
         types = [e.event_type for e in events]
         assert EventType.RUN_ERROR in types
         assert types.index(EventType.TEXT_MESSAGE_END) < types.index(EventType.RUN_ERROR)

@@ -21,6 +21,20 @@ export enum OAuthGrantType {
   TOKEN_EXCHANGE = 'urn:ietf:params:oauth:grant-type:token-exchange',
 }
 
+/**
+ * `createdBy` of an app no person created: a client that registered itself (RFC 7591) and the
+ * first-party device app. A valid id in both stores that no user has, so such an app is in
+ * nobody's list and its tokens never act as a person (the token service and auth middleware).
+ */
+export const NO_APP_CREATOR = '000000000000000000000000';
+
+/**
+ * `ownerFormat` of every app this code stores: its owner fields follow the rules above (no borrowed
+ * creator). An app without it was stored by an older release, which is what the one-time repair
+ * (`disownInstanceApps`) looks for; the repair sets it on what it fixes.
+ */
+export const APP_OWNER_FORMAT = 1;
+
 /** A stored OAuth app with every id as a string; same keys as the stored row. */
 export interface OAuthAppDto {
   _id: string;
@@ -43,6 +57,8 @@ export interface OAuthAppDto {
   termsOfServiceUrl?: string;
   isConfidential: boolean;
   isDynamic?: boolean;
+  /** `APP_OWNER_FORMAT` on an app stored or repaired by this code; absent on one an older release stored. */
+  ownerFormat?: number;
   /** What every token of this app may reach; absent means everything the connecting user can see. */
   knowledgeLimit?: KnowledgeLimit;
   accessTokenLifetime: number;
@@ -111,6 +127,11 @@ export interface OwnedAppListQuery {
   limit: number;
 }
 
+/** An administrator's view: every app of the org, optionally only one person's. */
+export interface OrgAppListQuery extends OwnedAppListQuery {
+  createdBy?: string;
+}
+
 /**
  * "Owned" means: in the org, created by the user, not deleted, and not one of the
  * internal clients (the per-org personal-token and service-token apps, the
@@ -153,6 +174,13 @@ export interface OAuthAppRepository {
     patch: OAuthAppPatch,
     opts?: UpdateOwnedOptions,
   ): Promise<OAuthAppDto | null>;
+  /** Same filter as `findOwned` without the creator: any app an administrator of the org manages. */
+  findInOrg(orgId: string, appId: string): Promise<OAuthAppDto | null>;
+  /** Same filter and order as `listOwned` without the creator. */
+  listInOrg(
+    orgId: string,
+    q: OrgAppListQuery,
+  ): Promise<{ rows: OAuthAppDto[]; total: number }>;
   /** Not deleted. Used by the token endpoints, after the client is known. */
   findLiveByClientId(clientId: string): Promise<OAuthAppDto | null>;
   /** The scopes and knowledge limit a live app allows now, or null when the app is gone or deleted. */
@@ -178,14 +206,51 @@ export interface OAuthAppRepository {
     id: string,
     grant: Pick<OAuthAppDto, 'allowedScopes' | 'allowedGrantTypes'>,
   ): Promise<void>;
+  /**
+   * Repair of the instance apps of `orgId` (dynamically registered clients and the first-party
+   * device app, deleted or not) that an older release stored, with a borrowed user as their
+   * creator: every such app without `ownerFormat`. Sets `createdBy` to `NO_APP_CREATOR` and
+   * `ownerFormat`, and stores each dynamic client under `dynamicClientOrgId` when that is another
+   * org. An app this code stored (a metadata client keeps the person who consented) has
+   * `ownerFormat` and is left alone, so it is safe to run at every start. Returns how many apps
+   * changed, each counted once. PostgreSQL keeps every row in its org, so there a different org
+   * is refused.
+   */
+  disownInstanceApps(
+    orgId: string,
+    dynamicClientOrgId: string,
+  ): Promise<number>;
   /** Client ids of live apps whose tokens act as the given user (a service account). */
   listClientIdsActingAs(userId: string): Promise<string[]>;
-  /** Client ids of live apps the user created. */
-  listClientIdsCreatedBy(orgId: string, userId: string): Promise<string[]>;
-  /** Soft-deletes and revokes every live app the user created. */
-  softDeleteCreatedBy(
+  /**
+   * Client ids of live apps whose own `client_credentials` tokens act as the user because
+   * they created the app and it names no service account.
+   */
+  listClientIdsActingAsCreator(
+    orgId: string,
+    userId: string,
+  ): Promise<string[]>;
+  /** Soft-deletes and revokes the apps `listClientIdsActingAsCreator` lists. */
+  softDeleteActingAsCreator(
     orgId: string,
     userId: string,
     deletedBy: string,
+  ): Promise<void>;
+  /** Every app of the org with its stored secret, deleted ones too (the `SECRET_KEY` rotation's walk, ADR-KEY-01). */
+  listClientSecrets(
+    orgId: string,
+  ): Promise<Array<{ id: string; clientSecretEncrypted: string }>>;
+  /** Replaces the stored secret only while it is still `expected`; false when it changed since or the app is gone. */
+  replaceClientSecret(
+    orgId: string,
+    id: string,
+    expected: string,
+    next: string,
+  ): Promise<boolean>;
+  /** Makes `toUserId` the creator of every live app `fromUserId` created, internal ones included. */
+  transferCreatedBy(
+    orgId: string,
+    fromUserId: string,
+    toUserId: string,
   ): Promise<void>;
 }

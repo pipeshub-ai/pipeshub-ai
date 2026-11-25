@@ -17,6 +17,7 @@ derive the pre-parse field map from this module.
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import re
@@ -80,6 +81,14 @@ class PushRefusal(Exception):
         self.location = location
         self.issues = issues or []
         self.extra = extra or {}
+
+
+#: errno values of a full disk or an exhausted quota: the server's fault, never counted against the caller.
+DISK_FULL = (errno.ENOSPC, errno.EDQUOT)
+
+
+def spool_full() -> PushRefusal:
+    return PushRefusal(503, "SPOOL_FULL", "The server has no space to hold the request.", extra={"retryAfter": 5})
 
 
 class _M(BaseModel):

@@ -7,7 +7,7 @@
 import { system, orgContextStorage } from '../../context/orgContext';
 import { Tx as PgKernelTx, withJobsUow } from '../../db';
 import { InternalServerError } from '../../errors/http.errors';
-import { stripNul } from '../nul';
+import { stripNul } from '../strip-nul';
 import { fill, inUnit } from '../pg-util';
 import type { Tx } from '../uow';
 import type {
@@ -160,6 +160,20 @@ export class PgOutboxRepository implements OutboxRepository, Importable {
         ],
       ),
     );
+  }
+
+  /** As the jobs role, as the dispatcher settles rows: a request's role may only append. */
+  eraseDeliveredForOrg(orgId: string, limit: number): Promise<number> {
+    if (limit <= 0) return Promise.resolve(0);
+    return inJobs(async (k) => {
+      const r = await k.query(
+        `/* pipeshub:platform.outbox_erase_delivered_for_org */ DELETE FROM platform.outbox o
+           WHERE (o.org_id, o.id) IN (SELECT org_id, id FROM platform.outbox
+             WHERE org_id = $1 AND status IN ('published', 'failed') LIMIT $2)`,
+        [orgId, limit],
+      );
+      return r.rowCount ?? 0;
+    });
   }
 
   async statusCounts(): Promise<Record<OutboxStatus, number>> {

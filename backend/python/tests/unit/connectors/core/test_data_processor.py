@@ -628,9 +628,32 @@ class TestUnchangedRecordsAreNotRepublished:
         assert record.indexing_status != ProgressStatus.PASSWORD_PROTECTED.value
 
     @pytest.mark.asyncio
-    async def test_an_unchanged_failed_record_is_still_queued_again(self) -> None:
+    @pytest.mark.parametrize(
+        "status",
+        [
+            ProgressStatus.FAILED.value,
+            ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value,
+            ProgressStatus.EMPTY.value,
+            ProgressStatus.QUEUED.value,
+            ProgressStatus.IN_PROGRESS.value,
+        ],
+    )
+    async def test_an_unchanged_record_keeps_its_status_and_publishes_nothing(self, status: str) -> None:
+        """A sync is not a retry: an outcome stays until the content changes or someone
+        reindexes, and queued or running work already has its event."""
+        proc, _ = self._proc_with_existing(self._existing("rev-1", status))
+        record = _make_record()
+        record.external_revision_id = "rev-1"
+
+        await proc.on_new_records([(record, [])])
+
+        proc.messaging_producer.send_messages.assert_not_awaited()
+        assert record.indexing_status == status
+
+    @pytest.mark.asyncio
+    async def test_an_unchanged_record_whose_event_was_never_acknowledged_is_published(self) -> None:
         proc, _ = self._proc_with_existing(
-            self._existing("rev-1", ProgressStatus.FAILED.value)
+            self._existing("rev-1", ProgressStatus.NOT_STARTED.value)
         )
         record = _make_record()
         record.external_revision_id = "rev-1"
@@ -638,6 +661,26 @@ class TestUnchangedRecordsAreNotRepublished:
         await proc.on_new_records([(record, [])])
 
         proc.messaging_producer.send_messages.assert_awaited_once()
+        assert record.indexing_status == ProgressStatus.NOT_STARTED.value
+
+    @pytest.mark.asyncio
+    async def test_a_changed_record_is_stored_not_started_until_its_event_is_acknowledged(self) -> None:
+        """QUEUED is written only by the compare-and-set after the publish, so a lost
+        publish leaves a NOT_STARTED row the stranded-record sweep sends again."""
+        proc, _ = self._proc_with_existing(
+            self._existing("rev-1", ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value)
+        )
+        proc.messaging_producer.send_messages = AsyncMock(return_value=[True])
+        record = _make_record()
+        record.external_revision_id = "rev-2"
+
+        await proc.on_new_records([(record, [])])
+
+        proc.messaging_producer.send_messages.assert_awaited_once()
+        assert record.indexing_status == ProgressStatus.NOT_STARTED.value
+        proc.data_store_provider.compare_and_set_indexing_status.assert_awaited_once_with(
+            [record.id], ProgressStatus.NOT_STARTED.value, ProgressStatus.QUEUED.value,
+        )
 
     @pytest.mark.asyncio
     async def test_changed_completed_record_is_requeued_and_published(self):
@@ -763,13 +806,16 @@ class TestOnRecordContentUpdate:
         ctx.__aexit__ = AsyncMock(return_value=False)
         proc.data_store_provider.transaction.return_value = ctx
 
-        record = _make_record()
+        record = _make_record(external_revision_id="r2")
         record.id = "rec-1"
         record.indexing_status = ProgressStatus.COMPLETED.value
 
         mock_db_record = MagicMock()
         mock_db_record.indexing_status = ProgressStatus.COMPLETED.value
         tx_store.get_record_by_key.return_value = mock_db_record
+        # An indexed record whose content changed (a new revision): the save re-queues it.
+        tx_store.get_record_by_external_id.return_value = _make_record(
+            id="rec-1", external_revision_id="r1", indexing_status=ProgressStatus.COMPLETED.value)
 
         await proc.on_record_content_update(record)
 
@@ -2404,6 +2450,29 @@ class TestMigrateGroupPermissionsToUser:
 
         await proc.migrate_group_permissions_to_user("g1", "user@test.com", "conn-1")
         tx_store.batch_create_edges.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_failed_grant_read_is_not_an_empty_group(self) -> None:
+        """The providers answer a failed read with [] unless asked to raise; that must not report every grant moved."""
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        mock_user = MagicMock()
+        mock_user.id = "u1"
+        tx_store.get_user_by_email.return_value = mock_user
+
+        async def read(*, from_node_id: str, edge_collection: str, raise_on_error: bool = False) -> list[dict]:
+            if raise_on_error:
+                raise ConnectionError("graph read failed")
+            return []
+        tx_store.get_edges_from_node = AsyncMock(side_effect=read)
+
+        with pytest.raises(ConnectionError):
+            await proc.migrate_group_permissions_to_user("g1", "user@test.com", "conn-1", tx_store)
+        tx_store.batch_create_edges.assert_not_awaited()
+        tx_store.get_user_by_email.assert_awaited_once_with("user@test.com", org_id="org-1")
+        tx_store.get_edges_from_node.assert_awaited_once_with(
+            from_node_id=f"{CollectionNames.GROUPS.value}/g1", edge_collection=CollectionNames.PERMISSION.value, raise_on_error=True,
+        )
 
     @pytest.mark.asyncio
     async def test_creates_new_permission_edges(self):

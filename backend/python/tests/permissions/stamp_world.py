@@ -81,3 +81,18 @@ class WorldGraph:
     async def update_node(self, key: str, collection: str, updates: dict, *args: object) -> bool:
         self.app_docs.setdefault(key, {"_key": key}).update(updates)
         return True
+
+    async def update_node_fields_if_match(self, key: str, collection: str, updates: dict, expected: dict, *args: object) -> bool:
+        doc = self.app_docs.setdefault(key, {"_key": key})
+        if any(doc.get(k) != v for k, v in expected.items()):
+            return False
+        doc.update(updates)
+        return True
+
+    def is_write_conflict(self, exc: Exception) -> bool:
+        return False
+
+    async def increment_node_field(self, key: str, collection: str, field: str, *args: object) -> int:
+        doc = self.app_docs.setdefault(key, {"_key": key})
+        doc[field] = int(doc.get(field) or 0) + 1
+        return doc[field]

@@ -10,6 +10,7 @@ from __future__ import annotations
 import contextlib
 import functools
 import json
+from collections import Counter
 from typing import TYPE_CHECKING, Any
 
 from app.config.constants.arangodb import FOLDER_MIME_TYPES, CollectionNames, Connectors
@@ -21,15 +22,32 @@ from app.core.org_context import (
     current_or_system,
     current_org_id,
 )
-from app.models.entities import AppRole, AppUserGroup, User
-from app.services.graph_db.common.utils import dedupe_agents_by_id
+from app.models.entities import AppRole, AppUser, AppUserGroup, Person, User
+from app.schema.node_validator import SchemaValidationError
+from app.services.graph_db.common.utils import (
+    agent_update_document,
+    decode_agent_json_fields,
+    dedupe_agents_by_id,
+    is_full_address,
+)
 from app.services.graph_db.postgres.base import (
+    _VALIDATOR,
     NotImplementedInPostgres,
     PgBase,
     _arango,
     _doc,
+    _ekey,
     _j,
 )
+from app.services.graph_db.user_email_identity import (
+    PERMISSION_ROLE_RANK,
+    STUB_EDGE_COLLECTIONS,
+    GraphUserEmailConflictError,
+    classify_email_peer,
+    connector_ids_of_users,
+    graph_user_key,
+)
+from app.utils import error_class
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
@@ -37,6 +55,7 @@ if TYPE_CHECKING:
 
 
 _KB = Connectors.KNOWLEDGE_BASE.value
+_PRINCIPALS_PAGE = 5000      # the LIMIT of each branch of graph.principals_by_email
 _ORG_FIELD = "orgId"  # the org property of a graph document, not a claim
 
 
@@ -45,6 +64,17 @@ def _js(v: Any) -> Any:  # noqa: ANN401
 
 
 _SERVICE_SUFFIX = f"@{SERVICE_ACCOUNT_EMAIL_DOMAIN}"
+_AGENT_CAN = {"can_edit": ("OWNER", "WRITER", "ORGANIZER"), "can_delete": ("OWNER",), "can_share": ("OWNER", "ORGANIZER")}
+
+
+def _stub_app(connector_id: str, app_type: Any = None) -> dict:  # noqa: ANN401
+    """The app node made when a link needs one that is not there yet: every field the apps schema requires, with the connector id as its name
+    (and as its type when the caller does not know it); the connector's own registration fills in the rest."""
+    kind = getattr(app_type, "value", app_type) or connector_id
+    now = get_epoch_timestamp_in_ms()
+    # An app the caller could not name is as bare as Neo4j's ``MERGE (a:App {id})``: not active, so ``get_org_apps(active_only=True)`` skips it.
+    return {"id": connector_id, "name": connector_id, "type": kind, "appGroup": kind, "scope": "team", "isActive": bool(app_type),
+            "createdAtTimestamp": now, "updatedAtTimestamp": now}
 
 
 def _soft(default: Any, *, flag: bool = False) -> Any:  # noqa: ANN401
@@ -54,17 +84,24 @@ def _soft(default: Any, *, flag: bool = False) -> Any:  # noqa: ANN401
         async def wrapper(self: Any, *a: Any, **k: Any) -> Any:  # noqa: ANN401
             try:
                 return await fn(self, *a, **k)
-            except (MissingOrgContext, SystemContextNotAllowed, OrgMismatch):
+            except (MissingOrgContext, SystemContextNotAllowed, OrgMismatch, SchemaValidationError):    # a rejected payload is never a default
                 raise
             except Exception as e:
-                self.logger.error("%s failed: %s", fn.__name__, e)
-                if flag and k.get("raise_on_error"):
+                if flag and k.get("raise_on_error"):  # raised before logging: the caller that handles it logs it once
                     raise
+                error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op=fn.__name__)
                 return default() if callable(default) else default
         return wrapper
     return deco
 
 
+
+
+def _far(coll: str, incoming: bool, e: dict) -> tuple:  # noqa: FBT001
+    """The identity of an edge of a user: the node at its other end and its key. A user holds one grant on a node whatever its type, as a MERGE does, so a
+    permission is keyed by the node alone."""
+    key = "" if coll == "permission" else _ekey(coll, e)
+    return (e["from_collection"], e["from_id"], key) if incoming else (e["to_collection"], e["to_id"], key)
 
 
 class IdentityMixin(PgBase):
@@ -89,6 +126,15 @@ class IdentityMixin(PgBase):
         return not org_id or org_id == current_org_id()
 
     @staticmethod
+    def _named_org(org_id: str | None) -> bool:
+        """For a method whose org argument is required: no org (None or empty) is an error, never the ambient org by default;
+        another org reads nothing. A missing or system context raises first, as for every read."""
+        org = current_org_id()
+        if not org_id:
+            raise MissingOrgContext("the org argument is required")
+        return org_id == org
+
+    @staticmethod
     def _require_org(org_id: str | None) -> None:
         """A write names the ambient org or none: it is refused, not skipped, for any other."""
         if not IdentityMixin._mine(org_id):
@@ -96,6 +142,46 @@ class IdentityMixin(PgBase):
 
     async def _id_rows(self, sql: str, args: list[Any], transaction: str | None, *, write: bool = False) -> list:
         return await self._q(lambda tx: tx.fetch(sql, *args), transaction, write=write)
+
+    async def _principals_by_email(self, colls: list[str], emails: list[str], transaction: str | None) -> list | None:
+        """The vetted read of graph_0006: ``(coll, node_id, doc)`` of the users, groups and persons (as ``colls`` names them) whose lower-cased email is one of
+        ``emails``. None when it cannot answer for the arguments (out of its bounds) or a page may not be all of the matches: the caller reads with its statement."""
+        current_org_id()      # no org is an error here, as for the statement: the function would answer nothing
+        if not emails or len(emails) > 1000 or not all(isinstance(e, str) and 0 < len(e) <= 1000 for e in emails):
+            return None
+        rows = await self._id_rows("/* pipeshub:graph.principals_by_email */ SELECT coll, node_id, doc FROM graph.principals_by_email($1::text[], $2::text[])", [colls, emails], transaction)
+        return rows if len(rows) < _PRINCIPALS_PAGE else None
+
+    async def _users_by_email_rows(self, org: str, emails: list[str], transaction: str | None) -> list:
+        """``(email, id, active)`` of the users whose lower-cased email is one of the lower-cased ``emails``: the vetted read of graph_0006 for up to its bound of
+        addresses, or the statement for more, for an address out of its bounds or a page that may not be all of the matches. One read either way: chunks would each
+        see their own snapshot, and a login moving between two of them would be missed by both (the batch would then create a duplicate user)."""
+        if emails and len(emails) <= 1000 and all(0 < len(e) <= 1000 for e in emails):
+            rows = await self._id_rows("""/* pipeshub:graph.users_by_email_vetted */ SELECT lower(p.doc->>'email') AS email, p.node_id AS id,
+                   coalesce((p.doc->>'isActive')::boolean, false) AS active FROM graph.principals_by_email(ARRAY['users'], $1::text[]) p ORDER BY p.node_id""", [emails], transaction)
+            if len(rows) < _PRINCIPALS_PAGE:
+                return rows
+        return await self._id_rows("""/* pipeshub:graph.users_by_email */ SELECT lower(doc->>'email') AS email, id, coalesce((doc->>'isActive')::boolean, false) AS active
+                   FROM graph.nodes WHERE org_id = $1 AND coll = 'users' AND lower(doc->>'email') = ANY($2::text[]) ORDER BY id""", [org, emails], transaction)
+
+    async def _verified_email_peers(self, org: str, email: str, transaction: str | None) -> list:
+        """The users whose lower-cased email is ``email``'s, by id: the vetted read of graph_0006, or the statement for an address out of its bounds."""
+        if 0 < len(email) <= 1000:
+            rows = await self._id_rows("/* pipeshub:graph.verified_email_peers_vetted */ SELECT p.doc FROM graph.principals_by_email(ARRAY['users'], ARRAY[$1]::text[]) p ORDER BY p.node_id",
+                                       [email], transaction)
+            if len(rows) < _PRINCIPALS_PAGE:
+                return rows
+        return await self._id_rows("/* pipeshub:graph.verified_email_peers */ SELECT doc FROM graph.nodes WHERE org_id = $1 AND coll = 'users' AND lower(doc->>'email') = lower($2) ORDER BY id",
+                                   [org, email], transaction)
+
+    async def _by_external(self, coll: str, connector_id: str, external_id: str, transaction: str | None) -> list:
+        """The group, record group or role (``coll``) of the connector with this external id: the vetted read of graph_0008, or the statement for a value out of its bounds."""
+        org = current_org_id()
+        if isinstance(connector_id, str) and isinstance(external_id, str) and 0 < len(connector_id) <= 200 and 0 < len(external_id) <= 2000:
+            return await self._id_rows("/* pipeshub:graph.node_by_external */ SELECT node_id, doc FROM graph.node_by_external($1, $2, $3)", [coll, connector_id, external_id], transaction)
+        key = "externalRoleId" if coll == "roles" else "externalGroupId"
+        return await self._id_rows("/* pipeshub:graph.node_by_external_plain */ SELECT doc FROM graph.nodes WHERE org_id = $1 AND coll = $2 AND doc->>$3 = $4 AND doc->>'connectorId' = $5 LIMIT 1",
+                                   [org, coll, key, external_id, connector_id], transaction)
 
     async def _enrich_created_by(self, entities: list[dict], transaction: str | None = None) -> None:
         """createdByUser (graph id, userId, name, email) from the createdBy graph keys, one query for all of them."""
@@ -116,17 +202,25 @@ class IdentityMixin(PgBase):
     # ---- users and orgs ------------------------------------------------------------------------------------------
     @_soft(None, flag=True)
     async def get_user_by_user_id(self, user_id: str, *, raise_on_error: bool = False) -> dict | None:
-        d = await self._one("/* pipeshub:graph.get_user_by_user_id */ SELECT doc FROM graph.nodes WHERE org_id = $1 AND coll = 'users' AND doc->>'userId' = $2 LIMIT 1",
-                            current_org_id(), user_id)
+        org = current_org_id()
+        if isinstance(user_id, str) and 0 < len(user_id) <= 200:      # the vetted read of graph_0004
+            d = await self._one("/* pipeshub:graph.user_by_user_id */ SELECT node_id, doc FROM graph.user_by_user_id($1)", user_id)
+        else:
+            d = await self._one("/* pipeshub:graph.get_user_by_user_id */ SELECT doc FROM graph.nodes WHERE org_id = $1 AND coll = 'users' AND doc->>'userId' = $2 LIMIT 1",
+                                org, user_id)
         return _arango(d, "users") if d else None
 
     @_soft(None, flag=True)
     async def get_user_by_email(self, email: str, transaction: str | None = None, *, raise_on_error: bool = False,
-                                org_id: str | None = None) -> User | None:
-        if not self._mine(org_id):
+                                org_id: str) -> User | None:
+        if not self._named_org(org_id):
             return None
-        d = await self._one("/* pipeshub:graph.get_user_by_email */ SELECT doc FROM graph.nodes WHERE org_id = $1 AND coll = 'users' AND lower(doc->>'email') = lower($2) LIMIT 1",
-                            current_org_id(), email, transaction=transaction)
+        rows = await self._principals_by_email(["users"], [email], transaction)
+        if rows is not None:
+            d = _doc(rows[0]["doc"]) if rows else None
+        else:
+            d = await self._one("/* pipeshub:graph.get_user_by_email */ SELECT doc FROM graph.nodes WHERE org_id = $1 AND coll = 'users' AND lower(doc->>'email') = lower($2) LIMIT 1",
+                                current_org_id(), email, transaction=transaction)
         return User.from_arango_user(_arango(d, "users")) if d else None
 
     @_soft(dict, flag=True)
@@ -136,9 +230,11 @@ class IdentityMixin(PgBase):
         wanted = list(dict.fromkeys(e.lower() for e in emails if e))
         if not wanted or not self._mine(org_id):
             return {}
-        # lower(doc->>'email') is the expression index nodes_user_email (org_id, lower(doc->>'email')).
-        rows = await self._id_rows("/* pipeshub:graph.get_users_by_emails */ SELECT id, doc FROM graph.nodes WHERE org_id = $1 AND coll = 'users' AND lower(doc->>'email') = ANY($2::text[])",
-                                   [org, wanted], transaction)
+        # lower(doc->>'email') is the expression index nodes_user_email (org_id, lower(doc->>'email')), which the vetted read reaches.
+        rows = await self._principals_by_email(["users"], wanted, transaction)
+        if rows is None:
+            rows = await self._id_rows("/* pipeshub:graph.get_users_by_emails */ SELECT id, doc FROM graph.nodes WHERE org_id = $1 AND coll = 'users' AND lower(doc->>'email') = ANY($2::text[])",
+                                       [org, wanted], transaction)
         out: dict[str, User] = {}
         for r in rows:
             d = _arango(_doc(r["doc"]), "users")
@@ -164,13 +260,15 @@ class IdentityMixin(PgBase):
                                                   org, active, is_external), transaction)
         return [_arango(_doc(r["doc"]), "organizations") for r in rows]
 
-    async def get_org_apps(self, org_id: str, *, active_only: bool = True, app_type: str | None = None, raise_on_error: bool = False) -> list[dict]:
+    async def get_org_apps(self, org_id: str, *, active_only: bool = True, app_type: str | None = None, raise_on_error: bool = False,
+                           app_ids: list[str] | None = None) -> list[dict]:
         if not self._mine(org_id):    # never another org's apps, and not under a system context (current_org_id refuses it)
             return []
         rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.get_org_apps */ SELECT a.doc FROM graph.edges e JOIN graph.nodes a
             ON a.org_id = e.org_id AND a.coll = 'apps' AND a.id = e.to_id WHERE e.org_id = $1 AND e.coll = 'orgAppRelation' AND e.from_id = $1
-            AND (NOT $2 OR coalesce((a.doc->>'isActive')::boolean, false)) AND ($3::text IS NULL OR a.doc->>'type' = $3)""",
-                                                  current_org_id(), active_only, app_type), None)
+            AND (NOT $2 OR coalesce((a.doc->>'isActive')::boolean, false)) AND ($3::text IS NULL OR a.doc->>'type' = $3)
+            AND ($4::text[] IS NULL OR a.id = ANY($4::text[]))""",
+                                                  current_org_id(), active_only, app_type, app_ids), None)
         return [_arango(_doc(r["doc"]), "apps") for r in rows]
 
     async def batch_upsert_orgs(self, orgs: list[dict], transaction: str | None = None) -> None:
@@ -186,13 +284,14 @@ class IdentityMixin(PgBase):
             WHERE org_id = $1 AND coll = 'organizations' AND id = $2 AND coalesce((doc->>'isExternal')::boolean, false) = $3 LIMIT 1""",
                                                    current_org_id(), org_id, is_external), transaction)
 
-    @_soft(list)
-    async def get_users(self, org_id: str, *, active: bool = True) -> list[dict]:
-        if not self._mine(org_id):
-            return []
+    @_soft(list, flag=True)
+    async def get_users(self, org_id: str, *, active: bool = True, raise_on_error: bool = False) -> list[dict]:
+        return await self._org_users(None, active=active) if self._mine(org_id) else []
+
+    async def _org_users(self, tid: str | None, *, active: bool) -> list[dict]:
         rows = await self._id_rows("""/* pipeshub:graph.get_users */ SELECT u.doc FROM graph.edges b JOIN graph.nodes u ON u.org_id = b.org_id AND u.coll = 'users' AND u.id = b.from_id
             WHERE b.org_id = $1 AND b.coll = 'belongsTo' AND b.from_coll = 'users' AND b.to_coll = 'organizations' AND b.to_id = $1 AND b.doc->>'entityType' = 'ORGANIZATION'
-              AND (NOT $2 OR coalesce((u.doc->>'isActive')::boolean, false))""", [current_org_id(), active], None)
+              AND (NOT $2 OR coalesce((u.doc->>'isActive')::boolean, false))""", [current_org_id(), active], tid)
         return [_arango(_doc(r["doc"]), "users") for r in rows]
 
     @_soft(lambda: ([], 0))
@@ -252,14 +351,68 @@ class IdentityMixin(PgBase):
             ORDER BY lower(coalesce(o.doc->>'fullName', o.doc->>'email', '')) COLLATE "C", o.id COLLATE "C" """, [current_org_id(), wanted, max(1, limit)], None)
         return [dict(r) for r in rows]
 
-    async def get_graph_user_keys_by_mongo_user_ids(self, user_ids: list[str], org_id: str | None = None, *, chunk_size: int) -> dict[str, str]:
+    async def find_people(self, org_id: str, query: str, *, limit: int = 10) -> list[dict[str, Any]]:
+        # Not _soft: a failed read raises. An email matches only as one whole address, never a fragment.
+        wanted_raw = " ".join((query or "").split())
+        if not org_id or not wanted_raw or not self._mine(org_id):
+            return []
+        wanted = await self._q(lambda tx: tx.fetchval("/* pipeshub:graph.lower */ SELECT lower($1::text)", wanted_raw), None)
+        if "@" in wanted:
+            if not is_full_address(wanted):
+                return []
+            found = await self._principals_by_email(["person"], [wanted], None)
+            if found is not None:      # by id in byte order, as COLLATE "C": a str compares by code point, which is the UTF-8 byte order
+                return [{"id": r["node_id"], "fullName": (d := _doc(r["doc"])).get("fullName"), "email": d.get("email")}
+                        for r in sorted(found, key=lambda r: r["node_id"])[:max(1, limit)]]
+            rows = await self._id_rows("""/* pipeshub:graph.find_people_by_email */ SELECT p.id, p.doc->>'fullName' AS "fullName", p.doc->>'email' AS email FROM graph.nodes p
+                WHERE p.org_id = $1 AND p.coll = 'person' AND lower(p.doc->>'email') = $2 ORDER BY p.id COLLATE "C" LIMIT $3""", [current_org_id(), wanted, max(1, limit)], None)
+            return [dict(r) for r in rows]
+        if len(wanted) <= 400 and limit <= 1000:      # the vetted read of graph_0006, which narrows and orders as the statement below does, by the indexes of the person's name
+            rows = await self._id_rows("/* pipeshub:graph.people_by_name */ SELECT node_id AS id, doc FROM graph.people_by_name($1, $2)", [wanted, max(1, limit)], None)
+            return [{"id": r["id"], "fullName": (d := _doc(r["doc"])).get("fullName"), "email": d.get("email")} for r in rows]
+        rows = await self._id_rows("""/* pipeshub:graph.find_people */ WITH u AS (
+              SELECT x.id, x.doc, array_to_string(array_remove(string_to_array(lower(coalesce(x.doc->>'fullName', '')), ' '), ''), ' ') AS name,
+                     array_to_string(array_remove(string_to_array(lower(coalesce(x.doc->>'firstName', '') || ' ' || coalesce(x.doc->>'lastName', '')), ' '), ''), ' ') AS parts
+              FROM graph.nodes x WHERE x.org_id = $1 AND x.coll = 'person'),
+            hits AS (
+              SELECT id, doc, name, (name = $2 OR parts = $2) AS exact FROM u
+              WHERE name = $2 OR parts = $2 OR (length($2) >= 3 AND (starts_with(name, $2) OR EXISTS (SELECT 1 FROM unnest(string_to_array(name, ' ')) w WHERE starts_with(w, $2)))))
+            SELECT id, doc->>'fullName' AS "fullName", doc->>'email' AS email FROM hits WHERE exact OR NOT EXISTS (SELECT 1 FROM hits WHERE exact)
+            ORDER BY name COLLATE "C", id COLLATE "C" LIMIT $3""", [current_org_id(), wanted, max(1, limit)], None)
+        return [dict(r) for r in rows]
+
+    async def get_graph_user_keys_by_mongo_user_ids_all_orgs(self, user_ids: list[str], *, chunk_size: int) -> dict[str, str]:
+        """Every active org in turn, each bound by ``for_org`` from this enumeration (the database filters on the bound org); the answers are joined."""
+        from app.core.org_context import for_org, peek, system
+
+        ctx = peek()
+        if ctx is None or ctx.kind != "system":
+            raise PermissionError("get_graph_user_keys_by_mongo_user_ids_all_orgs requires an explicit system context")
         if not user_ids:
             return {}
+        with system("graph_user_keys_all_orgs"):
+            org_docs = await self.get_all_orgs(active=True)
+        found: dict[str, str] = {}
+        for doc in org_docs:
+            org_id = str(doc.get("_key") or doc.get("id") or "")
+            todo = [u for u in user_ids if u not in found]
+            if not org_id or not todo:
+                continue
+            with for_org(org_id, job="graph_user_keys_all_orgs"):
+                found.update(await self.get_graph_user_keys_by_mongo_user_ids(todo, org_id, chunk_size=chunk_size, allow_missing=True))
+        return found
+
+    async def get_graph_user_keys_by_mongo_user_ids(self, user_ids: list[str], org_id: str | None = None, *, chunk_size: int, allow_missing: bool = False) -> dict[str, str]:
+        if not user_ids:
+            return {}
+        if not org_id:
+            # Fail closed: without an org the lookup would match a user of any organisation.
+            raise ValueError("org_id is required to look up graph users by Mongo user id")
         rows = await self._id_rows("/* pipeshub:graph.user_keys_by_user_ids */ SELECT doc->>'userId' AS uid, id FROM graph.nodes WHERE org_id = $1 AND coll = 'users' AND doc->>'userId' = ANY($2::text[])"
-                                " AND ($3::text IS NULL OR doc->>'orgId' = $3)", [current_org_id(), list(user_ids), org_id], None)
+                                " AND doc->>'orgId' = $3", [current_org_id(), list(user_ids), org_id], None)
         found = {r["uid"]: r["id"] for r in rows if r["uid"] and r["id"]}
         missing = [u for u in user_ids if u not in found]
-        if missing:
+        if missing and not allow_missing:
             raise ValueError(f"Users not found in graph: {missing}")
         return found
 
@@ -294,30 +447,64 @@ class IdentityMixin(PgBase):
         except (MissingOrgContext, SystemContextNotAllowed, OrgMismatch):
             raise
         except Exception as e:
-            self.logger.error("get_app_users failed: %s", e)
             if raise_on_error:
                 raise
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="get_app_users")
             return []
 
-    async def batch_upsert_app_users(self, users: list, transaction: str | None = None) -> None:
+    async def get_app_user_links(self, org_id: str, connector_id: str, transaction: str | None = None) -> list[dict]:
+        """Every user of the org linked to the app with a source user id, guests included; a failed read raises."""
+        if not self._mine(org_id):
+            return []
+        rows = await self._id_rows("""/* pipeshub:graph.get_app_user_links */ SELECT r.from_id AS id, r.doc->>'sourceUserId' AS sid
+            FROM graph.edges r JOIN graph.nodes u ON u.org_id = r.org_id AND u.coll = 'users' AND u.id = r.from_id
+            WHERE r.org_id = $1 AND r.coll = 'userAppRelation' AND r.from_coll = 'users' AND r.to_id = $2
+              AND r.doc->>'sourceUserId' IS NOT NULL""", [current_org_id(), connector_id], transaction)
+        return [{"id": r["id"], "sourceUserId": r["sid"]} for r in rows]
+
+    async def batch_upsert_app_users(self, users: list, transaction: str | None = None, *, org_id: str) -> None:
         if not users:
             return
+        if not self._named_org(org_id):     # the connector's org is the ambient one
+            raise OrgMismatch("the org argument differs from the ambient org")
         org = current_org_id()
+        connector_id = users[0].connector_id
+        now = get_epoch_timestamp_in_ms()
+        stub = _stub_app(connector_id, users[0].app_name)
+        # The whole batch is checked before the first statement, whether or not the caller's transaction is open: a user that already exists is not
+        # written, but one that is not is checked as a create (the org is the ambient one, which is the org node).
+        _VALIDATOR.validate_node(CollectionNames.APPS.value, stub)
+        for u in users:
+            _VALIDATOR.validate_node(CollectionNames.USERS.value, {**u.to_arango_base_user(), "id": u.id, "orgId": org, "isActive": False})
+            if not u.is_guest:
+                _VALIDATOR.validate_edge(CollectionNames.BELONGS_TO.value, {"createdAtTimestamp": u.created_at, "updatedAtTimestamp": u.updated_at, "entityType": "ORGANIZATION"})
+            _VALIDATOR.validate_edge(CollectionNames.USER_APP_RELATION.value, {"sourceUserId": u.source_user_id, "isExternalUser": False, "syncState": "NOT_STARTED",
+                                                                                "lastSyncUpdate": now, "createdAtTimestamp": now, "updatedAtTimestamp": now})
         orgs = await self.get_all_orgs(transaction=transaction)
         if not orgs:
             raise Exception("No organizations found in the database")
         org_node = orgs[0].get("id") or orgs[0].get("_key")
-        connector_id = users[0].connector_id
-        now = get_epoch_timestamp_in_ms()
         async with self._atomic(transaction) as tx:
             await self._q(lambda t: t.execute("""/* pipeshub:graph.ensure_minimal_app */ INSERT INTO graph.nodes (org_id, coll, id, doc)
-                VALUES ($1, 'apps', $2, $3::jsonb) ON CONFLICT DO NOTHING""", org, connector_id, _j({"id": connector_id, "name": connector_id, "isActive": True})), tx, write=True)
+                VALUES ($1, 'apps', $2, $3::jsonb) ON CONFLICT DO NOTHING""", org, connector_id, _j(stub)), tx, write=True)
             # the database lowers an address, as it lowers the stored ones: Python's lower() may disagree on non-ASCII letters
             low = {r["raw"]: r["low"] for r in await self._id_rows("/* pipeshub:graph.lower_emails */ SELECT e AS raw, lower(e) AS low FROM unnest($1::text[]) e",
                                                                    [list({u.email for u in users})], tx)}
-            have = {r["email"]: (r["id"], bool(r["active"])) for r in await self._id_rows(
-                """/* pipeshub:graph.users_by_email */ SELECT lower(doc->>'email') AS email, id, coalesce((doc->>'isActive')::boolean, false) AS active
-                   FROM graph.nodes WHERE org_id = $1 AND coll = 'users' AND lower(doc->>'email') = ANY($2::text[])""", [org, sorted(set(low.values()))], tx)}
+            have: dict[str, tuple[str, bool]] = {}
+            shared: dict[str, list[tuple[str, bool]]] = {}
+            for r in await self._users_by_email_rows(org, sorted(set(low.values())), tx):      # by id, either read: users sharing an address resolve to the first
+                have.setdefault(r["email"], (r["id"], bool(r["active"])))
+                shared.setdefault(r["email"], []).append((r["id"], bool(r["active"])))
+            # Users sharing an address: a source account already linked to one of them keeps that link, so a sync never links it to a second user
+            # (both would then hold what the source account may read). Only an account with no link takes the first by id.
+            linked: dict[tuple[str, str], tuple[str, bool]] = {}
+            if ids := [i for c in shared.values() if len(c) > 1 for i, _ in c]:
+                active = {i: a for c in shared.values() for i, a in c}
+                for r in await self._id_rows("""/* pipeshub:graph.app_links_of_shared_addresses */ SELECT from_id AS id, doc->>'sourceUserId' AS sid FROM graph.edges
+                        WHERE org_id = $1 AND coll = 'userAppRelation' AND from_coll = 'users' AND to_coll = 'apps' AND to_id = $2 AND from_id = ANY($3::text[])
+                        ORDER BY from_id""", [org, connector_id, ids], tx):
+                    if r["sid"]:
+                        linked.setdefault((r["sid"], r["id"]), (r["id"], active[r["id"]]))
             new: dict[str, Any] = {}
             for u in users:
                 if low[u.email] not in have and low[u.email] not in new:
@@ -337,18 +524,22 @@ class IdentityMixin(PgBase):
                     except NotImplementedInPostgres:
                         pass
                     except Exception as e:
-                        self.logger.error("Person adoption failed for %s: %s", u.email, e)
+                        error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False,
+                                                op="batch_upsert_app_users", step="person_adoption")
                 member_edges = [{"from_id": u.id, "from_collection": "users", "to_id": org_node, "to_collection": "organizations", "createdAtTimestamp": u.created_at,
                                  "updatedAtTimestamp": u.updated_at, "entityType": "ORGANIZATION"} for u in new.values() if not u.is_guest]
                 await self.batch_create_edges(member_edges, CollectionNames.BELONGS_TO.value, tx)
+            def pick(u: AppUser) -> tuple[str, bool]:      # the user a source account resolves to: its existing link, else the first by id
+                return next((linked[(u.source_user_id, i)] for i, _ in shared.get(low[u.email], []) if (u.source_user_id, i) in linked), have[low[u.email]])
+
             # a guest an earlier sync made an org member loses it, unless an admin invite made them active
-            heal = list({have[low[u.email]][0] for u in users if u.is_guest and low[u.email] not in new and not have[low[u.email]][1]})
+            heal = list({pick(u)[0] for u in users if u.is_guest and low[u.email] not in new and not pick(u)[1]})
             if heal:
                 await self._q(lambda t: t.execute("""/* pipeshub:graph.guest_org_edge_heal */ DELETE FROM graph.edges WHERE org_id = $1 AND coll = 'belongsTo'
                     AND from_coll = 'users' AND from_id = ANY($2::text[]) AND to_coll = 'organizations' AND to_id = $3""", org, heal, org_node), tx, write=True)
             links = {}
             for u in users:
-                key = have[low[u.email]][0]
+                key = pick(u)[0]
                 links[key] = {"from_id": key, "from_collection": "users", "to_id": connector_id, "to_collection": "apps", "sourceUserId": u.source_user_id,
                               "isExternalUser": False, "syncState": "NOT_STARTED", "lastSyncUpdate": now, "createdAtTimestamp": now, "updatedAtTimestamp": now}
             await self.batch_create_edges(list(links.values()), CollectionNames.USER_APP_RELATION.value, tx)
@@ -362,8 +553,7 @@ class IdentityMixin(PgBase):
     # ---- groups and roles ----------------------------------------------------------------------------------------
     @_soft(None, flag=True)
     async def get_user_group_by_external_id(self, connector_id: str, external_id: str, transaction: str | None = None, *, raise_on_error: bool = False) -> AppUserGroup | None:
-        rows = await self._id_rows("""/* pipeshub:graph.get_user_group_by_external_id */ SELECT doc FROM graph.nodes WHERE org_id = $1 AND coll = 'groups'
-            AND doc->>'externalGroupId' = $2 AND doc->>'connectorId' = $3 LIMIT 1""", [current_org_id(), external_id, connector_id], transaction)
+        rows = await self._by_external("groups", connector_id, external_id, transaction)
         return AppUserGroup.from_arango_base_user_group(_arango(_doc(rows[0]["doc"]), "groups")) if rows else None
 
     @_soft(list, flag=True)
@@ -396,8 +586,7 @@ class IdentityMixin(PgBase):
 
     @_soft(None, flag=True)
     async def get_app_role_by_external_id(self, connector_id: str, external_id: str, transaction: str | None = None, *, raise_on_error: bool = False) -> AppRole | None:
-        rows = await self._id_rows("""/* pipeshub:graph.get_app_role_by_external_id */ SELECT doc FROM graph.nodes WHERE org_id = $1 AND coll = 'roles'
-            AND doc->>'externalRoleId' = $2 AND doc->>'connectorId' = $3 LIMIT 1""", [current_org_id(), external_id, connector_id], transaction)
+        rows = await self._by_external("roles", connector_id, external_id, transaction)
         return AppRole.from_arango_base_role(_arango(_doc(rows[0]["doc"]), "roles")) if rows else None
 
     async def batch_upsert_user_groups(self, user_groups: list, transaction: str | None = None) -> None:
@@ -425,6 +614,7 @@ class IdentityMixin(PgBase):
         if source_user_id is not None:
             props["sourceUserId"] = source_user_id
         org = current_org_id()
+        _VALIDATOR.validate_edge(CollectionNames.USER_APP_RELATION.value, props)
         await self._q(lambda tx: tx.execute("""/* pipeshub:graph.ensure_app_membership */ INSERT INTO graph.edges (org_id, coll, from_coll, from_id, to_coll, to_id, ekey, doc)
             SELECT $1, 'userAppRelation', $2, p.id, 'apps', a.id, '', $5::jsonb FROM graph.nodes p, graph.nodes a
             WHERE p.org_id = $1 AND p.coll = $2 AND p.id = $3 AND a.org_id = $1 AND a.coll = 'apps' AND a.id = $4
@@ -436,12 +626,15 @@ class IdentityMixin(PgBase):
             return
         org, team, ts = current_org_id(), f"all_{org_id}", get_epoch_timestamp_in_ms()
         props = {"sourceUserId": team, "syncState": "NOT_STARTED", "lastSyncUpdate": ts, "createdAtTimestamp": ts, "updatedAtTimestamp": ts}
+        stub = _stub_app(connector_id)
+        _VALIDATOR.validate_edge(CollectionNames.USER_APP_RELATION.value, props)
+        _VALIDATOR.validate_node(CollectionNames.APPS.value, stub)
 
         async def go(tx: Any) -> None:  # noqa: ANN401
             if not await tx.fetchval("/* pipeshub:graph.team_exists */ SELECT 1 FROM graph.nodes WHERE org_id = $1 AND coll = 'teams' AND id = $2", org, team):
                 return
             await tx.execute("/* pipeshub:graph.ensure_bare_app */ INSERT INTO graph.nodes (org_id, coll, id, doc) VALUES ($1, 'apps', $2, $3::jsonb) ON CONFLICT DO NOTHING",
-                             org, connector_id, _j({"id": connector_id}))
+                             org, connector_id, _j(stub))
             await tx.execute("""/* pipeshub:graph.ensure_team_app_edge */ INSERT INTO graph.edges (org_id, coll, from_coll, from_id, to_coll, to_id, ekey, doc)
                 VALUES ($1, 'userAppRelation', 'teams', $2, 'apps', $3, '', $4::jsonb) ON CONFLICT (org_id, coll, from_coll, from_id, to_coll, to_id, ekey) DO NOTHING""", org, team, connector_id, _j(props))
         await self._q(go, transaction, write=True)
@@ -450,6 +643,8 @@ class IdentityMixin(PgBase):
         """One link per connector: a stale one (other ends) is dropped, the right one is created or touched."""
         self._require_org(org_id)
         org, ts = current_org_id(), get_epoch_timestamp_in_ms()
+        link = {"connectorId": connector_id, "orgId": org, "createdAtTimestamp": ts, "updatedAtTimestamp": ts}
+        _VALIDATOR.validate_edge(CollectionNames.AUTHENTICATED_AS.value, link)
 
         async def go(tx: Any) -> None:  # noqa: ANN401
             if await tx.fetchval("""/* pipeshub:graph.authenticated_as_ends */ SELECT count(*) FROM graph.nodes WHERE org_id = $1 AND coll = 'users' AND id IN ($2, $3)""",
@@ -461,7 +656,7 @@ class IdentityMixin(PgBase):
                 VALUES ($1, 'authenticatedAs', 'users', $2, 'users', $3, $6, $4::jsonb)
                 ON CONFLICT (org_id, coll, from_coll, from_id, to_coll, to_id, ekey) DO UPDATE SET doc = graph.edges.doc || jsonb_build_object('orgId', $1::text, 'updatedAtTimestamp', $5::bigint)""",
                              org, creator_key, source_user_key,
-                             _j({"connectorId": connector_id, "orgId": org, "createdAtTimestamp": ts, "updatedAtTimestamp": ts}), ts, connector_id)
+                             _j(link), ts, connector_id)
         await self._q(go, transaction, write=True)
 
     async def remove_authenticated_as(self, connector_id: str, transaction: str | None = None) -> bool:
@@ -474,7 +669,7 @@ class IdentityMixin(PgBase):
     async def get_user_apps(self, user_id: str, transaction: str | None = None) -> list:
         """The apps this user passes the connector gate for (the access check's gate, in the user's own org)."""
         org = current_org_id()
-        gated = (await self.get_knowledge_hub_access_v3(user_id, org, transaction=transaction))["gated_app_ids"]
+        gated = (await self.get_knowledge_hub_access_context_v2(user_id, org, transaction=transaction))["gated_app_ids"]      # the gate alone: no grant is read
         if not gated:
             return []
         rows = await self._id_rows("/* pipeshub:graph.get_user_apps */ SELECT doc FROM graph.nodes WHERE org_id = $1 AND coll = 'apps' AND id = ANY($2::text[])", [org, gated], transaction)
@@ -559,6 +754,7 @@ class IdentityMixin(PgBase):
         org = current_org_id()
         if not connector_keys:
             return 0
+        _VALIDATOR.validate_node_update(collection, {"isActive": is_active, "isAgentActive": is_agent_active})
         return await self._q(lambda tx: tx.fetchval("""/* pipeshub:graph.batch_update_connector_status */ WITH u AS (UPDATE graph.nodes SET doc = doc || jsonb_build_object('isActive', $4::boolean, 'isAgentActive', $5::boolean)
             WHERE org_id = $1 AND coll = $2 AND id = ANY($3::text[]) RETURNING 1) SELECT count(*) FROM u""", org, collection, list(connector_keys), is_active, is_agent_active),
                              transaction, write=True)
@@ -661,7 +857,6 @@ class IdentityMixin(PgBase):
         return await self._team_view(team_id, org_id, user_key, search, (page - 1) * limit, limit, transaction,
                                      include_service_accounts=include_service_accounts)
 
-    @_soft(list)
     async def delete_team_member_edges(self, team_id: str, user_ids: list[str], transaction: str | None = None) -> list[dict]:
         rows = await self._id_rows("""/* pipeshub:graph.delete_team_member_edges */ DELETE FROM graph.edges WHERE org_id = $1 AND coll = 'permission' AND from_coll = 'users'
             AND from_id = ANY($2::text[]) AND to_coll = 'teams' AND to_id = $3 RETURNING doc, from_id, to_id""", [current_org_id(), list(user_ids), team_id], transaction, write=True)
@@ -697,10 +892,12 @@ class IdentityMixin(PgBase):
                 "userRole": role, "status": d.get("status"), "folders": _js(rows[0]["folders"])}
 
     async def update_knowledge_base(self, kb_id: str, updates: dict, transaction: str | None = None) -> dict | None:
+        org = current_org_id()
         clean = {k: v for k, v in updates.items() if k not in ("id", "_key")}
+        _VALIDATOR.validate_node_update(CollectionNames.APPS.value, clean)
         rows = await self._id_rows("""/* pipeshub:graph.update_knowledge_base */ UPDATE graph.nodes SET doc = (SELECT coalesce(jsonb_object_agg(_nv.key, _nv.value), '{}'::jsonb) FROM jsonb_each(doc || $3::jsonb) AS _nv
                 WHERE _nv.value <> 'null'::jsonb)
-            WHERE org_id = $1 AND coll = 'apps' AND id = $2 AND doc->>'type' = $4 RETURNING doc""", [current_org_id(), kb_id, _j(clean), _KB], transaction, write=True)
+            WHERE org_id = $1 AND coll = 'apps' AND id = $2 AND doc->>'type' = $4 RETURNING doc""", [org, kb_id, _j(clean), _KB], transaction, write=True)
         return _arango(_doc(rows[0]["doc"]), "apps") if rows else None
 
     async def _get_kb_context_for_record(self, record_id: str, transaction: str | None = None) -> dict | None:
@@ -708,3 +905,426 @@ class IdentityMixin(PgBase):
             JOIN graph.nodes kb ON kb.org_id = b.org_id AND kb.coll = 'apps' AND kb.id = b.to_id AND kb.doc->>'type' = $3
             WHERE b.org_id = $1 AND b.coll = 'belongsTo' AND b.from_coll = 'records' AND b.from_id = $2 ORDER BY kb.id LIMIT 1""", [current_org_id(), record_id, _KB], transaction)
         return {"kb_id": rows[0]["id"], "kb_name": rows[0]["name"], "org_id": rows[0]["org"]} if rows else None
+
+
+    # ---- organizations, people, and the email of a login user ---------------------------------------------------------------------
+    @_soft(False)
+    async def organization_exists(self, organization_name: str, is_external: bool = False) -> bool:  # noqa: FBT001, FBT002
+        """Whether the ambient org holds an organization of this name (an external one when asked); another org's are out of reach."""
+        rows = await self._id_rows("""/* pipeshub:graph.organization_exists */ SELECT 1 FROM graph.nodes WHERE org_id = $1 AND coll = 'organizations' AND doc->>'name' = $2
+            AND coalesce((doc->>'isExternal')::boolean, false) = $3 LIMIT 1""", [current_org_id(), organization_name, is_external], None)
+        return bool(rows)
+
+    @_soft(None)
+    async def get_app_user_by_email(self, email: str, connector_id: str, transaction: str | None = None) -> AppUser | None:
+        rows = await self._id_rows("""/* pipeshub:graph.get_app_user_by_email */ SELECT u.doc, r.doc->>'sourceUserId' AS sid FROM graph.edges r
+            JOIN graph.nodes u ON u.org_id = r.org_id AND u.coll = 'users' AND u.id = r.from_id
+            WHERE r.org_id = $1 AND r.coll = 'userAppRelation' AND r.from_coll = 'users' AND r.to_coll = 'apps' AND r.to_id = $2 AND lower(u.doc->>'email') = lower($3)
+            ORDER BY u.id LIMIT 1""", [current_org_id(), connector_id, email], transaction)
+        return AppUser.from_arango_user({**_arango(_doc(rows[0]["doc"]), "users"), "sourceUserId": rows[0]["sid"]}) if rows else None
+
+    @_soft(None, flag=True)
+    async def get_person_by_email(self, email: str, org_id: str, transaction: str | None = None, *, raise_on_error: bool = False) -> Person | None:
+        """The person of this org with this email (stored lowercase). Persons are looked up by a document field: there is no index for it."""
+        if not self._mine(org_id):
+            return None
+        d = await self._one("/* pipeshub:graph.get_person_by_email */ SELECT doc FROM graph.nodes WHERE org_id = $1 AND coll = 'person' AND doc->>'email' = $2 ORDER BY id LIMIT 1",
+                            current_org_id(), email.lower(), transaction=transaction)
+        return Person.from_arango_person(_arango(d, "person")) if d else None
+
+    @_soft(None, flag=True)
+    async def upsert_person_by_email(self, person: Person, transaction: str | None = None, *, raise_on_error: bool = False) -> str | None:
+        """The id of the person of this org with this email, created when there is none; an existing one is never changed (it may hold names a
+        connector that knows only an email would blank). Two creators of one email are serialised by a lock on it. A person of another org is refused."""
+        org = current_org_id()
+        node = person.to_arango_person()
+        self._require_org(person.org_id)
+        async with self._atomic(transaction) as tid:
+            await self._id_rows("/* pipeshub:graph.upsert_person_lock */ SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [f"person:{org}:{node['email']}"], tid, write=True)
+            rows = await self._id_rows("/* pipeshub:graph.upsert_person_find */ SELECT id FROM graph.nodes WHERE org_id = $1 AND coll = 'person' AND doc->>'email' = $2 ORDER BY id LIMIT 1",
+                                       [org, node["email"]], tid)
+            if rows:
+                return rows[0]["id"]
+            return node["_key"] if await self.create_node_if_absent(node["_key"], "person", node, tid) else None
+
+    async def apply_verified_user_email(self, user_id: str, org_id: str, email: str) -> dict | None:
+        """Sets the login user's email and merges into them the connector stubs that hold it: their edges move over (the stronger permission role wins,
+        edges between the two and ones the login has are left as they are) and the stubs go, all in one transaction. A second real login with the
+        email is a conflict. None when the login user is not there."""
+        self._require_org(org_id)
+        org = current_org_id()
+        async with self._atomic(None) as tid:
+            # Two verifications of one address are serialised: the second reads what the first committed, and finds its login user there as a conflict.
+            await self._id_rows("/* pipeshub:graph.verified_email_lock */ SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [f"verified_email:{org}:{email.lower()}"], tid, write=True)
+            found = await self._id_rows("/* pipeshub:graph.verified_email_login */ SELECT doc FROM graph.nodes WHERE org_id = $1 AND coll = 'users' AND doc->>'userId' = $2 LIMIT 1",
+                                        [org, user_id], tid)
+            keep_key = graph_user_key(_arango(_doc(found[0]["doc"]), "users")) if found else None
+            if not keep_key:
+                return None
+            peers = [_arango(_doc(r["doc"]), "users") for r in await self._verified_email_peers(org, email, tid)]
+            stubs: list[str] = []
+            for peer in peers:
+                kind = classify_email_peer(user_id, keep_key, peer)
+                if kind == "login":
+                    raise GraphUserEmailConflictError("Email already belongs to another login user in the graph", conflicting_user_id=str(peer.get("userId") or ""))
+                if kind == "stub" and (key := graph_user_key(peer)):
+                    stubs.append(key)
+            connector_ids = await connector_ids_of_users(self, stubs)
+            for stub in stubs:
+                await self._absorb_user_stub(keep_key, stub, tid)
+            await self.batch_upsert_nodes([{"id": keep_key, "userId": user_id, "orgId": org, "email": email, "updatedAtTimestamp": get_epoch_timestamp_in_ms()}], "users", tid)
+        return {"email": email, "mergedStubKeys": stubs, "connectorIds": connector_ids}
+
+    async def _absorb_user_stub(self, keep_key: str, stub_key: str, tid: str) -> None:
+        """Moves the stub's edges to the login user, then removes the stub. Edges between the two are dropped with the stub; an edge the login already has (same other end and
+        key) stays, except that a stronger permission role replaces it."""
+        def rank(e: dict) -> int:
+            return PERMISSION_ROLE_RANK.get(str(e.get("role") or "").upper(), 0)
+
+        for coll in STUB_EDGE_COLLECTIONS:
+            moved: list[dict] = []
+            for incoming in (False, True):
+                read = self.get_edges_to_node if incoming else self.get_edges_from_node
+
+                held = {_far(coll, incoming, e): e for e in await read(f"users/{keep_key}", coll, tid, raise_on_error=True)}
+                for e in await read(f"users/{stub_key}", coll, tid, raise_on_error=True):
+                    k = _far(coll, incoming, e)
+                    have = held.get(k)
+                    if k[1] in (stub_key, keep_key) or (have is not None and not (coll == "permission" and rank(e) > rank(have))):
+                        continue
+                    props = {k2: v for k2, v in {**(have or {}), **e}.items() if k2 not in ("_from", "_to", "_key", "from_id", "to_id", "from_collection", "to_collection")}
+                    ends = {"from_collection": k[0], "from_id": k[1], "to_collection": "users", "to_id": keep_key} if incoming else {
+                        "from_collection": "users", "from_id": keep_key, "to_collection": k[0], "to_id": k[1]}
+                    moved.append({**props, **ends})
+            if moved:
+                await self.batch_create_edges(moved, coll, tid)
+        await self.delete_nodes([stub_key], "users", tid)
+
+
+    # ---- the "All" team, which holds every member of the org ----------------------------------------------------------------------
+    async def _all_team(self, org_id: str, tid: str) -> str:
+        """The id of the org's "All" team, created when it is not there. Callers hold the team's lock, so two of them never both see it empty."""
+        team_id, now = f"all_{org_id}", get_epoch_timestamp_in_ms()
+        await self._id_rows("/* pipeshub:graph.all_team_lock */ SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [f"all_team:{current_org_id()}:{team_id}"], tid, write=True)
+        await self.create_node_if_absent(team_id, "teams", {"id": team_id, "name": "All", "description": "All organization members", "createdBy": "system", "orgId": org_id,
+                                                           "createdAtTimestamp": now, "updatedAtTimestamp": now}, tid)
+        return team_id
+
+    async def _join_all_team(self, team_id: str, user_keys: list[str], *, owner_if_empty: bool, tid: str) -> None:
+        """Gives each user without an edge to the team a READER one; when the team has no member the first gets OWNER and becomes its creator. The team is locked."""
+        now = get_epoch_timestamp_in_ms()
+        held = {r["from_id"] for r in await self._id_rows("""/* pipeshub:graph.all_team_members */ SELECT p.from_id FROM graph.edges p WHERE p.org_id = $1 AND p.coll = 'permission'
+            AND p.to_coll = 'teams' AND p.to_id = $2""", [current_org_id(), team_id], tid)}
+        edges = []
+        for key in user_keys:
+            if key in held:
+                continue
+            role = "OWNER" if owner_if_empty and not held else "READER"
+            held.add(key)
+            if role == "OWNER":
+                await self.update_node(team_id, "teams", {"createdBy": key, "updatedAtTimestamp": now}, tid)
+            edges.append({"from_id": key, "from_collection": "users", "to_id": team_id, "to_collection": "teams", "type": "USER", "role": role,
+                          "createdAtTimestamp": now, "updatedAtTimestamp": now})
+        if edges:
+            await self.batch_create_edges(edges, "permission", tid)
+
+    async def add_user_to_all_team(self, org_id: str, user_key: str) -> None:
+        """Adds the user to the org's "All" team (made when missing): OWNER if nobody is in it, else READER. Idempotent. A user who is not in the graph is not added."""
+        self._require_org(org_id)
+        async with self._atomic(None) as tid:
+            team_id = await self._all_team(org_id, tid)
+            # a read that raises, not check_collection_has_document: a lookup that failed is not "the user is not in the graph"
+            if await self._id_rows("/* pipeshub:graph.all_team_user_exists */ SELECT 1 FROM graph.nodes WHERE org_id = $1 AND coll = 'users' AND id = $2", [current_org_id(), user_key], tid):
+                await self._join_all_team(team_id, [user_key], owner_if_empty=True, tid=tid)
+
+    async def ensure_all_team_with_users(self, org_id: str) -> None:
+        """Makes sure every active user of the org is in its "All" team: the oldest becomes OWNER if the team was empty, the rest READER. Idempotent."""
+        self._require_org(org_id)
+        async with self._atomic(None) as tid:
+            team_id = await self._all_team(org_id, tid)
+            # the raising read, not get_users: a failed read must not fill the team with nobody and report success
+            users = sorted(await self._org_users(tid, active=True), key=lambda u: u.get("createdAtTimestamp", 0))
+            await self._join_all_team(team_id, [k for u in users if (k := u.get("id"))], owner_if_empty=True, tid=tid)
+
+    # ---- what an agent still uses, and counts of connector instances ----------------------------------------------------------------
+    async def count_active_apps_by_type(self) -> dict[str, int]:
+        """Active connector instances per type (``unknown`` without one): the ambient org's, or every org's under a system context, one count per org."""
+        counts: Counter[str] = Counter()
+        errors: list[tuple[str, Exception]] = []
+        for org_id in await self._sweep_orgs():
+            with self._sweep(org_id, errors):
+                rows = await self._q(lambda tx, org=current_org_id(): tx.fetch("""/* pipeshub:graph.count_active_apps_by_type */
+                    SELECT coalesce(nullif(doc->>'type', ''), 'unknown') AS type, count(*) AS n FROM graph.nodes
+                    WHERE org_id = $1 AND coll = 'apps' AND coalesce((doc->>'isActive')::boolean, false) GROUP BY 1""", org), None)
+                counts.update({r["type"]: r["n"] for r in rows})
+        self._raise_failed(errors)
+        return dict(counts)
+
+    async def check_api_toolset_in_use(self, instance_id: str, transaction: str | None = None) -> list[str]:
+        """Names of the live agents with an operation of this API toolset attached (an entry of ``apiToolsetTools`` starting ``<instance>:``)."""
+        rows = await self._id_rows("""/* pipeshub:graph.check_api_toolset_in_use */ SELECT DISTINCT a.id AS "agentId", a.doc->>'name' AS "agentName" FROM graph.nodes a
+            WHERE a.org_id = $1 AND a.coll = 'agentInstances' AND coalesce((a.doc->>'isDeleted')::boolean, false) = false AND jsonb_typeof(a.doc->'apiToolsetTools') = 'array'
+              AND EXISTS (SELECT 1 FROM jsonb_array_elements_text(a.doc->'apiToolsetTools') t WHERE left(t, length($2)) = $2)""", [current_org_id(), f"{instance_id}:"], transaction)
+        return dedupe_agents_by_id([dict(r) for r in rows])
+
+    async def check_mcp_instance_in_use(self, instance_id: str, transaction: str | None = None) -> list[str]:
+        """Names of the live agents with this MCP server instance attached."""
+        rows = await self._id_rows("""/* pipeshub:graph.check_mcp_instance_in_use */ SELECT DISTINCT a.id AS "agentId", a.doc->>'name' AS "agentName" FROM graph.nodes s
+            JOIN graph.edges e ON e.org_id = s.org_id AND e.coll = 'agentHasMcpServer' AND e.to_coll = 'agentMcpServers' AND e.to_id = s.id
+            JOIN graph.nodes a ON a.org_id = e.org_id AND a.coll = 'agentInstances' AND a.id = e.from_id AND coalesce((a.doc->>'isDeleted')::boolean, false) = false
+            WHERE s.org_id = $1 AND s.coll = 'agentMcpServers' AND s.doc->>'instanceId' = $2""", [current_org_id(), instance_id], transaction)
+        return dedupe_agents_by_id([dict(r) for r in rows])
+
+    async def check_toolset_instance_in_use(self, instance_id: str, transaction: str | None = None) -> list[str]:
+        """Names of the live agents using a toolset of this instance; two agents with one name count apart."""
+        rows = await self._id_rows("""/* pipeshub:graph.check_toolset_instance_in_use */ SELECT DISTINCT a.id AS "agentId", a.doc->>'name' AS "agentName" FROM graph.nodes s
+            JOIN graph.edges e ON e.org_id = s.org_id AND e.coll = 'agentHasToolset' AND e.to_coll = 'agentToolsets' AND e.to_id = s.id
+            JOIN graph.nodes a ON a.org_id = e.org_id AND a.coll = 'agentInstances' AND a.id = e.from_id AND coalesce((a.doc->>'isDeleted')::boolean, false) = false
+            WHERE s.org_id = $1 AND s.coll = 'agentToolsets' AND s.doc->>'instanceId' = $2""", [current_org_id(), instance_id], transaction)
+        return dedupe_agents_by_id([dict(r) for r in rows])
+
+    async def check_connector_name_uniqueness(self, instance_name: str, scope: str, org_id: str, user_id: str, collection: str, edge_collection: str | None = None,
+                                              transaction: str | None = None) -> bool:
+        """Whether no other instance of the scope holds this name (without case or surrounding space): the user's own for a personal one, the org's for a team one.
+        A check that cannot be made lets the name through, as on the other stores."""
+        # edge_collection is ignored: orgAppRelation is the only relation an org holds its instances by
+        try:
+            return not await self.check_connector_name_exists(collection, instance_name, scope, org_id, user_id, transaction)
+        except (MissingOrgContext, SystemContextNotAllowed, OrgMismatch):
+            raise
+        except Exception as e:
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="check_connector_name_uniqueness")
+            return True
+
+    @_soft(0)
+    async def count_connector_instances_by_scope(self, collection: str, scope: str, user_id: str | None = None, *, is_admin: bool = False, transaction: str | None = None) -> int:
+        """How many configured instances of the scope there are (a personal scope narrowed to the user's own when one is given)."""
+        rows = await self._id_rows("""/* pipeshub:graph.count_connector_instances_by_scope */ SELECT count(*) AS n FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = $2
+            AND n.doc->>'scope' = $3 AND n.doc->>'isConfigured' = 'true' AND ($3 <> 'personal' OR $4::text IS NULL OR n.doc->>'createdBy' = $4)""",
+                                  [current_org_id(), collection, scope, user_id or None], transaction)
+        return rows[0]["n"]
+
+
+    # ---- agents: the document with what hangs off it, and the agents that use a model or a web search provider ---------------------------------------
+    async def _agent_targets(self, agent_ids: list[str], edge: str, node_coll: str, transaction: str | None) -> dict[str, list[dict]]:
+        """The documents ``agent_ids`` point at over ``edge``, per agent, by id: edges by their source, nodes by key."""
+        if not agent_ids:
+            return {}
+        org = current_org_id()
+        rows = await self._id_rows("""/* pipeshub:graph.agent_targets */ SELECT e.from_id AS agent, t.doc FROM graph.edges e
+            JOIN graph.nodes t ON t.org_id = e.org_id AND t.coll = e.to_coll AND t.id = e.to_id
+            WHERE e.org_id = $1 AND e.coll = $2 AND e.from_coll = 'agentInstances' AND e.from_id = ANY($3::text[]) AND e.to_coll = $4 ORDER BY t.id""",
+                                   [org, edge, agent_ids, node_coll], transaction)
+        out: dict[str, list[dict]] = {}
+        for r in rows:
+            out.setdefault(r["agent"], []).append(_doc(r["doc"]))
+        return out
+
+    async def _tools_of(self, owners: list[dict], edge: str, fields: tuple[str, ...], transaction: str | None) -> dict[str, list[dict]]:
+        """The tools of each toolset or MCP server document in ``owners``, as ``{_key, <fields>}``."""
+        if not owners:
+            return {}
+        rows = await self._id_rows("""/* pipeshub:graph.agent_tools */ SELECT e.from_id AS owner, t.doc FROM graph.edges e
+            JOIN graph.nodes t ON t.org_id = e.org_id AND t.coll = 'agentTools' AND t.id = e.to_id
+            WHERE e.org_id = $1 AND e.coll = $2 AND e.from_id = ANY($3::text[]) AND e.to_coll = 'agentTools' ORDER BY t.id""",
+                                   [current_org_id(), edge, [o["id"] for o in owners]], transaction)
+        out: dict[str, list[dict]] = {}
+        for r in rows:
+            d = _doc(r["doc"])
+            out.setdefault(r["owner"], []).append({"_key": d["id"], **{f: d.get(f) for f in fields}})
+        return out
+
+    async def _project_agents_toolsets_and_knowledge(self, agent_ids: list[str], transaction: str | None = None) -> dict[str, dict[str, list[dict]]]:
+        """For each agent its toolsets with their tools and its knowledge (a connector, with its filters read and the app's name); every id asked is present."""
+        out: dict[str, dict[str, list[dict]]] = {i: {"toolsets": [], "knowledge": []} for i in agent_ids}
+        sets = await self._agent_targets(agent_ids, "agentHasToolset", "agentToolsets", transaction)
+        tools = await self._tools_of([t for ts in sets.values() for t in ts], "toolsetHasTool", ("name", "fullName", "toolsetName", "description"), transaction)
+        for aid, docs in sets.items():
+            out[aid]["toolsets"] = [{"_key": t["id"], **{f: t.get(f) for f in ("name", "displayName", "type", "instanceId", "instanceName", "selectedTools")}, "tools": tools.get(t["id"], [])}
+                                    for t in docs]
+        know = await self._agent_targets(agent_ids, "agentHasKnowledge", "agentKnowledge", transaction)
+        ids = sorted({k.get("connectorId") for ks in know.values() for k in ks if k.get("connectorId")})
+        apps = {r["id"]: _doc(r["doc"]) for r in await self._id_rows(
+            "/* pipeshub:graph.agent_knowledge_apps */ SELECT id, doc FROM graph.nodes WHERE org_id = $1 AND coll = 'apps' AND id = ANY($2::text[])", [current_org_id(), ids], transaction)} if ids else {}
+        for aid, ks in know.items():
+            for k in ks:
+                raw, cid = k.get("filters"), k.get("connectorId")
+                parsed = {} if raw is None else raw      # a value that is neither null nor a string passes through, as on Neo4j
+                if isinstance(raw, str):
+                    try:
+                        parsed = json.loads(raw)
+                    except ValueError:
+                        parsed = {}
+                app = apps.get(cid)
+                out[aid]["knowledge"].append({"_key": k["id"], "connectorId": cid, "filters": raw, "filtersParsed": parsed, "name": app.get("name", "") if app else cid,
+                                              "type": app.get("type", "APP") if app else "UNKNOWN", "displayName": app.get("name", "") if app else cid})
+        return out
+
+    async def _project_agents_mcp_servers(self, agent_ids: list[str], transaction: str | None = None) -> dict[str, list[dict]]:
+        out: dict[str, list[dict]] = {i: [] for i in agent_ids}
+        servers = await self._agent_targets(agent_ids, "agentHasMcpServer", "agentMcpServers", transaction)
+        tools = await self._tools_of([s for ss in servers.values() for s in ss], "mcpServerHasTool", ("name", "fullName", "description"), transaction)
+        for aid, docs in servers.items():
+            out[aid] = [{"_key": s["id"], **{f: s.get(f) for f in ("name", "displayName", "typeId", "instanceId")}, "allTools": s.get("allTools") or False, "tools": tools.get(s["id"], [])}
+                        for s in docs]
+        return out
+
+    async def _project_agent_skills(self, agent_id: str, transaction: str | None = None) -> list[dict]:
+        fields = ("name", "description", "category", "subcategory", "version", "status", "deprecatedReason", "replacedBy")
+        return [{f: d.get(f) for f in fields} for d in (await self._agent_targets([agent_id], "agentHasSkill", "agentSkills", transaction)).get(agent_id, [])]
+
+    async def get_agent(self, agent_id: str, org_id: str | None = None, transaction: str | None = None) -> dict | None:
+        """The live agent with its toolsets, knowledge, skills, MCP servers and ``shareWithOrg``; None when it is not there. No permission is checked: callers
+        call ``check_agent_permission`` first. An MCP read that fails leaves the list empty and marks ``mcpServersUnavailable``, so a save cannot detach every server."""
+        org = current_org_id()
+        if not self._mine(org_id):
+            return None
+        try:
+            rows = await self._id_rows("""/* pipeshub:graph.get_agent */ SELECT doc, EXISTS (SELECT 1 FROM graph.edges o WHERE o.org_id = $1 AND o.coll = 'permission' AND o.from_coll = 'organizations'
+                  AND ($3::text IS NULL OR o.from_id = $3) AND o.to_coll = 'agentInstances' AND o.to_id = a.id) AS shared FROM graph.nodes a WHERE a.org_id = $1 AND a.coll = 'agentInstances'
+                AND a.id = $2 AND coalesce((a.doc->>'isDeleted')::boolean, false) = false""", [org, agent_id, org_id or None], transaction)
+            if not rows:
+                return None
+            agent = _arango(_doc(rows[0]["doc"]), "agentInstances")
+            proj = (await self._project_agents_toolsets_and_knowledge([agent_id], transaction))[agent_id]
+            agent["toolsets"], agent["knowledge"] = proj["toolsets"], proj["knowledge"]
+            agent["skills"] = await self._project_agent_skills(agent_id, transaction)
+            try:
+                mcp = await self._project_agents_mcp_servers([agent_id], transaction)
+            except (MissingOrgContext, SystemContextNotAllowed, OrgMismatch):
+                raise
+            except Exception as e:
+                error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False,
+                                        op="get_agent", step="mcp_server_enrichment", agent_id=agent_id)
+                mcp, agent["mcpServersUnavailable"] = {}, True
+            agent["mcpServers"] = mcp.get(agent_id, [])
+            agent["shareWithOrg"] = bool(rows[0]["shared"])
+            return decode_agent_json_fields(agent)
+        except (MissingOrgContext, SystemContextNotAllowed, OrgMismatch):
+            raise
+        except Exception as e:
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="get_agent")
+            return None
+
+    async def get_agents_by_model_key(self, org_id: str, model_key: str) -> list[dict]:
+        """The live agents of the org that use the model (its key, or a key that starts ``<key>_``): those a user of the org owns and those shared with the org.
+        A failed read raises: a delete is refused on this answer. Another org than the ambient one reads nothing; that is a caller bug, not a failed read."""
+        if not self._mine(org_id):
+            return []
+        rows = await self._id_rows("""/* pipeshub:graph.get_agents_by_model_key */ WITH x AS (
+              SELECT p.to_id AS agent FROM graph.edges b JOIN graph.nodes u ON u.org_id = b.org_id AND u.coll = 'users' AND u.id = b.from_id
+                JOIN graph.edges p ON p.org_id = b.org_id AND p.coll = 'permission' AND p.from_coll = 'users' AND p.from_id = u.id AND p.to_coll = 'agentInstances'
+                  AND p.doc->>'type' = 'USER' AND p.doc->>'role' = 'OWNER'
+              WHERE b.org_id = $1 AND b.coll = 'belongsTo' AND b.from_coll = 'users' AND b.to_coll = 'organizations' AND b.to_id = $2
+              UNION SELECT p.to_id FROM graph.edges p WHERE p.org_id = $1 AND p.coll = 'permission' AND p.from_coll = 'organizations' AND p.from_id = $2
+                AND p.to_coll = 'agentInstances' AND p.doc->>'type' = 'ORG')
+            SELECT a.doc->>'name' AS name, a.id AS "_key", coalesce(c.doc->>'fullName', c.doc->>'name') AS "creatorName" FROM x
+            CROSS JOIN LATERAL (SELECT y.id, y.doc, y.doc->>'createdBy' AS created_by FROM graph.nodes y
+              WHERE y.org_id = $1 AND y.coll = 'agentInstances' AND y.id = x.agent AND coalesce((y.doc->>'isDeleted')::boolean, false) = false
+              AND jsonb_typeof(y.doc->'models') = 'array' AND EXISTS (SELECT 1 FROM jsonb_array_elements(y.doc->'models') e, LATERAL (SELECT e #>> '{}' AS m) q
+                WHERE jsonb_typeof(e) = 'string' AND (q.m = $3 OR left(q.m, length($3) + 1) = $3 || '_')) LIMIT 1) a
+            LEFT JOIN graph.nodes c ON c.org_id = $1 AND c.coll = 'users' AND c.id = a.created_by ORDER BY a.id""", [current_org_id(), org_id, model_key], None)
+        return [dict(r) for r in rows]
+
+    async def get_agents_by_web_search_provider(self, org_id: str, provider: str) -> list[dict]:
+        """The live agents of the org that use the web search provider: those a user of the org owns and those shared with the org.
+        A failed read raises: a delete is refused on this answer. Another org than the ambient one reads nothing; that is a caller bug, not a failed read."""
+        if not self._mine(org_id):
+            return []
+        rows = await self._id_rows("""/* pipeshub:graph.get_agents_by_web_search_provider */ WITH x AS (
+              SELECT p.to_id AS agent FROM graph.edges b JOIN graph.nodes u ON u.org_id = b.org_id AND u.coll = 'users' AND u.id = b.from_id
+                JOIN graph.edges p ON p.org_id = b.org_id AND p.coll = 'permission' AND p.from_coll = 'users' AND p.from_id = u.id AND p.to_coll = 'agentInstances'
+                  AND p.doc->>'type' = 'USER' AND p.doc->>'role' = 'OWNER'
+              WHERE b.org_id = $1 AND b.coll = 'belongsTo' AND b.from_coll = 'users' AND b.to_coll = 'organizations' AND b.to_id = $2
+              UNION SELECT p.to_id FROM graph.edges p WHERE p.org_id = $1 AND p.coll = 'permission' AND p.from_coll = 'organizations' AND p.from_id = $2
+                AND p.to_coll = 'agentInstances' AND p.doc->>'type' = 'ORG')
+            SELECT a.doc->>'name' AS name, a.id AS "_key", coalesce(c.doc->>'fullName', c.doc->>'name') AS "creatorName" FROM x
+            CROSS JOIN LATERAL (SELECT y.id, y.doc, y.doc->>'createdBy' AS created_by FROM graph.nodes y
+              WHERE y.org_id = $1 AND y.coll = 'agentInstances' AND y.id = x.agent AND coalesce((y.doc->>'isDeleted')::boolean, false) = false
+              AND y.doc->>'webSearch' = $3 LIMIT 1) a
+            LEFT JOIN graph.nodes c ON c.org_id = $1 AND c.coll = 'users' AND c.id = a.created_by ORDER BY a.id""", [current_org_id(), org_id, provider], None)
+        return [dict(r) for r in rows]
+
+    @_soft(list)
+    async def get_all_agents(self, user_id: str, org_id: str, page: int | None = None, limit: int | None = None, search: str | None = None,
+                             sort_by: str | None = None, sort_order: str | None = None, is_deleted: bool = False,  # noqa: FBT001, FBT002
+                             transaction: str | None = None) -> list[dict] | dict[str, Any]:
+        """The agents the user holds a grant on, or that the org shares, with the user's access (their own grant first) and ``shareWithOrg``; only deleted ones
+        with ``is_deleted``. ``search`` matches name, description or a tag, without case. Sorted on ``sort_by`` (newest first by default); with ``page`` and
+        ``limit`` that page as ``{agents, totalItems}``, else a list. Only the agents returned carry their toolsets, knowledge and MCP servers."""
+        if not self._mine(org_id):
+            return []
+        q = search.strip().lower() if search and search.strip() else None
+        # shortcut: reads every agent the user reaches to sort and count them here, as Neo4j does; move the order and the window into SQL if a user reaches thousands
+        rows = await self._id_rows("""/* pipeshub:graph.get_all_agents */ SELECT DISTINCT ON (a.id) a.doc, p.doc->>'role' AS role, p.doc->>'type' AS kind,
+              EXISTS (SELECT 1 FROM graph.edges o WHERE o.org_id = $1 AND o.coll = 'permission' AND o.from_coll = 'organizations' AND o.from_id = $3
+                AND o.to_coll = 'agentInstances' AND o.to_id = a.id AND o.doc->>'type' = 'ORG') AS shared
+            FROM graph.nodes a
+            JOIN graph.edges p ON p.org_id = $1 AND p.coll = 'permission' AND p.to_coll = 'agentInstances' AND p.to_id = a.id
+              AND ((p.from_coll = 'users' AND p.from_id = $2 AND p.doc->>'type' = 'USER') OR (p.from_coll = 'organizations' AND p.from_id = $3 AND p.doc->>'type' = 'ORG'))
+            JOIN graph.nodes g ON g.org_id = $1 AND g.coll = p.from_coll AND g.id = p.from_id
+            WHERE a.org_id = $1 AND a.coll = 'agentInstances' AND coalesce(a.doc->>'isDeleted' = 'true', false) = $4
+              AND ($5::text IS NULL OR strpos(lower(a.doc->>'name'), $5) > 0 OR strpos(lower(a.doc->>'description'), $5) > 0
+                OR (jsonb_typeof(a.doc->'tags') = 'array' AND EXISTS (SELECT 1 FROM jsonb_array_elements(a.doc->'tags') t WHERE strpos(lower(t #>> '{}'), $5) > 0)))
+            ORDER BY a.id, (p.doc->>'type' = 'USER') DESC""", [current_org_id(), user_id, org_id or None, bool(is_deleted), q], transaction)
+        agents = []
+        for r in rows:
+            role = r["role"]
+            agents.append({**_arango(_doc(r["doc"]), "agentInstances"), "access_type": "INDIVIDUAL" if r["kind"] == "USER" else "ORG", "user_role": role,
+                           **{k: role in v for k, v in _AGENT_CAN.items()}, "can_view": True, "shareWithOrg": bool(r["shared"])})
+        field = sort_by or "updatedAtTimestamp"
+
+        def sort_key(d: dict) -> tuple:
+            v = d.get(field)
+            if v is None and field != "updatedAtTimestamp":
+                v = d.get("updatedAtTimestamp")
+            return (d.get("createdAtTimestamp") if v is None else v,)
+        with contextlib.suppress(TypeError):      # values that do not compare leave the id order, as Neo4j leaves its own
+            agents.sort(key=sort_key, reverse=(sort_order or "desc").lower() != "asc")
+        paged = page is not None and limit is not None
+        window = agents[max((page - 1) * limit, 0):][:limit] if paged else agents
+        ids = [a["_key"] for a in window]
+        try:
+            proj = await self._project_agents_toolsets_and_knowledge(ids, transaction)
+        except (MissingOrgContext, SystemContextNotAllowed, OrgMismatch):
+            raise
+        except Exception as e:
+            error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False,
+                                    op="get_all_agents", step="agent_enrichment")
+            proj = {}
+        try:
+            mcp, mcp_failed = await self._project_agents_mcp_servers(ids, transaction), False
+        except (MissingOrgContext, SystemContextNotAllowed, OrgMismatch):
+            raise
+        except Exception as e:
+            error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False,
+                                    op="get_all_agents", step="mcp_server_enrichment")
+            mcp, mcp_failed = {}, True
+        for a in window:
+            got = proj.get(a["_key"], {"toolsets": [], "knowledge": []})
+            a.update(toolsets=got["toolsets"], knowledge=got["knowledge"], mcpServers=mcp.get(a["_key"], []))
+            if mcp_failed:
+                a["mcpServersUnavailable"] = True      # the empty list is not the agent's: a builder that saved it would detach every server
+        return {"agents": window, "totalItems": len(agents)} if paged else window
+
+    @_soft(False)
+    async def update_agent(self, agent_id: str, agent_updates: dict[str, Any], user_id: str, org_id: str, transaction: str | None = None) -> bool | None:
+        """Write the allowed fields of the update (``models`` as de-duplicated keys) when the user may edit the live agent; False when not."""
+        perm = await self.check_agent_permission(agent_id, user_id, org_id, transaction)
+        if not perm or not perm["can_edit"]:
+            self.logger.warning("User %s may not edit agent %s", user_id, agent_id)
+            return False
+        # One builder for every backend: the harness settings are kept, as JSON text where the other backends store them so.
+        data = agent_update_document(agent_updates, user_id, get_epoch_timestamp_in_ms())
+        return await self.update_node(agent_id, "agentInstances", data, transaction=transaction)
+
+    @_soft(False)
+    async def delete_agent(self, agent_id: str, user_id: str, org_id: str, transaction: str | None = None) -> bool | None:
+        """Mark the live agent deleted when the user owns it (its edges stay); False when not."""
+        perm = await self.check_agent_permission(agent_id, user_id, org_id, transaction)
+        if not perm or not perm["can_delete"]:
+            self.logger.warning("User %s may not delete agent %s", user_id, agent_id)
+            return False
+        return await self.update_node(agent_id, "agentInstances", {"isDeleted": True, "deletedAtTimestamp": get_epoch_timestamp_in_ms(), "deletedByUserId": user_id},
+                                      transaction=transaction)

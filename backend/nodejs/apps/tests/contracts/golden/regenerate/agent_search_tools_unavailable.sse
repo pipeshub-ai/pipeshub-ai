@@ -1,0 +1,72 @@
+event: CUSTOM
+data: {"type":"CUSTOM","name":"conversation_created","value":{"message":"SSE connection established"}}
+
+event: RUN_STARTED
+data: {"type": "RUN_STARTED", "threadId": "conv-golden", "runId": "uuid-1"}
+
+event: STATE_SNAPSHOT
+data: {"type": "STATE_SNAPSHOT", "runId": "uuid-1", "snapshot": {"run_id": "uuid-1", "agent_id": "uuid-2", "trace_id": "uuid-3", "parent_run_id": null, "role_name": "pipeshub-agent", "status": "starting", "current_turn": 0, "current_tool": null, "current_child_run_id": null, "hil_request_id": null, "goal_description": "Close the Acme deal", "started_at": "<timestamp>", "updated_at": "<timestamp>"}}
+
+event: STATE_SNAPSHOT
+data: {"type": "STATE_SNAPSHOT", "runId": "uuid-1", "snapshot": {"run_id": "uuid-1", "agent_id": "uuid-2", "trace_id": "uuid-3", "parent_run_id": null, "role_name": "pipeshub-agent", "status": "calling_llm", "current_turn": 0, "current_tool": null, "current_child_run_id": null, "hil_request_id": null, "goal_description": "Close the Acme deal", "started_at": "<timestamp>", "updated_at": "<timestamp>"}}
+
+event: TEXT_MESSAGE_START
+data: {"type": "TEXT_MESSAGE_START", "messageId": "msg-4", "role": "assistant", "runId": "uuid-1"}
+
+event: STATE_SNAPSHOT
+data: {"type": "STATE_SNAPSHOT", "runId": "uuid-1", "snapshot": {"run_id": "uuid-1", "agent_id": "uuid-2", "trace_id": "uuid-3", "parent_run_id": null, "role_name": "pipeshub-agent", "status": "calling_llm", "current_turn": 0, "current_tool": null, "current_child_run_id": null, "hil_request_id": null, "goal_description": "Close the Acme deal", "started_at": "<timestamp>", "updated_at": "<timestamp>"}}
+
+event: TEXT_MESSAGE_END
+data: {"type": "TEXT_MESSAGE_END", "messageId": "msg-4", "runId": "uuid-1"}
+
+event: TOOL_CALL_START
+data: {"type": "TOOL_CALL_START", "toolCallId": "call-find", "toolCallName": "search_tools", "runId": "uuid-1"}
+
+event: TOOL_CALL_ARGS
+data: {"type": "TOOL_CALL_ARGS", "toolCallId": "call-find", "delta": "{\"query\": \"close deal\"}", "runId": "uuid-1", "argsSummary": "Searching for tools matching \"close deal\"", "argsPreview": "{\"query\": \"close deal\"}"}
+
+event: STATE_SNAPSHOT
+data: {"type": "STATE_SNAPSHOT", "runId": "uuid-1", "snapshot": {"run_id": "uuid-1", "agent_id": "uuid-2", "trace_id": "uuid-3", "parent_run_id": null, "role_name": "pipeshub-agent", "status": "running_tool", "current_turn": 0, "current_tool": "search_tools", "current_child_run_id": null, "hil_request_id": null, "goal_description": "Close the Acme deal", "started_at": "<timestamp>", "updated_at": "<timestamp>"}}
+
+event: CUSTOM
+data: {"type": "CUSTOM", "name": "tool_unavailable", "value": {"tool": "goldencrm__close_deal", "toolset": "goldencrm", "reason": "not_attached", "message": "Close a CRM deal as won or lost."}, "runId": "uuid-1"}
+
+event: TOOL_CALL_END
+data: {"type": "TOOL_CALL_END", "toolCallId": "call-find", "runId": "uuid-1"}
+
+event: TOOL_CALL_RESULT
+data: {"type": "TOOL_CALL_RESULT", "toolCallId": "call-find", "content": "{\"matches\": [], \"unavailable\": [{\"name\": \"goldencrm__close_deal\", \"toolset\": \"goldencrm\", \"description\": \"Close a CRM deal as won or lost.\", \"reason\": \"not_attached\"}], \"message\": \"No attached tool matched your query, but a matching tool exists \u2014 see `unavailable` for what to tell the user.\"}", "role": "tool", "status": "completed", "runId": "uuid-1", "resultSummary": "Found 0 matches"}
+
+event: STATE_SNAPSHOT
+data: {"type": "STATE_SNAPSHOT", "runId": "uuid-1", "snapshot": {"run_id": "uuid-1", "agent_id": "uuid-2", "trace_id": "uuid-3", "parent_run_id": null, "role_name": "pipeshub-agent", "status": "calling_llm", "current_turn": 1, "current_tool": null, "current_child_run_id": null, "hil_request_id": null, "goal_description": "Close the Acme deal", "started_at": "<timestamp>", "updated_at": "<timestamp>"}}
+
+event: TEXT_MESSAGE_START
+data: {"type": "TEXT_MESSAGE_START", "messageId": "msg-5", "role": "assistant", "runId": "uuid-1"}
+
+event: TEXT_MESSAGE_CONTENT
+data: {"type": "TEXT_MESSAGE_CONTENT", "messageId": "msg-5", "delta": "I can't close deals here: ", "runId": "uuid-1"}
+
+event: TEXT_MESSAGE_CONTENT
+data: {"type": "TEXT_MESSAGE_CONTENT", "messageId": "msg-5", "delta": "the CRM toolset is not attached to this agent.", "runId": "uuid-1"}
+
+event: TEXT_MESSAGE_END
+data: {"type": "TEXT_MESSAGE_END", "messageId": "msg-5", "runId": "uuid-1"}
+
+event: STATE_DELTA
+data: {"type": "STATE_DELTA", "runId": "uuid-1", "delta": [{"op": "replace", "path": "/citations", "value": []}, {"op": "replace", "path": "/normalizedAnswer", "value": "I can't close deals here: "}, {"op": "replace", "path": "/rawLength", "value": 26}]}
+
+event: STATE_SNAPSHOT
+data: {"type": "STATE_SNAPSHOT", "runId": "uuid-1", "snapshot": {"run_id": "uuid-1", "agent_id": "uuid-2", "trace_id": "uuid-3", "parent_run_id": null, "role_name": "pipeshub-agent", "status": "completed", "current_turn": 1, "current_tool": null, "current_child_run_id": null, "hil_request_id": null, "goal_description": "Close the Acme deal", "started_at": "<timestamp>", "updated_at": "<timestamp>"}}
+
+event: STATE_DELTA
+data: {"type": "STATE_DELTA", "runId": "uuid-1", "delta": [{"op": "replace", "path": "/citations", "value": []}, {"op": "replace", "path": "/normalizedAnswer", "value": "I can't close deals here: the CRM toolset is not attached to this agent."}, {"op": "replace", "path": "/rawLength", "value": 72}]}
+
+event: STATE_DELTA
+data: {"type": "STATE_DELTA", "runId": "uuid-1", "delta": [{"op": "replace", "path": "/citations", "value": []}, {"op": "replace", "path": "/normalizedAnswer", "value": "I can't close deals here: the CRM toolset is not attached to this agent."}, {"op": "replace", "path": "/rawLength", "value": 72}]}
+
+event: STATE_SNAPSHOT
+data: {"type": "STATE_SNAPSHOT", "runId": "uuid-1", "snapshot": {"final": true, "parts": [{"type": "text", "content": "", "runId": "uuid-1"}, {"type": "tool_call", "toolCallId": "call-find", "toolName": "search_tools", "args": "{\"query\": \"close deal\"}", "status": "completed", "runId": "uuid-1", "argsSummary": "Searching for tools matching \"close deal\"", "resultPreview": "{\"matches\": [], \"unavailable\": [{\"name\": \"goldencrm__close_deal\", \"toolset\": \"goldencrm\", \"description\": \"Close a CRM deal as won or lost.\", \"reason\": \"not_attached\"}], \"message\": \"No attached tool matched your query, but a matching tool exists \u2014 see `unavailable` for what to tell the user.\"}", "resultSummary": "Found 0 matches"}, {"type": "text", "content": "I can't close deals here: the CRM toolset is not attached to this agent.", "runId": "uuid-1", "isFinal": true}], "answer": "I can't close deals here: the CRM toolset is not attached to this agent.", "citations": [], "confidence": null, "succeeded_tool_names": ["search_tools"], "failed_tool_names": []}}
+
+event: RUN_FINISHED
+data: {"type":"RUN_FINISHED","result":{"conversation":{"userId":"oid-2","orgId":"oid-3","title":"Earlier chat","initiator":"oid-2","isShared":false,"isDeleted":false,"isArchived":false,"lastActivityAt":"<clock>","status":"Complete","modelInfo":{"chatMode":"quick"},"agentKey":"agent-1","conversationSource":"agent_chat","_id":"oid-4","sharedWith":[],"conversationErrors":[],"activeRunId":"node-uuid-1","createdAt":"<timestamp>","updatedAt":"<timestamp>","__v":0,"messages":[{"messageType":"bot_response","content":"I can't close deals here: the CRM toolset is not attached to this agent.","contentFormat":"MARKDOWN","citations":[],"confidence":null,"followUpQuestions":[],"modelInfo":{"chatMode":"quick"},"appliedFilters":{"apps":[],"kb":[],"recordGroups":[],"records":[],"recordsExact":[]},"parts":[{"type":"text","content":"","runId":"uuid-1"},{"type":"tool_call","toolCallId":"call-find","toolName":"search_tools","args":"{\"query\": \"close deal\"}","status":"completed","runId":"uuid-1","argsSummary":"Searching for tools matching \"close deal\"","resultPreview":"{\"matches\": [], \"unavailable\": [{\"name\": \"goldencrm__close_deal\", \"toolset\": \"goldencrm\", \"description\": \"Close a CRM deal as won or lost.\", \"reason\": \"not_attached\"}], \"message\": \"No attached tool matched your query, but a matching tool exists — see `unavailable` for what to tell the user.\"}","resultSummary":"Found 0 matches"},{"type":"text","content":"I can't close deals here: the CRM toolset is not attached to this agent.","runId":"uuid-1","isFinal":true}],"_id":"oid-5","createdAt":"<timestamp>","updatedAt":"<timestamp>","feedback":[],"attachments":[],"referenceData":[],"tools":[],"reasoning":[]}]},"recordsUsed":0,"meta":{"requestId":"req-stream","timestamp":"<timestamp>","duration":"<clock>","recordsUsed":0}}}
+

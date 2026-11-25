@@ -15,6 +15,8 @@ export const SWR_NS = {
   myToolCatalog: 'tools/my-catalog',
   userDirectory: 'users/directory',
   connectorConfigs: 'connectors/configs',
+  webSearchConfig: 'web-search/config',
+  mcpPopular: 'mcp-servers/popular',
 } as const;
 
 export type SwrNamespace = (typeof SWR_NS)[keyof typeof SWR_NS];

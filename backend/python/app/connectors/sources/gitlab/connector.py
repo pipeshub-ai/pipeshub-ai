@@ -284,6 +284,8 @@ class GitLabConnector(BaseConnector):
         # Runtime state set during init/sync
         self._gitlab_included_group_paths: list[str] | None = None
         self._gitlab_user_id: int | None = None
+        # GitLab ids of each project's members at Guest or above, from this run's member read.
+        self._project_reader_ids: dict[int, set[int]] = {}
         self._is_admin: bool = False
         self._is_auditor: bool = False
         self._auditor_fallback_warned: bool = False

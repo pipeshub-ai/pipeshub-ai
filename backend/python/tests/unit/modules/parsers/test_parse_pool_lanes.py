@@ -39,6 +39,7 @@ from app.services.resource_governor.lanes import (
     in_lane_scope,
     plan_lanes,
 )
+from tests.support.settle import SETTLE_S
 from tests.unit.lane_gauge import (
     FakeClock,
     Mem,
@@ -742,7 +743,7 @@ def test_shutdown_while_a_job_is_finishing_stops_its_worker(
         thread = threading.Thread(target=pool.shutdown)
         thread.start()
         shutdowns.append(thread)
-        wait_for(lambda: pool._closing, 1.0)  # shutdown() has run its first step; the job is still finishing
+        wait_for(lambda: pool._closing, SETTLE_S)  # shutdown() has run its first step; the job is still finishing
         return real_checkin(entry)  # type: ignore[arg-type]
 
     pool.checkin = checkin  # type: ignore[method-assign]
@@ -815,7 +816,7 @@ def test_cancel_while_admitting_a_spawn(
 ) -> None:
     budget = make_budget(1)
     pool = make_pool(budget, hub=hub)
-    monkeypatch.setattr(budget, "admit_spawn", lambda ws=None: None)
+    monkeypatch.setattr(budget, "admit_spawn", lambda ws=None, **kw: None)
     job = submit(pool, quick)
     assert wait_for(lambda: pool._spawn_waiters == 1)
     job.cancelled.set()
@@ -845,7 +846,7 @@ def test_lost_checkout_race_respawns_through_admission(
     budget, pool = real_pool(make_budget, make_pool, 2)
     admitted = []
     real_admit = budget.admit_spawn
-    monkeypatch.setattr(budget, "admit_spawn", lambda ws=None: admitted.append(1) or real_admit(ws))
+    monkeypatch.setattr(budget, "admit_spawn", lambda ws=None, **kw: admitted.append(1) or real_admit(ws, **kw))
     first = submit(pool, pid_job, os.devnull, 0.0).future.result(timeout=60)
     real_checkout = pool.checkout
 
@@ -870,7 +871,7 @@ def test_every_spawn_goes_through_admission(
     budget, pool = real_pool(make_budget, make_pool, 2)
     admitted = []
     real_admit = budget.admit_spawn
-    monkeypatch.setattr(budget, "admit_spawn", lambda ws=None: admitted.append(1) or real_admit(ws))
+    monkeypatch.setattr(budget, "admit_spawn", lambda ws=None, **kw: admitted.append(1) or real_admit(ws, **kw))
     pid = submit(pool, pid_job, os.devnull, 0.0).future.result(timeout=60)
     assert len(admitted) == 1
     os.kill(pid, signal.SIGKILL)  # dies idle
@@ -941,13 +942,13 @@ def test_lane_wait_is_bounded(
     budget = make_budget(1)
     pool = make_pool(budget, hub=hub)
     blocker = budget.try_acquire()
-    started = time.monotonic()
     with pytest.raises(ParseWorkerError) as raised:
         submit(pool, quick).future.result(timeout=10)
-    assert raised.value.cause == "unavailable" and time.monotonic() - started < 5
+    # The lane is never given back before this: an unbounded wait would end in the result's TimeoutError instead.
+    assert raised.value.cause == "unavailable" and budget.held_count()[0] == 1
     # And the same bound for a spawn that is never admitted.
     blocker.release()
-    monkeypatch.setattr(budget, "admit_spawn", lambda ws=None: None)
+    monkeypatch.setattr(budget, "admit_spawn", lambda ws=None, **kw: None)
     with pytest.raises(ParseWorkerError) as raised:
         submit(pool, quick).future.result(timeout=10)
     assert raised.value.cause == "unavailable"
@@ -1044,17 +1045,13 @@ def test_alternating_under_pressure_is_bounded_per_switch(tmp_path: Path) -> Non
     b = start_role("pool", {"dir": str(tmp_path / "lanes"), "lanes": 1, **pressure}, commands=True)
     first_line(a), first_line(b)
     gauge = str(tmp_path / "gauge")
-    bound = 5.0 + 1.0 + 6.0 + 4.0  # min idle + one tick + a worker start + margin
     try:
-        pids, waits = [], []
-        for role in (a, b, a):
-            started = time.monotonic()
-            reply = send(role, op="job", gauge=gauge, seconds=0.1)
-            waits.append(time.monotonic() - started)
-            pids.append(reply["pid"])
-        assert all(w < bound for w in waits), waits
+        pids = [send(role, op="job", gauge=gauge, seconds=0.1)["pid"] for role in (a, b, a)]
         assert len(set(pids)) == 3 and max_overlap(gauge) == 1  # at most one spawn per switch
-        assert sum(send(role, op="stats")["reaped"]["request"] for role in (a, b)) >= 1
+        # Each switch freed the other process's worker on request, once it had been idle 5 s. Left to the idle
+        # timer (60 s) a switch would wait out that timer instead.
+        reaped = [send(role, op="stats")["reaped"] for role in (a, b)]
+        assert [r["request"] for r in reaped] == [1, 1] and [r["timer"] for r in reaped] == [0, 0], reaped
     finally:
         reap(a, b)
 
@@ -1176,11 +1173,10 @@ def test_interactive_parse_is_not_blocked_by_background(lanes_on: None, make_bud
     parse_pool.set_resource_governor(_governor(budget, 2))
     background = submit(parse_pool._pool(), pid_job, str(tmp_path / "bg"), 12.0)
     assert wait_for(lambda: budget.held_count()[0] == 1 and (tmp_path / "bg").exists(), 60)
-    started = time.monotonic()
     pid = asyncio.run(parse_pool.submit(pid_job, os.devnull, 0.0, interactive=True))
-    assert pid > 0 and time.monotonic() - started < 12.0  # not queued behind the background job
+    assert pid > 0
     assert budget.held_count()[0] == 1  # the interactive job took no lease
-    assert not background.future.done()
+    assert not background.future.done()  # not queued behind the background job: that one still runs
     background.future.result(timeout=60)
 
 

@@ -285,7 +285,7 @@ const TableCellMemo = memo(function TableCellMemo({
         fontFamily: "'Manrope', sans-serif",
       }}
     >
-      {text || (isHeaderRow ? <span style={{ color: isDark ? '#666' : 'var(--olive-8)', fontStyle: 'italic' }}>(Empty)</span> : '')}
+      {text || (isHeaderRow ? <span style={{ color: 'var(--olive-11)', fontStyle: 'italic' }}>(Empty)</span> : '')}
     </td>
   );
 });
@@ -299,10 +299,12 @@ interface SpreadsheetRendererProps {
   fileType?: string;
   citations?: PreviewCitation[];
   activeCitationId?: string | null;
+  /** Increments on every click on a citation, so a repeat click on the active one scrolls again. */
+  citationClickVersion?: number;
   onHighlightClick?: (citationId: string) => void;
 }
 
-export function SpreadsheetRenderer({ fileUrl, fileName, fileType, citations, activeCitationId, onHighlightClick }: SpreadsheetRendererProps) {
+export function SpreadsheetRenderer({ fileUrl, fileName, fileType, citations, activeCitationId, citationClickVersion, onHighlightClick }: SpreadsheetRendererProps) {
   const { appearance } = useThemeAppearance();
   const isDark = appearance === 'dark';
   const [state, dispatch] = useReducer(viewerReducer, INITIAL_STATE);
@@ -552,6 +554,7 @@ export function SpreadsheetRenderer({ fileUrl, fileName, fileType, citations, ac
     scrollToRow(rowNum);
   }, [
     activeCitationId,
+    citationClickVersion,
     citations,
     rowOffset,
     applyHighlight,
@@ -603,7 +606,7 @@ export function SpreadsheetRenderer({ fileUrl, fileName, fileType, citations, ac
   if (state.error || !state.workbookData) {
     return (
       <Flex direction="column" align="center" justify="center" gap="3" style={{ height: '100%', padding: 'var(--space-6)' }}>
-        <span className="material-icons-outlined" style={{ fontSize: '48px', color: 'var(--red-9)' }}>error_outline</span>
+        <span className="material-icons-outlined" style={{ fontSize: '48px', color: 'var(--red-11)' }}>error_outline</span>
         <Text size="3" weight="medium" color="red">{state.error || 'Failed to load spreadsheet'}</Text>
       </Flex>
     );
@@ -616,7 +619,7 @@ export function SpreadsheetRenderer({ fileUrl, fileName, fileType, citations, ac
         <Flex align="center" justify="center" direction="column" gap="3"
           style={{ flex: 1, backgroundColor: isDark ? '#1e2125' : 'white', borderRadius: 'var(--radius-3)', border: `1px solid ${isDark ? '#404448' : 'var(--olive-6)'}`, margin: 'var(--space-4)' }}
         >
-          <span className="material-icons-outlined" style={{ fontSize: '48px', color: 'var(--olive-8)' }}>table_chart</span>
+          <span className="material-icons-outlined" style={{ fontSize: '48px', color: 'var(--olive-11)' }}>table_chart</span>
           <Text size="2" color="gray">This sheet is empty</Text>
         </Flex>
         {state.availableSheets.length > 1 && (
@@ -683,7 +686,7 @@ export function SpreadsheetRenderer({ fileUrl, fileName, fileType, citations, ac
                   backgroundColor: isDark ? '#2a2d32' : 'var(--olive-3)',
                   borderRight: `1px solid ${isDark ? '#404448' : 'var(--olive-5)'}`,
                   borderBottom: `1px solid ${isDark ? '#404448' : 'var(--olive-5)'}`,
-                  color: isDark ? '#999' : 'var(--olive-9)',
+                  color: isDark ? '#999' : 'var(--olive-11)',
                   position: 'sticky',
                   left: 0,
                   zIndex: 3,
@@ -704,7 +707,7 @@ export function SpreadsheetRenderer({ fileUrl, fileName, fileType, citations, ac
                     backgroundColor: isDark ? '#2a2d32' : 'var(--olive-3)',
                     borderRight: `1px solid ${isDark ? '#404448' : 'var(--olive-5)'}`,
                     borderBottom: `1px solid ${isDark ? '#404448' : 'var(--olive-5)'}`,
-                    color: isDark ? '#999' : 'var(--olive-9)',
+                    color: isDark ? '#999' : 'var(--olive-11)',
                     overflow: 'hidden',
                     textOverflow: 'ellipsis',
                     whiteSpace: 'nowrap',
@@ -753,7 +756,7 @@ export function SpreadsheetRenderer({ fileUrl, fileName, fileType, citations, ac
                       backgroundColor: isDark ? '#2a2d32' : 'var(--olive-2)',
                       borderRight: `1px solid ${isDark ? '#404448' : 'var(--olive-5)'}`,
                       borderBottom: `1px solid ${isDark ? '#404448' : 'var(--olive-4)'}`,
-                      color: isDark ? '#999' : 'var(--olive-9)',
+                      color: isDark ? '#999' : 'var(--olive-11)',
                       position: 'sticky',
                       left: 0,
                       zIndex: 1,
@@ -790,7 +793,7 @@ export function SpreadsheetRenderer({ fileUrl, fileName, fileType, citations, ac
             borderTop: `1px solid ${isDark ? '#404448' : 'var(--olive-4)'}`,
           }}
         >
-          <span className="material-icons-outlined" style={{ fontSize: '16px', color: 'var(--olive-9)' }}>info</span>
+          <span className="material-icons-outlined" style={{ fontSize: '16px', color: 'var(--olive-11)' }}>info</span>
           <Text size="1" color="gray">
             Showing first {displayedDataRows.toLocaleString()} of {totalDataRows.toLocaleString()} rows. Download to view all data.
           </Text>
@@ -841,7 +844,7 @@ function SheetTabs({
                 : '2px solid transparent',
               color: isActive
                 ? (isDark ? '#e1e3e7' : 'var(--olive-12)')
-                : (isDark ? '#999' : 'var(--olive-10)'),
+                : (isDark ? '#999' : 'var(--olive-11)'),
               backgroundColor: 'transparent',
               transition: 'color 0.15s ease, border-color 0.15s ease',
               fontFamily: "'Manrope', sans-serif",

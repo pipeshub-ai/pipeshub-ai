@@ -2,10 +2,13 @@ import base64
 import json
 import logging
 import uuid
+from collections.abc import Iterator
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import HTTPException
+
+from tests.support.bound_org import bind_test_org
 
 
 @pytest.fixture(autouse=True)
@@ -173,14 +176,14 @@ class TestGetToolsetMetadata:
         assert exc.value.status_code == 400
 
     def test_not_found_raises(self):
-        from app.api.routes.toolsets import _get_toolset_metadata, ToolsetNotFoundError
+        from app.api.routes.toolsets import ToolsetNotFoundError, _get_toolset_metadata
         registry = MagicMock()
         registry.get_toolset_metadata.return_value = None
         with pytest.raises(ToolsetNotFoundError):
             _get_toolset_metadata(registry, "nonexistent")
 
     def test_internal_toolset_raises(self):
-        from app.api.routes.toolsets import _get_toolset_metadata, ToolsetNotFoundError
+        from app.api.routes.toolsets import ToolsetNotFoundError, _get_toolset_metadata
         registry = MagicMock()
         registry.get_toolset_metadata.return_value = {"isInternal": True}
         with pytest.raises(ToolsetNotFoundError):
@@ -281,21 +284,30 @@ class TestGetOAuthConfigFromRegistry:
         assert result is mock_config
 
     def test_not_found(self):
-        from app.api.routes.toolsets import _get_oauth_config_from_registry, ToolsetNotFoundError
+        from app.api.routes.toolsets import (
+            ToolsetNotFoundError,
+            _get_oauth_config_from_registry,
+        )
         registry = MagicMock()
         registry.get_toolset_metadata.return_value = None
         with pytest.raises(ToolsetNotFoundError):
             _get_oauth_config_from_registry("jira", registry)
 
     def test_no_oauth_config(self):
-        from app.api.routes.toolsets import _get_oauth_config_from_registry, OAuthConfigError
+        from app.api.routes.toolsets import (
+            OAuthConfigError,
+            _get_oauth_config_from_registry,
+        )
         registry = MagicMock()
         registry.get_toolset_metadata.return_value = {"config": {"_oauth_configs": {}}}
         with pytest.raises(OAuthConfigError):
             _get_oauth_config_from_registry("jira", registry)
 
     def test_incomplete_oauth_config(self):
-        from app.api.routes.toolsets import _get_oauth_config_from_registry, OAuthConfigError
+        from app.api.routes.toolsets import (
+            OAuthConfigError,
+            _get_oauth_config_from_registry,
+        )
         registry = MagicMock()
         mock_config = MagicMock(spec=[])
         registry.get_toolset_metadata.return_value = {
@@ -374,7 +386,7 @@ class TestGetOAuthConfigsForType:
 class TestBuildOAuthConfig:
     @pytest.mark.asyncio
     async def test_missing_client_id_raises(self):
-        from app.api.routes.toolsets import _build_oauth_config, InvalidAuthConfigError
+        from app.api.routes.toolsets import InvalidAuthConfigError, _build_oauth_config
         with pytest.raises(InvalidAuthConfigError):
             await _build_oauth_config({}, "jira", MagicMock())
 
@@ -484,16 +496,17 @@ class TestCreateOrUpdateToolsetOAuthConfig:
             assert result is not None
 
     @pytest.mark.asyncio
-    async def test_exception_returns_none(self):
+    async def test_exception_raises_500(self):
         from app.api.routes.toolsets import _create_or_update_toolset_oauth_config
         cs = AsyncMock()
         cs.get_config = AsyncMock(return_value=[])
 
-        with patch("app.api.routes.toolsets._prepare_toolset_auth_config", new_callable=AsyncMock, side_effect=Exception("fail")):
-            result = await _create_or_update_toolset_oauth_config(
+        with patch("app.api.routes.toolsets._prepare_toolset_auth_config", new_callable=AsyncMock, side_effect=Exception("fail")), \
+             pytest.raises(HTTPException) as exc:
+            await _create_or_update_toolset_oauth_config(
                 "jira", {}, "Jira", "u1", "org1", cs, MagicMock(), "http://localhost"
             )
-            assert result is None
+        assert (exc.value.status_code, exc.value.__cause__ is not None) == (500, True)
 
 
 class TestPrepareToolsetAuthConfig:
@@ -875,6 +888,8 @@ class TestUpdateToolsetInstanceEdgeCases:
         instances = [{"_id": "i1", "orgId": "o1", "toolsetType": "jira", "authType": "BASIC_AUTH",
                        "instanceName": "J"}]
         cs.set_config = AsyncMock()
+        # The write replays its change onto a fresh read of the whole list (TSC-21).
+        cs.get_config = AsyncMock(side_effect=lambda *_a, **_k: list(instances))
 
         req = _make_request(body_dict={"authConfig": {"username": "u", "password": "p"}})
         req.app.state.toolset_registry = _make_registry("jira", supported_auth=["BASIC_AUTH"])
@@ -906,6 +921,8 @@ class TestDeleteToolsetInstanceCredentialCleanup:
                        "instanceName": "J"}]
         cs.list_keys_in_directory = AsyncMock(return_value=[])
         cs.set_config = AsyncMock()
+        # The write replays its change onto a fresh read of the whole list (TSC-21).
+        cs.get_config = AsyncMock(side_effect=lambda *_a, **_k: list(instances))
 
         req = _make_request()
         gp = self._mock_graph_provider()
@@ -932,6 +949,8 @@ class TestDeleteToolsetInstanceCredentialCleanup:
         ])
         cs.delete_config = AsyncMock(return_value=True)
         cs.set_config = AsyncMock()
+        # The write replays its change onto a fresh read of the whole list (TSC-21).
+        cs.get_config = AsyncMock(side_effect=lambda *_a, **_k: list(instances))
 
         req = _make_request()
         gp = self._mock_graph_provider()
@@ -957,6 +976,8 @@ class TestDeleteToolsetInstanceCredentialCleanup:
         ])
         cs.delete_config = AsyncMock(side_effect=[RuntimeError("fail"), True])
         cs.set_config = AsyncMock()
+        # The write replays its change onto a fresh read of the whole list (TSC-21).
+        cs.get_config = AsyncMock(side_effect=lambda *_a, **_k: list(instances))
 
         req = _make_request()
         gp = self._mock_graph_provider()
@@ -978,6 +999,8 @@ class TestDeleteToolsetInstanceCredentialCleanup:
                        "instanceName": "J"}]
         cs.list_keys_in_directory = AsyncMock(side_effect=RuntimeError("etcd fail"))
         cs.set_config = AsyncMock()
+        # The write replays its change onto a fresh read of the whole list (TSC-21).
+        cs.get_config = AsyncMock(side_effect=lambda *_a, **_k: list(instances))
 
         req = _make_request()
         gp = self._mock_graph_provider()
@@ -1111,7 +1134,10 @@ class TestGetInstanceOAuthAuthorizationUrl:
     @pytest.mark.asyncio
     async def test_non_oauth_instance_raises(self):
         """Line 2212 — non-OAUTH instance raises OAuthConfigError."""
-        from app.api.routes.toolsets import OAuthConfigError, get_instance_oauth_authorization_url
+        from app.api.routes.toolsets import (
+            OAuthConfigError,
+            get_instance_oauth_authorization_url,
+        )
         cs = AsyncMock()
         instances = [{"_id": "i1", "orgId": "o1", "toolsetType": "jira", "authType": "API_TOKEN"}]
 
@@ -1124,7 +1150,10 @@ class TestGetInstanceOAuthAuthorizationUrl:
 
     @pytest.mark.asyncio
     async def test_missing_oauth_config_id_raises(self):
-        from app.api.routes.toolsets import OAuthConfigError, get_instance_oauth_authorization_url
+        from app.api.routes.toolsets import (
+            OAuthConfigError,
+            get_instance_oauth_authorization_url,
+        )
         cs = AsyncMock()
         instances = [{"_id": "i1", "orgId": "o1", "toolsetType": "jira", "authType": "OAUTH"}]
 
@@ -1137,7 +1166,10 @@ class TestGetInstanceOAuthAuthorizationUrl:
 
     @pytest.mark.asyncio
     async def test_deleted_oauth_config_raises(self):
-        from app.api.routes.toolsets import OAuthConfigError, get_instance_oauth_authorization_url
+        from app.api.routes.toolsets import (
+            OAuthConfigError,
+            get_instance_oauth_authorization_url,
+        )
         cs = AsyncMock()
         instances = [{"_id": "i1", "orgId": "o1", "toolsetType": "jira", "authType": "OAUTH", "oauthConfigId": "cfg-1"}]
 
@@ -1176,7 +1208,10 @@ class TestGetInstanceOAuthAuthorizationUrl:
     @pytest.mark.asyncio
     async def test_empty_auth_url_raises(self):
         """Line 2255 — empty/None URL from start_authorization."""
-        from app.api.routes.toolsets import OAuthConfigError, get_instance_oauth_authorization_url
+        from app.api.routes.toolsets import (
+            OAuthConfigError,
+            get_instance_oauth_authorization_url,
+        )
         cs = AsyncMock()
         instances = [{"_id": "i1", "orgId": "o1", "toolsetType": "jira", "authType": "OAUTH", "oauthConfigId": "cfg-1"}]
         oauth_cfg = {"_id": "cfg-1", "config": {"clientId": "cid", "clientSecret": "cs"}}
@@ -1200,7 +1235,10 @@ class TestGetInstanceOAuthAuthorizationUrl:
     @pytest.mark.asyncio
     async def test_missing_state_param_raises(self):
         """Line 2265 — no state in auth URL query params."""
-        from app.api.routes.toolsets import OAuthConfigError, get_instance_oauth_authorization_url
+        from app.api.routes.toolsets import (
+            OAuthConfigError,
+            get_instance_oauth_authorization_url,
+        )
         cs = AsyncMock()
         instances = [{"_id": "i1", "orgId": "o1", "toolsetType": "jira", "authType": "OAUTH", "oauthConfigId": "cfg-1"}]
         oauth_cfg = {"_id": "cfg-1", "config": {"clientId": "cid", "clientSecret": "cs"}}
@@ -1267,12 +1305,24 @@ class TestGetInstanceOAuthAuthorizationUrl:
 # ===================================================================
 class TestHandleToolsetOAuthCallbackFlows:
 
+    @pytest.fixture(autouse=True)
+    def jira_setup_check(self) -> Iterator[MagicMock]:
+        """The toolset's own post-OAuth setup check, accepting the token (the real Jira one calls Atlassian; it is
+        covered with the Jira factory)."""
+        factory = MagicMock()
+        factory.test_connection = AsyncMock(return_value=None)
+        with patch(
+            "app.agents.tools.factories.registry.ClientFactoryRegistry.get_factory",
+            side_effect=lambda name: factory if name == "jira" else None,
+        ):
+            yield factory
+
     def _encode_state(self, state, instance_id, user_id, is_agent=False):
         from app.api.routes.toolsets import _encode_state_with_instance
         return _encode_state_with_instance(state, instance_id, user_id, is_agent=is_agent)
 
     @pytest.mark.asyncio
-    async def test_user_flow_happy_path(self):
+    async def test_user_flow_happy_path(self, jira_setup_check):
         """Lines 2301-2407 — successful user OAuth callback."""
         from app.api.routes.toolsets import handle_toolset_oauth_callback
         cs = AsyncMock()
@@ -1297,11 +1347,12 @@ class TestHandleToolsetOAuthCallbackFlows:
              patch("app.api.routes.toolsets._get_oauth_config_by_id", new_callable=AsyncMock, return_value=oauth_cfg), \
              patch("app.api.routes.toolsets._build_oauth_config", new_callable=AsyncMock, return_value={"clientId": "cid", "clientSecret": "cs"}), \
              patch("app.api.routes.toolsets.OAuthProvider", return_value=mock_provider), \
-             patch.dict("sys.modules", {"app.connectors.core.base.token_service.startup_service": MagicMock(startup_service=MagicMock(get_toolset_token_refresh_service=MagicMock(return_value=None)))}):
+             patch("app.connectors.core.base.token_service.startup_service.startup_service", MagicMock(get_toolset_token_refresh_service=MagicMock(return_value=None))):
             result = await handle_toolset_oauth_callback(req, code="auth-code", state=encoded_state, error=None, base_url=None, config_service=cs)
 
         assert result["success"] is True
         assert "oauth_success=true" in result["redirect_url"]
+        assert jira_setup_check.test_connection.await_args.kwargs["access_token"] == "token123"
 
     @pytest.mark.asyncio
     async def test_user_flow_user_mismatch(self):
@@ -1382,7 +1433,7 @@ class TestHandleToolsetOAuthCallbackFlows:
              patch("app.api.routes.toolsets._get_oauth_config_by_id", new_callable=AsyncMock, return_value=oauth_cfg), \
              patch("app.api.routes.toolsets._build_oauth_config", new_callable=AsyncMock, return_value={"clientId": "cid", "clientSecret": "cs"}), \
              patch("app.api.routes.toolsets.OAuthProvider", return_value=mock_provider), \
-             patch.dict("sys.modules", {"app.connectors.core.base.token_service.startup_service": MagicMock(startup_service=MagicMock(get_toolset_token_refresh_service=MagicMock(return_value=None)))}):
+             patch("app.connectors.core.base.token_service.startup_service.startup_service", MagicMock(get_toolset_token_refresh_service=MagicMock(return_value=None))):
             result = await handle_toolset_oauth_callback(req, code="auth-code", state=encoded_state, error=None, base_url=None, config_service=cs)
 
         assert result["success"] is True
@@ -1568,8 +1619,8 @@ class TestHandleToolsetOAuthCallbackFlows:
         cs.set_config.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_callback_auth_status_update_exception_still_succeeds(self):
-        """Lines 2390-2391 — auth status update exception doesn't block."""
+    async def test_callback_auth_record_read_failure_is_server_error(self):
+        """A callback that can't read the record it must update must not report the toolset connected."""
         from app.api.routes.toolsets import handle_toolset_oauth_callback
         cs = AsyncMock()
         cs.get_config = AsyncMock(side_effect=RuntimeError("etcd fail"))
@@ -1593,9 +1644,11 @@ class TestHandleToolsetOAuthCallbackFlows:
              patch("app.api.routes.toolsets._get_oauth_config_by_id", new_callable=AsyncMock, return_value=oauth_cfg), \
              patch("app.api.routes.toolsets._build_oauth_config", new_callable=AsyncMock, return_value={"clientId": "cid", "clientSecret": "cs"}), \
              patch("app.api.routes.toolsets.OAuthProvider", return_value=mock_provider), \
-             patch.dict("sys.modules", {"app.connectors.core.base.token_service.startup_service": MagicMock(startup_service=MagicMock(get_toolset_token_refresh_service=MagicMock(return_value=None)))}):
+             patch("app.connectors.core.base.token_service.startup_service.startup_service", MagicMock(get_toolset_token_refresh_service=MagicMock(return_value=None))):
             result = await handle_toolset_oauth_callback(req, code="code", state=encoded_state, error=None, base_url=None, config_service=cs)
-        assert result["success"] is True
+        assert result["success"] is False
+        assert "oauth_error=server_error" in result["redirect_url"]
+        cs.set_config.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_refresh_scheduling_failure_still_succeeds(self):
@@ -1628,7 +1681,7 @@ class TestHandleToolsetOAuthCallbackFlows:
              patch("app.api.routes.toolsets._get_oauth_config_by_id", new_callable=AsyncMock, return_value=oauth_cfg), \
              patch("app.api.routes.toolsets._build_oauth_config", new_callable=AsyncMock, return_value={"clientId": "cid", "clientSecret": "cs"}), \
              patch("app.api.routes.toolsets.OAuthProvider", return_value=mock_provider), \
-             patch.dict("sys.modules", {"app.connectors.core.base.token_service.startup_service": mock_startup}):
+             patch("app.connectors.core.base.token_service.startup_service.startup_service", mock_startup.startup_service):
             result = await handle_toolset_oauth_callback(req, code="code", state=encoded_state, error=None, base_url=None, config_service=cs)
 
         assert result["success"] is True
@@ -2113,7 +2166,10 @@ class TestGetAgentToolsetOAuthUrlFlows:
 
     @pytest.mark.asyncio
     async def test_non_oauth_raises(self):
-        from app.api.routes.toolsets import OAuthConfigError, get_agent_toolset_oauth_url
+        from app.api.routes.toolsets import (
+            OAuthConfigError,
+            get_agent_toolset_oauth_url,
+        )
         cs = AsyncMock()
         instances = [{"_id": "i1", "orgId": "o1", "toolsetType": "jira", "authType": "API_TOKEN"}]
         req = _make_request()
@@ -2126,7 +2182,10 @@ class TestGetAgentToolsetOAuthUrlFlows:
 
     @pytest.mark.asyncio
     async def test_missing_oauth_config_raises(self):
-        from app.api.routes.toolsets import OAuthConfigError, get_agent_toolset_oauth_url
+        from app.api.routes.toolsets import (
+            OAuthConfigError,
+            get_agent_toolset_oauth_url,
+        )
         cs = AsyncMock()
         instances = [{"_id": "i1", "orgId": "o1", "toolsetType": "jira", "authType": "OAUTH"}]
         req = _make_request()
@@ -2164,7 +2223,10 @@ class TestGetAgentToolsetOAuthUrlFlows:
     @pytest.mark.asyncio
     async def test_empty_auth_url_raises(self):
         """Line 3275 — empty URL from start_authorization."""
-        from app.api.routes.toolsets import OAuthConfigError, get_agent_toolset_oauth_url
+        from app.api.routes.toolsets import (
+            OAuthConfigError,
+            get_agent_toolset_oauth_url,
+        )
         cs = AsyncMock()
         instances = [{"_id": "i1", "orgId": "o1", "toolsetType": "jira", "authType": "OAUTH", "oauthConfigId": "cfg-1"}]
         oauth_cfg = {"_id": "cfg-1", "config": {"clientId": "cid", "clientSecret": "cs"}}
@@ -2186,7 +2248,10 @@ class TestGetAgentToolsetOAuthUrlFlows:
     @pytest.mark.asyncio
     async def test_missing_state_param_raises(self):
         """Line 3285 — auth URL without state param."""
-        from app.api.routes.toolsets import OAuthConfigError, get_agent_toolset_oauth_url
+        from app.api.routes.toolsets import (
+            OAuthConfigError,
+            get_agent_toolset_oauth_url,
+        )
         cs = AsyncMock()
         instances = [{"_id": "i1", "orgId": "o1", "toolsetType": "jira", "authType": "OAUTH", "oauthConfigId": "cfg-1"}]
         oauth_cfg = {"_id": "cfg-1", "config": {"clientId": "cid", "clientSecret": "cs"}}
@@ -2208,7 +2273,10 @@ class TestGetAgentToolsetOAuthUrlFlows:
     @pytest.mark.asyncio
     async def test_deleted_oauth_config_raises(self):
         """Line 3254 — OAuth config not found."""
-        from app.api.routes.toolsets import OAuthConfigError, get_agent_toolset_oauth_url
+        from app.api.routes.toolsets import (
+            OAuthConfigError,
+            get_agent_toolset_oauth_url,
+        )
         cs = AsyncMock()
         instances = [{"_id": "i1", "orgId": "o1", "toolsetType": "jira", "authType": "OAUTH", "oauthConfigId": "cfg-1"}]
         req = _make_request()
@@ -2260,3 +2328,9 @@ class TestGetAgentToolsetOAuthUrlFlows:
             result = await get_agent_toolset_oauth_url("a1", "i1", req, config_service=cs)
 
         assert "token_access_type" not in result["authorizationUrl"]
+
+
+@pytest.fixture(autouse=True)
+def _bound_org() -> Iterator[str]:
+    """The auth middleware binds the verified token's org; these tests call the route functions directly."""
+    yield from bind_test_org("o1")

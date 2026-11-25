@@ -326,12 +326,11 @@ async def test_name_filter_narrows_and_an_oversized_match_is_truncated(graph) ->
     assert capped == {"hits": [], "truncated": True}
 
 
+@pytest.mark.parametrize("graph", ["arango"], indirect=True)
 async def test_entity_filter_lookups_read_through_indexes(graph) -> None:
     """These run on every entity-filtered search: a collection scan here reads
     every org's mention edges or value rows."""
     provider, org_id, backend = graph
-    if backend != "arango":
-        pytest.skip("ArangoDB query plans only")
     from app.modules.named_entities.graph_ops import (
         _AQL_BIND,
         NODE_RECORDS_AQL,
@@ -547,10 +546,9 @@ async def _drop_unique_mention_index(provider: IGraphDBProvider) -> None:
                 assert resp.status == 200, await resp.text()
 
 
+@pytest.mark.parametrize("graph", ["arango"], indirect=True)
 async def test_existing_duplicate_edges_are_collapsed_so_the_unique_index_can_be_built(graph) -> None:
     provider, org_id, backend = graph
-    if backend != "arango":
-        pytest.skip("ArangoDB only: Neo4j locks both ends on MERGE")
     from app.modules.named_entities.graph_ops import ensure_unique_mentions
 
     (record,) = await _records(provider, org_id, 1)
@@ -631,12 +629,11 @@ async def test_reserved_schema_fields_are_accepted(graph) -> None:
     assert (found["mergedInto"], found["keyScheme"], found["orphanedAt"]) == ("survivor", 2, 123)
 
 
+@pytest.mark.parametrize("graph", ["arango"], indirect=True)
 async def test_fields_a_later_release_adds_do_not_block_updates(graph) -> None:
     """After a rollback this build's schemas are reapplied; documents a newer build
     wrote with fields this build does not know must still take its updates."""
     provider, org_id, backend = graph
-    if backend != "arango":
-        pytest.skip("ArangoDB schema validation only")
     (record,) = await _records(provider, org_id, 1)
     acme = _org(org_id, "Acme")
     await _writer(provider).write(org_id, record, [acme, _amount(org_id, "1250")])
@@ -695,13 +692,12 @@ async def test_the_sweep_keeps_a_merged_node_so_its_redirect_survives(graph) -> 
     assert await provider.resolve_named_entity_redirects(org_id, merged) == dict.fromkeys(merged, survivor)
 
 
+@pytest.mark.parametrize("graph", ["neo4j"], indirect=True)
 async def test_a_sweep_delete_waiting_on_a_writer_keeps_the_node_the_writer_linked(graph) -> None:
     """Neo4j: the delete matches the node as an orphan, then waits for the lock the
     writer's open transaction holds. Once the writer commits the link, the node has
     a mention and must stay, with its edge."""
     provider, org_id, backend = graph
-    if backend != "neo4j":
-        pytest.skip("Arango raises a write conflict on the stale snapshot instead")
     (record,) = await _records(provider, org_id, 1)
     acme = _org(org_id, "Acme")
     await provider.create_named_entities_if_absent([node_document(org_id, acme, 1)])
@@ -728,10 +724,9 @@ async def test_a_sweep_delete_waiting_on_a_writer_keeps_the_node_the_writer_link
     assert "_sweepLock" not in node
 
 
+@pytest.mark.parametrize("graph", ["neo4j"], indirect=True)
 async def test_an_orphan_delete_keeps_an_alias_another_entity_still_uses(graph) -> None:
     provider, org_id, backend = graph
-    if backend != "neo4j":
-        pytest.skip("ArangoDB keeps aliases on the node itself")
     (record,) = await _records(provider, org_id, 1)
     gone, kept = _org(org_id, "Acme Robotics"), _org(org_id, "Acme Foods")
     await provider.create_named_entities_if_absent([node_document(org_id, item, 1) for item in (gone, kept)])
@@ -1185,14 +1180,13 @@ async def test_orphan_delete_without_a_cutoff_still_removes_unmarked_orphans(gra
     assert await provider.delete_orphan_named_entities(org_id) == [entity.graph_key]
 
 
+@pytest.mark.parametrize("graph", ["arango"], indirect=True)
 async def test_records_this_release_writes_stay_updatable_under_the_previous_schema(graph) -> None:
     """The rollback contract. An older build reapplies its strict records schema on
     start; every record this release linked, cleared or copied must still take that
     build's updates. A record carrying the entity-extraction fields would not, which is
     why their writer ships a release after the schema."""
     provider, org_id, backend = graph
-    if backend != "arango":
-        pytest.skip("ArangoDB schema validation only")
     import copy
 
     from app.schema.arango.documents import record_schema
@@ -1263,10 +1257,9 @@ async def test_a_key_prefix_matches_whole_words_of_one_kind_and_is_bounded(graph
     assert await provider.find_named_entities_by_key_prefix(f"{org_id}-other", [("person", "name:person:sam")]) == []
 
 
+@pytest.mark.parametrize("graph", ["arango"], indirect=True)
 async def test_a_key_prefix_reads_through_the_kind_and_key_index(graph) -> None:
     provider, org_id, backend = graph
-    if backend != "arango":
-        pytest.skip("ArangoDB query plans only")
     from app.modules.named_entities.graph_ops import _AQL_BIND, KEY_PREFIX_AQL
 
     client = provider.http_client

@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any
 
 from app.config.constants.arangodb import CollectionNames
 from app.modules.artifacts.reader import record_artifact_reader
-from app.modules.retrieval.selection_scope import outside_connection
+from app.modules.retrieval.selection_scope import outside_connection, resolve_user_key
 from app.utils.attachment_mime_types import DOC_ATTACHMENT_MIME_TYPES
 from app.utils.chat_helpers import ImageBudget, is_base64_image
 from app.utils.image_admission import (
@@ -19,7 +19,7 @@ from app.utils.image_admission import (
     ImageOrigin,
     admission_from_state,
 )
-from app.utils.record_access import caller_can_read_virtual_record
+from app.utils.record_access import attachment_reader_id, caller_can_read_virtual_record
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
@@ -85,8 +85,7 @@ async def keep_accessible_attachments(
             if record_id and is_chat_attachment(row, org_id):
                 record_by_vrid.setdefault(row["virtualRecordId"], record_id)
     elif vrids:
-        user_doc = await graph_provider.get_user_by_user_id(user_id) if user_id else None
-        user_key = (user_doc or {}).get("id") or (user_doc or {}).get("_key")
+        user_key = await resolve_user_key(graph_provider, user_id) if user_id else None
         # A failed check raises: answering as if nothing were attached would hide
         # the outage from the user.
         if user_key:
@@ -573,7 +572,7 @@ async def ensure_attachment_blocks(state: dict, logger: logging.Logger) -> list:
             out_records=attachment_records,
             image_budget=image_budget,
             image_admission=admission_from_state(state),
-            user_id=state.get("user_id") or "",
+            user_id=attachment_reader_id(state.get("user_id") or "", state.get("user_info")) or "",
             graph_provider=state.get("graph_provider"),
             is_service_account=bool(state.get("is_service_account")),
         )

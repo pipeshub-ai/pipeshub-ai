@@ -1,0 +1,263 @@
+"""``PARSE_LANES`` off (or unset) leaves the memory gates exactly as they were (PX-2e, T86).
+
+``fixtures/policy_off_trace.json`` was recorded by ``policy_off_trace`` from the sources before the
+per-kind charges existed: the working-set and cap functions over an environment grid,
+``record_memory_cost`` and ``parse_cost``, the calls ``reserve_record_memory`` and
+``acquire_parsing_slot`` make, and what a governor's limits and ``stats()`` show over a few
+samples. The functions that 2e had to edit are pinned by those behaviours; every other top-level
+statement, function and method of the four modules is pinned by a hash of its source tree.
+"""
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+
+from app.services.resource_governor.kinds import ParseKind
+from tests.unit.services.resource_governor import policy_off_trace as trace
+
+RECORDED = json.loads(trace.FIXTURE.read_text())
+ROOT = Path(__file__).resolve().parents[4]
+
+# Entries that differ from the recorded source, and why. Each one's behaviour is pinned below.
+EDITED = {
+    "policy.py": {
+        "heavy_memory_cap", "cgroup_heavy_parse_limit", "_target_for", "_next_pool_limit", "next_limits",  # an optional figure, None = legacy
+        "docling_working_set_gb", "resolve_heavy_working_set", "class HeavyWorkingSet", "HeavyWorkingSet.gb",  # new
+        "HeavyWorkingSet.source", "HeavyWorkingSet.as_dict",
+        "assign:PDF_PARENT_WORKING_SET_GB", "assign:DOCLING_WORKING_SET_DEFAULT_GB",
+        # The code sandbox yield: only acts with host_yield=True, which the grid never passes.
+        "assign:YIELD_INDEX_SHRINK_FACTOR", "assign:YIELD_GROW_CONFIRM_SAMPLES", "assign:YIELD_POOLS",
+        "_yield_shrink_target", "_yield_holdoff",
+        "assign:YIELD_REPEAT_WINDOW_SAMPLES", "assign:YIELD_HEAVY_MAX_HOLDOFF_SAMPLES",
+        # Read-only admission explain: a rule tag on the returned state, no change to any limit.
+        "_with_rule", "_feedback_services", "assign:_GROWTH_HOLDS", "assign:_SHRINK_CAUSE",
+        "_feedback_for", "assign:SERVICE_POOL",  # a Docling-only report brakes INDEX_HEAVY only; no memory gate reads feedback
+        "resolve_ceilings",  # two keyword arguments (cells, profile); profile="legacy" (the default) runs the old body, so the capacity-profile test pins the equality
+    },
+    "memory_budget.py": {
+        "kind_reservation_cost",  # new; record_memory_cost itself is unchanged
+        "MemoryBudget._enqueue", "MemoryBudget.reserve", "MemoryBudget.__init__", "MemoryBudget:Expr",  # __init__: the set of ahead waiters (empty unless ahead is passed)
+        # PARSE_ADMISSION=classes: one keyword (ahead, default False); without it the queue order is unchanged (test_memory_ahead_off_is_unchanged)
+    },
+    "consumer_concurrency.py": {
+        "reserve_record_memory", "acquire_parsing_slot",  # optional kind; no kind or no excess = the old path
+        "record_parse_kind",
+        "wait_out_held_service",  # new; waits out a held service's pause before the parse permit and reserves nothing (test_docling_hold_recheck)
+        "parse_ceiling", "parse_lease_pool",  # one heavy lease for both tiers, only with USE_PARSING_SERVICE and PARSING_SERVICE_CONCURRENCY set; otherwise unchanged
+        "RequeueWithoutAttempt.pauses_consumer",  # read only by the PostgreSQL consumer's stage admission, not by a memory gate
+        "RequeueWithoutAttempt.__init__",  # adds the level the consumer logs the hand-back at; reserves nothing
+        "class ProgressRequeue", "ProgressRequeue.__init__", "ProgressRequeue.counts_toward_backstop",  # new exception, raised after the handler has unwound and its memory is released
+        "ProgressRequeue:Expr", "requeue_after_productive_cut",  # new; runs in the consumers' timeout handler and reserves nothing
+        "if:TYPE_CHECKING",  # one more type-only import
+        # Read-only admission explain: counters and a tag, no change to any admission decision.
+        "class AdmissionBacklog", "AdmissionBacklog.__slots__", "AdmissionBacklog.__init__", "AdmissionBacklog.add", "AdmissionBacklog._observed",
+        "AdmissionBacklog.remove", "AdmissionBacklog.totals", "AdmissionBacklog.lease_waiting",
+        "AdmissionBacklog.reset", "AdmissionBacklog:Expr",
+        "class LocalPermits", "LocalPermits.__slots__", "LocalPermits.__init__", "LocalPermits:Expr",
+        "assign:PHASE_GATE", "assign:PHASE_LEASE", "assign:PHASE_DOWNLOAD", "assign:PHASE_PARSE",
+        "assign:_PHASES", "assign:_SLOT", "assign:_SUM",
+        "in_phase", "_counted", "at_gate", "_read_paused_for_admission", "consumer_id", "_lease_pools", "_local_permits_name", "admission_explain",
+        "GateWaiterToken.__slots__", "GateWaiterToken.__init__", "GateWaiterToken._backlog",
+        "GateWaiterToken.enter_gate", "GateWaiterToken._leave_gate", "GateWaiterToken.admit",
+        "GateWaiterToken.release",
+        # The waiter counter also tells admitted records from waiting ones; the pool a parse waits on has one decision.
+        "GateWaiters.__slots__", "GateWaiters.__init__", "GateWaiters.reset", "GateWaiters.retain",
+        "GateWaiters.unretain", "GateWaiters.retained_snapshot", "GateWaiters.view", "admission_parse_lease_pool",
+        "acquire_index_slot",  # the legacy semaphore path counts its holders and waiters
+        "_wait_for_heavy_parse_slots",  # counts a caller that has to wait for the shared slots
+        # PARSE_ADMISSION=classes. Every edit below is behind `wiring.classes_enabled()` or an argument only the class path
+        # passes (`ctx`, a CostClass level, `ahead`), so with the flag off each runs its old body (the recorded trace above, and
+        # tests/unit/services/messaging/test_class_admission_off.py, which compares the off path against a copy of the old bodies).
+        "effective_index_tier",  # a CostClass level (never produced with the flag off) routes to the heavy pool
+        "dispatch_tier", "_payload_size",  # the class branch is first and guarded; the old body follows unchanged
+        "GateWaiters.__init__", "GateWaiters.count", "GateWaiters.snapshot",  # a defaultdict seeded with the same two tiers; same counts
+        "DispatchBudget.allows", "DispatchBudget.tiers",  # type widening only
+        "_tier_ceiling", "_class_ceiling", "dispatch_budget",  # class levels only with the flag on; `waiters.get(tier, 0)` equals `waiters[tier]` for both tiers
+        "acquire_index_slot", "acquire_download_slot", "acquire_parsing_slot",  # keyword `ctx` (None = the old body); a CostClass tier takes the class gate first
+        "_acquire_parsing_slot_by_class", "_acquire_remote_by_class", "_backlog_tier", "class_context", "class_kwargs", "reclass_index_slot", "reclass_download_slot",  # new; reached only with a `ctx`
+        "class BigAdmissionTimeout", "BigAdmissionTimeout.__init__", "BigAdmissionTimeout.counts_toward_backstop",  # new exception, raised only by the class path
+        "BigAdmissionTimeout.pauses_consumer", "BigAdmissionTimeout:Expr",
+        # Inspection and the requeue: `first_admission_kwargs` is new and returns {} for anything but a BigAdmissionTimeout
+        # (so the consumers' requeue call is unchanged with the flag off); `spaced` on acquire_parsing_slot defaults to True and only
+        # the class path passes False (test_policy_off_pin's recorded acquire_parsing_slot calls and test_class_admission_off cover it).
+        "first_admission_kwargs",
+        # The backstop's give-up reason: `give_up_label` is None for every hand-back but a same-bytes update, and
+        # `backstop_give_up_reason` then returns the old admission wording unchanged (tests/unit/events/
+        # test_update_coalescing.py::test_the_give_up_reason_names_a_same_bytes_hand_back_and_only_that).
+        "RequeueWithoutAttempt.give_up_label", "backstop_give_up_reason",
+        # Logging only: a failed clear is one structured WARNING (index.retry_clear_failed) instead of a plain ERROR, and is
+        # still swallowed; it runs after settlement and reserves nothing (tests/unit/services/messaging/test_indexing_end.py::
+        # test_redis_retry_tracker_failure_after_the_ack_is_a_second_line).
+        "clear_retry_tracking",
+        # A Docling 429 holds only the records that call Docling (F57f): read and dispatch decisions, no gate or memory charge.
+        "downstream_read_pause", "read_pausing_services", "held_pools", "held_downstream",
+    },
+    "controller.py": {
+        "ResourceGovernor.__init__", "ResourceGovernor._sample_once", "ResourceGovernor.stats",
+        "ResourceGovernor.try_acquire_heavy_parse_slots", "ResourceGovernor.heavy_working_set",
+        # PIPESHUB_CAPACITY_PROFILE=auto only: __init__ (inputs and the container link), _sample_once (one step on the shared limits), stats (one extra key). Flag off: the branches are not taken.
+        "ResourceGovernor._policy_working_set", "ResourceGovernor._measured_base_applies",
+        "ResourceGovernor._resolve_heavy_working_set",
+        # The code sandbox yield signal: without one (every governor but indexing's) none of it runs.
+        "ResourceGovernor._read_yield", "ResourceGovernor._after_yield_read", "ResourceGovernor._yield_stats",
+        "ResourceGovernor.close",
+        # Read-only admission explain.
+        "ResourceGovernor.admission_explain", "ResourceGovernor.slot_wait", "ResourceGovernor.report_memory_incident",
+        "if:TYPE_CHECKING",  # Iterator, for slot_wait; YieldSignal, for the yield signal
+        # A monotonic count of brake entries per pool and reason, incremented where the decision is made
+        # (_sample_once, report_memory_incident) and shown in admission_explain: no limit, state or
+        # admission outcome changes. Reason: load notifications must not miss an entry a delayed read skipped.
+        "ResourceGovernor._count_brake_entries",
+    },
+}
+
+
+def _changed(name: str) -> set[str]:
+    current = trace.unedited_hashes(ROOT / trace.MODULES[name])
+    recorded = RECORDED["hashes"][name]
+    return {k for k in recorded.keys() | current.keys() if recorded.get(k) != current.get(k)}
+
+
+@pytest.mark.parametrize("name", sorted(trace.MODULES))
+def test_off_pin_covers_whole_module_except_allowlist(name: str) -> None:
+    unexpected = {k for k in _changed(name) if not k.startswith("import:")} - EDITED[name]
+    assert not unexpected, f"{name} changed outside the allowlist: {sorted(unexpected)}"
+
+
+@pytest.mark.parametrize("name", sorted(trace.MODULES))
+def test_off_pin_allowlist_is_not_padded(name: str) -> None:
+    padded = EDITED[name] - _changed(name)
+    assert not padded, f"{name}: entries that did not change: {sorted(padded)}"
+
+
+def test_record_memory_cost_and_parse_cost_are_unchanged() -> None:
+    assert trace.cost_grid() == RECORDED["cost"]
+
+
+def test_policy_functions_give_main_s_answers_over_the_environment_grid(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("PARSE_LANES", raising=False)
+    now = trace.policy_grid()
+    recorded = RECORDED["policy"]
+    assert now.keys() == recorded.keys()
+    differing = {k: (now[k], recorded[k]) for k in now if now[k] != recorded[k]}
+    assert not differing, dict(list(differing.items())[:5])
+    assert len(now) > 400, "the grid is not a handful of points"
+
+
+@pytest.mark.parametrize("mode", ["off", "", "junk", "yes"])
+def test_the_policy_grid_does_not_depend_on_the_mode_value(monkeypatch: pytest.MonkeyPatch, mode: str) -> None:
+    monkeypatch.setenv("PARSE_LANES", mode)
+    assert trace.policy_grid() == RECORDED["policy"]
+
+
+def test_consumer_helpers_make_the_same_calls_and_admissions(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("PARSE_LANES", raising=False)
+    import asyncio
+
+    now = asyncio.run(trace._consumer_trace())
+    recorded = RECORDED["consumer"]
+    assert now.keys() == recorded.keys()
+    assert not {k for k in now if json.loads(json.dumps(now[k], default=str)) != recorded[k]}
+
+
+@pytest.mark.parametrize("kind", [k.value for k in ParseKind])
+def test_consumer_trace_with_a_kind_is_the_same_in_off(monkeypatch: pytest.MonkeyPatch, kind: str) -> None:
+    """A kind passed in off changes no call and no Admission field: the excess is zero and nothing is reserved."""
+    import asyncio
+    import logging
+    from types import SimpleNamespace
+
+    from app.services.messaging import consumer_concurrency as cc
+    from app.services.resource_governor.models import ParseTier
+    from tests.unit.services.messaging.governor_test_helpers import make_test_governor
+
+    monkeypatch.delenv("PARSE_LANES", raising=False)
+
+    async def run(kind: ParseKind | None) -> list[object]:
+        governor = make_test_governor(logger_name="test.off.kind")
+        host = SimpleNamespace(governor=governor, logger=logging.getLogger("test.off.kind"))
+        calls: list[object] = []
+        real = governor.memory_budget.reserve
+
+        async def reserve(n, timeout=None, *, held=0):  # noqa: ANN202
+            calls.append(("reserve", n, held))
+            return await real(n, timeout, held=held)
+
+        governor.memory_budget.reserve = reserve  # type: ignore[method-assign]
+        out: list[object] = []
+        for size in (None, 10 * 2**20, 100 * 2**20):
+            for tier in (ParseTier.HEAVY, ParseTier.LIGHT):
+                memory = await cc.reserve_record_memory(host, tier, size, kind=kind)
+                slot = await cc.acquire_parsing_slot(host, tier, size, kind=kind)
+                out.append((None if memory is None else memory.cost, slot.cost, sorted(slot.__dict__)))
+                cc.release_admission(slot)
+                cc.release_admission(memory)
+        governor.close()
+        return [out, calls]
+
+    assert asyncio.run(run(ParseKind(kind))) == asyncio.run(run(None))
+
+
+def test_governor_limits_and_health_fields_are_unchanged(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("PARSE_LANES", raising=False)
+    now = json.loads(json.dumps(trace.governor_trace(), default=str))
+    for value in (*now.values(), *RECORDED["governor"].values()):
+        value["lanes"] = {"mode": value["lanes"]["mode"]}  # the plan reads this host's CPU count
+        value["keys"] = [k for k in value["keys"] if k != "admission"]  # the read-only explain section
+    assert now == RECORDED["governor"]
+    for value in now.values():
+        assert "heavy_working_set" not in value["keys"]
+
+
+def test_off_creates_no_ledger_v3_file(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.delenv("PARSE_LANES", raising=False)
+    monkeypatch.setattr("tempfile.gettempdir", lambda: str(tmp_path))
+    from app.services.resource_governor import lanes as lanes_module
+    from tests.unit.services.resource_governor.test_heavy_working_set import (
+        make,
+        sample,
+    )
+
+    governor = make()
+    sample(governor)
+    assert governor.lanes is None
+    governor.close()
+    assert not [p for p in tmp_path.iterdir() if "cpu-lanes" in p.name]
+    assert lanes_module.open_lane_budget(
+        lanes_module.plan_lanes(cpus=4, heavy=4), local_share=1, environ={"PARSE_LANES": "off"}
+    ) is None
+
+
+def test_off_never_asks_the_memory_budget_for_an_excess_on_the_route(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.services.resource_governor.kinds import ParseKind, permit_excess_bytes
+    from app.services.resource_governor.policy import resolve_heavy_working_set
+
+    monkeypatch.delenv("PARSE_LANES", raising=False)
+    ws = resolve_heavy_working_set()
+    for kind in ParseKind:
+        assert permit_excess_bytes(kind, ws.gb, ws.source) == 0
+
+
+def test_governor_trace_ignores_downstream_feedback_left_by_other_tests(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Throttles reported to the process-wide feedback by an earlier test must not narrow the trace."""
+    from app.services.resource_governor.feedback import (
+        DownstreamFeedback,
+        set_default_downstream_feedback,
+    )
+
+    monkeypatch.delenv("PARSE_LANES", raising=False)
+    left_over = DownstreamFeedback()
+    for _ in range(50):
+        left_over.report_throttle("embedding")
+        left_over.report_timeout("vector_db")
+    set_default_downstream_feedback(left_over)
+    try:
+        now = json.loads(json.dumps(trace.governor_trace(), default=str))
+    finally:
+        set_default_downstream_feedback(None)
+    for value in (*now.values(), *RECORDED["governor"].values()):
+        value["lanes"] = {"mode": value["lanes"]["mode"]}
+        value["keys"] = [k for k in value["keys"] if k != "admission"]
+    assert now == RECORDED["governor"]

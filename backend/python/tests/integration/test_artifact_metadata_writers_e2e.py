@@ -255,10 +255,11 @@ async def test_a_sidecar_of_another_write_is_never_served(
     new_path = (await world.mapping(vrid))["storedMeta"]
     assert new_path != old_path
     sidecars = ArtifactSidecars(NodeArtifactStore(world.blob, stored_write_world.logger), world.blob.config_service)
+    # Planted in the set the pointer names, so only the stamp tells it apart.
     await sidecars.write_at(world.org, vrid, _rev(A), new_path, {
         "storedRun": "gen-it:some-other-write", "storedMeta": new_path,
         "classification": {"summary": "old classification"},
-    })
+    }, stored_run=(await world.mapping(vrid))["currentRun"])
 
     if not stamp:
         monkeypatch.setattr(

@@ -85,6 +85,40 @@ describe('shadow reads (DOC_STORE=shadow)', () => {
     expect(counts['document:diff']).to.equal(1);
   });
 
+  it('a credential read compares the credential without its id and version: PostgreSQL keys a credential by the account', async () => {
+    const cred = { userId: 'u', orgId: 'o', hashedPassword: 'h', wrongCredentialCount: 0, isBlocked: false, isDeleted: false };
+    const repo = shadowWrap(
+      'identity',
+      { find: async () => ({ ...cred, _id: 'credential-doc-id', __v: 0 }) },
+      () => ({ find: async () => ({ ...cred, _id: 'u' }) }),
+      runPg,
+    );
+    await repo.find();
+    await wait(100);
+    expect(counts['identity:equal']).to.equal(1);
+    const other = shadowWrap(
+      'identity',
+      { find: async () => ({ ...cred, _id: 'x', isBlocked: true }) },
+      () => ({ find: async () => ({ ...cred, _id: 'u' }) }),
+      runPg,
+    );
+    await other.find();
+    await wait(100);
+    expect(counts['identity:diff']).to.equal(1);
+  });
+
+  it('a find of another repository still compares the id', async () => {
+    const repo = shadowWrap(
+      'connectors-config',
+      { find: async () => ({ _id: 'a', name: 'n' }) },
+      () => ({ find: async () => ({ _id: 'b', name: 'n' }) }),
+      runPg,
+    );
+    await repo.find();
+    await wait(100);
+    expect(counts['connectors-config:diff']).to.equal(1);
+  });
+
   it('every repository method that looks like a read is classified (a new one must be added to the list or named so it is not one)', () => {
     const root = join(__dirname, '../../../src/libs/repositories');
     const looksRead = /^(find|get|list|count|exists?|search|lookup|has|resolve|read|fetch|load|query|check|select|stats|page)/;
@@ -96,6 +130,27 @@ describe('shadow reads (DOC_STORE=shadow)', () => {
     }
     expect(missing).to.deep.equal([]);
   });
+
+  const g = (id: string, users?: string[]) => ({ _id: id, name: `n-${id}`, type: 'custom', ...(users && { users }) });
+  // [method, MongoDB answer, the same in another order, a real difference]
+  const groupReads: Array<[string, unknown, unknown, unknown]> = [
+    ['groupsOfUser', [g('g1'), g('g2')], [g('g2'), g('g1')], [g('g1'), { ...g('g2'), name: 'other' }]],
+    ['summariesForUsers', [g('g1', ['u1', 'u2']), g('g2', ['u3'])], [g('g2', ['u3']), g('g1', ['u2', 'u1'])], [g('g1', ['u1']), g('g2', ['u3'])]],
+    ['memberIdsOfTypes', ['u1', 'u2', 'u2'], ['u2', 'u1', 'u2'], ['u1', 'u2']],
+  ];
+  for (const [method, left, reordered, different] of groupReads) {
+    it(`${method} is compared in any order: the same answer reordered is equal, a real difference is reported`, async () => {
+      const read = (answer: unknown) =>
+        shadowWrap('group', { [method]: async () => left }, () => ({ [method]: async () => answer }), runPg)[method]!();
+      await read(reordered);
+      await wait(100);
+      expect(counts['group:equal'], 'reordered').to.equal(1);
+      expect(counts['group:diff'], 'reordered').to.equal(undefined);
+      await read(different);
+      await wait(100);
+      expect(counts['group:diff'], 'different').to.equal(1);
+    });
+  }
 
   it('keeps a synchronous method synchronous (isConnected is a boolean, not a promise)', () => {
     const repo = shadowWrap('thing', { isConnected: () => false }, () => ({ isConnected: () => true }), runPg);
@@ -143,13 +198,13 @@ describe('shadow reads (DOC_STORE=shadow)', () => {
   it('never blocks or fails the caller: a slow PostgreSQL read times out, an error is counted, writes are untouched', async () => {
     const wrote: unknown[] = [];
     const repo = shadowWrap('thing', { findOpen: async () => 1, findMessage: async () => 2, create: async (x: unknown) => (wrote.push(x), 'ok') }, () => ({
-      findOpen: () => wait(2000).then(() => 1), findMessage: async () => { throw new Error('boom'); }, create: async () => { throw new Error('must not run'); },
+      findOpen: () => new Promise(() => undefined), findMessage: async () => { throw new Error('boom'); }, create: async () => { throw new Error('must not run'); },
     }), runPg);
-    const t0 = Date.now();
     expect(await repo.findOpen()).to.equal(1);
     expect(await repo.findMessage()).to.equal(2);
     expect(await repo.create('x')).to.equal('ok');
-    expect(Date.now() - t0).to.be.lessThan(150);
+    // The PostgreSQL read never answers: a caller that waited for it would return only after the timeout was counted.
+    expect(counts['thing:timeout']).to.equal(undefined);
     await wait(400);
     expect(counts['thing:timeout']).to.equal(1);
     expect(counts['thing:error']).to.equal(1);

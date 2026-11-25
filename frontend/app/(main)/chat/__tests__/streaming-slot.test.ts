@@ -19,10 +19,12 @@ installMemoryStorage();
 
 vi.mock('@/config', async () => {
   const auth = await vi.importActual<typeof import('@/lib/store/auth-store')>('@/lib/store/auth-store');
-  return { useAuthStore: auth.useAuthStore, logoutAndRedirect: vi.fn() };
+  const rules = await vi.importActual<typeof import('@/app/(main)/chat/approval-ask-rules')>('@/app/(main)/chat/approval-ask-rules');
+  const runErrors = await vi.importActual<typeof import('@/app/(main)/chat/run-error-extras')>('@/app/(main)/chat/run-error-extras');
+  return { useAuthStore: auth.useAuthStore, approvalAskRules: rules.approvalAskRules, runErrorExtras: runErrors.runErrorExtras, logoutAndRedirect: vi.fn() };
 });
 
-const { useAuthStore } = await import('@/lib/store/auth-store');
+const { useAuthStore } = await import('@/config');
 const { useChatStore } = await import('../store');
 const { streamMessageForSlot, streamRegenerateForSlot, loadOlderMessagesForSlot, cancelStreamForSlot } = await import('../streaming');
 const { fakeApi } = await import('@/lib/api/__tests__/fake-api');
@@ -134,7 +136,7 @@ function respondWith(plan: StreamPlan | string[] | Response) {
 beforeEach(() => {
   fetchMock.mockReset();
   vi.stubGlobal('fetch', fetchMock);
-  useAuthStore.setState({ accessToken: jwtExpiringIn(3600), refreshToken: 'r' });
+  useAuthStore.setState({ accessToken: jwtExpiringIn(3600) });
   useChatStore.setState({ ...initialState, slots: {}, activeSlotId: null, pendingConversations: {}, conversations: [] });
   useToastStore.getState().clearAll();
   // The chat only ever runs on /chat; whether a finished answer is "in view" depends on it.
@@ -252,6 +254,35 @@ describe('a new conversation, start to finish', () => {
     // the new answer has no note of its own and the earlier one keeps its note
     expect(earlier).toEqual(['a1']);
     expect(degradedRows(slotId)).toEqual(['a1']);
+  });
+
+  it('keeps the access notices on the answer they came with, and a later answer without them does not inherit them', async () => {
+    const slotId = newSlot();
+    const noticesOf = () => slot(slotId).messages
+      .filter((m) => m.role === 'assistant')
+      .map((m) => (m.metadata?.custom as { accessNotices?: unknown } | undefined)?.accessNotices ?? null);
+    const notices = [{ code: 'connector_syncing', connectorId: 'c1', connectorName: 'Jira' }];
+    respondWith([
+      frame('TEXT_MESSAGE_START'),
+      frame('TEXT_MESSAGE_CONTENT', { delta: 'Revenue was $4.2M.' }),
+      frame('TEXT_MESSAGE_END'),
+      frame('RUN_FINISHED', { result: { conversation: finishedConversation('Revenue was $4.2M.'), meta: { accessNotices: notices } } }),
+    ]);
+    await streamMessageForSlot(slotId, Q, request());
+    expect(noticesOf()).toEqual([notices]);
+    expect(degradedRows(slotId)).toEqual([]);
+
+    const secondTurn = {
+      ...finishedConversation('x'),
+      messages: [
+        ...finishedConversation('x').messages,
+        storedMessage({ _id: 'q2', messageType: 'user_query', content: 'And Q4?' }),
+        storedMessage({ _id: 'a2', messageType: 'bot_response', content: 'Q4 was lower.' }),
+      ],
+    };
+    respondWith([frame('RUN_FINISHED', { result: { conversation: secondTurn, meta: {} } })]);
+    await streamMessageForSlot(slotId, Q, request({ conversationId: 'conv-real' }));
+    expect(noticesOf()).toEqual([notices, null]);
   });
 
   it('ignores an artifact event with no payload instead of failing the run', async () => {
@@ -460,7 +491,7 @@ describe('when the answer fails', () => {
 
     const reply = slot(slotId).messages[1];
     expect(getThreadMessagePlainText(reply)).toBe('Connect GitHub first.');
-    expect(reply.metadata?.custom?.streamError).toEqual({ code: 'mcp_server_config_missing', details });
+    expect(reply.metadata?.custom?.streamError).toEqual({ code: 'mcp_server_config_missing', details, source: 'run' });
   });
 
   it('says PipesHub is busy when the request is rate limited', async () => {
@@ -1339,6 +1370,43 @@ describe('an agent that re-asks a question the user already answered', () => {
     await streamMessageForSlot(slotId, picked, request({ query: picked }), { resumeAskUserQuestion: true });
 
     expect(slot(slotId).pendingAskUserQuestion?.status).toBe('submitted');
+  });
+
+  it('QAFIX-1: the approvals the answer run decided stay as receipts when it ends, not only after a reload', async () => {
+    const slotId = await askThenAnswer();
+    const approval = (interactionId: string, seq: number) => ({
+      type: 'approval', interactionId, runId: 'run-2', toolCallId: `call-${interactionId}`,
+      toolName: 'e2esaas__create_ticket', status: 'approved', seq,
+    });
+    respondWith([
+      frame('TEXT_MESSAGE_START'),
+      frame('TEXT_MESSAGE_CONTENT', { delta: 'Both tickets filed.' }),
+      frame('RUN_FINISHED', {
+        result: {
+          conversation: {
+            ...finishedConversation('Both tickets filed.'),
+            messages: [
+              storedMessage({ _id: 'q1', messageType: 'user_query', content: Q }),
+              asked('t1'),
+              storedMessage({ _id: 'a1', messageType: 'bot_response', content: '' }),
+              storedMessage({ _id: 'sel', messageType: 'user_query', content: picked }),
+              storedMessage({
+                _id: 'a2', messageType: 'bot_response', content: 'Both tickets filed.',
+                parts: [approval('ix.approve.t1.0', 3), approval('ix.approve.t2.0', 7), { type: 'text', content: 'Both tickets filed.' }],
+              } as Partial<ConversationMessage>),
+            ],
+          },
+        },
+      }),
+    ]);
+    await streamMessageForSlot(slotId, picked, request({ query: picked }), { resumeAskUserQuestion: true });
+
+    const parts = slot(slotId).messages.at(-1)?.metadata?.custom?.persistedParts as MessagePart[];
+    expect(parts.filter((p) => p.type === 'approval').map((p) => [p.runId, p.interactionId, p.status])).toEqual([
+      ['run-2', 'ix.approve.t1.0', 'approved'],
+      ['run-2', 'ix.approve.t2.0', 'approved'],
+    ]);
+    expect(parts.some((p) => p.type === 'text' && p.content === 'Both tickets filed.')).toBe(true);
   });
 });
 
