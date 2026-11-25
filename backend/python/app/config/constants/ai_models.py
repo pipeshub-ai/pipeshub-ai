@@ -30,6 +30,12 @@ REMOTE_EMBEDDING_REQUEST_TIMEOUT_SECONDS = 60.0
 # after its caller has given up, while a fresh attempt answers at once.
 QUERY_EMBEDDING_ATTEMPT_TIMEOUT_SECONDS = 15.0
 
+# For a local model (the embedding server, or a provider on an internal address), one deadline over all
+# attempts to embed a search query. It may be loading on first use or after an idle unload, so no single
+# attempt is cut short; but without a deadline a server that accepts the connection and never answers
+# holds the search for the client's own timeout (600s per attempt, retried).
+LOCAL_QUERY_EMBEDDING_DEADLINE_SECONDS = 60.0
+
 class OCRProvider(Enum):
     AZURE_DI = "azureDI"
     VLM_OCR = "vlmOCR"

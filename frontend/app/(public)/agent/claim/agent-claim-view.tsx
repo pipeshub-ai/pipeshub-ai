@@ -73,7 +73,13 @@ export function AgentClaimView() {
     try {
       await apiClient.post(
         COMPLETE_API,
-        { claim_attempt_token: attemptToken, user_code: userCode.trim(), action },
+        {
+          claim_attempt_token: attemptToken,
+          user_code: userCode.trim(),
+          action,
+          // What this page showed: the approval records exactly these, or is refused if they changed since.
+          scopes: asArray(context?.scopes).map((scope) => scope.name),
+        },
         { suppressErrorToast: true },
       );
       setDone(action);
