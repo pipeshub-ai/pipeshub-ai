@@ -553,7 +553,7 @@ delivery. The per-record stats keep `vector_failures` and `graph_failures`
 (failed attempts, so a record that resolved after one retry shows 1), and a
 deferred record logs `entity_resolution deferred: ...` with them.
 
-Metrics live in `app/telemetry/modules/entity_resolution_metrics.py`:
+Metrics live in `app/plugins/telemetry/modules/entity_resolution_metrics.py`:
 names by outcome, model calls by result, fallbacks by reason and per-record
 latency. Each record also logs one `entity_resolution mode=... tier0_hits=...`
 line.

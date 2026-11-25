@@ -55,7 +55,7 @@ READS = {
         "/services/aiModels": ("app/embedding_main.py::_local_model_in_use", "config_node_constants.AI_MODELS.value"),         # also utils/llm.py::is_local_cpu_embedding_configured (docling, parsing), extraction/client.py::ExtractionClient._context_length_ceiling
         "/services/secretKeys": ("app/api/middlewares/auth.py::isJwtTokenValid", "config_node_constants.SECRET_KEYS.value"),  # parsing and extraction routes; policy_store.py::IdentityPolicyStore.pseudonym_key (pseudonyms)
         "/services/aiGateway/identityPolicy": ("app/services/model_identity/policy_store.py::IdentityPolicyStore._load", "config_node_constants.AI_GATEWAY_IDENTITY_POLICY.value"),  # routes/parsing.py::_parse_file, routes/extraction.py::classify
-        "/services/metricsCollection": ("app/telemetry/pusher.py::MetricsPusher._load_config", "get_config(METRICS_CONFIG_KEY"),  # embedding, docling (pusher bound at start)
+        "/services/metricsCollection": ("app/plugins/telemetry/pusher.py::MetricsPusher._load_config", "get_config(METRICS_CONFIG_KEY"),  # embedding, docling (the telemetry plug-in binds the pusher at start; loaded from app/plugins_manifest.py, not imported)
         "/migrations/etcd_to_redis": ("app/config/configuration_service.py::ConfigurationService._start_watch.watch_worker", "_migration_completed(migration_flag_key)"),  # every ConfigurationService
         # parsing and extraction bind the fleet breaker at start (fleet_redis.bind_service_fleet): created if absent, then read
         "/services/indexing/spendGuard/hmacKey": ("app/services/llm_gateway/fleet_breaker.py::load_install_secret", "get_config(INSTALL_SECRET_KEY"),
@@ -83,7 +83,7 @@ READS = {
         "/services/aiModels": ("app/modules/transformers/entity_vectorstore.py::EntityVectorStore._load_embedding_configs", "config_node_constants.AI_MODELS.value"),
         "/services/aiGateway/identityPolicy": ("app/services/model_identity/policy_store.py::IdentityPolicyStore._load", "config_node_constants.AI_GATEWAY_IDENTITY_POLICY.value"),
         "/services/namedEntities": ("app/modules/named_entities/domain/config.py::load_named_entity_config", "config_node_constants.NAMED_ENTITIES.value"),
-        "/services/metricsCollection": ("app/telemetry/pusher.py::MetricsPusher._load_config", "get_config(METRICS_CONFIG_KEY"),
+        "/services/metricsCollection": ("app/plugins/telemetry/pusher.py::MetricsPusher._load_config", "get_config(METRICS_CONFIG_KEY"),
         "/services/platform/settings": ("app/services/featureflag/platform_settings.py::read_platform_feature_flag", "PLATFORM_SETTINGS_KEY"),  # pipeline stages
         "/services/file_types/config": ("app/services/messaging/kafka/handlers/record.py::RecordEventHandler._disabled_file_types", "get_config(file_types.FILE_TYPES_CONFIG_KEY"),  # the record event handler
         "/migrations/kh_listing_state_v1": ("app/services/graph_db/neo4j/neo4j_provider.py::Neo4jProvider._kh_listing_state_ready", "get_config(KH_LISTING_STATE_FLAG"),
