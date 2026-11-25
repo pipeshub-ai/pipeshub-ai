@@ -977,7 +977,14 @@ class SlackConnector(BaseConnector):
                 self.logger.error(f"❌ users.list failed: {getattr(resp, 'error', 'no response')}")
                 break
 
-            members = resp.data.get("members", [])
+            members = resp.data.get("members") if isinstance(resp.data, dict) else None
+            if not isinstance(members, list):
+                # Not a page of users: it says nothing about whether more follow.
+                self._full_sync_read_failed = True
+                self._users_read_failed = True
+                listing.cut("a user page had no members list")
+                self.logger.error("❌ users.list returned a page with no members list")
+                break
             if not members:
                 # An empty page that points further is a listing that stopped early.
                 if (resp.data.get("response_metadata") or {}).get("next_cursor"):
