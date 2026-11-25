@@ -511,7 +511,7 @@ class JiraDataCenter(Source):
     can = frozenset({Can.EMPTY_PAGE_WITH_CURSOR, Can.MORE_WITHOUT_CURSOR, Can.INACTIVE})
     miss = Presence.ABSENT
     failures = (403, 500)
-    malformed = ({"not": "a page"}, "not a page", {"values": None}, None)
+    malformed = ({"not": "a page"}, "not a page", {"values": None}, {"values": []}, [], None)
     broken = ("not a row",)
 
     def wire(self) -> MagicMock:
