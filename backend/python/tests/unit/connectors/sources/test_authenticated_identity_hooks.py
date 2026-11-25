@@ -1454,7 +1454,7 @@ class TestJiraDataCenterSyncOrder:
         ]
         conn = _connector(
             JiraDataCenterConnector, data_source=MagicMock(), connector_name="JIRA", _user_bulk_forbidden=False,
-            _user_bulk_incomplete=False, _user_read_unfinished=False, _user_listing=None,
+            _user_bulk_incomplete=False, _user_read_unfinished=False, _user_list_end_unsaid=False, _user_listing=None,
             _dc_name_to_source_id={}, _seen_user_keys=set(),
         )
         conn.data_entities_processor = MagicMock(

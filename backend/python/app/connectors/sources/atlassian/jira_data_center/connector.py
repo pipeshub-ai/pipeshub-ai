@@ -571,6 +571,8 @@ class JiraDataCenterConnector(BaseConnector):
         # are held back. A read refused from its first page is the account's lasting answer
         # and does not set this: the sync then fails closed.
         self._user_read_unfinished: bool = False
+        # /user/list ended with a page that neither said it was the last nor pointed further.
+        self._user_list_end_unsaid: bool = False
         # This sync's user listing, for the authenticator's link; None until _fetch_users builds one.
         self._user_listing: SourceUserListing | None = None
         self._stored_app_users: list[AppUser] = []
@@ -1833,6 +1835,8 @@ class JiraDataCenterConnector(BaseConnector):
             listing.add_row(email, user_key)
         if self._user_read_unfinished:
             listing.cut("the user list was not read to its end")
+        elif self._user_list_end_unsaid:
+            listing.cut("the user list did not say it ended")
         else:
             listing.finish()
         return listing
@@ -1934,11 +1938,14 @@ class JiraDataCenterConnector(BaseConnector):
                 self._user_read_unfinished = True
                 break
             batch_users, next_cursor = page
-            if not batch_users and not next_cursor:
-                break
-
             users.extend(batch_users)
             if not next_cursor:
+                is_last = payload.get("isLast") if isinstance(payload, dict) else None
+                if is_last is False:
+                    self.logger.error("/user/list says more users follow but gave no cursor")
+                    self._user_read_unfinished = True
+                elif is_last is not True:
+                    self._user_list_end_unsaid = True
                 break
             cursor = next_cursor
 
@@ -2070,6 +2077,7 @@ class JiraDataCenterConnector(BaseConnector):
         self._user_bulk_forbidden = False
         self._user_bulk_refused = False
         self._user_bulk_incomplete = False
+        self._user_list_end_unsaid = False
 
         list_users = await self._fetch_users_via_list() if self._dc_profile.user_list else None
         if list_users is not None:
