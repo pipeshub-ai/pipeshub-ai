@@ -4,8 +4,8 @@ The kernel is product-neutral, but a few seams need behaviour only the host
 product knows: how to repair a malformed tool call, where learned provider
 API modes are recorded, which events are derived from each emitted event,
 which tool argument streams as answer text, how spawn batches are scheduled,
-which builtin special-route handlers exist, and how the kernel's log lines
-are shaped. Each seam left as ``None``
+which builtin special-route handlers exist, how the kernel's log lines
+are shaped, and who hears that a tool call ended. Each seam left as ``None``
 gives the neutral behaviour. Seams tied to one ``AgentRuntime`` are copied
 onto the runtime when it is built, so a runtime can still opt out.
 """
@@ -50,6 +50,16 @@ class SpawnBatchScheduler(Protocol):
     async def cancel_pending(self, tasks: dict[str, asyncio.Task[Any]]) -> None: ...
 
 
+class ToolCallObserver(Protocol):
+    """Hears that a tool call ended: the registered tool's name (``unregistered`` for a name the model made up), its
+    kind, how the call ended and how long it took. Never its arguments or its output. ``wanted`` is asked once per
+    call before it starts; while it says no, the executor reads no clock for it."""
+
+    def wanted(self) -> bool: ...
+
+    def ended(self, *, tool: str, kind: str | None, outcome: str, duration_seconds: float) -> None: ...
+
+
 # Returns the recovery function, or raises when it is unavailable; the
 # transport then falls back to a plain JSON parse.
 InvalidToolCallRecovery: TypeAlias = "Callable[[], Callable[[Mapping[str, Any]], ToolCall]]"
@@ -71,6 +81,8 @@ class KernelBindings:
     output_limits: Callable[[], OutputLimits] | None = None
     # The host's log line shapes (`harness_core.log_lines`); ``None`` writes plain standard library lines.
     log_lines: LogLines | None = None
+    # Told of every tool call ``ToolExecutor.call_tool`` ends; ``None`` tells nobody.
+    tool_call_observer: ToolCallObserver | None = None
 
 
 NEUTRAL = KernelBindings()

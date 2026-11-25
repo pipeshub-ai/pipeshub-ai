@@ -547,6 +547,14 @@ class KernelDB:
             raise lost from e
         waited = time.perf_counter() - t_start
         platform_events.emit("db.connection.acquired", service=self.cfg.service, wait_seconds=waited)
+        if platform_events.has_listeners("db.pool.sampled"):
+            platform_events.emit(
+                "db.pool.sampled",
+                service=self.cfg.service,
+                pool_size=pool.get_size(),
+                pool_idle=pool.get_idle_size(),
+                pool_max=pool.get_max_size(),
+            )
         if timeout_ms and statement_ms <= timeout_ms:      # the caller's budget covers the wait for a connection and the statement together
             statement_ms = max(1, statement_ms - int(waited * 1000))
         tx = Tx(con, self, klass=klass, idempotent=idempotent, request_id=request_id)

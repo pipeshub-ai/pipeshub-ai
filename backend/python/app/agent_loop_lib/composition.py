@@ -19,6 +19,7 @@ import logging
 from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, Any
 
+from app.agent_loop_lib.tool_call_events import TOOL_CALL_EVENTS
 from harness_core import bindings
 
 if TYPE_CHECKING:
@@ -212,6 +213,7 @@ def install() -> None:
             special_route_fallback=_special_route_fallback,
             output_limits=_output_limits,
             log_lines=APP_LOG_LINES,
+            tool_call_observer=TOOL_CALL_EVENTS,
         )
     )
 

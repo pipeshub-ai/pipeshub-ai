@@ -1,5 +1,6 @@
 import asyncio
 import contextvars
+import functools
 import logging
 import math
 import os
@@ -562,6 +563,49 @@ def _naming_rate_limits() -> Iterator[None]:
         if EmbeddingGateway.retry_kind(exc) is not RetryKind.THROTTLE:
             raise
         raise QueryEmbeddingRateLimitedError from exc
+def _result_count(result: object) -> int:
+    """How many results a search returned: the list of a semantic search, the hits of every query of a lexical one."""
+    if isinstance(result, dict):
+        found = result.get("searchResults")
+        return len(found) if isinstance(found, list) else 0
+    hits = getattr(result, "hits", None)
+    return sum(len(query_hits) for query_hits in hits) if isinstance(hits, list) else 0
+
+
+def _announced(search_type: str) -> Callable[[Callable[..., Awaitable[Any]]], Callable[..., Awaitable[Any]]]:
+    """Announce each call of a ``RetrievalService`` search as ``retrieval.completed``: which kind of search, how many
+    queries and results, how long it took and how it ended (a semantic search answers a failure with a status
+    instead of raising). Never a query or a result."""
+
+    def decorate(search: Callable[..., Awaitable[Any]]) -> Callable[..., Awaitable[Any]]:
+        @functools.wraps(search)
+        async def announced(self: "RetrievalService", queries: list[str], user_id: str, org_id: str, *args: Any, **kwargs: Any) -> Any:  # noqa: ANN401 - the search's own signature
+            started = time.perf_counter()
+            result: Any = None
+            ok = False
+            try:
+                result = await search(self, queries, user_id, org_id, *args, **kwargs)
+                status = result.get("status_code") if isinstance(result, dict) else None
+                ok = not isinstance(status, int) or status < _FAILURE_STATUS
+                return result
+            finally:
+                if platform_events.has_listeners("retrieval.completed"):
+                    platform_events.emit(
+                        "retrieval.completed",
+                        org_id=org_id,
+                        search_type=search_type,
+                        query_count=len(queries),
+                        count=_result_count(result),
+                        duration_seconds=time.perf_counter() - started,
+                        outcome="success" if ok else "failure",
+                    )
+
+        return announced
+
+    return decorate
+
+
+_FAILURE_STATUS = 400
 
 
 class RetrievalService:
@@ -850,6 +894,7 @@ class RetrievalService:
             formatted_results.append(formatted_result)
         return formatted_results
 
+    @_announced("semantic")
     async def search_with_filters(
         self,
         queries: list[str],
@@ -2521,6 +2566,7 @@ class RetrievalService:
             return None
         return sum(counts)
 
+    @_announced("lexical")
     async def search_lexical(
         self,
         queries: list[str],

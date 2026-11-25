@@ -39,9 +39,15 @@ def _delta(sample: str, emit) -> float:
 
 def test_the_plugin_listens_to_every_catalogued_event() -> None:
     """Nothing the application says goes unheard. The two governor events are heard by the ops exporter wiring;
-    the two broker events are announced for other plug-ins and this one records nothing from them."""
+    the broker events and the per-call ones (a model call, a tool call, an indexing stage, a retrieval, an outbound
+    request, a pool sample) are announced for other plug-ins: no usage metric is defined on them, so this one
+    records nothing from them."""
     unheard = set(catalog.EVENTS) - set(listeners.handlers())
-    assert unheard == {"resource_governor.started", "resource_governor.stopped", "message.published", "message.consumed"}
+    assert unheard == {
+        "resource_governor.started", "resource_governor.stopped", "message.published", "message.consumed",
+        "llm.call.completed", "tool.call.completed", "indexing.stage.completed", "retrieval.completed",
+        "http.client.request.completed", "db.pool.sampled",
+    }
     for name, handler in listeners.handlers().items():
         assert platform_events.is_listening(name, handler), name
 

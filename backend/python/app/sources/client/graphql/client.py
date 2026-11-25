@@ -6,6 +6,7 @@ import aiohttp  # type: ignore
 
 from app.sources.client.graphql.response import GraphQLResponse
 from app.sources.client.http.send_ambiguity import note_aiohttp_failure, note_status
+from app.utils import http_client_events
 
 _OPERATION = re.compile(r"^\s*(?:#[^\n]*\n\s*)*(\w+)")
 
@@ -63,17 +64,21 @@ class GraphQLClient(ABC):
         try:
             timeout = aiohttp.ClientTimeout(total=self.timeout)
             async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.post(
-                    self.endpoint,
-                    json=payload,
-                    headers=self.headers
-                ) as response:
-                    if mutation:
-                        note_status("POST", response.status)
-                    response_data = await response.json()
-                    return GraphQLResponse.from_response(
-                        response_data, status_code=response.status
-                    )
+                with http_client_events.request(
+                    http_client_events.upstream_of(self), "POST", library="aiohttp"
+                ) as call:
+                    async with session.post(
+                        self.endpoint,
+                        json=payload,
+                        headers=self.headers
+                    ) as response:
+                        call.status = response.status
+                        if mutation:
+                            note_status("POST", response.status)
+                        response_data = await response.json()
+                        return GraphQLResponse.from_response(
+                            response_data, status_code=response.status
+                        )
         except aiohttp.ClientError as e:
             note_aiohttp_failure(e, unsafe=mutation)
             # ContentTypeError (a non-JSON error body) and ClientResponseError

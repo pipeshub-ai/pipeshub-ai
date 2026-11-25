@@ -1,4 +1,5 @@
 import secrets
+import time
 from typing import Optional
 
 import httpx  # type: ignore
@@ -9,6 +10,7 @@ from app.sources.client.http.http_response import HTTPResponse
 from app.sources.client.http.send_ambiguity import note_httpx_failure, note_status
 from app.sources.client.iclient import IClient
 from app.sources.client.resilience import ResiliencePolicy, parse_retry_after
+from app.utils import http_client_events
 
 
 class HTTPClient(IClient):
@@ -114,11 +116,15 @@ class HTTPClient(IClient):
         elif isinstance(request.body, bytes):
             request_kwargs["content"] = request.body
 
+        started = time.perf_counter()
         try:
             response = await client.request(request.method, url, **request_kwargs)
-        except httpx.HTTPError as exc:
-            note_httpx_failure(request.method, exc)
+        except BaseException as exc:
+            if isinstance(exc, httpx.HTTPError):
+                note_httpx_failure(request.method, exc)
+            http_client_events.completed(http_client_events.upstream_of(self), request.method, started)
             raise
+        http_client_events.completed(http_client_events.upstream_of(self), request.method, started, response.status_code)
         note_status(request.method, response.status_code)
         retry_after = parse_retry_after(response.headers)
         if is_throttle(response.status_code, retry_after):

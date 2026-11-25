@@ -3704,6 +3704,11 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             parsed_message.payload.get("recordId"),
             parsed_message.eventType,
             index_tier.value,
+            connector=parsed_message.payload.get("connectorName"),
+            broker="kafka",
+            topic=message.topic,
+            # A record always has the broker's timestamp; a stand-in for one may not.
+            published_at_ms=getattr(message, "timestamp", None),
         )
 
         async def give_up(reason: str, attempts: int) -> None:

@@ -20,6 +20,7 @@ import httpx
 
 from app.services.model_identity.propagation import PCP_CLAIM, encode_pcp
 from app.services.resource_governor.feedback import get_default_downstream_feedback
+from app.utils import http_client_events
 from app.utils.jwt import generate_jwt
 from app.utils.request_context import inject_request_headers
 
@@ -556,7 +557,13 @@ class BaseServiceClient:
                         kwargs["data"] = data
 
                     async with self._attempt_slot():
-                        response = await client.request(method, url, **kwargs)
+                        attempt_started = time.perf_counter()
+                        try:
+                            response = await client.request(method, url, **kwargs)
+                        except BaseException:
+                            http_client_events.completed(self.service_name, method, attempt_started)
+                            raise
+                        http_client_events.completed(self.service_name, method, attempt_started, response.status_code)
                     last_status = response.status_code
                     response.extensions[EARLIER_ATTEMPT_DELIVERED] = delivered
                     # A 429 with Retry-After is the service declining before any work; every other answer may

@@ -1155,3 +1155,28 @@ def test_a_driver_error_on_a_connection_the_pool_already_took_back_is_a_lost_con
     tx._con = SimpleNamespace(is_closed=released)  # type: ignore[assignment]
     err = asyncpg.InternalClientError("unexpected message while the backend was ended")
     assert isinstance(_db().map_error(err, tx), ConnectionLost)
+# ---- db.pool.sampled: the pool's size, read when a connection is handed out -----------------------------------------
+
+async def test_the_pool_size_is_announced_when_a_connection_is_handed_out() -> None:
+    from unittest.mock import AsyncMock, MagicMock
+
+    from app.core.db.config import TIMEOUT_CLASSES
+    from tests.support.platform_event_capture import captured_events, facts
+
+    pool = MagicMock(acquire=AsyncMock(side_effect=lambda **_k: MagicMock()), release=AsyncMock())
+    pool.get_size.return_value, pool.get_idle_size.return_value, pool.get_max_size.return_value = 7, 2, 20
+
+    async def open_once() -> None:
+        try:
+            async with _db()._open(pool, role="r", org_id="", request_id="q", klass=next(iter(TIMEOUT_CLASSES)), write=False):
+                pass
+        except Exception:  # a mocked connection may not open a unit; the pool was read before it
+            pass
+
+    await open_once()
+    pool.get_size.assert_not_called()  # nobody listened: the pool is not asked
+
+    with captured_events("db.pool.sampled") as events:
+        await open_once()
+
+    assert facts(events, "db.pool.sampled") == [{"service": _db().cfg.service, "pool_size": 7, "pool_idle": 2, "pool_max": 20}]

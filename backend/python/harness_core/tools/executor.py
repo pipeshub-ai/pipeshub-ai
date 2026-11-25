@@ -27,6 +27,7 @@ from dataclasses import dataclass, replace
 from types import MappingProxyType
 from typing import TYPE_CHECKING
 
+from harness_core import bindings
 from harness_core.deadline import call_deadline, remaining_s
 from harness_core.effects.ambiguity import (
     note_ambiguous_send,
@@ -190,6 +191,23 @@ def _usage_hint(tool: "Tool") -> str:
     return "\n".join(lines)
 
 
+UNREGISTERED_TOOL = "unregistered"
+
+
+def _tell_observer(observer: bindings.ToolCallObserver, tool: "Tool | None", ended: _Ended, started: float) -> None:
+    """One call ended: the registered tool's own name (a name the model made up is ``unregistered``), its kind, how
+    it ended and how long it took. A failing observer never fails the call."""
+    try:
+        observer.ended(
+            tool=tool.name if tool is not None else UNREGISTERED_TOOL,
+            kind=tool.log_kind if tool is not None else None,
+            outcome=ended.outcome,
+            duration_seconds=time.perf_counter() - started,
+        )
+    except Exception:
+        logger.debug("tool call observer failed", exc_info=True)
+
+
 class ToolExecutor:
     """Resolves a tool by name and dispatches it through the hook pipelines."""
 
@@ -305,6 +323,11 @@ class ToolExecutor:
         tool = self._registry.resolve_by_name(resolved_name) if self._registry.has(resolved_name) else None
         ids = tool.log_ids if tool is not None else {}
         ended = _Ended()
+        observer = bindings.current().tool_call_observer
+        if observer is not None and not observer.wanted():
+            observer = None
+        # Read only for the observer, so only when somebody listens.
+        started = time.perf_counter() if observer is not None else 0.0
         with log_fields(
             tool=resolved_name[:MAX_LOGGED_TOOL_NAME], tool_call_id=call.id,
             mcp_server_id=ids.get("mcp_server_id"), toolset_id=ids.get("toolset_id"),
@@ -318,8 +341,12 @@ class ToolExecutor:
                 )
             except BaseException as exc:
                 self._log_end(ended, tool, raised=exc)
+                if observer is not None:
+                    _tell_observer(observer, tool, ended, started)
                 raise
             self._log_end(ended, tool)
+            if observer is not None:
+                _tell_observer(observer, tool, ended, started)
         return result
 
     @staticmethod

@@ -9,8 +9,9 @@ every attempt inside ``bindings.scoped(durable_bindings())``.
   ``answer_markdown`` streams as the answer when the deployment enables the tool.
 - ``spawn_scheduler`` / ``special_route_fallback``: none. Child runs and
   coordination tools arrive with P3; the durable tool set has no special routes.
-- ``invalid_tool_call_recovery`` / ``api_mode_store`` / ``log_lines``: the same
-  PipesHub functions the legacy path binds, passed by reference here.
+- ``invalid_tool_call_recovery`` / ``api_mode_store`` / ``log_lines`` /
+  ``tool_call_observer``: the same PipesHub functions the legacy path binds,
+  passed by reference here.
 """
 
 from __future__ import annotations
@@ -51,6 +52,7 @@ def _output_limits() -> OutputLimits:
 
 def durable_bindings() -> KernelBindings:
     from app.agent_loop_lib.composition import APP_LOG_LINES
+    from app.agent_loop_lib.tool_call_events import TOOL_CALL_EVENTS
 
     return KernelBindings(
         invalid_tool_call_recovery=_invalid_tool_call_recovery,
@@ -61,6 +63,7 @@ def durable_bindings() -> KernelBindings:
         special_route_fallback=None,
         output_limits=_output_limits,
         log_lines=APP_LOG_LINES,
+        tool_call_observer=TOOL_CALL_EVENTS,
     )
 
 

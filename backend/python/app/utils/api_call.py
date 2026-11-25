@@ -12,6 +12,7 @@ from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.base.error.stream_errors import SOURCE_REFUSAL_HEADER
 from app.exceptions.non_retryable import NonRetryableError
 from app.services.base_client import parse_retry_after
+from app.utils import http_client_events
 from app.utils.request_context import inject_request_headers
 
 # 4xx responses that *are* worth retrying — caller may be rate-limited
@@ -22,6 +23,8 @@ from app.utils.request_context import inject_request_headers
 _RETRYABLE_4XX_STATUSES = {408, HttpStatusCode.TOO_MANY_REQUESTS.value}
 
 _MAX_ATTEMPTS = 3
+# Who these calls go to, as ``http.client.request.completed`` names it: a service of this product, by a signed route.
+_UPSTREAM = "internal_api"
 _MAX_RETRY_WAIT_SECONDS = 15
 
 
@@ -139,40 +142,42 @@ async def make_api_call(route: str, token: str, *, max_bytes: int | None = None)
             })
 
             # Make the request
-            async with session.get(url, headers=headers) as response:
-                # Check status code FIRST - before reading content
-                if response.status != HttpStatusCode.SUCCESS.value:
-                    error_text = await response.text()
-                    raise ApiCallError(
-                        f"API call to {url} failed with status {response.status}: {error_text}",
-                        status_code=response.status,
-                        retry_after_seconds=parse_retry_after(response.headers.get("Retry-After")),
-                        source_reason=_source_reason(response.headers, error_text),
-                    )
+            with http_client_events.request(_UPSTREAM, "GET", library="aiohttp") as call:
+                async with session.get(url, headers=headers) as response:
+                    call.status = response.status
+                    # Check status code FIRST - before reading content
+                    if response.status != HttpStatusCode.SUCCESS.value:
+                        error_text = await response.text()
+                        raise ApiCallError(
+                            f"API call to {url} failed with status {response.status}: {error_text}",
+                            status_code=response.status,
+                            retry_after_seconds=parse_retry_after(response.headers.get("Retry-After")),
+                            source_reason=_source_reason(response.headers, error_text),
+                        )
 
-                content_type = response.headers.get("Content-Type", "").lower()
+                    content_type = response.headers.get("Content-Type", "").lower()
 
-                if max_bytes is not None:
-                    # Held to a size: the body is read in chunks and refused once it passes it.
-                    body = await read_limited(response, max_bytes)
-                    if "application/json" in content_type:
+                    if max_bytes is not None:
+                        # Held to a size: the body is read in chunks and refused once it passes it.
+                        body = await read_limited(response, max_bytes)
+                        if "application/json" in content_type:
+                            try:
+                                return {"is_json": True, "data": json.loads(body)}
+                            except ValueError:
+                                pass
+                        return {"is_json": False, "data": body}
+
+                    if response.status == HttpStatusCode.SUCCESS.value and "application/json" in content_type:
                         try:
-                            return {"is_json": True, "data": json.loads(body)}
+                            data = await response.json()
+                            return {"is_json": True, "data": data}
                         except ValueError:
-                            pass
-                    return {"is_json": False, "data": body}
-
-                if response.status == HttpStatusCode.SUCCESS.value and "application/json" in content_type:
-                    try:
-                        data = await response.json()
-                        return {"is_json": True, "data": data}
-                    except ValueError:
-                        # A file served as JSON is not always JSON: Kafka's protocol schemas and
-                        # tsconfig.json carry // comments. Hand over its bytes as for any file.
-                        return {"is_json": False, "data": await response.read()}
-                else:
-                    data = await response.read()
-                    return {"is_json": False, "data": data}
+                            # A file served as JSON is not always JSON: Kafka's protocol schemas and
+                            # tsconfig.json carry // comments. Hand over its bytes as for any file.
+                            return {"is_json": False, "data": await response.read()}
+                    else:
+                        data = await response.read()
+                        return {"is_json": False, "data": data}
     except aiohttp.ClientPayloadError:
         # Server committed to 200/chunked and then died mid-stream. Don't
         # retry — surface the real cause unchanged so the upstream handler

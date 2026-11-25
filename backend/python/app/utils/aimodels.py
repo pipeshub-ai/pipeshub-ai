@@ -71,16 +71,20 @@ def _decorate_chat_model(model, provider, model_name, config):  # noqa: ANN001, 
     # every service using this module should not have to load.
     from app.edition_services import decorate_chat_model
     from app.services.model_identity.transport.instrument import instrument_model
+    from app.utils.model_call_events import announce_chat_model
 
-    # Before the edition decorators, so they wrap a model that already carries identity.
-    return decorate_chat_model(instrument_model(model, provider, config), provider, model_name, config)
+    # Before the edition decorators, so they wrap a model that already carries identity and announces its calls.
+    model = announce_chat_model(instrument_model(model, provider, config), provider, model_name, config)
+    return decorate_chat_model(model, provider, model_name, config)
 
 
 def _decorate_embeddings(embeddings, provider, model_name, config):  # noqa: ANN001, ANN202
     from app.edition_services import decorate_embeddings
     from app.services.model_identity.transport.instrument import instrument_model
+    from app.utils.model_call_events import announce_embeddings
 
-    return decorate_embeddings(instrument_model(embeddings, provider, config), provider, model_name, config)
+    embeddings = announce_embeddings(instrument_model(embeddings, provider, config), provider, model_name, config)
+    return decorate_embeddings(embeddings, provider, model_name, config)
 
 def coerce_message_content_to_text(content: Any) -> str:
     """Normalize a LangChain message ``content`` value to plain text.

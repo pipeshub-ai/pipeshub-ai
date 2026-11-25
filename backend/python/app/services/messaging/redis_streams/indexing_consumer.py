@@ -36,8 +36,8 @@ from app.modules.indexing.record_progress import (
     new_progress,
 )
 from app.services.distributed.interface import IDistributedLeaseManager, IRetryTracker
+from app.services.messaging import broker_events, record_budget
 from app.services.messaging import consumer_concurrency as concurrency
-from app.services.messaging import record_budget
 from app.services.messaging.backpressure import BackpressureEpisode
 from app.services.messaging.config import (
     IndexingEvent,
@@ -4443,6 +4443,10 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             parsed_message.payload.get("recordId"),
             parsed_message.eventType,
             index_tier.value,
+            connector=parsed_message.payload.get("connectorName"),
+            broker="redis",
+            topic=stream_name,
+            published_at_ms=broker_events.stream_entry_ms(message_id),
         )
 
         async def give_up(reason: str, attempts: int) -> None:
