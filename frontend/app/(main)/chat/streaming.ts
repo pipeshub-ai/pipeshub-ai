@@ -653,6 +653,11 @@ function notifyAskUserQuestionResumeFailed(detail: string): void {
   });
 }
 
+function notifyRegenerateFailed(error: unknown): void {
+  const description = error instanceof StreamError && error.status !== undefined ? error.message : undefined;
+  toast.error(i18n.t('chatStream.regenerateFailed'), description ? { description } : undefined);
+}
+
 function notifyToolApprovalFailed(detail: string): void {
   toast.error(i18n.t('chat.toolApproval.answerFailed'), {
     ...(detail ? { description: detail } : {}),
@@ -2156,6 +2161,7 @@ export async function streamRegenerateForSlot(
       }
       cancelPendingStatus();
       console.error('[streaming] Regenerate error for slot', slotId, error);
+      notifyRegenerateFailed(error);
       const dropped = turnIsAskedAgain && !editWasNotTaken(error);
       useChatStore.getState().updateSlot(slotId, {
         ...(dropped ? {} : undoEditedQuestion()),
@@ -2265,6 +2271,7 @@ export async function streamRegenerateForSlot(
     if (!slotIsOnRun(slotId, streamRunId)) return;
     if (!aborted) {
       console.error('[streaming] Fatal regenerate error for slot', slotId, error);
+      if (!useChatStore.getState().slots[slotId]?.stopping) notifyRegenerateFailed(error);
     }
     const dropped = turnIsAskedAgain && !aborted && !editWasNotTaken(error);
     useChatStore.getState().updateSlot(slotId, {

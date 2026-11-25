@@ -142,6 +142,7 @@
     "refiningResponse": "正在优化回复…",
     "errorFallback": "发生错误。请重试。",
     "askQuestionResumeFailed": "无法发送你的回答。请再次提交以重试。",
+    "regenerateFailed": "无法重新生成。请检查网络连接后重试。",
     "copyCode": "复制",
     "copiedCode": "已复制",
     "remoteImageBlocked": "未加载外部图片",
@@ -849,6 +850,9 @@
     "listening": "正在聆听…",
     "voiceInputNotSupported": "此浏览器不支持语音输入",
     "voiceError": "无法访问麦克风",
+    "voiceNoMic": "未找到麦克风。",
+    "voiceTooLong": "录音太长。请尝试较短的录音。",
+    "voiceTranscribeFailed": "无法将语音转换为文字。请重试或直接输入。",
     "noModelsAvailable": "尚未配置任何 AI 模型",
     "failedToLoadModels": "加载 AI 模型失败",
     "failedToLoadAgentConfig": "加载此智能体的模型配置失败",
@@ -1003,6 +1007,7 @@
     "unpin": "取消置顶",
     "pinned": "已置顶",
     "pinFailed": "无法置顶聊天",
+    "answerInProgressSidebar": "请等待回答完成，或先点击停止。",
     "unpinFailed": "无法取消置顶聊天",
     "export": {
       "menuItem": "导出",
@@ -3111,6 +3116,8 @@
       "saveConfig": "保存配置",
       "continueToConfiguration": "继续进行配置 →",
       "oauthSigningIn": "请完成您的提供商登录…",
+      "oauthNotConfirmed": "无法确认登录。如果您关闭了窗口，请选择“登录”重试。如果您已完成登录，请关闭此面板并重新打开，查看是否显示“已连接”。",
+      "oauthTimedOut": "登录在 5 分钟后超时。请选择“登录”重试。",
       "authRequiredBeforeConfig": "请先完成 OAuth 授权，再配置同步和筛选条件",
       "backToCredentials": "返回凭证",
       "backFromConfigure": "返回",
@@ -4633,6 +4640,9 @@
       }
     },
     "prompts": {
+      "loadError": {
+        "title": "无法加载已保存的提示词"
+      },
       "label": "系统提示词",
       "labelDescription": "定义 AI 助手的行为和个性",
       "title": "自定义系统提示词",
@@ -5802,6 +5812,7 @@
     }
   },
   "recordView": {
+    "fullscreenBlocked": "您的浏览器不允许全屏。",
     "sections": {
       "documentSummary": "摘要",
       "documentFields": "文档",

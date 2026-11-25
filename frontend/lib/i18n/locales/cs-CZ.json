@@ -166,6 +166,7 @@
     "refiningResponse": "Upřesňuji odpověď…",
     "errorFallback": "Došlo k chybě. Zkuste to prosím znovu.",
     "askQuestionResumeFailed": "Vaše odpovědi se nepodařilo odeslat. Odešlete je znovu.",
+    "regenerateFailed": "Odpověď se nepodařilo znovu vygenerovat. Zkontrolujte připojení a zkuste to znovu.",
     "copyCode": "Kopírovat",
     "copiedCode": "Zkopírováno",
     "remoteImageBlocked": "Externí obrázek nebyl načten",
@@ -895,6 +896,9 @@
     "listening": "Poslouchám...",
     "voiceInputNotSupported": "Hlasový vstup není v tomto prohlížeči podporován",
     "voiceError": "Nepodařilo se získat přístup k mikrofonu",
+    "voiceNoMic": "Nebyl nalezen žádný mikrofon.",
+    "voiceTooLong": "Nahrávka je příliš dlouhá. Zkuste kratší.",
+    "voiceTranscribeFailed": "Řeč se nepodařilo převést na text. Zkuste to znovu nebo pište.",
     "noModelsAvailable": "Zatím nejsou nakonfigurovány žádné modely AI",
     "failedToLoadModels": "Nepodařilo se načíst modely AI",
     "failedToLoadAgentConfig": "Nepodařilo se načíst konfiguraci modelu tohoto agenta",
@@ -1051,6 +1055,7 @@
     "unpin": "Odepnout",
     "pinned": "Připnuté",
     "pinFailed": "Chat se nepodařilo připnout",
+    "answerInProgressSidebar": "Počkejte, až odpověď dokončí, nebo nejprve stiskněte Zastavit.",
     "unpinFailed": "Chat se nepodařilo odepnout",
     "export": {
       "menuItem": "Exportovat",
@@ -3233,6 +3238,8 @@
       "saveConfig": "Uložit konfiguraci",
       "continueToConfiguration": "Pokračovat ke konfiguraci →",
       "oauthSigningIn": "Dokončete přihlášení u svého poskytovatele…",
+      "oauthNotConfirmed": "Přihlášení se nepodařilo potvrdit. Pokud jste okno zavřeli, zkuste to znovu výběrem možnosti Přihlásit se. Pokud jste přihlášení dokončili, zavřete tento panel a znovu jej otevřete a zkontrolujte, zda se zobrazuje Připojeno.",
+      "oauthTimedOut": "Přihlášení vypršelo po 5 minutách. Zkuste to znovu výběrem možnosti Přihlásit se.",
       "authRequiredBeforeConfig": "Před nastavením synchronizace a filtrů dokončete autorizaci OAuth",
       "backToCredentials": "Zpět k přihlašovacím údajům",
       "backFromConfigure": "Zpět",
@@ -4794,6 +4801,9 @@
       }
     },
     "prompts": {
+      "loadError": {
+        "title": "Uložené prompty se nepodařilo načíst"
+      },
       "label": "Systémový prompt",
       "labelDescription": "Definujte chování a osobnost asistenta AI",
       "title": "Vlastní systémový prompt",
@@ -5990,6 +6000,7 @@
     }
   },
   "recordView": {
+    "fullscreenBlocked": "Váš prohlížeč nepovolil celou obrazovku.",
     "sections": {
       "documentSummary": "Shrnutí",
       "documentFields": "Dokument",

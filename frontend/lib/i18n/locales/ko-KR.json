@@ -142,6 +142,7 @@
     "refiningResponse": "응답을 다듬는 중…",
     "errorFallback": "오류가 발생했습니다. 다시 시도해 주세요.",
     "askQuestionResumeFailed": "답변을 보내지 못했습니다. 다시 제출해 주세요.",
+    "regenerateFailed": "다시 생성하지 못했습니다. 연결을 확인하고 다시 시도해 주세요.",
     "copyCode": "복사",
     "copiedCode": "복사됨",
     "remoteImageBlocked": "외부 이미지가 로드되지 않았습니다",
@@ -849,6 +850,9 @@
     "listening": "듣는 중...",
     "voiceInputNotSupported": "이 브라우저에서는 음성 입력이 지원되지 않습니다",
     "voiceError": "마이크에 접근할 수 없습니다",
+    "voiceNoMic": "마이크를 찾을 수 없습니다.",
+    "voiceTooLong": "녹음이 너무 깁니다. 더 짧게 녹음해 주세요.",
+    "voiceTranscribeFailed": "음성을 텍스트로 변환하지 못했습니다. 다시 시도하거나 직접 입력해 주세요.",
     "noModelsAvailable": "아직 구성된 AI 모델이 없습니다",
     "failedToLoadModels": "AI 모델을 불러오지 못했습니다",
     "failedToLoadAgentConfig": "이 에이전트의 모델 구성을 불러오지 못했습니다",
@@ -1003,6 +1007,7 @@
     "unpin": "고정 해제",
     "pinned": "고정됨",
     "pinFailed": "채팅을 고정하지 못했습니다",
+    "answerInProgressSidebar": "답변이 끝날 때까지 기다리거나 먼저 중지를 누르세요.",
     "unpinFailed": "채팅 고정을 해제하지 못했습니다",
     "export": {
       "menuItem": "내보내기",
@@ -3111,6 +3116,8 @@
       "saveConfig": "설정 저장",
       "continueToConfiguration": "설정으로 계속 →",
       "oauthSigningIn": "공급자를 통한 로그인을 완료해 주세요…",
+      "oauthNotConfirmed": "로그인을 확인할 수 없습니다. 창을 닫았다면 로그인을 선택하여 다시 시도하세요. 로그인을 완료했다면 이 패널을 닫았다가 다시 열어 연결됨으로 표시되는지 확인하세요.",
+      "oauthTimedOut": "로그인이 5분 후 시간 초과되었습니다. 로그인을 선택하여 다시 시도하세요.",
       "authRequiredBeforeConfig": "동기화 및 필터를 구성하기 전에 OAuth 인증을 완료하세요",
       "backToCredentials": "자격 증명으로 돌아가기",
       "backFromConfigure": "뒤로",
@@ -4633,6 +4640,9 @@
       }
     },
     "prompts": {
+      "loadError": {
+        "title": "저장된 프롬프트를 불러올 수 없습니다"
+      },
       "label": "시스템 프롬프트",
       "labelDescription": "AI 어시스턴트의 동작과 성격을 정의합니다",
       "title": "사용자 지정 시스템 프롬프트",
@@ -5802,6 +5812,7 @@
     }
   },
   "recordView": {
+    "fullscreenBlocked": "브라우저에서 전체 화면을 허용하지 않았습니다.",
     "sections": {
       "documentSummary": "요약",
       "documentFields": "문서",

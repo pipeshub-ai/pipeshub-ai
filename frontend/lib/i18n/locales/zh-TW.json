@@ -142,6 +142,7 @@
     "refiningResponse": "正在潤飾回應…",
     "errorFallback": "發生錯誤。請再試一次。",
     "askQuestionResumeFailed": "無法送出你的回答。請再次提交以重試。",
+    "regenerateFailed": "無法重新產生。請檢查網路連線後再試一次。",
     "copyCode": "複製",
     "copiedCode": "已複製",
     "remoteImageBlocked": "未載入外部圖片",
@@ -849,6 +850,9 @@
     "listening": "聆聽中...",
     "voiceInputNotSupported": "此瀏覽器不支援語音輸入",
     "voiceError": "無法存取麥克風",
+    "voiceNoMic": "找不到麥克風。",
+    "voiceTooLong": "錄音太長。請嘗試較短的錄音。",
+    "voiceTranscribeFailed": "無法將語音轉換為文字。請重試或直接輸入。",
     "noModelsAvailable": "尚未設定任何 AI 模型",
     "failedToLoadModels": "無法載入 AI 模型",
     "failedToLoadAgentConfig": "無法載入此代理的模型設定",
@@ -1003,6 +1007,7 @@
     "unpin": "取消置頂",
     "pinned": "已置頂",
     "pinFailed": "無法置頂聊天",
+    "answerInProgressSidebar": "請等待回答完成，或先按停止。",
     "unpinFailed": "無法取消置頂聊天",
     "export": {
       "menuItem": "匯出",
@@ -3111,6 +3116,8 @@
       "saveConfig": "儲存設定",
       "continueToConfiguration": "繼續進行設定 →",
       "oauthSigningIn": "請完成透過您的提供者登入…",
+      "oauthNotConfirmed": "無法確認登入。如果您關閉了視窗，請選擇「登入」重試。如果您已完成登入，請關閉此面板並重新開啟，查看是否顯示「已連線」。",
+      "oauthTimedOut": "登入在 5 分鐘後逾時。請選擇「登入」重試。",
       "authRequiredBeforeConfig": "請先完成 OAuth 授權，再設定同步與篩選條件",
       "backToCredentials": "返回憑證",
       "backFromConfigure": "返回",
@@ -4633,6 +4640,9 @@
       }
     },
     "prompts": {
+      "loadError": {
+        "title": "無法載入已儲存的提示詞"
+      },
       "label": "系統提示詞",
       "labelDescription": "定義 AI 助理的行為與個性",
       "title": "自訂系統提示詞",
@@ -5802,6 +5812,7 @@
     }
   },
   "recordView": {
+    "fullscreenBlocked": "您的瀏覽器不允許全螢幕。",
     "sections": {
       "documentSummary": "摘要",
       "documentFields": "文件",

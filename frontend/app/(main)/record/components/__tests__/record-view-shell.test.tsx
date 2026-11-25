@@ -213,4 +213,21 @@ describe('RecordViewShell when the record cannot be read', () => {
     expect(env.back).toHaveBeenCalledOnce();
     env.inAppBack = false;
   });
+
+  it('tells the person when the browser refuses full screen', async () => {
+    const { useToastStore } = await import('@/lib/store/toast-store');
+    env.mobile = false;
+    useToastStore.setState({ toasts: [] });
+    const original = HTMLElement.prototype.requestFullscreen;
+    HTMLElement.prototype.requestFullscreen = vi.fn().mockRejectedValue(new Error('denied'));
+    renderShell();
+    await screen.findByTestId('metadata');
+
+    fireEvent.click(screen.getByText('open_in_full').closest('button')!);
+
+    await waitFor(() =>
+      expect(useToastStore.getState().toasts.map((x) => x.title)).toContain('Your browser did not allow full screen.'),
+    );
+    HTMLElement.prototype.requestFullscreen = original;
+  });
 });

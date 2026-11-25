@@ -185,7 +185,10 @@ export function ChatSectionElement({
   }, [isRenaming]);
 
   const handleStartRename = () => {
-    if (convStreamingBlocksSidebarMutation()) return;
+    if (convStreamingBlocksSidebarMutation()) {
+      toast.error(t('chat.answerInProgressSidebar'));
+      return;
+    }
     setRenameValue(conversation.title);
     setIsRenaming(true);
   };
@@ -193,6 +196,7 @@ export function ChatSectionElement({
   const handleRenameBlur = async () => {
     if (!isRenaming || isSavingRename) return;
     if (convStreamingBlocksSidebarMutation()) {
+      toast.error(t('chat.answerInProgressSidebar'));
       setRenameValue(conversation.title);
       setIsRenaming(false);
       return;
@@ -271,7 +275,10 @@ export function ChatSectionElement({
   };
 
   const handleConfirmDelete = async () => {
-    if (convStreamingBlocksSidebarMutation()) return;
+    if (convStreamingBlocksSidebarMutation()) {
+      toast.error(t('chat.answerInProgressSidebar'));
+      return;
+    }
     setIsDeleting(true);
     try {
       if (agentId) {
@@ -302,7 +309,10 @@ export function ChatSectionElement({
   };
 
   const handleConfirmArchive = async () => {
-    if (convStreamingBlocksSidebarMutation()) return;
+    if (convStreamingBlocksSidebarMutation()) {
+      toast.error(t('chat.answerInProgressSidebar'));
+      return;
+    }
     setIsArchiving(true);
     try {
       if (agentId) {
@@ -344,7 +354,10 @@ export function ChatSectionElement({
   };
 
   const handleRemoveFromProject = async () => {
-    if (convStreamingBlocksSidebarMutation()) return;
+    if (convStreamingBlocksSidebarMutation()) {
+      toast.error(t('chat.answerInProgressSidebar'));
+      return;
+    }
     try {
       await ProjectApi.setConversationProject(conversation.id, null, { agentKey: agentId });
       moveConversationToProject(conversation.id, null);

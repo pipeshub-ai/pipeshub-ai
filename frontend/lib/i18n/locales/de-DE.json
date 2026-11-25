@@ -57,6 +57,7 @@
     "refiningResponse": "Antwort wird verfeinert…",
     "errorFallback": "Ein Fehler ist aufgetreten. Bitte erneut versuchen.",
     "askQuestionResumeFailed": "Antworten konnten nicht gesendet werden. Zum Wiederholen erneut senden.",
+    "regenerateFailed": "Neu generieren fehlgeschlagen. Prüfen Sie Ihre Verbindung und versuchen Sie es erneut.",
     "copyCode": "Kopieren",
     "copiedCode": "Kopiert",
     "remoteImageBlocked": "Externes Bild nicht geladen",
@@ -759,6 +760,9 @@
     "listening": "Zuhören...",
     "voiceInputNotSupported": "Spracheingabe wird in diesem Browser nicht unterstützt",
     "voiceError": "Zugriff auf das Mikrofon nicht möglich",
+    "voiceNoMic": "Kein Mikrofon gefunden.",
+    "voiceTooLong": "Die Aufnahme ist zu lang. Versuchen Sie eine kürzere.",
+    "voiceTranscribeFailed": "Ihre Sprache konnte nicht in Text umgewandelt werden. Versuchen Sie es erneut oder tippen Sie.",
     "noModelsAvailable": "Es sind noch keine KI-Modelle konfiguriert",
     "failedToLoadModels": "KI-Modelle konnten nicht geladen werden",
     "failedToLoadAgentConfig": "Die Modellkonfiguration dieses Agenten konnte nicht geladen werden",
@@ -1109,6 +1113,7 @@
     "unpin": "Lösen",
     "pinned": "Angepinnt",
     "pinFailed": "Der Chat konnte nicht angeheftet werden",
+    "answerInProgressSidebar": "Warten Sie, bis die Antwort fertig ist, oder drücken Sie zuerst auf Stopp.",
     "unpinFailed": "Der Chat konnte nicht gelöst werden",
     "export": {
       "menuItem": "Exportieren",
@@ -2949,6 +2954,8 @@
       "saveConfig": "Konfiguration speichern",
       "continueToConfiguration": "Weiter zur Konfiguration →",
       "oauthSigningIn": "Schließen Sie die Anmeldung bei Ihrem Anbieter ab…",
+      "oauthNotConfirmed": "Die Anmeldung konnte nicht bestätigt werden. Wenn Sie das Fenster geschlossen haben, wählen Sie Anmelden, um es erneut zu versuchen. Wenn Sie die Anmeldung abgeschlossen haben, schließen Sie dieses Panel und öffnen Sie es erneut, um zu prüfen, ob Verbunden angezeigt wird.",
+      "oauthTimedOut": "Die Anmeldung ist nach 5 Minuten abgelaufen. Wählen Sie Anmelden, um es erneut zu versuchen.",
       "authRequiredBeforeConfig": "Schließen Sie die OAuth-Autorisierung ab, bevor Sie Synchronisierung und Filter konfigurieren",
       "backToCredentials": "Zurück zu den Anmeldedaten",
       "backFromConfigure": "Zurück",
@@ -4325,6 +4332,9 @@
       }
     },
     "prompts": {
+      "loadError": {
+        "title": "Die gespeicherten Prompts konnten nicht geladen werden"
+      },
       "label": "Systemprompt",
       "labelDescription": "Definieren Sie das Verhalten und die Persönlichkeit des KI-Assistenten",
       "title": "Benutzerdefinierter Systemprompt",
@@ -5748,6 +5758,7 @@
     }
   },
   "recordView": {
+    "fullscreenBlocked": "Ihr Browser hat den Vollbildmodus nicht zugelassen.",
     "sections": {
       "documentSummary": "Überblick",
       "documentFields": "Dokument",

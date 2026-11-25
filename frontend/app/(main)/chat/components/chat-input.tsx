@@ -396,9 +396,15 @@ export function ChatInput({
   } = useChatSpeechRecognition({
     lang: i18n.language,
     onError: (error) => {
-      if (error === 'not-allowed') {
-        toast.error(t('chat.voiceError'));
-      }
+      // 'not-supported' has its own unavailable state; raw messages are never shown.
+      if (error === 'not-supported') return;
+      const key = {
+        'not-allowed': 'chat.voiceError',
+        'service-not-allowed': 'chat.voiceError',
+        'audio-capture': 'chat.voiceNoMic',
+        'audio-too-large': 'chat.voiceTooLong',
+      }[error] ?? 'chat.voiceTranscribeFailed';
+      toast.error(t(key));
     },
   });
 

@@ -57,6 +57,7 @@
     "refiningResponse": "उत्तर परिष्कृत हो रहा है…",
     "errorFallback": "एक त्रुटि हुई। कृपया पुनः प्रयास करें।",
     "askQuestionResumeFailed": "आपके उत्तर भेजे नहीं जा सके। फिर से कोशिश करने के लिए दोबारा सबमिट करें।",
+    "regenerateFailed": "दोबारा जनरेट नहीं हो सका। अपना कनेक्शन जाँचें और फिर कोशिश करें।",
     "copyCode": "कॉपी करें",
     "copiedCode": "कॉपी हो गया",
     "remoteImageBlocked": "बाहरी छवि लोड नहीं की गई",
@@ -760,6 +761,9 @@
     "listening": "सुन रहे हैं...",
     "voiceInputNotSupported": "इस ब्राउज़र में वॉइस इनपुट समर्थित नहीं है",
     "voiceError": "माइक्रोफ़ोन तक पहुँच नहीं हो सकी",
+    "voiceNoMic": "कोई माइक्रोफ़ोन नहीं मिला।",
+    "voiceTooLong": "यह रिकॉर्डिंग बहुत लंबी है। छोटी रिकॉर्डिंग आज़माएँ।",
+    "voiceTranscribeFailed": "आपकी आवाज़ को टेक्स्ट में नहीं बदला जा सका। फिर कोशिश करें या टाइप करें।",
     "noModelsAvailable": "अभी तक कोई AI मॉडल कॉन्फ़िगर नहीं किया गया है",
     "failedToLoadModels": "AI मॉडल लोड करने में विफल",
     "failedToLoadAgentConfig": "इस एजेंट का मॉडल कॉन्फ़िगरेशन लोड करने में विफल",
@@ -1112,6 +1116,7 @@
     "unpin": "अनपिन करें",
     "pinned": "पिन किया गया",
     "pinFailed": "चैट पिन नहीं की जा सकी",
+    "answerInProgressSidebar": "उत्तर पूरा होने तक प्रतीक्षा करें, या पहले रोकें दबाएँ।",
     "unpinFailed": "चैट अनपिन नहीं की जा सकी",
     "export": {
       "menuItem": "एक्सपोर्ट करें",
@@ -2944,6 +2949,8 @@
       "saveConfig": "कॉन्फ़िगरेशन सहेजें",
       "continueToConfiguration": "Continue to configuration →",
       "oauthSigningIn": "Finish signing in with your provider…",
+      "oauthNotConfirmed": "We could not confirm the sign-in. If you closed the window, select Sign in to try again. If you finished signing in, close this panel and reopen it to check if it says Connected.",
+      "oauthTimedOut": "Sign-in timed out after 5 minutes. Select Sign in to try again.",
       "authRequiredBeforeConfig": "Complete OAuth authorization before configuring sync and filters",
       "backToCredentials": "Back to credentials",
       "backFromConfigure": "Back",
@@ -4320,6 +4327,9 @@
       }
     },
     "prompts": {
+      "loadError": {
+        "title": "Couldn't load the saved prompts"
+      },
       "label": "System prompt",
       "labelDescription": "Define the behaviour and personality of the AI assistant",
       "title": "Custom system prompt",
@@ -5748,6 +5758,7 @@
     }
   },
   "recordView": {
+    "fullscreenBlocked": "Your browser did not allow full screen.",
     "sections": {
       "documentSummary": "सारांश",
       "documentFields": "दस्तावेज़",

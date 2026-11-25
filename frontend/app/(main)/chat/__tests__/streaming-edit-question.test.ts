@@ -28,6 +28,7 @@ const { ChatStreamError } = await import('../stream-error');
 const { StreamError } = await import('@/lib/api/stream-errors');
 const { getThreadMessagePlainText } = await import('../runtime');
 const { apiClient } = await import('@/lib/api');
+const { useToastStore } = await import('@/lib/store/toast-store');
 
 const fetchMock = vi.fn<typeof fetch>();
 const initialState = useChatStore.getState();
@@ -190,6 +191,30 @@ describe('regenerating with an edited question', () => {
     expect(slot(slotId).isStreaming).toBe(false);
     expect(questionOf(slotId)).toBe('Old question');
     expect(getThreadMessagePlainText(slot(slotId).messages[1])).toBe('old answer');
+  });
+
+  it('tells the user a regenerate failed, with the server sentence when there is one', async () => {
+    const slotId = newSlot();
+    useToastStore.setState({ toasts: [] });
+    fetchMock.mockResolvedValueOnce(jsonResponse(400, { error: { message: 'Can only regenerate the last answer.' } }));
+
+    await streamRegenerateForSlot(slotId, 'a1', MODEL);
+
+    const toasts = useToastStore.getState().toasts;
+    expect(toasts.map((t) => t.title)).toEqual(["Couldn't regenerate. Check your connection and try again."]);
+    expect(toasts[0].description).toBe('Can only regenerate the last answer.');
+  });
+
+  it('shows only the title when the request never reached the server', async () => {
+    const slotId = newSlot();
+    useToastStore.setState({ toasts: [] });
+    fetchMock.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+
+    await streamRegenerateForSlot(slotId, 'a1', MODEL);
+
+    const toasts = useToastStore.getState().toasts;
+    expect(toasts).toHaveLength(1);
+    expect(toasts[0].description).toBeUndefined();
   });
 
   it('puts the stored question back when the run ends in an error', async () => {
