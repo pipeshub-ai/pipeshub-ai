@@ -71,8 +71,11 @@ export const OrgApi = {
     return response.data instanceof Blob ? await blobToDataUrl(response.data) : null;
   },
 
-  /** PUT /api/v1/org/ — update org fields, then refetch the cached org (the response is an envelope). */
-  async updateOrg(payload: UpdateOrgPayload): Promise<void> {
+  /**
+   * PUT /api/v1/org/ — update org fields, then refetch the cached org (the response is an envelope).
+   * The payload may carry fields an edition's settings add (general-page-settings.ts).
+   */
+  async updateOrg(payload: UpdateOrgPayload & Readonly<Record<string, unknown>>): Promise<void> {
     await apiClient.put(`${BASE_URL}/`, payload);
     void mutate(ORG_KEYS.details);
   },

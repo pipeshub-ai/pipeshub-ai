@@ -19,10 +19,13 @@ vi.mock('react-i18next', async (importOriginal) => ({
   ...(await importOriginal<typeof import('react-i18next')>()),
   useTranslation: () => ({ t: (key: string) => key, i18n: { language: 'en' } }),
 }));
-// The general page's extra cards as this repository binds them, whatever `@/config` a build supplies.
+// The general page's extra cards as this repository binds them, whatever `@/config` a build supplies. The page
+// alone otherwise: the edition's form settings and extras are empty here. What an edition puts in them has its own tests.
 vi.mock('@/config', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/config')>()),
   GeneralSettingsExtras: (await import('../components/general-settings-extras')).GeneralSettingsExtras,
+  GeneralPageExtras: () => null,
+  useGeneralPageSettings: (await import('../general-page-settings')).useNoGeneralPageSettings,
 }));
 vi.mock('@/app/components/ui/lottie-loader', () => ({ LottieLoader: () => <div>loading</div> }));
 vi.mock('@/app/components/ui/MaterialIcon', () => ({ MaterialIcon: () => null }));
@@ -53,15 +56,11 @@ const ORG = {
   permanentAddress: { addressLine1: '1 Main St', city: 'Springfield', state: 'IL', postCode: '62701', country: 'US' },
 };
 let org = ORG;
-let metrics: Promise<{ data: unknown }> | null = null;
 
 function answerReads() {
   api.get.mockImplementation(async (url: string) => {
     if (url === '/api/v1/org') return { status: 200, data: org };
     if (url === '/api/v1/org/logo') return { status: 204, data: new Blob([]) };
-    if (url === '/api/v1/configurationManager/metricsCollection') {
-      return metrics ?? { status: 200, data: { enableMetricCollection: 'false' } };
-    }
     throw new Error(`unexpected GET ${url}`);
   });
 }
@@ -92,7 +91,6 @@ describe('General settings page', () => {
     clearSessionCache();
     useGeneralStore.getState().reset();
     org = ORG;
-    metrics = null;
     answerReads();
     api.put.mockResolvedValue({ data: {} });
     URL.createObjectURL = vi.fn(() => 'blob:preview');
@@ -131,66 +129,41 @@ describe('General settings page', () => {
     expect(form().displayName).toBe('Acme');
     expect(calls('/api/v1/org')).toBe(1);
     expect(calls('/api/v1/org/logo')).toBe(1);
-    expect(calls('/api/v1/configurationManager/metricsCollection')).toBe(1);
   });
 
-  it('never asks a member for the metrics setting', async () => {
+  it('with nothing added by the edition, an admin gets the form and a save sends the org fields alone', async () => {
+    await renderPage();
+
+    expect(screen.getByDisplayValue('Acme Inc')).toBeTruthy();
+    expect(screen.queryByRole('switch')).toBeNull();
+    expect(api.get.mock.calls.map(([url]) => url).sort()).toEqual(['/api/v1/org', '/api/v1/org/logo']);
+    // Nothing is unsaved yet: the save bar is put away.
+    expect(screen.getByRole('button', { name: /save/i }).closest('[inert]')).not.toBeNull();
+
+    act(() => useGeneralStore.getState().setField('displayName', 'Acme Labs'));
+    org = { ...ORG, shortName: 'Acme Labs' };
+    fireEvent.click(screen.getByRole('button', { name: /save/i }));
+
+    await waitFor(() => expect(calls('/api/v1/org')).toBe(2));
+    expect(api.put).toHaveBeenCalledTimes(1);
+    expect(api.put).toHaveBeenCalledWith('/api/v1/org/', {
+      registeredName: 'Acme Inc',
+      shortName: 'Acme Labs',
+      contactEmail: 'admin@acme.test',
+      permanentAddress: { addressLine1: '1 Main St', country: 'US', state: 'IL', city: 'Springfield', postCode: '62701' },
+    });
+    expect(useGeneralStore.getState().isDirty()).toBe(false);
+  });
+
+  it('a member gets the read-only page', async () => {
     signedIn(false);
 
     await renderPage();
 
     expect(screen.getByDisplayValue('Acme Inc')).toBeTruthy();
-    expect(calls('/api/v1/configurationManager/metricsCollection')).toBe(0);
+    expect(screen.queryByRole('button', { name: /save/i })).toBeNull();
   });
 
-  it("waits for an admin's metrics setting before showing the form", async () => {
-    let finish: (value: { data: unknown }) => void = () => undefined;
-    metrics = new Promise((resolve) => { finish = resolve; });
-    renderInTheme(<GeneralPage />);
-    await waitFor(() => expect(calls('/api/v1/configurationManager/metricsCollection')).toBe(1));
-    expect(useGeneralStore.getState().isLoading).toBe(true);
-
-    await act(async () => {
-      finish({ data: { enableMetricCollection: 'true' } });
-    });
-
-    await waitFor(() => expect(useGeneralStore.getState().isLoading).toBe(false));
-    expect(form().optIn).toBe(true);
-  });
-
-  it('saving the name and the data-collection switch together keeps the new values and raises no load error', async () => {
-    await renderPage();
-    act(() => {
-      useGeneralStore.getState().setField('displayName', 'Acme Labs');
-      useGeneralStore.getState().setField('optIn', true);
-    });
-    org = { ...ORG, shortName: 'Acme Labs' };
-    // The metrics reread after the toggle fails: it must not undo the switch or toast a load error.
-    metrics = Promise.reject(new Error('down'));
-    metrics.catch(() => undefined);
-
-    fireEvent.click(screen.getByRole('button', { name: /save/i }));
-
-    await waitFor(() => expect(calls('/api/v1/configurationManager/metricsCollection')).toBe(2));
-    await waitFor(() => expect(calls('/api/v1/org')).toBe(2));
-    expect(form()).toMatchObject({ displayName: 'Acme Labs', optIn: true });
-    expect(useGeneralStore.getState().isDirty()).toBe(false);
-    expect(addToast).not.toHaveBeenCalledWith(expect.objectContaining({ title: 'workspace.general.toasts.loadError' }));
-  });
-
-  it('an admin sees the Data Collection switch, and saving it on calls the toggle route', async () => {
-    await renderPage();
-    expect(screen.getByText('workspace.general.dataCollection')).toBeTruthy();
-
-    fireEvent.click(screen.getByRole('switch'));
-    fireEvent.click(screen.getByRole('button', { name: /save/i }));
-
-    await waitFor(() =>
-      expect(api.put).toHaveBeenCalledWith('/api/v1/configurationManager/metricsCollection/toggle', {
-        enableMetricCollection: true,
-      }),
-    );
-  });
 
   it('uploading a logo keeps unsaved edits and shows the stored logo', async () => {
     await renderPage();
@@ -267,7 +240,7 @@ describe('General settings page', () => {
   it('a logo that cannot be read leaves the page usable', async () => {
     api.get.mockImplementation(async (url: string) => {
       if (url === '/api/v1/org/logo') throw new Error('down');
-      return url === '/api/v1/org' ? { status: 200, data: org } : { status: 200, data: { enableMetricCollection: 'false' } };
+      return { status: 200, data: org };
     });
 
     await renderPage();

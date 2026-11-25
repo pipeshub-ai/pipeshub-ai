@@ -23,7 +23,6 @@ import { useGeneralStore } from './store';
 import type { GeneralFormData } from './store';
 import { OrgApi, type OrgResponse } from './api';
 import { useOrg, useOrgLogo } from './use-org';
-import { useDataCollection, DataCollectionSection } from './data-collection';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { useUserStore, selectIsAdmin, selectIsProfileInitialized } from '@/lib/store/user-store';
 import { orgConfirmationName } from '@/lib/org-deletion';
@@ -33,7 +32,7 @@ import {
   selectAgentHarnessOn,
 } from '@/lib/store/feature-flags-store';
 import { SettingsPageContainer } from '@/app/(main)/workspace/components/settings-page-container';
-import { GeneralPageExtras, WorkspaceEditionSection } from '@/config';
+import { GeneralPageExtras, WorkspaceEditionSection, useGeneralPageSettings } from '@/config';
 
 // ========================================
 // Read-only view for non-admin users
@@ -98,7 +97,7 @@ function ReadOnlyGeneralPage({ form, logoUrl }: ReadOnlyGeneralPageProps) {
   );
 }
 
-function toGeneralForm(org: OrgResponse, optIn: boolean): GeneralFormData {
+function toGeneralForm(org: OrgResponse): GeneralFormData {
   return {
     registeredName: org.registeredName || '',
     displayName: org.shortName || '',
@@ -108,7 +107,6 @@ function toGeneralForm(org: OrgResponse, optIn: boolean): GeneralFormData {
     state: org.permanentAddress?.state || '',
     city: org.permanentAddress?.city || '',
     zipCode: org.permanentAddress?.postCode || '',
-    optIn,
     logoFileName: null,
   };
 }
@@ -126,14 +124,8 @@ export default function GeneralPage() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const { data: org, error: orgError, isValidating: orgValidating, mutate: rereadOrg } = useOrg();
   const { data: savedLogoUrl, isLoading: logoLoading } = useOrgLogo();
-  const {
-    loaded: optInLoaded,
-    error: optInError,
-    validating: optInValidating,
-    reread: rereadOptIn,
-    value: savedOptIn,
-    save: saveOptIn,
-  } = useDataCollection();
+  // Settings the edition adds to this form (config.ts): they load, show and save themselves.
+  const editionSettings = useGeneralPageSettings(isProfileInitialized && isAdmin === true);
   // Local preview of a logo while it uploads; the saved logo comes from the cache.
   const [previewLogoUrl, setPreviewLogoUrl] = useState<string | null>(null);
   const [logoUploading, setLogoUploading] = useState(false);
@@ -162,7 +154,9 @@ export default function GeneralPage() {
   const discardChanges = useGeneralStore((s) => s.discardChanges);
   const setDiscardDialogOpen = useGeneralStore((s) => s.setDiscardDialogOpen);
   const setLoading = useGeneralStore((s) => s.setLoading);
-  const isDirty = useGeneralStore((s) => s.isDirty);
+  // Read as a value, so the save bar follows a save that only moved the saved snapshot.
+  const formDirty = useGeneralStore((s) => s.isDirty());
+  const dirty = formDirty || editionSettings.dirty;
 
   // ── Log user store state on navigation to this page (dev only) ─────────
   useEffect(() => {
@@ -177,21 +171,21 @@ export default function GeneralPage() {
   useEffect(() => {
     // isAdmin is null until the profile is initialized, which would pick the wrong branch.
     if (!isProfileInitialized || formSeeded) return;
-    if (org && !logoLoading && (!isAdmin || optInLoaded)) {
+    if (org && !logoLoading && editionSettings.ready) {
       setFormSeeded(true);
-      setForm(toGeneralForm(org, Boolean(isAdmin) && savedOptIn));
+      setForm(toGeneralForm(org));
       setLoading(false);
       return;
     }
     const orgFailed = orgError && !org && !orgValidating;
-    const optInFailed = isAdmin && optInError && !optInLoaded && !optInValidating;
-    if (!orgFailed && !optInFailed) return;
+    const settingsFailed = editionSettings.failed;
+    if (!orgFailed && !settingsFailed) return;
     // An error left in the cache by an earlier read (the sidebar footer) is not this visit's answer:
     // ask once more before reporting it. So a real outage makes two reads before the toast.
     if (!cachedErrorRetriedRef.current) {
       cachedErrorRetriedRef.current = true;
       if (orgFailed) void rereadOrg();
-      if (optInFailed) void rereadOptIn();
+      if (settingsFailed) editionSettings.retry();
       return;
     }
     if (!loadErrorShownRef.current) {
@@ -203,8 +197,8 @@ export default function GeneralPage() {
       });
     }
     setLoading(false);
-  }, [isAdmin, isProfileInitialized, formSeeded, org, logoLoading, optInLoaded, savedOptIn, orgError, orgValidating,
-    optInError, optInValidating, rereadOrg, rereadOptIn, addToast, setForm, setLoading]);
+  }, [isProfileInitialized, formSeeded, org, logoLoading, orgError, orgValidating, editionSettings.ready,
+    editionSettings.failed, editionSettings.retry, rereadOrg, addToast, setForm, setLoading]);
 
   // ── Handlers ───────────────────────────────────────────────
 
@@ -236,10 +230,11 @@ export default function GeneralPage() {
           city: form.city,
           postCode: form.zipCode,
         },
+        ...editionSettings.orgFields,
       });
 
-      // 2. Save the opt-in setting, where there is one
-      await saveOptIn(form.optIn, savedForm.optIn);
+      // 2. The edition's settings, when they changed
+      await editionSettings.save();
 
       markSaved();
       addToast({
@@ -254,7 +249,7 @@ export default function GeneralPage() {
         description: t('workspace.general.toasts.saveErrorDescription'),
       });
     }
-  }, [formSeeded, form, savedForm, validate, saveOptIn, markSaved, addToast]);
+  }, [formSeeded, form, validate, markSaved, addToast, editionSettings.orgFields, editionSettings.save]);
 
   const handleDiscard = useCallback(() => {
     setDiscardDialogOpen(true);
@@ -263,6 +258,7 @@ export default function GeneralPage() {
   const handleDiscardConfirm = useCallback(() => {
     setPreviewLogoUrl(null);
     discardChanges();
+    editionSettings.discard();
     addToast({
       variant: 'success',
       title: t('workspace.general.toasts.discardSuccess'),
@@ -271,18 +267,18 @@ export default function GeneralPage() {
     const href = leavingHrefRef.current;
     leavingHrefRef.current = null;
     if (href) router.push(href);
-  }, [discardChanges, addToast, router]);
+  }, [discardChanges, addToast, router, editionSettings.discard]);
 
   // A link inside the form (the Edition section) would drop unsaved edits, so it asks first.
   const confirmLeavingWithEdits = useCallback(
     (e: React.MouseEvent) => {
       const link = (e.target as HTMLElement).closest('a');
-      if (!link || !isDirty() || link.target === '_blank' || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+      if (!link || !dirty || link.target === '_blank' || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
       e.preventDefault();
       leavingHrefRef.current = link.getAttribute('href');
       setDiscardDialogOpen(true);
     },
-    [isDirty, setDiscardDialogOpen]
+    [dirty, setDiscardDialogOpen]
   );
 
   const handleDiscardDialogOpenChange = useCallback(
@@ -520,8 +516,8 @@ export default function GeneralPage() {
 
         <GeneralPageExtras />
 
-        {/* The section spaces itself, so a build without it leaves no gap */}
-        <DataCollectionSection />
+        {/* An edition's settings in the form (OSS: Data Collection); a build without them leaves no gap */}
+        {editionSettings.section && <Box style={{ marginBottom: 'var(--space-5)' }}>{editionSettings.section}</Box>}
 
         {/* ── An edition's cards, beside the org's deletion ── */}
         {harnessOn && (
@@ -559,7 +555,7 @@ export default function GeneralPage() {
       />
 
       {/* ── Settings Save Bar (shown when dirty) ── */}
-      <SettingsSaveBar visible={formSeeded && isDirty()} onDiscard={handleDiscard} onSave={handleSave} />
+      <SettingsSaveBar visible={formSeeded && dirty} onDiscard={handleDiscard} onSave={handleSave} />
     </Box>
   );
 }

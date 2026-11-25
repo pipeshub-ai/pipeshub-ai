@@ -14,7 +14,7 @@ vi.mock('@/app/components/ui/user-avatar', () => ({
 
 import { ChatSidebarFooter } from '@/app/(main)/chat/sidebar/footer';
 import { OrgApi } from '../api';
-import { MetricsApi } from '../data-collection';
+import { MetricsApi } from '../data-collection/api';
 import { updateOrgProfile } from '@/app/(main)/onboarding/api';
 import { clearSessionCache } from '@/lib/api/session-cache';
 
@@ -26,7 +26,6 @@ function answerReads() {
   api.get.mockImplementation(async (url: string) => {
     if (url === '/api/v1/org') return { status: 200, data: org };
     if (url === '/api/v1/org/logo') return logo ? { status: 200, data: logo } : { status: 204, data: new Blob([]) };
-    if (url === '/api/v1/configurationManager/metricsCollection') return { status: 200, data: { enableMetricCollection: 'true' } };
     throw new Error(`unexpected GET ${url}`);
   });
 }
@@ -126,16 +125,6 @@ describe('org and logo cache (sidebar footer)', () => {
     await settle();
 
     expect(footerLogo()).toBeNull();
-    expect(calls('/api/v1/org/logo')).toBe(1);
-  });
-
-  it('saving the metrics switch rereads only the metrics setting', async () => {
-    (await renderFooter()).unmount();
-
-    await MetricsApi.toggleMetricsCollection(true);
-    await renderFooter();
-
-    expect(calls('/api/v1/org')).toBe(1);
     expect(calls('/api/v1/org/logo')).toBe(1);
   });
 
