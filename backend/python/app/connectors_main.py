@@ -45,6 +45,7 @@ from app.api.routes.toolsets import router as toolsets_router
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import AccountType, AppStatus, CollectionNames
 from app.config.constants.service import config_node_constants
+from app.connectors.core.base.connector.connector_service import ConnectorInitError
 from app.connectors.core.base.connector.instance_lock import connector_init_lock
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.connectors.core.base.token_service.startup_service import startup_service
@@ -431,6 +432,10 @@ async def resume_sync_services(app_container: ConnectorAppContainer, data_store:
                                 notification_service=app_container.connector_notification_service(),
                                 start_sync=not publish,
                             )
+                        except ConnectorInitError as e:
+                            # Its settings are refused, in words for its owner: not a fault of this service.
+                            logger.warning("%s (%s) was not started for org %s: %s", connector_name, connector_id, org_id, e)
+                            return connector_name, connector_id, None
                         except Exception as e:
                             logger.error(
                                 f"❌ Failed to initialize {connector_name} ({connector_id}) for org {org_id}: {e}",

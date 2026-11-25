@@ -320,6 +320,17 @@ class TestPostgreSQLClientConnection:
                 await client.connect()
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(("refused_host", "level"), [(True, "warning"), (False, "error")])
+    async def test_a_host_that_is_refused_is_a_warning(self, asyncpg_module, refused_host: bool, level: str) -> None:
+        asyncpg_module.create_pool.side_effect = _pg_mod.HostCheckError("no such server") if refused_host else Exception("refused")
+
+        with patch.object(_pg_mod, "asyncpg", asyncpg_module), patch.object(_pg_mod, "logger") as log, \
+                pytest.raises(ConnectionError):
+            await PostgreSQLClient(host="localhost", database="db", user="u", password="p").connect()
+
+        assert [c[0] for c in log.method_calls if c[0] in ("warning", "error")] == [level]
+
+    @pytest.mark.asyncio
     async def test_close(self) -> None:
         client = PostgreSQLClient(
             host="localhost", database="db", user="u", password="p"

@@ -18,7 +18,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 from pydantic import AliasChoices, BaseModel, Field, ValidationError, model_validator
 
 from app.sources.client.iclient import IClient
-from app.utils.url_fetcher import IPAddress, vetted_addresses
+from app.utils.url_fetcher import HostCheckError, IPAddress, vetted_addresses
 
 logger = logging.getLogger(__name__)
 
@@ -199,7 +199,9 @@ class PostgreSQLClient:
                 return self
 
             except Exception as e:
-                logger.error(f"🔧 [PostgreSQLClient] Pool initialization failed: {e}")
+                # A host that is refused or does not resolve is a setting to correct.
+                log = logger.warning if isinstance(e, HostCheckError) else logger.error
+                log(f"🔧 [PostgreSQLClient] Pool initialization failed: {e}")
                 raise ConnectionError(f"Failed to connect to PostgreSQL: {e}") from e
 
     async def close(self) -> None:

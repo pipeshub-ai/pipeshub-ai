@@ -255,6 +255,36 @@ class TestResumeSyncServices:
         assert mock_container.connectors_map["app1"] is mock_connector
         assert mock_container.connectors_map["app2"] is mock_connector
 
+    @pytest.mark.parametrize(("refused", "level"), [(True, logging.WARNING), (False, logging.ERROR)])
+    async def test_a_connector_whose_settings_are_refused_is_a_warning(
+        self, refused: bool, level: int, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Every start logged an error with a traceback for a server name that no longer exists."""
+        from app.connectors.core.base.connector.connector_service import ConnectorInitError
+        from app.connectors_main import resume_sync_services
+
+        logger_name = "tests.connectors_main.refused"
+        mock_container = _make_container()
+        mock_container.logger.return_value = logging.getLogger(logger_name)
+        mock_container.connectors_map = {}
+        gp = _make_graph_provider()
+        gp.get_all_orgs = AsyncMock(return_value=[{"_key": "org1"}])
+        gp.get_org_apps = AsyncMock(return_value=[{"_key": "bad", "type": "PostgreSQL"}, {"_key": "good", "type": "Slack"}])
+        gp.get_users = AsyncMock(return_value=[{"_key": "user1"}])
+        error = ConnectorInitError("not a public server address") if refused else RuntimeError("boom")
+        good = MagicMock()
+
+        with patch(
+            "app.connectors_main.ConnectorFactory.create_and_start_sync", new_callable=AsyncMock,
+            side_effect=lambda **kw: good if kw["connector_id"] == "good" else (_ for _ in ()).throw(error),
+        ), caplog.at_level(logging.INFO, logger=logger_name):
+            assert await resume_sync_services(mock_container, _make_data_store(gp)) is True
+
+        [line] = [r for r in caplog.records if "bad" in r.getMessage() and r.levelno >= logging.WARNING]
+        assert line.levelno == level
+        assert bool(line.exc_info) is not refused
+        assert mock_container.connectors_map == {"good": good}
+
     async def test_connector_owed_a_full_sync_is_published_not_started(self) -> None:
         """Started here it would sync incrementally; only the event path runs
         the full sync its pendingFullSync flag asks for."""
