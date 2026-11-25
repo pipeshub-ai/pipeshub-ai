@@ -47,6 +47,7 @@ CALLS = {   # name -> (arguments of one call, the table, a count query for one o
     "kg.w_listing_set": (([11], [3], ["rec"], [3], [True], [False], [False], [b"\x00r"]), "kg.records"),
     "kg.w_trash_set": (([11], [3], ["rec"], [3], [1790000000000], ["bt1"]), "kg.records"),
     "kg.w_pc_top_set": (([11], [3], ["rec"], [3], [True]), "kg.records"),
+    "kg.w_grant_marks_set": (([1], [11], ["USER"], [True], [None]), "kg.scope_members"),
     "kg.w_counts_add": (([5], [1], [7], [3], [False], [None], [None], [2]), "kg.counts"),
     "kg.w_counts_delete": (([1],), "kg.counts"),
     "kg.w_analyze_request": ((5,), "kg.analyze_requests"),
@@ -56,6 +57,7 @@ CASTS = {   # the arguments psycopg cannot type from a list of Nones, or that ar
     "kg.w_listing_set": ["%s::bigint[]", "%s::smallint[]", "%s::text[]", "%s::smallint[]", "%s::boolean[]", "%s::boolean[]", "%s::boolean[]", "%s::bytea[]"],
     "kg.w_trash_set": ["%s::bigint[]", "%s::smallint[]", "%s::text[]", "%s::smallint[]", "%s::bigint[]", "%s::text[]"],
     "kg.w_pc_top_set": ["%s::bigint[]", "%s::smallint[]", "%s::text[]", "%s::smallint[]", "%s::boolean[]"],
+    "kg.w_grant_marks_set": ["%s::bigint[]", "%s::bigint[]", "%s::text[]", "%s::boolean[]", "%s::bigint[]"],
     "kg.w_r13_set": ["%s::bigint[]", "%s::smallint[]", "%s::text[]", "%s::smallint[]", "%s::boolean[]"],
     "kg.w_scopes_set": ["%s::bigint[]", "%s::smallint[]", "%s::bigint[]", "%s::boolean[]", "%s::boolean[]", "%s::boolean[]", "%s::boolean[]"],
     "kg.w_fence_rows": ["%s::bigint[]", "%s::smallint[]", "%s::text[]", "%s::smallint[]", "%s::bigint[]", "%s"],
@@ -72,7 +74,7 @@ def marks(args: tuple, name: str | None = None) -> str:
 
 # The writers that take the caller's projection code epoch last (kg_0013); call() passes it.
 GUARDED = ("kg.w_stamps_set", "kg.w_fence_rows", "kg.w_queue_touch", "kg.w_queue_done", "kg.w_changes_ack", "kg.w_changes_delete")
-EPOCH = 10
+EPOCH = 11
 
 
 def call(c, name: str, org: str | None, args: tuple, *, epoch: int | None = EPOCH):
@@ -117,7 +119,8 @@ def test_every_kg_table_requires_the_per_org_policy_and_is_plain_with_org_first_
         assert keys and [k for k in keys if k[1] != "org_id"] == [], keys
 
 
-@pytest.mark.parametrize("name", [n for n in CALLS if not n.endswith(("_delete", "_ack", "_done", "_touch", "_release"))])
+# kg.w_grant_marks_set updates rows only (it makes none): its org isolation is test_grant_marks_are_written_to_the_row_of_the_session_org_and_the_other_columns_stay
+@pytest.mark.parametrize("name", [n for n in CALLS if not n.endswith(("_delete", "_ack", "_done", "_touch", "_release")) and n != "kg.w_grant_marks_set"])
 def test_a_set_writes_the_session_org_and_leaves_the_other_orgs_row_as_it_was(pdb, name):
     args, table = CALLS[name]
     with conn(pdb) as c:
@@ -233,6 +236,8 @@ BAD = {
                        ([11], [3], ["s"], [3], [1, 2], ["b"]), ([11], [3], ["s"], [3], [1], ["b", "c"]), (None, [3], ["s"], [3], [1], ["b"])],
     "kg.w_pc_top_set": [([11, 12], [3], ["s"], [3], [True]), ([11], [4], ["s"], [3], [True]), ([11], [3], [""], [3], [True]), ([11], [3], ["s"], [3], [None]),
                         ([None], [3], ["s"], [3], [True]), ([11], [3], ["s"], [3], [True, False]), (None, [3], ["s"], [3], [True])],
+    "kg.w_grant_marks_set": [([1, 2], [11], ["USER"], [True], [None]), ([None], [11], ["USER"], [True], [None]), ([1], [11], [""], [True], [None]), ([1], [11], ["x" * 65], [True], [None]),
+                             ([1], [11], ["USER"], [None], [None]), ([1], [11], ["USER"], [True], [None, 5]), (None, [11], ["USER"], [True], [None])],
     "kg.w_stamps_set": [([11, 12], [3], ["rec"], [3], [None], [None], [False], [False], [False], [False], [None], [True]), ([None], [3], ["rec"], [3], [None], [None], [False], [False], [False], [False], [None], [True]),
                         ([11], [4], ["rec"], [3], [None], [None], [False], [False], [False], [False], [None], [True]), ([11], [3], [""], [3], [None], [None], [False], [False], [False], [False], [None], [True]),
                         ([11], [3], ["rec"], [3], [None], [None], [False], [False], [False], [False], [9], [True]), ([11], [3], ["rec"], [3], [None], [None], [None], [False], [False], [False], [None], [True]),
@@ -575,6 +580,24 @@ def test_the_trash_columns_are_written_to_the_row_of_the_session_org_and_the_oth
         assert tuple(c.execute("SELECT deleted_ms, delete_batch FROM kg.records WHERE org_id = %s AND sk = 11", (ORG_A,)).fetchone()) == (None, None)
         call(c, "kg.w_trash_set", ORG_B, ([11], [3], ["rec-1"], [3], [5], ["other"]))                                                    # another org's call makes a row of its own
         assert tuple(c.execute("SELECT deleted_ms, delete_batch FROM kg.records WHERE org_id = %s AND sk = 11", (ORG_A,)).fetchone()) == (None, None)
+        clean(c)
+
+
+def test_grant_marks_are_written_to_the_row_of_the_session_org_and_the_other_columns_stay(pdb):
+    with conn(pdb) as c:
+        clean(c)
+        call(c, "kg.w_grants_set", ORG_A, ([1], [11], ["USER"], ["READER"], [5], [False]))
+        before = c.execute("SELECT role, app_sk, leaf, parent_held, node_group FROM kg.scope_members WHERE org_id = %s AND principal_sk = 1 AND node_sk = 11", (ORG_A,)).fetchone()
+        assert tuple(before) == ("READER", 5, False, False, None)                                                                     # kg_0025's defaults
+        assert call(c, "kg.w_grant_marks_set", ORG_A, ([1], [11], ["USER"], [True], [7])) == [(1,)]
+        assert tuple(c.execute("SELECT role, app_sk, leaf, parent_held, node_group FROM kg.scope_members WHERE org_id = %s AND principal_sk = 1 AND node_sk = 11",
+                               (ORG_A,)).fetchone()) == ("READER", 5, False, True, 7)
+        assert call(c, "kg.w_grant_marks_set", ORG_B, ([1], [11], ["USER"], [False], [None])) == [(0,)]                                # another org's call finds no row of its own
+        assert c.execute("SELECT parent_held FROM kg.scope_members WHERE org_id = %s AND principal_sk = 1 AND node_sk = 11", (ORG_A,)).fetchone()[0] is True
+        assert c.execute("SELECT count(*) FROM kg.scope_members WHERE org_id = %s", (ORG_B,)).fetchone()[0] == 0
+        # a grant the caller read and another unit deleted since: its marks make no row (a grant with no role, connector or leaf of its own)
+        assert call(c, "kg.w_grant_marks_set", ORG_A, ([1, 2], [11, 11], ["USER", "USER"], [False, True], [None, 7])) == [(1,)]
+        assert c.execute("SELECT count(*) FROM kg.scope_members WHERE org_id = %s", (ORG_A,)).fetchone()[0] == 1
         clean(c)
 
 
