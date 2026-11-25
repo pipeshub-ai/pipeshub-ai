@@ -639,24 +639,66 @@ it cannot read is returned unchanged.
 {{- end -}}
 
 {{/*
-How many pods share one external Docker daemon, when each must size its
-code sandbox cap to its share of it: the most pods that can run, with
-config.dockerHost set, sandbox.capacity.maxTotal empty, and more than one
-pod. Empty otherwise.
+How many pods share one Docker daemon, when each must size its code sandbox
+cap to its share of it: the most pods that can run, when there is more than
+one, and either config.dockerHost set with sandbox.capacity.maxTotal empty,
+or the sandbox broker's daemon (ADR-CAP-02: the broker enforces
+sandbox.capacity.maxTotal, or the size of its daemon, on every sandbox, and
+each pod takes its share of that). Empty otherwise.
 */}}
 {{- define "pipeshub-ai.sandboxCapacityDivisor" -}}
-{{- if and (eq (include "pipeshub-ai.sandboxPath" .) "external") (not (include "pipeshub-ai.sandboxMaxTotal" .)) -}}
+{{- $path := include "pipeshub-ai.sandboxPath" . -}}
+{{- if or (hasPrefix "broker" $path) (and (eq $path "external") (not (include "pipeshub-ai.sandboxMaxTotal" .))) -}}
 {{- $pods := int .Values.replicaCount -}}
 {{- if .Values.autoscaling.enabled -}}
 {{- $pods = int .Values.autoscaling.maxReplicas -}}
 {{- end -}}
 {{- if gt $pods 64 -}}
+{{- if hasPrefix "broker" $path -}}
+{{- fail (printf "%d pods share the sandbox broker's Docker daemon, but the code sandbox splits its capacity at most 64 ways: lower the pod count (autoscaling.maxReplicas or replicaCount)" $pods) -}}
+{{- end -}}
 {{- fail (printf "%d pods share one external Docker daemon, but the code sandbox splits its capacity at most 64 ways: lower the pod count (autoscaling.maxReplicas or replicaCount) or set sandbox.capacity.maxTotal" $pods) -}}
 {{- end -}}
 {{- if gt $pods 1 -}}
 {{- $pods -}}
 {{- end -}}
 {{- end -}}
+{{- end -}}
+
+{{/*
+The capacity variables the sandbox broker sizes its ceiling with
+(ADR-CAP-02), read the way the app reads them: sandbox.capacity.maxTotal and
+the sizing knobs, and with the broker's own dind sidecar its limits, as the
+app pod's dind path passes them. Empty values are left out (sized).
+*/}}
+{{- define "pipeshub-ai.brokerCapacityEnv" -}}
+{{- if and .Values.sandbox.dind.enabled (not .Values.config.dockerHost) }}
+- name: SANDBOX_HOST_MEMORY_BYTES
+  valueFrom:
+    resourceFieldRef:
+      containerName: dind
+      resource: limits.memory
+      divisor: "1"
+- name: SANDBOX_HOST_CPU_MILLIS
+  valueFrom:
+    resourceFieldRef:
+      containerName: dind
+      resource: limits.cpu
+      divisor: "1m"
+- name: SANDBOX_MEMORY_SHARE
+  value: {{ .Values.sandbox.capacity.memoryShare | default "0.9" | quote }}
+{{- end }}
+{{- with (include "pipeshub-ai.sandboxMaxTotal" .) }}
+- name: SANDBOX_MAX_TOTAL
+  value: {{ . | quote }}
+{{- end }}
+{{- range $name, $key := dict "SANDBOX_MIN_TOTAL" "minTotal" "SANDBOX_CPU_FACTOR" "cpuFactor" "SANDBOX_HOST_PID_LIMIT" "pidLimit" }}
+{{- $value := index $.Values.sandbox.capacity $key }}
+{{- if and (not (kindIs "invalid" $value)) (ne (toString $value) "") }}
+- name: {{ $name }}
+  value: {{ $value | toString | quote }}
+{{- end }}
+{{- end }}
 {{- end -}}
 
 {{/*

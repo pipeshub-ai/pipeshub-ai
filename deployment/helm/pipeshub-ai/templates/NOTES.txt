@@ -157,6 +157,18 @@ the pod DNS, the broker's KV port and public addresses on {{ .Values.networkPoli
 metadata, another store or a private range.{{ else }}with networkPolicy off, nothing below that
 firewall stops the pod reaching what the node can.{{ end }}
 
+{{- with (include "pipeshub-ai.sandboxMaxTotal" .) }}
+
+The broker runs at most {{ . }} sandboxes at once on its daemon (sandbox.capacity.maxTotal).
+{{- else }}
+
+The broker sizes its ceiling on sandboxes from {{ if eq $path "broker-dind" }}the `dind` sidecar's limits{{ else }}its daemon{{ end }}, as the code
+sandbox cap is sized (sandbox.capacity). Set sandbox.capacity.maxTotal to override it.
+{{- end }}
+{{- with (include "pipeshub-ai.sandboxCapacityDivisor" .) }}
+Each application pod runs at most 1/{{ . }} of it (up to {{ . }} pods can run).
+{{- end }}
+
 {{- else if eq $path "local" }}
 
 NO ISOLATION. Code the model generates runs as a subprocess of the application
