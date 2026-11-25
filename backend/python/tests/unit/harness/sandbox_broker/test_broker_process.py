@@ -295,7 +295,7 @@ def test_sec_iso_06_no_value_turns_the_workspace_quota_off(raw: str, monkeypatch
 class _SizedProvider:
     """A daemon of 16 GiB and 8 CPUs, on a kernel that is not this host's."""
 
-    class client:  # noqa: N801 - docker-py's attribute
+    class client:
         @staticmethod
         def info() -> dict[str, object]:
             return {"MemTotal": 16 * 2**30, "NCPU": 8, "KernelVersion": "0.0.0-not-this-host"}

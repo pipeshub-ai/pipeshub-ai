@@ -3,7 +3,7 @@ that runs the sandboxes; in broker mode the app takes the machine and the ceilin
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
@@ -21,13 +21,16 @@ from app.agent_loop_lib.sandbox.capacity import (
     read_broker_machine_size,
 )
 
+if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
 GiB = 2**30
 # Neither machine is this test host, so no process limit is read from it and the terms are fixed.
 SMALL = {"MemTotal": 16 * GiB, "NCPU": 8, "KernelVersion": "0.0.0-not-this-host"}
 LARGE = {"MemTotal": 64 * GiB, "NCPU": 16, "KernelVersion": "0.0.0-not-this-host"}
 
 
-def _info(info: dict[str, Any]):
+def _info(info: dict[str, Any]) -> Callable[[], Awaitable[dict[str, Any]]]:
     async def read() -> dict[str, Any]:
         return info
 
@@ -88,7 +91,7 @@ async def test_cap02_the_broker_sizes_from_the_sandbox_host_a_deployment_passes_
     assert broker.ceiling() == 6
 
 
-def _health(detail: dict[str, str]):
+def _health(detail: dict[str, str]) -> Callable[[], Awaitable[dict[str, str]]]:
     async def read() -> dict[str, str]:
         return detail
 

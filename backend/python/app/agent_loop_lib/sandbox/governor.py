@@ -50,7 +50,6 @@ from app.agent_loop_lib.sandbox.capacity import (
     hold_reason,
     org_tag,
     reset_sandbox_capacity,
-    sandbox_state_directory,
 )
 from app.agent_loop_lib.sandbox.manager import SandboxLimitExceeded
 from app.core.org_context import spawn_detached
@@ -59,6 +58,7 @@ from app.services.resource_governor.shared_slots import (
     SharedSlots,
     SlotHold,
     ensure_private_directory,
+    sandbox_state_directory,
 )
 
 if TYPE_CHECKING:

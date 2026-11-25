@@ -33,11 +33,7 @@ import weakref
 from dataclasses import asdict, dataclass, replace
 from typing import TYPE_CHECKING, Any, Literal
 
-from app.agent_loop_lib.sandbox.capacity import (
-    HoldReason,
-    LiveView,
-    sandbox_state_directory,
-)
+from app.agent_loop_lib.sandbox.capacity import HoldReason, LiveView
 from app.agent_loop_lib.sandbox.host_reading import (
     HostSample,
     LiveMode,
@@ -53,6 +49,7 @@ from app.agent_loop_lib.sandbox.live_record import (
 from app.agent_loop_lib.sandbox.live_settings import MAX_MEMORY_OVERCOMMIT, LiveSettings
 from app.core.org_context import spawn_detached
 from app.services.resource_governor.lane_ledger import pid_alive
+from app.services.resource_governor.shared_slots import sandbox_state_directory
 
 if TYPE_CHECKING:
     from collections.abc import Callable

@@ -42,7 +42,6 @@ from enum import Enum
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 from app.core.org_context import spawn_detached
-from app.services.resource_governor.shared_slots import sandbox_state_directory
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Mapping
@@ -74,7 +73,6 @@ __all__ = [
     "read_machine_size",
     "reset_sandbox_capacity",
     "run_size",
-    "sandbox_state_directory",
     "slot_file_count",
 ]
 
