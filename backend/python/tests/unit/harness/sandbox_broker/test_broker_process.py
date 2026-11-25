@@ -313,8 +313,11 @@ class _SizedProvider:
 async def test_c2_19_cap02_the_install_sandbox_ceiling_is_sized_from_the_brokers_daemon(
     raw: str | None, ceiling: int, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    from app.agent_loop_lib.sandbox import capacity as capacity_module
     from app.sandbox_broker_main import sandbox_capacity
 
+    # The settings warn once per process: this test must not use up a warning another test expects.
+    monkeypatch.setattr(capacity_module, "_warned", set())
     if raw is None:
         monkeypatch.delenv("SANDBOX_MAX_TOTAL", raising=False)
     else:

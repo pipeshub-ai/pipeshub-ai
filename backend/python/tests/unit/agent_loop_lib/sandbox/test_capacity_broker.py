@@ -30,6 +30,12 @@ SMALL = {"MemTotal": 16 * GiB, "NCPU": 8, "KernelVersion": "0.0.0-not-this-host"
 LARGE = {"MemTotal": 64 * GiB, "NCPU": 16, "KernelVersion": "0.0.0-not-this-host"}
 
 
+@pytest.fixture(autouse=True)
+def _own_warnings(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The settings warn once per process; these tests must not use up a warning another test expects."""
+    monkeypatch.setattr(capacity_module, "_warned", set())
+
+
 def _info(info: dict[str, Any]) -> Callable[[], Awaitable[dict[str, Any]]]:
     async def read() -> dict[str, Any]:
         return info

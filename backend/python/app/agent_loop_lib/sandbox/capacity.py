@@ -875,18 +875,22 @@ def _resolve_backend() -> str | None:
         return None
 
 
-def _resolve_mode(backend: str | None = None) -> Mode:
+def _mode_for(backend: str | None, env: Mapping[str, str] | None = None) -> Mode:
     if backend == "e2b":
         return "e2b"
     if backend == "local":
         return "local"
-    return _docker_mode(os.environ)
+    return _docker_mode(os.environ if env is None else env)
+
+
+def _resolve_mode() -> Mode:
+    return _mode_for(_resolve_backend())
 
 
 def build_sandbox_capacity(backend: str | None, env: Mapping[str, str] | None = None) -> SandboxCapacity:
     """The capacity for *backend* (a ``SANDBOX_MODE`` backend name) from *env*."""
     env = os.environ if env is None else env
-    mode = _resolve_mode(backend)
+    mode = _mode_for(backend, env)
     settings = CapacitySettings.from_env(env)
     reader: Callable[[], Awaitable[tuple[MachineSize, DockerInfo | None]]] | None = None
     if backend == "broker":
