@@ -205,7 +205,12 @@ class Sim:
         return sorted(out)
 
 
-@pytest.fixture(params=["arango", "neo4j", "postgres"])
+# PostgreSQL where a migrated database is configured (scripts/prepare_pg_test_db.sh). Elsewhere its cases are not
+# collected: the graph shards run without one, and fail on any skip.
+STORES = ["arango", "neo4j", *(["postgres"] if os.environ.get("PG_CORE_URL") else [])]
+
+
+@pytest.fixture(params=STORES)
 async def sim(
     request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch, arango_provider: object, neo4j_provider: object,
 ) -> AsyncIterator[Sim]:
@@ -214,8 +219,6 @@ async def sim(
     org = uuid.uuid4().hex[:24]
     db = None
     if request.param == "postgres":
-        if not os.environ.get("PG_CORE_URL"):
-            pytest.skip("PG_CORE_URL is not set")
         from app.core.db import DbConfig, KernelDB
         from app.services.graph_db.postgres.provider import PostgresGraphProvider
         db = KernelDB(DbConfig.from_env("connectors"))
