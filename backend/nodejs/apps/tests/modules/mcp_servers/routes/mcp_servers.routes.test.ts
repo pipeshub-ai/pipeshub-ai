@@ -59,6 +59,7 @@ describe('mcp_servers/routes/mcp_servers.routes', () => {
         ['get', '/popular'],
         ['get', '/my-mcp-servers'],
         ['get', '/oauth/callback'],
+        ['post', '/oauth/discover'],
         ['get', '/instances'],
         ['post', '/instances'],
         ['get', '/instances/:instanceId'],

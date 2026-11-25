@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Box, Flex, Text, TextField, IconButton, ScrollArea } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
@@ -36,7 +36,10 @@ import { AgentBuilderToolsetsSection } from './sidebar-toolsets-section';
 import { AgentBuilderMcpDiscovery } from './sidebar-mcp-discovery';
 import { AgentBuilderMcpSection } from './sidebar-mcp-section';
 import { AgentBuilderSkillsSection } from './sidebar-skills-section';
+import { useGrantable } from './capability-badge';
 import { SidebarCategoryRow } from './sidebar-category-row';
+import { PaletteShowMore } from './palette-show-more';
+import type { BuilderCatalogPaging } from '../hooks/use-agent-builder-data';
 import { DraggableRow } from './sidebar-draggable-row';
 import { AgentBuilderPaletteSkeletonList } from './agent-builder-palette-skeleton';
 import type { McpMyServerEntry } from '../../../workspace/mcp-servers/types';
@@ -61,6 +64,8 @@ const paletteRowLabelStyle: React.CSSProperties = {
   textAlign: 'left',
 };
 
+const PALETTE_SEARCH_DEBOUNCE_MS = 300;
+
 export function AgentBuilderSidebar(props: {
   open: boolean;
   /** Inside the phone bottom sheet, which already shows the palette title. */
@@ -70,6 +75,10 @@ export function AgentBuilderSidebar(props: {
   nodeTemplates: NodeTemplate[];
   availableSkills: SkillForBuilder[];
   configuredConnectors: Connector[];
+  /** The org's catalogs a page at a time (R30-LAT-FU-1); absent: what is given is all there is. */
+  catalogs?: { knowledgeBases: BuilderCatalogPaging; connectors: BuilderCatalogPaging; toolsets: BuilderCatalogPaging };
+  /** Asks the server for each catalog's matches of a palette query ('' clears them). */
+  onSearchCatalogs?: (query: string) => Promise<void>;
   toolsets: BuilderSidebarToolset[];
   activeToolsetTypeKeys: Set<string>;
   toolsetMergeCheckNodes: ToolsetTypeKeyFlowNode[];
@@ -104,6 +113,8 @@ export function AgentBuilderSidebar(props: {
     nodeTemplates,
     availableSkills,
     configuredConnectors,
+    catalogs,
+    onSearchCatalogs,
     toolsets,
     activeToolsetTypeKeys,
     toolsetMergeCheckNodes,
@@ -123,6 +134,8 @@ export function AgentBuilderSidebar(props: {
     inSheet = false,
     collectionsNeedBinding = false,
   } = props;
+  // Badges for what a run of this agent could not use (CPD-11 U6); a new agent has no key and none.
+  const grantable = useGrantable(agentKey);
 
   const { t } = useTranslation();
   const mcpEnabled = useFeatureFlagsStore(selectMcpEnabled);
@@ -133,6 +146,13 @@ export function AgentBuilderSidebar(props: {
   }, [paletteDragBlockedMessage, onNotify]);
   const [search, setSearch] = useState('');
   const searching = search.trim() !== '';
+  // What the pages read do not hold, the server finds: one search per pause in typing, not per key.
+  useEffect(() => {
+    if (!onSearchCatalogs) return;
+    const query = search.trim();
+    const timer = setTimeout(() => void onSearchCatalogs(query), query === '' ? 0 : PALETTE_SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  }, [search, onSearchCatalogs]);
   const { isOpen, toggle: toggleKey, expand } = useSearchAwareExpanded(searching, {
     models: false,
     knowledge: true,
@@ -446,36 +466,14 @@ export function AgentBuilderSidebar(props: {
                         </SidebarCategoryRow>
                       );
                     })}
-                    {!searching && connectorTypeEntries.length > SHOW_MORE_LIMIT && (
-                      <button
-                        type="button"
-                        aria-expanded={showAllConnectors}
-                        onClick={() => setShowAllConnectors((v) => !v)}
-                        style={{
-                          display: 'flex',
-                          alignItems: 'center',
-                          width: '100%',
-                          gap: 4,
-                          padding: '6px 8px',
-                          cursor: 'pointer',
-                          userSelect: 'none',
-                          borderRadius: 'var(--radius-1)',
-                          border: 'none',
-                          background: 'none',
-                          fontFamily: 'inherit',
-                        }}
-                        onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = 'var(--olive-a3)'; }}
-                        onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = 'transparent'; }}
-                      >
-                        <MaterialIcon
-                          name={showAllConnectors ? 'expand_less' : 'expand_more'}
-                          size={16}
-                          color="var(--accent-9)"
-                        />
-                        <Text size="1" weight="medium" style={{ color: 'var(--accent-9)' }}>
-                          {showAllConnectors ? t('agentBuilder.showLess') : `${t('agentBuilder.showMore')} (${connectorTypeEntries.length - SHOW_MORE_LIMIT})`}
-                        </Text>
-                      </button>
+                    {!searching && (
+                      <PaletteShowMore
+                        expanded={showAllConnectors}
+                        read={connectorTypeEntries.length}
+                        visible={showAllConnectors ? connectorTypeEntries.length : Math.min(connectorTypeEntries.length, SHOW_MORE_LIMIT)}
+                        paging={catalogs ? { ...catalogs.connectors, total: null } : undefined}
+                        onToggle={setShowAllConnectors}
+                      />
                     )}
                     </>
                   )}
@@ -487,7 +485,7 @@ export function AgentBuilderSidebar(props: {
                 <SidebarCategoryRow
                   groupLabel={collectionsLabel}
                   groupMaterialIcon="folder"
-                  itemCount={kbIndividuals.length}
+                  itemCount={searching ? kbIndividuals.length : (catalogs?.knowledgeBases.total ?? kbIndividuals.length)}
                   isExpanded={isSectionOpen('knowledge-collections')}
                   onToggle={() => toggle('knowledge-collections')}
                   dragType={paletteStructureLocked || collectionsNeedBinding ? undefined : 'kb-group'}
@@ -517,36 +515,14 @@ export function AgentBuilderSidebar(props: {
                         <span style={paletteRowLabelStyle}>{t.label}</span>
                       </DraggableRow>
                     ))}
-                    {!searching && kbIndividuals.length > SHOW_MORE_LIMIT && (
-                      <button
-                        type="button"
-                        aria-expanded={showAllKbCollections}
-                        onClick={() => setShowAllKbCollections((v) => !v)}
-                        style={{
-                          display: 'flex',
-                          alignItems: 'center',
-                          width: '100%',
-                          gap: 4,
-                          padding: '6px 8px',
-                          cursor: 'pointer',
-                          userSelect: 'none',
-                          borderRadius: 'var(--radius-1)',
-                          border: 'none',
-                          background: 'none',
-                          fontFamily: 'inherit',
-                        }}
-                        onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = 'var(--olive-a3)'; }}
-                        onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = 'transparent'; }}
-                      >
-                        <MaterialIcon
-                          name={showAllKbCollections ? 'expand_less' : 'expand_more'}
-                          size={16}
-                          color="var(--accent-9)"
-                        />
-                        <Text size="1" weight="medium" style={{ color: 'var(--accent-9)' }}>
-                          {showAllKbCollections ? t('agentBuilder.showLess') : `${t('agentBuilder.showMore')} (${kbIndividuals.length - SHOW_MORE_LIMIT})`}
-                        </Text>
-                      </button>
+                    {!searching && (
+                      <PaletteShowMore
+                        expanded={showAllKbCollections}
+                        read={kbIndividuals.length}
+                        visible={showAllKbCollections ? kbIndividuals.length : Math.min(kbIndividuals.length, SHOW_MORE_LIMIT)}
+                        paging={catalogs?.knowledgeBases}
+                        onToggle={setShowAllKbCollections}
+                      />
                     )}
                     </>
                   )}
@@ -568,6 +544,7 @@ export function AgentBuilderSidebar(props: {
                 <Box className="agent-builder-palette-nest" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                   <AgentBuilderToolsetsSection
                     toolsets={toolsets}
+                    paging={catalogs ? { ...catalogs.toolsets, total: null } : undefined}
                     search={toolsSearch}
                     loading={loading}
                     refreshToolsets={refreshToolsets}
@@ -581,6 +558,7 @@ export function AgentBuilderSidebar(props: {
                     orgCredentialUiLocked={toolsetsOrgCredentialLocked}
                     onPaletteStructureDragBlocked={onPaletteDragBlocked}
                     webSearchAttached={webSearchAttached}
+                    grantable={grantable}
                     webSearchConfig={webSearchConfig}
                     agentShared={isServiceAccount || shareWithOrg}
                   />
@@ -613,6 +591,7 @@ export function AgentBuilderSidebar(props: {
                     onServerAdded={revealMcpServers}
                     structureLocked={paletteStructureLocked}
                     onPaletteStructureDragBlocked={onPaletteDragBlocked}
+                    grantable={grantable}
                   />
                 </Box>
               ) : null}
@@ -635,6 +614,7 @@ export function AgentBuilderSidebar(props: {
                   loading={loading}
                   structureLocked={paletteStructureLocked}
                   onPaletteStructureDragBlocked={onPaletteDragBlocked}
+                  grantable={grantable}
                 />
               ) : null}
             </>
@@ -677,25 +657,11 @@ function SectionHeader({
   onToggle: () => void;
   beta?: boolean;
 }) {
-  const { t } = useTranslation();
+  // One button for the whole row, named by its title and saying whether it is open: a chevron button inside a
+  // row that was itself a button nested one control in another (axe `nested-interactive`).
   return (
-    <Flex
-      align="start"
-      justify="between"
-      gap="2"
-      mt="1"
-      className="agent-builder-section-header"
-      style={{ width: '100%', minWidth: 0 }}
-      onClick={onToggle}
-      role="button"
-      tabIndex={0}
-      onKeyDown={(e) => {
-        if (e.key === 'Enter' || e.key === ' ') {
-          e.preventDefault();
-          onToggle();
-        }
-      }}
-    >
+    <Flex asChild align="start" justify="between" gap="2" mt="1" className="agent-builder-section-header" style={{ width: '100%', minWidth: 0 }}>
+      <button type="button" aria-expanded={open} onClick={onToggle}>
       <Flex align="start" gap="2" style={{ minWidth: 0, flex: 1 }}>
         {icon ? (
           <Box
@@ -731,19 +697,10 @@ function SectionHeader({
         </span>
         {beta ? <BetaBadge /> : null}
       </Flex>
-      <IconButton
-        size="2"
-        variant="ghost"
-        color="gray"
-        onClick={(e) => {
-          e.stopPropagation();
-          onToggle();
-        }}
-        aria-label={open ? t('agentBuilder.collapse') : t('agentBuilder.expand')}
-        style={{ flexShrink: 0 }}
-      >
+      <Flex align="center" justify="center" style={{ width: 32, height: 32, flexShrink: 0 }}>
         <MaterialIcon name={open ? 'expand_less' : 'expand_more'} size={18} color="var(--olive-11)" />
-      </IconButton>
+      </Flex>
+      </button>
     </Flex>
   );
 }

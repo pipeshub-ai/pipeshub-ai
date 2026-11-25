@@ -1,6 +1,7 @@
 import { Logger } from './logger.service';
 import { IKVStoreConnection } from '../types/keyValueStore.types';
 import { DistributedKeyValueStore } from '../keyValueStore/keyValueStore';
+import type { EtcdAuthAdmin } from '../keyValueStore/etcd-auth';
 import { KeyValueStoreFactory } from '../keyValueStore/keyValueStoreFactory';
 import {
   KeyValueStoreType,
@@ -128,6 +129,19 @@ export class KeyValueStoreService implements IKVStoreConnection {
    */
   isConnected(): boolean {
     return this.isInitialized;
+  }
+
+  /** Whether the configured store is etcd, whose roles Node applies for the sandbox plane (R38IDENT-FU-9). */
+  usesEtcd(): boolean {
+    return (
+      KeyValueStoreType.fromString(this.config.storeType) === StoreType.Etcd3
+    );
+  }
+
+  /** The store's role-based auth where it has one (etcd with a client certificate); null otherwise or before connect. */
+  authAdmin(): EtcdAuthAdmin | null {
+    if (!this.isInitialized) return null;
+    return this.store.authAdmin?.() ?? null;
   }
 
   /**

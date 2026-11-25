@@ -1,0 +1,22 @@
+{
+ "scenario": "agent_ask_user_question",
+ "parts": [
+  {
+   "type": "text",
+   "content": "I wasn't able to generate a response. Please try rephrasing.",
+   "runId": "run-golden",
+   "isFinal": true
+  },
+  {
+   "type": "tool_call",
+   "toolCallId": "call-ask",
+   "toolName": "internaltools__ask_user_question",
+   "args": "{\"user_intent\": \"The user wants a report but did not say which region.\", \"questions\": [{\"question\": \"Which region should the report cover?\", \"options\": [{\"label\": \"North America\"}, {\"label\": \"Europe\"}, {\"label\": \"Asia Pacific\"}, {\"label\": \"Enter a region\", \"isUserInput\": true}], \"multiSelect\": false}]}",
+   "status": "completed",
+   "runId": "run-golden",
+   "argsSummary": "Ask User Question",
+   "resultPreview": "{\"name\": \"ask_user_question\", \"userIntent\": \"The user wants a report but did not say which region.\", \"questions\": [{\"uuid\": \"00000000-0000-0000-0000-000000000001\", \"question\": \"Which region should the",
+   "resultSummary": "Completed successfully"
+  }
+ ]
+}

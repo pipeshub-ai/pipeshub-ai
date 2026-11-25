@@ -19,6 +19,7 @@ from app.modules.parsers.pdf.pdf_inspection import quick_facts
 from app.services.messaging import consumer_concurrency as cc
 from app.services.resource_governor import StartRateLimiter
 from app.services.resource_governor.models import ParseTier, Pool
+from tests.support.settle import SETTLE_S
 from tests.unit.services.messaging.governor_test_helpers import make_test_governor
 
 MIB = 1 << 20
@@ -90,6 +91,7 @@ def test_quick_facts_reads_a_thousand_pages_from_a_sample_only() -> None:
     started = time.monotonic()
     facts = quick_facts(blank_pdf(1000), sample_pages=8)
     assert facts.page_count == 1000
+    # wall-clock-ok: a 1000-page sample read takes well under a second; reading every page is the failure, minutes
     assert time.monotonic() - started < 10
 
 
@@ -149,7 +151,7 @@ def test_the_record_moves_in_place_holds_one_permit_and_small_files_do_not_wait_
         # More of the same class queue behind the huge cap while small ones sail through.
         t0 = time.monotonic()
         smalls = [
-            await asyncio.wait_for(cc.acquire_index_slot(h, S, **cc.class_kwargs(ctx_for())), 1.0) for _ in range(2)
+            await asyncio.wait_for(cc.acquire_index_slot(h, S, **cc.class_kwargs(ctx_for())), SETTLE_S) for _ in range(2)
         ]
         out["small_wait"] = time.monotonic() - t0
         for a in smalls:
@@ -306,6 +308,7 @@ def test_aging_is_measured_from_the_carried_time() -> None:
     ctx = wiring.class_context({"extension": "pdf", "orgId": "o", "parseEnqueuedAtMs": now_ms - 600_000})
     assert ctx is not None
     first = ctx.first_seen_s()
+    # wall-clock-ok: two readings of the clock around a 600 s carried age; the 10 s window only absorbs the gap between them
     assert first is not None and 590 < time.monotonic() - first < 610
 
 

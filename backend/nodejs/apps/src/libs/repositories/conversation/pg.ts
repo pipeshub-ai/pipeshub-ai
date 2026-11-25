@@ -12,7 +12,8 @@
  * SQL, so another viewer's copy is never read from the table.
  */
 import { randomUUID } from 'crypto';
-import { pgRuntime } from '../../db';
+import { pgRuntime, withJobsUow } from '../../db';
+import { orgContextStorage, system } from '../../context/orgContext';
 import type { Tx as PgKernelTx } from '../../db';
 import { CONVERSATION_STATUS } from '../../../modules/enterprise_search/constants/constants';
 import { BadRequestError, InternalServerError } from '../../errors/http.errors';
@@ -68,7 +69,15 @@ import type {
   SessionScope,
   SessionShareDto,
   SessionSummary,
+  HarnessSessionRow,
+  HarnessSessionPatch,
+  HarnessLedgerDto,
+  HarnessVersionDto,
+  ErasureRequestDto,
+  SessionDeletionDto,
+  UserSessionDto,
 } from './types';
+import type { StoredMessage } from './pg-rows';
 import type { Importable, ImportStats, NeutralDoc } from '../import';
 import { importConversationDocs } from './pg-import';
 import { kernelTx } from '../pg';
@@ -87,7 +96,7 @@ const SHARED_WITH = `COALESCE((SELECT jsonb_agg(jsonb_build_object('userId', m.u
 
 const MESSAGE_COLS = `m.id, m.session_id, m.seq, m.message_type, m.content, m.content_format, m.status, m.confidence,
   m.citations, m.follow_up_questions, m.feedback, m.metadata, m.model_info, m.applied_filters, m.attachments, m.reference_data,
-  m.tools, m.reasoning, m.parts, m.created_at, m.updated_at`;
+  m.tools, m.reasoning, m.parts, m.created_at, m.updated_at, m.sender_id, m.harness`;
 
 const CITATION_COLS = `c.id, c.content, c.chunk_index, c.citation_type, c.metadata, c.version, c.created_at, c.updated_at`;
 
@@ -385,6 +394,72 @@ export async function insertCitation(
   return citationDto(rows[0] as CitationSqlRow, true);
 }
 
+/** A ledger as stored: its three fields only. */
+const plainLedger = (l: HarnessLedgerDto): HarnessLedgerDto => ({
+  seq: l.seq,
+  digest: l.digest,
+  ...(l.diverged === true ? { diverged: true } : {}),
+});
+
+/** The sender, label and harness columns of a message row, in that order. */
+const harnessParams = (
+  s: StoredMessage,
+): [string | null, string | null, string | null] => [
+  s.senderId !== null ? (oidOf(s.senderId) ?? s.senderId) : null,
+  s.label !== null ? JSON.stringify(s.label) : null,
+  s.harness !== null ? JSON.stringify(s.harness) : null,
+];
+
+/**
+ * Deployment-wide sweeps (erasure requests, the backfill's scan of every org) as the jobs role, whose row policy admits
+ * every org; every statement names `org_id` where it means one org.
+ */
+function jobsRead<T>(
+  reason: string,
+  fn: (k: PgKernelTx) => Promise<T>,
+): Promise<T> {
+  const run = (): Promise<T> => withJobsUow({ write: false }, fn);
+  return orgContextStorage.getStore() ? run() : system(reason, run);
+}
+
+interface HarnessSqlRow extends SessionRow {
+  harness_version: HarnessVersionDto | null;
+  harness_ledger: HarnessLedgerDto | null;
+  erasure_requested_at: string | null;
+}
+
+interface DeletionSqlRow {
+  org_id: string;
+  id: string;
+  is_deleted: boolean;
+  deleted_by: string | null;
+  erasure_requested_at: string | null;
+  updated_at: Date;
+  messages: number;
+  citations: number;
+}
+
+/** A session's deletion fields with its message and citation-link counts; `@{WHERE}` and `@{TAIL}` complete it. */
+const DELETION_STATES = `/* pipeshub:conversation.deletion_states */ SELECT s.org_id, s.id, s.is_deleted, s.deleted_by, s.erasure_requested_at, s.updated_at,
+    COALESCE(c.messages, 0)::int AS messages, COALESCE(c.citations, 0)::int AS citations
+  FROM conversation.chat_sessions s
+  LEFT JOIN LATERAL (SELECT count(*) AS messages, COALESCE(sum(jsonb_array_length(m.citations)), 0) AS citations
+    FROM conversation.chat_messages m WHERE m.org_id = s.org_id AND m.session_id = s.id) c ON true
+  WHERE @{WHERE} ORDER BY s.id @{TAIL}`;
+
+const deletionDto = (r: DeletionSqlRow): SessionDeletionDto => ({
+  orgId: r.org_id,
+  sessionId: r.id,
+  isDeleted: r.is_deleted,
+  ...(r.deleted_by !== null ? { deletedBy: r.deleted_by } : {}),
+  ...(r.erasure_requested_at !== null
+    ? { erasureRequestedAt: Number(r.erasure_requested_at) }
+    : {}),
+  updatedAt: r.updated_at,
+  messages: r.messages,
+  citations: r.citations,
+});
+
 const citationIdsOf = (rows: MessageSqlRow[]): string[] =>
   rows.flatMap((r) =>
     r.citations.map((c) =>
@@ -458,8 +533,8 @@ export class PgConversationRepository
     const { rows } = await k.query<SessionRow>(
       SQL(`/* pipeshub:conversation.open_session */ INSERT INTO conversation.chat_sessions AS s
         (org_id, id, session_type, user_id, initiator, title, last_activity_at, status, model_info, agent_key, conversation_source,
-         project_id, project_visibility, metadata, created_at, updated_at)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11, $12, $13, $14::jsonb, $15, $15)
+         project_id, project_visibility, metadata, created_at, updated_at, harness_version, harness_ledger)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11, $12, $13, $14::jsonb, $15, $15, $16, $17::jsonb)
         RETURNING @{S}`),
       [
         k.orgId,
@@ -477,6 +552,10 @@ export class PgConversationRepository
         fields.projectVisibility ?? null,
         fields.metadata ? JSON.stringify(fields.metadata) : null,
         now,
+        fields.harnessVersion ?? null,
+        fields.harnessLedger
+          ? JSON.stringify(plainLedger(fields.harnessLedger))
+          : null,
       ],
     );
     return sessionDto(rows[0] as SessionRow, k.orgId, {
@@ -1181,16 +1260,28 @@ export class PgConversationRepository
     );
   }
 
-  async discardSession(id: string, orgId: string, tx?: Tx): Promise<void> {
+  async discardSession(
+    id: string,
+    orgId: string,
+    tx?: Tx,
+  ): Promise<{ sessions: number; messages: number }> {
     const oid = oidOf(id);
-    if (!oid) return;
-    await inUnit(tx, { write: true }, async (k) => {
+    if (!oid) return { sessions: 0, messages: 0 };
+    return inUnit(tx, { write: true }, async (k) => {
       assertOrg(k, orgId);
-      // Members, messages and their rows follow the session (foreign keys cascade).
-      await k.query(
+      const messages = await k.query(
+        '/* pipeshub:conversation.discard_session_messages */ DELETE FROM conversation.chat_messages WHERE org_id = $1 AND session_id = $2::text',
+        [k.orgId, oid],
+      );
+      // Members follow the session (the foreign key cascades).
+      const sessions = await k.query(
         '/* pipeshub:conversation.discard_session */ DELETE FROM conversation.chat_sessions WHERE org_id = $1 AND id = $2::text',
         [k.orgId, oid],
       );
+      return {
+        sessions: sessions.rowCount ?? 0,
+        messages: messages.rowCount ?? 0,
+      };
     });
   }
 
@@ -1251,10 +1342,11 @@ export class PgConversationRepository
   async softDeleteAgent(
     id: string,
     userId: string,
+    tx?: Tx,
   ): Promise<ChatSessionDto | null> {
     const oid = oidOf(id);
     if (!oid) return null;
-    return inUnit(undefined, { write: true }, (k) =>
+    return inUnit(tx, { write: true }, (k) =>
       this.one(
         k,
         SQL(`/* pipeshub:conversation.soft_delete_agent */ UPDATE conversation.chat_sessions s SET is_deleted = true, deleted_by = $3,
@@ -1444,9 +1536,9 @@ export class PgConversationRepository
       SQL(`/* pipeshub:conversation.insert_message */ INSERT INTO conversation.chat_messages AS m
         (org_id, session_id, seq, id, message_type, content, content_format, status, confidence, citations,
          follow_up_questions, feedback, metadata, model_info, applied_filters, attachments, reference_data, tools, reasoning, parts,
-         created_at, updated_at)
+         created_at, updated_at, sender_id, label, harness)
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11::jsonb, $12::jsonb, $13::jsonb, $14::jsonb, $15::jsonb, $16::jsonb,
-                $17::jsonb, $18::jsonb, $19::jsonb, $20::jsonb, $21, $22)
+                $17::jsonb, $18::jsonb, $19::jsonb, $20::jsonb, $21, $22, $23, $24::jsonb, $25::jsonb)
         RETURNING @{M}`),
       [
         k.orgId,
@@ -1472,6 +1564,7 @@ export class PgConversationRepository
         JSON.stringify(s.parts),
         m.createdAt ?? now,
         m.updatedAt ?? now,
+        ...harnessParams(s),
       ],
     );
     return messageDto(rows[0] as MessageSqlRow, k.orgId).dto;
@@ -1518,7 +1611,7 @@ export class PgConversationRepository
             message_type = $3, content = $4, content_format = $5, status = $6, confidence = $7, citations = $8::jsonb,
             follow_up_questions = $9::jsonb, feedback = $10::jsonb, metadata = $11::jsonb, model_info = $12::jsonb, applied_filters = $13::jsonb,
             attachments = $14::jsonb, reference_data = $15::jsonb, tools = $16::jsonb, reasoning = $17::jsonb, parts = $18::jsonb,
-            created_at = $19, updated_at = $20
+            created_at = $19, updated_at = $20, sender_id = $21, label = $22::jsonb, harness = $23::jsonb
           WHERE m.org_id = $1 AND m.id = $2::text RETURNING @{M}`),
         [
           k.orgId,
@@ -1542,6 +1635,7 @@ export class PgConversationRepository
           JSON.stringify(s.parts),
           stamped.createdAt ?? now,
           stamped.updatedAt ?? now,
+          ...harnessParams(s),
         ],
       );
       return rows[0] ? messageDto(rows[0], k.orgId).dto : null;
@@ -1657,10 +1751,19 @@ export class PgConversationRepository
       limit?: number;
       withCitations?: boolean;
       order?: 'asc' | 'desc';
+      withLabels?: boolean;
+      afterSeq?: number;
     },
     tx?: Tx,
   ): Promise<MessageRow[]> {
-    const { skip = 0, limit, withCitations = false, order = 'asc' } = q;
+    const {
+      skip = 0,
+      limit,
+      withCitations = false,
+      order = 'asc',
+      withLabels = false,
+      afterSeq,
+    } = q;
     if (limit !== undefined && limit <= 0) return [];
     const sid = oidOf(sessionId);
     if (!sid) return [];
@@ -1668,14 +1771,12 @@ export class PgConversationRepository
       assertOrg(k, q.orgId);
       const text =
         order === 'desc'
-          ? '/* pipeshub:conversation.list_messages_desc */ SELECT @{M} FROM conversation.chat_messages m WHERE m.org_id = $1 AND m.session_id = $2::text ORDER BY m.seq DESC OFFSET $3 LIMIT $4'
-          : '/* pipeshub:conversation.list_messages */ SELECT @{M} FROM conversation.chat_messages m WHERE m.org_id = $1 AND m.session_id = $2::text ORDER BY m.seq OFFSET $3 LIMIT $4';
-      const { rows } = await k.query<MessageSqlRow>(SQL(text), [
-        k.orgId,
-        sid,
-        skip,
-        limit ?? null,
-      ]);
+          ? '/* pipeshub:conversation.list_messages_desc */ SELECT @{M}@{LABEL} FROM conversation.chat_messages m WHERE m.org_id = $1 AND m.session_id = $2::text AND ($5::int IS NULL OR m.seq > $5) ORDER BY m.seq DESC OFFSET $3 LIMIT $4'
+          : '/* pipeshub:conversation.list_messages */ SELECT @{M}@{LABEL} FROM conversation.chat_messages m WHERE m.org_id = $1 AND m.session_id = $2::text AND ($5::int IS NULL OR m.seq > $5) ORDER BY m.seq OFFSET $3 LIMIT $4';
+      const { rows } = await k.query<MessageSqlRow>(
+        SQL(text, { LABEL: withLabels ? ', m.label' : '' }),
+        [k.orgId, sid, skip, limit ?? null, afterSeq ?? null],
+      );
       const docs = withCitations
         ? await citationDocs(k, citationIdsOf(rows))
         : undefined;
@@ -1782,6 +1883,469 @@ export class PgConversationRepository
         [k.orgId, want],
       );
       return rows.map((r) => citationDto(r, false));
+    });
+  }
+
+  async deleteCitations(
+    ids: string[],
+    orgId: string,
+    tx?: Tx,
+  ): Promise<number> {
+    const want = oidsOf(ids);
+    if (!want.length) return 0;
+    return inUnit(tx, { write: true }, async (k) => {
+      assertOrg(k, orgId);
+      const r = await k.query(
+        '/* pipeshub:conversation.delete_citations */ DELETE FROM conversation.citations WHERE org_id = $1 AND id = ANY($2::text[])',
+        [k.orgId, want],
+      );
+      return r.rowCount ?? 0;
+    });
+  }
+
+  // ---- the agent harness's fields and sweeps
+  async findHarnessSession(
+    id: string,
+    orgId: string,
+    opts: { forUpdate?: boolean } = {},
+    tx?: Tx,
+  ): Promise<HarnessSessionRow | null> {
+    const oid = oidOf(id);
+    if (!oid) return null;
+    return inUnit(tx, { write: opts.forUpdate === true }, async (k) => {
+      assertOrg(k, orgId);
+      const { rows } = await k.query<HarnessSqlRow>(
+        SQL(
+          opts.forUpdate
+            ? `/* pipeshub:conversation.harness_session_for_update */ SELECT @{S}, s.harness_version, s.harness_ledger, s.erasure_requested_at
+                FROM conversation.chat_sessions s WHERE s.org_id = $1 AND s.id = $2::text FOR UPDATE OF s`
+            : `/* pipeshub:conversation.harness_session */ SELECT @{S}, s.harness_version, s.harness_ledger, s.erasure_requested_at
+                FROM conversation.chat_sessions s WHERE s.org_id = $1 AND s.id = $2::text`,
+        ),
+        [k.orgId, oid],
+      );
+      const r = rows[0];
+      if (!r) return null;
+      return {
+        session: sessionDto(r, k.orgId, LEAN_SHAPE),
+        sessionType: r.session_type,
+        nextSeq: r.next_seq ?? 0,
+        ...(r.harness_version !== null
+          ? { harnessVersion: r.harness_version }
+          : {}),
+        ...(r.harness_ledger !== null
+          ? { harnessLedger: plainLedger(r.harness_ledger) }
+          : {}),
+        ...(r.erasure_requested_at !== null
+          ? { erasureRequestedAt: Number(r.erasure_requested_at) }
+          : {}),
+      };
+    });
+  }
+
+  async setHarnessFields(
+    id: string,
+    orgId: string,
+    patch: HarnessSessionPatch,
+    tx?: Tx,
+  ): Promise<boolean> {
+    const oid = oidOf(id);
+    if (!oid) return false;
+    return inUnit(tx, { write: true }, async (k) => {
+      assertOrg(k, orgId);
+      const r = await k.query(
+        `/* pipeshub:conversation.set_harness_fields */ UPDATE conversation.chat_sessions s SET
+            harness_version = COALESCE($3, s.harness_version),
+            harness_ledger = COALESCE($4::jsonb, s.harness_ledger),
+            erasure_requested_at = COALESCE($5::bigint, s.erasure_requested_at),
+            status = COALESCE($6, s.status),
+            last_activity_at = COALESCE($7::timestamptz, s.last_activity_at),
+            updated_at = $8
+          WHERE s.org_id = $1 AND s.id = $2::text`,
+        [
+          k.orgId,
+          oid,
+          patch.harnessVersion ?? null,
+          patch.harnessLedger
+            ? JSON.stringify(plainLedger(patch.harnessLedger))
+            : null,
+          patch.erasureRequestedAt ?? null,
+          patch.status ?? null,
+          patch.lastActivityAt !== undefined
+            ? new Date(patch.lastActivityAt)
+            : null,
+          new Date(),
+        ],
+      );
+      return (r.rowCount ?? 0) === 1;
+    });
+  }
+
+  async markHarnessSeen(
+    id: string,
+    orgId: string,
+    userId: string,
+    at: number,
+    tx?: Tx,
+  ): Promise<number | null> {
+    const oid = oidOf(id);
+    if (!oid) return null;
+    return inUnit(tx, { write: true }, async (k) => {
+      assertOrg(k, orgId);
+      // The mark is the person's, not a change to the conversation: `updated_at` (the list's order) stays.
+      const { rows } = await k.query<{ seen: number | string | null }>(
+        `/* pipeshub:conversation.mark_harness_seen */ UPDATE conversation.chat_sessions s SET
+            harness_seen = jsonb_set(
+              COALESCE(s.harness_seen, '{}'::jsonb),
+              ARRAY[$3::text],
+              to_jsonb(GREATEST(COALESCE((s.harness_seen->>$3::text)::double precision, $4::double precision), $4::double precision))
+            )
+          WHERE s.org_id = $1 AND s.id = $2::text
+          RETURNING (s.harness_seen->>$3::text)::double precision AS seen`,
+        [k.orgId, oid, userId, at],
+      );
+      const row = rows[0];
+      return row === undefined || row.seen === null ? null : Number(row.seen);
+    });
+  }
+
+  async harnessSeenMarks(
+    orgId: string,
+    userId: string,
+    ids: readonly string[],
+  ): Promise<Map<string, number>> {
+    const valid = ids.flatMap((id) => {
+      const oid = oidOf(id);
+      return oid === undefined ? [] : [oid];
+    });
+    if (valid.length === 0) return new Map();
+    return inUnit(undefined, { write: false }, async (k) => {
+      assertOrg(k, orgId);
+      const { rows } = await k.query<{ id: string; seen: number | string }>(
+        `/* pipeshub:conversation.harness_seen_marks */ SELECT s.id, (s.harness_seen->>$3::text)::double precision AS seen
+          FROM conversation.chat_sessions s
+          WHERE s.org_id = $1 AND s.id = ANY($2::text[]) AND s.harness_seen ? $3::text`,
+        [k.orgId, valid, userId],
+      );
+      return new Map(rows.map((row) => [row.id, Number(row.seen)]));
+    });
+  }
+
+  async listIdleSessions(
+    orgId: string,
+    before: number,
+    limit: number,
+  ): Promise<string[]> {
+    if (!oidOf(orgId) || limit <= 0) return [];
+    return inUnit(undefined, { write: false }, async (k) => {
+      assertOrg(k, orgId);
+      const { rows } = await k.query<{ id: string }>(
+        `/* pipeshub:conversation.idle_sessions */ SELECT s.id FROM conversation.chat_sessions s
+          WHERE s.org_id = $1 AND NOT s.is_deleted AND s.last_activity_at < $2 ORDER BY s.last_activity_at, s.id LIMIT $3`,
+        [k.orgId, new Date(before), limit],
+      );
+      return rows.map((r) => r.id);
+    });
+  }
+
+  async expireIdleSession(
+    orgId: string,
+    id: string,
+    before: number,
+    at: number,
+    tx?: Tx,
+  ): Promise<boolean> {
+    const oid = oidOf(id);
+    if (!oid || !oidOf(orgId)) return false;
+    return inUnit(tx, { write: true }, async (k) => {
+      assertOrg(k, orgId);
+      const r = await k.query(
+        `/* pipeshub:conversation.expire_idle_session */ UPDATE conversation.chat_sessions s SET is_deleted = true, erasure_requested_at = $4,
+            updated_at = $5
+          WHERE s.org_id = $1 AND s.id = $2::text AND NOT s.is_deleted AND s.last_activity_at < $3`,
+        [k.orgId, oid, new Date(before), at, new Date()],
+      );
+      return (r.rowCount ?? 0) === 1;
+    });
+  }
+
+  async listErasureRequests(
+    after: { requestedAt: number; sessionId: string } | null,
+    limit: number,
+  ): Promise<ErasureRequestDto[]> {
+    if (limit <= 0) return [];
+    const afterId = after !== null ? (oidOf(after.sessionId) ?? null) : null;
+    return jobsRead('conversation-erasure-requests', async (k) => {
+      const { rows } = await k.query<{
+        org_id: string;
+        id: string;
+        erasure_requested_at: string;
+        deleted_by: string | null;
+      }>(
+        `/* pipeshub:conversation.erasure_requests */ SELECT s.org_id, s.id, s.erasure_requested_at, s.deleted_by
+          FROM conversation.chat_sessions s
+          WHERE s.erasure_requested_at IS NOT NULL AND s.is_deleted
+            AND ($1::bigint IS NULL OR (s.erasure_requested_at, s.id) > ($1::bigint, $2::text))
+          ORDER BY s.erasure_requested_at, s.id LIMIT $3`,
+        [
+          afterId !== null ? (after?.requestedAt ?? null) : null,
+          afterId,
+          limit,
+        ],
+      );
+      return rows.map((r) => ({
+        orgId: r.org_id,
+        sessionId: r.id,
+        requestedAt: Number(r.erasure_requested_at),
+        ...(r.deleted_by !== null ? { deletedBy: r.deleted_by } : {}),
+      }));
+    });
+  }
+
+  async listDeletedSessions(
+    after: string | null,
+    limit: number,
+    orgId: string | null,
+  ): Promise<SessionDeletionDto[]> {
+    if (limit <= 0 || (orgId !== null && !oidOf(orgId))) return [];
+    const afterId = after !== null ? (oidOf(after) ?? null) : null;
+    return jobsRead('conversation-backfill', async (k) => {
+      const { rows } = await k.query<DeletionSqlRow>(
+        fill(DELETION_STATES, {
+          WHERE:
+            's.is_deleted AND ($1::text IS NULL OR s.org_id = $1) AND ($2::text IS NULL OR s.id > $2::text)',
+          TAIL: 'LIMIT $3',
+        }),
+        [orgId, afterId, limit],
+      );
+      return rows.map(deletionDto);
+    });
+  }
+
+  async sessionDeletionStates(
+    orgId: string,
+    ids: readonly string[],
+  ): Promise<SessionDeletionDto[]> {
+    const want = oidsOf(ids);
+    if (!oidOf(orgId) || !want.length) return [];
+    return inUnit(undefined, { write: false }, async (k) => {
+      assertOrg(k, orgId);
+      const { rows } = await k.query<DeletionSqlRow>(
+        fill(DELETION_STATES, {
+          WHERE: 's.org_id = $1 AND s.id = ANY($2::text[])',
+          TAIL: '',
+        }),
+        [k.orgId, want],
+      );
+      return rows.map(deletionDto);
+    });
+  }
+
+  async listUserSessionsAfter(
+    orgId: string,
+    userId: string,
+    after: string | null,
+    limit: number,
+  ): Promise<UserSessionDto[]> {
+    const user = oidOf(userId);
+    const afterId = after !== null ? oidOf(after) : null;
+    if (!oidOf(orgId) || !user || afterId === undefined || limit <= 0)
+      return [];
+    return inUnit(undefined, { write: false }, async (k) => {
+      assertOrg(k, orgId);
+      const { rows } = await k.query<{
+        id: string;
+        session_type: 'chat' | 'agent';
+        title: string | null;
+        agent_key: string | null;
+        created_at: Date;
+        updated_at: Date;
+      }>(
+        `/* pipeshub:conversation.user_sessions_after */ SELECT s.id, s.session_type, s.title, s.agent_key, s.created_at, s.updated_at
+          FROM conversation.chat_sessions s
+          WHERE s.org_id = $1 AND s.user_id = $2::text AND NOT s.is_deleted AND ($3::text IS NULL OR s.id > $3::text)
+          ORDER BY s.id LIMIT $4`,
+        [k.orgId, user, afterId, limit],
+      );
+      return rows.map((r) => ({
+        _id: r.id,
+        sessionType: r.session_type,
+        ...(r.title !== null ? { title: r.title } : {}),
+        ...(r.agent_key !== null ? { agentKey: r.agent_key } : {}),
+        createdAt: r.created_at,
+        updatedAt: r.updated_at,
+      }));
+    });
+  }
+
+  async markAttachmentsRemoved(
+    orgId: string,
+    exceptSessionId: string,
+    recordIds: readonly string[],
+  ): Promise<number> {
+    const except = oidOf(exceptSessionId);
+    if (!oidOf(orgId) || !except || recordIds.length === 0) return 0;
+    return inUnit(undefined, { write: true }, async (k) => {
+      assertOrg(k, orgId);
+      const marked = new Set<string>();
+      // One statement per record keeps each on the attachments index (a containment test per value).
+      for (const recordId of new Set(recordIds)) {
+        const { rows } = await k.query<{ id: string }>(
+          `/* pipeshub:conversation.mark_attachments_removed */ UPDATE conversation.chat_messages m SET
+              attachments = (SELECT jsonb_agg(CASE WHEN a->>'recordId' = $3 THEN a || '{"removed": true}'::jsonb ELSE a END ORDER BY i)
+                FROM jsonb_array_elements(m.attachments) WITH ORDINALITY AS e(a, i)),
+              updated_at = $4
+            WHERE m.org_id = $1 AND m.session_id <> $2::text AND m.attachments <> '[]'::jsonb
+              AND m.attachments @> jsonb_build_array(jsonb_build_object('recordId', $3::text))
+              AND NOT m.attachments @> jsonb_build_array(jsonb_build_object('recordId', $3::text, 'removed', true))
+            RETURNING m.id`,
+          [k.orgId, except, recordId, new Date()],
+        );
+        for (const r of rows) marked.add(r.id);
+      }
+      return marked.size;
+    });
+  }
+
+  async findAttachmentCarriers(
+    orgId: string,
+    recordIds: readonly string[],
+  ): Promise<Map<string, string>> {
+    const carried = new Map<string, string>();
+    if (!oidOf(orgId) || recordIds.length === 0) return carried;
+    return inUnit(undefined, { write: false }, async (k) => {
+      assertOrg(k, orgId);
+      for (const recordId of new Set(recordIds)) {
+        const { rows } = await k.query<{ session_id: string }>(
+          `/* pipeshub:conversation.attachment_carrier */ SELECT m.session_id FROM conversation.chat_messages m
+            WHERE m.org_id = $1 AND m.attachments <> '[]'::jsonb
+              AND m.attachments @> jsonb_build_array(jsonb_build_object('recordId', $2::text))
+            LIMIT 1`,
+          [k.orgId, recordId],
+        );
+        if (rows[0]) carried.set(recordId, rows[0].session_id);
+      }
+      return carried;
+    });
+  }
+
+  async listTitles(
+    orgId: string,
+    ids: readonly string[],
+  ): Promise<Map<string, string>> {
+    const found = new Map<string, string>();
+    const want = oidsOf([...new Set(ids)]);
+    if (!oidOf(orgId) || want.length === 0) return found;
+    return inUnit(undefined, { write: false }, async (k) => {
+      assertOrg(k, orgId);
+      const { rows } = await k.query<{ id: string; title: string | null }>(
+        `/* pipeshub:conversation.session_titles */ SELECT s.id, s.title FROM conversation.chat_sessions s
+          WHERE s.org_id = $1 AND s.id = ANY($2::text[]) AND NOT s.is_deleted`,
+        [k.orgId, want],
+      );
+      for (const row of rows) found.set(row.id, row.title ?? '');
+      return found;
+    });
+  }
+
+  async listOwnedForHandover(
+    orgId: string,
+    userId: string,
+  ): Promise<Array<{ sessionId: string; shared: boolean }>> {
+    const user = oidOf(userId);
+    if (!oidOf(orgId) || !user) return [];
+    return inUnit(undefined, { write: false }, async (k) => {
+      assertOrg(k, orgId);
+      const { rows } = await k.query<{ id: string; shared: boolean }>(
+        `/* pipeshub:conversation.owned_for_handover */ SELECT s.id, s.is_shared AND EXISTS (
+             SELECT 1 FROM conversation.chat_session_members m WHERE m.org_id = s.org_id AND m.session_id = s.id) AS shared
+           FROM conversation.chat_sessions s
+          WHERE s.org_id = $1 AND s.user_id = $2::text AND NOT s.is_deleted ORDER BY s.id`,
+        [k.orgId, user],
+      );
+      return rows.map((r) => ({ sessionId: r.id, shared: r.shared }));
+    });
+  }
+
+  async transferOwners(
+    orgId: string,
+    ids: readonly string[],
+    fromUserId: string,
+    toUserId: string,
+    tx?: Tx,
+  ): Promise<number> {
+    const [want, from, to] = [
+      oidsOf([...ids]),
+      oidOf(fromUserId),
+      oidOf(toUserId),
+    ];
+    if (!oidOf(orgId) || want.length === 0 || !from || !to) return 0;
+    return inUnit(tx, { write: true }, async (k) => {
+      assertOrg(k, orgId);
+      const { rows } = await k.query<{ id: string }>(
+        `/* pipeshub:conversation.transfer_owners */ UPDATE conversation.chat_sessions s
+            SET user_id = $3::text, initiator = $3::text, version = s.version + 1, updated_at = $4
+          WHERE s.org_id = $1 AND s.id = ANY($2::text[]) AND s.user_id = $5::text RETURNING s.id`,
+        [k.orgId, want, to, new Date(), from],
+      );
+      if (rows.length === 0) return 0;
+      await k.query(
+        `/* pipeshub:conversation.transfer_owners_unshare */ DELETE FROM conversation.chat_session_members
+          WHERE org_id = $1 AND session_id = ANY($2::text[]) AND user_id = $3::text`,
+        [k.orgId, rows.map((r) => r.id), to],
+      );
+      return rows.length;
+    });
+  }
+
+  async markDeletedForErasure(
+    orgId: string,
+    ids: readonly string[],
+    at: number,
+    tx?: Tx,
+  ): Promise<number> {
+    const want = oidsOf([...ids]);
+    if (!oidOf(orgId) || want.length === 0) return 0;
+    return inUnit(tx, { write: true }, async (k) => {
+      assertOrg(k, orgId);
+      const r = await k.query(
+        `/* pipeshub:conversation.mark_deleted_for_erasure */ UPDATE conversation.chat_sessions s
+            SET is_deleted = true, erasure_requested_at = COALESCE(s.erasure_requested_at, $3), updated_at = $4
+          WHERE s.org_id = $1 AND s.id = ANY($2::text[])`,
+        [k.orgId, want, at, new Date()],
+      );
+      return r.rowCount ?? 0;
+    });
+  }
+
+  async listSessionIdsAfter(
+    orgId: string,
+    after: string | null,
+    limit: number,
+  ): Promise<string[]> {
+    const afterId = after !== null ? oidOf(after) : null;
+    if (!oidOf(orgId) || afterId === undefined || limit <= 0) return [];
+    return inUnit(undefined, { write: false }, async (k) => {
+      assertOrg(k, orgId);
+      const { rows } = await k.query<{ id: string }>(
+        `/* pipeshub:conversation.session_ids_after */ SELECT s.id FROM conversation.chat_sessions s
+          WHERE s.org_id = $1 AND ($2::text IS NULL OR s.id > $2::text) ORDER BY s.id LIMIT $3`,
+        [k.orgId, afterId, limit],
+      );
+      return rows.map((r) => r.id);
+    });
+  }
+
+  async deleteOrgCitations(orgId: string, limit: number): Promise<number> {
+    if (!oidOf(orgId) || limit <= 0) return 0;
+    return inUnit(undefined, { write: true }, async (k) => {
+      assertOrg(k, orgId);
+      const r = await k.query(
+        `/* pipeshub:conversation.delete_org_citations */ DELETE FROM conversation.citations
+          WHERE org_id = $1 AND id IN (SELECT id FROM conversation.citations WHERE org_id = $1 LIMIT $2)`,
+        [k.orgId, limit],
+      );
+      return r.rowCount ?? 0;
     });
   }
 }

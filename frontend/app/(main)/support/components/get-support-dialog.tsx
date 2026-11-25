@@ -42,6 +42,13 @@ function formatTime(iso: string): string {
   return new Date(iso).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 }
 
+// A state's fill and its text on one line, so the contrast check reads the text against its own fill.
+const STEP_MARK = {
+  current: { border: 'none', background: 'var(--accent-9)', color: 'var(--accent-contrast)' },
+  done: { border: 'none', background: 'var(--accent-a3)', color: 'var(--accent-11)' },
+  todo: { border: '1px solid var(--gray-a7)', background: 'transparent', color: 'var(--slate-11)' },
+} as const;
+
 function StepIndicator({ current }: { current: 1 | 2 }) {
   const { t } = useTranslation();
   const steps = [t('support.steps.area'), t('support.steps.details')];
@@ -70,9 +77,7 @@ function StepIndicator({ current }: { current: 1 | 2 }) {
                       borderRadius: '50%',
                       fontSize: 12,
                       fontWeight: 700,
-                      border: isDone || isCurrent ? 'none' : '1px solid var(--gray-a7)',
-                      background: isCurrent ? 'var(--accent-9)' : isDone ? 'var(--accent-a3)' : 'transparent',
-                      color: isCurrent ? 'var(--accent-contrast)' : isDone ? 'var(--accent-11)' : 'var(--slate-11)',
+                      ...STEP_MARK[isCurrent ? 'current' : isDone ? 'done' : 'todo'],
                     }}
                   >
                     {isDone ? <MaterialIcon name="check" size={14} /> : number}
@@ -345,9 +350,7 @@ function SupportDialog() {
     body = (
       <>
         <VisuallyHidden>
-          <Dialog.Title>
-            {finished.result.outcome === 'pending' ? t('support.result.pendingTitle') : t('support.result.sentTitle')}
-          </Dialog.Title>
+          <Dialog.Title>{t(finished.result.outcome === 'pending' ? 'support.result.pendingTitle' : 'support.result.sentTitle')}</Dialog.Title>
         </VisuallyHidden>
         <SavedView result={finished.result} />
       </>

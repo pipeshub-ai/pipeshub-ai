@@ -55,7 +55,7 @@ export function McpCatalogDetails({
         size="1"
         weight="bold"
         style={{
-          color: 'var(--gray-10)',
+          color: 'var(--gray-11)',
           textTransform: 'uppercase',
           letterSpacing: '0.06em',
         }}
@@ -148,7 +148,7 @@ export function McpCatalogDetails({
 
         <Flex direction="column" gap="2">
           <Flex gap="3">
-            <Text size="2" style={{ color: 'var(--gray-10)', width: 120, flexShrink: 0 }}>
+            <Text size="2" style={{ color: 'var(--gray-11)', width: 120, flexShrink: 0 }}>
               {t('workspace.mcpServers.discover.signIn')}
             </Text>
             <Text size="2" style={{ color: 'var(--gray-12)', minWidth: 0 }}>
@@ -157,7 +157,7 @@ export function McpCatalogDetails({
           </Flex>
           {template.documentationUrl && (
             <Flex gap="3">
-              <Text size="2" style={{ color: 'var(--gray-10)', width: 120, flexShrink: 0 }}>
+              <Text size="2" style={{ color: 'var(--gray-11)', width: 120, flexShrink: 0 }}>
                 {t('workspace.mcpServers.discover.documentation')}
               </Text>
               <Link

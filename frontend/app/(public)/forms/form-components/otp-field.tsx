@@ -91,7 +91,7 @@ const OtpField = React.forwardRef<HTMLInputElement, OtpFieldProps>(function OtpF
           >
             <span
               className="material-icons-outlined"
-              style={{ fontSize: '16px', color: 'var(--gray-10)' }}
+              style={{ fontSize: '16px', color: 'var(--gray-11)' }}
             >
               {visible ? 'visibility_off' : 'visibility'}
             </span>

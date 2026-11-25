@@ -2,9 +2,20 @@
 import { statfs } from 'node:fs/promises';
 import type { Db, Document } from 'mongodb';
 import { Census, CensusFinding, judgeCensus } from './census';
-import { MAPPINGS, IGNORED } from './mapping';
+import {
+  CARRIED,
+  HELD,
+  IGNORED,
+  MAPPINGS,
+  fieldCarrier,
+  splitOutside,
+} from './mapping';
+import { CARRIERS, carriedSources } from './carry';
+import { carryMongo } from './carry/steps';
+import type { Carrier, CarryMongo } from './carry/types';
 import { collectionCounts, idString } from './mongo-read';
-import { MONGO_COLLECTIONS } from './mongo-collections';
+// loading it registers every model, which the census and the schema checks read
+import './mongo-collections';
 import type { MigrationRuntime } from './runtime';
 import { sourceDb } from './bulk';
 import { JobState } from './state';
@@ -34,7 +45,7 @@ const SAMPLE = 50_000;
 function migratorRequirements(): ReturnType<typeof schemaRequirements> {
   const req = schemaRequirements();
   for (const [branch, epoch] of Object.entries({
-    platform_data: 3,
+    platform_data: 8,
   }))
     req[branch] = {
       requires: Math.max(req[branch]?.requires ?? 0, epoch),
@@ -53,6 +64,80 @@ const MUST_BE_EMPTY: Record<string, string> = {
   agentconversations:
     'legacy agent conversations still hold embedded messages: start the application on MongoDB once so that its boot migration moves them to chat sessions, then run preflight again',
 };
+
+/**
+ * The held collections and fields that hold data (R45-MIGR): the copy does not carry them yet and must not drop them, so each one
+ * is red and the move is refused until the copy carries it.
+ */
+export function heldFindings(
+  counts: ReadonlyMap<string, number>,
+  heldFields: ReadonlyMap<string, number>,
+  carriers: readonly Carrier[] = CARRIERS,
+): Finding[] {
+  const out: Finding[] = [];
+  for (const h of splitOutside(carriers).held) {
+    const n = counts.get(h.collection) ?? 0;
+    if (n > 0)
+      out.push({
+        check: 'held_collection',
+        message: `${h.collection} holds ${String(n)} documents that this release cannot copy to PostgreSQL yet (${h.reason}); stay on MongoDB until the copy carries it`,
+        data: { collection: h.collection, n, tables: h.tables },
+      });
+  }
+  for (const m of MAPPINGS)
+    for (const h of m.held ?? []) {
+      if (fieldCarrier(m.collection, h.path, carriers)) continue;
+      const n = heldFields.get(`${m.collection}.${h.path}`) ?? 0;
+      if (n > 0)
+        out.push({
+          check: 'held_field',
+          message: `${String(n)} ${m.collection} documents hold ${h.path}, which this release cannot copy to PostgreSQL yet (${h.reason}); stay on MongoDB until the copy carries it`,
+          data: { collection: m.collection, path: h.path, n },
+        });
+    }
+  return out;
+}
+
+/**
+ * The carried collections and fields (R45-CARRY): every document must be one its carrier can write, or the copy would stop half
+ * way. Read here, before anything is written; `info.carried` counts the documents per carrier and collection.
+ */
+export async function carriedFindings(
+  mongo: CarryMongo,
+  counts: ReadonlyMap<string, number>,
+  info: Record<string, unknown>,
+): Promise<Finding[]> {
+  const out: Finding[] = [];
+  const seen: Record<string, number> = {};
+  for (const c of CARRIERS)
+    for (const coll of carriedSources(c)) {
+      if ((counts.get(coll) ?? 0) === 0) continue;
+      let n = 0;
+      const refused: string[] = [];
+      for await (const d of mongo.scan(coll, c.reads?.[coll] ?? {})) {
+        if (d.refused) refused.push(d.refused);
+        else
+          try {
+            if (c.expected(coll, d).length) n += 1;
+          } catch (e) {
+            refused.push(e instanceof Error ? e.message : String(e));
+          }
+      }
+      seen[`${c.name}:${coll}`] = n;
+      if (refused.length)
+        out.push({
+          check: 'carry_refused',
+          message: `${String(refused.length)} ${coll} documents cannot be carried to PostgreSQL by ${c.name}: ${refused.slice(0, 3).join('; ')}`,
+          data: {
+            carrier: c.name,
+            collection: coll,
+            refused: refused.slice(0, 20),
+          },
+        });
+    }
+  info.carried = seen;
+  return out;
+}
 
 /** The import login is shut except during a move, and its password is not in `.env` then: an empty password means "shut". */
 /**
@@ -180,13 +265,15 @@ export async function preflight(
   const mapped = new Set([
     ...MAPPINGS.map((m) => m.collection),
     ...IGNORED.map((i) => i.collection),
+    ...HELD.map((h) => h.collection),
+    ...CARRIED.map((h) => h.collection),
   ]);
   info.collections = Object.fromEntries(counts);
+  // a collection the application defines is no excuse: one that is neither mapped, listed as not copied nor held would be dropped
   for (const [name, n] of counts) {
     if (mapped.has(name)) continue;
     if (name === 'docstore_fence' || name === 'docstore_migrate_marker')
       continue;
-    if (MONGO_COLLECTIONS.includes(name)) continue;
     if (n > 0)
       red.push({
         check: 'unmapped_collection',
@@ -206,6 +293,21 @@ export async function preflight(
         message: why,
         data: { name, n: counts.get(name) },
       });
+  const heldFields = new Map<string, number>();
+  for (const m of MAPPINGS)
+    for (const h of m.held ?? [])
+      if (
+        (counts.get(m.collection) ?? 0) > 0 &&
+        !fieldCarrier(m.collection, h.path)
+      )
+        heldFields.set(
+          `${m.collection}.${h.path}`,
+          await sourceDb(rt, m)
+            .collection(m.collection)
+            .countDocuments({ [h.path]: { $exists: true } }),
+        );
+  red.push(...heldFindings(counts, heldFields));
+  red.push(...(await carriedFindings(carryMongo(rt), counts, info)));
   for (const i of IGNORED) {
     const n = counts.get(i.collection) ?? 0;
     if (n > 0 && !(i.collection in MUST_BE_EMPTY))

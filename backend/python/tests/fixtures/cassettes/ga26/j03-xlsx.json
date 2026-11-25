@@ -1,0 +1,225 @@
+{
+ "format": "pipeshub.harness.cassette/v1",
+ "manifest": {
+  "name": "j03-xlsx",
+  "source": "scripted",
+  "provider": "scripted",
+  "model": "scripted-brain",
+  "accepts_output_limit": false
+ },
+ "interactions": [
+  {
+   "request": {
+    "call": "complete",
+    "digest": "3c50c3fda19dcd934be0",
+    "message_count": 1,
+    "last_user": "Make an XLSX of all open P1 Jira issues with owners.\nskill xlsx\ntool jira_search {\"jql\": \"priority = P1 AND status = Open\"}\nwrite out/open-p1-issues.xlsx key,owner\nsay Saved open-p1-issues.xlsx\n\nAbout your workspace (the current directory):\nThis task has no input files: start the work without listin",
+    "tools": [
+     "ask_user",
+     "jira_search",
+     "read",
+     "search",
+     "shell",
+     "skill",
+     "write"
+    ]
+   },
+   "events": [
+    {
+     "type": "complete",
+     "response": {
+      "message": {
+       "role": "assistant",
+       "content": [
+        {
+         "type": "text",
+         "text": ""
+        }
+       ],
+       "tool_calls": [
+        {
+         "id": "call_1",
+         "name": "skill",
+         "arguments": {
+          "name": "xlsx"
+         }
+        }
+       ],
+       "truncated": false
+      },
+      "usage": {
+       "input_tokens": 331,
+       "output_tokens": 5,
+       "cache_read_tokens": 0,
+       "cache_write_tokens": 0,
+       "reasoning_tokens": 0
+      },
+      "stop_reason": "tool_use",
+      "model": "scripted-brain"
+     }
+    }
+   ],
+   "structured": null,
+   "usage": null,
+   "error": null
+  },
+  {
+   "request": {
+    "call": "complete",
+    "digest": "e90c924ea68f87c605ae",
+    "message_count": 3,
+    "last_user": "Make an XLSX of all open P1 Jira issues with owners.\nskill xlsx\ntool jira_search {\"jql\": \"priority = P1 AND status = Open\"}\nwrite out/open-p1-issues.xlsx key,owner\nsay Saved open-p1-issues.xlsx\n\nAbout your workspace (the current directory):\nThis task has no input files: start the work without listin",
+    "tools": [
+     "ask_user",
+     "jira_search",
+     "read",
+     "search",
+     "shell",
+     "skill",
+     "write"
+    ]
+   },
+   "events": [
+    {
+     "type": "complete",
+     "response": {
+      "message": {
+       "role": "assistant",
+       "content": [
+        {
+         "type": "text",
+         "text": ""
+        }
+       ],
+       "tool_calls": [
+        {
+         "id": "call_2",
+         "name": "jira_search",
+         "arguments": {
+          "jql": "priority = P1 AND status = Open"
+         }
+        }
+       ],
+       "truncated": false
+      },
+      "usage": {
+       "input_tokens": 376,
+       "output_tokens": 13,
+       "cache_read_tokens": 0,
+       "cache_write_tokens": 0,
+       "reasoning_tokens": 0
+      },
+      "stop_reason": "tool_use",
+      "model": "scripted-brain"
+     }
+    }
+   ],
+   "structured": null,
+   "usage": null,
+   "error": null
+  },
+  {
+   "request": {
+    "call": "complete",
+    "digest": "1dcc085b41867a88b14a",
+    "message_count": 5,
+    "last_user": "Make an XLSX of all open P1 Jira issues with owners.\nskill xlsx\ntool jira_search {\"jql\": \"priority = P1 AND status = Open\"}\nwrite out/open-p1-issues.xlsx key,owner\nsay Saved open-p1-issues.xlsx\n\nAbout your workspace (the current directory):\nThis task has no input files: start the work without listin",
+    "tools": [
+     "ask_user",
+     "jira_search",
+     "read",
+     "search",
+     "shell",
+     "skill",
+     "write"
+    ]
+   },
+   "events": [
+    {
+     "type": "complete",
+     "response": {
+      "message": {
+       "role": "assistant",
+       "content": [
+        {
+         "type": "text",
+         "text": ""
+        }
+       ],
+       "tool_calls": [
+        {
+         "id": "call_3",
+         "name": "write",
+         "arguments": {
+          "filePath": "out/open-p1-issues.xlsx",
+          "content": "key,owner"
+         }
+        }
+       ],
+       "truncated": false
+      },
+      "usage": {
+       "input_tokens": 585,
+       "output_tokens": 17,
+       "cache_read_tokens": 0,
+       "cache_write_tokens": 0,
+       "reasoning_tokens": 0
+      },
+      "stop_reason": "tool_use",
+      "model": "scripted-brain"
+     }
+    }
+   ],
+   "structured": null,
+   "usage": null,
+   "error": null
+  },
+  {
+   "request": {
+    "call": "complete",
+    "digest": "81f287b9fabceace11b5",
+    "message_count": 7,
+    "last_user": "Make an XLSX of all open P1 Jira issues with owners.\nskill xlsx\ntool jira_search {\"jql\": \"priority = P1 AND status = Open\"}\nwrite out/open-p1-issues.xlsx key,owner\nsay Saved open-p1-issues.xlsx\n\nAbout your workspace (the current directory):\nThis task has no input files: start the work without listin",
+    "tools": [
+     "ask_user",
+     "jira_search",
+     "read",
+     "search",
+     "shell",
+     "skill",
+     "write"
+    ]
+   },
+   "events": [
+    {
+     "type": "complete",
+     "response": {
+      "message": {
+       "role": "assistant",
+       "content": [
+        {
+         "type": "text",
+         "text": "Saved open-p1-issues.xlsx"
+        }
+       ],
+       "tool_calls": null,
+       "truncated": false
+      },
+      "usage": {
+       "input_tokens": 644,
+       "output_tokens": 6,
+       "cache_read_tokens": 0,
+       "cache_write_tokens": 0,
+       "reasoning_tokens": 0
+      },
+      "stop_reason": "end_turn",
+      "model": "scripted-brain"
+     }
+    }
+   ],
+   "structured": null,
+   "usage": null,
+   "error": null
+  }
+ ]
+}

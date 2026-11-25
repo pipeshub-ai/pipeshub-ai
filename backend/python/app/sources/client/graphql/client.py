@@ -1,9 +1,19 @@
+import re
 from abc import ABC, abstractmethod
 from typing import Any, Dict, Optional
 
 import aiohttp  # type: ignore
 
 from app.sources.client.graphql.response import GraphQLResponse
+from app.sources.client.http.send_ambiguity import note_aiohttp_failure, note_status
+
+_OPERATION = re.compile(r"^\s*(?:#[^\n]*\n\s*)*(\w+)")
+
+
+def is_mutation(query: str) -> bool:
+    """A document whose (first) operation is a mutation; a query or shorthand ``{...}`` is not."""
+    match = _OPERATION.match(query)
+    return match is not None and match.group(1) == "mutation"
 
 
 class GraphQLClient(ABC):
@@ -49,6 +59,7 @@ class GraphQLClient(ABC):
         if operation_name:
             payload["operationName"] = operation_name
 
+        mutation = is_mutation(query)
         try:
             timeout = aiohttp.ClientTimeout(total=self.timeout)
             async with aiohttp.ClientSession(timeout=timeout) as session:
@@ -57,11 +68,14 @@ class GraphQLClient(ABC):
                     json=payload,
                     headers=self.headers
                 ) as response:
+                    if mutation:
+                        note_status("POST", response.status)
                     response_data = await response.json()
                     return GraphQLResponse.from_response(
                         response_data, status_code=response.status
                     )
         except aiohttp.ClientError as e:
+            note_aiohttp_failure(e, unsafe=mutation)
             # ContentTypeError (a non-JSON error body) and ClientResponseError
             # both carry the status; plain transport failures have none.
             return GraphQLResponse(
@@ -69,6 +83,9 @@ class GraphQLClient(ABC):
                 message=f"Request failed: {str(e)}",
                 status_code=getattr(e, "status", None),
             )
+        except TimeoutError as e:
+            note_aiohttp_failure(e, unsafe=mutation)
+            raise
 
     async def close(self) -> None:
         """No-op close: sessions are short-lived per request and auto-closed."""

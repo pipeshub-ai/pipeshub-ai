@@ -108,6 +108,9 @@ class OutlookFolders:
         "Conversation History": "conversationhistory",
     }
     STANDARD_FOLDERS: list[str] = list(WELL_KNOWN_NAMES)
+    # Created on first use, so many mailboxes lack them; a 404 for any other standard
+    # folder means Graph did not resolve one the mailbox has.
+    MAY_BE_ABSENT: tuple[str, ...] = ("Archive", "Conversation History")
     # Synced only when a folder filter selects it. Deleting a mail or a folder in Outlook
     # moves it here, so syncing it by default kept deleted mail searchable. Recoverable
     # Items (recoverableitemsdeletions) is outside the folder tree and never listed.
@@ -284,6 +287,9 @@ class OutlookSyncPointKeys:
     # Which kind of Graph ids a folder's delta link (and the mail it read) was saved with.
     ID_TYPE = "id_type"
     DELTA_LINK = "delta_link"
+    # Whether the read a folder's delta link continues asks for each mail's source metadata: a link saved before
+    # keeps its query, so its mail is read without it and keeps what it holds.
+    METADATA_READ = "metadata_read"
     LAST_SYNC_TIMESTAMP = "last_sync_timestamp"
     FOLDER_ID = "folder_id"
     FOLDER_NAME = "folder_name"

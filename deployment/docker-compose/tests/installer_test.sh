@@ -264,6 +264,17 @@ compose="$(cat "$COMPOSE_DIR/docker-compose.yml")"
 check "app healthcheck gates on core services" "$compose" "required=('query','connector','indexing','docling')"
 check "sandbox image is profile-gated" "$compose" 'profiles: ["sandbox"]'
 check "eval skip slackbot env is wired" "$compose" "PIPESHUB_SKIP_SLACKBOT"
+echo "== Installer: standalone MongoDB converts before the stack starts =="
+# The conversion itself runs against Docker in mongodb_replset_test.sh.
+_migrate_line="$(grep -n '^migrate_mongo_to_replset$' "$INNER_INSTALLER" | head -1 | cut -d: -f1)"
+_start_line="$(grep -n 'compose_up_with_mongo_heal "up"' "$INNER_INSTALLER" | tail -1 | cut -d: -f1)"
+if [[ -n "$_migrate_line" && -n "$_start_line" && "$_migrate_line" -lt "$_start_line" ]]; then
+  pass "installer converts MongoDB before compose up"
+else
+  fail "installer converts MongoDB before compose up"
+fi
+check "base compose runs MongoDB as replica set rs0" "$compose" '- --replSet'
+check "base compose app uses the replica-set URI" "$compose" 'replicaSet=rs0'
 echo "== Compose: Hub slim empty ints are unset before start =="
 # Compose ${KEY:-} injects "". Hub slim int(os.getenv(KEY, default)) crashes
 # on that. The app entrypoint must unset blanks so the key is absent.
@@ -502,12 +513,14 @@ eval "$(extract_fn opt_in_profiles "$INNER_INSTALLER")"
 _saved_env_val() { :; }
 eval "$(extract_fn persist_env_var "$INNER_INSTALLER")"
 
-dp() { DATA_STORE="$1" KV_STORE_TYPE="$2" MESSAGE_BROKER="$3" derive_compose_profiles; }
+# The sandbox profile pairs with SANDBOX_MODE (broker, or docker while it
+# migrates); the plan step sets it before this runs (sandbox_plane_test.sh).
+dp() { DATA_STORE="$1" KV_STORE_TYPE="$2" MESSAGE_BROKER="$3" SANDBOX_MODE="${4-broker}" derive_compose_profiles; }
 check "arango + kafka + redis kv" "$(dp arangodb redis kafka)" "graph-arango,broker-kafka,sandbox"
 check "neo4j + redis + redis (slim)" "$(dp neo4j redis redis)" "graph-neo4j,sandbox"
-check "eval omits sandbox" "$(DEPLOY_TYPE=eval dp neo4j redis redis)" "graph-neo4j"
+check "eval omits sandbox" "$(DEPLOY_TYPE=eval dp neo4j redis redis '')" "graph-neo4j"
 check "neo4j + etcd + kafka (full custom)" "$(dp neo4j etcd kafka)" "graph-neo4j,kv-etcd,broker-kafka,sandbox"
-[[ -z "$(DEPLOY_TYPE=eval dp '' '' '')" ]] && pass "eval all-unset derives empty" || fail "eval all-unset derives empty"
+[[ -z "$(DEPLOY_TYPE=eval dp '' '' '' '')" ]] && pass "eval all-unset derives empty" || fail "eval all-unset derives empty"
 check "all-unset still includes sandbox" "$(dp '' '' '')" "sandbox"
 # The exact stale value from the user's terminal must be corrected, not trusted.
 check "repairs stale 'kafka' to real profiles" "$(dp arangodb redis kafka)" "graph-arango,broker-kafka,sandbox"
@@ -533,15 +546,17 @@ echo "== In-tree installer: persist_env_var replaces in place =="
 )
 
 echo "== In-tree installer: the opt-in postgres profiles =="
-check "keeps postgres in COMPOSE_PROFILES" "$(COMPOSE_PROFILES=graph-neo4j,postgres,postgres-migrate dp neo4j redis redis)" "graph-neo4j,sandbox,postgres,postgres-migrate"
-check_exact "does not invent postgres" "$(dp neo4j redis redis)" "graph-neo4j,sandbox"
-check_exact "does not match a longer profile name" "$(COMPOSE_PROFILES=postgres-extra dp neo4j redis redis)" "graph-neo4j,sandbox"
-check_exact "keeps exactly the two opt-in profiles and nothing else" "$(COMPOSE_PROFILES=graph-neo4j,postgres,postgres-migrate dp neo4j redis redis)" "graph-neo4j,sandbox,postgres,postgres-migrate"
+# SANDBOX_MODE=docker without the harness (the compatibility default, R51-COMPAT): broker mode, or the harness on in
+# docker mode, would add the sandbox-broker profile too.
+check "keeps postgres in COMPOSE_PROFILES" "$(COMPOSE_PROFILES=graph-neo4j,postgres,postgres-migrate AGENT_HARNESS_WORKER_ENABLED=false dp neo4j redis redis docker)" "graph-neo4j,sandbox,postgres,postgres-migrate"
+check_exact "does not invent postgres" "$(AGENT_HARNESS_WORKER_ENABLED=false dp neo4j redis redis docker)" "graph-neo4j,sandbox"
+check_exact "does not match a longer profile name" "$(COMPOSE_PROFILES=postgres-extra AGENT_HARNESS_WORKER_ENABLED=false dp neo4j redis redis docker)" "graph-neo4j,sandbox"
+check_exact "keeps exactly the two opt-in profiles and nothing else" "$(COMPOSE_PROFILES=graph-neo4j,postgres,postgres-migrate AGENT_HARNESS_WORKER_ENABLED=false dp neo4j redis redis docker)" "graph-neo4j,sandbox,postgres,postgres-migrate"
 # the exact check does fail on a wrongly appended profile (the substring check did not)
 [[ "graph-neo4j,sandbox,postgres" != "graph-neo4j,sandbox" ]] && pass "an appended postgres is caught by the exact comparison" || fail "an appended postgres is caught by the exact comparison"
 check "uninstall also covers the postgres profiles" "$(awk '/if \$FLAG_UNINSTALL; then/{g=1} g{print} g&&/^fi/{exit}' "$INNER_INSTALLER")" 'sandbox,postgres,postgres-migrate,postgres-metrics"'
-check_exact "keeps the metrics profile when it is set" "$(COMPOSE_PROFILES=graph-neo4j,postgres,postgres-metrics dp neo4j redis redis)" "graph-neo4j,sandbox,postgres,postgres-metrics"
-check_exact "the document-store override does not add the metrics profile" "$(PIPESHUB_COMPOSE_OVERRIDES=docker-compose.postgres-docstore.yml dp neo4j redis redis)" "graph-neo4j,sandbox,postgres,postgres-migrate"
+check_exact "keeps the metrics profile when it is set" "$(COMPOSE_PROFILES=graph-neo4j,postgres,postgres-metrics AGENT_HARNESS_WORKER_ENABLED=false dp neo4j redis redis docker)" "graph-neo4j,sandbox,postgres,postgres-metrics"
+check_exact "the document-store override does not add the metrics profile" "$(PIPESHUB_COMPOSE_OVERRIDES=docker-compose.postgres-docstore.yml AGENT_HARNESS_WORKER_ENABLED=false dp neo4j redis redis docker)" "graph-neo4j,sandbox,postgres,postgres-migrate"
 check "uninstall asks before deleting the PostgreSQL volume" "$(awk '/if \$FLAG_UNINSTALL; then/{g=1} g{print} g&&/^fi/{exit}' "$INNER_INSTALLER")" "Also delete the PostgreSQL data volume?"
 # The .env the wizard writes carries one random password per login; an existing value is kept across --reconfigure.
 wizard="$(awk '/PostgreSQL profile \(opt-in\): kept across/{g=1} g{print} g&&/^  done/{exit}' "$INNER_INSTALLER")"
@@ -640,13 +655,14 @@ STUB
   fi
 )
 # Every variable the installer reads before it first sets it (so a value from the caller's environment counts) is in the list it keeps
-# across sudo. Not inputs: bash's own variables, internal flags read inside functions defined before they are set, and the PostgreSQL
-# passwords (set with printf -v from .env or generated, never read from the environment).
+# across sudo. Not inputs: bash's own variables, internal flags read inside functions defined before they are set (the platform
+# probes, IMAGE_SOURCE, SANDBOX_PLAN), and the secrets the installer reads from .env or generates (SECRET_KEY, SECRET_KEY_PREVIOUS,
+# the PostgreSQL passwords set with printf -v), never from the environment.
 _read="$(awk '
   { a=""; rest=$0
     if (match($0, /^[[:space:]]*(export |local |readonly )?[A-Z][A-Z0-9_]*=/)) { a=substr($0, RSTART, RLENGTH); sub(/^[[:space:]]*(export |local |readonly )?/, "", a); sub(/=$/, "", a); rest=substr($0, RSTART+RLENGTH) }
     s=rest; while (match(s, /\$\{?[A-Z][A-Z0-9_]*/)) { n=substr(s, RSTART, RLENGTH); gsub(/[${]/, "", n); if (!(n in set)) print n; s=substr(s, RSTART+RLENGTH) }
-    if (a != "") set[a]=1 }' "$INNER_INSTALLER" | grep -vE '^(BASH_[A-Z_]+|EUID|SECONDS|USER|IS_MACOS|IS_WINDOWS|TOTAL_RAM_MB|PG_[A-Z]+_PASSWORD)$' | sort -u)"
+    if (a != "") set[a]=1 }' "$INNER_INSTALLER" | grep -vE '^(BASH_[A-Z_]+|EUID|SECONDS|USER|IS_MACOS|IS_WINDOWS|IS_LINUX|IS_WSL|ARCH|IMAGE_SOURCE|SANDBOX_PLAN|SECRET_KEY|SECRET_KEY_PREVIOUS|TOTAL_RAM_MB|PG_[A-Z]+_PASSWORD)$' | sort -u)"
 _kept="$(awk '/^    _keep=""/{g=1} g&&/; do$/{print; exit} g{print}' "$INNER_INSTALLER" | grep -oE '\b[A-Z][A-Z0-9_]*\b' | sort -u)"
 check_exact "the sudo re-exec list covers every setting the installer reads" "$(comm -23 <(printf '%s\n' "$_read") <(printf '%s\n' "$_kept"))" ""
 check "the guard finds settings without the PIPESHUB_ prefix" "$_read" "HEALTH_WAIT_SECS"
@@ -712,7 +728,7 @@ check "refresh target honours the pinned tag" "$inner" '_APP_IMAGE="${APP_IMAGE_
 
 # Downstream builds: image repository and extra compose files.
 check "app image repository defaults to pipeshubai/pipeshub-ai" "$inner" 'APP_IMAGE_REPO="${PIPESHUB_IMAGE:-pipeshubai/pipeshub-ai}"'
-check "compose app image follows PIPESHUB_IMAGE" "$(cat "$REPO_ROOT/deployment/docker-compose/docker-compose.yml")" 'image: ${PIPESHUB_IMAGE:-pipeshubai/pipeshub-ai}:${IMAGE_TAG:-latest}'
+check "compose app image follows PIPESHUB_IMAGE" "$(cat "$REPO_ROOT/deployment/docker-compose/docker-compose.yml")" 'image: ${PIPESHUB_APP_PINNED:-${PIPESHUB_IMAGE:-pipeshubai/pipeshub-ai}:${IMAGE_TAG:-latest}}'
 check "extra compose files are read from PIPESHUB_COMPOSE_OVERRIDES" "$inner" 'read -r -a _compose_overrides <<< "$PIPESHUB_COMPOSE_OVERRIDES"'
 check "image and overrides are saved in .env" "$inner" 'printf '"'"'PIPESHUB_COMPOSE_OVERRIDES=%s\n'"'"' "$PIPESHUB_COMPOSE_OVERRIDES" >> "$ENV_FILE"'
 check "later runs read the saved image" "$inner" 'PIPESHUB_IMAGE="${PIPESHUB_IMAGE:-$(_saved_env_val PIPESHUB_IMAGE)}"'
@@ -722,9 +738,25 @@ if grep -Eq -- 'docker compose .*-f "\$COMPOSE_FILE"|^ *-f "\$COMPOSE_FILE" \\$'
 else
   pass "every compose call passes the override files too"
 fi
+# R25-OPS: the sandbox-mode choice once rebuilt the file list from docker-compose.yml alone, so every compose call
+# after it dropped PIPESHUB_COMPOSE_OVERRIDES without a word.
+if grep -Eq '(^|[^_A-Z])COMPOSE_FILES=\(-f "\$COMPOSE_FILE"' "$INNER_INSTALLER"; then
+  fail "no later choice of compose files drops the overrides"
+else
+  pass "no later choice of compose files drops the overrides"
+fi
+(
+  work="$TMP_ROOT/overrides-kept"; mkdir -p "$work"
+  cp "$INNER_INSTALLER" "$COMPOSE_DIR/docker-compose.yml" "$work/"
+  printf 'services: {}\n' >"$work/extra.yml"
+  out="$(cd "$work" && PIPESHUB_DEPLOY_TYPE=slim PIPESHUB_IMAGE_SOURCE=prebuilt PIPESHUB_VERSION=0.7.0-slim \
+    PIPESHUB_PROJECT=installer-test-overrides PIPESHUB_GVISOR=skip PIPESHUB_COMPOSE_OVERRIDES=extra.yml \
+    bash ./install.sh --yes --print-env-only </dev/null 2>&1)"
+  check "the printed compose command carries the override file" "$out" "-f extra.yml -p installer-test-overrides up -d"
+)
 # Launch-path guards.
 check "refreshes app image via compose pull" "$inner" 'pull "${_PULL_SERVICES[@]}"'
-check "eval skips sandbox image pull" "$inner" 'DEPLOY_TYPE:-}" != "eval"'
+check "sandbox image pulled only with the sandbox profile" "$inner" '[[ ",${COMPOSE_PROFILES:-}," == *",sandbox,"* ]] && _PULL_SERVICES+=(sandbox-image)'
 check "--no-pull flag is parsed" "$inner" "FLAG_NO_PULL=true"
 check "refresh decision uses the testable helper" "$inner" 'should_pull_image "$_USE_BUILD" "$FLAG_NO_PULL" "${PIPESHUB_NO_PULL:-}"'
 # A pull failure must NOT abort when an image is already cached (flaky network).
@@ -987,6 +1019,22 @@ echo "== In-tree installer: --upgrade honours --version / PIPESHUB_VERSION =="
   check "custom sandbox image is left untouched" "$(cat "$work/.env")" \
     "SANDBOX_DOCKER_IMAGE=myregistry.example/pipeshub-sandbox:pinned"
 
+  # C15.04: a fresh install from a mirror names the mirror's sandbox image; without it the stack asks for
+  # pipeshubai/pipeshub-sandbox:<tag>, which an air-gapped host does not have.
+  rm -f "$work/.env"
+  run_installer "a fresh install from a mirror" PIPESHUB_DEPLOY_TYPE=slim PIPESHUB_IMAGE_SOURCE=prebuilt \
+    PIPESHUB_VERSION=0.7.0-slim PIPESHUB_PROJECT=installer-test-mirror PIPESHUB_GVISOR=skip \
+    PIPESHUB_IMAGE=registry.internal:5000/pipeshubai/pipeshub-ai \
+    PIPESHUB_SANDBOX_IMAGE=registry.internal:5000/pipeshubai/pipeshub-sandbox:0.7.0-slim -- --yes
+  check "the mirror's sandbox image is written to .env" "$(cat "$work/.env")" \
+    $'\nSANDBOX_DOCKER_IMAGE=registry.internal:5000/pipeshubai/pipeshub-sandbox:0.7.0-slim\n'
+  check "the mirror's app image is written to .env" "$(cat "$work/.env")" \
+    $'\nPIPESHUB_IMAGE=registry.internal:5000/pipeshubai/pipeshub-ai'
+  rm -f "$work/.env"
+  run_installer "a fresh install with no mirror" PIPESHUB_DEPLOY_TYPE=slim PIPESHUB_IMAGE_SOURCE=prebuilt \
+    PIPESHUB_VERSION=0.7.0-slim PIPESHUB_PROJECT=installer-test-mirror PIPESHUB_GVISOR=skip -- --yes
+  check "with no mirror the sandbox image follows the tag" "$(cat "$work/.env")" $'\nSANDBOX_DOCKER_IMAGE=\n'
+
   seed_env "0.6.0-slim"
   run_installer "plain --upgrade" -- --upgrade
   check "plain --upgrade keeps the recorded tag" "$out" "Image tag:             0.6.0-slim"
@@ -1042,6 +1090,384 @@ echo "== In-tree installer: --upgrade honours --version / PIPESHUB_VERSION =="
   run_installer "an ArangoDB install ignores the Neo4j heap settings" \
     PIPESHUB_GRAPH_DB=arango PATH="$nodocker:$PATH" -- --reconfigure --yes
   check "the ArangoDB install was chosen" "$(cat "$work/.env")" $'\nDATA_STORE=arangodb\n'
+)
+
+echo "== SEC-D-08: the app port's bind address (real functions) =="
+(
+  eval "$(extract_fn app_bind_address "$INNER_INSTALLER")"
+  eval "$(extract_fn explain_bind_address "$INNER_INSTALLER")"
+  info() { printf '%s\n' "$*"; }; warn() { printf '%s\n' "$*"; }
+  check "no public URL: this machine only" "$(app_bind_address "" "")" "127.0.0.1"
+  check "a public HTTPS URL opens every interface" "$(app_bind_address "" "https://pipeshub.example.com")" "0.0.0.0"
+  check "a localhost URL stays local" "$(app_bind_address "" "http://LOCALHOST:3000")" "127.0.0.1"
+  check "an explicit address wins over the URL" "$(app_bind_address "127.0.0.1" "https://pipeshub.example.com")" "127.0.0.1"
+  check "local: says how to open it" "$(explain_bind_address 127.0.0.1 3000 "")" "APP_BIND_ADDRESS"
+  check "open: says ufw does not close it" "$(explain_bind_address 0.0.0.0 3000 https://p.example.com)" "bypass ufw and firewalld"
+  check "open over http: warns of plaintext" "$(explain_bind_address 0.0.0.0 3000 http://p.example.com)" "unencrypted"
+)
+
+echo "== SEC-D-08 / SEC-D-06: an .env from an older installer, reused (--print-env-only) =="
+(
+  work="$TMP_ROOT/bind-upgrade"; mkdir -p "$work"
+  cp "$INNER_INSTALLER" "$work/install.sh"
+  cp "$COMPOSE_DIR/docker-compose.yml" "$work/"
+  nodocker="$work/nodocker"; mkdir -p "$nodocker"
+  printf '#!/bin/sh\n[ "$1" = volume ] && exit 1\nexit 0\n' >"$nodocker/docker"; chmod +x "$nodocker/docker"
+  for case in local public; do
+    printf 'DEPLOY_TYPE=slim\nIMAGE_TAG=0.9.0\nSECRET_KEY=%s\nAPP_PORT=3000\nDATA_STORE=neo4j\nNEO4J_PASSWORD=n\nKV_STORE_TYPE=redis\nMESSAGE_BROKER=redis\nREDIS_PASSWORD=keep\nCOMPOSE_PROFILES=graph-neo4j\nSANDBOX_MODE=\n' \
+      "$(head -c 48 /dev/urandom | od -An -tx1 | tr -d ' \n')" >"$work/.env"
+    [[ "$case" == public ]] && echo "FRONTEND_PUBLIC_URL=https://pipeshub.example.com" >>"$work/.env"
+    # The hardened profile (opted in): an .env from before SEC-D-08 gets the rule a fresh install follows.
+    out="$(cd "$work" && PIPESHUB_HARDENED=true PATH="$nodocker:$PATH" bash ./install.sh --print-env-only </dev/null 2>&1)"
+    env_now="$(cat "$work/.env")"
+    if [[ "$case" == local ]]; then
+      check "an old .env with no public URL is closed to this machine" "$env_now" "APP_BIND_ADDRESS=127.0.0.1"
+      check "and the installer says how to open it again" "$out" "set APP_BIND_ADDRESS=0.0.0.0"
+    else
+      check "an old .env with a public URL keeps every interface" "$env_now" "APP_BIND_ADDRESS=0.0.0.0"
+    fi
+    check "an existing Redis password is kept" "$env_now" $'\nREDIS_PASSWORD=keep\n'
+    # The compatibility profile (no opt-in): the port stays on every interface and nothing is written for it.
+    sed -i.bak -E '/^(APP_BIND_ADDRESS|PIPESHUB_HARDENED|SANDBOX_BROKER_COMPONENT_KEY|EGRESS_PROXY_COMPONENT_KEY|DOCKER_PROXY_BROKER_TOKEN)=/d' \
+      "$work/.env" && rm -f "$work/.env.bak"
+    out_compat="$(cd "$work" && PATH="$nodocker:$PATH" bash ./install.sh --print-env-only </dev/null 2>&1)"
+    if [[ "$case" == local ]] && ! grep -q '^APP_BIND_ADDRESS=' "$work/.env"; then
+      pass "compatibility: an old .env keeps every interface ($case)"
+    elif [[ "$case" == public ]] && ! grep -q '^APP_BIND_ADDRESS=' "$work/.env"; then
+      pass "compatibility: an old .env keeps every interface ($case)"
+    else
+      fail "compatibility: an old .env keeps every interface ($case)"
+    fi
+    check "compatibility: the summary says so ($case)" "$out_compat" "(every interface"
+    check "a missing Kafka password is generated" "$(grep -E '^KAFKA_PASSWORD=[a-f0-9]{48}$' "$work/.env")" "KAFKA_PASSWORD="
+    [[ "$out" != *"$(grep ^KAFKA_PASSWORD= "$work/.env" | cut -d= -f2)"* ]] && pass "the generated value is not printed ($case)" \
+      || fail "the generated value is not printed ($case)"
+  done
+)
+
+echo "== Image signatures: a distribution names its own signer, never a wider one (SIGNER-FU-1) =="
+(
+  eval "$(grep -E '^(PIPESHUB_SIGNER_IDENTITY|PIPESHUB_SIGNER_ISSUER)=' "$INNER_INSTALLER")"
+  for fn in signer_identity verify_image_signature cosign_run; do eval "$(extract_fn "$fn" "$INNER_INSTALLER")"; done
+  error() { printf 'x %s\n' "$*" >&2; }
+  matches() { [[ "$2" =~ $1 ]] && echo yes || echo no; }
+  release='https://github.com/pipeshub-ai/pipeshub-ai/.github/workflows/release-publish.yml@refs/tags/v1.2.3'
+  dist='https://github.com/acme-dist/pipeshub-dist/.github/workflows/release-publish.yml@refs/tags/v1.2.3'
+
+  unset PIPESHUB_SIGNER_REPOSITORY PIPESHUB_SIGNER_WORKFLOW
+  check "unset: upstream's release identity" "$(signer_identity)" "$PIPESHUB_SIGNER_IDENTITY"
+
+  id="$(PIPESHUB_SIGNER_REPOSITORY=acme-dist/pipeshub-dist signer_identity)"
+  check "a distribution's identity is its release workflow at a tag" "$(matches "$id" "$dist")" yes
+  check "and no longer upstream's" "$(matches "$id" "$release")" no
+  check "a branch of the distribution is not a release" "$(matches "$id" "${dist/refs\/tags\/v1.2.3/refs/heads/main}")" no
+  check "another workflow of the distribution is not the release" "$(matches "$id" "${dist/release-publish/e2e}")" no
+  check "a look-alike owner is not the distribution" "$(matches "$id" "${dist/acme-dist/acme-dist-x}")" no
+  check "a look-alike repository is not the distribution" "$(matches "$id" "${dist/pipeshub-dist\//pipeshub-distx/}")" no
+  check "the dots of a name are literal" "$(matches "$(PIPESHUB_SIGNER_REPOSITORY=acme/pipeshub.ee signer_identity)" "${dist/acme-dist\/pipeshub-dist/acme/pipeshubXee}")" no
+  check "the issuer stays GitHub Actions OIDC" "$PIPESHUB_SIGNER_ISSUER" "https://token.actions.githubusercontent.com"
+  id="$(PIPESHUB_SIGNER_REPOSITORY=acme-dist/pipeshub-dist PIPESHUB_SIGNER_WORKFLOW=sign-images.yaml signer_identity)"
+  check "a distribution may name its workflow file" "$(matches "$id" "${dist/release-publish.yml/sign-images.yaml}")" yes
+
+  for bad in '.*' 'acme/.*' 'acme/x|evil/y' 'acme' 'acme/x/y' '-acme/x' 'acme/..' 'acme/x$(id)' 'acme/x y'; do
+    out="$(PIPESHUB_SIGNER_REPOSITORY="$bad" signer_identity 2>&1)"; rc=$?
+    check "repository '$bad' is refused" "$rc:$out" "1:x PIPESHUB_SIGNER_REPOSITORY must be owner/repo"
+  done
+  for bad in '.*' 'x.yml|y' '../a.yml' 'a.yml.evil' 'a'; do
+    rc=0; PIPESHUB_SIGNER_REPOSITORY=acme/x PIPESHUB_SIGNER_WORKFLOW="$bad" signer_identity >/dev/null 2>&1 || rc=$?
+    check "workflow '$bad' is refused" "$rc" "1"
+  done
+
+  log="$TMP_ROOT/cosign.log"; mkdir -p "$TMP_ROOT/sigbin"
+  printf '#!/usr/bin/env bash\necho "cosign $*" >>"%s"\nexit 0\n' "$log" >"$TMP_ROOT/sigbin/cosign"; chmod +x "$TMP_ROOT/sigbin/cosign"
+  ref="acme/pipeshub-dist:1.2.3@sha256:$(printf 'c%.0s' {1..64})"
+  : >"$log"; PATH="$TMP_ROOT/sigbin:$PATH" PIPESHUB_SIGNER_REPOSITORY=acme-dist/pipeshub-dist verify_image_signature "$ref"
+  check "cosign is asked for the distribution's identity" "$(cat "$log")" '--certificate-identity-regexp ^https://github\.com/acme-dist/pipeshub-dist/\.github/workflows/release-publish\.yml@refs/tags/v[0-9] --certificate-oidc-issuer https://token.actions.githubusercontent.com'
+  : >"$log"; rc=0; PATH="$TMP_ROOT/sigbin:$PATH" PIPESHUB_SIGNER_REPOSITORY='.*' verify_image_signature "$ref" 2>/dev/null || rc=$?
+  check "a malformed signer fails the check" "$rc" "1"
+  [[ ! -s "$log" ]] && pass "nothing was verified against a malformed signer" || fail "nothing was verified against a malformed signer"
+)
+
+echo "== Agent harness switch: on by default, an upgrade keeps a named choice (ADR-OPS-06 as amended 2026-11-20) =="
+(
+  eval "$(extract_fn get_existing_val "$INNER_INSTALLER")"
+  eval "$(extract_fn agent_harness_switch "$INNER_INSTALLER")"
+  die() { printf 'x %s\n' "$*" >&2; exit 1; }
+  unset PIPESHUB_AGENT_HARNESS
+  ENV_FILE="$TMP_ROOT/harness.env"
+  rm -f "$ENV_FILE"
+  check "a fresh install turns the harness on" "$(agent_harness_switch)" "true"
+  printf 'DATA_STORE=neo4j\nREDIS_PASSWORD=x\n' >"$ENV_FILE"
+  check "an upgrade whose .env does not name it turns it on" "$(agent_harness_switch)" "true"
+  printf 'SANDBOX_BROKER_COMPONENT_KEY=k\nAGENT_HARNESS_WORKER_ENABLED=false\n' >"$ENV_FILE"
+  check "an .env that turned it off keeps it off" "$(agent_harness_switch)" "false"
+  printf 'AGENT_HARNESS_WORKER_ENABLED=true\n' >"$ENV_FILE"
+  check "an .env that turned it on keeps it on" "$(agent_harness_switch)" "true"
+  check "PIPESHUB_AGENT_HARNESS=off decides" "$(PIPESHUB_AGENT_HARNESS=off agent_harness_switch)" "false"
+  rm -f "$ENV_FILE"
+  check "PIPESHUB_AGENT_HARNESS=OFF decides on a fresh install, any case" "$(PIPESHUB_AGENT_HARNESS=OFF agent_harness_switch)" "false"
+  check "PIPESHUB_AGENT_HARNESS=ON decides, any case" "$(PIPESHUB_AGENT_HARNESS=ON agent_harness_switch)" "true"
+  out="$(PIPESHUB_AGENT_HARNESS=maybe agent_harness_switch 2>&1)"; rc=$?
+  check "a value that is not on or off is refused" "$rc:$out" "1:x PIPESHUB_AGENT_HARNESS must be on or off"
+  check "the wizard writes the switch into .env" "$(grep -c '^AGENT_HARNESS_WORKER_ENABLED=\${AGENT_HARNESS_WORKER_ENABLED}$' "$INNER_INSTALLER")" "1"
+  check "Compose's default is on" "$(grep -c 'AGENT_HARNESS_WORKER_ENABLED=${AGENT_HARNESS_WORKER_ENABLED:-true}' "$COMPOSE_DIR/docker-compose.yml")" "1"
+  # Only this run's PIPESHUB_AGENT_HARNESS=on asks for the harness; the switch an .env names is not a request.
+  eval "$(extract_fn agent_harness_requested "$INNER_INSTALLER")"
+  printf 'AGENT_HARNESS_WORKER_ENABLED=true\n' >"$ENV_FILE"
+  check "a switch the .env names is not a request" "$(agent_harness_requested)" "false"
+  check "PIPESHUB_AGENT_HARNESS=On is one, any case" "$(PIPESHUB_AGENT_HARNESS=On agent_harness_requested)" "true"
+  check "PIPESHUB_AGENT_HARNESS=off is not" "$(PIPESHUB_AGENT_HARNESS=off agent_harness_requested)" "false"
+)
+
+echo "== Security profile: unit (ADR-OPS-07, R51-COMPAT) =="
+(
+  for fn in get_existing_val persist_env_var gen_secret weak_secret_reason security_profile_choice sandbox_plan \
+            sync_docker_proxy_app_token secure_secret_key; do
+    eval "$(extract_fn "$fn" "$INNER_INSTALLER")"
+  done
+  die() { printf 'x %s\n' "$*" >&2; exit 1; }
+  info() { printf 'i %s\n' "$*"; }; warn() { printf 'w %s\n' "$*"; }
+  ENV_FILE="$TMP_ROOT/profile.env"
+  PIPESHUB_HARDENED_REQUESTED=""
+  rm -f "$ENV_FILE"
+  check "a fresh install is hardened" "$(security_profile_choice false)" "true"
+  printf 'DATA_STORE=neo4j\nREDIS_PASSWORD=x\nCOMPOSE_PROFILES=graph-neo4j,sandbox\n' >"$ENV_FILE"
+  check "an .env from a release without the switch keeps its behaviour" "$(security_profile_choice true)" "false"
+  for mark in SANDBOX_BROKER_COMPONENT_KEY EGRESS_PROXY_COMPONENT_KEY DOCKER_PROXY_BROKER_TOKEN APP_BIND_ADDRESS; do
+    printf 'DATA_STORE=neo4j\n%s=v\n' "$mark" >"$ENV_FILE"
+    check "an .env this installer wrote before the switch ($mark) stays hardened" "$(security_profile_choice true)" "true"
+  done
+  printf 'SANDBOX_BROKER_COMPONENT_KEY=k\nPIPESHUB_HARDENED=false\n' >"$ENV_FILE"
+  check "an .env that names false keeps it" "$(security_profile_choice true)" "false"
+  printf 'PIPESHUB_HARDENED=true\n' >"$ENV_FILE"
+  check "an .env that names true keeps it" "$(security_profile_choice true)" "true"
+  printf 'DATA_STORE=neo4j\n' >"$ENV_FILE"
+  check "PIPESHUB_HARDENED=true given to the installer opts in" "$(PIPESHUB_HARDENED_REQUESTED=TRUE security_profile_choice true)" "true"
+  printf 'PIPESHUB_HARDENED=true\n' >"$ENV_FILE"
+  check "PIPESHUB_HARDENED=false given to the installer decides" "$(PIPESHUB_HARDENED_REQUESTED=false security_profile_choice true)" "false"
+  out="$(PIPESHUB_HARDENED_REQUESTED=maybe security_profile_choice true 2>&1)"; rc=$?
+  check "a value that is not a boolean is refused" "$rc:$out" "1:x PIPESHUB_HARDENED must be true or false"
+
+  check "compatibility keeps docker" "$(sandbox_plan slim __unset__ false false)" "docker"
+  check "compatibility keeps a named docker" "$(sandbox_plan slim docker false false)" "docker"
+  check "hardened migrates docker to the broker" "$(sandbox_plan slim docker true false)" "migrate"
+  check "the harness migrates docker to the broker" "$(sandbox_plan slim __unset__ false true)" "migrate"
+  check "the broker stays the broker under compatibility" "$(sandbox_plan slim broker false false)" "broker"
+  check "eval stays off" "$(sandbox_plan eval __unset__ false false)" "disabled"
+
+  printf 'DOCKER_PROXY_TOKEN=\n' >"$ENV_FILE"
+  sync_docker_proxy_app_token docker >/dev/null
+  check "docker mode gives the app its proxy token" "$(grep -E '^DOCKER_PROXY_TOKEN=[a-f0-9]{64}$' "$ENV_FILE")" "DOCKER_PROXY_TOKEN="
+  sync_docker_proxy_app_token broker >/dev/null
+  [[ "$(cat "$ENV_FILE")" == "DOCKER_PROXY_TOKEN=" ]] && pass "on the broker the app holds no proxy token" \
+    || fail "on the broker the app holds no proxy token"
+  [[ "$(grep -c '^DOCKER_PROXY_TOKEN=' "$ENV_FILE")" == 1 ]] && pass "one token line" || fail "one token line"
+
+  SECRET_KEY="your_random_encryption_secret_key"; SECRET_KEY_PREVIOUS=""
+  out="$(secure_secret_key false; echo "rc=$?"; echo "key=$SECRET_KEY")"
+  check "compatibility keeps a weak SECRET_KEY" "$out" "key=your_random_encryption_secret_key"
+  check "and says how to replace it" "$out" "PIPESHUB_HARDENED=true ./install.sh --upgrade"
+  check "and reports nothing to persist" "$out" "rc=1"
+  secure_secret_key true >/dev/null
+  check "hardened moves the weak key to SECRET_KEY_PREVIOUS" "$SECRET_KEY_PREVIOUS" "your_random_encryption_secret_key"
+  [[ "$SECRET_KEY" =~ ^[a-f0-9]{64}$ ]] && pass "and generates a random key" || fail "and generates a random key"
+)
+
+echo "== Security profile: an upstream .env upgraded, opted in, a fresh install (--print-env-only, R51-COMPAT) =="
+(
+  # This release's image (the stub docker below has no labels to read); the older image has its own block below.
+  export PIPESHUB_IMAGE_CAPABILITIES="sandbox-broker,secret-key-file,agent-harness"
+  work="$TMP_ROOT/profile-upgrade"; mkdir -p "$work"
+  cp "$INNER_INSTALLER" "$work/install.sh"
+  cp "$COMPOSE_DIR/docker-compose.yml" "$work/"
+  nodocker="$work/nodocker"; mkdir -p "$nodocker"
+  printf '#!/bin/sh\n[ "$1" = volume ] && exit 1\nexit 0\n' >"$nodocker/docker"; chmod +x "$nodocker/docker"
+  rnd() { head -c "$1" /dev/urandom | od -An -tx1 | tr -d ' \n'; }
+  # The keys upstream main's install.sh --yes writes (no KAFKA_PASSWORD, SANDBOX_MODE, APP_BIND_ADDRESS, sandbox keys);
+  # SECRET_KEY is the template's placeholder, as a hand-made upstream .env has it.
+  upstream_env() {
+    printf '%s\n' "DEPLOY_TYPE=slim" "IMAGE_TAG=0.9.0" "IMAGE_SOURCE=prebuilt" "SANDBOX_DOCKER_IMAGE=" \
+      "PIPESHUB_SKIP_SLACKBOT=false" "COMPOSE_PROJECT_NAME=pxh-r51-upstream" "COMPOSE_PROFILES=graph-neo4j,sandbox" \
+      "NODE_ENV=production" "LOG_LEVEL=info" "SECRET_KEY=your_random_encryption_secret_key" "ROTATE_SIGNING_SECRETS=" \
+      "FRONTEND_PUBLIC_URL=" "APP_PORT=3000" "DATA_STORE=neo4j" "NEO4J_USERNAME=neo4j" "NEO4J_PASSWORD=$(rnd 8)" \
+      "NEO4J_DATABASE=neo4j" "KV_STORE_TYPE=redis" "MESSAGE_BROKER=redis" "REDIS_PASSWORD=$(rnd 8)" \
+      "MONGO_USERNAME=admin" "MONGO_PASSWORD=$(rnd 8)" "QDRANT_API_KEY=$(rnd 10)"
+  }
+  upgrade() { (cd "$work" && PATH="$nodocker:$PATH" bash ./install.sh --upgrade --print-env-only </dev/null 2>&1); }
+  keys() { grep -E '^[A-Z_]+=' "$1" | cut -d= -f1 | sort -u; }
+  val() { grep -E "^$1=" "$work/.env" | tail -1 | cut -d= -f2-; }
+
+  upstream_env >"$work/.env"; cp "$work/.env" "$work/env.before"
+  out="$(upgrade)"; rc=$?
+  check "the upstream .env upgrades (exit 0)" "$rc" "0"
+  check "the compatibility profile is written down" "$(cat "$work/.env")" $'\nPIPESHUB_HARDENED=false'
+  check "and said" "$out" "Security profile: compatibility"
+  check "and how to opt in" "$out" "PIPESHUB_HARDENED=true ./install.sh --upgrade"
+  check "the weak SECRET_KEY is kept (rollback reads it)" "$(val SECRET_KEY)" "your_random_encryption_secret_key"
+  [[ -z "$(val SECRET_KEY_PREVIOUS)" ]] && pass "no SECRET_KEY_PREVIOUS" || fail "no SECRET_KEY_PREVIOUS"
+  [[ -z "$(val APP_BIND_ADDRESS)" ]] && pass "no bind address: every interface, as before" || fail "no bind address: every interface, as before"
+  check "summary says every interface" "$out" "0.0.0.0:3000 (every interface"
+  # The harness switch is on by default (ADR-OPS-06 as amended 2026-11-20), but its default is not a request: code
+  # execution stays on docker and no broker starts until the operator opts in (ADR-OPS-07).
+  check "code execution stays on docker" "$out" "SANDBOX_MODE=docker (the app"
+  check "written down" "$(val SANDBOX_MODE)" "docker"
+  check "and no broker starts" "$(val COMPOSE_PROFILES)" "graph-neo4j,sandbox"
+  check "and how to move to the broker is said" "$out" "PIPESHUB_AGENT_HARNESS=on ./install.sh --upgrade"
+  [[ "$(val KAFKA_PASSWORD)" =~ ^[a-f0-9]{48}$ ]] && pass "credentials healed (invisible)" || fail "credentials healed (invisible)"
+  [[ "$(val DOCKER_PROXY_TOKEN)" =~ ^[a-f0-9]{64}$ ]] && pass "docker mode: the app gets its proxy token" || fail "docker mode: the app gets its proxy token"
+  check "the harness is written on (the default; Labs keeps it off for every org)" "$(val AGENT_HARNESS_WORKER_ENABLED)" "true"
+  cp "$work/.env" "$work/env.compat"
+  upgrade >/dev/null
+  diff -q "$work/env.compat" "$work/.env" >/dev/null && pass "a second upgrade changes nothing" || fail "a second upgrade changes nothing"
+
+  if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
+    for envf in env.before env.compat; do
+      # Before and after the upgrade alike: docker code execution through the proxy, no broker.
+      expected="0.0.0.0 false docker docker-socket-proxy"
+      rendered="$(env -i PATH="$PATH" HOME="${HOME:-/tmp}" docker compose -f "$work/docker-compose.yml" -p pxh-r51-render \
+        --env-file "$work/$envf" config --format json 2>&1)"; rc=$?
+      check "plain compose renders the $envf .env (exit 0)" "$rc" "0"
+      summary="$(printf '%s' "$rendered" | python3 -c 'import json,sys
+d=json.load(sys.stdin)["services"]; a=d["pipeshub-ai"]
+print(a["ports"][0]["host_ip"], a["environment"]["PIPESHUB_HARDENED"], a["environment"]["SANDBOX_MODE"],
+      ",".join(sorted(set(d) & {"sandbox-broker","egress-proxy","docker-socket-proxy"})))' 2>&1)"
+      check "it publishes every interface, compatibility, docker code execution ($envf)" "$summary" "$expected"
+    done
+  else
+    pass "docker compose is not installed: render skipped"
+  fi
+
+  # The operator opts in: exactly the documented set changes.
+  cp "$work/env.compat" "$work/.env"
+  out="$(cd "$work" && PIPESHUB_HARDENED=true PATH="$nodocker:$PATH" bash ./install.sh --upgrade --print-env-only </dev/null 2>&1)"
+  changed="$(diff <(grep -E '^[A-Z_]+=' "$work/env.compat" | sort) <(grep -E '^[A-Z_]+=' "$work/.env" | sort) \
+    | grep -E '^[<>]' | sed -E 's/^[<>] ([A-Z_]+)=.*/\1/' | sort -u | tr '\n' ' ')"
+  # SANDBOX_MODE=docker stays written until the broker is healthy (migrate_sandbox_to_broker).
+  check "the opt-in changes exactly the profiles, the security profile, the key and the bind address" "$changed" \
+    "APP_BIND_ADDRESS COMPOSE_PROFILES PIPESHUB_HARDENED SECRET_KEY SECRET_KEY_PREVIOUS "
+  [[ "$changed" == "APP_BIND_ADDRESS COMPOSE_PROFILES PIPESHUB_HARDENED SECRET_KEY SECRET_KEY_PREVIOUS " ]] \
+    && pass "and nothing else" || fail "and nothing else ($changed)"
+  check "hardened" "$(val PIPESHUB_HARDENED)" "true"
+  check "the weak key is retired to SECRET_KEY_PREVIOUS" "$(val SECRET_KEY_PREVIOUS)" "your_random_encryption_secret_key"
+  check "the app port binds this machine" "$(val APP_BIND_ADDRESS)" "127.0.0.1"
+  check "the broker's profile starts for the move" "$(val COMPOSE_PROFILES)" "graph-neo4j,sandbox,sandbox-broker"
+  check "code execution moves to the broker once it is healthy" "$out" "moving to the sandbox broker"
+
+  # An .env this branch's installer wrote before the switch: it ran hardened, and keeps doing so.
+  { upstream_env | grep -v '^SECRET_KEY='; echo "SECRET_KEY=$(rnd 32)"; echo "SANDBOX_MODE=broker"
+    echo "SANDBOX_BROKER_COMPONENT_KEY=$(rnd 32)"; echo "APP_BIND_ADDRESS=127.0.0.1"; echo "DOCKER_PROXY_TOKEN=$(rnd 32)"
+    echo "COMPOSE_PROFILES=graph-neo4j,sandbox"; } >"$work/.env"
+  upgrade >/dev/null
+  check "an earlier hardened .env stays hardened" "$(val PIPESHUB_HARDENED)" "true"
+  check "and on the broker" "$(val SANDBOX_MODE)" "broker"
+  check "with the broker's profile" "$(val COMPOSE_PROFILES)" "graph-neo4j,sandbox,sandbox-broker"
+  [[ -z "$(val DOCKER_PROXY_TOKEN)" ]] && pass "and no app token the proxy would accept" || fail "and no app token the proxy would accept"
+
+  # A fresh install.
+  rm -f "$work/.env"
+  out="$(cd "$work" && PATH="$nodocker:$PATH" bash ./install.sh --yes --print-env-only </dev/null 2>&1)"; rc=$?
+  check "a fresh install writes its .env (exit 0)" "$rc" "0"
+  check "a fresh install is hardened" "$(val PIPESHUB_HARDENED)" "true"
+  check "on the broker" "$(val SANDBOX_MODE)" "broker"
+  check "with the broker's profile" "$(val COMPOSE_PROFILES)" ",sandbox,sandbox-broker"
+  check "bound to this machine" "$(val APP_BIND_ADDRESS)" "127.0.0.1"
+  [[ -z "$(val DOCKER_PROXY_TOKEN)" ]] && pass "no app proxy token on the broker" || fail "no app proxy token on the broker"
+  sk="$(val SECRET_KEY)"; [[ ${#sk} -ge 32 ]] && pass "a random SECRET_KEY" || fail "a random SECRET_KEY"
+)
+
+echo "== App image capabilities: an image without the label is set up as upstream did (published before the broker) =="
+(
+  for fn in app_image_capabilities image_can sandbox_plan; do eval "$(extract_fn "$fn" "$INNER_INSTALLER")"; done
+  eval "$(grep -E '^APP_IMAGE_CAPABILITIES_(LABEL|ALL)=' "$INNER_INSTALLER")"
+  APP_IMAGE_REPO=pipeshubai/pipeshub-ai IMAGE_TAG=slim IMAGE_SOURCE=prebuilt
+  unset PIPESHUB_IMAGE_CAPABILITIES
+  capbin="$TMP_ROOT/capbin"; mkdir -p "$capbin"
+  # docker: LOCAL is the local label (unset: no local copy), REGISTRY the registry's config JSON (unset: unreadable).
+  cat >"$capbin/docker" <<'STUB'
+#!/usr/bin/env bash
+if [[ "$1 $2" == "image inspect" ]]; then [[ -n "${LOCAL+set}" ]] || exit 1; printf '%s\n' "$LOCAL"; exit 0; fi
+if [[ "$1 $2 $3" == "buildx imagetools inspect" ]]; then [[ -n "${REGISTRY+set}" ]] || exit 1; printf '%s\n' "$REGISTRY"; exit 0; fi
+exit 1
+STUB
+  chmod +x "$capbin/docker"
+  caps() { PATH="$capbin:$PATH" app_image_capabilities; }
+  check "the local image's label is read" "$(LOCAL='sandbox-broker,agent-harness' caps)" "sandbox-broker,agent-harness"
+  check "a local image without the label is older" "$(LOCAL='<no value>' caps)" "none"
+  check "the registry's label is read without pulling" \
+    "$(REGISTRY='{"config":{"Labels":{"ai.pipeshub.capabilities": "sandbox-broker,secret-key-file"}}}' caps)" "sandbox-broker,secret-key-file"
+  check "a registry image without the label is older" "$(REGISTRY='{"config":{"Labels":{"x":"y"}}}' caps)" "none"
+  check "unreadable is unknown" "$(caps)" "unknown"
+  check "a local build is this release's image" "$(IMAGE_SOURCE=local caps)" "$APP_IMAGE_CAPABILITIES_ALL"
+  check "PIPESHUB_IMAGE_CAPABILITIES decides" "$(PIPESHUB_IMAGE_CAPABILITIES=none caps)" "none"
+  image_can sandbox-broker unknown && pass "unknown assumes this release's image" || fail "unknown assumes this release's image"
+  image_can sandbox-broker none && fail "an older image cannot run the broker" || pass "an older image cannot run the broker"
+  check "hardened, but an image without the broker keeps docker" "$(sandbox_plan slim __unset__ true true false)" "docker"
+  check "and an image with it migrates" "$(sandbox_plan slim __unset__ true true true)" "migrate"
+
+  work="$TMP_ROOT/old-image"; mkdir -p "$work"
+  cp "$INNER_INSTALLER" "$work/install.sh"; cp "$COMPOSE_DIR/docker-compose.yml" "$work/"
+  nodocker="$work/nodocker"; mkdir -p "$nodocker"
+  printf '#!/bin/sh\n[ "$1" = volume ] && exit 1\nexit 0\n' >"$nodocker/docker"; chmod +x "$nodocker/docker"
+  val() { grep -E "^$1=" "$work/.env" | tail -1 | cut -d= -f2-; }
+  out="$(cd "$work" && PIPESHUB_IMAGE_CAPABILITIES=none PATH="$nodocker:$PATH" bash ./install.sh --yes --print-env-only </dev/null 2>&1)"; rc=$?
+  check "a fresh install on an older image writes its .env (exit 0)" "$rc" "0"
+  check "it runs code on docker, as upstream did" "$(val SANDBOX_MODE)" "docker"
+  check "with no broker" "$(val COMPOSE_PROFILES)" ",sandbox"
+  [[ "$(val COMPOSE_PROFILES)" != *sandbox-broker* ]] && pass "no broker profile" || fail "no broker profile"
+  check "and says why" "$out" "predates the sandbox broker"
+  out="$(cd "$work" && PIPESHUB_IMAGE_CAPABILITIES=none PIPESHUB_HARDENED=true PATH="$nodocker:$PATH" bash ./install.sh --upgrade --print-env-only </dev/null 2>&1)"
+  check "an opt-in on an older image does not move to the broker" "$(val SANDBOX_MODE)" "docker"
+  [[ "$out" != *"moving to the sandbox broker"* ]] && pass "and says no move" || fail "and says no move"
+  out="$(cd "$work" && PIPESHUB_IMAGE_CAPABILITIES=sandbox-broker,secret-key-file,agent-harness PIPESHUB_AGENT_HARNESS=on PATH="$nodocker:$PATH" bash ./install.sh --upgrade --print-env-only </dev/null 2>&1)"
+  check "once the image has the broker, asking for the harness moves it" "$out" "moving to the sandbox broker"
+)
+
+echo "== R50OFF-FU-2: an empty MONGO_PASSWORD on an existing volume gets a root user (mocked docker) =="
+(
+  for fn in get_existing_val persist_env_var gen_secret volume_exists mongo_container_ids mongo_probe_name \
+            stop_mongo_probe start_mongo_probe ensure_mongo_root_user; do
+    eval "$(extract_fn "$fn" "$INNER_INSTALLER")"
+  done
+  die() { printf 'x %s\n' "$*" >&2; exit 1; }
+  info() { printf 'i %s\n' "$*"; }; warn() { printf 'w %s\n' "$*"; }; success() { printf 's %s\n' "$*"; }
+  PROJECT_NAME=pxh-r51; COMPOSE_FILES=(-f /c/docker-compose.yml); ENV_FILE="$TMP_ROOT/mongo.env"; MONGO_PROBE_WAIT_SECS=2
+  calls="$TMP_ROOT/mongo.calls"
+  # users: what countDocuments answers. The password reaches mongosh only through the environment (-e).
+  docker() {
+    printf '%s\n' "$*" >>"$calls"
+    case "$*" in
+      "volume inspect pxh-r51_mongodb_data") return 0 ;;
+      ps*) return 0 ;;
+      *"config --images mongodb") echo mongo:8.0.17 ;;
+      *countDocuments*) echo "$MOCK_USERS" ;;
+      *createUser*) [[ "$*" == *"PXH_MONGO_PASSWORD="* ]] || return 1 ;;
+    esac
+    return 0
+  }
+  unset MONGO_URI MONGO_USERNAME
+  : >"$calls"; printf 'MONGO_PASSWORD=\nOTHER=1\n' >"$ENV_FILE"; MOCK_USERS=0
+  out="$(ensure_mongo_root_user 2>&1; echo "PW=$MONGO_PASSWORD")"
+  written="$(grep '^MONGO_PASSWORD=' "$ENV_FILE" | cut -d= -f2)"
+  [[ "$written" =~ ^[a-f0-9]{48}$ ]] && pass "a password is generated and written" || fail "a password is generated and written"
+  check "the root user is created on the volume" "$(cat "$calls")" "createUser"
+  check "as root of admin" "$(cat "$calls")" 'roles: [{role: "root", db: "admin"}]'
+  [[ "$(sed "s/PW=$written//" <<<"$out")" != *"$written"* ]] && pass "the password is never printed" || fail "the password is never printed"
+  check "the shell carries it for Compose" "$out" "PW=$written"
+  check "the app was stopped before the probe opened the volume" "$(cat "$calls")" "run -d --name pxh-r51-mongodb-rs-migrate"
+
+  : >"$calls"; printf 'MONGO_PASSWORD=\n' >"$ENV_FILE"; MOCK_USERS=1
+  out="$(ensure_mongo_root_user 2>&1)"
+  check "a volume that already has the user is left without authentication" "$(cat "$ENV_FILE")" "MONGO_PASSWORD="
+  [[ "$(grep -c createUser "$calls")" == 0 ]] && pass "and no user is created" || fail "and no user is created"
+  check "and the operator is told" "$out" "keeps running without"
+
+  : >"$calls"; printf 'MONGO_PASSWORD=set\n' >"$ENV_FILE"
+  ensure_mongo_root_user >/dev/null 2>&1
+  [[ ! -s "$calls" ]] && pass "a set MONGO_PASSWORD touches nothing" || fail "a set MONGO_PASSWORD touches nothing"
+  grep -n '^ensure_mongo_root_user$' "$INNER_INSTALLER" >/dev/null && pass "the launch runs it" || fail "the launch runs it"
+  heal="$(grep -n '^ensure_mongo_root_user$' "$INNER_INSTALLER" | cut -d: -f1)"
+  conv="$(grep -n '^migrate_mongo_to_replset$' "$INNER_INSTALLER" | cut -d: -f1)"
+  [[ -n "$heal" && -n "$conv" && "$heal" -lt "$conv" ]] && pass "before MongoDB restarts with a key" || fail "before MongoDB restarts with a key"
 )
 
 PASS="$(wc -l <"$PASS_FILE" | tr -d ' ')"

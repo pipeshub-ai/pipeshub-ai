@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import ast
 import struct
-import time
 from pathlib import Path
 
 import pypdfium2
@@ -21,6 +20,7 @@ from app.services.messaging.error_classifier import (
     MessageErrorClassifier,
     MessageErrorType,
 )
+from tests.support.cpu_budget import thread_cpu
 from tests.support.office_samples import (
     ENCRYPTED_BY_EXTENSION,
     ENCRYPTED_MACRO_BY_EXTENSION,
@@ -185,11 +185,12 @@ class TestMalformedContainers:
         full = cfbf(["EncryptionInfo", "EncryptedPackage"]) + b"\xAB" * (50 * 1024 * 1024)
         has_encrypted_package(full)
 
-        started = time.perf_counter()
-        for _ in range(20):
-            assert has_encrypted_package(full)
-        per_call_ms = (time.perf_counter() - started) / 20 * 1000
+        with thread_cpu() as cpu:
+            for _ in range(20):
+                assert has_encrypted_package(full)
+        per_call_ms = cpu.seconds / 20 * 1000
 
+        # Microseconds when only the header and directory are read; a copy or scan of the 50 MB is milliseconds.
         assert per_call_ms < 5, f"{per_call_ms:.2f} ms per 50 MB file"
 
 

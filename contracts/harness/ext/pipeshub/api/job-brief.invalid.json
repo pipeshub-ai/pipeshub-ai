@@ -1,0 +1,276 @@
+[
+  {
+    "description": "a withheld reason the brief does not word",
+    "instance": {
+      "runId": "run_2",
+      "parentRunId": "run_1",
+      "sessionId": "ses_1",
+      "agent": {
+        "kind": "engine",
+        "engine": "claude_code"
+      },
+      "goal": "Fix PAY-1423: the refund total rounds twice. Open a pull request with the fix and a test.",
+      "task": null,
+      "sent": {
+        "files": [
+          {
+            "artifactId": "art_1",
+            "version": 2
+          }
+        ],
+        "sources": [
+          {
+            "kind": "record",
+            "recordId": "rec_1",
+            "attachment": false
+          },
+          {
+            "kind": "connector_item",
+            "connector": "JIRA",
+            "externalRecordId": "PAY-1423"
+          }
+        ],
+        "sourcesComplete": true,
+        "knowledge": {
+          "apps": [],
+          "collections": []
+        },
+        "skills": [],
+        "continuesRunId": null
+      },
+      "withheld": [
+        {
+          "what": "conversation",
+          "reason": "policy_layer_3"
+        }
+      ],
+      "reach": {
+        "internet": "allowed_sites",
+        "sandbox": true,
+        "tools": [
+          {
+            "toolId": "github@inst-1/create_pull_request",
+            "app": "github",
+            "name": "create_pull_request"
+          }
+        ],
+        "allowedWithoutAsking": 1
+      }
+    }
+  },
+  {
+    "description": "an internal spec digest leaking into the brief",
+    "instance": {
+      "runId": "run_2",
+      "parentRunId": "run_1",
+      "sessionId": "ses_1",
+      "agent": {
+        "kind": "engine",
+        "engine": "claude_code"
+      },
+      "goal": "Fix PAY-1423: the refund total rounds twice. Open a pull request with the fix and a test.",
+      "task": null,
+      "sent": {
+        "files": [
+          {
+            "artifactId": "art_1",
+            "version": 2
+          }
+        ],
+        "sources": [
+          {
+            "kind": "record",
+            "recordId": "rec_1",
+            "attachment": false
+          },
+          {
+            "kind": "connector_item",
+            "connector": "JIRA",
+            "externalRecordId": "PAY-1423"
+          }
+        ],
+        "sourcesComplete": true,
+        "knowledge": {
+          "apps": [],
+          "collections": []
+        },
+        "skills": [],
+        "continuesRunId": null
+      },
+      "withheld": [
+        {
+          "what": "conversation",
+          "reason": "task_only"
+        },
+        {
+          "what": "credentials",
+          "reason": "outside_sandbox"
+        },
+        {
+          "what": "tools",
+          "reason": "not_granted",
+          "items": [
+            "send_message"
+          ]
+        }
+      ],
+      "reach": {
+        "internet": "allowed_sites",
+        "sandbox": true,
+        "tools": [
+          {
+            "toolId": "github@inst-1/create_pull_request",
+            "app": "github",
+            "name": "create_pull_request"
+          }
+        ],
+        "allowedWithoutAsking": 1
+      },
+      "specDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+  },
+  {
+    "description": "an agent that is neither an engine nor a sub-agent",
+    "instance": {
+      "runId": "run_2",
+      "parentRunId": "run_1",
+      "sessionId": "ses_1",
+      "agent": {
+        "kind": "loop"
+      },
+      "goal": "Fix PAY-1423: the refund total rounds twice. Open a pull request with the fix and a test.",
+      "task": null,
+      "sent": {
+        "files": [
+          {
+            "artifactId": "art_1",
+            "version": 2
+          }
+        ],
+        "sources": [
+          {
+            "kind": "record",
+            "recordId": "rec_1",
+            "attachment": false
+          },
+          {
+            "kind": "connector_item",
+            "connector": "JIRA",
+            "externalRecordId": "PAY-1423"
+          }
+        ],
+        "sourcesComplete": true,
+        "knowledge": {
+          "apps": [],
+          "collections": []
+        },
+        "skills": [],
+        "continuesRunId": null
+      },
+      "withheld": [
+        {
+          "what": "conversation",
+          "reason": "task_only"
+        },
+        {
+          "what": "credentials",
+          "reason": "outside_sandbox"
+        },
+        {
+          "what": "tools",
+          "reason": "not_granted",
+          "items": [
+            "send_message"
+          ]
+        }
+      ],
+      "reach": {
+        "internet": "allowed_sites",
+        "sandbox": true,
+        "tools": [
+          {
+            "toolId": "github@inst-1/create_pull_request",
+            "app": "github",
+            "name": "create_pull_request"
+          }
+        ],
+        "allowedWithoutAsking": 1
+      }
+    }
+  },
+  {
+    "description": "a carried call with its arguments",
+    "instance": {
+      "runId": "run_2",
+      "parentRunId": "run_1",
+      "sessionId": "ses_1",
+      "agent": {
+        "kind": "engine",
+        "engine": "claude_code"
+      },
+      "goal": "Fix PAY-1423: the refund total rounds twice. Open a pull request with the fix and a test.",
+      "task": {
+        "request": "r",
+        "notes": "",
+        "earlier": "",
+        "fileName": null,
+        "dueAt": null,
+        "maxCostUsd": null,
+        "carried": [
+          {
+            "tool": "load_skill",
+            "failed": false,
+            "arguments": {
+              "name": "pdf"
+            }
+          }
+        ]
+      },
+      "sent": {
+        "files": [
+          {
+            "artifactId": "art_1",
+            "version": 2
+          }
+        ],
+        "sources": [
+          {
+            "kind": "record",
+            "recordId": "rec_1",
+            "attachment": false
+          },
+          {
+            "kind": "connector_item",
+            "connector": "JIRA",
+            "externalRecordId": "PAY-1423"
+          }
+        ],
+        "sourcesComplete": true,
+        "knowledge": {
+          "apps": [],
+          "collections": []
+        },
+        "skills": [],
+        "continuesRunId": null
+      },
+      "withheld": [
+        {
+          "what": "conversation",
+          "reason": "task_only"
+        }
+      ],
+      "reach": {
+        "internet": "allowed_sites",
+        "sandbox": true,
+        "tools": [
+          {
+            "toolId": "github@inst-1/create_pull_request",
+            "app": "github",
+            "name": "create_pull_request"
+          }
+        ],
+        "allowedWithoutAsking": 1
+      }
+    }
+  }
+]

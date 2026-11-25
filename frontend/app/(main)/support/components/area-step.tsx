@@ -116,7 +116,7 @@ export function AreaStep({
                   <Text as="div" size="2" weight="medium" style={{ color: 'var(--slate-12)', lineHeight: '18px' }}>
                     {t(`support.areas.${key}.label`)}
                   </Text>
-                  <Text as="div" size="1" style={{ color: 'var(--slate-10)', lineHeight: '16px', marginTop: 2 }}>
+                  <Text as="div" size="1" style={{ color: 'var(--slate-11)', lineHeight: '16px', marginTop: 2 }}>
                     {t(`support.areas.${key}.hint`)}
                   </Text>
                 </Box>

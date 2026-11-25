@@ -21,6 +21,7 @@ from app.agent_loop_lib.core.streaming import StreamCompleteEvent
 from app.agent_loop_lib.core.usage_source import current_llm_usage_source
 from app.agent_loop_lib.transport.base import LLMTransport, llm_error_class
 from app.utils.logging_fields import log_event
+from harness_core.models.output_bound import output_limit
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable
@@ -54,6 +55,11 @@ class UsageReportingTransport(LLMTransport):
     @property
     def model_name(self) -> str:
         return self._inner.model_name
+
+    @property
+    def accepts_output_limit(self) -> bool:
+        # Always wrapped now, so a wrapper that hid the capability would send every call unbounded.
+        return self._inner.accepts_output_limit
 
     def _report(self, usage: TokenUsage | None) -> None:
         if usage is None:
@@ -110,6 +116,7 @@ class UsageReportingTransport(LLMTransport):
         thinking_budget: int | None = None,
         effort: str | None = None,
         system_blocks: list[str] | None = None,
+        max_output_tokens: int | None = None,
         *,
         tool_choice: ToolChoice | None = None,
     ) -> ModelResponse:
@@ -117,6 +124,7 @@ class UsageReportingTransport(LLMTransport):
         try:
             response = await self._inner.complete(
                 messages, tools, system, model, thinking_budget, effort, system_blocks,
+                **output_limit(max_output_tokens),
                 **({"tool_choice": tool_choice} if tool_choice else {}),
             )
         except (Exception, asyncio.CancelledError) as exc:
@@ -132,10 +140,13 @@ class UsageReportingTransport(LLMTransport):
         output_schema: dict[str, Any],
         system: str | None = None,
         model: str | None = None,
+        max_output_tokens: int | None = None,
     ) -> StructuredResponse:
         started = time.perf_counter()
         try:
-            response = await self._inner.complete_structured(messages, output_schema, system, model)
+            response = await self._inner.complete_structured(
+                messages, output_schema, system, model, **output_limit(max_output_tokens),
+            )
         except (Exception, asyncio.CancelledError) as exc:
             self._log_end(started, None, exc=exc)
             raise
@@ -152,6 +163,7 @@ class UsageReportingTransport(LLMTransport):
         thinking_budget: int | None = None,
         effort: str | None = None,
         system_blocks: list[str] | None = None,
+        max_output_tokens: int | None = None,
         *,
         tool_choice: ToolChoice | None = None,
     ) -> AsyncIterator[StreamEvent]:
@@ -160,6 +172,7 @@ class UsageReportingTransport(LLMTransport):
         try:
             async for event in self._inner.stream(
                 messages, tools, system, model, thinking_budget, effort, system_blocks,
+                **output_limit(max_output_tokens),
                 **({"tool_choice": tool_choice} if tool_choice else {}),
             ):
                 if isinstance(event, StreamCompleteEvent):

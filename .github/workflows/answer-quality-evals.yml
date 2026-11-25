@@ -76,14 +76,11 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
-
       - name: Install backend dependencies
         working-directory: backend/python
         run: |
-          uv venv
-          uv pip install -e ".[dev]"
+          python -m venv .venv
+          PYTHON=.venv/bin/python requirements/install.sh dev --project . --editable
 
       # --fail-on-regression has no effect while the committed baselines are
       # placeholders: the CLI skips the comparison and says so. It starts

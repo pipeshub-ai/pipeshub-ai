@@ -53,6 +53,12 @@ from app.config.constants.arangodb import (
     ProgressStatus,
 )
 from app.config.constants.http_status_code import HttpStatusCode
+from app.connectors.core.base.source_metadata import (
+    ItemMetadata,
+    apply_source_metadata,
+    held_metadata,
+    source_metadata,
+)
 from app.connectors.core.base.connector.connector_service import BaseConnector, ConnectorInitError
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
@@ -156,6 +162,7 @@ from app.models.entities import (
     SharePointPageRecord,
 )
 from app.models.permission import EntityType, Permission, PermissionType
+from app.sources.client.microsoft.send_safe_middleware import credential_graph_adapter
 from app.services.notification.types import NotificationSeverity, NotificationType
 from app.utils.streaming import create_stream_record_response, stream_content
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -472,6 +479,13 @@ class CountryToRegionMapper:
     .with_description("Sync documents and lists from SharePoint Online")\
     .with_categories(["Storage", "Documentation"])\
     .with_scopes([ConnectorScope.TEAM.value])\
+    .with_resilience_config(
+        # The vendor's quota is the org's shared budget (app.services.rate_budget.families), which this policy
+        # takes from; the rate is this process's own cap when that budget is unreachable. Retries stay the
+        # connector's own (max_retries 0), as before.
+        rate_limit=10,
+        max_retries=0,
+    )\
     .with_auth([
         AuthBuilder.type(AuthType.OAUTH_ADMIN_CONSENT).fields([
             AuthField(
@@ -947,8 +961,7 @@ class SharePointConnector(BaseConnector):
 
         # Initialize Graph Client
         self.client = GraphServiceClient(
-            self.credential,
-            scopes=["https://graph.microsoft.com/.default"]
+            request_adapter=credential_graph_adapter(self.credential, resilience=self.resilience)
         )
         self.msgraph_client = MSGraphClient(self.connector_name, self.connector_id, self.client, self.logger)
 
@@ -1655,6 +1668,13 @@ class SharePointConnector(BaseConnector):
         file_record = await self._create_file_record(item, drive_id, existing_record)
         if not file_record:
             raise RuntimeError(f"item {item_id} could not be mapped to a record")
+        held = held_metadata(existing_record)
+        fields = await self._metadata_reader().fields_for(
+            drive_id, item_id, held, changed=file_record.is_file and (is_new or is_updated)
+        )
+        if apply_source_metadata(file_record, existing_record, fields):
+            is_updated = True
+            metadata_changed = True
         if access is None:
             # An edit is still synced; the record keeps its stored access and inheritance.
             file_record.inherit_permissions = await self._inheritance_when_unreadable(
@@ -3802,12 +3822,19 @@ class SharePointConnector(BaseConnector):
 
             # Recreate Graph client with new credential
             self.client = GraphServiceClient(
-                self.credential,
-                scopes=["https://graph.microsoft.com/.default"]
+                request_adapter=credential_graph_adapter(self.credential, resilience=self.resilience)
             )
             self.msgraph_client = MSGraphClient(self.connector_name, self.connector_id, self.client, self.logger)
 
             self.logger.info("✅ Credential successfully reinitialized")
+
+    def _metadata_reader(self) -> ItemMetadata:
+        """The source metadata reads of this connector's files, through its current Graph client."""
+        reader = getattr(self, "_item_metadata", None)
+        if reader is None:
+            reader = source_metadata().item_metadata(lambda: self.msgraph_client, self.logger)
+            self._item_metadata = reader
+        return reader
 
     async def run_sync(self) -> None:
         """One sync run: users, groups, sites, then each site's libraries and pages.
@@ -3816,6 +3843,7 @@ class SharePointConnector(BaseConnector):
         that did not read everything must not report success, and a full sync that did not must not
         remove what it did not see (full_sync_coverage).
         """
+        self._metadata_reader().new_sync()
         start_time = datetime.now()
         self.stats = {
             'sites_processed': 0,

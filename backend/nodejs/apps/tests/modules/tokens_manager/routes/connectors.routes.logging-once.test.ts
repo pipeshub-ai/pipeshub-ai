@@ -328,4 +328,14 @@ describe('Connector routes: a request is logged once, with its connector', funct
       expect(text).to.not.include(ADMIN.email)
     })
   }
+
+  if (!VECTOR_STORE_REBUILD_AVAILABLE) {
+    for (const path of ['/api/v1/connectors/vector-store/cleanup', '/api/v1/connectors/vector-store/reindex']) {
+      it(`POST ${path}: refused here (403) without reaching the service, logged once`, async () => {
+        expect(await send('POST', path, {})).to.equal(403)
+        expect(backend.calls).to.have.length(0)
+        expect(byMessage('http.request.error')).to.have.length(1)
+      })
+    }
+  }
 })

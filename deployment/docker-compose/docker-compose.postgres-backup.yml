@@ -41,6 +41,15 @@ services:
     profiles: ["postgres"]
     image: ${PG_IMAGE:-pipeshubai/postgres}:${PG_MAJOR:-18}-${PG_IMAGE_REV:-1}
     user: postgres
+    # Runs as postgres from the start, so it needs no capability and gains none.
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    # pgBackRest reads the cluster's files, as PostgreSQL does (OPS1).
+    ulimits:
+      nofile:
+        soft: 4096
+        hard: 4096
     command: ["pg-backup.sh"]
     init: true   # the scheduler stops at once on `docker compose stop` instead of after the 10 s timeout
     restart: always
@@ -64,6 +73,7 @@ services:
       resources:
         limits:
           memory: ${PG_BACKUP_MEMORY_LIMIT:-1G}
+          pids: 1024
     depends_on:
       postgres:
         condition: service_healthy

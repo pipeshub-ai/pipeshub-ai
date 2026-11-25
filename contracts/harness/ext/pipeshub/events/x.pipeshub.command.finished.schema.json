@@ -1,0 +1,185 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/ext/pipeshub/events/x.pipeshub.command.finished.schema.json",
+  "title": "PipeshubCommandFinishedEvent",
+  "description": "One command a run ran in its sandbox (UX5): run_code's program or an engine's shell command, with its exit code, duration, the newest output of each stream and the full log, all redacted through the shared token vector. Presentation only (non-critical, owner); the fold ignores it. Written only when the claim's Node lists command_activity.",
+  "x-writer": [
+    "worker"
+  ],
+  "allOf": [
+    {
+      "$ref": "../../../core/envelope.schema.json#/$defs/InlineEnvelope"
+    }
+  ],
+  "properties": {
+    "type": {
+      "const": "x.pipeshub.command.finished"
+    },
+    "writer": {
+      "const": "worker"
+    },
+    "data": {
+      "$ref": "#/$defs/PipeshubCommandFinishedData"
+    }
+  },
+  "$defs": {
+    "PipeshubCommandFinishedData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "commandId",
+        "source",
+        "command",
+        "status",
+        "startedAt",
+        "stdout",
+        "stderr",
+        "liveDropped"
+      ],
+      "properties": {
+        "commandId": {
+          "$ref": "../../../core/common.schema.json#/$defs/Id"
+        },
+        "source": {
+          "enum": [
+            "run_code",
+            "engine"
+          ]
+        },
+        "invocationId": {
+          "$ref": "../../../core/common.schema.json#/$defs/Id",
+          "description": "The tool call that ran it (run_code); absent for an engine's own shell command."
+        },
+        "taskId": {
+          "$ref": "../../../core/common.schema.json#/$defs/Id",
+          "description": "The engine task it belongs to (engine runs)."
+        },
+        "command": {
+          "type": "string",
+          "maxLength": 2000,
+          "description": "What ran: the shell line, or the code run_code ran; redacted and bounded."
+        },
+        "language": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "status": {
+          "enum": [
+            "completed",
+            "failed",
+            "timed_out",
+            "cancelled"
+          ]
+        },
+        "exitCode": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991
+        },
+        "startedAt": {
+          "$ref": "../../../core/common.schema.json#/$defs/UInt",
+          "description": "Epoch milliseconds, from the worker's clock."
+        },
+        "durationMs": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "stdout": {
+          "$ref": "#/$defs/OutputTail"
+        },
+        "stderr": {
+          "$ref": "#/$defs/OutputTail"
+        },
+        "liveDropped": {
+          "$ref": "../../../core/common.schema.json#/$defs/UInt",
+          "description": "Bytes not shown live (backpressure or the live cap); the log has them."
+        },
+        "outputMayBeLost": {
+          "description": "R32ENGFU-FU-1: the engine that ran it is known to lose a command's output now and then (its profile's outputMayBeLost), so an empty output is unverified: the panel says nothing was captured, never that the command printed nothing. Absent: the output is what the command wrote.",
+          "const": true
+        },
+        "log": {
+          "$ref": "../../../core/common.schema.json#/$defs/ContentRef",
+          "description": "The full redacted output, interleaved as written."
+        },
+        "logTruncated": {
+          "type": "boolean"
+        }
+      }
+    },
+    "OutputTail": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tail",
+        "bytes",
+        "truncated"
+      ],
+      "properties": {
+        "tail": {
+          "type": "string",
+          "maxLength": 4000,
+          "description": "The newest output of the stream, redacted."
+        },
+        "bytes": {
+          "$ref": "../../../core/common.schema.json#/$defs/UInt"
+        },
+        "truncated": {
+          "type": "boolean"
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "attemptId": "att_1",
+      "fence": 3,
+      "type": "x.pipeshub.command.finished",
+      "data": {
+        "commandId": "inv_1",
+        "source": "run_code",
+        "invocationId": "inv_1",
+        "command": "print('hello')",
+        "language": "python",
+        "status": "completed",
+        "exitCode": 0,
+        "startedAt": 1759320000000,
+        "durationMs": 412,
+        "stdout": {
+          "tail": "hello\n",
+          "bytes": 6,
+          "truncated": false
+        },
+        "stderr": {
+          "tail": "",
+          "bytes": 0,
+          "truncated": false
+        },
+        "liveDropped": 0,
+        "log": {
+          "ref": "cas/sha256/ab",
+          "hash": "sha256:abababababababababababababababababababababababababababababababab",
+          "size": 6
+        },
+        "logTruncated": false
+      }
+    }
+  ]
+}

@@ -28,6 +28,9 @@ import { UsedPasswordResetLink } from '../../../../src/modules/auth/schema/usedP
 import { SIGN_IN_METHOD_NOT_ALLOWED } from '../../../../src/modules/auth/utils/authMethodGuard';
 import { AuthMiddleware } from '../../../../src/libs/middlewares/auth.middleware';
 import { AuthTokenService } from '../../../../src/libs/services/authtoken.service';
+import { setSessionFamilyRepository } from '../../../../src/libs/repositories/session-family';
+import { InMemorySessionFamilies } from '../../../support/auth/in-memory-session-families';
+import { PLAIN_SESSION_COOKIE, signOutSessionCookie } from '../../../../src/modules/auth/session-cookie';
 import { TokenScopes } from '../../../../src/libs/enums/token-scopes.enum';
 import { jwtGeneratorForForgotPasswordLink } from '../../../../src/libs/utils/createJwt';
 import { OrgAuthConfig } from '../../../../src/modules/auth/schema/orgAuthConfiguration.schema';
@@ -37,6 +40,7 @@ import { MAX_WRONG_CREDENTIAL_ATTEMPTS } from '../../../../src/libs/repositories
 type ClaimedCredentials = Awaited<ReturnType<typeof UserCredentials.findOneAndUpdate>>;
 import { UserActivities } from '../../../../src/modules/auth/schema/userActivities.schema';
 import { Org } from '../../../../src/modules/user_management/schema/org.schema';
+import { AgentPrincipalErasureModel } from '../../../../src/libs/repositories/agent-harness/principal-erasure/schema/principal-erasure.schema';
 import { Users } from '../../../../src/modules/user_management/schema/users.schema';
 import {
   BadRequestError,
@@ -1065,32 +1069,37 @@ describe('UserAccountController', () => {
       expect(res.send.calledOnce).to.be.true;
     });
 
-    it('takes the same time for a known and an unknown address', async function () {
-      this.timeout(30000);
-      sinon.stub(Org, 'findOne').resolves({ shortName: 'TestOrg' } as any);
-      mockIamService.getUserByEmail.callsFake(async (email: string) =>
-        delayed(email.startsWith('known') ? 25 : 2, {
-          statusCode: email.startsWith('known') ? 200 : 404,
-          data: email.startsWith('known') ? { ...knownUser, email } : {},
-        }),
-      );
-      mockMailService.sendMail.callsFake(() => delayed(25, { statusCode: 200 }));
+    it('takes the same time for a known and an unknown address', async () => {
+      const clock = sinon.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+      try {
+        sinon.stub(Org, 'findOne').resolves({ shortName: 'TestOrg' } as any);
+        mockIamService.getUserByEmail.callsFake(async (email: string) =>
+          delayed(email.startsWith('known') ? 25 : 2, {
+            statusCode: email.startsWith('known') ? 200 : 404,
+            data: email.startsWith('known') ? { ...knownUser, email } : {},
+          }),
+        );
+        mockMailService.sendMail.callsFake(() => delayed(25, { statusCode: 200 }));
 
-      const median = (xs: number[]) => [...xs].sort((a, b) => a - b)[xs.length >> 1];
-      const time = async (email: string) => {
-        const start = process.hrtime.bigint();
-        await controller.forgotPasswordEmail({ body: { email }, ip: '127.0.0.1' } as any, res, next);
-        return Number(process.hrtime.bigint() - start) / 1e6;
-      };
-      const known: number[] = [];
-      const unknown: number[] = [];
-      for (let i = 0; i < 50; i++) {
-        known.push(await time(`known${i}@example.com`));
-        unknown.push(await time(`unknown${i}@example.com`));
+        // On the fake clock the lookup takes 25 ms for a known address and 2 ms
+        // for an unknown one, and the mail 25 ms more: an answer that waited for
+        // either would come later for a known address.
+        const answeredAfter = async (email: string): Promise<number> => {
+          const start = Date.now();
+          const answered = controller
+            .forgotPasswordEmail({ body: { email }, ip: '127.0.0.1' } as any, res, next)
+            .then(() => Date.now() - start);
+          await clock.tickAsync(100);
+          return answered;
+        };
+        for (let i = 0; i < 3; i++) {
+          expect(await answeredAfter(`known${i}@example.com`), 'known address').to.equal(0);
+          expect(await answeredAfter(`unknown${i}@example.com`), 'unknown address').to.equal(0);
+        }
+        expect(mockMailService.sendMail.callCount).to.equal(3);
+      } finally {
+        clock.restore();
       }
-      await new Promise((resolve) => setTimeout(resolve, 100));
-
-      expect(Math.abs(median(known) - median(unknown))).to.be.lessThan(3);
     });
   });
 
@@ -1345,6 +1354,26 @@ describe('UserAccountController', () => {
 
       expect(res.status.calledWith(200)).to.be.true;
       expect(res.end.calledOnce).to.be.true;
+    });
+
+    it('ends the session family of the cookie it signed out, so a refresh minted just before stops working (R48MIGFIX-3)', async () => {
+      const families = new InMemorySessionFamilies();
+      setSessionFamilyRepository(families);
+      sinon.stub(UserActivities, 'create').resolves({} as any);
+      const started = await (controller as any).sessions.start('u1', 'o1');
+      const req: any = {
+        user: { orgId: 'o1', userId: 'u1' },
+        ip: '127.0.0.1',
+        headers: { authorization: 'Bearer access', cookie: `${PLAIN_SESSION_COOKIE}=${started.refreshToken}`, host: 'h' },
+      };
+      res.locals = {};
+      res.clearCookie = sinon.stub();
+      signOutSessionCookie()(req, res, () => undefined);
+
+      await controller.logoutSession(req, res, next);
+
+      expect(res.status.calledWith(200)).to.be.true;
+      expect((await families.get('o1', started.familyId))?.revokedReason).to.equal('signed_out');
     });
 
     it('should call next(error) if UserActivities.create throws', async () => {
@@ -2585,6 +2614,9 @@ describe('UserAccountController', () => {
       });
 
       sinon.stub(Org, 'findOne').resolves(null);
+      // No org is being deleted either (ORGDEL: sign-in falls back to such an org's methods).
+      const noJob = { sort: () => noJob, select: () => noJob, lean: () => Promise.resolve(null) };
+      sinon.stub(AgentPrincipalErasureModel, 'findOne').returns(noJob as never);
 
       mockSessionService.createSession.resolves({
         token: 'session-nojit-123',
@@ -3530,8 +3562,10 @@ describe('UserAccountController', () => {
   // -----------------------------------------------------------------------
   describe('getAccessTokenFromRefreshToken - success with credential update', () => {
     it('should update credentials and return new access token', async () => {
+      const { refreshToken } = await (controller as any).sessions.start('u1', 'o1');
       const req: any = {
-        tokenPayload: { orgId: 'o1', userId: 'u1' },
+        tokenPayload: jwt.decode(refreshToken),
+        verifiedToken: refreshToken,
         ip: '127.0.0.1',
       };
 
@@ -3554,6 +3588,147 @@ describe('UserAccountController', () => {
       expect(res.json.calledOnce).to.be.true;
       const jsonArg = res.json.firstCall.args[0];
       expect(jsonArg).to.have.property('accessToken');
+      // R43AUTH-FU-1: a bearer client gets the replacement refresh token, of the same sign-in.
+      const replaced = jwt.decode(jsonArg.refreshToken) as Record<string, unknown>;
+      const presented = jwt.decode(refreshToken) as Record<string, unknown>;
+      expect(replaced.sid).to.equal(presented.sid);
+      expect(replaced.jti).to.not.equal(presented.jti);
+      expect(replaced.exp).to.equal(presented.exp);
+    });
+
+    // R43AUTH-FU-1: a replaced token presented after the grace ends the sign-in and is recorded once.
+    it('ends the sign-in and records it when a replaced refresh token comes back', async () => {
+      sinon.stub(UserActivities, 'create').resolves({} as any);
+      mockIamService.getUserById.resolves({ statusCode: 200, data: { _id: 'u1', orgId: 'o1', email: 'test@test.com' } });
+      sinon.stub(UserCredentials, 'findOneAndUpdate').resolves({ isBlocked: false } as any);
+      const generateAuthTokenMod = require('../../../../src/modules/auth/utils/generateAuthToken');
+      sinon.stub(generateAuthTokenMod, 'generateAuthToken').resolves('access-token-123');
+      const audit = sinon.stub().resolves();
+      (controller as any).sessionReplayAudit = audit;
+      const { refreshToken, familyId } = await (controller as any).sessions.start('u1', 'o1');
+      const request = (): any => ({ tokenPayload: jwt.decode(refreshToken), verifiedToken: refreshToken, ip: '127.0.0.1' });
+
+      await controller.getAccessTokenFromRefreshToken(request(), res, next);
+      expect(next.called).to.be.false;
+      const clock = sinon.useFakeTimers({ now: Date.now() + 61_000, toFake: ['Date'] });
+      try {
+        await controller.getAccessTokenFromRefreshToken(request(), res, next);
+      } finally {
+        clock.restore();
+      }
+      expect(next.calledOnce).to.be.true;
+      expect(next.firstCall.args[0]).to.be.instanceOf(UnauthorizedError);
+      expect(audit.calledOnce).to.be.true;
+      expect(audit.firstCall.args[0]).to.deep.equal({ orgId: 'o1', userId: 'u1', familyId });
+      expect(JSON.stringify(audit.firstCall.args[0])).to.not.contain(refreshToken);
+    });
+
+    // R41OPS-FU-7: the web app moves the refresh token it kept in localStorage into the HttpOnly cookie.
+    it('sets the cookie from the verified bearer token only when the page asked for it', async () => {
+      sinon.stub(UserActivities, 'create').resolves({} as any);
+      mockIamService.getUserById.resolves({
+        statusCode: 200,
+        data: { _id: 'u1', orgId: 'o1', email: 'test@test.com', fullName: 'Test User' },
+      });
+      sinon.stub(UserCredentials, 'findOneAndUpdate').resolves({ isBlocked: false, lastLogin: Date.now() } as any);
+      const generateAuthTokenMod = require('../../../../src/modules/auth/utils/generateAuthToken');
+      sinon.stub(generateAuthTokenMod, 'generateAuthToken').resolves('access-token-123');
+      const refresh = jwt.sign({ userId: 'u1', orgId: 'o1' }, 'k', { expiresIn: '1h' });
+      const request = (): any => ({
+        tokenPayload: jwt.decode(refresh),
+        verifiedToken: refresh,
+        ip: '127.0.0.1',
+        headers: { origin: 'https://pipeshub.example.com' },
+      });
+
+      res.cookie = sinon.stub();
+      res.locals = {};
+      await controller.getAccessTokenFromRefreshToken(request(), res, next);
+      expect(res.cookie.called).to.be.false;
+      // The old token was adopted into a family and replaced; the bearer client keeps the replacement.
+      const replacement = res.json.lastCall.args[0].refreshToken as string;
+      expect(replacement).to.be.a('string').and.not.equal(refresh);
+
+      res.locals = { sessionAdoptIntoCookie: true };
+      await controller.getAccessTokenFromRefreshToken(
+        { ...request(), tokenPayload: jwt.decode(replacement), verifiedToken: replacement },
+        res,
+        next,
+      );
+      expect(res.cookie.calledOnce).to.be.true;
+      const [name, value, options] = res.cookie.firstCall.args;
+      expect(name).to.equal('__Host-pipeshub_refresh');
+      expect((jwt.decode(value) as Record<string, unknown>).sid).to.equal(
+        (jwt.decode(replacement) as Record<string, unknown>).sid,
+      );
+      expect(value).to.not.equal(replacement);
+      expect(options).to.include({ httpOnly: true, secure: true, sameSite: 'strict', path: '/' });
+      expect(res.json.lastCall.args[0]).to.not.have.property('refreshToken');
+    });
+  });
+
+  // R51-COMPAT item 7 (R50OFF-FU-1, ADR-OPS-07): on the compatibility profile a body-token refresh keeps its token,
+  // answered as before rotation, unless the client asks for rotation.
+  describe('getAccessTokenFromRefreshToken - compatibility profile', () => {
+    let saved: string | undefined;
+    beforeEach(() => {
+      saved = process.env.PIPESHUB_HARDENED;
+      delete process.env.PIPESHUB_HARDENED;
+      sinon.stub(UserActivities, 'create').resolves({} as any);
+      mockIamService.getUserById.resolves({ statusCode: 200, data: { _id: 'u1', orgId: 'o1', email: 'test@test.com' } });
+      sinon.stub(UserCredentials, 'findOneAndUpdate').resolves({ isBlocked: false } as any);
+      const generateAuthTokenMod = require('../../../../src/modules/auth/utils/generateAuthToken');
+      sinon.stub(generateAuthTokenMod, 'generateAuthToken').resolves('access-token-123');
+    });
+    afterEach(() => {
+      if (saved === undefined) delete process.env.PIPESHUB_HARDENED;
+      else process.env.PIPESHUB_HARDENED = saved;
+    });
+
+    it('answers user and accessToken only, and the same token works again a minute later', async () => {
+      const { refreshToken } = await (controller as any).sessions.start('u1', 'o1');
+      const request = (): any => ({ tokenPayload: jwt.decode(refreshToken), verifiedToken: refreshToken, ip: '127.0.0.1', headers: {} });
+      await controller.getAccessTokenFromRefreshToken(request(), res, next);
+      expect(res.json.lastCall.args[0]).to.have.all.keys('user', 'accessToken');
+      const clock = sinon.useFakeTimers({ now: Date.now() + 61_000, toFake: ['Date'] });
+      try {
+        await controller.getAccessTokenFromRefreshToken(request(), res, next);
+      } finally {
+        clock.restore();
+      }
+      expect(next.called).to.be.false;
+      expect(res.json.callCount).to.equal(2);
+    });
+
+    it('rotates for a client that sends X-PipesHub-Refresh-Rotation: 1', async () => {
+      const { refreshToken } = await (controller as any).sessions.start('u1', 'o1');
+      await controller.getAccessTokenFromRefreshToken(
+        { tokenPayload: jwt.decode(refreshToken), verifiedToken: refreshToken, ip: '127.0.0.1', headers: { 'x-pipeshub-refresh-rotation': '1' } } as any,
+        res,
+        next,
+      );
+      const replaced = res.json.lastCall.args[0].refreshToken as string;
+      expect(replaced).to.be.a('string').and.not.equal(refreshToken);
+    });
+
+    it('still refuses a token its family replaced, after the grace, and records the replay', async () => {
+      const audit = sinon.stub().resolves();
+      (controller as any).sessionReplayAudit = audit;
+      const { refreshToken } = await (controller as any).sessions.start('u1', 'o1');
+      await (controller as any).sessions.rotate(refreshToken, jwt.decode(refreshToken));
+      const clock = sinon.useFakeTimers({ now: Date.now() + 61_000, toFake: ['Date'] });
+      try {
+        await controller.getAccessTokenFromRefreshToken(
+          { tokenPayload: jwt.decode(refreshToken), verifiedToken: refreshToken, ip: '127.0.0.1', headers: {} } as any,
+          res,
+          next,
+        );
+      } finally {
+        clock.restore();
+      }
+      expect(next.calledOnce).to.be.true;
+      expect(next.firstCall.args[0]).to.be.instanceOf(UnauthorizedError);
+      expect(audit.calledOnce).to.be.true;
     });
   });
 
@@ -3876,9 +4051,9 @@ describe('UserAccountController', () => {
 
       expect(createStub.calledOnce).to.be.true
       const activityArg = createStub.firstCall.args[0]
-      expect(activityArg.orgId).to.equal('org1')
-      expect(activityArg.userId).to.equal('u1')
-      expect(activityArg.ipAddress).to.equal('10.0.0.1')
+      expect(activityArg!.orgId).to.equal('org1')
+      expect(activityArg!.userId).to.equal('u1')
+      expect(activityArg!.ipAddress).to.equal('10.0.0.1')
     })
   });
 
@@ -3894,7 +4069,7 @@ describe('UserAccountController', () => {
       expect(uri).to.equal('http://connectors:8088/api/v1/entity/user/email')
       expect(method).to.equal('PATCH')
       expect(body).to.deep.equal({ email: 'new@email.com' })
-      const claims = jwt.verify(headers.Authorization.replace('Bearer ', ''), 'test-scoped-secret') as Record<string, unknown>
+      const claims = jwt.verify(headers.Authorization!.replace('Bearer ', ''), 'test-scoped-secret') as Record<string, unknown>
       expect(claims).to.include({ userId: 'u1', orgId: 'org1' })
       expect(claims.scopes).to.deep.equal(['entity:user:write'])
     })

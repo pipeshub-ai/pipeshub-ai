@@ -7,6 +7,24 @@ allowed_connector_list_scopes: set[str] = {"personal", "team"}
 # Organization-wide rules for toolset tools (the "Tool approvals" editor). Off: a toolset tool
 # starts from what it does to data, and the person in the chat answers its approval card.
 organization_toolset_tool_rules = False
+# D-MCP-5: an edition's McpToolAdmission (app/harness/mcp_hub/tool_admission.py). None: no admin approval of MCP tools.
+mcp_tool_admission = None
+# An edition's OrgNetworkLayers (app/harness/org_network_layers.py). None: no org or agent list of websites or git
+# hosts; a run reaches no website and clones from the release's public presets on a run with web access.
+org_network_layers = None
+# An edition's rule layers in the approvals document (app/harness/approvals.py OrgApprovalRules). None: the
+# deployment's rules alone.
+org_approval_rules = None
+# An edition's SkillAdmission (app/harness/supply_chain/skills.py). None: an imported skill is used unless the
+# content scanner flags it.
+skill_admission = None
+# An edition's per-server MCP runner settings (app/agents/mcp/runner_fields.py McpRunnerSettings). None: a STDIO
+# server's runner reaches the hosts it declares, in the deployment's runner image.
+mcp_runner_settings = None
+# An edition's LayerAskAnswers (app/harness/approvals.py): which rule layers' asks hold the platform's web tools and which
+# a person may answer for the conversation or for good. None: no layer governs web search or page opening, and every
+# other layer's ask is answered once, as each card asks it.
+layer_ask_answers = None
 from app.config.redaction import can_reveal_secrets, hide_secrets_by_default
 from app.api.routes.search_llm_resolver import resolve_llm_for_search
 from app.api.routes.toolset_resolvers import (
@@ -25,6 +43,7 @@ from app.api.routes.mcp_resolvers import (
     get_mcp_instance as get_mcp_instance_resolved,
     load_mcp_instances,
     mask_mcp_instance_for_response,
+    mcp_instance_visible_to_org,  # noqa: F401 - edition seam, read at call time by app.agents.mcp.instance_scope
     resolve_instance_owner_config_service,
     resolve_mcp_instances_with_inheritance,
 )
@@ -100,4 +119,9 @@ def __getattr__(name: str):
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
     import importlib
 
-    return importlib.import_module(module).router
+    try:
+        return importlib.import_module(module).router
+    except AttributeError as exc:
+        # `from app.edition_config import <name>` reports an AttributeError raised here as "cannot import
+        # name" and drops it, hiding which import in the router actually failed.
+        raise ImportError(f"{name}: importing {module} failed: {exc!r}") from exc

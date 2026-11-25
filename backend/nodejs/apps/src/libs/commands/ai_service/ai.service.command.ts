@@ -18,6 +18,7 @@ export interface AICommandOptions {
   // out no further attempt is made.
   timeoutMs?: number;
   maxAttempts?: number;
+  signal?: AbortSignal;
 }
 
 interface FetchCommandError extends Error {
@@ -31,21 +32,40 @@ interface FetchCommandError extends Error {
 
 const AI_SERVICE_TIMEOUT_MS = 620_000;
 
+/**
+ * Node's signed resolution of a legacy chat turn (CPD-10 §3). Only the query
+ * service reads it, so only this command forwards it past the allow-list;
+ * the chat proxy sites are its one source, never the client's request.
+ */
+export const AI_RESOLVED_TURN_HEADER = 'x-pipeshub-resolved';
+
 export class AIServiceCommand<T> extends BaseCommand<AIServiceResponse<T>> {
   private method: HttpMethod;
   private body?: any;
   private timeoutMs: number;
   private maxAttempts: number;
+  private readonly signal?: AbortSignal;
 
   constructor(options: AICommandOptions) {
     super(options.uri, options.queryParams, options.headers);
     this.method = options.method;
+    this.signal = options.signal;
     this.body = this.sanitizeBody(options.body);
     this.headers = this.sanitizeHeaders(options.headers!);
     this.timeoutMs = options.timeoutMs ?? AI_SERVICE_TIMEOUT_MS;
     this.maxAttempts = options.maxAttempts ?? 3;
   }
-  
+
+  protected override sanitizeHeaders(
+    headers: Record<string, string>,
+  ): Record<string, string> {
+    const sanitized = super.sanitizeHeaders(headers);
+    const resolved = headers[AI_RESOLVED_TURN_HEADER];
+    return typeof resolved === 'string' && resolved.length > 0
+      ? { ...sanitized, [AI_RESOLVED_TURN_HEADER]: resolved }
+      : sanitized;
+  }
+
   // Execute the HTTP request based on the provided options.
   public async execute(): Promise<AIServiceResponse<T>> {
     const url = this.buildUrl();
@@ -164,75 +184,103 @@ export class AIServiceCommand<T> extends BaseCommand<AIServiceResponse<T>> {
   public async executeStream(signal?: AbortSignal): Promise<Readable> {
     const url = this.buildUrl();
     const sanitizedHeaders = this.sanitizeHeaders(this.headers);
+    const abortController = new AbortController();
+    const callerSignal = AbortSignal.any(
+      [this.signal, signal].filter((s): s is AbortSignal => s !== undefined),
+    );
     const requestOptions: RequestInit = {
       method: this.method,
       headers: sanitizedHeaders,
       body: this.body,
-      // Lets Node abandon a run nobody is waiting for (see `attachUpstreamAbort`);
-      // aborting only the Readable would leave Python generating into the void.
-      ...(signal ? { signal } : {}),
+      // Propagates a client disconnect to the upstream fetch — without this,
+      // aborting on our end only tore down the Node-side Readable while
+      // Python kept generating against a socket nobody was reading.
+      signal: AbortSignal.any([abortController.signal, callerSignal]),
     };
 
     // A 2xx with a body is held: its call line is written when the stream ends, not at its headers.
     const held: { call?: UpstreamCall } = {};
-    const response = await this.fetchWithRetry(
-      (attempt) =>
-        upstreamFetch(url, requestOptions, attempt, (call) => {
-          held.call = call;
-        }),
-      this.maxAttempts,
-      300,
-      undefined,
-      signal,
-    );
     const end = (result: { status: number; error?: unknown }): void => {
       if (held.call) endUpstreamCall(held.call, result);
+      held.call = undefined;
     };
+    let response: Response;
+    try {
+      response = await this.fetchWithRetry(
+        (attempt) => {
+          requestOptions.signal?.throwIfAborted();
+          return upstreamFetch(url, requestOptions, attempt, (call) => {
+            held.call = call;
+          });
+        },
+        this.maxAttempts,
+        300,
+        undefined,
+        callerSignal,
+      );
+    } catch (error: unknown) {
+      abortController.abort();
+      throw error;
+    }
 
     if (!response.ok) {
       let error: FetchCommandError;
-      try{
+      try {
         error = await this.buildStreamHttpError(response);
-      }
-      catch (error) {
+      } catch {
         throw new Error(`HTTP error! status: ${response.status}`);
       }
       throw error;
     }
 
     if (!response.body) {
+      end({ status: response.status, error: new Error('Response body is null') });
       throw new Error('Response body is null');
     }
 
-    // Convert ReadableStream to Node.js Readable
-    const readable = new Readable({
-      read() {}
-    });
-
     const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-
-    const pump = async () => {
-      try {
-        while (true) {
-          const { done, value } = await reader.read();
-          
-          if (done) {
-            end({ status: response.status });
-            readable.push(null);
-            break;
-          }
-          
-          const chunk = decoder.decode(value, { stream: true });
-          readable.push(chunk);
-        }
-      } catch (error) {
-        end({ status: response.status, error });
-        readable.destroy(error as Error);
+    let finished = false;
+    let released = false;
+    const release = () => {
+      if (!released) {
+        reader.releaseLock();
+        released = true;
       }
     };
-
-    pump();
+    const readable = new Readable({
+      encoding: 'utf8',
+      // Read only on demand so a slow consumer bounds the upstream buffer.
+      read() {
+        void reader.read().then(
+          ({ done, value }) => {
+            if (this.destroyed) return;
+            if (done) {
+              finished = true;
+              end({ status: response.status });
+              release();
+              this.push(null);
+            } else {
+              this.push(Buffer.from(value));
+            }
+          },
+          (error: unknown) => {
+            this.destroy(error instanceof Error ? error : new Error('Stream read failed'));
+          },
+        );
+      },
+      destroy(error, callback) {
+        if (finished) {
+          callback(error);
+          return;
+        }
+        end({ status: response.status, error: error ?? new Error('Stream closed before it ended') });
+        abortController.abort();
+        void reader.cancel().then(
+          () => { release(); callback(error); },
+          () => { release(); callback(error); },
+        );
+      },
+    });
 
     return readable;
   }

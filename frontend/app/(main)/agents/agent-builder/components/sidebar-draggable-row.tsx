@@ -56,6 +56,13 @@ function TapAddIconButton({ onTap }: { onTap: () => void }) {
   );
 }
 
+/**
+ * How far a palette row that can't be added fades. Its name still says what it is, so it stays readable: at 0.55
+ * the name fell to 3.7:1 in light, under WCAG AA's 4.5:1 (axe on the UX captures, QAFINAL-FU-AXE); 0.7 keeps it
+ * above 5.5:1 in both themes and still reads as unavailable beside the not-allowed cursor.
+ */
+export const PALETTE_ROW_DISABLED_OPACITY = 0.7;
+
 export function DraggableRow({
   children,
   disabled,
@@ -64,6 +71,7 @@ export function DraggableRow({
   comfortable = false,
   title,
   mb,
+  attrs,
   onTap,
 }: {
   children: React.ReactNode;
@@ -74,12 +82,15 @@ export function DraggableRow({
   comfortable?: boolean;
   title?: string;
   mb?: React.ComponentProps<typeof Box>['mb'];
+  attrs?: Record<`data-${string}`, string>;
   /** Adds the row without dragging; defaults to the palette's tap-to-add. */
   onTap?: () => void;
 }) {
   const paletteTap = usePaletteTapAdd(data, disabled);
   return (
     <Box
+      {...attrs}
+      aria-disabled={disabled || undefined}
       draggable={!disabled}
       // Browsers send no dragstart for a row that can't be dragged, so pressing it is what says why.
       onPointerDown={disabled ? () => onBlocked?.() : undefined}
@@ -104,7 +115,7 @@ export function DraggableRow({
         boxSizing: 'border-box',
         gap: comfortable ? 10 : 8,
         cursor: disabled ? 'not-allowed' : 'grab',
-        opacity: disabled ? 0.55 : 1,
+        opacity: disabled ? PALETTE_ROW_DISABLED_OPACITY : 1,
         borderRadius: comfortable ? 'var(--radius-2)' : 'var(--radius-1)',
         border: comfortable ? '1px solid var(--olive-3)' : '1px solid transparent',
         backgroundColor: comfortable ? 'var(--olive-2)' : 'transparent',
@@ -129,6 +140,8 @@ export function SidebarToolDragRow({
   disabled,
   onBlocked,
   mb,
+  note,
+  attrs,
 }: {
   name: string;
   description?: string;
@@ -136,9 +149,19 @@ export function SidebarToolDragRow({
   disabled?: boolean;
   onBlocked?: () => void;
   mb?: React.ComponentProps<typeof Box>['mb'];
+  /** A line under the name, e.g. an MCP tool's approval state. */
+  note?: React.ReactNode;
+  attrs?: Record<`data-${string}`, string>;
 }) {
   return (
-    <DraggableRow data={data} disabled={disabled} onBlocked={onBlocked} title={description || undefined} mb={mb}>
+    <DraggableRow
+      data={data}
+      disabled={disabled}
+      onBlocked={onBlocked}
+      title={description || undefined}
+      mb={mb}
+      attrs={attrs}
+    >
       <MaterialIcon name="build" size={ICON_SIZE_DEFAULT} color="var(--slate-11)" style={{ flexShrink: 0, lineHeight: 0 }} />
       <span
         style={{
@@ -153,6 +176,7 @@ export function SidebarToolDragRow({
         }}
       >
         {normalizePaletteLabel(name)}
+        {note}
       </span>
     </DraggableRow>
   );

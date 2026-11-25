@@ -24,6 +24,7 @@ from app.agents.actions.knowledge_graph.views import (
 )
 from app.modules.agents.qna.chat_state import remember_record_ids
 from app.services.graph_db.interface.graph_db_provider import AccessCheck
+from tests.support.record_access import InMemoryRecordAccess
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -48,17 +49,14 @@ class _Graph:
     shown to take the same path."""
 
     def __init__(self, readable_by: dict[str, set[str]] | None = None) -> None:
-        self._readable_by = readable_by or {}
+        self.access = InMemoryRecordAccess().user("user-1", "org-1").user("someone-else", "org-1")
+        for record_id, users in (readable_by or {}).items():
+            self.access.record(record_id, "org-1")
+            for user in users:
+                self.access.grant(record_id, user=user)
+        self.access.serve(self)
         self.calls: list[str] = []
         self.config_service = None
-
-    async def check_record_access_with_details(
-        self, user_id: str, org_id: str, record_id: str,
-    ) -> dict[str, Any] | None:
-        self.calls.append("check_record_access_with_details")
-        if user_id in self._readable_by.get(record_id, set()):
-            return {"_key": record_id}
-        return None
 
     async def get_document(self, document_key: str, collection: str) -> dict[str, Any] | None:
         self.calls.append("get_document")
@@ -139,7 +137,7 @@ class TestUnknownIdRecovery:
 
         assert missing.error.encode() == unreadable.error.encode()
         assert missing.success is unreadable.success is False
-        assert missing_graph.calls == unreadable_graph.calls
+        assert (missing_graph.calls, missing_graph.access.asked_about) == (unreadable_graph.calls, unreadable_graph.access.asked_about)
 
     async def test_list_holds_only_the_twenty_most_recent(self) -> None:
         ids = [f"{i:08x}-0000-4000-8000-000000000000" for i in range(30)]
@@ -228,7 +226,7 @@ class TestUnknownIdRecovery:
             return_value=([{"type": "text", "text": "content"}], ref_mapper),
         ):
             output, _ = await execute_fetch_record(
-                # A record in the retrieved map is still checked: this user may read it.
+                # The read gate checks a map entry too, so the user must be able to read it.
                 context=_context(state, _Graph(readable_by={OTHER: {"user-1"}})),
                 virtual_records={"vr-1": read_now},
                 citation_ref_mapper=ref_mapper,
@@ -454,4 +452,4 @@ class TestStorageSearchRecovery:
 
         assert f"- {REAL} (Call notes)" in missing.error
         assert missing.error.encode() == unreadable.error.encode()
-        assert missing_graph.calls == unreadable_graph.calls
+        assert (missing_graph.calls, missing_graph.access.asked_about) == (unreadable_graph.calls, unreadable_graph.access.asked_about)

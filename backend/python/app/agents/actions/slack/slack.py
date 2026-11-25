@@ -33,6 +33,7 @@ from app.connectors.core.registry.auth_builder import (
 from app.connectors.core.constants import IconPaths
 from app.connectors.core.registry.connector_builder import CommonFields
 from app.connectors.core.registry.tool_builder import (
+    ToolProvider,
     ToolsetBuilder,
     ToolsetCategory,
 )
@@ -40,8 +41,17 @@ from app.connectors.core.registry.types import DocumentationLink
 from app.sources.client.slack.slack import SlackClient
 from app.sources.external.slack.slack import SlackDataSource
 from app.utils.oauth_errors import RATE_LIMITED_ERROR_CODES, TEMPORARY_ERROR_CODES
+from harness_core.effects.reconcile import current_effect_tag
 
 logger = logging.getLogger(__name__)
+
+EFFECT_EVENT_TYPE = "pipeshub_effect"
+# Slack's conversations.history page cap is 1000; a reconcile reads from just before the post.
+EFFECT_HISTORY_LIMIT = 200
+
+
+def _effect_metadata(effect: str) -> dict[str, Any]:
+    return {"event_type": EFFECT_EVENT_TYPE, "event_payload": {"effect": effect}}
 
 # Constants
 MIN_SLACK_USER_ID_LENGTH = 9  # Minimum length for valid Slack user ID (starts with 'U' or 'W')
@@ -702,7 +712,7 @@ class UploadFileToChannelInput(BaseModel):
     )
 
 # Register Slack toolset
-@ToolsetBuilder("Slack")\
+@ToolsetBuilder("Slack", provider=ToolProvider.CONNECTOR)\
     .in_group("Slack")\
     .with_description("Slack workspace integration for messaging, channels, file management, and collaboration")\
     .with_category(ToolsetCategory.APP)\
@@ -1193,6 +1203,25 @@ class Slack:
         logger.debug(f"Returning original channel value: '{channel}'")
         return channel
 
+    async def find_effect_message(self, channel: str, effect: str, oldest: float) -> dict[str, str] | None:
+        """The message a post stamped with ``effect``; a read only (channel history is read-after-write)."""
+        chan = await self._resolve_channel(channel)
+        response = await self.client.conversations_history(
+            channel=chan,
+            oldest=f"{oldest:.6f}",
+            include_all_metadata=True,
+            limit=EFFECT_HISTORY_LIMIT,
+        )
+        slack_response = self._handle_slack_response(response)
+        if not slack_response.success:
+            raise RuntimeError(f"slack history failed: {slack_response.error}")
+        for message in (slack_response.data or {}).get("messages") or []:
+            metadata = message.get("metadata") or {}
+            payload = metadata.get("event_payload") or {}
+            if metadata.get("event_type") == EFFECT_EVENT_TYPE and payload.get("effect") == effect:
+                return {"channel": chan, "ts": str(message.get("ts", ""))}
+        return None
+
     @tool(
         path="/tools/slack/send_message",
         short_description="Send a message to a Slack channel using mrkdwn format",
@@ -1208,7 +1237,7 @@ class Slack:
             ToolParameter(name="message", type=ParameterType.STRING, description="The message to send. Must use Slack's mrkdwn format", required=True),
             attachment_record_ids_parameter(required=False),
         ],
-        tags=[Tag(key="category", value="communication"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
         args_summary=args_template("Sending Slack message to {channel}", "channel"),
         result_summary=confirmation("Message sent to {channel}", "channel"),
     )
@@ -1241,10 +1270,14 @@ class Slack:
             chan = await self._resolve_channel(channel)
             slack_message = self._convert_markdown_to_slack_mrkdwn(message)
 
+            effect = current_effect_tag()
+            # A reconcile finds the message by this metadata if the post's answer is lost (P2.9).
+            stamp = {} if effect is None else {"metadata": _effect_metadata(effect)}
             response = await self.client.chat_post_message(
                 channel=chan,
                 text=slack_message,
-                mrkdwn=True
+                mrkdwn=True,
+                **stamp,
             )
             slack_response = self._handle_slack_response(response)
             if not slack_response.success:
@@ -1286,7 +1319,7 @@ class Slack:
             ToolParameter(name="latest", type=ParameterType.STRING, description="End of time range as an ISO 8601 date or datetime string. Omit to fetch up to the current time.", required=False),
             ToolParameter(name="inclusive", type=ParameterType.BOOLEAN, description="Include messages with the exact 'oldest' or 'latest' timestamp", required=False),
         ],
-        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
         args_summary=args_template("Fetching history for Slack channel {channel}", "channel"),
         result_summary=list_summary(("data", "messages"), _slack_message_label, "message"),
     )
@@ -1401,7 +1434,7 @@ class Slack:
         parameters=[
             ToolParameter(name="channel", type=ParameterType.STRING, description="The channel to get the info of", required=True),
         ],
-        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
         args_summary=args_template("Fetching info for Slack channel {channel}", "channel"),
         result_summary=entity_summary(lambda c: f"Channel: {_slack_channel_label(c)}", path=("data", "channel")),
     )
@@ -1437,7 +1470,7 @@ class Slack:
         parameters=[
             ToolParameter(name="user", type=ParameterType.STRING, description="Slack user identifier. Use email or Slack user ID (starts with 'U')", required=True),
         ],
-        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_user_info(self, user: str) -> Tuple[bool, str]:
         """Get the info of a user with transformed response for easy field extraction"""
@@ -1513,7 +1546,7 @@ class Slack:
             ToolParameter(name="types", type=ParameterType.STRING, description="Comma-separated list of conversation types. Defaults to ALL types: 'public_channel,private_channel,mpim,im'", required=False),
             ToolParameter(name="exclude_archived", type=ParameterType.BOOLEAN, description="Exclude archived conversations", required=False),
         ],
-        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
         args_summary=lambda _args: "Fetching Slack conversations",
         result_summary=list_summary(("data", "channels"), _slack_channel_label, "conversation"),
     )
@@ -1575,7 +1608,7 @@ class Slack:
             ToolParameter(name="query", type=ParameterType.STRING, description="The search query to find messages, files, and channels", required=True),
             ToolParameter(name="limit", type=ParameterType.INTEGER, description="Maximum number of results to return", required=False),
         ],
-        tags=[Tag(key="category", value="communication"), Tag(key="type", value="search")],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="search"), Tag(key="effect", value="read")],
         args_summary=args_template('Searching Slack: "{query}"', "query"),
         result_summary=_search_all_result_summary,
     )
@@ -1639,7 +1672,7 @@ class Slack:
         parameters=[
             ToolParameter(name="channel", type=ParameterType.STRING, description="The channel to get the members of", required=True),
         ],
-        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_channel_members(self, channel: str) -> Tuple[bool, str]:
         """Get the members of a channel"""
@@ -1673,7 +1706,7 @@ class Slack:
         parameters=[
             ToolParameter(name="channel_id", type=ParameterType.STRING, description="The channel ID to get the members of", required=True),
         ],
-        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_channel_members_by_id(self, channel_id: str) -> Tuple[bool, str]:
         """Get the members of a channel by ID"""
@@ -1701,7 +1734,7 @@ class Slack:
         parameters=[
             ToolParameter(name="user_id", type=ParameterType.STRING, description="The user ID to resolve", required=True),
         ],
-        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def resolve_user(self, user_id: str) -> Tuple[bool, str]:
         """Resolve a Slack user ID to display name and email"""
@@ -1739,7 +1772,7 @@ class Slack:
             ToolParameter(name="name", type=ParameterType.STRING, description="The name to search for (display name, real name, or username). Minimum 2 characters.", required=True),
             ToolParameter(name="include_bots", type=ParameterType.BOOLEAN, description="Include bot users in results. Defaults to false.", required=False),
         ],
-        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
         args_summary=args_template('Searching Slack users: "{name}"', "name"),
         result_summary=list_summary(
             ("data", "users"),
@@ -1824,7 +1857,7 @@ class Slack:
             "Not for normal Slack operations."
         ),
         parameters=[],
-        tags=[Tag(key="category", value="communication"), Tag(key="type", value="utility")],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="utility"), Tag(key="effect", value="read")],
     )
     async def check_token_info(self) -> Tuple[bool, str]:
         """Check Slack token information and available scopes"""
@@ -1856,7 +1889,7 @@ class Slack:
             ToolParameter(name="message", type=ParameterType.STRING, description="The message to send", required=True),
             attachment_record_ids_parameter(required=False),
         ],
-        tags=[Tag(key="category", value="communication"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
         args_summary=args_template("Sending Slack DM to {user}", "user"),
         result_summary=confirmation("Message sent to {user}", "user"),
     )
@@ -1948,7 +1981,7 @@ class Slack:
             ToolParameter(name="latest", type=ParameterType.STRING, description="End of time range as an ISO 8601 date or datetime string. Omit to fetch up to the current time.", required=False),
             ToolParameter(name="inclusive", type=ParameterType.BOOLEAN, description="Include messages with the exact 'oldest' or 'latest' timestamp", required=False),
         ],
-        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read"), Tag(key="effect", value="write")],
     )
     async def get_dm_history(
         self,
@@ -2046,7 +2079,7 @@ class Slack:
             ToolParameter(name="latest_message", type=ParameterType.BOOLEAN, description="Whether to reply to the latest message in the channel", required=False),
             attachment_record_ids_parameter(required=False),
         ],
-        tags=[Tag(key="category", value="communication"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
     )
     async def reply_to_message(
         self,
@@ -2115,7 +2148,7 @@ class Slack:
             ToolParameter(name="channels", type=ParameterType.ARRAY, description="List of channels to send the message to", required=True),
             ToolParameter(name="message", type=ParameterType.STRING, description="The message to send to all channels", required=True),
         ],
-        tags=[Tag(key="category", value="communication"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
     )
     async def send_message_to_multiple_channels(self, channels: List[str], message: str) -> Tuple[bool, str]:
         """Send a message to multiple channels. Message will be auto-converted from standard markdown to Slack mrkdwn."""
@@ -2188,7 +2221,7 @@ class Slack:
             ToolParameter(name="timestamp", type=ParameterType.STRING, description="Timestamp of the message to add reaction to", required=True),
             ToolParameter(name="name", type=ParameterType.STRING, description="Name of the emoji reaction (e.g., 'thumbsup', '+1')", required=True),
         ],
-        tags=[Tag(key="category", value="communication"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
     )
     async def add_reaction(self, channel: str, timestamp: str, name: str) -> Tuple[bool, str]:
         """Add a reaction to a message"""
@@ -2239,7 +2272,7 @@ class Slack:
             ToolParameter(name="after", type=ParameterType.STRING, description="Restrict to messages after this date (YYYY-MM-DD). EXCLUSIVE — 'after:2025-01-15' matches from 2025-01-16 onward.", required=False),
             ToolParameter(name="before", type=ParameterType.STRING, description="Restrict to messages before this date (YYYY-MM-DD). EXCLUSIVE — 'before:2025-01-15' matches up to 2025-01-14.", required=False),
         ],
-        tags=[Tag(key="category", value="communication"), Tag(key="type", value="search")],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="search"), Tag(key="effect", value="read")],
     )
     async def search_messages(
         self,
@@ -2361,7 +2394,7 @@ class Slack:
             ToolParameter(name="status_emoji", type=ParameterType.STRING, description="OPTIONAL status emoji (e.g., ':calendar:', ':airplane:'). Pass empty string '' to clear. Omit if unsure.", required=False),
             ToolParameter(name="duration_seconds", type=ParameterType.INTEGER, description="Duration in seconds from NOW. Examples: 1 hour = 3600, 30 minutes = 1800. Do NOT pass a Unix timestamp.", required=False),
         ],
-        tags=[Tag(key="category", value="communication"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
     )
     async def set_user_status(self, status_text: str, status_emoji: Optional[str] = None, duration_seconds: Optional[int] = None) -> Tuple[bool, str]:
         """Set user status in Slack.
@@ -2453,7 +2486,7 @@ class Slack:
             ToolParameter(name="message", type=ParameterType.STRING, description="The message to send", required=True),
             ToolParameter(name="post_at", type=ParameterType.STRING, description="When to post the message, as an ISO 8601 datetime string. Examples: '2026-05-01T09:00:00Z' (UTC), '2026-05-01T14:30:00+05:30'. Naive datetimes are interpreted as UTC.", required=True),
         ],
-        tags=[Tag(key="category", value="communication"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
     )
     async def schedule_message(self, channel: str, message: str, post_at: str) -> Tuple[bool, str]:
         """Schedule a message to be sent at a specific time"""
@@ -2514,7 +2547,7 @@ class Slack:
             ToolParameter(name="channel", type=ParameterType.STRING, description="The channel id containing the message e.g 'C1234567890','G1234567890', 'D1234567890'", required=True),
             ToolParameter(name="timestamp", type=ParameterType.STRING, description="Timestamp of the message to pin", required=True),
         ],
-        tags=[Tag(key="category", value="communication"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
     )
     async def pin_message(self, channel: str, timestamp: str) -> Tuple[bool, str]:
         """Pin a message to a channel"""
@@ -2551,7 +2584,7 @@ class Slack:
         parameters=[
             ToolParameter(name="channel", type=ParameterType.STRING, description="The channel to check for unread messages", required=True),
         ],
-        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_unread_messages(self, channel: str) -> Tuple[bool, str]:
         """Get unread messages from a channel"""
@@ -2633,7 +2666,7 @@ class Slack:
         parameters=[
             ToolParameter(name="channel", type=ParameterType.STRING, description="The channel to get scheduled messages for", required=False),
         ],
-        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_scheduled_messages(self, channel: Optional[str] = None) -> Tuple[bool, str]:
         """Get scheduled messages"""
@@ -2692,7 +2725,7 @@ class Slack:
             ToolParameter(name="message", type=ParameterType.STRING, description="The message to send with mentions", required=True),
             ToolParameter(name="mentions", type=ParameterType.ARRAY, description="List of users to mention", required=False),
         ],
-        tags=[Tag(key="category", value="communication"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
     )
     async def send_message_with_mentions(self, channel: str, message: str, mentions: Optional[List[str]] = None) -> Tuple[bool, str]:
         """Send a message with user mentions"""
@@ -2754,7 +2787,7 @@ class Slack:
             ToolParameter(name="include_deleted", type=ParameterType.BOOLEAN, description="Include deleted users in the list. Defaults to True.", required=False),
             ToolParameter(name="limit", type=ParameterType.INTEGER, description="Maximum number of users to return. If not specified, returns ALL users with pagination.", required=False),
         ],
-        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_users_list(self, include_deleted: Optional[bool] = None, limit: Optional[int] = None) -> Tuple[bool, str]:
         """Get list of all users in the organization with pagination"""
@@ -2799,7 +2832,7 @@ class Slack:
             ToolParameter(name="exclude_archived", type=ParameterType.BOOLEAN, description="Exclude archived conversations", required=False),
             ToolParameter(name="limit", type=ParameterType.INTEGER, description="Maximum number of conversations to return. If not specified, returns ALL with pagination.", required=False),
         ],
-        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_user_conversations(self, types: Optional[str] = None, exclude_archived: Optional[bool] = None, limit: Optional[int] = None) -> Tuple[bool, str]:
         """
@@ -2856,7 +2889,7 @@ class Slack:
             ToolParameter(name="include_users", type=ParameterType.BOOLEAN, description="Include users in each user group", required=False),
             ToolParameter(name="include_disabled", type=ParameterType.BOOLEAN, description="Include disabled user groups", required=False),
         ],
-        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_user_groups(self, include_users: Optional[bool] = None, include_disabled: Optional[bool] = None) -> Tuple[bool, str]:
         """Get list of user groups in the organization"""
@@ -2906,7 +2939,7 @@ class Slack:
             ToolParameter(name="usergroup", type=ParameterType.STRING, description="User group ID to get info for", required=True),
             ToolParameter(name="include_disabled", type=ParameterType.BOOLEAN, description="Include disabled user groups", required=False),
         ],
-        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_user_group_info(self, usergroup: str, include_disabled: Optional[bool] = None) -> Tuple[bool, str]:
         """Get information about a specific user group"""
@@ -2964,7 +2997,7 @@ class Slack:
             ToolParameter(name="exclude_archived", type=ParameterType.BOOLEAN, description="Exclude archived channels", required=False),
             ToolParameter(name="types", type=ParameterType.STRING, description="Comma-separated list of conversation types. Defaults to ALL types: 'public_channel,private_channel,mpim,im'", required=False),
         ],
-        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_user_channels(self, exclude_archived: Optional[bool] = None, types: Optional[str] = None) -> Tuple[bool, str]:
         """
@@ -3019,7 +3052,7 @@ class Slack:
             ToolParameter(name="timestamp", type=ParameterType.STRING, description="Timestamp of the message to delete", required=True),
             ToolParameter(name="as_user", type=ParameterType.BOOLEAN, description="Delete the message as the authenticated user", required=False),
         ],
-        tags=[Tag(key="category", value="communication"), Tag(key="type", value="destructive")],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="destructive"), Tag(key="effect", value="write")],
     )
     async def delete_message(self, channel: str, timestamp: str, as_user: Optional[bool] = None) -> Tuple[bool, str]:
         """Delete a message from a channel"""
@@ -3064,7 +3097,7 @@ class Slack:
             ToolParameter(name="blocks", type=ParameterType.ARRAY, description="Rich message blocks for advanced formatting", required=False),
             ToolParameter(name="as_user", type=ParameterType.BOOLEAN, description="Update the message as the authenticated user", required=False),
         ],
-        tags=[Tag(key="category", value="communication"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
     )
     async def update_message(self, channel: str, timestamp: str, text: str, blocks: Optional[List[Dict]] = None, as_user: Optional[bool] = None) -> Tuple[bool, str]:
         """Update an existing message"""
@@ -3111,7 +3144,7 @@ class Slack:
             ToolParameter(name="channel", type=ParameterType.STRING, description="The channel id containing the message e.g 'C1234567890','G1234567890', 'D1234567890'", required=True),
             ToolParameter(name="timestamp", type=ParameterType.STRING, description="Timestamp of the message to get permalink for", required=True),
         ],
-        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_message_permalink(self, channel: str, timestamp: str) -> Tuple[bool, str]:
         """Get a permalink for a specific message"""
@@ -3146,7 +3179,7 @@ class Slack:
             ToolParameter(name="timestamp", type=ParameterType.STRING, description="Timestamp of the message to get reactions for", required=True),
             ToolParameter(name="full", type=ParameterType.BOOLEAN, description="Return full reaction objects", required=False),
         ],
-        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_reactions(self, channel: str, timestamp: str, full: Optional[bool] = None) -> Tuple[bool, str]:
         """Get reactions for a specific message"""
@@ -3219,7 +3252,7 @@ class Slack:
             ToolParameter(name="timestamp", type=ParameterType.STRING, description="Timestamp of the message to remove reaction from", required=True),
             ToolParameter(name="name", type=ParameterType.STRING, description="Name of the emoji reaction to remove", required=True),
         ],
-        tags=[Tag(key="category", value="communication"), Tag(key="type", value="destructive")],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="destructive"), Tag(key="effect", value="write")],
     )
     async def remove_reaction(self, channel: str, timestamp: str, name: str) -> Tuple[bool, str]:
         """Remove a reaction from a message"""
@@ -3254,7 +3287,7 @@ class Slack:
         parameters=[
             ToolParameter(name="channel", type=ParameterType.STRING, description="The channel to get pinned messages from", required=True),
         ],
-        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_pinned_messages(self, channel: str) -> Tuple[bool, str]:
         """Get pinned messages from a channel"""
@@ -3300,7 +3333,7 @@ class Slack:
             ToolParameter(name="channel", type=ParameterType.STRING, description="The channel id containing the message e.g 'C1234567890','G1234567890', 'D1234567890'", required=True),
             ToolParameter(name="timestamp", type=ParameterType.STRING, description="Timestamp of the message to unpin", required=True),
         ],
-        tags=[Tag(key="category", value="communication"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
     )
     async def unpin_message(self, channel: str, timestamp: str) -> Tuple[bool, str]:
         """Unpin a message from a channel"""
@@ -3340,7 +3373,7 @@ class Slack:
             ToolParameter(name="latest", type=ParameterType.STRING, description="End of time range as an ISO 8601 date or datetime string", required=False),
             ToolParameter(name="inclusive", type=ParameterType.BOOLEAN, description="Include messages with the exact 'oldest' or 'latest' timestamp", required=False),
         ],
-        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_thread_replies(
         self,
@@ -3429,7 +3462,7 @@ class Slack:
             ToolParameter(name="initial_comment", type=ParameterType.STRING, description="Message posted alongside the file in the channel", required=False),
             attachment_record_ids_parameter(required=False),
         ],
-        tags=[Tag(key="category", value="communication"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
     )
     async def upload_file_to_channel(
         self,
