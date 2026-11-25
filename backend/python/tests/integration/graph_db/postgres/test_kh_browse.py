@@ -15,9 +15,8 @@ import pytest
 
 from app.exceptions.graph_db_exceptions import KnowledgeHubListingTooLarge
 from app.services.graph_db.postgres import kh_browse, kh_listing
-from app.services.graph_db.postgres.kg import grant_marks
+from app.services.graph_db.postgres.kg import grant_marks, net
 from app.services.graph_db.postgres.kg import listing as kgl
-from app.services.graph_db.postgres.kg import net
 from tests.support import plan_gate
 
 from .pg_support import new_org
