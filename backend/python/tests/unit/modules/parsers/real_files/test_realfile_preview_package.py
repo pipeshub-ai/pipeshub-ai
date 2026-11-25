@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import contextvars
 import io
 import logging
 import shutil
 import struct
 import threading
+import time
 import tracemalloc
 import warnings
 import zipfile
@@ -237,11 +239,12 @@ def test_only_relationships_to_missing_parts_are_dropped(tmp_path: Path) -> None
     source.write_bytes(_with_rels(
         '<Relationship Id="external" Type="t" Target="https://docs.invalid/" TargetMode="External"/>'
         '<Relationship Id="present" Type="t" Target="/ppt/presentation.xml"/>'
+        '<Relationship Id="above root" Type="t" Target="../ppt/presentation.xml"/>'
         '<Relationship Id="gone" Type="t" Target="docProps/gone.xml"/>'
     ))
     assert rebuild_package(source, target)
     root = etree.fromstring(zipfile.ZipFile(target).read("_rels/.rels"))
-    assert [r.get("Id") for r in root] == ["external", "present"]
+    assert [r.get("Id") for r in root] == ["external", "present", "above root"]
 
 
 def test_the_rebuilt_package_keeps_every_part(tmp_path: Path) -> None:
@@ -380,6 +383,31 @@ async def test_files_that_fail_together_share_one_probe(monkeypatch: pytest.Monk
     answers = await asyncio.gather(*(libreoffice_convert.can_convert_known_good_file("pptx", "pdf") for _ in range(5)))
     assert answers == [True] * 5
     assert len(runs) == 2, "one sample made and read once"
+
+
+async def test_an_old_success_is_checked_again_before_a_final_refusal(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def failing_run(*_args: object, **_kwargs: object) -> SimpleNamespace:
+        return SimpleNamespace(returncode=1, output=None)
+
+    monkeypatch.setattr(libreoffice_convert, "_run_libreoffice", failing_run)
+    long_ago = time.monotonic() - 3600
+    monkeypatch.setattr(libreoffice_convert, "_format_probe_results", {("pptx", "pdf"): (True, long_ago)})
+    assert await libreoffice_convert.can_convert_known_good_file("pptx", "pdf") is False
+
+
+async def test_the_shared_probe_runs_in_no_callers_context(monkeypatch: pytest.MonkeyPatch) -> None:
+    caller: contextvars.ContextVar[str | None] = contextvars.ContextVar("caller", default=None)
+    seen: list[str | None] = []
+
+    async def fake_run(*_args: object, **_kwargs: object) -> SimpleNamespace:
+        seen.append(caller.get())
+        return SimpleNamespace(returncode=0, output=b"x")
+
+    monkeypatch.setattr(libreoffice_convert, "_run_libreoffice", fake_run)
+    monkeypatch.setattr(libreoffice_convert, "_format_probe_results", {})
+    caller.set("org-1")
+    assert await libreoffice_convert.can_convert_known_good_file("pptx", "pdf") is True
+    assert seen == [None, None]
 
 
 async def test_a_file_name_cannot_forge_a_log_line(

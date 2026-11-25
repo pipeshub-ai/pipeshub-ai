@@ -21,6 +21,7 @@ from uuid import uuid4
 from fastapi import HTTPException
 
 from app.config.constants.http_status_code import HttpStatusCode
+from app.core.org_context import spawn_in_request
 from app.utils import libreoffice_convert
 from app.utils.ooxml_repair import rebuild_package
 from app.utils.user_messages import FILE_PREVIEW_UNAVAILABLE
@@ -162,7 +163,7 @@ async def _rebuild_package(source: str, target: str, *, timeout: float) -> bool:
     held until the thread is done, also when the caller is cancelled."""
     stop = threading.Event()
     async with libreoffice_convert.conversion_slots.slot():
-        worker = asyncio.ensure_future(asyncio.to_thread(rebuild_package, Path(source), Path(target), stop.is_set))
+        worker = spawn_in_request(asyncio.to_thread(rebuild_package, Path(source), Path(target), stop.is_set))
         try:
             return await asyncio.wait_for(asyncio.shield(worker), timeout=timeout)
         except asyncio.TimeoutError as error:

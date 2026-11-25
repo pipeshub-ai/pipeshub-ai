@@ -48184,7 +48184,7 @@ paths:
         '422':
           description: |
             `convertTo=application/pdf` only: there is no PDF preview of this file, because it
-            is an EPUB or because it cannot be read for conversion
+            is an EPUB (`error` is a message) or because it cannot be read for conversion
             (`error.reasonCode` is `conversion_failed`). Retrying does not help; the original is still returned without `convertTo`.
           content:
             application/json:

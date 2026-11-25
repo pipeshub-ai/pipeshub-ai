@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import math
 import os
 import signal
 import tempfile
@@ -20,6 +21,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from app.core.org_context import spawn_detached
 from app.core.org_context import spawn_in_request
 from app.exceptions.indexing_exceptions import DocumentProcessingError
 from app.services.llm_gateway.limiter import CrossLoopSemaphore
@@ -91,6 +93,8 @@ _IMPORT_UNSUPPORTED = frozenset({"epub"})
 # A passing probe is kept for the life of the process. A failing one is retried
 # after a while, so one bad moment does not keep every file of that type retrying.
 _PROBE_FAILURE_TTL_SECONDS = 300.0
+# A refusal that is final for the caller needs a recent answer: the host may have failed since.
+_RECENT_PROBE_SECONDS = 60.0
 _format_probe_results: dict[tuple[str, str], tuple[bool, float]] = {}
 _probes_in_flight: dict[tuple[str, str], asyncio.Task[bool]] = {}
 
@@ -258,11 +262,13 @@ def source_not_loaded(stderr: str) -> bool:
 
 async def can_convert_known_good_file(input_ext: str, output_ext: str) -> bool:
     """Whether a failure to load is about the file: True only when LibreOffice on
-    this host is seen to convert a known-good *input_ext* file."""
-    return await _libreoffice_can_convert(input_ext, output_ext) is True
+    this host is seen, within the last minute, to convert a known-good *input_ext* file."""
+    return await _libreoffice_can_convert(input_ext, output_ext, success_ttl=_RECENT_PROBE_SECONDS) is True
 
 
-async def _libreoffice_can_convert(input_ext: str, output_ext: str) -> bool | None:
+async def _libreoffice_can_convert(
+    input_ext: str, output_ext: str, *, success_ttl: float = math.inf
+) -> bool | None:
     """Whether LibreOffice on this host converts a known-good *input_ext* file
     to *output_ext*, or None when there is no sample to check that format with.
     Only run after a conversion has already failed."""
@@ -272,14 +278,15 @@ async def _libreoffice_can_convert(input_ext: str, output_ext: str) -> bool | No
     key = (input_ext, output_ext)
     now = time.monotonic()
     cached = _format_probe_results.get(key)
-    if cached is not None and (cached[0] or now - cached[1] < _PROBE_FAILURE_TTL_SECONDS):
+    if cached is not None and now - cached[1] < (success_ttl if cached[0] else _PROBE_FAILURE_TTL_SECONDS):
         return cached[0]
 
     # Files that fail together share one probe.
     loop = asyncio.get_running_loop()
     probe = _probes_in_flight.get(key)
     if probe is None or probe.done() or probe.get_loop() is not loop:
-        probe = loop.create_task(_probe_format(key, sample))
+        # Detached: its answer serves every caller, so it runs in none of their contexts.
+        probe = spawn_detached(_probe_format(key, sample), name="libreoffice-probe")
         _probes_in_flight[key] = probe
     return await asyncio.shield(probe)
 

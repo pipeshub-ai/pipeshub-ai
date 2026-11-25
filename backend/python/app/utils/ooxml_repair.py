@@ -97,7 +97,7 @@ def _root_relationships(archive: zipfile.ZipFile, parts: dict[str, zipfile.ZipIn
     for relationship in list(root.iter(_RELATIONSHIP)):
         if relationship.get("TargetMode") == "External":
             continue
-        target = posixpath.normpath((relationship.get("Target") or "").lstrip("/"))
+        target = posixpath.normpath(posixpath.join("/", relationship.get("Target") or "")).lstrip("/")
         if target.lower() not in present:
             root.remove(relationship)
     return etree.tostring(root, xml_declaration=True, encoding="UTF-8", standalone=True)
