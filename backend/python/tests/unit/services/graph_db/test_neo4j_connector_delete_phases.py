@@ -214,6 +214,29 @@ async def test_the_type_docs_are_measured_per_collection() -> None:
         await p._delete_isoftype_targets_from_collected("t", targets)
 
 
+@pytest.mark.asyncio
+async def test_the_type_nodes_a_connector_delete_collects_are_named_by_their_collection() -> None:
+    """Every record type's node is found, and named by the collection the delete addresses, not by its label."""
+    from app.config.constants.arangodb import RECORD_TYPE_COLLECTION_MAPPING
+    from app.config.constants.neo4j import collection_to_label
+
+    p = Neo4jProvider.__new__(Neo4jProvider)
+    p.logger = MagicMock()
+    rows = [
+        {"target": {"label": collection_to_label(c), "key": f"k-{c}", "full_id": f"k-{c}"}}
+        for c in sorted(set(RECORD_TYPE_COLLECTION_MAPPING.values()))
+    ]
+    p.client = MagicMock(execute_query=AsyncMock(return_value=rows))
+
+    targets, ok = await p._collect_isoftype_targets(None, "c1")
+
+    assert ok is True
+    assert sorted(t["collection"] for t in targets) == sorted(set(RECORD_TYPE_COLLECTION_MAPPING.values()))
+    assert all(t["key"] == f"k-{t['collection']}" for t in targets)
+    asked = p.client.execute_query.await_args.kwargs["parameters"]["type_labels"]
+    assert set(asked) == {collection_to_label(c) for c in RECORD_TYPE_COLLECTION_MAPPING.values()}
+
+
 def _batch_provider(errors: list[BaseException]) -> tuple[Neo4jProvider, AsyncMock]:
     p = Neo4jProvider.__new__(Neo4jProvider)
     p.logger = MagicMock()

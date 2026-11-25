@@ -48,29 +48,57 @@ INGRESS=(
   --set 'ingress.hosts[0].paths[0].path=/'
   --set 'ingress.hosts[0].paths[0].pathType=Prefix'
 )
-LOCAL=(-f values-local.yaml)
+# The presets render the hardened profile here (ADR-OPS-07): their network graph is what netpol_check.py proves.
+# defaults-dind and compat-kafka-builtin-mongo render the compatibility default.
+LOCAL=(-f values-local.yaml --set hardened=true)
+EXTERNAL=(--set config.dockerHost=tcp://d:2375 --set persistence.accessModes={ReadWriteMany})
 
 # name, then the helm arguments for that variant. They come after SECRETS so a
 # variant can override one of them.
 VARIANTS=(
   "local-neo4j-kafka|${LOCAL[*]}"
-  "local-parsing|${LOCAL[*]} --set parsing.enabled=true --set parsing.replicas=3 --set parsing.maxConcurrent=2 --set parsing.clientConcurrency=8 --set-string parsing.nodeSelector.pool=parse --set parsing.tolerations[0].key=parse --set parsing.tolerations[0].operator=Exists --set parsing.extraEnv[0].name=PARSING_UVICORN_WORKERS --set-string parsing.extraEnv[0].value=4 --set parsing.extraEnv[1].name=extra-marker --set-string parsing.extraEnv[1].value=x"
+  "local-parsing|${LOCAL[*]} --set networkPolicy.enabled=false --set parsing.enabled=true --set parsing.replicas=3 --set parsing.maxConcurrent=2 --set parsing.clientConcurrency=8 --set-string parsing.nodeSelector.pool=parse --set parsing.tolerations[0].key=parse --set parsing.tolerations[0].operator=Exists --set parsing.extraEnv[0].name=PARSING_UVICORN_WORKERS --set-string parsing.extraEnv[0].value=4 --set parsing.extraEnv[1].name=extra-marker --set-string parsing.extraEnv[1].value=x"
   "local-parsing-netpol|${LOCAL[*]} --set parsing.enabled=true --set networkPolicy.enabled=true --set parsing.networkPolicy.extraIngress[0].from[0].namespaceSelector.matchLabels.team=monitoring --set parsing.networkPolicy.extraIngress[0].ports[0].port=8092"
   "local-redis-streams|${LOCAL[*]} --set messageBroker.type=redis"
   "local-arangodb|${LOCAL[*]} --set neo4j.enabled=false --set arango.enabled=true --set arango.auth.rootPassword=ci-arango"
   "local-etcd|${LOCAL[*]} --set etcd.enabled=true --set config.kvStoreType=etcd"
   "local-redis-cluster-external|${LOCAL[*]} --set redis.enabled=false --set redis.external.enabled=true --set redis.mode=cluster --set redis.external.clusterEndpoints=redis-0:6379 --set celery.brokerUrl=redis://celery:6379/0"
-  "local-metrics|${LOCAL[*]} --set metrics.podMonitor.enabled=true --set metrics.podMonitor.labels.release=prom"
+  "local-metrics|${LOCAL[*]}"
+  "local-postgres-exporter|${LOCAL[*]} --set postgresExporter.enabled=true --set postgresExporter.dataSource=pg.example:5432/pipeshub?sslmode=require --set postgresExporter.passwordSecret.name=pg-monitor"
   "local-metrics-bind|${LOCAL[*]} --set metrics.bind=0.0.0.0"
   "local-extras|${LOCAL[*]} --set networkPolicy.enabled=true ${INGRESS[*]}"
   "local-external-secrets|${LOCAL[*]} --set secretManagement.externalSecrets.enabled=true --set secretManagement.externalSecrets.secretStoreRef.name=vault --set secretManagement.externalSecrets.remoteRefs.secretKey=pipeshub/secret-key --set secretManagement.externalSecrets.remoteRefs.mongodbPassword=pipeshub/mongo --set secretManagement.externalSecrets.remoteRefs.redisPassword=pipeshub/redis --set secretManagement.externalSecrets.remoteRefs.neo4jPassword=pipeshub/neo4j"
   "local-existing-secrets|${LOCAL[*]} --set secretManagement.existingSecrets.enabled=true --set secretManagement.existingSecrets.appSecretName=pipeshub-app"
   "defaults-dind|--set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany}"
-  "cloud|-f values-cloud.yaml --set config.sandboxMode=e2b ${INGRESS[*]}"
+  "hardened-dind|--set hardened=true --set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany} --set messageBroker.type=kafka --set mongodb.enabled=false --set mongodb.builtin.enabled=true"
+  "compat-kafka-builtin-mongo|--set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany} --set messageBroker.type=kafka --set mongodb.enabled=false --set mongodb.builtin.enabled=true"
+  "node-log-files|--set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany} --set logging.nodeFiles.enabled=true"
+  "broker-netpol|--set config.sandboxMode=broker --set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany} --set networkPolicy.enabled=true"
+  "broker-etcd|--set hardened=true --set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany} --set etcd.enabled=true --set config.kvStoreType=etcd"
+  "netpol-off|--set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany} --set networkPolicy.enabled=false"
+  "hpa-event-loop|--set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany} --set monitoring.serviceMonitor.enabled=true --set autoscaling.eventLoopUtilization.enabled=true"
+  "harness-metrics|--set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany} --set metrics.harness.enabled=true --set metrics.harness.remoteWrite.url=http://prometheus.monitoring:9090/api/v1/write --set metrics.harness.remoteWrite.peers[0].namespaceSelector.matchLabels.kubernetes\\.io/metadata\\.name=monitoring --set metrics.harness.remoteWrite.bearerTokenSecret.name=prom-rw --set metrics.harness.remoteWrite.bearerTokenSecret.key=token"
+  "legacy-docker-dind|--set hardened=true --set config.sandboxMode=docker --set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany}"
+  "dind-run-cap|--set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany} --set config.sandboxMaxRunTimeoutS=900"
+  "dind-live-off|--set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany} --set sandbox.dind.liveLimit.enabled=false"
+  "dind-live-tuned|--set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany} --set sandbox.dind.liveLimit.memHigh=0.85 --set sandbox.dind.liveLimit.cpuThrottle=0.3 --set sandbox.capacity.memoryOvercommit=2"
+  "cloud|--set hardened=true -f values-cloud.yaml --set config.sandboxMode=e2b ${INGRESS[*]}"
+  "external-daemon-2-pods|${EXTERNAL[*]} --set replicaCount=2 --set autoscaling.enabled=false"
+  "external-daemon-max-total|${EXTERNAL[*]} --set replicaCount=2 --set autoscaling.enabled=false --set sandbox.capacity.maxTotal=10"
+  "external-daemon-max-total-0|${EXTERNAL[*]} --set replicaCount=2 --set autoscaling.enabled=false --set sandbox.capacity.maxTotal=0"
+  "dind-max-total-0|--set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany} --set-string sandbox.capacity.maxTotal=0 --set sandbox.proxy.reapUnlabeled=true"
+  "dind-capacity-zeros|--set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany} --set sandbox.capacity.slotWaitSeconds=0 --set sandbox.capacity.maxPerOrg=0"
+  "external-daemon-max-total-float|${EXTERNAL[*]} --set replicaCount=2 --set autoscaling.enabled=false --set-string sandbox.capacity.maxTotal=4.0"
+  "external-daemon-1-pod|${EXTERNAL[*]} --set replicaCount=1 --set autoscaling.enabled=false"
+  "external-daemon-autoscaled|${EXTERNAL[*]} --set replicaCount=1 --set autoscaling.enabled=true --set autoscaling.maxReplicas=3"
   "eks|-f values-eks.yaml --set secretManagement.existingSecrets.enabled=true --set secretManagement.existingSecrets.appSecretName=pipeshub-ai-secrets --set config.frontendPublicUrl=https://pipeshub.example.com --set config.allowedOrigins=https://pipeshub.example.com ${INGRESS[*]}"
+  "eks-hardened|--set hardened=true -f values-eks.yaml --set secretManagement.existingSecrets.enabled=true --set secretManagement.existingSecrets.appSecretName=pipeshub-ai-secrets --set config.frontendPublicUrl=https://pipeshub.example.com --set config.allowedOrigins=https://pipeshub.example.com ${INGRESS[*]}"
+  "eks-single-az|--set hardened=true -f values-eks.yaml -f values-eks-single-az.yaml --set secretManagement.existingSecrets.enabled=true --set secretManagement.existingSecrets.appSecretName=pipeshub-ai-secrets --set config.frontendPublicUrl=https://pipeshub.example.com --set config.allowedOrigins=https://pipeshub.example.com ${INGRESS[*]} --set-string nodeSelector.topology\\.kubernetes\\.io/zone=us-east-1a --set-string mongodb.builtin.nodeSelector.topology\\.kubernetes\\.io/zone=us-east-1a --set-string redis.builtin.nodeSelector.topology\\.kubernetes\\.io/zone=us-east-1a --set-string qdrant.nodeSelector.topology\\.kubernetes\\.io/zone=us-east-1a --set-string neo4j.nodeSelector.topology\\.kubernetes\\.io/zone=us-east-1a --set redis.builtin.enabled=false --set redis.external.enabled=true --set redis.external.host=redis.example.internal --set redis.clientTls.enabled=true"
   "eks-parsing|-f values-eks.yaml --set parsing.enabled=true --set secretManagement.existingSecrets.enabled=true --set secretManagement.existingSecrets.appSecretName=pipeshub-ai-secrets --set config.frontendPublicUrl=https://pipeshub.example.com --set config.allowedOrigins=https://pipeshub.example.com ${INGRESS[*]}"
   "eks-single-az-parsing|-f values-eks.yaml -f values-eks-single-az.yaml --set parsing.enabled=true --set secretManagement.existingSecrets.enabled=true --set secretManagement.existingSecrets.appSecretName=pipeshub-ai-secrets --set config.frontendPublicUrl=https://pipeshub.example.com --set config.allowedOrigins=https://pipeshub.example.com ${INGRESS[*]} --set redis.builtin.enabled=false --set redis.external.enabled=true --set redis.external.host=redis.example.internal --set redis.clientTls.enabled=true"
-  "eks-single-az|-f values-eks.yaml -f values-eks-single-az.yaml --set secretManagement.existingSecrets.enabled=true --set secretManagement.existingSecrets.appSecretName=pipeshub-ai-secrets --set config.frontendPublicUrl=https://pipeshub.example.com --set config.allowedOrigins=https://pipeshub.example.com ${INGRESS[*]} --set-string nodeSelector.topology\\.kubernetes\\.io/zone=us-east-1a --set-string mongodb.builtin.nodeSelector.topology\\.kubernetes\\.io/zone=us-east-1a --set-string redis.builtin.nodeSelector.topology\\.kubernetes\\.io/zone=us-east-1a --set-string qdrant.nodeSelector.topology\\.kubernetes\\.io/zone=us-east-1a --set-string neo4j.nodeSelector.topology\\.kubernetes\\.io/zone=us-east-1a --set redis.builtin.enabled=false --set redis.external.enabled=true --set redis.external.host=redis.example.internal --set redis.clientTls.enabled=true"
+  "hardened-parsing|--set hardened=true --set parsing.enabled=true --set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany}"
+  "old-image-local|-f values-local.yaml --set hardened=false --set image.capabilities=none"
+  "old-image-hardened-dind|--set hardened=true --set image.capabilities=none --set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany}"
 )
 
 KUBECONFORM=(
@@ -117,17 +145,57 @@ expect() { # variant, grep -F pattern, "present" | "absent" [, only in the docum
     echo "ok $1: '$2' $3${4:+ in $4}"
   fi
 }
+# The security profile (ADR-OPS-07): default values render what the chart before the programme rendered, so a
+# `helm upgrade` changes nothing until the operator sets hardened=true (test_security_profile.py has the detail).
+if [[ -f "$OUT/compat-kafka-builtin-mongo.yaml" ]]; then
+  expect compat-kafka-builtin-mongo 'kind: NetworkPolicy' absent
+  expect compat-kafka-builtin-mongo 'readOnlyRootFilesystem: false' present
+  expect compat-kafka-builtin-mongo 'value: "docker"' present 'name: SANDBOX_MODE'
+  expect compat-kafka-builtin-mongo 'value: "false"' present 'name: PIPESHUB_HARDENED'
+  expect compat-kafka-builtin-mongo 'SASL_PLAINTEXT' absent
+  expect compat-kafka-builtin-mongo 'chown 999:999 /keyfile/keyfile' present
+fi
+if [[ -f "$OUT/hardened-dind.yaml" ]]; then
+  expect hardened-dind 'name: ci-pipeshub-ai-default-deny' present
+  expect hardened-dind 'readOnlyRootFilesystem: true' present
+  expect hardened-dind 'value: "broker"' present 'name: SANDBOX_MODE'
+  expect hardened-dind 'value: "true"' present 'name: PIPESHUB_HARDENED'
+  expect hardened-dind 'INTERNAL:SASL_PLAINTEXT,EXTERNAL:SASL_PLAINTEXT' present
+  expect hardened-dind 'chown 999:999 /keyfile/keyfile' absent
+fi
+# An image older than ai.pipeshub.capabilities (image.capabilities=none) gets what the upstream chart rendered for it:
+# SECRET_KEY as a variable, docker code execution and no broker even when hardened, the harness off.
+if [[ -f "$OUT/old-image-local.yaml" ]]; then
+  expect old-image-local 'name: SECRET_KEY_FILE' absent
+  expect old-image-local 'key: secret-key' present 'name: SECRET_KEY'
+  expect old-image-local 'mountPath: /run/secrets/pipeshub' absent
+  expect old-image-local 'value: "false"' present 'name: AGENT_HARNESS_WORKER_ENABLED'
+  expect old-image-hardened-dind 'value: "docker"' present 'name: SANDBOX_MODE'
+  expect old-image-hardened-dind 'name: ci-pipeshub-ai-sandbox-broker' absent
+  expect old-image-hardened-dind 'name: SECRET_KEY_FILE' absent
+  # This release's image (the default): the file form, the broker when hardened, the harness on.
+  expect local-neo4j-kafka 'name: SECRET_KEY_FILE' present
+  expect local-neo4j-kafka 'value: "true"' present 'name: AGENT_HARNESS_WORKER_ENABLED'
+  expect hardened-dind 'name: ci-pipeshub-ai-sandbox-broker' present
+fi
 if [[ -f "$OUT/local-metrics.yaml" ]]; then
-  expect local-metrics 'kind: PodMonitor' present
-  expect local-metrics 'port: metrics' present 'kind: PodMonitor'
-  expect local-metrics 'release: prom' present 'kind: PodMonitor'
+  expect local-metrics 'kind: PodMonitor' absent
+  expect local-metrics 'name: metrics' present
+  expect local-metrics 'name: node-metrics' present
   expect local-metrics 'name: PIPESHUB_METRICS_ENABLED' present
   expect local-metrics 'name: PIPESHUB_METRICS_BIND' present
   expect local-metrics 'fieldPath: status.podIP' present
   expect local-metrics-bind 'name: PIPESHUB_METRICS_BIND' present
   expect local-metrics-bind 'fieldPath: status.podIP' absent
-  expect local-neo4j-kafka 'kind: PodMonitor' absent
   expect local-neo4j-kafka 'name: PIPESHUB_METRICS_PORT' present
+fi
+# The PostgreSQL exporter: nothing by default; enabled, its own pods (not selected by the main Deployment) log in as the monitoring role.
+if [[ -f "$OUT/local-postgres-exporter.yaml" ]]; then
+  expect local-neo4j-kafka 'postgres-exporter' absent
+  expect local-postgres-exporter 'app.kubernetes.io/name: pipeshub-ai-postgres-exporter' present 'name: ci-pipeshub-ai-postgres-exporter'
+  expect local-postgres-exporter 'value: "pipeshub_monitor"' present 'name: DATA_SOURCE_USER'
+  expect local-postgres-exporter 'name: "pg-monitor"' present 'name: DATA_SOURCE_PASS'
+  expect local-postgres-exporter 'kind: Service' present 'port: 9187'
 fi
 if [[ -f "$OUT/cloud.yaml" ]]; then
   # shellcheck disable=SC2016 # the literal template text, not an expansion
@@ -168,7 +236,7 @@ if [[ -f "$OUT/local-parsing.yaml" ]]; then
   expect local-neo4j-kafka 'PARSING_MAX_CONCURRENT' absent
   expect local-neo4j-kafka 'PARSING_SERVICE_CONCURRENCY' absent
 fi
-# The parsing pods' own NetworkPolicy: only with networkPolicy.enabled and parsing.enabled, selecting only the
+# The parsing pods' own NetworkPolicy: only with network policy on (networkPolicy.enabled, or hardened) and parsing.enabled, selecting only the
 # parsing pods, admitting the application's selector on the parsing port (and what extraIngress lists).
 netpol_check() { # rendered file, "present" | "absent"
   python3 - "$1" "$2" <<'PY' || failed=1
@@ -184,7 +252,8 @@ spec = parsing[0]["spec"]
 sel = spec["podSelector"]["matchLabels"]
 assert sel["app.kubernetes.io/name"].endswith("-parsing") and sel["pipeshub.ai/workload"] == "parsing", sel
 main = [d for d in docs if d is not parsing[0]]
-assert all(d["spec"]["podSelector"]["matchLabels"]["app.kubernetes.io/name"] != sel["app.kubernetes.io/name"] for d in main), "main policy selects parsing pods"
+# the default-deny policy (an empty selector under hardened) is the only one that may select every pod
+assert all(d["spec"]["podSelector"].get("matchLabels", {}).get("app.kubernetes.io/name") != sel["app.kubernetes.io/name"] for d in main), "main policy selects parsing pods"
 first = spec["ingress"][0]
 assert first["ports"] == [{"protocol": "TCP", "port": 8092}], first
 (source,) = first["from"]
@@ -246,11 +315,14 @@ if [[ -f "$OUT/eks.yaml" ]]; then
   expect eks 'pipeshubai/pipeshub-sandbox:0.8.0' present
   expect eks 'force-sigv4.js' absent
   # The image drops root itself with setpriv, which fails once capabilities are dropped.
-  expect eks 'runAsUser: 1000' present 'name: DOCKER_PROXY_UPSTREAM'
+  # eks runs the sandbox broker (no docker-proxy in the app pod), so check the app Deployment itself.
+  expect eks 'runAsUser: 1000' present 'name: NODE_LOG_FILES'
   expect local-neo4j-kafka 'force-sigv4.js' absent
   expect eks 'name: ci-mongodb-initiate-1' present
   expect eks 'helm.sh/hook' absent
-  expect eks 'cidr: 169.254.170.23/32' present
+  # The preset's policies follow `hardened` (ADR-OPS-07): an upgraded EKS release gets none, a hardened one the rules.
+  expect eks 'kind: NetworkPolicy' absent
+  expect eks-hardened 'cidr: 169.254.170.23/32' present
   expect eks 'name: DOCKER_HOST' present
   expect eks 'storageClassName: "gp3"' present
   # Neo4j is one pod. Qdrant is three. Count the StatefulSet replica lines by name.
@@ -293,15 +365,101 @@ if [[ -f "$OUT/eks-single-az.yaml" ]]; then
   expect eks-single-az 'app.kubernetes.io/instance: pipeshub-ai' absent
 fi
 
-# The DinD daemon must be reachable only through the policy proxy: no TCP
-# listener (pod containers share one network namespace), and its socket volume
-# mounted into dind and docker-proxy alone, never the app container.
-check_docker_proxy() { # variant
+# MongoDB topology per preset: data-bearing members, arbiters, and the
+# connection string the app gets. Local is a single-node replica set; the
+# harness preset (cloud) and EKS are three data members with no arbiter, and
+# only arbiter-free sets get w=majority. The chart default keeps its PSA set.
+mongo_topology() { # variant, members, arbiters, "majority" | "no-majority"
+  local doc="$OUT/$1.yaml" got
+  [[ -f "$doc" ]] || return 0
+  got="$(python3 - "$doc" <<'PY'
+import sys, yaml
+members = arbiters = 0
+uri = rs_available = ""
+for doc in yaml.safe_load_all(open(sys.argv[1], encoding="utf-8")):
+    if not doc:
+        continue
+    name = doc.get("metadata", {}).get("name", "")
+    if doc.get("kind") == "StatefulSet" and name == "ci-mongodb":
+        members = doc["spec"]["replicas"]
+    if doc.get("kind") == "StatefulSet" and name == "ci-mongodb-arbiter":
+        arbiters = doc["spec"]["replicas"]
+    if doc.get("kind") == "Deployment" and name == "ci-pipeshub-ai":
+        for env in doc["spec"]["template"]["spec"]["containers"][0].get("env", []):
+            if env["name"] == "MONGO_URI":
+                uri = env.get("value", "")
+            if env["name"] == "REPLICA_SET_AVAILABLE":
+                rs_available = env.get("value", "")
+majority = "majority" if "w=majority" in uri else "no-majority"
+rs = "rs" if "replicaSet=rs0" in uri and rs_available == "true" else "no-rs"
+print(members, arbiters, majority, rs)
+PY
+)"
+  if [[ "$got" != "$2 $3 $4 rs" ]]; then
+    echo "!! $1: expected mongodb '$2 $3 $4 rs' (members arbiters write-concern replicaSet), got '$got'"; failed=1
+  else
+    echo "ok $1: mongodb $got"
+  fi
+}
+mongo_topology local-neo4j-kafka 1 0 majority
+mongo_topology local-arangodb 1 0 majority
+mongo_topology cloud 3 0 majority
+mongo_topology eks 3 0 majority
+mongo_topology defaults-dind 2 1 no-majority
+
+# D1: the Docker daemon (privileged DinD) lives in the sandbox-broker pod, never
+# in the app pods, unless the legacy sandboxMode=docker is chosen explicitly.
+sandbox_topology() { # variant, broker | docker [, --netpol]
+  local doc="$OUT/$1.yaml"
+  [[ -f "$doc" ]] || return 0
+  if python3 ../tests/sandbox_topology.py "$doc" "${@:2}"; then
+    echo "ok $1: sandbox daemon topology ${*:2}"
+  else
+    echo "!! $1: sandbox daemon topology ${*:2}"; failed=1
+  fi
+}
+# Unset config.sandboxMode follows `hardened` (ADR-OPS-07): docker by default, as before the broker; broker hardened.
+sandbox_topology defaults-dind docker
+sandbox_topology hardened-dind broker --netpol
+sandbox_topology broker-netpol broker --netpol
+sandbox_topology eks docker
+sandbox_topology eks-hardened broker --netpol
+sandbox_topology eks-single-az broker --netpol
+sandbox_topology legacy-docker-dind docker
+sandbox_topology broker-etcd broker --netpol
+
+# ADR-OPS-04 (SEC-D-09): every pod default-denied, and the allowed paths exactly
+# the expected ones; the broker reaches DNS, its KV port and public 443 only.
+netpol() { # variant [netpol_check.py flags]
+  local doc="$OUT/$1.yaml"
+  [[ -f "$doc" ]] || return 0
+  if python3 ../tests/netpol_check.py "$doc" "${@:2}"; then
+    echo "ok $1: network policy paths"
+  else
+    echo "!! $1: network policy paths"; failed=1
+  fi
+}
+for variant in local-neo4j-kafka local-redis-streams local-arangodb local-etcd local-redis-cluster-external \
+               local-extras hardened-dind broker-netpol broker-etcd legacy-docker-dind cloud; do
+  netpol "$variant"
+done
+netpol eks-hardened --pod-identity --allow-world-ingress 3001 8088
+netpol eks-single-az --pod-identity --allow-world-ingress 3001 8088
+[[ -f "$OUT/netpol-off.yaml" ]] && expect netpol-off 'kind: NetworkPolicy' absent
+# The component, not the word: the app pod names the broker's key (ADR-KEY-02) in every mode.
+[[ -f "$OUT/local-neo4j-kafka.yaml" ]] && expect local-neo4j-kafka 'app.kubernetes.io/component: sandbox-broker' absent
+[[ -f "$OUT/local-neo4j-kafka.yaml" ]] && expect local-neo4j-kafka '--oplogSize=1024' present
+# Legacy sandboxMode=docker: the app pod's DinD daemon must be reachable only
+# through the policy proxy: no TCP listener (pod containers share one network
+# namespace), and its socket volume mounted into dind and docker-proxy alone,
+# never the app container. (Broker mode: sandbox_topology above checks the
+# broker pod the same way.)
+check_docker_proxy() { # variant [expected SANDBOX_MAX_RUN_TIMEOUT_S, default 300]
   local doc="$OUT/$1.yaml"
   [[ -f "$doc" ]] || return 0
   expect "$1" 'app.docker_proxy_main' present
   expect "$1" '--host=tcp://' absent
-  if python3 - "$doc" <<'PY'; then echo "ok $1: dind socket reachable only through docker-proxy"; else failed=1; fi
+  if python3 - "$doc" "${2:-300}" <<'PY'; then echo "ok $1: dind socket reachable only through docker-proxy"; else failed=1; fi
 import sys, yaml
 docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d and d.get("kind") == "Deployment"]
 pod = next(d for d in docs if d["metadata"]["name"] == "ci-pipeshub-ai")["spec"]["template"]["spec"]
@@ -318,14 +476,215 @@ if env.get("DOCKER_PROXY_HOST") != "127.0.0.1":
 app_env = {e["name"]: e.get("value") for e in containers["pipeshub-ai"].get("env") or []}
 if app_env.get("DOCKER_HOST") != f"tcp://127.0.0.1:{env.get('DOCKER_PROXY_PORT')}":
     errors.append(f"app DOCKER_HOST {app_env.get('DOCKER_HOST')!r} is not the docker-proxy listener")
+# SEC-A-04: the proxy and the app share the app's credential; the proxy runs as no root.
+for name, holder in (("docker-proxy", env), ("pipeshub-ai", app_env)):
+    if "DOCKER_PROXY_TOKEN" not in holder:
+        errors.append(f"{name} lacks DOCKER_PROXY_TOKEN")
+if (containers["docker-proxy"].get("securityContext") or {}).get("runAsUser") in (None, 0):
+    errors.append("docker-proxy runs as root")
+# The proxy's reaper age follows the run-time cap, so both must get the same value.
+cap = sys.argv[2]
+if app_env.get("SANDBOX_MAX_RUN_TIMEOUT_S") != cap or env.get("SANDBOX_MAX_RUN_TIMEOUT_S") != cap:
+    errors.append(
+        f"SANDBOX_MAX_RUN_TIMEOUT_S is {app_env.get('SANDBOX_MAX_RUN_TIMEOUT_S')!r} on the app and "
+        f"{env.get('SANDBOX_MAX_RUN_TIMEOUT_S')!r} on docker-proxy, expected {cap!r} on both"
+    )
+if env.get("DOCKER_PROXY_INSTANCE") != "default/ci-pipeshub-ai":
+    errors.append(f"docker-proxy DOCKER_PROXY_INSTANCE is {env.get('DOCKER_PROXY_INSTANCE')!r}")
 for e in errors:
     print(f"!! {sys.argv[1]}: {e}")
 sys.exit(1 if errors else 0)
 PY
 }
 check_docker_proxy defaults-dind
+check_docker_proxy dind-run-cap 900
+check_docker_proxy dind-live-off
 check_docker_proxy eks
-check_docker_proxy eks-single-az
+check_docker_proxy legacy-docker-dind
+
+# The code sandbox cap is sized from the dind sidecar's limits, passed in as
+# env; pods sharing an external daemon each take their share of it.
+app_env() { # variant name -> "missing" or the env entry as JSON
+  python3 - "$OUT/$1.yaml" "$2" <<'PY'
+import json, sys, yaml
+docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d and d.get("kind") == "Deployment"]
+pod = next(d for d in docs if d["metadata"]["name"] == "ci-pipeshub-ai")["spec"]["template"]["spec"]
+app = next(c for c in pod["containers"] if c["name"] == "pipeshub-ai")
+entry = next((e for e in app.get("env") or [] if e["name"] == sys.argv[2]), None)
+print("missing" if entry is None else json.dumps(entry.get("value", entry.get("valueFrom")), sort_keys=True))
+PY
+}
+expect_env() { # variant, name, expected
+  local doc="$OUT/$1.yaml" got
+  [[ -f "$doc" ]] || return 0
+  got="$(app_env "$1" "$2")"
+  if [[ "$got" == "$3" ]]; then echo "ok $1: $2 = $3"; else echo "!! $1: $2 is $got, expected $3"; failed=1; fi
+}
+for v in defaults-dind eks; do
+  expect_env "$v" SANDBOX_HOST_MEMORY_BYTES '{"resourceFieldRef": {"containerName": "dind", "divisor": "1", "resource": "limits.memory"}}'
+  expect_env "$v" SANDBOX_HOST_CPU_MILLIS '{"resourceFieldRef": {"containerName": "dind", "divisor": "1m", "resource": "limits.cpu"}}'
+  expect_env "$v" SANDBOX_MEMORY_SHARE '"0.9"'
+  expect_env "$v" SANDBOX_CAPACITY_DIVISOR missing
+  if [[ -f "$OUT/$v.yaml" ]] && python3 - "$OUT/$v.yaml" <<'PY'; then echo "ok $v: dind requests equal limits"; else failed=1; fi
+import sys, yaml
+docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d and d.get("kind") == "Deployment"]
+pod = next(d for d in docs if d["metadata"]["name"] == "ci-pipeshub-ai")["spec"]["template"]["spec"]
+res = next(c for c in pod["containers"] if c["name"] == "dind")["resources"]
+if res.get("requests") != res.get("limits"):
+    print(f"!! {sys.argv[1]}: dind requests {res.get('requests')} differ from limits {res.get('limits')}")
+    sys.exit(1)
+PY
+done
+for name in SANDBOX_HOST_MEMORY_BYTES SANDBOX_MEMORY_SHARE SANDBOX_CAPACITY_DIVISOR SANDBOX_MAX_TOTAL; do
+  expect_env cloud "$name" missing
+done
+expect_env external-daemon-2-pods SANDBOX_CAPACITY_DIVISOR '"2"'
+expect_env external-daemon-2-pods SANDBOX_HOST_MEMORY_BYTES missing
+expect_env external-daemon-max-total SANDBOX_CAPACITY_DIVISOR missing
+expect_env external-daemon-max-total SANDBOX_MAX_TOTAL '"10"'
+# maxTotal 0 means "sized automatically", like empty: never the app's 1024,
+# and pods sharing an external daemon still split it.
+expect_env external-daemon-max-total-0 SANDBOX_MAX_TOTAL missing
+expect_env external-daemon-max-total-0 SANDBOX_CAPACITY_DIVISOR '"2"'
+expect_env dind-max-total-0 SANDBOX_MAX_TOTAL missing
+
+# docker-proxy reaps unlabelled sandbox containers only when asked.
+proxy_env() { # variant, name -> value or "missing"
+  python3 - "$OUT/$1.yaml" "$2" <<'PY'
+import sys, yaml
+docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d and d.get("kind") == "Deployment"]
+pod = next(d for d in docs if d["metadata"]["name"] == "ci-pipeshub-ai")["spec"]["template"]["spec"]
+proxy = next(c for c in pod["containers"] if c["name"] == "docker-proxy")
+print(next((e.get("value") for e in proxy.get("env") or [] if e["name"] == sys.argv[2]), "missing"))
+PY
+}
+for pair in defaults-dind:false dind-max-total-0:true; do
+  v="${pair%%:*}" want="${pair#*:}"
+  [[ -f "$OUT/$v.yaml" ]] || continue
+  got="$(proxy_env "$v" DOCKER_PROXY_REAP_UNLABELED)"
+  if [[ "$got" == "$want" ]]; then echo "ok $v: DOCKER_PROXY_REAP_UNLABELED = $want"; else echo "!! $v: DOCKER_PROXY_REAP_UNLABELED is $got, expected $want"; failed=1; fi
+done
+expect_env external-daemon-1-pod SANDBOX_CAPACITY_DIVISOR missing
+# A whole number written as 4.0 reaches the app as an integer it can read.
+expect_env external-daemon-max-total-float SANDBOX_MAX_TOTAL '"4"'
+expect_env external-daemon-max-total-float SANDBOX_CAPACITY_DIVISOR missing
+# A numeric 0 is passed on, like a quoted one; an empty value is left out.
+expect_env dind-capacity-zeros SANDBOX_SLOT_WAIT_S '"0"'
+expect_env dind-capacity-zeros SANDBOX_MAX_PER_ORG '"0"'
+expect_env defaults-dind SANDBOX_SLOT_WAIT_S missing
+expect_env external-daemon-autoscaled SANDBOX_CAPACITY_DIVISOR '"3"'
+
+# Live limit: on the dind sidecar the app reads the sidecar's own cgroup,
+# exported by a loop in the dind container and served by docker-proxy; never
+# the node. Turned off, the dind container is exactly as without it.
+for v in defaults-dind eks; do
+  expect_env "$v" SANDBOX_DOCKER_TOPOLOGY '"dind-sidecar"'
+  expect_env "$v" SANDBOX_LIVE_LIMIT missing
+  expect_env "$v" SANDBOX_SIDECAR_MEM_HIGH missing
+done
+for v in cloud external-daemon-1-pod; do
+  expect_env "$v" SANDBOX_DOCKER_TOPOLOGY missing
+done
+expect_env dind-live-off SANDBOX_DOCKER_TOPOLOGY '"dind-sidecar"'
+expect_env dind-live-off SANDBOX_LIVE_LIMIT '"off"'
+expect_env dind-live-tuned SANDBOX_SIDECAR_MEM_HIGH '"0.85"'
+expect_env dind-live-tuned SANDBOX_SIDECAR_CPU_THROTTLE '"0.3"'
+expect_env dind-live-tuned SANDBOX_SIDECAR_MEM_HARD missing
+expect_env dind-live-tuned SANDBOX_MEMORY_OVERCOMMIT '"2"'
+
+# Load alerts: each pod has its own cooldown, named after the pod.
+for v in local-neo4j-kafka defaults-dind; do
+  expect_env "$v" SANDBOX_ALERT_SCOPE '{"fieldRef": {"fieldPath": "metadata.name"}}'
+done
+check_live_limit() { # variant, "on" | "off"
+  local doc="$OUT/$1.yaml"
+  [[ -f "$doc" ]] || return 0
+  if python3 - "$doc" "$2" <<'PY'; then echo "ok $1: live limit $2 in dind and docker-proxy"; else failed=1; fi
+import sys, yaml
+docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d and d.get("kind") == "Deployment"]
+pod = next(d for d in docs if d["metadata"]["name"] == "ci-pipeshub-ai")["spec"]["template"]["spec"]
+containers = {c["name"]: c for c in pod["containers"]}
+dind, proxy = containers["dind"], containers["docker-proxy"]
+dind_env = [e["name"] for e in dind.get("env") or []]
+proxy_env = {e["name"]: e.get("value") for e in proxy.get("env") or []}
+errors = []
+if (dind.get("args") or [None])[0] != "dockerd":
+    errors.append(f"dind args must start with dockerd: {dind.get('args')}")
+if sys.argv[2] == "on":
+    command = dind.get("command") or []
+    if command[:2] != ["/bin/sh", "-c"] or command[3:] != ["pipeshub-dind"] or "dockerd-entrypoint.sh" not in command[2]:
+        errors.append(f"dind command is not the exporter wrapper: {command[:2]} ... {command[3:]}")
+    if "PIPESHUB_EXPORT_INTERVAL" not in dind_env:
+        errors.append("dind has no PIPESHUB_EXPORT_INTERVAL")
+    if proxy_env.get("DOCKER_PROXY_SIDECAR_STATS_FILE") != "/var/run/dind/pipeshub-sidecar-stats":
+        errors.append("docker-proxy has no DOCKER_PROXY_SIDECAR_STATS_FILE")
+else:
+    if "command" in dind:
+        errors.append("dind has a command with the live limit off")
+    if dind_env != ["DOCKER_TLS_CERTDIR", "DOCKER_HOST"]:
+        errors.append(f"dind env is {dind_env} with the live limit off")
+    if "DOCKER_PROXY_SIDECAR_STATS_FILE" in proxy_env:
+        errors.append("docker-proxy reads the sidecar stats with the live limit off")
+for e in errors:
+    print(f"!! {sys.argv[1]}: {e}")
+sys.exit(1 if errors else 0)
+PY
+}
+check_live_limit defaults-dind on
+check_live_limit eks on
+check_live_limit dind-live-off off
+
+# The exporter itself, run under sh against fixture cgroup v2 files.
+if [[ -f "$OUT/defaults-dind.yaml" ]] && python3 - "$OUT/defaults-dind.yaml" "$OUT" <<'PY'; then echo "ok defaults-dind: exporter script writes the sidecar stats"; else failed=1; fi
+import os, subprocess, sys, time, yaml
+docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d and d.get("kind") == "Deployment"]
+pod = next(d for d in docs if d["metadata"]["name"] == "ci-pipeshub-ai")["spec"]["template"]["spec"]
+command = next(c for c in pod["containers"] if c["name"] == "dind")["command"]
+work = os.path.join(sys.argv[2], "exporter")
+cg, bin_dir = os.path.join(work, "cg"), os.path.join(work, "bin")
+os.makedirs(cg, exist_ok=True)
+os.makedirs(bin_dir, exist_ok=True)
+files = {
+    "memory.max": "4294967296\n", "memory.current": "812000000\n", "cpu.max": "200000 100000\n",
+    "memory.stat": "anon 500000000\nfile 300000000\nshmem 20000000\nkernel 1\n",
+    "memory.events.local": "low 0\nhigh 0\nmax 2\noom 1\noom_kill 1\n",
+    "cpu.stat": "usage_usec 123456\nuser_usec 1\nsystem_usec 2\nnr_periods 150\nnr_throttled 50\nthrottled_usec 9\n",
+    "memory.pressure": "some avg10=1.00 avg60=0 avg300=0 total=1\nfull avg10=0.50 avg60=0 avg300=0 total=1\n",
+    "cpu.pressure": "some avg10=12.00 avg60=0 avg300=0 total=1\nfull avg10=0.00 avg60=0 avg300=0 total=0\n",
+}
+for name, text in files.items():
+    with open(os.path.join(cg, name), "w") as f:
+        f.write(text)
+stub = os.path.join(bin_dir, "dockerd-entrypoint.sh")
+with open(stub, "w") as f:
+    f.write("#!/bin/sh\nexit 0\n")
+os.chmod(stub, 0o755)
+# No dockerd or containerd process to read RSS from (as on a CI host): the counters are still published.
+pidof = os.path.join(bin_dir, "pidof")
+with open(pidof, "w") as f:
+    f.write("#!/bin/sh\nexit 1\n")
+os.chmod(pidof, 0o755)
+out = os.path.join(work, "stats")
+env = {"PATH": f"{bin_dir}:{os.environ['PATH']}", "PIPESHUB_CGROUP_DIR": cg,
+       "PIPESHUB_SIDECAR_STATS": out, "PIPESHUB_EXPORT_ONCE": "1"}
+proc = subprocess.run([*command, "dockerd", "--host=unix:///x"], env=env, timeout=20)
+deadline = time.time() + 10
+while not os.path.exists(out) and time.time() < deadline:
+    time.sleep(0.05)
+errors = [] if proc.returncode == 0 else [f"the wrapper exited {proc.returncode}"]
+lines = set(open(out).read().splitlines()) if os.path.exists(out) else set()
+for want in ("v 1", "seq 1", "memory.max 4294967296", "memory.current 812000000", "cpu.max 200000 100000",
+             "memory.stat.file 300000000", "memory.stat.shmem 20000000", "memory.events.local.oom 1",
+             "cpu.stat.usage_usec 123456", "cpu.stat.nr_throttled 50", "memory.pressure.full.avg10 0.50",
+             "cpu.pressure.some.avg10 12.00"):
+    if want not in lines:
+        errors.append(f"missing {want!r} in {sorted(lines)}")
+if os.path.exists(out + ".tmp"):
+    errors.append("the temp file was left behind")
+for e in errors:
+    print(f"!! exporter: {e}")
+sys.exit(1 if errors else 0)
+PY
 
 # A rotated key must restart both sides together. Secrets the chart does not
 # create carry no checksum: the chart cannot see their value.
@@ -358,7 +717,19 @@ REFUSED=(
   "no qdrant api key|qdrant.apiKey is required|${LOCAL[*]} --set qdrant.apiKey="
   "placeholder qdrant api key|qdrant.apiKey must not use default placeholder 'api_key'|${LOCAL[*]} --set qdrant.apiKey=api_key"
   "default arango password|arango.auth.rootPassword must not use default placeholder 'root'|${LOCAL[*]} --set neo4j.enabled=false --set arango.enabled=true --set arango.auth.rootPassword=root"
-  "docker sandbox without a daemon|no Docker daemon is configured|--set persistence.accessModes={ReadWriteMany}"
+  "broker sandbox without a daemon|config.sandboxMode is \"broker\" but no Docker daemon is configured|--set hardened=true --set persistence.accessModes={ReadWriteMany}"
+  "default sandbox without a daemon, as before the broker|config.sandboxMode is \"docker\" but no Docker daemon is configured|--set persistence.accessModes={ReadWriteMany}"
+  "legacy docker sandbox without a daemon|config.sandboxMode is \"docker\" but no Docker daemon is configured|--set config.sandboxMode=docker --set persistence.accessModes={ReadWriteMany}"
+  "dind without a memory limit|the code sandbox cap is sized from the dind limits|--set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany} --set sandbox.dind.resources.limits.memory=null"
+  "dind without limits|the code sandbox cap is sized from the dind limits|--set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany} --set sandbox.dind.resources.limits=null"
+  "live limit memHigh above memHard|memHigh must be below memHard|--set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany} --set sandbox.dind.liveLimit.memHigh=0.95 --set sandbox.dind.liveLimit.memHard=0.9"
+  "live limit memHigh above the default memHard|memHigh must be below memHard|--set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany} --set sandbox.dind.liveLimit.memHigh=0.96"
+  "live limit memHard below the default memHigh|memHigh must be below memHard|--set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany} --set sandbox.dind.liveLimit.memHard=0.9"
+  "live limit memHard just under 0.01 above memHigh|memHigh must be below memHard|--set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany} --set sandbox.dind.liveLimit.memHigh=0.70 --set sandbox.dind.liveLimit.memHard=0.70995"
+  "fractional sandbox maxTotal|must be a whole number of sandboxes|${EXTERNAL[*]} --set replicaCount=2 --set autoscaling.enabled=false --set-string sandbox.capacity.maxTotal=4.5"
+  "live limit memHard closer than 0.01 to memHigh|memHigh must be below memHard|--set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany} --set sandbox.dind.liveLimit.memHigh=0.9 --set sandbox.dind.liveLimit.memHard=0.905"
+  "live limit export interval out of range|exportIntervalSeconds must be 2..15|--set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany} --set sandbox.dind.liveLimit.exportIntervalSeconds=1"
+  "live limit export interval past the proxy's staleness|exportIntervalSeconds must be 2..15|--set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany} --set sandbox.dind.liveLimit.exportIntervalSeconds=16"
   "shared RWO volume across replicas|persistence requires ReadWriteMany|--set sandbox.dind.enabled=true"
   "docker socket mounted into the app|mounts a Docker socket into the application container|--set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany} --set extraVolumes[0].name=s --set extraVolumes[0].hostPath.path=/var/run/docker.sock --set extraVolumeMounts[0].name=s --set extraVolumeMounts[0].mountPath=/var/run/docker.sock"
   "docker socket mounted under another path|mounts a Docker socket into the application container|${LOCAL[*]} --set extraVolumes[0].name=s --set extraVolumes[0].hostPath.path=/var/run/docker.sock --set extraVolumeMounts[0].name=s --set extraVolumeMounts[0].mountPath=/tmp/d"
@@ -380,10 +751,28 @@ REFUSED=(
   "neo4j community replicas|requires an Enterprise image|${LOCAL[*]} --set neo4j.replicaCount=2"
   "both mongodb charts|cannot both be true|--set mongodb.enabled=true --set mongodb.builtin.enabled=true --set persistence.enabled=false --set config.sandboxMode=local --set config.sandboxAllowLocal=true"
   "local sandbox without the dev flag|refuses it unless config.sandboxAllowLocal=true|${LOCAL[*]} --set config.sandboxAllowLocal=false"
+  "broker on an image without it|does not list sandbox-broker|--set config.sandboxMode=broker --set image.capabilities=none --set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany}"
+  "postgres exporter without a server|postgresExporter.dataSource is required|${LOCAL[*]} --set postgresExporter.enabled=true --set postgresExporter.passwordSecret.name=pg-monitor"
+  "postgres exporter name colliding with the app name|the postgres exporter name|${LOCAL[*]} --set postgresExporter.enabled=true --set postgresExporter.dataSource=pg.example:5432/pipeshub --set postgresExporter.passwordSecret.name=pg-monitor --set fullnameOverride=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-postgres-exporter"
+  "postgres exporter selector colliding with the app selector|the postgres exporter pods' application name|${LOCAL[*]} --set postgresExporter.enabled=true --set postgresExporter.dataSource=pg.example:5432/pipeshub --set postgresExporter.passwordSecret.name=pg-monitor --set nameOverride=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-postgres-exporter"
+  "postgres exporter without its password|postgresExporter.passwordSecret.name is required|${LOCAL[*]} --set postgresExporter.enabled=true --set postgresExporter.dataSource=pg.example:5432/pipeshub"
   "parsing name colliding with the app name|equals the main application's name|${LOCAL[*]} --set parsing.enabled=true --set nameOverride=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-parsing"
   "parsing object names colliding with the app names|equals the main application's name|${LOCAL[*]} --set parsing.enabled=true --set nameOverride=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-parsing"
   "parsing object names colliding, shorter override|equals the main application's name|${LOCAL[*]} --set parsing.enabled=true --set nameOverride=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-parsing"
+  "external daemon shared by more pods than the capacity split allows|splits its capacity at most 64 ways|${EXTERNAL[*]} --set replicaCount=1 --set autoscaling.enabled=true --set autoscaling.maxReplicas=65"
+  "run-time cap set through extraEnv|Set config.sandboxMaxRunTimeoutS instead|--set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany} --set extraEnv[0].name=SANDBOX_MAX_RUN_TIMEOUT_S --set-string extraEnv[0].value=900"
   "local sandbox with a string false flag|refuses it unless config.sandboxAllowLocal=true|${LOCAL[*]} --set-string config.sandboxAllowLocal=false"
+  "harness metrics with nowhere to write|needs metrics.harness.remoteWrite.url|--set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany} --set metrics.harness.enabled=true"
+  "event-loop autoscaling without metrics|needs metrics.enabled|--set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany} --set autoscaling.eventLoopUtilization.enabled=true --set metrics.enabled=false"
+  "negative neo4j memory limit|neo4j.resources.limits.memory \"-8Gi\" is not a memory quantity|${LOCAL[*]} --set-string neo4j.resources.limits.memory=-8Gi"
+  "neo4j memory limit with two suffixes|neo4j.resources.limits.memory \"8e3Gi\" is not a memory quantity|${LOCAL[*]} --set-string neo4j.resources.limits.memory=8e3Gi"
+  "neo4j memory limit that is not a quantity|neo4j.resources.limits.memory \"lots\" is not a memory quantity|${LOCAL[*]} --set-string neo4j.resources.limits.memory=lots"
+  "neo4j starting heap in a unit neo4j refuses|NEO4J_server_memory_heap_initial__size \"5kib\" is not a size|${LOCAL[*]} --set-string neo4j.resources.limits.memory=8Gi --set-string neo4j.env.NEO4J_server_memory_heap_initial__size=5kib"
+  "neo4j starting heap with a lowercase exponent|NEO4J_server_memory_heap_initial__size \"3e9\" is not a size|${LOCAL[*]} --set-string neo4j.resources.limits.memory=8Gi --set-string neo4j.env.NEO4J_server_memory_heap_initial__size=3e9"
+  "neo4j starting heap with a plus-signed exponent|NEO4J_server_memory_heap_initial__size \"3E+9\" is not a size|${LOCAL[*]} --set-string neo4j.resources.limits.memory=8Gi --set-string neo4j.env.NEO4J_server_memory_heap_initial__size=3E+9"
+  "neo4j starting heap above Long.MAX_VALUE bytes|NEO4J_server_memory_heap_initial__size \"1E19\" is not a size|${LOCAL[*]} --set-string neo4j.resources.limits.memory=8Gi --set-string neo4j.env.NEO4J_server_memory_heap_initial__size=1E19"
+  "neo4j memory limit exponent past the bound|neo4j.resources.limits.memory \"8e31\" is not a memory quantity|${LOCAL[*]} --set-string neo4j.resources.limits.memory=8e31"
+  "neo4j memory limit past the bound through its significand|neo4j.resources.limits.memory \"80000000000e21\" is not a memory quantity|${LOCAL[*]} --set-string neo4j.resources.limits.memory=80000000000e21"
 )
 for entry in "${REFUSED[@]}"; do
   IFS='|' read -r name message rest <<<"$entry"
@@ -399,6 +788,12 @@ done
 
 # The socket checks must not refuse ordinary host paths that only look similar.
 ACCEPTED=(
+  "live limit export interval at its maximum|--set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany} --set sandbox.dind.liveLimit.exportIntervalSeconds=15"
+  "live limit export interval at its minimum|--set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany} --set sandbox.dind.liveLimit.exportIntervalSeconds=2"
+  "live limit memHigh exactly 0.01 below memHard|--set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany} --set sandbox.dind.liveLimit.memHigh=0.93 --set sandbox.dind.liveLimit.memHard=0.94"
+  "live limit memHigh alone, 0.01 below the default memHard|--set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany} --set sandbox.dind.liveLimit.memHigh=0.94"
+  "live limit memHard alone, above the default memHigh|--set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany} --set sandbox.dind.liveLimit.memHard=0.98"
+  "live limit off ignores its tuning|--set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany} --set sandbox.dind.liveLimit.enabled=false --set sandbox.dind.liveLimit.exportIntervalSeconds=1 --set sandbox.dind.liveLimit.memHigh=0.99"
   "host log directory|${LOCAL[*]} --set extraVolumes[0].name=s --set extraVolumes[0].hostPath.path=/var/log/pipeshub --set extraVolumeMounts[0].name=s --set extraVolumeMounts[0].mountPath=/logs"
   "host path sharing the /var/run prefix|${LOCAL[*]} --set extraVolumes[0].name=s --set extraVolumes[0].hostPath.path=/var/runner-cache --set extraVolumeMounts[0].name=s --set extraVolumeMounts[0].mountPath=/cache"
 )
@@ -412,6 +807,44 @@ for entry in "${ACCEPTED[@]}"; do
   fi
 done
 
+# Neo4j sizes derived from its memory limit: name | expected initial,max,pagecache | helm arguments.
+# An unquoted integer in a values file reaches the template as a float ("8.589934592e+09").
+printf 'neo4j:\n  resources:\n    limits:\n      memory: 8589934592\n' >"$OUT/neo4j-int-limit.yaml"
+NEO4J_MEMORY=(
+  "8Gi|1024m,4096m,2048m|--set-string neo4j.resources.limits.memory=8Gi"
+  "8Gi in bytes, from --set|1024m,4096m,2048m|--set neo4j.resources.limits.memory=8589934592"
+  "8Gi in bytes, from a values file|1024m,4096m,2048m|-f $OUT/neo4j-int-limit.yaml"
+  "unsigned exponent|953m,3814m,1907m|--set-string neo4j.resources.limits.memory=8e9"
+  "signed exponent|953m,3814m,1907m|--set-string neo4j.resources.limits.memory=8e+9"
+  "zero-padded signed exponent|953m,3814m,1907m|--set-string neo4j.resources.limits.memory=8e+009"
+  "8Gi as a long significand and a negative exponent|1024m,4096m,2048m|--set-string neo4j.resources.limits.memory=85899345920000000000000000000000000000000e-31"
+  "8Gi written with leading zeros and a fraction|1024m,4096m,2048m|--set-string neo4j.resources.limits.memory=0000.0000000000085899345920e+21"
+  "starting heap with neo4j's uppercase exponent|3E9,4096m,2048m|--set-string neo4j.resources.limits.memory=8Gi --set-string neo4j.env.NEO4J_server_memory_heap_initial__size=3E9"
+  "starting heap with an exponent and a unit|5E3m,5000m,2048m|--set-string neo4j.resources.limits.memory=8Gi --set-string neo4j.env.NEO4J_server_memory_heap_initial__size=5E3m"
+  "starting heap with a negative exponent|5242880000E-3k,5120m,2048m|--set-string neo4j.resources.limits.memory=8Gi --set-string neo4j.env.NEO4J_server_memory_heap_initial__size=5242880000E-3k"
+  "negative exponent|1024m,4096m,2048m|--set-string neo4j.resources.limits.memory=8589934592000e-3"
+  "leading dot|64m,256m,128m|--set-string neo4j.resources.limits.memory=.5Gi"
+  "plus sign|1024m,4096m,2048m|--set-string neo4j.resources.limits.memory=+8Gi"
+  "starting heap in bytes with neo4j's B suffix|2147483648B,4096m,2048m|--set-string neo4j.resources.limits.memory=8Gi --set-string neo4j.env.NEO4J_server_memory_heap_initial__size=2147483648B"
+  "starting heap above half the limit|5242880k,5120m,2048m|--set-string neo4j.resources.limits.memory=8Gi --set-string neo4j.env.NEO4J_server_memory_heap_initial__size=5242880k"
+  "unreadable limit with every size given|1g,2g,1g|--set-string neo4j.resources.limits.memory=lots --set-string neo4j.env.NEO4J_server_memory_heap_initial__size=1g --set-string neo4j.env.NEO4J_server_memory_heap_max__size=2g --set-string neo4j.env.NEO4J_server_memory_pagecache_size=1g"
+)
+for entry in "${NEO4J_MEMORY[@]}"; do
+  IFS='|' read -r name want rest <<<"$entry"
+  read -r -a args <<<"$rest"
+  if ! helm template ci . "${SECRETS[@]}" "${LOCAL[@]}" "${args[@]}" --show-only templates/neo4j-statefulset.yaml >"$OUT/neo4j-mem.yaml" 2>"$OUT/neo4j-mem.err"; then
+    echo "!! neo4j memory, ${name}: refused:"; cat "$OUT/neo4j-mem.err"; failed=1; continue
+  fi
+  got=$(for s in heap_initial__size heap_max__size pagecache_size; do
+    grep -A1 -E "name: NEO4J_(server|dbms)_memory_${s}\$" "$OUT/neo4j-mem.yaml" | sed -n 's/.*value: "\{0,1\}\([^"]*\)"\{0,1\}$/\1/p' | head -1
+  done | paste -sd, -)
+  if [[ "$got" == "$want" ]]; then
+    echo "ok neo4j memory, ${name}: ${got}"
+  else
+    echo "!! neo4j memory, ${name}: got '${got}', want '${want}'"; failed=1
+  fi
+done
+
 # The no-daemon error used to suggest mounting the node's socket.
 if helm template ci . "${SECRETS[@]}" --set 'persistence.accessModes={ReadWriteMany}' >/dev/null 2>"$OUT/refused.err" \
    || grep -qF 'docker.sock' "$OUT/refused.err"; then
@@ -419,6 +852,46 @@ if helm template ci . "${SECRETS[@]}" --set 'persistence.accessModes={ReadWriteM
 else
   echo "ok refused: docker sandbox without a daemon suggests no socket mount"
 fi
+
+# NOTES.txt, rendered without a cluster: a copy of the chart serves it
+# through tpl from a ConfigMap.
+NOTES_CHART="$OUT/notes-chart"
+cp -r . "$NOTES_CHART"
+mv "$NOTES_CHART/templates/NOTES.txt" "$NOTES_CHART/notes.tpl"
+cat > "$NOTES_CHART/templates/zz-notes.yaml" <<'YAML'
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: notes
+data:
+  notes: {{ tpl (.Files.Get "notes.tpl") . | quote }}
+YAML
+notes() { # args... -> the rendered NOTES on stdout
+  helm template ci "$NOTES_CHART" "${SECRETS[@]}" --set 'persistence.accessModes={ReadWriteMany}' "$@" \
+    --show-only templates/zz-notes.yaml | python3 -c 'import sys, yaml; print(yaml.safe_load(sys.stdin)["data"]["notes"])'
+}
+check_notes() { # name, "has"|"lacks", text, args...
+  local name="$1" mode="$2" text="$3" out; shift 3
+  if ! out="$(notes "$@" 2>&1)"; then echo "!! notes $name: render failed: $out"; failed=1; return; fi
+  if grep -qF -- "$text" <<<"$out"; then found=has; else found=lacks; fi
+  if [[ "$found" == "$mode" ]]; then echo "ok notes $name: $mode '$text'"; else echo "!! notes $name: expected it $mode '$text'"; failed=1; fi
+}
+DIND=(--set sandbox.dind.enabled=true)
+EVICT="requests differ from its limits"
+check_notes "dind defaults" lacks "$EVICT" "${DIND[@]}"
+check_notes "dind requests 2000m / limits 2" lacks "$EVICT" "${DIND[@]}" --set-string sandbox.dind.resources.requests.cpu=2000m
+check_notes "dind requests 4096Mi / limits 4Gi" lacks "$EVICT" "${DIND[@]}" --set-string sandbox.dind.resources.requests.memory=4096Mi
+check_notes "dind requests 1.5 / limits 1500m" lacks "$EVICT" "${DIND[@]}" --set-string sandbox.dind.resources.requests.cpu=1.5 --set-string sandbox.dind.resources.limits.cpu=1500m
+check_notes "dind requests 4G / limits 4Gi" has "$EVICT" "${DIND[@]}" --set-string sandbox.dind.resources.requests.memory=4G
+check_notes "dind requests 250m" has "$EVICT" "${DIND[@]}" --set-string sandbox.dind.resources.requests.cpu=250m
+check_notes "dind no requests" has "$EVICT" "${DIND[@]}" --set sandbox.dind.resources.requests=null
+check_notes "dind sized" has "the smallest of" "${DIND[@]}"
+check_notes "dind maxTotal 5" has "Each pod runs at most 5 code sandboxes" "${DIND[@]}" --set sandbox.capacity.maxTotal=5
+check_notes "dind maxTotal 0" has "the smallest of" "${DIND[@]}" --set sandbox.capacity.maxTotal=0
+check_notes "external 2 pods" has "each pod uses 1/2 of its capacity" "${EXTERNAL[@]}" --set replicaCount=2 --set autoscaling.enabled=false
+check_notes "external 2 pods maxTotal 0" has "each pod uses 1/2 of its capacity" "${EXTERNAL[@]}" --set replicaCount=2 --set autoscaling.enabled=false --set-string sandbox.capacity.maxTotal=0
+check_notes "external 2 pods maxTotal 4" lacks "each pod uses 1/2" "${EXTERNAL[@]}" --set replicaCount=2 --set autoscaling.enabled=false --set sandbox.capacity.maxTotal=4
+check_notes "external run cap" has "SANDBOX_MAX_RUN_TIMEOUT_S=900" "${EXTERNAL[@]}" --set config.sandboxMaxRunTimeoutS=900
 
 # The eksctl config: it parses, and the parsing node group carries the taint and label and
 # a max that fits the pods the chart sizes for it.
@@ -450,6 +923,26 @@ else:
 for e in errors:
     print("!! cluster.yaml:", e)
 sys.exit(1 if errors else 0)
+PY
+
+# The EKS preset's most app pods fit the app node group as created: each pod's
+# summed CPU requests against an m7i.2xlarge's CPU left after kubelet reserve and
+# daemonsets (about 7.5 of 8).
+if [[ -f "$OUT/eks.yaml" ]] && python3 - "$OUT/eks.yaml" "$AWS_DIR/cluster.yaml" <<'PY'; then echo "ok eks: max app pods fit the app node group"; else failed=1; fi
+import sys, yaml
+def cpu(v):
+    v = str(v)
+    return float(v[:-1]) / 1000 if v.endswith("m") else float(v)
+docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d]
+pod = next(d for d in docs if d["kind"] == "Deployment" and d["metadata"]["name"] == "ci-pipeshub-ai")["spec"]["template"]["spec"]
+per_pod = sum(cpu((c.get("resources") or {}).get("requests", {}).get("cpu", 0)) for c in pod["containers"])
+hpa = next(d for d in docs if d["kind"] == "HorizontalPodAutoscaler" and d["metadata"]["name"] == "ci-pipeshub-ai")
+app = next(g for g in yaml.safe_load(open(sys.argv[2]))["managedNodeGroups"] if g["name"] == "app")
+assert app["instanceType"] == "m7i.2xlarge", app["instanceType"]
+fit = int(7.5 // per_pod) * app["desiredCapacity"]
+if hpa["spec"]["maxReplicas"] > fit:
+    print(f"!! eks: maxReplicas {hpa['spec']['maxReplicas']} but {app['desiredCapacity']} app nodes hold {fit} pods of {per_pod:g} CPU")
+    sys.exit(1)
 PY
 
 if [[ "$failed" -ne 0 ]]; then

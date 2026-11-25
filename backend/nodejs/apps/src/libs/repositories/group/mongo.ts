@@ -5,7 +5,8 @@ import {
 } from '../../../modules/user_management/schema/userGroup.schema';
 import { asQueryFilter } from '../../utils/mongo-filter';
 import { escapeRegExp } from '../../../utils/escape-regexp';
-import { mapMongoError } from '../mongo';
+import { mapMongoError, sessionOf } from '../mongo';
+import type { Tx } from '../uow';
 import { toPlain } from '../plain';
 import type {
   GroupDto,
@@ -40,7 +41,13 @@ export class MongoGroupRepository implements GroupRepository {
       filter.createdAt = dateFilter;
     }
     const [rows, total] = await Promise.all([
-      UserGroups.find(filter).skip(q.skip).limit(q.limit).lean().exec(),
+      // without a sort MongoDB returns whatever order the chosen index gives, and skip/limit pages can repeat or miss groups
+      UserGroups.find(filter)
+        .sort({ _id: 1 })
+        .skip(q.skip)
+        .limit(q.limit)
+        .lean()
+        .exec(),
       UserGroups.countDocuments(filter),
     ]);
     return { rows: rows.map(dto), total };
@@ -56,6 +63,26 @@ export class MongoGroupRepository implements GroupRepository {
       .lean()
       .exec();
     return row ? dto(row) : null;
+  }
+
+  async listLiveByIds(
+    orgId: string,
+    ids: readonly string[],
+  ): Promise<GroupSummaryDto[]> {
+    const valid = [...new Set(ids)].filter((id) =>
+      mongoose.isValidObjectId(id),
+    );
+    if (valid.length === 0 || !mongoose.isValidObjectId(orgId)) return [];
+    const rows = await UserGroups.find({
+      _id: { $in: valid },
+      orgId,
+      isDeleted: false,
+    })
+      .select('_id name type')
+      .sort({ _id: 1 })
+      .lean()
+      .exec();
+    return rows.map((r) => toPlain<GroupSummaryDto>(r));
   }
 
   async nameTaken(
@@ -190,6 +217,28 @@ export class MongoGroupRepository implements GroupRepository {
     );
   }
 
+  async holdLiveMembership(
+    orgId: string,
+    groupIds: readonly string[],
+    userId: string,
+    tx?: Tx,
+  ): Promise<boolean> {
+    const groups = groupIds.filter((id) => mongoose.isValidObjectId(id));
+    if (
+      groups.length === 0 ||
+      !mongoose.isValidObjectId(orgId) ||
+      !mongoose.isValidObjectId(userId)
+    )
+      return false;
+    // A write in the transaction: a concurrent removal from the same group document conflicts with it.
+    const fenced = await UserGroups.updateOne(
+      { _id: { $in: groups }, orgId, isDeleted: { $ne: true }, users: userId },
+      { $inc: { approvalDecisionFence: 1 } },
+      { session: sessionOf(tx), strict: false },
+    ).exec();
+    return fenced.matchedCount > 0;
+  }
+
   async groupsOfUser(
     orgId: string,
     userId: string,
@@ -198,7 +247,9 @@ export class MongoGroupRepository implements GroupRepository {
       orgId,
       users: { $in: [userId] },
       isDeleted: false,
-    }).select('name type');
+    })
+      .select('name type')
+      .sort({ _id: 1 });
     return rows.map((r) => toPlain<GroupSummaryDto>(r));
   }
 
@@ -211,6 +262,7 @@ export class MongoGroupRepository implements GroupRepository {
       }),
     )
       .select('users')
+      .sort({ _id: 1 })
       .lean();
     return groups.flatMap((g) =>
       ((g as { users?: unknown[] }).users ?? []).map(String),
@@ -229,6 +281,7 @@ export class MongoGroupRepository implements GroupRepository {
       },
     })
       .select('_id name type users')
+      .sort({ _id: 1 })
       .lean()
       .exec();
     return rows.map((r) => toPlain<GroupSummaryDto & { users: string[] }>(r));
@@ -247,6 +300,7 @@ export class MongoGroupRepository implements GroupRepository {
           avgUsers: { $avg: { $size: '$users' } },
         },
       },
+      { $sort: { _id: 1 } },
     ]);
   }
 }

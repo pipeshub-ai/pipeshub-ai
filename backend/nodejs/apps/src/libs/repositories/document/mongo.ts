@@ -111,13 +111,34 @@ async function touchArtifactSet(
       { 'artifactSet.retiringAt': { $lt: now - staleMs } },
     ],
   };
-  const touched = await DocumentModel.findOneAndUpdate(
-    writable as never,
-    { $set: { updatedAt: now }, $unset: { 'artifactSet.retiringAt': 1 } },
-    { new: true, timestamps: false },
-  );
-  if (touched) return row(touched);
+  const touch = async (): Promise<DocumentRow | null> => {
+    // The stamp always moves strictly forward, so a purge that listed it earlier can tell a touch happened: to `now`
+    // when that is later than the stored stamp, otherwise one millisecond past it (a touch read at an earlier `now`
+    // that lands late must not leave the stamp a purge listed unchanged).
+    const later: Record<string, unknown> = {
+      ...writable,
+      updatedAt: { $lt: now },
+    };
+    const forward = await DocumentModel.findOneAndUpdate(
+      later as never,
+      { $set: { updatedAt: now }, $unset: { 'artifactSet.retiringAt': 1 } },
+      { returnDocument: 'after', timestamps: false },
+    );
+    if (forward) return row(forward);
+    const bumped = await DocumentModel.findOneAndUpdate(
+      writable as never,
+      { $inc: { updatedAt: 1 }, $unset: { 'artifactSet.retiringAt': 1 } },
+      { returnDocument: 'after', timestamps: false },
+    );
+    return bumped ? row(bumped) : null;
+  };
+  const touched = await touch();
+  if (touched) return touched;
   if (await DocumentModel.findOne(filter as never)) {
+    // The revision may have been created by a concurrent presign between the two reads above: touch it once more. Only a
+    // revision that is still refused (claimed by a delete that has not gone stale) is a conflict.
+    const again = await touch();
+    if (again) return again;
     throw new ConflictError(
       'This revision is being deleted; write it again once the delete has finished',
     );
@@ -181,7 +202,7 @@ export class MongoDocumentRepository implements DocumentRepository {
         $inc: { writeSeq: 1 },
         $push: { writers: { t: token, until: now + windowMs } },
       },
-      { new: true, timestamps: false },
+      { returnDocument: 'after', timestamps: false },
     )
       .select('+writeSeq')
       .maxTimeMS(TOKEN_MAX_TIME_MS);
@@ -221,7 +242,7 @@ export class MongoDocumentRepository implements DocumentRepository {
     const bumped = await DocumentModel.findOneAndUpdate(
       { _id: id, orgId },
       { $inc: { writeSeq: 1 } },
-      { new: true, timestamps: false },
+      { returnDocument: 'after', timestamps: false },
     )
       .select('+writeSeq')
       .maxTimeMS(TOKEN_MAX_TIME_MS);
@@ -266,7 +287,7 @@ export class MongoDocumentRepository implements DocumentRepository {
     const marked = await DocumentModel.findOneAndUpdate(
       { _id: id, orgId },
       { $set: patch, $inc: { writeSeq: 1 } },
-      { new: true },
+      { returnDocument: 'after' },
     ).select('+writeSeq');
     return marked
       ? { row: rowWithoutState(marked), writeSeq: seqOf(marked) }
@@ -589,7 +610,7 @@ export class MongoDocumentRepository implements DocumentRepository {
     const marked = await DocumentModel.findOneAndUpdate(
       { _id: id, orgId: orgId, isDeleted: false, retiredAt: null },
       { $set: { retiredAt: now } },
-      { new: true, timestamps: false },
+      { returnDocument: 'after', timestamps: false },
     ).lean();
     if (marked) return { retiredAt: marked.retiredAt ?? null };
     const existing = await DocumentModel.findOne({
@@ -802,7 +823,7 @@ export class MongoDocumentRepository implements DocumentRepository {
     const claimed = await DocumentModel.findOneAndUpdate(
       guarded as never,
       { $set: { 'artifactSet.retiringAt': now } },
-      { new: true, timestamps: false },
+      { returnDocument: 'after', timestamps: false },
     );
     if (claimed) return row(claimed);
     const present =

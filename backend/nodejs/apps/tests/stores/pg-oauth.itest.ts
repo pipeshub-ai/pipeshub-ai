@@ -15,6 +15,7 @@ import {
   type OAuthTokenRepository,
 } from '../../src/libs/repositories/oauth-token';
 import type { IdentityLookup } from '../../src/libs/repositories/identity-lookup';
+import { NO_APP_CREATOR, OAuthGrantType } from '../../src/libs/repositories/oauth-app';
 import { describeOAuthAppContract } from './contract/oauth-app.contract';
 import { describeOAuthTokenContract } from './contract/oauth-token.contract';
 import {
@@ -83,6 +84,7 @@ const APP_OPTIONAL: Array<[string, string]> = [
   ['privacy_policy_url', 'privacyPolicyUrl'],
   ['terms_of_service_url', 'termsOfServiceUrl'],
   ['deleted_by', 'deletedBy'],
+  ['owner_format', 'ownerFormat'],
 ];
 const ACCESS_ALWAYS = [
   '_id',
@@ -141,6 +143,9 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
       listClientIdsActingAsCreator: 0,
       softDeleteActingAsCreator: 0,
       transferCreatedBy: 0,
+      listClientSecrets: 0,
+      replaceClientSecret: 0,
+      disownInstanceApps: 0,
     });
     // the ledger learns hex ids only; a client id is not one, so these calls run in the org that holds the client
     const BY_CLIENT = new Set([
@@ -194,6 +199,54 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
                 [id, at],
               ) },
           ),
+        clearOwnerFormat: (id) =>
+          stack.admin(async (c) => {
+            await c.query('UPDATE oauth.apps SET owner_format = NULL WHERE id = $1', [id]);
+          }),
+      });
+    });
+
+    describe('OAuthAppRepository on PostgreSQL only', () => {
+      it('takes the borrowed creator off the first-party device app too', async () => {
+        const org = newId();
+        const device = await appRepo.create({
+          clientId: 'pipeshub-agent',
+          clientSecretEncrypted: 'enc',
+          name: 'PipesHub agent',
+          orgId: org,
+          createdBy: newId(),
+          redirectUris: [],
+          allowedGrantTypes: [OAuthGrantType.DEVICE_CODE, OAuthGrantType.REFRESH_TOKEN],
+          allowedScopes: ['org:read'],
+          isConfidential: false,
+        });
+        await stack.admin(async (c) => {
+          await c.query('UPDATE oauth.apps SET owner_format = NULL WHERE org_id = $1 AND id = $2', [org, device._id]);
+        });
+        expect(await appRepo.disownInstanceApps(org, org)).to.equal(1);
+        const stored = await stack.admin(async (c) =>
+          (await c.query('SELECT created_by FROM oauth.apps WHERE org_id = $1 AND id = $2', [org, device._id])).rows[0]);
+        expect(stored?.created_by).to.equal(NO_APP_CREATOR);
+      });
+
+      // A row's org is part of its key and its row policy: it cannot be moved to another org here.
+      it('refuses to move instance apps to another organisation, and changes nothing', async () => {
+        const org = newId();
+        const app = await appRepo.create({
+          clientId: `cid-${newId()}`,
+          clientSecretEncrypted: 'enc',
+          name: 'App',
+          orgId: org,
+          createdBy: newId(),
+          redirectUris: ['https://a.example/cb'],
+          allowedGrantTypes: [OAuthGrantType.AUTHORIZATION_CODE],
+          allowedScopes: ['org:read'],
+          isConfidential: false,
+          isDynamic: true,
+        });
+        const error = await appRepo.disownInstanceApps(org, newId()).catch((e: unknown) => e);
+        expect((error as Error).message).to.match(/not supported on PostgreSQL/);
+        expect((await appRepo.findByClientId(app.clientId))?.createdBy).to.equal(app.createdBy);
       });
     });
 

@@ -26,7 +26,7 @@ import {
 import type { MentionNode } from '@/chat/utils/node-mentions';
 import { CollectionStatsPanel } from './components/collection-stats-panel';
 import type { UploadFileItem } from './components';
-import { SelectionActionBar } from '@/config';
+import { SelectionActionBar, useKbUploadExtras } from '@/config';
 import { useUploadStore, generateUploadId } from '@/lib/store/upload-store';
 import { notifyUploadFailures } from '@/lib/utils/upload-failure-feedback';
 import { useUploadLimits } from '@/lib/hooks/use-upload-limits';
@@ -62,6 +62,14 @@ import { buildFilterParams, buildAllRecordsFilterParams, hasKnowledgeHubFlatteni
 import { ShareSidebar } from '@/app/components/share';
 import type { SharedAvatarMember } from '@/app/components/share';
 import { createKBShareAdapter } from './share-adapter';
+import { PublicationsPanel } from './publications/publications-panel';
+import { canPublishCollection } from './publications/api';
+import {
+  useFeatureFlagsStore,
+  selectKnowledgePublicationsEnabled,
+  selectSoftDeleteEnabled,
+} from '@/lib/store/feature-flags-store';
+import { useUserStore, selectIsAdmin } from '@/lib/store/user-store';
 import {
   serializeCollectionsParams,
   serializeAllRecordsParams,
@@ -86,6 +94,7 @@ import {
 import { openFolderChildren, seedChildrenFromListing, storeChildrenList } from './utils/folder-children';
 import { kbSessionToken } from './utils/kb-session';
 import { onSessionEnd } from '@/lib/api/session-cache';
+import { openRecordContent, type Pending, type RecordLease, type Variant, type Grant } from '@/lib/record-content';
 // Registers the sign-out reset for the knowledge base's cached state.
 import './utils/sidebar-session';
 import {
@@ -110,9 +119,8 @@ import {
 import { toast } from '@/lib/store/toast-store';
 import { FilePreviewSidebar, FilePreviewFullscreen } from '@/app/components/file-preview';
 import {
-  isPresentationFile,
+  acquireRecordForPreview,
   isDocxFile,
-  isLegacyWordDocFile,
   resolvePreviewMimeAfterStream,
 } from '@/app/components/file-preview/utils';
 import { useDebouncedSearch } from './hooks/use-debounced-search';
@@ -122,7 +130,6 @@ import { MAX_SELECTED_NODES } from '@/chat/utils/tree-selection';
 import { ErrorType, getUserFacingErrorMessage, isProcessedError, isRequestCancelledError, parseRetryAfter } from '@/lib/api/api-error';
 import { isRejectedCursorError } from './utils/cursor-recovery';
 import { useUserPermission } from '@/config';
-import { useFeatureFlagsStore, selectSoftDeleteEnabled } from '@/lib/store/feature-flags-store';
 import { canOpenRecentlyDeleted } from './recently-deleted/utils';
 
 /** Empty pages in a row that All Records goes on from before it shows the empty state (a page the server stopped scanning early has no rows and a cursor to go on with). */
@@ -301,6 +308,8 @@ function KnowledgeBasePageContent() {
       ? Infinity
       : Math.max(maxFolderDepth - folderDepthOf(tableData?.breadcrumbs, selectedKbId), 0);
   const canAddFolderHere = remainingFolderLevels > 0;
+  // At the root this creates a collection; inside one it creates a folder, which is an edit of that collection.
+  const canCreateHere = tableData?.currentNode ? canEditCollection : canCreateCollection;
 
   // Get table items directly from API response (no client-side filtering)
   const tableItems = useMemo(() => {
@@ -1560,7 +1569,7 @@ function KnowledgeBasePageContent() {
 
   // Handle create folder - context-aware
   const handleCreateFolder = useCallback(() => {
-    if (!canCreateCollection) return;
+    if (!canCreateHere) return;
     const currentNode = tableData?.currentNode;
 
     if (currentNode?.nodeType === 'app') {
@@ -1595,7 +1604,7 @@ function KnowledgeBasePageContent() {
         description: `A folder cannot be created inside "${currentNode.name}" (${currentNode.nodeType}).`,
       });
     }
-  }, [tableData, canCreateCollection]);
+  }, [tableData, canCreateHere]);
 
   const validateCreateName = useCallback(
     (name: string) =>
@@ -1703,8 +1712,11 @@ function KnowledgeBasePageContent() {
     setIsUploadSidebarOpen(true);
   }, [canEditCollection]);
 
-  // Handle upload save - add items to upload store and start uploading
-  const handleUploadSave = useCallback(
+  const uploadExtras = useKbUploadExtras(selectedKbId);
+  const { onUploadStart, onFileSucceeded, onUploadEnd } = uploadExtras;
+
+  // Add items to the upload store and upload them
+  const uploadFiles = useCallback(
     async (items: UploadFileItem[]) => {
       if (!selectedKbId) return;
 
@@ -1869,6 +1881,7 @@ function KnowledgeBasePageContent() {
                 const id = findStoreId(data);
                 if (id) completeUpload(id);
                 anySuccess = true;
+                if (typeof data?.recordId === 'string') onFileSucceeded?.(data.recordId);
               } else if (evt.event === 'file:failed') {
                 const id = findStoreId(data);
                 if (id) {
@@ -2053,7 +2066,21 @@ function KnowledgeBasePageContent() {
         await refreshData();
       }
     },
-    [selectedKbId, isAllRecordsMode, allRecordsTableData, tableData, addUploadItems, startUpload, completeUpload, failUpload, refreshData, maxFileSizeBytes, maxFileSizeMB, t]
+    [selectedKbId, isAllRecordsMode, allRecordsTableData, tableData, addUploadItems, startUpload, completeUpload, failUpload, refreshData, maxFileSizeBytes, maxFileSizeMB, t, onFileSucceeded]
+  );
+
+  // Handle upload save. The hook's start and end callbacks bracket every exit, early returns and errors included.
+  const handleUploadSave = useCallback(
+    async (items: UploadFileItem[]) => {
+      if (!selectedKbId) return;
+      onUploadStart?.();
+      try {
+        await uploadFiles(items);
+      } finally {
+        onUploadEnd?.();
+      }
+    },
+    [selectedKbId, uploadFiles, onUploadStart, onUploadEnd]
   );
 
   // Returns false so the upload panel keeps the picked files when there is
@@ -2137,6 +2164,17 @@ function KnowledgeBasePageContent() {
     setIsShareSidebarOpen(true);
   }, [canShareCollection]);
 
+  // Publications (P2.13): owners and admins of a collection; the query service decides again.
+  const publicationsEnabled = useFeatureFlagsStore(selectKnowledgePublicationsEnabled);
+  const isOrgAdmin = useUserStore(selectIsAdmin);
+  const [isPublicationsOpen, setIsPublicationsOpen] = useState(false);
+  const canPublishSelectedKb = canPublishCollection({
+    flagOn: publicationsEnabled,
+    isRootCollection: !!shareAdapter,
+    isOwner: isSelectedKbOwner,
+    isAdmin: isOrgAdmin,
+  });
+
   useEffect(() => {
     if (!canManageSelectedKbSharing && isShareSidebarOpen) {
       setIsShareSidebarOpen(false);
@@ -2173,8 +2211,34 @@ function KnowledgeBasePageContent() {
     [],
   );
 
+  // The preview's hold on the cached content. Replacing or closing the preview releases it.
+  const previewLeaseRef = useRef<RecordLease | null>(null);
+  const previewPendingRef = useRef<Pending | null>(null);
+  const previewTokenRef = useRef(0);
+  const releasePreviewLease = useCallback(() => {
+    previewPendingRef.current?.leave();
+    previewPendingRef.current = null;
+    previewLeaseRef.current?.release();
+    previewLeaseRef.current = null;
+  }, []);
+  useEffect(() => releasePreviewLease, [releasePreviewLease]);
+
   // Handle file preview
   const handlePreviewFile = useCallback(async (item: KnowledgeBaseItem | KnowledgeHubNode) => {
+    const token = ++previewTokenRef.current;
+    releasePreviewLease();
+    const acquirePreviewLease = async (id: string, variant: Variant, grant: Grant | null) => {
+      const pending = openRecordContent(id, variant, grant ?? undefined);
+      previewPendingRef.current = pending;
+      const lease = await pending.promise;
+      if (token !== previewTokenRef.current) {
+        lease.release();
+        return null;
+      }
+      previewPendingRef.current = null;
+      previewLeaseRef.current = lease;
+      return lease;
+    };
 
     // Check if item is a KnowledgeHubNode
     const isKnowledgeHubNode = 'nodeType' in item && 'origin' in item;
@@ -2201,7 +2265,8 @@ function KnowledgeBasePageContent() {
         setPreviewMode('sidebar');
 
         // 2. Fetch details first so non-previewable records skip the stream.
-        const recordDetails = await KnowledgeBaseApi.getRecordDetails(item.id);
+        const { details: recordDetails, grant } = await KnowledgeBaseApi.getRecordDetailsForOpen(item.id);
+        if (token !== previewTokenRef.current) return;
         const record = recordDetails?.record;
         if (!record) {
           throw new Error('Record details unavailable');
@@ -2228,11 +2293,14 @@ function KnowledgeBasePageContent() {
         // Prefer fresh record metadata for conversion; list-item fields are fallbacks.
         const previewMime = record.mimeType || item.mimeType;
         const previewName = record.recordName || item.name;
-        const streamAsPdf =
-          isPresentationFile(previewMime, previewName) ||
-          isLegacyWordDocFile(previewMime, previewName);
-        const streamOptions = streamAsPdf ? { convertTo: 'application/pdf' } : undefined;
-        const blob = await KnowledgeBaseApi.streamRecord(item.id, streamOptions);
+        const opened = await acquireRecordForPreview(
+          (variant) => acquirePreviewLease(item.id, variant, grant),
+          previewMime,
+          previewName,
+        );
+        if (!opened) return;
+        const { lease, asPdf } = opened;
+        const blob = lease.blob;
 
         // 3. For DOCX we hand the Blob straight through to DocxRenderer.
         //    All other renderers still expect a URL.
@@ -2241,7 +2309,7 @@ function KnowledgeBasePageContent() {
           recordMime,
           previewName,
           blob,
-          !!streamOptions,
+          asPdf,
         );
         const fr = record.fileRecord;
         const isDocx = isDocxFile(
@@ -2251,7 +2319,7 @@ function KnowledgeBasePageContent() {
           item.extension ?? undefined,
           fr?.extension,
         );
-        const url = isDocx ? '' : URL.createObjectURL(blob);
+        const url = isDocx ? '' : lease.url;
 
         // 4. Update state with actual file URL and/or Blob
         setPreviewFile({
@@ -2272,6 +2340,7 @@ function KnowledgeBasePageContent() {
         });
 
       } catch (error) {
+        if (token !== previewTokenRef.current) return;
         const errorMessage = getPreviewErrorMessage(error);
         console.error('Failed to load file preview:', { error, message: errorMessage });
         setPreviewFile(prev => prev ? {
@@ -2298,7 +2367,8 @@ function KnowledgeBasePageContent() {
         });
         setPreviewMode('sidebar');
 
-        const recordDetails = await KnowledgeBaseApi.getRecordDetails(item.id);
+        const { details: recordDetails, grant } = await KnowledgeBaseApi.getRecordDetailsForOpen(item.id);
+        if (token !== previewTokenRef.current) return;
         const record = recordDetails?.record;
         if (!record) {
           throw new Error('Record details unavailable');
@@ -2323,11 +2393,14 @@ function KnowledgeBasePageContent() {
 
         const previewMime = record.mimeType || item.fileType;
         const previewName = record.recordName || item.name;
-        const legacyStreamAsPdf =
-          isPresentationFile(previewMime, previewName) ||
-          isLegacyWordDocFile(previewMime, previewName);
-        const legacyStreamOptions = legacyStreamAsPdf ? { convertTo: 'application/pdf' } : undefined;
-        const blob = await KnowledgeBaseApi.streamRecord(item.id, legacyStreamOptions);
+        const opened = await acquireRecordForPreview(
+          (variant) => acquirePreviewLease(item.id, variant, grant),
+          previewMime,
+          previewName,
+        );
+        if (!opened) return;
+        const { lease, asPdf: legacyAsPdf } = opened;
+        const blob = lease.blob;
 
         // DOCX uses the Blob directly; other types stay on URLs.
         const legacyRecordMime = record.mimeType || item.fileType || '';
@@ -2335,7 +2408,7 @@ function KnowledgeBasePageContent() {
           legacyRecordMime,
           previewName,
           blob,
-          !!legacyStreamOptions,
+          legacyAsPdf,
         );
         const frLegacy = record.fileRecord;
         const isDocx = isDocxFile(
@@ -2345,7 +2418,7 @@ function KnowledgeBasePageContent() {
           undefined,
           frLegacy?.extension,
         );
-        const url = isDocx ? '' : URL.createObjectURL(blob);
+        const url = isDocx ? '' : lease.url;
 
         setPreviewFile({
           id: item.id,
@@ -2365,6 +2438,7 @@ function KnowledgeBasePageContent() {
         });
 
       } catch (error) {
+        if (token !== previewTokenRef.current) return;
         const errorMessage = getPreviewErrorMessage(error);
         console.error('Failed to load file preview:', { error, message: errorMessage });
         setPreviewFile(prev => prev ? {
@@ -2374,7 +2448,7 @@ function KnowledgeBasePageContent() {
         } : null);
       }
     }
-  }, [getPreviewErrorMessage]);
+  }, [getPreviewErrorMessage, releasePreviewLease]);
 
   // The preview dialog covers the selection bar, so Chat for this record lives on the preview.
   const handlePreviewChat = useCallback(() => {
@@ -2599,7 +2673,12 @@ function KnowledgeBasePageContent() {
         } else if (hubItem.nodeType === 'app') {
           await KnowledgeBaseApi.reindexRecordGroup(item.id, depth, statusFilters);
         } else {
-          await KnowledgeBaseApi.reindexItem(item.id, depth, statusFilters);
+          // The Force reindex action of an indexed file re-parses and re-indexes it: nothing stored is reused.
+          if (requiresForceReindexConfirmation(reindexNode, statusFilters)) {
+            await KnowledgeBaseApi.reindexItem(item.id, depth, statusFilters, true);
+          } else {
+            await KnowledgeBaseApi.reindexItem(item.id, depth, statusFilters);
+          }
         }
 
         toast.update(toastId, {
@@ -2607,7 +2686,13 @@ function KnowledgeBasePageContent() {
           title: getReindexSuccessTitle(reindexNode, depth, statusFilters),
         });
 
-        await refreshData();
+        // The request succeeded: a failed refresh of the list is not a failed reindex, and must not offer a retry
+        // that would send the same (possibly Force) request again.
+        try {
+          await refreshData();
+        } catch {
+          // the list refreshes on its next load
+        }
       } catch (error: unknown) {
         const errorMessage = getUserFacingErrorMessage(
           error,
@@ -3180,8 +3265,10 @@ function KnowledgeBasePageContent() {
               onCreateFolder={isAllRecordsMode || !canAddFolderHere ? undefined : handleCreateFolder}
               onUpload={isAllRecordsMode || !selectedKbId ? undefined : handleUpload}
               onShare={shareAdapter && isSelectedKbOwner ? handleShare : undefined}
-              createPermissionDenied={!isAllRecordsMode && !canCreateCollection && !canEditCollection}
-              folderPermissionDenied={!isAllRecordsMode && !canCreateCollection}
+              onPublish={canPublishSelectedKb ? () => setIsPublicationsOpen(true) : undefined}
+              // Locked only when nothing it offers is allowed: no create here, and no upload (which needs an open collection).
+              createPermissionDenied={!isAllRecordsMode && !canCreateHere && (!selectedKbId || !canEditCollection)}
+              folderPermissionDenied={!isAllRecordsMode && !canCreateHere}
               uploadPermissionDenied={!isAllRecordsMode && !canEditCollection}
               sharePermissionDenied={Boolean(shareAdapter && isSelectedKbOwner && !canShareCollection)}
               sharedMembers={sharedMembers}
@@ -3287,7 +3374,7 @@ function KnowledgeBasePageContent() {
           onMove={!isAllRecordsMode ? handleMoveClick : undefined}
           onDelete={!isAllRecordsMode ? handleDelete : undefined}
           onDownload={handleDownload}
-          onCreateFolder={!isAllRecordsMode && canCreateCollection && canAddFolderHere ? handleCreateFolder : undefined}
+          onCreateFolder={!isAllRecordsMode && canCreateHere && canAddFolderHere ? handleCreateFolder : undefined}
           onUpload={!isAllRecordsMode && canEditCollection && selectedKbId ? handleUpload : undefined}
           onGoToCollection={handleGoToCollection}
           refreshData={refreshDataAfterDelete}
@@ -3309,6 +3396,8 @@ function KnowledgeBasePageContent() {
           onDelete={!isAllRecordsMode && !bulkDeleteNeedsCollection ? handleBulkDeleteClick : undefined}
           deletePermissionDenied={bulkDeleteDenied}
           pageViewMode={isAllRecordsMode ? 'all-records' : 'collections'}
+          selectedItems={tickedRows}
+          onChanged={refreshData}
         />
 
         {selectedCount === 0 && (
@@ -3429,6 +3518,7 @@ function KnowledgeBasePageContent() {
             isSaving={isUploading}
             remainingFolderLevels={remainingFolderLevels}
             maxFolderDepth={maxFolderDepth}
+            extras={uploadExtras.panel}
           />
 
           {/* Replace File Dialog */}
@@ -3464,10 +3554,7 @@ function KnowledgeBasePageContent() {
           onToggleFullscreen={() => setPreviewMode('fullscreen')}
           onOpenChange={(open) => {
             if (!open) {
-              // Clean up blob URL (only PDF/image/html/etc. paths allocate one)
-              if (previewFile.url && previewFile.url.startsWith('blob:')) {
-                URL.revokeObjectURL(previewFile.url);
-              }
+              releasePreviewLease();
               setPreviewFile(null);
             }
           }}
@@ -3494,10 +3581,7 @@ function KnowledgeBasePageContent() {
           onChat={handlePreviewChat}
           onExitFullscreen={() => setPreviewMode('sidebar')}
           onClose={() => {
-            // Clean up blob URL (only PDF/image/html/etc. paths allocate one)
-            if (previewFile.url && previewFile.url.startsWith('blob:')) {
-              URL.revokeObjectURL(previewFile.url);
-            }
+            releasePreviewLease();
             setPreviewFile(null);
           }}
         />
@@ -3541,6 +3625,15 @@ function KnowledgeBasePageContent() {
               setSharedMembers([]);
             });
           }}
+        />
+      )}
+
+      {canPublishSelectedKb && selectedNode?.nodeId && (
+        <PublicationsPanel
+          open={isPublicationsOpen}
+          onOpenChange={setIsPublicationsOpen}
+          kbId={selectedNode.nodeId}
+          kbName={collectionStatsTarget?.name ?? currentTitle ?? ''}
         />
       )}
 

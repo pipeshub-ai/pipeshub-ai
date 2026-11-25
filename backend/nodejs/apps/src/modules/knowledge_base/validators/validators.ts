@@ -91,6 +91,8 @@ export const reindexRecordSchema = z.object({
     .object({
       depth: z.number().check(integerCheck()).min(-1).max(100).optional(),
       statusFilters: z.array(z.string()).optional(),
+      // A user's Force reindex: every stored result is bypassed and paid for again.
+      force: z.boolean().optional(),
     })
     .optional(),
 });
@@ -128,10 +130,16 @@ const uploadRecordsBodySchema = z.object({
   isVersioned: z
     .union([
       z.boolean(),
-      z.string().transform((val) => {
+      z.string().transform((val, ctx) => {
         if (val === '' || val === 'false' || val === '0') return false;
         if (val === 'true' || val === '1') return true;
-        throw new Error('Invalid boolean string value');
+        // Non-fatal, so the union reports this text rather than "isn't valid".
+        ctx.addIssue({
+          code: 'custom',
+          continue: true,
+          message: 'isVersioned must be true, false, 1 or 0',
+        });
+        return z.NEVER;
       }),
     ])
     .optional()
@@ -255,14 +263,21 @@ export const listKnowledgeBasesSchema = z.object({
         },
         { message: 'Search parameter contains potentially dangerous content (HTML tags, scripts, or format specifiers are not allowed)' },
       )
-      .transform((val) => {
-        if (!val) return undefined;
-        const trimmed = val.trim();
-        if (trimmed.length > 1000) {
-          throw new Error('Search term too long (max 1000 characters)');
-        }
-        return trimmed || undefined;
-      }),
+        .transform((val, ctx) => {
+          if (!val) return undefined;
+          const trimmed = val.trim();
+          if (trimmed.length > 1000) {
+            ctx.addIssue({
+              code: 'too_big',
+              origin: 'string',
+              maximum: 1000,
+              inclusive: true,
+              message: 'Search term too long (max 1000 characters)',
+            });
+            return z.NEVER;
+          }
+          return trimmed || undefined;
+        }),
 
     permissions: z
       .string()

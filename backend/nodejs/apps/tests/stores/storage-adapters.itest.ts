@@ -15,8 +15,9 @@
 import 'reflect-metadata';
 import { expect } from 'chai';
 import { randomBytes, randomUUID } from 'crypto';
-import { CreateBucketCommand, S3Client } from '@aws-sdk/client-s3';
+import { CopyObjectCommand, CreateBucketCommand, S3Client } from '@aws-sdk/client-s3';
 import mongoose from 'mongoose';
+import { purgePaidResultsOlderThan } from '../../src/modules/storage/utils/paid-results-purge';
 import AmazonS3Adapter from '../../src/modules/storage/providers/s3.provider';
 import AzureBlobStorageAdapter from '../../src/modules/storage/providers/azure.provider';
 import { StorageServiceInterface } from '../../src/modules/storage/services/storage.service';
@@ -349,6 +350,85 @@ describe('Storage adapters against a real storage server', function () {
     expect(got.equals(Buffer.concat(partBodies))).to.equal(true);
   });
 
+  describe('bound range reads (what the record preview issues)', () => {
+    async function signed(body: Buffer, name = 'ranged.bin'): Promise<{ doc: Document; url: string; etag: string }> {
+      const stored = await upload(name, body);
+      const doc = documentFor(target, stored);
+      const res = await target.adapter.getSignedUrl(doc);
+      expect(res.statusCode).to.equal(200);
+      const url = res.data as string;
+      const whole = await fetch(url, { headers: { Range: 'bytes=0-0' } });
+      const etag = whole.headers.get('etag');
+      expect(etag, 'the object has an ETag').to.be.a('string');
+      await whole.arrayBuffer();
+      return { doc, url, etag: etag as string };
+    }
+
+    it('answers one closed range with exactly those bytes, as 206 with the length', async () => {
+      const body = randomBytes(300 * 1024);
+      const { url, etag } = await signed(body);
+      const res = await fetch(url, { headers: { Range: 'bytes=1000-70999', 'If-Match': etag } });
+      expect(res.status).to.equal(206);
+      const got = Buffer.from(await res.arrayBuffer());
+      expect(got.equals(body.subarray(1000, 71000))).to.equal(true);
+      expect(res.headers.get('content-range')).to.equal(`bytes 1000-70999/${body.length}`);
+    });
+
+    it('honours an open-ended range', async () => {
+      const body = randomBytes(64 * 1024);
+      const { url, etag } = await signed(body);
+      const res = await fetch(url, { headers: { Range: `bytes=${body.length - 100}-`, 'If-Match': etag } });
+      expect(res.status).to.equal(206);
+      expect(Buffer.from(await res.arrayBuffer()).equals(body.subarray(body.length - 100))).to.equal(true);
+    });
+
+    it('answers a range past the end with 416 (the length comes from the verified object size, not from this answer)', async () => {
+      const body = randomBytes(8 * 1024);
+      const { url } = await signed(body);
+      const res = await fetch(url, { headers: { Range: 'bytes=999999999-' } });
+      expect(res.status).to.equal(416);
+      await res.arrayBuffer();
+    });
+
+    it('refuses a read bound to an object that was overwritten (412), even for a range', async () => {
+      const body = randomBytes(32 * 1024);
+      const { doc, url, etag } = await signed(body, 'overwritten.bin');
+      const res = await target.adapter.updateBuffer(randomBytes(32 * 1024), doc);
+      expect(res.statusCode).to.equal(200);
+      const fresh = await target.adapter.getSignedUrl(doc);
+      const stale = await fetch(fresh.data as string, { headers: { Range: 'bytes=0-99', 'If-Match': etag } });
+      expect(stale.status).to.equal(412);
+      await stale.arrayBuffer();
+      // the old link is not a way around the binding either
+      const old = await fetch(url, { headers: { Range: 'bytes=0-99', 'If-Match': etag } });
+      expect([200, 206, 403, 404, 412]).to.include(old.status);
+      if (old.status !== 412) {
+        const now = await fetch(fresh.data as string, { headers: { Range: 'bytes=0-0' } });
+        await now.arrayBuffer();
+        expect(now.headers.get('etag')).to.not.equal(etag);
+      }
+    });
+
+    it('streams a whole object bound to its tag without holding it in memory', async () => {
+      const body = randomBytes(24 * 1024 * 1024);
+      const { url, etag } = await signed(body, 'stream.bin');
+      const res = await fetch(url, { headers: { 'If-Match': etag } });
+      expect(res.status).to.equal(200);
+      let received = 0;
+      const reader = (res.body as ReadableStream<Uint8Array>).getReader();
+      let peak = process.memoryUsage().rss;
+      const start = peak;
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        received += value.length;
+        peak = Math.max(peak, process.memoryUsage().rss);
+      }
+      expect(received).to.equal(body.length);
+      expect(peak - start).to.be.lessThan(4 * body.length);
+    });
+  });
+
   describe('artifact sets', () => {
     // One content revision's files, as the presign route lays them out.
     const revisionRoot = (rev: string): string => `${orgPrefix}/record-revisions/${runId}-vr/${rev}`
@@ -525,6 +605,189 @@ describe('Storage adapters against a real storage server', function () {
       await target.adapter.deleteTree!(`${org}/PipesHub/paid-results`);
       expect((await signedGet(key('purge-b', 1))).status).to.equal(404);
       expect((await signedGet(otherOrgKey)).status).to.equal(200);
+    });
+  });
+  describe('conditional paid-result writes', () => {
+    const org = new mongoose.Types.ObjectId().toString();
+    const root = `${org}/PipesHub/paid-results/g35`;
+    const key = (n: number): string => `${root}/ocr_page/${n.toString(16).padStart(64, '0')}.json`;
+    const etagOf = async (k: string): Promise<string | undefined> => {
+      const page = await target.adapter.listObjects!(`${root}/`, { limit: 1000 });
+      return page.objects.find((o) => o.key === k)?.etag;
+    };
+    const put = async (k: string, body: string): Promise<void> => {
+      const signed = await target.adapter.signObjectUrl!(k, { method: 'PUT', contentType: 'application/json', expiresInSeconds: 60 });
+      const res = await fetch(signed.url, { method: 'PUT', headers: signed.headers, body });
+      await res.arrayBuffer();
+      expect(res.status).to.be.oneOf([200, 201]);
+    };
+    const putIfMatch = async (k: string, body: string, etag: string): Promise<number> => {
+      const signed = await target.adapter.signObjectUrl!(k, { method: 'PUT', contentType: 'application/json', expiresInSeconds: 60, ifMatch: etag });
+      const res = await fetch(signed.url, { method: 'PUT', headers: signed.headers, body });
+      await res.arrayBuffer();
+      return res.status;
+    };
+    const exists = async (k: string): Promise<boolean> => (await etagOf(k)) !== undefined;
+
+    it('names what the store honours, probed against the real server (recorded in the log)', async () => {
+      const caps = await target.adapter.conditionalCapabilities!();
+      // eslint-disable-next-line no-console
+      console.log(`      conditional capabilities on ${backend}: ${JSON.stringify(caps)}`);
+      // Every store honours the conditional write (the bump). A conditional delete is honoured by Azure; the CI MinIO
+      // build ignores If-Match on DeleteObject (it deletes on a wrong ETag), and the probe must say so.
+      expect(caps.bump).to.equal(true);
+      if (backend === 'azure') expect(caps.conditionalDelete).to.equal(true);
+    });
+
+    if (backend === 's3') {
+      it('the probe is right when it says this S3-compatible store ignores the delete condition: a wrong ETag deletes', async () => {
+        const caps = await target.adapter.conditionalCapabilities!();
+        if (caps.conditionalDelete) return; // a store that honours it is covered by the tests below
+        await put(key(40), 'x');
+        await target.adapter.deleteObjectsIfMatch!([{ key: key(40), etag: '0'.repeat(32) }]);
+        expect(await exists(key(40)), 'the probe said no, but the store honoured the condition').to.equal(false);
+      });
+    }
+
+    it('lists an etag per object, and an object replaced with other bytes lists another', async () => {
+      await put(key(1), '{"a":1}');
+      const first = await etagOf(key(1));
+      expect(first).to.be.a('string').and.not.equal('');
+      await put(key(1), '{"a":2}');
+      expect(await etagOf(key(1))).to.not.equal(first);
+    });
+
+    it('deletes an object at the listed etag, keeps one that changed, and counts a missing one as done', async () => {
+      if (!(await target.adapter.conditionalCapabilities!()).conditionalDelete) return; // this store ignores the condition
+      await put(key(10), 'one');
+      await put(key(11), 'two');
+      const [e10, e11] = [(await etagOf(key(10)))!, (await etagOf(key(11)))!];
+      await put(key(11), 'two, replaced');
+      const r = await target.adapter.deleteObjectsIfMatch!([
+        { key: key(10), etag: e10 },
+        { key: key(11), etag: e11 },
+        { key: key(99), etag: 'abc' },
+      ]);
+      expect(r.changed).to.deep.equal([key(11)]);
+      expect(await exists(key(10))).to.equal(false);
+      expect(await exists(key(11))).to.equal(true);
+    });
+
+    it('a bump that read its version before a newer write landed never replaces that write (the store refuses it)', async () => {
+      await put(key(61), '{"v":1,"value":"old"}');
+      const readByBump = (await etagOf(key(61)))!; // the bump read this version, then stalled
+      await put(key(61), '{"v":1,"value":"newer refresh result"}'); // another writer commits meanwhile
+      expect(await putIfMatch(key(61), '{"v":1,"value":"old","touchedMs":1}', readByBump)).to.equal(412);
+      const signed = await target.adapter.signObjectUrl!(key(61), { method: 'GET', expiresInSeconds: 60 });
+      const res = await fetch(signed.url);
+      expect(await res.text()).to.equal('{"v":1,"value":"newer refresh result"}');
+    });
+
+    it('a PUT If-Match replaces the named version and changes the etag; a stale etag is refused with 412', async () => {
+      await put(key(20), '{"v":1,"value":"x"}');
+      const before = (await etagOf(key(20)))!;
+      expect(await putIfMatch(key(20), '{"v":1,"value":"x","touchedMs":1}', before)).to.be.oneOf([200, 201]);
+      const after = (await etagOf(key(20)))!;
+      expect(after).to.not.equal(before);
+      expect(await putIfMatch(key(20), '{"again":true}', before)).to.equal(412);
+      expect((await etagOf(key(20)))).to.equal(after);
+    });
+
+    it('a PUT If-Match of a missing key creates nothing (the store answers 404 or 412: the caller reads once to tell)', async () => {
+      const status = await putIfMatch(key(21), '{"x":1}', 'abc123');
+      // eslint-disable-next-line no-console
+      console.log(`      If-Match PUT of a missing key on ${backend}: HTTP ${status}`);
+      expect(status).to.be.oneOf([404, 412]);
+      expect(await exists(key(21))).to.equal(false);
+    });
+
+    if (backend === 's3') {
+      it('the premise of the first design: a copy in place keeps the content-hash ETag, so only changed bytes move it', async () => {
+        await put(key(30), '{"v":1,"value":"x"}');
+        const before = (await etagOf(key(30)))!;
+        const client = new S3Client({
+          region: S3_REGION,
+          endpoint: requireEnv('STORAGE_IT_S3_ENDPOINT'),
+          forcePathStyle: true,
+          credentials: { accessKeyId: requireEnv('STORAGE_IT_S3_ACCESS_KEY'), secretAccessKey: requireEnv('STORAGE_IT_S3_SECRET_KEY') },
+        });
+        await client.send(
+          new CopyObjectCommand({
+            Bucket: `pipeshub-it-${runId}`,
+            Key: key(30),
+            CopySource: `pipeshub-it-${runId}/${encodeURIComponent(key(30))}`,
+            MetadataDirective: 'REPLACE',
+            Metadata: { touched: '1' },
+            ContentType: 'application/json',
+          }),
+        );
+        expect(await etagOf(key(30))).to.equal(before);
+      });
+    }
+
+    it('a cutoff purge keeps an object written after its listing, on a store that does or does not delete by version', async () => {
+      const k = key(300);
+      await put(k, '{"old":true}');
+      await new Promise((resolve) => setTimeout(resolve, 1100));
+      const cutoff = Date.now() + 60_000;                // after the object: the purge lists it as older
+      const realList = target.adapter.listObjects!.bind(target.adapter);
+      let listings = 0;
+      const adapter = Object.create(target.adapter) as typeof target.adapter;
+      adapter.listObjects = async (prefix, options) => {
+        const page = await realList(prefix, options);
+        listings += 1;
+        if (listings === 1) await put(k, '{"refreshed":true}');       // the refresh's own write lands after the listing
+        return page;
+      };
+      await purgePaidResultsOlderThan(adapter as never, root, cutoff);
+      // The object was listed older than the cutoff and replaced before the delete: it is not the object listed.
+      expect(await exists(k), 'the replacement was purged').to.equal(true);
+      expect((await etagOf(k)) !== undefined).to.equal(true);
+    });
+
+    it('a full cutoff-purge page that gains a key in range between its two listings leaves no old object behind', async () => {
+      const keys = [310, 311, 312, 313, 314].map(key);
+      for (const k of keys) await put(k, '{"old":true}');
+      const cutoff = Date.now() + 60_000;
+      const realList = target.adapter.listObjects!.bind(target.adapter);
+      let listings = 0;
+      const adapter = Object.create(target.adapter) as typeof target.adapter;
+      adapter.listObjects = async (prefix, options) => {
+        const page = await realList(prefix, options);
+        listings += 1;
+        // After the first page is out, a key that sorts before the others is stored.
+        if (listings === 1) await put(key(305), '{"inserted":true}');
+        return page;
+      };
+      // The inserted key is newer than the cutoff would allow only if the cutoff were earlier; here it is older, so it goes too.
+      await purgePaidResultsOlderThan(adapter as never, root, cutoff, 2);
+      for (const k of keys) expect(await exists(k), `${k} survived the purge`).to.equal(false);
+    });
+
+    it('a bump and a conditional delete racing on one version never both win, over many keys', async () => {
+      if (!(await target.adapter.conditionalCapabilities!()).conditionalDelete) return; // this store ignores the condition
+      const keys = Array.from({ length: 40 }, (_, i) => key(100 + i));
+      for (const k of keys) await put(k, '{"v":1,"value":"x"}');
+      const listed = new Map<string, string>();
+      for (const k of keys) listed.set(k, (await etagOf(k))!);
+      const outcomes = await Promise.all(
+        keys.map(async (k) => {
+          const etag = listed.get(k)!;
+          const [bumped, deleted] = await Promise.all([
+            putIfMatch(k, '{"v":1,"value":"x","touchedMs":2}', etag),
+            target.adapter.deleteObjectsIfMatch!([{ key: k, etag }]),
+          ]);
+          return { k, bumped: bumped === 200 || bumped === 201, deleted: deleted.changed.length === 0 };
+        }),
+      );
+      for (const { k, bumped, deleted } of outcomes) {
+        const present = await exists(k);
+        // Never both: a bump that won leaves the object; a delete that won leaves nothing and the bump was refused.
+        // (Both refused, e.g. one answered with a conflict while the other ran, keeps the old version: allowed.)
+        if (bumped) expect(present, `${k}: the bump won and the object is gone`).to.equal(true);
+        if (deleted) expect(present, `${k}: the delete won and the object is there`).to.equal(false);
+        expect(bumped && deleted, `${k}: both won`).to.equal(false);
+      }
     });
   });
 });

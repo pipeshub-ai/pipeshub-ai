@@ -20,6 +20,8 @@ interface UseCitationSyncOptions {
    * citation — instead of the first citation on the target page.
    */
   initialCitationId?: string | null;
+  /** Increments on every jump within the shown record, so the same citation twice re-seeds. */
+  jumpSeq?: number;
 }
 
 interface UseCitationSyncResult {
@@ -56,6 +58,7 @@ export function useCitationSync({
   initialHighlightBox,
   initialPage,
   initialCitationId,
+  jumpSeq,
 }: UseCitationSyncOptions): UseCitationSyncResult {
   const [activeCitationId, setActiveCitationId] = useState<string | null>(
     initialCitationId ?? null,
@@ -104,8 +107,7 @@ export function useCitationSync({
     }
     setActiveHighlightBox(initialHighlightBox ? [...initialHighlightBox] : undefined);
     setActiveHighlightPage(initialPage);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [initialCitationId, initialPage]);
+  }, [initialCitationId, initialPage, jumpSeq]);
 
   // ── Page scroll → find matching citation (debounced 300ms) ──────────
   useEffect(() => {

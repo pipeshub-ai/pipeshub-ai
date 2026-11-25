@@ -31,6 +31,8 @@ from app.exceptions.indexing_exceptions import PasswordProtectedError
 if TYPE_CHECKING:
     from collections.abc import Collection
 
+    import pypdfium2
+
 _logger = logging.getLogger(__name__)
 
 _CFBF_MAGIC = bytes.fromhex("D0CF11E0A1B11AE1")
@@ -117,16 +119,48 @@ def raise_if_odf_encrypted(content: bytes) -> None:
         raise PasswordProtectedError(PASSWORD_PROTECTED_MESSAGE, details={"format": "odt"})
 
 
-def pdfium_password_error(exc: BaseException) -> bool:
-    """Whether *exc* is pdfium refusing a PDF for want of a password."""
+def _pdfium_password_error(exc: BaseException) -> bool:
+    """Whether *exc* is pdfium refusing a PDF for want of a password.
+
+    Only trustworthy for the error of an open made by ``open_pdfium_document``,
+    which is the only caller: a plain ``pypdfium2.PdfDocument`` open that fails
+    without pdfium setting an error carries the code left by whatever failed
+    last in the thread.
+    """
     import pypdfium2
     import pypdfium2.raw as pdfium_raw
 
     if not isinstance(exc, pypdfium2.PdfiumError):
         return False
-    # The code pdfium reported for this load, carried by the exception (pypdfium2 5+). Not
-    # FPDF_GetLastError(): that is the library's state for whatever failed last in the thread.
     return getattr(exc, "err_code", None) == pdfium_raw.FPDF_ERR_PASSWORD
+
+
+def open_pdfium_document(source: object, password: str | None = None) -> pypdfium2.PdfDocument:
+    """``pypdfium2.PdfDocument(source)``, refusing a locked file as ``PasswordProtectedError``.
+
+    Raises ``PasswordProtectedError`` when pdfium needs a password it was not
+    given, and ``pypdfium2.PdfiumError`` when it cannot open *source* for any
+    other reason. Callers must not read pdfium's error code themselves.
+
+    pdfium fails some loads (a PDF with no pages) without setting an error, and pypdfium2 then
+    reports the thread's previous code: a worker that read a locked file just before would call
+    the next broken one password-protected. A load that fails with a known code first replaces
+    whatever the thread held.
+    """
+    import contextlib
+
+    import pypdfium2
+
+    with contextlib.suppress(pypdfium2.PdfiumError):
+        pypdfium2.PdfDocument(b"x")
+    try:
+        return pypdfium2.PdfDocument(source, password=password)
+    except pypdfium2.PdfiumError as exc:
+        if _pdfium_password_error(exc):
+            raise PasswordProtectedError(
+                PASSWORD_PROTECTED_MESSAGE, details={"format": "pdf"}
+            ) from exc
+        raise
 
 
 def raise_if_pdf_needs_password(content: bytes) -> None:
@@ -135,15 +169,11 @@ def raise_if_pdf_needs_password(content: bytes) -> None:
     A PDF pdfium cannot open for another reason, or opens, passes. Only worth
     calling once another reader has failed on the file: it opens the PDF again.
     """
-    import pypdfium2
-
     try:
-        document = pypdfium2.PdfDocument(content)
-    except Exception as exc:
-        if pdfium_password_error(exc):
-            raise PasswordProtectedError(
-                PASSWORD_PROTECTED_MESSAGE, details={"format": "pdf"}
-            ) from exc
+        document = open_pdfium_document(content)
+    except PasswordProtectedError:
+        raise
+    except Exception:
         return
     document.close()
 

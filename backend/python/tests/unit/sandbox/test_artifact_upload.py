@@ -22,6 +22,8 @@ from app.sandbox.artifact_upload import (
     upload_bytes_artifact,
 )
 from app.sandbox.models import ArtifactOutput, ExecutionResult
+from app.sandbox.roots import DOCKER, LOCAL, ensure_private_dir
+from app.sandbox.roots import sandbox_root as root_of
 
 
 @pytest.fixture(autouse=True)
@@ -44,13 +46,27 @@ class TestInferArtifactType:
 
 class TestReadFileBytes:
     def test_reads_file_under_sandbox_root(self, monkeypatch):
-        sandbox_root = os.path.join(tempfile.gettempdir(), "pipeshub_sandbox")
+        sandbox_root = ensure_private_dir(root_of(LOCAL))
         os.makedirs(sandbox_root, exist_ok=True)
         test_file = os.path.join(sandbox_root, "test_read.txt")
         try:
             with open(test_file, "wb") as f:
                 f.write(b"hello world")
             assert _read_file_bytes(test_file) == b"hello world"
+        finally:
+            if os.path.exists(test_file):
+                os.unlink(test_file)
+
+    def test_cleanup_2_reads_a_broker_run_output(self) -> None:
+        """CLEANUP-2: SANDBOX_MODE=broker (the shipped default) copies a run's output under its own root."""
+        from app.sandbox.broker_executor import BrokerExecutor
+
+        root = ensure_private_dir(BrokerExecutor(broker=AsyncMock()).work_root)
+        test_file = os.path.join(root, "cleanup2_read.txt")
+        try:
+            with open(test_file, "wb") as f:
+                f.write(b"chart bytes")
+            assert _read_file_bytes(test_file) == b"chart bytes"
         finally:
             if os.path.exists(test_file):
                 os.unlink(test_file)
@@ -66,7 +82,7 @@ class TestReadFileBytes:
     def test_rejects_symlinked_artifact(self, tmp_path) -> None:
         """An artifact that is a symlink to a host file must be refused (SB-5),
         even when the link itself sits under the sandbox root."""
-        sandbox_root = os.path.join(tempfile.gettempdir(), "pipeshub_sandbox")
+        sandbox_root = ensure_private_dir(root_of(LOCAL))
         os.makedirs(sandbox_root, exist_ok=True)
         secret = tmp_path / "host_secret.txt"
         secret.write_bytes(b"TOP-SECRET-HOST")
@@ -82,7 +98,7 @@ class TestReadFileBytes:
 
     def test_rejects_file_exceeding_size_cap(self):
         """A file larger than max_bytes must be refused without being loaded into memory."""
-        sandbox_root = os.path.join(tempfile.gettempdir(), "pipeshub_sandbox")
+        sandbox_root = ensure_private_dir(root_of(LOCAL))
         os.makedirs(sandbox_root, exist_ok=True)
         test_file = os.path.join(sandbox_root, "test_oversize.bin")
         try:
@@ -95,7 +111,7 @@ class TestReadFileBytes:
                 os.unlink(test_file)
 
     def test_allows_file_at_size_cap(self):
-        sandbox_root = os.path.join(tempfile.gettempdir(), "pipeshub_sandbox")
+        sandbox_root = ensure_private_dir(root_of(LOCAL))
         os.makedirs(sandbox_root, exist_ok=True)
         test_file = os.path.join(sandbox_root, "test_atcap.bin")
         try:
@@ -112,7 +128,7 @@ class TestReadFileBytes:
         assert 1024 * 1024 <= MAX_ARTIFACT_BYTES <= 1024 * 1024 * 1024
 
     def test_reads_file_under_docker_sandbox_root(self):
-        sandbox_root = os.path.join(tempfile.gettempdir(), "pipeshub_sandbox_docker")
+        sandbox_root = ensure_private_dir(root_of(DOCKER))
         os.makedirs(sandbox_root, exist_ok=True)
         test_file = os.path.join(sandbox_root, "test_read_docker.txt")
         try:
@@ -139,7 +155,7 @@ class TestUploadArtifactsToBlob:
 
     @pytest.mark.asyncio
     async def test_uploads_artifacts(self):
-        sandbox_root = os.path.join(tempfile.gettempdir(), "pipeshub_sandbox")
+        sandbox_root = ensure_private_dir(root_of(LOCAL))
         os.makedirs(sandbox_root, exist_ok=True)
         file_path = os.path.join(sandbox_root, "test_upload_chart.png")
         file_data = b"\x89PNG" + b"\x00" * 100
@@ -205,7 +221,7 @@ class TestUploadArtifactsToBlob:
 
     @pytest.mark.asyncio
     async def test_continues_on_upload_error(self):
-        sandbox_root = os.path.join(tempfile.gettempdir(), "pipeshub_sandbox")
+        sandbox_root = ensure_private_dir(root_of(LOCAL))
         os.makedirs(sandbox_root, exist_ok=True)
         f1_path = os.path.join(sandbox_root, "test_bad.png")
         f2_path = os.path.join(sandbox_root, "test_good.csv")
@@ -423,7 +439,7 @@ class TestUploadArtifactsToBlobWithRecord:
 
     @pytest.mark.asyncio
     async def test_creates_record_and_handles_failure(self):
-        sandbox_root = os.path.join(tempfile.gettempdir(), "pipeshub_sandbox")
+        sandbox_root = ensure_private_dir(root_of(LOCAL))
         os.makedirs(sandbox_root, exist_ok=True)
         f1 = os.path.join(sandbox_root, "t_rec_ok.png")
         f2 = os.path.join(sandbox_root, "t_rec_fail.png")
@@ -489,7 +505,7 @@ class TestReadFileBytesErrorPaths:
     """Cover the getsize OSError, open OSError, and TOCTOU grow-past-cap branches."""
 
     def test_stat_oserror(self):
-        sandbox_root = os.path.join(tempfile.gettempdir(), "pipeshub_sandbox")
+        sandbox_root = ensure_private_dir(root_of(LOCAL))
         os.makedirs(sandbox_root, exist_ok=True)
         test_file = os.path.join(sandbox_root, "stat_error.txt")
         try:
@@ -505,7 +521,7 @@ class TestReadFileBytesErrorPaths:
                 os.unlink(test_file)
 
     def test_open_oserror(self):
-        sandbox_root = os.path.join(tempfile.gettempdir(), "pipeshub_sandbox")
+        sandbox_root = ensure_private_dir(root_of(LOCAL))
         os.makedirs(sandbox_root, exist_ok=True)
         test_file = os.path.join(sandbox_root, "open_error.txt")
         try:
@@ -526,7 +542,7 @@ class TestReadFileBytesErrorPaths:
 
     def test_grew_past_cap_during_read(self):
         """File stat-ed at cap but delivered more bytes during streaming read."""
-        sandbox_root = os.path.join(tempfile.gettempdir(), "pipeshub_sandbox")
+        sandbox_root = ensure_private_dir(root_of(LOCAL))
         os.makedirs(sandbox_root, exist_ok=True)
         test_file = os.path.join(sandbox_root, "grew_past_cap.bin")
         try:
@@ -632,7 +648,7 @@ class TestScheduleArtifactUploadTask:
     async def test_uses_blob_storage_fallback(self):
         """When blob_store is None, the helper must build a BlobStorage from
         config_service + graph_provider and run the upload through it."""
-        sandbox_root = os.path.join(tempfile.gettempdir(), "pipeshub_sandbox")
+        sandbox_root = ensure_private_dir(root_of(LOCAL))
         os.makedirs(sandbox_root, exist_ok=True)
         file_path = os.path.join(sandbox_root, "test_schedule_fallback.csv")
         try:

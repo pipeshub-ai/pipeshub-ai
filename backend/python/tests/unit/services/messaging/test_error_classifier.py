@@ -509,6 +509,23 @@ class TestOpenAIErrors:
         except ImportError:
             pytest.skip("OpenAI not available")
 
+    def test_openai_empty_balance_is_terminal_although_it_is_a_429(self) -> None:
+        """A 429 that says the account is out of credit fails the same way on every redelivery."""
+        import httpx
+        import openai
+
+        from app.exceptions.indexing_exceptions import EmbeddingError
+
+        exc = openai.RateLimitError(
+            "Error code: 429",
+            response=httpx.Response(429, request=httpx.Request("POST", "http://x/v1/embeddings")),
+            body={"error": {"message": "no credit", "type": "insufficient_quota", "code": "insufficient_quota"}},
+        )
+        assert MessageErrorClassifier.classify_by_exception(exc) == MessageErrorType.TERMINAL
+        wrapped = EmbeddingError("Dense embedding failed")
+        wrapped.__cause__ = exc
+        assert MessageErrorClassifier.classify_by_exception(wrapped) == MessageErrorType.TERMINAL
+
     def test_openai_auth_error(self):
         """Test that OpenAI auth errors are terminal."""
         try:
@@ -1243,3 +1260,86 @@ def test_a_final_error_raised_from_a_connection_error_is_terminal() -> None:
             raise Final("stop") from cause
     except Final as exc:
         assert MessageErrorClassifier.classify_by_exception(exc) == MessageErrorType.TERMINAL
+
+
+class TestARecordsSchemaRefusalIsTransient:
+    """A records write refused by a schema narrower than ours aborts its transaction, nothing is kept, and the next delivery
+    finds the schema wide: the consumer must retry it, not mark the record FAILED on its first delivery. The store's own answer
+    is a 400, which alone reads as terminal."""
+
+    @staticmethod
+    def _refusal(shape: str) -> Exception:
+        from app.exceptions.graph_db_exceptions import RecordSchemaNarrowError
+        from app.services.graph_db.arango.arango_http_client import ArangoQueryError
+
+        body = '{"error":true,"errorNum":1620,"errorMessage":"Document does not match the record schema."}'
+        causes = {
+            "aql": ArangoQueryError("Query failed", 400, body),
+            "document patch": Exception(f"Failed to update document (status=400): {body}"),
+            "batch insert": Exception("Batch insert failed with 1 error(s): Item 0: [1620] Document does not match the record schema."),
+        }
+        try:
+            raise RecordSchemaNarrowError("the records schema refused a write in transaction 1; it was aborted") from causes[shape]
+        except RecordSchemaNarrowError as error:
+            return error
+
+    @pytest.mark.parametrize("shape", ["aql", "document patch", "batch insert"])
+    def test_it_is_transient_whatever_the_store_answered(self, shape: str) -> None:
+        assert MessageErrorClassifier.classify_by_exception(self._refusal(shape)) == MessageErrorType.TRANSIENT
+
+    def test_it_is_transient_when_wrapped_by_a_stage(self) -> None:
+        from app.exceptions.indexing_exceptions import IndexingError
+
+        outer = IndexingError("write failed")
+        outer.__cause__ = self._refusal("aql")
+        assert MessageErrorClassifier.classify_by_exception(outer) == MessageErrorType.TRANSIENT
+
+    def test_the_stores_bare_400_is_still_terminal(self) -> None:
+        """The control: without the exception type in the chain, a 400 stays terminal (a data refusal is permanent)."""
+        from app.services.graph_db.arango.arango_http_client import ArangoQueryError
+
+        bare = ArangoQueryError("Query failed", 400, '{"errorNum":1620}')
+        assert MessageErrorClassifier.classify_by_exception(bare) == MessageErrorType.TERMINAL
+
+
+class TestWorkerDeathRetryIsReadFromExplicitCausesOnly:
+    @staticmethod
+    def _wrap(inner: BaseException) -> DocumentProcessingError:
+        try:
+            raise DocumentProcessingError("Failed to process document") from inner
+        except DocumentProcessingError as wrapped:
+            return wrapped
+
+    def test_a_retried_death_that_caused_the_failure_is_transient(self) -> None:
+        from app.modules.parsers.parse_pool import ParseWorkerError
+
+        killed = ParseWorkerError("killed", "crashed", retrying=True)
+        assert MessageErrorClassifier.classify_by_exception(self._wrap(killed)) == MessageErrorType.TRANSIENT
+
+    def test_a_terminal_error_raised_while_a_death_was_handled_stays_terminal(self) -> None:
+        from app.modules.parsers.parse_pool import ParseWorkerError
+        from app.services.parsing.interface import ParseError, ParseErrorCode
+
+        try:
+            try:
+                raise ParseWorkerError("killed", "crashed", retrying=True)
+            except ParseError:
+                raise ParseError(ParseErrorCode.PARSE_FAILED, "OCR found no text")  # noqa: B904
+        except ParseError as later:
+            wrapped = self._wrap(later)
+
+        assert MessageErrorClassifier.classify_by_exception(wrapped) == MessageErrorType.TERMINAL
+
+    def test_a_second_death_raised_while_the_first_was_handled_stays_terminal(self) -> None:
+        from app.modules.parsers.parse_pool import ParseWorkerError
+        from app.services.parsing.interface import ParseError
+
+        try:
+            try:
+                raise ParseWorkerError("killed", "crashed", retrying=True)
+            except ParseError:
+                raise ParseWorkerError("too large", "crashed")  # noqa: B904
+        except ParseError as later:
+            wrapped = self._wrap(later)
+
+        assert MessageErrorClassifier.classify_by_exception(wrapped) == MessageErrorType.TERMINAL

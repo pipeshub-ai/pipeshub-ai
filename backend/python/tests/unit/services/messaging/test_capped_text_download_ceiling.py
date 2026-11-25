@@ -67,10 +67,18 @@ async def test_the_connector_stream_stops_past_the_limit(big_file_url, path: str
 
 @pytest.mark.parametrize("ext", ["log", "cfg"])
 async def test_an_unsized_log_past_the_ceiling_is_not_supported_and_not_streamed_again(ext: str) -> None:
-    with patch("app.services.messaging.kafka.handlers.record.make_api_call", new_callable=AsyncMock) as stream:
-        record, downloaded = await handler_run(
-            ext, "application/octet-stream", b"", too_large=True,
-        )
+    from app.utils import indexing_timing
+
+    timeline, token = indexing_timing.begin_record("r1")
+    try:
+        with patch("app.services.messaging.kafka.handlers.record.make_api_call", new_callable=AsyncMock) as stream:
+            record, downloaded = await handler_run(
+                ext, "application/octet-stream", b"", too_large=True,
+            )
+        noted = dict(timeline.facts)
+    finally:
+        indexing_timing.end_record(timeline, token, outcome="ok")
+    assert (noted.get("outcome"), noted.get("reason")) == ("skipped", "too_large")  # index.end is not a success
     assert downloaded
     assert record["indexingStatus"] == "FILE_TYPE_NOT_SUPPORTED"
     assert record["reason"] == file_too_large_to_read(ext)

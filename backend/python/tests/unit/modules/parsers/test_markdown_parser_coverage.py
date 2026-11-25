@@ -6,22 +6,14 @@ Targets uncovered lines:
 - 127: inline image at a reference position is skipped
 """
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
 from app.exceptions.indexing_exceptions import DocumentProcessingError
-
-# Mock docling imports before importing DoclingMarkdownParser
-with patch.dict("sys.modules", {
-    "docling": MagicMock(),
-    "docling.datamodel": MagicMock(),
-    "docling.datamodel.document": MagicMock(),
-    "docling.document_converter": MagicMock(),
-}):
-    from app.modules.parsers.markdown.docling_markdown_parser import (
-        DoclingMarkdownParser,
-    )
+from app.modules.parsers.markdown.docling_markdown_parser import (
+    DoclingMarkdownParser,
+)
 
 
 @pytest.fixture

@@ -1505,6 +1505,40 @@ workflows:
         successCriteria:
           - condition: $statusCode == 200
           - condition: $response.header.Content-Type == application/json
+      # The token starts with no limit, so this step proves a real change is stored and returned.
+      # Sources differ per instance; the server does not check that an id exists, so any UUID works.
+      - stepId: limitTokenKnowledge
+        operationId: updatePersonalAccessTokenKnowledgeLimit
+        parameters:
+          - name: tokenId
+            in: path
+            value: $steps.createToken.outputs.tokenId
+        requestBody:
+          contentType: application/json
+          payload:
+            knowledgeLimit:
+              apps:
+                - 00000000-0000-4000-8000-000000000001
+        successCriteria:
+          - condition: $statusCode == 200
+          - condition: $response.header.Content-Type == application/json
+          - condition: $response.body#/token/name == sdk-test-pat
+          - condition: $response.body#/token/knowledgeLimit/apps/0 == 00000000-0000-4000-8000-000000000001
+      # Then lifts it again, so the token ends with everything its owner can see.
+      - stepId: updateTokenKnowledgeLimit
+        operationId: updatePersonalAccessTokenKnowledgeLimit
+        parameters:
+          - name: tokenId
+            in: path
+            value: $steps.createToken.outputs.tokenId
+        requestBody:
+          contentType: application/json
+          payload:
+            knowledgeLimit: null
+        successCriteria:
+          - condition: $statusCode == 200
+          - condition: $response.header.Content-Type == application/json
+          - condition: $response.body#/token/name == sdk-test-pat
       - stepId: revokeToken
         operationId: revokePersonalAccessToken
         parameters:
@@ -1526,7 +1560,7 @@ workflows:
             name: sdk-test-pat-admin-revoke
             scopes:
               - kb:read
-            expiryDays: never
+            expiryDays: 7
         successCriteria:
           - condition: $statusCode == 201
           - condition: $response.header.Content-Type == application/json

@@ -11,13 +11,13 @@ Needs the 3-master cluster from
 Every test in this package exercises the *real* `ClusterRedisProvider`
 end-to-end against real cluster slots -- the CROSSSLOT and multi-node
 behaviour `FakeClusterRedis` only approximates in the unit contract suites
-under `tests/unit/services/redis/`. They skip cleanly (do not fail the
-suite) when no cluster answers, so a normal unit/CI run without Docker is
-unaffected.
+under `tests/unit/services/redis/`. They skip when REDIS_CLUSTER_ENDPOINTS is
+unset, so a normal unit/CI run without Docker is unaffected; they never dial a
+default address.
 
 Environment:
-  REDIS_MODE                (must be "cluster" for these tests to mean anything)
-  REDIS_CLUSTER_ENDPOINTS   (default: 127.0.0.1:17000,127.0.0.1:17001,127.0.0.1:17002)
+  REDIS_MODE                (set to "cluster" here when unset)
+  REDIS_CLUSTER_ENDPOINTS   (required; the compose cluster is the value above)
 """
 from __future__ import annotations
 
@@ -33,8 +33,7 @@ from app.services.redis.connection_provider_factory import (
     get_redis_provider,
     reset_redis_provider_registry,
 )
-
-DEFAULT_ENDPOINTS = "127.0.0.1:17000,127.0.0.1:17001,127.0.0.1:17002"
+from tests.support import it_backends
 
 
 @pytest.fixture
@@ -46,11 +45,10 @@ def unique_suffix() -> str:
 
 @pytest.fixture(scope="session", autouse=True)
 def _redis_cluster_env() -> None:
-    """Point every `get_redis_provider()` call at the compose cluster unless
-    the caller already set `REDIS_MODE`/`REDIS_CLUSTER_ENDPOINTS` themselves
-    (e.g. a CI job pointed at a different cluster)."""
+    """Run every `get_redis_provider()` call in cluster mode, against the
+    cluster REDIS_CLUSTER_ENDPOINTS names; skip when it names none."""
+    it_backends.endpoint("REDIS_CLUSTER_ENDPOINTS")
     os.environ.setdefault("REDIS_MODE", "cluster")
-    os.environ.setdefault("REDIS_CLUSTER_ENDPOINTS", DEFAULT_ENDPOINTS)
 
 
 def _unavailable(reason: str) -> None:

@@ -1,0 +1,117 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/ext/pipeshub/events/x.pipeshub.memory.recalled.schema.json",
+  "title": "PipeshubMemoryRecalledEvent",
+  "description": "What a run's model was given from governed memory (P7.3): the recalled memories' ids, scopes, kinds and labels, and the size of the rendered text, journaled with the pre-run commit. Never the content. The run's own-work label joins these labels (P2.5a). Presentation and label evidence (non-critical).",
+  "x-writer": [
+    "worker"
+  ],
+  "allOf": [
+    {
+      "$ref": "../../../core/envelope.schema.json#/$defs/InlineEnvelope"
+    }
+  ],
+  "properties": {
+    "type": {
+      "const": "x.pipeshub.memory.recalled"
+    },
+    "writer": {
+      "const": "worker"
+    },
+    "data": {
+      "$ref": "#/$defs/PipeshubMemoryRecalledData"
+    }
+  },
+  "$defs": {
+    "PipeshubMemoryRecalledData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "entries",
+        "chars",
+        "truncated"
+      ],
+      "properties": {
+        "entries": {
+          "type": "array",
+          "maxItems": 20,
+          "items": {
+            "$ref": "#/$defs/PipeshubRecalledMemory"
+          },
+          "description": "The memories the rendered text holds, in the order it shows them."
+        },
+        "chars": {
+          "$ref": "../../../core/common.schema.json#/$defs/UInt",
+          "description": "Characters of the rendered text."
+        },
+        "truncated": {
+          "type": "boolean",
+          "description": "Whether pinned memories were left out by the size bound."
+        }
+      }
+    },
+    "PipeshubRecalledMemory": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "memoryId",
+        "scope",
+        "kind",
+        "label"
+      ],
+      "properties": {
+        "memoryId": {
+          "$ref": "../../../core/common.schema.json#/$defs/Id"
+        },
+        "scope": {
+          "enum": [
+            "user",
+            "session",
+            "agent"
+          ]
+        },
+        "kind": {
+          "enum": [
+            "fact",
+            "preference"
+          ]
+        },
+        "label": {
+          "$ref": "../turn-label.schema.json"
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 6,
+      "runId": "run_1",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "type": "x.pipeshub.memory.recalled",
+      "data": {
+        "entries": [
+          {
+            "memoryId": "mem_1",
+            "scope": "user",
+            "kind": "preference",
+            "label": {
+              "complete": true,
+              "sources": []
+            }
+          }
+        ],
+        "chars": 312,
+        "truncated": false
+      },
+      "attemptId": "att_1",
+      "fence": 3
+    }
+  ]
+}

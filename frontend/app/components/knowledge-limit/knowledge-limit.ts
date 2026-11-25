@@ -30,6 +30,13 @@ export function limitSize(limit: KnowledgeLimit): number {
   return limit.apps.length + limit.recordGroups.length + limit.records.length;
 }
 
+/** Two limits name the same items, in any order; absent equals only absent. */
+export function sameKnowledgeLimit(a?: KnowledgeLimit | null, b?: KnowledgeLimit | null): boolean {
+  const key = (l?: KnowledgeLimit | null) =>
+    l ? JSON.stringify([[...l.apps].sort(), [...l.recordGroups].sort(), [...l.records].sort()]) : '';
+  return key(a) === key(b);
+}
+
 /** A stored limit as the picker's selection, for editing it. */
 export function selectionFromLimit(limit?: KnowledgeLimit | null): KnowledgeLimitValue {
   if (!limit) return null;

@@ -1,0 +1,90 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/core/events/session.forked.schema.json",
+  "title": "SessionForkedEvent",
+  "description": "This session was forked from another (\"continue privately\", ARCHITECTURE 4.9 Fork; SS3 writes it): the first event of the new session's root stream, naming the source and how far into its stream the copy reaches. The source's stream records the same fork, with `intoSessionId`, for its audit. No fold reads it.",
+  "x-writer": [
+    "node"
+  ],
+  "allOf": [
+    {
+      "$ref": "../envelope.schema.json#/$defs/InlineEnvelope"
+    }
+  ],
+  "properties": {
+    "type": {
+      "const": "session.forked"
+    },
+    "writer": {
+      "const": "node"
+    },
+    "data": {
+      "$ref": "#/$defs/SessionForkedData"
+    }
+  },
+  "$defs": {
+    "SessionForkedData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "by",
+        "fromSessionId",
+        "atSeq"
+      ],
+      "properties": {
+        "by": {
+          "$ref": "../common.schema.json#/$defs/PrincipalRef",
+          "description": "Who forked: the new session's owner."
+        },
+        "fromSessionId": {
+          "$ref": "../common.schema.json#/$defs/Id"
+        },
+        "atSeq": {
+          "$ref": "../common.schema.json#/$defs/UInt",
+          "description": "The source root stream's last seq the copy accounts for."
+        },
+        "intoSessionId": {
+          "$ref": "../common.schema.json#/$defs/Id",
+          "description": "On the source's stream only: the session the fork created."
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_2",
+      "streamId": "ses_2",
+      "seq": 1,
+      "type": "session.forked",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-03T12:00:00.123Z",
+      "writer": "node",
+      "visibility": "shared",
+      "data": {
+        "by": "p_user2",
+        "fromSessionId": "ses_0",
+        "atSeq": 41
+      }
+    },
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_0",
+      "streamId": "ses_0",
+      "seq": 42,
+      "type": "session.forked",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-03T12:00:00.123Z",
+      "writer": "node",
+      "visibility": "audit",
+      "data": {
+        "by": "p_user2",
+        "fromSessionId": "ses_0",
+        "atSeq": 41,
+        "intoSessionId": "ses_2"
+      }
+    }
+  ]
+}

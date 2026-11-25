@@ -73,7 +73,7 @@ INDEX_WAIT_SECONDS = 120
 ORDERED = """
 MATCH (n:{label}) USING INDEX n:{label}(connectorId, {prop})
 WHERE n.connectorId = $c AND n.{prop} >= {low} AND n.khScope IN $open
-  AND n.orgId = $org AND NOT n:KhPlaceholder AND NOT n:KhDeleted {keyset}
+  AND n.orgId = $org AND NOT n:KhPlaceholder AND NOT n:KhDeleted AND NOT coalesce(n.accessOnly, false) {keyset}
 RETURN n.id AS id, n.{prop} AS sortKey
 ORDER BY n.connectorId {sdir}, n.{prop} {sdir}, n.id {iddir}
 LIMIT $limit
@@ -82,7 +82,7 @@ LIMIT $limit
 SEEK = """
 MATCH (n:Record) USING INDEX n:Record(khScope, {prop})
 WHERE n.khScope IN $open AND n.{prop} >= {low} AND n.connectorId = $c
-  AND n.orgId = $org AND NOT n:KhPlaceholder AND NOT n:KhDeleted {keyset}
+  AND n.orgId = $org AND NOT n:KhPlaceholder AND NOT n:KhDeleted AND NOT coalesce(n.accessOnly, false) {keyset}
 RETURN n.id AS id, n.{prop} AS sortKey
 ORDER BY n.{prop} {sdir}, n.id {iddir}
 LIMIT $limit
@@ -94,7 +94,7 @@ CALL () {{
     MATCH (n:RecordGroup) WHERE n.connectorId = $c RETURN n
 }}
 WITH n WHERE n.khSortName IS NULL AND n.khScope IN $open AND n.orgId = $org AND NOT n:KhPlaceholder
-  AND NOT n:KhDeleted {keyset}
+  AND NOT n:KhDeleted AND NOT coalesce(n.accessOnly, false) {keyset}
 RETURN n.id AS id ORDER BY n.id LIMIT $limit
 """
 KEYSET = "AND n.{prop} {cmp}= $ks AND (n.{prop} {cmp} $ks OR n.id {idcmp} $kid)"
@@ -136,7 +136,8 @@ K, DEL, HIDES, RULE, PM, PH, FOLDER, ORG, NULLNAME, PARENT, NPARENTS, INH, OLD, 
 _NOT_NUMBER = "NOT ({p} IS :: INTEGER NOT NULL OR {p} IS :: FLOAT NOT NULL)"
 _NODE_FIELDS = f"""
     n.id AS id, n:KhDeleted AS del, n:KhHidesChildren AS hides, coalesce(n.accessRule, 'OPEN') AS rule,
-    n.permissionModel AS pm, n:KhPlaceholder AS ph, n:KhFolder AS folder, n.orgId = $org AS sameOrg,
+    n.permissionModel AS pm, n:KhPlaceholder AS ph, n:KhFolder AS folder,
+    n.orgId = $org AND NOT coalesce(n.accessOnly, false) AS sameOrg,
     n.khSortName IS NULL AS nullName, n.khScope AS old,
     {_NOT_NUMBER.format(p="n.updatedAtTimestamp")} AS nullUpd,
     {_NOT_NUMBER.format(p="n.createdAtTimestamp")} AS nullCre, n.origin AS origin,
@@ -153,6 +154,21 @@ async def _q(client: Neo4jClient, cypher: str, params: dict | None = None) -> li
 
 
 LISTS = "kh_lists"
+
+
+def by_id(v: str, labels: str, key: str) -> str:
+    """``MATCH (v:labels {id: key})`` alone in a subquery, so its only seek is the labels' unique id index. The statement tests ``v``'s
+    org or App after it: Neo4j moves a test written beside the match, or after a plain ``WITH``, into the seek, and a plan could then seek
+    the org or App index and test the id after, reading every node of the org or App once per id. ``key`` is a variable or a
+    ``$parameter``."""
+    imports = "" if key.startswith("$") else key
+    return f"CALL ({imports}) {{ MATCH ({v}:{labels} {{id: {key}}}) RETURN {v} }}"
+
+
+def by_ids(v: str, labels: str, ids: str) -> str:
+    """``MATCH (v:labels) WHERE v.id IN ids`` as `by_id`, each id once."""
+    key = f"kh_bid_{v}"
+    return f"UNWIND {ids} AS {key} WITH DISTINCT * {by_id(v, labels, key)}"
 
 
 @lru_cache(maxsize=512)

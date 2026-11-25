@@ -27,6 +27,7 @@ import pytest
 from app.config.constants.arangodb import CollectionNames
 from app.schema.arango.documents import record_schema
 from app.schema.node_validator import NodeSchemaValidator, SchemaValidationError
+from tests.integration.graph_db.record_diagnostics_support import drop_database
 from tests.integration.real_graph import backend_unavailable, connect_arango
 
 if TYPE_CHECKING:
@@ -46,6 +47,8 @@ def _schema_before_diagnostics() -> dict[str, Any]:
     old = copy.deepcopy(record_schema)
     for name in FIELDS:
         del old["rule"]["properties"][name]
+    # an image of that time knows no generation marker
+    old["rule"].pop("$comment", None)
     return old
 
 
@@ -92,6 +95,8 @@ async def store() -> AsyncIterator[_Store]:
     try:
         yield _Store(provider)
     finally:
+        # each case has a database of its own, with every collection: dropped, or a small server runs out of memory
+        await drop_database(provider)
         await provider.disconnect()
 
 

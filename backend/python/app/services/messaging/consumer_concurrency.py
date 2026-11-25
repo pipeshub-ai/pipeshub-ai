@@ -41,6 +41,7 @@ from typing import TYPE_CHECKING, Any, Protocol, TypeVar
 
 from app.capacity.budget_policy import Family
 from app.capacity.classes import BIG_CLASSES, CostClass
+from app.config import file_types
 from app.modules.parse_engine import pools as class_pools
 from app.modules.parse_engine import wiring
 from app.services.messaging.config import messaging_env
@@ -67,7 +68,9 @@ from app.services.resource_governor.memory_domain import (
     set_permit_covers,
 )
 from app.services.resource_governor.models import ParseTier, Pool
+from app.services.resource_governor.policy import SERVICE_POOL
 from app.services.resource_governor.probe import memory_domain_id
+from app.utils.error_class import log_failure
 from app.utils.loop_bridge import run_on_loop
 from app.utils.request_context import reset_admitted_in, set_admitted_in
 
@@ -631,9 +634,8 @@ async def clear_retry_tracking(host: ConcurrencyHost, message_id: str) -> None:
     try:
         await host.retry_manager.clear(message_id)
     except Exception as e:
-        host.logger.error(
-            "Failed to clear retry tracking for %s: %s", message_id, e
-        )
+        # Swallowed: what this delivery settled stands; only the count is left behind.
+        log_failure(host.logger, "index.retry_clear_failed", e, level=logging.WARNING, tracking_id=message_id)
 
 
 async def get_retry_count(host: ConcurrencyHost, message_id: str) -> int:
@@ -1186,6 +1188,78 @@ def index_gates_saturated(host: ConcurrencyHost) -> bool:
     )
 
 
+def downstream_read_pause(host: ConcurrencyHost, *, scoped: bool) -> float:
+    """Seconds every read and dispatch must still wait out a downstream 429.
+
+    *scoped* is a consumer with the fair scheduler, which can pass over a record: it ignores the services only one
+    index tier calls (``SERVICE_POOL``), whose records ``held_downstream`` holds instead. A broker-order consumer
+    cannot pass over its head, so every pause stops it.
+    """
+    coordinator = getattr(host, "backpressure_coordinator", None)
+    if coordinator is None:
+        return 0.0
+    return coordinator.pause_remaining(ignoring=SERVICE_POOL.keys() if scoped else ())
+
+
+def read_pausing_services(host: ConcurrencyHost, *, scoped: bool) -> list[str]:
+    """The services whose pause ``downstream_read_pause`` waits for, for the log line that names them."""
+    coordinator = getattr(host, "backpressure_coordinator", None)
+    if coordinator is None:
+        return []
+    paused = coordinator.paused_services
+    return sorted(paused - SERVICE_POOL.keys() if scoped else paused)
+
+
+def held_pools(host: ConcurrencyHost) -> frozenset[Pool]:
+    """The index pools whose records wait this turn: those of a paused service that only that tier calls.
+
+    None on a stage consumer: its jobs take no index permit and never call such a service.
+    """
+    coordinator = getattr(host, "backpressure_coordinator", None)
+    if coordinator is None or host.stage_admission is not None:
+        return frozenset()
+    return frozenset(SERVICE_POOL[name] for name in coordinator.paused_services if name in SERVICE_POOL)
+
+
+def held_downstream(host: ConcurrencyHost, message: "StreamMessage", pools: frozenset[Pool]) -> bool:
+    """Whether this record calls a service whose pause holds *pools*: Docling, by its heavy pool or its PDF route."""
+    if not pools:
+        return False
+    if index_pool(dispatch_tier(host, message)) in pools:
+        return True
+    # shortcut: the PDF route is Docling's, the one SERVICE_POOL entry; a second tier-scoped service needs its own test
+    payload = message.payload
+    dispatch = file_types.labels_route(
+        payload.get("extension"), payload.get("mimeType"),
+        file_path=payload.get("filePath"), record_name=payload.get("recordName"),
+    )
+    return dispatch is not None and dispatch.route is file_types.Route.PDF
+
+
+async def wait_out_held_service(
+    host: ConcurrencyHost, tier: ParseTier | None, message: "StreamMessage", wait: "AdmissionWait", *, scoped: bool,
+) -> None:
+    """A record the dispatch could not judge calls a held service: wait that service's pause out before the parse permit.
+
+    The dispatch judged the event's labels; a stored PDF sent with light ones is known only at START_PARSING, by its
+    raised *tier*. The wait runs inside START_PARSING's own parse wait (*wait*), so the budget is paused once and the
+    bound is that wait's. A pause that outlasts it hands the record back: returning would not, since a gate with room
+    admits whatever the timeout.
+    """
+    if not scoped:  # a broker-order consumer already stops for every pause
+        return
+    pools = held_pools(host)
+    pool = index_pool(effective_index_tier(host, tier))
+    if pool not in pools or held_downstream(host, message, pools):
+        return
+    coordinator = host.backpressure_coordinator  # type: ignore[attr-defined]
+    holding = {name for name, owner in SERVICE_POOL.items() if owner is pool}
+    while (left := coordinator.pause_remaining(ignoring=coordinator.paused_services - holding)) > 0:
+        if wait.remaining() <= 0:
+            raise wait.timed_out("docling")
+        await asyncio.sleep(min(left, wait.remaining()))
+
+
 def get_gate_waiter_count(
     host: ConcurrencyHost, tier: ParseTier | None = None
 ) -> int:
@@ -1535,6 +1609,8 @@ class RequeueWithoutAttempt(Exception):
     # Whether hand-backs count toward the delivery backstop, which stops a message from
     # being handed back forever.
     counts_toward_backstop = True
+    # Names the kind of hand-back in the reason the backstop gives up with (None: the admission wording).
+    give_up_label: str | None = None
     # Whether the reason holds for the whole stage (a paused dependency), so a consumer that
     # can stop claiming does; False when only this message has to wait.
     pauses_consumer = True
@@ -1545,6 +1621,13 @@ class RequeueWithoutAttempt(Exception):
         self.delay_s = delay_s
         # The level the consumer logs the hand-back at: lower for a wake that only repeats what was already reported.
         self.log_level = log_level
+
+
+def backstop_give_up_reason(error: RequeueWithoutAttempt, cycles: int, backstop: int) -> str:
+    """The reason a message is given up on when its hand-backs reach the delivery backstop."""
+    if error.give_up_label:
+        return f"{error.give_up_label}: handed back {cycles} times (backstop {backstop})"
+    return f"handed back {cycles} times without being admitted (backstop {backstop})"
 
 
 class ProgressRequeue(RequeueWithoutAttempt):
@@ -1815,9 +1898,9 @@ async def reclass_download_slot(
     """Move a record's download place to the class its inspection now says. Returns the admission to hold from here on.
 
     A small PDF that inspection turns into a huge one keeps holding a place of the small pool while it waits for its
-    parse slot, which blocks the next small PDF's download. The place in the new class's pool is taken first (the
-    record's content is already in hand, so the places stay bounded) and the old one given back after; if no new place
-    comes free in *timeout*, ``ParseAdmissionTimeout`` is raised and the old place is still the caller's to release.
+    parse slot, which blocks the next small PDF's download. A free place of the new pool is taken without waiting and the
+    old one given back; when none is free the old place is given back first and the record queues for the new one (never
+    waiting while holding the old). If none comes free in *timeout*, ``ParseAdmissionTimeout`` is raised.
     A no-op without ``PARSE_ADMISSION=classes`` or when the class did not change."""
     if admission is None or admission.released or ctx is None:
         return admission
@@ -1829,11 +1912,20 @@ async def reclass_download_slot(
     if ahead is wiring.download_ahead(old):
         admission.download_class = new  # type: ignore[attr-defined]  # large and huge share the big pool: the place is right
         return admission
+    if await ahead.try_acquire():
+        # A place of the new pool is free now: take it, then give the old one back.
+        moved = Admission(tier=ParseTier.HEAVY, _release=ahead.release)
+        moved.download_class = new  # type: ignore[attr-defined]
+        release_admission(admission)
+        return moved
+    # None is free. Never wait while holding the old place: two records crossing between full pools would wait on each
+    # other. Give it back, then queue for the new one through the ordinary path (its content is in hand, so the excess
+    # is bounded by the records moving).
+    release_admission(admission)
     if not await ahead.acquire(timeout):
         raise ParseAdmissionTimeout("download_ahead", timeout or 0.0)
     moved = Admission(tier=ParseTier.HEAVY, _release=ahead.release)
     moved.download_class = new  # type: ignore[attr-defined]
-    release_admission(admission)
     return moved
 
 
@@ -2182,18 +2274,25 @@ def admission_explain(host: ConcurrencyHost) -> dict[str, Any]:
     }
     coordinator = getattr(host, "backpressure_coordinator", None)
     paused: list[str] = []
-    remaining = 0.0
+    held: list[str] = []
+    remaining = reads_held = 0.0
     if coordinator is not None:
+        # Raw: every signalled pause. `downstream` is whether reads wait (a Docling pause on a fair consumer holds
+        # only `heldPools`' records), so `downstream: false` beside a non-zero `pauseRemainingSec` is expected.
         remaining = coordinator.pause_remaining()
         paused = sorted(coordinator.paused_services)
+        held = sorted(pool.value for pool in held_pools(host))
+        probe = getattr(host, "downstream_read_pause", None)
+        reads_held = probe() if callable(probe) else remaining
     explain: dict[str, Any] = {
         "v": 2,
         "consumerId": consumer_id(host),
         "readPause": {
             "admission": _read_paused_for_admission(host),
-            "downstream": remaining > 0.0,
+            "downstream": reads_held > 0.0,
             "pauseRemainingSec": remaining,
             "pausedServices": paused,
+            "heldPools": held,
         },
         "leases": {
             pool: {"limit": limit, "waiting": lease_waiting.get(pool, 0)}

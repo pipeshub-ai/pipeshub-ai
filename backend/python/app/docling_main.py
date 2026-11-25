@@ -38,7 +38,7 @@ from app.services.resource_governor import ResourceGovernor
 from app.services.resource_governor.controller import run_for_health
 from app.services.resource_governor.policy import docling_working_set_gb
 from app.telemetry.setup import setup_telemetry
-from app.utils.env_utils import uvicorn_worker_healthcheck_timeout
+from app.utils.env_utils import bind_host, bind_port, uvicorn_worker_healthcheck_timeout
 from app.utils.logger import install_log_redaction
 from app.utils.memory_release import limit_malloc_arenas
 from app.utils.process_hardening import mark_process_non_dumpable
@@ -87,6 +87,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         # Initialize Docling service with proper dependencies
         config_service = app_container.config_service()
         logger = app_container.logger()
+        from app.modules.indexing.replay_set import check_main_redis_eviction_policy
+
+        await check_main_redis_eviction_policy(config_service, logger, "docling")
         app.state.docling_service = DoclingService(
             config_service=config_service, logger=logger
         )
@@ -254,8 +257,10 @@ async def health_check() -> JSONResponse:
             },
         )
 
-def run(host: str = "0.0.0.0", port: int = 8081, *, reload: bool = False) -> None:
+def run(host: str | None = None, port: int | None = None, *, reload: bool = False) -> None:
     """Run the Docling service"""
+    host = host or bind_host()
+    port = port if port is not None else bind_port(8081)
     workers = max(1, int(os.getenv("DOCLING_UVICORN_WORKERS", "1")))
     if reload and workers > 1:
         workers = 1

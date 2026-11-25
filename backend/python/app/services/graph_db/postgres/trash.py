@@ -15,7 +15,7 @@ from app.config.constants.arangodb import (
     ProgressStatus,
 )
 from app.config.constants.service import DefaultEndpoints, config_node_constants
-from app.core.org_context import current_org_id
+from app.core.org_context import current_or_system, current_org_id
 from app.modules.code_graph.edge_build_trigger import is_code_record
 from app.services.graph_db.common.utils import (
     TRASH_LIST_OTHER_ROOT_NAMES,
@@ -32,6 +32,8 @@ from app.services.graph_db.common.utils import (
 from app.services.graph_db.entity_index_queries import APP_STATUS_DELETING
 from app.services.graph_db.postgres.base import _VALIDATOR, PgBase, _doc, _j
 from app.services.graph_db.postgres.hierarchy import _EDGE_COLLS, _remove_records
+from app.services.graph_db.postgres.kg import hierarchy as kg_hier
+from app.services.graph_db.postgres.kg import trash as kg_trash
 from app.services.graph_db.postgres.records import _rec, _uniq
 from app.services.graph_db.push_claim import (
     KB_DELETING_STATUS,
@@ -39,6 +41,7 @@ from app.services.graph_db.push_claim import (
     PushExpect,
     PushSet,
 )
+from app.utils import error_class
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_messages import action_failed
 
@@ -95,8 +98,7 @@ class TrashMixin(PgBase):
 
         try:
             row = await self._q(go, transaction, write=True)
-        except Exception as e:
-            self.logger.error(f"❌ Failed to move records to the trash: {e}")
+        except Exception:
             raise
         return soft_delete_result(record_ids, list(row["root_keys"]), row["marked"], batch_id)
 
@@ -133,7 +135,8 @@ class TrashMixin(PgBase):
                     WHERE h.org_id = $1 AND h.coll = 'records' AND h.doc->>'externalRecordId' = c.ext AND h.doc->>'connectorId' = $3
                       AND coalesce((h.doc->>'isDeleted')::boolean, false) AND NOT h.id = ANY($5::text[])""", org, _j(reclaims), connector_id, TRASHED_EXTERNAL_ID_PREFIX, ids)
             rows = await tx.fetch("""/* pipeshub:graph.restore_records */ UPDATE graph.nodes n SET doc = ((n.doc - $3::text[] - z.cleared) ||
-                  jsonb_build_object('isDeleted', false, 'updatedAtTimestamp', $4::bigint)) || (x.set - z.cleared)
+                  jsonb_build_object('isDeleted', false, 'updatedAtTimestamp', $4::bigint, 'firstQueuedAt', CASE WHEN jsonb_typeof(x.set->'restoredAtTimestamp') = 'number' THEN GREATEST($4::bigint::numeric, (x.set->>'restoredAtTimestamp')::numeric + 1) ELSE $4::bigint::numeric END,
+                  'indexingAttempts', 0)) || (x.set - z.cleared)
                 FROM jsonb_to_recordset($2::jsonb) x(id text, set jsonb),
                   LATERAL (SELECT coalesce(array_agg(k.key), '{}'::text[]) AS cleared FROM jsonb_each(x.set) k WHERE k.value = 'null'::jsonb) z WHERE n.org_id = $1 AND n.coll = 'records' AND n.id = x.id RETURNING n.id""",
                                   org, _j(items), list(TRASH_STATE_FIELDS), get_epoch_timestamp_in_ms())
@@ -164,16 +167,22 @@ class TrashMixin(PgBase):
     async def list_trashed_records(self, connector_id: str, org_id: str, *, skip: int = 0, limit: int = 25, single_file_batches_only: bool = False,
                                    after: tuple[int, str] | None = None, count_cap: int | None = None,
                                    transaction: str | None = None) -> dict[str, Any]:
-        """One row per delete batch of a connector's trash (a batch restores whole), newest first."""
+        """One row per delete batch of a connector's trash (a batch restores whole), newest first. Paged from the typed graph for a connector it serves
+        (``kg.trash.page``), else walked."""
         if not connector_id or not org_id or limit <= 0:
             return {"items": [], "total": 0}
         org = current_org_id()
-        rows = await self._qrows("""/* pipeshub:graph.list_trashed_records */ WITH tr AS MATERIALIZED (SELECT n.id, n.doc FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = 'records' AND coalesce((n.doc->>'isDeleted')::boolean, false)),
+        cap = None if count_cap is None else count_cap + 1
+
+        async def walk(tx: Tx) -> tuple[list[dict], int]:
+            # A root's trashed parent is read by its key: probed in `tr` (a CTE, no index) it scanned every trashed record of the org per root.
+            # A batch's size is joined to its records once: as a subquery per root, `cnt` (inlined) counted every trashed record of the org again for each root.
+            rows = await tx.fetch("""/* pipeshub:graph.list_trashed_records */ WITH tr AS MATERIALIZED (SELECT n.id, n.doc FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = 'records' AND coalesce((n.doc->>'isDeleted')::boolean, false)),
             cnt AS (SELECT doc->>'deleteBatchId' AS batch, count(*) AS c FROM tr GROUP BY 1),
             roots AS (SELECT r.id, r.doc->>'deleteBatchId' AS batch, (r.doc->>'deletedAtTimestamp')::bigint AS ts, r.doc->>'recordName' AS name FROM tr r
-              WHERE r.doc->>'connectorId' = $2 AND r.doc->>'deletedAtTimestamp' IS NOT NULL AND r.doc->>'orgId' = $3 AND r.doc->>'deleteBatchId' IS NOT NULL
-                AND CASE WHEN $4 AND (SELECT c FROM cnt WHERE cnt.batch = r.doc->>'deleteBatchId') > 1 THEN false
-                         WHEN EXISTS (SELECT 1 FROM graph.edges e JOIN tr p ON p.id = e.from_id WHERE e.org_id = $1 AND e.coll = 'nodeRelations' AND e.doc->>'relationshipType' IN ('PARENT_CHILD', 'ATTACHMENT') AND e.from_coll = 'records'
+              LEFT JOIN cnt ON cnt.batch = r.doc->>'deleteBatchId' WHERE r.doc->>'connectorId' = $2 AND r.doc->>'deletedAtTimestamp' IS NOT NULL AND r.doc->>'orgId' = $3 AND r.doc->>'deleteBatchId' IS NOT NULL
+                AND CASE WHEN $4 AND cnt.c > 1 THEN false
+                         WHEN EXISTS (SELECT 1 FROM graph.edges e JOIN graph.nodes p ON p.org_id = e.org_id AND p.coll = 'records' AND p.id = e.from_id AND coalesce((p.doc->>'isDeleted')::boolean, false) WHERE e.org_id = $1 AND e.coll = 'nodeRelations' AND e.doc->>'relationshipType' IN ('PARENT_CHILD', 'ATTACHMENT') AND e.from_coll = 'records'
                                       AND e.to_id = r.id AND p.doc->>'deleteBatchId' = r.doc->>'deleteBatchId') THEN false
                          ELSE NOT $4 OR EXISTS (SELECT 1 FROM graph.edges ie JOIN graph.nodes t ON t.org_id = ie.org_id AND t.coll = ie.to_coll AND t.id = ie.to_id
                                                 WHERE ie.org_id = $1 AND ie.coll = 'isOfType' AND ie.from_id = r.id AND t.doc->>'isFile' = 'true') END),
@@ -195,18 +204,25 @@ class TrashMixin(PgBase):
     WHERE e.org_id = r.org_id AND e.coll = 'isOfType' AND e.from_id = r.id LIMIT 1) ty ON true
             LEFT JOIN graph.nodes u ON u.org_id = $1 AND u.coll = 'users' AND u.id = r.deleted_by
             ORDER BY page.deleted_at DESC, page.batch DESC""", org, connector_id, org_id, single_file_batches_only, max(skip, 0), limit,
-                                TRASH_LIST_OTHER_ROOT_NAMES, *(after or (None, None)), transaction=transaction)
-        total = await self._q(lambda tx: tx.fetchval("""/* pipeshub:graph.list_trashed_records_total */ WITH tr AS MATERIALIZED (SELECT n.id, n.doc FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = 'records' AND coalesce((n.doc->>'isDeleted')::boolean, false)),
+                                  TRASH_LIST_OTHER_ROOT_NAMES, *(after or (None, None)))
+            total = await tx.fetchval("""/* pipeshub:graph.list_trashed_records_total */ WITH tr AS MATERIALIZED (SELECT n.id, n.doc FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = 'records' AND coalesce((n.doc->>'isDeleted')::boolean, false)),
             cnt AS (SELECT doc->>'deleteBatchId' AS batch, count(*) AS c FROM tr GROUP BY 1),
             roots AS (SELECT r.id, r.doc->>'deleteBatchId' AS batch, (r.doc->>'deletedAtTimestamp')::bigint AS ts, r.doc->>'recordName' AS name FROM tr r
-              WHERE r.doc->>'connectorId' = $2 AND r.doc->>'deletedAtTimestamp' IS NOT NULL AND r.doc->>'orgId' = $3 AND r.doc->>'deleteBatchId' IS NOT NULL
-                AND CASE WHEN $4 AND (SELECT c FROM cnt WHERE cnt.batch = r.doc->>'deleteBatchId') > 1 THEN false
-                         WHEN EXISTS (SELECT 1 FROM graph.edges e JOIN tr p ON p.id = e.from_id WHERE e.org_id = $1 AND e.coll = 'nodeRelations' AND e.doc->>'relationshipType' IN ('PARENT_CHILD', 'ATTACHMENT') AND e.from_coll = 'records'
+              LEFT JOIN cnt ON cnt.batch = r.doc->>'deleteBatchId' WHERE r.doc->>'connectorId' = $2 AND r.doc->>'deletedAtTimestamp' IS NOT NULL AND r.doc->>'orgId' = $3 AND r.doc->>'deleteBatchId' IS NOT NULL
+                AND CASE WHEN $4 AND cnt.c > 1 THEN false
+                         WHEN EXISTS (SELECT 1 FROM graph.edges e JOIN graph.nodes p ON p.org_id = e.org_id AND p.coll = 'records' AND p.id = e.from_id AND coalesce((p.doc->>'isDeleted')::boolean, false) WHERE e.org_id = $1 AND e.coll = 'nodeRelations' AND e.doc->>'relationshipType' IN ('PARENT_CHILD', 'ATTACHMENT') AND e.from_coll = 'records'
                                       AND e.to_id = r.id AND p.doc->>'deleteBatchId' = r.doc->>'deleteBatchId') THEN false
                          ELSE NOT $4 OR EXISTS (SELECT 1 FROM graph.edges ie JOIN graph.nodes t ON t.org_id = ie.org_id AND t.coll = ie.to_coll AND t.id = ie.to_id
                                                 WHERE ie.org_id = $1 AND ie.coll = 'isOfType' AND ie.from_id = r.id AND t.doc->>'isFile' = 'true') END)
-            SELECT count(*) FROM (SELECT DISTINCT batch FROM roots LIMIT $5::bigint) b""",
-                                                      org, connector_id, org_id, single_file_batches_only, None if count_cap is None else count_cap + 1), transaction)
+            SELECT count(*) FROM (SELECT DISTINCT batch FROM roots LIMIT $5::bigint) b""", org, connector_id, org_id, single_file_batches_only, cap)
+            return [dict(r) for r in rows], total
+        got = await kg_hier.answer(self, "trash", transaction, lambda tx: kg_trash.page(tx, org, connector_id, org_id, files_only=single_file_batches_only,
+                                                                                       skip=max(skip, 0), limit=limit, after=after, count_cap=count_cap), walk=walk)
+        if got is None:
+            # The page and its total in one snapshot: a caller's transaction is one already; otherwise one repeatable-read unit, with the role _q would choose.
+            got = await (self._q(walk, transaction) if transaction else
+                         self._db.run(walk, isolation="repeatable_read", custom_plan=True, jobs=current_or_system().kind == "system"))
+        rows, total = got
         items = [{"record": _rec(r["rec"]), "parentId": r["parent_id"], "parentName": r["parent_name"],
                   "parentIsDeleted": (r["parent_deleted"] == "true") if r["parent_id"] else None,
                   "isFile": None if r["is_file"] is None else r["is_file"] == "true", "fileMimeType": r["file_mime"],
@@ -431,7 +447,8 @@ class TrashMixin(PgBase):
                             )
                         }
                     except Exception as decode_error:
-                        self.logger.warning(f"Failed to decode file content as UTF-8: {str(decode_error)}")
+                        error_class.log_failure(self.logger, "graph.provider.step_failed", decode_error, include_error_text=False,
+                                                op="_create_reindex_event_payload", step="decode_file_content")
 
             # Standard payload for non-MAIL records
             return {
@@ -455,8 +472,7 @@ class TrashMixin(PgBase):
                 )
             }
 
-        except Exception as e:
-            self.logger.error(f"❌ Failed to create reindex event payload: {str(e)}")
+        except Exception:
             raise
 
     async def reindex_single_record(
@@ -664,7 +680,8 @@ class TrashMixin(PgBase):
                 }
 
             except Exception as event_error:
-                self.logger.error(f"❌ Failed to create reindex event data: {str(event_error)}")
+                error_class.log_failure(self.logger, "graph.provider.failed", event_error, include_error_text=False,
+                                        op="reindex_single_record")
                 # Return success but indicate event data creation failed
                 return {
                     "success": True,
@@ -677,7 +694,8 @@ class TrashMixin(PgBase):
                 }
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to reindex record {record_id}: {str(e)}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="reindex_single_record", record_id=record_id)
             return {"success": False, "code": 500, "reason": str(e)}
 
     async def reindex_record_group_records(
@@ -747,8 +765,9 @@ class TrashMixin(PgBase):
                 allowed = record_group_id in (await self.check_access(
                     user_key, org_id, node_ids=[record_group_id],
                 )).node_ids
-            except Exception:
-                self.logger.exception("❌ Access check failed for record group %s", record_group_id)
+            except Exception as exc:
+                error_class.log_failure(self.logger, "graph.provider.failed", exc, include_error_text=False,
+                                        op="reindex_record_group_records")
                 return {"success": False, "code": 500, "reason": action_failed("check access to this record group")}
             if not allowed:
                 return {
@@ -778,5 +797,6 @@ class TrashMixin(PgBase):
             }
 
         except Exception as e:
-            self.logger.error("❌ Failed to validate record group reindex: %s", str(e))
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="reindex_record_group_records")
             return {"success": False, "code": 500, "reason": str(e)}

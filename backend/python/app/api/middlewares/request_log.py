@@ -5,6 +5,7 @@ import contextlib
 import inspect
 import ipaddress
 import logging
+import re
 from collections.abc import Awaitable, Callable, MutableMapping
 from dataclasses import dataclass, replace
 from time import perf_counter
@@ -30,6 +31,8 @@ _FIELDS_KEY = "pipeshub.request_log_fields"
 # Never routine: a service token naming another org is our bug or a stolen token.
 _REASON_LEVEL = {"org_mismatch": logging.WARNING}
 _CRASH_BODY = {"detail": "Internal server error"}
+# Node's isShownId (logger.service.ts), which its bindPathLogFields applies too: one rule for an id on a line.
+_SHOWN_ID = re.compile(r"[A-Za-z0-9._:-]{1,128}")
 # When the line saw the client leave: before the answer started, or after it started and before its last body message.
 # A disconnect seen after the last body was handed over is the server's "response complete" and not recorded.
 _BEFORE_ANSWER = "before_answer"
@@ -80,10 +83,12 @@ def bind_request_log_fields(request: Request, **ids: object) -> None:
 
 
 def path_log_fields(**field_by_param: str) -> Callable[[Request], Awaitable[None]]:
-    """A router dependency binding path parameters as log ids: ``path_log_fields(instance_id="toolset_id")``."""
+    """A router dependency binding path parameters as log ids: ``path_log_fields(instance_id="toolset_id")``. It runs
+    before the route checks anything, so a value is bound only when it is shaped like an id."""
     async def bind(request: Request) -> None:  # async: a sync dependency runs in a thread, which loses the binding
-        bind_request_log_fields(request, **{field: request.path_params.get(param)
-                                            for param, field in field_by_param.items()})
+        values = {field: request.path_params.get(param) for param, field in field_by_param.items()}
+        bind_request_log_fields(request, **{field: v for field, v in values.items()
+                                            if v is not None and _SHOWN_ID.fullmatch(str(v))})
 
     return bind
 
@@ -133,13 +138,9 @@ def _status_class(status: int) -> str:
     return "internal" if status == 500 else error_class.classify_error(status)
 
 
-def _has_chain(exc: BaseException) -> bool:
-    return exc.__cause__ is not None or (exc.__context__ is not None and not exc.__suppress_context__)
-
-
 def _handed_over_class(exc: BaseException) -> str:
     """A bare HTTPException is its own status's class; one raised from a failure is that failure's class (P1b)."""
-    if isinstance(exc, StarletteHTTPException) and not _has_chain(exc):
+    if isinstance(exc, StarletteHTTPException) and not error_class.has_chain(exc):
         return _status_class(exc.status_code)
     return error_class.classify_error(exc)
 
@@ -231,7 +232,7 @@ def _log_exception(failure: _Failure, cls: str, **fields: object) -> None:
         log_event(logger, EVENT, level=error_class.level_for(cls), outcome="failure", error_class=cls, **fields)
         return
     # A type name only, so it stays with include_error_text=False.
-    cause_type = error_class.innermost_type(exc) if _has_chain(exc) else None
+    cause_type = error_class.innermost_type(exc) if error_class.has_chain(exc) else None
     if not error_class.already_logged(exc, error_class.level_for(cls)):
         error_class.log_failure(logger, EVENT, exc, error_class=cls, include_error_text=failure.include_error_text,
                                 cause_type=cause_type, **fields)
@@ -312,7 +313,7 @@ class _AlreadyLogged(logging.Filter):
     """On ``uvicorn.error``: drops "Exception in ASGI application" for an exception ``http.request.end`` logged."""
 
     def filter(self, record: logging.LogRecord) -> bool:
-        exc = record.exc_info[1] if record.exc_info else None
+        exc = error_class.record_exception(record)
         return exc is None or error_class.logged_level(exc) is None
 
 

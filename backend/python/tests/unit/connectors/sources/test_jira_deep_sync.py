@@ -55,6 +55,9 @@ def _make_mock_deps():
     dep = MagicMock()
     dep.org_id = "org-jira-1"
     dep.on_new_app_users = AsyncMock()
+    dep.open_app_to_org_team = AsyncMock(return_value=True)
+    dep.withdraw_team_app_edge = AsyncMock()
+    dep.org_team_app_edge_exists = AsyncMock(return_value=False)
     dep.on_new_user_groups = AsyncMock()
     dep.on_new_records = AsyncMock()
     dep.on_new_record_groups = AsyncMock()
@@ -84,6 +87,9 @@ def _make_connector():
     connector = JiraConnector(logger, dep, dsp, cs, "conn-jira-1", "team", "test-user-id")
     # No issue security scheme: unsecured issues are unchanged
     connector._load_issue_security = AsyncMock(return_value=IssueSecurityContext(knowledge=SchemeKnowledge.NONE))
+    # The role list kept for security levels (roles_for_levels): nothing kept yet.
+    connector.issues_sync_point.read_sync_point = AsyncMock(return_value={})
+    connector.issues_sync_point.update_sync_point = AsyncMock()
     return connector
 
 
@@ -194,6 +200,7 @@ class TestRunSync:
             from app.connectors.core.registry.filters import FilterCollection
             mock_filters.return_value = (FilterCollection(), FilterCollection())
             connector._fetch_users = AsyncMock(return_value=[user])
+            connector._keep_licensed_users = AsyncMock(side_effect=lambda found, _mapping: found)  # all licensed
             connector._sync_user_groups = AsyncMock(return_value={"g1": [user]})
             rg = _project_rg()
             connector._fetch_projects = AsyncMock(return_value=(
@@ -249,6 +256,30 @@ class TestRunSync:
             await connector.run_sync()
 
         assert [k for k in order if k in ("sweep", "people_reread")] == (["sweep", "people_reread"] if swept else ["sweep"])
+
+    @pytest.mark.asyncio
+    async def test_a_failed_read_of_the_pipeshub_users_fails_the_sync_loudly(self) -> None:
+        """Every store answers a failed user read with no users unless asked to raise: read that way, the sync
+        stopped as if the org had no users, and nobody was told."""
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+
+        async def get_all_active_users(*, raise_on_error: bool = False) -> list:
+            if raise_on_error:
+                raise ConnectionError("graph unavailable")
+            return []
+
+        connector.data_entities_processor.get_all_active_users = AsyncMock(side_effect=get_all_active_users)
+        connector.notify = AsyncMock()
+        with patch(
+            "app.connectors.sources.atlassian.jira_cloud.connector.load_connector_filters",
+            new_callable=AsyncMock,
+        ) as mock_filters:
+            from app.connectors.core.registry.filters import FilterCollection
+            mock_filters.return_value = (FilterCollection(), FilterCollection())
+            with pytest.raises(ConnectionError):
+                await connector.run_sync()
+        connector.notify.assert_awaited()
 
     @pytest.mark.asyncio
     async def test_run_sync_propagates_exception(self):
@@ -331,6 +362,7 @@ class TestSyncAllProjectIssues:
             "updated_count": 0,
             "failed_count": 0,
             "failed_project_keys": [],
+            "incomplete_project_keys": [],
             "failed_project_statuses": {},
             "full_sync_project_ids": set(),
             "leveled_reread_project_ids": set(),
@@ -475,6 +507,41 @@ class TestFetchIssuesBatched:
             batches.append(batch)
 
         assert len(batches) == 2
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("pages", "built", "complete"), [
+        ([{"issues": [], "isLast": False, "nextPageToken": "t1"}, {"issues": ["I"], "nextPageToken": None}], 1, True),
+        ([{"issues": [], "isLast": False, "nextPageToken": "t1"}, {"issues": [], "isLast": False, "nextPageToken": "t1"}],
+         0, False),
+        ([{"issues": [], "isLast": True, "nextPageToken": "t1"}], 0, True),
+        ([{"issues": [], "isLast": False}], 0, False),
+        ([{"issues": ["I"], "isLast": False}], 1, False),
+        ([{"issues": ["I"], "nextPageToken": "t1"}, {"issues": ["I"], "isLast": False, "nextPageToken": "t1"}], 2, False),
+        ([{"issues": ["I"], "isLast": True, "nextPageToken": "t9"}], 1, True),
+        ([{"issues": ["I"], "nextPageToken": ["not", "a", "token"]}], 1, False),
+    ], ids=["empty_page_then_issues", "repeated_token", "last_page", "not_last_without_a_token",
+            "issues_not_last_without_a_token", "issues_with_a_repeated_token", "issues_last_page_with_a_token",
+            "issues_with_a_malformed_token"])
+    async def test_an_empty_page_that_is_not_the_last_is_followed(self, pages: list, built: int, complete: bool) -> None:
+        """Enhanced search can answer an empty page with a nextPageToken before a page with issues: stopping there would
+        leave the later issues with their old access and report the pass done."""
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector.sync_filters = None
+        connector.indexing_filters = None
+        connector._issue_build_failures = 0
+        issue = _issue_dict("1001", "PROJ-1", "2024-06-01T00:00:00.000+0000")
+        bodies = [{**p, "issues": [issue if i == "I" else i for i in p["issues"]]} for p in pages]
+        ds = MagicMock()
+        ds.search_and_reconsile_issues_using_jql_post = AsyncMock(return_value=_resp(200, {}))
+        connector._get_fresh_datasource = AsyncMock(return_value=ds)
+        connector._build_issue_records = AsyncMock(return_value=([MagicMock()], []))
+        connector._safe_json_parse = MagicMock(side_effect=bodies)
+
+        batches = [batch async for batch, _more, _ts in connector._fetch_issues_batched("PROJ", "p-1", [], None, None)]
+
+        assert sum(len(b) for b in batches) == built
+        assert (connector._issue_build_failures == 0) is complete
 
     @pytest.mark.asyncio
     async def test_api_error_raises(self):
@@ -949,7 +1016,7 @@ class TestSyncUserGroups:
         result = await connector._sync_user_groups([user])
 
         assert "g1" in result
-        assert "devs" in result
+        assert "devs" not in result  # by id only: a name resolves through _group_ids_by_name
         connector.data_entities_processor.on_new_user_groups.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -1189,10 +1256,12 @@ class TestProcessNewRecords:
         connector = _make_connector()
 
         epic = MagicMock(spec=TicketRecord)
+        epic.external_record_id = "epic-1"
         epic.parent_external_record_id = None
         epic.version = 0
 
         task = MagicMock(spec=TicketRecord)
+        task.external_record_id = "task-1"
         task.parent_external_record_id = "epic-1"
         task.version = 0
 
@@ -1201,8 +1270,8 @@ class TestProcessNewRecords:
 
         await connector._process_new_records(records, "PROJ", stats)
 
-        # Should have called on_new_records
-        connector.data_entities_processor.on_new_records.assert_awaited()
+        written = [r for r, _ in connector.data_entities_processor.on_new_records.await_args.args[0]]
+        assert written == [epic, task]
         assert stats["new_count"] == 2
 
     @pytest.mark.asyncio
@@ -1210,10 +1279,12 @@ class TestProcessNewRecords:
         connector = _make_connector()
 
         new_rec = MagicMock(spec=TicketRecord)
+        new_rec.external_record_id = "new-1"
         new_rec.parent_external_record_id = None
         new_rec.version = 0
 
         updated_rec = MagicMock(spec=TicketRecord)
+        updated_rec.external_record_id = "updated-1"
         updated_rec.parent_external_record_id = None
         updated_rec.version = 3
 
@@ -2128,14 +2199,14 @@ class TestInlineResolverEdges:
 class TestFetchIssueAttachmentsEdges:
 
     @pytest.mark.asyncio
-    async def test_exception_returns_empty_list(self):
+    async def test_exception_is_raised_for_the_caller_to_retry_the_issue(self):
         connector = _make_connector()
         connector._resolve_inline_image_attachment_ids = MagicMock(side_effect=RuntimeError("x"))
-        result = await connector._fetch_issue_attachments(
-            "1", "PROJ-1", {"attachment": [{"id": "1"}]}, [], "p-1",
-            RecordGroupType.PROJECT, AsyncMock(),
-        )
-        assert result == []
+        with pytest.raises(RuntimeError):
+            await connector._fetch_issue_attachments(
+                "1", "PROJ-1", {"attachment": [{"id": "1"}]}, [], "p-1",
+                RecordGroupType.PROJECT, AsyncMock(),
+            )
 
     @pytest.mark.asyncio
     async def test_no_attachments_returns_empty(self):
@@ -2430,10 +2501,12 @@ class TestEdgeRebuildRecordsAreNotRepublished:
         connector = _make_connector()
 
         changed = MagicMock(spec=TicketRecord)
+        changed.external_record_id = "changed-1"
         changed.parent_external_record_id = None
         changed.version = 3
 
         unchanged = MagicMock(spec=TicketRecord)
+        unchanged.external_record_id = "unchanged-1"
         unchanged.parent_external_record_id = None
         unchanged.version = 7
 

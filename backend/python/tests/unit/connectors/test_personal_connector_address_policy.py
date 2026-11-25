@@ -20,6 +20,8 @@ import asyncpg
 import pytest
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+
     from app.connectors.sources.cifs.connector import CifsConnector
 
 import app.sources.client.postgres.postgres as pg_client
@@ -74,12 +76,16 @@ def _resolve(monkeypatch, answers: dict[str, str]) -> MagicMock:
 
 
 @pytest.fixture
-def no_socket_connect(monkeypatch) -> None:
-    """Any attempt to open a TCP connection fails the test."""
+async def no_socket_connect() -> AsyncIterator[MagicMock]:
+    """Any attempt to open a TCP connection fails the test.
+
+    Async, and undone in its own teardown, so the patch is on only while the test's
+    event loop exists: on Windows building a loop connects a loopback socketpair."""
     connect = MagicMock(side_effect=AssertionError("a socket connect was attempted"))
-    monkeypatch.setattr(socket.socket, "connect", connect)
-    monkeypatch.setattr(socket.socket, "connect_ex", connect)
-    return connect
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(socket.socket, "connect", connect)
+        mp.setattr(socket.socket, "connect_ex", connect)
+        yield connect
 
 
 @pytest.fixture

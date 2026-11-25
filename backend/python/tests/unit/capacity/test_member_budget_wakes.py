@@ -18,6 +18,7 @@ from app.capacity.member_budget import (
     CancelToken,
     MemberBudget,
 )
+from tests.support.eventually import until
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -38,29 +39,23 @@ def _small(n: int = 1) -> Demand:
     return Demand(Family.PARSE, n, 0, "small")
 
 
-def _p95(values: list[float]) -> float:
-    return sorted(values)[max(0, int(len(values) * 0.95) - 1)]
-
-
-async def test_a_release_wakes_a_waiter_within_a_few_milliseconds(ledger: Path) -> None:
+async def test_a_release_wakes_a_waiter_within_a_few_milliseconds(ledger: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The wake comes from the watcher's next read of the change counters, every ``WATCH_S``: not from the fallback tick."""
+    assert mb.WATCH_S <= 0.005
+    monkeypatch.setattr(mb, "FALLBACK_S", 60.0)  # past the deadline: only the release's wake can serve the waiter
     b = MemberBudget(ledger, cpu_tokens=16, mem_bytes=1 << 36, llm_cap=1)
-    latencies: list[float] = []
     for _ in range(30):
         held = await b.reserve(_llm(), deadline_s=1)
-        task = asyncio.create_task(b.reserve(_llm(), deadline_s=5))
-        await asyncio.sleep(0.02)
-        started = time.monotonic()
+        task = asyncio.create_task(b.reserve(_llm(), deadline_s=10))
+        assert await until(lambda: bool(b._watcher._entries))  # its first attempt failed; it now waits for a wake
         held.release()
-        permit = await asyncio.wait_for(task, 2)
-        latencies.append(time.monotonic() - started)
-        permit.release()
-    assert _p95(latencies) < 0.02, sorted(latencies)[-3:]
+        (await asyncio.wait_for(task, 15)).release()  # a missed wake times out at the 10 s deadline
 
 
 async def test_a_release_that_lands_before_the_watchers_first_read_is_not_missed(ledger: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """The watcher thread starts late (as a descheduled thread would): the waiter's own pre-attempt read still sees the change."""
     b = MemberBudget(ledger, cpu_tokens=16, mem_bytes=1 << 36, llm_cap=1)
-    monkeypatch.setattr(mb, "FALLBACK_S", 5.0)  # only a wake, not the fallback tick, can serve the waiter in time
+    monkeypatch.setattr(mb, "FALLBACK_S", 60.0)  # past the deadline: only a wake can serve the waiter
     real_run = mb._Watcher._run
 
     def late(self: mb._Watcher) -> None:
@@ -71,23 +66,20 @@ async def test_a_release_that_lands_before_the_watchers_first_read_is_not_missed
     held = await b.reserve(_llm(), deadline_s=1)
     task = asyncio.create_task(b.reserve(_llm(), deadline_s=10))
     await asyncio.sleep(0.05)  # the waiter has made its first attempt; the watcher thread is still asleep
-    started = time.monotonic()
     held.release()
-    await asyncio.wait_for(task, 3)
-    assert time.monotonic() - started < 1.0
+    (await asyncio.wait_for(task, 15)).release()  # a missed wake times out at the 10 s deadline
 
 
-async def test_freeing_k_llm_slots_at_once_wakes_k_waiters_in_one_round(ledger: Path) -> None:
+async def test_freeing_k_llm_slots_at_once_wakes_k_waiters_in_one_round(ledger: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(mb, "FALLBACK_S", 60.0)  # past the deadline: a waiter the release did not wake times out
     b = MemberBudget(ledger, cpu_tokens=16, mem_bytes=1 << 36, llm_cap=20)
     holder = MemberBudget(ledger, cpu_tokens=16, mem_bytes=1 << 36, llm_cap=20)
     held = [holder.try_reserve(_llm()) for _ in range(20)]
     waiters = [asyncio.create_task(b.reserve(_llm(), deadline_s=10)) for _ in range(20)]
     await asyncio.sleep(0.3)
     assert not any(w.done() for w in waiters)
-    started = time.monotonic()
     holder.close()  # one call frees 20 slots
-    await asyncio.wait_for(asyncio.gather(*waiters), 5)
-    assert time.monotonic() - started < 0.5  # one wake round, not one waiter per fallback tick (about 1.4 s)
+    await asyncio.wait_for(asyncio.gather(*waiters), 15)  # all 20 woken by the release; one not woken times out at 10 s
     assert len(held) == 20
 
 
@@ -142,9 +134,11 @@ def test_a_blocking_wait_whose_deadline_passed_does_not_take_one_more_permit(led
     waiting = threading.Event()
     result: list[BaseException | object] = []
     real_wait = threading.Event.wait
+    me = threading.get_ident()
 
     def wait_then_pass_the_deadline(self: threading.Event, timeout: float | None = None) -> bool:
-        if timeout is None or waiting.is_set():
+        # the patch is process-wide: another thread's timed wait (a controller left by an earlier test) must not move the clock before this wait starts
+        if timeout is None or waiting.is_set() or threading.get_ident() != me:
             return real_wait(self, timeout)  # thread start-up and everything else that waits on an Event
         waiting.set()  # the waiter has made its first attempt and is about to sleep
         now[0] += 10.0  # the deadline passes while it sleeps ...
@@ -152,6 +146,9 @@ def test_a_blocking_wait_whose_deadline_passed_does_not_take_one_more_permit(led
         return real_wait(self, 5)
 
     monkeypatch.setattr(threading.Event, "wait", wait_then_pass_the_deadline)
+    bystander = threading.Thread(target=lambda: threading.Event().wait(0.01))  # a timed wait in another thread, as under a loaded run
+    bystander.start()
+    bystander.join()
     try:
         b.reserve_blocking(_small(), deadline_s=5)
         result.append("took the permit")
@@ -217,7 +214,7 @@ def test_a_forked_child_that_only_closes_does_not_keep_the_parents_lock_alive(le
         finally:
             os._exit(0)
     os.close(w)  # the parent's write end: a failed child then ends the read with EOF instead of hanging it
-    assert os.read(r, 1) == b"x"
+    assert _read_or_kill(r, pid) == b"x"
     os.close(r)
     try:
         # The parent's slot lock must still be held by the parent alone: closing a copy does not release it,
@@ -248,9 +245,22 @@ def test_a_forked_child_can_wait_for_a_slot_the_parent_frees(ledger: Path) -> No
             os._exit(code)
     time.sleep(0.1)
     held.release()  # the parent frees the only slot while the child waits
-    outcome = os.read(r, 1)
+    outcome = _read_or_kill(r, pid)
     os.waitpid(pid, 0)
     assert outcome == b"\x00"
+
+
+def _read_or_kill(r: int, pid: int, timeout: float = 15.0) -> bytes:
+    """One byte from the child, or a failure: a child that hangs (a regression) is killed so pytest does not hang with it."""
+    import select
+    import signal
+
+    ready, _, _ = select.select([r], [], [], timeout)
+    if not ready:
+        os.kill(pid, signal.SIGKILL)
+        os.waitpid(pid, 0)
+        pytest.fail(f"the forked child did not answer within {timeout} s (it was killed)")
+    return os.read(r, 1)
 
 
 def _in_a_forked_child(work: object) -> bytes:
@@ -266,8 +276,9 @@ def _in_a_forked_child(work: object) -> bytes:
         finally:
             os.write(w, bytes([code]))
             os._exit(code)
-    outcome = os.read(r, 1)
+    outcome = _read_or_kill(r, pid)
     os.waitpid(pid, 0)
+    os.close(r)
     return outcome
 
 
@@ -296,17 +307,15 @@ async def _async_wait(b: MemberBudget) -> None:
 
 
 async def test_a_freed_token_wakes_the_critical_waiter_before_an_older_big_one(ledger: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(mb, "FALLBACK_S", 5.0)  # only a wake, not the fallback tick, can serve the waiter in time
+    monkeypatch.setattr(mb, "FALLBACK_S", 60.0)  # past the deadline: only a wake can serve the waiter
     b = MemberBudget(ledger, cpu_tokens=1, mem_bytes=1 << 36)
     held = b.try_reserve(_small())
     big = asyncio.create_task(b.reserve(Demand(Family.PARSE, 1, 0, "large"), deadline_s=10))
     await asyncio.sleep(0.1)
     critical = asyncio.create_task(b.reserve(_small(), deadline_s=10))
     await asyncio.sleep(0.1)
-    started = time.monotonic()
     held.release()
-    permit = await asyncio.wait_for(critical, 2)
-    assert time.monotonic() - started < 0.5  # woken first, not after the fallback tick (5 s)
+    permit = await asyncio.wait_for(critical, 15)  # woken first; not woken, it times out at its 10 s deadline
     assert not big.done()
     permit.release()
     (await asyncio.wait_for(big, 2)).release()

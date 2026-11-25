@@ -51,8 +51,11 @@ CALLS = {
     "get_typed_records_batch": (["r"],), "get_virtual_record_ids_for_record_ids": (["r"],), "get_virtual_record_ids_in_use": (["v"],),
     "get_virtual_record_holders": (["v"], "o"),
     "batch_upsert_records": ([plain("o", "r")],), "create_record_relation": ("a", "b", "BOOKMARK"),
+    "write_attempt_start": ("r", {"indexingStatus": "IN_PROGRESS"}),
     "compare_and_set_indexing_status": (["r"], "QUEUED", "COMPLETED"), "update_indexing_status_for_record_ids": (["r"], "QUEUED"),
+    "update_record_fields_for_ids": (["r"], {"refreshIntentId": "i"}), "get_records_with_refresh_intent": ("org",),
     "has_records_indexed_since": ("c1", 0), "get_sync_point": ("k", "syncPoints"), "upsert_sync_point": ("k", {}, "syncPoints"),
+    "list_sync_points": ("o", "syncPoints"),
     "remove_sync_point": ("k", "syncPoints"), "_delete_records_with_their_types": (["r"],),
     "page_record_ids_by_type": ("o", ["FILE"]),
     "list_unsupported_page": ("o", "c1", None, 10), "transition_unsupported": (["r"], "QUEUED"),
@@ -80,6 +83,10 @@ async def test_a_record_is_written_with_its_type_document_and_read_back_typed(pg
     assert len(await p.get_edges_from_node("records/r1", "isOfType")) == 1 and await p.get_edges_from_node("records/r2", "isOfType") == []
     assert await p.get_record_by_id("r2") is None                      # no type document: Neo4j cannot build it either, and answers None
     assert await p.get_record_by_id("nope") is None
+    # Asked to raise, it gives the same answers: only a failed read raises, not a record that is missing or will not build.
+    assert isinstance(await p.get_record_by_id("r1", raise_on_error=True), CodeFileRecord)
+    assert await p.get_record_by_id("r2", raise_on_error=True) is None
+    assert await p.get_record_by_id("nope", raise_on_error=True) is None
     got = await p.get_typed_records_batch(["r1", "r2", "nope"])
     assert list(got) == ["r1"]                                          # what will not build is left out
 
@@ -243,6 +250,20 @@ async def test_a_sync_point_is_created_once_merged_cleared_and_removed(pg_db) ->
     await p.remove_sync_point("k", "syncPoints")
     assert await p.get_sync_point("k", "syncPoints") is None
     await p.remove_sync_point("k", "syncPoints")
+
+
+async def test_wp87_fu_4b_one_orgs_sync_points_page_in_key_order_and_another_org_reads_nothing(pg_db) -> None:
+    p, other = bound(pg_db), bound(pg_db)
+    for key in ("c", "a", "e", "b", "d"):
+        await p.upsert_sync_point(f"{p.org}/{key}", {"orgId": p.org, "cursor": key}, "syncPoints")
+    await other.upsert_sync_point(f"{other.org}/a", {"orgId": other.org}, "syncPoints")
+    first = await p.list_sync_points(p.org, "syncPoints", limit=2)
+    rest = await p.list_sync_points(p.org, "syncPoints", after_key=first[-1]["syncPointKey"], limit=10)
+    assert [d["cursor"] for d in first + rest] == ["a", "b", "c", "d", "e"]
+    assert await p.list_sync_points(other.org, "syncPoints") == []          # an org argument is only ever the ambient org
+    assert [d["syncPointKey"] for d in await other.list_sync_points(other.org, "syncPoints")] == [f"{other.org}/a"]
+    assert await p.update_sync_point_if(f"{p.org}/a", {"cursor": "a"}, {"cursor": "a2"}, "syncPoints")
+    assert not await p.update_sync_point_if(f"{p.org}/a", {"cursor": "a"}, {"cursor": "a3"}, "syncPoints")
 
 
 def filerec(org: str, rid: str, **kw: object) -> FileRecord:

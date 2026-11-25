@@ -18,6 +18,9 @@ from app.services.messaging.kafka.consumer.indexing_consumer import (
     IndexingKafkaConsumer,
 )
 from app.services.resource_governor.models import ParseTier
+from tests.unit.services.messaging.test_indexing_consumer import (
+    apply_backpressure_after_settle,
+)
 
 
 def _fill_gate_waiters(consumer, count: int, tier: ParseTier = ParseTier.HEAVY) -> None:
@@ -294,15 +297,18 @@ class TestApplyBackpressure:
         _fill_gate_waiters(consumer, messaging_env.max_pending_indexing_tasks + 1)
         consumer._IndexingKafkaConsumer__apply_backpressure()
         consumer.consumer.pause.assert_called()
-        assert consumer._backpressure_logged is True
+        assert consumer._backpressure_episode.open is True
 
     def test_clear_backpressure(self, consumer):
         consumer.consumer = MagicMock()
         consumer.consumer.paused.return_value = {MagicMock()}
-        consumer._backpressure_logged = True
+        consumer._backpressure_episode.engaged()
         consumer._IndexingKafkaConsumer__apply_backpressure()
         consumer.consumer.resume.assert_called()
-        assert consumer._backpressure_logged is False
+        assert consumer._backpressure_episode.open is True  # one clear turn does not end the episode
+        apply_backpressure_after_settle(consumer)
+        assert consumer._backpressure_episode.open is False
+        assert consumer.consumer.resume.call_count == 2  # every clear turn resumes, settled or not
 
 
 class TestInitialize:

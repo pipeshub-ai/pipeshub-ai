@@ -1,8 +1,10 @@
+import functools
 import json
 from abc import ABC, abstractmethod
-from collections.abc import Mapping, Sequence
-from typing import Dict, List, Optional, Union
+from collections.abc import Awaitable, Callable, Mapping, Sequence
+from typing import Any, Dict, List, Optional, Union
 
+from app.services.vector_db.errors import VectorsNotFetchable
 from app.services.vector_db.models import (
     CollectionConfig,
     FilterExpression,
@@ -18,6 +20,7 @@ from app.services.vector_db.models import (
     VectorDBMemoryReport,
     VectorPoint,
 )
+from harness_core.deadline import bounded_read
 
 
 class IVectorDBService(ABC):
@@ -39,6 +42,15 @@ class IVectorDBService(ABC):
     lexical leg.  Indexing and retrieval paths branch on these flags so the
     *call-site code never hard-codes provider names*.
     """
+
+    def __init_subclass__(cls, **kwargs: Any) -> None:  # noqa: ANN401
+        """Every backend's run-path reads are bounded by a tool call's remaining time (ERR-UX), so the next backend
+        gets the bound without code of its own."""
+        super().__init_subclass__(**kwargs)
+        for name in _RUN_PATH_READS:
+            method = cls.__dict__.get(name)
+            if method is not None:
+                setattr(cls, name, _bounded(method))
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -251,6 +263,20 @@ class IVectorDBService(ABC):
         """
         raise NotImplementedError
 
+    async def scroll_with_vectors(
+        self,
+        collection_name: str,
+        scroll_filter: FilterExpression,
+        limit: int,
+        offset: Optional[str] = None,
+    ) -> ScrollResult:
+        """``scroll`` returning each point whole: its full payload and its stored dense (and, where the store keeps one, sparse) vector, so
+        the point can be written again under another id with ``upsert_points`` and no new embedding.
+
+        A store that cannot hand its vectors back keeps this default and raises ``VectorsNotFetchable``; the caller then embeds again.
+        """
+        raise VectorsNotFetchable(f"{self.get_service_name()} cannot return stored vectors")
+
     def scroll_offset_after_delete(
         self, next_offset: Optional[str], deleted: int,
     ) -> Optional[str]:
@@ -447,3 +473,15 @@ class IVectorDBService(ABC):
         mapped files and expose an explicit warmup API (e.g. OpenSearch).
         """
 
+
+
+# The reads a run's knowledge tool makes; writes (indexing) are never on a tool call's path.
+_RUN_PATH_READS = ("get_collection", "scroll", "retrieve_points", "query_nearest_points")
+
+
+def _bounded(method: Callable[..., Awaitable[Any]]) -> Callable[..., Awaitable[Any]]:
+    @functools.wraps(method)
+    async def read(self: IVectorDBService, *args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+        return await bounded_read("vector", method(self, *args, **kwargs))
+
+    return read

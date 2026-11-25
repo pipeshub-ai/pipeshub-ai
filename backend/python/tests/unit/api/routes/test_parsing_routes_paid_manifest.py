@@ -186,3 +186,73 @@ def test_a_parse_that_fails_after_noting_keys_keeps_every_key_listed(store: Memo
     assert _post(parse).status_code >= 500
     listed = json.loads(store.files[(ORG, REC, f"manifests/{content_revision(BODY)}/parse.open.json")][0])["keys"]
     assert len(listed) == 3
+
+
+def test_a_retry_of_a_refresh_request_is_still_a_refresh_that_reuses_only_its_own_earlier_pages(store: MemoryResultStore) -> None:
+    from app.services.paid_cache.run import current_run
+
+    seen: list[tuple[bool, bool]] = []
+
+    async def parse(*_a: Any, **_k: Any) -> Any:  # noqa: ANN401
+        run = current_run()
+        seen.append((run is not None and run.refresh, run is not None and run.reuse_prior_attempt))
+        return _ok_result()
+
+    first = _post(parse, refresh_paid_outputs="true", refresh_token="run-abc")
+    retry = _post(parse, refresh_paid_outputs="true", refresh_token="run-abc")     # the client's own retry
+    other = _post(parse, refresh_paid_outputs="true", refresh_token="run-xyz")     # a new refresh
+    assert (first.status_code, retry.status_code, other.status_code) == (200, 200, 200)
+    assert seen == [(True, False), (True, True), (True, False)]
+
+
+@pytest.mark.parametrize("sent", ["inf", "-inf", "nan", "0", "-5", "1e400"])
+def test_an_unusable_record_budget_falls_back_cleanly_and_is_not_reported_as_used(
+    store: MemoryResultStore, caplog: pytest.LogCaptureFixture, sent: str,
+) -> None:
+    async def parse(*_a: Any, **_k: Any) -> Any:  # noqa: ANN401
+        return _ok_result()
+
+    with caplog.at_level("WARNING"):
+        assert _post(parse, record_budget_s=sent).status_code == 200            # not a 500
+    assert not [r for r in caplog.records if "differs from this service" in r.getMessage()]
+
+
+def test_the_runs_stage_bound_is_the_budget_the_client_sent_with_the_2400_s_floor(store: MemoryResultStore) -> None:
+    """The write bound of a conversion thread that outlives its 504 is the run's own: it carries the sent budget."""
+    from app.services.paid_cache import locks
+    from app.services.paid_cache.run import current_run
+
+    bounds: list[float | None] = []
+
+    async def parse(*_a: Any, **_k: Any) -> Any:  # noqa: ANN401
+        run = current_run()
+        bounds.append(run.stage_deadline_s if run is not None else None)
+        return _ok_result()
+
+    _post(parse, record_budget_s="9000")
+    _post(parse, record_budget_s="100")                                          # below the floor
+    _post(parse)                                                                  # absent: the process setting
+    assert bounds[0] == 9000.0
+    assert bounds[1] == float(locks.STAGE_DEADLINE_S)
+    assert bounds[2] == locks.stage_deadline_s()
+
+
+def test_a_budget_longer_than_the_open_manifest_protection_falls_back_and_one_inside_it_is_honoured(
+    store: MemoryResultStore, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+) -> None:
+    from app.services.paid_cache import locks
+    from app.services.paid_cache.run import OPEN_PROTECTS_MS
+
+    assert locks.MAX_RECORD_BUDGET_S * 1000 < OPEN_PROTECTS_MS                  # derived from the window, below it
+    assert locks.stage_deadline_for(20 * 3600.0) == 20 * 3600.0                 # 20 h is honoured
+    assert locks.stage_deadline_for(23 * 3600.0) == locks.stage_deadline_s()    # 23 h falls back
+    assert locks.stage_deadline_for(locks.MAX_RECORD_BUDGET_S + 1) == locks.stage_deadline_s()
+
+    monkeypatch.setattr("app.api.routes.parsing._budget_mismatch_logged", set())
+
+    async def parse(*_a: Any, **_k: Any) -> Any:  # noqa: ANN401
+        return _ok_result()
+
+    with caplog.at_level("WARNING"):
+        assert _post(parse, record_budget_s=str(23 * 3600)).status_code == 200
+    assert any("above" in r.getMessage() and "accepts" in r.getMessage() for r in caplog.records)

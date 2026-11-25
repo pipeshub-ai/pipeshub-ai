@@ -11,6 +11,7 @@ import {
   sha256Hex,
   writePlan,
 } from '../import';
+import { shapeHarnessFields } from './pg-schema';
 
 const str = (v: unknown): string | null => (typeof v === 'string' ? v : null);
 const arr = (v: unknown): unknown[] => (Array.isArray(v) ? v : []);
@@ -96,6 +97,11 @@ export function sessionRow(d: NeutralDoc): Row | null {
         : null,
     project_id: idText(d.projectId),
     project_visibility: str(d.projectVisibility),
+    harness_version: str(d.harnessVersion),
+    harness_ledger: obj(d.harnessLedger),
+    erasure_requested_at:
+      typeof d.erasureRequestedAt === 'number' ? d.erasureRequestedAt : null,
+    harness_seen: obj(d.harnessSeen),
     version: typeof d.__v === 'number' ? d.__v : 0,
     nulls: nullsOf(d),
     created_at: d.createdAt,
@@ -164,6 +170,9 @@ export function messageRow(d: NeutralDoc): Row | null {
     tools: arr(d.tools),
     reasoning: arr(d.reasoning),
     parts: arr(d.parts),
+    sender_id: idText(d.senderId),
+    label: d.label ?? null,
+    harness: shapeHarnessFields(d),
     created_at: d.createdAt,
     updated_at: d.updatedAt ?? d.createdAt,
   };

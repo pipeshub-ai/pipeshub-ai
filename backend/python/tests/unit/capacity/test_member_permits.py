@@ -50,11 +50,9 @@ async def test_the_lane_adopts_the_callers_permit_and_reserves_nothing(
 
     async def step() -> int:
         p = await b.reserve(Demand(Family.DOCLING, 1, 0, "small"), deadline_s=5)
-        return await parse_pool.submit(work, timeout=2, permit=p)
+        return await parse_pool.submit(work, timeout=10, permit=p)  # a lane that reserves again waits out this 10 s
 
-    t = time.monotonic()
     assert await asyncio.gather(*(step() for _ in range(n))) == [1] * n
-    assert time.monotonic() - t < 1.5, "a lane that reserves again waits for tokens its own caller holds"
     assert max(seen) == n  # exactly N tokens held, none for a second permit
     assert b.snapshot()["used"] == 0  # the lane released them at job end
     assert b.snapshot()["families"]["docling"]["used"] == 0
@@ -267,11 +265,16 @@ def test_run_blocking_stops_waiting_for_capacity_when_its_caller_is_cancelled(mo
     b = install_budget(monkeypatch, tmp_path / "l", c=1)
     held = b.try_reserve(Demand(Family.PARSE, 1, 0, "small"))
     cancelled = threading.Event()
-    threading.Timer(0.2, cancelled.set).start()
-    started = time.monotonic()
-    with pytest.raises(ParseAbandonedError):
-        parse_pool.run_blocking(_hold, 0, timeout=30, cancelled=cancelled)  # the budget is full: it waits, then is cancelled
-    assert time.monotonic() - started < 3.0
+
+    def cancel_once_it_waits() -> None:
+        end = time.monotonic() + 10
+        while not any(f["waiting"] for f in b.snapshot()["families"].values()) and time.monotonic() < end:
+            time.sleep(0.005)
+        cancelled.set()
+
+    threading.Thread(target=cancel_once_it_waits, daemon=True).start()
+    with pytest.raises(ParseAbandonedError):  # a cancel it ignored would end as a capacity timeout at 10 s instead
+        parse_pool.run_blocking(_hold, 0, timeout=10, cancelled=cancelled)  # the budget is full: it waits, then is cancelled
     held.release()
 
 
@@ -395,3 +398,60 @@ async def test_a_pool_job_keeps_its_tokens_until_its_lane_has_finished_with_it(
         (tmp_path / "release").write_text("go")
         parse_pool.shutdown_parse_pool()
         parse_pool.set_resource_governor(None)
+
+
+def test_an_inspections_lane_demand_keeps_its_designed_memory_and_other_kinds_keep_their_lane_charge(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.modules.parse_engine import wiring
+    from app.services.resource_governor.kinds import ParseKind, lane_charge_bytes
+
+    monkeypatch.setenv("PARSE_ADMISSION", "classes")
+    wiring.reset_for_tests()
+    inspect = parse_pool._lane_demand(ParseKind.INSPECT, 1 << 20)
+    assert inspect.family is Family.INSPECT and inspect.mem_bytes == wiring.INSPECT_MEMORY_BYTES  # 0.1 GiB, not 1.25
+    for kind in (ParseKind.EXCEL_LOAD, ParseKind.PDF_LAYOUT, ParseKind.TEXT):
+        assert parse_pool._lane_demand(kind, 1 << 20).mem_bytes == lane_charge_bytes(kind, 1 << 20)  # unchanged
+    monkeypatch.setenv("PARSE_ADMISSION", "legacy")
+    assert parse_pool._lane_demand(ParseKind.INSPECT, 1 << 20).mem_bytes == lane_charge_bytes(ParseKind.INSPECT, 1 << 20)
+
+
+async def test_twelve_inspections_on_an_eight_gib_ledger_run_at_once(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, no_pool: None
+) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+
+    from app.modules.parse_engine import wiring
+    from app.services.resource_governor.kinds import ParseKind
+
+    monkeypatch.setenv("PARSE_ADMISSION", "classes")
+    wiring.reset_for_tests()
+    install_budget(monkeypatch, tmp_path / "l", c=32, mem=8 * GIB)
+    # The thread fallback runs on the loop's default executor, whose size depends on the host's CPU count (8 on a
+    # 4-CPU runner): pin it, so only the ledger can limit how many inspections run at once.
+    executor = ThreadPoolExecutor(max_workers=16)
+    asyncio.get_running_loop().set_default_executor(executor)
+    running = 0
+    peak = 0
+    lock = threading.Lock()
+
+    all_up = threading.Event()
+
+    def inspect() -> int:
+        nonlocal running, peak
+        with lock:
+            running += 1
+            peak = max(peak, running)
+            if running == 12:
+                all_up.set()
+        all_up.wait(10)  # held until all twelve have started (bounded: insufficient admission fails, it does not hang)
+        with lock:
+            running -= 1
+        return 1
+
+    try:
+        await asyncio.gather(*(parse_pool.submit(inspect, kind=ParseKind.INSPECT, size=1 << 20) for _ in range(12)))
+    finally:
+        all_up.set()
+        executor.shutdown(wait=True)
+    assert peak == 12  # at 1.25 GiB each only 6 fit an 8 GiB ledger

@@ -575,6 +575,8 @@ class TestHandleDelete:
         service.graph_provider.delete_connector_instance = AsyncMock(
             return_value={"success": False, "error": "boom"}
         )
+        # Still there after the failed delete; a connector that reads as gone has its lane freed.
+        service.graph_provider.get_document = AsyncMock(return_value={"type": "Gmail"})
         with patch("app.connectors.services.event_service.reindex_task_manager") as mock_rtm, \
              patch(
                  "app.connectors.services.event_service.free_lane_of_deleted_connector",
@@ -856,10 +858,13 @@ class TestStageReruns:
         {"orgId": "o1", "connectorId": "c1", "stages": ["embed"]},
         {"orgId": "o1", "connectorId": "c1", "stages": ["classify", "entities"]},
         {"orgId": "o1", "connectorId": "c1", "stages": "classify"},
+        {"orgId": "o1", "connectorId": "c1", "stages": []},
     ])
     async def test_stage_reruns_are_connector_wide_and_name_known_stages(self, service, payload) -> None:
+        """A payload fault: redelivering the same event cannot make it valid."""
         service._ensure_connector = AsyncMock()
-        assert await service._handle_reindex("gmail", payload) is False
+        with pytest.raises(NonRetryableError):
+            await service._handle_reindex("gmail", payload)
         service._ensure_connector.assert_not_awaited()
 
     @pytest.mark.asyncio

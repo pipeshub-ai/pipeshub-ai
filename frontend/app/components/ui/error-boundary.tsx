@@ -1,11 +1,35 @@
 'use client';
 
-import React from 'react';
+import React, { useEffect } from 'react';
 import Link from 'next/link';
 import { Button, Flex, Heading, Text } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 
+/** A page's code split that did not arrive (a network change mid-load, or a deploy that replaced the files). */
+export function isChunkLoadError(error: Error | null | undefined): boolean {
+  if (!error) return false;
+  return error.name === 'ChunkLoadError' || /Loading (CSS )?chunk [\w-]+ failed/i.test(error.message ?? '');
+}
+
+const CHUNK_RELOAD_KEY = 'pipeshub-chunk-reload-at';
+const CHUNK_RELOAD_WINDOW_MS = 30_000;
+
+/**
+ * QA-AUTO F2: a code split that failed to load is not a broken page: loading the page again fetches it (React keeps
+ * a lazy import's failure, so "Try again" alone throws it again). One reload, then the fallback stays: a second
+ * failure within the window is a real outage, and reloading again would loop.
+ */
+export function reloadOnceForChunk(error: Error, now: number = Date.now(), storage: Storage | undefined = globalThis.sessionStorage, reload: () => void = () => window.location.reload()): boolean {
+  if (!isChunkLoadError(error) || !storage) return false;
+  const last = Number(storage.getItem(CHUNK_RELOAD_KEY) ?? 0);
+  if (Number.isFinite(last) && now - last < CHUNK_RELOAD_WINDOW_MS) return false;
+  storage.setItem(CHUNK_RELOAD_KEY, String(now));
+  reload();
+  return true;
+}
+
 export function ErrorFallback({
+  error,
   reset,
   compact = false,
   nested = false,
@@ -17,6 +41,9 @@ export function ErrorFallback({
   nested?: boolean;
 }) {
   const { t } = useTranslation();
+  useEffect(() => {
+    reloadOnceForChunk(error);
+  }, [error]);
   if (compact) {
     return (
       <Flex align="center" gap="3" wrap="wrap" role="alert" style={{ padding: 'var(--space-3)' }}>

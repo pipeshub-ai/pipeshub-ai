@@ -8,6 +8,7 @@ from app.utils.html_to_blocks import TextBlock
 from app.web.chain import ChainOutcome
 from app.web.errors import Blocked, InvalidUrl, TimedOut, UnsafeUrl
 from app.web.models import Attempt, CallerContext, WebPage
+from app.web.own_files import ISSUED_DOWNLOAD_LINKS_KEY, remember_download_link
 from app.web.tools.fetch_url import (
     FetchUrlArgs,
     checked_url,
@@ -92,6 +93,7 @@ class TestTool:
             "title": "Final page",
             "fetched_by": "builtin",
             "blocks": [{"type": "text", "content": "Hello"}],
+            "images": [],
         }
         fake.fetch.assert_awaited_once_with("https://example.com/start", CALLER)
 
@@ -124,3 +126,94 @@ class TestTool:
         with patch("app.web.tools.fetch_url.record_fetch") as record:
             await create_fetch_url_tool(service(TimedOut("x")), CALLER).ainvoke({"url": "https://example.com"})
         assert record.call_args.args[0] == "timeout"
+
+
+# Made-up values in the shape of an S3 presigned link for an uploaded file.
+OWN_LINK = (
+    "https://files-bucket.s3.us-west-2.amazonaws.com/org-1/KnowledgeBase/private/doc-1/current/report.pdf"
+    "?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=AKIAEXAMPLE%2F20261117%2Fus-west-2%2Fs3%2Faws4_request"
+    "&X-Amz-Date=20261117T000000Z&X-Amz-Expires=3600&X-Amz-Signature=0123abcd&X-Amz-SignedHeaders=host"
+)
+
+
+def issued(url: str = OWN_LINK) -> dict:
+    state: dict = {}
+    remember_download_link(state, url, record_id="rec-1", file_name="report.pdf")
+    return state[ISSUED_DOWNLOAD_LINKS_KEY]
+
+
+class TestOwnFiles:
+    """A download link PipesHub handed out for its own file is sent back to the record, not read as a web page."""
+
+    async def test_issued_link_is_not_fetched(self) -> None:
+        fake = service(PAGE)
+        with patch("app.web.tools.fetch_url.record_fetch") as record:
+            payload = json.loads(await create_fetch_url_tool(fake, CALLER, issued_links=issued()).ainvoke({"url": OWN_LINK}))
+        fake.fetch.assert_not_called()
+        assert payload["ok"] is False and payload["error_type"] == "own_file" and payload["retryable"] is False
+        assert "report.pdf" in payload["error"]
+        assert "rec-1" in payload["hint"] and "knowledge base" in payload["hint"]
+        # The step card shows `error` to people: no record id there, and no link either.
+        assert "rec-1" not in payload["error"] and "amazonaws" not in json.dumps(payload)
+        assert record.call_args.args[0] == "own_file"
+
+    async def test_reencoded_copy_of_issued_link_is_not_fetched(self) -> None:
+        fake = service(PAGE)
+        copied = OWN_LINK.replace("%2F", "/")
+        payload = json.loads(await create_fetch_url_tool(fake, CALLER, issued_links=issued()).ainvoke({"url": copied}))
+        assert payload["error_type"] == "own_file"
+        fake.fetch.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "copied",
+        [
+            "https://acct.blob.core.windows.net/c/f.pdf?sv=2023-11-03&sp=r&sig=abc+def=",
+            "https://acct.blob.core.windows.net/c/f.pdf?sv=2023-11-03&sp=r&sig=abc%2Bdef%3D&x=1",
+            "https://acct.blob.core.windows.net/c/f.pdf?x-amz-signature=decoy&sv=2023-11-03&sp=r&sig=abc%2Bdef%3D",
+        ],
+    )
+    async def test_altered_copy_of_issued_azure_link_is_not_fetched(self, copied: str) -> None:
+        """A miss would go on to an outside page reader with a link that still opens the file."""
+        fake = service(PAGE)
+        links = issued("https://acct.blob.core.windows.net/c/f.pdf?sv=2023-11-03&sp=r&sig=abc%2Bdef%3D")
+        payload = json.loads(await create_fetch_url_tool(fake, CALLER, issued_links=links).ainvoke({"url": copied}))
+        assert payload["error_type"] == "own_file"
+        fake.fetch.assert_not_called()
+
+    async def test_tiny_ref_to_issued_link_is_not_fetched(self) -> None:
+        fake = service(PAGE)
+        tool = create_fetch_url_tool(fake, CALLER, ref_mapper=mapper({"ref3": OWN_LINK}), issued_links=issued())
+        payload = json.loads(await tool.ainvoke({"url": "https://ref3.xyz"}))
+        assert payload["error_type"] == "own_file"
+        fake.fetch.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            # Someone else's signed link: a vendor's download, a file link from search results.
+            "https://vendor-bucket.s3.amazonaws.com/manual.pdf?X-Amz-Expires=600&X-Amz-Signature=feedface",
+            # The same file signed again later: this request did not hand it out.
+            OWN_LINK.replace("0123abcd", "99998888"),
+            "https://example.com/start",
+        ],
+    )
+    async def test_links_not_issued_are_fetched_as_before(self, url: str) -> None:
+        fake = service(PAGE)
+        payload = json.loads(await create_fetch_url_tool(fake, CALLER, issued_links=issued()).ainvoke({"url": url}))
+        assert payload["ok"] is True
+        fake.fetch.assert_awaited_once_with(url, CALLER)
+
+    async def test_a_link_whose_signature_was_removed_is_not_fetched(self) -> None:
+        """The form an earlier turn's saved step gives back: it opens nothing, and would only hand the
+        storage path to an outside page reader."""
+        fake = service(PAGE)
+        saved = OWN_LINK.replace("X-Amz-Signature=0123abcd", "X-Amz-Signature=[REDACTED]")
+        payload = json.loads(await create_fetch_url_tool(fake, CALLER).ainvoke({"url": saved}))
+        assert payload["error_type"] == "invalid_url"
+        assert "knowledge base" in payload["error"]
+        fake.fetch.assert_not_called()
+
+    async def test_without_issued_links_an_own_link_is_fetched_as_before(self) -> None:
+        fake = service(PAGE)
+        await create_fetch_url_tool(fake, CALLER).ainvoke({"url": OWN_LINK})
+        fake.fetch.assert_awaited_once_with(OWN_LINK, CALLER)

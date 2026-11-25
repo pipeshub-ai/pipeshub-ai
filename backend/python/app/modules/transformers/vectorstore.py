@@ -16,6 +16,7 @@ No LangChain QdrantVectorStore is imported or used.
 import asyncio
 import codecs
 import contextlib
+import contextvars
 import hashlib
 import inspect
 import json
@@ -24,16 +25,21 @@ import math
 import os
 import time
 import uuid
-from collections.abc import Awaitable, Callable, Iterator
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Iterator
+from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
-from typing import Any, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, ClassVar, List, Optional, Tuple
 
 import openai
 from langchain_core.documents import Document
 
 from app.config.constants.ai_models import TOKENIZE_MAX_CHARS, TOKENIZE_MAX_ITEMS
 from app.config.constants.arangodb import CollectionNames
-from app.core.org_context import MissingOrgContext, current_or_system, for_org
+from app.core.org_context import (
+    MissingOrgContext,
+    current_or_system,
+    for_org,
+)
 from app.exceptions.indexing_exceptions import (
     ChunkingError,
     DocumentProcessingError,
@@ -46,12 +52,14 @@ from app.exceptions.indexing_exceptions import (
 from app.exceptions.non_retryable import NonRetryableError
 from app.models.blocks import (
     Block,
+    BlockGroup,
     BlocksContainer,
     BlockType,
     GroupSubType,
     SemanticMetadata,
 )
 from app.models.entities import Record
+from app.modules.indexing import rekey_metrics
 from app.modules.indexing.embed_resume import (
     EMBED_DELIVERY_ID,
     EMBED_DIGEST,
@@ -64,15 +72,23 @@ from app.modules.indexing.embed_resume import (
     EMBED_UNCOUNTED,
     EMBED_VRID,
     POINT_KEY,
+    POINT_PRECISION,
     POINT_REV,
     EmbedAttempt,
     current_attempt,
     digest_of,
 )
 from app.modules.indexing.record_progress import carried_counters, current_progress
+from app.modules.indexing.stray_sweep import (
+    BLOCK_ID_FIELD,
+    sweep_enabled,
+    sweep_max_points,
+    sweep_stray_points,
+)
 from app.modules.parsers.link_text import anchor_text_only
 from app.modules.parsers.table_titles import table_titles
 from app.modules.parsers.text_splitting import detect_language, split_into_sentences
+from app.modules.pipeline.leases import LeaseLost, RecordBusy
 from app.modules.transformers.code_units import (
     RESIDUE_UNIT_KIND,
     class_header_unit,
@@ -82,19 +98,27 @@ from app.modules.transformers.code_units import (
 )
 from app.modules.transformers.transformer import TransformContext, Transformer
 from app.services.embeddings.multimodal.config import MultimodalProviderConfig
-from app.services.embeddings.multimodal.factory import MultimodalEmbeddingFactory
 from app.services.embeddings.multimodal.interface import ImageEmbeddingResult
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.llm_gateway import wire
 from app.services.llm_gateway.embedding_gateway import get_embedding_gateway
 from app.services.messaging.backpressure import get_default_backpressure_coordinator
+from app.services.messaging.config import messaging_env
+from app.services.messaging.consumer_concurrency import RecordLeaseHeld
 from app.services.messaging.error_classifier import format_exception_chain
+from app.services.messaging.precision_flip import FenceMoved, PrecisionFlip
 from app.services.permissions.mode import scope_fields_enabled
 from app.services.resource_governor.feedback import get_default_downstream_feedback
+from app.services.vector_db.collection_epoch import POINT_EPOCH, Fence
 from app.services.vector_db.collection_locator import VirtualRecordCollectionLocator
+from app.services.vector_db.collection_pin import IMAGE_TAG, CollectionPinStore
 from app.services.vector_db.collection_registry import CollectionRegistry
-from app.services.vector_db.const.const import VIRTUAL_RECORD_ID_FIELD
-from app.services.vector_db.filters import org_for_filter
+from app.services.vector_db.const.const import (
+    CONTENT_REV_FIELD,
+    VIRTUAL_RECORD_ID_FIELD,
+)
+from app.services.vector_db.errors import PartialResult, VectorsNotFetchable
+from app.services.vector_db.filters import OrgRequired, org_for_filter
 from app.services.vector_db.interface.vector_db import IVectorDBService
 from app.services.vector_db.membership import (
     STALE_SCOPE,
@@ -109,14 +133,17 @@ from app.services.vector_db.membership import (
     vector_point_payload,
 )
 from app.services.vector_db.models import SparseVector, VectorChunkPayload, VectorPoint
+from app.services.vector_db.precision_guard import (
+    UNCONFIRMED_WRITE,
+    PrecisionGuard,
+    run_despite_cancellation,
+)
 from app.services.vector_db.sparse_embeddings import SparseEmbedder
 from app.services.vector_db.strategy import RecordContext
 from app.utils.aimodels import (
     INDEXING_SDK_RETRIES,
     EmbeddingProvider,
     embedding_config_hash,
-    get_default_embedding_model,
-    get_embedding_model,
     is_local_cpu_embedding_provider,
 )
 from app.utils.embedding_gate import GateFailFast
@@ -126,10 +153,27 @@ from app.utils.embedding_retry import (
     signal_backpressure_if_rate_limited,
 )
 from app.utils.embedding_server_client import EmbeddingServerEmbeddings
+from app.utils.error_class import innermost_type
 from app.utils.image_utils import normalize_image_to_base64
-from app.utils.indexing_timing import stage
-from app.utils.llm import load_ai_models
+from app.utils.indexing_timing import note, stage
+from app.utils.llm import (
+    LLMUnavailableError,
+    ModelNotAllowedError,
+    build_embeddings,
+    build_multimodal_embeddings,
+    load_ai_models,
+    require_embeddings_placement,
+)
 from app.utils.openai_hosts import is_openai_api_url
+from app.utils.precision_witness import get_precision_witness
+
+# A record re-keyed from random block ids reads this many old blocks' points per query and this many points per page.
+_REKEY_BLOCKS_PER_READ = 100
+_REKEY_PAGE = 500
+# Records whose stray sweep stopped at its bound, with where to resume (per process; losing it only restarts that record's sweep).
+_SWEEP_RESUME_RECORDS = 2048
+if TYPE_CHECKING:
+    from app.modules.pipeline.leases import LeaseHandle, RecordLeases
 
 RECORD_SUMMARY_BLOCK_ID_SUFFIX = "_summary"
 CODE_RESIDUE_BLOCK_ID_SUFFIX = "_code_residue"
@@ -140,7 +184,7 @@ CODE_RESIDUE_BLOCK_ID_SUFFIX = "_code_residue"
 _POINT_ID_NAMESPACE = uuid.uuid5(uuid.NAMESPACE_URL, "pipeshub:vector-point")
 
 
-def deterministic_point_id(metadata: dict[str, object], page_content: str) -> str:
+def deterministic_point_id(metadata: dict[str, object], page_content: str, fence: Fence | None = None) -> str:
     """Stable id for the point *metadata*/*page_content* becomes.
 
     Keyed on (virtual record, block, kind, text): the same point written twice
@@ -149,6 +193,9 @@ def deterministic_point_id(metadata: dict[str, object], page_content: str) -> st
     splits an over-long table, row or SQL text into several pieces sharing one
     metadata. An edited block is not overwritten in place by id; every write
     path deletes the block's stored points first.
+
+    With *fence* (the epoch the batch was accepted under) the id is also specific to that epoch once the collection
+    has been reset, so a batch that outlived a reset cannot replace what a later batch wrote for the same chunk.
 
     Missing identity still hashes canonical metadata and text so a retry
     overwrites the same point instead of inserting a duplicate.
@@ -166,7 +213,21 @@ def deterministic_point_id(metadata: dict[str, object], page_content: str) -> st
         )
         kind = "chunk" if is_sub_chunk else "unit"
         name = f"{virtual_record_id}|{block_id}|{kind}|{page_content}"
-    return str(uuid.uuid5(_POINT_ID_NAMESPACE, name))
+    base = str(uuid.uuid5(_POINT_ID_NAMESPACE, name))
+    return fence.point_id(base) if fence is not None else base
+
+
+def _attempt_rev(virtual_record_id: str | None) -> str | None:
+    """The content revision this run writes the points of *virtual_record_id* for, when the run knows it (an attempt of a kind whose
+    stored blocks are the whole content); None otherwise, and the points' revision field is then left as it is."""
+    attempt = current_attempt()
+    if attempt is None or not attempt.eligible or not attempt.rev or attempt.vrid != virtual_record_id:
+        return None
+    return attempt.rev
+
+
+# A kept point's stored fields that follow its block's place in the record and the revision written.
+_KEPT_POINT_FIELDS = [BLOCK_ID_FIELD, "metadata.blockIndex", "metadata.blockGroupIndex", CONTENT_REV_FIELD]
 
 _DEFAULT_DOCUMENT_BATCH_SIZE = 50
 # Residue units read back per scroll page when checking which records already have them.
@@ -1015,6 +1076,154 @@ def _is_code_block(block: object) -> bool:
     return str(getattr(kind, "value", kind)).lower() == BlockType.CODE.value
 
 
+class VirtualRecordBusy(IndexingError, RecordLeaseHeld):
+    """Another record of the same virtual record holds the lease on it (or this run lost it): the delivery is handed back, not counted
+    as an attempt, like a held record lease. An ``IndexingError`` too, so the format processors, which re-raise those and wrap any other
+    exception as a terminal ``DocumentProcessingError``, let it through to the consumer."""
+
+    pauses_consumer = False
+
+    def __init__(self, message: str) -> None:
+        IndexingError.__init__(self, message)
+
+
+class _PointLog:
+    """What this ``apply`` knows about the record's points, to be recorded in its reconciliation metadata (``pointedBlocks``).
+
+    Only what the writers did is recorded, never what the store lists: *wrote* holds the block id of every point a writer stored (or
+    moved, or found already stored by an interrupted run of the same revision) in this run; *carried* the blocks the previous record
+    had a point for and this run left alone. A listing is used to find a carried block whose point is gone (it is then written
+    again), never to shrink the set. *recordable* is False when nothing says which unchanged blocks have a point (a record with no
+    recorded set, changed in part): the set is then left unrecorded.
+    """
+
+    __slots__ = ("wrote", "carried", "recordable", "tokens")
+
+    def __init__(self) -> None:
+        # Every epoch token this run accepted a batch under, by collection (checked once more right before the record is marked indexed).
+        self.tokens: dict[str, set[str]] = {}
+        self.wrote: set[str] = set()
+        self.carried: set[str] = set()
+        self.recordable = True
+
+    def note(self, points: "Iterable[VectorPoint]") -> None:
+        for point in points:
+            block_id = ((point.payload or {}).get("metadata") or {}).get("blockId")
+            if block_id:
+                self.wrote.add(block_id)
+
+
+# ``ctx.settings`` key: the epoch tokens an ``apply`` wrote under, by collection.
+WRITTEN_UNDER = "writtenUnder"
+
+_POINTED: contextvars.ContextVar["_PointLog | None"] = contextvars.ContextVar("pointed_blocks", default=None)
+
+
+def _note_fence(fence: Fence) -> Fence:
+    """Remember the epoch a batch of this run is accepted under, and hand the fence back."""
+    log = _POINTED.get()
+    if log is not None:
+        log.tokens.setdefault(fence.collection, set()).add(fence.token)
+    return fence
+
+
+def _note_points(points: "Iterable[VectorPoint]") -> None:
+    log = _POINTED.get()
+    if log is not None:
+        log.note(points)
+
+# The lease on the virtual record held by the ``apply`` this task is running in (None: no lease is bound, nothing to confirm).
+_HELD_LEASE: contextvars.ContextVar["LeaseHandle | None"] = contextvars.ContextVar("vrid_lease", default=None)
+
+
+async def _require_lease(what: str) -> None:
+    """Right before a delete: confirm the virtual record's lease is still this run's (a compare-and-renew on its own token). If not
+    (it lapsed and a newer run took it), nothing is deleted and the delivery is handed back."""
+    handle = _HELD_LEASE.get()
+    if handle is not None and not await handle.confirm():
+        raise LeaseLost(f"the lease on the virtual record is no longer held; {what} was not done")
+
+
+@contextlib.asynccontextmanager
+async def _fenced(what: str) -> AsyncIterator[None]:
+    """Around a delete: confirm the lease right before the call. While the call is in flight the hold's own renewer keeps the lease and
+    is the only thing that cancels the run (it does so when the lease is really lost, not on one failed renewal): a second canceller
+    here would drop the lease on a transient error while the delete could still land."""
+    await _require_lease(what)
+    yield
+
+
+@contextlib.asynccontextmanager
+async def hold_virtual_record(owner: str, org_id: str | None, virtual_record_id: str | None) -> AsyncIterator[None]:
+    """Hold the lease on the virtual record for the body (unless this task already holds it, or none is bound), with the handle
+    published so every delete under it confirms the lease. A wait past the limit, or a lost lease, is a ``VirtualRecordBusy``."""
+    leases = VectorStore.vrid_leases
+    if _HELD_LEASE.get() is not None or leases is None or not leases.bound or not org_id or not virtual_record_id:
+        yield
+        return
+    try:
+        async with leases.hold(
+            f"vrid:{org_id}:{virtual_record_id}", owner=owner,
+            wait_s=messaging_env.record_lease_wait_seconds, still_current=_always_current,
+        ) as handle:
+            token = _HELD_LEASE.set(handle)
+            try:
+                yield
+            finally:
+                _HELD_LEASE.reset(token)
+    except RecordBusy as e:  # the lease stayed busy past the wait, or was lost: not a failure of this record
+        raise VirtualRecordBusy(f"the virtual record {virtual_record_id} is being written by another record: {e}") from e
+
+
+fenced_delete = _fenced  # for the deletes outside this module that run under ``hold_virtual_record``
+
+
+async def _always_current() -> bool:
+    return True
+
+
+def _has_text(value: object) -> bool:
+    return isinstance(value, str) and bool(value.strip())
+
+
+def _is_code_item(item: Block | BlockGroup) -> bool:
+    if isinstance(item, BlockGroup):
+        return str(getattr(item.sub_type, "value", item.sub_type) or "").lower() == GroupSubType.CODE_CLASS.value
+    return _is_code_block(item)
+
+
+def _embeds_a_point(item: Block | BlockGroup | None, *, code_unit_ids: frozenset[str] = frozenset(), multimodal: bool = False) -> bool:
+    """Whether indexing writes a point for *item* itself (a block or a group), as the writers do under the active setup: text with text,
+    table rows with their row text, tables and groups with a summary, DDL or view text, images with a description (or any image on a
+    multimodal embedding model), and code only where the code writer emits a unit with that block or group as its own
+    (*code_unit_ids*: most code folds into a class unit or the file's residue and has no point of its own)."""
+    if item is None:
+        return False
+    kind = str(getattr(item.type, "value", item.type)).lower()
+    data = item.data
+    if _is_code_item(item):
+        return item.id in code_unit_ids
+    if isinstance(item, BlockGroup):
+        if kind not in ("table", "view"):
+            return False  # other groups (a JSON root, a list) are never points
+        return any(_has_text(v) for v in data.values()) if isinstance(data, dict) else _has_text(data)
+    if kind in ("table", "table_cell"):
+        return any(_has_text(v) for v in data.values()) if isinstance(data, dict) else _has_text(data)
+    if kind in ("image", "drawing"):
+        # On a text model an image has a point exactly when it has a description. On a multimodal model whether it has one depends on
+        # whether the provider returned an embedding for it, which nothing stored says: for a record that predates the recorded set
+        # every image with a uri is expected to have a point (conservative: a provider-skipped image costs one re-embed, after which the
+        # set is recorded and exact).
+        if not isinstance(data, dict) or not data.get("uri"):
+            return False
+        return True if multimodal else bool(VectorStore._image_block_description(item))
+    if kind == "table_row":
+        return isinstance(data, dict) and any(_has_text(v) for k, v in data.items() if k != "row_number")
+    if kind in ("text", "paragraph", "textsection", "heading", "quote"):
+        return _has_text(data.get("text")) if isinstance(data, dict) else _has_text(data)
+    return False
+
+
 def code_residue_block_id(virtual_record_id: str) -> str:
     """The residue unit's ``blockId``: one per record, like the summary's, so a reconcile can replace it."""
     return f"{virtual_record_id}{CODE_RESIDUE_BLOCK_ID_SUFFIX}"
@@ -1140,6 +1349,18 @@ def _unknown_clock_seconds() -> float:
     return messaging_env.embed_record_ceiling_seconds
 
 
+_WITNESS_MAX_AGE_SECONDS = 5.0
+INT8_INTENT = "int8-w"
+
+
+def _bound_org() -> str | None:
+    """The org bound for this write, or None when none is (the guard keeps it only for a store with one space per org)."""
+    try:
+        return org_for_filter()
+    except OrgRequired:
+        return None
+
+
 class VectorStore(Transformer):
     # The embedding model's input window, once known; None until then and under policy A.
     model_window: _Window | None = None
@@ -1158,6 +1379,7 @@ class VectorStore(Transformer):
         self.graph_provider = graph_provider
         self.vector_db_service = vector_db_service
         self.collection_registry = collection_registry
+        self._sweep_resume: dict[tuple[str, str, int], str] = {}
         self.collection_locator = VirtualRecordCollectionLocator(
             strategy=collection_registry.strategy,
             manifest_store=collection_registry.manifest_store,
@@ -1216,7 +1438,159 @@ class VectorStore(Transformer):
     # Transformer protocol
     # ------------------------------------------------------------------
 
+    #: Bound by the indexing service to its ``RecordLeases``: records that share a virtual record take one lease on it for the whole of
+    #: their write (the embed, the delete of replaced blocks, the stray sweep), so they serialise. The record's own lease is per
+    #: record id, and the points of a virtual record are shared by every record that reuses it. Unbound (tests, a single process
+    #: without a lease manager) nothing is held.
+    vrid_leases: ClassVar["RecordLeases | None"] = None
+
+    def _vrid_lease(self, owner: str, org_id: str | None, virtual_record_id: str | None) -> AbstractAsyncContextManager[None]:
+        return hold_virtual_record(owner, org_id, virtual_record_id)
+
     async def apply(self, ctx: TransformContext) -> bool | None:
+        record = ctx.record
+        async with self._vrid_lease(f"index:{record.id}", record.org_id, record.virtual_record_id):
+            log = _PointLog()
+            token = _POINTED.set(log)
+            try:
+                result = await self._apply_locked(ctx)
+                self._record_pointed_blocks(ctx)
+                rc = ctx.reconciliation_context
+                if rc is not None and rc.blocks_to_index_ids is not None:
+                    await self._refresh_kept_points(record)
+                return result
+            finally:
+                # Carried out of this scope for the check that precedes the record's COMPLETED write (the sink runs it after this returns).
+                ctx.settings[WRITTEN_UNDER] = {c: sorted(t) for c, t in log.tokens.items()}
+                _POINTED.reset(token)
+
+    async def require_epochs_current(self, written_under: "dict[str, list[str]]") -> None:
+        """Raise ``FenceMoved`` unless every epoch the record's batches were accepted under is still current for its collection.
+
+        A reset after the last batch was confirmed drops the collection under a record that then completes; the record is
+        handed back instead and embedded again under the current epoch.
+        """
+        epochs = self._precision_guard()._pins.epochs
+        for collection, tokens in written_under.items():
+            current = await epochs.current(collection)
+            if any(token != current for token in tokens):
+                raise FenceMoved(f"collection '{collection}' was reset before the record was marked indexed; it is embedded again")
+
+    async def _refresh_kept_points(self, record: "Record") -> None:
+        """Write the current position, and the revision this run wrote, into the points of the blocks a reconciled update kept.
+
+        A kept block is not embedded again, so its point still says where the block sat (``blockIndex``, or ``blockGroupIndex`` for a
+        group) and which revision wrote it, as of the run that embedded it. Blocks added or removed before it move it, and a reader that
+        trusts the stored position then cites another block. Only the points whose fields differ are rewritten: a listing of those
+        fields finds them, they are read whole (with their vectors) and written back under the same id, so nothing is embedded. The
+        caller holds the virtual record's lease. A failure is logged and leaves the points as they were; it never fails the record.
+        """
+        vrid = record.virtual_record_id
+        if not vrid or not record.org_id:
+            return
+        rev = _attempt_rev(vrid)
+        group_index = {g.id: g.index for g in record.block_containers.block_groups}
+        block_index = {b.id: b.index for b in record.block_containers.blocks}
+
+        def changes(meta: dict[str, Any]) -> dict[str, Any]:
+            block_id = meta.get("blockId")
+            wanted: dict[str, Any] = {}
+            if block_id in group_index:  # a group point carries the group's index in blockGroupIndex, never in blockIndex
+                wanted["blockGroupIndex"] = group_index[block_id]
+            elif block_id in block_index:
+                wanted["blockIndex"] = block_index[block_id]
+            else:
+                return {}  # the summary, code residue, or a point the stray sweep removes
+            if rev is not None:
+                wanted[POINT_REV] = rev
+            # Compared as text: a store that keeps payload fields as strings (Redis) answers "7" for 7.
+            return {k: v for k, v in wanted.items() if str(meta.get(k)) != str(v)}
+
+        org = org_for_filter(record.org_id, match_bound=True)
+        try:
+            collection_name = self.collection_registry.resolve_write_collection(self._record_context(record.org_id, record))
+            listing = await self.vector_db_service.filter_collection(must={"orgId": org, "virtualRecordId": vrid})
+            stale: set[str] = set()
+            scanned, limit, offset = 0, sweep_max_points(), None
+            while scanned < limit:
+                page = await self.vector_db_service.scroll(
+                    collection_name, listing, min(_REKEY_PAGE, limit - scanned), offset, with_payload=_KEPT_POINT_FIELDS,
+                )
+                for point in page.points or []:
+                    meta = (point.payload or {}).get("metadata") or {}
+                    if changes(meta):
+                        stale.add(meta["blockId"])
+                scanned += len(page.points or [])
+                if not page.next_offset or page.next_offset == offset:
+                    break
+                offset = page.next_offset
+            if not stale:
+                return
+            ordered, written, attempted = sorted(stale), 0, False
+            try:
+                for start in range(0, len(ordered), _REKEY_BLOCKS_PER_READ):
+                    writes: list[VectorPoint] = []
+                    for point in await self._read_points_whole(collection_name, org, vrid, ordered[start:start + _REKEY_BLOCKS_PER_READ]):
+                        meta = dict(point.payload.get("metadata") or {})
+                        change = changes(meta)
+                        if change and point.dense_vector is not None:
+                            writes.append(VectorPoint(
+                                id=point.id, dense_vector=point.dense_vector, sparse_vector=point.sparse_vector,
+                                payload={**point.payload, "metadata": {**meta, **change}},
+                            ))
+                    for i in range(0, len(writes), _REKEY_PAGE):
+                        attempted = True
+                        await self.vector_db_service.upsert_points(collection_name, writes[i:i + _REKEY_PAGE])
+                    written += len(writes)
+            finally:
+                if attempted:
+                    # Written from payloads read moments earlier: membership is re-applied from the graph, as after any write of
+                    # points, and also after a write that failed part way (a store may have taken some of its points).
+                    await self._resync_membership_after_write(vrid, record.id)
+            self.logger.info(f"Record {record.id}: refreshed the position or revision of {written} kept point(s)")
+        except VectorsNotFetchable:
+            self.logger.info(f"Record {record.id}: the vector store cannot return stored vectors; kept points keep their stored position")
+        except LeaseLost:
+            raise  # the delivery is handed back, as for every other write under the lease
+        except Exception as e:
+            self.logger.warning(f"Record {record.id}: could not refresh the kept points' position and revision: {e}")
+
+    def _record_pointed_blocks(self, ctx: TransformContext) -> None:
+        """Write the ids of the blocks that have a point into the metadata saved with the record, so a later verification expects exactly
+        those and never a block the writers gave no point (a provider-skipped image, code with no unit of its own).
+
+        The set is what the writers wrote this run plus what the previous set held for the blocks this run left alone, limited to the
+        blocks the record still has. It is never read back from the store: a point lost since stays in the set, so it is expected (and
+        written again) rather than forgotten."""
+        log, rc = _POINTED.get(), ctx.reconciliation_context
+        if log is None or rc is None or not log.recordable or not isinstance(rc.new_metadata, dict) or not rc.new_metadata:
+            return
+        container = ctx.record.block_containers
+        ids = {b.id for b in container.blocks} | {g.id for g in container.block_groups}
+        rc.new_metadata["pointedBlocks"] = sorted((log.wrote | log.carried) & ids)
+
+    async def _heal_lost_points(
+        self, record: "Record", seen: "frozenset[str] | None", log: _PointLog | None, titles: "dict[int, str] | None", member_blocks: "list | None",
+    ) -> None:
+        """Write again the blocks the record had a point for whose point the sweep's whole listing did not find. A listing that is not
+        whole (it hit its bound, or resumes) finds nothing missing: it never changes what is recorded."""
+        if seen is None or log is None or not log.carried:
+            return
+        missing = log.carried - seen
+        if not missing:
+            return
+        container = record.block_containers
+        redo = BlocksContainer(
+            blocks=[b for b in container.blocks if b.id in missing],
+            block_groups=[g for g in container.block_groups if g.id in missing],
+        )
+        self.logger.warning(f"Record {record.id}: {len(missing)} recorded block(s) have no point in the store, embedding them again")
+        await self.index_documents(
+            redo, record.org_id, record.id, record.virtual_record_id, is_reconciliation=True,
+            record=record, titles=titles, member_blocks=member_blocks,
+        )
+
+    async def _apply_locked(self, ctx: TransformContext) -> bool | None:
         record = ctx.record
         record_id = record.id
         virtual_record_id = record.virtual_record_id
@@ -1227,6 +1601,7 @@ class VectorStore(Transformer):
         # A changed row's heading, or a re-indexed class's members, may be unchanged blocks left out below.
         titles = table_titles(block_containers.blocks, block_containers.block_groups)
         member_blocks = block_containers.blocks
+        log = _POINTED.get()
 
         if (
             ctx.reconciliation_context
@@ -1235,11 +1610,20 @@ class VectorStore(Transformer):
             is_reconciliation = True
             blocks_to_index_ids = ctx.reconciliation_context.blocks_to_index_ids
             block_ids_to_delete = ctx.reconciliation_context.block_ids_to_delete or set()
+            rekey_ids = ctx.reconciliation_context.rekey_ids or {}
+            recorded = ctx.reconciliation_context.recorded_points
+            if log is not None and not rekey_ids:
+                # Blocks this run leaves alone keep the point the previous run recorded for them; with no previous set, nothing says.
+                log.recordable = recorded is not None
 
-            if not blocks_to_index_ids and not block_ids_to_delete:
+            if not blocks_to_index_ids and not block_ids_to_delete and not rekey_ids:
                 self.logger.info(
                     f"Reconciliation: No changes detected for record {record_id}"
                 )
+                if log is not None and recorded is not None:
+                    log.carried = set(recorded) & ({b.id for b in block_containers.blocks} | {g.id for g in block_containers.block_groups})
+                await self._heal_lost_points(
+                    record, await self._sweep_stray_points(record, block_containers), log, titles, member_blocks)
                 return True
 
             # Shallow copy with only blocks/block_groups that need indexing
@@ -1247,6 +1631,23 @@ class VectorStore(Transformer):
                 blocks_to_index_ids = _with_whole_tables(
                     block_containers.blocks, blocks_to_index_ids, any_deleted=bool(block_ids_to_delete)
                 )
+            if rekey_ids:
+                blocks_to_index_ids, block_ids_to_delete = await self._move_points_to_new_ids(
+                    record, rekey_ids, set(blocks_to_index_ids), set(block_ids_to_delete),
+                    recorded=ctx.reconciliation_context.recorded_points,
+                )
+                if not blocks_to_index_ids and not block_ids_to_delete:
+                    self.logger.info(f"Re-key: every block of record {record_id} moved, nothing to embed")
+                    # The moved points were written from payloads read moments earlier: membership is re-applied from the graph, and
+                    # a record deleted meanwhile is released, as after any other write of points.
+                    with stage("vector.cleanup"):
+                        await self._cleanup_orphaned_embeddings_if_needed(record_id, virtual_record_id, org_id, record)
+                        await self._resync_membership_after_write(virtual_record_id, record_id)
+                    await self._sweep_stray_points(record, record.block_containers)
+                    return True
+            if log is not None and not rekey_ids and recorded is not None:
+                log.carried = {i for i in recorded if i not in blocks_to_index_ids} & (
+                    {b.id for b in record.block_containers.blocks} | {g.id for g in record.block_containers.block_groups})
             block_containers = BlocksContainer(
                 blocks=[b for b in block_containers.blocks if b.id in blocks_to_index_ids],
                 block_groups=[
@@ -1255,7 +1656,7 @@ class VectorStore(Transformer):
                 ],
             )
 
-        return await self.index_documents(
+        indexed = await self.index_documents(
             block_containers,
             org_id,
             record_id,
@@ -1266,6 +1667,248 @@ class VectorStore(Transformer):
             titles=titles,
             member_blocks=member_blocks,
         )
+        await self._heal_lost_points(
+            record, await self._sweep_stray_points(record, record.block_containers), log, titles, member_blocks)
+        return indexed
+
+    async def _move_points_to_new_ids(
+        self,
+        record: "Record",
+        rekey_ids: dict[str, str],
+        blocks_to_index_ids: set[str],
+        block_ids_to_delete: set[str],
+        recorded: set[str] | None = None,
+    ) -> tuple[set[str], set[str]]:
+        """Move the points of unchanged blocks from their old ids to their content-derived ids, with the stored vectors: all or nothing.
+
+        *recorded*: the old ids of the blocks that had a point when the record was last indexed (its reconciliation metadata), when that
+        was recorded: the verification then expects exactly those. Without it (a record that predates it) a block is expected to have
+        a point when the writers would give it one (``_embeds_a_point``).
+
+        A record indexed before block ids followed content has its points under random block ids. Its blocks of unchanged content
+        keep their vectors, but only if the move can be shown complete first. Pass one reads every stored point of the record's blocks
+        (under their old ids, and under their new ids when an earlier run already moved some), window by window and verified against
+        the store's count, and checks that every point can move (it has a vector, and lists only rows of this revision) and that every
+        block that gets a point has one. Anything short of that (a read that fails or does not verify, a store that cannot return
+        vectors, a point that cannot move, a block whose point is gone) and the whole record is embedded instead: a record is never
+        moved in part. Pass two reads the windows again with their vectors, writes the points under the new ids, and only then deletes
+        the old ids. Points already under their new id (a retry after a failed run) are recognised, so a retry continues the move.
+        Returns the updated ``(blocks_to_index_ids, block_ids_to_delete)``.
+        """
+        vrid, org_id = record.virtual_record_id, org_for_filter(record.org_id, match_bound=True)
+        new_by_old = dict(rekey_ids)
+        # A block that is embedded anyway (a table that changed) is not moved: its old points are deleted.
+        for old, new in list(new_by_old.items()):
+            if new in blocks_to_index_ids:
+                block_ids_to_delete.add(old)
+                del new_by_old[old]
+        if not new_by_old:
+            return blocks_to_index_ids, block_ids_to_delete
+        old_by_new = {new: old for old, new in new_by_old.items()}
+        collection_name = self.collection_registry.resolve_write_collection(self._record_context(record.org_id, record))
+        blocks_by_id: dict[str, Block | BlockGroup] = {b.id: b for b in record.block_containers.blocks}
+        blocks_by_id.update({g.id: g for g in record.block_containers.block_groups})
+        old_ids = sorted(new_by_old)
+        windows = [old_ids[i:i + _REKEY_BLOCKS_PER_READ] for i in range(0, len(old_ids), _REKEY_BLOCKS_PER_READ)]
+
+        def embed_whole_record(reason: str) -> tuple[set[str], set[str]]:
+            for old in old_ids:
+                rekey_metrics.REKEY_FALLBACK.inc(reason)
+                blocks_to_index_ids.add(new_by_old[old])
+                block_ids_to_delete.add(old)
+            return blocks_to_index_ids, block_ids_to_delete
+
+        def window_ids(window: list[str]) -> list[str]:
+            return [*window, *(new_by_old[o] for o in window)]
+
+        def is_old(point: VectorPoint) -> bool:
+            return (point.payload.get("metadata") or {}).get("blockId") in new_by_old
+
+        def rows_of(point: VectorPoint) -> list[str]:
+            meta = point.payload.get("metadata") or {}
+            return [meta.get("blockId"), *(meta.get("rowBlockIds") or ())]
+
+        try:
+            # Pass one: verify. Only ids are kept; the vectors of a window are dropped with it.
+            covered: set[str] = set()  # old ids some stored point speaks for: as its blockId or in rowBlockIds
+            anchors: set[str] = set()  # old ids that are the blockId of a stored point (what the recorded set names)
+            counts: list[int] = []
+            for window in windows:
+                points = await self._read_points_whole(collection_name, org_id, vrid, window_ids(window))
+                counts.append(sum(is_old(p) for p in points))
+                for point in points:
+                    if is_old(point):
+                        if point.dense_vector is None or any(r not in new_by_old for r in rows_of(point)):
+                            return embed_whole_record("unmovable")
+                        covered.update(rows_of(point))
+                        anchors.add(rows_of(point)[0])
+                    else:  # already under its new id: an earlier run moved it
+                        covered.update(old_by_new[r] for r in rows_of(point) if r in old_by_new)
+                        anchors.update(old_by_new[r] for r in rows_of(point)[:1] if r in old_by_new)
+            if recorded is not None:
+                # What the writer recorded: a recorded block whose point is gone lost it; a block never recorded never had one.
+                if any(old in recorded and old not in anchors for old in old_ids):
+                    return embed_whole_record("missing")
+                uncovered = []
+            else:
+                uncovered = [blocks_by_id.get(new_by_old[old]) for old in old_ids if old not in covered]
+            if uncovered:
+                code_units = await self._code_unit_ids(record) if any(i is not None and _is_code_item(i) for i in uncovered) else frozenset()
+                needs_model = any(
+                    i is not None and not isinstance(i, BlockGroup)
+                    and str(getattr(i.type, "value", i.type)).lower() in ("image", "drawing") for i in uncovered)
+                multimodal = bool(await self.get_embedding_model_instance()) if needs_model else False
+                if any(_embeds_a_point(i, code_unit_ids=code_units, multimodal=multimodal) for i in uncovered):
+                    return embed_whole_record("missing")
+            # Pass two: move, window by window.
+            index_of = {b.id: b.index for b in record.block_containers.blocks}
+            group_index_of = {g.id: g.index for g in record.block_containers.block_groups}
+            rev = _attempt_rev(vrid)
+            for window, expected in zip(windows, counts, strict=True):
+                moving = [p for p in await self._read_points_whole(collection_name, org_id, vrid, window_ids(window)) if is_old(p)]
+                if len(moving) != expected:
+                    return embed_whole_record("error")  # the store changed between the passes: nothing is trusted
+                writes: list[VectorPoint] = []
+                for point in moving:
+                    payload = point.payload
+                    meta = dict(payload.get("metadata") or {})
+                    new_block = new_by_old[meta["blockId"]]
+                    meta["blockId"] = new_block
+                    if new_block in group_index_of:  # a group point carries the group's index in blockGroupIndex, never in blockIndex
+                        meta["blockGroupIndex"] = group_index_of[new_block]
+                    elif new_block in index_of:
+                        meta["blockIndex"] = index_of[new_block]
+                    if meta.get("rowBlockIds"):
+                        meta["rowBlockIds"] = [new_by_old[r] for r in meta["rowBlockIds"]]
+                    if rev is not None:
+                        meta[POINT_REV] = rev
+                    # The id keeps the epoch of the point being moved: a point written after a reset is salted by its own token, so
+                    # a stale batch of another epoch cannot replace it, and the first token keeps the plain id. The payload (epoch
+                    # token, precision tag) is carried over unchanged.
+                    own_epoch = meta.get(POINT_EPOCH)
+                    writes.append(VectorPoint(
+                        id=deterministic_point_id(
+                            meta, payload.get("page_content", ""), Fence(collection_name, own_epoch) if own_epoch else None,
+                        ),
+                        dense_vector=point.dense_vector, sparse_vector=point.sparse_vector, payload={**payload, "metadata": meta},
+                    ))
+                for start in range(0, len(writes), _REKEY_PAGE):
+                    await self.vector_db_service.upsert_points(collection_name, writes[start:start + _REKEY_PAGE])
+        except VectorsNotFetchable:
+            return embed_whole_record("unsupported")
+        except Exception as e:  # a read that failed or does not verify: embedding the record is always correct
+            self.logger.warning(f"Re-key of {vrid} could not be verified, embedding the record instead: {e}")
+            return embed_whole_record("error")
+        for start in range(0, len(old_ids), _REKEY_PAGE):
+            await self.delete_blocks_by_ids(set(old_ids[start:start + _REKEY_PAGE]), vrid, collection_name, org_id=org_id)
+        rekey_metrics.REKEYED.inc(self.vector_db_service.get_service_name(), value=float(len(old_ids)))
+        log = _POINTED.get()
+        if log is not None:  # the points now under their new ids are the ones this move wrote (or an earlier try of it did)
+            log.wrote.update(new_by_old[o] for o in anchors)
+        return blocks_to_index_ids, block_ids_to_delete
+
+    async def _code_unit_ids(self, record: "Record") -> frozenset[str]:
+        """The blocks and groups the code writer gives a unit (a point) of their own, found by running the writer on the record's code."""
+        container = record.block_containers
+        code_blocks = [b for b in container.blocks if _is_code_block(b)]
+        class_groups = [g for g in container.block_groups if g.sub_type == GroupSubType.CODE_CLASS]
+        if not code_blocks and not class_groups:
+            return frozenset()
+        documents = await asyncio.to_thread(
+            code_documents_for_record, code_blocks, class_groups, record.virtual_record_id, record.org_id,
+            _record_context_line(record), member_blocks=container.blocks,
+        )
+        return frozenset(d.metadata["blockId"] for d in documents)
+
+    async def _read_points_whole(
+        self, collection_name: str, org_id: str, virtual_record_id: str, block_ids: list[str],
+    ) -> list[VectorPoint]:
+        scroll_filter = await self.vector_db_service.filter_collection(
+            must={"orgId": org_id, "virtualRecordId": virtual_record_id, "blockId": block_ids}
+        )
+        await self.vector_db_service.make_searchable(collection_name)  # a point written a moment ago is in neither the scroll nor the count
+        points: list[VectorPoint] = []
+        offset = None
+        while True:
+            page = await self.vector_db_service.scroll_with_vectors(collection_name, scroll_filter, _REKEY_PAGE, offset)
+            points.extend(page.points or [])
+            if not page.next_offset or page.next_offset == offset:
+                break
+            offset = page.next_offset
+        # A positional cursor can repeat a point and skip another: one entry per point id, so the count check below sees the skip.
+        points = list({p.id: p for p in points}.values())
+        # Complete or an error: a store can answer a scroll with fewer points than it holds, and a block counted as moved loses
+        # its old points. The store's own count of the same filter must agree with what was read.
+        counted = await self.vector_db_service.count_points(collection_name, scroll_filter)
+        if counted != len(points):
+            raise PartialResult(f"{collection_name}: the scroll saw {len(points)} points and the store counts {counted}")
+        return points
+
+    async def _still_current(self, record: "Record") -> bool:
+        """Asked before each delete batch of the sweep: the virtual record's lease is still this run's, and the record is still on this
+        run's revision (and readable)."""
+        try:
+            await _require_lease("the stray sweep")
+            return not await self._run_superseded(record)
+        except LeaseLost:
+            raise  # the lease is gone: the run stops and the delivery is handed back, it does not just skip a sweep
+        except Exception:  # cannot tell: nothing more is deleted
+            return False
+
+    async def _run_superseded(self, record: "Record") -> bool:
+        """Whether the stored record is no longer the revision this run indexed (a newer run took the record meanwhile, for instance after
+        this one lost its lease): its virtual record or its content checksum differs. The sweep deletes by what this run's revision
+        holds, so it must not run against another one."""
+        doc = await self.graph_provider.get_document(record.id, CollectionNames.RECORDS.value)
+        if doc is None:
+            return True  # deleted: the orphan cleanup releases its points, not the sweep
+        if not isinstance(doc, dict):
+            return False
+        current_vrid, current_md5 = doc.get("virtualRecordId"), doc.get("md5Checksum")
+        if current_vrid and current_vrid != record.virtual_record_id:
+            return True
+        run_md5 = record.md5_hash if isinstance(record.md5_hash, str) else None
+        return bool(current_md5 and run_md5 and current_md5 != run_md5)
+
+    async def _sweep_stray_points(self, record: "Record", revision: BlocksContainer | None) -> "frozenset[str] | None":
+        """Drop the record's points that *revision* (its whole current container) does not reference.
+        Best effort: the record is already searchable, so a failure here is logged and not raised. Returns the kept blocks the listing
+        found a point for when it listed the record whole, else None."""
+        if not sweep_enabled() or revision is None or not record.org_id or not record.virtual_record_id:
+            return None
+        vrid = record.virtual_record_id
+        try:
+            if await self._run_superseded(record):
+                self.logger.info(f"Stray point sweep of {vrid} skipped: the record is on another revision now")
+                return None
+        except Exception as e:  # cannot tell: a backstop that cannot tell does not delete
+            self.logger.warning(f"Stray point sweep of {vrid} skipped, the record could not be read: {e}")
+            return None
+        keep = {b.id for b in revision.blocks} | {g.id for g in revision.block_groups}
+        keep |= {self.record_summary_block_id(vrid), code_residue_block_id(vrid)}
+        try:
+            collection_name = self.collection_registry.resolve_write_collection(
+                self._record_context(record.org_id, record))
+            # A record larger than one pass lists is swept in steps: the next pass of this revision resumes where the last stopped.
+            where = (record.org_id, vrid, hash(frozenset(keep)))
+            await self.vector_db_service.make_searchable(collection_name)  # the listing must see what this run just wrote
+            result = await sweep_stray_points(
+                self.vector_db_service, collection_name,
+                org_id=org_for_filter(record.org_id, match_bound=True), virtual_record_id=vrid, keep_block_ids=keep,
+                resume=self._sweep_resume.pop(where, None),
+                may_delete=lambda: self._still_current(record),
+                fence=lambda: _fenced("the stray sweep"),
+            )
+            if result.next_offset is not None:
+                self._sweep_resume[where] = result.next_offset
+                while len(self._sweep_resume) > _SWEEP_RESUME_RECORDS:
+                    self._sweep_resume.pop(next(iter(self._sweep_resume)))
+            return result.seen_blocks
+        except LeaseLost:
+            raise
+        except Exception as e:  # a backstop must not fail an indexed record
+            self.logger.warning(f"Stray point sweep of {vrid} failed: {e}")
+        return None
 
     # ------------------------------------------------------------------
     # Record summary helpers
@@ -1398,13 +2041,20 @@ class VectorStore(Transformer):
             org_scope = for_org(org_id, job="index_record_summary") if org_id else contextlib.nullcontext()
         with org_scope:
             tokens = await self._bind_membership(virtual_record_id, org_id=org_id)
+            # Written outside ``apply``, so it collects the epochs it wrote under itself and is checked once it is written.
+            own = _PointLog()
+            handle = _POINTED.set(own)
             try:
                 await self._process_document_chunks([summary_doc], record_id, collection_name)
             finally:
+                _POINTED.reset(handle)
                 reset_membership_context(tokens)
+            if own.tokens:
+                await self.require_epochs_current({c: sorted(t) for c, t in own.tokens.items()})
             # The membership and the stamp were read before the embedding: what changed meanwhile is applied now, as for the other points
             await self._resync_membership_after_write(virtual_record_id, record_id)
-        self.logger.debug("✅ Indexed record summary for record %s", record_id)
+            await self._check_for_leaks(collection_name, org_id, virtual_record_id)
+        self.logger.debug("Indexed record summary for record %s", record_id)
 
     async def _collection_with_model(self, org_id: str, record: Optional["Record"]) -> str:
         """The record's collection, with the embedding model built on this instance first: a path
@@ -1459,6 +2109,7 @@ class VectorStore(Transformer):
             reset_membership_context(tokens)
         # What changed in the membership while the units were embedded is applied now, as for the other points.
         await self._resync_membership_after_write(virtual_record_id, record_id)
+        await self._check_for_leaks(collection_name, org_id, virtual_record_id)
         return sum(d.metadata["blockId"] not in stale for d in documents)
 
     async def _drop_superseded_units(
@@ -1635,6 +2286,7 @@ class VectorStore(Transformer):
                 )
                 # Deletes only when no record references the VRID, behind its own
                 # confirming re-read.
+                await _require_lease("the release of an orphaned virtual record")
                 await rewrite_or_delete_virtual_record(
                     self.vector_db_service,
                     self.collection_locator,
@@ -1651,6 +2303,8 @@ class VectorStore(Transformer):
                 virtual_record_id,
                 self.logger,
             )
+        except LeaseLost:
+            raise
         except Exception as e:
             # Loud but non-fatal: the points are already written and correct
             # apart from membership, so failing the whole index would discard
@@ -1702,11 +2356,6 @@ class VectorStore(Transformer):
             record_group_ids = state.record_group_ids
             root_record_group_ids = state.root_record_group_ids
         except Exception as e:
-            self.logger.error(
-                "Failed to resolve vector membership for %s: %s",
-                virtual_record_id,
-                e,
-            )
             raise VectorStoreError(
                 f"Could not resolve vector membership for virtual record {virtual_record_id}",
                 details={"virtual_record_id": virtual_record_id, "error": str(e)},
@@ -1754,6 +2403,13 @@ class VectorStore(Transformer):
         # HTTP connection pool that the previous one never gets to reuse, and
         # the dimension probe costs an extra embed round trip per record.
         if self.dense_embeddings is not None and self._embedding_config_hash == config_hash:
+            # A pin saved after the client was built binds it from the next record on (MG-15).
+            await require_embeddings_placement(
+                self.config_service,
+                next((c for c in embedding_configs if c.get("isDefault")), embedding_configs[0])
+                if embedding_configs
+                else None,
+            )
             return self.is_multimodal_embedding
 
         async with self._embedding_model_lock:
@@ -1775,7 +2431,9 @@ class VectorStore(Transformer):
                 "falling back to the local embedding service."
             )
             try:
-                dense_embeddings = get_default_embedding_model()
+                dense_embeddings = await build_embeddings(self.config_service, None)
+            except (ModelNotAllowedError, LLMUnavailableError):
+                raise
             except Exception as e:
                 raise EmbeddingNotConfiguredError(
                     "No embedding model is configured for this organisation "
@@ -1790,7 +2448,7 @@ class VectorStore(Transformer):
             if provider == "ollama":
                 config = await self.collection_registry.resolve_embedding_config(config)
             configuration = config["configuration"]
-            dense_embeddings = get_embedding_model(provider, config, sdk_retries=INDEXING_SDK_RETRIES)
+            dense_embeddings = await build_embeddings(self.config_service, config, sdk_retries=INDEXING_SDK_RETRIES)
             is_multimodal = config.get("isMultimodal")
 
         try:
@@ -1818,6 +2476,9 @@ class VectorStore(Transformer):
 
         await self._ensure_sparse_embeddings()
 
+        read_precision = getattr(dense_embeddings, "read_precision", None)
+        if inspect.iscoroutinefunction(read_precision):
+            await read_precision()
         self.model_window = await _model_window(dense_embeddings)
         self.dense_embeddings = dense_embeddings
         self.embedding_provider = provider
@@ -1899,6 +2560,7 @@ class VectorStore(Transformer):
         # deployments). rewrite_or_delete_virtual_record re-checks the graph
         # for *any* remaining record on this VRID and only deletes when none
         # is left, rewriting membership otherwise.
+        await _require_lease("the release of an orphaned virtual record")
         await rewrite_or_delete_virtual_record(
             self.vector_db_service,
             self.collection_locator,
@@ -1907,24 +2569,62 @@ class VectorStore(Transformer):
             self.logger,
         )
 
+    def _precision_guard(self) -> PrecisionGuard:
+        guard = getattr(self, "_guard", None)
+        if guard is None:
+            guard = PrecisionGuard(CollectionPinStore(self.config_service, self.logger), self.vector_db_service, self.logger)
+            self._guard = guard
+        return guard
+
+    async def require_matching_precision_before_delete(
+        self, collection_name: str | None, org_id: str | None, *, build_model: bool = False,
+    ) -> None:
+        """Refuse, before a delete that is followed by a write, when the server no longer serves the index's precision.
+
+        A delete in front of a write that cannot succeed would take the record's old vectors out for nothing.
+        The witness is the freshest one this process has (a probe embedding when it is older than a few
+        seconds); a restart inside that window is caught by the check in front of the batch itself.
+        """
+        embedder = self.dense_embeddings
+        if embedder is None and build_model:
+            await self.get_embedding_model_instance()
+            embedder = self.dense_embeddings
+        if not isinstance(embedder, EmbeddingServerEmbeddings):
+            return
+
+        async def probe() -> tuple[str, bool]:
+            _, precision, fallback = await embedder.aembed_documents_witnessed(["."], single_attempt=True)
+            return precision, fallback
+
+        witness = await get_precision_witness().fresh(embedder.model, _WITNESS_MAX_AGE_SECONDS, probe)
+        org = org_for_filter(org_id, match_bound=True)
+        names = [collection_name] if collection_name else [m.name for m in await self.collection_registry.list_managed_collections()]
+        for name in names:
+            await self._precision_guard().verify_batch(
+                name, org, witness.precision, fallback=witness.fallback, intent=INT8_INTENT, claim=False,
+            )
+
     async def delete_blocks_by_ids(
         self, block_ids: set, virtual_record_id: str, collection_name: str, *, org_id: str | None = None,
     ) -> None:
         """Delete embeddings for specific block IDs scoped to a virtual record."""
         if not block_ids:
             return
+        await self.require_matching_precision_before_delete(collection_name, org_id)
         org_id = org_for_filter(org_id, match_bound=True)
         try:
             filter_dict = await self.vector_db_service.filter_collection(
                 must={"orgId": org_id, "blockId": list(block_ids), "virtualRecordId": virtual_record_id}
             )
-            await self.vector_db_service.delete_points(collection_name, filter_dict)
+            async with _fenced("a delete of replaced blocks"):
+                await self.vector_db_service.delete_points(collection_name, filter_dict)
             self.logger.info(
-                f"✅ Deleted {len(block_ids)} blocks from vector store "
+                f"Deleted {len(block_ids)} blocks from vector store "
                 f"for virtual_record_id {virtual_record_id}"
             )
+        except LeaseLost:
+            raise
         except Exception as e:
-            self.logger.error(f"Error deleting blocks by IDs: {e}")
             raise VectorStoreError(
                 "Failed to delete blocks by IDs", details={"error": str(e)}
             ) from e
@@ -1939,12 +2639,14 @@ class VectorStore(Transformer):
             filter_dict = await self.vector_db_service.filter_collection(
                 must={"orgId": org_id, "virtualRecordId": virtual_record_id}
             )
-            await self.vector_db_service.delete_points(collection_name, filter_dict)
+            async with _fenced("a delete of the record's embeddings"):
+                await self.vector_db_service.delete_points(collection_name, filter_dict)
             self.logger.debug(
-                f"✅ Deleted embeddings for virtual record '{virtual_record_id}'"
+                f"Deleted embeddings for virtual record '{virtual_record_id}'"
             )
+        except LeaseLost:
+            raise
         except Exception as e:
-            self.logger.error(f"Error deleting embeddings: {e}")
             raise VectorStoreError(
                 "Failed to delete embeddings", details={"error": str(e)}
             ) from e
@@ -1955,7 +2657,8 @@ class VectorStore(Transformer):
         """Delete all vector points for a record, resolving the collection internally."""
         ctx = self._record_context(org_id, record)
         collection_name = self.collection_registry.resolve_write_collection(ctx)
-        await self.delete_embeddings(virtual_record_id, collection_name, org_id=org_id)
+        async with self._vrid_lease(f"purge:{virtual_record_id}", org_id, virtual_record_id):
+            await self.delete_embeddings(virtual_record_id, collection_name, org_id=org_id)
 
     # ------------------------------------------------------------------
     # Image embedding (provider dispatch via MultimodalEmbeddingFactory)
@@ -2020,7 +2723,7 @@ class VectorStore(Transformer):
                     ),
                     dense_vector=result.embedding,
                     payload=vector_point_payload(
-                        chunk.get("metadata", {}),
+                        {**chunk.get("metadata", {}), POINT_PRECISION: IMAGE_TAG},
                         chunk.get("description", ""),
                     ),
                 )
@@ -2046,7 +2749,7 @@ class VectorStore(Transformer):
         if not image_base64s:
             return []
 
-        provider = MultimodalEmbeddingFactory.create(self._multimodal_provider_config())
+        provider = await build_multimodal_embeddings(self.config_service, self._multimodal_provider_config())
         if provider is None or not provider.supports_multimodal():
             self.logger.warning(
                 f"Unsupported embedding provider for images: {self.embedding_provider}"
@@ -2069,8 +2772,9 @@ class VectorStore(Transformer):
             await self.vector_db_service.upsert_points(
                 collection_name=collection_name, points=points[i:i + batch_size]
             )
+            _note_points(points[i:i + batch_size])
         self.logger.info(
-            f"✅ Stored {len(points)} image points in {time.perf_counter() - start:.2f}s"
+            f"Stored {len(points)} image points in {time.perf_counter() - start:.2f}s"
         )
 
     # ------------------------------------------------------------------
@@ -2118,7 +2822,7 @@ class VectorStore(Transformer):
         return await embedder.embed_documents(texts)
 
     async def _embed_documents_with_retry(
-        self, texts: List[str], record_id: str
+        self, texts: list[str], record_id: str, witness_out: list[tuple[str, bool]] | None = None,
     ) -> List[List[float]]:
         """Dense-embed one batch, retrying transient provider failures.
 
@@ -2164,6 +2868,18 @@ class VectorStore(Transformer):
                 ):
                     # Gated: the client must not sleep through its own backoff while holding the permit;
                     # this loop retries, and sleeps below with the permit released.
+                    if isinstance(embedder, EmbeddingServerEmbeddings):
+                        # The bundled server names the weights on every response; that is the precision
+                        # these vectors have, whatever this client read earlier.
+                        vectors, precision, fallback = await asyncio.wait_for(
+                            embedder.aembed_documents_witnessed(texts, single_attempt=gate is not None),
+                            timeout=attempt_timeout,
+                        )
+                        if witness_out is not None:
+                            witness_out.append((precision, fallback))
+                        if gateway is not None:
+                            gateway.note_success()
+                        return vectors
                     vectors = await asyncio.wait_for(
                         embedder.aembed_documents(texts, single_attempt=True)
                         if gate is not None
@@ -2223,14 +2939,14 @@ class VectorStore(Transformer):
                 # The gateway's full-jitter wait, already capped to the call's sleep allowance: no fixed floor.
                 delay = decision.delay_s
                 slept_s += delay
-            # The chain, not str(): the OpenAI SDK reports every transport
-            # failure as "Connection error." and keeps the httpx exception that
-            # says which one as __cause__; a bare timeout's message is empty.
+            # The innermost cause, not the text: the OpenAI SDK reports every transport failure as
+            # "Connection error." with the httpx error that says which one as __cause__, and a
+            # provider's text is its response body, which can echo the chunks.
             self.logger.warning(
                 f"Dense embedding attempt {attempt}/{_EMBEDDING_BATCH_MAX_ATTEMPTS} "
                 f"failed for batch of {len(texts)} texts / {total_chars} chars "
-                f"(record {record_id}); retrying in {delay:.1f}s: "
-                f"{format_exception_chain(last_error)}"
+                f"(record {record_id}); retrying in {delay:.1f}s: {type(last_error).__name__}",
+                extra={"error_type": type(last_error).__name__, "cause_type": innermost_type(last_error)},
             )
             # A failing provider is not a stalled record: the stall timer waits out the retry.
             if progress is not None:
@@ -2253,6 +2969,7 @@ class VectorStore(Transformer):
         record_id: str,
         collection_name: str,
         presence: Optional["_RecordPresence"] = None,
+        fence: Fence | None = None,
     ) -> None:
         """Embed a batch of LangChain Documents and upsert to the vector DB.
 
@@ -2272,12 +2989,29 @@ class VectorStore(Transformer):
             return
 
         texts = [doc.page_content for doc in documents]
+        # The epoch of the collection this batch is accepted under, read before it is embedded: a cleanup that
+        # drops the collection meanwhile moves it, and the batch then claims and confirms nothing.
+        # Every provider has one: the id of each point depends on it. A caller that wrote ids before (a resumed record) passes its own.
+        guard = self._precision_guard()
+        if fence is None:
+            fence = await guard.capture(collection_name)
+        _note_fence(fence)
 
         with stage(
             "embed.dense",
             detail=f"batch of {len(texts)} texts / {sum(len(t) for t in texts)} chars",
         ):
-            dense_embeddings = await self._embed_documents_with_retry(texts, record_id)
+            witnessed: list[tuple[str, bool]] = []
+            dense_embeddings = await self._embed_documents_with_retry(texts, record_id, witnessed)
+
+        # The precision of this batch is compared with the index's, right before anything is written.
+        batch_precision: str | None = None
+        if witnessed:
+            batch_precision, batch_fallback = witnessed[-1]
+            await self._precision_guard().verify_batch(
+                collection_name, _bound_org(), batch_precision,
+                fallback=batch_fallback, intent=INT8_INTENT, fence=fence,
+            )
 
         # Sparse embeddings (provider-dependent). Code adds its subtokens here only.
         with stage("embed.sparse", detail=f"batch of {len(texts)} texts"):
@@ -2290,13 +3024,17 @@ class VectorStore(Transformer):
         # Added after the id is derived from the metadata, so it never changes an id.
         attempt = current_attempt()
         stamp = (attempt.stamp if attempt is not None else None) or {}
+        # The weights that made this batch, as its own response said: every point carries it, fp32 too.
+        precision_stamp = {POINT_PRECISION: batch_precision} if batch_precision else {}
+        if batch_precision:  # a provider that does not witness its weights is not confirmed after the write, so its points are not tagged
+            precision_stamp[POINT_EPOCH] = fence.token
         points: List[VectorPoint] = [
             VectorPoint(
-                id=deterministic_point_id(doc.metadata, doc.page_content),
+                id=deterministic_point_id(doc.metadata, doc.page_content, fence),
                 dense_vector=dense,
                 sparse_vector=sparse,
                 payload=vector_point_payload(
-                    {**{k: v for k, v in doc.metadata.items() if k != _SPARSE_EXTRA}, **stamp},
+                    {**{k: v for k, v in doc.metadata.items() if k != _SPARSE_EXTRA}, **stamp, **precision_stamp},
                     doc.page_content,
                 ),
             )
@@ -2306,6 +3044,9 @@ class VectorStore(Transformer):
             await self.vector_db_service.upsert_points(
                 collection_name=collection_name, points=points
             )
+        if batch_precision and fence is not None:
+            await self._confirm_batch(guard, collection_name, batch_precision, fence, documents)
+        _note_points(points)
         progress = current_progress()
         if progress is not None:
             progress.beat(len(points))
@@ -2316,10 +3057,15 @@ class VectorStore(Transformer):
         langchain_document_chunks: List[Document],
         record_id: str,
         collection_name: str,
+        fence: Fence | None = None,
     ) -> None:
         self.logger.debug(
-            f"⏱️ Embedding {len(langchain_document_chunks)} document chunks"
+            f"Embedding {len(langchain_document_chunks)} document chunks"
         )
+        # One epoch for every batch of the call: the ids of its points are derived from it.
+        if fence is None:
+            fence = await self._precision_guard().capture(collection_name)
+        _note_fence(fence)
         use_local_sequential = self._is_local_cpu_embedding()
         max_documents, max_chars = (
             (_LOCAL_CPU_DOCUMENT_BATCH_SIZE, _LOCAL_CPU_DOCUMENT_BATCH_CHARS)
@@ -2332,14 +3078,10 @@ class VectorStore(Transformer):
         )
 
         async def process_batch(batch_start: int, batch: List[Document]) -> int:
-            try:
-                await self._embed_and_upsert_documents(
-                    batch, record_id, collection_name, presence
-                )
-                return len(batch)
-            except Exception as e:
-                self.logger.warning(f"Batch at {batch_start} failed: {e}")
-                raise
+            await self._embed_and_upsert_documents(
+                batch, record_id, collection_name, presence, fence
+            )
+            return len(batch)
 
         if not use_local_sequential and self._batches_by_tokens():
             batches = await asyncio.to_thread(
@@ -2357,9 +3099,12 @@ class VectorStore(Transformer):
             for idx, (start, batch) in enumerate(batches):
                 try:
                     await process_batch(start, batch)
-                except NonRetryableError:
+                except PrecisionFlip:
                     raise
                 except Exception as e:
+                    note(failed_batches=1)  # sequential: the first failure stops the rest
+                    if isinstance(e, NonRetryableError):
+                        raise
                     raise VectorStoreError(
                         f"Failed to store batch {idx}",
                         details={"error": str(e), "batch_index": idx},
@@ -2374,8 +3119,10 @@ class VectorStore(Transformer):
             results = await asyncio.gather(
                 *[limited(s, b) for s, b in batches], return_exceptions=True
             )
+            # Only the first failure is raised; the count says how many batches went with it.
+            note(failed_batches=sum(isinstance(r, Exception) for r in results) or None)
             for idx, result in enumerate(results):
-                if isinstance(result, NonRetryableError):
+                if isinstance(result, (NonRetryableError, PrecisionFlip)):
                     raise result
                 if isinstance(result, Exception):
                     raise VectorStoreError(
@@ -2398,6 +3145,10 @@ class VectorStore(Transformer):
             _point_policy(),
             str(_rows_per_point()),
             str(_max_row_points_per_table()),
+            # The weights are not part of it, and must not be: the key is fixed for the whole attempt and every retry of
+            # it, and what a batch comes back with is known only after the first one. One precision per index is held by
+            # the pin, checked in front of every write, and points of another one are removed at the end of a record,
+            # so no point a resume would keep can be of a precision other than the index's.
         )
         return hashlib.sha256("\x1f".join(parts).encode()).hexdigest()[:16]
 
@@ -2433,7 +3184,9 @@ class VectorStore(Transformer):
         embeds the rest; anything else is today's full replace. Errors after the first write never
         remove points: they fail the attempt, and the next one converges.
         """
-        point_ids = [deterministic_point_id(d.metadata, d.page_content) for d in documents]
+        # The epoch this record is written under, once: the ids it wants and the ids its batches write are the same ones.
+        fence = _note_fence(await self._precision_guard().capture(collection_name))
+        point_ids = [deterministic_point_id(d.metadata, d.page_content, fence) for d in documents]
         digest = digest_of(point_ids)
         key = self._embed_key()
         prior = attempt.prior
@@ -2462,6 +3215,7 @@ class VectorStore(Transformer):
         progress = current_progress()
 
         if not resuming:
+            await self.require_matching_precision_before_delete(collection_name, org_id)
             await self._write_embed_marker(record_id, {
                 EMBED_VRID: virtual_record_id,
                 EMBED_REV: attempt.rev,
@@ -2479,6 +3233,9 @@ class VectorStore(Transformer):
             todo = documents
             present = set()
         else:
+            # An attempt stopped before its full delete leaves the older revision's points, under the ids this one wants (the id
+            # follows the block and its text, not the revision). Counted as present, they would be skipped and then fenced.
+            await self._drop_points_of_other_runs(attempt, key, virtual_record_id, collection_name, org_id)
             with stage("vector.exists"):
                 present = await self._existing_ids(collection_name, list(dict.fromkeys(point_ids)))
             todo = [d for d, pid in zip(documents, point_ids) if pid not in present]
@@ -2492,15 +3249,34 @@ class VectorStore(Transformer):
             await progress.report(force=True)
 
         if todo:
-            await self._process_document_chunks(todo, record_id, collection_name)
+            await self._process_document_chunks(todo, record_id, collection_name, fence)
+        log = _POINTED.get()
+        if present and log is not None:  # kept from the interrupted run of this same revision: they are this run's points too
+            log.wrote.update(d.metadata["blockId"] for d, pid in zip(documents, point_ids) if pid in present and d.metadata.get("blockId"))
         if progress is not None:
             progress.finish()
 
+        await self._check_for_leaks(collection_name, org_id, virtual_record_id)
         if not resuming:
             return
         await self._fence_and_verify(
             attempt, key, point_ids, record_id, virtual_record_id, collection_name, org_id
         )
+
+    async def _drop_points_of_other_runs(
+        self, attempt: EmbedAttempt, key: str, virtual_record_id: str, collection_name: str, org_id: str | None,
+    ) -> None:
+        """Delete the virtual record's points of another revision or embedding setup; a missing field counts as different. Both
+        deletes pin the org and the virtual record."""
+        org = org_for_filter(org_id, match_bound=True)
+        with stage("vector.delete"):
+            for field, value in ((POINT_REV, attempt.rev), (POINT_KEY, key)):
+                stale = await self.vector_db_service.filter_collection(
+                    must={"orgId": org, "virtualRecordId": virtual_record_id},
+                    must_not={field: value},
+                )
+                async with _fenced("the fence of a resumed run"):
+                    await self.vector_db_service.delete_points(collection_name, stale)
 
     async def _fence_and_verify(
         self,
@@ -2516,16 +3292,9 @@ class VectorStore(Transformer):
 
         A pod that lost its lease can still land a write after this run began, and points written
         before the revision and setup were recorded on them carry neither field; a missing field
-        counts as different. Both deletes pin the org and the virtual record.
+        counts as different.
         """
-        org = org_for_filter(org_id, match_bound=True)
-        with stage("vector.delete"):
-            for field, value in ((POINT_REV, attempt.rev), (POINT_KEY, key)):
-                stale = await self.vector_db_service.filter_collection(
-                    must={"orgId": org, "virtualRecordId": virtual_record_id},
-                    must_not={field: value},
-                )
-                await self.vector_db_service.delete_points(collection_name, stale)
+        await self._drop_points_of_other_runs(attempt, key, virtual_record_id, collection_name, org_id)
         wanted = list(dict.fromkeys(point_ids))
         with stage("vector.exists"):
             present = await self._existing_ids(collection_name, wanted)
@@ -2583,15 +3352,17 @@ class VectorStore(Transformer):
                     "Failed to store documents in vector store",
                     details={"error": str(e)},
                 ) from e
-            self.logger.info(f"Embeddings created and stored for record '{record_id}'")
+            note(chunks=len(langchain_docs) + len(image_chunks))
+            self.logger.debug(f"Embeddings created and stored for record '{record_id}'")
             return
 
         # Delete existing embeddings first (full replace, non-reconciliation path)
+        await self.require_matching_precision_before_delete(collection_name, org_id)
         with stage("vector.delete"):
             await self.delete_embeddings(virtual_record_id, collection_name, org_id=org_id)
 
         self.logger.debug(
-            f"📊 Processing {len(langchain_docs)} text + {len(image_chunks)} image chunks"
+            f"Processing {len(langchain_docs)} text + {len(image_chunks)} image chunks"
         )
 
         if image_chunks:
@@ -2612,7 +3383,68 @@ class VectorStore(Transformer):
                     details={"error": str(e)},
                 ) from e
 
-        self.logger.info(f"✅ Embeddings created and stored for record '{record_id}'")
+        await self._check_for_leaks(collection_name, org_id, virtual_record_id)
+        note(chunks=len(langchain_docs) + len(image_chunks))
+        self.logger.debug(f"Embeddings created and stored for record '{record_id}'")
+
+    async def _confirm_batch(
+        self, guard: PrecisionGuard, collection_name: str, precision: str, fence: Fence, documents: list[Document],
+    ) -> None:
+        """After the write: the epoch and the pin are still the batch's, else the error is raised.
+
+        On a definite verdict (the pin holds the other precision, or the epoch moved) the points of this batch's records at this
+        precision and epoch, in the writer's organisation, are removed first: they are invalid whoever wrote them. Any other outcome
+        (a pin that cannot be read or is missing, a cancellation) removes nothing and leaves a debt entry that is settled later by
+        reading the pin and the epoch again; a pin that was unreadable is confirmed again before that.
+        """
+        org = _bound_org()
+        record_ids = sorted({d.metadata.get("virtualRecordId") for d in documents if d.metadata.get("virtualRecordId")})
+        extras = [{"virtualRecordId": record_ids}] if record_ids else []
+        try:
+            await guard.confirm_after_write(collection_name, org, precision, fence)
+        except UNCONFIRMED_WRITE as exc:
+            if not extras:
+                self.logger.info(
+                    "The points of an unconfirmed batch in '%s' were not removed: its %d documents name no record",
+                    collection_name, len(documents),
+                )
+                raise
+            settled = await guard.settle_unconfirmed(collection_name, org, precision, fence, extras, exc)
+            if settled is None:
+                return
+            if settled is exc:
+                raise
+            raise settled from exc
+        except asyncio.CancelledError:
+            if extras:
+                try:
+                    await run_despite_cancellation(guard.note_debt(collection_name, org, precision, fence, extras[0]))
+                except BaseException:
+                    self.logger.error(
+                        "Could not record the points of a cancelled batch in '%s' as debt", collection_name, exc_info=True,
+                    )
+            raise
+
+    async def _check_for_leaks(self, collection_name: str, org_id: str | None, virtual_record_id: str) -> None:
+        """End of a record: no point of the record may carry the other precision's tag.
+
+        A claim race or a pin released under a writer can leave one. Only those points are removed (the
+        record's other points may be unchanged blocks of a reconciled record), and the message goes back to the queue.
+        """
+        if not isinstance(self.dense_embeddings, EmbeddingServerEmbeddings):
+            return
+        guard = self._precision_guard()
+        org = org_for_filter(org_id, match_bound=True)
+        await guard.sweep_dead(collection_name, org, throttle=True)
+        standing = await guard.standing(collection_name, org, fresh=True)
+        if standing.precision is None:
+            return
+        if await guard.leaked(collection_name, org, virtual_record_id, standing.precision):
+            await guard.delete_leaked(collection_name, org, virtual_record_id, standing.precision)
+            raise PrecisionFlip(
+                f"points of the other precision were found in '{collection_name}' for this record and removed; "
+                f"the index holds {standing.precision}",
+            )
 
     # ------------------------------------------------------------------
     # Main entry point
@@ -2639,6 +3471,11 @@ class VectorStore(Transformer):
                 "Failed to get embedding model instance",
                 details={"error": str(e)},
             ) from e
+        attempt = current_attempt()
+        if is_reconciliation and attempt is not None and attempt.stamp is None and _attempt_rev(virtual_record_id) is not None:
+            # An update's points say which revision and setup wrote them, as a full index's do (the stamp is set there by
+            # _embed_resumably, which an update does not go through).
+            attempt.stamp = {POINT_REV: attempt.rev, POINT_KEY: self._embed_key()}
 
         # No LLM is resolved here any more: the only thing it was used for was
         # describing images, which now happens before the record is stored
@@ -2701,6 +3538,8 @@ class VectorStore(Transformer):
                 await self._cleanup_orphaned_embeddings_if_needed(
                     record_id, virtual_record_id, org_id, record
                 )
+                # A record with nothing to write still ends here: points a writer that died left are found now.
+                await self._check_for_leaks(collection_name, org_id, virtual_record_id)
                 return None
 
             text_blocks = []
@@ -2741,7 +3580,7 @@ class VectorStore(Transformer):
                     table_blocks.append(block)
 
             self.logger.debug(
-                f"📊 Processing {len(blocks)} blocks and {len(block_groups)} block_groups"
+                f"Processing {len(blocks)} blocks and {len(block_groups)} block_groups"
             )
             self.logger.debug(
                 f"Block classification: text={len(text_blocks)}, image={len(image_blocks)}, "
@@ -2762,7 +3601,7 @@ class VectorStore(Transformer):
                         _record_context_line(record), member_blocks=member_blocks,
                     )
                 )
-                self.logger.info("✅ Added code documents for embedding")
+                self.logger.info("Added code documents for embedding")
 
             # ── Text blocks ──
             if text_blocks:
@@ -2776,7 +3615,7 @@ class VectorStore(Transformer):
                             timeout=_TEXT_PROCESSING_TIMEOUT_S,
                         )
                     documents_to_embed.extend(text_documents)
-                    self.logger.debug("✅ Added text documents for embedding")
+                    self.logger.debug("Added text documents for embedding")
                 except asyncio.TimeoutError:
                     raise DocumentProcessingError(
                         f"Text processing timed out after {_TEXT_PROCESSING_TIMEOUT_S}s "
@@ -2875,7 +3714,7 @@ class VectorStore(Transformer):
                                 "\n\n".join(parts), sql_base_metadata,
                             ))
                             self.logger.info(
-                                f"📊 Added SQL TABLE DDL+Summary for embedding: {fqn}"
+                                f"Added SQL TABLE DDL+Summary for embedding: {fqn}"
                             )
 
                     elif sub_type == "sql_view":
@@ -2912,11 +3751,11 @@ class VectorStore(Transformer):
                                 view_context, sql_base_metadata,
                             ))
                             self.logger.info(
-                                f"📊 Added SQL VIEW for embedding: {fqn}"
+                                f"Added SQL VIEW for embedding: {fqn}"
                             )
                         else:
                             self.logger.warning(
-                                f"⚠️ SQL VIEW {fqn} has no embeddable content, skipping"
+                                f"SQL VIEW {fqn} has no embeddable content, skipping"
                             )
 
                 elif block_group_type == "table":
@@ -2958,7 +3797,7 @@ class VectorStore(Transformer):
                     ))
                     sql_rows_embedded += 1
             if sql_rows_embedded > 0:
-                self.logger.debug(f"📊 Added {sql_rows_embedded} SQL row(s) for embedding")
+                self.logger.debug(f"Added {sql_rows_embedded} SQL row(s) for embedding")
 
             # ── Regular table blocks ──
             for block in table_blocks:
@@ -3020,12 +3859,13 @@ class VectorStore(Transformer):
                 )
 
             if not documents_to_embed:
-                self.logger.warning("⚠️ No documents to embed after filtering by block type")
+                self.logger.warning("No documents to embed after filtering by block type")
                 if block_ids_to_delete:
                     await self.delete_blocks_by_ids(block_ids_to_delete, virtual_record_id, collection_name, org_id=org_id)
                 await self._cleanup_orphaned_embeddings_if_needed(
                     record_id, virtual_record_id, org_id, record
                 )
+                await self._check_for_leaks(collection_name, org_id, virtual_record_id)
                 return True
 
             # ── Embed and store ──
@@ -3051,6 +3891,7 @@ class VectorStore(Transformer):
                         image_chunks, image_base64s, record_id
                     )
                     await self._store_image_points(points, collection_name)
+                await self._check_for_leaks(collection_name, org_id, virtual_record_id)
             else:
                 await self._create_embeddings(documents_to_embed, record_id, virtual_record_id, collection_name, org_id=org_id)
 
@@ -3058,12 +3899,12 @@ class VectorStore(Transformer):
                 progress.finish()
 
             if block_ids_to_delete:
-                self.logger.debug(f"📊 Deleting {len(block_ids_to_delete)} removed blocks")
+                self.logger.debug(f"Deleting {len(block_ids_to_delete)} removed blocks")
                 with stage("vector.delete"):
                     await self.delete_blocks_by_ids(block_ids_to_delete, virtual_record_id, collection_name, org_id=org_id)
 
             self.logger.debug(
-                f"✅ Indexing complete for record {record_id}: "
+                f"Indexing complete for record {record_id}: "
                 f"{len(documents_to_embed)} documents"
             )
 
@@ -3074,8 +3915,8 @@ class VectorStore(Transformer):
                 await self._resync_membership_after_write(virtual_record_id, record_id)
             return True
 
-        except (IndexingError, VectorStoreError, DocumentProcessingError, EmbeddingError, NonRetryableError):
-            raise
+        except (IndexingError, VectorStoreError, DocumentProcessingError, EmbeddingError, NonRetryableError, RecordBusy):
+            raise  # a lost or busy lease (RecordBusy) is handed back by apply, not counted as a failed attempt
         except Exception as e:
             raise IndexingError(
                 "Unexpected error during indexing",

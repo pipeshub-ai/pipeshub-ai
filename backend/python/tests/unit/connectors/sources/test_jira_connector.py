@@ -375,6 +375,23 @@ class TestFetchGroups:
         assert "acc-2" in account_ids
 
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("page", "ok"), [({"values": [], "isLast": True}, True), ({"isLast": True}, False),
+                                              ({"values": None}, False), ([], False)],
+                             ids=["empty_group", "no_values", "values_null", "not_an_object"])
+    async def test_a_member_page_without_a_values_list_is_an_unread_group(self, page, ok) -> None:
+        """An empty group is known; a page with no member list is not (licensing read from it would withdraw everyone)."""
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        mock_ds = MagicMock()
+        resp = _make_mock_response(200)
+        resp.json = MagicMock(return_value=page)
+        mock_ds.get_users_from_group = AsyncMock(return_value=resp)
+        connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+
+        assert await connector._fetch_group_members("g1", "jira-software-users") == ([], ok)
+
+
 # ===========================================================================
 # JiraConnector._handle_deleted_issue
 # ===========================================================================
@@ -611,7 +628,8 @@ class TestSyncUserGroups:
 
         result = await connector._sync_user_groups([user])
         assert "g1" in result
-        assert "developers" in result
+        assert "developers" not in result  # by id only: a name resolves through _group_ids_by_name
+        assert connector._group_ids_by_name == {"developers": "g1"}
         assert len(result["g1"]) == 1
         connector.data_entities_processor.on_new_user_groups.assert_awaited_once()
 
@@ -636,7 +654,7 @@ class TestSyncUserGroups:
         connector._fetch_group_members = AsyncMock(side_effect=Exception("API error"))
 
         result = await connector._sync_user_groups([])
-        assert result == {"g1": None, "devs": None}, "members unknown, not empty"
+        assert result == {"g1": None}, "members unknown, not empty"
 
     @pytest.mark.asyncio
     async def test_returns_none_on_exception(self):
@@ -2057,6 +2075,7 @@ class TestFetchProjectPermissionScheme:
     async def test_user_permission(self):
         connector = _make_connector()
         connector._user_read_unfinished = True  # no user map: the grant's own email is only used after a cut-short user read
+        connector._licensed_account_ids = {"acc-1"}  # a licensed account the cut-short read did not show
         mock_ds = MagicMock()
         mock_ds.get_assigned_permission_scheme = AsyncMock(return_value=_make_mock_response_fullcov(200, {"id": 1}))
         mock_ds.get_permission_scheme_grants = AsyncMock(return_value=_make_mock_response_fullcov(200, {

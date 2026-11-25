@@ -1,0 +1,79 @@
+{
+  "format": "pipeshub.harness.recording/v1",
+  "manifest": {
+    "scenario": "chat-kb-answer",
+    "source": "legacy",
+    "harness": "legacy-agent-loop",
+    "model": "scripted-model",
+    "scrub_version": "1"
+  },
+  "inputs": {
+    "route": "chat",
+    "chat_mode": "internal_search",
+    "query": "What is the refund policy?",
+    "fixtures": {
+      "knowledge": [
+        {
+          "id": "kb-refund",
+          "title": "Refund policy",
+          "text": "Customers may request a refund within 30 days of purchase."
+        }
+      ],
+      "tickets": [],
+      "slack": {},
+      "emails": [],
+      "files": [],
+      "web": {}
+    }
+  },
+  "steps": [
+    {
+      "kind": "model",
+      "request": {
+        "message_count": 2,
+        "last_user": "What is the refund policy?",
+        "last_tool": null,
+        "last_tool_status": null,
+        "tools": [
+          "drive__read_file",
+          "drive__share_file",
+          "gmail__read_email",
+          "gmail__search_emails",
+          "gmail__send_email",
+          "internaltools__ask_user_question",
+          "jira__add_comment",
+          "jira__create_issue",
+          "jira__get_issue",
+          "jira__search_issues",
+          "knowledge__read_document",
+          "knowledge__search",
+          "knowledgegraph__fetch_record",
+          "retrieve_artifact_content",
+          "search_tools",
+          "slack__read_channel",
+          "slack__send_message",
+          "web__fetch_url"
+        ],
+        "digest": "7311c5db4a22bbcb"
+      },
+      "response": {
+        "text": "Refunds are accepted within 30 days of purchase [source](ref1).",
+        "reasoning": "",
+        "tool_calls": [],
+        "usage": {
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0
+        },
+        "stop_reason": "end_turn"
+      },
+      "error": null
+    }
+  ],
+  "effects": [],
+  "final": {
+    "answer": "Refunds are accepted within 30 days of purchase [1](https://pipeshub.test/record/rec-kb-refund/preview#blockIndex=0).",
+    "status": "completed"
+  }
+}

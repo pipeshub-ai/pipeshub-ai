@@ -103,10 +103,12 @@ async def emit_already_answered(context: "AgentContext", *, event_sink: "EventSi
 async def _emit_text_answer(
     context: "AgentContext", text: str, match_type: str, *, event_sink: "EventSink",
 ) -> dict[str, Any]:
+    # A question asked back, or a note that the card was already answered, is not an answer: nothing to be confident
+    # about, so no confidence is shown with it (ANSWER-CONTRACT-FU-5, ADR-RUN-03 D3).
     completion_data: dict[str, Any] = {
         "answer": text,
         "citations": [],
-        "confidence": "Medium",
+        "confidence": None,
         "answerMatchType": match_type,
     }
     for evt in context.formatter.answer_delta(

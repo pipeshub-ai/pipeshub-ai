@@ -1,0 +1,14 @@
+[
+  {
+    "description": "a deployment subject",
+    "instance": {"schemaVersion": 1, "orgId": "o1", "subject": "deployment", "entries": [], "revision": 1}
+  },
+  {
+    "description": "an entry without required",
+    "instance": {"schemaVersion": 1, "orgId": "o1", "subject": "agent:a7", "entries": [{"installation": "inst_01J9ZQ5Y8K3M4N5P6Q7R8S9T0V", "tools": null}], "revision": 1}
+  },
+  {
+    "description": "a tool id instead of a tool name",
+    "instance": {"schemaVersion": 1, "orgId": "o1", "subject": "agent:a7", "entries": [{"installation": "inst_01J9ZQ5Y8K3M4N5P6Q7R8S9T0V", "tools": ["mcp@inst_01J9ZQ5Y8K3M4N5P6Q7R8S9T0V/list_issues"], "required": false}], "revision": 1}
+  }
+]

@@ -584,3 +584,140 @@ class TestChainHas:
         assert EC.chain_has(outer, OSError) is True
         assert EC.chain_has(outer, KeyError, ValueError) is True
         assert EC.chain_has(outer, KeyError) is False
+
+    def test_chain_link_is_the_first_match(self) -> None:
+        inner = OSError("inner")
+        middle = _chained(ValueError("middle"), inner)
+        outer = _chained(RuntimeError("outer"), middle)
+        assert EC.chain_link(outer, OSError) is inner
+        assert EC.chain_link(outer, OSError, ValueError) is middle
+        assert EC.chain_link(outer, KeyError) is None
+
+
+class TestChainHelpers:
+    def test_has_chain(self) -> None:
+        assert EC.has_chain(_chained(RuntimeError("outer"), KeyError("k")))
+        assert EC.has_chain(_chained(RuntimeError("outer"), KeyError("k"), explicit=False))
+        assert not EC.has_chain(_raised(RuntimeError("alone")))
+        suppressed = RuntimeError("from None")
+        suppressed.__context__, suppressed.__suppress_context__ = KeyError("k"), True
+        assert not EC.has_chain(suppressed)
+
+    def test_quotes_content_reads_every_link(self) -> None:
+        deep = _chained(RuntimeError("outer"), _chained(DocumentProcessingError("Failed: report.docx"), KeyError("k")))
+        assert EC.quotes_content(deep)
+        assert EC.quotes_content(DocumentProcessingError("x"))
+        assert not EC.quotes_content(_chained(RuntimeError("outer"), ConnectionError("down")))
+
+    def test_a_group_whose_member_points_back_at_it_is_walked_once(self) -> None:
+        member = ConnectionError("down")
+        group = ExceptionGroup("batch", [member])
+        member.__cause__ = group  # a cycle through the member edge
+        assert EC.quotes_content(group) is False
+        assert EC._hides_text(group) is False
+        member.log_hide_text = True
+        assert EC._hides_text(member) is True
+        content = DocumentProcessingError("a.docx")
+        content.__cause__ = ExceptionGroup("g", [content])
+        assert EC.quotes_content(content) is True
+
+    def test_a_parsing_service_error_quotes_content(self) -> None:
+        from app.services.parsing.client import ParsingClientError
+        from app.services.parsing.interface import ParseErrorCode
+
+        assert EC.quotes_content(ParsingClientError(ParseErrorCode.PARSE_FAILED, "Docling service failed to parse 'a.pdf'"))
+
+    def test_quotes_content_reads_exception_group_members(self) -> None:
+        group = ExceptionGroup("pages", [ConnectionError("down"), DocumentProcessingError("Failed: report.docx")])
+        assert EC.quotes_content(_chained(RuntimeError("outer"), group))
+        assert not EC.quotes_content(ExceptionGroup("pages", [ConnectionError("down")]))
+
+    def test_a_validation_error_quotes_the_message(self) -> None:
+        from pydantic import BaseModel, ValidationError
+
+        class _M(BaseModel):
+            payload: dict
+
+        with pytest.raises(ValidationError) as caught:
+            _M(payload="Quarterly-Secret-Plan.docx")
+        assert EC.quotes_content(_chained(RuntimeError("outer"), caught.value))
+
+
+class TestLogUnitEnd:
+    def test_no_exception_writes_the_event_at_the_level(self, capture) -> None:
+        logger, records = capture
+        EC.log_unit_end(logger, "unit.end", None, level=logging.INFO, outcome="success", n=3)
+        (record,) = records
+        assert (record.levelno, record.getMessage(), record.outcome, record.n) == (logging.INFO, "unit.end", "success", 3)
+        assert not hasattr(record, "error_class")
+
+    def test_no_exception_with_a_class_writes_the_class(self, capture) -> None:
+        logger, records = capture
+        EC.log_unit_end(logger, "unit.end", None, level=logging.WARNING, error_class="timeout", outcome="failure")
+        (record,) = records
+        assert (record.levelno, record.error_class, record.outcome) == (logging.WARNING, "timeout", "failure")
+        assert record.exc_info is None and not hasattr(record, "error_type")
+
+    def test_a_fresh_exception_is_one_failure_line_with_the_stack_once(self, capture) -> None:
+        logger, records = capture
+        exc = _raised(KeyError("k"))
+        EC.log_unit_end(logger, "unit.end", exc, level=logging.ERROR, include_error_text=False, outcome="failure")
+        (record,) = records
+        assert (record.levelno, record.error_class, record.error_type) == (logging.ERROR, "internal", "KeyError")
+        assert not hasattr(record, "error_message") and "KeyError: <message omitted>" in record.exc_text
+        assert EC.logged_level(exc) == logging.ERROR
+
+    def test_an_exception_already_logged_as_high_adds_no_text_and_no_stack(self, capture) -> None:
+        logger, records = capture
+        exc = _raised(KeyError("secret-arg"))
+        EC.log_failure(logger, "inner.failed", exc)  # ERROR, with the stack
+        EC.log_unit_end(logger, "unit.end", exc, level=logging.ERROR, outcome="failure")
+        end = records[-1]
+        assert (end.levelno, end.getMessage(), end.error_class, end.error_type) == (logging.ERROR, "unit.end", "internal", "KeyError")
+        assert end.exc_info is None and getattr(end, "exc_text", None) is None and not hasattr(end, "error_message")
+
+    def test_an_exception_logged_lower_is_written_again_at_the_higher_level(self, capture) -> None:
+        logger, records = capture
+        exc = _raised(KeyError("k"))
+        EC.log_failure(logger, "inner.failed", exc, level=logging.WARNING)
+        EC.log_unit_end(logger, "unit.end", exc, level=logging.ERROR, outcome="failure")
+        end = records[-1]
+        assert end.levelno == logging.ERROR and "KeyError" in end.exc_text and hasattr(end, "error_message")
+
+
+class TestRetryLater:
+    """``retry_later``: a store that could not answer just now (worth asking again), never a bug of ours."""
+
+    def test_an_outage_or_a_timeout_however_wrapped(self) -> None:
+        from app.core.db.errors import CommitOutcomeUnknown, ConnectionLost, PoolTimeout
+
+        for exc in (ConnectionRefusedError("down"), TimeoutError(), ConnectionLost("lost", retry_safe=True), CommitOutcomeUnknown("commit"), PoolTimeout("pool"),
+                    _http_status_error(503), _chained(RuntimeError("Neo4j reconnection failed"), ConnectionError("down"))):
+            assert EC.retry_later(exc) is True, type(exc).__name__
+
+    def test_the_neo4j_driver_losing_the_server(self) -> None:
+        neo4j_exceptions = pytest.importorskip("neo4j.exceptions")
+        assert EC.retry_later(neo4j_exceptions.ServiceUnavailable("gone")) is True
+        assert EC.retry_later(neo4j_exceptions.SessionExpired("gone")) is True
+
+    def test_a_group_counts_only_when_every_member_is_retry_later(self) -> None:
+        assert EC.retry_later(ExceptionGroup("g", [ConnectionError("a"), TimeoutError()])) is True
+        assert EC.retry_later(_chained(RuntimeError("check"), ExceptionGroup("g", [ConnectionError("a")]))) is True
+        assert EC.retry_later(ExceptionGroup("g", [ConnectionError("a"), TypeError("bug")])) is False
+        assert EC.retry_later(ExceptionGroup("g", [ConnectionError("a"), ValueError("other")])) is False
+
+    def test_a_bug_or_a_refusal_is_not(self) -> None:
+        for exc in (TypeError("x"), KeyError("k"), ValueError("v"), _http_status_error(404), _http_status_error(500),
+                    _chained(TypeError("bug"), ConnectionError("down"), explicit=False), asyncio.CancelledError()):
+            assert EC.retry_later(exc) is False, type(exc).__name__
+
+    def test_a_member_met_twice_is_judged_each_time_not_taken_for_a_loop(self) -> None:
+        lost = ConnectionError("down")
+        assert EC.retry_later(ExceptionGroup("reads", [lost, lost])) is True
+        assert EC.retry_later(ExceptionGroup("reads", [_chained(RuntimeError("a"), lost), _chained(RuntimeError("b"), lost)])) is True
+
+    def test_a_group_whose_member_loops_back_ends(self) -> None:
+        member = ValueError("not decisive")
+        group = ExceptionGroup("g", [member])
+        member.__cause__ = group
+        assert EC.retry_later(group) is False

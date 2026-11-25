@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+from collections.abc import Collection
 from logging import Logger
 from typing import Any, AsyncContextManager, Optional
 
@@ -314,7 +315,7 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
-    async def get_users(self, org_id: str, active: bool = True) -> list[User]:
+    async def get_users(self, org_id: str, active: bool = True, *, raise_on_error: bool = False) -> list[User]:
         pass
 
     @abstractmethod
@@ -344,6 +345,15 @@ class BaseDataStore(ABC):
     async def remove_user_access_to_connector(self, connector_id: str, user_id: str) -> int:
         """Delete the user's own PERMISSION edges to this connector's records, record groups, user groups and roles.
         Returns how many were deleted."""
+        raise NotImplementedError
+
+    async def remove_unlinked_user_access_to_connector(self, connector_id: str) -> int:
+        """Delete every user's own PERMISSION edges to this connector's nodes when the user is not linked to the connector
+        (no USER_APP_RELATION edge), checked in the same statement. Returns how many were deleted."""
+        raise NotImplementedError
+
+    async def get_user_granted_records(self, connector_id: str, user_id: str) -> list[dict[str, Any]]:
+        """The connector's records the user holds a direct USER grant on (``id``, ``externalRecordId``, ``recordType``)."""
         raise NotImplementedError
 
     @abstractmethod
@@ -496,6 +506,7 @@ class BaseDataStore(ABC):
     @abstractmethod
     async def replace_record_entity_relations(
         self, record_id: str, to_collections: list[str], origin: str, edges: list[dict],
+        *, keep_edge_types: Collection[str] = (),
     ) -> None:
         """Replace the record's ``entityRelations`` edges of ``origin`` to
         ``to_collections`` with ``edges``, atomically; see
@@ -566,6 +577,10 @@ class TransactionStore(BaseDataStore):
 
     def is_transient_error(self, error: BaseException) -> bool:
         """Whether *error* rolled this transaction back cleanly so it can be run again."""
+        return False
+
+    async def publish_with_commit(self, producer: Any, topic: str, messages: list[tuple[str | None, dict]]) -> bool:  # noqa: ANN401
+        """Publish *messages* inside this transaction; False when the store cannot, and the caller publishes after the commit."""
         return False
 
     @abstractmethod

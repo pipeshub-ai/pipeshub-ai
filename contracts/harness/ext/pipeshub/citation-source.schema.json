@@ -1,0 +1,114 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/ext/pipeshub/citation-source.schema.json",
+  "title": "PipeshubCitationSource",
+  "description": "Where a citation's content came from (P1b C-18), as a typed reference. A shared viewer's access is decided per kind: a record's own ACL (indexed, attachment, generated), the ACL of the indexed copy of the same item (live), or none (web). A live source never names a record: the id of the temporary record a tool built is not a record reference.",
+  "anyOf": [
+    {
+      "$ref": "#/$defs/RecordSource"
+    },
+    {
+      "$ref": "#/$defs/LiveSource"
+    },
+    {
+      "$ref": "#/$defs/WebSource"
+    }
+  ],
+  "$defs": {
+    "RecordSource": {
+      "title": "PipeshubRecordSource",
+      "description": "A record in the graph: indexed from a connector or a knowledge base, a file uploaded into the conversation (attachment), or an artifact a run produced (generated).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "recordId"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "indexed",
+            "attachment",
+            "generated"
+          ]
+        },
+        "recordId": {
+          "$ref": "#/$defs/SourceId"
+        },
+        "virtualRecordId": {
+          "$ref": "#/$defs/SourceId",
+          "description": "The stored content an attachment reference names (its virtualRecordId, what a worker reads the file by): readable only when it is this record's own (C-21, steering attachments)."
+        },
+        "publicationId": {
+          "$ref": "#/$defs/SourceId",
+          "description": "The knowledge publication (D21, P2.13) through which an indexed record reached the turn when its reader could not read it themselves. A viewer may then see the source when they can read the record, or while that publication still discloses it to them; never anyone outside its audience."
+        }
+      }
+    },
+    "LiveSource": {
+      "title": "PipeshubLiveSource",
+      "description": "A file a tool fetched directly from a connector with the run owner's credentials. connector is the source system's connector kind (a Connectors value); connectorId the instance that fetched it, when known.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "connector",
+        "externalRecordId"
+      ],
+      "properties": {
+        "kind": {
+          "const": "live"
+        },
+        "connector": {
+          "$ref": "#/$defs/SourceId"
+        },
+        "connectorId": {
+          "$ref": "#/$defs/SourceId"
+        },
+        "externalRecordId": {
+          "$ref": "#/$defs/SourceId"
+        }
+      }
+    },
+    "WebSource": {
+      "title": "PipeshubWebSource",
+      "description": "A public web page. Names no record and is shown to every viewer.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind"
+      ],
+      "properties": {
+        "kind": {
+          "const": "web"
+        }
+      }
+    },
+    "SourceId": {
+      "description": "An identifier as the source system writes it (record keys, connector kinds such as 'SHAREPOINT ONLINE', drive item ids).",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024
+    }
+  },
+  "examples": [
+    {
+      "kind": "indexed",
+      "recordId": "0b6f4c1e-2d7a-4e39-9c55-0d1f6a7b8c9d"
+    },
+    {
+      "kind": "indexed",
+      "recordId": "r-policy",
+      "publicationId": "pub-hr-handbook"
+    },
+    {
+      "kind": "live",
+      "connector": "DRIVE",
+      "connectorId": "toolset-instance-1",
+      "externalRecordId": "1AbCdEfGhIjKlMnOpQrStUvWxYz"
+    },
+    {
+      "kind": "web"
+    }
+  ]
+}

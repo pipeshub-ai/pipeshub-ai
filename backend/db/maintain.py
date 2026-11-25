@@ -6,9 +6,10 @@
     python -m db.maintain analyze                     ANALYZE the kg tables the knowledge-hub browse reads when a connector's first load or a restore
                                                       asked for it (kg.analyze_requests; db/lib/kg_stats.py); needs PG_JOBS_URL
 
-    python -m db.maintain fold [--watch [SECONDS]]    fold the point-count deltas of every org into retrieval.collection_stats, one transaction
-                                                      per org; needs PG_JOBS_URL. --watch repeats (default 30 s)
-    python -m db.maintain recount [<org>]             recompute the point counts from the live points (every org, or one); needs PG_JOBS_URL
+    python -m db.maintain fold [--watch [SECONDS]]    fold the point-count and term-frequency deltas of every org (collection_stats, lexical_df), one transaction
+                                                      per org, then fill the term bounds an upgrade left missing (lexical_bound_pending, up to 200
+                                                      per transaction and 20,000 per org per pass); needs PG_JOBS_URL. --watch repeats (default 30 s)
+    python -m db.maintain recount [<org>]             recompute the point counts and term frequencies from the live rows (every org, or one); needs PG_JOBS_URL
     python -m db.maintain group-gc                    delete the membership of groups that have no point (every org); needs PG_JOBS_URL
     python -m db.maintain build-indexes               the vector indexes of every points leaf for every embedding space, sized to the leaf
     python -m db.maintain nightly [--all]             HNSW safe mode (pgvector before 0.8.4): delete the points of tombstoned rows, rebuild the vector
@@ -153,16 +154,20 @@ def _watch(url: str, interval: float) -> None:
             time.sleep(interval)
 
 
-def _fold_pass() -> tuple[dict[str, int], dict[str, str]]:
+def _fold_pass() -> tuple[dict[str, int], dict[str, str], tuple[dict[str, int], dict[str, str], int]]:
+    """Fold the deltas, then fill the term bounds that are missing (after an upgrade, or a delta without one)."""
     with psycopg.connect(_jobs_url(), autocommit=True) as jobs:
-        return fold.run(jobs)
+        return (*fold.run(jobs), fold.fill_bounds(jobs))
 
 
-def _fold_log(folded: dict[str, int], failed: dict[str, str]) -> int:
+def _fold_log(folded: dict[str, int], failed: dict[str, str], bounds: tuple[dict[str, int], dict[str, str], int]) -> int:
     """Log the result of a fold pass; the exit code (6 when any org failed)."""
     if folded or failed:
         log(f"point counts folded for {len(folded)} org(s), {sum(folded.values())} deltas" + _failed_line(failed))
-    return EXIT_PARTIAL if failed else 0
+    filled, bad, pending = bounds
+    if filled or bad:
+        log(f"term bounds filled: {sum(filled.values())} in {len(filled)} org(s), {pending} collection(s) still pending" + _failed_line(bad))
+    return EXIT_PARTIAL if failed or bad else 0
 
 
 def _fold_watch(interval: float) -> None:

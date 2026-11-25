@@ -1,0 +1,18 @@
+[
+  {
+    "description": "another event type",
+    "instance": {"type": "config.changed", "orgId": "o1", "revision": 2, "previous": 1, "touched": [{"kind": "policy-section", "id": "approvals"}], "narrowing": false}
+  },
+  {
+    "description": "nothing touched",
+    "instance": {"type": "cp.changed", "orgId": "o1", "revision": 2, "previous": 1, "touched": [], "narrowing": false}
+  },
+  {
+    "description": "a value in the event",
+    "instance": {"type": "cp.changed", "orgId": "o1", "revision": 2, "previous": 1, "touched": [{"kind": "policy-section", "id": "approvals", "value": {"writes": "ask"}}], "narrowing": false}
+  },
+  {
+    "description": "a policy value in the live member",
+    "instance": {"type": "cp.changed", "orgId": "o1", "revision": 2, "previous": 1, "touched": [{"kind": "policy-section", "id": "approvals"}], "narrowing": true, "live": {"org": {"schemaVersion": 1, "scope": {"kind": "live"}, "approvals": {"writes": "deny"}}}}
+  }
+]

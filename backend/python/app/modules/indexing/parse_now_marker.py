@@ -77,7 +77,16 @@ _STATUS_FIELDS = frozenset({
     "extractionDeferred",
     "reason",
     "indexingNote",
+    # The parser identity of the copy: a store-only run records none.
+    "indexedParser",
+    "indexedParserAt",
+    "indexedParserVrid",
+    "indexedParserSource",
     "retryNotBefore",
+    # The run fields: a store-only run is not an attempt and ends no run.
+    "firstQueuedAt",
+    "indexingAttempts",
+    "failedAt",
     # The embedding resume marker too: a store-only run must not end a pending retry's resume.
 }) | frozenset(EMBED_FIELDS)
 

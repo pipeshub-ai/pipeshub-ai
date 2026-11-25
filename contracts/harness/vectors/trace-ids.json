@@ -1,0 +1,20 @@
+{
+  "description": "P9: a run's trace context derived from its id (harness_core.telemetry.ids, Node harness-tracing.ts). traceId = sha256(\"pipeshub.run/\" + runId)[:32]; rootSpanId = sha256(\"pipeshub.run/\" + runId + \"/admit\")[:16].",
+  "cases": [
+    {
+      "runId": "run-1",
+      "traceId": "b57d4cb9d876b2c325379faec1570834",
+      "rootSpanId": "d668df329efc43b6"
+    },
+    {
+      "runId": "0f4c2b8e-9d1a-4c53-a8f2-6e1b7c9d0a11",
+      "traceId": "e664ad4b122ff4c13726c53522fdc14f",
+      "rootSpanId": "273d07b40409ce2a"
+    },
+    {
+      "runId": "p9-fm0",
+      "traceId": "6183196fad592faa7f7fdb7ebfcbb6a3",
+      "rootSpanId": "6760771b4dc89270"
+    }
+  ]
+}

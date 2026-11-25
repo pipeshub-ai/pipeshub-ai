@@ -1,7 +1,9 @@
 import base64
+import io
 import math
 import os
 import re
+from enum import Enum
 from urllib.parse import unquote, urlparse
 
 from app.config import file_types
@@ -67,6 +69,58 @@ def get_mime_type_from_base64(b64: str) -> str | None:
 
     return None
 
+# Decoded size, which a byte cap does not bound: a small, highly compressible file can decode to
+# hundreds of MB. Models are sent at most ~1.6k px a side, so a larger image buys nothing.
+MAX_DECODED_PIXELS = 4096 * 4096
+
+
+class ImageCheck(str, Enum):
+    """Whether an image can be sent to a model, and if not, why (the value reads in a note)."""
+
+    OK = "ok"
+    UNREADABLE = "unreadable image data"
+    TOO_LARGE = "image too large"
+    ANIMATED = "animated image"
+
+
+def check_image(content: bytes, *, max_pixels: int | None = MAX_DECODED_PIXELS) -> ImageCheck:
+    """Whether ``content`` is a still image that decodes in full.
+
+    A format signature or a readable header proves neither: a truncated or corrupt body passes
+    both, and a provider refuses the whole model request over one such image. An animated image
+    is refused: ``load()`` decodes only its first frame, so a damaged later frame would pass, and
+    models read still images. ``max_pixels`` (None: only Pillow's own decompression-bomb guard)
+    is checked against the header before any pixel is decoded. CPU-bound: run it off the event loop.
+    """
+    from PIL import Image
+
+    try:
+        with Image.open(io.BytesIO(content)) as image:
+            if getattr(image, "is_animated", False):
+                return ImageCheck.ANIMATED
+            width, height = image.size
+            if max_pixels is not None and width * height > max_pixels:
+                return ImageCheck.TOO_LARGE
+            image.load()
+    except Image.DecompressionBombError:
+        return ImageCheck.TOO_LARGE
+    except Exception:  # Pillow raises many types (OSError, SyntaxError, ValueError, ...)
+        return ImageCheck.UNREADABLE
+    return ImageCheck.OK
+
+
+def check_data_uri(image_uri: str, *, max_pixels: int | None = MAX_DECODED_PIXELS) -> ImageCheck:
+    """``check_image`` for a base64 ``data:`` URI; UNREADABLE when it holds no base64 payload."""
+    b64 = normalize_image_to_base64(image_uri)
+    if not b64:
+        return ImageCheck.UNREADABLE
+    try:
+        content = base64.b64decode(b64, validate=False)
+    except Exception:
+        return ImageCheck.UNREADABLE
+    return check_image(content, max_pixels=max_pixels)
+
+
 def read_image_dimensions(image_uri: str | None) -> tuple[int, int] | None:
     """`(width, height)` of an image, read from its header bytes alone.
 
@@ -80,14 +134,40 @@ def read_image_dimensions(image_uri: str | None) -> tuple[int, int] | None:
     Returns None when the format is unrecognized or the header is truncated.
     Callers must treat None as "unknown", never as "too small" -- dropping a
     real figure because its header was unusual is the expensive mistake.
+
+    Only the header is normalized and validated, so a payload that is corrupt
+    past it still reports dimensions; it fails later, where it is decoded.
     """
-    b64 = normalize_image_to_base64(image_uri)
+    return _dimensions_from_base64(_normalized_head(image_uri, _HEADER_BASE64_CHARS))
+
+
+# 512 base64 chars -> 384 bytes: past the JPEG APPn/EXIF blocks that commonly
+# precede the SOF marker, and a multiple of 4.
+_HEADER_BASE64_CHARS = 512
+
+
+def _normalized_head(image_uri: str | None, length: int) -> str | None:
+    """`normalize_image_to_base64(image_uri)[:length]` for a well-formed URI,
+    normalizing only a prefix: the whole-payload pass costs ~2 ms per MB."""
+    if not image_uri or not isinstance(image_uri, str):
+        return None
+    head_end = image_uri.find(",") + 1  # 0 for bare base64
+    window = length + 64  # room for MIME line breaks
+    while True:
+        b64 = normalize_image_to_base64(image_uri[: head_end + window])
+        # Padding adds up to 3 chars, so this many guarantees `length` real
+        # ones. None may only mean the window held nothing but whitespace.
+        if (b64 and len(b64) >= length + 3) or head_end + window >= len(image_uri):
+            return b64[:length] if b64 else None
+        window *= 2
+
+
+def _dimensions_from_base64(b64: str | None) -> tuple[int, int] | None:
     if not b64:
         return None
     try:
-        # 512 base64 chars -> 384 bytes: past the JPEG APPn/EXIF blocks that
-        # commonly precede the SOF marker, and a multiple of 4.
-        header = base64.b64decode(b64[:512] + "=" * ((-len(b64[:512])) % 4))
+        head = b64[:_HEADER_BASE64_CHARS]
+        header = base64.b64decode(head + "=" * ((-len(head)) % 4))
     except Exception:
         return None
 
@@ -215,7 +295,7 @@ def downscale_to_limits(
     if not b64:
         return image_uri
 
-    dimensions = read_image_dimensions(image_uri)
+    dimensions = _dimensions_from_base64(b64)
     too_large = bool(dimensions) and max(dimensions) > max_long_edge_px  # type: ignore[arg-type]
     # 4 base64 chars per 3 bytes; compare against the encoded size, which is
     # what actually travels.

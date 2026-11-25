@@ -9,7 +9,7 @@ listings use:
   only its vectors.
 - A user's delete through the record DELETE route hides the file from its
   owner and from a user the collection was shared with, in search, chat
-  citations, opening the record, All Records, the collection listing and the
+  citations, opening the record, All Records, the folder listing and the
   counts. A restore brings all of it back under the same id and queues the
   file for indexing. A second delete and a purge after the retention remove it
   for good.
@@ -228,12 +228,8 @@ class _World:
 
     async def in_collection(self, name: str) -> dict[str, bool]:
         g, record_id = self.graph, self.ids[name]
-        kb_records, _, _ = await g.list_kb_records(
-            self.kb_id, self.owner.key, self.org_id, 0, 500,
-            None, None, None, None, None, None, None, "recordName", "asc",
-        )
         folder = _ids_anywhere(await g.get_folder_children(self.kb_id, self.ids["docs"], 0, 500))
-        return {"collection list": record_id in _ids_anywhere(kb_records), "folder browse": record_id in folder}
+        return {"folder browse": record_id in folder}
 
     async def collection_total(self) -> int:
         stats = await self.graph.get_connector_stats(self.org_id, self.kb_id)
@@ -629,7 +625,7 @@ async def test_a_users_delete_hides_the_file_from_everyone_until_it_is_restored_
     sharee_gates = await world.sees(world.sharee, "policy")
     assert _everywhere(owner_gates) == set(owner_gates), owner_gates
     assert _everywhere(sharee_gates) >= {"search", "permission check", "open", "citation", "chat hydrate"}, sharee_gates
-    assert await world.in_collection("policy") == {"collection list": True, "folder browse": True}
+    assert await world.in_collection("policy") == {"folder browse": True}
     total_before = await world.collection_total()
 
     response = await world.delete_through_the_route("policy", soft=True, monkeypatch=monkeypatch)
@@ -641,7 +637,7 @@ async def test_a_users_delete_hides_the_file_from_everyone_until_it_is_restored_
     assert world.kafka.of_type(EventTypes.DELETE_STORED_DOCUMENTS.value) == [], "the upload stays for a restore"
     assert _everywhere(await world.sees(world.owner, "policy")) == set()
     assert _everywhere(await world.sees(world.sharee, "policy")) == set()
-    assert await world.in_collection("policy") == {"collection list": False, "folder browse": False}
+    assert await world.in_collection("policy") == {"folder browse": False}
     assert await world.collection_total() == total_before - 1
     assert _everywhere(await world.sees(world.owner, "handbook")) == set(owner_gates), "the file beside it stays"
     with pytest.raises(RecordNotFoundError):
@@ -660,7 +656,7 @@ async def test_a_users_delete_hides_the_file_from_everyone_until_it_is_restored_
     await world.graph.update_node(world.ids["policy"], RECORDS, {"indexingStatus": ProgressStatus.COMPLETED.value})
     assert await world.sees(world.owner, "policy") == owner_gates
     assert await world.sees(world.sharee, "policy") == sharee_gates
-    assert await world.in_collection("policy") == {"collection list": True, "folder browse": True}
+    assert await world.in_collection("policy") == {"folder browse": True}
     assert await world.collection_total() == total_before
     reindexed = [e["payload"]["recordId"] for e in world.broker.of_type(EventTypes.REINDEX_RECORD.value)]
     assert reindexed == [world.ids["policy"]], "its vectors went with the delete, so it is indexed again"

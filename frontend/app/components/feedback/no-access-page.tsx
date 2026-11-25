@@ -23,7 +23,7 @@ export function NoAccessPage({ recordId, onBack }: { recordId?: string; onBack?:
   };
   return (
     <Flex direction="column" align="center" justify="center" gap="3" p="6" style={{ textAlign: 'center' }} data-testid="no-access-page">
-      <MaterialIcon name="lock" size={48} color="var(--gray-9)" />
+      <MaterialIcon name="lock" size={48} color="var(--gray-11)" />
       <Heading as="h1" size="5">{t('accessNotice.noAccess.title')}</Heading>
       <Text size="2" color="gray" style={{ maxWidth: 480 }}>{t('accessNotice.noAccess.body')}</Text>
       <Text size="2" color="gray" style={{ maxWidth: 480 }}>{t('accessNotice.noAccess.justGotAccess')}</Text>

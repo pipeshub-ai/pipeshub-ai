@@ -6,7 +6,8 @@ was lost) is acknowledged. Before the decision moved ahead of the reconciliation
 vector store to delete or rewrite the record's points: wasted I/O on every replay, and a window in which a failure
 there left the event unacknowledged. The vector store is not asked anything now.
 
-A forced reindex of the same record still reconciles, so the guard does not turn a real reindex into a no-op.
+A forced reindex of the same record still runs (it is not acknowledged as a replay) and takes no point out of the
+vector store ahead of its work, so the guard does not turn a real reindex into a no-op.
 
   docker compose -f deployment/docker-compose/docker-compose.integration.vector-db.yml \
     -f deployment/docker-compose/docker-compose.integration.graph-db.yml \
@@ -46,6 +47,7 @@ from tests.integration.real_graph import (
     connect_arango,
     connect_neo4j,
 )
+from tests.support import it_backends
 from tests.support.vector_db import make_config_service
 
 if TYPE_CHECKING:
@@ -57,7 +59,6 @@ pytestmark = [pytest.mark.integration, pytest.mark.timeout(300)]
 
 logger = logging.getLogger("replay-guard-it")
 
-QDRANT_HOST = os.environ.get("QDRANT_IT_HOST", "localhost")
 QDRANT_PORT = int(os.environ.get("QDRANT_IT_PORT", "6343"))
 DIM = 8
 CHUNKS = 3
@@ -97,7 +98,8 @@ class _World:
 
 
 async def _connect_qdrant() -> QdrantService:
-    service = QdrantService(QdrantConfig(host=QDRANT_HOST, port=QDRANT_PORT, prefer_grpc=False, timeout=30))
+    qdrant_host = it_backends.endpoint("QDRANT_IT_HOST")
+    service = QdrantService(QdrantConfig(host=qdrant_host, port=QDRANT_PORT, prefer_grpc=False, timeout=30))
     await service.connect()
     await service.get_collections()
     return service
@@ -111,9 +113,7 @@ async def world(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch)
         try:
             qdrant = await _connect_qdrant()
         except Exception as exc:
-            if os.environ.get("QDRANT_IT_HOST") or os.environ.get("QDRANT_IT_PORT"):
-                pytest.fail(f"Qdrant is configured (QDRANT_IT_HOST/PORT) but not reachable: {exc!r}")
-            pytest.skip(f"Qdrant not configured and not reachable locally: {exc!r}")
+            it_backends.unavailable("QDRANT_IT_HOST", exc)
         cleanup.push_async_callback(qdrant.disconnect)
         try:
             graph = await (
@@ -180,17 +180,22 @@ async def test_replayed_reindex_leaves_points_untouched(world: _World, monkeypat
     assert delete_points.await_count == 0, "a replay deletes no point"
 
 
-async def test_a_forced_reindex_still_reconciles(world: _World, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_a_forced_reindex_still_runs_and_takes_no_point_out_first(
+    world: _World, monkeypatch: pytest.MonkeyPatch
+) -> None:
     set_payload = AsyncMock(wraps=world.qdrant.set_payload)
+    delete_points = AsyncMock(wraps=world.qdrant.delete_points)
     monkeypatch.setattr(world.qdrant, "set_payload", set_payload)
+    monkeypatch.setattr(world.qdrant, "delete_points", delete_points)
 
-    # The run goes on to download the file, which this world does not have; what matters is what it did first.
-    with contextlib.suppress(Exception):
+    # The run goes on to download the file, which this world cannot do: it fails there, which a replay
+    # (acknowledged with both completion events) never does.
+    with pytest.raises(Exception):  # noqa: B017
         _ = [
             e async for e in world.handler().process_event(
                 EventTypes.REINDEX_RECORD.value, world.payload(forceReindex=True)
             )
         ]
 
-    assert set_payload.await_count >= 1, "a forced reindex goes through the reconciliation"
-    assert await world.points() == CHUNKS, "the points of a referenced virtual record are kept"
+    assert set_payload.await_count == 0 and delete_points.await_count == 0, "nothing leaves the store ahead of the work"
+    assert await world.points() == CHUNKS, "the points of the record are kept"

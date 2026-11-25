@@ -14,12 +14,12 @@ export function FieldLabel({ label, labelSuffix, required }: FieldLabelProps) {
     <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
       {label}
       {required && (
-        <Text as="span" style={{ color: 'var(--red-9)' }}>
+        <Text as="span" style={{ color: 'var(--red-11)' }}>
           {' '}*
         </Text>
       )}
       {labelSuffix && (
-        <Text as="span" size="1" style={{ color: 'var(--slate-10)', fontWeight: 400 }}>
+        <Text as="span" size="1" style={{ color: 'var(--slate-11)', fontWeight: 400 }}>
           {' '}{labelSuffix}
         </Text>
       )}

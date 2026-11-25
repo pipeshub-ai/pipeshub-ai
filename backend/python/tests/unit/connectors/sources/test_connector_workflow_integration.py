@@ -13,6 +13,7 @@ No real database, Kafka, or HTTP calls are made.
 
 import copy
 import uuid
+from collections.abc import Collection
 from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Tuple
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -22,12 +23,14 @@ import pytest
 from app.config.constants.arangodb import (
     HIERARCHY_RELATION_TYPES,
     CollectionNames,
-    Connectors as ConnectorsEnum,
     EntityRelations,
     MimeTypes,
     OriginTypes,
     ProgressStatus,
     RecordRelations,
+)
+from app.config.constants.arangodb import (
+    Connectors as ConnectorsEnum,
 )
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
@@ -451,6 +454,9 @@ class MockTransactionStore:
     def is_transient_error(self, error: BaseException) -> bool:
         return False
 
+    async def publish_with_commit(self, producer: object, topic: str, messages: list) -> bool:
+        return False  # no broker shares this store's transaction: the processor publishes after the commit
+
     async def get_users_by_emails(
         self, emails: list[str], *, raise_on_error: bool = False, org_id: str | None = None,
     ) -> dict[str, User]:
@@ -494,7 +500,7 @@ class MockTransactionStore:
             return existing.id
         return self._s.upsert_node(CollectionNames.PEOPLE.value, person.to_arango_person())["_key"]
 
-    async def get_users(self, org_id: str, active: bool = True) -> List[User]:
+    async def get_users(self, org_id: str, active: bool = True, *, raise_on_error: bool = False) -> List[User]:
         results = []
         for doc in self._s.collections.get(CollectionNames.USERS.value, {}).values():
             if doc.get("orgId") == org_id and (not active or doc.get("isActive", True)):
@@ -662,11 +668,16 @@ class MockTransactionStore:
 
     async def replace_record_entity_relations(
         self, record_id: str, to_collections: list[str], origin: str, edges: list[dict],
+        *, keep_edge_types: Collection[str] = (),
     ) -> None:
-        for to_collection in to_collections:
-            self._s.delete_edges_between_collections(
-                CollectionNames.ENTITY_RELATIONS.value, record_id, CollectionNames.RECORDS.value, to_collection,
-            )
+        relations = CollectionNames.ENTITY_RELATIONS.value
+        source = f"{CollectionNames.RECORDS.value}/{record_id}"
+        targets = tuple(f"{c}/" for c in to_collections)
+        self._s.edges[relations] = [
+            e for e in self._s.edges.get(relations, [])
+            if not (e.get("_from") == source and str(e.get("_to", "")).startswith(targets)
+                    and e.get("edgeType") not in keep_edge_types)
+        ]
         await self.batch_create_entity_relations(edges)
 
     async def delete_edge(self, from_id: str, from_collection: str, to_id: str,
@@ -729,10 +740,10 @@ class MockTransactionStore:
                 "relationshipType": RecordRelations.PARENT_CHILD.value,
             }], CollectionNames.NODE_RELATIONS.value)
 
-    async def get_edges_from_node(self, from_node_id: str, edge_collection: str) -> List[Dict]:
+    async def get_edges_from_node(self, from_node_id: str, edge_collection: str, *, raise_on_error: bool = False) -> List[Dict]:
         return self._s.get_edges_from_node(from_node_id, edge_collection)
 
-    async def get_edges_to_node(self, node_id: str, edge_collection: str) -> List[Dict]:
+    async def get_edges_to_node(self, node_id: str, edge_collection: str, *, raise_on_error: bool = False) -> List[Dict]:
         return self._s.get_edges_to_node(node_id, edge_collection)
 
     async def delete_record_by_key(self, key: str) -> None:

@@ -18,6 +18,7 @@ import torch
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
+from app.config.configuration_service import ConfigurationService
 from app.config.constants.ai_models import DEFAULT_EMBEDDING_MODEL
 from app.embedding_main import (
     MAX_EMBEDDING_REQUEST_BYTES,
@@ -32,10 +33,10 @@ from app.embedding_main import (
     _measure_blobs_dir_bytes,
     _normalize_input,
     app,
-    model_manager,
     release_memory,
     run,
 )
+from tests.support.settle import settle
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -49,10 +50,10 @@ async def _passthrough_to_thread(func, *args, **kwargs):
 @pytest.fixture(autouse=True)
 def _no_settings_lookup_at_startup() -> Iterator[None]:
     """Lifespan reads the AI settings to decide on warm-up; never hit a real store."""
-    with patch(
-        "app.embedding_main._local_model_in_use",
-        new_callable=AsyncMock,
-        return_value=False,
+    # A real ConfigurationService starts a watch thread that dials the KV store and outlives the test.
+    with (
+        patch("app.embedding_main._local_model_in_use", new_callable=AsyncMock, return_value=False),
+        patch("app.embedding_main.ConfigurationService", return_value=MagicMock(spec=ConfigurationService)),
     ):
         yield
 
@@ -123,7 +124,7 @@ class TestEmbeddingServerRoutes:
             ["hello"],
             trust_remote_code=False,
             priority=EncodePriority.BULK,
-            should_stop=ANY,
+            should_stop=ANY, witness=ANY,
         )
 
     def test_create_embeddings_batch_input(self, client):
@@ -144,7 +145,7 @@ class TestEmbeddingServerRoutes:
             ["hello", "world"],
             trust_remote_code=False,
             priority=EncodePriority.BULK,
-            should_stop=ANY,
+            should_stop=ANY, witness=ANY,
         )
 
     def test_create_embeddings_empty_input_rejected(self, client):
@@ -211,7 +212,7 @@ class TestEmbeddingServerRoutes:
             ["hello"],
             trust_remote_code=True,
             priority=EncodePriority.BULK,
-            should_stop=ANY,
+            should_stop=ANY, witness=ANY,
         )
 
     def test_a_marked_query_is_encoded_as_a_query(self, client) -> None:
@@ -978,7 +979,9 @@ class TestEncodeGate:
         assert not third_bulk.done()
 
         # A query arriving now starts at once on the reserved slot.
-        await asyncio.wait_for(gate.acquire(EncodePriority.QUERY), timeout=1)
+        query = asyncio.ensure_future(gate.acquire(EncodePriority.QUERY))
+        await self._settle()
+        assert query.done()
         assert gate.in_use == 3
         third_bulk.cancel()
 
@@ -1008,7 +1011,9 @@ class TestEncodeGate:
         """A reservation as large as the pool must not stop indexing."""
         gate = EncodeGate(capacity=2, reserved_for_queries=5)
         assert gate.bulk_limit == 1
-        await asyncio.wait_for(gate.acquire(EncodePriority.BULK), timeout=1)
+        bulk = asyncio.ensure_future(gate.acquire(EncodePriority.BULK))
+        await self._settle()
+        assert bulk.done()
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("capacity", [2, 4])
@@ -1026,7 +1031,7 @@ class TestEncodeGate:
         loops = [asyncio.ensure_future(query_loop()) for _ in range(8)]
         await asyncio.sleep(0.01)
         try:
-            await asyncio.wait_for(gate.acquire(EncodePriority.BULK), timeout=1)
+            await settle(gate.acquire(EncodePriority.BULK))
         finally:
             stop.set()
             await asyncio.gather(*loops)
@@ -1051,7 +1056,7 @@ class TestEncodeGate:
         loops = [asyncio.ensure_future(bulk_loop()) for _ in range(4)]
         await asyncio.sleep(0.01)
         try:
-            await asyncio.wait_for(gate.acquire(EncodePriority.QUERY), timeout=1)
+            await settle(gate.acquire(EncodePriority.QUERY))
         finally:
             stop.set()
         gate.release(EncodePriority.QUERY)
@@ -1070,10 +1075,11 @@ class TestEncodeGate:
         await self._settle()
 
         gate.release(EncodePriority.QUERY)
-        await asyncio.wait_for(bulk, timeout=1)
-        assert not query.done()
+        await self._settle()
+        assert bulk.done() and not query.done()
         gate.release(EncodePriority.QUERY)
-        await asyncio.wait_for(query, timeout=1)
+        await self._settle()
+        assert query.done()
 
     @pytest.mark.asyncio
     async def test_bulk_waits_while_a_query_is_waiting(self) -> None:
@@ -1088,7 +1094,8 @@ class TestEncodeGate:
         await self._settle()
         assert query.done() and not bulk.done()
         gate.release(EncodePriority.BULK)
-        await asyncio.wait_for(bulk, timeout=1)
+        await self._settle()
+        assert bulk.done()
 
     @pytest.mark.asyncio
     async def test_a_cancelled_waiter_does_not_hold_a_slot(self) -> None:
@@ -1101,7 +1108,9 @@ class TestEncodeGate:
 
         gate.release(EncodePriority.BULK)
         assert gate.in_use == 0
-        await asyncio.wait_for(gate.acquire(EncodePriority.BULK), timeout=1)
+        again = asyncio.ensure_future(gate.acquire(EncodePriority.BULK))
+        await self._settle()
+        assert again.done()
 
     @pytest.mark.asyncio
     async def test_a_waiter_cancelled_after_its_grant_hands_it_back(self) -> None:
@@ -1152,7 +1161,7 @@ class TestEncodeGate:
 
         now[0] = 150.0
         gate.release(EncodePriority.BULK, bulk)  # hands the slot to the waiter, which waited 10 s
-        await asyncio.wait_for(waiter, timeout=1)
+        await settle(waiter)
         assert gate.stats()["wait_p95_ms"]["bulk"] == 10000.0
         assert gate.stats()["oldest_in_use_age_s"]["bulk"] == 0.0
 
@@ -1276,10 +1285,10 @@ class TestQueriesDuringIndexing:
             assert before["in_use"] == 1 and before["waiting"] == 2
             assert before["oldest_in_use_age_s"]["bulk"] > 0
 
-            started = time.monotonic()
-            await asyncio.wait_for(manager.encode("m", ["query"], priority=EncodePriority.QUERY), timeout=2)
-            assert time.monotonic() - started < 1
-            # The query took the reserved slot without queueing.
+            await asyncio.wait_for(manager.encode("m", ["query"], priority=EncodePriority.QUERY), timeout=10)
+            # By order: the query finished while every bulk batch still waited on the held slot.
+            assert not any(b.done() for b in batches)
+            # The query took the reserved slot without queueing (read on the gate's own clock, not timed).
             assert manager.encode_gate_stats()["wait_p95_ms"]["query"] == 0.0
 
             release_bulk.set()
@@ -2027,8 +2036,11 @@ class TestTokenizerRace:
 
     @staticmethod
     def _slow_model(delay: float) -> MagicMock:
+        threads: list[int] = []  # every call's thread, the private copy's included
+
         class Slow:
             def __call__(self, texts: list[str], **_: object) -> dict:
+                threads.append(threading.get_ident())
                 time.sleep(delay)
                 return {"input_ids": [[1, 2] for _ in texts]}
 
@@ -2037,6 +2049,7 @@ class TestTokenizerRace:
         model.default_prompt_name = "q"
         model.prompts = {"q": "p"}
         model.encode = lambda texts, **_: np.zeros((len(texts), 4))
+        model.tokenizer_threads = threads
         return model
 
     @pytest.mark.asyncio
@@ -2047,13 +2060,16 @@ class TestTokenizerRace:
         await manager._counter("m", model)  # built when the model loads
         flood = [asyncio.create_task(manager.count_tokens("m", ["a"])) for _ in range(64)]
         await asyncio.sleep(0.2)
-        start = time.perf_counter()
+        counted_before = sum(t.done() for t in flood)
         await manager.encode("m", ["q"], priority=EncodePriority.QUERY)
-        waited = time.perf_counter() - start
+        counted_after = sum(t.done() for t in flood)
         for t in flood:
             t.cancel()
         await asyncio.gather(*flood, return_exceptions=True)
-        assert waited < 0.5
+        # Counts run one at a time beside the encode. Parked on worker threads instead, they fill the
+        # executor and the encode starts only after a worker's worth of them has finished.
+        assert counted_before < 64
+        assert counted_after - counted_before <= 3, (counted_before, counted_after)
 
     @pytest.mark.asyncio
     async def test_models_listing_does_not_wait_for_queued_counts(self) -> None:
@@ -2063,19 +2079,22 @@ class TestTokenizerRace:
         await manager._counter("m", model)  # built when the model loads
         flood = [asyncio.create_task(manager.count_tokens("m", ["a"])) for _ in range(4)]
         await asyncio.sleep(0.1)
-        start = time.perf_counter()
+        tokenized = len(model.tokenizer_threads)
         assert manager.prompt_tokens("m") == 2
-        waited = time.perf_counter() - start
+        on_the_loop = [t for t in model.tokenizer_threads[tokenized:] if t == threading.get_ident()]
         for t in flood:
             t.cancel()
         await asyncio.gather(*flood, return_exceptions=True)
-        assert waited < 0.05
+        assert on_the_loop == [], "the listing tokenized on the event loop"
 
     @pytest.mark.asyncio
     async def test_copying_a_tokenizer_does_not_block_the_event_loop(self) -> None:
+        # The thread the copy ran on, not the loop's longest gap during it (which a busy runner stretches).
+        copied_on: list[int] = []
+
         class SlowCopy:
             def __deepcopy__(self, memo: dict) -> "SlowCopy":
-                time.sleep(0.4)
+                copied_on.append(threading.get_ident())
                 return SlowCopy()
 
             def __call__(self, texts: list[str], **_: object) -> dict:
@@ -2086,20 +2105,8 @@ class TestTokenizerRace:
         model.default_prompt_name = None
         manager = ModelManager()
         manager._models = {"m": model}
-        gaps: list[float] = []
-
-        async def ticker() -> None:
-            last = time.perf_counter()
-            while True:
-                await asyncio.sleep(0.01)
-                now = time.perf_counter()
-                gaps.append(now - last)
-                last = now
-
-        task = asyncio.create_task(ticker())
         assert await manager.count_tokens("m", ["a"]) == [1]
-        task.cancel()
-        assert max(gaps) < 0.2
+        assert copied_on and threading.get_ident() not in copied_on, "the tokenizer was copied on the event loop"
 
     @pytest.mark.asyncio
     async def test_without_any_private_tokenizer_counting_degrades_to_the_shared_one(self) -> None:

@@ -8,7 +8,6 @@ behaviour before patterns existed.
 
 from __future__ import annotations
 
-import time
 import unicodedata
 
 import pytest
@@ -34,6 +33,7 @@ from app.connectors.core.registry.folder_scope import (
     folder_value_problems,
     saved_folder_values,
 )
+from tests.support.cpu_budget import thread_cpu
 
 KEEP, PASS, SKIP = FolderRole.KEEP, FolderRole.PASS_THROUGH, FolderRole.SKIP
 OS, FS = "os", "fs"
@@ -257,9 +257,9 @@ class TestFolderRole:
     def test_a_double_star_pattern_is_a_state_set_not_backtracking(self) -> None:
         live = scope(["**/a/**/b/**/c/**/d"])
         deep = "/".join(["a"] * 400)
-        start = time.perf_counter()
-        assert live.folder_role(deep) is PASS
-        assert time.perf_counter() - start < 1.0
+        with thread_cpu() as cpu:
+            assert live.folder_role(deep) is PASS
+        assert cpu.seconds < 1.0
 
 
 class TestListPrefixes:

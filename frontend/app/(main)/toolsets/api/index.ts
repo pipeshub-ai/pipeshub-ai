@@ -1,4 +1,5 @@
 import { apiClient } from '@/lib/api';
+import { observeInstanceToolIds } from './tool-identity';
 import { REVEAL_PARAMS } from '@/lib/hooks/use-secret-reveal-available';
 import { desktopAuthorizeParams } from '@/lib/electron';
 import type { DocumentationLink } from '@/app/(main)/workspace/connectors/types';
@@ -54,6 +55,9 @@ export interface BuilderSidebarToolset {
   supportedAuthTypes?: string[];
   /** From merged list / registry metadata (toolset type docs). */
   documentationLinks?: DocumentationLink[];
+  /** WP-64: why the person's sign-in is no longer there (`sign_in_rejected`: the service rejected it), and since when (ms). */
+  deauthReason?: string;
+  deauthAt?: number;
 }
 
 export type ToolsetInstanceScope = 'org' | 'personal';
@@ -182,7 +186,7 @@ function normalizeToolsetOauthConfigListRow(raw: Record<string, unknown>): Tools
   };
 }
 
-function mapToSidebar(inst: Record<string, unknown>): BuilderSidebarToolset {
+export function mapToSidebar(inst: Record<string, unknown>): BuilderSidebarToolset {
   const toolsRaw = (inst.tools as Record<string, unknown>[]) || [];
   const toolsetType = (inst.toolsetType as string) || (inst.instanceName as string) || '';
   /** Registry / toolset human name from API — never the per-instance label (use `instanceName` for that). */
@@ -206,6 +210,8 @@ function mapToSidebar(inst: Record<string, unknown>): BuilderSidebarToolset {
     })),
     isConfigured: Boolean(inst.isConfigured ?? inst.is_configured),
     isAuthenticated: Boolean(inst.isAuthenticated ?? inst.is_authenticated ?? false),
+    ...(typeof inst.deauthReason === 'string' ? { deauthReason: inst.deauthReason } : {}),
+    ...(typeof inst.deauthAt === 'number' ? { deauthAt: inst.deauthAt } : {}),
     isFromRegistry: Boolean(inst.isFromRegistry),
     instanceId: inst.instanceId as string | undefined,
     instanceName: inst.instanceName as string | undefined,
@@ -382,6 +388,7 @@ export const ToolsetsApi = {
         scope: params.scope,
       },
     });
+    observeInstanceToolIds(data);
     const rows = data?.toolsets ?? [];
     const fc = data?.filterCounts;
     const { pagination, hasNext } = paginationFromListPayload(data?.pagination, limit, rows.length);
@@ -430,6 +437,7 @@ export const ToolsetsApi = {
         toolsetType: params.toolsetType?.trim() || undefined,
       },
     });
+    observeInstanceToolIds(data);
     const rows = data?.toolsets ?? [];
     const { pagination, hasNext } = paginationFromListPayload(data?.pagination, limit, rows.length);
     return {

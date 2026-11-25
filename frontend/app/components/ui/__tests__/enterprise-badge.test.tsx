@@ -7,6 +7,8 @@ import en from '@/lib/i18n/locales/en-US.json';
 import { EnterpriseBadge, EnterpriseFeatureNotice } from '../enterprise-badge';
 
 vi.mock('@/app/components/ui/MaterialIcon', () => ({ MaterialIcon: () => null }));
+let showEnterprise = true;
+vi.mock('@/lib/hooks/use-enterprise-prompt', () => ({ useEnterprisePrompt: () => showEnterprise }));
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
     t: (key: string) => {
@@ -22,6 +24,22 @@ vi.mock('react-i18next', () => ({
 
 afterEach(() => {
   cleanup();
+  showEnterprise = true;
+});
+
+describe('for someone who is not an admin', () => {
+  it('renders neither the badge nor the notice', () => {
+    showEnterprise = false;
+    const { container } = render(
+      <Theme>
+        <EnterpriseBadge />
+        <EnterpriseFeatureNotice title="Organization approval rules" description="Decide which tools run." />
+      </Theme>
+    );
+    expect(screen.queryByText(en.common.enterprise.label)).toBeNull();
+    expect(screen.queryByTestId('enterprise-feature-notice')).toBeNull();
+    expect(container.textContent).toBe('');
+  });
 });
 
 describe('EnterpriseBadge', () => {

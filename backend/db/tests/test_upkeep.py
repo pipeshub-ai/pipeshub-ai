@@ -89,7 +89,7 @@ def test_the_short_point_columns_and_the_bit_vector_stay_in_the_row_on_every_lea
     placement_env(monkeypatch, cluster, name)
     adopt(cluster, name, ORG_A)
     with cluster.admin(name) as c:
-        main = {"org_id", "group_key", "vrid", "block_id", "ent_type", "ent_id", "ent_kind", "ent_level", "bq"}
+        main = {"org_id", "group_key", "vrid", "block_id", "ent_type", "ent_id", "ent_kind", "ent_level", "bq", "member_keys"}
         for rel in ("retrieval.points", "retrieval.points_h0", "retrieval.points_h7"):
             s = storage(c, rel)
             assert {k: s[k] for k in main} == dict.fromkeys(main, "m"), rel
@@ -724,6 +724,7 @@ def test_a_one_shot_fold_exits_6_when_an_org_failed_and_a_failing_org_does_not_h
     monkeypatch.setattr(fold, "fold_org", step)
     assert fold.run(None) == ({}, {"a": "deadlock detected"}) and seen == ["a", "b", "c"]
     monkeypatch.setattr(fold, "run", lambda jobs: ({}, {"a": "x"}))
+    monkeypatch.setattr(fold, "fill_bounds", lambda jobs: ({}, {}, 0))
     monkeypatch.setattr(maintain.psycopg, "connect", lambda *a, **k: type("C", (), {"__enter__": lambda s: None, "__exit__": lambda s, *e: None})())
     monkeypatch.setenv("PG_JOBS_URL", "postgresql://x@127.0.0.1:1/x")
     assert maintain.main(["fold"]) == maintain.EXIT_PARTIAL

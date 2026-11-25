@@ -155,6 +155,7 @@ CALLS = [
     ("set_record_properties", ("k",), {"values": {}, "previous_names": (), "controls": {"propsVer": 1}, "conditions": [Cond("propsVer", "is_null")]}),
     ("delete_nodes", (["k"], "things"), {}),
     ("delete_nodes_and_edges", (["k"], "things"), {}),
+    ("delete_node_if_match", ("k", "things", {"v": 0}), {}),
     ("batch_create_edges", ([_EDGE], "belongsTo"), {}),
     ("get_edge", ("x", "things", "y", "things", "belongsTo"), {}),
     ("get_edges_to_node", ("things/y", "belongsTo"), {}),
@@ -469,3 +470,41 @@ async def test_increment_node_field_is_atomic_stays_in_the_org_and_answers_none_
         assert await p.increment_node_field("missing", "things", "gen") is None
     with org_ctx(b):
         assert await p.increment_node_field("app", "things", "gen") is None  # another org's node is not found
+
+
+async def test_the_pending_reason_writes_are_conditional_on_the_revision_and_the_reason(pg_provider, orgs, org_ctx) -> None:
+    """The give-up repair marks a record with a pending reason and later puts the previous one back. Each write applies only
+    while the record still has the revision and the reason it read (``None`` expects the field absent)."""
+    a, _ = orgs
+    p = pg_provider
+    pending = "Access scope update pending"
+    with org_ctx(a):
+        await p.batch_upsert_nodes([{"_key": "r1", "contentRev": "rev-1", "reason": "had one"}, {"_key": "r2", "contentRev": "rev-1"}], "things")
+
+        assert await p.update_node_fields_if_match("r1", "things", {"reason": pending}, {"contentRev": "rev-2", "reason": "had one"}) is False
+        assert await p.update_node_fields_if_match("r1", "things", {"reason": pending}, {"contentRev": "rev-1", "reason": "other"}) is False
+        assert await p.update_node_fields_if_match("r1", "things", {"reason": pending}, {"contentRev": "rev-1", "reason": "had one"}) is True
+        assert await p.update_node_fields_if_match("r2", "things", {"reason": pending}, {"contentRev": "rev-1", "reason": None}) is True
+
+        # A reason written since is not replaced by the restore; the pending one is, back to what it was (or to none).
+        assert await p.update_node_fields_if_match("r1", "things", {"reason": "had one"}, {"contentRev": "rev-1", "reason": "newer"}) is False
+        assert await p.update_node_fields_if_match("r1", "things", {"reason": "had one"}, {"contentRev": "rev-1", "reason": pending}) is True
+        assert await p.update_node_fields_if_match("r2", "things", {"reason": None}, {"contentRev": "rev-1", "reason": pending}) is True
+        assert (await p.get_document("r1", "things"))["reason"] == "had one"
+        assert "reason" not in await p.get_document("r2", "things")
+
+
+async def test_by_default_a_call_for_another_org_or_with_no_org_is_refused(pg_provider, orgs, org_ctx, monkeypatch) -> None:
+    """ORG_CONTEXT_MODE unset is enforce: an org-scoped provider method refuses another org's id and a call with no org bound,
+    before any statement runs; the caller's own org reads as usual."""
+    from app.core.org_context import OrgMismatch
+
+    monkeypatch.delenv("ORG_CONTEXT_MODE", raising=False)
+    a, b = orgs
+    p = pg_provider
+    with org_ctx(a):
+        assert await p.get_records_by_status(a, "c1", None) == []
+        with pytest.raises(OrgMismatch):
+            await p.get_records_by_status(b, "c1", None)
+    with pytest.raises(MissingOrgContext):
+        await p.get_records_by_status(a, "c1", None)

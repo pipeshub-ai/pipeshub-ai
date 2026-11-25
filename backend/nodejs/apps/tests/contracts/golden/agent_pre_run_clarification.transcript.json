@@ -1,0 +1,149 @@
+{
+  "conversation": {
+    "sessionType": "agent",
+    "nextSeq": 3,
+    "userId": "oid-1",
+    "orgId": "oid-2",
+    "title": "report",
+    "initiator": "oid-1",
+    "isShared": false,
+    "isDeleted": false,
+    "isArchived": false,
+    "lastActivityAt": "<clock>",
+    "status": "Complete",
+    "modelInfo": {
+      "chatMode": "react"
+    },
+    "agentKey": "agent-1",
+    "conversationSource": "agent_chat",
+    "_id": "oid-3",
+    "sharedWith": [],
+    "conversationErrors": [],
+    "createdAt": "<timestamp>",
+    "updatedAt": "<timestamp>",
+    "__v": 0
+  },
+  "messages": [
+    {
+      "sessionId": "oid-3",
+      "orgId": "oid-2",
+      "seq": 1,
+      "messageType": "user_query",
+      "content": "report",
+      "contentFormat": "MARKDOWN",
+      "modelInfo": {
+        "chatMode": "react"
+      },
+      "appliedFilters": {
+        "apps": [],
+        "kb": [],
+        "recordGroups": [],
+        "records": [],
+        "recordsExact": []
+      },
+      "parts": [],
+      "_id": "oid-4",
+      "createdAt": "<timestamp>",
+      "updatedAt": "<timestamp>",
+      "citations": [],
+      "followUpQuestions": [],
+      "feedback": [],
+      "attachments": [],
+      "referenceData": [],
+      "tools": [],
+      "reasoning": []
+    },
+    {
+      "sessionId": "oid-3",
+      "orgId": "oid-2",
+      "seq": 2,
+      "messageType": "tool_call",
+      "content": "",
+      "contentFormat": "MARKDOWN",
+      "modelInfo": {
+        "chatMode": "quick"
+      },
+      "appliedFilters": {
+        "apps": [],
+        "kb": [],
+        "recordGroups": [],
+        "records": [],
+        "recordsExact": []
+      },
+      "tools": [
+        {
+          "toolName": "ask_user_question",
+          "toolResult": {
+            "name": "ask_user_question",
+            "userIntent": "The user wants a report but gave no topic.",
+            "questions": [
+              {
+                "uuid": "uuid-1",
+                "question": "Which report do you need?",
+                "options": [
+                  {
+                    "id": "opt_sales",
+                    "label": "Sales",
+                    "isUserInput": false
+                  },
+                  {
+                    "id": "opt_support",
+                    "label": "Support",
+                    "isUserInput": false
+                  },
+                  {
+                    "id": "opt_finance",
+                    "label": "Finance",
+                    "isUserInput": false
+                  }
+                ],
+                "multiSelect": false
+              }
+            ],
+            "expiresAt": "<timestamp>"
+          }
+        }
+      ],
+      "parts": [],
+      "_id": "oid-5",
+      "createdAt": "<timestamp>",
+      "updatedAt": "<timestamp>",
+      "citations": [],
+      "followUpQuestions": [],
+      "feedback": [],
+      "attachments": [],
+      "referenceData": [],
+      "reasoning": []
+    },
+    {
+      "sessionId": "oid-3",
+      "orgId": "oid-2",
+      "seq": 3,
+      "messageType": "bot_response",
+      "content": "Which report do you need?",
+      "contentFormat": "MARKDOWN",
+      "citations": [],
+      "confidence": null,
+      "followUpQuestions": [],
+      "modelInfo": {
+        "chatMode": "react"
+      },
+      "appliedFilters": {
+        "apps": [],
+        "kb": [],
+        "recordGroups": [],
+        "records": [],
+        "recordsExact": []
+      },
+      "parts": [],
+      "_id": "oid-6",
+      "createdAt": "<timestamp>",
+      "updatedAt": "<timestamp>",
+      "feedback": [],
+      "attachments": [],
+      "referenceData": [],
+      "tools": [],
+      "reasoning": []
+    }
+  ]
+}

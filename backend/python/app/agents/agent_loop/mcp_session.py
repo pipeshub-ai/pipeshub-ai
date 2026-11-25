@@ -16,6 +16,12 @@ When an OAuth instance's listing or call is rejected with HTTP 401, this refresh
 credential once (`app.agents.mcp.token_refresh.refresh_credential_record`) and retries once with
 the fresh token: on the same session when it is still open, on a new one otherwise.
 
+Harness additions: a call first checks the server is still granted (`mcp_liveness`, MCPLIVE);
+with MCP_HUB on (P2.8) HTTP servers and servers in P5.10 runners are called on a leased pooled
+session, released (not closed) at teardown, and every call passes the server's circuit breaker
+(MX-08); a STDIO server runs in its owner's runner when
+MCP_STDIO_RUNNERS is on.
+
 A turn takes a server's tools from the tool cache when it has them (`tools()`), and then opens
 no session until the model calls one. Before that first call the session lists once, which
 checks the cache against the server and gives the SDK the tools' schemas it would otherwise
@@ -29,6 +35,7 @@ import logging
 from contextlib import suppress
 from typing import TYPE_CHECKING, Any, TypeVar
 
+from app.agents.agent_loop.mcp_liveness import MCPServerRevoked, mcp_liveness
 from app.agents.mcp import step_up, tool_cache
 from app.agents.mcp.client import MCPClientManager, ToolListing
 from app.agents.mcp.discovery import build_auth_env_and_headers, tool_infos_from_listing
@@ -41,13 +48,19 @@ from app.agents.mcp.errors import (
     request_may_have_run,
     request_never_reached_server,
 )
-from app.agents.mcp.models import MCPAuthMode, MCPToolInfo
+from app.agents.mcp.models import MCPAuthMode, MCPToolInfo, MCPTransport
 from app.agents.mcp.service import (
     credentials_to_discovery_dict,
     instance_config_from_dict,
 )
 from app.agents.mcp.token_refresh import refresh_credential_record
+from app.harness.mcp_hub.discovery import hub_target
+from app.harness.mcp_hub.hub import process_mcp_hub
+from app.harness.mcp_hub.settings import harness_surface, hub_enabled
+from app.harness.mcp_runner.routing import stdio_target
+from app.harness.mcp_runner.settings import runners_enabled
 from app.utils.logging_fields import log_event
+from harness_core.mcp_hub.types import SessionKey
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -56,10 +69,25 @@ if TYPE_CHECKING:
 
     from app.agents.agent_loop.context import AgentContext
     from app.agents.agent_loop.mcp_access import ResolvedMCPServer
+    from harness_core.mcp_hub.pool import SessionLease
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["MCPSessionManager", "is_http_unauthorized"]
+__all__ = ["MCPSessionManager", "close_request_sessions", "is_http_unauthorized"]
+
+_OWN_SESSIONS = "_mcp_client_managers"
+_POOLED_LEASES = "_mcp_hub_leases"
+
+
+async def close_request_sessions(context: "AgentContext") -> int:
+    """Ends what one request holds of MCP: its own sessions are closed, its leases of pooled sessions released.
+    The number of both; a request that used no MCP server builds nothing here."""
+    state = context.tool_state
+    held = len(state.get(_OWN_SESSIONS) or ()) + len(state.get(_POOLED_LEASES) or ())
+    if not held:
+        return 0
+    await MCPSessionManager(context).aclose_all()
+    return held
 
 _Result = TypeVar("_Result")
 
@@ -93,7 +121,9 @@ class MCPSessionManager:
         self._context = context
         self._log = context.logger or logger
         state = context.tool_state
-        self._managers: dict[str, MCPClientManager] = state.setdefault("_mcp_client_managers", {})
+        self._managers: dict[str, MCPClientManager] = state.setdefault(_OWN_SESSIONS, {})
+        # MCP_HUB on (P2.8): this request's leases of the process's pooled sessions, released (not closed) at teardown.
+        self._leases: dict[str, "SessionLease[MCPClientManager]"] = state.setdefault(_POOLED_LEASES, {})
         self._locks: dict[str, asyncio.Lock] = state.setdefault("_mcp_client_locks", {})
         # Per instance: the cache entry this turn's tools came from, and the listing that checks
         # it before the first call.
@@ -170,6 +200,33 @@ class MCPSessionManager:
         """Run one tool call. It is sent a second time only when the first can't have run: it
         never reached the server, the server refused its session, or it was refused with HTTP
         401 (sent again after a token refresh). `on_progress` hears the server's progress."""
+        with harness_surface(on=self._context.harness_run):
+            return await self._call(server, tool_name, arguments, on_progress=on_progress)
+
+    async def _call(
+        self, server: "ResolvedMCPServer", tool_name: str, arguments: dict[str, Any],
+        *, on_progress: "ProgressFnT | None" = None,
+    ) -> Any:  # noqa: ANN401
+        try:
+            await mcp_liveness.check(self._context, server)
+        except MCPServerRevoked:
+            await self._drop_lease(server.instance_id, broken=True)
+            await self.aclose(server.instance_id)
+            raise
+        if not hub_enabled():
+            return await self._call_server(server, tool_name, arguments, on_progress=on_progress)
+        key = SessionKey(self._context.org_id, server.instance_id, server.owner_id)
+        return await process_mcp_hub.get().breakers.run(
+            key, server.display_name,
+            lambda: self._call_server(server, tool_name, arguments, on_progress=on_progress),
+        )
+
+    async def _call_server(
+        self, server: "ResolvedMCPServer", tool_name: str, arguments: dict[str, Any],
+        *, on_progress: "ProgressFnT | None" = None,
+    ) -> Any:  # noqa: ANN401
+        if hub_enabled() and self._pooled(server):
+            return await self._call_pooled(server, tool_name, arguments, on_progress=on_progress)
         if server.instance_id in self._cache_hits:
             await self._listed_before_first_call(server, tool_name)
         token = self._access_token(server)
@@ -292,9 +349,12 @@ class MCPSessionManager:
         return credentials_to_discovery_dict(MCPAuthMode.OAUTH.value, server.auth).get("accessToken")
 
     async def aclose_all(self) -> None:
-        """Tears down every session opened this request — called from
-        `stream_bridge.py`'s existing `finally` block. All at once: a hung server can take
-        its close timeout."""
+        """Tears down every session opened this request — called from `stream_bridge.py`'s
+        `finally` block and, on the durable path, from `app.harness.assembly.teardown`. All at
+        once: a hung server can take its close timeout. Pooled sessions (MCP_HUB) are released
+        to the pool, not closed."""
+        for instance_id in sorted(self._leases):
+            await self._drop_lease(instance_id, broken=False)
         managers = list(self._managers.items())
         self._managers.clear()
         for listing in self._first_listings.values():
@@ -308,6 +368,121 @@ class MCPSessionManager:
         for (instance_id, _), result in zip(managers, results):
             if isinstance(result, Exception):
                 self._log.debug("MCPSessionManager: error closing session for %s: %s", instance_id, result)
+
+    async def aclose(self, instance_id: str) -> None:
+        """One instance's session: released to the pool when pooled, else closed. A pinned MCP item's load
+        closes its own session with this (R2 X-1); closing one that is not open does nothing."""
+        if instance_id in self._leases:
+            await self._drop_lease(instance_id, broken=False)
+        manager = self._managers.pop(instance_id, None)
+        if manager is None:
+            return
+        try:
+            await manager.aclose()
+        except Exception as exc:
+            # A session that will not close may be a live stdio child process.
+            self._log.warning(
+                "MCPSessionManager: could not close the session for MCP instance %s (%s)",
+                instance_id, type(exc).__name__,
+            )
+
+    @staticmethod
+    def _pooled(server: "ResolvedMCPServer") -> bool:
+        """HTTP servers and servers in P5.10 runners; a STDIO child of this process stays per request (P2.8)."""
+        return server.instance.get("transport") != MCPTransport.STDIO.value or runners_enabled()
+
+    async def _call_pooled(
+        self, server: "ResolvedMCPServer", tool_name: str, arguments: dict[str, Any],
+        *, on_progress: "ProgressFnT | None" = None,
+    ) -> Any:  # noqa: ANN401 - the server's result
+        lease = await self._lease(server)
+        token = self._access_token(server)
+        try:
+            return await lease.session.call_tool_in_session(tool_name, arguments, on_progress=on_progress)
+        except Exception as exc:
+            failure = exc
+        # Handled outside the `except`: a retry failing there would carry the first error as its context.
+        if not lease.session.is_open:
+            await self._drop_lease(server.instance_id, broken=True, only=lease)
+        if not self._should_refresh(server, failure):
+            raise failure
+        self._retry_line(server, op="call", reason="token_refresh", failure=failure)
+        lease = await self._refreshed_lease(server, stale=lease, rejected_token=token)
+        return await lease.session.call_tool_in_session(tool_name, arguments, on_progress=on_progress)
+
+    async def _lease(self, server: "ResolvedMCPServer") -> "SessionLease[MCPClientManager]":
+        lease = self._leases.get(server.instance_id)
+        if lease is not None:
+            return lease
+        async with self._locks.setdefault(server.instance_id, asyncio.Lock()):
+            lease = self._leases.get(server.instance_id)
+            if lease is None:
+                lease = await self._new_lease(server)
+                self._leases[server.instance_id] = lease
+            return lease
+
+    async def _new_lease(self, server: "ResolvedMCPServer") -> "SessionLease[MCPClientManager]":
+        config = instance_config_from_dict(server.instance)
+        credentials = credentials_to_discovery_dict(server.instance.get("authMode", ""), server.auth)
+        target = await hub_target(
+            config, credentials, tenant=self._context.org_id, owner=server.owner_id, principal=server.credential_owner,
+        )
+        return await process_mcp_hub.get().lease(target)
+
+    async def _drop_lease(
+        self, instance_id: str, *, broken: bool, only: "SessionLease[MCPClientManager] | None" = None,
+    ) -> None:
+        lease = self._leases.get(instance_id)
+        if lease is None or (only is not None and lease is not only):
+            return
+        del self._leases[instance_id]
+        try:
+            await (lease.discard() if broken else lease.release())
+        except Exception as exc:
+            self._log.warning(
+                "MCPSessionManager: could not return the pooled session for MCP instance %s (%s)",
+                instance_id, type(exc).__name__,
+            )
+
+    async def _refreshed_lease(
+        self, server: "ResolvedMCPServer", *, stale: "SessionLease[MCPClientManager]", rejected_token: str | None,
+    ) -> "SessionLease[MCPClientManager]":
+        """As `_refreshed`, for a pooled session: the fresh token is a new variant, a new session."""
+        async with self._locks.setdefault(server.instance_id, asyncio.Lock()):
+            current = self._leases.get(server.instance_id)
+            if current is not None and current is not stale:
+                return current
+            await self._drop_lease(server.instance_id, broken=True)
+            await self._refresh_tokens(server, rejected_token)
+            lease = await self._new_lease(server)
+            self._leases[server.instance_id] = lease
+            return lease
+
+    async def refresh_rejected(self, server: "ResolvedMCPServer", failure: BaseException) -> bool:
+        """After ``failure`` from a listing made outside this manager's sessions (the hub's pooled discovery): an
+        OAuth server's HTTP 401 refreshes the credential owner's tokens once, as a listing or call here does, and
+        ``server`` holds the new ones. False: not a rejection a refresh answers."""
+        if not self._should_refresh(server, failure):
+            return False
+        self._retry_line(server, op="list", reason="token_refresh", failure=failure)
+        token = self._access_token(server)
+        async with self._locks.setdefault(server.instance_id, asyncio.Lock()):
+            await self._refresh_tokens(server, token)
+        return True
+
+    async def _refresh_tokens(self, server: "ResolvedMCPServer", rejected_token: str | None) -> None:
+        """Refreshes the credential owner's stored tokens (through the org's binding refresher with
+        CONTROL_PLANE_CREDENTIALS on) and gives ``server`` the new ones."""
+        tokens = await refresh_credential_record(
+            server.instance_id, server.owner_id, self._context.config_service,
+            stale_access_token=rejected_token, org_id=self._context.org_id,
+        )
+        # The rest of the record (its `connectedAt`, which the tool cache checks) stays.
+        server.auth = {
+            **(server.auth or {}),
+            "isAuthenticated": True,
+            "oauthTokens": tokens.model_dump(by_alias=True, mode="json"),
+        }
 
     async def _get_or_open(self, server: "ResolvedMCPServer") -> MCPClientManager:
         manager = self._managers.get(server.instance_id)
@@ -328,8 +503,17 @@ class MCPSessionManager:
 
     async def _build_and_open(self, server: "ResolvedMCPServer") -> MCPClientManager:
         config = instance_config_from_dict(server.instance)
-        env, headers = build_auth_env_and_headers(config, credentials_to_discovery_dict(server.instance.get("authMode", ""), server.auth))
-        manager = MCPClientManager(config, env=env, headers=headers)
+        credentials = credentials_to_discovery_dict(server.instance.get("authMode", ""), server.auth)
+        env, headers = build_auth_env_and_headers(config, credentials)
+        # MCP_STDIO_RUNNERS on: a STDIO server runs in its owner's runner or not at all (P5.10).
+        runner = await stdio_target(
+            config, credentials, tenant=self._context.org_id, owner=server.owner_id, principal=server.credential_owner,
+        )
+        # Main's construction unless the server runs in a runner (MCP_STDIO_RUNNERS on, STDIO only).
+        manager = (
+            MCPClientManager(config, env=env, headers=headers) if runner is None
+            else MCPClientManager(config, env=env, headers=headers, runner=runner)
+        )
         await manager.open()
         return manager
 
@@ -342,15 +526,7 @@ class MCPSessionManager:
         from each opening, and leaking, a session of their own."""
         lock = self._locks.setdefault(server.instance_id, asyncio.Lock())
         async with lock:
-            tokens = await refresh_credential_record(
-                server.instance_id, server.owner_id, self._context.config_service, stale_access_token=rejected_token,
-            )
-            # The rest of the record (its `connectedAt`, which the tool cache checks) stays.
-            server.auth = {
-                **(server.auth or {}),
-                "isAuthenticated": True,
-                "oauthTokens": tokens.model_dump(by_alias=True, mode="json"),
-            }
+            await self._refresh_tokens(server, rejected_token)
             manager = self._managers.get(server.instance_id)
             if manager is not None and manager.is_open:
                 _, headers = build_auth_env_and_headers(

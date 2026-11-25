@@ -43,6 +43,7 @@ from app.connectors.api.router import (
 )
 from app.connectors.core.registry.connector_builder import ConnectorScope
 from app.models.entities import RecordType
+from tests.support.record_access import InMemoryRecordAccess
 
 # ---------------------------------------------------------------------------
 # Shared helpers
@@ -177,7 +178,7 @@ class TestGetRecordStream:
 
     @pytest.mark.asyncio
     async def test_pdf_conversion_timeout(self):
-        """LibreOffice hangs -> TimeoutError -> 500."""
+        """LibreOffice hangs -> TimeoutError -> 504 conversion_timed_out, kept by the route."""
         req = _mock_request(query_params={"from": "pptx", "to": MimeTypes.PDF.value})
         file = _make_upload_file()
 
@@ -195,10 +196,9 @@ class TestGetRecordStream:
 
             with pytest.raises(HTTPException) as exc:
                 await get_record_stream(req, file)
-            assert exc.value.status_code == HttpStatusCode.INTERNAL_SERVER_ERROR.value
-            # the person is told what failed and what to do, not the exception text
-            assert exc.value.detail.lower() == "we couldn't open this file. please try again; if it keeps failing, contact your admin."
-            assert "timed out" not in exc.value.detail
+            assert exc.value.status_code == HttpStatusCode.GATEWAY_TIMEOUT.value
+            # the reason code the web app reads, with a message written for the person, not the exception text
+            assert exc.value.detail == {"reasonCode": "conversion_timed_out", "message": "PDF conversion timed out"}
 
     @pytest.mark.asyncio
     async def test_pdf_conversion_nonzero_returncode(self):
@@ -291,8 +291,8 @@ class TestConvertToPdf:
         with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock, return_value=mock_process):
             with pytest.raises(HTTPException) as exc:
                 await convert_to_pdf("/tmp/file.pptx", "/tmp")
-            assert exc.value.status_code == HttpStatusCode.INTERNAL_SERVER_ERROR.value
-            assert "timed out" in exc.value.detail.lower()
+            assert exc.value.status_code == HttpStatusCode.GATEWAY_TIMEOUT.value
+            assert "timed out" in exc.value.detail["message"].lower()
             mock_process.kill.assert_called_once()
 
     @pytest.mark.asyncio
@@ -307,7 +307,7 @@ class TestConvertToPdf:
         with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock, return_value=mock_process):
             with pytest.raises(HTTPException) as exc:
                 await convert_to_pdf("/tmp/file.pptx", "/tmp")
-            assert "timed out" in exc.value.detail.lower()
+            assert "timed out" in exc.value.detail["message"].lower()
             mock_process.kill.assert_not_called()
 
     @pytest.mark.asyncio
@@ -321,7 +321,7 @@ class TestConvertToPdf:
             with pytest.raises(HTTPException) as exc:
                 await convert_to_pdf("/tmp/file.pptx", "/tmp")
             assert exc.value.status_code == HttpStatusCode.INTERNAL_SERVER_ERROR.value
-            assert "Failed" in exc.value.detail or "failed" in exc.value.detail.lower()
+            assert exc.value.detail["reasonCode"] == "conversion_failed"
 
     @pytest.mark.asyncio
     async def test_output_file_not_found(self):
@@ -437,7 +437,8 @@ class TestConvertBufferToPdfStream:
             )
 
         input_path = mock_convert.await_args.args[0]
-        assert input_path.endswith("Quarterly review.pptx")
+        assert input_path.endswith(".pptx")
+        assert "Quarterly" not in input_path
 
     @pytest.mark.asyncio
     async def test_streaming_response_buffer(self):
@@ -711,7 +712,7 @@ class TestHandleOauthConfigCreation:
             base_url="http://localhost",
             logger=logging.getLogger("test"),
         )
-        assert result is None
+        assert result.app_id is None
 
     @pytest.mark.asyncio
     async def test_no_credentials_with_existing_id_returns_id(self):
@@ -730,7 +731,7 @@ class TestHandleOauthConfigCreation:
                 base_url="http://localhost",
                 logger=logging.getLogger("test"),
             )
-        assert result == "existing-id"
+        assert result.app_id == "existing-id"
 
     @pytest.mark.asyncio
     async def test_no_credentials_no_id_returns_none(self):
@@ -749,7 +750,7 @@ class TestHandleOauthConfigCreation:
                 base_url="http://localhost",
                 logger=logging.getLogger("test"),
             )
-        assert result is None
+        assert result.app_id is None
 
     @pytest.mark.asyncio
     async def test_new_config_creation(self):
@@ -775,7 +776,7 @@ class TestHandleOauthConfigCreation:
                 base_url="http://localhost",
                 logger=logging.getLogger("test"),
             )
-        assert result == "new-id"
+        assert result.app_id == "new-id"
         mock_conflict.assert_called_once()
         mock_create.assert_awaited_once()
 
@@ -806,7 +807,7 @@ class TestHandleOauthConfigCreation:
                 base_url="http://localhost",
                 logger=logging.getLogger("test"),
             )
-        assert result == "oauth-1"
+        assert result.app_id == "oauth-1"
         # Name didn't change, so no conflict check on update
         mock_conflict.assert_not_called()
 
@@ -837,7 +838,7 @@ class TestHandleOauthConfigCreation:
                 base_url="http://localhost",
                 logger=logging.getLogger("test"),
             )
-        assert result == "oauth-1"
+        assert result.app_id == "oauth-1"
         mock_conflict.assert_called_once()
         # Verify exclude_index was passed
         _, kwargs = mock_conflict.call_args
@@ -869,7 +870,7 @@ class TestHandleOauthConfigCreation:
                 base_url="http://localhost",
                 logger=logging.getLogger("test"),
             )
-        assert result == "new-id"
+        assert result.app_id == "new-id"
         mock_conflict.assert_called_once()
         # oauth_app_id should have been reset to None for the create call
         call_kwargs = mock_create.call_args[1]
@@ -902,7 +903,7 @@ class TestHandleOauthConfigCreation:
                 base_url="http://localhost",
                 logger=logging.getLogger("test"),
             )
-        assert result == "oauth-1"
+        assert result.app_id == "oauth-1"
         # Verify create was called with existing name
         call_kwargs = mock_create.call_args[1]
         assert call_kwargs["instance_name"] == "Existing Name" or mock_create.call_args[0][2] == "Existing Name"
@@ -931,7 +932,7 @@ class TestHandleOauthConfigCreation:
                 base_url="http://localhost",
                 logger=logging.getLogger("test"),
             )
-        assert result == "new-id"
+        assert result.app_id == "new-id"
 
 
 # ============================================================================
@@ -1149,12 +1150,13 @@ class TestStreamRecordInternalEdgeCases:
     @pytest.mark.asyncio
     async def test_unexpected_error_raises_500(self):
         """Generic exception -> 500."""
-        graph_provider = AsyncMock()
-        graph_provider.get_record_by_id = AsyncMock(side_effect=RuntimeError("boom"))
+        req, _, config_service, graph_provider = self._setup()
 
-        with pytest.raises(HTTPException) as exc:
+        with patch(
+            "app.connectors.api.router._get_streaming_connector", AsyncMock(side_effect=RuntimeError("boom"))
+        ), pytest.raises(HTTPException) as exc:
             await stream_record_internal(
-                MagicMock(), "rec-1", graph_provider, AsyncMock(), claims=self._CLAIMS
+                req, "rec-1", graph_provider, config_service, claims=self._CLAIMS
             )
         assert exc.value.status_code == HttpStatusCode.INTERNAL_SERVER_ERROR.value
 
@@ -1327,7 +1329,7 @@ class TestStreamRecordDeepPaths:
         graph_provider = AsyncMock()
         graph_provider.get_record_by_id = AsyncMock(return_value=record)
         graph_provider.get_document = AsyncMock(side_effect=_get_doc)
-        graph_provider.check_record_access_with_details = AsyncMock(return_value=True)
+        InMemoryRecordAccess().readable("u1", "org-1", "rec-1").serve(graph_provider)
 
         config_service = AsyncMock()
 
@@ -1442,13 +1444,14 @@ class TestStreamRecordDeepPaths:
         """JWT org_id differs from record org_id -> 404; the record's org is never used."""
         req, record, gp, cs, conn_obj = self._setup(is_google=False)
         record.org_id = "org-2"
-        gp.check_record_access_with_details = AsyncMock(return_value={"id": "rec-1"})
+        access = InMemoryRecordAccess().readable("u1", "org-1", "rec-1")
+        access.serve(gp)
 
         from app.connectors.api.router import stream_record
         with pytest.raises(HTTPException) as exc:
             await stream_record(req, "rec-1", convertTo=None, version=None, graph_provider=gp, config_service=cs)
         assert exc.value.status_code == HttpStatusCode.NOT_FOUND.value
-        gp.check_record_access_with_details.assert_not_awaited()
+        assert access.asked_about == []
         org_lookups = [
             c for c in gp.get_document.await_args_list
             if CollectionNames.ORGS.value in c.args
@@ -1460,19 +1463,20 @@ class TestStreamRecordDeepPaths:
         """A record with no org_id cannot be confined to the caller's org -> 404."""
         req, record, gp, cs, conn_obj = self._setup(is_google=False)
         record.org_id = ""
-        gp.check_record_access_with_details = AsyncMock(return_value={"id": "rec-1"})
+        access = InMemoryRecordAccess().readable("u1", "org-1", "rec-1")
+        access.serve(gp)
 
         from app.connectors.api.router import stream_record
         with pytest.raises(HTTPException) as exc:
             await stream_record(req, "rec-1", convertTo=None, version=None, graph_provider=gp, config_service=cs)
         assert exc.value.status_code == HttpStatusCode.NOT_FOUND.value
-        gp.check_record_access_with_details.assert_not_awaited()
+        assert access.asked_about == []
 
     @pytest.mark.asyncio
     async def test_access_denied_raises_403(self):
         """User has no access to record -> 403."""
         req, record, gp, cs, conn_obj = self._setup()
-        gp.check_record_access_with_details = AsyncMock(return_value=False)
+        InMemoryRecordAccess().user("u1", "org-1").record("rec-1", "org-1").serve(gp)
 
         from app.connectors.api.router import stream_record
         with pytest.raises(HTTPException) as exc:
@@ -1552,12 +1556,13 @@ class TestStreamRecordDeepPaths:
 
     @pytest.mark.asyncio
     async def test_outer_generic_exception_raises_500(self):
-        """Top-level generic exception -> 500."""
+        """Top-level generic exception -> 500 (a failed access check is a 503: test_record_read_outage.py)."""
         req, record, gp, cs, conn_obj = self._setup()
-        gp.get_record_by_id = AsyncMock(side_effect=RuntimeError("db down"))
 
+        from app.connectors.api import router as router_mod
         from app.connectors.api.router import stream_record
-        with pytest.raises(HTTPException) as exc:
+        with patch.object(router_mod, "refuse_outside_connection", new=AsyncMock(side_effect=RuntimeError("boom"))), \
+                pytest.raises(HTTPException) as exc:
             await stream_record(req, "rec-1", convertTo=None, version=None, graph_provider=gp, config_service=cs)
         assert exc.value.status_code == HttpStatusCode.INTERNAL_SERVER_ERROR.value
 

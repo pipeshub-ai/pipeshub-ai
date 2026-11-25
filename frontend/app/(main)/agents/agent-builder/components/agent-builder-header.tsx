@@ -19,6 +19,8 @@ import {
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { PermissionLockIcon } from '@/config';
 import { useTranslation } from 'react-i18next';
+import type { AgentVersioning } from '../../types';
+import { AgentVersionStatus } from './agent-version-status';
 import { useUserDirectoryEntry } from '@/lib/hooks/use-user-directory-entry';
 import { userDisplayName } from '@/lib/utils/formatters';
 import { useIsBelowDesktop, useIsMobile } from '@/lib/hooks/use-is-mobile';
@@ -32,7 +34,22 @@ export function AgentBuilderHeader(props: {
   agentNameError?: string | null;
   agentNameInputRef?: React.RefObject<HTMLInputElement | null>;
   saving: boolean;
+  /** Creates a new agent (which publishes its version 1). */
   onSave: () => void;
+  /** Editing: keeps the edits a draft that chats do not run yet (OWD-14). */
+  onSaveDraft?: () => void;
+  /** Editing: asks to publish the edits as the next version. */
+  onPublish?: () => void;
+  onOpenVersions?: () => void;
+  /** The agent's published versions; absent for a new agent or when they could not be read. */
+  versioning?: AgentVersioning | null;
+  /** Edits chats do not run yet, saved to the draft or only in the editor. */
+  unpublished?: boolean;
+  /**
+   * Whether agents have versions here (ADR-OPS-08): only with the agent harness on for the org. Without them an edit
+   * is saved as the agent chats run, behind one "Save changes", as in a release without the harness.
+   */
+  versioned?: boolean;
   /** Called when the back chevron is clicked; parent handles dirty-check logic. */
   onGoBack?: () => void;
   /** True when there are unsaved changes; disables the save button when false (edit mode only). */
@@ -61,6 +78,8 @@ export function AgentBuilderHeader(props: {
   canDeleteAgent?: boolean;
   deletePermissionDenied?: boolean;
   onRequestDeleteAgent?: () => void;
+  /** Editing: opens "Export configuration" (C4.08), for anyone who can open the agent. */
+  onExport?: () => void;
   sharePermissionDenied?: boolean;
   /** MongoDB user ID from agent.createdBy — resolved via by-ids for display. */
   createdBy?: string | null;
@@ -80,6 +99,12 @@ export function AgentBuilderHeader(props: {
     agentNameInputRef,
     saving,
     onSave,
+    onSaveDraft,
+    onPublish,
+    onOpenVersions,
+    versioning = null,
+    unpublished = false,
+    versioned = true,
     onGoBack,
     isDirty = true,
     shareWithOrg,
@@ -98,6 +123,7 @@ export function AgentBuilderHeader(props: {
     canDeleteAgent = false,
     deletePermissionDenied = false,
     onRequestDeleteAgent,
+    onExport,
     createdBy = null,
     onShare,
     hideShareControls = false,
@@ -112,6 +138,7 @@ export function AgentBuilderHeader(props: {
 
   const showDeleteOption = Boolean(editing && canDeleteAgent && onRequestDeleteAgent);
   const showConvertOption = Boolean(!isServiceAccount && onEnableServiceAccount);
+  const showExportOption = Boolean(editing && onExport);
   const convertLabel = editing
     ? t('agentBuilder.agentMenuConvertToServiceAgent')
     : t('agentBuilder.agentMenuCreateAsServiceAgent');
@@ -120,13 +147,13 @@ export function AgentBuilderHeader(props: {
   const showShareInMenu = isMobile && !hideShareControls;
   const showConvertInMenu = isBelowDesktop && showConvertOption;
   const convertDisabled = saving || loading || serviceAccountPermissionDenied;
-  const showAgentMenu = showDeleteOption || showShareInMenu || showConvertInMenu;
+  const showAgentMenu = showDeleteOption || showExportOption || showShareInMenu || showConvertInMenu;
 
   return (
     <Flex
       align="center"
       justify="between"
-      gap={isMobile ? '3' : '4'}
+      gap="3"
       wrap="wrap"
       px="4"
       py="3"
@@ -158,8 +185,8 @@ export function AgentBuilderHeader(props: {
           >
             {t('agentBuilder.agentName')}
           </Text>
-          <Flex align="center" gap="3">
-            <Box style={{ minWidth: 0, flex: isMobile ? 1 : undefined }}>
+          <Flex align="center" gap="3" wrap="wrap">
+            <Box style={{ minWidth: 0, flexShrink: 0, maxWidth: '100%', flex: isMobile ? 1 : undefined }}>
               <TextField.Root
                 ref={agentNameInputRef}
                 value={agentName}
@@ -169,7 +196,7 @@ export function AgentBuilderHeader(props: {
                 size="2"
                 aria-invalid={agentNameError ? true : undefined}
                 color={agentNameError ? 'red' : undefined}
-                style={{ width: isMobile ? '100%' : 200 }}
+                style={{ width: isMobile ? '100%' : 200, maxWidth: '100%' }}
               >
                 <TextField.Slot side="left">
                   <MaterialIcon name="smart_toy" size={18} color="var(--olive-11)" />
@@ -182,7 +209,7 @@ export function AgentBuilderHeader(props: {
               ) : null}
               {creatorName ? (
                 <Flex align="center" gap="1" mt="1">
-                  <Text size="1" style={{ color: 'var(--olive-10)' }}>
+                  <Text size="1" style={{ color: 'var(--olive-11)' }}>
                     {t('agentBuilder.createdBy')}
                   </Text>
                   <Avatar
@@ -207,6 +234,9 @@ export function AgentBuilderHeader(props: {
                 </Flex>
               ) : null}
             </Box>
+            {versioned ? (
+              <AgentVersionStatus editing={editing} versioning={versioning} unpublished={unpublished} />
+            ) : null}
             {isServiceAccount ? (
               <Tooltip content={t('agentBuilder.serviceAgentBadgeTooltip')}>
                 <Badge
@@ -230,7 +260,7 @@ export function AgentBuilderHeader(props: {
           </Flex>
         </Box>
       </Flex>
-      <Flex align="center" gap="4" style={{ flexShrink: 0, marginLeft: 'auto' }}>
+      <Flex align="center" gap="3" wrap="wrap" style={{ flexShrink: 0, maxWidth: '100%', marginLeft: 'auto' }}>
         {showAgentMenu ? (
           <DropdownMenu.Root modal={false}>
             <DropdownMenu.Trigger>
@@ -247,6 +277,8 @@ export function AgentBuilderHeader(props: {
                   background: agentMenuTriggerHovered ? 'var(--olive-5)' : 'transparent',
                   borderRadius: 'var(--radius-1)',
                   padding: 2,
+                  minWidth: 32,
+                  minHeight: 32,
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
@@ -258,6 +290,19 @@ export function AgentBuilderHeader(props: {
               </button>
             </DropdownMenu.Trigger>
             <DropdownMenu.Content side="bottom" align="end" sideOffset={4} style={{ minWidth: 140 }}>
+              {showExportOption ? (
+                <DropdownMenu.Item
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onExport?.();
+                  }}
+                >
+                  <Flex align="center" gap="2">
+                    <MaterialIcon name="file_download" size={16} color="var(--slate-11)" />
+                    <Text size="2">{t('agentTransfer.export.menuItem')}</Text>
+                  </Flex>
+                </DropdownMenu.Item>
+              ) : null}
               {showConvertInMenu ? (
                 <DropdownMenu.Item
                   disabled={convertDisabled}
@@ -338,7 +383,9 @@ export function AgentBuilderHeader(props: {
                 : t('agentBuilder.shareWithOrgTooltip')
             }
           >
+            {/* A label around the words and the switch: the words name the switch, and a click on them toggles it. */}
             <Flex
+              asChild
               align="center"
               gap="2"
               px="2"
@@ -349,15 +396,17 @@ export function AgentBuilderHeader(props: {
                 background: 'var(--gray-2)',
               }}
             >
-              <MaterialIcon name="groups" size={18} color="var(--olive-11)" />
-              <Text size="2" style={{ color: 'var(--olive-12)' }}>
-                {t('agentBuilder.shareWithOrg')}
-              </Text>
-              <Switch
-                checked={shareWithOrg || isServiceAccount}
-                onCheckedChange={onShareWithOrgChange}
-                disabled={isFlowStructureLocked || loading || isServiceAccount || sharePermissionDenied}
-              />
+              <label>
+                <MaterialIcon name="groups" size={18} color="var(--olive-11)" />
+                <Text size="2" style={{ color: 'var(--olive-12)' }}>
+                  {t('agentBuilder.shareWithOrg')}
+                </Text>
+                <Switch
+                  checked={shareWithOrg || isServiceAccount}
+                  onCheckedChange={onShareWithOrgChange}
+                  disabled={isFlowStructureLocked || loading || isServiceAccount || sharePermissionDenied}
+                />
+              </label>
             </Flex>
           </Tooltip>
         ))}
@@ -402,43 +451,99 @@ export function AgentBuilderHeader(props: {
           </Tooltip>
         ) : null}
         {(() => {
-          const isSaveDisabled =
-            saving || loading || !canPersist || saveBlockedByDeprecatedTools || Boolean(saveBlockedReason) || (editing && !isDirty);
-          const saveLabel = saving
-            ? t('agentBuilder.saving')
-            : editing
-              ? t('agentBuilder.saveChanges')
-              : t('agentBuilder.createAgent');
-          const saveButton = (
-            <Button
-              size="2"
-              onClick={onSave}
-              disabled={isSaveDisabled}
-              aria-label={isMobile ? saveLabel : undefined}
-              style={isMobile ? touchTarget(true) : { minWidth: 132 }}
-            >
-              <Flex align="center" gap="2">
-                {saving ? (
-                  <MaterialIcon name="hourglass_empty" size={18} />
-                ) : (
-                  <MaterialIcon name="save" size={18} />
-                )}
-                {isMobile ? null : saveLabel}
-              </Flex>
-            </Button>
-          );
-          if (!saveBlockedByDeprecatedTools && !saveBlockedReason) return saveButton;
-          return (
-            <Tooltip content={saveBlockedByDeprecatedTools ? t('agentBuilder.removeDeprecatedTools') : saveBlockedReason}>
-              <span
-                style={{
-                  display: 'inline-flex',
-                  cursor: 'not-allowed',
-                }}
+          const blocked = saveBlockedByDeprecatedTools || Boolean(saveBlockedReason);
+          const blockedTooltip = saveBlockedByDeprecatedTools ? t('agentBuilder.removeDeprecatedTools') : saveBlockedReason;
+          const withBlockedTooltip = (button: React.ReactElement, key: string) =>
+            blocked ? (
+              <Tooltip key={key} content={blockedTooltip}>
+                <span style={{ display: 'inline-flex', cursor: 'not-allowed' }}>{button}</span>
+              </Tooltip>
+            ) : (
+              <React.Fragment key={key}>{button}</React.Fragment>
+            );
+
+          if (!editing) {
+            const createLabel = saving ? t('agentBuilder.saving') : t('agentBuilder.createAgent');
+            return withBlockedTooltip(
+              <Button
+                size="2"
+                onClick={onSave}
+                disabled={saving || loading || !canPersist || blocked}
+                aria-label={isMobile ? createLabel : undefined}
+                style={isMobile ? touchTarget(true) : { minWidth: 132 }}
               >
-                {saveButton}
-              </span>
-            </Tooltip>
+                <Flex align="center" gap="2">
+                  <MaterialIcon name={saving ? 'hourglass_empty' : 'save'} size={18} />
+                  {isMobile ? null : createLabel}
+                </Flex>
+              </Button>,
+              'create',
+            );
+          }
+
+          if (!versioned) {
+            const saveLabel = saving ? t('agentBuilder.saving') : t('agentBuilder.saveChanges');
+            return withBlockedTooltip(
+              <Button
+                size="2"
+                onClick={onSaveDraft}
+                disabled={saving || loading || !canPersist || blocked || !isDirty}
+                aria-label={isMobile ? saveLabel : undefined}
+                style={isMobile ? touchTarget(true) : { minWidth: 132 }}
+              >
+                <Flex align="center" gap="2">
+                  <MaterialIcon name={saving ? 'hourglass_empty' : 'save'} size={18} />
+                  {isMobile ? null : saveLabel}
+                </Flex>
+              </Button>,
+              'save',
+            );
+          }
+
+          const canPublish = isDirty || Boolean(versioning?.unpublishedChanges);
+          return (
+            <>
+              <Tooltip content={t('agentVersions.versionsTooltip')}>
+                <Button type="button" variant="outline" color="gray" size="2" onClick={onOpenVersions}>
+                  <Flex align="center" gap="2">
+                    <MaterialIcon name="history" size={18} />
+                    {t('agentVersions.versions')}
+                  </Flex>
+                </Button>
+              </Tooltip>
+              {withBlockedTooltip(
+                <Button
+                  type="button"
+                  variant="soft"
+                  size="2"
+                  onClick={onSaveDraft}
+                  disabled={saving || loading || !canPersist || blocked || !isDirty}
+                  title={t('agentVersions.saveDraftTooltip')}
+                >
+                  <Flex align="center" gap="2">
+                    <MaterialIcon name="save" size={18} />
+                    {t('agentVersions.saveDraft')}
+                  </Flex>
+                </Button>,
+                'draft',
+              )}
+              {withBlockedTooltip(
+                <Button
+                  type="button"
+                  size="2"
+                  onClick={onPublish}
+                  disabled={saving || loading || !canPersist || blocked || !canPublish}
+                  title={canPublish ? t('agentVersions.publishTooltip') : t('agentVersions.nothingToPublish')}
+                  style={{ minWidth: 112 }}
+                >
+                  <Flex align="center" gap="2">
+                    <MaterialIcon name={saving ? 'hourglass_empty' : 'publish'} size={18} />
+                    {saving ? t('agentBuilder.saving') : t('agentVersions.publish')}
+                  </Flex>
+                </Button>,
+                'publish',
+              )}
+            </>
           );
         })()}
       </Flex>

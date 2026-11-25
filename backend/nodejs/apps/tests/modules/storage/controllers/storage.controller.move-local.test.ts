@@ -139,7 +139,10 @@ describe('StorageController.moveTreeLocal on disk', () => {
 
     const sets = writtenPaths(bulk)
     expect(sets).to.have.keys(a._id)
-    expect(logger.warn.calledOnce).to.be.true
+    // A count, never the old or the new folder path.
+    expect(logger.warn.args).to.deep.equal([
+      ['moveTree: documents not found under the new path were left as they were', { missing: 1 }],
+    ])
   })
 
   it('keeps names with spaces, colons and unicode intact in the file URL', async () => {

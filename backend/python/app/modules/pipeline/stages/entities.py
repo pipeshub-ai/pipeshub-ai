@@ -92,6 +92,10 @@ class EntitiesStage:
     headline: ClassVar[HeadlineField | None] = None
     budget_s: ClassVar[float] = 900.0
 
+    # A redrive runs it even where `applies` is false, so an install that turned extraction off still clears the
+    # entities it wrote; the other stages end SKIPPED there.
+    runs_when_not_applicable: ClassVar[bool] = True
+
     def applies(self, view: RecordView, policy: PipelinePolicy) -> bool:
         # Images carry no text the recognizers read. Whether extraction is on is read when the
         # job runs: an install that turns it off must still clear the entities it wrote.

@@ -35,6 +35,7 @@ from app.modules.parsers.excel.excel_parser import ExcelParser
 from app.modules.parsers.excel.workbook_model import SheetModel, WorkbookModel
 from app.services.parsing.interface import ParseError
 from app.utils import user_errors
+from tests.support.cpu_budget import thread_cpu
 from tests.support.excel_workbooks import empty_cells, load, workbook_zip
 
 MB = 1024 * 1024
@@ -250,7 +251,7 @@ async def test_the_whole_llm_path_makes_identical_blocks() -> None:
     for parser in (_openpyxl_parser(data), load(data)):
         _stub_llm(parser)
         parser.get_table_summary = AsyncMock(return_value="summary")
-        parser.get_rows_text = AsyncMock(side_effect=lambda rows, _summary: [f"row {r[0]['row']}: " + ", ".join(str(c['value']) for c in r) for r in rows])
+        parser.get_rows_text = AsyncMock(side_effect=lambda rows, _summary, **_kw: [f"row {r[0]['row']}: " + ", ".join(str(c['value']) for c in r) for r in rows])
         parser.llm = MagicMock()
         with patch.object(module, "get_llm_gateway", MagicMock()), patch.object(parser, "process_sheet_with_summaries", wraps=parser.process_sheet_with_summaries):
             out.append(_shape(await parser.get_blocks_from_workbook(MagicMock())))
@@ -505,7 +506,7 @@ async def test_the_indexing_blocks_stop_at_the_output_budget() -> None:
     parser = _loaded_with_budget(_small_xlsx_many_rows(300), 2_000)
     _stub_llm(parser)
     parser.get_table_summary = AsyncMock(return_value="summary")
-    parser.get_rows_text = AsyncMock(side_effect=lambda rows, _s: ["x" * 500 for _ in rows])  # LLM output is charged
+    parser.get_rows_text = AsyncMock(side_effect=lambda rows, _s, **_kw: ["x" * 500 for _ in rows])  # LLM output is charged
     with pytest.raises(ParseError) as raised:
         await parser.get_blocks_from_workbook(MagicMock())
     assert raised.value.message == user_errors.EXCEL_TOO_LARGE
@@ -598,7 +599,7 @@ async def test_the_indexing_tables_charge_their_cell_dicts_and_give_them_back_pe
         p = _loaded_with_budget(out.getvalue(), budget)
         _stub_llm(p)
         p.get_table_summary = AsyncMock(return_value="s")
-        p.get_rows_text = AsyncMock(side_effect=lambda rows, _s: ["r" for _ in rows])
+        p.get_rows_text = AsyncMock(side_effect=lambda rows, _s, **_kw: ["r" for _ in rows])
         return p
 
     with pytest.raises(ParseError):  # not even one sheet's cells fit
@@ -616,8 +617,66 @@ def test_a_stray_cell_far_from_the_data_cannot_make_the_parent_build_millions_of
     wb.active.cell(60_000, 300, 7)  # 18 M positions below the data
     out = io.BytesIO()
     wb.save(out)
-    start = time.monotonic()
-    with pytest.raises(ParseError) as raised:
-        load(out.getvalue())._build_basic_block_container()
+    parser = load(out.getvalue())
+    with thread_cpu() as cpu, pytest.raises(ParseError) as raised:
+        parser._build_basic_block_container()
     assert raised.value.message == user_errors.EXCEL_TOO_LARGE
-    assert time.monotonic() - start < 15  # refused after ~70 rows of 300 cells, not after 18 M cells
+    assert cpu.seconds < 15  # refused after ~70 rows of 300 cells, not after 18 M cells (minutes)
+
+
+def test_sec_c_19_a_zip_declaring_too_many_entries_is_refused_before_its_directory_is_parsed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import io
+    import zipfile
+
+    from app.modules.parsers.excel import workbook_model
+
+    monkeypatch.setattr(workbook_model, "MAX_ZIP_ENTRIES", 50)
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w") as archive:
+        for index in range(51):
+            archive.writestr(f"x/{index}", b"")
+    parsed: list[bytes] = []
+    monkeypatch.setattr(workbook_model.zipfile, "ZipFile", lambda data, *a, **k: parsed.append(b"") or zipfile.ZipFile(data))
+    with pytest.raises(workbook_model.WorkbookRefused):
+        workbook_model._precheck(out.getvalue(), 10**9)
+    assert parsed == []
+
+
+@pytest.mark.asyncio
+async def test_the_batches_of_one_table_share_one_retry_budget(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A table's retries are bounded per table: every batch of it draws on the same budget, and the next
+    table gets a new one."""
+    # 2 tables of 120 rows in batches of 50: pinned, whatever the environment sets
+    monkeypatch.setenv("INDEXING_TABLE_ROW_BATCH_SIZE", "50")
+    monkeypatch.setenv("MAX_TABLE_ROWS_FOR_LLM", "1000")
+    wb = openpyxl.Workbook()
+    for sheet_index, title in enumerate(("First", "Second")):
+        ws = wb.active if sheet_index == 0 else wb.create_sheet()
+        ws.title = title
+        ws.append(["Name", "Amount"])
+        for i in range(120):
+            ws.append([f"{title}-{i}", i])
+    buf = io.BytesIO()
+    wb.save(buf)
+    parser = load(buf.getvalue())
+    _stub_llm(parser)
+    parser.get_table_summary = AsyncMock(return_value="summary")
+    budgets: list[tuple[int, object]] = []
+
+    async def rows_text(rows, _summary, *, retry_budget=None):
+        budgets.append((len(rows), retry_budget))
+        return ["text" for _ in rows]
+
+    parser.get_rows_text = rows_text
+    parser.llm = MagicMock()
+    with patch.object(module, "get_llm_gateway", MagicMock()):
+        await parser.get_blocks_from_workbook(MagicMock())
+
+    assert len(budgets) == 6, budgets  # 3 batches of 50 rows or fewer per 120-row table
+    assert all(b is not None for _, b in budgets)
+    distinct = list(dict.fromkeys(id(b) for _, b in budgets))
+    assert len(distinct) == 2
+    assert [id(b) for _, b in budgets[:3]] == [distinct[0]] * 3
+    assert [id(b) for _, b in budgets[3:]] == [distinct[1]] * 3

@@ -168,9 +168,8 @@ out-of-memory risk, so prefer that.
 
 ## Datastore memory settings on small machines
 
-The Compose deployment reads these optional variables from `.env`. Each default
-is the value used before the variable existed, so leaving them unset changes
-nothing.
+The Compose deployment reads these optional variables from `.env`. Leaving one
+unset keeps the default below.
 
 | Variable | Default | Controls |
 |---|---|---|
@@ -179,13 +178,15 @@ nothing.
 | `QDRANT_MEMORY_LIMIT` / `QDRANT_MEMORY_RESERVATION` | `6G` / `2G` (`4G` / `2G` in `docker-compose.build.neo4j.yml`) | Qdrant container limit and reservation |
 | `NEO4J_HEAP_INITIAL` / `NEO4J_HEAP_MAX` | `1G` / `2G` | Neo4j JVM heap at start and at most |
 | `NEO4J_PAGECACHE` | `1G` | Neo4j page cache |
-| `NEO4J_MEMORY_LIMIT` / `NEO4J_MEMORY_RESERVATION` | `3G` / `2G` | Neo4j container limit and reservation |
+| `NEO4J_MEMORY_LIMIT` / `NEO4J_MEMORY_RESERVATION` | `4G` / `2G` | Neo4j container limit and reservation |
 
 - Neo4j also uses memory outside the heap and page cache (thread stacks,
-  metaspace, network buffers). The defaults put heap maximum + page cache equal
-  to the 3G limit; that holds because the heap rarely grows to its maximum. When
-  you change these values, keep heap maximum + page cache clearly below the
-  container limit, or the container can be killed under load.
+  metaspace, network buffers). The default limit leaves 1G for it above heap
+  maximum + page cache. Knowledge Hub listings over a large graph do grow the
+  heap to its maximum: with the limit equal to heap maximum + page cache (3G),
+  the kernel killed Neo4j within the first minute of concurrent listings over
+  400,000 records. When you change these values, keep heap maximum + page cache
+  at least 1G below the container limit.
 - A reservation is not a cap. The container limit is what protects the rest of
   the machine, so lower the limit and the heap together.
 - The Neo4j page cache holds the graph store. If the store outgrows it, graph

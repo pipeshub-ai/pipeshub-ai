@@ -20,7 +20,12 @@ import type {
   OrgRepository,
 } from './types';
 
-const dto = (row: unknown): OrgDto => toPlain<OrgDto>(row);
+// The admin-role lease is a lock, not organisation data.
+const dto = (row: unknown): OrgDto => {
+  const org = toPlain<OrgDto & { adminRoleLease?: unknown }>(row);
+  delete org.adminRoleLease;
+  return org;
+};
 const logoDto = (row: unknown): OrgLogoDto => toPlain<OrgLogoDto>(row);
 
 export class MongoOrgRepository implements OrgRepository {
@@ -71,7 +76,7 @@ export class MongoOrgRepository implements OrgRepository {
     orgId: string,
   ): Promise<Pick<OrgDto, 'accountType'> | null> {
     const row = await Org.findOne({ _id: orgId, isDeleted: false })
-      .select('accountType')
+      .select('-_id accountType')
       .lean()
       .exec();
     return row ? toPlain<Pick<OrgDto, 'accountType'>>(row) : null;
@@ -81,7 +86,7 @@ export class MongoOrgRepository implements OrgRepository {
     orgId: string,
   ): Promise<Pick<OrgDto, 'registeredName' | 'shortName'> | null> {
     const row = await Org.findOne({ _id: orgId, isDeleted: false })
-      .select('registeredName shortName')
+      .select('-_id registeredName shortName')
       .lean()
       .exec();
     return row
@@ -93,7 +98,7 @@ export class MongoOrgRepository implements OrgRepository {
     orgId: string,
   ): Promise<Pick<OrgDto, 'onBoardingStatus'> | null> {
     const row = await Org.findOne({ _id: orgId, isDeleted: false })
-      .select('onBoardingStatus')
+      .select('-_id onBoardingStatus')
       .lean();
     return row ? toPlain<Pick<OrgDto, 'onBoardingStatus'>>(row) : null;
   }

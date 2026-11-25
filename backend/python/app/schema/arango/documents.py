@@ -205,6 +205,8 @@ app_schema = {
             # app.connectors.core.sync.sync_runner: when the last run started and ended, and how.
             "lastSyncStartedAtTimestamp": {"type": ["number", "null"]},
             "lastSyncFinishedAtTimestamp": {"type": ["number", "null"]},
+            # app.services.messaging.kafka.handlers.entity: rewritten while a user-link pass runs, left to go stale after it.
+            "userLinkStartedAtTimestamp": {"type": ["number", "null"]},
             "lastSyncOutcome": {"type": ["string", "null"]},
             "lastSyncSummary": {"type": ["string", "null"]},
             # What the connector's admin has to do (JSON text, see ActionItem); null when nothing.
@@ -229,6 +231,7 @@ app_schema = {
             "scopeProjectionOpenWrites": {"type": ["string", "null"]},  # {token: {deadline, roots}} of the writes counted as opened (see open_write)
             "scopeSweepState": {"type": ["string", "null"]},  # {failures, error, retry time} of the sweep of this connector (see scope_sweep)
             "scopeRewriteLease": {"type": ["string", "null"]},  # {holder, deadline} of the rewriter that holds the connector (see permissions.rewrite_lease)
+            "aclFilterMode": {"type": ["string", "null"]},  # the admin's permission filter mode for this connector (see permissions.currency.MODE_KEY)
             # app.services.vector_db.scope_backfill: the checkpoint of the permission scope-field back-fill
             "scopeBackfillState": {"type": ["string", "null"]},
             "scopeBackfillAfter": {"type": ["string", "null"]},
@@ -314,6 +317,11 @@ app_schema = {
     "message": "Document does not match the app schema.",
 }
 
+# Raised by one with every change to ``app_schema``; applied as ``RECORD_SCHEMA_GENERATION`` is (see below).
+# tests/unit/schema/test_record_schema_generation.py pins a hash of the rule to this number.
+APP_SCHEMA_GENERATION = 1
+app_schema["rule"]["$comment"] = f"pipeshub-app-schema gen={APP_SCHEMA_GENERATION}"
+
 # Record schema for ArangoDB
 record_schema = {
     "rule": {
@@ -387,6 +395,12 @@ record_schema = {
             "failedAt": {"type": ["number", "null"]},
             "indexingAttempts": {"type": ["integer", "null"], "minimum": 0},
             "pageCount": {"type": ["integer", "null"], "minimum": 1},
+            # The hex md5 of the bytes that were last fully indexed (internal; never returned by the API). Written only
+            # when an index completes from those bytes, so unlike md5Checksum a connector sync never overwrites it.
+            "indexedMd5": {"type": ["string", "null"]},
+            # The taxonomy entities a record linked to, kept (internal; never returned by the API) only while taking its
+            # index back is unfinished, so a retry can still clean up the entity points that nothing else reaches.
+            "pendingTaxonomyRefs": {"type": ["array", "null"], "items": {"type": "object"}},
             # A record whose source rate-limited its content fetch: when it may
             # be sent again, and when this run of waits began (see
             # app/modules/indexing/rate_limit_deferral.py).
@@ -398,6 +412,13 @@ record_schema = {
             # When (ms) a record was first handed back for a model provider's rate limit, set once and never moved:
             # ``RATE_LIMIT_MAX_WAIT_S`` of wall time since then ends the record. Cleared when the record ends.
             "rateLimitedSinceMs": {"type": ["number", "null"]},
+            # A Force reindex requested for the record and not yet served by a refresh run: its id, and when it was made
+            # (ms). Read by every record event and the intent sweep (app/modules/indexing/refresh_intent.py).
+            "refreshIntentId": {"type": ["string", "null"]},
+            "refreshIntentAtMs": {"type": ["number", "null"]},
+            # The id of the newest Force reindex request whose refresh ran on the record, written in the statement that clears the request: every
+            # replica sees that it was served (identity, never wall time: the hosts' clocks differ).
+            "refreshDoneId": {"type": ["string", "null"]},
             "parsingStatus": {"type": "string", "enum": PROGRESS_STATUS_VALUES},
             "indexingStatus": {
                 "type": "string",
@@ -431,6 +452,8 @@ record_schema = {
             "entityExtractorVersion": {"type": ["string", "null"]},
             "summaryDocumentId": {"type": ["string", "null"]},
             "virtualRecordId": {"type": ["string", "null"], "default": None},
+            # Names the life of the vertex: minted at insert, changed only by a restore from the trash.
+            "incarnationId": {"type": ["string", "null"]},
             "previewRenderable": {"type": ["boolean", "null"], "default": True},
             "isShared": {"type": ["boolean", "null"], "default": False},
             "isDependentNode": {"type": "boolean", "default": False},
@@ -438,6 +461,9 @@ record_schema = {
             "hideWeburl": {"type": "boolean", "default": False},
             "isInternal": {"type": "boolean", "default": False},
             "isPlaceholder": {"type": "boolean", "default": False},
+            # Fields an edition read of the item at its source (Record.edition_fields), by its own keys; absent when
+            # it read none.
+            "editionFields": {"type": ["object", "null"]},
             # Set by an API push (see Record.push_origin); absent on every other record.
             "pushOrigin": {"type": "boolean"},
             # Permission traversal input, read per visited node. Per node and
@@ -452,12 +478,26 @@ record_schema = {
             "md5Checksum": {"type": ["string", "null"]},
             "sizeInBytes": {"type": ["number", "null"]},
             "storageDocumentId": {"type": ["string", "null"]},
+            # Who uploaded a chat attachment (app.services.chat_attachments.uploads).
+            "uploaderUserId": {"type": ["string", "null"]},
+            "uploaderKind": {"type": ["string", "null"], "enum": ["person", "service_account", None]},
+            "uploaderAgentKey": {"type": ["string", "null"]},
+            # A chat attachment's conversation and whether a message has carried it yet (CLEANUP-G5).
+            "uploadConversationId": {"type": ["string", "null"]},
+            "awaitingSend": {"type": ["boolean", "null"]},
             # SQL record fields (tables/views)
             "definition": {"type": ["string", "null"]},
             "sourceTables": {"type": ["array", "null"], "items": {"type": "string"}},
             "rowCount": {"type": ["number", "null"]},
             # sha256(source bytes)[:16] of the revision being processed; stage status writes CAS on it.
             "contentRev": {"type": ["string", "null"]},
+            # The parser that built the indexed copy ("inproc:txt@1"), the lastIndexTimestamp and virtualRecordId it was written
+            # with (it describes the copy only while both still match) and where the label came from (parsed, adopted, twin).
+            # Accepted by this release; written only with RECORD_PARSER_IDENTITY_WRITE, which is off by default.
+            "indexedParser": {"type": ["string", "null"]},
+            "indexedParserAt": {"type": ["number", "null"]},
+            "indexedParserVrid": {"type": ["string", "null"]},
+            "indexedParserSource": {"type": ["string", "null"]},
             # Typed property values projected for filtering (record properties); written by indexing.
             "recordProps": {"type": ["object", "null"]},
             # 16-hex hash of the property names projected, the schema generation that
@@ -474,6 +514,9 @@ record_schema = {
             "parseNowAt": {"type": ["number", "null"]},
             # The in-flight embedding marker (see app/modules/indexing/embed_resume.py): flat scalars, so
             # a partial write leaves the others alone on every graph provider. Null once the record is indexed.
+            # The virtual record the record is indexing a replacement copy into; it keeps serving `virtualRecordId` until the
+            # copy commits, and the field is removed (never null) by the commit and by every other end of the run.
+            "pendingVirtualRecordId": {"type": ["string", "null"]},
             "embedVrid": {"type": ["string", "null"]},
             "embedRev": {"type": ["string", "null"]},
             "embedKey": {"type": ["string", "null"]},
@@ -500,6 +543,12 @@ record_schema = {
     "level": "strict",
     "message": "Document does not match the record schema.",
 }
+
+# Raised by one with every change to ``record_schema``. A process applies its own schema only while the live
+# collection's generation is lower, so an older image cannot narrow a newer one without being re-widened.
+# tests/unit/schema/test_record_schema_generation.py pins a hash of the rule to this number.
+RECORD_SCHEMA_GENERATION = 9
+record_schema["rule"]["$comment"] = f"pipeshub-record-schema gen={RECORD_SCHEMA_GENERATION}"
 
 
 # Pipeline stage state: one document per (virtual record, content revision, stage).
@@ -623,6 +672,8 @@ artifact_record_schema = {
             # rejects list-of-map properties; "array" stays valid for documents
             # written before that.
             "versions": {"type": ["array", "string", "null"]},
+            # Per-version provenance (P3.5), JSON-encoded for the same reason.
+            "provenance": {"type": ["string", "null"]},
         },
         "required": ["name", "orgId"],
         "additionalProperties": False,
@@ -1094,6 +1145,7 @@ record_group_schema = {
             },
             "isInternal": {"type": ["boolean", "null"], "default": False},
             "hideChildren": {"type": ["boolean", "null"], "default": False},
+            "accessOnly": {"type": ["boolean", "null"], "default": False},
             # Permission traversal input, as on records: per node, and
             # RESTRICTED never cascades to children.
             "accessRule": {
@@ -1362,6 +1414,20 @@ agent_schema = {
                 "type": ["string", "null"],
                 "enum": ["none", "low", "medium", "high", "max", None],
             },
+            # An engine agent's narrowing as JSON text (AG1: Neo4j holds no maps, Arango's PATCH
+            # merges objects); absent or null: the agent runs on the loop.
+            "engineProfile": {"type": ["string", "null"], "maxLength": 16384},
+            # The org cloud account (`cloud/<id>`) the agent's engine runs use; never a person's key.
+            "modelAccountId": {"type": ["string", "null"], "maxLength": 300},
+            # The team whose layer narrows the agent's runs and whose admins manage it (CPD-9).
+            "ownerTeam": {"type": ["string", "null"], "maxLength": 128},
+            # The model each sub-agent role runs on as JSON text (MA1; text for the reasons engineProfile is);
+            # absent or null: every sub-agent runs on its parent's model.
+            "roleModels": {"type": ["string", "null"], "maxLength": 65536},
+            # The agent's own run gates as JSON text (WP-31 D); absent or null: none.
+            "gates": {"type": ["string", "null"], "maxLength": 65536},
+            # The agent's environment for its engine runs as JSON text (C20.18, WP-100); absent or null: none.
+            "environment": {"type": ["string", "null"], "maxLength": 262144},
             # API toolset operations the agent may call: "<instanceId>:<toolName>".
             "apiToolsetTools": {
                 "type": "array",
@@ -1389,6 +1455,36 @@ agent_schema = {
     },
     "level": "strict",
     "message": "Document does not match the agent schema.",
+}
+
+# Agent Versions Node Schema (OWD-14): one immutable document per published
+# version of an agent, created once (ensure_nodes) and never updated. The
+# definition is canonical JSON text: Neo4j properties hold no nested maps.
+agent_versions_schema = {
+    "rule": {
+        "type": "object",
+        "properties": {
+            "_key": {"type": "string"},  # "<agentKey>-v<version>"
+            "orgId": {"type": "string", "minLength": 1},
+            "agentKey": {"type": "string", "minLength": 1},
+            "version": {"type": "integer", "minimum": 1},
+            "definition": {"type": "string"},
+            "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+            "source": {"type": "string", "enum": ["publish", "rollback", "migration"]},
+            "rolledBackFrom": {"type": ["integer", "null"], "minimum": 1},
+            "note": {"type": ["string", "null"], "maxLength": 500},
+            "publishedBy": {"type": ["string", "null"]},
+            "publishedAtTimestamp": {"type": "number"},
+            # The publisher's nonce: of two publishers racing for one number, the one whose nonce was stored won.
+            "publishId": {"type": "string", "minLength": 1},
+        },
+        "required": [
+            "orgId", "agentKey", "version", "definition", "digest", "source", "publishedAtTimestamp", "publishId",
+        ],
+        "additionalProperties": False,
+    },
+    "level": "strict",
+    "message": "Document does not match the agent versions schema.",
 }
 
 team_schema = {
@@ -1838,7 +1934,22 @@ agent_skills_schema = {
             "replacedBy": {"type": ["string", "null"]},
             "packName": {"type": ["string", "null"]},
             "packVersion": {"type": ["string", "null"]},
-            "createdBy": {"type": "string"},
+            # A /command (SLASH1): flat, the arguments as JSON text (Neo4j holds no maps).
+            "invocationUser": {"type": "boolean"},
+            "invocationModel": {"type": "boolean"},
+            "commandArguments": {"type": ["string", "null"]},
+            # Sharing (SLASH1 S4): absent is personal; `teamId` names the team of a team skill.
+            "scope": {"type": "string", "enum": ["personal", "team", "org"]},
+            "teamId": {"type": ["string", "null"]},
+            # The author was erased and the skill passed to the org (`createdBy` is then null).
+            "authorFormer": {"type": "boolean"},
+            # The conversations whose runs wrote its content (FOLLOWUPS1-1): erasing one erases the skill.
+            "sourceSessionIds": {"type": "array", "items": {"type": "string"}},
+            # UI-B4: the name people see (its `name` stays the id agents, commands and history use), and the note
+            # its author gave the current version (a version's note moves to its snapshot's `summary`).
+            "displayName": {"type": ["string", "null"]},
+            "changeNote": {"type": ["string", "null"]},
+            "createdBy": {"type": ["string", "null"]},
             "updatedBy": {"type": ["string", "null"]},
             "createdAtTimestamp": {"type": "number"},
             "updatedAtTimestamp": {"type": "number"},
@@ -1922,6 +2033,14 @@ agent_skill_candidates_schema = {
             "tags": {"type": "array", "items": {"type": "string"}, "default": []},
             "status": {"type": "string"},
             "sourceTrajectorySummary": {"type": ["string", "null"]},
+            # The conversation the candidate was learned from, so its erasure takes the candidate (CLEANUP-G7).
+            "sessionId": {"type": "string"},
+            # The learning run's label (FOLLOWUPS1-1), as JSON text: approval carries it onto the skill.
+            "label": {"type": "string"},
+            # UI-B4: the agent whose run learned it (absent: the assistant), that run, and the person it ran for.
+            "agentKey": {"type": "string"},
+            "runId": {"type": "string"},
+            "proposedBy": {"type": "string"},
             "createdAtTimestamp": {"type": "number"},
         },
         "required": ["orgId", "candidateId", "name", "description", "body", "createdAtTimestamp"],

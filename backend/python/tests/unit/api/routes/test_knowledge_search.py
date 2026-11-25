@@ -411,7 +411,9 @@ async def test_the_neighbors_answer_matches_the_published_schema_and_dates_a_rec
     assert {k: v for k, v in preview.items() if k in dates} == dates
 
 
-async def _search_answer(hits: list, *, named: bool = False, **body) -> tuple[dict, AsyncMock]:
+async def _search_answer(
+    hits: list, *, named: bool = False, wider: list | None = None, matching: set[str] | None = None, **body,
+) -> tuple[dict, AsyncMock]:
     """What the route answers for ``hits`` (as the access check kept them), with named-entity extraction ``named``, and the search it ran.
 
     The route's own state and access context are built for real, so whatever the route leaves out of them (a turn's
@@ -420,8 +422,14 @@ async def _search_answer(hits: list, *, named: bool = False, **body) -> tuple[di
 
     ed = "app.agents.actions.knowledge_graph.ops.entity_discovery"
     ep = "app.modules.retrieval.entity_permissions"
-    search = AsyncMock(return_value=hits)
-    with patch("app.api.routes.chatbot.load_entity_vector_store", AsyncMock(return_value=MagicMock())), \
+    # ``wider``: what a search of every type finds when a type filter matched no name. A name
+    # matches the query when it is in ``matching`` (every name does when that is None).
+    search = AsyncMock(side_effect=[hits, wider or []])
+    store = MagicMock()
+    store.dense_similarities = AsyncMock(side_effect=lambda query, names: [
+        0.9 if matching is None or n in matching else 0.2 for n in names
+    ])
+    with patch("app.api.routes.chatbot.load_entity_vector_store", AsyncMock(return_value=store)), \
          patch(f"{ep}._load_access_context", AsyncMock(return_value=_context())), \
          patch(f"{ep}._row_scopes", AsyncMock(return_value=(SelectionScope(),))), \
          patch(f"{ed}.search_entities_for_user", search), \
@@ -431,7 +439,7 @@ async def _search_answer(hits: list, *, named: bool = False, **body) -> tuple[di
 
 
 async def test_the_search_answer_is_exactly_what_the_published_schema_documents() -> None:
-    from app.modules.retrieval.entity_permissions import EntityHit
+    from app.modules.retrieval.entity_permissions import EntityHit, EntitySearchHits
 
     row = {"_key": RID, "recordName": "Doc", "recordType": "FILE", "connectorId": "c1"}
     found, _ = await _search_answer([
@@ -440,12 +448,24 @@ async def test_the_search_answer_is_exactly_what_the_published_schema_documents(
         EntityHit(RID, "record", "Acme plan", 0.7, [row], False, indexing_status="QUEUED", indexed=False),
     ])
     empty, _ = await _search_answer([])
-    for payload in (found, empty):
+    cut_short, _ = await _search_answer(EntitySearchHits([EntityHit("o1", "organization", "Acme", 0.8, [row], False)],
+                                                         incomplete=True))
+    # A type filter (and a word that is no type) that matches no name: matches of other types are listed apart.
+    other_types, _ = await _search_answer(
+        [EntityHit("g1", "record_group", "Sales", 0.5, [], False)],
+        wider=[EntityHit(RID, "record", "Acme plan", 0.7, [row], False)], matching={"Acme plan"},
+        entityTypes=["record_group", "project"],
+    )
+    for payload in (found, empty, cut_short, other_types):
         _validate("EntitySearchResponse", payload)
-    schema = openapi_spec()["components"]["schemas"]["EntitySearchResponse"]
-    item = schema["properties"]["results"]["items"]["properties"]
+    schemas = openapi_spec()["components"]["schemas"]
+    schema = schemas["EntitySearchResponse"]
+    item = schemas["EntitySearchResult"]["properties"]
     # every field the route writes is documented, and every documented field is one the route writes
-    assert set(found) | set(empty) == set(schema["properties"])
+    assert set(found) | set(empty) | set(cut_short) | set(other_types) == set(schema["properties"])
+    assert cut_short["incomplete"] is True and "incomplete" not in found
+    assert [m["entityId"] for m in other_types["otherTypeMatches"]] == [RID]
+    assert other_types["ignoredEntityTypes"] == ["project"]
     assert {k for r in found["results"] for k in r} == set(item)
     # the route never limits the search to part of the caller's sources, so it never says it did
     assert "scopeNote" not in empty
@@ -456,7 +476,7 @@ async def test_the_search_answer_is_exactly_what_the_published_schema_documents(
 @pytest.mark.parametrize("types", [None, []])
 async def test_no_entity_types_or_an_empty_list_searches_every_type(types) -> None:
     _, search = await _search_answer([], entityTypes=types)
-    assert search.await_args.kwargs["entity_types"] is None
+    assert search.await_args_list[0].kwargs["entity_types"] is None
 
 
 async def test_named_entity_alone_is_a_400_while_extraction_is_off_and_searched_while_it_is_on() -> None:
@@ -464,7 +484,7 @@ async def test_named_entity_alone_is_a_400_while_extraction_is_off_and_searched_
         await _search_answer([], entityTypes=["named_entity"])
     assert err.value.status_code == 400 and "not enabled" in err.value.detail
     _, search = await _search_answer([], named=True, entityTypes=["named_entity"])
-    assert search.await_args.kwargs["entity_types"] == ["named_entity"]
+    assert search.await_args_list[0].kwargs["entity_types"] == ["named_entity"]
 
 
 @pytest.mark.parametrize("failing", ["get_record_taxonomy_links", "get_named_entities_for_record"])
@@ -576,23 +596,20 @@ async def test_grep_drops_apps_the_caller_cannot_reach_and_searches_nothing_if_n
 
 # ---- one bounded request ------------------------------------------------------
 async def test_grep_with_a_catastrophic_regex_returns_within_the_budget_and_says_it_is_incomplete() -> None:
-    """End to end with the real line matcher. Only a loose backstop on the wall clock (5 times the budget); what makes it stop in time and
-    keeps the event loop free is asserted structurally by the three tests after it."""
-    import time
-
+    """End to end with the real line matcher: the answer says the time limit cut it. What makes it stop in time and
+    keeps the event loop free is asserted structurally by the three tests after it; without the deadline this
+    pattern does not finish before the test's timeout."""
     line = ",".join(f"v{j}" for j in range(60))
     retrieval = _retrieval()
     retrieval.blob_store.get_record_from_storage = AsyncMock(return_value={"block_containers": {"blocks": [
         {"index": 0, "data": "\n".join([line] * 400)},
     ]}})
-    start = time.monotonic()
     with patch.object(ks, "run_pattern_match_with_llm_grep", _fake_grep), \
          patch.object(ks, "check_pattern_match_eligible", AsyncMock(return_value=True)), \
          patch.object(ks, "resolve_frontend_url", AsyncMock(return_value=None)):
         response = await ks.grep(
             _request(), ks.GrepQuery(pattern=r"(?:.*?,){40}x|v0_0", regex=True, timeBudgetMs=1000), retrieval, _graph(True),
         )
-    assert time.monotonic() - start < 5.0
     out = json.loads(response.body)
     assert out["coverage"]["complete"] is False and "time limit" in out["coverage"]["note"]
 

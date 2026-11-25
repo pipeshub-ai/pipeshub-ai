@@ -8,6 +8,13 @@ import { KbListView } from '../components/kb-list-view';
 import type { KnowledgeHubNode } from '../types';
 import { hubNode, installBrowserShims, openRowMenu, renderInTheme } from './kb-page-harness';
 
+// These tests are about other behaviour; group permissions grant everything. Mocked at the
+// collection hook because @/config imports these views itself, so a partial @/config mock misses them.
+vi.mock('../hooks/use-collection-group-permissions', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../hooks/use-collection-group-permissions')>()),
+  useCollectionGroupPermissions: () => ({ canEdit: true, canDelete: true, canManageSync: true }),
+}));
+
 vi.mock('@/lib/hooks/use-is-mobile', () => ({ useIsMobile: () => false, useIsBelowDesktop: () => false }));
 vi.mock('@/lib/hooks/use-can-hover', () => ({ useCanHover: () => true }));
 

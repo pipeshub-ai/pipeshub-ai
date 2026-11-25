@@ -9,7 +9,21 @@ import type {
   ToolsetReference,
 } from './types';
 import type { WebSearchProviderType } from '../../workspace/web-search/types';
+import { isEngineProfile } from './agent-account';
+import { roleModelsPayload } from './role-models';
+import { agentGatesPayload } from '../agent-gates';
+import { agentEnvironmentPayload } from '../agent-environment';
 import { changedAttachments, isApiToolsetNode } from './api-toolset-attachments';
+
+/**
+ * The agent's engine narrowing as edited (or as loaded). An edited null on an
+ * engine agent removes its engine; a loop agent's payload stays as it was.
+ */
+function engineProfilePayload(edited: unknown, stored: unknown): Pick<AgentFormPayload, 'engineProfile'> {
+  if (isEngineProfile(edited)) return { engineProfile: edited };
+  if (!isEngineProfile(stored)) return {};
+  return edited === null ? { engineProfile: null } : { engineProfile: stored };
+}
 
 interface ToolsetDataInternal {
   name: string;
@@ -397,6 +411,13 @@ export function extractAgentConfigFromFlow(
     sendUserContext: agentCoreNode
       ? (coreCfg.sendUserContext as boolean | undefined) !== false
       : currentAgent?.sendUserContext !== false,
+    ...engineProfilePayload(agentCoreNode ? coreCfg.engineProfile : undefined, currentAgent?.engineProfile),
+    ...roleModelsPayload(agentCoreNode ? coreCfg.roleModels : currentAgent?.roleModels, currentAgent?.roleModels),
+    ...agentGatesPayload(agentCoreNode ? coreCfg.gates : currentAgent?.gates, currentAgent?.gates),
+    ...agentEnvironmentPayload(
+      agentCoreNode ? coreCfg.environment : currentAgent?.environment,
+      currentAgent?.environment,
+    ),
     toolsets,
     knowledge,
     skills,

@@ -30,9 +30,10 @@ from app.utils.jwt import generate_jwt
 
 if TYPE_CHECKING:
     import logging
-    from collections.abc import Mapping
+    from collections.abc import AsyncIterator, Mapping
 
     from app.config.configuration_service import ConfigurationService
+    from app.utils.byte_range import ByteRange
 
 _REDIRECTS = frozenset({301, 302, 307, 308})
 _TIMEOUT = aiohttp.ClientTimeout(total=90)
@@ -68,6 +69,40 @@ def parse_upload_limit(settings: object) -> int:
 
 
 _FINGERPRINT_VERSION = 1
+
+
+class BoundReadChanged(Exception):
+    """The stored object is no longer the one the caller verified (412 from the bound read)."""
+
+
+class BoundReadOutOfRange(Exception):
+    """The requested range lies outside the stored object (416 from the bound read)."""
+
+
+class BoundRead:
+    """A bound read of one stored object that is open and has answered 200 or 206.
+
+    The body is streamed in chunks and never held whole. ``close`` is idempotent and runs when the body ends,
+    fails or is abandoned.
+    """
+
+    def __init__(self, status: int, content_length: int | None, content_range: str | None, resp: aiohttp.ClientResponse, session: aiohttp.ClientSession) -> None:
+        self.status = status
+        self.content_length = content_length
+        self.content_range = content_range
+        self._resp = resp
+        self._session = session
+
+    async def chunks(self, size: int = 64 * 1024) -> AsyncIterator[bytes]:
+        try:
+            async for chunk in self._resp.content.iter_chunked(size):
+                yield chunk
+        finally:
+            await self.close()
+
+    async def close(self) -> None:
+        self._resp.release()
+        await self._session.close()
 
 
 def _strip_etag(raw: str | None) -> str:
@@ -352,6 +387,60 @@ class StorageDocuments:
         if info is None:
             raise StorageUploadError("the storage service answered without a document")
         return info
+
+    async def open_bound(
+        self,
+        org_id: str,
+        document_id: str,
+        info: StorageDocumentInfo,
+        *,
+        byte_range: ByteRange | None = None,
+    ) -> BoundRead:
+        """Open a streamed read of the object ``info`` verified: the whole body, or one range of it.
+
+        The read is bound to the object's ETag, so the bytes are those the fingerprint named: S3 and Azure
+        through a signed GET with ``If-Match``, a local file through the download route's ``ifMatch``. Raises
+        ``BoundReadChanged`` when the object is another one now, ``BoundReadOutOfRange`` for a range past the
+        end, and ``StorageUploadError`` for any other answer or a transport failure.
+        """
+        etag = info.object_etag
+        if etag is None or not info.trusted:
+            raise StorageUploadError("the object was not verified, so it cannot be read bound to its version")
+        range_header = {"Range": f"bytes={byte_range.start}-{byte_range.end}"} if byte_range else {}
+        token = await generate_jwt(self.config_service, {"orgId": org_id, "scopes": ["storage:token"]})
+        base = await self._storage_url()
+        route = f"{base}/api/v1/document/internal/{document_id}/download"
+        session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=None, sock_connect=10, sock_read=60))
+        try:
+            if info.storage_vendor == "local":
+                resp = await session.get(route, params={"ifMatch": etag}, headers={"Authorization": f"Bearer {token}", **range_header})
+            else:
+                hop = await session.get(route, headers={"Authorization": f"Bearer {token}"})
+                try:
+                    if hop.status != 200:
+                        raise StorageUploadError(f"the storage service answered {hop.status}")
+                    signed = (await hop.json(content_type=None)).get("signedUrl")
+                finally:
+                    hop.release()
+                if not isinstance(signed, str) or not signed or info.if_match_header is None:
+                    raise StorageUploadError("the storage service gave no signed link for the object")
+                resp = await session.get(URL(signed, encoded=True), headers={"If-Match": info.if_match_header, **range_header})
+            if resp.status == 412:
+                resp.release()
+                raise BoundReadChanged
+            if resp.status == 416:
+                resp.release()
+                raise BoundReadOutOfRange
+            if resp.status not in (200, 206) or (byte_range is not None and resp.status != 206):
+                resp.release()
+                raise StorageUploadError(f"the storage service answered {resp.status}")
+            length = resp.headers.get("Content-Length")
+            return BoundRead(resp.status, int(length) if length and length.isdigit() else None, resp.headers.get("Content-Range"), resp, session)
+        except BaseException as e:
+            await session.close()
+            if isinstance(e, (aiohttp.ClientError, TimeoutError, OSError)):
+                raise StorageUploadError(f"the storage service could not be reached: {type(e).__name__}") from e
+            raise
 
     async def mint_token(self, org_id: str, *, ttl_s: int) -> str:
         """An org-scoped storage token that expires in ``ttl_s`` seconds (never logged)."""

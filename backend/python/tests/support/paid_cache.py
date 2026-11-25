@@ -15,7 +15,7 @@ from app.services.model_identity.workload import Workload
 from app.services.paid_cache.store import ListedFile
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Iterator, Sequence
 
 Path = tuple[str, str, str]  # (org, record, path inside the record's folder)
 
@@ -76,10 +76,27 @@ class MemoryResultStore:
         for p in paths:
             self.files.pop((org_id, record_id, p), None)
 
-    async def purge_record(self, org_id: str, record_id: str) -> None:
+    async def purge_record(self, org_id: str, record_id: str, *, before_ms: int | None = None) -> None:
         self._call("purge", org_id, record_id)
         for k in [k for k in self.files if k[0] == org_id and k[1] == record_id]:
+            if before_ms is not None and self.files[k][1] >= before_ms:
+                continue                                       # written at or after the purge's start: not its to remove
             del self.files[k]
+
+    async def purge_records(self, org_id: str, record_ids: Sequence[str]) -> dict[str, BaseException | None]:
+        self._call("purge_batch", org_id, ",".join(record_ids))
+        outcomes: dict[str, BaseException | None] = {}
+        for rid in record_ids:
+            try:
+                await self.purge_record(org_id, rid)
+                outcomes[rid] = None
+            except Exception as exc:
+                outcomes[rid] = exc
+        return outcomes
+
+    async def purge_cutoff(self, org_id: str, record_id: str) -> int:
+        self._call("cutoff", org_id, record_id)
+        return self.now_ms                                     # the store's own clock
 
     async def purge_org(self, org_id: str) -> None:
         self._call("purge", org_id)

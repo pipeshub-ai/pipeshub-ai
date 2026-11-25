@@ -12,6 +12,10 @@ from contextlib import ExitStack
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
+from tests.support.agent_versions import versions_beside
+
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
@@ -20,6 +24,12 @@ ASSISTANT = "agentIdPlaceholder"
 NAMED = "agent-1"
 DUCKDUCKGO = {"provider": "duckduckgo", "configuration": {}, "providers": []}
 LOGGER = "agent-web-search-gate-test"
+
+
+@pytest.fixture(autouse=True)
+def _agent_versions(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The routes' agent versions (OWD-14) beside this file's mocked graph."""
+    versions_beside(monkeypatch, "app.api.routes.agent")
 
 
 def _agent(**extra: object) -> dict:

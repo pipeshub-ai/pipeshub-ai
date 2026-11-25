@@ -63,8 +63,8 @@ describe('ConnectorScheduleSweepService', () => {
 
     expect(summary.repaired).to.equal(1)
     const [schedule] = schedulesFor('c1')
-    expect(schedule.every).to.equal(String(DAY * 60_000))
-    const run = store.pending().find((j) => j.opts.repeatJobKey === schedule.key)
+    expect(schedule!.every).to.equal(String(DAY * 60_000))
+    const run = store.pending().find((j) => j.opts.repeatJobKey === schedule!.key)
     expect(run?.data.orgId).to.equal('org-b')
   })
 
@@ -120,6 +120,87 @@ describe('ConnectorScheduleSweepService', () => {
 
     expect(summary.aborted).to.be.true
     expect(schedulesFor('c1')).to.have.length(1)
+  })
+
+  it('the startup sweep waits for the connector service instead of aborting', async () => {
+    const clock = sinon.useFakeTimers()
+    fetchAll.onCall(0).rejects(new Error('connect ECONNREFUSED'))
+    fetchAll.onCall(1).rejects(new Error('connect ECONNREFUSED'))
+    fetchAll.onCall(2).resolves(listed([record('c1')]))
+
+    const done = (sweeper as any).runJob({ id: 'sweep-startup' })
+    await clock.tickAsync(10_000)
+    const summary = await done
+
+    expect(fetchAll.callCount).to.equal(3)
+    expect(summary.aborted).to.be.false
+    expect(summary.repaired).to.equal(1)
+    expect(schedulesFor('c1')).to.have.length(1)
+  })
+
+  it('the startup sweep aborts once the connector service stays unreachable', async () => {
+    const clock = sinon.useFakeTimers()
+    await seed(record('c1'))
+    fetchAll.resetHistory()
+    fetchAll.rejects(new Error('connect ECONNREFUSED'))
+
+    const done = (sweeper as any).runJob({ id: 'sweep-startup' })
+    await clock.tickAsync(10 * 60_000)
+    const summary = await done
+
+    expect(fetchAll.callCount).to.equal(10)
+    expect(summary.aborted).to.be.true
+    expect(schedulesFor('c1')).to.have.length(1)
+  })
+
+  it('recreates a schedule that disappeared while the startup run waited', async () => {
+    const clock = sinon.useFakeTimers()
+    await seed(record('c1'))
+    fetchAll.resetHistory()
+    fetchAll.onCall(0).rejects(new Error('connect ECONNREFUSED'))
+    fetchAll.onCall(1).resolves(listed([record('c1')]))
+
+    const done = (sweeper as any).runJob({ id: 'sweep-startup' })
+    await clock.tickAsync(0)
+    // the schedule store is emptied during the wait (for example a Redis flush)
+    store.repeatables.clear()
+    store.jobs.clear()
+    await clock.tickAsync(10_000)
+    const summary = await done
+
+    expect(fetchAll.callCount).to.equal(2)
+    expect(summary.repaired).to.equal(1)
+    expect(schedulesFor('c1')).to.have.length(1)
+  })
+
+  it('closing the service ends the startup wait at once and changes nothing', async () => {
+    const clock = sinon.useFakeTimers()
+    await seed(record('c1'))
+    fetchAll.resetHistory()
+    fetchAll.rejects(new Error('connect ECONNREFUSED'))
+
+    let summary: any
+    const done = (sweeper as any).runJob({ id: 'sweep-startup' }).then((s: any) => { summary = s })
+    await clock.tickAsync(0)
+    await sweeper.close()
+    await clock.tickAsync(0)
+    const settledOnClose = summary !== undefined
+    await clock.tickAsync(10 * 60_000)
+    await done
+
+    expect(settledOnClose).to.be.true
+    expect(fetchAll.callCount).to.equal(1)
+    expect(summary.aborted).to.be.true
+    expect(schedulesFor('c1')).to.have.length(1)
+  })
+
+  it('a scheduled tick does not wait for the connector service', async () => {
+    fetchAll.rejects(new Error('connect ECONNREFUSED'))
+
+    const summary = await (sweeper as any).runJob({ id: 'repeat:sweep:1' })
+
+    expect(fetchAll.callCount).to.equal(1)
+    expect(summary.aborted).to.be.true
   })
 
   it('keeps existing schedules when the list comes back empty', async () => {
@@ -212,7 +293,7 @@ describe('ConnectorScheduleSweepService', () => {
     await seed(record('c1'))
     const [matching] = schedulesFor('c1')
     store.repeatables.set('stale-key', {
-      ...matching,
+      ...matching!,
       key: 'stale-key',
       every: String(5 * 60_000),
     })
@@ -221,7 +302,7 @@ describe('ConnectorScheduleSweepService', () => {
     const summary = await sweeper.sweep()
 
     expect(summary.driftFixed).to.equal(1)
-    expect(schedulesFor('c1').map((r) => r.key)).to.deep.equal([matching.key])
+    expect(schedulesFor('c1').map((r) => r.key)).to.deep.equal([matching!.key])
   })
 
   it('keeps the schedule of a listed connector that fails before its job name is built', async () => {

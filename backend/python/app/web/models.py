@@ -20,13 +20,22 @@ class WebResult:
 
 
 @dataclass(frozen=True)
+class WebImage:
+    """An image a fetched page shows: its absolute http(s) address, not its bytes."""
+
+    url: str
+    alt: str = ""
+
+
+@dataclass(frozen=True)
 class WebPage:
-    """The readable text of one fetched page."""
+    """The readable text of one fetched page, and the images it shows in reading order."""
 
     url: str  # after redirects
     title: str
     blocks: tuple[TextBlock, ...]
     fetched_by: str
+    images: tuple[WebImage, ...] = ()
 
 
 @dataclass(frozen=True)

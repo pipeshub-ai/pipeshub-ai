@@ -68,7 +68,6 @@ export const rejectClientConversationHistory = (
   logger.warn('Rejected client-supplied conversation history', {
     requestId: req.context?.requestId,
     orgId: orgIdForLog(req),
-    path: req.baseUrl + req.path,
     reason: CLIENT_HISTORY_REJECTED_REASON,
     entries: Array.isArray(history) ? history.length : undefined,
     valueType: Array.isArray(history) ? 'array' : typeof history,

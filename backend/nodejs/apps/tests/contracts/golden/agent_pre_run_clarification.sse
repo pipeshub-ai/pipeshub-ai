@@ -1,0 +1,15 @@
+event: CUSTOM
+data: {"type":"CUSTOM","name":"conversation_created","value":{"conversationId":"oid-1","title":"report"}}
+
+event: CUSTOM
+data: {"type": "CUSTOM", "name": "ask_user_question", "value": {"status": "success", "toolData": {"name": "ask_user_question", "userIntent": "The user wants a report but gave no topic.", "questions": [{"uuid": "uuid-1", "question": "Which report do you need?", "options": [{"id": "opt_sales", "label": "Sales", "isUserInput": false}, {"id": "opt_support", "label": "Support", "isUserInput": false}, {"id": "opt_finance", "label": "Finance", "isUserInput": false}], "multiSelect": false}], "expiresAt": "<timestamp>"}}, "runId": "uuid-2"}
+
+event: STATE_DELTA
+data: {"type": "STATE_DELTA", "runId": "uuid-2", "delta": [{"op": "replace", "path": "/citations", "value": []}, {"op": "replace", "path": "/normalizedAnswer", "value": "Which report do you need?"}, {"op": "replace", "path": "/rawLength", "value": 25}]}
+
+event: STATE_SNAPSHOT
+data: {"type": "STATE_SNAPSHOT", "runId": "uuid-2", "snapshot": {"final": true, "answer": "Which report do you need?", "citations": [], "confidence": null, "answerMatchType": "Clarification Needed"}}
+
+event: RUN_FINISHED
+data: {"type":"RUN_FINISHED","result":{"conversation":{"userId":"oid-2","orgId":"oid-3","title":"report","initiator":"oid-2","isShared":false,"isDeleted":false,"isArchived":false,"lastActivityAt":"<clock>","status":"Complete","modelInfo":{"chatMode":"react"},"agentKey":"agent-1","conversationSource":"agent_chat","_id":"oid-1","sharedWith":[],"conversationErrors":[],"createdAt":"<timestamp>","updatedAt":"<timestamp>","__v":0,"messages":[{"messageType":"bot_response","content":"Which report do you need?","contentFormat":"MARKDOWN","citations":[],"confidence":null,"followUpQuestions":[],"modelInfo":{"chatMode":"react"},"appliedFilters":{"apps":[],"kb":[],"recordGroups":[],"records":[],"recordsExact":[]},"parts":[],"_id":"oid-4","createdAt":"<timestamp>","updatedAt":"<timestamp>","feedback":[],"attachments":[],"referenceData":[],"tools":[],"reasoning":[]}]},"meta":{"requestId":"req-stream","timestamp":"<timestamp>","duration":"<clock>"}}}
+

@@ -8,6 +8,7 @@ each labelled "content not indexed yet". The lookup never fails the answer.
 from __future__ import annotations
 
 import json
+import logging
 from contextlib import ExitStack
 from types import SimpleNamespace
 from typing import Any
@@ -25,6 +26,8 @@ from app.modules.retrieval.entity_permissions import (
     EntitySearchTimedOut,
 )
 from app.modules.retrieval.title_hits import UnindexedMatch
+from tests.support.log_capture import assert_text_free, failure_line
+from tests.support.provider_errors import MARK, SENTINELS, openai_error
 
 CONTENT_TEXT = "Enterprise pricing strategy 2026"
 STORE = object()
@@ -103,7 +106,8 @@ class _Rendering:
             self.lookup.return_value = self.titles or []
         enter(patch(f"{mod}.find_unindexed_matches", self.lookup))
         if self.max_chars is not None:
-            enter(patch(f"{mod}.search_max_chars", return_value=self.max_chars))
+            # The search's size comes from its response-format budget (search_budget.py) on this line.
+            enter(patch("app.agents.actions.knowledge_graph.ops.search_budget.search_max_chars", return_value=self.max_chars))
         return self
 
     def __exit__(self, *exc: object) -> None:
@@ -272,3 +276,27 @@ class TestWhatTheLookupIsGiven:
         result, _, rendering = await _search(_found(), [_match()], scope_virtual_record_ids=["vr1"])
         rendering.lookup.assert_not_called()
         assert "Record ID: r2" not in result
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("error", "error_class", "level"),
+    [(lambda: openai_error(429), "rate_limited", logging.WARNING), (lambda: KeyError(MARK), "internal", logging.ERROR)],
+    ids=["provider-429", "our-bug"],
+)
+async def test_a_failed_title_lookup_is_one_text_free_line(caplog, error, error_class, level) -> None:
+    """The content answer stands without the title matches; the line has the class, never the provider's text."""
+    caplog.set_level(logging.DEBUG)
+    state = {"entity_vector_store": MagicMock(), "graph_provider": MagicMock()}
+    with patch.object(search_mod, "load_entity_access_context", AsyncMock(return_value=MagicMock())), patch.object(
+        search_mod, "find_unindexed_matches", AsyncMock(side_effect=error()),
+    ):
+        found = await search_mod._unindexed_title_matches(state, "quarterly planning", None, logging.getLogger("f24b.kg"))
+
+    assert found is None
+    failure_line(caplog.records, "title_lookup.failed", error_class, level, *SENTINELS)
+    if level == logging.ERROR:
+        (line,) = [r for r in caplog.records if r.getMessage() == "title_lookup.failed"]
+        assert "KeyError: <message omitted>" in line.exc_text
+    assert_text_free(caplog.records, *SENTINELS)
+

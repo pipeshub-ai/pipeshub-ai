@@ -5,6 +5,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { Theme } from '@radix-ui/themes';
 import type { SSEStreamingOptions } from '@/lib/api/streaming';
 import type { AIModelProvider, ConfiguredModel } from '../types';
+import { ErrorType } from '@/lib/api/api-error';
 
 const api = vi.hoisted(() => ({
   addProvider: vi.fn(),
@@ -456,6 +457,147 @@ function configuredModel(overrides: Partial<ConfiguredModel> = {}): ConfiguredMo
   };
 }
 
+/** Listing only needs the endpoint here, but the form asks for an API key as well. */
+function endpointProvider(apiKeyRequired: boolean) {
+  return {
+    ...MANUAL_PROVIDER,
+    providerId: 'openAICompatible',
+    name: 'OpenAI Compatible',
+    discovery: { mode: 'list', requiredFields: ['endpoint'] },
+    fields: {
+      text_generation: [
+        field('endpoint', { fieldType: 'URL', required: true, placeholder: 'Endpoint' }),
+        ...MANUAL_PROVIDER.fields.text_generation.map((f) =>
+          f.name === 'apiKey' ? { ...f, required: apiKeyRequired } : f,
+        ),
+      ],
+    },
+  } as unknown as AIModelProvider;
+}
+
+describe('ModelConfigDialog listing models from an endpoint', () => {
+  const settle = () => new Promise((done) => setTimeout(done, 700));
+  const type = (placeholder: string, value: string) =>
+    fireEvent.change(screen.getByPlaceholderText(placeholder), { target: { value } });
+
+  it('waits for the API key the form requires before listing', async () => {
+    api.discoverModels.mockResolvedValue({ success: true, supported: true, models: LISTED_MODELS });
+    renderDialog(vi.fn(), vi.fn(), { provider: endpointProvider(true) });
+
+    type('Endpoint', 'https://llm.example.com/v1');
+    await settle();
+    expect(api.discoverModels).not.toHaveBeenCalled();
+    expect(
+      screen.getByText('Fill in the connection details above to load the model list, or type a model name.'),
+    ).toBeTruthy();
+
+    type('API key', 'sk-1');
+    await waitFor(() => expect(api.discoverModels).toHaveBeenCalledTimes(1));
+    expect(api.discoverModels.mock.calls[0][0].configuration).toMatchObject({
+      endpoint: 'https://llm.example.com/v1',
+      apiKey: 'sk-1',
+    });
+    expect(await screen.findByText('2 models available. Search, or type any model name.')).toBeTruthy();
+  });
+
+  it('lists again with the corrected key and drops the list when the key is cleared', async () => {
+    api.discoverModels.mockResolvedValueOnce({
+      success: false,
+      supported: true,
+      models: [],
+      errorCode: 'auth_error',
+      message: 'The provider rejected these credentials.',
+    });
+    api.discoverModels.mockResolvedValue({ success: true, supported: true, models: LISTED_MODELS });
+    renderDialog(vi.fn(), vi.fn(), { provider: endpointProvider(true) });
+
+    type('Endpoint', 'https://llm.example.com/v1');
+    type('API key', 'sk-wrong');
+    expect(await screen.findByText(/The provider rejected these credentials/)).toBeTruthy();
+
+    type('API key', 'sk-right');
+    await waitFor(() => expect(api.discoverModels).toHaveBeenCalledTimes(2));
+    expect(api.discoverModels.mock.calls[1][0].configuration).toMatchObject({ apiKey: 'sk-right' });
+    expect(await screen.findByText('2 models available. Search, or type any model name.')).toBeTruthy();
+    expect(screen.queryByText(/The provider rejected these credentials/)).toBeNull();
+
+    type('API key', '');
+    expect(screen.queryByText('2 models available. Search, or type any model name.')).toBeNull();
+    await settle();
+    expect(api.discoverModels).toHaveBeenCalledTimes(2);
+  });
+
+  it('lists without an optional API key and lists again once one is added', async () => {
+    api.discoverModels.mockResolvedValue({ success: true, supported: true, models: LISTED_MODELS });
+    renderDialog(vi.fn(), vi.fn(), { provider: endpointProvider(false) });
+
+    type('Endpoint', 'http://localhost:1234/v1');
+    await waitFor(() => expect(api.discoverModels).toHaveBeenCalledTimes(1));
+    expect(api.discoverModels.mock.calls[0][0].configuration).not.toHaveProperty('apiKey');
+
+    type('API key', 'sk-1');
+    await waitFor(() => expect(api.discoverModels).toHaveBeenCalledTimes(2));
+    expect(api.discoverModels.mock.calls[1][0].configuration).toMatchObject({ apiKey: 'sk-1' });
+  });
+
+  it('lists a saved model from its stored key and again when the key is replaced', async () => {
+    api.discoverModels.mockResolvedValue({ success: true, supported: true, models: LISTED_MODELS });
+    renderDialog(vi.fn(), vi.fn(), {
+      mode: 'edit',
+      provider: endpointProvider(true),
+      editModel: configuredModel({
+        provider: 'openAICompatible',
+        configuredFields: ['endpoint', 'apiKey', 'model'],
+      }),
+    });
+    await waitFor(() => expect(api.discoverModels).toHaveBeenCalledTimes(1));
+    expect(api.discoverModels.mock.calls[0][0].configuration).not.toHaveProperty('apiKey');
+
+    const [, apiKey] = screen.getAllByPlaceholderText('Saved — leave blank to keep');
+    fireEvent.change(apiKey, { target: { value: 'sk-new' } });
+    await waitFor(() => expect(api.discoverModels).toHaveBeenCalledTimes(2));
+    expect(api.discoverModels.mock.calls[1][0].configuration).toMatchObject({ apiKey: 'sk-new' });
+  });
+
+  it('shows a fixed list without waiting for the API key, and does not reload it for the key', async () => {
+    api.discoverModels.mockResolvedValue({ success: true, supported: true, models: LISTED_MODELS });
+    renderDialog(vi.fn(), vi.fn(), {
+      provider: { ...MANUAL_PROVIDER, discovery: { mode: 'list', requiredFields: [] } } as unknown as AIModelProvider,
+    });
+    await waitFor(() => expect(api.discoverModels).toHaveBeenCalledTimes(1));
+
+    type('API key', 'sk-1');
+    await settle();
+    expect(api.discoverModels).toHaveBeenCalledTimes(1);
+  });
+
+  it('lists Bedrock models again when the secret key changes', async () => {
+    api.discoverModels.mockResolvedValue({ success: true, supported: true, models: LISTED_MODELS });
+    renderDialog(vi.fn(), vi.fn(), {
+      provider: {
+        ...MANUAL_PROVIDER,
+        providerId: 'bedrock',
+        discovery: { mode: 'list', requiredFields: ['region'] },
+        fields: {
+          text_generation: [
+            field('region', { required: true, placeholder: 'Region' }),
+            field('awsAccessKeyId', { placeholder: 'Access key' }),
+            field('awsAccessSecretKey', { fieldType: 'PASSWORD', placeholder: 'Secret key' }),
+            field('model', { required: true, placeholder: 'Model id' }),
+          ],
+        },
+      } as unknown as AIModelProvider,
+    });
+    type('Region', 'us-east-1');
+    type('Access key', 'AKIA1');
+    await waitFor(() => expect(api.discoverModels).toHaveBeenCalledTimes(1));
+
+    type('Secret key', 'shh');
+    await waitFor(() => expect(api.discoverModels).toHaveBeenCalledTimes(2));
+    expect(api.discoverModels.mock.calls[1][0].configuration).toMatchObject({ awsAccessSecretKey: 'shh' });
+  });
+});
+
 describe('ModelConfigDialog on edit with a model list', () => {
   it('loads the same model list from stored credentials and keeps the current model selected', async () => {
     api.discoverModels.mockResolvedValue({ success: true, supported: true, models: LISTED_MODELS });
@@ -546,6 +688,28 @@ describe('ModelConfigDialog on edit with a model list', () => {
     const configuration = await savedConfiguration();
     expect(configuration).toMatchObject({ model: 'gpt-5-mini' });
     expect(configuration).not.toHaveProperty('deploymentName');
+  });
+});
+
+describe('ModelConfigDialog when the health check rejects an edit', () => {
+  it("shows the provider's reason and scrolls it into view", async () => {
+    api.discoverModels.mockResolvedValue({ success: true, supported: true, models: LISTED_MODELS });
+    const reason =
+      'OpenAI turned down the test call for gpt-5.4 because of a rate limit or an exhausted quota. ' +
+      'OpenAI said: "You exceeded your current quota, please check your plan and billing details."';
+    api.updateProvider.mockRejectedValue({ type: ErrorType.VALIDATION_ERROR, message: reason, statusCode: 400 });
+    renderDialog(vi.fn(), vi.fn(), {
+      mode: 'edit',
+      provider: LISTING_PROVIDER,
+      editModel: configuredModel(),
+    });
+    await waitFor(() => expect(api.discoverModels).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Update model' }));
+
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toBe(reason);
+    await waitFor(() => expect(scrollIntoView.mock.contexts).toContain(alert));
   });
 });
 

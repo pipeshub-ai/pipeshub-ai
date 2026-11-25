@@ -447,12 +447,10 @@ class TestGetFilterOptions:
 # handle_webhook_notification
 # ===========================================================================
 class TestHandleWebhookNotification:
-    async def test_no_op(self, box_connector):
-        """handle_webhook_notification creates asyncio task, so we mock run_incremental_sync."""
-        box_connector.run_incremental_sync = AsyncMock()
-        with patch("app.connectors.sources.box.connector.asyncio.create_task") as mock_create_task:
-            box_connector.handle_webhook_notification({})
-            mock_create_task.assert_called_once()
+    async def test_requests_a_sync(self, box_connector):
+        box_connector.request_sync = MagicMock()
+        box_connector.handle_webhook_notification({})
+        box_connector.request_sync.assert_called_once_with()
 
 
 # ===========================================================================

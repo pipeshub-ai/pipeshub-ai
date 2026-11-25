@@ -31,7 +31,7 @@ async def test_saved_dimensions_keep_existing_collection_usable(path, monkeypatc
     )
     requests = []
 
-    def build_model(provider, effective, **_kwargs) -> MagicMock:
+    def build_model(provider, effective, *_args, **_kwargs) -> MagicMock:
         assert provider == "ollama"
         dimension = effective["configuration"].get("dimensions", 768)
         requests.append(dimension)
@@ -39,14 +39,17 @@ async def test_saved_dimensions_keep_existing_collection_usable(path, monkeypatc
         model.aembed_query = AsyncMock(return_value=[0.1] * dimension)
         return model
 
+    # build_embeddings resolves the provider client through app.utils.llm.
+    monkeypatch.setattr("app.utils.llm.get_embedding_model", build_model)
+
     if path == "indexing":
         from app.modules.transformers import vectorstore as module
 
         store = module.VectorStore.__new__(module.VectorStore)
         store.logger = MagicMock()
         store.collection_registry = registry
+        store.config_service = make_config_service()
         store._ensure_sparse_embeddings = AsyncMock()
-        monkeypatch.setattr(module, "get_embedding_model", build_model)
         monkeypatch.setattr(module, "_model_window", AsyncMock(return_value=2048))
         await store._build_embedding_model([config], "saved-config")
         model = store.dense_embeddings
@@ -60,15 +63,14 @@ async def test_saved_dimensions_keep_existing_collection_usable(path, monkeypatc
         store.config_service.get_config.return_value = {"embedding": [config]}
         store._cached_dense_embeddings = None
         store._embedding_model_lock = asyncio.Lock()
-        monkeypatch.setattr(module, "get_embedding_model", build_model)
         model = await store.get_embedding_model_instance()
     else:
         from app.modules.transformers import entity_vectorstore as module
 
         store = module.EntityVectorStore.__new__(module.EntityVectorStore)
+        store.config_service = make_config_service()
         store.vector_db_service = vdb
         store.collection_name = "entities"
-        monkeypatch.setattr(module, "get_embedding_model", build_model)
         model = await store._build_dense_embeddings(config)
 
     vector = await model.aembed_query("existing document or search query")

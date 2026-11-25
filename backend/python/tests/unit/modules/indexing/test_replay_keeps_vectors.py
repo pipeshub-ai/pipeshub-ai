@@ -1,9 +1,8 @@
 """A reindex that deletes a virtual record's embeddings keeps every point while a record still references it.
 
-This is the behaviour that makes a replayed reindex wasted work rather than data loss: even where the handler
-still reaches ``bulk_delete_embeddings`` (a forced reindex, a lost hand-off), the points of a referenced
-virtual record are rewritten in place, never removed. It passes before and after the replay guard moved ahead
-of the reconciliation; it pins the premise the guard relies on.
+``bulk_delete_embeddings`` rewrites the membership of a virtual record's points in place, and never removes them,
+while a record still references it. The record handler no longer calls it ahead of an update or reindex; this pins
+the behaviour of the call for the callers that remain (connector and record deletes).
 """
 
 from unittest.mock import AsyncMock, MagicMock
