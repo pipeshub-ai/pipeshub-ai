@@ -344,47 +344,48 @@ class SandboxAlertRunner:
 
         accepted = set() if accepted is None else accepted
         try:
-            if self._producer is None:
-                self._producer = await asyncio.wait_for(self._producer_factory(), self._publish_timeout_s)
             if sign_enabled() and self._org_ids is not None:
                 # A signed message names one org: each org's admins get the copy signed under their org (Node delivers it to that
-                # org only), so nothing is sent unsigned and nothing runs unbound.
+                # org only), so nothing is sent unsigned and nothing runs unbound. One org's failed copy does not stop the others'.
                 sent = True
                 for org in await asyncio.wait_for(self._org_ids(), self._publish_timeout_s):
                     if org in accepted:
                         continue
                     try:
                         with for_org(org, job="sandbox-alerts"):
-                            copy = {**event, "payload": {**event["payload"], "orgId": org}}
-                            ok = await asyncio.wait_for(
-                                self._producer.send_message(NOTIFICATION_TOPIC, copy, key=f"sandbox-capacity-{alert_id}"),
-                                self._publish_timeout_s,
-                            )
+                            ok = await self._send({**event, "payload": {**event["payload"], "orgId": org}}, alert_id)
                     except Exception as exc:
-                        if isinstance(exc, TimeoutError):
-                            await self._drop_producer()
-                        self._warn_once("publish", "sandbox load alert: publish failed (%r)", exc)
+                        await self._send_failed(exc)
                         ok = False
-                    if ok is False:
-                        sent = False
-                    else:
+                    if ok:
                         accepted.add(org)
+                    else:
+                        sent = False
             else:
-                sent = await asyncio.wait_for(
-                    self._producer.send_message(NOTIFICATION_TOPIC, event, key=f"sandbox-capacity-{alert_id}"),
-                    self._publish_timeout_s,
-                )
+                sent = await self._send(event, alert_id)
         except Exception as exc:
-            if isinstance(exc, TimeoutError):
-                # A producer that hung once is rebuilt on the next try.
-                await self._drop_producer()
-            self._warn_once("publish", "sandbox load alert: publish failed (%r)", exc)
+            await self._send_failed(exc)
             return False
-        if sent is False:
+        if not sent:
             self._warn_once("publish", "sandbox load alert: publish failed (not accepted)")
             return False
         self._recovered("publish")
         return True
+
+    async def _send(self, message: dict[str, Any], alert_id: str) -> bool:
+        """One copy, on a producer built first when there is none (the last one hung and was dropped): True when accepted."""
+        if self._producer is None:
+            self._producer = await asyncio.wait_for(self._producer_factory(), self._publish_timeout_s)
+        sent = await asyncio.wait_for(
+            self._producer.send_message(NOTIFICATION_TOPIC, message, key=f"sandbox-capacity-{alert_id}"), self._publish_timeout_s,
+        )
+        return sent is not False
+
+    async def _send_failed(self, exc: Exception) -> None:
+        if isinstance(exc, TimeoutError):
+            # A producer that hung once is rebuilt for the next copy.
+            await self._drop_producer()
+        self._warn_once("publish", "sandbox load alert: publish failed (%r)", exc)
 
     async def _drop_producer(self) -> None:
         producer, self._producer = self._producer, None

@@ -443,3 +443,31 @@ async def test_an_alert_no_org_took_gives_its_claims_back_so_the_next_evaluation
     env.warn()
     await runner.run_once()
     assert [o for o, _ in _copies(env, "SANDBOX_CAPACITY_WARNING")] == ["org-a"]
+
+
+async def test_a_copy_that_times_out_does_not_stop_the_later_orgs_and_is_sent_again_under_the_same_id(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A timed-out copy drops the producer (it may hang again); the next org's copy is sent on a new one in the same pass."""
+
+    class _HangsFor(_OrgFlakyProducer):
+        async def send_message(self, topic: str, message: dict, key: str | None = None) -> bool:
+            if message["payload"].get("orgId") == self.failing:
+                raise TimeoutError
+            return await super().send_message(topic, message, key)
+
+    env = Env(tmp_path)
+    env.producer = _HangsFor()
+    env.producer.failing = "org-b"
+    runner = _signed_runner(env, monkeypatch, ["org-a", "org-b", "org-c"])
+    env.warn()
+    await runner.run_once()
+    copies = _copies(env, "SANDBOX_CAPACITY_WARNING")
+    assert [o for o, _ in copies] == ["org-a", "org-c"]
+    alert_id = copies[0][1]
+    assert env.built == 2 and env.producer.cleaned            # the hung producer was dropped and a new one built for org-c
+    env.producer.failing = None
+    env.clock.now += 10
+    env.warn()
+    await runner.run_once()
+    assert _copies(env, "SANDBOX_CAPACITY_WARNING") == [("org-a", alert_id), ("org-c", alert_id), ("org-b", alert_id)]
