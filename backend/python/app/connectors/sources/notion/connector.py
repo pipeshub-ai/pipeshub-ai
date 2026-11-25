@@ -2745,8 +2745,9 @@ class NotionConnector(BaseConnector):
         try:
             self.logger.info("🔄 Starting user synchronization...")
 
-            # Notion lists every member of the workspace; it has no lookup by email.
-            listing = self._user_listing = SourceUserListing(includes_inactive=True)
+            # "Guests are not included in the response" (developers.notion.com/reference/get-users), and Notion
+            # has no lookup by email: the listing proves the authenticator present but never absent.
+            listing = self._user_listing = SourceUserListing(includes_inactive=False)
 
             # Pagination variables
             page_size = self._SYNC_PAGE_SIZE
@@ -2774,9 +2775,19 @@ class NotionConnector(BaseConnector):
                     raise Exception(f"Notion API error while fetching users: {error_msg}")
 
                 response_data = response.data.json() if response.data else {}
-                users_data = response_data.get("results", [])
-                has_more = response_data.get("has_more", False)
-                next_cursor = response_data.get("next_cursor")
+                page = response_data if isinstance(response_data, dict) else {}
+                users_data = page.get("results")
+                has_more = page.get("has_more")
+                if not isinstance(users_data, list) or not isinstance(has_more, bool):
+                    # Not a page of users, or one that does not say whether more follow.
+                    self.logger.warning("Notion users page has no results list or no has_more")
+                    listing.cut("a user page had no results list or did not say whether more follow")
+                    user_details_complete = False
+                    all_pages_read = False
+                    if not isinstance(users_data, list):
+                        break
+                    has_more = False
+                next_cursor = page.get("next_cursor")
                 if next_cursor is not None and next_cursor == cursor:
                     self.logger.warning(
                         "Notion users pagination cursor did not advance "
@@ -2827,6 +2838,8 @@ class NotionConnector(BaseConnector):
                             f"(type: {user_type}, id: {user.get('id', 'N/A')})"
                         )
                         total_skipped += 1
+                        # A partial user object, or a person without an id, may be anyone.
+                        listing.row_failed(f"user {user.get('id')} of type {user_type} could not be read")
 
                 # Extract workspace info from bot user (only on first page if not already set)
                 if bot_user and not self.workspace_id:
