@@ -2988,7 +2988,7 @@ describe('Enterprise Search Controller', () => {
       execute.resolves({
         statusCode: 503,
         data: { searchResults: [], status: 'embedding_rate_limited', status_code: 503, message },
-        headers: { 'retry-after': '12' },
+        headers: { 'retry-after': '60' },
       } as any)
 
       for (const handler of [search(createMockAppConfig()), retrieve(createMockAppConfig())]) {
@@ -3002,7 +3002,30 @@ describe('Enterprise Search Controller', () => {
         const error: any = next.firstCall.args[0]
         expect(error.statusCode).to.equal(503)
         expect(error.message).to.equal(message)
-        expect(error.metadata).to.deep.equal({ retryAfter: '12' })
+        expect(error.metadata).to.deep.equal({ retryAfter: '60' })
+      }
+    })
+
+    it('passes on no other header of a failed search', async () => {
+      const execute = sinon.stub(AIServiceCommand.prototype, 'execute')
+      execute.resolves({
+        statusCode: 503,
+        data: { searchResults: [], status: 'error', status_code: 503, message: 'x' },
+        headers: { 'retry-after': '60', 'set-cookie': 'sid=secret', server: 'secret', 'x-internal': 'secret' },
+      } as any)
+
+      for (const handler of [search(createMockAppConfig()), retrieve(createMockAppConfig())]) {
+        const next = createMockNext()
+        const res = createMockResponse()
+        await handler(
+          createMockRequest({ body: { query: 'q' }, user: { userId: VALID_OID, orgId: VALID_OID2 } }),
+          res,
+          next,
+        )
+
+        const error: any = next.firstCall.args[0]
+        expect(error.metadata).to.deep.equal({ retryAfter: '60' })
+        expect(JSON.stringify({ ...error, message: error.message })).to.not.contain('secret')
       }
     })
 

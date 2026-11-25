@@ -57977,7 +57977,7 @@ paths:
             requests after the search retried: try again later.
           headers:
             Retry-After:
-              description: Seconds to wait, when the embedding provider named a wait.
+              description: Seconds to wait (60), sent when the embedding model's provider is limiting requests.
               schema:
                 type: integer
           content:
@@ -58175,7 +58175,7 @@ paths:
             search retried: try again later.
           headers:
             Retry-After:
-              description: Seconds to wait, when the embedding provider named a wait.
+              description: Seconds to wait (60), sent when the embedding model's provider is limiting requests.
               schema:
                 type: integer
           content:

@@ -105,18 +105,33 @@ async def test_a_rate_limited_query_embedding_answers_503_try_again(
     assert result["status_code"] == 503
     assert result["message"] == retrieval.EMBEDDING_RATE_LIMITED_MESSAGE
     assert result["searchResults"] == []
-    assert _failed_search_headers(result) == {"Retry-After": "12"}
+    assert _failed_search_headers(result) == {"Retry-After": "60"}
     # The provider's own words name the account; neither the answer nor the log repeats them.
     assert "gateway-key" not in json.dumps(result)
     assert "search.failed" in caplog.text
     assert "gateway-key" not in caplog.text
 
 
-async def test_without_a_retry_after_there_is_no_header(provider: _Provider) -> None:
+@pytest.mark.parametrize("value", [
+    None, "0", "1", "12", "3600", "inf", "-inf", "nan", "1e400", "-5", "", "99999999999999999999", "<script>",
+    "12 ; gateway-key-team-7", "Wed, 21 Oct 2099 07:28:00 GMT",
+])
+async def test_the_wait_is_fixed_whatever_the_provider_says(provider: _Provider, value: str | None) -> None:
+    provider.headers = {"Set-Cookie": "sid=gateway-key-team-7", "X-Request-Id": "gateway-key-team-7"}
+    if value is not None:
+        provider.headers["Retry-After"] = value
+
     result = await _search(provider)
 
     assert result["status"] == Status.EMBEDDING_RATE_LIMITED.value
-    assert _failed_search_headers(result) is None
+    assert _failed_search_headers(result) == {"Retry-After": "60"}
+    assert "retryAfter" not in result
+    assert "gateway-key" not in json.dumps(result)
+
+
+@pytest.mark.parametrize("status", [s for s in Status if s is not Status.EMBEDDING_RATE_LIMITED])
+def test_no_other_failed_search_names_a_wait(status: Status) -> None:
+    assert _failed_search_headers({"status": status.value, "retryAfter": 12}) is None
 
 
 async def test_a_limit_that_lifts_during_the_retries_is_not_an_error(provider: _Provider) -> None:

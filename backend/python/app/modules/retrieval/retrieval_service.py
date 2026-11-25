@@ -96,7 +96,7 @@ from app.services.graph_db.interface.graph_db_provider import (
     _unsupported_container_filters,
     requested_scope_ids,
 )
-from app.services.llm_gateway.embedding_gateway import EmbeddingGateway, retry_after_of
+from app.services.llm_gateway.embedding_gateway import EmbeddingGateway
 from app.services.model_identity.call_context import narrow_workload
 from app.services.model_identity.workload import Workload
 from app.services.permissions import access_status
@@ -549,9 +549,8 @@ _SELECTION_REQUEST_KEYS = frozenset(
 class QueryEmbeddingRateLimitedError(Exception):
     """The embedding provider still answered 429 to the query after the retries."""
 
-    def __init__(self, retry_after: float | None) -> None:
+    def __init__(self) -> None:
         super().__init__("the embedding provider is rate limiting queries")
-        self.retry_after = retry_after
 
 
 @contextmanager
@@ -562,7 +561,7 @@ def _naming_rate_limits() -> Iterator[None]:
     except Exception as exc:
         if EmbeddingGateway.retry_kind(exc) is not RetryKind.THROTTLE:
             raise
-        raise QueryEmbeddingRateLimitedError(retry_after_of(exc) or None) from exc
+        raise QueryEmbeddingRateLimitedError from exc
 
 
 class RetrievalService:
@@ -1727,10 +1726,7 @@ class RetrievalService:
             return self._create_empty_response("Unexpected server error during search.", Status.ERROR)
         except QueryEmbeddingRateLimitedError as e:
             log_failure(self.logger, "search.failed", e, include_error_text=False)
-            response = self._create_empty_response(EMBEDDING_RATE_LIMITED_MESSAGE, Status.EMBEDDING_RATE_LIMITED)
-            if e.retry_after is not None:
-                response["retryAfter"] = math.ceil(e.retry_after)
-            return response
+            return self._create_empty_response(EMBEDDING_RATE_LIMITED_MESSAGE, Status.EMBEDDING_RATE_LIMITED)
         except Exception as e:
             # A refused query embedding lands here too, its text the provider's body.
             log_failure(self.logger, "search.failed", e, include_error_text=False)

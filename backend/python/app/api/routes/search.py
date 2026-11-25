@@ -483,10 +483,15 @@ def _timed_out_response(seconds: float) -> dict[str, Any]:
     }
 
 
+# Fixed, matching EMBEDDING_RATE_LIMITED_MESSAGE: the provider's own wait tells how busy the provider account is.
+_RATE_LIMITED_RETRY_AFTER_SECONDS = 60
+
+
 def _failed_search_headers(results: dict[str, Any]) -> dict[str, str] | None:
-    """Retry-After for a search that failed with a wait the provider named, else None."""
-    retry_after = results.get("retryAfter")
-    return {"Retry-After": str(retry_after)} if retry_after else None
+    """Retry-After for a search the embedding provider refused as rate limited, else None."""
+    if results.get("status") != Status.EMBEDDING_RATE_LIMITED.value:
+        return None
+    return {"Retry-After": str(_RATE_LIMITED_RETRY_AFTER_SECONDS)}
 
 
 # A date-bounded search that found nothing in its dates answers 404 (no
