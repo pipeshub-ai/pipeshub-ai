@@ -209,6 +209,7 @@ export class LauncherClient extends EventEmitter {
       let reportedError: { code: string; message?: string } | null = null;
       let exitedService: string | null = null;
       let child: ChildProcess;
+      // eslint-disable-next-line prefer-const -- `finish` reads it and can run (a failed spawn) before it is set.
       let timer: NodeJS.Timeout | undefined;
       const finish = (status: LocalServerStatus): void => {
         if (settled) return;
