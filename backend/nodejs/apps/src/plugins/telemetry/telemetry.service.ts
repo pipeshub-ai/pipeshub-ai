@@ -19,6 +19,8 @@ import { parseBoolean } from '../../modules/storage/utils/utils';
 import { configPaths } from '../../modules/configuration_manager/paths/paths';
 import { EncryptionService } from '../../libs/encryptor/encryptor';
 import { loadConfigurationManagerConfig } from '../../modules/configuration_manager/config/config';
+import { axiosV3Http } from './v3/http';
+import { UsageV3Sender, usageContractMode } from './v3/sender';
 
 const logger = Logger.getInstance({ service: 'Telemetry Service' });
 
@@ -67,6 +69,24 @@ export class TelemetryService implements ITelemetryService {
   private pushInterval: NodeJS.Timeout | null = null;
   private isStarting: boolean = false;
   private mutex: Mutex = new Mutex();
+  private pushing: Promise<void> | null = null;
+  // Usage telemetry v3: registers the install once, then sends over v3 and
+  // says each interval whether v3 or the legacy endpoints carry the data.
+  private readonly v3: UsageV3Sender = new UsageV3Sender({
+    mode: usageContractMode(),
+    http: axiosV3Http({
+      timeoutMs: TIMEOUT_MS,
+      httpsAgent: () => this.createHttpsAgent(),
+      headers: () => ({ [HEADER_REQUEST_ID]: newSystemRoot() }),
+    }),
+    secrets: {
+      read: () => this.readInstallSecret(),
+      write: (secret) => this.writeInstallSecret(secret),
+    },
+    logger,
+    snapshot: () => metricsBackend.snapshot(),
+    events: eventBuffer,
+  });
 
   constructor(
     @inject('KeyValueStoreService') private kvStore: KeyValueStoreService,
@@ -222,11 +242,8 @@ export class TelemetryService implements ITelemetryService {
           );
           return;
         }
-        this.pushMetricsToServer().catch((err: unknown) => {
-          logger.warn('Failed to push metrics:', err);
-        });
-        this.shipEventsToServer().catch((err: unknown) => {
-          logger.warn('Failed to ship events:', err);
+        this.pushOnce().catch((err: unknown) => {
+          logger.warn('Failed to push telemetry:', err);
         });
         this.refreshInstallInfo().catch((err: unknown) => {
           logger.warn('Failed to refresh install info:', err);
@@ -256,17 +273,86 @@ export class TelemetryService implements ITelemetryService {
     return lines.some((line) => !line.trim().startsWith('#'));
   }
 
-  private async pushMetricsToServer(): Promise<void> {
+  /**
+   * One interval's push. The v3 sender goes first: it sends over v3 when the
+   * collector speaks it, and otherwise says the legacy endpoints carry this
+   * interval (or that nothing is to be sent now and everything is kept).
+   * Pushes never overlap: a second call waits for the one in flight.
+   */
+  private pushOnce(): Promise<void> {
+    const run = (this.pushing ?? Promise.resolve())
+      .then(() => this.pushOnceNow())
+      .finally(() => {
+        if (this.pushing === run) this.pushing = null;
+      });
+    this.pushing = run;
+    return run;
+  }
+
+  private async pushOnceNow(): Promise<void> {
+    if (this.instanceId === '') {
+      logger.debug('Skipping telemetry push - installId not initialized');
+      return;
+    }
+    let route: 'v3' | 'legacy' | 'none';
+    try {
+      route = await this.v3.tick({
+        serverUrl: this.metricsServerUrl,
+        installId: this.instanceId,
+        version: this.appVersion,
+        service: SERVICE_NAME,
+      });
+    } catch (error) {
+      // Nothing is sent the other way either: the registry and the buffer keep it.
+      logger.warn('Usage telemetry v3 push failed:', {
+        message: error instanceof Error ? error.message : 'unknown error',
+      });
+      return;
+    }
+    if (route !== 'legacy') {
+      return;
+    }
+    const delivered = await this.pushMetricsToServer();
+    await this.shipEventsToServer();
+    if (delivered) {
+      await this.v3.deliveredByLegacy();
+    }
+  }
+
+  private async readInstallSecret(): Promise<string | undefined> {
+    const secret = (await this.getConfig())[keyValues.INSTALL_SECRET];
+    return secret != null && secret !== '' ? secret : undefined;
+  }
+
+  /**
+   * Stores the secret next to the install id, in the same encrypted value.
+   * Refuses when the stored configuration is not this install's, so a failed
+   * read cannot replace the configuration with a value that holds only a secret.
+   */
+  private async writeInstallSecret(secret: string): Promise<void> {
+    const config = await this.getConfig();
+    if (config[keyValues.INSTALL_ID] !== this.instanceId) {
+      throw new Error('stored telemetry configuration is not readable');
+    }
+    config[keyValues.INSTALL_SECRET] = secret;
+    await this.kvStore.set<string>(
+      configPaths.metricsCollection,
+      this.getEncryptionService().encrypt(JSON.stringify(config)),
+    );
+  }
+
+  /** True when the collector accepted the push. */
+  private async pushMetricsToServer(): Promise<boolean> {
     if (this.instanceId === '') {
       logger.debug('Skipping metrics push - installId not initialized');
-      return;
+      return false;
     }
     try {
       const metricsText = await metricsBackend.serialize();
 
       if (!this.hasActualMetrics(metricsText)) {
         logger.debug('Skipping metrics push - no actual metrics data');
-        return;
+        return false;
       }
 
       await axios.post(
@@ -288,6 +374,7 @@ export class TelemetryService implements ITelemetryService {
         },
       );
       logger.debug('Successfully pushed metrics to server');
+      return true;
     } catch (error: unknown) {
       // The registry only grows, so a 413 would otherwise recur until restart.
       if (axios.isAxiosError(error) && error.response?.status === 413) {
@@ -296,9 +383,10 @@ export class TelemetryService implements ITelemetryService {
           { serverUrl: this.metricsServerUrl },
         );
         metricsBackend.reset();
-        return;
+        return false;
       }
       this.handlePushError(error);
+      return false;
     }
   }
 
@@ -448,8 +536,7 @@ export class TelemetryService implements ITelemetryService {
     if (!this.isServerUrlValid()) {
       return;
     }
-    await this.pushMetricsToServer();
-    await this.shipEventsToServer();
+    await this.pushOnce();
   }
 
   /**

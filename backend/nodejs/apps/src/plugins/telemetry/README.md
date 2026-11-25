@@ -46,6 +46,63 @@ MCP clients of the hosted `/mcp` endpoint are reported separately, by
 None of this carries a user id, an address or a name: only the organisation id
 and the address domain that the other metrics already carry.
 
+## How it is sent: usage telemetry v3, with the legacy endpoints as fallback
+
+`USAGE_TELEMETRY_CONTRACT` chooses how the data reaches the collector. It is
+the only setting; the switch above and each organisation's Data Collection
+setting decide whether anything is sent at all, exactly as before.
+
+| Value | Behaviour |
+| --- | --- |
+| `auto` (default) | Use contract v3. If the collector does not answer as a v3 collector, use the legacy endpoints and ask again a day later |
+| `v3` | v3 only. Against a collector without v3 nothing is sent; what was counted is kept and sent when v3 answers |
+| `legacy` | The legacy endpoints only: `/collect-metrics` and `/collect-events`, as every earlier version did |
+
+**v3** (`v3/`): the install registers once with `POST /v3/installs` and is
+given a secret, stored as `installSecret` in the same encrypted configuration
+value as `installId` (`/services/metricsCollection`) and never logged. This
+service registers and is the only writer of that value; the Python services
+read the secret from it. Every push is authenticated with the secret. Metrics
+go to `/v3/metrics` as named points, counters as the amount counted since the
+previous push; events go to `/v3/events`. Each process has its own id and
+numbers its pushes, so the collector adds up several replicas and applies a
+push it receives twice once.
+
+- A push is kept until the collector acknowledges it and is sent again
+  unchanged: after 30 seconds, then twice as long each time up to 30 minutes,
+  or as long as the collector asks. One batch of metrics and one of events is
+  pending at most; what is counted meanwhile stays in the registry and in the
+  event buffer (5000 events).
+- A collector is a v3 collector when its answer carries `X-Usage-Contract: 3`.
+  Any other answer to a v3 request (the `404` or `405` of an older collector,
+  a proxy's login page) switches to the legacy endpoints for 24 hours.
+- A restarted process gets a new id and numbers from 1 again; the one batch
+  the old process had not got acknowledged is lost with it.
+- If the collector refuses the secret, the configuration is read again (another
+  replica may have rotated it), then the install registers again. If the id is
+  held by someone else, the legacy endpoints are used for a day and a warning
+  is logged.
+- `USAGE_TELEMETRY_EDITION=ee` reports the edition as `ee`; anything else is `oss`.
+
+**What v3 does not carry.** v3 sends nothing the legacy endpoints did not
+send, and less: only what the usage contract names, and nothing that says who.
+
+| Legacy | v3 |
+| --- | --- |
+| labels `org`, `domain` on every usage metric | dropped; values are added up over them, so a count is for the install |
+| labels `service`, `kb`, `mimetype` on `pipeshub_activity_total`; `service` on `pipeshub_usage_sdk_requests_total` | dropped |
+| event props `orgId`, `userId`, `email`, `domain`, `fullName` | dropped |
+| event props `user_agent`, `auth_type`, `oauth_client_id`, `client_id`, `transport`, `referrer_domain`, and `channel` on `org_created` | dropped |
+| `pipeshub_http_requests_total`, `pipeshub_http_request_duration_seconds` | not sent: the contract calls them operational |
+| `pipeshub_metric_collection_enabled` | not sent: an install that has opted out sends nothing |
+| `pipeshub_db_*`, `pipeshub_org_context_missing_total`, `docstore_*`, `pipeshub_consumer_inbox_*`, `notification_event_refused_total` | not sent |
+| events `pat_created`, `pat_access_changed`, `oauth_token_issued`, `mcp_tool_called` | not sent: the contract has no such event |
+
+What is sent, and under which name, is the two tables in `v3/translate.ts`.
+One difference in meaning follows from dropping the organisation:
+`sdk.client.seen` is still recorded once per organisation, client and day, so
+over v3 the collector sees one event per organisation without knowing which.
+
 ## Building an image without it
 
 Nothing outside this directory imports the plug-in or `prom-client`;
