@@ -348,3 +348,98 @@ async def test_with_signing_on_in_enforce_each_org_gets_its_alert_signed_under_i
         opened = await envelope.open_envelope("notification", message, keys=(envelope.derive_key("test-secret"),))
         assert opened.ctx.org_id == message["ctx"]["orgId"] == opened.message["payload"]["orgId"]
         assert opened.message["audience"] == "platformAdmins"
+
+
+class _OrgFlakyProducer(FakeProducer):
+    """Accepts every org's copy but ``failing``'s, which it refuses while ``failing`` is set."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.failing: str | None = None
+
+    async def send_message(self, topic: str, message: dict, key: str | None = None) -> bool:
+        if message["payload"].get("orgId") == self.failing:
+            return False
+        return await super().send_message(topic, message, key)
+
+
+def _signed_runner(env: Env, monkeypatch: pytest.MonkeyPatch, orgs: list[str]) -> SandboxAlertRunner:
+    monkeypatch.setenv("ENVELOPE_SIGN", "true")
+    monkeypatch.delenv("ORG_CONTEXT_MODE", raising=False)
+    monkeypatch.delenv("ENVELOPE_CTX_REQUIRED", raising=False)
+
+    async def org_ids() -> list[str]:
+        return list(orgs)
+
+    return SandboxAlertRunner(
+        env.store, SETTINGS, env.state,  # type: ignore[arg-type]
+        producer_factory=env.factory, snapshot=lambda: dict(SNAPSHOT), clock=env.clock, host="test-host", org_ids=org_ids,
+    )
+
+
+def _copies(env: Env, kind: str) -> list[tuple[str, str]]:
+    return [(m["payload"]["orgId"], m["payload"]["alertId"]) for _, m, _ in env.producer.sent if m["type"] == kind]
+
+
+async def test_an_alert_one_org_took_is_sent_again_only_to_the_org_that_did_not_with_the_same_id(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Node keeps one delivery per alert id and org: a retry under a new id would notify (and mail) the org that has it again."""
+    env = Env(tmp_path)
+    env.producer = _OrgFlakyProducer()
+    env.producer.failing = "org-b"
+    runner = _signed_runner(env, monkeypatch, ["org-a", "org-b"])
+    env.warn()
+    await runner.run_once()
+    [(org, alert_id)] = _copies(env, "SANDBOX_CAPACITY_WARNING")
+    assert org == "org-a"
+    env.producer.failing = None
+    env.clock.now += 10
+    env.warn()
+    await runner.run_once()
+    assert _copies(env, "SANDBOX_CAPACITY_WARNING") == [("org-a", alert_id), ("org-b", alert_id)]
+    env.clock.now += 10
+    await runner.run_once()
+    assert len(_copies(env, "SANDBOX_CAPACITY_WARNING")) == 2      # nothing more once every org has it
+    assert env.store.values[WARN_KEY]["alertId"] == alert_id       # the claim stayed the alert's
+
+
+async def test_a_resolved_notice_one_org_took_is_sent_again_only_to_the_other_with_the_same_id(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env = Env(tmp_path)
+    env.producer = _OrgFlakyProducer()
+    runner = _signed_runner(env, monkeypatch, ["org-a", "org-b"])
+    env.warn()
+    await runner.run_once()
+    env.producer.failing = "org-b"
+    for _ in range(33):                       # the window moves past the load, then a full clear window
+        env.clock.now += 10
+        env.quiet()
+        await runner.run_once()
+    [(org, notice_id)] = _copies(env, "SANDBOX_CAPACITY_RESOLVED")
+    assert org == "org-a"
+    env.producer.failing = None
+    for _ in range(3):
+        env.clock.now += 10
+        env.quiet()
+        await runner.run_once()
+    assert _copies(env, "SANDBOX_CAPACITY_RESOLVED") == [("org-a", notice_id), ("org-b", notice_id)]
+
+
+async def test_an_alert_no_org_took_gives_its_claims_back_so_the_next_evaluation_sends_it_anew(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Nobody has it, so a new id harms nothing, and a restart or another worker can send it too (nothing is held)."""
+    env = Env(tmp_path)
+    env.producer = _OrgFlakyProducer()
+    env.producer.failing = "org-a"
+    runner = _signed_runner(env, monkeypatch, ["org-a"])
+    env.warn()
+    await runner.run_once()
+    assert _copies(env, "SANDBOX_CAPACITY_WARNING") == []
+    env.producer.failing = None
+    env.clock.now += 10
+    env.warn()
+    await runner.run_once()
+    assert [o for o, _ in _copies(env, "SANDBOX_CAPACITY_WARNING")] == ["org-a"]
