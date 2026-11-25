@@ -324,26 +324,55 @@ def children_sql(where: str, links: str | None) -> str:
 def children_held_sql(where: str, links: str | None) -> str:
     """How many children the start ``$2`` has by a hierarchy edge, counted up to ``$3`` (``n``), and the children themselves when there are fewer than ``$3`` (one row of NULLs
     beside ``n`` when there are none or too many)."""
-    return (f"/* pipeshub:kg.browse_children_held */ SELECT n.n, c.* FROM (SELECT count(*) AS n FROM ({_children('1', where, links)}) x) n "
-            f"LEFT JOIN LATERAL (SELECT * FROM ({_children(COLS, where, links)}) r LIMIT $3) c ON n.n < $3")
+    # one read of the children: the first $3 of them, counted after (a count and a second read of the same children cost twice as much where each child is tested, as the
+    # sidebar tests each for a child of its own)
+    return (f"/* pipeshub:kg.browse_children_held */ WITH c AS MATERIALIZED (SELECT * FROM ({_children(COLS, where, links)}) r LIMIT $3) "
+            "SELECT n.n, c.* FROM (SELECT count(*) AS n FROM c) n LEFT JOIN c ON n.n < $3")
 
 
 def browse_undecided_sql(where: str, classes_param: str, app_param: str, links: str | None) -> str:
     """The children of the start that kg does not decide (as :func:`undecided_sql`, or of another connector, whose classes are not this one's) or that are placeholders (listed only on
     the way to something readable): ``$3`` of them at most."""
-    undecided = f"r.placeholder OR NOT r.r13 IS FALSE OR NOT r.has_path OR r.class_id IS NULL OR r.fenced OR r.class_id = ANY({classes_param}::bigint[]) OR r.app_sk IS DISTINCT FROM {app_param}::bigint"
-    return f"/* pipeshub:kg.browse_undecided */ SELECT * FROM ({_children(COLS, where, links, _FENCE)}) r WHERE {undecided} LIMIT $3"
+    return f"/* pipeshub:kg.browse_undecided */ SELECT * FROM ({_children(COLS, where, links, _FENCE)}) r WHERE {_browse_undecided(classes_param, app_param)} LIMIT $3"
+
+
+def _browse_undecided(classes_param: str, app_param: str) -> str:
+    """A child (a row ``r`` with the columns of :data:`COLS`) the classes do not decide, of :func:`browse_undecided_sql`."""
+    return (f"(r.placeholder OR NOT r.r13 IS FALSE OR NOT r.has_path OR r.class_id IS NULL OR r.fenced OR r.class_id = ANY({classes_param}::bigint[]) OR "
+            f"r.app_sk IS DISTINCT FROM {app_param}::bigint)")
+
+
+def _browse_admitted(plain: str, own: str, granted: str, unvouched: str, app: str, a: str = "r") -> str:
+    """A child (a row ``a`` with the columns of :data:`COLS`) the classes admit, of :func:`browse_count_sql`."""
+    return (f"(NOT {a}.placeholder AND {a}.r13 IS FALSE AND {a}.has_path AND {a}.class_id IS NOT NULL AND NOT {a}.fenced AND NOT {a}.class_id = ANY({unvouched}::bigint[]) "
+            f"AND {a}.app_sk = {app}::bigint AND "
+            f"({a}.class_id = ANY({plain}::bigint[]) OR ({a}.class_id = ANY({own}::bigint[]) AND {a}.id = ANY({granted}::text[]))))")
 
 
 def browse_count_sql(where: str, plain: str, own: str, granted: str, unvouched: str, app: str, links: str | None) -> str:
     """:func:`count_sql` over the children of the start: the ones of the connector ``app`` kg admits by class, by type, ``$3`` at most (another connector's child is the access
     check's, as :func:`browse_undecided_sql` hands it over: a class can be shared by two connectors)."""
-    admitted = (f"NOT c.placeholder AND c.r13 IS FALSE AND c.has_path AND c.class_id IS NOT NULL AND NOT c.fenced AND NOT c.class_id = ANY({unvouched}::bigint[]) "
-                f"AND c.app_sk = {app}::bigint "
-                f"AND (c.class_id = ANY({plain}::bigint[]) OR (c.class_id = ANY({own}::bigint[]) AND c.id = ANY({granted}::text[])))")
+    admitted = _browse_admitted(plain, own, granted, unvouched, app, "c")
     cols = "r.kind, r.folder, r.id, r.placeholder, r.r13, r.path IS NOT NULL AS has_path, r.class_id, r.fence_job IS NOT NULL AS fenced, r.app_sk"
     return (f"/* pipeshub:kg.browse_count */ SELECT t.kind, t.folder, count(*) AS n FROM (SELECT c.kind, c.folder FROM ({_children(cols, where, links, _FENCE)}) c "
             f"WHERE {admitted} LIMIT $3) t GROUP BY t.kind, t.folder")
+
+
+def browse_once_sql(field_: str, sort_dir: str, direction: str, where: str, branches: list[str] | None, links: str | None, undecided: tuple[str, str, str],
+                    admitted: tuple[str, str, str, str, str, str]) -> str:
+    """A wide node's first window, its undecided children and its count in one read of its children: the children (as :func:`browse_scopes` reads them, each by its own range or
+    key) are read once into a materialized set, and the three are taken from it: ``undecided`` (:func:`browse_undecided_sql`: the unvouched classes, the connector, the limit)
+    as an array of sks, ``admitted`` (:func:`browse_count_sql`: plain, own, granted, unvouched, the connector, the cap) as counts by type, and the window past ``branches`` in
+    the sort order, ``$3`` rows, one row each (none when the window is empty: the arrays then come on one row of NULLs)."""
+    unv, app, ulim = undecided
+    plain, own, granted, unvouched, capp, cap = admitted
+    past = f"({') OR ('.join(branches)})" if branches else "true"
+    return (f"/* pipeshub:kg.browse_once */ WITH r AS MATERIALIZED ({_children(COLS, where, links, _FENCE)}) "
+            f"SELECT x.undecided, x.counts, w.* FROM (SELECT "
+            f"(SELECT coalesce(array_agg(u.sk), '{{}}') FROM (SELECT r.sk FROM r WHERE {_browse_undecided(unv, app)} LIMIT {ulim}) u) AS undecided, "
+            f"(SELECT coalesce(json_agg(json_build_array(t.kind, t.folder, t.n)), '[]') FROM (SELECT z.kind, z.folder, count(*) AS n FROM "
+            f"(SELECT r.kind, r.folder FROM r WHERE {_browse_admitted(plain, own, granted, unvouched, capp)} LIMIT {cap}) z GROUP BY z.kind, z.folder) t) AS counts) x "
+            f"LEFT JOIN LATERAL (SELECT r.* FROM r WHERE {past} ORDER BY {order(field_, sort_dir, direction)} LIMIT $3) w ON true")
 
 
 def children_of_sql(only: str = "", *, total: bool = False) -> str:
@@ -369,6 +398,9 @@ CHAIN_GRANTED = """/* pipeshub:kg.chain_granted */ SELECT r.sk, r.id, r.kind, r.
 CHAIN_ROWS = """/* pipeshub:kg.chain_rows */ SELECT r.sk, r.id, r.kind, r.parent_sk, r.group_sk, r.deleted FROM kg.records r
     WHERE r.org_id = $1 AND r.coll = ANY('{2,3}'::smallint[]) AND r.id = ANY($2::text[])"""
 CHAIN_BY_SK = "/* pipeshub:kg.chain_by_sk */ SELECT r.sk, r.kind, r.parent_sk, r.deleted, r.alien FROM kg.records r WHERE r.org_id = $1 AND r.sk = ANY($2::bigint[])"
+# The ids and collections of the nodes ``$2`` (sks) as three arrays in one row: the root's chain-top read asks it for every grant of the viewer (``KhBrowseMixin._kh_root_tops``).
+KEYS_OF = """/* pipeshub:kg.keys_of */ SELECT coalesce(array_agg(sk), '{}') AS sks, coalesce(array_agg(coll), '{}') AS colls, coalesce(array_agg(id), '{}') AS ids
+    FROM kg.node_keys WHERE org_id = $1 AND sk = ANY($2::bigint[])"""
 APP_KEY = "/* pipeshub:kg.app_key */ SELECT sk FROM kg.node_keys WHERE org_id = $1 AND coll = 1 AND id = $2"
 # The groups that hold a record among ids ``$2`` (as its group or by a group link) that could be a chain-top: read once per request by key from the grants.
 HELD_ANY = """/* pipeshub:kg.listing_held_any */ SELECT DISTINCT g.sk FROM kg.records c

@@ -507,7 +507,7 @@ async def test_a_node_counts_only_live_linked_children_against_its_bound_and_lis
 
 
 # the statements checked for the plan of their values only (the page's snapshot plans each for its values): the windows of a wide node and its total
-CUSTOM_ONLY = ("wide ", "children ", "undecided ", "count ")
+CUSTOM_ONLY = ("wide ", "children ", "undecided ", "count ", "once ")
 
 
 # an index condition that names the node (or nodes) the statement asks about: a parent, a key, a child, an id (not merely the org, a kind or a class); ``>=`` is a seek's
@@ -597,13 +597,19 @@ async def test_every_browse_statement_reads_by_an_index_and_never_scans_the_orga
                 statements += [(f"children {at}", kgl.children_sql(where, links), ch.values), (f"children_held {at}", kgl.children_held_sql(where, links), held.values),
                                (f"undecided {at}", kgl.browse_undecided_sql(where, und.add([3]), und.add(app_sk), und_links), und.values),
                                (f"count {at}", kgl.browse_count_sql(where, cnt.add([1]), cnt.add([2]), cnt.add(["x"]), cnt.add([3]), cnt.add(app_sk), cnt_links), cnt.values)]
+                for boundary in (None, {"nullRank": 0, "sortKey": "child 0100", "id": "c0100"}):
+                    one, _, one_links = params(204)
+                    branches = kgl.after("name", "ASC", "next", boundary, one) if boundary else None
+                    sql = kgl.browse_once_sql("name", "ASC", "next", where, branches, one_links, (one.add([3]), one.add(app_sk), one.add(201)),
+                                              (one.add([1]), one.add([2]), one.add(["x"]), one.add([3]), one.add(app_sk), one.add(10_001)))
+                    statements.append((f"once {at} {'after' if boundary else 'first'}", sql, one.values))
         q = kgl.Params([org, [sk, g1], hide])
         admit = kgl.class_admit("c", q, {"plain": [1], "own": [2], "unvouched": [], "granted": ["x"], "walked": set()})
         arrows = kgl.arrows_sql(admit, kgl.undecided_child(q, [3], app_sk))      # as the listing asks it
         statements += [("children_of", kgl.children_of_sql(""), [org, [sk, g1], 200, hide]), ("children_of_bounded", kgl.children_of_sql(total=True), [org, [sk, g1], 1000, hide, 5000]),
                        ("held", kgl.HELD, [org, [g1], ["c0001", "fold"]]), ("chain_granted", kgl.CHAIN_GRANTED, [org, ["c0001", "fold"], "app1"]),
                        ("chain_rows", kgl.CHAIN_ROWS, [org, ["c0001", "fold"]]), ("chain_by_sk", kgl.CHAIN_BY_SK, [org, [sk, g1]]), ("app_key", kgl.APP_KEY, [org, "app1"]),
-                       ("root_chain", grant_marks.ROOT_CHAIN, [org, [sk, *hide], app_sk]),
+                       ("root_chain", grant_marks.ROOT_CHAIN, [org, [sk, *hide], app_sk]), ("keys_of", kgl.KEYS_OF, [org, [sk, *hide]]),
                        ("arrows", arrows, q.values), ("linked_children", kgl.LINKED_CHILDREN, [org, g1, 5001, hide]),
                        ("start", kgl.BROWSE_START, [org, "fold"]), ("start_connector", kh_browse.START_CONNECTOR, [org, "fold"]), ("up", kgl.BROWSE_UP, [org, [sk]]),
                        ("state", kgl.STATE, [org, "app1"]), ("hiders", kgl.HAS_HIDER, [org, app_sk]), ("hidden", kgl.HIDDEN, [org, app_sk]), ("classes", kgl.CLASSES, [org, app_sk, 50_001]),

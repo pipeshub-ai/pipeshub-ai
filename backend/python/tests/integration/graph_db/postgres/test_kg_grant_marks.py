@@ -9,9 +9,10 @@ from typing import Any
 
 import pytest
 
-from app.services.graph_db.postgres import kh_listing
+from app.services.graph_db.postgres import kh_browse, kh_listing
 from app.services.graph_db.postgres.kg import backfill as bf
 from app.services.graph_db.postgres.kg import grant_marks
+from app.services.graph_db.postgres.kg import listing as kgl
 from app.services.graph_db.postgres.kg.drainer import drain_org
 from app.services.graph_db.postgres.kg.model import CODE_EPOCH
 from app.services.graph_db.postgres.kg.verify import verify_app
@@ -255,9 +256,9 @@ async def test_a_browse_from_the_marked_grants_lists_what_one_from_every_grant_l
     given: list[list[str]] = []
     real = p._kh_root_tops
 
-    async def spy(org_, org_id, app_id, top, groups, access, transaction) -> list:
+    async def spy(org_, org_id, app_id, top, groups, access, transaction, **kw) -> list:
         given.append(await top.ids(groups))
-        return await real(org_, org_id, app_id, top, groups, access, transaction)
+        return await real(org_, org_id, app_id, top, groups, access, transaction, **kw)
     monkeypatch.setattr(p, "_kh_root_tops", spy)
     marked = {u: await _pages(p, org, u) for u in VIEWERS}
     at_root = given[0]
@@ -337,3 +338,39 @@ async def test_the_root_read_from_the_marks_and_the_rows_lists_what_the_walk_lis
         return kh_listing.TopGrants(granted, None, {}, None)
     monkeypatch.setattr(kh_listing.KhListingMixin, "_kh_top_grants", every)
     assert {u: await _roots(p, org, u) for u in VIEWERS} == marked
+
+
+async def test_a_root_too_wide_to_hold_lists_what_one_held_whole_lists(pg_provider, pg_db, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A root with more chain-tops than a browse holds is read in windows, its first window, undecided rows and count in one read of its children (and, with no filter, without
+    counting them first): every viewer's root and sidebar, in every sort and page, list the same rows in the same order with the same arrows and counts as held whole."""
+    p, org = pg_provider, new_org()
+    await _root_world(p, pg_db, org)
+
+    async def pages(user: str) -> list:
+        out = []
+        with ctx(org):
+            acc = await p.get_knowledge_hub_access_v3(user, org)
+            kw = {"grantee_ids": acc["grantee_ids"], "gated_app_ids": acc["gated_app_ids"], "grants_by_connector": acc["by_connector"], "user_key": user}
+            for side in (False, True):
+                for field, order in (("name", "ASC"), ("name", "DESC"), ("updatedAt", "DESC")):
+                    after = None
+                    for _ in range(10):
+                        page = await p.get_knowledge_hub_connector_page_v3("app1", org, limit=2, flatten=False, start_id="app1", start_type="app", sort_field=field,
+                                                                           sort_dir=order, after=after, filters={"only_containers": True} if side else {}, **kw)
+                        out.append(([(r["id"], r["hasChildren"]) for r in page["rows"]], page.get("total"), page.get("totalCapped"), page.get("nRecord"), page.get("nFolder")))
+                        if not page["hasMore"]:
+                            break
+                        after = page.get("resume") or {k: page["rows"][-1][k] for k in ("nullRank", "sortKey", "id")}
+        return out
+    held = {u: await pages(u) for u in VIEWERS}
+    assert any(len(rows) > 1 for rows, *_ in held["u1"])
+    monkeypatch.setattr(kh_browse, "BROWSE_MEMORY_MAX", 2)
+    once: list[int] = []
+    real = kgl.browse_once_sql
+
+    def spy(*a, **k) -> str:
+        once.append(1)
+        return real(*a, **k)
+    monkeypatch.setattr(kgl, "browse_once_sql", spy)
+    assert {u: await pages(u) for u in VIEWERS} == held
+    assert once                                                                   # the wide root read its children once

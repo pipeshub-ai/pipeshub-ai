@@ -57,7 +57,9 @@ HELD = "/* pipeshub:kg.grant_marks_held */ SELECT sk, kind, app_sk, group_sk, de
 MARKED = ("kind", "app_sk", "group_sk", "deleted", "placeholder", "alien", "rule")
 # The viewer's grants of the connector $3 that may be chain-tops (no parent the same principal holds covers them), with each node's group and parent marks: the grants of every principal
 # the viewer holds in it (kg.principal_closure: the user, their groups, roles, teams and organisation, and the source accounts linked in the connector with theirs).
-CANDIDATES = """/* pipeshub:kg.chain_top_grants */ SELECT m.node_sk, m.node_group, m.node_parent FROM kg.node_keys u
+# One row of three arrays: a viewer can hold tens of thousands of grants, and as a row each they took longer to decode than to read (as ``read.LITERALS``).
+CANDIDATES = """/* pipeshub:kg.chain_top_grants */ SELECT coalesce(array_agg(m.node_sk), '{}') AS sks, coalesce(array_agg(m.node_group), '{}') AS grps,
+      coalesce(array_agg(m.node_parent), '{}') AS pars FROM kg.node_keys u
     JOIN kg.principal_closure c ON c.org_id = u.org_id AND c.user_sk = u.sk AND c.app_sk IN (0, $3)
     CROSS JOIN LATERAL (SELECT m.node_sk, m.node_group, m.node_parent FROM kg.scope_members m WHERE m.org_id = $1 AND m.principal_sk = c.principal_sk AND m.app_sk = $3
         AND NOT m.parent_held AND m.gtype <> '@uar' OFFSET 0) m
@@ -135,4 +137,5 @@ async def fill_page(tx: Tx, org: str, app_sk: int, after: tuple[int, int, str], 
 async def candidates(tx: Tx, org: str, app_sk: int, user_key: str) -> dict[int, tuple[int | None, int | None]]:
     """The viewer's grants of the connector that may be chain-tops: node sk -> (its record group, its one hierarchy parent), each None where the mark is not set. Only for a
     connector kg serves."""
-    return {r["node_sk"]: (r["node_group"], r["node_parent"]) for r in await tx.fetch(CANDIDATES, org, user_key, app_sk)}
+    r = await tx.fetchrow(CANDIDATES, org, user_key, app_sk)
+    return dict(zip(r["sks"], zip(r["grps"], r["pars"], strict=True), strict=True))
