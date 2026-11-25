@@ -77,10 +77,13 @@ async def test_an_old_replica_swapping_in_another_orgs_intent_loses_nothing(
     config.kv[EARLIER] = {"orgId": "org-a", "connectorId": "c1", "requestedAt": 1}
     theirs = {"orgId": "org-b", "connectorId": "c1", "requestedAt": 2}
     read, write = Config.get_config, Config.set_config
+    swapped = False
 
     async def swap_after_read(self: Config, key: str, *a: object, **kw: object) -> object:
         value = await read(self, key, *a, **kw)
-        self.kv[EARLIER] = theirs
+        nonlocal swapped
+        if not swapped:
+            swapped, self.kv[EARLIER] = True, theirs
         return value
 
     async def swap_after_write(self: Config, key: str, value: object, **kw: object) -> bool:
