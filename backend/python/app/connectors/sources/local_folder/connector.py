@@ -50,6 +50,7 @@ from app.connectors.core.registry.filters import (
     SyncFilterKey,
     load_connector_filters,
 )
+from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
 from app.connectors.sources.local_folder import scan
 from app.models.entities import (
     AppUser,
@@ -167,6 +168,7 @@ class FolderConnector(BaseConnector):
     CONNECTOR = Connectors.LOCAL_REPO
     FILTER_KEY = "localrepository"
     DEFAULT_IGNORES = scan.DEFAULT_IGNORES
+    _sync_incomplete = False
 
     def __init__(
         self,
@@ -375,7 +377,12 @@ class FolderConnector(BaseConnector):
             raise
         return scan.sha256_fd(fd), binary
 
+    def full_sync_coverage(self) -> FullSyncCoverage:
+        """A full sync that could not name the records it held back for unreadable files has not read everything, so it unlinks nothing."""
+        return FullSyncCoverage(complete=not self._sync_incomplete)
+
     async def run_sync(self) -> None:
+        self._sync_incomplete = False
         try:
             await self._load_config()
         except scan.PathRefused as exc:
@@ -485,8 +492,15 @@ class FolderConnector(BaseConnector):
 
         # Every run: records for paths the walk no longer sees (old root, an earlier instance, a lost delete).
         # Paths that failed to read this run are kept, so a transient error never deletes.
-        keep = live | dirs | unreadable | {a for u in unreadable for a in _ancestors(u)} | set(undeleted)
+        held = unreadable | {a for u in unreadable for a in _ancestors(u)}
+        keep = live | dirs | held | set(undeleted)
         deleted_fail += len(await self._prune_unseen(keep, stored))
+        if stored is not None:
+            kept = [stored[x] for x in {external_id(r) for r in held} if x in stored]
+            if kept:
+                self.data_entities_processor.note_kept_records(self.connector_id, kept)
+        elif unreadable:
+            self._sync_incomplete = True
 
         self.logger.info(
             "Folder sync of %s: %d walked, %d changed, %d removed, %d unreadable, %d delete failures, %d credential files left out",
@@ -538,9 +552,9 @@ class FolderConnector(BaseConnector):
                 self.logger.error("Folder: could not delete record for %s", x, exc_info=True)
         return failed
 
-    async def _stored_ids(self) -> set[str] | None:
-        """External ids of every record the store holds for this connector, or None if it cannot be listed."""
-        ids: set[str] = set()
+    async def _stored_ids(self) -> dict[str, str] | None:
+        """The record id of every record the store holds for this connector by external id, or None if they cannot be listed."""
+        ids: dict[str, str] = {}
         offset = 0
         statuses = [s.value for s in ProgressStatus]
         try:
@@ -551,7 +565,8 @@ class FolderConnector(BaseConnector):
                 )
                 if not page:
                     return ids
-                ids.update(r.external_record_id for r in page)
+                for r in page:
+                    ids[r.external_record_id] = r.id
                 offset += len(page)
         except asyncio.CancelledError:
             raise
@@ -559,7 +574,7 @@ class FolderConnector(BaseConnector):
             self.logger.warning("Folder: could not list stored records; skipping reconcile", exc_info=True)
             return None
 
-    async def _prune_unseen(self, seen: set[str], stored: set[str] | None) -> list[str]:
+    async def _prune_unseen(self, seen: set[str], stored: dict[str, str] | None) -> list[str]:
         """After a first full walk, retire records the walk did not see (an earlier instance left them)."""
         seen_ids = {external_id(s) for s in seen}
         return await self._delete([x for x in (stored or ()) if x not in seen_ids])
