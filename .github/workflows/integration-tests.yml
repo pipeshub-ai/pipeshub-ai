@@ -337,8 +337,8 @@ jobs:
       AZURE_BLOB_CONNECTION_STRING: ${{ secrets.AZURE_BLOB_CONNECTION_STRING }}
       AZURE_FILES_CONNECTION_STRING: ${{ secrets.AZURE_FILES_CONNECTION_STRING }}
       # The AI model provider is the repository variable TEST_AI_MODEL_PROVIDER
-      # (openAI or azureOpenAI; openAI when unset). Both providers' settings are
-      # always passed, so switching provider is that one variable. The model setup,
+      # (openAI, azureOpenAI or openAICompatible; openAI when unset). Every provider's
+      # settings are always passed, so switching provider is that one variable. The model setup,
       # the live provider specs, the demo judge and the Playwright tests all use
       # only the named provider; the other's key may belong to an unfunded account.
       TEST_AI_MODEL_PROVIDER: ${{ vars.TEST_AI_MODEL_PROVIDER || 'openAI' }}
@@ -357,6 +357,11 @@ jobs:
       # local .env run does today.
       TEST_AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME: ${{ secrets.TEST_AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME || vars.TEST_AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME }}
       TEST_AZURE_OPENAI_EMBEDDING_MODEL: ${{ secrets.TEST_AZURE_OPENAI_EMBEDDING_MODEL || vars.TEST_AZURE_OPENAI_EMBEDDING_MODEL }}
+      # For openAICompatible (a gateway such as Bifrost): base URL with /v1, the gateway's model ids.
+      TEST_OPENAI_COMPATIBLE_API_KEY: ${{ secrets.TEST_OPENAI_COMPATIBLE_API_KEY }}
+      TEST_OPENAI_COMPATIBLE_ENDPOINT: ${{ secrets.TEST_OPENAI_COMPATIBLE_ENDPOINT || vars.TEST_OPENAI_COMPATIBLE_ENDPOINT }}
+      TEST_OPENAI_COMPATIBLE_LLM_MODEL: ${{ vars.TEST_OPENAI_COMPATIBLE_LLM_MODEL }}
+      TEST_OPENAI_COMPATIBLE_EMBEDDING_MODEL: ${{ vars.TEST_OPENAI_COMPATIBLE_EMBEDDING_MODEL }}
       # The demo test's answer judge follows TEST_AI_MODEL_PROVIDER too. Required:
       # without it, facts a question lists for the judge would go unchecked yet pass.
       PIPESHUB_REQUIRE_JUDGE: '1'

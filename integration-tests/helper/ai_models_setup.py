@@ -31,7 +31,8 @@ Env vars (first provider with complete credentials wins unless
 ``TEST_AI_MODEL_PROVIDER`` is set; on health-check failure the next configured
 provider is tried):
 
-    TEST_AI_MODEL_PROVIDER       – force provider id: openAI, azureOpenAI, gemini, groq
+    TEST_AI_MODEL_PROVIDER       – force provider id: openAI, azureOpenAI,
+                                   openAICompatible, gemini, groq
 
     OpenAI:
         TEST_OPENAI_API_KEY        – falls back to OPENAI_API_KEY
@@ -45,6 +46,14 @@ provider is tried):
         TEST_AZURE_OPENAI_MODEL
         TEST_AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME – optional; falls back to deployment name
         TEST_AZURE_OPENAI_EMBEDDING_MODEL      – optional (default: text-embedding-3-small)
+
+    OpenAI-compatible endpoint (a gateway such as Bifrost or LiteLLM):
+        TEST_OPENAI_COMPATIBLE_ENDPOINT        – base URL the OpenAI SDK appends
+                                                 /chat/completions to, e.g. https://gw.example.com/v1
+        TEST_OPENAI_COMPATIBLE_API_KEY
+        TEST_OPENAI_COMPATIBLE_LLM_MODEL       – the gateway's model id, e.g. openai/gpt-5.6-luna;
+                                                 also used for the reasoning LLM
+        TEST_OPENAI_COMPATIBLE_EMBEDDING_MODEL – e.g. openai/text-embedding-3-small
 
     Gemini / Groq (LLM only):
         TEST_GEMINI_API_KEY, TEST_GEMINI_LLM_MODEL
@@ -86,6 +95,7 @@ _PROVIDER_AZURE_OPENAI = "azureOpenAI"
 _PROVIDER_GEMINI = "gemini"
 _PROVIDER_GROQ = "groq"
 _PROVIDER_OLLAMA = "ollama"
+_PROVIDER_OPENAI_COMPATIBLE = "openAICompatible"
 
 _DEFAULT_LLM_MODEL_TYPE = "llm"
 _DEFAULT_EMBEDDING_MODEL_TYPE = "embedding"
@@ -102,6 +112,7 @@ _EMBEDDING_IN_USE_MARKER = "is embedding your indexed content"
 _LLM_PROVIDER_ORDER = (
     _PROVIDER_AZURE_OPENAI,
     _PROVIDER_OPENAI,
+    _PROVIDER_OPENAI_COMPATIBLE,
     _PROVIDER_GEMINI,
     _PROVIDER_GROQ,
     _PROVIDER_OLLAMA,
@@ -109,6 +120,7 @@ _LLM_PROVIDER_ORDER = (
 _EMBEDDING_PROVIDER_ORDER = (
     _PROVIDER_AZURE_OPENAI,
     _PROVIDER_OPENAI,
+    _PROVIDER_OPENAI_COMPATIBLE,
     _PROVIDER_OLLAMA,
 )
 
@@ -207,9 +219,37 @@ def _azure_credentials_complete(*, for_embedding: bool) -> bool:
     return bool(deployment)
 
 
+def _openai_compatible_model_name(*, for_embedding: bool) -> str | None:
+    # No default: a gateway names its models its own way (Bifrost: openai/gpt-5.6-luna).
+    if for_embedding:
+        return _env("TEST_OPENAI_COMPATIBLE_EMBEDDING_MODEL")
+    return _env("TEST_OPENAI_COMPATIBLE_LLM_MODEL")
+
+
+def _build_openai_compatible_candidate(
+    *, model_name: str | None, for_embedding: bool
+) -> _ProviderCandidate | None:
+    api_key = _env("TEST_OPENAI_COMPATIBLE_API_KEY")
+    endpoint = _env("TEST_OPENAI_COMPATIBLE_ENDPOINT")
+    resolved_name = model_name or _openai_compatible_model_name(for_embedding=for_embedding)
+    if not api_key or not endpoint or not resolved_name:
+        return None
+    return _ProviderCandidate(
+        provider=_PROVIDER_OPENAI_COMPATIBLE,
+        model_name=resolved_name,
+        configuration={"model": resolved_name, "apiKey": api_key, "endpoint": endpoint},
+    )
+
+
 def _provider_credentials_available(provider: str, *, for_embedding: bool) -> bool:
     if provider == _PROVIDER_OPENAI:
         return bool(_openai_api_key())
+    if provider == _PROVIDER_OPENAI_COMPATIBLE:
+        return bool(
+            _env("TEST_OPENAI_COMPATIBLE_API_KEY")
+            and _env("TEST_OPENAI_COMPATIBLE_ENDPOINT")
+            and _openai_compatible_model_name(for_embedding=for_embedding)
+        )
     if provider == _PROVIDER_AZURE_OPENAI:
         return _azure_credentials_complete(for_embedding=for_embedding)
     if provider == _PROVIDER_OLLAMA:
@@ -277,6 +317,9 @@ def _build_llm_candidate(
             configuration=_build_openai_configuration(api_key, resolved_name),
         )
 
+    if provider == _PROVIDER_OPENAI_COMPATIBLE:
+        return _build_openai_compatible_candidate(model_name=model_name, for_embedding=False)
+
     if provider == _PROVIDER_AZURE_OPENAI:
         api_key = _env("TEST_AZURE_OPENAI_API_KEY")
         deployment = _env("TEST_AZURE_OPENAI_DEPLOYMENT_NAME")
@@ -340,6 +383,9 @@ def _build_embedding_candidate(
             model_name=resolved_name,
             configuration=_build_openai_configuration(api_key, resolved_name),
         )
+
+    if provider == _PROVIDER_OPENAI_COMPATIBLE:
+        return _build_openai_compatible_candidate(model_name=model_name, for_embedding=True)
 
     if provider == _PROVIDER_AZURE_OPENAI:
         api_key = _env("TEST_AZURE_OPENAI_API_KEY")
@@ -425,6 +471,8 @@ def _missing_credentials_message(*, for_embedding: bool) -> str:
             "  - Azure OpenAI: TEST_AZURE_OPENAI_API_KEY, TEST_AZURE_OPENAI_ENDPOINT, "
             "and TEST_AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME "
             "(or TEST_AZURE_OPENAI_DEPLOYMENT_NAME)\n"
+            "  - OpenAI-compatible endpoint: TEST_OPENAI_COMPATIBLE_ENDPOINT, "
+            "TEST_OPENAI_COMPATIBLE_API_KEY and TEST_OPENAI_COMPATIBLE_EMBEDDING_MODEL\n"
             "Or set TEST_AI_MODEL_PROVIDER to force a specific provider."
         )
     return (
@@ -432,6 +480,8 @@ def _missing_credentials_message(*, for_embedding: bool) -> str:
         "  - OpenAI: TEST_OPENAI_API_KEY (or OPENAI_API_KEY)\n"
         "  - Azure OpenAI: TEST_AZURE_OPENAI_API_KEY, TEST_AZURE_OPENAI_ENDPOINT, "
         "TEST_AZURE_OPENAI_DEPLOYMENT_NAME\n"
+        "  - OpenAI-compatible endpoint: TEST_OPENAI_COMPATIBLE_ENDPOINT, "
+        "TEST_OPENAI_COMPATIBLE_API_KEY and TEST_OPENAI_COMPATIBLE_LLM_MODEL\n"
         "  - Gemini: TEST_GEMINI_API_KEY\n"
         "  - Groq: TEST_GROQ_API_KEY\n"
         "Or set TEST_AI_MODEL_PROVIDER to force a specific provider."
@@ -657,7 +707,8 @@ def setup_test_llm_model(
 ) -> SeededAIModel:
     """Add a single LLM model and return its assigned modelKey.
 
-    Tries providers in env order (OpenAI, Azure OpenAI, Gemini, Groq) until one
+    Tries providers in env order (Azure OpenAI, OpenAI, an OpenAI-compatible
+    endpoint, Gemini, Groq, Ollama) until one
     passes the backend health check. Set ``TEST_AI_MODEL_PROVIDER`` to force one.
 
     When the org's default LLM already is the wanted model (same provider and
@@ -717,8 +768,8 @@ def setup_test_embedding_model(
     reused as it is and teardown leaves it: the stack is shared by every pytest
     session and the Playwright run, and PipesHub refuses to delete or replace
     the embedding model while the vector store holds its vectors. Otherwise the
-    model is added, trying Azure OpenAI, OpenAI, then Ollama when credentials
-    are present.
+    model is added, trying Azure OpenAI, OpenAI, an OpenAI-compatible endpoint,
+    then Ollama when credentials are present.
 
     Raises ``RuntimeError`` if no provider credentials are available, all fail,
     or another model has already embedded content. The suite does not delete
