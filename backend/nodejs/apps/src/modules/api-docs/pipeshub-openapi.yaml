@@ -21175,11 +21175,10 @@ components:
     ConnectorScope:
       type: string
       description: |
-        Scope determines visibility and access control for connectors:<br>
-        <ul>
-        <li><code>team</code> - Available to all users in the organization (admin-only creation)</li>
-        <li><code>personal</code> - Private to the creating user only</li>
-        </ul>
+        Scope determines visibility and access control for connectors:
+
+        - `team` - Available to all users in the organization (admin-only creation)
+        - `personal` - Private to the creating user only
       enum: [team, personal]
       example: "team"
     ConnectorAuthType:
@@ -24139,16 +24138,15 @@ components:
       type: string
       enum: [hourly, daily, weekly, monthly, custom, once, interval]
       description: |
-        Type of crawling schedule that determines how often the connector data is synced.<br>
-        <ul>
-        <li><b>hourly</b>: Run at specified minute every X hours</li>
-        <li><b>daily</b>: Run once per day at specified hour and minute</li>
-        <li><b>weekly</b>: Run on specified days of the week at specified time</li>
-        <li><b>monthly</b>: Run on specified day of month at specified time</li>
-        <li><b>custom</b>: Use cron expression for complex schedules</li>
-        <li><b>once</b>: Run once at a specific future datetime</li>
-        <li><b>interval</b>: Repeat every N minutes regardless of clock time (BullMQ <code>every</code>-based)</li>
-        </ul>
+        Type of crawling schedule that determines how often the connector data is synced.
+
+        - **hourly**: Run at specified minute every X hours
+        - **daily**: Run once per day at specified hour and minute
+        - **weekly**: Run on specified days of the week at specified time
+        - **monthly**: Run on specified day of month at specified time
+        - **custom**: Use cron expression for complex schedules
+        - **once**: Run once at a specific future datetime
+        - **interval**: Repeat every N minutes regardless of clock time (BullMQ `every`-based)
 
 
     # Base schedule configuration (common fields)
@@ -24240,7 +24238,8 @@ components:
                 maximum: 6
               minItems: 1
               description: |
-                Days of the week to run (0=Sunday, 1=Monday, ..., 6=Saturday).<br>
+                Days of the week to run (0=Sunday, 1=Monday, ..., 6=Saturday).
+
                 Example: [1, 3, 5] runs on Monday, Wednesday, Friday
               example: [1, 3, 5]
             hour:
@@ -24307,14 +24306,14 @@ components:
               type: string
               pattern: "^(\\S+\\s+){4}\\S+$"
               description: |
-                Standard 5-field cron expression: minute hour day-of-month month day-of-week.<br>
-                Examples:<br>
-                <ul>
-                <li><code>0 2 * * *</code> - Every day at 2:00 AM</li>
-                <li><code>30 */4 * * *</code> - Every 4 hours at minute 30</li>
-                <li><code>0 9 * * 1-5</code> - Weekdays at 9:00 AM</li>
-                <li><code>0 0 1,15 * *</code> - 1st and 15th of each month at midnight</li>
-                </ul>
+                Standard 5-field cron expression: minute hour day-of-month month day-of-week.
+
+                Examples:
+
+                - `0 2 * * *` - Every day at 2:00 AM
+                - `30 */4 * * *` - Every 4 hours at minute 30
+                - `0 9 * * 1-5` - Weekdays at 9:00 AM
+                - `0 0 1,15 * *` - 1st and 15th of each month at midnight
               example: "0 2 * * *"
             description:
               type: string
@@ -24338,8 +24337,8 @@ components:
               format: date-time
               pattern: '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$'
               description: |
-                ISO 8601 datetime when the job should run, in UTC with a <code>Z</code> suffix.
-                A numeric offset such as <code>+00:00</code> and a date without a time are refused.
+                ISO 8601 datetime when the job should run, in UTC with a `Z` suffix.
+                A numeric offset such as `+00:00` and a date without a time are refused.
                 Must be in the future.
               example: "2024-12-25T10:00:00Z"
           required:
@@ -24351,10 +24350,10 @@ components:
         - $ref: '#/components/schemas/BaseScheduleConfig'
         - type: object
           description: |
-            Repeat every N minutes using BullMQ's millisecond-based <code>every</code> repeat option.
+            Repeat every N minutes using BullMQ's millisecond-based `every` repeat option.
             Unlike cron-based schedules this fires relative to the previous run, not at a fixed
             wall-clock time. Used by the connector sync scheduler when
-            <code>selectedStrategy = SCHEDULED</code> with an <code>intervalMinutes</code> config.
+            `selectedStrategy = SCHEDULED` with an `intervalMinutes` config.
           properties:
             scheduleType:
               type: string
@@ -24363,8 +24362,8 @@ components:
               type: object
               description: |
                 The interval itself. Unlike every other schedule type, whose fields sit beside
-                <code>scheduleType</code>, the interval is nested one level down under this key.
-                An <code>intervalMinutes</code> sent beside <code>scheduleType</code> is ignored.
+                `scheduleType`, the interval is nested one level down under this key.
+                An `intervalMinutes` sent beside `scheduleType` is ignored.
               properties:
                 intervalMinutes:
                   type: integer
@@ -24372,13 +24371,13 @@ components:
                   maximum: 525600
                   description: |
                     How often to repeat, in minutes. Maximum is 525 600 (one year).
-                    BullMQ stores this as <code>every: intervalMinutes * 60 * 1000</code> ms;
-                    the <code>pattern</code> field will be <code>null</code> on repeatable-job
+                    BullMQ stores this as `every: intervalMinutes * 60 * 1000` ms;
+                    the `pattern` field will be `null` on repeatable-job
                     listings for this schedule type.
                   example: 5
                 timezone:
                   type: string
-                  description: Optional IANA timezone identifier for the interval, stored and echoed beside <code>intervalMinutes</code>. The outer <code>timezone</code> still takes its default.
+                  description: Optional IANA timezone identifier for the interval, stored and echoed beside `intervalMinutes`. The outer `timezone` still takes its default.
                   example: "UTC"
               required:
                 - intervalMinutes
@@ -24388,17 +24387,17 @@ components:
     # Unified ScheduleConfig using oneOf for discriminated union
     ScheduleConfig:
       description: |
-        Schedule configuration for crawling jobs. The structure varies based on <code>scheduleType</code>.<br><br>
-        <b>Schedule Type Configurations:</b><br>
-        <ul>
-        <li><b>hourly:</b> <code>minute</code>, <code>interval</code> (optional)</li>
-        <li><b>daily:</b> <code>hour</code>, <code>minute</code></li>
-        <li><b>weekly:</b> <code>daysOfWeek</code>, <code>hour</code>, <code>minute</code></li>
-        <li><b>monthly:</b> <code>dayOfMonth</code>, <code>hour</code>, <code>minute</code></li>
-        <li><b>custom:</b> <code>cronExpression</code>, <code>description</code> (optional)</li>
-        <li><b>once:</b> <code>scheduledTime</code></li>
-        <li><b>interval:</b> <code>scheduleConfig.intervalMinutes</code> (nested one level down) — repeats every N minutes (BullMQ <code>every</code>-based)</li>
-        </ul>
+        Schedule configuration for crawling jobs. The structure varies based on `scheduleType`.
+
+        **Schedule Type Configurations:**
+
+        - **hourly:** `minute`, `interval` (optional)
+        - **daily:** `hour`, `minute`
+        - **weekly:** `daysOfWeek`, `hour`, `minute`
+        - **monthly:** `dayOfMonth`, `hour`, `minute`
+        - **custom:** `cronExpression`, `description` (optional)
+        - **once:** `scheduledTime`
+        - **interval:** `scheduleConfig.intervalMinutes` (nested one level down) — repeats every N minutes (BullMQ `every`-based)
       oneOf:
         - $ref: '#/components/schemas/HourlyScheduleConfig'
         - $ref: '#/components/schemas/DailyScheduleConfig'
@@ -24523,16 +24522,15 @@ components:
           type: string
           enum: [waiting, active, completed, failed, delayed, paused, stuck]
           description: |
-            Current state of the job in the queue:<br>
-            <ul>
-            <li><b>waiting</b>: Queued and waiting to be processed</li>
-            <li><b>active</b>: Currently being processed by a worker</li>
-            <li><b>completed</b>: Successfully finished</li>
-            <li><b>failed</b>: Failed after all retry attempts</li>
-            <li><b>delayed</b>: Scheduled to run at a future time</li>
-            <li><b>paused</b>: Manually paused by user</li>
-            <li><b>stuck</b>: Job is stuck (worker crashed mid-processing)</li>
-            </ul>
+            Current state of the job in the queue:
+
+            - **waiting**: Queued and waiting to be processed
+            - **active**: Currently being processed by a worker
+            - **completed**: Successfully finished
+            - **failed**: Failed after all retry attempts
+            - **delayed**: Scheduled to run at a future time
+            - **paused**: Manually paused by user
+            - **stuck**: Job is stuck (worker crashed mid-processing)
           example: "waiting"
       required:
         - name
@@ -24648,15 +24646,15 @@ components:
           example: "Your OTP Code for PipesHub"
         templateData:
           description: |
-            Dynamic data to populate the email template. Required fields depend on <code>emailTemplateType</code>.<br><br>
-            <b>Template Data Requirements:</b><br>
-            <ul>
-            <li><b>loginWithOTP:</b> See <code>LoginWithOTPTemplateData</code> - requires <code>name</code>, <code>otp</code></li>
-            <li><b>resetPassword:</b> See <code>ResetPasswordTemplateData</code> - requires <code>name</code>, <code>link</code></li>
-            <li><b>accountCreation:</b> See <code>AccountCreationTemplateData</code> - requires <code>orgName</code>, <code>link</code></li>
-            <li><b>appuserInvite:</b> See <code>AppUserInviteTemplateData</code> - requires <code>invitee</code>, <code>orgName</code>, <code>link</code></li>
-            <li><b>suspiciousLoginAttempt:</b> See <code>SuspiciousLoginTemplateData</code> - requires <code>link</code></li>
-            </ul>
+            Dynamic data to populate the email template. Required fields depend on `emailTemplateType`.
+
+            **Template Data Requirements:**
+
+            - **loginWithOTP:** See `LoginWithOTPTemplateData` - requires `name`, `otp`
+            - **resetPassword:** See `ResetPasswordTemplateData` - requires `name`, `link`
+            - **accountCreation:** See `AccountCreationTemplateData` - requires `orgName`, `link`
+            - **appuserInvite:** See `AppUserInviteTemplateData` - requires `invitee`, `orgName`, `link`
+            - **suspiciousLoginAttempt:** See `SuspiciousLoginTemplateData` - requires `link`
           oneOf:
             - $ref: '#/components/schemas/LoginWithOTPTemplateData'
             - $ref: '#/components/schemas/ResetPasswordTemplateData'
@@ -33809,16 +33807,17 @@ paths:
       summary: OpenID Connect Discovery
       description: |
         OpenID Connect Discovery Endpoint (RFC 8414).
-        <br><br>
+
         Returns metadata about the OAuth/OIDC authorization server including
         endpoint URLs, supported features, and capabilities.
-        <br><br>
-        <b>Use Cases:</b><br>
-        - Automatic client configuration<br>
-        - Discovering supported features<br>
+
+        **Use Cases:**
+
+        - Automatic client configuration
+        - Discovering supported features
         - Getting endpoint URLs without hardcoding
-        <br><br>
-        <b>Note:</b> This endpoint does not require authentication. It takes no parameters; query parameters are ignored.
+
+        **Note:** This endpoint does not require authentication. It takes no parameters; query parameters are ignored.
       operationId: openidConfiguration
       security: []
       servers:
@@ -33855,12 +33854,12 @@ paths:
       summary: OAuth 2.0 Authorization Server Metadata
       description: |
         OAuth 2.0 Authorization Server Metadata Endpoint (RFC 8414).
-        <br><br>
+
         Returns the same metadata as the OpenID Connect Discovery endpoint
         but at the RFC 8414 standard path. MCP clients like Claude Code use
         this endpoint for discovery instead of openid-configuration.
-        <br><br>
-        <b>Note:</b> This endpoint does not require authentication. It takes no parameters; query parameters are ignored.
+
+        **Note:** This endpoint does not require authentication. It takes no parameters; query parameters are ignored.
       operationId: oauthAuthorizationServerMetadata
       security: []
       servers:
@@ -33897,18 +33896,20 @@ paths:
       summary: JSON Web Key Set
       description: |
         JSON Web Key Set Endpoint (RFC 7517).
-        <br><br>
+
         Returns the public keys used to verify JWT signatures for ID tokens
         and access tokens.
-        <br><br>
-        <b>Use Cases:</b><br>
-        - Verifying ID token signatures<br>
+
+        **Use Cases:**
+
+        - Verifying ID token signatures
         - Verifying access token signatures (if JWT-based)
-        <br><br>
-        <b>Note:</b><br>
-        - For HS256 (symmetric) signing, this returns empty keys<br>
-        - For RS256 (asymmetric) signing, returns public RSA keys<br>
-        - Keys should be cached with appropriate TTL<br>
+
+        **Note:**
+
+        - For HS256 (symmetric) signing, this returns empty keys
+        - For RS256 (asymmetric) signing, returns public RSA keys
+        - Keys should be cached with appropriate TTL
         - The endpoint takes no parameters; query parameters are ignored
       operationId: jwks
       security: []
@@ -33941,22 +33942,23 @@ paths:
       summary: OAuth Protected Resource Metadata
       description: |
         OAuth Protected Resource Metadata Endpoint (RFC 9728).
-        <br><br>
+
         Returns metadata about the protected resource including the resource
         identifier, authorization servers, supported scopes, and bearer token methods.
-        <br><br>
+
         `scopes_supported` lists the scopes the MCP tools use, plus
         `offline_access` for refresh tokens, limited to the instance's
         `MCP_SCOPES`. MCP clients that request every listed scope therefore
         ask only for what they need. `MCP_SCOPES` remains the
         limit on the scopes any personal access token or OAuth token can hold.
-        <br><br>
-        <b>Use Cases:</b><br>
-        - Discovering which authorization server to use for this resource<br>
-        - Determining supported scopes and bearer token methods<br>
+
+        **Use Cases:**
+
+        - Discovering which authorization server to use for this resource
+        - Determining supported scopes and bearer token methods
         - MCP client auto-configuration
-        <br><br>
-        <b>Note:</b> This endpoint does not require authentication. It takes no parameters; query parameters are ignored.
+
+        **Note:** This endpoint does not require authentication. It takes no parameters; query parameters are ignored.
       operationId: oauthProtectedResource
       security: []
       servers:
@@ -33992,8 +33994,8 @@ paths:
         enabled, personal access tokens, the scopes an agent sign-in gets, and
         what a `401` or `403` means. Built from the same settings as discovery.
         `/auth.md` and `/.well-known/auth.md` return the same document.
-        <br><br>
-        <b>Note:</b> This endpoint does not require authentication. It takes no parameters; query parameters are ignored.
+
+        **Note:** This endpoint does not require authentication. It takes no parameters; query parameters are ignored.
       operationId: authMd
       security: []
       servers:
@@ -34033,8 +34035,8 @@ paths:
         enabled, personal access tokens, the scopes an agent sign-in gets, and
         what a `401` or `403` means. Built from the same settings as discovery.
         `/auth.md` and `/.well-known/auth.md` return the same document.
-        <br><br>
-        <b>Note:</b> This endpoint does not require authentication. It takes no parameters; query parameters are ignored.
+
+        **Note:** This endpoint does not require authentication. It takes no parameters; query parameters are ignored.
       operationId: wellKnownAuthMd
       security: []
       servers:
@@ -57503,21 +57505,19 @@ paths:
         Upload a short audio recording and receive its transcript from the
         configured Speech-to-Text provider (OpenAI Whisper, `gpt-4o-transcribe`,
         a self-hosted `faster-whisper` model, Wispr Flow, or Gemini multimodal
-        models such as `gemini-2.5-flash`).<br><br>
-        <b>Overview:</b><br>
+        models such as `gemini-2.5-flash`).
+
+        **Overview:**
+
         The chat UI captures audio via the browser's `MediaRecorder` and
         POSTs it here as `multipart/form-data`. If no STT provider is
-        configured the endpoint returns <code>409</code> and the client falls
-        back to the browser's native Web Speech Recognition.<br><br>
-        <b>Limits:</b><br>
-        <ul>
-          <li>Audio payload is capped at 25 MB (matches OpenAI's
-              <code>audio.transcriptions.create</code> limit).</li>
-          <li>Supported MIME types include <code>audio/webm</code>,
-              <code>audio/ogg</code>, <code>audio/mp4</code>,
-              <code>audio/mpeg</code>, <code>audio/wav</code>, and
-              <code>audio/flac</code>.</li>
-        </ul>
+        configured the endpoint returns `409` and the client falls
+        back to the browser's native Web Speech Recognition.
+
+        **Limits:**
+
+        - Audio payload is capped at 25 MB (matches OpenAI's `audio.transcriptions.create` limit).
+        - Supported MIME types include `audio/webm`, `audio/ogg`, `audio/mp4`, `audio/mpeg`, `audio/wav`, and `audio/flac`.
       operationId: transcribeChatAudio
       security:
         - bearerAuth: []
@@ -57657,20 +57657,20 @@ paths:
         provider (e.g. OpenAI `tts-1`, `gpt-4o-mini-tts`, or Gemini
         `gemini-3.1-flash-tts-preview` / `gemini-2.5-flash-preview-tts`).
         The response body is
-        the raw audio bytes in the requested format.<br><br>
-        <b>Overview:</b><br>
+        the raw audio bytes in the requested format.
+
+        **Overview:**
+
         The chat UI calls this when the user clicks "Read aloud" on an
         assistant message. If no TTS provider is configured the endpoint
-        returns <code>409</code> and the client falls back to the browser's
-        <code>speechSynthesis</code> API.<br><br>
-        <b>Limits:</b><br>
-        <ul>
-          <li>Input text is capped at 4096 characters.</li>
-          <li><code>speed</code> is clamped to the range
-              [<code>0.25</code>, <code>4.0</code>].</li>
-          <li>Unknown <code>format</code> values silently fall back to
-              <code>mp3</code>.</li>
-        </ul>
+        returns `409` and the client falls back to the browser's
+        `speechSynthesis` API.
+
+        **Limits:**
+
+        - Input text is capped at 4096 characters.
+        - `speed` is clamped to the range [`0.25`, `4.0`].
+        - Unknown `format` values silently fall back to `mp3`.
       operationId: synthesizeChatSpeech
       security:
         - bearerAuth: []
@@ -57686,7 +57686,7 @@ paths:
         '200':
           description: |
             Raw audio bytes in the negotiated format. Response headers
-            <code>X-TTS-Provider</code> and <code>X-TTS-Model</code> identify
+            `X-TTS-Provider` and `X-TTS-Model` identify
             the provider/model that produced the audio.
           headers:
             X-TTS-Provider:
@@ -57700,7 +57700,7 @@ paths:
             Cache-Control:
               schema:
                 type: string
-              description: Always <code>no-store</code>.
+              description: Always `no-store`.
           content:
             audio/mpeg:
               schema:
@@ -62571,21 +62571,25 @@ paths:
         - Connector Registry
       summary: List available connector types
       description: |
-        Get all available connector types from the registry.<br><br>
-        <b>Overview:</b><br>
+        Get all available connector types from the registry.
+
+        **Overview:**
+
         The registry contains all connector types that can be configured as instances.
-        Each type has specific authentication requirements, supported scopes, and capabilities.<br><br>
-        <b>Connector Types Include:</b><br>
-        <ul>
-        <li><b>Google Workspace:</b> Drive, Gmail, Calendar, etc.</li>
-        <li><b>Microsoft 365:</b> OneDrive, Outlook, SharePoint, etc.</li>
-        <li><b>Cloud Storage:</b> Dropbox, Box, AWS S3</li>
-        <li><b>Collaboration:</b> Slack, Confluence, Notion, Jira</li>
-        <li><b>Databases:</b> PostgreSQL, MySQL, MongoDB</li>
-        </ul>
-        <b>Filtering:</b><br>
-        Use <code>scope</code> to filter by team or personal connectors.
-        Use <code>search</code> for full-text search across connector names.
+        Each type has specific authentication requirements, supported scopes, and capabilities.
+
+        **Connector Types Include:**
+
+        - **Google Workspace:** Drive, Gmail, Calendar, etc.
+        - **Microsoft 365:** OneDrive, Outlook, SharePoint, etc.
+        - **Cloud Storage:** Dropbox, Box, AWS S3
+        - **Collaboration:** Slack, Confluence, Notion, Jira
+        - **Databases:** PostgreSQL, MySQL, MongoDB
+
+        **Filtering:**
+
+        Use `scope` to filter by team or personal connectors.
+        Use `search` for full-text search across connector names.
       operationId: getConnectorRegistry
       x-pipeshub-sdk: true
       security:
@@ -62625,15 +62629,15 @@ paths:
         - name: isAuthenticated
           in: query
           description: |
-            Validated (must be <code>true</code> or <code>false</code>) but
+            Validated (must be `true` or `false`) but
             ignored by this endpoint: it filters nothing. The parameter exists
-            because the query validator is shared with <code>GET /connectors</code>.
+            because the query validator is shared with `GET /connectors`.
           schema:
             type: boolean
         - name: isActive
           in: query
           description: |
-            Validated (must be <code>true</code> or <code>false</code>) but
+            Validated (must be `true` or `false`) but
             ignored by this endpoint: it filters nothing.
           schema:
             type: boolean
@@ -62716,19 +62720,13 @@ paths:
         - Connector Registry
       summary: Get connector configuration schema
       description: |
-        The configuration form for one connector type.<br><br>
-        <b>Sections:</b><br>
-        <ul>
-        <li><b>auth:</b> <code>supportedAuthTypes</code>, and per auth type in <code>schemas</code> the
-        fields to send in <code>config.auth</code> (by <code>name</code>) plus, for OAuth, the
-        <code>redirectUri</code> path</li>
-        <li><b>sync:</b> <code>supportedStrategies</code>, <code>scheduledConfig</code> defaults, and the
-        connector's own settings in <code>customFields</code> (sent in <code>config.sync</code> by
-        <code>name</code>)</li>
-        <li><b>filters:</b> the <code>sync</code> and <code>indexing</code> filter fields; a field with
-        <code>optionSourceType: dynamic</code> gets its values from
-        <code>GET /connectors/{connectorId}/filters/{filterKey}/options</code></li>
-        </ul>
+        The configuration form for one connector type.
+
+        **Sections:**
+
+        - **auth:** `supportedAuthTypes`, and per auth type in `schemas` the fields to send in `config.auth` (by `name`) plus, for OAuth, the `redirectUri` path
+        - **sync:** `supportedStrategies`, `scheduledConfig` defaults, and the connector's own settings in `customFields` (sent in `config.sync` by `name`)
+        - **filters:** the `sync` and `indexing` filter fields; a field with `optionSourceType: dynamic` gets its values from `GET /connectors/{connectorId}/filters/{filterKey}/options`
       operationId: getConnectorSchema
       x-pipeshub-sdk: true
       security:
@@ -62801,22 +62799,28 @@ paths:
       summary: Test connector credentials before saving
       description: |
         Try the auth settings from a connector's setup form without creating or
-        changing an instance.<br><br>
-        <b>Overview:</b><br>
-        Only connector types whose schema has <code>supportsConnectionCheck: true</code>
+        changing an instance.
+
+        **Overview:**
+
+        Only connector types whose schema has `supportsConnectionCheck: true`
         can be tested. A failed check is not an error: the response is
-        <code>200</code> with <code>success: false</code> and a <code>message</code>
+        `200` with `success: false` and a `message`
         to show the user (for example a wrong password, an unknown database, or a
-        timeout because a firewall blocks PipesHub's IP address).<br><br>
-        <b>Editing an instance:</b><br>
-        Pass <code>connectorId</code> to lay the settings over the instance's saved
-        ones, as <code>PUT /connectors/{connectorId}/config/auth</code> does. The
-        caller must be allowed to update that instance.<br><br>
-        <b>Addresses:</b><br>
+        timeout because a firewall blocks PipesHub's IP address).
+
+        **Editing an instance:**
+
+        Pass `connectorId` to lay the settings over the instance's saved
+        ones, as `PUT /connectors/{connectorId}/config/auth` does. The
+        caller must be allowed to update that instance.
+
+        **Addresses:**
+
         A check runs under the rules of the connector it is for. A personal
-        connector (any check by a non-admin, or with the <code>connectorId</code> of
+        connector (any check by a non-admin, or with the `connectorId` of
         a personal instance) can only reach servers on public addresses; any other
-        host gets <code>200</code> with <code>success: false</code> and one message
+        host gets `200` with `success: false` and one message
         for every refused host. A team connector follows the deployment's
         address policy.
       operationId: testConnectorConnection
@@ -62870,7 +62874,7 @@ paths:
                     stored value; any other value that is sent replaces the saved one.
       responses:
         '200':
-          description: Check ran; see <code>success</code>
+          description: Check ran; see `success`
           content:
             application/json:
               schema:
@@ -62891,13 +62895,12 @@ paths:
                 message: 'PostgreSQL rejected the login for user "reader". Check the username and password.'
         '400':
           description: |
-            Refused. Possible reasons:<br>
-            <ul>
-            <li><code>VALIDATION_ERROR</code> - the body is not a JSON object; <code>auth</code> is missing, <code>null</code> or not an object; or <code>connectorId</code> is not a string of 1-64 letters, digits, underscores or hyphens</li>
-            <li>The connector type has no connection check (<code>&lt;type&gt; has no connection check</code>)</li>
-            <li><code>connectorId</code> names an instance of another connector type</li>
-            <li><code>connectorType</code> is not a safe path segment (for example it contains an encoded <code>/</code>); answered before the token is checked</li>
-            </ul>
+            Refused. Possible reasons:
+
+            - `VALIDATION_ERROR` - the body is not a JSON object; `auth` is missing, `null` or not an object; or `connectorId` is not a string of 1-64 letters, digits, underscores or hyphens
+            - The connector type has no connection check (`<type> has no connection check`)
+            - `connectorId` names an instance of another connector type
+            - `connectorType` is not a safe path segment (for example it contains an encoded `/`); answered before the token is checked
           content:
             application/json:
               schema:
@@ -62945,11 +62948,12 @@ paths:
       summary: Get the IP addresses connectors connect from
       description: |
         Public IP addresses PipesHub's connectors use to reach external systems, for
-        users to allow in a database's or API's firewall.<br><br>
-        Set by the deployment through <code>CONNECTOR_EGRESS_IPS</code>; otherwise
+        users to allow in a database's or API's firewall.
+
+        Set by the deployment through `CONNECTOR_EGRESS_IPS`; otherwise
         looked up by the connector service and cached. The list is empty when the
         address cannot be determined, or when the deployment sets
-        <code>CONNECTOR_EGRESS_IPS=none</code>.
+        `CONNECTOR_EGRESS_IPS=none`.
       operationId: getConnectorEgressIps
       x-pipeshub-sdk: true
       security:
@@ -63016,20 +63020,22 @@ paths:
         - Connector Instances
       summary: List connector instances
       description: |
-        Get all configured connector instances for your organization.<br><br>
-        <b>Overview:</b><br>
+        Get all configured connector instances for your organization.
+
+        **Overview:**
+
         Returns instances created by users, filtered by scope and permissions.
         Team-scope connectors are visible to all org users. Personal connectors
         are only visible to their creators, not even to admins. Knowledge bases
-        (instances of type <code>KB</code>) are not listed here.<br><br>
-        <b>Instance States:</b><br>
-        <ul>
-        <li><b>isConfigured:</b> All required settings are complete</li>
-        <li><b>isAuthenticated:</b> OAuth flow complete or credentials valid</li>
-        <li><b>isActive:</b> Connector is enabled for sync/agent</li>
-        <li><b>desktopOnline:</b> Owner device's desktop app connected (Local FS only)</li>
-        <li><b>ownerDeviceId / ownerDeviceName:</b> Desktop device that owns the connector, set on first enable (Local FS only)</li>
-        </ul>
+        (instances of type `KB`) are not listed here.
+
+        **Instance States:**
+
+        - **isConfigured:** All required settings are complete
+        - **isAuthenticated:** OAuth flow complete or credentials valid
+        - **isActive:** Connector is enabled for sync/agent
+        - **desktopOnline:** Owner device's desktop app connected (Local FS only)
+        - **ownerDeviceId / ownerDeviceName:** Desktop device that owns the connector, set on first enable (Local FS only)
       operationId: listConnectorInstances
       x-pipeshub-sdk: true
       security:
@@ -63040,7 +63046,7 @@ paths:
           in: query
           required: false
           description: |
-            Filter by scope. Defaults to <code>team</code> when omitted.
+            Filter by scope. Defaults to `team` when omitted.
           schema:
             title: ConnectorInstanceListScope
             allOf:
@@ -63065,15 +63071,15 @@ paths:
           in: query
           description: |
             Full-text search across instance name, type, and app group. The term
-            is not echoed back in <code>pagination</code>.
+            is not echoed back in `pagination`.
           schema:
             type: string
         - name: isAuthenticated
           in: query
           description: |
             Filter by authentication status.
-            <code>true</code> returns only authenticated instances;
-            <code>false</code> returns only unauthenticated ones.
+            `true` returns only authenticated instances;
+            `false` returns only unauthenticated ones.
             Omit to return all.
           schema:
             type: boolean
@@ -63081,16 +63087,16 @@ paths:
           in: query
           description: |
             Filter by active status.
-            <code>true</code> returns only active instances;
-            <code>false</code> returns only inactive ones.
+            `true` returns only active instances;
+            `false` returns only inactive ones.
             Omit to return all.
           schema:
             type: boolean
         - name: connectorType
           in: query
           description: |
-            Filter by exact connector type string (e.g. <code>Confluence</code>,
-            <code>GoogleDrive</code>). Case-sensitive. An empty or blank value
+            Filter by exact connector type string (e.g. `Confluence`,
+            `GoogleDrive`). Case-sensitive. An empty or blank value
             is refused with `400` (the value is trimmed before it is checked).
           schema:
             type: string
@@ -63152,31 +63158,35 @@ paths:
         - Connector Instances
       summary: Create connector instance
       description: |
-        Create a connector instance from a registry type.<br><br>
-        <b>Body:</b><br>
-        Put the auth fields the registry schema lists for <code>authType</code> in <code>config.auth</code>,
-        flat, and the connector's own sync settings in <code>config.sync</code>. A connector that needs no
-        OAuth sign-in is configured on creation.<br><br>
-        <b>OAuth:</b><br>
-        The OAuth app's credentials may be sent in <code>config.auth</code>: the app is saved and linked.
+        Create a connector instance from a registry type.
+
+        **Body:**
+
+        Put the auth fields the registry schema lists for `authType` in `config.auth`,
+        flat, and the connector's own sync settings in `config.sync`. A connector that needs no
+        OAuth sign-in is configured on creation.
+
+        **OAuth:**
+
+        The OAuth app's credentials may be sent in `config.auth`: the app is saved and linked.
         On a team connector (admins only) it is the organization's app. On a personal connector it is the
         caller's own app, admins included: only they can list, link, change or sign in with it, every
         required OAuth field (the client secret too) must be sent, and an address field must be a public
-        <code>https://</code> address. Otherwise send <code>config.auth.oauthConfigId</code> to use a saved
+        `https://` address. Otherwise send `config.auth.oauthConfigId` to use a saved
         app: an organization app, or on a personal connector one of the caller's own. Someone else's own
         app answers like one that does not exist. A non-admin must send one or the other.
-        Send <code>baseUrl</code>: the provider redirects to <code>{baseUrl}/{redirectUri}</code>.<br><br>
-        <b>Scope Permissions:</b><br>
-        <ul>
-        <li><code>team</code> scope requires admin privileges</li>
-        <li><code>personal</code> scope available to all users</li>
-        </ul>
-        <b>Next Steps After Creation:</b><br>
-        <ol>
-        <li>OAuth only: <code>GET /{id}/oauth/authorize</code>, then <code>GET /oauth/callback</code></li>
-        <li>Optionally set sync and filters via <code>PUT /{id}/config/filters-sync</code></li>
-        <li>Turn sync on via <code>POST /{id}/toggle</code></li>
-        </ol>
+        Send `baseUrl`: the provider redirects to `{baseUrl}/{redirectUri}`.
+
+        **Scope Permissions:**
+
+        - `team` scope requires admin privileges
+        - `personal` scope available to all users
+
+        **Next Steps After Creation:**
+
+        1. OAuth only: `GET /{id}/oauth/authorize`, then `GET /oauth/callback`
+        2. Optionally set sync and filters via `PUT /{id}/config/filters-sync`
+        3. Turn sync on via `POST /{id}/toggle`
       operationId: createConnectorInstance
       x-pipeshub-sdk: true
       security:
@@ -63313,11 +63323,13 @@ paths:
         - Connector Instances
       summary: List active connector instances
       description: |
-        Get all active (enabled) connector instances.<br><br>
-        <b>Overview:</b><br>
-        Returns only instances where <code>isActive: true</code>: the team
+        Get all active (enabled) connector instances.
+
+        **Overview:**
+
+        Returns only instances where `isActive: true`: the team
         instances of the organization and the caller's own personal ones.
-        Knowledge bases (instances of type <code>KB</code>), which are always
+        Knowledge bases (instances of type `KB`), which are always
         active, are included. The list is not paginated and takes no query
         parameters; any that are sent are ignored.
       operationId: listActiveConnectors
@@ -63369,7 +63381,7 @@ paths:
       description: |
         Get all inactive (disabled) connector instances: the team instances of
         the organization and the caller's own personal ones where
-        <code>isActive</code> is <code>false</code>. The list is not paginated
+        `isActive` is `false`. The list is not paginated
         and takes no query parameters; any that are sent are ignored.
       operationId: listInactiveConnectors
       security:
@@ -63418,16 +63430,22 @@ paths:
         - Connector Instances
       summary: List configured connector instances
       description: |
-        Get all connector instances that have completed configuration.<br><br>
-        <b>Overview:</b><br>
-        Returns instances where <code>isConfigured: true</code>.
-        These have all required settings but may not be active yet.<br><br>
-        <b>Response shape:</b><br>
+        Get all connector instances that have completed configuration.
+
+        **Overview:**
+
+        Returns instances where `isConfigured: true`.
+        These have all required settings but may not be active yet.
+
+        **Response shape:**
+
         Unlike the other connector lists, the page is nested one level down:
-        the instances are at <code>connectors.connectors</code> and the paging
-        information at <code>connectors.pagination</code>.<br><br>
-        <b>Paging:</b><br>
-        The page and <code>totalCount</code> cover only the configured
+        the instances are at `connectors.connectors` and the paging
+        information at `connectors.pagination`.
+
+        **Paging:**
+
+        The page and `totalCount` cover only the configured
         instances, newest first (by creation time, ties broken by ID), so
         walking the pages returns each matching instance once.
       operationId: listConfiguredConnectors
@@ -63437,7 +63455,7 @@ paths:
       parameters:
         - name: scope
           in: query
-          description: Filter by scope. Defaults to <code>team</code> when omitted.
+          description: Filter by scope. Defaults to `team` when omitted.
           schema:
             allOf:
               - $ref: '#/components/schemas/ConnectorScope'
@@ -63461,21 +63479,21 @@ paths:
           in: query
           description: |
             Full-text search across instance name, type, and app group. Echoed
-            back in <code>connectors.pagination.search</code>.
+            back in `connectors.pagination.search`.
           schema:
             type: string
         - name: isAuthenticated
           in: query
           description: |
-            Validated (must be <code>true</code> or <code>false</code>) but
+            Validated (must be `true` or `false`) but
             ignored by this endpoint: it filters nothing. The parameter exists
-            because the query validator is shared with <code>GET /connectors</code>.
+            because the query validator is shared with `GET /connectors`.
           schema:
             type: boolean
         - name: isActive
           in: query
           description: |
-            Validated (must be <code>true</code> or <code>false</code>) but
+            Validated (must be `true` or `false`) but
             ignored by this endpoint: it filters nothing.
           schema:
             type: boolean
@@ -63553,10 +63571,12 @@ paths:
         - Connector Instances
       summary: List active agent connectors
       description: |
-        Get connector instances enabled for AI agent integration.<br><br>
-        <b>Overview:</b><br>
-        Returns instances where both <code>isAgentActive</code> and
-        <code>isConfigured</code> are <code>true</code>.
+        Get connector instances enabled for AI agent integration.
+
+        **Overview:**
+
+        Returns instances where both `isAgentActive` and
+        `isConfigured` are `true`.
         These are available to AI agents for querying and actions.
       operationId: listActiveAgentConnectors
       security:
@@ -63587,21 +63607,21 @@ paths:
           in: query
           description: |
             Full-text search across instance name, type, and app group. Echoed
-            back in <code>pagination.search</code>.
+            back in `pagination.search`.
           schema:
             type: string
         - name: isAuthenticated
           in: query
           description: |
-            Validated (must be <code>true</code> or <code>false</code>) but
+            Validated (must be `true` or `false`) but
             ignored by this endpoint: it filters nothing. The parameter exists
-            because the query validator is shared with <code>GET /connectors</code>.
+            because the query validator is shared with `GET /connectors`.
           schema:
             type: boolean
         - name: isActive
           in: query
           description: |
-            Validated (must be <code>true</code> or <code>false</code>) but
+            Validated (must be `true` or `false`) but
             ignored by this endpoint: it filters nothing.
           schema:
             type: boolean
@@ -63670,15 +63690,15 @@ paths:
       summary: Get connector instance
       description: |
         Retrieve a specific connector instance by ID, together with the setup
-        form of its connector type (<code>config</code>).<br><br>
-        <b>Who can read an instance:</b><br>
-        <ul>
-        <li>Team scope: the creator and org admins. Other members get
-        <code>404</code>, although the lists show them the instance.</li>
-        <li>Personal scope: the creator only. An admin gets <code>404</code>.</li>
-        </ul>
+        form of its connector type (`config`).
+
+        **Who can read an instance:**
+
+        - Team scope: the creator and org admins. Other members get `404`, although the lists show them the instance.
+        - Personal scope: the creator only. An admin gets `404`.
+
         The ID of a knowledge base is accepted too: a knowledge base is stored
-        as a connector instance of type <code>KB</code>.
+        as a connector instance of type `KB`.
       operationId: getConnectorInstance
       x-pipeshub-sdk: true
       security:
@@ -63749,20 +63769,23 @@ paths:
         - Connector Instances
       summary: Delete connector instance
       description: |
-        Start the deletion of a connector instance and all associated data.<br><br>
-        <b>Asynchronous:</b><br>
-        The request is answered with <code>202</code> as soon as the instance is
-        marked <code>DELETING</code>; its sync is stopped and its records,
-        vectors and configuration are removed in the background.<br><br>
-        <b>Permissions:</b><br>
-        <ul>
-        <li>The creator can delete their own instance</li>
-        <li>An org admin can delete any instance, including another user's
-        personal one (which the admin cannot read)</li>
-        <li>Anyone else gets <code>404</code></li>
-        </ul>
-        <b>In use:</b><br>
-        Refused with <code>409</code> while an agent uses the instance as a
+        Start the deletion of a connector instance and all associated data.
+
+        **Asynchronous:**
+
+        The request is answered with `202` as soon as the instance is
+        marked `DELETING`; its sync is stopped and its records,
+        vectors and configuration are removed in the background.
+
+        **Permissions:**
+
+        - The creator can delete their own instance
+        - An org admin can delete any instance, including another user's personal one (which the admin cannot read)
+        - Anyone else gets `404`
+
+        **In use:**
+
+        Refused with `409` while an agent uses the instance as a
         knowledge source.
       operationId: deleteConnectorInstance
       x-pipeshub-sdk: true
@@ -63867,11 +63890,12 @@ paths:
         Retrieve record counts of a connector instance, in total and per record
         type, broken down by indexing status. The ID of a knowledge base is
         accepted too (a knowledge base is stored as a connector instance of type
-        <code>KB</code>); its stats report <code>origin: COLLECTION</code>.<br><br>
-        <b>Who can read them:</b> the creator of the instance and, for a team
+        `KB`); its stats report `origin: COLLECTION`.
+
+        **Who can read them:** the creator of the instance and, for a team
         instance, org admins. Stats use the same read gate as
-        <code>GET /connectors/{connectorId}</code>: anyone else, including an
-        admin reading another user's personal instance, gets <code>404</code>
+        `GET /connectors/{connectorId}`: anyone else, including an
+        admin reading another user's personal instance, gets `404`
         ("This connector was removed, or you no longer have access. ..."), so
         the instance's existence is not confirmed.
 
@@ -64068,13 +64092,13 @@ paths:
         whether search reads its stored permissions now. The answer holds counts,
         codes and times only; it names no record, container or user.
 
-        <b>Who can read it:</b> org admins, for a connector they may open: a personal
+        **Who can read it:** org admins, for a connector they may open: a personal
         connector only by the user who created it. A connected app whose grant limits it to
         part of the knowledge gets it only when that limit names this connector whole,
         because the counts cover the whole connector; an app with no such limit gets it as
         any admin does. Anyone else, an ID no instance of the caller's organization has,
         another user's personal connector, and a connected app whose limit does not name
-        this connector whole get <code>404</code>.
+        this connector whole get `404`.
       operationId: getConnectorPermissionStatus
       security:
         - bearerAuth: []
@@ -64916,11 +64940,11 @@ paths:
         search. When `ACL_FILTER_MODE` is `shadow`, a switch to `scopes` reaches search within
         30 seconds.
 
-        <b>Who can call it:</b> an org admin, for a connector they may open: a personal connector
+        **Who can call it:** an org admin, for a connector they may open: a personal connector
         only by the user who created it, and a connected app only when its knowledge limit names this
         connector whole. A session needs no scope; an OAuth client or personal access token needs
         `connector:write` (this route does not accept `connector:read`). Anyone else, and an ID no
-        instance of the caller's organization has, gets <code>404</code>.
+        instance of the caller's organization has, gets `404`.
       operationId: setConnectorPermissionFilter
       security:
         - bearerAuth: []
@@ -65680,12 +65704,15 @@ paths:
         indexing status. Covers both external connectors and KB app
         instances (a KB is itself a connector instance). Omitting
         `statusFilters` reindexes everything for a KB connector; other
-        connector types default server-side to `FAILED`-only.<br><br>
+        connector types default server-side to `FAILED`-only.
+
         The connector must be enabled for sync (`409` otherwise). A knowledge
         base is also found for a member who holds a role on it; one without a
         role is refused with `403`. A team connector of another user is
-        answered `404` to a member, as if it did not exist.<br><br>
-        Fields of the body other than `statusFilters` and `stages` are dropped without an error.<br><br>
+        answered `404` to a member, as if it did not exist.
+
+        Fields of the body other than `statusFilters` and `stages` are dropped without an error.
+
         An OAuth token holding `kb:write` instead of `connector:sync` is accepted too.
       operationId: reindexConnector
       security:
@@ -65859,13 +65886,13 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '409':
           description: |
-            Conflict. Possible reasons:<br>
-            <ul>
-            <li>A sync is already running, or the connector is locked</li>
-            <li><code>DESKTOP_OFFLINE</code> - Local FS: the owner device's desktop app is not connected</li>
-            <li><code>DESKTOP_UNCLAIMED</code> - Local FS: no device owns the connector yet</li>
-            </ul>
-            Local FS refusals carry <code>details.code</code> and use the
+            Conflict. Possible reasons:
+
+            - A sync is already running, or the connector is locked
+            - `DESKTOP_OFFLINE` - Local FS: the owner device's desktop app is not connected
+            - `DESKTOP_UNCLAIMED` - Local FS: no device owns the connector yet
+
+            Local FS refusals carry `details.code` and use the
             LocalFsDesktopRefusal body; the others use the standard error body.
           content:
             application/json:
@@ -65996,8 +66023,9 @@ paths:
         - Connector Instances
       summary: Update connector instance name
       description: |
-        Update the display name of a connector instance.<br><br>
-        <b>Note:</b> This only updates the display name, not the connector configuration.
+        Update the display name of a connector instance.
+
+        **Note:** This only updates the display name, not the connector configuration.
       operationId: updateConnectorName
       security:
         - bearerAuth: []
@@ -66044,13 +66072,12 @@ paths:
                         description: The new name, trimmed
         '400':
           description: |
-            Refused. Possible reasons:<br>
-            <ul>
-            <li><code>VALIDATION_ERROR</code> - <code>instanceName</code> is missing, empty or not a string</li>
-            <li><code>instanceName is required</code> - the name is only whitespace</li>
-            <li>Another connector already uses the name</li>
-            <li>The connector ID is an unsafe path segment</li>
-            </ul>
+            Refused. Possible reasons:
+
+            - `VALIDATION_ERROR` - `instanceName` is missing, empty or not a string
+            - `instanceName is required` - the name is only whitespace
+            - Another connector already uses the name
+            - The connector ID is an unsafe path segment
           content:
             application/json:
               schema:
@@ -66103,13 +66130,15 @@ paths:
         - Connector Configuration
       summary: Get connector configuration
       description: |
-        Get the current configuration for a connector instance.<br><br>
-        <b>Security:</b><br>
-        Stored credentials and OAuth tokens (<code>credentials</code>, <code>oauth</code>)
-        are never returned. The saved <code>auth</code> values are returned so the
-        form can be edited, except that each secret (an <code>isSecret</code> or
-        <code>PASSWORD</code> field of the connector type's auth schema, and a
-        legacy <code>private_key</code>) comes back as <code>••••••••</code>.
+        Get the current configuration for a connector instance.
+
+        **Security:**
+
+        Stored credentials and OAuth tokens (`credentials`, `oauth`)
+        are never returned. The saved `auth` values are returned so the
+        form can be edited, except that each secret (an `isSecret` or
+        `PASSWORD` field of the connector type's auth schema, and a
+        legacy `private_key`) comes back as `••••••••`.
         Sending that mask back on a save keeps the stored value. A personal connector's configuration is only
         readable by its creator: to anyone else, admins included, it is
         answered `404` as if it did not exist. A team connector of another
@@ -66183,44 +66212,46 @@ paths:
         - Connector Configuration
       summary: Update connector configuration
       description: |
-        Update authentication, sync, and filter configuration.<br><br>
-        <b>Prerequisites:</b><br>
-        Connector must be <b>disabled</b> before updating configuration.
-        Disable it first using <code>POST /{id}/toggle</code>.<br><br>
-        <b>Partial Updates:</b><br>
+        Update authentication, sync, and filter configuration.
+
+        **Prerequisites:**
+
+        Connector must be **disabled** before updating configuration.
+        Disable it first using `POST /{id}/toggle`.
+
+        **Partial Updates:**
+
         Only provide the sections you want to update. Omitted sections
-        are not modified.<br><br>
-        <b>Secrets:</b><br>
-        A secret field in <code>auth</code> sent as <code>••••••••</code> keeps the
+        are not modified.
+
+        **Secrets:**
+
+        A secret field in `auth` sent as `••••••••` keeps the
         stored value, so the configuration can be sent back as it was read. The
-        response masks stored secrets the same way.<br><br>
-        <b>Signing out:</b><br>
-        A change to <code>auth</code>, a different top-level <code>oauthConfigId</code>,
+        response masks stored secrets the same way.
+
+        **Signing out:**
+
+        A change to `auth`, a different top-level `oauthConfigId`,
         or a linked OAuth app that now holds a different client signs the connector
-        out and clears its OAuth tokens. Sending <code>auth</code> back as it was read,
-        with secrets as the mask or in full, keeps it signed in.<br><br>
-        <b>OAuth apps (OAUTH connectors):</b><br>
+        out and clears its OAuth tokens. Sending `auth` back as it was read,
+        with secrets as the mask or in full, keeps it signed in.
+
+        **OAuth apps (OAUTH connectors):**
+
         An OAUTH connector signs in with the client ID and secret of its linked OAuth
-        app, so client credentials an admin sends in <code>auth</code>, or anyone sends for
-        their own personal connector, go into an app, as on <code>PUT /{connectorId}/config/auth</code>:
-        <ul>
-          <li>On a connector with no app, an app is created from them and linked
-          (<code>auth.oauthConfigId</code> in the response) once every required OAuth
-          field is present; until then the values are kept on the connector.</li>
-          <li>On a linked connector, changed values update the app named in
-          <code>auth.oauthConfigId</code>, and only the fields that changed. Without that
-          field a new app is created and linked; the previously linked app, which other
-          connectors may share, is not changed.</li>
-          <li>The new app is named <code>auth.oauthInstanceName</code>, or else after the
-          connector.</li>
-          <li>On a personal connector the app is the caller's own, which only they can use. It
-          is built only from what was sent: changing a field of an organization app the caller
-          may not change needs every required field, the secret too, and creates their own app.</li>
-        </ul>
+        app, so client credentials an admin sends in `auth`, or anyone sends for
+        their own personal connector, go into an app, as on `PUT /{connectorId}/config/auth`:
+
+        - On a connector with no app, an app is created from them and linked (`auth.oauthConfigId` in the response) once every required OAuth field is present; until then the values are kept on the connector.
+        - On a linked connector, changed values update the app named in `auth.oauthConfigId`, and only the fields that changed. Without that field a new app is created and linked; the previously linked app, which other connectors may share, is not changed.
+        - The new app is named `auth.oauthInstanceName`, or else after the connector.
+        - On a personal connector the app is the caller's own, which only they can use. It is built only from what was sent: changing a field of an organization app the caller may not change needs every required field, the secret too, and creates their own app.
+
         A linked connector stores no copy of its app's secret fields: they are not
-        stored, and not returned, in <code>config.auth</code>. Its client ID and provider
+        stored, and not returned, in `config.auth`. Its client ID and provider
         URLs are the app's. An organization app is created or changed only by an admin, and only
-        from a team connector; a person's own app only by them. <code>auth.connectorScope</code> is
+        from a team connector; a person's own app only by them. `auth.connectorScope` is
         set by the server from the connector; a sent value is ignored.
       operationId: updateConnectorConfig
       x-pipeshub-sdk: true
@@ -66260,17 +66291,16 @@ paths:
                   - config
         '400':
           description: |
-            Refused. Possible reasons:<br>
-            <ul>
-            <li><code>VALIDATION_ERROR</code> - <code>baseUrl</code> is not a string</li>
-            <li><code>filters.sync</code> or <code>filters.indexing</code> is present but not an object</li>
-            <li><code>auth</code> is present but not an object ("Auth configuration must be an object.")</li>
-            <li><code>auth.authType</code> differs from the instance's auth type, which is locked after creation</li>
-            <li>A required sync filter of the connector type is not set</li>
-            <li>The connector is active: disable it before updating</li>
-            <li>The connector ID is an unsafe path segment</li>
-            <li>For an OAUTH connector: a new client ID sent without its client secret; a replacement OAuth app that would lack a required field; or a client secret sent while the connector still lacks its own authorize and token URLs (ServiceNow). Nothing is stored.</li>
-            </ul>
+            Refused. Possible reasons:
+
+            - `VALIDATION_ERROR` - `baseUrl` is not a string
+            - `filters.sync` or `filters.indexing` is present but not an object
+            - `auth` is present but not an object ("Auth configuration must be an object.")
+            - `auth.authType` differs from the instance's auth type, which is locked after creation
+            - A required sync filter of the connector type is not set
+            - The connector is active: disable it before updating
+            - The connector ID is an unsafe path segment
+            - For an OAUTH connector: a new client ID sent without its client secret; a replacement OAuth app that would lack a required field; or a client secret sent while the connector still lacks its own authorize and token URLs (ServiceNow). Nothing is stored.
           content:
             application/json:
               schema:
@@ -66289,7 +66319,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: |
-            Connector, or the OAuth app named in <code>auth.oauthConfigId</code>, not found.
+            Connector, or the OAuth app named in `auth.oauthConfigId`, not found.
             For the connector: also when it is not visible to the caller (another user's
             personal connector, or another user's team connector for a member).
             Also the answer for an ID of the wrong shape: this route does not check it.
@@ -66301,8 +66331,8 @@ paths:
           description: |
             The connector is locked by a sync or deletion in progress, or an OAuth app
             with the name the new app would take already exists in the organization. For
-            a name collision, send a different <code>auth.oauthInstanceName</code>, or name
-            the app to update in <code>auth.oauthConfigId</code>.
+            a name collision, send a different `auth.oauthInstanceName`, or name
+            the app to update in `auth.oauthConfigId`.
           content:
             application/json:
               schema:
@@ -66323,21 +66353,29 @@ paths:
         - Connector Configuration
       summary: Update authentication configuration
       description: |
-        Update only the authentication configuration.<br><br>
-        <b>Use Case:</b><br>
+        Update only the authentication configuration.
+
+        **Use Case:**
+
         Use this when you need to update credentials without changing
-        sync or filter settings. Useful for credential rotation.<br><br>
-        <b>Prerequisites:</b><br>
+        sync or filter settings. Useful for credential rotation.
+
+        **Prerequisites:**
+
         Connector must be disabled. This endpoint clears OAuth state,
-        requiring re-authentication for OAuth connectors.<br><br>
-        <b>Secrets:</b><br>
-        A secret field sent as <code>••••••••</code> keeps the stored value; send a
-        new value to replace it. The response masks stored secrets the same way.<br><br>
-        <b>OAuth app:</b><br>
+        requiring re-authentication for OAuth connectors.
+
+        **Secrets:**
+
+        A secret field sent as `••••••••` keeps the stored value; send a
+        new value to replace it. The response masks stored secrets the same way.
+
+        **OAuth app:**
+
         On a personal connector, client credentials update the caller's own OAuth app named in
-        <code>auth.oauthConfigId</code>, or create one (every required field, the secret too) when that
+        `auth.oauthConfigId`, or create one (every required field, the secret too) when that
         app is the organization's or not named. They never change an organization app, an admin's
-        included. <code>auth.connectorScope</code> is set by the server from the connector; a sent
+        included. `auth.connectorScope` is set by the server from the connector; a sent
         value is ignored.
       operationId: updateConnectorAuthConfig
       x-pipeshub-sdk: true
@@ -66417,11 +66455,15 @@ paths:
         - Connector Configuration
       summary: Update filters and sync configuration
       description: |
-        Update filter selections and sync settings without touching auth.<br><br>
-        <b>Use Case:</b><br>
+        Update filter selections and sync settings without touching auth.
+
+        **Use Case:**
+
         Use this to change what data is synced or adjust sync schedule
-        without re-authenticating.<br><br>
-        <b>Merging:</b><br>
+        without re-authenticating.
+
+        **Merging:**
+
         `sync` is merged key by key into the saved sync settings. Each of
         `filters.sync` and `filters.indexing` that is sent replaces the saved
         one. At least one of `sync` and `filters` must be truthy in
@@ -66431,7 +66473,8 @@ paths:
         skipped without an error; any other `filters` value that is not an object, such as
         `true`, `[null]` or a non-empty string, is answered `500`. Fields
         other than `sync` and `filters`, `baseUrl`
-        included, are dropped without an error.<br><br>
+        included, are dropped without an error.
+
         The connector must be disabled (`400` otherwise).
       operationId: updateConnectorFiltersSyncConfig
       x-pipeshub-sdk: true
@@ -66521,30 +66564,30 @@ paths:
         - Connector Control
       summary: Toggle connector sync or agent
       description: |
-        Turn a connector's sync or agent use on or off. Send <code>enabled</code> with the state you
+        Turn a connector's sync or agent use on or off. Send `enabled` with the state you
         want: a call for the state the connector is already in changes nothing and answers
-        <code>changed: false</code>, so a request can be sent again safely after a dropped connection
-        or a timeout. Without <code>enabled</code> the call flips the current state (on when off, off
-        when on); sent twice, that turns the connector back, so read <code>isActive</code> /
-        <code>isAgentActive</code> first. Turning sync on starts the first sync.<br><br>
-        <b>Toggle Types:</b><br>
-        <ul>
-        <li><code>sync</code> - data synchronization</li>
-        <li><code>agent</code> - use by AI agents</li>
-        </ul>
-        <b>Before Sync Can Be Turned On:</b><br>
-        <ul>
-        <li>The connector is configured (<code>isConfigured: true</code>)</li>
-        <li>OAuth connectors: sign-in has completed</li>
-        <li>The connection test against the source passes</li>
-        <li>For agent: the connector supports agents (<code>supportsAgent: true</code>)</li>
-        <li>Local FS: must be enabled from the owner device via the desktop app, which sends <code>deviceId</code> and <code>deviceName</code>. The first enable claims that device as owner.</li>
-        </ul>
-        <b>Permissions:</b><br>
-        <ul>
-        <li>Team scope: Requires admin</li>
-        <li>Personal scope: Only creator can toggle</li>
-        </ul>
+        `changed: false`, so a request can be sent again safely after a dropped connection
+        or a timeout. Without `enabled` the call flips the current state (on when off, off
+        when on); sent twice, that turns the connector back, so read `isActive` /
+        `isAgentActive` first. Turning sync on starts the first sync.
+
+        **Toggle Types:**
+
+        - `sync` - data synchronization
+        - `agent` - use by AI agents
+
+        **Before Sync Can Be Turned On:**
+
+        - The connector is configured (`isConfigured: true`)
+        - OAuth connectors: sign-in has completed
+        - The connection test against the source passes
+        - For agent: the connector supports agents (`supportsAgent: true`)
+        - Local FS: must be enabled from the owner device via the desktop app, which sends `deviceId` and `deviceName`. The first enable claims that device as owner.
+
+        **Permissions:**
+
+        - Team scope: Requires admin
+        - Personal scope: Only creator can toggle
       operationId: toggleConnector
       x-pipeshub-sdk: true
       security:
@@ -66635,15 +66678,16 @@ paths:
         - Connector OAuth
       summary: Get OAuth authorization URL
       description: |
-        Start the OAuth sign-in for a connector instance.<br><br>
-        <b>Flow:</b><br>
-        <ol>
-        <li>Call this endpoint to get <code>authorizationUrl</code> and <code>state</code></li>
-        <li>A person opens the URL and gives consent at the provider</li>
-        <li>The provider redirects to <code>{baseUrl}/{redirectUri}</code> with <code>code</code> and <code>state</code></li>
-        <li>Pass both to <code>GET /connectors/oauth/callback</code> with a bearer token</li>
-        </ol>
-        The redirect URI is fixed when the connector is created (its <code>baseUrl</code>) and must be
+        Start the OAuth sign-in for a connector instance.
+
+        **Flow:**
+
+        1. Call this endpoint to get `authorizationUrl` and `state`
+        2. A person opens the URL and gives consent at the provider
+        3. The provider redirects to `{baseUrl}/{redirectUri}` with `code` and `state`
+        4. Pass both to `GET /connectors/oauth/callback` with a bearer token
+
+        The redirect URI is fixed when the connector is created (its `baseUrl`) and must be
         registered with the provider.
       operationId: getOAuthAuthorizationUrl
       x-pipeshub-sdk: true
@@ -66730,12 +66774,14 @@ paths:
         - Connector OAuth
       summary: OAuth callback handler
       description: |
-        Finish the OAuth sign-in: exchange the provider's <code>code</code> for tokens and store
-        them. Call it with the <code>code</code> and <code>state</code> the provider sent to the redirect URI,
-        as the connector's creator or an admin.<br><br>
-        <b>Result:</b><br>
-        Always JSON. <code>success</code> is true when the connector is signed in; otherwise
-        <code>error</code> and <code>errorMessage</code> say why. Provider tokens are never returned.
+        Finish the OAuth sign-in: exchange the provider's `code` for tokens and store
+        them. Call it with the `code` and `state` the provider sent to the redirect URI,
+        as the connector's creator or an admin.
+
+        **Result:**
+
+        Always JSON. `success` is true when the connector is signed in; otherwise
+        `error` and `errorMessage` say why. Provider tokens are never returned.
       operationId: handleOAuthCallback
       x-pipeshub-sdk: true
       security:
@@ -66841,28 +66887,34 @@ paths:
         - Connector Filters
       summary: Get filter options
       description: |
-        Get available filter options for a connector.<br><br>
-        <b>Overview:</b><br>
+        Get available filter options for a connector.
+
+        **Overview:**
+
         Returns filter fields that can be used to limit what data is synced.
         For example, a Google Drive connector might offer filters for
-        specific folders or file types.<br><br>
-        <b>Dynamic Filters:</b><br>
-        Some filter fields have <code>dynamic: true</code> (i.e.
-        <code>optionSourceType: dynamic</code>), meaning their options are
+        specific folders or file types.
+
+        **Dynamic Filters:**
+
+        Some filter fields have `dynamic: true` (i.e.
+        `optionSourceType: dynamic`), meaning their options are
         loaded separately via the filter options endpoint.
         For such fields, call
-        <code>GET /connectors/{connectorId}/filters/{filterKey}/options</code>.
+        `GET /connectors/{connectorId}/filters/{filterKey}/options`.
         When scoping options to a specific parent (e.g. GitLab projects within
         a selected group), pass the parent paths via the
-        <code>contextGroupPath</code> query parameter on that endpoint.<br><br>
-        <b>Which connectors answer:</b><br>
-        An <code>OAUTH</code> connector answers once it has completed sign-in. A connector with
-        any other auth type (<code>API_TOKEN</code>, <code>BEARER_TOKEN</code>,
-        <code>OAUTH_ADMIN_CONSENT</code>, <code>BASIC_AUTH</code>, <code>ACCESS_KEY</code>,
-        <code>KEY_PAIR</code>, <code>IAM_ROLE</code>, <code>ACCOUNT_KEY</code>, <code>CONNECTION_STRING</code>, <code>ENTRA_ID</code>, <code>CUSTOM</code>) answers once its settings,
-        including the auth section, are saved. A <code>NONE</code> connector (for example RSS)
+        `contextGroupPath` query parameter on that endpoint.
+
+        **Which connectors answer:**
+
+        An `OAUTH` connector answers once it has completed sign-in. A connector with
+        any other auth type (`API_TOKEN`, `BEARER_TOKEN`,
+        `OAUTH_ADMIN_CONSENT`, `BASIC_AUTH`, `ACCESS_KEY`,
+        `KEY_PAIR`, `IAM_ROLE`, `ACCOUNT_KEY`, `CONNECTION_STRING`, `ENTRA_ID`, `CUSTOM`) answers once its settings,
+        including the auth section, are saved. A `NONE` connector (for example RSS)
         needs saved settings but no auth section. Otherwise the request is refused with
-        <code>400</code>.
+        `400`.
       operationId: getConnectorFilters
       x-pipeshub-sdk: true
       security:
@@ -66883,8 +66935,8 @@ paths:
         '200':
           description: |
             Filter options retrieved. A connector whose auth type has no dynamic filter options
-            (for example <code>NONE</code> or <code>BASIC_AUTH</code>) and has saved settings gets an
-            empty <code>filterOptions</code> object.
+            (for example `NONE` or `BASIC_AUTH`) and has saved settings gets an
+            empty `filterOptions` object.
           content:
             application/json:
               schema:
@@ -66900,7 +66952,7 @@ paths:
         '400':
           description: |
             An OAUTH connector has not signed in, or another connector has no saved settings
-            (or, for any type except <code>NONE</code>, no saved auth section).
+            (or, for any type except `NONE`, no saved auth section).
 
             Also returned, before authentication, when a query value, or any string in a JSON or form-encoded body, looks like markup to the app-wide XSS filter: an HTML tag, a script tag, `<iframe`, `<object`, `<embed` or `<svg` tag, a word starting with `on` followed by `=` (meant for inline event handlers such as `onerror=`, it also catches plain text such as `one=1`), a `javascript:` or `data:text/html` URL, an encoded script tag (`&lt;script`, `%3cscript`), or any string longer than 100,000 characters (`HTTP_BAD_REQUEST`, "HTML tags, scripts, and XSS content are not allowed in ...", naming the field or query parameter; a string over 100,000 characters is refused as too long instead). A JSON body that does not parse is refused the same way, also before authentication (`HTTP_BAD_REQUEST`, "The request body is not valid JSON.").
           content:
@@ -66917,7 +66969,7 @@ paths:
           description: |
             Forbidden — one of:
             - the OAuth token lacks the `connector:read` scope
-            - the token lacks <code>connector:read</code>, or the caller may not use this connector
+            - the token lacks `connector:read`, or the caller may not use this connector
           content:
             application/json:
               schema:
@@ -66945,20 +66997,24 @@ paths:
         - Connector Filters
       summary: Save filter selections (deprecated)
       description: |
-        <b>Deprecated.</b> Save filters with
-        <code>PUT /connectors/{connectorId}/config/filters-sync</code> instead, which is what the
-        PipesHub app uses. That route takes <code>{sync?, filters?: {sync, indexing}}</code>. It ignores the
-        flat <code>filters</code> map this one takes: the call still returns 200, but nothing is saved.
+        **Deprecated.** Save filters with
+        `PUT /connectors/{connectorId}/config/filters-sync` instead, which is what the
+        PipesHub app uses. That route takes `{sync?, filters?: {sync, indexing}}`. It ignores the
+        flat `filters` map this one takes: the call still returns 200, but nothing is saved.
         It also refuses while the connector is active, so disable it first.
-        This endpoint will be removed in a future release.<br><br>
-        What this endpoint saves goes to <code>filters.values</code>, which sync does not read:
-        sync reads <code>filters.sync</code> and <code>filters.indexing</code>.<br><br>
-        Save the user's filter selections for a connector.<br><br>
-        <b>Request:</b><br>
-        <code>filters</code> must hold at least one entry: <code>{"filters": {}}</code> is
-        refused with <code>400</code>. The server stores whatever it is given under the
+        This endpoint will be removed in a future release.
+
+        What this endpoint saves goes to `filters.values`, which sync does not read:
+        sync reads `filters.sync` and `filters.indexing`.
+
+        Save the user's filter selections for a connector.
+
+        **Request:**
+
+        `filters` must hold at least one entry: `{"filters": {}}` is
+        refused with `400`. The server stores whatever it is given under the
         connector's saved filter values without checking it against the filter schema.
-        Use <code>PUT /connectors/{connectorId}/config/filters-sync</code> to save typed
+        Use `PUT /connectors/{connectorId}/config/filters-sync` to save typed
         sync and indexing filters.
       operationId: saveConnectorFilters
       x-pipeshub-sdk: true
@@ -66998,7 +67054,7 @@ paths:
                   - success
                   - message
         '400':
-          description: <code>filters</code> is missing or empty
+          description: '`filters` is missing or empty'
           content:
             application/json:
               schema:
@@ -67013,7 +67069,7 @@ paths:
           description: |
             Forbidden — one of:
             - the OAuth token lacks the `connector:write` scope
-            - the token lacks <code>connector:write</code>, or the caller may not use this connector
+            - the token lacks `connector:write`, or the caller may not use this connector
           content:
             application/json:
               schema:
@@ -67044,27 +67100,32 @@ paths:
         - Connector Filters
       summary: Get dynamic filter options
       description: |
-        Get options for a dynamic filter field with pagination.<br><br>
-        <b>Overview:</b><br>
-        For filters with <code>optionSourceType: dynamic</code>, options are loaded
+        Get options for a dynamic filter field with pagination.
+
+        **Overview:**
+
+        For filters with `optionSourceType: dynamic`, options are loaded
         from the connected service. This supports pagination and search. The
         connector is started on demand with its saved credentials, so the
-        connected service must be reachable.<br><br>
-        <b>Scoped options (GitLab):</b><br>
-        When fetching options for the <code>project_ids</code> filter key, pass
-        one or more <code>contextGroupPath</code> query parameters to restrict
+        connected service must be reachable.
+
+        **Scoped options (GitLab):**
+
+        When fetching options for the `project_ids` filter key, pass
+        one or more `contextGroupPath` query parameters to restrict
         the returned repositories to those that belong to the specified GitLab
-        group namespace paths (e.g. <code>myorg/team</code>). This is used to
+        group namespace paths (e.g. `myorg/team`). This is used to
         populate the project filter after the user has selected groups. Other
-        connectors accept and ignore both group path parameters.<br><br>
-        <b>Examples:</b><br>
-        <ul>
-        <li>Google Drive folders list</li>
-        <li>Slack channels list</li>
-        <li>Confluence spaces list</li>
-        <li>GitLab groups list (<code>filterKey=group_ids</code>)</li>
-        <li>GitLab projects scoped to groups (<code>filterKey=project_ids&amp;contextGroupPath=myorg/team</code>)</li>
-        </ul>
+        connectors accept and ignore both group path parameters.
+
+        **Examples:**
+
+        - Google Drive folders list
+        - Slack channels list
+        - Confluence spaces list
+        - GitLab groups list (`filterKey=group_ids`)
+        - GitLab projects scoped to groups (`filterKey=project_ids&contextGroupPath=myorg/team`)
+
         Query parameters other than the six below are dropped without an error.
       operationId: getFilterFieldOptions
       x-pipeshub-sdk: true
@@ -67230,22 +67291,25 @@ paths:
       summary: Exchange Google authorization code for tokens
       deprecated: true
       description: |
-        <b>⚠️ Deprecated:</b> Legacy Google Workspace token exchange endpoint. Use the generic
-        OAuth flow via <code>/connectors/{connectorId}/oauth/authorize</code> instead.<br><br>
-        <b>Overview:</b><br>
+        **⚠️ Deprecated:** Legacy Google Workspace token exchange endpoint. Use the generic
+        OAuth flow via `/connectors/{connectorId}/oauth/authorize` instead.
+
+        **Overview:**
+
         Exchanges a Google OAuth authorization code for access and refresh tokens,
-        stores the credentials, and enables the Google Workspace connector.<br><br>
-        <b>What Happens:</b><br>
-        <ol>
-        <li>Retrieves Google Workspace OAuth config (client ID/secret)</li>
-        <li>Exchanges the authorization code for tokens via Google's token endpoint</li>
-        <li>Verifies the ID token</li>
-        <li>Stores access and refresh tokens in configuration manager. When Google sends no refresh token
-        (a repeat consent), the user's stored refresh token is kept</li>
-        <li>Creates or enables the Google Workspace connector</li>
-        <li>Publishes an AppEnabledEvent for the sync service</li>
-        </ol>
-        <b>Admin Only:</b><br>
+        stores the credentials, and enables the Google Workspace connector.
+
+        **What Happens:**
+
+        1. Retrieves Google Workspace OAuth config (client ID/secret)
+        2. Exchanges the authorization code for tokens via Google's token endpoint
+        3. Verifies the ID token
+        4. Stores access and refresh tokens in configuration manager. When Google sends no refresh token (a repeat consent), the user's stored refresh token is kept
+        5. Creates or enables the Google Workspace connector
+        6. Publishes an AppEnabledEvent for the sync service
+
+        **Admin Only:**
+
         Requires organization admin privileges.
       operationId: getTokenFromCode
       security:
@@ -67385,7 +67449,11 @@ paths:
         - Toolset Registry
       summary: List available toolsets
       description: |-
-        Get all available toolsets from the registry.<br><br> <b>Overview:</b><br> Returns the toolsets
+        Get all available toolsets from the registry.
+
+        **Overview:**
+
+        Returns the toolsets
         that can be configured and used with agents, to any authenticated member. The list is always
         returned whole: `page` and `limit` are validated and echoed in `pagination`, but do not slice
         it.
@@ -68364,7 +68432,9 @@ paths:
       summary: Handle OAuth callback
       description: |-
         Handle the OAuth callback from the authorization server: exchange the authorization code for
-        tokens and store them for the user (or agent) named in `state`.<br><br> The outcome is in the
+        tokens and store them for the user (or agent) named in `state`.
+
+        The outcome is in the
         body, not in the status: a flow that fails or is refused is also answered `200`, with `success:
         false`, an `error` key and a `redirectUrl` that carries it. The frontend navigates to
         `redirectUrl` in both cases.
@@ -76683,9 +76753,11 @@ paths:
         - OAuth Configuration
       summary: List OAuth-capable connector types
       description: |
-        List the connector and toolset types that support OAuth, from the OAuth registry.<br><br>
+        List the connector and toolset types that support OAuth, from the OAuth registry.
+
         Each entry carries the provider URLs, the scopes requested, and the `authFields`
-        to collect when creating an OAuth configuration for that type.<br><br>
+        to collect when creating an OAuth configuration for that type.
+
         Any authenticated user can call this; it is not limited to admins.
       operationId: getOAuthRegistry
       x-pipeshub-sdk: true
@@ -76771,7 +76843,8 @@ paths:
         - OAuth Configuration
       summary: Get OAuth connector type details
       description: |
-        Get the OAuth registry entry of one connector or toolset type.<br><br>
+        Get the OAuth registry entry of one connector or toolset type.
+
         `connectorType` is the registered name and is case-sensitive (e.g. `Confluence`).
       operationId: getOAuthConnectorType
       x-pipeshub-sdk: true
@@ -76868,10 +76941,11 @@ paths:
         - OAuth Configuration
       summary: List OAuth configurations
       description: |
-        List the saved OAuth apps of every connector type in the organization.<br><br>
+        List the saved OAuth apps of every connector type in the organization.
+
         Every caller, admin or not, gets the same essential fields (ID, name, connector type, app
         metadata, timestamps). Credentials are never included; an admin reads them per app with
-        <code>GET /oauth/{connectorType}/{configId}</code>.
+        `GET /oauth/{connectorType}/{configId}`.
       operationId: listOAuthConfigs
       x-pipeshub-sdk: true
       security:
@@ -76953,13 +77027,14 @@ paths:
         - OAuth Configuration
       summary: List OAuth configs for connector type
       description: |
-        List the organization's OAuth configurations for one connector type.<br><br>
-        <b>What comes back depends on the caller:</b><br>
-        <ul>
-        <li>An admin gets each organization app's stored record in full, including `config`. The client secret is masked (`••••••••`) when the server sets `HIDE_SECRET_CONFIG=true`, unless the request passes `reveal=true`</li>
-        <li>Any other caller gets only the credential-free fields</li>
-        <li>The caller's own apps (created for their personal connectors) are listed with `personal: true` and never with `config`</li>
-        </ul>
+        List the organization's OAuth configurations for one connector type.
+
+        **What comes back depends on the caller:**
+
+        - An admin gets each organization app's stored record in full, including `config`. The client secret is masked (`••••••••`) when the server sets `HIDE_SECRET_CONFIG=true`, unless the request passes `reveal=true`
+        - Any other caller gets only the credential-free fields
+        - The caller's own apps (created for their personal connectors) are listed with `personal: true` and never with `config`
+
         Other people's own apps are never listed, to anyone, admins included, and never counted in
         `pagination`. With `scope=team` the caller's own apps are left out too, since they link only
         to personal connectors.
@@ -77062,22 +77137,29 @@ paths:
         - OAuth Configuration
       summary: Create OAuth configuration
       description: |
-        Create a new OAuth configuration for a connector type.<br><br>
-        <b>Admin Only:</b><br>
+        Create a new OAuth configuration for a connector type.
+
+        **Admin Only:**
+
         Only admins can create OAuth configurations. These provide the
-        OAuth credentials needed for users to authenticate connectors.<br><br>
-        <b>Use Case:</b><br>
+        OAuth credentials needed for users to authenticate connectors.
+
+        **Use Case:**
+
         Before users can create Google Drive connectors with OAuth,
         an admin must create an OAuth configuration with the Google
-        OAuth client ID and secret.<br><br>
+        OAuth client ID and secret.
+
         The response carries the credential-free view of the new configuration; the
-        credentials are never echoed back. Success is reported as `200`, not `201`.<br><br>
-        <b>The connector type is not checked.</b> `connectorType` is not compared with the OAuth
+        credentials are never echoed back. Success is reported as `200`, not `201`.
+
+        **The connector type is not checked.** `connectorType` is not compared with the OAuth
         registry, so a misspelled or wrongly-cased name (`confluence` for `Confluence`) does not
         fail: the configuration is stored under that name with the default icon and an empty
         group, description and category list. It is then returned by
         `GET /oauth/{connectorType}` for that same name but never by `GET /oauth`, which only
-        walks the registered types.<br><br>
+        walks the registered types.
+
         Body fields other than `oauthInstanceName`, `config` and `baseUrl` are ignored.
       operationId: createOAuthConfig
       x-pipeshub-sdk: true
@@ -77156,7 +77238,8 @@ paths:
         - OAuth Configuration
       summary: Get OAuth configuration
       description: |
-        Get a specific OAuth configuration by ID.<br><br>
+        Get a specific OAuth configuration by ID.
+
         An admin gets `config` with the stored credentials, client secret in clear text.
         Any other caller gets the same object without `config`.
         The caller's own app answers with `personal: true` and without `config`, for admins too;
@@ -77236,8 +77319,10 @@ paths:
         - OAuth Configuration
       summary: Update OAuth configuration
       description: |
-        Update an OAuth configuration.<br><br>
-        <b>Admin Only:</b><br>
+        Update an OAuth configuration.
+
+        **Admin Only:**
+
         Only an admin can update, including apps another admin created.
       operationId: updateOAuthConfig
       x-pipeshub-sdk: true
@@ -77355,10 +77440,14 @@ paths:
         - OAuth Configuration
       summary: Delete OAuth configuration
       description: |
-        Delete an OAuth configuration.<br><br>
-        <b>Admin Only:</b><br>
-        Only admins can delete OAuth configurations.<br><br>
-        <b>Warning:</b><br>
+        Delete an OAuth configuration.
+
+        **Admin Only:**
+
+        Only admins can delete OAuth configurations.
+
+        **Warning:**
+
         The server does not check whether connectors still use the configuration:
         it is deleted either way, and those connectors lose their OAuth app.
       operationId: deleteOAuthConfig
@@ -83040,54 +83129,53 @@ paths:
         - Crawling Jobs
       summary: Schedule a crawling job
       description: |
-        Schedule a new crawling job for a specific connector instance.<br><br>
+        Schedule a new crawling job for a specific connector instance.
 
-        <b>Overview:</b><br>
+        **Overview:**
+
         Creates a scheduled crawling job that will sync data from the specified connector into
         PipesHub's search index. The job is added to a BullMQ queue and will execute according
-        to the specified schedule configuration.<br><br>
+        to the specified schedule configuration.
 
-        <b>Schedule Types:</b><br>
-        <ul>
-        <li><b>hourly:</b> Run every X hours at specified minute (e.g., every 2 hours at :30)</li>
-        <li><b>daily:</b> Run once per day at specified time (e.g., 2:00 AM daily)</li>
-        <li><b>weekly:</b> Run on specific days of the week (e.g., Mon/Wed/Fri at 3:00 AM)</li>
-        <li><b>monthly:</b> Run on specific day of month (e.g., 1st of each month at 4:00 AM)</li>
-        <li><b>custom:</b> Use cron expression for complex schedules</li>
-        <li><b>once:</b> Run once at a specific future datetime</li>
-        <li><b>interval:</b> Run every N minutes, counted from the previous run</li>
-        </ul>
+        **Schedule Types:**
 
-        <b>Access Control:</b><br>
+        - **hourly:** Run every X hours at specified minute (e.g., every 2 hours at :30)
+        - **daily:** Run once per day at specified time (e.g., 2:00 AM daily)
+        - **weekly:** Run on specific days of the week (e.g., Mon/Wed/Fri at 3:00 AM)
+        - **monthly:** Run on specific day of month (e.g., 1st of each month at 4:00 AM)
+        - **custom:** Use cron expression for complex schedules
+        - **once:** Run once at a specific future datetime
+        - **interval:** Run every N minutes, counted from the previous run
+
+        **Access Control:**
+
         The connector instance is first looked up as the caller, and a connector the caller
-        cannot see is answered <code>404</code>, not <code>403</code>:
-        <ul>
-        <li>Team-scoped connectors: an organization admin can schedule them; a member who cannot see the connector gets <code>404</code></li>
-        <li>Personal-scoped connectors: only the creator can schedule them; everyone else, admins included, gets <code>404</code></li>
-        </ul>
-        A <code>403</code> comes from a token without the <code>crawl:write</code> scope, from a token
-        with neither <code>connector:read</code> nor <code>kb:write</code> (the connector lookup above is
+        cannot see is answered `404`, not `403`:
+
+        - Team-scoped connectors: an organization admin can schedule them; a member who cannot see the connector gets `404`
+        - Personal-scoped connectors: only the creator can schedule them; everyone else, admins included, gets `404`
+
+        A `403` comes from a token without the `crawl:write` scope, from a token
+        with neither `connector:read` nor `kb:write` (the connector lookup above is
         made with the caller's token and needs one of them), and from a non-admin who can see a team
         connector because they created it. The same rules hold for reading, removing, pausing and
-        resuming a schedule.<br><br>
+        resuming a schedule.
 
-        <b>Job Behavior:</b><br>
-        <ul>
-        <li>If a job already exists for this connector, it will be replaced</li>
-        <li>A disabled schedule (<code>isEnabled: false</code>) is refused with <code>400</code>, and the connector's existing schedule, if any, is removed</li>
-        <li>A schedule refused for an unusable time, cron expression or timezone leaves the existing schedule in place</li>
-        <li>The job is stored under the connector instance's own type, whatever the <code>connector</code> path segment says</li>
-        <li>Body fields the request schema does not list are ignored</li>
-        <li>Jobs use exponential backoff for retries (5s, 10s, 20s, etc.)</li>
-        <li>Only last 10 completed/failed jobs are retained per connector</li>
-        </ul>
+        **Job Behavior:**
 
-        <b>Related Endpoints:</b><br>
-        <ul>
-        <li><code>GET /crawlingManager/{connector}/{connectorId}/schedule</code> - Get job status</li>
-        <li><code>POST /crawlingManager/{connector}/{connectorId}/pause</code> - Pause job</li>
-        <li><code>DELETE /crawlingManager/{connector}/{connectorId}/remove</code> - Remove job</li>
-        </ul>
+        - If a job already exists for this connector, it will be replaced
+        - A disabled schedule (`isEnabled: false`) is refused with `400`, and the connector's existing schedule, if any, is removed
+        - A schedule refused for an unusable time, cron expression or timezone leaves the existing schedule in place
+        - The job is stored under the connector instance's own type, whatever the `connector` path segment says
+        - Body fields the request schema does not list are ignored
+        - Jobs use exponential backoff for retries (5s, 10s, 20s, etc.)
+        - Only last 10 completed/failed jobs are retained per connector
+
+        **Related Endpoints:**
+
+        - `GET /crawlingManager/{connector}/{connectorId}/schedule` - Get job status
+        - `POST /crawlingManager/{connector}/{connectorId}/pause` - Pause job
+        - `DELETE /crawlingManager/{connector}/{connectorId}/remove` - Remove job
       operationId: scheduleCrawlingJob
       security:
         - bearerAuth: []
@@ -83235,14 +83323,13 @@ paths:
                         example: "2024-01-15T10:30:00Z"
         '400':
           description: |
-            Bad request. Possible reasons:<br>
-            <ul>
-            <li><code>connector</code> or <code>connectorId</code> is not a safe path segment (answered before the token is checked)</li>
-            <li>The request validator refused the body (code <code>VALIDATION_ERROR</code>): <code>scheduleConfig</code> is missing or not valid for its <code>scheduleType</code>, or a field is out of range or of the wrong type. This is checked before the connector is looked up.</li>
-            <li>Schedule is disabled (<code>isEnabled: false</code>)</li>
-            <li>The schedule never produces a run time: a cron expression that cannot be parsed, an unknown timezone, or a fraction in <code>minute</code>, <code>hour</code>, <code>interval</code>, <code>dayOfMonth</code> or <code>daysOfWeek</code></li>
-            <li>Scheduled time is in the past for one-time jobs</li>
-            </ul>
+            Bad request. Possible reasons:
+
+            - `connector` or `connectorId` is not a safe path segment (answered before the token is checked)
+            - The request validator refused the body (code `VALIDATION_ERROR`): `scheduleConfig` is missing or not valid for its `scheduleType`, or a field is out of range or of the wrong type. This is checked before the connector is looked up.
+            - Schedule is disabled (`isEnabled: false`)
+            - The schedule never produces a run time: a cron expression that cannot be parsed, an unknown timezone, or a fraction in `minute`, `hour`, `interval`, `dayOfMonth` or `daysOfWeek`
+            - Scheduled time is in the past for one-time jobs
 
             Also returned, before authentication, when a query value, or any string in a JSON or form-encoded body, looks like markup to the app-wide XSS filter: an HTML tag, a script tag, `<iframe`, `<object`, `<embed` or `<svg` tag, a word starting with `on` followed by `=` (meant for inline event handlers such as `onerror=`, it also catches plain text such as `one=1`), a `javascript:` or `data:text/html` URL, an encoded script tag (`&lt;script`, `%3cscript`), or any string longer than 100,000 characters (`HTTP_BAD_REQUEST`, "HTML tags, scripts, and XSS content are not allowed in ...", naming the field or query parameter; a string over 100,000 characters is refused as too long instead). A JSON body that does not parse is refused the same way, also before authentication (`HTTP_BAD_REQUEST`, "The request body is not valid JSON.").
           content:
@@ -83257,12 +83344,12 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |
-            Forbidden (code `HTTP_FORBIDDEN`), for one of these reasons:<br>
-            <ul>
-            <li>The token lacks the `crawl:write` scope</li>
-            <li>The token has neither `connector:read` nor `kb:write`. The route first reads the connector from the connector service with the caller's own token, and that read needs one of them (message `Insufficient scope. Required: connector:read or kb:write`), so a token with only `crawl:*` scopes is refused</li>
-            <li>The caller is not an admin and the connector is a team connector they can see because they created it (for example while they were an admin): the connector service shows it to its creator, and this route then refuses every non-admin (message `You are not authorized to schedule this connector`)</li>
-            </ul>
+            Forbidden (code `HTTP_FORBIDDEN`), for one of these reasons:
+
+            - The token lacks the `crawl:write` scope
+            - The token has neither `connector:read` nor `kb:write`. The route first reads the connector from the connector service with the caller's own token, and that read needs one of them (message `Insufficient scope. Required: connector:read or kb:write`), so a token with only `crawl:*` scopes is refused
+            - The caller is not an admin and the connector is a team connector they can see because they created it (for example while they were an admin): the connector service shows it to its creator, and this route then refuses every non-admin (message `You are not authorized to schedule this connector`)
+
             A connector the caller cannot see at all is answered `404`, not `403`.
           content:
             application/json:
@@ -83278,9 +83365,9 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            <code>priority</code> was sent as a fraction (e.g. <code>1.5</code>): the request
+            `priority` was sent as a fraction (e.g. `1.5`): the request
             validator accepts it, the queue refuses it, and the failure is reported as an internal
-            error (code <code>INTERNAL_ERROR</code>) instead of a <code>400</code>. By then the
+            error (code `INTERNAL_ERROR`) instead of a `400`. By then the
             connector's existing schedule has already been removed, so the connector is left with
             no schedule at all.
 
@@ -83295,26 +83382,27 @@ paths:
         - Crawling Jobs
       summary: Get crawling job status
       description: |
-        Retrieve the current status of a scheduled crawling job for a specific connector.<br><br>
+        Retrieve the current status of a scheduled crawling job for a specific connector.
 
-        <b>Overview:</b><br>
+        **Overview:**
+
         Returns detailed information about the most recent crawling job for the specified connector,
-        including its current state, progress, timing information, and any error details.<br><br>
+        including its current state, progress, timing information, and any error details.
 
-        <b>Job States:</b><br>
-        <ul>
-        <li><b>waiting:</b> Job is queued and waiting to be processed</li>
-        <li><b>active:</b> Job is currently being processed by a worker</li>
-        <li><b>completed:</b> Job finished successfully</li>
-        <li><b>failed:</b> Job failed after exhausting retry attempts</li>
-        <li><b>delayed:</b> Job is scheduled for future execution</li>
-        <li><b>paused:</b> Job has been manually paused</li>
-        </ul>
+        **Job States:**
 
-        <b>Access Control:</b><br>
+        - **waiting:** Job is queued and waiting to be processed
+        - **active:** Job is currently being processed by a worker
+        - **completed:** Job finished successfully
+        - **failed:** Job failed after exhausting retry attempts
+        - **delayed:** Job is scheduled for future execution
+        - **paused:** Job has been manually paused
+
+        **Access Control:**
+
         Same as scheduling: a connector the caller cannot see (a team connector for a member who
-        cannot see it, someone else's personal connector for anyone) is answered <code>404</code>, and
-        the same <code>403</code> cases apply (no <code>connector:read</code> or <code>kb:write</code> on the
+        cannot see it, someone else's personal connector for anyone) is answered `404`, and
+        the same `403` cases apply (no `connector:read` or `kb:write` on the
         token, or a non-admin creator of a team connector).
       operationId: getCrawlingJobStatus
       security:
@@ -83368,12 +83456,12 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |
-            Forbidden (code `HTTP_FORBIDDEN`), for one of these reasons:<br>
-            <ul>
-            <li>The token lacks the `crawl:read` scope</li>
-            <li>The token has neither `connector:read` nor `kb:write`. The route first reads the connector from the connector service with the caller's own token, and that read needs one of them (message `Insufficient scope. Required: connector:read or kb:write`), so a token with only `crawl:*` scopes is refused</li>
-            <li>The caller is not an admin and the connector is a team connector they can see because they created it (for example while they were an admin): the connector service shows it to its creator, and this route then refuses every non-admin (message `You are not authorized to schedule this connector`)</li>
-            </ul>
+            Forbidden (code `HTTP_FORBIDDEN`), for one of these reasons:
+
+            - The token lacks the `crawl:read` scope
+            - The token has neither `connector:read` nor `kb:write`. The route first reads the connector from the connector service with the caller's own token, and that read needs one of them (message `Insufficient scope. Required: connector:read or kb:write`), so a token with only `crawl:*` scopes is refused
+            - The caller is not an admin and the connector is a team connector they can see because they created it (for example while they were an admin): the connector service shows it to its creator, and this route then refuses every non-admin (message `You are not authorized to schedule this connector`)
+
             A connector the caller cannot see at all is answered `404`, not `403`.
           content:
             application/json:
@@ -83382,8 +83470,8 @@ paths:
         '404':
           description: |
             Either the connector has no scheduled or paused job under the type given in
-            <code>connector</code> (the controller's own <code>success: false</code> body with
-            <code>data: null</code>), or the connector instance does not exist or is not visible
+            `connector` (the controller's own `success: false` body with
+            `data: null`), or the connector instance does not exist or is not visible
             to the caller (standard error envelope).
           content:
             application/json:
@@ -83406,30 +83494,29 @@ paths:
         - Crawling Jobs
       summary: Remove a crawling job
       description: |
-        Permanently remove a scheduled crawling job for a specific connector.<br><br>
+        Permanently remove a scheduled crawling job for a specific connector.
 
-        <b>Overview:</b><br>
+        **Overview:**
+
         Removes the crawling job and all associated data from the queue. This includes
-        removing repeatable job configurations and cleaning up job history.<br><br>
+        removing repeatable job configurations and cleaning up job history.
 
-        <b>What Gets Removed:</b><br>
-        <ul>
-        <li>Active or waiting job instances</li>
-        <li>Repeatable job configuration (for recurring schedules)</li>
-        <li>Paused job information</li>
-        <li>Job mappings and metadata</li>
-        </ul>
+        **What Gets Removed:**
 
-        <b>Note:</b> Completed and failed job records may be retained for audit purposes.<br><br>
+        - Active or waiting job instances
+        - Repeatable job configuration (for recurring schedules)
+        - Paused job information
+        - Job mappings and metadata
+
+        **Note:** Completed and failed job records may be retained for audit purposes.
 
         The call succeeds whether or not anything was removed: a connector that has no job, or a
-        <code>connector</code> segment that is not the instance's own type, still answers
-        <code>200</code> with the same body and removes nothing.
+        `connector` segment that is not the instance's own type, still answers
+        `200` with the same body and removes nothing.
 
-        <b>Related Endpoints:</b><br>
-        <ul>
-        <li><code>DELETE /crawlingManager/schedule/all</code> - Remove all jobs for organization</li>
-        </ul>
+        **Related Endpoints:**
+
+        - `DELETE /crawlingManager/schedule/all` - Remove all jobs for organization
       operationId: removeCrawlingJob
       security:
         - bearerAuth: []
@@ -83480,12 +83567,12 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |
-            Forbidden (code `HTTP_FORBIDDEN`), for one of these reasons:<br>
-            <ul>
-            <li>The token lacks the `crawl:delete` scope</li>
-            <li>The token has neither `connector:read` nor `kb:write`. The route first reads the connector from the connector service with the caller's own token, and that read needs one of them (message `Insufficient scope. Required: connector:read or kb:write`), so a token with only `crawl:*` scopes is refused</li>
-            <li>The caller is not an admin and the connector is a team connector they can see because they created it (for example while they were an admin): the connector service shows it to its creator, and this route then refuses every non-admin (message `You are not authorized to schedule this connector`)</li>
-            </ul>
+            Forbidden (code `HTTP_FORBIDDEN`), for one of these reasons:
+
+            - The token lacks the `crawl:delete` scope
+            - The token has neither `connector:read` nor `kb:write`. The route first reads the connector from the connector service with the caller's own token, and that read needs one of them (message `Insufficient scope. Required: connector:read or kb:write`), so a token with only `crawl:*` scopes is refused
+            - The caller is not an admin and the connector is a team connector they can see because they created it (for example while they were an admin): the connector service shows it to its creator, and this route then refuses every non-admin (message `You are not authorized to schedule this connector`)
+
             A connector the caller cannot see at all is answered `404`, not `403`.
           content:
             application/json:
@@ -83684,12 +83771,12 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |
-            Forbidden (code `HTTP_FORBIDDEN`), for one of these reasons:<br>
-            <ul>
-            <li>The token lacks the `crawl:write` scope</li>
-            <li>The token has neither `connector:read` nor `kb:write`. The route first reads the connector from the connector service with the caller's own token, and that read needs one of them (message `Insufficient scope. Required: connector:read or kb:write`), so a token with only `crawl:*` scopes is refused</li>
-            <li>The caller is not an admin and the connector is a team connector they can see because they created it (for example while they were an admin): the connector service shows it to its creator, and this route then refuses every non-admin (message `You are not authorized to schedule this connector`)</li>
-            </ul>
+            Forbidden (code `HTTP_FORBIDDEN`), for one of these reasons:
+
+            - The token lacks the `crawl:write` scope
+            - The token has neither `connector:read` nor `kb:write`. The route first reads the connector from the connector service with the caller's own token, and that read needs one of them (message `Insufficient scope. Required: connector:read or kb:write`), so a token with only `crawl:*` scopes is refused
+            - The caller is not an admin and the connector is a team connector they can see because they created it (for example while they were an admin): the connector service shows it to its creator, and this route then refuses every non-admin (message `You are not authorized to schedule this connector`)
+
             A connector the caller cannot see at all is answered `404`, not `403`.
           content:
             application/json:
@@ -83779,12 +83866,12 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |
-            Forbidden (code `HTTP_FORBIDDEN`), for one of these reasons:<br>
-            <ul>
-            <li>The token lacks the `crawl:write` scope</li>
-            <li>The token has neither `connector:read` nor `kb:write`. The route first reads the connector from the connector service with the caller's own token, and that read needs one of them (message `Insufficient scope. Required: connector:read or kb:write`), so a token with only `crawl:*` scopes is refused</li>
-            <li>The caller is not an admin and the connector is a team connector they can see because they created it (for example while they were an admin): the connector service shows it to its creator, and this route then refuses every non-admin (message `You are not authorized to schedule this connector`)</li>
-            </ul>
+            Forbidden (code `HTTP_FORBIDDEN`), for one of these reasons:
+
+            - The token lacks the `crawl:write` scope
+            - The token has neither `connector:read` nor `kb:write`. The route first reads the connector from the connector service with the caller's own token, and that read needs one of them (message `Insufficient scope. Required: connector:read or kb:write`), so a token with only `crawl:*` scopes is refused
+            - The caller is not an admin and the connector is a team connector they can see because they created it (for example while they were an admin): the connector service shows it to its creator, and this route then refuses every non-admin (message `You are not authorized to schedule this connector`)
+
             A connector the caller cannot see at all is answered `404`, not `403`.
           content:
             application/json:
@@ -84009,17 +84096,17 @@ paths:
         - Connectors
       summary: List all connectors configured for SCHEDULED sync (internal)
       description: |
-        <b>Internal service-to-service endpoint.</b> Used exclusively by the Node.js
+        **Internal service-to-service endpoint.** Used exclusively by the Node.js
         scheduled-jobs backfill migration to enumerate connector instances whose etcd
-        sync config has <code>selectedStrategy = SCHEDULED</code>.<br><br>
+        sync config has `selectedStrategy = SCHEDULED`.
 
-        <b>Pagination:</b> Callers step through 1-based pages. Each response returns
-        up to <code>limit</code> items that are active (<code>isActive: true</code>)
-        and have a SCHEDULED strategy, plus a <code>hasMore</code> flag so the caller
-        knows when to stop. Database-level <code>LIMIT/OFFSET</code> is used so memory
-        stays proportional to <code>limit</code> regardless of total connector count.<br><br>
+        **Pagination:** Callers step through 1-based pages. Each response returns
+        up to `limit` items that are active (`isActive: true`)
+        and have a SCHEDULED strategy, plus a `hasMore` flag so the caller
+        knows when to stop. Database-level `LIMIT/OFFSET` is used so memory
+        stays proportional to `limit` regardless of total connector count.
 
-        <b>Auth:</b> Requires a scoped service JWT with <code>CONNECTOR_READ</code>
+        **Auth:** Requires a scoped service JWT with `CONNECTOR_READ`
         scope. Not intended for end-user clients.
       operationId: getAllScheduledConnectorInstancesInternal
       security:
@@ -84050,9 +84137,9 @@ paths:
           description: |
             Comma-separated connector ids (at most 200). The response then holds exactly these
             connectors, active or not and whatever their strategy, in one page with
-            <code>hasMore: false</code>. A connector that does not exist comes back as
-            <code>missing: true</code>, and one whose settings could not be read as
-            <code>unreadable: true</code>.
+            `hasMore: false`. A connector that does not exist comes back as
+            `missing: true`, and one whose settings could not be read as
+            `unreadable: true`.
           schema:
             type: string
           example: "8f792208-6d61-4e16-9eda-5b1b62f28e8a,1c0b3a52-2f7e-4f3e-9d65-4c1e8f0b7a11"
@@ -91884,14 +91971,17 @@ paths:
       summary: Look up users by email address (Internal)
       description: |
         Internal service-to-service endpoint used by the authentication service to find the
-        account behind an email address before a session exists.<br><br>
+        account behind an email address before a session exists.
+
         Returns the non-deleted users whose `email` equals the address, as a bare JSON array
         holding only `_id`, `orgId`, `email`, `fullName`, `role` and `hasLoggedIn` of each. The
         array is empty when no account matches. When the token names an organization
-        (`orgId`), only that organization's accounts are returned.<br><br>
-        <b>Note:</b> the address is read from the JSON <b>request body</b> of this `GET`
+        (`orgId`), only that organization's accounts are returned.
+
+        **Note:** the address is read from the JSON **request body** of this `GET`
         request. An `email` query parameter is ignored and fails validation as a missing body
-        field.<br><br>
+        field.
+
         Requires a scoped service token carrying the `user:lookup` scope. A regular session
         token, a token with another scope, or a wrongly signed token is rejected with `401`.
         The token must also carry an `email` claim equal to the body's `email`, ignoring letter
@@ -92004,8 +92094,10 @@ paths:
         Internal endpoint called by the Configuration Manager after settings change. It
         reloads the application configuration from the configuration store and rebinds the
         mail and auth services and the user and organization controllers to it, so the user
-        management module picks up the new values without a restart.<br><br>
-        Takes no request body and is idempotent.<br><br>
+        management module picks up the new values without a restart.
+
+        Takes no request body and is idempotent.
+
         Requires a scoped service token carrying the `fetch:config` scope. A regular session
         token (even an organization admin's), a token with another scope, or a wrongly signed
         token is rejected with `401`.
@@ -92053,9 +92145,11 @@ paths:
         settings change. It reloads the application configuration from the
         configuration store and rebinds the storage configuration and controller,
         so the storage routes pick up the new values without a restart. Nothing is
-        written: the call only reloads what is already stored.<br><br>
+        written: the call only reloads what is already stored.
+
         Takes no request body and no query parameters (anything sent is ignored, as long as
-        a body is valid JSON) and is idempotent.<br><br>
+        a body is valid JSON) and is idempotent.
+
         Requires a scoped service token carrying the `fetch:config` scope. A regular
         session token (even an organization admin's), a token with another scope, or
         a wrongly signed token is rejected with `401`.
@@ -92948,8 +93042,10 @@ paths:
         Internal endpoint called by the Configuration Manager after settings change. It
         reloads the application configuration from the configuration store and rebinds it
         for the semantic search routes, so they pick up the new values without a restart.
-        Nothing is written: the call only reloads what is already stored.<br><br>
-        Takes no request body (one that is sent is ignored) and is idempotent.<br><br>
+        Nothing is written: the call only reloads what is already stored.
+
+        Takes no request body (one that is sent is ignored) and is idempotent.
+
         Requires a scoped service token carrying the `fetch:config` scope. A regular session
         token (even an organization admin's), a token with another scope, or a wrongly signed
         token is rejected with `401`.
@@ -93170,15 +93266,22 @@ paths:
       description: |
         Start a background job that drops the records vector collection shared by
         every connector, recreates it empty and resets the indexing status of the
-        organization's records so they can be indexed again.<br><br>
-        <b>Admin Only:</b><br>
-        Requires organization admin privileges.<br><br>
-        <b>Availability:</b><br>
-        Refused with <code>403</code> when vector-store rebuild is not part of the
-        edition or has not been enabled by the administrator.<br><br>
-        <b>One job at a time:</b><br>
-        Refused with <code>409</code> while another cleanup or reindex job runs, or
-        while records are still being indexed.<br><br>
+        organization's records so they can be indexed again.
+
+        **Admin Only:**
+
+        Requires organization admin privileges.
+
+        **Availability:**
+
+        Refused with `403` when vector-store rebuild is not part of the
+        edition or has not been enabled by the administrator.
+
+        **One job at a time:**
+
+        Refused with `409` while another cleanup or reindex job runs, or
+        while records are still being indexed.
+
         The request returns as soon as the job is accepted; it does not wait for it.
       operationId: cleanupVectorStore
       security:
@@ -93237,17 +93340,24 @@ paths:
       description: |
         Start a background job that re-embeds the records of every connector of
         the organization from their stored content. Unlike
-        <code>POST /connectors/vector-store/cleanup</code> it does not drop the
-        vector collection.<br><br>
-        <b>Admin Only:</b><br>
-        Requires organization admin privileges.<br><br>
-        <b>Availability:</b><br>
-        Refused with <code>403</code> when vector-store rebuild is not part of the
-        edition or has not been enabled by the administrator.<br><br>
-        <b>One job at a time:</b><br>
-        Refused with <code>409</code> while another cleanup or reindex job runs,
+        `POST /connectors/vector-store/cleanup` it does not drop the
+        vector collection.
+
+        **Admin Only:**
+
+        Requires organization admin privileges.
+
+        **Availability:**
+
+        Refused with `403` when vector-store rebuild is not part of the
+        edition or has not been enabled by the administrator.
+
+        **One job at a time:**
+
+        Refused with `409` while another cleanup or reindex job runs,
         while a cleanup is still dropping the collection, or while records are
-        still being indexed.<br><br>
+        still being indexed.
+
         The request returns as soon as the job is accepted; it does not wait for it.
       operationId: reindexVectorStore
       security:
@@ -93307,13 +93417,16 @@ paths:
       description: |
         Internal endpoint that makes the connector routes re-read their
         application configuration (service URLs, signing secrets, storage
-        settings) from the configuration store.<br><br>
-        <b>Purpose:</b><br>
+        settings) from the configuration store.
+
+        **Purpose:**
+
         Called by other PipesHub services after the configuration changed, so
         the new values apply without a restart. Nothing is written: the call
-        only reloads what is already stored.<br><br>
-        <b>Note:</b> This is an internal service-to-service endpoint. It takes a
-        scoped service token with the <code>fetch:config</code> scope, not a
+        only reloads what is already stored.
+
+        **Note:** This is an internal service-to-service endpoint. It takes a
+        scoped service token with the `fetch:config` scope, not a
         user access token.
       operationId: updateConnectorAppConfig
       security:
