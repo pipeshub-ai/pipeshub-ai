@@ -1620,7 +1620,8 @@ class OutlookIndividualConnector(OutlookFolderInventoryMixin, BaseConnector):
         """Process email attachments with folder information.
 
         ``kept_ids`` gets the ids of listed attachments skipped this time (no content type),
-        so a stored record of theirs is not taken as removed.
+        so a stored record of theirs is not taken as removed, here or by the sweep after a
+        full sync.
         """
         attachment_updates = []
 
@@ -1663,8 +1664,11 @@ class OutlookIndividualConnector(OutlookFolderInventoryMixin, BaseConnector):
 
                 # Skip if attachment was filtered out (e.g., no content_type)
                 if not attachment_record:
-                    if kept_ids is not None and not unsynced_attachment_kind(attachment):
-                        kept_ids.add(attachment_id)
+                    if not unsynced_attachment_kind(attachment):
+                        if kept_ids is not None:
+                            kept_ids.add(attachment_id)
+                        if existing_record:
+                            self.data_entities_processor.note_kept_records(self.connector_id, [existing_record.id])
                     continue
 
                 attachment_updates.append(RecordUpdate(

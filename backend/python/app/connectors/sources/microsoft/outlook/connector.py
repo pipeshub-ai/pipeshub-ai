@@ -1635,6 +1635,9 @@ class OutlookConnector(OutlookFolderInventoryMixin, BaseConnector):
 
                     content_type = attachment.content_type
                     if not content_type:
+                        self.logger.warning(f"Skipping attachment {attachment_id} of post {post_id} - no content_type available")
+                        if existing_record:
+                            self.data_entities_processor.note_kept_records(self.connector_id, [existing_record.id])
                         continue
 
                     is_new = existing_record is None
@@ -2079,6 +2082,8 @@ class OutlookConnector(OutlookFolderInventoryMixin, BaseConnector):
                 ids.add(response.data.id)
             elif is_folder_not_found_error(response.error):
                 self._standard_folder_missing = True
+                if name not in OutlookFolders.MAY_BE_ABSENT:
+                    self._hold_folders_maybe_present = True
             else:
                 raise Exception(f"Failed to read the '{name}' folder: {response.error}")
         return ids
@@ -2148,7 +2153,7 @@ class OutlookConnector(OutlookFolderInventoryMixin, BaseConnector):
             self.logger.info(f"Retrieved {len(top_level_folders)} top-level folders across {page_num} page(s)")
 
             if folder_names is not None and folder_filter_mode:
-                self._standard_folder_missing = False
+                self._standard_folder_missing = self._hold_folders_maybe_present = False
                 standard_ids = await self._get_standard_folder_ids(user_id, folder_names)
                 keep = folder_filter_mode == "include"
                 if keep and self._standard_folder_missing:
@@ -2809,7 +2814,8 @@ class OutlookConnector(OutlookFolderInventoryMixin, BaseConnector):
         Args:
             message: Pydantic Message object
             kept_ids: gets the ids of listed attachments skipped this time (no content type),
-                so a stored record of theirs is not taken as removed
+                so a stored record of theirs is not taken as removed, here or by the sweep
+                after a full sync
         """
         attachment_updates = []
 
@@ -2855,8 +2861,11 @@ class OutlookConnector(OutlookFolderInventoryMixin, BaseConnector):
 
                 # Skip if attachment was filtered out (e.g., no content_type)
                 if not attachment_record:
-                    if kept_ids is not None and not unsynced_attachment_kind(attachment):
-                        kept_ids.add(attachment_id)
+                    if not unsynced_attachment_kind(attachment):
+                        if kept_ids is not None:
+                            kept_ids.add(attachment_id)
+                        if existing_record:
+                            self.data_entities_processor.note_kept_records(self.connector_id, [existing_record.id])
                     continue
 
                 attachment_updates.append(RecordUpdate(

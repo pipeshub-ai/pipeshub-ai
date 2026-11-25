@@ -108,6 +108,9 @@ class OutlookFolders:
         "Conversation History": "conversationhistory",
     }
     STANDARD_FOLDERS: list[str] = list(WELL_KNOWN_NAMES)
+    # Created on first use, so many mailboxes lack them; a 404 for any other standard
+    # folder means Graph did not resolve one the mailbox has.
+    MAY_BE_ABSENT: tuple[str, ...] = ("Archive", "Conversation History")
     # Synced only when a folder filter selects it. Deleting a mail or a folder in Outlook
     # moves it here, so syncing it by default kept deleted mail searchable. Recoverable
     # Items (recoverableitemsdeletions) is outside the folder tree and never listed.
