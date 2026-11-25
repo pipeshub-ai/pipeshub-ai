@@ -8,8 +8,11 @@ viewer may open, else under the App. Two marks of each grant row, functions of k
   seed arm, ``access._is_seed``; kg's class of such a node has the ``@self`` clause), so the node is no chain-top of theirs.
 - ``node_group``: the node's one record group, for a record of exactly one group (``group_sk`` and no group link); NULL otherwise. A record whose group the viewer may open is
   listed under that group, never under the App.
+- ``node_parent`` (kg_0027): the node's one hierarchy parent, for a live (not deleted, no placeholder, of the organisation), OPEN record with a ``node_group`` whose only
+  hierarchy parent is its primary one (``parent_sk`` and no hierarchy link); NULL otherwise. With it a browse of the root has every row the chain-top rule reads of the node
+  (its parents and own groups are that parent and that group) from the grant alone; without it the browse reads the node's rows.
 
-Both default to what lists every grant as before (false, NULL), and a mark is only ever a reason to leave a grant out: a mark that is late can cost reads, never a chain-top.
+All three default to what lists every grant as before (false, NULL, NULL), and a mark is only ever a reason to leave a grant out: a mark that is late can cost reads, never a chain-top.
 The projection keeps them exact in the unit that changes what they read (:func:`refresh`), the bootstrap fills an older copy in place, and the verify refuses a copy that holds a
 mark its rows no longer give (:data:`BY_APP`, ``unsafe``). The writer only updates grant rows that exist: a grant another unit deleted meanwhile is never made again.
 """
@@ -29,9 +32,13 @@ _WANT = """LEFT JOIN LATERAL (SELECT
           JOIN kg.records pr ON pr.org_id = $1 AND pr.sk = p.sk
           JOIN kg.scope_members q ON q.org_id = $1 AND q.principal_sk = m.principal_sk AND q.node_sk = pr.sk AND q.gtype = m.gtype
         WHERE pr.kind IN (2, 3) AND pr.app_sk = r.app_sk AND NOT pr.deleted AND NOT pr.placeholder AND NOT pr.alien AND coalesce(pr.rule, 'OPEN') = 'OPEN') AS held,
-      CASE WHEN r.kind = 3 AND NOT EXISTS (SELECT 1 FROM kg.links l WHERE l.org_id = $1 AND l.child_sk = r.sk AND l.kind = 2) THEN r.group_sk END AS grp
-    FROM kg.records r WHERE r.org_id = $1 AND r.sk = m.node_sk AND r.kind IN (2, 3) AND r.app_sk = m.app_sk) x ON true"""
-_COLS = "m.principal_sk, m.node_sk, m.gtype, m.parent_held, m.node_group, coalesce(x.held, false) AS want_held, x.grp AS want_group"
+      g.grp,
+      CASE WHEN g.grp IS NOT NULL AND r.parent_sk IS NOT NULL AND NOT r.deleted AND NOT r.placeholder AND NOT r.alien AND coalesce(r.rule, 'OPEN') = 'OPEN'
+        AND NOT EXISTS (SELECT 1 FROM kg.links l WHERE l.org_id = $1 AND l.child_sk = r.sk AND l.kind = 1) THEN r.parent_sk END AS par
+    FROM kg.records r
+    CROSS JOIN LATERAL (SELECT CASE WHEN r.kind = 3 AND NOT EXISTS (SELECT 1 FROM kg.links l WHERE l.org_id = $1 AND l.child_sk = r.sk AND l.kind = 2) THEN r.group_sk END AS grp) g WHERE r.org_id = $1 AND r.sk = m.node_sk AND r.kind IN (2, 3) AND r.app_sk = m.app_sk) x ON true"""
+_COLS = ("m.principal_sk, m.node_sk, m.gtype, m.parent_held, m.node_group, m.node_parent, coalesce(x.held, false) AS want_held, x.grp AS want_group, "
+         "x.par AS want_parent")
 # The grants on the nodes $2.
 ON_NODES = f"/* pipeshub:kg.grant_marks_on */ SELECT {_COLS} FROM kg.scope_members m {_WANT} WHERE m.org_id = $1 AND m.node_sk = ANY($2::bigint[])"
 # The connector $2's grants after the key ($3, $4, $5), $6 of them in key order: a page of the fill and of the verify.
@@ -48,11 +55,11 @@ CHILDREN = """/* pipeshub:kg.grant_marks_children */ SELECT c.sk FROM (SELECT r.
 # What of a node's own row a mark reads (of the node, or of it as a parent), before a projection writes the row.
 HELD = "/* pipeshub:kg.grant_marks_held */ SELECT sk, kind, app_sk, group_sk, deleted, placeholder, alien, rule FROM kg.records WHERE org_id = $1 AND sk = ANY($2::bigint[])"
 MARKED = ("kind", "app_sk", "group_sk", "deleted", "placeholder", "alien", "rule")
-# The viewer's grants of the connector $3 that may be chain-tops (no parent the same principal holds covers them), with each node's group: the grants of every principal
+# The viewer's grants of the connector $3 that may be chain-tops (no parent the same principal holds covers them), with each node's group and parent marks: the grants of every principal
 # the viewer holds in it (kg.principal_closure: the user, their groups, roles, teams and organisation, and the source accounts linked in the connector with theirs).
-CANDIDATES = """/* pipeshub:kg.chain_top_grants */ SELECT m.node_sk, m.node_group FROM kg.node_keys u
+CANDIDATES = """/* pipeshub:kg.chain_top_grants */ SELECT m.node_sk, m.node_group, m.node_parent FROM kg.node_keys u
     JOIN kg.principal_closure c ON c.org_id = u.org_id AND c.user_sk = u.sk AND c.app_sk IN (0, $3)
-    CROSS JOIN LATERAL (SELECT m.node_sk, m.node_group FROM kg.scope_members m WHERE m.org_id = $1 AND m.principal_sk = c.principal_sk AND m.app_sk = $3
+    CROSS JOIN LATERAL (SELECT m.node_sk, m.node_group, m.node_parent FROM kg.scope_members m WHERE m.org_id = $1 AND m.principal_sk = c.principal_sk AND m.app_sk = $3
         AND NOT m.parent_held AND m.gtype <> '@uar' OFFSET 0) m
     WHERE u.org_id = $1 AND u.coll = 4 AND u.id = $2"""
 # The granted rows of the connector ``$3`` among ids ``$2`` that a browse may list as chain-tops (``kg.listing.CHAIN_GRANTED``), for a connector kg serves: kg's copy of the
@@ -61,15 +68,42 @@ CHAIN_GRANTED = """/* pipeshub:kg.chain_granted_kg */ SELECT r.sk, r.id, r.kind,
     WHERE r.org_id = $1 AND r.coll = ANY('{2,3}'::smallint[]) AND r.id = ANY($2::text[]) AND r.app_sk = (SELECT a.sk FROM kg.node_keys a WHERE a.org_id = $1 AND a.coll = 1 AND a.id = $3)
       AND NOT r.deleted AND NOT r.placeholder AND NOT r.alien AND coalesce(r.rule, 'OPEN') = 'OPEN'"""
 
+# The root's chain-top inputs (``KhBrowseMixin._kh_root_tops``), what ``kh_browse._chain_nodes`` hands the walk: of the grants' nodes ``$2`` (sks) of the connector ``$3``, the rows a
+# browse may list as chain-tops (as :data:`CHAIN_GRANTED`), by the nodes the walk asks the access check about for them (``judges``: the hierarchy parents a browse opens,
+# the App included, and the own groups: a record's group and group links, a group's parent groups), one row per set of judges with the rows' keys and ids. Each node by its
+# key in a subquery of its own (a seek per node whatever the statistics) and its links in one range of links_child; the judges' keys once each.
+ROOT_CHAIN = """/* pipeshub:kg.root_chain */ WITH c AS MATERIALIZED (SELECT r.sk, r.id, r.kind, r.parent_sk, r.group_sk, l.hier, l.grp
+      FROM unnest($2::bigint[]) AS q(sk) CROSS JOIN LATERAL (SELECT * FROM kg.records x WHERE x.org_id = $1 AND x.sk = q.sk LIMIT 1) r
+      CROSS JOIN LATERAL (SELECT coalesce(array_agg(k.parent_sk) FILTER (WHERE k.kind = 1), '{}') AS hier, coalesce(array_agg(k.parent_sk) FILTER (WHERE k.kind = 2), '{}') AS grp
+          FROM kg.links k WHERE k.org_id = $1 AND k.child_sk = r.sk AND k.kind IN (1, 2)) l
+      WHERE r.app_sk = $3 AND r.coll = ANY('{2,3}'::smallint[]) AND NOT r.deleted AND NOT r.placeholder AND NOT r.alien AND coalesce(r.rule, 'OPEN') = 'OPEN'),
+    e AS MATERIALIZED (SELECT c.sk, x.ref, x.parent FROM c CROSS JOIN LATERAL (SELECT h, true FROM unnest(c.parent_sk || c.hier) AS h
+        UNION ALL SELECT o, false FROM unnest(CASE WHEN c.kind = 2 THEN c.parent_sk || c.hier ELSE c.group_sk || c.grp END) AS o) AS x(ref, parent) WHERE x.ref IS NOT NULL),
+    k AS MATERIALIZED (SELECT k.sk, k.coll, coalesce(g.alien, false) AS alien FROM (SELECT DISTINCT ref FROM e) q
+      CROSS JOIN LATERAL (SELECT * FROM kg.node_keys n WHERE n.org_id = $1 AND n.sk = q.ref LIMIT 1) k
+      LEFT JOIN LATERAL (SELECT x.alien FROM kg.records x WHERE x.org_id = $1 AND x.sk = k.sk AND k.coll = 2 LIMIT 1) g ON true),
+    j AS (SELECT e.sk, array_agg(DISTINCT e.ref ORDER BY e.ref) AS judges FROM e JOIN k ON k.sk = e.ref
+      WHERE CASE WHEN e.parent THEN NOT k.alien ELSE k.coll = 2 AND e.ref <> e.sk END GROUP BY e.sk)
+  SELECT coalesce(j.judges, '{}') AS judges, array_agg(c.sk) AS sks, array_agg(c.id) AS ids FROM c LEFT JOIN j ON j.sk = c.sk GROUP BY 1"""
 
 def _wrong(rows: list) -> list[tuple[int, int, str, bool, int | None]]:
     return [(r["principal_sk"], r["node_sk"], r["gtype"], r["want_held"], r["want_group"]) for r in rows
             if (r["parent_held"], r["node_group"]) != (r["want_held"], r["want_group"])]
 
 
+def _wrong_parent(rows: list) -> list[tuple[int, int, str, int | None]]:
+    return [(r["principal_sk"], r["node_sk"], r["gtype"], r["want_parent"]) for r in rows if r["node_parent"] != r["want_parent"]]
+
+
+async def _write(tx: Tx, rows: list) -> int:
+    w = KgWriter(tx)
+    return (await w.grant_marks_set(wrong) if (wrong := _wrong(rows)) else 0) + (await w.grant_parent_set(par) if (par := _wrong_parent(rows)) else 0)
+
+
 def unsafe(r: dict) -> bool:
-    """A mark that leaves out a grant its rows no longer let it leave out."""
-    return (r["parent_held"] and not r["want_held"]) or (r["node_group"] is not None and r["node_group"] != r["want_group"])
+    """A mark that leaves out a grant its rows no longer let it leave out, or one that stands in for rows it no longer gives (``node_parent``)."""
+    return ((r["parent_held"] and not r["want_held"]) or (r["node_group"] is not None and r["node_group"] != r["want_group"])
+            or (r["node_parent"] is not None and r["node_parent"] != r["want_parent"]))
 
 
 async def changed(tx: Tx, org: str, sks: list[int], rows: dict[int, dict]) -> set[int]:
@@ -85,20 +119,20 @@ async def refresh(tx: Tx, org: str, nodes: set[int], parents: set[int]) -> int:
     for i in range(0, len(ps), CHUNK):
         every |= {r["sk"] for r in await tx.fetch(CHILDREN, org, ps[i:i + CHUNK])}
     sks = sorted(every)
-    wrong = []
+    rows = []
     for i in range(0, len(sks), CHUNK):
-        wrong += _wrong(await tx.fetch(ON_NODES, org, sks[i:i + CHUNK]))
-    return await KgWriter(tx).grant_marks_set(wrong) if wrong else 0
+        rows += await tx.fetch(ON_NODES, org, sks[i:i + CHUNK])
+    return await _write(tx, rows)
 
 
 async def fill_page(tx: Tx, org: str, app_sk: int, after: tuple[int, int, str], page: int) -> tuple[int, int, str] | None:
     """One page of the connector's grants given their marks; where the next goes on, or None after the last."""
     rows = await tx.fetch(BY_APP, org, app_sk, *after, page)
-    if wrong := _wrong(rows):
-        await KgWriter(tx).grant_marks_set(wrong)
+    await _write(tx, rows)
     return (rows[-1]["node_sk"], rows[-1]["principal_sk"], rows[-1]["gtype"]) if len(rows) == page else None
 
 
-async def candidates(tx: Tx, org: str, app_sk: int, user_key: str) -> dict[int, int | None]:
-    """The viewer's grants of the connector that may be chain-tops: node sk -> its record group (None: none, several or a group). Only for a connector kg serves."""
-    return {r["node_sk"]: r["node_group"] for r in await tx.fetch(CANDIDATES, org, user_key, app_sk)}
+async def candidates(tx: Tx, org: str, app_sk: int, user_key: str) -> dict[int, tuple[int | None, int | None]]:
+    """The viewer's grants of the connector that may be chain-tops: node sk -> (its record group, its one hierarchy parent), each None where the mark is not set. Only for a
+    connector kg serves."""
+    return {r["node_sk"]: (r["node_group"], r["node_parent"]) for r in await tx.fetch(CANDIDATES, org, user_key, app_sk)}

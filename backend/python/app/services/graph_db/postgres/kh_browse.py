@@ -37,6 +37,7 @@ from app.services.graph_db.postgres.kh_listing import (
     UNDECIDED_MAX,
     WINDOW_MAX,
     LeadBudget,
+    TopGrants,
     _node_type,
     capped_counts,
     chain_tops_apply,
@@ -101,10 +102,14 @@ class KhBrowseMixin(PgBase):
             # The viewer's chain-tops placed here (granted rows whose hierarchy parents they may not open), by the rule every store shares: read beside the node's linked children.
             # Of the grants that can be one, the walk is given those of the groups that can place one here: under the App, a chain-top of a group the viewer may open is
             # listed under that group instead; under a group, only one of that group.
-            mine = await top.ids(top.groups - await self._kh_open_groups(org_id, top, access, transaction) if at_app else {start["sk"]})
-            by_groups = await self._kh_v3_chain_top_groups(aid, org, mine, None if at_app else start_id, transaction) if mine else []
-            placed = await self._kh_v3_chain_tops(aid, org, access, transaction, only_group=None if at_app else start_id, by_groups=by_groups) if by_groups else {}
-            tops = [c["sk"] for c in placed.get(aid if at_app else start_id, [])]
+            groups = top.groups - await self._kh_open_groups(org_id, top, access, transaction) if at_app else {start["sk"]}
+            if at_app and top.by_group is not None:      # kg's grants: the walk's rule over kg's rows in one read
+                tops = await self._kh_root_tops(org, org_id, aid, top, groups, access, transaction)
+            else:
+                mine = await top.ids(groups)
+                by_groups = await self._kh_v3_chain_top_groups(aid, org, mine, None if at_app else start_id, transaction) if mine else []
+                placed = await self._kh_v3_chain_tops(aid, org, access, transaction, only_group=None if at_app else start_id, by_groups=by_groups) if by_groups else {}
+                tops = [c["sk"] for c in placed.get(aid if at_app else start_id, [])]
 
         async def unit(tx: Tx) -> dict[str, Any] | str:
             """Everything up to the page, in one read: the listing state, the breadcrumbs' trail, the children of a node held whole, and the access check's answer for the start,
@@ -476,6 +481,42 @@ class KhBrowseMixin(PgBase):
             nodes.append({"id": app_id, "name": app_doc.get("name"), "nodeType": "app", "subType": app_doc.get("type"), "isInternal": False, "admitted": True, "ownGroups": []})
         edges = [{"parentId": ids[a], "childId": ids[b], "lists": True} for a, b in sorted(set(sk_edges)) if a in ids and b in ids]
         return nodes, edges
+
+    async def _kh_root_tops(self, org: str, org_id: str, app_id: str, top: TopGrants, groups: set[int], access: dict[str, Any], transaction: str | None) -> list[int]:
+        """The sks of the viewer's chain-tops placed under the App, for a connector kg serves: what ``GraphDBProvider._kh_v3_chain_tops`` places there from the grants ``top``
+        of the record groups ``groups`` (and of no known group), by its rule (``kh_chain_tops.place_chain_tops``) and the same access check of the same parents and own groups
+        (``judges``). The walk reads each grant's row, links and keys in Python, twice; here a grant whose node_parent mark is set has its judges on the grant (that parent and
+        its group), and the others' come from one statement over their rows (``grant_marks.ROOT_CHAIN``). So a root whose viewer holds 20,000 files shared alone reads their grants,
+        the keys of their nodes and the few parents and groups they share, and asks the check about those."""
+        group_of = {sk: g for g, gs in (top.by_group or {}).items() if g is None or g in groups for sk in gs}
+        fast = sorted(sk for sk, g in group_of.items() if g is not None and sk in top.parents)
+        slow = sorted(sk for sk in group_of if sk not in top.parents or group_of[sk] is None)
+        if not group_of:
+            return []
+
+        async def read(tx: Tx) -> tuple[int, list[Any], dict[int, Any], set[int], set[int]]:
+            app_sk = await tx.fetchval(kgl.APP_KEY, org, app_id)
+            by_judges = list(await tx.fetch(grant_marks.ROOT_CHAIN, org, slow, app_sk)) if slow else []
+            refs = {s for r in by_judges for s in r["judges"]} | {s for sk in fast for s in (top.parents[sk], group_of[sk])}
+            keys = {r["sk"]: r for r in await tx.fetch(KEYS, org, sorted(refs | set(fast)))}
+            held = [s for s in refs if s in keys and keys[s]["coll"] == 2]
+            aliens = {r["sk"] for r in await tx.fetch(kgl.CHAIN_BY_SK, org, held) if r["alien"]} if held else set()      # a group that carries access only is no parent
+            hidden = set(await tx.fetchval(kgl.HIDDEN, org, app_sk)) if await tx.fetchval(kgl.HAS_HIDER, org, app_sk) else set()
+            return app_sk, by_judges, keys, aliens, hidden
+        app_sk, by_judges, keys, aliens, hidden = await self._kq(read, transaction)
+        # a marked grant's judges, as ``_chain_nodes`` gives them: its parent unless that is a group that carries access only, and its group
+        rows = [(r["judges"], r["sks"], r["ids"]) for r in by_judges]
+        pairs: dict[tuple[int, int], list[int]] = {}
+        for sk in fast:
+            pairs.setdefault((top.parents[sk], group_of[sk]), []).append(sk)
+        for (p, g), sks in pairs.items():
+            judges = [s for s in (p,) if s in keys and s not in aliens] + [s for s in (g,) if s in keys and keys[s]["coll"] == 2]
+            rows.append((judges, sks, [keys[sk]["id"] if sk in keys else None for sk in sks]))
+        ask = {keys[s]["id"] for judges, _, _ in rows for s in judges if s != app_sk}
+        opened = (await self.check_access("", org_id, node_ids=ask, access=access, transaction=transaction)).node_ids if ask else frozenset()
+        opens = {s for s, k in keys.items() if k["id"] in opened} | {app_sk}      # a direct child of the App is listed by the walk from it
+        # rows with a parent or an own group the viewer may open are listed there; the rest of the granted ones under the App
+        return sorted(sk for judges, sks, ids in rows if opens.isdisjoint(judges) for sk, i in zip(sks, ids, strict=True) if i in top.granted and sk not in hidden)
 
     # The chain-top walk (``GraphDBProvider._kh_v3_chain_tops``) reads these three; the rule that places what they return is the one every store shares.
     async def _kh_v3_chain_top_groups(self, app_id: str, org_id: str, granted_ids: list[str], only_group: str | None, transaction: str | None) -> list[dict[str, Any]]:

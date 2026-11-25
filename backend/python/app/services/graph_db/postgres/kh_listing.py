@@ -91,8 +91,10 @@ class TopGrants:
     (None: none, several, a group), as the chain-top walk takes them: ids of granted nodes. Without kg's answer (``by_group`` None: a connector kg does not serve, no user, the
     walk) every grant, of no known group: the walk's own input. Every grant that is a chain-top is among them, so the walk over them places exactly what it places over all."""
 
-    def __init__(self, granted: set[str], by_group: dict[int | None, list[int]] | None, loose: dict[int, str], keys: Callable[[list[int]], Awaitable[dict[int, str]]]) -> None:
+    def __init__(self, granted: set[str], by_group: dict[int | None, list[int]] | None, loose: dict[int, str], keys: Callable[[list[int]], Awaitable[dict[int, str]]],
+                 parents: dict[int, int] | None = None) -> None:
         self.granted, self.by_group, self._ids, self._keys = granted, by_group, dict(loose), keys
+        self.parents = parents or {}      # node sk -> its one hierarchy parent, where kg's mark has it (``grant_marks`` node_parent)
 
     @property
     def groups(self) -> set[int]:
@@ -503,17 +505,21 @@ class KhListingMixin(PgBase):
         async def keys(sks: list[int]) -> dict[int, str]:
             return {r["sk"]: r["id"] for r in await self._kq(lambda tx: tx.fetch(KEYS, org, sks), transaction)}
 
-        async def read(tx: Tx) -> tuple[dict[int | None, list[int]], dict[int, str]]:
+        async def read(tx: Tx) -> tuple[dict[int | None, list[int]], dict[int, str], dict[int, int]]:
             app_sk = await kg_hierarchy._served(tx, org, app_id)
             by: dict[int | None, list[int]] = {}
+            parents: dict[int, int] = {}
             if (app := await tx.fetchval(APP_DOC, org, app_id)) is None or not chain_tops_apply(_doc(app)):
-                return by, {}
-            for sk, g in (await grant_marks.candidates(tx, org, app_sk, user_key)).items():
+                return by, {}, parents
+            for sk, (g, par) in (await grant_marks.candidates(tx, org, app_sk, user_key)).items():
                 by.setdefault(g, []).append(sk)
+                if par is not None:
+                    parents[sk] = par
             loose = {r["sk"]: r["id"] for r in await tx.fetch(KEYS, org, by[None])} if by.get(None) else {}      # read here: ``TopGrants.held`` runs inside the caller's units
-            return by, loose
+            return by, loose, parents
         got = await kg_hierarchy.answer(self, "chain_top_grants", transaction, read) if user_key and granted else None
-        return TopGrants(granted, *(got or (None, {})), keys)
+        by, loose, parents = got or (None, {}, {})
+        return TopGrants(granted, by, loose, keys, parents)
 
     async def _kh_open_groups(self, org_id: str, top: TopGrants, access: dict[str, Any], transaction: str | None) -> set[int]:
         """Of the record groups the grants ``top`` are in, the ones the viewer may open (as the chain-top walk asks: ``check_access``): a chain-top in one is listed there, not under the App."""
