@@ -1,0 +1,31 @@
+id: plan-execute-two-sources
+description: planExecute plans, is critiqued, reads Jira and Slack, verifies and answers.
+chat_mode: planExecute
+task: "Is the login outage fixed, and what did the team say about it in #eng?"
+fixtures:
+  tickets:
+    - {key: PROJ-42, summary: Login returns 500, status: Resolved, owner: Priya}
+  slack:
+    eng:
+      - {user: priya, text: "Rolled back the auth deploy; login is healthy again."}
+script:
+  turns:
+    - reply: {text: "Check PROJ-42's status and summarise the #eng discussion about the login outage."}
+    - reply:
+        tool_calls:
+          - id: plan-1
+            name: create_plan
+            args:
+              steps:
+                - {id: ticket, description: Read PROJ-42, domain: jira}
+                - {id: chat, description: "Read #eng for the outage discussion", domain: slack}
+    - reply: {tool_calls: [{id: critique-1, name: critique_plan, args: {}}]}
+    - reply: {text: '{"passed": true, "confidence": "high", "summary": "plan is sound", "issues": []}'}
+    - reply:
+        tool_calls:
+          - {id: call-1, name: jira__get_issue, args: {issue_key: PROJ-42}}
+          - {id: call-2, name: slack__read_channel, args: {channel: "#eng"}}
+    - reply:
+        tool_calls: [{id: verify-1, name: verify_result, args: {result: "PROJ-42 is Resolved; Priya rolled back the auth deploy."}}]
+    - reply: {text: '{"passed": true, "confidence": "high", "summary": "answers both parts", "issues": []}'}
+    - reply: {text: "Yes. PROJ-42 is Resolved, and in #eng Priya said she rolled back the auth deploy and login is healthy again."}

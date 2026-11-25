@@ -284,6 +284,9 @@ class OutlookSyncPointKeys:
     # Which kind of Graph ids a folder's delta link (and the mail it read) was saved with.
     ID_TYPE = "id_type"
     DELTA_LINK = "delta_link"
+    # Whether the read a folder's delta link continues asks for each mail's source metadata: a link saved before
+    # keeps its query, so its mail is read without it and keeps what it holds.
+    METADATA_READ = "metadata_read"
     LAST_SYNC_TIMESTAMP = "last_sync_timestamp"
     FOLDER_ID = "folder_id"
     FOLDER_NAME = "folder_name"

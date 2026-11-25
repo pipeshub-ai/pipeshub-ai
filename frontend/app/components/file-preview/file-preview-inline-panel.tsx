@@ -100,7 +100,7 @@ export function FilePreviewInlinePanel({
   const [currentPage, setCurrentPage] = useState(initialPage ?? 1);
   const [totalPages, setTotalPages] = useState<number | null>(null);
 
-  const { pdfScale, setPdfScale, handlePdfZoomIn, handlePdfZoomOut, isZoomLocked, toggleZoomLock } =
+  const { pdfScale, pdfScaleValue, setPdfScale, handlePdfZoomIn, handlePdfZoomOut, isZoomLocked, toggleZoomLock } =
     usePdfZoom(file.id, file.url, initialPage);
 
   const tabs = useMemo(
@@ -172,7 +172,7 @@ export function FilePreviewInlinePanel({
     totalPages,
     onPageChange: handlePageChange,
     onTotalPagesDetected: handleTotalPagesDetected,
-    scale: pdfScale,
+    scale: pdfScaleValue,
     onScaleChange: setPdfScale,
   };
 
@@ -201,7 +201,7 @@ export function FilePreviewInlinePanel({
       >
         <Flex align="center" gap="2" style={{ flex: 1, minWidth: 0 }}>
           <FileIcon
-            extension={resolvePreviewIconExtension(recordDetails, file.type)}
+            extension={resolvePreviewIconExtension(recordDetails, file.type, file.sourceType)}
             filename={file.name}
             mimeType={file.type}
             size={ICON_SIZES.FILE_ICON_LARGE}
@@ -231,11 +231,11 @@ export function FilePreviewInlinePanel({
                 alignItems: 'center',
                 justifyContent: 'center',
                 flexShrink: 0,
-                color: 'var(--accent-9)',
+                color: 'var(--accent-11)',
                 lineHeight: 0,
               }}
             >
-              <MaterialIcon name="open_in_new" size={ICON_SIZES.FILE_ICON_SMALL} color="var(--accent-9)" />
+              <MaterialIcon name="open_in_new" size={ICON_SIZES.FILE_ICON_SMALL} color="var(--accent-11)" />
             </a>
           )}
           {file.version !== undefined && onVersionChange && (
@@ -366,7 +366,7 @@ export function FilePreviewInlinePanel({
                   gap="3"
                   style={{ height: '100%', padding: 'var(--space-6)' }}
                 >
-                  <MaterialIcon name="error_outline" size={48} color="var(--red-9)" />
+                  <MaterialIcon name="error_outline" size={48} color="var(--red-11)" />
                   <Text size="3" weight="medium" color="red">
                     {error}
                   </Text>
@@ -463,13 +463,14 @@ export function FilePreviewInlinePanel({
                   <MaterialIcon
                     name={isZoomLocked ? 'lock' : 'lock_open'}
                     size={ICON_SIZES.SECONDARY}
-                    color={isZoomLocked ? 'var(--accent-9)' : undefined}
+                    color={isZoomLocked ? 'var(--accent-11)' : undefined}
                   />
                 </IconButton>
 
                 <Box style={PREVIEW_TOOLBAR_DIVIDER} aria-hidden />
 
                 <IconButton
+                  aria-label={t('common.previousPage')}
                   variant="ghost"
                   color="gray"
                   size="1"
@@ -487,6 +488,7 @@ export function FilePreviewInlinePanel({
                 </Box>
 
                 <IconButton
+                  aria-label={t('common.nextPage')}
                   variant="ghost"
                   color="gray"
                   size="1"

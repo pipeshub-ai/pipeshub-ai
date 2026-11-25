@@ -313,13 +313,13 @@ describe('AgentRegistrationService', () => {
         'invalid_claim_token',
       );
       const [row] = [...repo.rows.values()];
-      row.expiresAt = new Date(Date.now() - 1000);
+      row!.expiresAt = new Date(Date.now() - 1000);
       await expectFail(
         service.startClaim(r.claim_token, 'ada@example.com'),
         'claim_expired',
       );
-      row.expiresAt = new Date(Date.now() + 60000);
-      row.status = AgentRegistrationStatus.CLAIMED;
+      row!.expiresAt = new Date(Date.now() + 60000);
+      row!.status = AgentRegistrationStatus.CLAIMED;
       await expectFail(
         service.startClaim(r.claim_token, 'ada@example.com'),
         'claimed_or_in_flight',
@@ -354,12 +354,12 @@ describe('AgentRegistrationService', () => {
         ),
         'access_denied',
       );
-      expect([...repo.rows.values()][0].status).to.equal('pending');
+      expect([...repo.rows.values()][0]!.status).to.equal('pending');
     });
 
     it('refuses an expired attempt', async () => {
       const r = await register();
-      [...repo.rows.values()][0].attemptExpiresAt = new Date(Date.now() - 1);
+      [...repo.rows.values()][0]!.attemptExpiresAt = new Date(Date.now() - 1);
       await expectFail(
         service.completeClaim(
           attemptToken(r.claim.verification_uri),
@@ -381,7 +381,7 @@ describe('AgentRegistrationService', () => {
           'invalid_user_code',
         );
       }
-      expect([...repo.rows.values()][0].status).to.equal('expired');
+      expect([...repo.rows.values()][0]!.status).to.equal('expired');
       await expectFail(
         service.completeClaim(t, r.claim.user_code, 'approve', USER),
         'invalid_request',
@@ -398,7 +398,7 @@ describe('AgentRegistrationService', () => {
           USER,
         ),
       ).to.equal('revoked');
-      expect([...repo.rows.values()][0].status).to.equal('revoked');
+      expect([...repo.rows.values()][0]!.status).to.equal('revoked');
       expect(logger.info.lastCall.args).to.deep.equal(['claim.denied', { registration_id: r.registration_id }]);
     });
 
@@ -420,7 +420,7 @@ describe('AgentRegistrationService', () => {
     it('keeps a registration that is never claimed only to the end of its window', async () => {
       await register();
       const [row] = [...repo.rows.values()];
-      expect(row.purgeAt.getTime()).to.equal(row.expiresAt.getTime());
+      expect(row!.purgeAt.getTime()).to.equal(row!.expiresAt.getTime());
     });
 
     it('shows the signed-in person what is being granted', async () => {
@@ -455,10 +455,10 @@ describe('AgentRegistrationService', () => {
       await expectFail(service.claimGrant('clm_nope'), 'expired_token');
       const r = await register();
       const [row] = [...repo.rows.values()];
-      row.expiresAt = new Date(Date.now() - 1);
+      row!.expiresAt = new Date(Date.now() - 1);
       await expectFail(service.claimGrant(r.claim_token), 'expired_token');
-      row.expiresAt = new Date(Date.now() + 60000);
-      row.status = AgentRegistrationStatus.EXPIRED;
+      row!.expiresAt = new Date(Date.now() + 60000);
+      row!.status = AgentRegistrationStatus.EXPIRED;
       await expectFail(service.claimGrant(r.claim_token), 'expired_token');
     });
 
@@ -506,7 +506,7 @@ describe('AgentRegistrationService', () => {
       });
       const [row] = [...repo.rows.values()];
       const claims = jwt.decode(out.identity_assertion!) as jwt.JwtPayload;
-      expect(row.purgeAt.getTime()).to.be.greaterThan(claims.exp! * 1000);
+      expect(row!.purgeAt.getTime()).to.be.greaterThan(claims.exp! * 1000);
     });
 
     it('keeps to what the person approved when the app is widened afterwards', async () => {
@@ -632,7 +632,7 @@ describe('AgentRegistrationService', () => {
 
     it('refuses a revoked registration', async () => {
       const assertion = await consumed();
-      [...repo.rows.values()][0].status = AgentRegistrationStatus.REVOKED;
+      [...repo.rows.values()][0]!.status = AgentRegistrationStatus.REVOKED;
       await expectFail(service.jwtBearerGrant(assertion), 'invalid_grant');
     });
 
@@ -675,7 +675,7 @@ describe('AgentRegistrationService', () => {
       expect(await tokens.revokeAgentToken(out.identity_assertion!)).to.equal(
         true,
       );
-      expect([...repo.rows.values()][0].status).to.equal(
+      expect([...repo.rows.values()][0]!.status).to.equal(
         AgentRegistrationStatus.REVOKED,
       );
       await expectFail(
@@ -689,7 +689,7 @@ describe('AgentRegistrationService', () => {
       await service.claimGrant(r.claim_token);
       const access = accessFor(r.registration_id);
       expect(await tokens.revokeAgentToken(access)).to.equal(true);
-      expect([...repo.rows.values()][0].status).to.equal(
+      expect([...repo.rows.values()][0]!.status).to.equal(
         AgentRegistrationStatus.REVOKED,
       );
       expect(repo.revoked).to.have.length(1);
@@ -711,7 +711,7 @@ describe('AgentRegistrationService', () => {
         { algorithm: 'HS256' },
       );
       expect(await tokens.revokeAgentToken(expired)).to.equal(true);
-      expect([...repo.rows.values()][0].status).to.equal(
+      expect([...repo.rows.values()][0]!.status).to.equal(
         AgentRegistrationStatus.REVOKED,
       );
     });
@@ -739,7 +739,7 @@ describe('AgentRegistrationService', () => {
         ),
       ).to.equal(false);
       expect(await tokens.revokeAgentToken('not.a.jwt')).to.equal(false);
-      expect([...repo.rows.values()][0].status).to.equal(
+      expect([...repo.rows.values()][0]!.status).to.equal(
         AgentRegistrationStatus.CONSUMED,
       );
     });
@@ -760,9 +760,9 @@ describe('AgentRegistrationService', () => {
       } catch (e: any) {
         expect(e.statusCode ?? e.status).to.equal(404);
       }
-      expect([...repo.rows.values()][0].status).to.equal('claimed');
+      expect([...repo.rows.values()][0]!.status).to.equal('claimed');
       await service.revokeForUser(id, USER);
-      expect([...repo.rows.values()][0].status).to.equal('revoked');
+      expect([...repo.rows.values()][0]!.status).to.equal('revoked');
       expect(logger.info.lastCall.args).to.deep.equal(['registration.revoked', { registration_id: id, user_id: USER.userId }]);
     });
   });

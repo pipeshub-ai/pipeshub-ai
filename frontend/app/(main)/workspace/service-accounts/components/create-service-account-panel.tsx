@@ -1,10 +1,10 @@
 'use client';
 
 import React, { useCallback, useEffect, useState } from 'react';
-import { Flex, Text, TextArea, TextField } from '@radix-ui/themes';
+import { Flex, Text } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
-import { FormField, WorkspaceRightPanel } from '../../components';
+import { FormField, FormFieldTextArea, FormFieldTextField, WorkspaceRightPanel } from '../../components';
 import { useToastStore } from '@/lib/store/toast-store';
 import { ServiceAccountsApi } from '../api';
 
@@ -110,7 +110,7 @@ export function CreateServiceAccountPanel({
           required
           error={slugError}
         >
-          <TextField.Root
+          <FormFieldTextField
             value={slug}
             placeholder="nightly-sync"
             onChange={(e) => {
@@ -119,13 +119,13 @@ export function CreateServiceAccountPanel({
             }}
             onBlur={() => slug.trim() && validateSlug(slug)}
           />
-          <Text size="1" style={{ color: 'var(--slate-10)' }}>
+          <Text size="1" style={{ color: 'var(--slate-11)' }}>
             {t('workspace.serviceAccounts.create.slugHelp')}
           </Text>
         </FormField>
 
         <FormField label={t('workspace.serviceAccounts.create.nameLabel')} optional>
-          <TextField.Root
+          <FormFieldTextField
             value={fullName}
             placeholder={t('workspace.serviceAccounts.create.namePlaceholder')}
             onChange={(e) => setFullName(e.target.value)}
@@ -136,7 +136,7 @@ export function CreateServiceAccountPanel({
           label={t('workspace.serviceAccounts.create.descriptionLabel')}
           optional
         >
-          <TextArea
+          <FormFieldTextArea
             value={description}
             rows={3}
             placeholder={t('workspace.serviceAccounts.create.descriptionPlaceholder')}
@@ -153,7 +153,7 @@ export function CreateServiceAccountPanel({
             padding: 'var(--space-3)',
           }}
         >
-          <MaterialIcon name="info" size={16} color="var(--slate-10)" />
+          <MaterialIcon name="info" size={16} color="var(--slate-11)" />
           <Text size="1" style={{ color: 'var(--slate-11)' }}>
             {t('workspace.serviceAccounts.create.note')}
           </Text>

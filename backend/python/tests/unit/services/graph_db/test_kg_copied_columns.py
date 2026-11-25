@@ -687,8 +687,9 @@ def test_a_module_s_constants_fill_its_f_strings_and_a_computed_statement_is_nam
 
 
 def test_a_run_of_comments_is_scanned_in_linear_time() -> None:
-    import time
-    t0 = time.perf_counter()
-    assert not _starts_statement("/*" + "*//*" * 5000) and not reads(["/*" + "*//*" * 5000])
-    assert _starts_statement("/* a */ /* b */ SELECT 1") and not _starts_statement("/* never closed SELECT 1")
-    assert time.perf_counter() - t0 < 1.0
+    from tests.support.cpu_budget import thread_cpu
+
+    with thread_cpu() as cpu:
+        assert not _starts_statement("/*" + "*//*" * 5000) and not reads(["/*" + "*//*" * 5000])
+        assert _starts_statement("/* a */ /* b */ SELECT 1") and not _starts_statement("/* never closed SELECT 1")
+    assert cpu.seconds < 1.0

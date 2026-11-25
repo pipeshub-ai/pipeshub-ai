@@ -39,6 +39,12 @@ from app.config.constants.arangodb import (
     OriginTypes,
     ProgressStatus,
 )
+from app.connectors.core.base.source_metadata import (
+    ItemMetadata,
+    apply_source_metadata,
+    held_metadata,
+    source_metadata,
+)
 from app.connectors.core.constants import IconPaths
 from app.connectors.core.base.connector.connector_service import ActionItem, BaseConnector, ConnectionCheckResult
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
@@ -99,6 +105,7 @@ from app.models.entities import (
     RecordType,
 )
 from app.models.permission import EntityType, Permission, PermissionType
+from app.sources.client.microsoft.send_safe_middleware import credential_graph_adapter
 from app.services.notification.types import NotificationOutcome, NotificationSeverity, NotificationType
 from app.utils.streaming import create_stream_record_response, stream_content
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -431,6 +438,13 @@ ONEDRIVE_USER_FAILURE_NOTIFICATIONS: Dict[OneDriveUserStatus, Tuple[str, str]] =
     .with_description("Sync files and folders from OneDrive")\
     .with_categories(["Storage"])\
     .with_scopes([ConnectorScope.TEAM.value])\
+    .with_resilience_config(
+        # The vendor's quota is the org's shared budget (app.services.rate_budget.families), which this policy
+        # takes from; the rate is this process's own cap when that budget is unreachable. Retries stay the
+        # connector's own (max_retries 0), as before.
+        rate_limit=10,
+        max_retries=0,
+    )\
     .with_auth([
         AuthBuilder.type(AuthType.OAUTH_ADMIN_CONSENT).fields([
             AuthField(
@@ -631,7 +645,9 @@ class OneDriveConnector(BaseConnector):
             )
             raise ValueError(f"Failed to initialize OneDrive credential: {sanitize_azure_error(token_error)}")
 
-        self.client = GraphServiceClient(self.credential, scopes=["https://graph.microsoft.com/.default"])
+        self.client = GraphServiceClient(
+            request_adapter=credential_graph_adapter(self.credential, resilience=self.resilience)
+        )
         self.msgraph_client = MSGraphClient(self.connector_name, self.connector_id, self.client, self.logger)
         self.scope_reader = self._build_scope_reader(auth_config)
         return True
@@ -1028,6 +1044,16 @@ class OneDriveConnector(BaseConnector):
             )
             if file_record.is_file and file_record.extension is None:
                 return None
+            held = held_metadata(existing_record)
+            fields = await self._metadata_reader().fields_for(
+                item.parent_reference.drive_id if item.parent_reference else "",
+                item.id,
+                held,
+                changed=file_record.is_file and (is_new or metadata_changed or content_changed),
+            )
+            if apply_source_metadata(file_record, existing_record, fields):
+                is_updated = True
+                metadata_changed = True
 
             permission_failure = None
             # An item that inherits has no grants of its own: Graph would list its parent's.
@@ -2922,11 +2948,20 @@ class OneDriveConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"❌ Error handling webhook notification: {e}")
 
+    def _metadata_reader(self) -> ItemMetadata:
+        """The source metadata reads of this connector's files, through its current Graph client."""
+        reader = getattr(self, "_item_metadata", None)
+        if reader is None:
+            reader = source_metadata().item_metadata(lambda: self.msgraph_client, self.logger)
+            self._item_metadata = reader
+        return reader
+
     async def run_sync(self) -> None:
         """
         Main entry point for the OneDrive connector.
         Implements non-blocking sync with all requested features.
         """
+        self._metadata_reader().new_sync()
         try:
             self.logger.info("Starting OneDrive connector sync")
 
@@ -3031,8 +3066,7 @@ class OneDriveConnector(BaseConnector):
 
         # Recreate Graph client with new credential
         self.client = GraphServiceClient(
-            self.credential,
-            scopes=["https://graph.microsoft.com/.default"]
+            request_adapter=credential_graph_adapter(self.credential, resilience=self.resilience)
         )
         self.msgraph_client = MSGraphClient(self.connector_name, self.connector_id, self.client, self.logger)
 

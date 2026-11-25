@@ -153,12 +153,12 @@ export function SearchResultCard({
           <Text
             size="2"
             weight="medium"
-            style={{ color: 'var(--slate-10)' }}
+            style={{ color: 'var(--slate-11)' }}
           >
             {config.sourceLabel}
           </Text>
           {syncLabel && (
-            <Text size="1" style={{ color: 'var(--slate-10)' }}>
+            <Text size="1" style={{ color: 'var(--slate-11)' }}>
               {syncLabel}
             </Text>
           )}

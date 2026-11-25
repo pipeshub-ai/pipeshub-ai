@@ -1,0 +1,174 @@
+# The seeded knowledge base for the office-documents and reports suites: a
+# fictional company, Northwind Robotics. Synthetic; no customer data. Each doc
+# is one record (one block) served through the product's knowledgegraph search
+# tool. Some docs are deliberate distractors (a superseded policy, a 2026 price
+# list next to 2025 prices) so citation precision means something.
+docs:
+  - id: pol-travel-2025
+    title: Travel policy (2025)
+    text: >-
+      Effective 1 March 2025. Book economy class for flights under 6 hours; premium economy is allowed
+      for flights of 6 hours or more. Hotel nightly cap is $220 in tier-1 cities and $160 elsewhere.
+      Book through Navan at least 14 days before travel. The daily meal per diem is $75.
+  - id: pol-travel-2023
+    title: Travel policy (2023, superseded)
+    text: >-
+      Superseded by the 2025 travel policy on 1 March 2025. Business class was allowed for flights over
+      8 hours. The hotel nightly cap was $250 in every city and the meal per diem was $60.
+  - id: pol-expenses
+    title: Expense policy
+    text: >-
+      Attach a receipt to every expense above $25 and submit it in Ramp within 30 days. Expenses above
+      $1,000 need manager approval; expenses above $5,000 also need Finance approval. Client
+      entertainment is capped at $120 per person.
+  - id: pol-remote
+    title: Remote work policy
+    text: >-
+      Hybrid staff may work remotely up to 3 days a week. Fully remote roles need VP approval. Remote
+      staff get a one-time $600 home office stipend and $40 a month for internet. Core collaboration
+      hours are 10:00 to 15:00 local time.
+  - id: pol-leave
+    title: Leave policy
+    text: >-
+      Full-time employees get 25 days of paid leave per calendar year and 10 paid sick days. Parental
+      leave is 16 weeks at full pay. Up to 5 unused leave days carry over and must be used by 31 March.
+  - id: pol-security-incident
+    title: Security incident response policy
+    text: >-
+      A SEV1 security incident pages the on-call security engineer within 15 minutes. The CISO, Dana
+      Whitfield, is notified within 1 hour. Customers are notified within 72 hours of a confirmed data
+      exposure. A written postmortem is due within 5 business days.
+  - id: pol-data-retention
+    title: Data retention policy
+    text: >-
+      Customer robot telemetry is kept for 13 months. Support tickets are kept for 3 years. Audit logs
+      are kept for 7 years. Customer deletion requests are completed within 30 days.
+  - id: pol-oncall
+    title: On-call policy
+    text: >-
+      On-call rotates weekly, starting Monday 09:00 UTC, with a primary and a secondary engineer. The
+      on-call stipend is $350 per week. An unacknowledged page escalates to the secondary after 10
+      minutes and to the engineering manager after 20 minutes.
+  - id: prod-arm200-notes
+    title: Arm-200 firmware 3.2 release notes
+    text: >-
+      Firmware 3.2 for the Arm-200 shipped on 18 September 2025. Rated payload rises from 10 kg to 12 kg.
+      It adds SafeStop, a new collision detection mode, and fixes the calibration drift bug tracked as
+      NW-118. Firmware 3.2 requires controller version 5 or later.
+  - id: prod-vision-kit
+    title: Vision Kit specification
+    text: >-
+      The Vision Kit is a 12 MP stereo camera running at 60 fps with on-device inference. It integrates
+      with both the Arm-100 and the Arm-200. List price is $640.
+  - id: prod-gripper-g2
+    title: Gripper G2 pricing and availability
+    text: >-
+      The Gripper G2 lists at $380, with a 12% volume discount on orders over 50 units. It ships from
+      the Leeds and Austin warehouses with a lead time of 3 weeks.
+  - id: prod-roadmap-h1-2026
+    title: Product roadmap H1 2026
+    text: >-
+      The Arm-300 enters beta in March 2026 with a 20 kg payload. Vision Kit 2 launches in May 2026. The
+      fleet dashboard reaches general availability in June 2026. The Gripper G3 has been deprioritised.
+  - id: prod-arm100-eol
+    title: Arm-100 end-of-life notice
+    text: >-
+      The Arm-100 reaches end of sale on 30 June 2026 and end of support on 30 June 2028. Customers
+      moving from the Arm-100 to the Arm-200 get a 20% migration discount.
+  - id: inc-301
+    title: "Postmortem INC-301: database failover"
+    text: >-
+      On 14 July 2025 the order API was down for 47 minutes. Root cause: a misconfigured replication
+      slot broke the primary Postgres failover. Action item: run automated failover drills every month,
+      owned by Priya Raman.
+  - id: inc-317
+    title: "Postmortem INC-317: payment webhook outage"
+    text: >-
+      On 22 August 2025 payment webhooks failed for 2 hours 10 minutes (130 minutes) because the Stripe
+      webhook signing secret was rotated without a deploy. 312 payments were delayed and none were lost.
+      Action item: a secret rotation runbook, owned by Marco Silva.
+  - id: inc-322
+    title: "Postmortem INC-322: mobile login errors"
+    text: >-
+      On 3 September 2025, 18% of iOS logins failed for 95 minutes because a certificate on the auth CDN
+      expired. Action item: certificate expiry monitoring, owned by Lena Park.
+  - id: inc-330
+    title: "Postmortem INC-330: warehouse sync delay"
+    text: >-
+      On 29 September 2025 inventory sync between the Pune warehouse and the ERP was delayed by 6 hours
+      (360 minutes) after a deploy left a queue consumer stuck. 41 orders were oversold. Action item: a
+      consumer lag alert at 15 minutes, owned by Arjun Mehta.
+  - id: cust-acme
+    title: "Account summary: Acme Corp"
+    text: >-
+      Acme Corp has an ARR of $1.2M and runs 140 Arm-200 units. Renewal is due on 31 January 2026. The
+      champion is Tom Becker, VP Operations. Risk: Acme keeps asking for the Arm-300 timeline, and
+      ticket NW-112 affects their line 3.
+  - id: cust-globex
+    title: "Account summary: Globex"
+    text: >-
+      Globex has an ARR of $640k and uses 60 Vision Kits. Renewal is due on 15 December 2025. There is an
+      open escalation, NW-114, about Vision Kit latency.
+  - id: cust-initech
+    title: "Account summary: Initech"
+    text: >-
+      Initech has an ARR of $310k and is piloting 20 Gripper G2 units. There is an expansion opportunity
+      for 80 more units in Q1 2026. The contact is Sara Ng. Initech requested the CSV export in NW-121.
+  - id: tkt-nw-112
+    title: "NW-112: SafeStop false positives on Arm-200"
+    text: >-
+      Priority P2. Owner Lena Park. Status In Progress. SafeStop triggers false stops on Acme Corp line 3
+      roughly twice per shift.
+  - id: tkt-nw-114
+    title: "NW-114: Globex Vision Kit latency"
+    text: >-
+      Priority P1. Owner Arjun Mehta. Status Open. Vision Kit inference latency at Globex is 180 ms
+      against a 100 ms SLA.
+  - id: tkt-nw-118
+    title: "NW-118: Arm-200 calibration drift"
+    text: >-
+      Priority P2. Owner Priya Raman. Status Resolved. Fixed in Arm-200 firmware 3.2.
+  - id: tkt-nw-121
+    title: "NW-121: Fleet dashboard export to CSV"
+    text: >-
+      Priority P3. Owner Marco Silva. Status Open. Requested by Initech.
+  - id: tkt-nw-125
+    title: "NW-125: Pune warehouse label printer failures"
+    text: >-
+      Priority P3. Owner Arjun Mehta. Status Open. Label printers in the Pune warehouse fail about once a
+      day.
+  - id: tkt-nw-127
+    title: "NW-127: Gripper G2 firmware update fails over Wi-Fi"
+    text: >-
+      Priority P2. Owner Lena Park. Status Open. Gripper G2 firmware updates time out over Wi-Fi; wired
+      updates work.
+  - id: biz-q3-review
+    title: Q3 2025 business review
+    text: >-
+      Q3 2025 revenue was $4.8M, up 11% on Q2. Gross margin was 58% and net revenue retention was 112%.
+      Two customers churned, Hooli and Vandelay. Headcount at quarter end was 212.
+  - id: biz-hiring-2026
+    title: Hiring plan 2026
+    text: >-
+      The 2026 plan adds 34 roles: 18 in Engineering, 8 in Sales, 5 in Support and 3 in Operations. The
+      hiring budget is $4.1M. The top priority is robotics firmware engineers.
+  - id: biz-okrs-q4
+    title: Q4 2025 OKRs
+    text: >-
+      O1: cut P1 incidents by 50%. O2: launch the fleet dashboard beta to 10 customers. O3: reach 115%
+      net revenue retention.
+  - id: biz-competitor
+    title: "Competitor note: Kinetica Arms"
+    text: >-
+      Kinetica Arms sells the KA-7 arm with a 15 kg payload at about $2,900. Its vision integration is
+      weaker than ours. Kinetica won 2 deals against Northwind in Q3 2025.
+  - id: biz-pricing-2026
+    title: Price list 2026
+    text: >-
+      From 1 January 2026 the Arm-200 is $2,550 (up from $2,450). The Vision Kit stays at $640. The
+      Gripper G2 rises to $395 (from $380).
+  - id: biz-support-sla
+    title: Support SLA
+    text: >-
+      First response targets: P1 within 1 hour, around the clock; P2 within 4 business hours; P3 within
+      1 business day; P4 within 3 business days.

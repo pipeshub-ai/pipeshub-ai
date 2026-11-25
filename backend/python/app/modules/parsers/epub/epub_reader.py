@@ -37,6 +37,7 @@ from app.utils.user_errors import (
     EPUB_UNREADABLE,
     EPUB_UNSAFE_PATHS,
 )
+from harness_core.archive_reader import zip_declared_entries
 
 logger = logging.getLogger(__name__)
 
@@ -196,6 +197,10 @@ class _EpubArchive:
     def __init__(self, content: bytes) -> None:
         if not content:
             raise _fail(ParseErrorCode.PARSE_FAILED, EPUB_UNREADABLE, reason="empty file")
+        # The central directory is parsed whole by ZipFile (memory per entry), so its count is checked first.
+        declared = zip_declared_entries(content)
+        if declared is not None and declared > MAX_ENTRIES:
+            raise _fail(ParseErrorCode.INVALID_INPUT, EPUB_TOO_LARGE, entries=declared, max_entries=MAX_ENTRIES)
         try:
             self._zip = zipfile.ZipFile(io.BytesIO(content))
             infos = self._zip.infolist()

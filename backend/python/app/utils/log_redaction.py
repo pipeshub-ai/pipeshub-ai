@@ -112,19 +112,19 @@ _AUTH_SCHEME = re.compile(
 # and only after the name has been found to be a credential, so a value
 # that holds a further pair (`Error: password=x`) is still scanned.
 _PAIR_HEAD = re.compile(r"(?<![A-Za-z0-9_.\-])([A-Za-z][A-Za-z0-9_.\-]{0,127})['\"]?[ \t]*[:=][ \t]*")
-# Here and in _PYDANTIC_INPUT_VALUE, runs of plain characters are one
-# character-class repeat: re keeps backtracking state for every pass through
-# a repeated group (about 120 bytes per character of a 1 MB quoted value).
+# The repeats of an alternation are possessive (`*+`, `++`): re otherwise keeps one backtrack point per character
+# matched, so a long value grew memory with its length and ran 3-5x slower per character once that outgrew the CPU
+# cache. Nothing after them can fail, so they match exactly what the greedy forms did.
 _PAIR_VALUE = re.compile(
-    r"b?\"[^\"\\\n]*(?:\\.[^\"\\\n]*)*\"?"
-    r"|b?'[^'\\\n]*(?:\\.[^'\\\n]*)*'?"
+    r"b?\"(?:[^\"\\\n]|\\.)*+\"?"
+    r"|b?'(?:[^'\\\n]|\\.)*+'?"
     r"|(?:(?i:bearer|basic|token)[ \t]+)?[^\s,;&'\"(){}\[\]<>]+"
 )
 # str(pydantic.ValidationError) echoes each rejected value as
 # `input_value=<repr>, input_type=<type>`; the repr can be a password. A repr
 # may hold `]` or `,` itself, so the value runs to `, input_type=` or, when
 # that was cut off, to the end of the line.
-_PYDANTIC_INPUT_VALUE = re.compile(r"(input_value=)(?!, input_type=)[^\n][^,\n]*(?:,(?! input_type=)[^,\n]*)*")
+_PYDANTIC_INPUT_VALUE = re.compile(r"(input_value=)(?:(?!, input_type=)[^\n])++")
 
 # A traceback's source line: the line after `File "...", line N, in f`, two
 # spaces deeper under the same `|` gutter (exception groups). It is code read

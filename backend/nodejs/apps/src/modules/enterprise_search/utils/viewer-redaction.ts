@@ -17,6 +17,8 @@
  * messages loses its id, name, link and text and shows as a placeholder.
  * A saved search of the viewer's own passes through.
  */
+import { withheldCitation } from '../../agent-harness/projection/citation-access';
+import { LIVE_RECORD_ID_PREFIX } from '../../agent-harness/projection/citation-source';
 import { AuthTokenService } from '../../../libs/services/authtoken.service';
 import { TokenScopes } from '../../../libs/enums/token-scopes.enum';
 import { HttpMethod } from '../../../libs/enums/http-methods.enum';
@@ -44,6 +46,8 @@ const ANSWER_UNCONFIRMED_TEXT = "We couldn't confirm your access. Try again.";
 const ACCESS_CHECK_BATCH = 500;
 /** `metadata.origin` of a citation that is a web page found by web search. */
 const WEB_SEARCH_ORIGIN = 'WEB_SEARCH';
+/** `metadata.origin` of a file of a public repository a run fetched: stored as a web page is. */
+const REPOSITORY_ORIGIN = 'REPOSITORY';
 
 type Viewer = { userId: string; orgId: string };
 
@@ -176,7 +180,13 @@ interface CitedMeta {
   recordId?: string;
   webUrl?: string;
   origin?: string;
+  sourceKind?: string;
 }
+/** A public page (web search result or fetched repository file): its `recordId` is its address. */
+const isPage = (meta: CitedMeta | undefined): boolean =>
+  meta?.origin === WEB_SEARCH_ORIGIN ||
+  meta?.origin === REPOSITORY_ORIGIN ||
+  meta?.sourceKind === 'web';
 /** A cited document: populated, or just an id. Only its metadata is read. */
 interface CitedDoc {
   _id?: { toString: () => string };
@@ -256,8 +266,24 @@ const filterLists = (f: object | undefined): Array<[string, RefEntry[]]> =>
       : [],
   );
 
+/**
+ * A citation the harness's per-viewer check (P1b C-6) already replaced with its placeholder: it names no document,
+ * so there is nothing to look up and nothing left to withhold.
+ */
+const alreadyWithheld = (c: CitationEntry | null): boolean =>
+  typeof c?.citationData === 'object' &&
+  c.citationData !== null &&
+  (c.citationData as { unavailable?: unknown }).unavailable === true;
+
+/** What a withheld citation keeps: its chunk index, read from the populated document when there is one. */
+const citedDocOrData = (c: CitationEntry | null): unknown => {
+  const d = c?.citationData ?? c?.citationId;
+  return typeof d === 'object' && d !== null ? d : undefined;
+};
+
 /** The cited document of a message citation: populated, or a bare id to look up. */
 const citedDoc = (c: CitationEntry | null): CitedDoc | string | undefined => {
+  if (alreadyWithheld(c)) return undefined;
   const d = c?.citationData ?? c?.citationId;
   if (!d) return undefined;
   if (typeof d === 'string') return d;
@@ -276,6 +302,13 @@ export interface RedactOptions<M> {
   leadUnknown?: boolean;
   /** The last turn goes on past the page and could not be read: its rows are hidden as unconfirmed. */
   trailUnknown?: boolean;
+  /**
+   * The messages whose citations the harness's per-viewer check (P1b C-6) already decided with the
+   * viewer's credential: on one not the viewer's own, a citation it showed is not asked about again,
+   * one it withheld leaves the answer unconfirmed, and a web page's citation is judged by its
+   * address, as on any other message.
+   */
+  citationsDecided?: (message: M) => boolean;
 }
 
 // A classified failure is stored as the turn's answer with type `error`, and still carries what it said.
@@ -327,6 +360,9 @@ export const redactMessagesFor = async <M extends ViewerMessage>(
 ): Promise<M[]> => {
   const { known, timeoutMs, fresh } = opts;
   const isOthers = (m: M): boolean => ownerOf(m) !== viewer.userId;
+  // The harness decided this message's citations for this viewer: the ones it showed are readable.
+  const decided = (m: M): boolean =>
+    isOthers(m) && opts.citationsDecided?.(m) === true;
   // The user's own files and filters (the question's, and a card reply's) are used by the turn's
   // answer too; a stopped answer stores none.
   const checked = messages.filter(
@@ -358,22 +394,29 @@ export const redactMessagesFor = async <M extends ViewerMessage>(
     const d = citedDoc(c);
     return typeof d === 'string' ? docOfCitation.get(d) : d?.metadata;
   };
+  // A file a harness tool read straight from its connector (P1b C-18) names a temporary `live:` id, never a
+  // record key: the query service's record check cannot decide it, only the harness's per-viewer check can.
+  const isLive = (c: CitationEntry | null): boolean =>
+    metaOf(c)?.recordId?.startsWith(LIVE_RECORD_ID_PREFIX) === true;
   // A web search result stores its page address as `recordId`: that names no record.
   const recordIdOf = (c: CitationEntry | null): string | undefined => {
     const meta = metaOf(c);
-    if (meta?.origin === WEB_SEARCH_ORIGIN) return undefined;
+    if (isPage(meta)) return undefined;
     const id = meta?.recordId;
-    return id === undefined || id === '' ? undefined : id;
+    return id === undefined || id === '' || isLive(c) ? undefined : id;
   };
   // A web citation names an address instead of a record. A web search result is checked by its
   // page address (its `webUrl` adds a text fragment no stored record matches); `webUrl` is shown.
   const webUrlOf = (c: CitationEntry | null): string | undefined => {
     const meta = metaOf(c);
     const url =
-      meta?.origin === WEB_SEARCH_ORIGIN && (meta.recordId ?? '') !== ''
-        ? meta.recordId
+      isPage(meta) && (meta?.recordId ?? '') !== ''
+        ? meta?.recordId
         : meta?.webUrl;
-    return recordIdOf(c) === undefined && url !== undefined && url !== ''
+    return recordIdOf(c) === undefined &&
+      !isLive(c) &&
+      url !== undefined &&
+      url !== ''
       ? url
       : undefined;
   };
@@ -383,7 +426,7 @@ export const redactMessagesFor = async <M extends ViewerMessage>(
     appConfig,
     viewer,
     checked.flatMap((m) => [
-      ...(m.citations ?? []).map(recordIdOf),
+      ...(decided(m) ? [] : (m.citations ?? []).map(recordIdOf)),
       ...(m.attachments ?? []).map((a) => a?.recordId),
       ...(m.referenceData ?? []).flatMap((e) => {
         const id = e?.recordId ?? (e ? refMeta(e) : undefined);
@@ -413,6 +456,13 @@ export const redactMessagesFor = async <M extends ViewerMessage>(
     let unknown = false;
     for (const c of m.citations ?? []) {
       if (c === null) continue;
+      // The harness's check shows every page; its address is still judged here, as on any other message.
+      if (decided(m) && !alreadyWithheld(c) && !isPage(metaOf(c))) continue;
+      // The owner's own live reads are theirs, as C-6 leaves them; another reader's are unconfirmed without the harness's check.
+      if (isLive(c)) {
+        if (isOthers(m)) unknown = true;
+        continue;
+      }
       const id = recordIdOf(c);
       const url = webUrlOf(c);
       if (id !== undefined) ids.push(id);
@@ -508,10 +558,13 @@ export const redactMessagesFor = async <M extends ViewerMessage>(
     if (!isOthers(m)) return m;
     const view: Record<string, unknown> = { ...(m as object) };
     if (m.citations)
-      view.citations = m.citations.map((c) => {
+      view.citations = m.citations.map((c, index) => {
+        if (alreadyWithheld(c)) return c;
         const id = recordIdOf(c);
-        const visible = id !== undefined ? ok(id) : okUrl(webUrlOf(c));
-        return visible ? c : { ...REDACTED };
+        const visible =
+          (decided(m) && !isPage(metaOf(c))) ||
+          (id !== undefined ? ok(id) : okUrl(webUrlOf(c)));
+        return visible ? c : withheldCitation(index, citedDocOrData(c));
       });
     // Dropped, not replaced: the chat UI renders every attachment as a file chip.
     if (m.attachments)

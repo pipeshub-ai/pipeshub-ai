@@ -73,7 +73,7 @@ export function AboutCard({ project, isOwner, onOpenShare }: AboutCardProps) {
           value={
             <Flex align="center" gap="2">
               {ownerAvatar}
-              <Text size="1" style={{ color: 'var(--slate-9)' }}>
+              <Text size="1" style={{ color: 'var(--slate-11)' }}>
                 {ownerName}
               </Text>
             </Flex>
@@ -90,7 +90,7 @@ export function AboutCard({ project, isOwner, onOpenShare }: AboutCardProps) {
           value={
             <Flex align="center" gap="2">
               {memberCount > 0 && <SharedAvatarStack members={avatarMembers} maxVisible={3} size={20} />}
-              <Text size="1" style={{ color: 'var(--slate-9)' }}>
+              <Text size="1" style={{ color: 'var(--slate-11)' }}>
                 {memberCount > 0
                   ? t('chat.projects.workspace.memberCount', { count: memberCount })
                   : t('chat.projects.workspace.membersStatusOnlyYou')}

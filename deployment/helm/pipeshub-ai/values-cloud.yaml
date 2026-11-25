@@ -66,16 +66,19 @@
 # ----- App image -----
 image:
   repository: pipeshubai/pipeshub-ai
-  tag: "latest"
+  # Empty runs the chart's appVersion; set image.digest from the release notes.
+  tag: ""
   pullPolicy: IfNotPresent
 
+# The durable agent harness (Beta) runs on every preset and stays idle until an org admin turns it on in Labs;
+# --set agentHarness.enabled=false runs none of it (docs/agent-harness-v2/FLAGS.md).
 # ----- App scaling: HA with HPA -----
 replicaCount: 2
 autoscaling:
   enabled: true
   minReplicas: 2
   maxReplicas: 10
-  targetCPUUtilizationPercentage: 70
+  targetCPUAverageValue: 700m  # one core, not a share of the request: Node is one thread (values.yaml)
   targetMemoryUtilizationPercentage: 80
 podDisruptionBudget:
   enabled: true
@@ -165,13 +168,17 @@ config:
   # connectorPublicBackend: "https://pipeshub-connector.example.com"  # optional, OAuth only
   # samlSpEntityId: "pipeshub"  # optional; set to match the Audience URI in your IdP when using SAML SSO
 
-# ----- MongoDB: 3-node replica set -----
+# ----- MongoDB: 3 data-bearing members (PSS), no arbiter -----
+# With an arbiter, w:majority stalls once one data member is down, so MongoDB
+# falls back to w:1 and an acknowledged write can roll back on failover. Three
+# data members keep majority writes available through one failure; the chart
+# then renders w=majority into MONGO_URI.
 mongodb:
   architecture: replicaset
   replicaSetName: rs0
   replicaCount: 3
   arbiter:
-    enabled: true
+    enabled: false
   auth:
     enabled: true
     rootUser: root
@@ -242,6 +249,9 @@ neo4j:
     NEO4J_dbms_memory_heap_max__size: 4g
     NEO4J_dbms_memory_pagecache_size: 2g
 
-# ----- Network policies are opt-in -----
+# ----- Network isolation (ADR-OPS-04) follows `hardened` -----
+# On with --set hardened=true (or networkPolicy.enabled=true). Check
+# networkPolicy.ingressControllers names your ingress controller's
+# namespace (default ingress-nginx), or the ingress cannot reach the app.
 networkPolicy:
-  enabled: false     # set true after you've validated your ingress namespace selector
+  enabled: null

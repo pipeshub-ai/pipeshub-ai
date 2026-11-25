@@ -37,40 +37,43 @@ def _worker(state: str, waits: int, done: Connection, hang: bool) -> None:
 
 
 def _start(ctx: SpawnContext, state: Path, waits: int, hang: bool) -> tuple[SpawnProcess, Connection]:
-    # One pipe per worker, not a shared Queue: a Queue's write lock is shared by
-    # every writer, and SIGKILL can land while the killed worker's feeder thread
-    # still holds it, which blocks every later writer for good.
-    recv, send = ctx.Pipe(duplex=False)
+    """A worker with a pipe of its own. A shared Queue's feeder thread holds the queue's write lock until after the
+    reader has the message, so SIGKILLing a worker that just reported could leave that lock held and block every
+    later put: the restarted worker's report never arrived (_queue.Empty)."""
+    receive, send = ctx.Pipe(duplex=False)
     worker = ctx.Process(target=_worker, args=(str(state), waits, send, hang))
     worker.start()
-    send.close()  # the worker holds the only write end, so its death reads as EOF
-    return worker, recv
+    send.close()
+    return worker, receive
 
 
-def _flushed(worker: SpawnProcess, recv: Connection) -> int:
+def _report(worker: SpawnProcess, receive: Connection) -> int:
+    assert receive.poll(60), "the worker did not report within 60 s"
     try:
-        return recv.recv()
+        return receive.recv()
     except EOFError:
-        pytest.fail(f"worker exited with {worker.exitcode} before flushing its ledger")
+        # The worker holds the only write end, so a worker that died before flushing reads as EOF.
+        worker.join(5)
+        pytest.fail(f"the worker exited with {worker.exitcode} before flushing its ledger")
 
 
 def test_four_workers_are_summed_and_a_killed_one_keeps_its_counts(tmp_path: Path) -> None:
     ctx = multiprocessing.get_context("spawn")
-    workers = [_start(ctx, tmp_path, 50, i == 0) for i in range(4)]
-    pids = {_flushed(*worker) for worker in workers}
+    started = [_start(ctx, tmp_path, 50, i == 0) for i in range(4)]
+    pids = {_report(worker, receive) for worker, receive in started}
     assert len(pids) == 4
-    os.kill(workers[0][0].pid, signal.SIGKILL)
-    for worker, _ in workers:
-        worker.join()
+    os.kill(started[0][0].pid, signal.SIGKILL)
+    for worker, _ in started:
+        worker.join(30)
 
     totals = read_window(tmp_path / "load", time.time(), 1800)
     assert totals.files == 4
     assert totals.waited == 200
     assert totals.refused == 100
 
-    restarted = _start(ctx, tmp_path, 10, False)
-    _flushed(*restarted)
-    restarted[0].join()
+    restarted, receive = _start(ctx, tmp_path, 10, False)
+    _report(restarted, receive)
+    restarted.join(30)
     totals = read_window(tmp_path / "load", time.time(), 1800)
     assert totals.files == 5
     assert totals.waited == 210

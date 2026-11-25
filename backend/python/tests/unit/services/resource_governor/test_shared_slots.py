@@ -259,17 +259,26 @@ class TestSharedTaggedSlots:
             os.close(mutex)
         assert isinstance(slots.try_acquire_tagged(4, tag=b"a", tag_limit=None), SlotHold)
 
-    def test_held_by_tag_does_not_wait_for_a_busy_mutex(self, tmp_path: Path) -> None:
-        import time
+    def test_held_by_tag_does_not_wait_for_a_busy_mutex(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        from app.services.resource_governor import shared_slots
 
         slots = SharedSlots(tmp_path, 256)
+        tries: list[int] = []
+        sleeps: list[float] = []
+        try_lock = shared_slots._try_lock
+
+        def counted(fd: int) -> bool:
+            tries.append(fd)
+            return try_lock(fd)
+
+        monkeypatch.setattr(shared_slots, "_try_lock", counted)
+        monkeypatch.setattr(shared_slots.time, "sleep", sleeps.append)
         mutex = os.open(tmp_path / "mutex", os.O_RDWR)
         try:
             fcntl.flock(mutex, fcntl.LOCK_EX)
-            started = time.monotonic()
             with pytest.raises(TimeoutError):
                 slots.held_by_tag(budget=0.0)
-            assert time.monotonic() - started < 0.005
+            assert tries == [slots._mutex_fd] and sleeps == []  # one try at the mutex, no spin
         finally:
             os.close(mutex)
 

@@ -19,6 +19,7 @@
  *
  * Code spans and code blocks are protected from transformation.
  */
+import { escapeSlackText, slackLink } from "./slack-escape";
 
 
 
@@ -209,30 +210,49 @@ interface ConvertOptions {
       return `\x00PLACEHOLDER_${idx}\x00`;
     }
     
-    markdown = markdown.replace(/&amp;/g, '&amp;amp;');
-    markdown = markdown.replace(/&lt;/g, '&amp;lt;');
-    markdown = markdown.replace(/&gt;/g, '&amp;gt;');
+    // A NUL would let the input spell one of the placeholders below.
+    markdown = markdown.replaceAll("\u0000", "");
 
-    // Protect fenced code blocks (``` ... ```)
+    // Protect fenced code blocks (``` ... ```). Code is escaped too: SEC-B-03.
     let text = markdown.replace(
       /```(\w*)\n([\s\S]*?)```/g,
-      (_match, _lang, code) => placeholder("```\n" + code.trimEnd() + "\n```")
+      (_match: string, _lang: string, code: string) => placeholder("```\n" + escapeSlackText(code.trimEnd()) + "\n```")
     );
   
     // Protect inline code (` ... `)
-    text = text.replace(/`([^`\n]+)`/g, (_match, code) =>
-      placeholder("`" + code + "`")
+    text = text.replace(/`([^`\n]+)`/g, (_match: string, code: string) =>
+      placeholder("`" + escapeSlackText(code) + "`")
     );
   
     // ── Step 1b: Convert Markdown tables → code block (monospaced) ─────
     // Slack has no table syntax, so we render as an aligned code block.
   
-    text = convertTables(text, placeholder, tableMode);
+    text = convertTables(text, (content) => placeholder(escapeSlackText(content)), tableMode);
 
-    // ── Step 1c: Escape &, <, > for Slack ──────────────────────────────
-    // Run AFTER code/table extraction so content inside backticks and
-    // code fences is not escaped.
-    text = escapeForSlack(text);
+    // ── Step 1c: Links, built by the bot from the parsed target and label ──
+    if (!preserveLinks) {
+      // Images: ![alt](url) → <url|alt>
+      text = text.replace(
+        /!\[([^\]]*)\]\((\S+?)(?:\s+"[^"]*")?\)/g,
+        (_m: string, alt: string, url: string) => placeholder(slackLink(url, alt || undefined))
+      );
+      // Links: [text](url) → <url|text>
+      text = text.replace(
+        /\[([^\]]+)\]\((\S+?)(?:\s+"[^"]*")?\)/g,
+        (_m: string, label: string, url: string) => placeholder(slackLink(url, label))
+      );
+    }
+    // Autolinks <https://…> and Slack-style <https://…|label>: rebuilt, so the label rule applies to them as well.
+    text = text.replace(
+      /<((?:https?:\/\/|mailto:)[^\s<>|]+)(?:\|([^<>]*))?>/g,
+      (_m: string, url: string, label: string | undefined) => placeholder(slackLink(url, label))
+    );
+
+    // Strip simple HTML tags (e.g. <br>, <p>, <em>, etc.)
+    text = text.replace(/<\/?(br|p|div|span|em|strong|b|i|u|s|del|hr)\s*\/?>/gi, "");
+
+    // ── Step 1d: Escape &, <, > in everything else ─────────────────────
+    text = escapeMrkdwnBody(text);
 
     // ── Step 2: Line-level transformations ─────────────────────────────
   
@@ -286,24 +306,6 @@ interface ConvertOptions {
   
     // ── Step 3: Inline transformations ─────────────────────────────────
   
-    // Images: ![alt](url) → <url|alt>
-    if (!preserveLinks) {
-      text = text.replace(
-        /!\[([^\]]*)\]\((\S+?)(?:\s+"[^"]*")?\)/g,
-        (_m, alt, url) => (alt ? `<${url}|${alt}>` : `<${url}>`)
-      );
-    }
-  
-    // Links: [text](url) → <url|text>
-    if (!preserveLinks) {
-      text = text.replace(
-        /\[([^\]]+)\]\((\S+?)(?:\s+"[^"]*")?\)/g,
-        (_m, label, url) => `<${url}|${label}>`
-      );
-    }
-  
-    // Autolinks: <http...> are already Slack-compatible, leave them.
-  
     // Bold + Italic (***text*** or ___text___) → *_text_*
     text = text.replace(/\*{3}(.+?)\*{3}/g, (_m, c) => placeholder("*_" + c + "_*"));
     text = text.replace(/_{3}(.+?)_{3}/g, (_m, c) => placeholder("*_" + c + "_*"));
@@ -317,9 +319,6 @@ interface ConvertOptions {
   
     // Strikethrough: ~~text~~ → ~text~
     text = text.replace(/~~(.+?)~~/g, "~$1~");
-  
-    // Strip simple HTML tags (e.g. <br>, <p>, <em>, etc.)
-    text = text.replace(/<\/?(br|p|div|span|em|strong|b|i|u|s|del|hr)\s*\/?>/gi, "");
   
     // ── Step 4: Restore placeholders ───────────────────────────────────
 
@@ -412,49 +411,21 @@ export function markdownToText(md: string): string {
 
   s = s.replace(/[ \t]{2,}/g, " ");
 
-  s = s.replace(/&amp;/g, '&amp;amp;');
-  s = s.replace(/&lt;/g, '&amp;lt;');
-  s = s.replace(/&gt;/g, '&amp;gt;');
-  s = escapeForSlack(s);
+  s = escapeSlackText(s);
 
   return s;
 }
 
 
 /**
- * Escapes &, <, and > for Slack text formatting,
- * but only when they appear standalone — not as part of
- * existing HTML entities, Slack special syntax, or markdown constructs.
+ * Escapes &, <, > in model text (SEC-B-03), keeping only the `>` that opens a blockquote line, which is not a token.
  */
-export function escapeForSlack(text: string): string {
- 
-
-
-  // 1. Escape standalone `&` (not already part of an HTML entity like &amp; &lt; &#123; &#x1F; etc.)
-  text = text.replace(/&(?!amp;|lt;|gt;|#\d+;|#x[0-9a-fA-F]+;|\w+;)/g, '&amp;');
-
-  // 2. Escape standalone `<` (not part of Slack special syntax like <url>, <@U123>, <#C123>, <!here>)
-  text = text.replace(/<(?!(?:https?:\/\/|mailto:|tel:)[^>]*>|[@#!][^>]*>)/g, '&lt;');
-
-  // 3. Escape standalone `>` (not closing a Slack special syntax block, and not a blockquote marker at line start)
-  //    We protect Slack links/mentions first, then escape remaining `>`
-  text = text.replace(
-    /(?<=^|\n)>(?=\s)/g,   // preserve blockquote `> ` at start of line — temp marker
-    '\0BLOCKQUOTE\0'
-  );
-
-  // Protect closing `>` of Slack special syntax: <...>
-  // We re-scan for valid Slack tokens and protect their closing `>`
-  text = text.replace(
-    /(<(?:https?:\/\/|mailto:|tel:)[^>]*|<[@#!][^>]*)>/g,
-    '$1\0SLACKCLOSE\0'
-  );
-
-  text = text.replace(/>/g, '&gt;');
-
-  // Restore protected sequences
-  text = text.replace(/\0BLOCKQUOTE\0/g, '>');
-  text = text.replace(/\0SLACKCLOSE\0/g, '>');
-
-  return text;
+function escapeMrkdwnBody(text: string): string {
+  return text
+    .split("\n")
+    .map((line) => {
+      const quote = line.match(/^(\s*>)(?=\s|$)/)?.[1];
+      return quote ? quote + escapeSlackText(line.slice(quote.length)) : escapeSlackText(line);
+    })
+    .join("\n");
 }

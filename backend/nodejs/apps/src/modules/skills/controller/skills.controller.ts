@@ -22,10 +22,18 @@ import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
 import {
   BadGatewayError,
   ServiceUnavailableError,
+  UnauthorizedError,
 } from '../../../libs/errors/http.errors';
 import { withCause } from '../../../libs/errors/base.error';
 import { HttpMethod } from '../../../libs/enums/http-methods.enum';
 import { AppConfig } from '../../tokens_manager/config/config';
+import {
+  candidateTargetId,
+  controlPlaneHttpError,
+  SkillCandidateApprovalTarget,
+  type ConfigChangeApprovalsFactory,
+} from '../../control-plane';
+import { getCurrentOrgId } from '../../../libs/context/orgContext';
 import { markRequestError } from '../../../libs/middlewares/access-log.middleware';
 import { classifyError } from '../../../libs/utils/error-class';
 
@@ -149,11 +157,37 @@ export const getSkill = forwardJson(HttpMethod.GET, (req) => `${SKILLS_BASE}/${e
 export const createSkill = forwardJson(HttpMethod.POST, () => `${SKILLS_BASE}/`, 'Create Skill');
 export const updateSkill = forwardJson(HttpMethod.PUT, (req) => `${SKILLS_BASE}/${encName(req)}`, 'Update Skill');
 export const patchSkillBody = forwardJson(HttpMethod.PATCH, (req) => `${SKILLS_BASE}/${encName(req)}/body`, 'Patch Skill Body');
-export const deprecateSkill = forwardJson(HttpMethod.POST, (req) => `${SKILLS_BASE}/${encName(req)}/deprecate`, 'Deprecate Skill');
-export const disableSkill = forwardJson(HttpMethod.POST, (req) => `${SKILLS_BASE}/${encName(req)}/disable`, 'Disable Skill');
-export const enableSkill = forwardJson(HttpMethod.POST, (req) => `${SKILLS_BASE}/${encName(req)}/enable`, 'Enable Skill');
-export const getSkillUsage = forwardJson(HttpMethod.GET, (req) => `${SKILLS_BASE}/${encName(req)}/usage`, 'Get Skill Usage');
-export const deleteSkill = forwardJson(HttpMethod.DELETE, (req) => `${SKILLS_BASE}/${encName(req)}`, 'Delete Skill');
+// UI-B4: the name people see; the skill's id stays (Python checks the owner and that no other skill shows it).
+export const renameSkill = forwardJson(
+  HttpMethod.POST,
+  (req) => `${SKILLS_BASE}/${encName(req)}/rename`,
+  'Rename Skill',
+);
+export const deprecateSkill = forwardJson(
+  HttpMethod.POST,
+  (req) => `${SKILLS_BASE}/${encName(req)}/deprecate`,
+  'Deprecate Skill',
+);
+export const disableSkill = forwardJson(
+  HttpMethod.POST,
+  (req) => `${SKILLS_BASE}/${encName(req)}/disable`,
+  'Disable Skill',
+);
+export const enableSkill = forwardJson(
+  HttpMethod.POST,
+  (req) => `${SKILLS_BASE}/${encName(req)}/enable`,
+  'Enable Skill',
+);
+export const getSkillUsage = forwardJson(
+  HttpMethod.GET,
+  (req) => `${SKILLS_BASE}/${encName(req)}/usage`,
+  'Get Skill Usage',
+);
+export const deleteSkill = forwardJson(
+  HttpMethod.DELETE,
+  (req) => `${SKILLS_BASE}/${encName(req)}`,
+  'Delete Skill',
+);
 
 // ---- Version history ------------------------------------------------------
 
@@ -164,6 +198,24 @@ export const getSkillVersion = forwardJson(
   'Get Skill Version',
 );
 export const rollbackSkill = forwardJson(HttpMethod.POST, (req) => `${SKILLS_BASE}/${encName(req)}/rollback`, 'Rollback Skill');
+
+// ---- Sharing a /command (SLASH1 S4) -----------------------------------------
+
+export const getCommandShareTargets = forwardJson(
+  HttpMethod.GET,
+  () => `${SKILLS_BASE}/commands/share-targets`,
+  'Get Command Share Targets',
+);
+export const getCommandProvenance = forwardJson(
+  HttpMethod.GET,
+  () => `${SKILLS_BASE}/commands/provenance`,
+  'Get Command Provenance',
+);
+export const publishCommand = forwardJson(
+  HttpMethod.POST,
+  (req) => `${SKILLS_BASE}/${encName(req)}/publish`,
+  'Publish Command',
+);
 
 // ---- Bundled resources ------------------------------------------------------
 
@@ -270,3 +322,132 @@ export const exportSkill =
       next(mapAxiosError(error, 'Export Skill'));
     }
   };
+
+/** The upstream's refusal of a candidate decision, answered to the caller as the upstream gave it. */
+class UpstreamAnswer extends Error {
+  constructor(readonly response: AxiosResponse) {
+    super(`upstream answered ${String(response.status)}`);
+    this.name = 'UpstreamAnswer';
+  }
+}
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+
+/**
+ * Whether Python lists `candidateId` as learned from the caller's own run (`mine`), read with the caller's own
+ * credential. Any doubt (an error, an unreadable answer) is `false`: the request then takes the admin's path.
+ */
+async function learnedForCaller(
+  appConfig: AppConfig,
+  req: AuthenticatedUserRequest,
+  candidateId: string,
+): Promise<boolean> {
+  try {
+    const response = await axios.request({
+      url: `${appConfig.aiBackend}${SKILLS_BASE}/candidates/pending`,
+      method: HttpMethod.GET,
+      headers: buildForwardHeaders(req, { 'Content-Type': 'application/json' }),
+      timeout: 30_000,
+      validateStatus: () => true,
+    });
+    const candidates: unknown = isRecord(response.data)
+      ? response.data['candidates']
+      : undefined;
+    return (
+      response.status === 200 &&
+      Array.isArray(candidates) &&
+      candidates.some(
+        (c) =>
+          isRecord(c) &&
+          c['candidate_id'] === candidateId &&
+          c['mine'] === true,
+      )
+    );
+  } catch {
+    return false;
+  }
+}
+
+/** The configuration-change approvals a candidate decision goes through, when bound. */
+export type CandidateWorkflowFactory = ConfigChangeApprovalsFactory;
+
+/**
+ * With configuration-change approvals bound (`CONTROL_PLANE_APPROVALS_FACTORY`),
+ * approving or rejecting a learned candidate is an `ApprovalRequest{change:
+ * publish}` the caller asks and decides in one audited control-plane write,
+ * the skill store's own write (the Python route, with the caller's
+ * credential) its effect.
+ *
+ * UI-B4: a candidate learned from the caller's own run becomes their own
+ * personal skill, which publishes nothing to the org, so it is not a publish
+ * request: it is decided as a skill they write themselves, with Python
+ * checking that it is theirs. The reviewer's edits are forwarded either way.
+ */
+export function decideSkillCandidateThroughWorkflow(
+  verdict: 'approve' | 'reject',
+) {
+  const action =
+    verdict === 'approve'
+      ? 'Approve Skill Candidate'
+      : 'Reject Skill Candidate';
+  return (appConfig: AppConfig, workflowFor: CandidateWorkflowFactory) =>
+    async (
+      req: AuthenticatedUserRequest,
+      res: Response,
+      next: NextFunction,
+    ): Promise<void> => {
+      const userId: unknown = req.user?.userId;
+      const orgId: unknown = getCurrentOrgId();
+      const candidateId = req.params.candidateId ?? '';
+      const forward = async (
+        step: 'approve' | 'reject',
+      ): Promise<AxiosResponse> => {
+        const response = await axios.request({
+          url: `${appConfig.aiBackend}${SKILLS_BASE}/candidates/${encParam(candidateId)}/${step}`,
+          method: HttpMethod.POST,
+          data: step === 'approve' && isRecord(req.body) ? req.body : {},
+          headers: buildForwardHeaders(req, {
+            'Content-Type': 'application/json',
+          }),
+          timeout: 30_000,
+          validateStatus: () => true,
+        });
+        if (response.status < 200 || response.status >= 300)
+          throw new UpstreamAnswer(response);
+        return response;
+      };
+      try {
+        if (typeof userId !== 'string' || typeof orgId !== 'string')
+          throw new UnauthorizedError('User authentication required');
+        if (await learnedForCaller(appConfig, req, candidateId)) {
+          const own = await forward(verdict);
+          res.status(own.status).json(own.data);
+          return;
+        }
+        const target = new SkillCandidateApprovalTarget({
+          approve: () => forward('approve'),
+          reject: () => forward('reject'),
+        });
+        const { applied } = await workflowFor([target]).submit({
+          actor: { orgId, userId },
+          target: { type: 'catalog-item', id: candidateTargetId(candidateId) },
+          change: { type: 'publish' },
+          decision: { decision: verdict },
+        });
+        const response = applied?.value as AxiosResponse;
+        res.status(response.status).json(response.data);
+      } catch (error) {
+        if (error instanceof UpstreamAnswer) {
+          res.status(error.response.status).json(error.response.data);
+          return;
+        }
+        const mapped = controlPlaneHttpError(error);
+        next(
+          mapped !== error || error instanceof UnauthorizedError
+            ? mapped
+            : mapAxiosError(error, action),
+        );
+      }
+    };
+}

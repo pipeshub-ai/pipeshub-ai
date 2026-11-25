@@ -26,6 +26,18 @@ spec:
       {{- if include "pipeshub-ai.createSecrets" . }}
       {{- $_ := set $podAnnotations "checksum/qdrant-api-key" (include "pipeshub-ai.qdrantApiKeyChecksum" .) }}
       {{- end }}
+      {{- if .Values.metrics.enabled }}
+      {{- /* Per-pod scrape of Node's process metrics (R41SUPPLY-FU-13): the Service address answers from any replica. */}}
+      {{- $_ := set $podAnnotations "prometheus.io/scrape" "true" }}
+      {{- $_ := set $podAnnotations "prometheus.io/port" (toString .Values.metrics.node.port) }}
+      {{- $_ := set $podAnnotations "prometheus.io/path" "/metrics" }}
+      {{- end }}
+      {{- with include "pipeshub-ai.etcdTls.podAnnotation" . | fromYaml }}
+      {{- $podAnnotations = merge $podAnnotations . }}
+      {{- end }}
+      {{- if .Values.metrics.harness.enabled }}
+      {{- $_ := set $podAnnotations "checksum/harness-metrics" (include (print $.Template.BasePath "/harness-metrics-agent.yaml") . | sha256sum) }}
+      {{- end }}
       {{- with $podAnnotations }}
       annotations:
         {{- toYaml . | nindent 8 }}
@@ -43,6 +55,7 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       serviceAccountName: {{ include "pipeshub-ai.serviceAccountName" . }}
+      automountServiceAccountToken: {{ .Values.serviceAccount.automountServiceAccountToken }}
       {{- with .Values.sandbox.runtimeClassName }}
       # Pod-level RuntimeClass for the whole pod, including the privileged
       # Docker-in-Docker sidecar, so an escape lands in the sandboxed runtime
@@ -55,11 +68,27 @@ spec:
       {{- end }}
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      initContainers:
+        # The root filesystem is read-only, but the app downloads models into the
+        # caches the image ships with (a newly chosen embedding model). Each pod
+        # gets a writable copy of them, seeded from the image so an air-gapped
+        # cluster keeps the bundled models.
+        - name: model-cache
+          image: {{ include "pipeshub-ai.appImage" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy | default .Values.global.imagePullPolicy }}
+          securityContext:
+            {{- include "pipeshub-ai.appSecurityContext" . | nindent 12 }}
+          command: ["/bin/sh", "-ec"]
+          args:
+            - for d in huggingface fastembed; do if [ -d "/root/.cache/$d" ]; then cp -a "/root/.cache/$d" /seed/; else mkdir -p "/seed/$d"; fi; done
+          volumeMounts:
+            - name: cache
+              mountPath: /seed
       containers:
         - name: {{ .Chart.Name }}
           securityContext:
-            {{- toYaml .Values.securityContext | nindent 12 }}
-          image: {{ include "pipeshub-ai.image" (dict "image" .Values.image "global" .Values.global) | quote }}
+            {{- include "pipeshub-ai.appSecurityContext" . | nindent 12 }}
+          image: {{ include "pipeshub-ai.appImage" . | quote }}
           imagePullPolicy: {{ .Values.image.pullPolicy | default .Values.global.imagePullPolicy }}
           ports:
             - name: main
@@ -81,8 +110,46 @@ spec:
             - name: metrics
               containerPort: {{ .Values.metrics.port }}
               protocol: TCP
+            - name: node-metrics
+              containerPort: {{ .Values.metrics.node.port }}
+              protocol: TCP
             {{- end }}
           env:{{ include "pipeshub-ai.appEnv" . }}
+            - name: NODE_LOG_FILES
+              value: {{ .Values.logging.nodeFiles.enabled | quote }}
+            {{- if .Values.metrics.enabled }}
+            # Node serves its event-loop utilization here (/metrics), the autoscaler's per-process signal.
+            - name: METRICS_PORT
+              value: {{ .Values.metrics.node.port | quote }}
+            {{- end }}
+            {{- if .Values.logging.nodeFiles.enabled }}
+            - name: NODE_LOG_DIR
+              value: {{ .Values.logging.nodeFiles.path | quote }}
+            {{- end }}
+            - name: AGENT_HARNESS_RELAY_ENABLED
+              value: {{ include "pipeshub-ai.agentHarnessEnabled" . | quote }}
+            - name: AGENT_HARNESS_WORKER_ENABLED
+              value: {{ include "pipeshub-ai.agentHarnessEnabled" . | quote }}
+            - name: HARNESS_FLOW_GUARD
+              value: {{ .Values.agentHarness.flowGuard | quote }}
+            - name: AGENT_HARNESS_KILL_SWITCH
+              value: {{ .Values.agentHarness.killSwitch | quote }}
+            - name: HARNESS_ENGINE_IMAGE_REGISTRY
+              value: {{ include "pipeshub-ai.engineImageRegistry" . | quote }}
+            - name: AGENT_HARNESS_INTERNAL_PORT
+              value: {{ .Values.config.agentHarnessInternalPort | quote }}
+            - name: AGENT_HARNESS_INTERNAL_HOST
+              value: "127.0.0.1"
+            - name: AGENT_HARNESS_STATE_URL
+              value: {{ printf "http://localhost:%v" .Values.config.agentHarnessInternalPort | quote }}
+            {{- if .Values.metrics.harness.enabled }}
+            # Node writes the scraper's credential here every minute; only this
+            # pod's metrics agent, running as the same user, reads it.
+            - name: HARNESS_METRICS_CREDENTIAL_FILE
+              value: /run/pxh-monitoring/worker-credential
+            - name: HARNESS_METRICS_CREDENTIAL_OWNER
+              value: {{ .Values.securityContext.runAsUser | default .Values.podSecurityContext.runAsUser | quote }}
+            {{- end }}
             # Code sandbox capacity (sandbox.capacity in values.yaml).
             {{- if and .Values.sandbox.dind.enabled (eq (include "pipeshub-ai.sandboxPath" .) "dind") }}
             - name: SANDBOX_HOST_MEMORY_BYTES
@@ -180,6 +247,20 @@ spec:
               mountPath: /home/user
             - name: app-rootlocal
               mountPath: /root/.local
+            - name: tmp
+              mountPath: /tmp
+            {{- include "pipeshub-ai.etcdTlsMount" . | nindent 12 }}
+            {{- include "pipeshub-ai.secretKeyMount" . | nindent 12 }}
+            - name: cache
+              mountPath: /root/.cache/huggingface
+              subPath: huggingface
+            - name: cache
+              mountPath: /root/.cache/fastembed
+              subPath: fastembed
+            {{- if .Values.logging.nodeFiles.enabled }}
+            - name: node-logs
+              mountPath: {{ .Values.logging.nodeFiles.path | quote }}
+            {{- end }}
             {{- if .Values.persistence.enabled }}
             # Shared persistent data (uploads, local KV state, etc.). With multiple
             # replicas this PVC MUST be ReadWriteMany — validation in _helpers.tpl
@@ -198,6 +279,10 @@ spec:
             - name: s3-sigv4
               mountPath: /etc/pipeshub/s3-sigv4
               readOnly: true
+            {{- end }}
+            {{- if .Values.metrics.harness.enabled }}
+            - name: harness-metrics-credential
+              mountPath: /run/pxh-monitoring
             {{- end }}
           {{- if .Values.healthCheck.startupProbe.enabled }}
           startupProbe:
@@ -225,138 +310,48 @@ spec:
             periodSeconds: {{ .Values.healthCheck.livenessProbe.periodSeconds }}
             timeoutSeconds: {{ .Values.healthCheck.livenessProbe.timeoutSeconds }}
             failureThreshold: {{ .Values.healthCheck.livenessProbe.failureThreshold }}
-        {{- if .Values.sandbox.dind.enabled }}
-        # Docker-in-Docker: gives SANDBOX_MODE=docker a daemon, so
-        # model-generated code runs in a throwaway container instead of as a
-        # subprocess of the application. See `sandbox.dind` in values.yaml for
-        # the privilege trade this makes.
-        - name: dind
-          image: {{ .Values.sandbox.dind.image | quote }}
-          imagePullPolicy: {{ .Values.sandbox.dind.pullPolicy | quote }}
+        {{- if .Values.metrics.harness.enabled }}
+        - name: harness-metrics
+          image: {{ include "pipeshub-ai.image" (dict "image" .Values.metrics.harness.image "global" .Values.global) | quote }}
+          imagePullPolicy: {{ .Values.metrics.harness.image.pullPolicy | default .Values.global.imagePullPolicy }}
           securityContext:
-            # The daemon needs to create namespaces, mount filesystems and
-            # manage cgroups, which no unprivileged container can do. This
-            # deliberately overrides the pod-level runAsNonRoot.
-            privileged: true
-            runAsNonRoot: false
-            runAsUser: 0
-          {{- if .Values.sandbox.dind.liveLimit.enabled }}
-          # Starts the loop that writes this container's cgroup counters for
-          # docker-proxy (pipeshub-ai.dindExporterScript), then the image's
-          # entrypoint with the args below unchanged.
-          command: ["/bin/sh", "-c", {{ include "pipeshub-ai.dindExporterScript" . | quote }}, "pipeshub-dind"]
-          {{- end }}
-          env:
-            - name: DOCKER_TLS_CERTDIR
-              value: ""
-            # For the `docker info` probes below.
-            - name: DOCKER_HOST
-              value: "unix:///var/run/dind/docker.sock"
-            {{- if .Values.sandbox.dind.liveLimit.enabled }}
-            - name: PIPESHUB_EXPORT_INTERVAL
-              value: {{ .Values.sandbox.dind.liveLimit.exportIntervalSeconds | default 5 | toString | quote }}
-            {{- end }}
-          # No TCP listener: every container in a pod shares one network
-          # namespace, so a loopback port would hand the raw API to the
-          # application container too. The socket's volume is mounted only
-          # here and in docker-proxy. First arg must be `dockerd`; if it starts
-          # with `-`, dockerd-entrypoint.sh adds its default 0.0.0.0:2375 listener.
+            {{- include "pipeshub-ai.appSecurityContext" . | nindent 12 }}
           args:
-            - dockerd
-            - "--host=unix:///var/run/dind/docker.sock"
-          resources:
-            {{- toYaml .Values.sandbox.dind.resources | nindent 12 }}
-          volumeMounts:
-            - name: dind-storage
-              mountPath: /var/lib/docker
-            - name: dind-sock
-              mountPath: /var/run/dind
-          livenessProbe:
-            exec:
-              command: ["docker", "info"]
-            initialDelaySeconds: 20
-            periodSeconds: 30
-            timeoutSeconds: 10
-            failureThreshold: 3
-          startupProbe:
-            # Pulling the sandbox image on a cold cache can take a while;
-            # this is what stops a slow first start being read as a crash.
-            exec:
-              command: ["docker", "info"]
-            initialDelaySeconds: 5
-            periodSeconds: 5
-            timeoutSeconds: 10
-            failureThreshold: 30
-        - name: docker-proxy
-          image: {{ .Values.sandbox.proxy.image | default (include "pipeshub-ai.image" (dict "image" .Values.image "global" .Values.global)) | quote }}
-          imagePullPolicy: {{ .Values.image.pullPolicy | default .Values.global.imagePullPolicy }}
-          # Bypasses the image entrypoint, which drops privileges for the app
-          # and needs capabilities this container deliberately does not have.
-          command: ["python", "-m", "app.docker_proxy_main"]
-          workingDir: /app/python
-          securityContext:
-            # Root only to open the root-owned daemon socket; it holds no
-            # capabilities. Same as the Compose docker-socket-proxy.
-            runAsUser: 0
-            runAsNonRoot: false
-            allowPrivilegeEscalation: false
-            readOnlyRootFilesystem: true
-            capabilities:
-              drop: ["ALL"]
+            - --config.file=/etc/pxh-agent/agent.yml
+            - --enable-feature=agent
+            - --enable-feature=expand-external-labels
+            - --storage.agent.path=/agent
+            # Not 9091: the indexing governor's exporter (metrics.port) may bind every interface of the pod.
+            - --web.listen-address=127.0.0.1:9094
           env:
-            # Loopback only (also the proxy's default): the pod IP must not
-            # serve it, since the proxy has no client authentication.
-            - name: DOCKER_PROXY_HOST
-              value: "127.0.0.1"
-            - name: DOCKER_PROXY_PORT
-              value: {{ .Values.sandbox.dind.port | quote }}
-            - name: DOCKER_PROXY_UPSTREAM
-              value: "unix:///var/run/dind/docker.sock"
-            - name: DOCKER_PROXY_LOG_LEVEL
-              value: {{ .Values.sandbox.proxy.logLevel | quote }}
-            {{- with .Values.sandbox.proxy.allowedImages }}
-            - name: DOCKER_PROXY_ALLOWED_IMAGES
-              value: {{ . | quote }}
-            {{- end }}
-            - name: SANDBOX_DOCKER_IMAGE
-              value: {{ .Values.config.sandboxDockerImage | quote }}
-            - name: SANDBOX_EGRESS_NETWORK
-              value: {{ .Values.config.sandboxEgressNetwork | quote }}
-            # The same value the app gets: the reaper removes sandbox
-            # containers older than this cap plus a margin.
-            - name: SANDBOX_MAX_RUN_TIMEOUT_S
-              value: {{ .Values.config.sandboxMaxRunTimeoutS | quote }}
-            # Labels this release's sandbox containers, so releases sharing a
-            # daemon never see or reap each other's.
-            - name: DOCKER_PROXY_INSTANCE
-              value: {{ printf "%s/%s" .Release.Namespace (include "pipeshub-ai.fullname" .) | quote }}
-            - name: DOCKER_PROXY_REAP_UNLABELED
-              value: {{ .Values.sandbox.proxy.reapUnlabeled | default false | toString | quote }}
-            {{- if .Values.sandbox.dind.liveLimit.enabled }}
-            # Written by the loop in the dind container; served as GET /_pipeshub/usage.
-            - name: DOCKER_PROXY_SIDECAR_STATS_FILE
-              value: "/var/run/dind/pipeshub-sidecar-stats"
-            {{- end }}
-            - name: PYTHONDONTWRITEBYTECODE
-              value: "1"
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
           resources:
-            {{- toYaml .Values.sandbox.proxy.resources | nindent 12 }}
+            {{- toYaml .Values.metrics.harness.resources | nindent 12 }}
           volumeMounts:
-            - name: dind-sock
-              mountPath: /var/run/dind
-          # A TCP connect, not /_ping: /_ping is forwarded to dockerd, and a
-          # slow daemon should not restart the proxy. The listener is on
-          # loopback, so a kubelet tcpSocket probe (pod IP) cannot reach it.
-          livenessProbe:
-            exec:
-              command:
-                - python
-                - -c
-                - "import socket; socket.create_connection(('127.0.0.1', {{ .Values.sandbox.dind.port }}), timeout=3).close()"
-            initialDelaySeconds: 10
-            periodSeconds: 30
-            timeoutSeconds: 10
-            failureThreshold: 3
+            - name: harness-metrics-config
+              mountPath: /etc/pxh-agent
+              readOnly: true
+            - name: harness-metrics-credential
+              mountPath: /run/pxh-monitoring
+              readOnly: true
+            - name: harness-metrics-wal
+              mountPath: /agent
+            {{- if .Values.metrics.harness.remoteWrite.bearerTokenSecret.name }}
+            - name: harness-metrics-remote-write
+              mountPath: /etc/pxh-remote-write
+              readOnly: true
+            {{- end }}
+        {{- end }}
+        {{- if and .Values.sandbox.dind.enabled (ne (include "pipeshub-ai.sandboxMode" .) "broker") }}
+        {{- include "pipeshub-ai.dindContainer" . | nindent 8 }}
+        {{- include "pipeshub-ai.dockerProxyContainer" (dict "root" . "profile" "legacy") | nindent 8 }}
         {{- end }}
           {{- with .Values.nodeSelector }}
           {{- $selector := include "pipeshub-ai.compactMap" . }}
@@ -385,19 +380,10 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       volumes:
-        {{- if .Values.sandbox.dind.enabled }}
-        - name: dind-storage
-          {{- if .Values.sandbox.dind.storage.existingClaim }}
-          persistentVolumeClaim:
-            claimName: {{ .Values.sandbox.dind.storage.existingClaim | quote }}
-          {{- else }}
-          emptyDir:
-            sizeLimit: {{ .Values.sandbox.dind.storage.sizeLimit | quote }}
-          {{- end }}
-        - name: dind-sock
-          emptyDir:
-            medium: Memory
-            sizeLimit: 1Mi
+        {{- include "pipeshub-ai.etcdTlsVolume" (dict "root" . "client" "pipeshub-ai") | nindent 8 }}
+        {{- include "pipeshub-ai.secretKeyVolume" . | nindent 8 }}
+        {{- if and .Values.sandbox.dind.enabled (ne (include "pipeshub-ai.sandboxMode" .) "broker") }}
+        {{- include "pipeshub-ai.dindVolume" . | nindent 8 }}
         {{- end }}
         - name: cache
           emptyDir: {}
@@ -407,6 +393,12 @@ spec:
           emptyDir: {}
         - name: app-rootlocal
           emptyDir: {}
+        - name: tmp
+          emptyDir: {}
+        {{- if .Values.logging.nodeFiles.enabled }}
+        - name: node-logs
+          emptyDir: {}
+        {{- end }}
         {{- if .Values.persistence.enabled }}
         - name: pipeshub-storage
           persistentVolumeClaim:
@@ -422,4 +414,26 @@ spec:
         - name: s3-sigv4
           configMap:
             name: {{ include "pipeshub-ai.fullname" . }}-s3-sigv4
+        {{- end }}
+        {{- if .Values.metrics.harness.enabled }}
+        - name: harness-metrics-config
+          configMap:
+            name: {{ include "pipeshub-ai.fullname" . }}-harness-metrics
+        - name: harness-metrics-credential
+          emptyDir:
+            medium: Memory
+            sizeLimit: 1Mi
+        - name: harness-metrics-wal
+          emptyDir:
+            sizeLimit: 512Mi
+        {{- with .Values.metrics.harness.remoteWrite.bearerTokenSecret }}
+        {{- if .name }}
+        - name: harness-metrics-remote-write
+          secret:
+            secretName: {{ .name }}
+            items:
+              - key: {{ required "metrics.harness.remoteWrite.bearerTokenSecret.key is required with its name" .key }}
+                path: token
+        {{- end }}
+        {{- end }}
         {{- end }}

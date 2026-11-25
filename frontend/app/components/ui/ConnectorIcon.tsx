@@ -97,6 +97,8 @@ export type ConnectorType =
   | 'discord'
   | 'posthog'
   | 'brave'
+  // A repository the run fetched (ADR-RUN-01 D3): its files are cited as sources
+  | 'repository'
   | 'stripe'
   | 'paypal'
   | 'vercel'
@@ -218,6 +220,7 @@ export const CONNECTOR_ICONS: Record<ConnectorType, { svg: string | null; fallba
   'discord': { svg: null, fallback: 'forum' },
   'posthog': { svg: svg('posthog'), fallback: 'insights' },
   'brave': { svg: svg('brave'), fallback: 'travel_explore' },
+  'repository': { svg: null, fallback: 'code' },
   'stripe': { svg: svg('stripe'), fallback: 'payments' },
   'paypal': { svg: svg('paypal'), fallback: 'payments' },
   'vercel': { svg: svg('vercel'), fallback: 'code' },

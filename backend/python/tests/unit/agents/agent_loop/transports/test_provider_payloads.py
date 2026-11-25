@@ -29,7 +29,7 @@ from app.agent_loop_lib.core.messages import (
     UserMessage,
 )
 from app.agent_loop_lib.transport.anthropic import AnthropicTransport
-from app.agent_loop_lib.transport.gemini import GeminiTransport
+from app.agent_loop_lib.transport.gemini import GeminiTransport, signature_block
 from app.agent_loop_lib.transport.ollama import OllamaTransport
 from app.agent_loop_lib.transport.openai import OpenAITransport
 from app.agent_loop_lib.transport.openai_responses import format_responses_input
@@ -157,6 +157,27 @@ def _merged_user_turns(turns: Turns) -> list[str]:
     return merged
 
 
+def _gemini_signed(
+    messages: list[Message], signatures: dict[str, bytes], provided: frozenset[str] = frozenset(),
+) -> list[Message]:
+    """``messages`` with each assistant turn carrying the Gemini state a response would have put on it: the
+    harness keeps signatures and Gemini's own call ids on the message (H4), not on the shared transport."""
+    from harness_core.models.provider_state import GEMINI_GENERATE_CONTENT, with_state
+
+    out: list[Message] = []
+    for message in messages:
+        if isinstance(message, AssistantMessage) and message.tool_calls:
+            blocks = [
+                block
+                for call in message.tool_calls
+                for block in signature_block(call.id, signatures.get(call.id), provided=call.id in provided)
+            ]
+            out.append(with_state(message, GEMINI_GENERATE_CONTENT, blocks))
+            continue
+        out.append(message)
+    return out
+
+
 def _image_tool_turn() -> list[Message]:
     return [
         UserMessage(content=HUMAN),
@@ -226,22 +247,23 @@ class TestImageToolResultOnEveryTransport:
         assert "chart result" in output[0]["text"]
         assert output[-1] == {"type": "input_text", "text": FOOTER}
 
-    def test_gemini_sends_the_image_beside_the_function_response(self) -> None:
+    def test_gemini_sends_the_image_after_the_function_response(self) -> None:
+        # The harness relocates a run's images to a user turn right after it (FIX-P3-B1), as on every wire
+        # that takes no image in a tool result; the response carries the text.
         transport = GeminiTransport(api_key="x")
-        transport._thought_signatures["call_b"] = b"signature"
-        contents = transport._format_contents(_image_tool_turn())
+        contents = transport._format_contents(_gemini_signed(_image_tool_turn(), {"call_b": b"signature"}))
 
-        tool_turn = contents[-1]
+        tool_turn, images = contents[-2], contents[-1]
         response = next(p.function_response for p in tool_turn.parts if p.function_response)
         assert response.response["result"] == "chart result" + FOOTER
-        assert any(p.inline_data is not None for p in tool_turn.parts)
+        assert any(p.inline_data is not None for p in images.parts)
 
     def test_gemini_keeps_the_image_when_the_call_is_replayed_as_text(self) -> None:
         contents = GeminiTransport(api_key="x")._format_contents(_image_tool_turn())
 
-        tool_turn = contents[-1]
+        tool_turn, images = contents[-2], contents[-1]
         assert any(p.text and "chart result" in p.text for p in tool_turn.parts)
-        assert any(p.inline_data is not None for p in tool_turn.parts)
+        assert any(p.inline_data is not None for p in images.parts)
 
 
 def _context() -> AgentContext:
@@ -386,9 +408,8 @@ class TestParallelToolResults:
         gemini-2.5-flash/pro, gemini-3-flash-preview and gemini-3.1-pro-preview), so the
         siblings must not be flattened to text with their results in the user's voice."""
         transport = GeminiTransport(api_key="x")
-        transport._thought_signatures["call_a"] = b"signature"
 
-        contents = transport._format_contents(_parallel_turn())
+        contents = transport._format_contents(_gemini_signed(_parallel_turn(), {"call_a": b"signature"}))
 
         model_turn = next(c for c in contents if c.role == "model")
         calls = [p for p in model_turn.parts if p.function_call]
@@ -397,19 +418,14 @@ class TestParallelToolResults:
         responses = [p.function_response for c in contents for p in c.parts if p.function_response]
         assert [r.name for r in responses] == ["kg__search", "charts__render", "jira__search"]
         assert all(str(r.response["result"]).endswith(FOOTER) for r in responses)
-        chart_turn = next(c for c in contents if any(
-            p.function_response and p.function_response.name == "charts__render" for p in c.parts
-        ))
-        assert any(p.inline_data is not None for p in chart_turn.parts)
+        # The run's image follows its results in one user turn (the harness's relocation).
+        assert any(p.inline_data is not None for c in contents for p in c.parts)
         assert not [p.text for c in contents for p in c.parts if p.text and p.text.startswith("[previous tool")]
 
     def test_gemini_pairs_repeated_calls_to_one_function_by_their_ids(self) -> None:
         """One function called for several inputs: only Gemini's own ids tell the results apart."""
         transport = GeminiTransport(api_key="x")
         cities = {"g-paris": "Paris", "g-london": "London", "g-tokyo": "Tokyo"}
-        for call_id in cities:
-            transport._call_id(SimpleNamespace(id=call_id))
-        transport._thought_signatures["g-paris"] = b"signature"
         messages = [
             UserMessage(content="Weather in Paris, London and Tokyo?"),
             AssistantMessage(content=None, tool_calls=[
@@ -419,7 +435,9 @@ class TestParallelToolResults:
               for i, (call_id, city) in enumerate(cities.items())],
         ]
 
-        contents = transport._format_contents(messages)
+        contents = transport._format_contents(
+            _gemini_signed(messages, {"g-paris": b"signature"}, provided=frozenset(cities)),
+        )
 
         calls = [p.function_call for c in contents for p in c.parts if p.function_call]
         responses = [p.function_response for c in contents for p in c.parts if p.function_response]
@@ -430,9 +448,8 @@ class TestParallelToolResults:
 
     def test_gemini_never_sends_an_id_it_did_not_issue(self) -> None:
         transport = GeminiTransport(api_key="x")
-        transport._thought_signatures["call_a"] = b"signature"
 
-        contents = transport._format_contents(_parallel_turn())
+        contents = transport._format_contents(_gemini_signed(_parallel_turn(), {"call_a": b"signature"}))
 
         parts = [p.function_call or p.function_response for c in contents for p in c.parts]
         assert all(getattr(p, "id", None) is None for p in parts if p is not None)

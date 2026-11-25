@@ -314,7 +314,7 @@ function DropZone({ type, onDrop, isEmpty, compact = false }: DropZoneProps) {
         <MaterialIcon
           name="add"
           size={24}
-          color={isDragOver ? 'var(--accent-9)' : 'var(--slate-9)'}
+          color={isDragOver ? 'var(--accent-11)' : 'var(--slate-11)'}
         />
         {isEmpty && (
           <>
@@ -497,7 +497,7 @@ function UploadedItem({ item, onRemove }: UploadedItemProps) {
           }}
         >
           {item.type === 'folder' ? (
-            <MaterialIcon name="folder" size={16} color="var(--accent-9)" />
+            <MaterialIcon name="folder" size={16} color="var(--accent-11)" />
           ) : (
             <FileIcon filename={item.name} size={16} />
           )}
@@ -513,7 +513,7 @@ function UploadedItem({ item, onRemove }: UploadedItemProps) {
           >
             {item.name}
           </Text>
-          <Text size="1" style={{ color: 'var(--slate-9)' }}>
+          <Text size="1" style={{ color: 'var(--slate-11)' }}>
             {item.type === 'folder'
               ? `${item.filesWithPaths?.length ?? 0} files`
               : formatBytes(item.size)}
@@ -664,7 +664,7 @@ function FolderTreeRow({ node, depth, onRemovePath }: FolderTreeRowProps) {
             <Box style={{ width: 20, flexShrink: 0 }} />
           )}
           {isFolder ? (
-            <MaterialIcon name="folder" size={16} color="var(--accent-9)" style={{ flexShrink: 0 }} />
+            <MaterialIcon name="folder" size={16} color="var(--accent-11)" style={{ flexShrink: 0 }} />
           ) : (
             <Box style={{ flexShrink: 0, display: 'inline-flex' }}>
               <FileIcon filename={node.name} size={16} />
@@ -681,7 +681,7 @@ function FolderTreeRow({ node, depth, onRemovePath }: FolderTreeRowProps) {
             {node.name}
           </Text>
           {!isFolder && node.size != null && (
-            <Text size="1" style={{ color: 'var(--slate-9)', flexShrink: 0 }}>
+            <Text size="1" style={{ color: 'var(--slate-11)', flexShrink: 0 }}>
               {formatBytes(node.size)}
             </Text>
           )}
@@ -741,7 +741,7 @@ function UploadedFolderItem({ item, onRemoveFolder, onRemovePath }: UploadedFold
           padding: 'var(--space-1) var(--space-3) var(--space-1) var(--space-2)',
         }}
       >
-        <Text size="1" style={{ color: 'var(--slate-9)', paddingLeft: 'var(--space-2)' }}>
+        <Text size="1" style={{ color: 'var(--slate-11)', paddingLeft: 'var(--space-2)' }}>
           {fileCount} {fileCount === 1 ? 'file' : 'files'} · {formatBytes(item.size)}
         </Text>
       </Flex>
@@ -927,12 +927,12 @@ export function UploadDataSidebar({
               {t('kb.upload.documentation')}
             </Button>
             <IconButton
+              aria-label={t('common.close')}
               variant="ghost"
               // Radix ghost buttons pull out by their padding; keep the header's own inset
               style={{ margin: 0 }}
               color="gray"
               size="2"
-              aria-label={t('common.close')}
               onClick={() => handleOpenChange(false)}
             >
               <MaterialIcon name="close" size={16} color="var(--slate-11)" />
@@ -973,7 +973,7 @@ export function UploadDataSidebar({
                 <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
                   {t('kb.upload.filesTitle')}
                 </Text>
-                <Text size="1" style={{ color: 'var(--slate-9)' }}>
+                <Text size="1" style={{ color: 'var(--slate-11)' }}>
                   {t('kb.upload.filesHint', { maxMb: maxFileSizeMB })}
                 </Text>
               </Flex>
@@ -1019,7 +1019,7 @@ export function UploadDataSidebar({
             <>
           <Flex align="center" gap="3">
             <Box style={{ flex: 1, height: '1px', backgroundColor: 'var(--slate-6)' }} />
-            <Text size="1" style={{ color: 'var(--slate-9)' }}>
+            <Text size="1" style={{ color: 'var(--slate-11)' }}>
               {t('kb.upload.or')}
             </Text>
             <Box style={{ flex: 1, height: '1px', backgroundColor: 'var(--slate-6)' }} />
@@ -1045,7 +1045,7 @@ export function UploadDataSidebar({
                 <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
                   {t('kb.upload.foldersTitle')}
                 </Text>
-                <Text size="1" style={{ color: 'var(--slate-9)' }}>
+                <Text size="1" style={{ color: 'var(--slate-11)' }}>
                   {t('kb.upload.foldersHint', { maxMb: maxFileSizeMB })}
                 </Text>
               </Flex>
@@ -1098,7 +1098,7 @@ export function UploadDataSidebar({
             )}
 
             {folderItems.length === 0 && !foldersAllowed && (
-              <Text size="1" style={{ color: 'var(--slate-9)' }} data-testid="upload-folder-limit-reached">
+              <Text size="1" style={{ color: 'var(--slate-11)' }} data-testid="upload-folder-limit-reached">
                 {t('kb.upload.folderLimitReached', { max: maxFolderDepth })}
               </Text>
             )}

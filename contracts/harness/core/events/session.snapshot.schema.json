@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/core/events/session.snapshot.schema.json",
+  "title": "SessionSnapshotEvent",
+  "description": "Session fold checkpoint.",
+  "x-writer": [
+    "node"
+  ],
+  "allOf": [
+    {
+      "$ref": "../envelope.schema.json#/$defs/InlineEnvelope"
+    }
+  ],
+  "properties": {
+    "type": {
+      "const": "session.snapshot"
+    },
+    "writer": {
+      "const": "node"
+    },
+    "data": {
+      "$ref": "#/$defs/SessionSnapshotData"
+    }
+  },
+  "$defs": {
+    "SessionSnapshotData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "stateRef",
+        "foldVersion"
+      ],
+      "properties": {
+        "stateRef": {
+          "$ref": "../common.schema.json#/$defs/ContentRef"
+        },
+        "foldVersion": {
+          "$ref": "../common.schema.json#/$defs/PosInt"
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "type": "session.snapshot",
+      "schemaVersion": 1,
+      "critical": true,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "node",
+      "visibility": "owner",
+      "data": {
+        "stateRef": {
+          "ref": "cas/snap1",
+          "hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "size": 5000
+        },
+        "foldVersion": 1
+      }
+    }
+  ]
+}

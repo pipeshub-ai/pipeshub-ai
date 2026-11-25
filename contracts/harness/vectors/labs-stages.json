@@ -1,0 +1,252 @@
+{
+  "_comment": "CPD-6, CPD-10: the Labs stages the durable worker and a legacy turn's resolved header answer, as Node pins them in the org layer's rollout section (domain/labs-stages.ts workerStage) and as the worker's reader answers for the same stored settings document (app/services/featureflag/platform_settings.py read_platform_feature_flag over /services/platform/settings; ENABLE_MCP through app/agents/mcp/service.py is_mcp_enabled, which reads through the same path; ENABLE_NAMED_ENTITY_EXTRACTION through is_named_entity_extraction_enabled, outside HIGH_ACCURACY_MODE). `settings` is the stored document (null: none); `worker` the value of each stage. A stage with no stored value is its release default (PLATFORM_FEATURE_FLAGS, PLATFORM_FLAG_DEFAULTS).",
+  "stages": [
+    "ENABLE_SKILLS",
+    "ENABLE_USER_CONTEXT",
+    "ENABLE_KNOWLEDGE_PUBLICATIONS",
+    "ENABLE_ACTIONS",
+    "ENABLE_MCP",
+    "ENABLE_NAMED_ENTITY_EXTRACTION"
+  ],
+  "cases": [
+    {
+      "id": "LS-1",
+      "settings": {},
+      "worker": {
+        "ENABLE_SKILLS": true,
+        "ENABLE_USER_CONTEXT": true,
+        "ENABLE_KNOWLEDGE_PUBLICATIONS": false,
+        "ENABLE_ACTIONS": true,
+        "ENABLE_MCP": true,
+        "ENABLE_NAMED_ENTITY_EXTRACTION": false
+      },
+      "note": "nothing stored: each stage is its release default"
+    },
+    {
+      "id": "LS-2",
+      "settings": null,
+      "worker": {
+        "ENABLE_SKILLS": true,
+        "ENABLE_USER_CONTEXT": true,
+        "ENABLE_KNOWLEDGE_PUBLICATIONS": false,
+        "ENABLE_ACTIONS": true,
+        "ENABLE_MCP": true,
+        "ENABLE_NAMED_ENTITY_EXTRACTION": false
+      },
+      "note": "no settings document"
+    },
+    {
+      "id": "LS-3",
+      "settings": {
+        "featureFlags": null
+      },
+      "worker": {
+        "ENABLE_SKILLS": true,
+        "ENABLE_USER_CONTEXT": true,
+        "ENABLE_KNOWLEDGE_PUBLICATIONS": false,
+        "ENABLE_ACTIONS": true,
+        "ENABLE_MCP": true,
+        "ENABLE_NAMED_ENTITY_EXTRACTION": false
+      },
+      "note": "featureFlags is not an object"
+    },
+    {
+      "id": "LS-4",
+      "settings": {
+        "featureFlags": []
+      },
+      "worker": {
+        "ENABLE_SKILLS": true,
+        "ENABLE_USER_CONTEXT": true,
+        "ENABLE_KNOWLEDGE_PUBLICATIONS": false,
+        "ENABLE_ACTIONS": true,
+        "ENABLE_MCP": true,
+        "ENABLE_NAMED_ENTITY_EXTRACTION": false
+      },
+      "note": "featureFlags is a list"
+    },
+    {
+      "id": "LS-5",
+      "settings": {
+        "featureFlagsVersion": 2,
+        "featureFlags": {
+          "ENABLE_SKILLS": false,
+          "ENABLE_KNOWLEDGE_PUBLICATIONS": true
+        }
+      },
+      "worker": {
+        "ENABLE_SKILLS": false,
+        "ENABLE_USER_CONTEXT": true,
+        "ENABLE_KNOWLEDGE_PUBLICATIONS": true,
+        "ENABLE_ACTIONS": true,
+        "ENABLE_MCP": true,
+        "ENABLE_NAMED_ENTITY_EXTRACTION": false
+      }
+    },
+    {
+      "id": "LS-6",
+      "settings": {
+        "featureFlags": {
+          "enable_user_context": false,
+          "Enable_Followup_Suggestions": false
+        }
+      },
+      "worker": {
+        "ENABLE_SKILLS": true,
+        "ENABLE_USER_CONTEXT": false,
+        "ENABLE_KNOWLEDGE_PUBLICATIONS": false,
+        "ENABLE_ACTIONS": true,
+        "ENABLE_MCP": true,
+        "ENABLE_NAMED_ENTITY_EXTRACTION": false
+      },
+      "note": "keys are compared in upper case"
+    },
+    {
+      "id": "LS-7",
+      "settings": {
+        "featureFlags": {
+          "ENABLE_SKILLS": 0,
+          "ENABLE_USER_CONTEXT": "",
+          "ENABLE_KNOWLEDGE_PUBLICATIONS": 1
+        }
+      },
+      "worker": {
+        "ENABLE_SKILLS": false,
+        "ENABLE_USER_CONTEXT": false,
+        "ENABLE_KNOWLEDGE_PUBLICATIONS": true,
+        "ENABLE_ACTIONS": true,
+        "ENABLE_MCP": true,
+        "ENABLE_NAMED_ENTITY_EXTRACTION": false
+      },
+      "note": "a stored value counts by its truth"
+    },
+    {
+      "id": "LS-8",
+      "settings": {
+        "featureFlags": {
+          "ENABLE_SKILLS": "false",
+          "ENABLE_KNOWLEDGE_PUBLICATIONS": "no"
+        }
+      },
+      "worker": {
+        "ENABLE_SKILLS": true,
+        "ENABLE_USER_CONTEXT": true,
+        "ENABLE_KNOWLEDGE_PUBLICATIONS": true,
+        "ENABLE_ACTIONS": true,
+        "ENABLE_MCP": true,
+        "ENABLE_NAMED_ENTITY_EXTRACTION": false
+      },
+      "note": "a non-empty string is true, whatever it says"
+    },
+    {
+      "id": "LS-9",
+      "settings": {
+        "featureFlags": {
+          "ENABLE_SKILLS": [],
+          "ENABLE_USER_CONTEXT": {},
+          "ENABLE_KNOWLEDGE_PUBLICATIONS": [
+            0
+          ]
+        }
+      },
+      "worker": {
+        "ENABLE_SKILLS": false,
+        "ENABLE_USER_CONTEXT": false,
+        "ENABLE_KNOWLEDGE_PUBLICATIONS": true,
+        "ENABLE_ACTIONS": true,
+        "ENABLE_MCP": true,
+        "ENABLE_NAMED_ENTITY_EXTRACTION": false
+      },
+      "note": "an empty list or object is false"
+    },
+    {
+      "id": "LS-10",
+      "settings": {
+        "featureFlags": {
+          "ENABLE_SOFT_DELETE": true,
+          "AGENT_HARNESS_KILL_SWITCH": true
+        }
+      },
+      "worker": {
+        "ENABLE_SKILLS": true,
+        "ENABLE_USER_CONTEXT": true,
+        "ENABLE_KNOWLEDGE_PUBLICATIONS": false,
+        "ENABLE_ACTIONS": true,
+        "ENABLE_MCP": true,
+        "ENABLE_NAMED_ENTITY_EXTRACTION": false
+      },
+      "note": "other flags do not move these"
+    },
+    {
+      "id": "LS-11",
+      "settings": {
+        "featureFlagsVersion": 2,
+        "featureFlags": {
+          "ENABLE_ACTIONS": false,
+          "ENABLE_MCP": true
+        }
+      },
+      "worker": {
+        "ENABLE_SKILLS": true,
+        "ENABLE_USER_CONTEXT": true,
+        "ENABLE_KNOWLEDGE_PUBLICATIONS": false,
+        "ENABLE_ACTIONS": false,
+        "ENABLE_MCP": true,
+        "ENABLE_NAMED_ENTITY_EXTRACTION": false
+      },
+      "note": "actions switched off, MCP switched on"
+    },
+    {
+      "id": "LS-12",
+      "settings": {
+        "featureFlags": {
+          "enable_actions": 0,
+          "Enable_Mcp": "yes"
+        }
+      },
+      "worker": {
+        "ENABLE_SKILLS": true,
+        "ENABLE_USER_CONTEXT": true,
+        "ENABLE_KNOWLEDGE_PUBLICATIONS": false,
+        "ENABLE_ACTIONS": false,
+        "ENABLE_MCP": true,
+        "ENABLE_NAMED_ENTITY_EXTRACTION": false
+      },
+      "note": "actions and MCP follow the same key and truth rules"
+    },
+    {
+      "id": "LS-13",
+      "settings": {
+        "featureFlags": {
+          "ENABLE_MCP": false
+        }
+      },
+      "worker": {
+        "ENABLE_SKILLS": true,
+        "ENABLE_USER_CONTEXT": true,
+        "ENABLE_KNOWLEDGE_PUBLICATIONS": false,
+        "ENABLE_ACTIONS": true,
+        "ENABLE_MCP": false,
+        "ENABLE_NAMED_ENTITY_EXTRACTION": false
+      },
+      "note": "main #4430: MCP is on by default; an admin's saved opt-out holds"
+    },
+    {
+      "id": "LS-14",
+      "settings": {
+        "featureFlags": {
+          "ENABLE_NAMED_ENTITY_EXTRACTION": true
+        }
+      },
+      "worker": {
+        "ENABLE_SKILLS": true,
+        "ENABLE_USER_CONTEXT": true,
+        "ENABLE_KNOWLEDGE_PUBLICATIONS": false,
+        "ENABLE_ACTIONS": true,
+        "ENABLE_MCP": true,
+        "ENABLE_NAMED_ENTITY_EXTRACTION": true
+      },
+      "note": "named entities on in Labs (WP-117): the pin holds it, so a durable run offers the entity tools its admission saw"
+    }
+  ]
+}

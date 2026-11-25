@@ -19,6 +19,7 @@ import fakeredis.aioredis
 import pytest
 
 from app.config.constants.ai_models import DEFAULT_EMBEDDING_MODEL
+from app.config.constants.service import config_node_constants
 from app.exceptions.indexing_exceptions import VectorStoreError
 from app.models.entities import EntityRecord, EntityType, EntityTypeCategory
 from app.modules.transformers import entity_vectorstore as module
@@ -87,7 +88,7 @@ MODELS: dict[str, FakeEmbeddingModel] = {
 
 @pytest.fixture(autouse=True)
 def _models() -> Iterator[None]:
-    with embedding_models(MODELS), patch.object(module, "get_default_embedding_model", return_value=BGE):
+    with embedding_models(MODELS), patch("app.utils.llm.get_default_embedding_model", return_value=BGE):
         yield
 
 
@@ -543,12 +544,12 @@ class TestOneRecreateAtATime:
         db, config = FakeEntityVectorDB(BGE.dimension), config_service(SMALL_CONFIG)
         with recreate_lock_redis() as server:
             redis = fakeredis.aioredis.FakeRedis(server=server)
-            monkeypatch.setattr(db, "create_collection", AsyncMock(side_effect=RuntimeError("create failed")))
-            with pytest.raises(RuntimeError, match="create failed"):
+            # Scoped to the failing write alone: ``monkeypatch.undo()`` would also undo the suite's defaults.
+            with patch.object(db, "create_collection", AsyncMock(side_effect=RuntimeError("create failed"))), \
+                    pytest.raises(RuntimeError, match="create failed"):
                 await _store(db, config).upsert_entities_batch([_topic()], merge_membership=False)
             assert await redis.get(module._recreate_lock_key("entities")) is None
 
-            monkeypatch.undo()
             assert (await _store(db, config).upsert_entities_batch([_topic()], merge_membership=False)).written == 1
             assert await redis.get(module._recreate_lock_key("entities")) is None
         assert db.dimension == SMALL.dimension
@@ -600,7 +601,10 @@ class TestConfigReads:
 
         async def _counting_get_key(key: str, **kwargs: object) -> object:
             nonlocal reads
-            reads += 1
+            # The embedding config, the epoch pointer and the precision pin; the region pin (MG-15) is a document of
+            # its own and not counted.
+            if key == config_node_constants.AI_MODELS.value or key.startswith("/services/vectordb/embedding_"):
+                reads += 1
             return await real_get_key(key, **kwargs)
 
         with patch.object(config.store, "get_key", side_effect=_counting_get_key):

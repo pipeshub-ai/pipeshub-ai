@@ -176,7 +176,7 @@ export function ExpandArrow({
         border: 'none',
         padding: 0,
         cursor: 'pointer',
-        color: 'var(--slate-10)',
+        color: 'var(--slate-11)',
       }}
     >
       <MaterialIcon name={expanded ? 'expand_more' : 'chevron_right'} size={18} />
@@ -195,7 +195,7 @@ export function LoadMoreLink({ loading, onClick }: { loading: boolean; onClick: 
         background: 'none',
         border: 'none',
         cursor: loading ? 'default' : 'pointer',
-        color: 'var(--olive-9)',
+        color: 'var(--olive-11)',
         fontSize: 12,
         padding: 0,
         textAlign: 'left',
@@ -343,13 +343,13 @@ export function KnowledgeTreeChildren({
   if (status === 'error') {
     return (
       <Flex align="center" gap="2" style={note}>
-        <Text size="1" style={{ color: 'var(--red-9)' }}>
+        <Text size="1" style={{ color: 'var(--red-11)' }}>
           {t('chat.treeLoadFailed')}
         </Text>
         <button
           type="button"
           onClick={retry}
-          style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer', color: 'var(--olive-9)', fontSize: 12 }}
+          style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer', color: 'var(--olive-11)', fontSize: 12 }}
         >
           {t('chat.treeRetry')}
         </button>
@@ -359,7 +359,7 @@ export function KnowledgeTreeChildren({
   if (items.length === 0) {
     return (
       <Flex align="center" style={note}>
-        <Text size="1" style={{ color: 'var(--slate-9)' }}>
+        <Text size="1" style={{ color: 'var(--slate-11)' }}>
           {t('chat.treeEmpty')}
         </Text>
       </Flex>
@@ -472,7 +472,7 @@ export function KnowledgeTreeRow({
           {node.name}
         </Text>
         {node.subtitle ? (
-          <Text size="1" truncate title={node.subtitle} style={{ color: 'var(--slate-9)', minWidth: 0 }}>
+          <Text size="1" truncate title={node.subtitle} style={{ color: 'var(--slate-11)', minWidth: 0 }}>
             {node.subtitle}
           </Text>
         ) : null}
@@ -712,7 +712,7 @@ export function KnowledgeTreeGroup({
           {title}
         </Text>
         {meta ? (
-          <Text size="1" style={{ color: 'var(--slate-9)', flexShrink: 0 }}>
+          <Text size="1" style={{ color: 'var(--slate-11)', flexShrink: 0 }}>
             {meta}
           </Text>
         ) : null}
@@ -891,7 +891,7 @@ export function KnowledgeSearchResults({
   if (status === 'short') {
     return (
       <Flex align="center" style={note} role="status">
-        <Text size="1" style={{ color: 'var(--neutral-a10)' }}>
+        <Text size="1" style={{ color: 'var(--neutral-a11)' }}>
           {t('chat.nodeSearchTooShort', { defaultValue: 'Type at least 2 characters' })}
         </Text>
       </Flex>
@@ -903,7 +903,7 @@ export function KnowledgeSearchResults({
   if (status === 'error') {
     return (
       <Flex align="center" style={note} role="alert">
-        <Text size="1" style={{ color: 'var(--red-9)' }}>
+        <Text size="1" style={{ color: 'var(--red-11)' }}>
           {t('chat.treeSearchFailed')}
         </Text>
       </Flex>
@@ -912,7 +912,7 @@ export function KnowledgeSearchResults({
   if (shown.length === 0) {
     return emptyText ? (
       <Flex align="center" justify="center" style={{ padding: 'var(--space-4)' }}>
-        <Text size="2" style={{ color: 'var(--slate-9)' }}>
+        <Text size="2" style={{ color: 'var(--slate-11)' }}>
           {emptyText}
         </Text>
       </Flex>
@@ -922,7 +922,7 @@ export function KnowledgeSearchResults({
   return (
     <Flex direction="column" gap="1" style={{ width: '100%', minWidth: 0 }}>
       <Flex align="center" style={{ height: 28, paddingLeft: 'var(--space-1)' }}>
-        <Text size="1" style={{ color: 'var(--olive-9)' }}>
+        <Text size="1" style={{ color: 'var(--olive-11)' }}>
           {t('chat.treeSearchMatches')}
         </Text>
       </Flex>

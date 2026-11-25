@@ -7,6 +7,7 @@ from fastapi import HTTPException
 
 from app.config.constants.arangodb import Connectors
 from app.models.blocks import BlockType
+from tests.support.record_access import InMemoryRecordAccess
 
 
 # ---------------------------------------------------------------------------
@@ -382,40 +383,77 @@ async def test_get_artifact_record_ids_for_conversation_paginates_in_stable_orde
     assert first_kwargs["raise_on_error"] is True
 
 
-@pytest.mark.asyncio
-async def test_grant_artifact_permissions_grants_once_then_is_a_read_only_no_op():
-    from app.api.routes.chatbot import grant_artifact_permissions
+def _artifact_graph(edges) -> AsyncMock:
+    """`_permission_graph` whose records are the conversation's two artifacts and one KB file."""
+    from types import SimpleNamespace
 
-    edges = {("key-owner", "artifact-1"): "OWNER", ("key-owner", "artifact-2"): "OWNER"}
+    from app.models.entities import RecordType
+
     gp = _permission_graph(edges)
     gp.get_documents_paginated = AsyncMock(
         return_value=[{"_key": "artifact-1"}, {"_key": "artifact-2"}]
     )
-    body = {"conversationId": "conv-1", "userIds": ["viewer"]}
+    records = {
+        rid: SimpleNamespace(id=rid, org_id="org-1", record_type=RecordType.ARTIFACT)
+        for rid in ("artifact-1", "artifact-2")
+    }
+    records["kb-1"] = SimpleNamespace(id="kb-1", org_id="org-1", record_type=RecordType.FILE)
+    gp.get_typed_records_batch = AsyncMock(
+        side_effect=lambda ids: {rid: records[rid] for rid in ids if rid in records}
+    )
+    InMemoryRecordAccess().readable("viewer", "org-1", "kb-1").user("owner", "org-1").record(
+        "kb-secret", "org-1"
+    ).serve(gp)
+    return gp
+
+
+@pytest.mark.asyncio
+async def test_grant_artifact_permissions_grants_nothing_without_provenance_and_revokes_old_grants() -> None:
+    """AV-9: no artifact records its sources yet, so sharing grants no READER, and
+    a READER granted before the check existed is removed; OWNER is untouched."""
+    from app.api.routes.chatbot import grant_artifact_permissions
+
+    gp = _artifact_graph({
+        ("key-owner", "artifact-1"): "OWNER",
+        ("key-owner", "artifact-2"): "OWNER",
+        ("key-viewer", "artifact-1"): "READER",
+    })
+    body = {"conversationId": "conv-1", "userIds": ["viewer", "owner"]}
 
     out = await grant_artifact_permissions(_json_request(body), gp, _GRANTOR_CLAIMS)
 
-    assert out["granted"] == 2
-    assert gp.get_documents_paginated.await_args.kwargs["filters"] == {
-        "orgId": "org-1",
-        "conversationId": "conv-1",
-    }
-    assert sorted(_edge_pairs(gp.batch_create_edges.await_args)) == [
-        ("key-viewer", "artifact-1"),
-        ("key-viewer", "artifact-2"),
-    ]
+    assert out == {"granted": 0, "revoked": 1}
+    gp.batch_create_edges.assert_not_awaited()
+    assert _edge_pairs(gp.batch_delete_edges.await_args) == [("key-viewer", "artifact-1")]
 
-    # Shared viewer reopens the conversation: edges already exist, nothing is written.
-    gp_caught_up = _permission_graph({
-        **edges,
-        ("key-viewer", "artifact-1"): "READER",
-        ("key-viewer", "artifact-2"): "READER",
-    })
-    gp_caught_up.get_documents_paginated = gp.get_documents_paginated
-    out_again = await grant_artifact_permissions(_json_request(body), gp_caught_up, _GRANTOR_CLAIMS)
 
-    assert out_again["granted"] == 0
-    gp_caught_up.batch_create_edges.assert_not_awaited()
+@pytest.mark.asyncio
+async def test_grant_artifact_permissions_grants_what_provenance_allows_once() -> None:
+    """AV-10: READER only on the artifact whose sources the viewer can read; a reopen writes nothing."""
+    from app.api.routes import chatbot
+    from app.services.artifact_registry.viewer_access import ArtifactViewerAccess
+
+    class Provenance:
+        async def sources_of(self, org_id, artifact_ids) -> dict[str, frozenset[str] | None]:
+            known = {"artifact-1": frozenset({"kb-1"}), "artifact-2": frozenset({"kb-secret"})}
+            return {aid: known.get(aid) for aid in artifact_ids}
+
+    edges = {("key-owner", "artifact-1"): "OWNER", ("key-owner", "artifact-2"): "OWNER"}
+    gp = _artifact_graph(edges)
+    body = {"conversationId": "conv-1", "userIds": ["viewer"]}
+    with patch.object(chatbot, "artifact_viewer_access", lambda graph: ArtifactViewerAccess(graph, Provenance())):
+        out = await chatbot.grant_artifact_permissions(_json_request(body), gp, _GRANTOR_CLAIMS)
+
+        assert out == {"granted": 1, "revoked": 0}
+        assert _edge_pairs(gp.batch_create_edges.await_args) == [("key-viewer", "artifact-1")]
+        assert gp.batch_create_edges.await_args.args[0][0]["role"] == "READER"
+
+        caught_up = _artifact_graph({**edges, ("key-viewer", "artifact-1"): "READER"})
+        again = await chatbot.grant_artifact_permissions(_json_request(body), caught_up, _GRANTOR_CLAIMS)
+
+    assert again == {"granted": 0, "revoked": 0}
+    caught_up.batch_create_edges.assert_not_awaited()
+    caught_up.batch_delete_edges.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -428,7 +466,7 @@ async def test_grant_artifact_permissions_short_circuits_without_users_or_artifa
     out = await grant_artifact_permissions(
         _json_request({"conversationId": "conv-1", "userIds": []}), gp, _GRANTOR_CLAIMS
     )
-    assert out["granted"] == 0
+    assert out == {"granted": 0, "revoked": 0}
     gp.get_documents_paginated.assert_not_awaited()
 
     out_no_artifacts = await grant_artifact_permissions(
@@ -1505,7 +1543,6 @@ async def test_delete_chat_attachment_early_and_full():
 
 
 
-    gp.delete_nodes = AsyncMock()
 
 
 
@@ -1514,7 +1551,7 @@ async def test_delete_chat_attachment_early_and_full():
 
 
 
-    await delete_chat_attachment("rid", rr, gp)
+    await delete_chat_attachment("rid", rr, gp, MagicMock())
 
 
 
@@ -1523,7 +1560,7 @@ async def test_delete_chat_attachment_early_and_full():
 
     gp.delete_nodes_and_edges.assert_awaited()
 
-    gp.delete_nodes.assert_awaited()
+    assert gp.delete_nodes_and_edges.await_count == 2
 
 
 

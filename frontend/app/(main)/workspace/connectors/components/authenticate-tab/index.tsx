@@ -297,7 +297,7 @@ export function AuthenticateTab() {
             <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
               {t('workspace.connectors.authTab.redirectCallbackUrlLabel')}
             </Text>
-            <Text size="1" style={{ color: 'var(--gray-10)', lineHeight: 1.55 }}>
+            <Text size="1" style={{ color: 'var(--gray-11)', lineHeight: 1.55 }}>
               {t('workspace.connectors.authTab.redirectUrlDescription')}
             </Text>
           </Flex>
@@ -372,7 +372,7 @@ export function AuthenticateTab() {
       {selectedAuthType === 'OAUTH' && (
         <>
           <OAuthAppSelector />
-          <Text size="1" style={{ color: 'var(--gray-10)', lineHeight: 1.55 }}>
+          <Text size="1" style={{ color: 'var(--gray-11)', lineHeight: 1.55 }}>
             {isCreateMode
               ? isAdmin === true
                 ? t('workspace.connectors.authTab.oauthCreateHelperAdmin')
@@ -385,7 +385,7 @@ export function AuthenticateTab() {
       )}
 
       {selectedAuthType !== 'OAUTH' && callbackUrl && displayRedirect !== false && (
-        <Text size="1" style={{ color: 'var(--gray-10)', lineHeight: 1.55 }}>
+        <Text size="1" style={{ color: 'var(--gray-11)', lineHeight: 1.55 }}>
           {t('workspace.connectors.authTab.redirectUrlHelperNonOauth')}
         </Text>
       )}
@@ -415,7 +415,7 @@ export function AuthenticateTab() {
               name: formatAuthTypeName(selectedAuthType),
             })}
           </Text>
-          <Text size="1" style={{ color: 'var(--gray-10)', lineHeight: 1.55 }}>
+          <Text size="1" style={{ color: 'var(--gray-11)', lineHeight: 1.55 }}>
             {credentialsSubtext}
           </Text>
         </Flex>
@@ -542,7 +542,7 @@ export function AuthenticateTab() {
             <Text size="3" weight="medium" style={{ color: 'var(--gray-12)' }}>
               Authentication method
             </Text>
-            <Text size="1" style={{ color: 'var(--gray-10)', lineHeight: 1.55 }}>
+            <Text size="1" style={{ color: 'var(--gray-11)', lineHeight: 1.55 }}>
               Choose how this connector instance will authenticate to {panelConnector.name}.
             </Text>
           </Flex>

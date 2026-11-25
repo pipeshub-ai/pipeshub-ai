@@ -1,0 +1,171 @@
+{
+ "scenario": "u3_engine_run",
+ "answer": "The Q3 report is in out/q3-report.md.\n\n::artifact[q3-report.md](record:art-q3){text/markdown||art-q3|DOCUMENT|2}",
+ "parts": [
+  {
+   "type": "engine_task",
+   "runId": "run-u3-engine",
+   "taskId": "run-u3-engine",
+   "frames": [
+    {
+     "tool": "code_task",
+     "taskId": "run-u3-engine",
+     "kind": "started",
+     "text": "Write the Q3 report and file it",
+     "data": {}
+    },
+    {
+     "tool": "code_task",
+     "taskId": "run-u3-engine",
+     "kind": "command",
+     "text": "python report.py",
+     "data": {
+      "callId": "c1"
+     }
+    },
+    {
+     "tool": "code_task",
+     "taskId": "run-u3-engine",
+     "kind": "output",
+     "text": "wrote out/q3-report.md\n",
+     "data": {
+      "callId": "c1",
+      "stream": "stdout",
+      "truncated": false
+     }
+    },
+    {
+     "tool": "code_task",
+     "taskId": "run-u3-engine",
+     "kind": "command_done",
+     "text": "",
+     "data": {
+      "callId": "c1",
+      "exitCode": 0,
+      "status": "completed"
+     }
+    },
+    {
+     "tool": "code_task",
+     "taskId": "run-u3-engine",
+     "kind": "file",
+     "text": "out/q3-report.md",
+     "data": {
+      "change": "added"
+     }
+    },
+    {
+     "tool": "code_task",
+     "taskId": "run-u3-engine",
+     "kind": "version",
+     "text": "",
+     "data": {
+      "revision": 1,
+      "reason": "autosave",
+      "files": 1,
+      "changed": 1,
+      "omitted": 0
+     }
+    },
+    {
+     "tool": "code_task",
+     "taskId": "run-u3-engine",
+     "kind": "diff",
+     "text": "out/q3-report.md",
+     "data": {
+      "change": "added",
+      "sizeBytes": 64,
+      "mimeType": "text/markdown",
+      "diff": "@@ -0,0 +1,2 @@\n+# Q3\n+Revenue up 4%\n",
+      "truncated": false
+     }
+    },
+    {
+     "tool": "code_task",
+     "taskId": "run-u3-engine",
+     "kind": "artifact",
+     "text": "q3-report.md",
+     "data": {
+      "artifactId": "art-q3",
+      "version": 1,
+      "mimeType": "text/markdown",
+      "sizeBytes": 64,
+      "lifecycle": "draft"
+     }
+    },
+    {
+     "tool": "code_task",
+     "taskId": "run-u3-engine",
+     "kind": "approval",
+     "text": "jira_create_issue",
+     "data": {
+      "interactionId": "ix.approve.k0f1e2d3c4b5a69788796a5b4c3d2e1f00112233",
+      "toolName": "jira_create_issue",
+      "argsJson": "{\"summary\":\"Q3 report ready\"}"
+     }
+    },
+    {
+     "tool": "code_task",
+     "taskId": "run-u3-engine",
+     "kind": "tool",
+     "text": "jira_create_issue",
+     "data": {}
+    },
+    {
+     "tool": "code_task",
+     "taskId": "run-u3-engine",
+     "kind": "version",
+     "text": "",
+     "data": {
+      "revision": 2,
+      "reason": "turn_end",
+      "files": 1,
+      "changed": 1,
+      "omitted": 0
+     }
+    },
+    {
+     "tool": "code_task",
+     "taskId": "run-u3-engine",
+     "kind": "artifact",
+     "text": "q3-report.md",
+     "data": {
+      "artifactId": "art-q3",
+      "version": 2,
+      "mimeType": "text/markdown",
+      "sizeBytes": 64,
+      "lifecycle": "final"
+     }
+    },
+    {
+     "tool": "code_task",
+     "taskId": "run-u3-engine",
+     "kind": "finished",
+     "text": "The Q3 report is in out/q3-report.md.",
+     "data": {
+      "success": true
+     }
+    }
+   ]
+  },
+  {
+   "type": "approval",
+   "interactionId": "ix.approve.k0f1e2d3c4b5a69788796a5b4c3d2e1f00112233",
+   "toolCallId": "ix.approve.k0f1e2d3c4b5a69788796a5b4c3d2e1f00112233",
+   "toolName": "jira_create_issue",
+   "args": "{\"summary\":\"Q3 report ready\"}",
+   "status": "approved",
+   "seq": 16,
+   "afterTurns": 0,
+   "decidedBefore": 0,
+   "requestedAt": "2026-10-04T12:00:00.000Z",
+   "runId": "run-u3-engine"
+  },
+  {
+   "type": "text",
+   "content": "The Q3 report is in out/q3-report.md.\n\n::artifact[q3-report.md](record:art-q3){text/markdown||art-q3|DOCUMENT|2}",
+   "runId": "run-u3-engine",
+   "isFinal": true
+  }
+ ]
+}

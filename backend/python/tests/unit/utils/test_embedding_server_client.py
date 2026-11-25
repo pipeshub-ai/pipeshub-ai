@@ -4,6 +4,7 @@ import logging
 from collections.abc import Callable, Iterator
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
+import httpx
 import openai
 import pytest
 
@@ -28,6 +29,7 @@ from app.utils.embedding_server_client import (
     _embedding_server_timeout,
     get_embedding_server_embeddings,
 )
+from harness_core.deadline import CONNECT_TIMEOUT_S
 
 
 def _rate_limit_error(retry_after: str | None) -> openai.RateLimitError:
@@ -471,7 +473,7 @@ class TestEmbeddingServerEmbeddings:
             "base_url": _embedding_server_base_url(),
             "check_embedding_ctx_length": False,
             "max_retries": 0,
-            "timeout": EMBEDDING_SERVER_REQUEST_TIMEOUT_SECONDS,
+            "timeout": httpx.Timeout(EMBEDDING_SERVER_REQUEST_TIMEOUT_SECONDS, connect=CONNECT_TIMEOUT_S),
             "extra_body": None,
         }
         clients = {"http_client": ANY, "http_async_client": ANY}
@@ -502,7 +504,7 @@ class TestEmbeddingServerEmbeddings:
             "base_url": _embedding_server_base_url(),
             "check_embedding_ctx_length": False,
             "max_retries": 0,
-            "timeout": 120.0,
+            "timeout": httpx.Timeout(120.0, connect=CONNECT_TIMEOUT_S),
             "extra_body": {"trust_remote_code": True},
         }
         clients = {"http_client": ANY, "http_async_client": ANY}
