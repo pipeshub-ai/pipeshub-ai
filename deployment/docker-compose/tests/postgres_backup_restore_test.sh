@@ -208,14 +208,19 @@ for major in ${DRILL_MAJORS:-17 18}; do
   t0=$(now)
   scripts/pg-restore.sh "$target" --in-place > "$work/restore.log" 2>&1 || { echo "FAIL $major: in-place restore:"; tail -20 "$work/restore.log"; fail=1; }
   check "$major: the reachability check ran on a reachable target" "$(grep -c 'without checking\|cannot be reached' "$work/restore.log")" 0
+  # the container is the same as before, and its log holds every earlier start: a stop during an earlier start's role setup (as the
+  # refusal above can be) logs "role setup failed" there, so only this start's lines count
+  started="$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)"
   dc up -d --no-build postgres > /dev/null 2>&1
   if writable 600; then
     echo "info $major: in-place restore to T, server accepting writes: $(secs "$t0" "$(now)")s"
     check "$major: in-place restore to T: rows and checksums per schema equal those at T" "$(sql -c "$checksums")" "$at_t"
     healthy postgres || { echo "FAIL $major: postgres is not healthy after the in-place restore"; fail=1; }
     # role setup waits for the end of recovery instead of writing into the read-only server
-    check "$major: role setup logs no failure during recovery" \
-      "$($DOCKER logs "$proj-postgres-1" 2>&1 | grep -c 'read-only transaction\|role setup failed')" 0
+    $DOCKER logs --since "$started" "$proj-postgres-1" > "$work/pg-inplace.log" 2>&1
+    n="$(grep -c 'read-only transaction\|role setup failed' "$work/pg-inplace.log" || true)"
+    check "$major: role setup logs no failure during recovery" "$n" 0
+    [ "$n" = 0 ] || grep -B3 'read-only transaction\|role setup failed' "$work/pg-inplace.log" | sed "s/^/info $major: postgres log: /"
   fi
   dc up -d --no-build pg-backup > /dev/null 2>&1
   check "$major: archiving and backups go on after an in-place restore" \
