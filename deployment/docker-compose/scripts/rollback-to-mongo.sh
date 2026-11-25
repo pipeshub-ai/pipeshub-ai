@@ -37,7 +37,7 @@ trap 'rc=$?; { [ "$FLAG" = --online ] && [ "$DONE" = 0 ]; } || import_login_clos
 trap 'exit 130' INT
 trap 'exit 143' TERM
 import_login_open
-[ "$FLAG" = --online ] || "${DC[@]}" stop pipeshub-ai
+[ "$FLAG" = --online ] || "${DC[@]}" stop pipeshub-ai >&2
 rc=0
 docstore rollback ${FLAG:+"$FLAG"} || rc=$?
 if [ "$rc" != 0 ]; then

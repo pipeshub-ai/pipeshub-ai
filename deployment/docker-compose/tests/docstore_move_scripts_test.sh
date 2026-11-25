@@ -93,6 +93,7 @@ case "$args" in
     fi
     [[ -n "${STUB_FAIL:-}" && "$tool" == "$STUB_FAIL"* ]] && { echo "$step" >>"$CALLS"; echo "  argv: $*" >>"$ARGV"; exit "${STUB_RC:-1}"; } ;;
 esac
+case "$step" in up:*|stop:*|mongo-keyfile|rs-init) echo "#1 [internal] compose output for $step" ;; esac
 echo "$step" >>"$CALLS"
 echo "  argv: $*" >>"$ARGV"
 exit 0
@@ -298,6 +299,18 @@ check "--entrypoint is the image entrypoint, before the service" "$(cat "$ARGV")
 check_eq "and the stub saw the tool run" "$(steps)" "tool:status"
 
 echo
+echo "== stdout carries only the tool's reports; Compose's own output goes to stderr =="
+for path in --online --offline; do
+  new_install "PIPESHUB_COMPOSE_OVERRIDES=docker-compose.mongo-replica-set.yml:docker-compose.docstore-shadow.yml"
+  STDOUT="$(PATH="$BIN:$PATH" PIPESHUB_ENV_FILE="$ENVF" EXPECT_MIGRATE_PW="$MIGRATE_PW" EXPECT_NODE_PW="$NODE_PW" \
+            "$BASH_UNDER_TEST" "$MIGRATE" "$path" 2>/dev/null)"
+  check_eq "migrate $path: stdout is only the tool's JSON lines" "$(printf '%s\n' "$STDOUT" | grep -v '^{"ok": true}$' | grep -c .)" 0
+done
+new_install
+STDOUT="$(PATH="$BIN:$PATH" PIPESHUB_ENV_FILE="$ENVF" EXPECT_MIGRATE_PW="$MIGRATE_PW" EXPECT_NODE_PW="$NODE_PW" \
+          "$BASH_UNDER_TEST" "$ROLLBACK" 2>/dev/null)"
+check_eq "rollback (offline): stdout is only the tool's JSON lines" "$(printf '%s\n' "$STDOUT" | grep -v '^{"ok": true}$' | grep -c .)" 0
+
 echo "== online: Ctrl+C reaches the follower, and the script still says how to close the login =="
 new_install "PIPESHUB_COMPOSE_OVERRIDES=docker-compose.mongo-replica-set.yml:docker-compose.docstore-shadow.yml"
 SIGS="$INST/signals"

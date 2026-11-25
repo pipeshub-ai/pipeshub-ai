@@ -17,6 +17,7 @@
 # 1 refused or found problems, 2 error. Re-running after a failed or interrupted run is safe. scripts/docstore-migrate.sh says how
 # the install is found; no password is printed.
 set -euo pipefail
+# stdout carries only the tool's reports: Compose's own output (container states, BuildKit progress) goes to stderr
 
 usage() { sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'; }
 MODE=""
@@ -55,16 +56,16 @@ if [ "$MODE" = --online ]; then
   # The key file the replica set's members authenticate with, made in MongoDB's own volume: mode 0400 and owned by mongod, as
   # mongod requires; it is never printed.
   "${DC[@]}" run --rm --no-deps -T --entrypoint sh mongodb -c \
-    'umask 077; [ -s /data/db/rs.key ] || head -c 756 /dev/urandom | base64 -w0 > /data/db/rs.key; chown mongodb:mongodb /data/db/rs.key; chmod 400 /data/db/rs.key'
-  "${DC[@]}" up -d --wait mongodb
+    'umask 077; [ -s /data/db/rs.key ] || head -c 756 /dev/urandom | base64 -w0 > /data/db/rs.key; chown mongodb:mongodb /data/db/rs.key; chmod 400 /data/db/rs.key' >&2
+  "${DC[@]}" up -d --wait mongodb >&2
   # Signs in with the container's own root login, from its environment, so no password is on a command line.
   "${DC[@]}" exec -T mongodb mongosh --quiet mongodb://localhost:27017/admin --eval '
     if (process.env.MONGO_INITDB_ROOT_USERNAME) db.auth(process.env.MONGO_INITDB_ROOT_USERNAME, process.env.MONGO_INITDB_ROOT_PASSWORD);
     let ok = 0; try { ok = rs.status().ok } catch (e) {}
     if (!ok) rs.initiate({ _id: "rs0", members: [{ _id: 0, host: "mongodb:27017" }] });
     for (let i = 0; i < 60 && !db.hello().isWritablePrimary; i++) sleep(1000);
-    if (!db.hello().isWritablePrimary) { print("MongoDB did not become the primary of replica set rs0"); quit(1) }'
-  "${DC[@]}" up -d pipeshub-ai
+    if (!db.hello().isWritablePrimary) { print("MongoDB did not become the primary of replica set rs0"); quit(1) }' >&2
+  "${DC[@]}" up -d pipeshub-ai >&2
 fi
 
 KEEP_LOGIN=0
@@ -79,7 +80,7 @@ case "$MODE" in
   --reset)
     docstore reset --yes ;;
   --offline)
-    "${DC[@]}" stop pipeshub-ai
+    "${DC[@]}" stop pipeshub-ai >&2
     docstore preflight
     docstore migrate --offline
     echo "Copied and verified. Start the application on PostgreSQL:" >&2
