@@ -306,7 +306,7 @@ export class MongoOAuthTokenRepository implements OAuthTokenRepository {
             },
           }
         : { $unset: { knowledgeLimit: 1 } },
-      { new: true },
+      { returnDocument: 'after' },
     );
     return updated ? toPlain<AccessTokenDto>(updated) : null;
   }
@@ -644,7 +644,7 @@ export class MongoOAuthTokenRepository implements OAuthTokenRepository {
     const row = await OAuthAgentRegistration.findOneAndUpdate(
       { _id: oid(id), status: AgentRegistrationStatus.CLAIMED },
       { $set: { status: AgentRegistrationStatus.CONSUMED, purgeAt } },
-      { new: true },
+      { returnDocument: 'after' },
     );
     return row ? toPlain<AgentRegistrationDto>(row) : null;
   }

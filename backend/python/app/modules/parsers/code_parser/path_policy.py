@@ -28,7 +28,7 @@ class PathPolicy:
     exclude_globs: tuple[str, ...] = ()
 
     def keeps_file(self, path: str, name: str | None = None) -> bool:
-        if is_sensitive_path(name or path) or self._excluded(path):
+        if is_sensitive_path(path or name) or self._excluded(path):
             return False
         if self.linguist.forces_in(path):
             return True
