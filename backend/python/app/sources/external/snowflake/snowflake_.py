@@ -15,6 +15,7 @@ from app.sources.client.http.http_request import HTTPRequest
 from app.sources.client.http.http_response import HTTPResponse
 from app.sources.client.snowflake.snowflake import SnowflakeClient, SnowflakeResponse
 from app.sources.external.snowflake.identifiers import quote_literal, stage_reference
+from app.utils.http_client_events import aiohttp_tracing
 
 logger = logging.getLogger(__name__)
 
@@ -4311,7 +4312,7 @@ class SnowflakeDataSource:
         import aiohttp
         
         try:
-            async with aiohttp.ClientSession() as session:
+            async with aiohttp.ClientSession(**aiohttp_tracing("snowflake")) as session:
                 async with session.get(presigned_url) as response:
                     if response.status < 400:
                         content = await response.read()

@@ -150,3 +150,90 @@ class TestAiohttpWrappers:
             ("internal_api", "GET", "2xx", "aiohttp"), ("internal_api", "GET", "4xx", "aiohttp"),
         ]
         assert SECRET not in repr(requests) and "node.internal" not in repr(requests)
+
+
+class TestSessionsOpenedOutsideTheWrappers:
+    """A module that opens its own aiohttp session passes ``**aiohttp_tracing(...)`` to it."""
+
+    def test_nothing_is_added_to_a_session_when_nobody_listens(self) -> None:
+        assert http_client_events.aiohttp_tracing("storage") == {}
+
+    async def test_every_request_of_the_session_is_announced_without_its_url(self) -> None:
+        from aiohttp import web
+        from aiohttp.test_utils import TestServer
+
+        async def answer(request: web.Request) -> web.Response:
+            return web.Response(status=503 if request.method == "PUT" else 200)
+
+        application = web.Application()
+        application.router.add_route("*", "/{tail:.*}", answer)
+        async with TestServer(application) as server:
+            with captured_events("http.client.request.completed") as events:
+                async with aiohttp.ClientSession(**http_client_events.aiohttp_tracing("storage")) as session:
+                    async with session.get(server.make_url(f"/{SECRET}"), headers={"X-Key": SECRET}):
+                        pass
+                    async with session.put(server.make_url("/buffer"), data=SECRET.encode()):
+                        pass
+
+        requests = facts(events, "http.client.request.completed")
+        assert [(r["upstream"], r["method"], r["status_class"], r["library"]) for r in requests] == [
+            ("storage", "GET", "2xx", "aiohttp"), ("storage", "PUT", "5xx", "aiohttp"),
+        ]
+        assert all(set(r) == FIELDS and 0 <= r["duration_seconds"] < 5 for r in requests)
+        assert SECRET not in repr(requests)
+
+    async def test_a_request_that_got_no_answer_is_announced_as_an_error_and_still_raised(self) -> None:
+        from tests.support.free_port import free_port
+
+        with captured_events("http.client.request.completed") as events:
+            async with aiohttp.ClientSession(**http_client_events.aiohttp_tracing("storage")) as session:
+                with pytest.raises(aiohttp.ClientError):
+                    await session.get(f"http://127.0.0.1:{free_port()}/{SECRET}")
+
+        (request,) = facts(events, "http.client.request.completed")
+        assert (request["upstream"], request["method"], request["status_class"]) == ("storage", "GET", "error")
+        assert SECRET not in repr(request)
+
+    def test_the_modules_that_open_a_session_of_their_own_pass_it(self) -> None:
+        """Every ``aiohttp.ClientSession(`` in the application is announced, or is on the short list of those that are
+        announced another way or deliberately not."""
+        import re
+        from pathlib import Path
+
+        app = Path(http_client_events.__file__).resolve().parents[1]
+        elsewhere = {
+            "utils/api_call.py",  # make_api_call announces each attempt itself
+            "sources/client/graphql/client.py",  # GraphQLClient.execute announces itself
+            "services/graph_db/arango/arango_http_client.py",  # a store client: its calls are db.query.completed
+            "plugins/telemetry/pusher.py",  # the usage sender's own requests are not usage
+            "plugins/telemetry/v3/http.py",
+            # A sandboxed child process that imports nothing of the application: no listener could run in it.
+            "connectors/sources/localKB/push/materialiser_child.py",
+        }
+        opened = re.compile(r"^(?!\s*#).*\baiohttp\.ClientSession\((?!\*\*aiohttp_tracing\()", re.MULTILINE)
+        silent = set()
+        for path in app.rglob("*.py"):
+            text = path.read_text(encoding="utf-8")
+            for found in opened.finditer(text):
+                following = text[found.end():found.end() + 80].lstrip()
+                if not following.startswith("**aiohttp_tracing(") and "``" not in found.group(0):
+                    silent.add(path.relative_to(app).as_posix())
+        assert silent - elsewhere == set()
+
+
+class TestRequestsLibrary:
+    def test_a_token_request_is_announced_without_its_endpoint_or_secret(self) -> None:
+        from app.sources.external.utils.oauth import GenericOAuth2Client
+
+        client = GenericOAuth2Client.__new__(GenericOAuth2Client)
+        client.client_id, client.client_secret, client.token_endpoint = "id", SECRET, f"https://idp.example.invalid/{SECRET}"
+        client.auth_method = "body"
+        answer = MagicMock(status_code=200, json=MagicMock(return_value={"access_token": "t"}))
+        with captured_events("http.client.request.completed") as events, \
+                patch("app.sources.external.utils.oauth.requests.post", return_value=answer):
+            client.refresh_token(SECRET)
+
+        (request,) = facts(events, "http.client.request.completed")
+        assert (request["upstream"], request["method"], request["status_class"], request["library"]) == (
+            "oauth_token_endpoint", "POST", "2xx", "requests")
+        assert SECRET not in repr(request) and "example.invalid" not in repr(request)

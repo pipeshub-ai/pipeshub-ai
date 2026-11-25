@@ -173,6 +173,7 @@ from app.services.vector_db.strategy import DeleteContext, RecordContext
 from app.services.vector_db.strategy_resolver import reset_strategy_cache
 from app.utils.api_call import ResponseTooLargeError, make_api_call
 from app.utils.error_class import log_failure, quotes_content
+from app.utils.http_client_events import aiohttp_tracing
 from app.utils.indexing_timing import current_timeline, note, stage
 from app.utils.jwt import generate_jwt
 from app.utils.loop_bridge import run_on_loop
@@ -3632,7 +3633,7 @@ class RecordEventHandler(BaseEventService):
             delay = base_delay * (2**attempt)  # Exponential backoff
             file_buffer = bytearray()
             try:
-                async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with aiohttp.ClientSession(**aiohttp_tracing("storage"), timeout=timeout) as session:
                     try:
                         async with session.get(signed_url) as response:
                             if response.status != HttpStatusCode.SUCCESS.value:

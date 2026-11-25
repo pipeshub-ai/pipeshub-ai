@@ -27,6 +27,7 @@ from app.config.constants.service import (
     config_node_constants,
 )
 from app.services.messaging.config import Topic
+from app.utils.http_client_events import aiohttp_tracing
 from app.utils.jwt import mint_service_token
 from app.utils.request_context import inject_request_headers
 from app.utils.storage_move import post_move_tree
@@ -117,7 +118,7 @@ class StorageCleanupHelper:
 
     async def _get_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
-            self._session = aiohttp.ClientSession()
+            self._session = aiohttp.ClientSession(**aiohttp_tracing("storage"))
         return self._session
 
     async def close(self) -> None:

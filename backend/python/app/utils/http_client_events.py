@@ -5,15 +5,23 @@ Called by the HTTP client wrappers the application sends through: ``HTTPClient.e
 extraction and docling services), ``GraphQLClient.execute`` and ``make_api_call`` (a
 service's own API). The facts are a bounded name of who was called, the method, the
 class of the answer, how long it took and which HTTP library sent it. Never a URL, a
-header or a body. A request made with a client of its own, outside these wrappers, is
-not announced.
+header or a body.
+
+Code that opens an ``aiohttp`` session of its own, outside these wrappers, passes
+``**aiohttp_tracing("<who is called>")`` to the session it opens: every request of that
+session is then announced the same way, through aiohttp's own tracing interface. A
+request sent with ``requests`` is timed with ``request(...)`` where it is made.
 """
 
 from __future__ import annotations
 
 import time
+from typing import TYPE_CHECKING, Any
 
 from app import platform_events
+
+if TYPE_CHECKING:
+    from types import SimpleNamespace
 
 COMPLETED = "http.client.request.completed"
 NO_RESPONSE = "error"
@@ -71,3 +79,28 @@ class request:  # lower case: used as ``with request(...) as call``
 
     def __exit__(self, *_exc: object) -> None:
         completed(self.upstream, self.method, self.started, self.status, library=self.library)
+
+
+def aiohttp_tracing(upstream: str) -> dict[str, Any]:
+    """Keyword arguments for ``aiohttp.ClientSession(...)`` that announce every request of the session as sent to
+    ``upstream`` (a short name set by code). Empty when nobody listens as the session is opened (plug-ins subscribe
+    at start, before any session is opened), so the session is then built exactly as it was without this."""
+    if not platform_events.has_listeners(COMPLETED):
+        return {}
+    import aiohttp
+
+    async def started(_session: object, context: SimpleNamespace, params: aiohttp.TraceRequestStartParams) -> None:
+        context.started = time.perf_counter()
+        context.method = params.method
+
+    async def answered(_session: object, context: SimpleNamespace, params: aiohttp.TraceRequestEndParams) -> None:
+        completed(upstream, context.method, context.started, params.response.status, library="aiohttp")
+
+    async def failed(_session: object, context: SimpleNamespace, _params: aiohttp.TraceRequestExceptionParams) -> None:
+        completed(upstream, context.method, context.started, library="aiohttp")
+
+    trace = aiohttp.TraceConfig()
+    trace.on_request_start.append(started)
+    trace.on_request_end.append(answered)
+    trace.on_request_exception.append(failed)
+    return {"trace_configs": [trace]}

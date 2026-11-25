@@ -61,6 +61,7 @@ from app.services.vector_db.membership import (
     EMPTY_CONFIRM_DELAY_SECONDS,
     remaining_record_keys,
 )
+from app.utils.http_client_events import aiohttp_tracing
 from app.utils.jwt import mint_service_token
 from app.utils.request_context import inject_request_headers
 from app.utils.storage_move import post_move_tree
@@ -732,6 +733,7 @@ def get_shared_session() -> aiohttp.ClientSession:
             _shared_sessions.pop(stale_loop, None)
 
     session = aiohttp.ClientSession(
+        **aiohttp_tracing("storage"),
         connector=aiohttp.TCPConnector(
             limit=download_connection_limit(),
             # Well inside Node's keep-alive window; see

@@ -259,6 +259,7 @@ from app.utils.user_lookup import (
     get_user_or_503,
     raise_if_unavailable,
 )
+from app.utils.http_client_events import aiohttp_tracing
 from harness_core.knowledge.errors import PublicationAnswerOnly
 from harness_core.knowledge.publications import require_raw
 
@@ -7906,7 +7907,7 @@ async def _fetch_filter_options_from_api(
             headers["Authorization"] = f"Bearer {token_or_credentials['token']}"
 
     try:
-        async with aiohttp.ClientSession() as session:
+        async with aiohttp.ClientSession(**aiohttp_tracing("connector_source")) as session:
             async with session.get(endpoint, headers=headers) as response:
                 if response.status == HttpStatusCode.SUCCESS.value:
                     data = await response.json()

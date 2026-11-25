@@ -16,6 +16,7 @@ from app.config.providers.etcd.etcd_env import etcd_store_config
 from app.services.messaging.kafka.config.kafka_config import kafka_security_kwargs
 from app.services.redis.config import RedisConnectionConfig
 from app.services.redis.connection_provider_factory import get_redis_provider
+from app.utils.http_client_events import aiohttp_tracing
 
 if TYPE_CHECKING:
     from app.containers.container import BaseAppContainer
@@ -74,7 +75,7 @@ class Health:
                 )
 
                 # TODO: remove aiohttp dependency and use http client from sources module
-                async with aiohttp.ClientSession() as session:
+                async with aiohttp.ClientSession(**aiohttp_tracing("health_probe")) as session:
                     async with session.get(connector_url) as response:
                         if response.status == HttpStatusCode.SUCCESS.value:
                             logger.info("✅ Connector service health check passed")
@@ -227,7 +228,7 @@ class Health:
                 )
 
                 # TODO: remove aiohttp dependency and use http client from sources module
-                async with aiohttp.ClientSession() as session:
+                async with aiohttp.ClientSession(**aiohttp_tracing("health_probe")) as session:
                     async with session.get(
                         f"{etcd_url}/health", timeout=aiohttp.ClientTimeout(total=5.0), ssl=tls_context or True
                     ) as response:
