@@ -1177,7 +1177,8 @@ class BookStackConnector(BaseConnector):
     async def _write_pages_moved_out(self, groups: set[str]) -> set[str] | None:
         """Write again, under their current parent, the stored pages of ``groups`` that BookStack still has
         elsewhere, so the groups' removal does not take their records. Returns the groups holding a page whose
-        lookup or access failed, or None when the stored page records could not be read."""
+        lookup, access or write failed, or whose id is unreadable, or None when the stored page records could not
+        be read."""
         try:
             records = await self._stored_page_records(lambda r: r.external_record_group_id in groups)
         except Exception as e:
@@ -1189,6 +1190,8 @@ class BookStackConnector(BaseConnector):
         for record in records:
             raw = record.external_record_id.split("/", 1)[1]
             if not raw.isdigit():
+                # The page removal keeps a record it cannot look up; its group's removal must not take it first.
+                unsettled.add(record.external_record_group_id)
                 continue
             answered, page = await self._fetch_page(int(raw))
             if not answered:
@@ -1205,7 +1208,21 @@ class BookStackConnector(BaseConnector):
                 unsettled.add(record.external_record_group_id)
                 continue
             await self.data_entities_processor.on_new_records([prepared])
+            # The processor skips a record the schema rejects without raising, which leaves it under the old group.
+            if not await self._stored_under(record.external_record_id, prepared[0].external_record_group_id):
+                self.logger.warning(f"Page {raw} was not stored under its new parent; keeping {record.external_record_group_id}")
+                unsettled.add(record.external_record_group_id)
         return unsettled
+
+    async def _stored_under(self, external_record_id: str, group: str | None) -> bool:
+        """Whether the stored record of ``external_record_id`` is in ``group``; False when the lookup fails."""
+        try:
+            stored = await self.data_entities_processor.get_record_by_external_id(
+                self.connector_id, external_record_id, raise_on_error=True)
+        except Exception as e:
+            self.logger.warning(f"Could not look up {external_record_id}: {e}")
+            return False
+        return stored is not None and stored.external_record_group_id == group
 
     async def _group_still_stored(self, external_id: str) -> bool:
         """Whether a record group is still stored; True when the lookup fails, so nothing counts as removed."""

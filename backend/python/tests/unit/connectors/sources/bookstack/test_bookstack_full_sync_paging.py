@@ -233,7 +233,12 @@ def _store(connector: BookStackConnector, parents: dict[str, str | None],
     processor.on_new_record_groups = AsyncMock(side_effect=write_groups)
     processor.on_record_group_deleted = AsyncMock(side_effect=delete)
     processor.get_records_by_status = AsyncMock(side_effect=scan)
+    async def lookup(connector_id: str, external_id: str, **kwargs: object) -> object:
+        stored = records.get(external_id)
+        return MagicMock(external_record_group_id=stored[0]) if stored else None
+
     processor.on_new_records = AsyncMock(side_effect=write_pages)
+    processor.get_record_by_external_id = AsyncMock(side_effect=lookup)
     connector._page_record = AsyncMock(side_effect=lambda page: (MagicMock(
         external_record_id=f"page/{page['id']}", external_record_group_id=f"book/{page['book_id']}"), []))
 
@@ -287,6 +292,38 @@ async def test_a_page_moved_out_of_a_deleted_book_keeps_its_record(connector) ->
     connector.data_entities_processor.on_record_group_deleted.assert_awaited_once_with("book/9", "bs-paging")
     assert parents == {"book/2": None}
     assert records == {"page/5": ("book/2", "record-5")}
+
+
+@pytest.mark.asyncio
+async def test_a_deleted_book_is_kept_while_a_page_moved_out_of_it_was_not_stored(connector) -> None:
+    """Page 5 moved from deleted book 9 to book 2, but the processor skipped its write without raising (a schema
+    rejection): it is still under book 9, so the book is kept with it."""
+    parents = {"book/9": None, "book/2": None}
+    records = {"page/5": ("book/9", "record-5")}
+    _store(connector, parents, records)
+    connector.data_entities_processor.on_new_records = AsyncMock()
+    connector.data_source.list_pages = AsyncMock(return_value=_pages([{"id": 5, "name": "p", "book_id": 2}], 1))
+
+    assert await connector._remove_groups_not_listed({"book/2"}) is False
+    connector.data_entities_processor.on_new_records.assert_awaited_once()
+    connector.data_entities_processor.on_record_group_deleted.assert_not_awaited()
+    assert parents == {"book/9": None, "book/2": None}
+    assert records == {"page/5": ("book/9", "record-5")}
+
+
+@pytest.mark.asyncio
+async def test_a_deleted_chapter_and_its_book_are_kept_while_a_page_id_is_unreadable(connector) -> None:
+    """A stored page with a non-numeric id cannot be looked up, and the page removal keeps it: its chapter and
+    the chapter's book are kept with it, while page 6, gone from BookStack, does not hold unrelated book 8."""
+    parents = {"book/9": None, "chapter/13": "book/9", "book/8": None}
+    records = {"page/legacy": ("chapter/13", "record-legacy"), "page/6": ("book/8", "record-6")}
+    _store(connector, parents, records)
+    connector.data_source.list_pages = AsyncMock(return_value=_pages([], 0))
+
+    assert await connector._remove_groups_not_listed(set()) is False
+    connector.data_entities_processor.on_record_group_deleted.assert_awaited_once_with("book/8", "bs-paging")
+    assert parents == {"book/9": None, "chapter/13": "book/9"}
+    assert records == {"page/legacy": ("chapter/13", "record-legacy")}
 
 
 @pytest.mark.asyncio
