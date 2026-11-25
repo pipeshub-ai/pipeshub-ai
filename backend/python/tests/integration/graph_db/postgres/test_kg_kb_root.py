@@ -538,6 +538,44 @@ async def test_a_folder_with_a_child_kg_cannot_hold_or_of_another_connector_take
     assert tally.c[("kb_folder", "unknown")] == 1, dict(tally.c)
 
 
+async def test_a_file_node_gone_under_its_edge_counts_the_child_as_a_record_as_the_walk_does(pg_provider, pg_db, tally) -> None:
+    """c's file node goes while its isOfType edge stays: the walk reads no file for c (a record of b's in a's page counts), and kg holds c as typed as no file, not as a file
+    that says nothing (FILE_UNSAID, which no count takes)."""
+    org = new_org()
+    await _tree(pg_provider, pg_db, org)
+    await _admin("DELETE FROM graph.nodes WHERE org_id = $1 AND coll = 'files' AND id = 'f-c'", org)
+    await flip(pg_db, org)
+    tally.c.clear()
+    got = await _listing_of(pg_provider, org, "a")
+    with _switch("0"):
+        assert await _listing_of(pg_provider, org, "a") == got
+    assert next(f for f in got["folders"] if f["id"] == "b")["counts"]["records"] == 1 and tally.c[("kb_folder", "kg")] == 1, dict(tally.c)
+    with ctx(org):
+        assert await pg_db.run(lambda tx: tx.fetchval("SELECT file_kind FROM kg.records WHERE org_id = $1 AND coll = 3 AND id = 'c'", org)) is None
+
+
+async def test_the_fill_writes_a_records_columns_to_that_record_alone(pg_provider, pg_db) -> None:
+    """A record whose id is its knowledge base's (another collection's key): the fill of an older copy writes the record's columns to the record's row, never to the App's."""
+    from app.services.graph_db.postgres.kg import backfill as bf
+    org = new_org()
+    await _tree(pg_provider, pg_db, org)
+    await _add(pg_provider, org, random.Random(3), [KB], set())
+    await flip(pg_db, org)
+
+    async def cols(tx: Any) -> list:  # noqa: ANN401
+        return [tuple(r) for r in await tx.fetch("""SELECT coll, id, indexing_status, connector_name, doc_created_ms, doc_updated_ms, file_size, file_kind, kb_odd FROM kg.records
+            WHERE org_id = $1 AND id = $2 ORDER BY coll""", org, KB)]
+    with ctx(org):
+        derived = await pg_db.run(cols)
+    assert derived[0][2:] == (None, None, None, None, None, None, False) and derived[1][7] == 1        # the App's columns are empty, the record's are its own
+    await _admin("""UPDATE kg.records SET indexing_status = NULL, connector_name = NULL, doc_created_ms = NULL, doc_updated_ms = NULL, file_size = NULL, file_kind = NULL, kb_odd = false
+        WHERE org_id = $1""", org)
+    await _admin("UPDATE kg.projection_state SET code_epoch = $2 WHERE org_id = $1 AND app_sk <> 0", org, bf.LISTING_FROM)
+    assert await bf.fill_kb_listing(pg_db, org, KB) == ("enforce", None)
+    with ctx(org):
+        assert await pg_db.run(cols) == derived
+
+
 async def _listing_of(p, org: str, folder: str) -> dict:
     with ctx(org):
         return await p.get_folder_children(KB, folder, 0, 50)

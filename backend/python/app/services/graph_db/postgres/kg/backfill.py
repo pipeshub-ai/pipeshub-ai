@@ -351,7 +351,7 @@ async def fill_kb_listing(db: KernelDB, org: str, app_id: str, *, page: int = PA
         write = []
         for r in rows:
             k = ("records", r["id"])
-            if k in docs and (cols := kb_listing(docs[k], files.get(k, []), r["name"])) != {c: r[c] for c in KB_COLS}:
+            if r["kind"] == 3 and k in docs and (cols := kb_listing(docs[k], files.get(k, []), r["name"])) != {c: r[c] for c in KB_COLS}:
                 write.append((r["sk"], r["coll"], r["id"], r["kind"], *(cols[c] for c in KB_COLS)))
         await KgWriter(tx).kb_listing_set(write)
         if len(rows) == page:
