@@ -108,6 +108,9 @@ class LocalRepoConnector(FolderConnector):
             self._excluded[entry.rel] = why
         return ok, role
 
+    def _left_out(self, rel: str, why: str) -> None:
+        self._excluded[rel] = why
+
     def _head(self, entry: scan.Entry) -> bytes | None:
         try:
             fd = scan.safe_open(self.root, entry.rel, self.MAX_LINKS)

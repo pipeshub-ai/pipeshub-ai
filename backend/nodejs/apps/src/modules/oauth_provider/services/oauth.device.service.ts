@@ -82,12 +82,13 @@ export class OAuthDeviceService {
       )
     }
 
+    const allowedScopes = this.allowedScopesOf(app);
     const requested = scope
       ? this.scopeValidatorService.parseScopes(scope)
-      : app.allowedScopes
+      : allowedScopes
     const { granted } = this.scopeValidatorService.resolveGrantedScopes(
       requested,
-      app.allowedScopes,
+      allowedScopes,
     )
 
     const deviceCode = crypto.randomBytes(DEVICE_CODE_BYTES).toString('hex')
@@ -282,7 +283,7 @@ export class OAuthDeviceService {
       orgId,
       this.scopeValidatorService.getGrantedScopes(
         claimed.scopes,
-        app.allowedScopes,
+        this.allowedScopesOf(app),
       ),
       true,
       fullName,
@@ -300,6 +301,11 @@ export class OAuthDeviceService {
       refresh_token: tokens.refreshToken,
       scope: tokens.scope,
     }
+  }
+
+  /** The scopes a grant of this app may carry now, both when a code is created and when its tokens are minted (`capScopes`). */
+  allowedScopesOf(app: OAuthAppDto): string[] {
+    return this.firstPartyDeviceAppService.capScopes(app);
   }
 
   private async findPendingByUserCode(userCodeRaw: string) {

@@ -254,8 +254,11 @@ the auth middleware bound.
   anywhere below is handed over by the exception handler, which then calls the handler registered before it.
 - Ids: `bind_request_log_fields(request, toolset_id=…)` puts them on the route's lines and on this one. A router binds its path
   parameters with `dependencies=[Depends(path_log_fields(instance_id="toolset_id"))]` (an async dependency: a sync one runs in
-  a thread, and the route's own lines would lose the binding). A route marks the `HTTPException` it raises, not its cause, then
-  raises it `from` the cause. `add_request_log_fields(request, oauth_error=…)` adds a bounded event field to this line only.
+  a thread, and the route's own lines would lose the binding). A path value is bound only when it is shaped like an id (letters,
+  digits, `._:-`, at most 128), the rule Node applies to an id field it binds from a route's params; an email, a name with a
+  space or a path is not bound, and a single token such as `ada` still is. A route marks the
+  `HTTPException` it raises, not its cause, then raises it `from` the cause. `add_request_log_fields(request, oauth_error=…)` adds
+  a bounded event field to this line only.
 - `cause_type` is the type name of the innermost cause (`__cause__`, else `__context__` unless suppressed; a group counts as its
   first leaf), on a failure line whose exception has a chain (`error_class.has_chain`; omitted otherwise, since it would repeat
   `error_type`; `http.request.end` and `index.end` follow this rule); it is a type name only, so it stays with
