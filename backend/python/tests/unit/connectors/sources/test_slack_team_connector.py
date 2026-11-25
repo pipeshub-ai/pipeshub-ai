@@ -10181,6 +10181,11 @@ class TestFullSyncCoverage:
         assert c._read_this_run(record(100_500)) is True
         assert c._read_this_run(record(100_499)) is False
         assert c._read_this_run(record(None)) is False
+        # The boundary is compared in whole milliseconds, as the creation time is stored.
+        c._kept_channel_read_from = {"C1": "1700000000.123456"}
+        assert c._read_this_run(record(1_700_000_000_123)) is True
+        assert c._read_this_run(record(1_700_000_000_122)) is False
+        c._kept_channel_read_from = {"C1": "100.5"}
         # A burst whose first message is the oldest one read was rewritten from the read pages.
         burst = SimpleNamespace(external_record_group_id="C1", start_ts="100.5", source_created_at=None)
         assert c._read_this_run(burst) is True
