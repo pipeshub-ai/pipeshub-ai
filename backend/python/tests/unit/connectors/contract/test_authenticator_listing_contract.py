@@ -112,11 +112,13 @@ MASKED = "creator at corp dot com"
 @dataclass(frozen=True)
 class Person:
     """A listed user. ``email`` None or "": the source does not show it. ``also``: the other addresses
-    it shows for the same user."""
+    it shows for the same user. ``public``: the address is one the user chose to show, and the source does
+    not vouch for it."""
 
     email: str | None
     active: bool = True
     also: tuple[str, ...] = ()
+    public: bool = False
 
 
 @dataclass(frozen=True)
@@ -166,6 +168,7 @@ class Can(Enum):
     MORE_WITHOUT_CURSOR = "more promised without a cursor"
     INACTIVE = "lists inactive users"
     SECOND_ADDRESS = "shows a user's other addresses"
+    PUBLIC_ADDRESS = "shows an address the user chose"
     INCREMENTAL = "reads only changed users after the first sync"
 
 
@@ -850,11 +853,11 @@ class Linear(Source):
 
 
 class GitHubTeams(Source):
-    """Each page is one organization's member listing."""
+    """Each page is one organization's member listing. An organization's verified domains vouch for an address."""
 
     name = "github-teams"
     connector = GitHubTeamsConnector
-    can = frozenset({Can.SECOND_ADDRESS})
+    can = frozenset({Can.SECOND_ADDRESS, Can.PUBLIC_ADDRESS})
     failures = (
         SimpleNamespace(success=False, data=None, error="boom", status_code=500),
         SimpleNamespace(success=False, data=None, error="not found", status_code=404),
@@ -897,7 +900,7 @@ class GitHubTeams(Source):
 
     def _verified_emails(self, login: str) -> dict:
         person = self.people.get(login)
-        emails = [person.email, *person.also] if person and person.also else []
+        emails = [e for e in (person.email, *person.also) if e] if person and not person.public else []
         return {"organizationVerifiedDomainEmails": emails}
 
     def row(self, uid: int, person: Person) -> SimpleNamespace:
@@ -1009,6 +1012,24 @@ class TestACompleteListing:
     @_each_that(Can.SECOND_ADDRESS)
     async def test_shows_a_creator_listed_under_another_of_their_addresses(self, source: type[Source]) -> None:
         result = await read(source, page(OTHER, Person("public@elsewhere.com", also=(LISTED_CREATOR,))))
+
+        assert result.error is None
+        assert result.presence() is Presence.PRESENT
+
+
+    @_each_that(Can.PUBLIC_ADDRESS)
+    async def test_of_a_user_known_only_by_an_address_they_chose_to_show_proves_nobody_absent(
+        self, source: type[Source],
+    ) -> None:
+        result = await read(source, page(OTHER, more=True), page(Person(THIRD, public=True)))
+
+        assert result.error is None
+        assert result.presence() is Presence.UNKNOWN
+        assert (result.presence(OTHER), result.presence(THIRD)) == (Presence.PRESENT, Presence.PRESENT)
+
+    @_each_that(Can.PUBLIC_ADDRESS)
+    async def test_shows_a_creator_known_only_by_an_address_they_chose_to_show(self, source: type[Source]) -> None:
+        result = await read(source, page(OTHER, Person(LISTED_CREATOR, public=True)))
 
         assert result.error is None
         assert result.presence() is Presence.PRESENT

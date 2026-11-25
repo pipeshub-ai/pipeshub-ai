@@ -224,12 +224,15 @@ class UsersSync:
 
         await self._persist_app_users(dict_member, resolved_email)
         self._resolved_emails = dict(resolved_email)
-        # A principal whose email stays unknown is an unidentified row: it may be the authenticator,
-        # and GitHub has no lookup by a private email to settle it.
+        # Only a verified-domain email identifies a principal. A public profile email is one the user chose
+        # to show, and a cached one may have come from there: it shows who they are, but they may be the
+        # authenticator under another address, so they are an unidentified row too.
         for uid, member in dict_member.items():
-            shown = {resolved_email.get(uid), self._plain_email_attr(member), *self._verified_emails.get(uid, [])}
-            for email in shown - {None} or {None}:
+            verified = self._verified_emails.get(uid, [])
+            for email in {resolved_email.get(uid), self._plain_email_attr(member), *verified} - {None}:
                 self._listing.add_row(email, str(uid))
+            if not verified:
+                self._listing.add_row(None, str(uid))
         self._listing.finish()
         member_ids = getattr(self, "_member_ids", set())
         self._org_member_emails = {

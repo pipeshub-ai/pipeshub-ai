@@ -7,6 +7,7 @@ must never abort the sync. What the helper then does with the pair is covered in
 tests/unit/connectors/core/test_authenticated_as_linking.py.
 """
 
+import re
 import sys
 import time
 from collections.abc import Callable
@@ -2166,20 +2167,27 @@ class TestGitHubTeamsListing:
                 return member_pages[args[0]]
             if fn is conn.data_source.list_org_outside_collaborators:
                 return outside if outside is not None else SimpleNamespace(success=True, data=[])
+            if fn is conn.data_source.graphql_query:
+                listed = {m.login: m for p in member_pages.values() for m in getattr(p, "data", None) or []}
+                return SimpleNamespace(success=True, data={
+                    alias: {"organizationVerifiedDomainEmails": listed[login].verified}
+                    for alias, login in re.findall(r'(u\d+): user\(login: "([^"]+)"\)', args[0])
+                })
             return SimpleNamespace(success=True, data=[])
 
         conn.runtime.ds_call = ds_call
         users = UsersSync(conn)
         users._resolve_target_orgs = AsyncMock(return_value=(list(member_pages), True))
         users._resolve_cached_users = AsyncMock(return_value={})
-        users._resolve_via_verified_domains = AsyncMock(return_value={})
         users._enrich_members_with_full_profile = AsyncMock(return_value={})
         users._persist_app_users = AsyncMock()
         return users
 
     @staticmethod
-    def _member(uid: int, email: str | None = None) -> SimpleNamespace:
-        return SimpleNamespace(id=uid, login=f"u{uid}", type="User", email=email)
+    def _member(uid: int, verified: str | None = None, *, public: str | None = None) -> SimpleNamespace:
+        return SimpleNamespace(
+            id=uid, login=f"u{uid}", type="User", email=public, verified=[verified] if verified else [],
+        )
 
     @staticmethod
     def _ok(*members: object) -> SimpleNamespace:
@@ -2205,6 +2213,32 @@ class TestGitHubTeamsListing:
         await users.sync_users()
 
         assert self._presence(users) is Presence.PRESENT
+
+    async def test_a_member_known_only_by_a_public_email_leaves_the_creator_unknown_but_is_listed(self) -> None:
+        users = self._users({"o1": self._ok(self._member(1, "a@corp.com"), self._member(2, public="b@home.com"))})
+
+        await users.sync_users()
+
+        assert self._presence(users) is Presence.UNKNOWN
+        assert self._presence(users, "b@home.com") is Presence.PRESENT
+
+    async def test_a_member_known_only_by_a_cached_email_leaves_the_creator_unknown_but_is_listed(self) -> None:
+        users = self._users({"o1": self._ok(self._member(1, "a@corp.com"), self._member(2))})
+        users._resolve_cached_users = AsyncMock(return_value={2: "b@corp.com"})
+
+        await users.sync_users()
+
+        assert self._presence(users) is Presence.UNKNOWN
+        assert self._presence(users, "b@corp.com") is Presence.PRESENT
+
+    async def test_a_cached_member_is_identified_by_their_verified_email(self) -> None:
+        users = self._users({"o1": self._ok(self._member(1, "a@corp.com"))})
+        users._resolve_cached_users = AsyncMock(return_value={1: "a@home.com"})
+
+        await users.sync_users()
+
+        assert self._presence(users) is Presence.ABSENT
+        assert users.listing.emails == {"a@corp.com", "a@home.com"}
 
     async def test_a_member_whose_email_stays_unresolved_leaves_the_creator_unknown(self) -> None:
         users = self._users({"o1": self._ok(self._member(1, "a@corp.com"), self._member(2))})
