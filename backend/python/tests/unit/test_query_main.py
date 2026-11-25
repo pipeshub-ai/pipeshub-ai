@@ -490,8 +490,8 @@ class TestLifespan:
             async with lifespan(MagicMock()):
                 assert org_context.peek() is None
 
-        assert len(seen) == 1 and seen[0] is not None
-        assert (seen[0].kind, seen[0].source) == ("system", "system:query_startup")
+        assert all(ctx is not None and ctx.kind == "system" for ctx in seen)
+        assert [ctx.source for ctx in seen] == ["system:orphan_view_sweep", "system:query_startup"]
 
     async def test_startup_seed_task_starts_with_no_org_context(self) -> None:
         """With orgs present the seeding task is started after the list; it must not inherit the list's cross-org scope."""

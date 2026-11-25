@@ -76,7 +76,12 @@ from app.config.constants.neo4j import (
 )
 from app.config.constants.service import DefaultEndpoints, config_node_constants
 from app.config.constants.service_accounts import cypher_not_a_service_account
-from app.core.org_context import MissingOrgContext, spawn_detached, spawn_in_request
+from app.core.org_context import (
+    MissingOrgContext,
+    for_org,
+    spawn_detached,
+    spawn_in_request,
+)
 from app.edition import extra_node_collections
 from app.exceptions.graph_db_exceptions import (
     GraphLockUnavailableError,
@@ -24034,22 +24039,24 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             places, app_org = row["places"], row["appOrg"]
             ids = {node for place in places for node in (place["groupId"], place["recordId"])}
             for user in row["users"]:
-                admitted = (await self.check_access(user["key"], app_org, node_ids=ids)).node_ids
+                # The candidates come from every org; each App's access check runs in that App's org.
+                with for_org(app_org, job="kh_plan_keeper"):
+                    admitted = (await self.check_access(user["key"], app_org, node_ids=ids)).node_ids
                 place = next((p for p in places if p["groupId"] in admitted and p["recordId"] in admitted), None)
                 if place is not None:
                     samples.append({"userId": user["userId"], "orgId": app_org, "appId": row["appId"], **place})
                     break
         return samples
 
-    async def kh_scope_restamp_stale(self) -> list[dict[str, Any]]:
-        """Stamp every connector without a fresh stamp of this version, one by one, when the listing is enabled.
+    async def kh_scope_restamp_stale(self, org_id: str) -> list[dict[str, Any]]:
+        """Stamp every connector of the org without a fresh stamp of this version, one by one, when the listing is enabled.
         A connector whose sync is running is skipped by the stamp itself and picked up after it."""
         if not await self.kh_scope_enabled():
             return []
         # The listing-state migration may have set its flag a moment ago; do not wait out the one-minute re-check.
         self._kh_state_next_check = 0.0
         results = []
-        for connector_id in await kh_scope.stale_connectors(self.client):
+        for connector_id in await kh_scope.stale_connectors(self.client, org_id):
             try:
                 results.append(await self.kh_scope_stamp(connector_id))
             except Exception as e:

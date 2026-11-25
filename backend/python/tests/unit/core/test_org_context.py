@@ -218,3 +218,14 @@ def test_bootstrap_system_org_is_counted_apart_and_refused_in_enforce(monkeypatc
         monkeypatch.setenv("ORG_CONTEXT_MODE", "enforce")
         with pytest.raises(OrgMismatch):
             oc.ambient_org("org_b", site="s")
+
+
+def test_the_reported_caller_is_the_code_behind_the_timing_wrapper(monkeypatch) -> None:
+    """Every store call goes through db_metrics' wrapper; naming it would report the same caller for all of them."""
+    from app.core import org_context as oc
+
+    scope: dict = {"oc": oc}
+    wrapper = "/srv/app/telemetry/modules/db_metrics.py"
+    exec(compile("def wrapped():\n    return oc._caller(1)\n", wrapper, "exec"), scope)
+    exec(compile("def job():\n    return wrapped()\n", "/srv/app/jobs/some_job.py", "exec"), scope)
+    assert scope["job"]() == "jobs/some_job.py:2"

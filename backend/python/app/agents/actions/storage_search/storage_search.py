@@ -35,7 +35,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import orjson
 import regex
@@ -50,8 +50,12 @@ from app.connectors.core.registry.tool_builder import (
     ToolsetBuilder,
     ToolsetCategory,
 )
+from app.core.org_jobs import for_each_org
 from app.modules.agents.qna.chat_state import ChatState, remember_record_ids
 from app.utils.bounded_cache import SizeBoundedCache
+
+if TYPE_CHECKING:
+    from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
 logger = logging.getLogger(__name__)
 
@@ -2131,12 +2135,20 @@ def _populate_view(connector_dir: str, view_dir: str, files: list[tuple[str, str
             continue
 
 
-async def sweep_orphan_views_at_startup(config_service: Any) -> None:  # noqa: ANN401
-    """Best effort: a view left by a process that died holds hard links to records."""
-    try:
+async def sweep_orphan_views_at_startup(config_service: Any, graph_provider: IGraphDBProvider) -> None:  # noqa: ANN401
+    """Best effort: a view left by a process that died holds hard links to records.
+
+    The storage settings are read in each org's own context; one mount can serve many orgs and is swept once."""
+    roots: set[str] = set()
+
+    async def find_root(_org_id: str) -> None:
         storage_cfg = await config_service.get_config(config_node_constants.STORAGE.value)
         if is_local_storage(storage_cfg):
-            mount_root = _resolve_mount_root((storage_cfg or {}).get("mountName", "PipesHub"))
+            roots.add(_resolve_mount_root((storage_cfg or {}).get("mountName", "PipesHub")))
+
+    try:
+        await for_each_org(graph_provider, "orphan_view_sweep", find_root, logger)
+        for mount_root in roots:
             await asyncio.to_thread(sweep_orphan_views, mount_root)
     except Exception:
         logger.warning("[storage_pattern_match] could not sweep old record views", exc_info=True)
