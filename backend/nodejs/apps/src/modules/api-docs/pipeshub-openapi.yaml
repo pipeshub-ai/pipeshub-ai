@@ -6115,8 +6115,21 @@ components:
         - error
       properties:
         error:
-          type: string
-          description: Human-readable error message from the gateway or downstream stream service
+          description: |
+            Human-readable error message from the gateway or downstream stream service. A failed PDF
+            conversion answers an object with the message and why it failed instead.
+          oneOf:
+            - type: string
+            - type: object
+              required:
+                - reasonCode
+                - message
+              properties:
+                reasonCode:
+                  type: string
+                  enum: [converter_unavailable, conversion_failed, conversion_timed_out]
+                message:
+                  type: string
     AuthError:
       type: object
       description: |
@@ -48168,6 +48181,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/StreamRecordErrorResponse'
+        '422':
+          description: |
+            `convertTo=application/pdf` only: there is no PDF preview of this file, because it
+            is an EPUB (`error` is a message) or because it cannot be read for conversion
+            (`error.reasonCode` is `conversion_failed`). Retrying does not help; the original is still returned without `convertTo`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StreamRecordErrorResponse'
         '500':
           description: |
             Internal streaming failure, downstream conversion failure, or a 500 answered by the
@@ -48197,13 +48219,17 @@ paths:
 
             Also answered, without `Retry-After`, when the connector service gave no answer
             (unreachable or the connection dropped): `{"error": "Failed to retrieve record data"}`.
+
+            With `convertTo=application/pdf`, also answered when document conversion is not installed
+            on the server (`error.reasonCode` is `converter_unavailable`): retrying does not help.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/StreamRecordErrorResponse'
         '504':
           description: |
-            The connector service did not answer in time: `{"error": "Failed to retrieve record data"}`.
+            The connector service did not answer in time: `{"error": "Failed to retrieve record data"}`, or
+            the PDF conversion timed out (`error.reasonCode` is `conversion_timed_out`).
           content:
             application/json:
               schema:
