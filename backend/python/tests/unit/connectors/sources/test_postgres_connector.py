@@ -57,6 +57,7 @@ from app.sources.external.postgres.postgres_ import (
     TableColumnStatistics,
 )
 from tests.support.data_store import runs_in_its_transaction
+from tests.support.sql_full_sync import full_sync_losses
 
 # ===========================================================================
 # Helpers
@@ -5291,17 +5292,12 @@ class _FullSyncWorld:
     async def full_sync(self) -> tuple[set[str], set[str]]:
         """Run a full sync; see what its end would unlink (sync_runner._unlink_what_full_sync_missed).
 
-        Returns the stored records of tables at the source that the filter
-        keeps which the sync neither wrote nor noted kept, and either deleted
-        or (while it reports having read the whole database) leaves to be
-        unlinked; and the stored records gone from the source that are removed
-        or unlinked.
+        Returns ``full_sync_losses`` for this sync; its first result is limited to the tables the filter keeps.
         """
         before = {fqn: record.id for fqn, record in self.records.items()}
         self.seen = set()
         await self.sync()
         coverage = getattr(self.connector, "full_sync_coverage", FullSyncCoverage)()
-        unlinks = coverage.complete and coverage.lists_everything
         at_source: set[str] = set()
         kept: set[str] = set()  # at the source, of a table the filter keeps
         for fqn, columns in self.tables.items():
@@ -5309,13 +5305,7 @@ class _FullSyncWorld:
             at_source |= records
             if name_passes_filter(self.sync_filters, "tables", fqn):
                 kept |= records
-        unlinked = {
-            fqn for fqn, record_id in before.items()
-            if fqn in self.records and record_id not in self.seen and unlinks
-        }
-        deleted = {fqn for fqn in before if fqn not in self.records}
-        deleted_unseen = {fqn for fqn in deleted if before[fqn] not in self.seen}
-        return (unlinked & at_source) | (deleted_unseen & kept), (deleted | unlinked) - at_source
+        return full_sync_losses(before, self.records.keys(), self.seen, coverage, at_source, kept)
 
 
 class TestFullSyncUnlink:
@@ -5362,6 +5352,57 @@ class TestFullSyncUnlink:
         wrongly, gone = await world.full_sync()
         # The filter leaves out public.old, so removing it is expected.
         assert sorted(wrongly) == ["public.customers", "testdb.public.customers.id", "testdb.public.customers.name"]
+        assert sorted(gone) == []
+
+    @staticmethod
+    def _then(world: _FullSyncWorld, change) -> None:
+        sync = world.sync
+
+        async def changed_sync() -> None:
+            await sync()
+            change()
+
+        world.sync = changed_sync
+
+    def _deleting_after_sync(self, world: _FullSyncWorld, table: str) -> None:
+        def delete() -> None:
+            for key in [k for k in world.records if k in (table, f"testdb.{table}") or k.startswith(f"testdb.{table}.")]:
+                del world.records[key]
+
+        self._then(world, delete)
+
+    @pytest.mark.asyncio
+    async def test_the_check_counts_a_kept_table_deleted_after_the_sync_wrote_it(self) -> None:
+        world = await self._world()
+        self._deleting_after_sync(world, "public.orders")
+        wrongly, gone = await world.full_sync()
+        assert sorted(wrongly) == ["public.orders", "testdb.public.orders.id", "testdb.public.orders.total"]
+        assert sorted(gone) == ["public.old", "testdb.public.old.id", "testdb.public.old.note"]
+
+    @pytest.mark.asyncio
+    async def test_the_check_counts_a_kept_table_deleted_after_the_sync_noted_it(self) -> None:
+        world = await self._world()
+        world.unreadable = {"public.customers"}
+        noted = _noting(world)
+        self._deleting_after_sync(world, "public.customers")
+        wrongly, gone = await world.full_sync()
+        assert noted
+        assert sorted(wrongly) == ["public.customers", "testdb.public.customers.id", "testdb.public.customers.name"]
+        assert sorted(gone) == ["public.old", "testdb.public.old.id", "testdb.public.old.note"]
+
+    @pytest.mark.asyncio
+    async def test_the_check_does_not_count_the_unlink_of_a_table_the_filter_excludes(self) -> None:
+        world = await self._world()
+        world.tables["public.old"] = ["id", "note"]
+        old = {key: record for key, record in world.records.items() if "public.old" in key}
+        # Left stored instead of deleted, so the end of the sync unlinks it.
+        self._then(world, lambda: world.records.update(old))
+        world.sync_filters = FilterCollection(filters=[
+            Filter(key="tables", value=["public.old"], type="list", operator="not_in"),
+        ])
+        wrongly, gone = await world.full_sync()
+        assert world.connector.full_sync_coverage().complete
+        assert sorted(wrongly) == []
         assert sorted(gone) == []
 
     @pytest.mark.asyncio
