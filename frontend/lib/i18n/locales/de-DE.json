@@ -5712,6 +5712,8 @@
     "mcpServerNodeSubtitle": "Tools eines MCP-Servers",
     "webSearchLocked": "Die Websuche kann für diesen Agenten nicht geändert werden",
     "webSearchLoading": "Websuchanbieter werden geladen…",
+    "webSearchNotSetUp": "Die Websuche ist noch nicht eingerichtet. Bitten Sie Ihren Admin, unter Workspace → Websuche einen Anbieter auszuwählen.",
+    "webSearchLoadFailed": "Websuchanbieter konnten nicht geladen werden.",
     "webSearchConfigureFirst": "Konfigurieren Sie zuerst {{name}}",
     "webSearch": "Websuche",
     "attached": "Hinzugefügt",

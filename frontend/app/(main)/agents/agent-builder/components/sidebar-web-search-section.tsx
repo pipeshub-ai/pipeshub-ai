@@ -76,7 +76,7 @@ export function AgentBuilderWebSearchSection({
   } | null>(null);
 
   const isAdmin = useUserStore(selectIsAdmin);
-  const { configuredProviders, loading, reload } = config;
+  const { configuredProviders, loading, error, reload } = config;
 
   const providerMap = useMemo(() => {
     const map = new Map<string, ConfiguredWebSearchProvider>();
@@ -144,8 +144,10 @@ export function AgentBuilderWebSearchSection({
         onToggle={handleToggle}
         toolsetStatus={parentStatus}
       >
-        {loading ? (
+        {loading || shownProviders.length === 0 ? (
+          // A member sees only providers an admin has set up: say why the list is empty.
           <Text
+            as="p"
             size="1"
             style={{
               color: 'var(--slate-11)',
@@ -153,7 +155,11 @@ export function AgentBuilderWebSearchSection({
               fontStyle: 'italic',
             }}
           >
-            {t('agentBuilder.webSearchLoading')}
+            {loading
+              ? t('agentBuilder.webSearchLoading')
+              : error
+                ? t('agentBuilder.webSearchLoadFailed')
+                : t('agentBuilder.webSearchNotSetUp')}
           </Text>
         ) : (
           shownProviders.map((meta) => {
