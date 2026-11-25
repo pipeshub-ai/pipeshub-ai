@@ -623,7 +623,7 @@ jobs:
       # hourly cap. The token is read-only: PR code on the runner can read it.
       - name: Log in to Docker Hub (read-only)
         if: env.DOCKERHUB_PULL_LOGIN == 'true'
-        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_PULL_TOKEN }}
@@ -732,7 +732,7 @@ jobs:
 
       - name: Check out the BookStack simulator
         if: env.NEEDS_BOOKSTACK_SIM == 'true'
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: pipeshub-ai/connectors-simulator
           ref: ${{ env.CONNSIM_BOOKSTACK_REF }}
@@ -750,7 +750,7 @@ jobs:
 
       - name: Check out the Salesforce simulator
         if: env.NEEDS_SALESFORCE_SIM == 'true'
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: pipeshub-ai/connectors-simulator
           ref: ${{ env.CONNSIM_SALESFORCE_REF }}
@@ -768,7 +768,7 @@ jobs:
 
       - name: Check out the ServiceNow simulator
         if: env.NEEDS_SERVICENOW_SIM == 'true'
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: pipeshub-ai/connectors-simulator
           ref: ${{ env.CONNSIM_SERVICENOW_REF }}
@@ -786,7 +786,7 @@ jobs:
 
       - name: Check out the Zammad simulator
         if: env.NEEDS_ZAMMAD_SIM == 'true'
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: pipeshub-ai/connectors-simulator
           ref: ${{ env.CONNSIM_ZAMMAD_REF }}
@@ -833,11 +833,11 @@ jobs:
           python-version: ${{ github.event.inputs.python_version || '3.12' }}
 
       - name: Install uv
-        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+        uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
 
       # The examples suite runs the Go SDK starter; the runner image only caches Go.
       - name: Set up Go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version: '1.23'
           cache: false
@@ -1421,7 +1421,7 @@ jobs:
       - name: Send Slack report
         if: ${{ !cancelled() }}
         id: slack-message
-        uses: slackapi/slack-github-action@dcb1066f776dd043e64d0e8ba94ca15cc7e1875d # v4.0.0
+        uses: slackapi/slack-github-action@0bc3581177d9a0f8d555e07689384b376528e8fa # v4.1.0
         with:
           method: chat.postMessage
           token: ${{ secrets.SLACK_BOT_TOKEN }}
@@ -1690,7 +1690,7 @@ jobs:
           python-version: '3.12'
 
       - name: Install uv
-        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+        uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
 
       - name: Set up Python and install dependencies
         working-directory: integration-tests
