@@ -7546,7 +7546,7 @@ async def handle_oauth_callback(
                 status_code=HttpStatusCode.FORBIDDEN.value,
                 detail="Only the creator or an administrator can handle OAuth callback for this connector"
             )
-        # Bound only after the checks above (stricter than the toolset callback): a state naming a connector the
+        # Bound only after the checks above (as the toolset callback does): a state naming a connector the
         # caller may not use never puts its id on a line.
         bind_request_log_fields(request, connector_id=connector_id, connector_type=connector_type)
         authorized_connector_id = connector_id

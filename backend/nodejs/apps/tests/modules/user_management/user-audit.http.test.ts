@@ -223,7 +223,8 @@ describe('user and group audit lines (HTTP)', function () {
       listByEmails: async (o: string, es: string[]) => users.filter((u) => u.orgId === o && es.includes(u.email)).map((u) => ({ ...u })),
       // Like both stores: restores the removed rows as members, then returns every live row at the addresses.
       restoreByEmails: async (o: string, es: string[]) => { for (const u of users) if (u.orgId === o && es.includes(u.email) && u.isDeleted) Object.assign(u, { isDeleted: false, role: 'member' }); return users.filter((u) => u.orgId === o && es.includes(u.email) && !u.isDeleted).map((u) => ({ ...u })); },
-      promoteToAdmin: async (_o: string, ids: string[]) => { for (const u of users) if (ids.includes(u._id)) u.role = 'admin'; },
+      // Like both stores: live accounts only.
+      promoteToAdmin: async (_o: string, ids: string[]) => { for (const u of users) if (ids.includes(u._id) && !u.isDeleted) u.role = 'admin'; },
       countActiveAdmins: async (o: string) => users.filter((u) => u.orgId === o && !u.isDeleted && u.role === 'admin').length,
       setRole: async (o: string, id: string, role: string) => { const u = live(o, id); if (u) u.role = role; },
       serviceAccountIdsAmong: async () => [],
