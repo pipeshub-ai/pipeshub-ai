@@ -23,7 +23,11 @@ from app.services.sandbox_alerts.cooldown import (
     emailed_at_ms,
 )
 from app.services.sandbox_alerts.evaluator import AlertDecision, evaluate
-from app.services.sandbox_alerts.event import EXPIRES_AFTER, build_alert_event, build_resolved_event
+from app.services.sandbox_alerts.event import (
+    EXPIRES_AFTER,
+    build_alert_event,
+    build_resolved_event,
+)
 from app.services.sandbox_alerts.leader import AlertLeader
 from app.services.sandbox_alerts.window import read_window
 
