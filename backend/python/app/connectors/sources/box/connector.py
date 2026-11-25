@@ -877,6 +877,8 @@ class BoxConnector(BaseConnector):
                 # A returning account's individual shares are written only by the share-history replay (an access-only
                 # invite is not in the grantee's All Files), and the replay moved past them: read it again from the start.
                 # shortcut: Box keeps that history for a limited time; a share older than it comes back only by a walk.
+                # shortcut: the replay is for every grantee, not only the returning ones; at most max_pages a run, so a
+                # long history takes several full syncs. Narrow it only with a way to tell replayed events from new ones.
                 await self.box_cursor_sync_point.update_sync_point(self.SHARE_HISTORY_KEY, {"position": "0"})
             if full_sync or gone:
                 # Saved before the withdrawal, so a failure in between cannot lose the account's later full sync.

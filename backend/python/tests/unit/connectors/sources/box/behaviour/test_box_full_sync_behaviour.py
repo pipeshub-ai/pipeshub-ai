@@ -918,6 +918,8 @@ class TestReplayedShareLookups:
         await connector.run_sync()
 
         assert BOB_EMAIL not in db.access("file-1")
+        # A position is saved only once the replay that was held back has been applied in full.
+        assert checkpoints.cursor() is not None
 
     async def test_a_removal_whose_collaboration_could_not_be_looked_up_leaves_no_cursor(self, box_api, db, checkpoints) -> None:
         enterprise(box_api, db)
@@ -957,6 +959,8 @@ class TestReplayedShareLookups:
         await connector.run_sync()
 
         assert BOB_EMAIL not in db.access("file-1")
+        # A position is saved only once the replay that was held back has been applied in full.
+        assert checkpoints.cursor() is not None
 
 
 def history_calls(api: FakeBoxApi) -> list[str]:
