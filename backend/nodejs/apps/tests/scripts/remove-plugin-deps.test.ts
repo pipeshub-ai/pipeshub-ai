@@ -39,7 +39,7 @@ describe('scripts/remove-plugin-deps.mjs', () => {
     root = mkdtempSync(join(tmpdir(), 'pipeshub-plugin-deps-'));
     mkdirSync(file('src'), { recursive: true });
     writeFileSync(
-      file('src/plugins.dependencies.json'),
+      file('plugins.dependencies.json'),
       JSON.stringify({
         pluginDependencies: {
           meter: ['meter-lib', 'shared-lib'],
@@ -186,7 +186,7 @@ describe('scripts/remove-plugin-deps.mjs', () => {
     rmSync(file('package-lock.json'));
     expect(run().removedFromLock).to.deep.equal([]);
     writeFileSync(
-      file('src/plugins.dependencies.json'),
+      file('plugins.dependencies.json'),
       JSON.stringify({ pluginDependencies: { meter: 'meter-lib' } }),
     );
     expect(() => run()).to.throw(/list of package names/);
@@ -194,7 +194,7 @@ describe('scripts/remove-plugin-deps.mjs', () => {
 
   describe('the checked-in map', () => {
     const map: Record<string, string[]> = JSON.parse(
-      readFileSync(join(APP, 'src', 'plugins.dependencies.json'), 'utf8'),
+      readFileSync(join(APP, 'plugins.dependencies.json'), 'utf8'),
     ).pluginDependencies;
     const declared = JSON.parse(readFileSync(join(APP, 'package.json'), 'utf8'));
 

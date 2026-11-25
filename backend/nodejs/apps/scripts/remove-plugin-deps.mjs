@@ -9,7 +9,9 @@
  *   node scripts/remove-plugin-deps.mjs --dry-run       print what would change, write nothing
  *
  * Which packages belong to which plug-in is data: `pluginDependencies` in
- * src/plugins.dependencies.json, plug-in name -> package names. A plug-in is
+ * plugins.dependencies.json next to src (where plugins.profiles.json also
+ * lives, so a tree built without a plug-in does not name it), plug-in name ->
+ * package names. A plug-in is
  * named as in scripts/generate-plugins.mjs: a bare name is src/plugins/<name>,
  * a path (it contains a "/") is relative to src. A package that a plug-in still
  * in the tree also lists is kept.
@@ -19,7 +21,7 @@
  * before `npm ci`.
  *
  * Options: --src <dir> (default: ../src next to this script), --map <file>
- * (default: plugins.dependencies.json in src), --package <file> (default:
+ * (default: plugins.dependencies.json next to src), --package <file> (default:
  * package.json next to src), --lock <file> (default: package-lock.json next to
  * the package file; skipped when absent).
  *
@@ -67,7 +69,7 @@ for (let i = 0; i < args.length; i++) {
       .filter((n) => n !== '');
   else fail(`unknown option ${arg}`);
 }
-mapFile ??= join(srcDir, 'plugins.dependencies.json');
+mapFile ??= join(srcDir, '..', 'plugins.dependencies.json');
 packageFile ??= join(srcDir, '..', 'package.json');
 lockFile ??= join(dirname(packageFile), 'package-lock.json');
 

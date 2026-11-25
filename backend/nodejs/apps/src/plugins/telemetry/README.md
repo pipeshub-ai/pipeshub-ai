@@ -53,7 +53,7 @@ Nothing outside this directory imports the plug-in or `prom-client`;
 it builds and type-checks the tree with this directory removed.
 
 `prom-client` is in `package.json` only for this plug-in, and
-`src/plugins.dependencies.json` says so as data (`pluginDependencies`: plug-in
+`plugins.dependencies.json` (next to `src`) says so as data (`pluginDependencies`: plug-in
 name to package names). An image that must not contain usage collection removes
 both, in `backend/nodejs/apps`, before it installs and compiles:
 
@@ -69,7 +69,7 @@ without the network; from the lockfile it also drops the packages only
 `--remove telemetry` it does the same while the directory is still there, which
 is what a Dockerfile needs: there the two `package*.json` files are copied
 before `npm ci` and `src` after it. That stage does not copy `scripts/` or
-`src/plugins.dependencies.json` today; a build that does this copies them as
+`plugins.dependencies.json` today; a build that does this copies them as
 well.
 
 A build that selects plug-ins from a `plugins.profiles.json` (see the header of
