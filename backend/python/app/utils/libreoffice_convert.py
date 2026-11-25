@@ -75,6 +75,8 @@ _PROBE_SAMPLES: dict[str, tuple[str, str]] = {
     "doc": ("fodt", _FODT),
     "xls": ("fods", _FODS),
     "ppt": ("fodp", _FODP),
+    "docx": ("fodt", _FODT),
+    "pptx": ("fodp", _FODP),
     "odt": ("fodt", _FODT),
     "rtf": ("fodt", _FODT),
 }
@@ -245,6 +247,17 @@ async def _run_libreoffice(binary: bytes, input_ext: str, output_ext: str, stem:
         )
 
 
+def source_not_loaded(stderr: str) -> bool:
+    """Whether LibreOffice said it could not load its input file."""
+    return _SOURCE_NOT_LOADED in stderr
+
+
+async def can_convert_known_good_file(input_ext: str, output_ext: str) -> bool:
+    """Whether a failure to load is about the file: True only when LibreOffice on
+    this host is seen to convert a known-good *input_ext* file."""
+    return await _libreoffice_can_convert(input_ext, output_ext) is True
+
+
 async def _libreoffice_can_convert(input_ext: str, output_ext: str) -> bool | None:
     """Whether LibreOffice on this host converts a known-good *input_ext* file
     to *output_ext*, or None when there is no sample to check that format with.
@@ -317,7 +330,7 @@ async def convert_with_libreoffice(binary: bytes, input_ext: str, output_ext: st
 
     # Anything other than LibreOffice's own load-failure message (a profile or
     # disk problem, a crash, a failed export) is about the host, not the file.
-    load_failed = _SOURCE_NOT_LOADED in run.stderr
+    load_failed = source_not_loaded(run.stderr)
     if not load_failed and (returncode != 0 or run.stderr.strip()):
         raise DocumentProcessingError(message, details=details)
 

@@ -437,7 +437,8 @@ class TestConvertBufferToPdfStream:
             )
 
         input_path = mock_convert.await_args.args[0]
-        assert input_path.endswith("Quarterly review.pptx")
+        assert input_path.endswith(".pptx")
+        assert "Quarterly" not in input_path
 
     @pytest.mark.asyncio
     async def test_streaming_response_buffer(self):

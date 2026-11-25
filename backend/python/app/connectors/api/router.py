@@ -238,7 +238,7 @@ from app.utils.oauth_errors import authorization_error_class, authorization_erro
 from app.utils.oauth_redirect import resolve_oauth_base_url
 from app.utils.retry import retry_async
 from app.utils.streaming import create_stream_record_response, start_streaming_response
-from app.utils.pdf_stream_conversion import libreoffice_to_pdf
+from app.utils.pdf_stream_conversion import libreoffice_to_pdf, safe_conversion_input
 from app.modules.indexing import refresh_intent
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_lookup import (
@@ -1965,16 +1965,13 @@ async def convert_buffer_to_pdf_stream(
     """
     _refuse_epub_pdf_preview(file_extension)
     with tempfile.TemporaryDirectory() as temp_dir:
-        safe_record_name = Path(record_name).name if record_name else "file"
+        # The record's name never reaches the filesystem: one near the 255-byte limit
+        # leaves LibreOffice no room to write its output.
+        name_extension = Path(record_name).suffix.lower().lstrip(".") if record_name else ""
         normalized_extension = (file_extension or "").lower().lstrip(".")
-        if (
-            normalized_extension in _PDF_CONVERTIBLE_EXTENSIONS
-            and Path(safe_record_name).suffix.lower().lstrip(".")
-            not in _PDF_CONVERTIBLE_EXTENSIONS
-        ):
-            safe_record_name = f"{safe_record_name}.{normalized_extension}"
-        temp_file_name = safe_record_name
-        temp_file_path = os.path.join(temp_dir, temp_file_name)
+        if name_extension not in _PDF_CONVERTIBLE_EXTENSIONS and normalized_extension:
+            name_extension = normalized_extension
+        temp_file_path = safe_conversion_input(temp_dir, name_extension)
 
         # Write buffer content to temporary file
         with open(temp_file_path, "wb") as f:

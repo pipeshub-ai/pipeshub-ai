@@ -44282,6 +44282,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/StreamRecordErrorResponse'
+        '422':
+          description: |
+            `convertTo=application/pdf` only: there is no PDF preview of this file, because it
+            is an EPUB or because it cannot be read for conversion. Asking again gives the same
+            answer; the original is still returned without `convertTo`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StreamRecordErrorResponse'
         '500':
           description: |
             Internal streaming failure, downstream conversion failure, or a 500 answered by the
