@@ -52,24 +52,25 @@ Nothing outside this directory imports the plug-in or `prom-client`;
 `tests/architecture/telemetry-is-a-plugin.test.ts` fails if that changes, and
 it builds and type-checks the tree with this directory removed.
 
-`prom-client` is in `package.json` only for this plug-in. An image that must
-not contain usage collection removes both, in `backend/nodejs/apps`, before it
-installs and compiles:
+`prom-client` is in `package.json` only for this plug-in, and
+`src/plugins.dependencies.json` says so as data (`pluginDependencies`: plug-in
+name to package names). An image that must not contain usage collection removes
+both, in `backend/nodejs/apps`, before it installs and compiles:
 
     rm -rf src/plugins/telemetry
     node scripts/generate-plugins.mjs          # rewrites src/plugins.generated.ts without it
-    npm uninstall --package-lock-only --ignore-scripts prom-client
+    node scripts/remove-plugin-deps.mjs        # drops the packages of plug-ins that are gone
     npm ci                                     # as the Dockerfile does; prom-client is no longer installed
     npm run build
 
-`npm uninstall --package-lock-only` edits `package.json` and
-`package-lock.json` without touching the network; it also drops the packages
-only `prom-client` needed (`tdigest`, `bintrees`, `@opentelemetry/api`). In the
-repository's `Dockerfile` the two `package*.json` files are copied before
-`npm ci` and `src` after it, so the `npm uninstall` line goes before `npm ci`
-and the first two lines after `COPY backend/nodejs/apps/src`. That stage does not copy
-`scripts/` today; a build that does this copies `scripts/generate-plugins.mjs`
-as well.
+`scripts/remove-plugin-deps.mjs` edits `package.json` and `package-lock.json`
+without the network; from the lockfile it also drops the packages only
+`prom-client` needed (`tdigest`, `bintrees`, `@opentelemetry/api`). With
+`--remove telemetry` it does the same while the directory is still there, which
+is what a Dockerfile needs: there the two `package*.json` files are copied
+before `npm ci` and `src` after it. That stage does not copy `scripts/` or
+`src/plugins.dependencies.json` today; a build that does this copies them as
+well.
 
 A build that selects plug-ins from a `plugins.profiles.json` (see the header of
 `scripts/generate-plugins.mjs`) declares the same thing as data, under

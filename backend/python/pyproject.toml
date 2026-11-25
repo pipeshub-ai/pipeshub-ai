@@ -258,7 +258,9 @@ dependencies = [
     "httpx==0.28.1",
     # mcp 2.x's HTTP library (a renamed httpx fork); MCP traffic goes through it.
     "httpx2==2.16.0",
-    "prometheus-client==0.26.0",
+    # What only a plug-in needs, as an extra of this project (see [project.optional-dependencies]): the default
+    # install includes it; a build without the plug-in drops this line (scripts/write_plugins_manifest.py --pyproject).
+    "ai-service[telemetry]",
     "PyGithub==2.8.1",
     "python-gitlab==8.6.0",
     "google-api-python-client==2.201.0",
@@ -464,6 +466,8 @@ parsing-service = "app.parsing_main:app"
 extraction-service = "app.extraction_main:app"
 
 [project.optional-dependencies]
+# One extra per plug-in, named after the last part of its module path (app.plugins.telemetry -> telemetry).
+telemetry = ["prometheus-client==0.26.0"]
 dev = ["ruff==0.17.2", "pyright", "sqlglot>=27,<28", "pytest", "pytest-xdist", "pytest-timeout", "pytest-cov", "pytest-asyncio", "fakeredis[lua]>=2.37", "hypothesis", "hypothesis-jsonschema", "import-linter", "mutmut", "datamodel-code-generator==0.83.0", "python-pptx==1.0.2", "graphql-core==3.3.1"]
 
 [tool.importlinter]
