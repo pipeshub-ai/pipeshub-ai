@@ -54,6 +54,7 @@ from app.services.graph_db.interface.graph_db_provider import (
     KH_SKIP_READS,
     IGraphDBProvider,
 )
+from app.utils import error_class
 from app.utils.kh_cursor import (
     Boundary,
     CursorError,
@@ -63,7 +64,7 @@ from app.utils.kh_cursor import (
     encode,
 )
 from app.utils.user_lookup import get_caller_user
-from app.utils.user_messages import action_failed
+from app.utils.user_messages import DATABASE_UNREACHABLE, action_failed
 
 _T = TypeVar("_T")
 
@@ -1068,6 +1069,10 @@ class KnowledgeHubService:
                 # Some other statement of this request found the transaction pool spent, or the deadline passed inside the batch check:
                 # a retry, not a failure.
                 return self._refusal(parent_id, page, limit, str(busy or KnowledgeHubListingBusy()), 503)
+            if error_class.retry_later(e):
+                # The graph store dropped the connection, timed out or is restarting: the web app asks again on a 503.
+                self.logger.warning("Knowledge hub listing: the graph store could not answer (%s)", error_class.innermost_type(e))
+                return self._refusal(parent_id, page, limit, DATABASE_UNREACHABLE, 503)
             self.logger.error("❌ Failed to get nodes: %s", e, exc_info=True)
             return KnowledgeHubNodesResponse(
                 success=False,

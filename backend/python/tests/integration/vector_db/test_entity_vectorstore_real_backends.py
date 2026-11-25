@@ -648,6 +648,34 @@ class TestRebuildSupport:
         payload = await _point(store, org, "topic", "t1")
         assert payload["metadata"]["embeddingModel"] == f"other:model:{DIM}"
 
+    async def test_the_same_model_from_another_provider_is_not_a_change(self, store: EntityVectorStore) -> None:
+        """What the server hands back must compare as the same model after a move to a gateway."""
+        org = f"org-{uuid.uuid4().hex[:6]}"
+        store._model_id = "azureOpenAI:text-embedding-3-small"
+        entity = _entity("t1", org=org, connectors=["c1"])
+        await store.upsert_entities_batch([entity], merge_membership=False)
+        await _publish_writes(store)
+        moved = EntityVectorStore(
+            logger=logger, config_service=embedding_config_service(), vector_db_service=store.vector_db_service,
+            collection_name=store.collection_name, recreate_on_dimension_mismatch=True,
+        )
+
+        async def _stub(embedding_configs: list | None = None) -> None:
+            moved._dense_embeddings = _StubEmbeddings()
+            moved._embedding_size = DIM
+            moved._model_id = "openAICompatible:azure/text-embedding-3-small"
+
+        moved._init_embeddings = _stub  # type: ignore[method-assign]
+        await moved._ensure_initialized()
+        outcome = await moved.upsert_entities_batch(
+            [entity, _entity("t2", org=org, connectors=["c1"])], merge_membership=False,
+        )
+        await _publish_writes(store)
+
+        assert (outcome.written, outcome.unchanged, outcome.failed) == (1, 1, 0)
+        [found] = await moved.find_candidates([entity.name], org, "topic")
+        assert "t1" in {match["entityId"] for match in found}
+
     async def test_dimension_change_recreates_only_when_enabled(self, store: EntityVectorStore) -> None:
         org = f"org-{uuid.uuid4().hex[:6]}"
         await store.upsert_entities_batch([_entity("t1", org=org, connectors=["c1"])])
