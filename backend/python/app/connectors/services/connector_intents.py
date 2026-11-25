@@ -11,10 +11,13 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from app.config.constants.arangodb import CollectionNames
+from app.core.org_context import spawn_detached, system
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
     from app.config.configuration_service import ConfigurationService
+    from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
 
 def owner_of(item: dict[str, Any]) -> object:
@@ -27,10 +30,24 @@ def held_by_another_org(app: dict[str, Any], org_id: str) -> bool:
     return owner_of(app) not in (None, "", org_id)
 
 
+async def exists_in_any_org(graph_provider: IGraphDBProvider, connector_id: str) -> bool:
+    """Whether any org holds the connector: a store that scopes reads by org answers None for another org's. Only that
+    it exists is told. Raises when the store cannot answer."""
+    async def read() -> bool:
+        with system("connector_exists"):
+            return await graph_provider.get_document(
+                connector_id, CollectionNames.APPS.value, raise_on_error=True
+            ) is not None
+
+    # Detached: the caller may have an org bound, which a system scope may not be nested in.
+    return await spawn_detached(read(), name="connector-exists")
+
+
 def _merged(older: dict[str, Any] | None, newer: dict[str, Any] | None) -> dict[str, Any]:
     """``newer``, with the record groups only ``older`` names."""
     merged = {**(newer or older or {})}
-    groups = [*((newer or {}).get("recordGroupIds") or []), *((older or {}).get("recordGroupIds") or [])]
+    lists = [(item or {}).get("recordGroupIds") for item in (newer, older)]
+    groups = [group for groups in lists if isinstance(groups, list) for group in groups]
     if groups:
         merged["recordGroupIds"] = list(dict.fromkeys(groups))
     return merged
@@ -87,7 +104,8 @@ class ConnectorIntentStore:
         for key in (self._unscoped_key(connector_id), self.key(org_id, connector_id)):
             try:
                 value = await config_service.get_config(key, use_cache=False, raise_on_error=True)
-                # An earlier version's key may hold another org's intent: that one is left.
+                # An earlier version's key may hold another org's intent: that one is left. Only a replica of that
+                # version can put one there between this read and the delete.
                 if isinstance(value, dict) and owner_of(value) == org_id:
                     cleared = bool(await config_service.delete_config(key)) and cleared
             except Exception:
@@ -100,7 +118,9 @@ class ConnectorIntentStore:
         """Count a failed attempt on ``intent`` and hold it until ``next_attempt_at``."""
         org_id, connector_id = str(owner_of(intent)), str(intent["connectorId"])
         # Raised, not None: what was added to the stored intent since the caller read it is kept.
-        current = await self.read(config_service, org_id, connector_id)
+        # An earlier version's entry is merged by the list, and one that cannot be read must not stop this.
+        current = await config_service.get_config(self.key(org_id, connector_id), use_cache=False, raise_on_error=True)
+        current = current if isinstance(current, dict) else None
         updated = {
             **_merged(current, intent),
             "attempts": int(intent.get("attempts") or 0) + 1, "nextAttemptAt": next_attempt_at,

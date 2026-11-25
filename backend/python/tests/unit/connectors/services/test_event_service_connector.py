@@ -1576,7 +1576,7 @@ class TestHandleDelete:
 
     async def _delete_gone(self, service, pre_read: dict | None) -> tuple[bool, AsyncMock]:
         """The cascade's answer is lost and the connector then reads as gone; *pre_read* is the app read before it."""
-        service.graph_provider.get_document = AsyncMock(side_effect=[pre_read, None])
+        service.graph_provider.get_document = AsyncMock(side_effect=[pre_read, None, None])
         service.graph_provider.delete_connector_instance = AsyncMock(return_value={"success": False, "error": "reply lost"})
         with current_coordinator() as mock_stm, patch.object(
             event_service_module, "free_lane_of_deleted_connector", new_callable=AsyncMock,
@@ -1612,7 +1612,7 @@ class TestHandleDelete:
 
     @pytest.mark.asyncio
     async def test_a_failed_pre_read_still_cleans_a_gone_connector(self, service) -> None:
-        service.graph_provider.get_document = AsyncMock(side_effect=[ConnectionError("store down"), None, None])
+        service.graph_provider.get_document = AsyncMock(side_effect=[ConnectionError("store down"), None, None, None])
         service.graph_provider.delete_connector_instance = AsyncMock(return_value={"success": False, "error": "reply lost"})
         with current_coordinator() as mock_stm, patch.object(event_service_module, "free_lane_of_deleted_connector", new_callable=AsyncMock):
             mock_stm.cancel_sync = AsyncMock()
@@ -1620,6 +1620,22 @@ class TestHandleDelete:
         calls = service.app_container.messaging_producer.send_message.await_args_list
         assert [(c.kwargs["topic"], c.kwargs["message"]["eventType"]) for c in calls] == [
             ("record-events", "deleteConnectorEmbeddings"), ("record-events", "deleteConnectorEntities")]
+
+    @pytest.mark.asyncio
+    async def test_an_id_only_another_org_holds_changes_nothing_where_reads_are_scoped_by_org(self, service) -> None:
+        from app.core.org_context import current_or_system, for_org
+
+        async def scoped(*_a: object, **_kw: object) -> dict | None:
+            return {"_key": "c1", "orgId": "org2"} if current_or_system().kind == "system" else None
+
+        service.graph_provider.get_document = AsyncMock(side_effect=scoped)
+        service.graph_provider.delete_connector_instance = AsyncMock()
+        with current_coordinator() as coordinator, for_org("org1", job="t"):
+            assert await service._handle_delete("drive", {"orgId": "org1", "connectorId": "c1"}) is False
+        coordinator.cancel_and_wait.assert_not_called()
+        service.graph_provider.delete_connector_instance.assert_not_awaited()
+        service.app_container.messaging_producer.send_message.assert_not_awaited()
+        service.app_container.config_service().set_config.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_a_connector_that_cannot_be_read_is_not_deleted(self, service) -> None:

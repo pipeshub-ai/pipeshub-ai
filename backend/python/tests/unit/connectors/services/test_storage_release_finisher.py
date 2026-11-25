@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from app.connectors.services import storage_release
 from app.connectors.services.storage_release import (
     GRACE_MS,
     StorageReleaseReconciler,
@@ -269,3 +270,19 @@ async def test_a_finisher_whose_reread_fails_publishes_nothing(monkeypatch: pyte
     assert await finish(ORG, KB) == {"success": False}
     kafka.publish_event.assert_not_awaited()
     sr.free_lane_of_deleted_connector.assert_not_awaited()
+
+
+async def test_a_release_whose_intent_cannot_be_cleared_is_held_back_not_run_again_at_once() -> None:
+    class Keeps(Config):
+        async def delete_config(self, key: str) -> bool:
+            return False
+
+    config = Keeps()
+    await record_pending_storage_release(config, org_id=ORG, connector_id=KB, now_ms=1)
+    helper = SimpleNamespace(release_connector_storage=AsyncMock(return_value=SimpleNamespace(completed=True)))
+    [intent] = config.kv.values()
+    assert not await storage_release.release_connector_storage(
+        MagicMock(), helper, config, org_id=ORG, connector_id=KB, intent=intent, now_ms=lambda: NOW,
+    )
+    [kept] = config.kv.values()
+    assert kept["nextAttemptAt"] > NOW

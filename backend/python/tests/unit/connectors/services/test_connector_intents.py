@@ -104,3 +104,10 @@ async def test_an_entry_whose_key_names_another_org_is_not_listed() -> None:
 ])
 def test_an_app_with_no_org_is_not_another_orgs(app: dict, other: bool) -> None:
     assert held_by_another_org(app, "org-a") is other
+
+
+async def test_a_malformed_group_list_does_not_stop_the_listing() -> None:
+    config = Config()
+    config.kv[EARLIER] = {"orgId": "org-a", "connectorId": "c1", "recordGroupIds": 3}
+    await STORE.record(config, org_id="org-b", connector_id="c2", now_ms=1)
+    assert {i["orgId"] for i in await STORE.list(config)} == {"org-a", "org-b"}

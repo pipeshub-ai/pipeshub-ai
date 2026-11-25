@@ -345,3 +345,24 @@ async def test_losing_the_lock_after_the_write_leaves_an_intent_for_the_reconcil
 
     assert f"{PENDING_DIRECTORY}org-1/app-1" in config.kv
     assert graph.updates == []
+
+
+async def test_the_reconcile_reads_and_cleans_inside_the_intents_org() -> None:
+    from app.core.org_context import current_org_id, peek
+
+    graph, store, config, rebuilder = _setup({"orgId": "org-9", "connectorId": "gone", "requestedAt": 0})
+    seen: list[str | None] = []
+    read, clean = graph.get_document, store.delete_entities_by_connector
+
+    async def reading(*a: Any, **kw: Any) -> Any:  # noqa: ANN401
+        if a[0] == "gone":
+            seen.append(current_org_id())
+        return await read(*a, **kw)
+
+    async def cleaning(*a: Any, **kw: Any) -> Any:  # noqa: ANN401
+        seen.append(current_org_id())
+        return await clean(*a, **kw)
+
+    graph.get_document, store.delete_entities_by_connector = reading, cleaning
+    assert await rebuilder.tick() == "entity_cleanup"
+    assert seen == ["org-9", "org-9"] and peek() is None

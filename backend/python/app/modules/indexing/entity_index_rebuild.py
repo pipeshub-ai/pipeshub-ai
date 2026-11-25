@@ -356,33 +356,34 @@ class EntityIndexRebuilder:
                 continue
             org_id, connector_id = str(intent["orgId"]), str(intent["connectorId"])
             try:
-                # Raised, not None: a failed read must never pass for a gone app.
-                app = await self.graph.get_document(connector_id, _APPS, raise_on_error=True)
-                if app and (
-                    app.get("status") == APP_STATUS_DELETING
-                    or int(intent.get("requestedAt") or 0) > now - ENTITY_CLEANUP_STALE_MS
-                ):
-                    continue  # its delete may still be running
-                if app is None:
-                    await self.store.delete_entities_by_connector(
-                        org_id=org_id,
-                        connector_id=connector_id,
-                        # The graph rows are gone; the store reads the
-                        # connector's groups from its own points.
-                        record_group_ids=None,
-                        membership_lookup=lambda refs, org=org_id: self.graph.get_taxonomy_entity_membership(
-                            refs, org,
-                        ),
-                    )
-                    self.logger.info(
-                        "entity_index_rebuild: entity cleanup reconciled | org=%s connector=%s",
-                        org_id, connector_id,
-                    )
-                else:
-                    # Its delete failed and was reverted: nothing to clean.
-                    self.logger.info(
-                        "entity_index_rebuild: stale cleanup intent dropped | connector=%s", connector_id,
-                    )
+                with _in_org(org_id):
+                    # Raised, not None: a failed read must never pass for a gone app.
+                    app = await self.graph.get_document(connector_id, _APPS, raise_on_error=True)
+                    if app and (
+                        app.get("status") == APP_STATUS_DELETING
+                        or int(intent.get("requestedAt") or 0) > now - ENTITY_CLEANUP_STALE_MS
+                    ):
+                        continue  # its delete may still be running
+                    if app is None:
+                        await self.store.delete_entities_by_connector(
+                            org_id=org_id,
+                            connector_id=connector_id,
+                            # The graph rows are gone; the store reads the
+                            # connector's groups from its own points.
+                            record_group_ids=None,
+                            membership_lookup=lambda refs, org=org_id: self.graph.get_taxonomy_entity_membership(
+                                refs, org,
+                            ),
+                        )
+                        self.logger.info(
+                            "entity_index_rebuild: entity cleanup reconciled | org=%s connector=%s",
+                            org_id, connector_id,
+                        )
+                    else:
+                        # Its delete failed and was reverted: nothing to clean.
+                        self.logger.info(
+                            "entity_index_rebuild: stale cleanup intent dropped | connector=%s", connector_id,
+                        )
             except Exception:
                 attempts = int(intent.get("attempts") or 0)
                 wait = min(ENTITY_CLEANUP_RETRY_MS * (2 ** attempts), ENTITY_CLEANUP_RETRY_CAP_MS)

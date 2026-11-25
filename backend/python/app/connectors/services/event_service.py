@@ -48,7 +48,10 @@ from app.connectors.core.sync.sync_runner import (
     run_sync_task,
 )
 from app.connectors.core.sync.task_manager import reindex_task_manager
-from app.connectors.services.connector_intents import held_by_another_org
+from app.connectors.services.connector_intents import (
+    exists_in_any_org,
+    held_by_another_org,
+)
 from app.connectors.services.entity_cleanup_intents import record_pending_entity_cleanup
 from app.connectors.services.late_write_sweep import record_pending_late_write_sweep
 from app.connectors.services.reindex_force import forced_by_user, user_forced_intent_id
@@ -1840,7 +1843,8 @@ class EventService:
                 current = await self.graph_provider.get_document(
                     connector_id, CollectionNames.APPS.value, raise_on_error=True
                 )
-            if current and held_by_another_org(current, org_id):
+            elsewhere = current is None and await exists_in_any_org(self.graph_provider, connector_id)
+            if elsewhere or (current and held_by_another_org(current, org_id)):
                 self.logger.error("Connector delete refused: the connector is another org's | org=%s connector=%s", org_id, connector_id)
                 return False
             try:

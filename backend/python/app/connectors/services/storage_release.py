@@ -23,6 +23,7 @@ from app.connectors.core.base.data_processor.storage_cleanup import StorageClean
 from app.connectors.core.base.user_access import delete_all_connections
 from app.connectors.services.connector_intents import (
     ConnectorIntentStore,
+    exists_in_any_org,
     held_by_another_org,
 )
 from app.connectors.services.vector_cleanup_events import (
@@ -31,7 +32,7 @@ from app.connectors.services.vector_cleanup_events import (
     log_cleanup_publish_failure,
 )
 from app.connectors.sources.localKB.handlers.delete_lease import lease_is_held
-from app.core.org_context import for_org, spawn_in_request, system
+from app.core.org_context import for_org, spawn_in_request
 from app.modules.indexing.vector_membership_backfill import (
     VectorMembershipBackfillLeaderLock,
 )
@@ -145,9 +146,10 @@ async def release_connector_storage(
         if completed:
             if await clear_pending_storage_release(config_service, connector_id, org_id=org_id):
                 logger.info("Storage release intent cleared | org=%s connector=%s", org_id, connector_id)
-            else:
-                logger.warning("Storage release intent not cleared | org=%s connector=%s", org_id, connector_id)
-            return True
+                return True
+            # Held back like a failed attempt: released again at once, it would keep every later intent waiting.
+            logger.warning("Storage release intent not cleared | org=%s connector=%s", org_id, connector_id)
+            completed = False
         current = intent or {"orgId": org_id, "connectorId": connector_id, "requestedAt": now_ms()}
         attempts = int(current.get("attempts") or 0)
         wait = retry_delay_ms(attempts)
@@ -217,10 +219,7 @@ class StorageReleaseReconciler:
                 if app is None:
                     # Credentials are keyed by the connector alone, so an id another org holds keeps them: the read
                     # above answers None for it in a store that scopes reads by org. Only whether it exists is used.
-                    with system("storage_release"):
-                        elsewhere = await self.graph.get_document(
-                            connector_id, CollectionNames.APPS.value, raise_on_error=True
-                        ) is not None
+                    elsewhere = await exists_in_any_org(self.graph, connector_id)
             except Exception as e:
                 # Kept, and no other org's release waits for it.
                 unread = e
