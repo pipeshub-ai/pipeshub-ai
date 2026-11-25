@@ -4337,7 +4337,8 @@ def _sent_oauth_app_values(auth_config: dict[str, Any], connector_type: str) -> 
 
 # OAuth app fields that hold an address the server sends the client secret or tokens to.
 _OAUTH_APP_ADDRESS_FIELDS = frozenset({
-    AuthFieldKeys.INSTANCE_URL, AuthFieldKeys.AUTHORIZE_URL, AuthFieldKeys.TOKEN_URL, AuthFieldKeys.LOGIN_URL, "instance_url",
+    AuthFieldKeys.INSTANCE_URL, AuthFieldKeys.AUTHORIZE_URL, AuthFieldKeys.TOKEN_URL, AuthFieldKeys.LOGIN_URL,
+    AuthFieldKeys.INSTANCE_URL_ALT,
 })
 
 

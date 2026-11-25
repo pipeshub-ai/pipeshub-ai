@@ -33,6 +33,7 @@ class AuthFieldKeys:
     CLIENT_SECRET = "clientSecret"
     CLIENT_SECRET_ALT = "client_secret"
     INSTANCE_URL = "instanceUrl"
+    INSTANCE_URL_ALT = "instance_url"
     LOGIN_URL = "loginUrl"
     HAS_ADMIN_CONSENT = "hasAdminConsent"
     AUTHORIZE_URL = "authorizeUrl"
