@@ -556,3 +556,17 @@ class TestTheRequestLogOfA503:
         assert raised.value.__cause__ is cause
         assert (raised.value.status_code, raised.value.detail) == (503, DATABASE_UNREACHABLE)
         assert raised.value.headers["Retry-After"] == "5"
+
+
+def test_raise_if_unavailable_is_a_503_to_retry_for_an_outage_and_returns_for_a_bug() -> None:
+    from fastapi import HTTPException
+
+    from app.utils.user_lookup import raise_if_unavailable
+    from app.utils.user_messages import DATABASE_UNREACHABLE
+
+    lost = ConnectionError("graph down")
+    with pytest.raises(HTTPException) as refused:
+        raise_if_unavailable(lost)
+    assert (refused.value.status_code, refused.value.detail, refused.value.headers) == (503, DATABASE_UNREACHABLE, {"Retry-After": "5"})
+    assert refused.value.__cause__ is lost
+    assert raise_if_unavailable(TypeError("bug")) is None
