@@ -552,7 +552,7 @@ export abstract class BasePgQueueConsumerConnection implements IMessageConsumer 
       unit(true, (tx) => tx.query(sql, [...key, ...extra]));
     // Only a failure of the handler itself is an outage hand-back. An acknowledgement that failed after the handler finished is
     // charged as before: a refund would rerun a finished handler up to the hand-back limit.
-    let handled = false;
+    let handled = false as boolean; // widened: TypeScript narrows it to false inside the catch below
     let value: unknown;
     try {
       if (r.attempts > max) {
