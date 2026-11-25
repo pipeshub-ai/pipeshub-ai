@@ -17,6 +17,7 @@ from app.agents.agent_loop.cancellation import kv_backed as kv_backed_module
 from app.agents.agent_loop.cancellation.kv_backed import KVBackedRunCancellationRegistry
 from app.agents.agent_loop.cancellation.registry import RunOwner
 from app.utils import logging_fields
+from tests.support.settle import settle
 
 
 def _owner(
@@ -155,7 +156,7 @@ class TestCrossProcessCancel:
             await running.wait()
             assert await other_registry.cancel("run-1", _owner()) == "cancelled"
             with pytest.raises(SandboxCallStopped):
-                await asyncio.wait_for(call, timeout=1.5)
+                await settle(call)
         finally:
             await owner_registry.unregister("run-1")
 

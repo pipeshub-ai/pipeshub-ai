@@ -7,7 +7,7 @@ import math
 import os
 import re
 import time
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 from app.agent_loop_lib.sandbox.coding.base import (
     CodeRequest,
@@ -34,7 +34,17 @@ from app.agent_loop_lib.tools.builtin.sandbox.input_staging import (
     PARENT_RESULTS_INPUT_PATH,
     peek_staged_input_files,
     peek_staged_skill_resources,
+    peek_staged_workspace_files,
 )
+from app.agent_loop_lib.tools.tags import (
+    TAG_EFFECT_EXECUTE,
+    TAG_EFFECT_READ,
+    TAG_SINK_NONE,
+)
+from harness_core.tools.time_bound import DEFAULT_WALL_S
+
+if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable, Mapping
 
 if TYPE_CHECKING:
     from app.agent_loop_lib.core.types import ToolResult
@@ -333,6 +343,21 @@ _PARENT_RESULTS_NOTE = (
 # `factory.py`'s `set_advertise_parent_results` call site) — the
 # parent-results handoff mechanism never runs for that grant, so promising
 # the file would be actively false, not merely optimistic.
+# QA-FP12 B1: told only about $OUTPUT_DIR, a model asked to keep notes wrote them to its working directory, and they
+# were gone with the sandbox. The workspace is named, with a path to write to and what happens to the files.
+_SESSION_WORKSPACE_NOTE = (
+    "$WORKSPACE_DIR is this chat's workspace (`workspace/` under the working directory). Files you write "
+    "there are saved to the chat after each call and are there again in every later call and later turn, "
+    "even in a new sandbox; the user sees them too. Keep notes, data and code you or the user will come back "
+    "to there (e.g. os.path.join(os.environ['WORKSPACE_DIR'], 'notes', 'themes.md')). A file the user names by "
+    "a path in the workspace (data/clean.csv, wiki/summary.md) goes at that path under $WORKSPACE_DIR; copy it "
+    "to $OUTPUT_DIR as well only when they want it attached. Files written anywhere else outside $OUTPUT_DIR are "
+    "not kept once the sandbox goes. "
+)
+_SANDBOX_WORKSPACE_NOTE = (
+    "$WORKSPACE_DIR is a scratch folder in this sandbox: it is not kept once the sandbox goes. "
+)
+
 _NO_PARENT_RESULTS_NOTE = (
     f"This sandbox never has `{PARENT_RESULTS_INPUT_PATH}` or any other "
     "automatic pre-loading of data the calling agent already fetched — do "
@@ -373,6 +398,7 @@ async def _upload_staged_files(backend: Any) -> list[str]:
     be the first to see `is_fresh_sandbox=True`."""
     staged_input = peek_staged_input_files()
     staged_skill = peek_staged_skill_resources()
+    staged_workspace = peek_staged_workspace_files()
     _logger.info(
         "_upload_staged_files: staged_input_files=%d (%s) staged_skill_resources=%d (%s) "
         "backend=%s",
@@ -383,6 +409,7 @@ async def _upload_staged_files(backend: Any) -> list[str]:
         type(backend).__name__,
     )
     to_upload: dict[str, bytes] = {}
+    to_upload.update(staged_workspace or {})
     to_upload.update(staged_input or {})
     to_upload.update(staged_skill or {})
     uploaded: list[str] = []
@@ -419,6 +446,16 @@ async def _read_head(backend: Any, path: str, max_bytes: int) -> tuple[bytes, bo
     return content[:max_bytes], len(content) > max_bytes
 
 
+# Provisioning (60 s by default), input staging and output collection around the program's run.
+_RUN_CODE_HEADROOM_S = 180.0
+
+
+class SessionWorkspaceCalls(Protocol):
+    """Runs one `run_code` call with the chat's workspace: staged before the program runs, saved after it."""
+
+    async def run(self, execute: Callable[[], Awaitable[ToolOutput]]) -> ToolOutput: ...
+
+
 class CodingSandboxTool(Tool):
     """`run_code` — write and run a standalone TypeScript/Python program."""
 
@@ -437,6 +474,18 @@ class CodingSandboxTool(Tool):
         self._allow_network = allow_network
         self._advertise_parent_results = advertise_parent_results
         self._web_tool_names: tuple[str, ...] = _DEFAULT_WEB_TOOL_NAMES
+        self._session_workspace = False
+        self._workspace_calls: SessionWorkspaceCalls | None = None
+
+    def time_bound_s(self, arguments: Mapping[str, Any]) -> float | None | Literal["default"]:
+        # The program's own `timeout` is the model's to choose; the bound sits above it by the
+        # sandbox's provisioning, staging and output collection, and never below the default.
+        try:
+            timeout = float(arguments.get("timeout") or self._default_timeout)
+        except (TypeError, ValueError):
+            return "default"
+        bound = timeout + _RUN_CODE_HEADROOM_S
+        return bound if bound > DEFAULT_WALL_S else "default"
 
     def set_web_tool_names(self, names: tuple[str, ...]) -> None:
         """Flip which web-fetching tool(s) `description` names as the
@@ -449,6 +498,14 @@ class CodingSandboxTool(Tool):
         knows the granted tool surface for this request. Left at the
         library default (`_DEFAULT_WEB_TOOL_NAMES`) when never called."""
         self._web_tool_names = names
+
+    def set_session_workspace(self, kept: bool, calls: SessionWorkspaceCalls | None = None) -> None:
+        """Whether what a call leaves under `$WORKSPACE_DIR` is saved to the chat's workspace (a durable run with a
+        session workspace), so `description` promises it only where it holds. `calls` stages and saves it around
+        every call, whoever makes it: the run's own loop or a delegate such as `coding_agent`, whose loop reaches
+        this tool without the durable route."""
+        self._session_workspace = kept
+        self._workspace_calls = calls if kept else None
 
     def set_advertise_parent_results(self, advertise: bool) -> None:
         """Flip whether `description` promises `PARENT_RESULTS_INPUT_PATH`.
@@ -497,8 +554,10 @@ class CodingSandboxTool(Tool):
             "are captured, returned in the result's `artifacts` list, and delivered to the "
             "user automatically; do NOT print file paths or download links in your answer. "
             "Write intermediates (page renders, scratch data, anything the program itself "
-            "doesn't consider the deliverable) anywhere OUTSIDE $OUTPUT_DIR — those stay "
-            "sandbox-local and are never shown to the user. Pass the returned sandbox_id on a later "
+            "doesn't consider the deliverable) anywhere OUTSIDE $OUTPUT_DIR — those are not "
+            "delivered to the user. "
+            + (_SESSION_WORKSPACE_NOTE if self._session_workspace else _SANDBOX_WORKSPACE_NOTE)
+            + "Pass the returned sandbox_id on a later "
             "call to reuse the same environment: installed packages and files persist "
             "across calls, but variables/imports do NOT (each call is a fresh process). "
             + (_PARENT_RESULTS_NOTE if self._advertise_parent_results else _NO_PARENT_RESULTS_NOTE)
@@ -517,11 +576,18 @@ class CodingSandboxTool(Tool):
 
     @property
     def tags(self) -> list[Tag]:
-        return [Tag("risk", "high"), Tag("category", "execute")]
+        tags = [Tag("risk", "high"), Tag("category", "execute"), TAG_EFFECT_EXECUTE]
+        # Without network the code's output stays in the sandbox and the user's artifacts (UX1). The backend must take
+        # the network away too: the local backend's host subprocess keeps the host's (SINK2), so it stays external.
+        offline = not self._allow_network and not (
+            isinstance(self._manager, SandboxManager) and self._manager.reaches_network(SandboxType.CODING)
+        )
+        return [*tags, TAG_SINK_NONE] if offline else tags
 
     @property
     def parameters(self) -> list[ToolParameter]:
-        cap = self._manager.run_timeout_cap(SandboxType.CODING)
+        # A tool listed without a sandbox manager (a catalog of the tools) describes no cap.
+        cap = self._manager.run_timeout_cap(SandboxType.CODING) if isinstance(self._manager, SandboxManager) else None
         timeout_description = "Maximum seconds to let the program run before it is killed"
         if cap is not None:
             timeout_description += (
@@ -556,6 +622,17 @@ class CodingSandboxTool(Tool):
     def result_failed(self, args: dict[str, Any], result: ToolResult) -> bool:
         return isinstance(result.content, dict) and result.content.get("exit_code", 0) != 0
 
+    def summarize_result(self, args: dict[str, Any], result: ToolResult) -> str | None:
+        """A run its sandbox's memory limit ended says so with the limit (R32SECCOMP-FU-1); others as the loop words
+        them."""
+        content = result.content
+        limit = content.get("out_of_memory_mb") if isinstance(content, dict) else None
+        if not isinstance(limit, int) or isinstance(limit, bool) or limit <= 0:
+            return None
+        from harness_core.sandbox.errors import memory_limit_text
+
+        return f"Ran out of memory (limit {memory_limit_text(limit)})"
+
     async def execute(
         self,
         code: str,
@@ -564,6 +641,27 @@ class CodingSandboxTool(Tool):
         sandbox_id: str | None = None,
         timeout: float | None = None,
         **kwargs: Any,
+    ) -> ToolOutput:
+        held: list[str] = []
+        try:
+            if self._workspace_calls is None:
+                return await self._run(code, language, packages, sandbox_id, timeout, held)
+            return await self._workspace_calls.run(
+                lambda: self._run(code, language, packages, sandbox_id, timeout, held)
+            )
+        finally:
+            # Held until the workspace is saved from it: a parallel call must not evict it first.
+            for resolved in held:
+                self._manager.release(SandboxType.CODING, resolved)
+
+    async def _run(
+        self,
+        code: str,
+        language: str,
+        packages: list[str] | None,
+        sandbox_id: str | None,
+        timeout: float | None,
+        held: list[str],
     ) -> ToolOutput:
         sandbox_id = _reuse_id(sandbox_id)
         is_fresh_sandbox = sandbox_id is None
@@ -577,9 +675,10 @@ class CodingSandboxTool(Tool):
         # wait and the VM creation happen.
         try:
             resolved_id, backend = await self._manager.unless_stopped(
-                lambda: self._manager.get_or_create(SandboxType.CODING, sandbox_id, tool=self.name),
+                lambda: self._manager.acquire(SandboxType.CODING, sandbox_id, tool=self.name),
                 tool=self.name,
             )
+            held.append(resolved_id)
         except UnknownSandboxError as e:
             _logger.error("CodingSandboxTool.execute: unknown sandbox %s: %s", sandbox_id, e)
             return ToolOutput(success=False, error=unknown_sandbox_guidance(e))
@@ -733,7 +832,7 @@ class InstallPackagesTool(Tool):
 
     @property
     def tags(self) -> list[Tag]:
-        return [Tag("risk", "medium"), Tag("category", "execute")]
+        return [Tag("risk", "medium"), Tag("category", "execute"), TAG_EFFECT_EXECUTE]
 
     @property
     def parameters(self) -> list[ToolParameter]:
@@ -768,7 +867,7 @@ class InstallPackagesTool(Tool):
         is_fresh_sandbox = sandbox_id is None
         try:
             resolved_id, backend = await self._manager.unless_stopped(
-                lambda: self._manager.get_or_create(SandboxType.CODING, sandbox_id, tool=self.name),
+                lambda: self._manager.acquire(SandboxType.CODING, sandbox_id, tool=self.name),
                 tool=self.name,
             )
         except UnknownSandboxError as e:
@@ -777,7 +876,14 @@ class InstallPackagesTool(Tool):
             return ToolOutput(success=False, error=sandbox_limit_guidance(e))
         except SandboxCallStopped:
             return stopped_output(started=False)
+        try:
+            return await self._installed(backend, resolved_id, packages, language, is_fresh_sandbox)
+        finally:
+            self._manager.release(SandboxType.CODING, resolved_id)
 
+    async def _installed(
+        self, backend: Any, resolved_id: str, packages: list[str], language: str, is_fresh_sandbox: bool
+    ) -> ToolOutput:
         # Same staged-input upload `run_code` does on a fresh sandbox —
         # a child that pre-warms its environment with install_packages
         # FIRST creates its sandbox HERE, and every later run_code call
@@ -858,7 +964,7 @@ class ReadSandboxFileTool(Tool):
 
     @property
     def tags(self) -> list[Tag]:
-        return [Tag("risk", "low"), Tag("category", "read")]
+        return [Tag("risk", "low"), Tag("category", "read"), TAG_EFFECT_READ]
 
     @property
     def parameters(self) -> list[ToolParameter]:

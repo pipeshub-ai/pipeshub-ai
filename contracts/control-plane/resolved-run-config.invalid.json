@@ -1,0 +1,185 @@
+[
+  {
+    "description": "a model key pinned with its secret",
+    "instance": {
+      "schemaVersion": 1,
+      "headRevision": 1042,
+      "routing": {
+        "path": "durable",
+        "reason": null
+      },
+      "scope": {
+        "agentKey": "a7",
+        "projectId": null
+      },
+      "effectiveSet": {
+        "items": [],
+        "digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555"
+      },
+      "effectiveConfig": {
+        "schemaVersion": 1,
+        "dimensions": {
+          "budgets.maxCostUsd": {
+            "value": 3,
+            "setBy": "agent",
+            "ceilings": [
+              {
+                "layer": "release",
+                "value": 5
+              },
+              {
+                "layer": "agent",
+                "value": 3
+              }
+            ]
+          },
+          "models.primary": {
+            "value": "openai:gpt-x",
+            "setBy": "agent",
+            "ceilings": []
+          }
+        }
+      },
+      "llm": {
+        "modelKey": "mk-1",
+        "provider": "openai",
+        "model": "gpt-x",
+        "configDigest": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+        "apiKey": "sk-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "deploymentDigest": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+      "digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444"
+    }
+  },
+  {
+    "description": "an unknown route",
+    "instance": {
+      "schemaVersion": 1,
+      "headRevision": 1042,
+      "routing": {
+        "path": "maybe",
+        "reason": null
+      },
+      "scope": {
+        "agentKey": "a7",
+        "projectId": null
+      },
+      "effectiveSet": {
+        "items": [],
+        "digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555"
+      },
+      "effectiveConfig": {
+        "schemaVersion": 1,
+        "dimensions": {
+          "budgets.maxCostUsd": {
+            "value": 3,
+            "setBy": "agent",
+            "ceilings": [
+              {
+                "layer": "release",
+                "value": 5
+              },
+              {
+                "layer": "agent",
+                "value": 3
+              }
+            ]
+          },
+          "models.primary": {
+            "value": "openai:gpt-x",
+            "setBy": "agent",
+            "ceilings": []
+          }
+        }
+      },
+      "llm": {
+        "modelKey": "mk-1",
+        "provider": "openai",
+        "model": "gpt-x",
+        "configDigest": "sha256:6666666666666666666666666666666666666666666666666666666666666666"
+      },
+      "deploymentDigest": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+      "digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444"
+    }
+  },
+  {
+    "description": "no head revision",
+    "instance": {
+      "schemaVersion": 1,
+      "routing": {
+        "path": "durable",
+        "reason": null
+      },
+      "scope": {
+        "agentKey": "a7",
+        "projectId": null
+      },
+      "effectiveSet": {
+        "items": [],
+        "digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555"
+      },
+      "effectiveConfig": {
+        "schemaVersion": 1,
+        "dimensions": {
+          "budgets.maxCostUsd": {
+            "value": 3,
+            "setBy": "agent",
+            "ceilings": [
+              {
+                "layer": "release",
+                "value": 5
+              },
+              {
+                "layer": "agent",
+                "value": 3
+              }
+            ]
+          },
+          "models.primary": {
+            "value": "openai:gpt-x",
+            "setBy": "agent",
+            "ceilings": []
+          }
+        }
+      },
+      "llm": {
+        "modelKey": "mk-1",
+        "provider": "openai",
+        "model": "gpt-x",
+        "configDigest": "sha256:6666666666666666666666666666666666666666666666666666666666666666"
+      },
+      "deploymentDigest": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+      "digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444"
+    }
+  },
+  {
+    "description": "an effective config without its version",
+    "instance": {
+      "schemaVersion": 1,
+      "headRevision": 1042,
+      "routing": {
+        "path": "durable",
+        "reason": null
+      },
+      "scope": {
+        "agentKey": "a7",
+        "projectId": null
+      },
+      "effectiveSet": {
+        "items": [],
+        "digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555"
+      },
+      "effectiveConfig": {
+        "dimensions": {}
+      },
+      "llm": {
+        "modelKey": "mk-1",
+        "provider": "openai",
+        "model": "gpt-x",
+        "configDigest": "sha256:6666666666666666666666666666666666666666666666666666666666666666"
+      },
+      "deploymentDigest": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+      "digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444"
+    }
+  }
+]

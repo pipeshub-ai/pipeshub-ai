@@ -41,8 +41,6 @@ from app.services.messaging.scheduling.interface import FairSchedulerConfig
 from app.services.resource_governor.models import ParseTier
 from tests.integration.messaging.conftest import (
     DRAIN_TIMEOUT_SECONDS,
-    REDIS_HOST,
-    REDIS_PORT,
     create_kafka_topic,
     delete_kafka_topic,
 )
@@ -143,7 +141,7 @@ def _completed_record(record_id: str) -> dict[str, Any]:
     }
 
 
-def _record_handler(record: dict[str, Any]):  # noqa: ANN202
+def _record_handler(record: dict[str, Any], redis_at: tuple[str, int]):  # noqa: ANN202
     """The real RecordEventHandler over ``record``, with a real Redis for the replay set."""
     handler = make_record_handler()
     gp = handler.event_processor.graph_provider
@@ -155,7 +153,7 @@ def _record_handler(record: dict[str, Any]):  # noqa: ANN202
     async def redis_client() -> Redis:  # one client per loop, as the handler's own
         loop = id(asyncio.get_running_loop())
         if loop not in clients:
-            clients[loop] = Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
+            clients[loop] = Redis(host=redis_at[0], port=redis_at[1], decode_responses=True)
         return clients[loop]
 
     handler._redis_client = redis_client
@@ -168,7 +166,8 @@ async def test_window_of_two_events_for_one_record_kafka(
 ) -> None:
     # Its own record per case: the replay-set keys are the record's, and cases may run on parallel workers.
     record_id = f"r-{unique_suffix}"
-    redis = Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
+    redis_host, redis_port = redis_available
+    redis = Redis(host=redis_host, port=redis_port, decode_responses=True)
     await redis.delete(replay_set.hash_key(record_id), replay_set.order_key(record_id))
     updates = [(EventTypes.UPDATE_RECORD.value, {"recordId": record_id, "orgId": "org-1", "virtualRecordId": "vr1",
                                                   "mimeType": "application/pdf", "extension": "pdf", "n": n})
@@ -204,7 +203,7 @@ async def test_window_of_two_events_for_one_record_kafka(
     # First run: U1 and U2 both complete and are committed.
     first_done: list[str] = []
     consumer = _consumer(kafka_available, topic, group)
-    await consumer.start(wrap(_record_handler(record), first_downloads, first_done))
+    await consumer.start(wrap(_record_handler(record, redis_available), first_downloads, first_done))
     try:
         await _until(lambda: len(first_done) >= 2, "both updates to complete")
         await asyncio.sleep(1.0)  # let the commit land
@@ -230,7 +229,7 @@ async def test_window_of_two_events_for_one_record_kafka(
         await rewind.stop()
 
     consumer = _consumer(kafka_available, topic, group)
-    await consumer.start(wrap(_record_handler(record), replay_downloads, replay_done))
+    await consumer.start(wrap(_record_handler(record, redis_available), replay_downloads, replay_done))
     try:
         await _until(lambda: len(replay_done) >= 2, "the replayed window", timeout=30)
     finally:

@@ -1,0 +1,506 @@
+[
+ {
+  "inputIndex": 0,
+  "messages": [
+   {
+    "content": "find the issue and file it",
+    "injected": false,
+    "pinned": false,
+    "role": "user"
+   }
+  ],
+  "slots": {},
+  "system": null,
+  "tools": null
+ },
+ {
+  "inputIndex": 0,
+  "messages": [
+   {
+    "content": "find the issue and file it",
+    "injected": false,
+    "pinned": false,
+    "role": "user"
+   },
+   {
+    "content": [
+     {
+      "text": "looking",
+      "type": "text"
+     }
+    ],
+    "role": "assistant",
+    "tool_calls": [
+     {
+      "arguments": {
+       "q": "bug"
+      },
+      "id": "call_0_0",
+      "name": "lookup"
+     }
+    ],
+    "truncated": false
+   },
+   {
+    "artifact_meta": null,
+    "content": "{\"found\": \"bug\"}",
+    "is_error": false,
+    "role": "tool",
+    "step_footer": "",
+    "tool_call_id": "call_0_0"
+   }
+  ],
+  "slots": {},
+  "system": null,
+  "tools": null
+ },
+ {
+  "inputIndex": 0,
+  "messages": [
+   {
+    "content": "find the issue and file it",
+    "injected": false,
+    "pinned": false,
+    "role": "user"
+   },
+   {
+    "content": [
+     {
+      "text": "looking",
+      "type": "text"
+     }
+    ],
+    "role": "assistant",
+    "tool_calls": [
+     {
+      "arguments": {
+       "q": "bug"
+      },
+      "id": "call_0_0",
+      "name": "lookup"
+     }
+    ],
+    "truncated": false
+   },
+   {
+    "artifact_meta": null,
+    "content": "{\"found\": \"bug\"}",
+    "is_error": false,
+    "role": "tool",
+    "step_footer": "",
+    "tool_call_id": "call_0_0"
+   },
+   {
+    "content": [],
+    "role": "assistant",
+    "tool_calls": [
+     {
+      "arguments": {
+       "q": "a"
+      },
+      "id": "call_1_0",
+      "name": "lookup"
+     },
+     {
+      "arguments": {
+       "q": "b"
+      },
+      "id": "call_1_1",
+      "name": "lookup"
+     }
+    ],
+    "truncated": false
+   },
+   {
+    "artifact_meta": null,
+    "content": "{\"found\": \"a\"}",
+    "is_error": false,
+    "role": "tool",
+    "step_footer": "",
+    "tool_call_id": "call_1_0"
+   },
+   {
+    "artifact_meta": null,
+    "content": "{\"found\": \"b\"}",
+    "is_error": false,
+    "role": "tool",
+    "step_footer": "",
+    "tool_call_id": "call_1_1"
+   }
+  ],
+  "slots": {},
+  "system": null,
+  "tools": null
+ },
+ {
+  "inputIndex": 0,
+  "messages": [
+   {
+    "content": "find the issue and file it",
+    "injected": false,
+    "pinned": false,
+    "role": "user"
+   },
+   {
+    "content": [
+     {
+      "text": "looking",
+      "type": "text"
+     }
+    ],
+    "role": "assistant",
+    "tool_calls": [
+     {
+      "arguments": {
+       "q": "bug"
+      },
+      "id": "call_0_0",
+      "name": "lookup"
+     }
+    ],
+    "truncated": false
+   },
+   {
+    "artifact_meta": null,
+    "content": "{\"found\": \"bug\"}",
+    "is_error": false,
+    "role": "tool",
+    "step_footer": "",
+    "tool_call_id": "call_0_0"
+   },
+   {
+    "content": [],
+    "role": "assistant",
+    "tool_calls": [
+     {
+      "arguments": {
+       "q": "a"
+      },
+      "id": "call_1_0",
+      "name": "lookup"
+     },
+     {
+      "arguments": {
+       "q": "b"
+      },
+      "id": "call_1_1",
+      "name": "lookup"
+     }
+    ],
+    "truncated": false
+   },
+   {
+    "artifact_meta": null,
+    "content": "{\"found\": \"a\"}",
+    "is_error": false,
+    "role": "tool",
+    "step_footer": "",
+    "tool_call_id": "call_1_0"
+   },
+   {
+    "artifact_meta": null,
+    "content": "{\"found\": \"b\"}",
+    "is_error": false,
+    "role": "tool",
+    "step_footer": "",
+    "tool_call_id": "call_1_1"
+   },
+   {
+    "content": [
+     {
+      "text": "filing",
+      "type": "text"
+     }
+    ],
+    "role": "assistant",
+    "tool_calls": [
+     {
+      "arguments": {
+       "title": "bug"
+      },
+      "id": "call_2_0",
+      "name": "create_issue"
+     }
+    ],
+    "truncated": false
+   },
+   {
+    "artifact_meta": null,
+    "content": "{\"issue\": \"create_issue-1\"}",
+    "is_error": false,
+    "role": "tool",
+    "step_footer": "",
+    "tool_call_id": "call_2_0"
+   }
+  ],
+  "slots": {},
+  "system": null,
+  "tools": null
+ },
+ {
+  "inputIndex": 9,
+  "messages": [
+   {
+    "content": "find the issue and file it",
+    "injected": false,
+    "pinned": false,
+    "role": "user"
+   },
+   {
+    "content": [
+     {
+      "text": "looking",
+      "type": "text"
+     }
+    ],
+    "role": "assistant",
+    "tool_calls": [
+     {
+      "arguments": {
+       "q": "bug"
+      },
+      "id": "call_0_0",
+      "name": "lookup"
+     }
+    ],
+    "truncated": false
+   },
+   {
+    "artifact_meta": null,
+    "content": "{\"found\": \"bug\"}",
+    "is_error": false,
+    "role": "tool",
+    "step_footer": "",
+    "tool_call_id": "call_0_0"
+   },
+   {
+    "content": [],
+    "role": "assistant",
+    "tool_calls": [
+     {
+      "arguments": {
+       "q": "a"
+      },
+      "id": "call_1_0",
+      "name": "lookup"
+     },
+     {
+      "arguments": {
+       "q": "b"
+      },
+      "id": "call_1_1",
+      "name": "lookup"
+     }
+    ],
+    "truncated": false
+   },
+   {
+    "artifact_meta": null,
+    "content": "{\"found\": \"a\"}",
+    "is_error": false,
+    "role": "tool",
+    "step_footer": "",
+    "tool_call_id": "call_1_0"
+   },
+   {
+    "artifact_meta": null,
+    "content": "{\"found\": \"b\"}",
+    "is_error": false,
+    "role": "tool",
+    "step_footer": "",
+    "tool_call_id": "call_1_1"
+   },
+   {
+    "content": [
+     {
+      "text": "filing",
+      "type": "text"
+     }
+    ],
+    "role": "assistant",
+    "tool_calls": [
+     {
+      "arguments": {
+       "title": "bug"
+      },
+      "id": "call_2_0",
+      "name": "create_issue"
+     }
+    ],
+    "truncated": false
+   },
+   {
+    "artifact_meta": null,
+    "content": "{\"issue\": \"create_issue-1\"}",
+    "is_error": false,
+    "role": "tool",
+    "step_footer": "",
+    "tool_call_id": "call_2_0"
+   },
+   {
+    "content": [
+     {
+      "text": "filed it",
+      "type": "text"
+     }
+    ],
+    "role": "assistant",
+    "tool_calls": null,
+    "truncated": false
+   },
+   {
+    "content": "and the second one?",
+    "injected": false,
+    "pinned": false,
+    "role": "user"
+   }
+  ],
+  "slots": {},
+  "system": null,
+  "tools": null
+ },
+ {
+  "inputIndex": 9,
+  "messages": [
+   {
+    "content": "find the issue and file it",
+    "injected": false,
+    "pinned": false,
+    "role": "user"
+   },
+   {
+    "content": [
+     {
+      "text": "looking",
+      "type": "text"
+     }
+    ],
+    "role": "assistant",
+    "tool_calls": [
+     {
+      "arguments": {
+       "q": "bug"
+      },
+      "id": "call_0_0",
+      "name": "lookup"
+     }
+    ],
+    "truncated": false
+   },
+   {
+    "artifact_meta": null,
+    "content": "{\"found\": \"bug\"}",
+    "is_error": false,
+    "role": "tool",
+    "step_footer": "",
+    "tool_call_id": "call_0_0"
+   },
+   {
+    "content": [],
+    "role": "assistant",
+    "tool_calls": [
+     {
+      "arguments": {
+       "q": "a"
+      },
+      "id": "call_1_0",
+      "name": "lookup"
+     },
+     {
+      "arguments": {
+       "q": "b"
+      },
+      "id": "call_1_1",
+      "name": "lookup"
+     }
+    ],
+    "truncated": false
+   },
+   {
+    "artifact_meta": null,
+    "content": "{\"found\": \"a\"}",
+    "is_error": false,
+    "role": "tool",
+    "step_footer": "",
+    "tool_call_id": "call_1_0"
+   },
+   {
+    "artifact_meta": null,
+    "content": "{\"found\": \"b\"}",
+    "is_error": false,
+    "role": "tool",
+    "step_footer": "",
+    "tool_call_id": "call_1_1"
+   },
+   {
+    "content": [
+     {
+      "text": "filing",
+      "type": "text"
+     }
+    ],
+    "role": "assistant",
+    "tool_calls": [
+     {
+      "arguments": {
+       "title": "bug"
+      },
+      "id": "call_2_0",
+      "name": "create_issue"
+     }
+    ],
+    "truncated": false
+   },
+   {
+    "artifact_meta": null,
+    "content": "{\"issue\": \"create_issue-1\"}",
+    "is_error": false,
+    "role": "tool",
+    "step_footer": "",
+    "tool_call_id": "call_2_0"
+   },
+   {
+    "content": [
+     {
+      "text": "filed it",
+      "type": "text"
+     }
+    ],
+    "role": "assistant",
+    "tool_calls": null,
+    "truncated": false
+   },
+   {
+    "content": "and the second one?",
+    "injected": false,
+    "pinned": false,
+    "role": "user"
+   },
+   {
+    "content": [],
+    "role": "assistant",
+    "tool_calls": [
+     {
+      "arguments": {
+       "q": "second"
+      },
+      "id": "call_0_0",
+      "name": "lookup"
+     }
+    ],
+    "truncated": false
+   },
+   {
+    "artifact_meta": null,
+    "content": "{\"found\": \"second\"}",
+    "is_error": false,
+    "role": "tool",
+    "step_footer": "",
+    "tool_call_id": "call_0_0"
+   }
+  ],
+  "slots": {},
+  "system": null,
+  "tools": null
+ }
+]

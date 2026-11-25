@@ -16,6 +16,7 @@ import pytest
 from app.api.middlewares.request_log import install_request_logging
 from app.config.constants.service import config_node_constants
 from app.schema.node_validator import SchemaValidationError
+from app.services.featureflag.config.config import CONFIG
 from app.utils import error_class
 from app.utils.logger import log_record_fields
 from tests.support.agent_routes import (
@@ -25,6 +26,7 @@ from tests.support.agent_routes import (
     as_user,
     make_client,
 )
+from tests.support.config_service import RIG_PLATFORM_FLAGS
 from tests.support.log_capture import assert_not_logged, failure_line
 
 if TYPE_CHECKING:
@@ -67,6 +69,12 @@ def _client(graph: InMemoryGraph, config: FakeConfigService | None = None) -> Te
     client, _ = make_client(graph, config or FakeConfigService({**_TOOLSET_INSTANCES, **_MCP_INSTANCES}))
     install_request_logging(client.app)  # outside the test auth, as in query_main
     return client
+
+
+@pytest.fixture(autouse=True)
+def _labs_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The routes' own lines, on an org whose harness is off (ADR-OPS-08): what a release without the harness logs."""
+    monkeypatch.setitem(RIG_PLATFORM_FLAGS, CONFIG.ENABLE_AGENT_HARNESS, False)
 
 
 @pytest.fixture(autouse=True)
@@ -482,8 +490,11 @@ def test_a_knowledge_limit_that_cannot_be_sized_does_not_block_the_create(graph:
     })
 
     assert response.status_code == 200
-    fields = failure_line(_records(caplog), ROUTE_FAILED, "unavailable", logging.WARNING, SENTINEL, "org-1")
+    fields = failure_line(_records(caplog), ROUTE_FAILED, "unavailable", logging.WARNING, SENTINEL)
     assert fields.get("op") == "size_knowledge_limit"
+    # the org is named only by the context field every line carries (docs/logging.md, "Context and fields"),
+    # which the request's bound org context sets; the failure itself names it nowhere else
+    assert [k for k, v in fields.items() if "org-1" in str(v) and k != "org_id"] == []
 
 
 # --- what the line says on success ----------------------------------------------------------------------------------

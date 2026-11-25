@@ -20,7 +20,17 @@ import { Logger } from '../../../libs/services/logger.service';
 import { getSlackBotStore } from '../../configuration_manager/controller/cm_controller';
 import { AppConfig } from '../../tokens_manager/config/config';
 import { getOrgRepository } from '../../../libs/repositories/org';
-import { getUserRepository } from '../../../libs/repositories/user';
+import { resolveSoleOrgId as soleOrgId } from '../../slack_link/sole-org';
+import {
+  isSlackIdentity,
+  type SlackIdentity,
+  type SlackIdentityLinks,
+} from '../../configuration_manager/slack-identity/slack-identity-links';
+import {
+  LinkedAccount,
+  liveLinkedAccount,
+  slackIdentityLinks,
+} from '../../configuration_manager/slack-identity/slack-linked-account';
 
 /**
  * Turns a scoped service token (`/internal/...` routes: Slack bot, service
@@ -31,26 +41,8 @@ const logger = Logger.getInstance({ service: 'Enterprise Search Service' });
 
 export const STAND_IN_TOKEN_TTL_SECONDS = 60;
 
-/**
- * The OSS Slack bot configuration carries no orgId, so this edition only has a
- * safe answer when there is exactly one org. On a multi-org instance the old
- * `Org.findOne` picked whichever document came back first, which could answer a
- * Slack workspace with another tenant's data — refuse instead. Multi-org Slack
- * is an EE feature and resolves the org from the bot config's own orgId.
- */
-export const resolveSoleOrgId = async (): Promise<string> => {
-  const { count, oldestId } = await getOrgRepository().liveSummary();
-  const soleOrg = count === 1 && oldestId !== null ? oldestId : undefined;
-  if (soleOrg === undefined) {
-    if (count > 1) {
-      throw new UnauthorizedError(
-        'Slack access is limited to single-organization deployments on this edition',
-      );
-    }
-    throw new NotFoundError('Organization not found');
-  }
-  return soleOrg;
-};
+/** The install's only organisation (`slack_link/sole-org.ts`), the org this edition's Slack bots serve. */
+export const resolveSoleOrgId = (): Promise<string> => soleOrgId();
 
 /** 24-char hex suitable for Mongo ObjectId; stable per email for Slack/service-account callers without a User row. */
 export const stableObjectIdHexForExternalEmail = (email: string): string =>
@@ -70,66 +62,127 @@ export const hydrateScopedRequestAsUser = async (
     return;
   }
 
-  const email = (req as AuthenticatedServiceRequest).tokenPayload?.email;
-  if (!email) {
-    throw new UnauthorizedError('Email not found in scoped token');
+  const tokenPayload = (req as AuthenticatedServiceRequest).tokenPayload ?? {};
+  if (tokenPayload.configId !== undefined) {
+    await hydrateSlackCaller(req, appConfig, keyValueStoreService);
+    return;
   }
 
+  // Only the Slack bot calls these routes, and every token it mints names its configuration. The only other minter
+  // of conversation:create is this file, for the services downstream, so a token without a configuration is not the
+  // bot's: it is refused rather than bound to a person by an email claim anyone holding the scope could write.
+  throw new UnauthorizedError(
+    'This Slack request does not name its Slack bot configuration',
+  );
+};
+
+/** Said when a Slack person who has not linked their PipesHub account asks something only an account can answer. */
+export const SLACK_LINK_REQUIRED_MESSAGE =
+  'Link your Slack account to PipesHub first: I sent you a private link in Slack. ' +
+  'After you sign in and approve it once, I answer as your PipesHub account.';
+
+/**
+ * A Slack bot's token (it names the bot's configuration) is answered only as the PipesHub account the Slack person
+ * linked, by Slack team and user id (ADR-SLACKID-01). The token's email is never read here: it came from a Slack
+ * profile, which another organisation's Slack admin can set to anyone's address.
+ */
+const hydrateSlackCaller = async (
+  req: AuthenticatedServiceRequest | AuthenticatedUserRequest,
+  appConfig: AppConfig,
+  keyValueStoreService?: KeyValueStoreService,
+): Promise<void> => {
   const orgId = await resolveSoleOrgId();
+  // The bot names the org it serves; disagreement means the bot and this gateway are out of step, so the turn is refused.
+  const claimedOrgId = (req as AuthenticatedServiceRequest).tokenPayload?.orgId;
+  if (claimedOrgId !== undefined && String(claimedOrgId) !== orgId) {
+    throw new UnauthorizedError(
+      'Slack token org does not match the organisation this bot serves',
+    );
+  }
+  await bindScopedRequestToSlackAccount(
+    req,
+    appConfig,
+    orgId,
+    await slackAgentConfigs(req, keyValueStoreService),
+    keyValueStoreService ? slackIdentityLinks(keyValueStoreService) : undefined,
+  );
+};
 
-  const user = await getUserRepository().getLiveByEmail(orgId, email as string);
+/** The Slack bots of the organisation, as far as binding needs them: which agent each one answers for. */
+export interface SlackAgentConfig {
+  agentId?: string | null;
+}
 
+const slackAgentConfigs = async (
+  req: AuthenticatedServiceRequest | AuthenticatedUserRequest,
+  keyValueStoreService?: KeyValueStoreService,
+): Promise<readonly SlackAgentConfig[]> =>
+  req.params.agentKey && keyValueStoreService
+    ? (await getSlackBotStore(keyValueStoreService)).configs
+    : [];
+
+/** The live PipesHub account a Slack account is linked to in `orgId` (ADR-SLACKID-01); never another org's link. */
+export const linkedUser = (
+  orgId: string,
+  slack: SlackIdentity,
+  links: SlackIdentityLinks = slackIdentityLinks(),
+): Promise<LinkedAccount | null> => liveLinkedAccount(links, slack, orgId);
+
+/**
+ * Makes a Slack bot's request the request of the account the Slack person linked in `orgId`, or of the agent's own
+ * service account when there is no link and the agent is one of `agentConfigs` and runs as one. Otherwise it is refused
+ * with the link message. The token's email is never read: it came from a Slack profile. The org is the caller's.
+ */
+export const bindScopedRequestToSlackAccount = async (
+  req: AuthenticatedServiceRequest | AuthenticatedUserRequest,
+  appConfig: AppConfig,
+  orgId: string,
+  agentConfigs: readonly SlackAgentConfig[],
+  links?: SlackIdentityLinks,
+): Promise<void> => {
+  const payload = (req as AuthenticatedServiceRequest).tokenPayload ?? {};
+  const identity = {
+    teamId: payload.slackTeamId,
+    slackUserId: payload.slackUserId,
+  };
+  if (!isSlackIdentity(identity)) {
+    throw new UnauthorizedError(
+      'This Slack request does not name a Slack workspace and person',
+    );
+  }
+  const account = await linkedUser(orgId, identity, links);
+  if (account) {
+    actAsUser(req, appConfig, account);
+    return;
+  }
+  // An agent that runs as its own service account answers a workspace member who has no PipesHub account; who
+  // they are is their Slack identity, never an address they typed into their profile.
+  const subject =
+    `slack-${identity.teamId}-${identity.slackUserId}@slack.invalid`.toLowerCase();
+  if (
+    await actAsServiceAccountAgent(req, appConfig, agentConfigs, orgId, subject)
+  ) {
+    return;
+  }
+  throw new UnauthorizedError(SLACK_LINK_REQUIRED_MESSAGE);
+};
+
+const actAsUser = (
+  req: AuthenticatedServiceRequest | AuthenticatedUserRequest,
+  appConfig: AppConfig,
+  user: {
+    orgId: string;
+    userId: string;
+    email: string;
+    fullName?: string;
+    mobile?: string;
+    userSlug?: string;
+  },
+): void => {
   const authTokenService = new AuthTokenService(
     appConfig.jwtSecret,
     appConfig.scopedJwtSecret,
   );
-
-  if (!user) {
-    const { agentKey } = req.params;
-    if (agentKey && keyValueStoreService) {
-      const store = await getSlackBotStore(keyValueStoreService);
-      const configs = store.configs;
-      for (const config of configs) {
-        if (config.agentId === agentKey) {
-          const isServiceAccount = await checkServiceAccountAccess(
-            req,
-            appConfig,
-          );
-          if (isServiceAccount) {
-            const org = await getOrgRepository().getLive(orgId);
-            if (!org?._id) {
-              throw new NotFoundError('Organization not found');
-            }
-            const stableUserIdHex = stableObjectIdHexForExternalEmail(email);
-            const scopedJwtToken = authTokenService.generateScopedToken(
-              {
-                userId: stableUserIdHex,
-                orgId: org._id,
-                email: email,
-                scopes: [TokenScopes.CONVERSATION_CREATE],
-                isServiceAccount: true,
-              },
-              '1h',
-            );
-            (req as AuthenticatedServiceRequest).headers.authorization =
-              `Bearer ${scopedJwtToken}`;
-            (req as AuthenticatedUserRequest).user = {
-              userId: stableUserIdHex,
-              orgId: org._id,
-              email: email,
-              scopes: [TokenScopes.CONVERSATION_CREATE],
-              isServiceAccount: true,
-            };
-            return;
-          }
-        }
-      }
-    }
-    throw new NotFoundError(
-      'User not found, create an account on the Pipeshub platform first.',
-    );
-  }
-
   // The Python services ask Node whether every session-style token is still
   // live, and Node refuses one without a role claim. Member is what this token
   // has always been treated as there, so it stays member. With a role Node
@@ -137,12 +190,12 @@ export const hydrateScopedRequestAsUser = async (
   // minted it needs to reach the AI service, not generateToken's default week.
   const jwtToken = authTokenService.generateToken(
     {
-      userId: user._id,
+      userId: user.userId,
       orgId: user.orgId,
       email: user.email,
       fullName: user.fullName,
       mobile: user.mobile,
-      userSlug: user.slug,
+      userSlug: user.userSlug,
       role: 'member',
     },
     STAND_IN_TOKEN_TTL_SECONDS,
@@ -151,13 +204,64 @@ export const hydrateScopedRequestAsUser = async (
   req.headers.authorization = `Bearer ${jwtToken}`;
 
   (req as AuthenticatedUserRequest).user = {
-    userId: user._id,
+    userId: user.userId,
     orgId: user.orgId,
     email: user.email,
     fullName: user.fullName,
     mobile: user.mobile,
-    userSlug: user.slug,
+    userSlug: user.userSlug,
   };
+};
+
+/** A caller with no PipesHub account, let in only for an agent set up for Slack that runs as a service account. */
+const actAsServiceAccountAgent = async (
+  req: AuthenticatedServiceRequest | AuthenticatedUserRequest,
+  appConfig: AppConfig,
+  agentConfigs: readonly SlackAgentConfig[],
+  orgId: string,
+  email: string,
+): Promise<boolean> => {
+  const { agentKey } = req.params;
+  if (!agentKey) return false;
+  if (!agentConfigs.some((config) => config.agentId === agentKey)) return false;
+  if (
+    !(await checkServiceAccountAccess(
+      req as AuthenticatedServiceRequest,
+      appConfig,
+    ))
+  )
+    return false;
+  const org = await getOrgRepository().getLive(orgId);
+  if (!org?._id) {
+    throw new NotFoundError('Organization not found');
+  }
+  const authTokenService = new AuthTokenService(
+    appConfig.jwtSecret,
+    appConfig.scopedJwtSecret,
+  );
+  const stableUserIdHex = stableObjectIdHexForExternalEmail(email);
+  const scopedJwtToken = authTokenService.generateScopedToken(
+    {
+      userId: stableUserIdHex,
+      orgId: org._id,
+      email: email,
+      scopes: [TokenScopes.CONVERSATION_CREATE],
+      isServiceAccount: true,
+      // The query service records it as the service identity an upload came through (QA-15G).
+      agentKey,
+    },
+    '1h',
+  );
+  (req as AuthenticatedServiceRequest).headers.authorization =
+    `Bearer ${scopedJwtToken}`;
+  (req as AuthenticatedUserRequest).user = {
+    userId: stableUserIdHex,
+    orgId: org._id,
+    email: email,
+    scopes: [TokenScopes.CONVERSATION_CREATE],
+    isServiceAccount: true,
+  };
+  return true;
 };
 
 export const checkServiceAccountAccess = async (

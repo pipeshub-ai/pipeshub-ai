@@ -1,4 +1,5 @@
-import { Router } from 'express';
+import { Request, RequestHandler, Response, Router } from 'express';
+import { serviceHealthChecks } from '../../agent-harness/ops/service-health-checks';
 import { Container } from 'inversify';
 import { readStoreEpoch } from '../../../libs/db/boot';
 import { pgRuntime } from '../../../libs/db/uow';
@@ -13,6 +14,10 @@ import { KeyValueStoreService } from '../../../libs/services/keyValueStore.servi
 import axios from 'axios';
 import { AppConfig } from '../config/config';
 import { ConfigService } from '../services/cm.service';
+import {
+  AgentHarnessHealth,
+  agentHarnessHealth,
+} from '../../agent-harness/config';
 import { BuildInfo, getBuildInfo } from '../../../libs/utils/build-info.utils';
 import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
 import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
@@ -21,6 +26,8 @@ import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
 import { userAdminCheck } from '../../user_management/middlewares/userAdminCheck';
 import { buildProxyHeaders } from '../controllers/connector.controllers';
 import { configuredLocalStorageReplicaProblem } from '../../storage/utils/replicas';
+import { isUserOrgAdmin } from '../../user_management/services/user-admin.service';
+import { hardenedProfile } from '../../../libs/utils/security-profile';
 import { precisionWaitWarningFromStore } from '../utils/precision-warning';
 
 /** What the health page calls the session cache: PostgreSQL, this process's memory or the Redis server. */
@@ -110,6 +117,8 @@ export interface HealthStatus {
   timestamp: string;
   services: Record<string, string>;
   serviceNames: Record<string, string>;
+  /** Reported, never counted in `status`: the rest of PipesHub serves while the harness is unavailable. */
+  agentHarness: AgentHarnessHealth;
   deployment: {
     kvStoreType: string;
     messageBrokerType: string;
@@ -124,6 +133,122 @@ export interface HealthStatus {
   // Configuration that works but loses data or misbehaves; status stays healthy.
   warnings?: string[];
 }
+
+/**
+ * What an unauthenticated caller learns (R41OPS-FU-8, ADR-WEB-01 D8): whether
+ * the app is healthy and whether durable runs are ready, which probes and lanes
+ * wait on. The stores, their modes, the build and the warnings are for an admin.
+ */
+export interface PublicHealthStatus {
+  status: HealthStatus['status'];
+  agentHarness: {
+    status: AgentHarnessHealth['status'];
+    capabilities?: 'settled' | 'settling';
+  };
+}
+
+export function publicHealth(health: HealthStatus): PublicHealthStatus {
+  const harness = health.agentHarness;
+  return {
+    status: health.status,
+    agentHarness:
+      harness.status === 'available' && harness.capabilities !== undefined
+        ? { status: harness.status, capabilities: harness.capabilities }
+        : { status: harness.status },
+  };
+}
+
+/** The product's own services, by the names every installer and healthcheck reads; nothing a check adds. */
+export const PUBLIC_SERVICE_NAMES = [
+  'query',
+  'connector',
+  'indexing',
+  'docling',
+  'embedding',
+  'parsing',
+  'extraction',
+] as const;
+
+export function publicServicesHealth(body: {
+  status: string;
+  services: Record<string, string>;
+}): { status: string; services: Record<string, string> } {
+  const services: Record<string, string> = {};
+  for (const name of PUBLIC_SERVICE_NAMES) {
+    if (body.services[name] !== undefined) services[name] = body.services[name];
+  }
+  return { status: body.status, services };
+}
+
+const HEALTH_DETAIL = 'healthDetail';
+
+const passes = (
+  handler: RequestHandler,
+  req: Request,
+  res: Response,
+): Promise<boolean> =>
+  new Promise((resolve) => {
+    try {
+      const result = handler(req, res, (error?: unknown) => resolve(!error));
+      void Promise.resolve(result).catch(() => resolve(false));
+    } catch {
+      resolve(false);
+    }
+  });
+
+/**
+ * Marks the request for the full report when it carries an org admin's token.
+ * Never refuses: a probe sends no token, and a token that does not pass gets
+ * the public answer, as a caller with none does. On the compatibility profile
+ * (ADR-OPS-07) every caller gets the full report, as a release without
+ * ADR-WEB-01 D8 answered, so a monitor that parses it keeps working.
+ */
+export function healthAudience(
+  authMiddleware: AuthMiddleware,
+  isAdmin: (userId: string, orgId: string) => Promise<boolean> = isUserOrgAdmin,
+  env: NodeJS.ProcessEnv = process.env,
+): RequestHandler {
+  const authenticate = authMiddleware.authenticate.bind(
+    authMiddleware,
+  ) as RequestHandler;
+  const configRead = requireScopes(
+    OAuthScopeNames.CONFIG_READ,
+  ) as RequestHandler;
+  return async (req, res, next) => {
+    if (!hardenedProfile(env)) {
+      res.locals[HEALTH_DETAIL] = true;
+      next();
+      return;
+    }
+    res.locals[HEALTH_DETAIL] = false;
+    if (req.headers.authorization) {
+      try {
+        if (
+          (await passes(authenticate, req, res)) &&
+          (await passes(configRead, req, res))
+        ) {
+          const user = (req as AuthenticatedUserRequest).user;
+          const userId: unknown = user?.userId;
+          const orgId: unknown = user?.orgId;
+          res.locals[HEALTH_DETAIL] =
+            Boolean(userId && orgId) &&
+            (await isAdmin(String(userId), String(orgId)));
+        }
+      } catch (error) {
+        logger.debug('health detail not granted', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+    next();
+  };
+}
+
+const wantsDetail = (res: Response): boolean => {
+  // A hand-built response (an internal caller, a test) may come without locals.
+  const response: { locals?: Record<string, unknown> } = res;
+  return response.locals?.[HEALTH_DETAIL] === true;
+};
 
 export function createHealthRouter(
   container: Container,
@@ -172,7 +297,9 @@ export function createHealthRouter(
     };
   }
 
-  router.get('/', async (_req, res, next) => {
+  const audience = healthAudience(authMiddleware);
+
+  router.get('/', audience, async (_req, res, next) => {
     try {
       const deployment = await getDeploymentConfig();
       const services: Record<string, string> = {
@@ -371,6 +498,7 @@ export function createHealthRouter(
         timestamp: new Date().toISOString(),
         services,
         serviceNames,
+        agentHarness: agentHarnessHealth(),
         deployment: {
           kvStoreType: deployment.kvStoreType,
           messageBrokerType: deployment.messageBrokerType,
@@ -382,7 +510,7 @@ export function createHealthRouter(
         ...(warnings.length > 0 ? { warnings } : {}),
       };
 
-      res.status(200).json(health);
+      res.status(200).json(wantsDetail(res) ? health : publicHealth(health));
     } catch (exception: unknown) {
       // The error middleware logs it once and answers 500.
       next(exception);
@@ -391,7 +519,7 @@ export function createHealthRouter(
 
   // Combined services health check (Python query + connector + indexing + docling + embedding,
   // plus parsing + extraction when USE_PARSING_SERVICE=true)
-  router.get('/services', async (_req, res, _next) => {
+  router.get('/services', audience, async (_req, res, _next) => {
     try {
       const aiHealthUrl = `${appConfig.aiBackend}/health`;
       const connectorHealthUrl = `${appConfig.connectorBackend}/health`;
@@ -432,8 +560,17 @@ export function createHealthRouter(
       const doclingOk = isServiceHealthy(doclingResp);
       const embeddingOk = isServiceHealthy(embeddingResp);
 
-      // Critical services: query + connector (required for core functionality)
-      const overallHealthy = aiOk && connectorOk;
+      const extra = serviceHealthChecks().map((check) => ({
+        check,
+        view: check.view(),
+      }));
+      // Critical services: query + connector (required for core functionality), and any critical added check
+      const overallHealthy =
+        aiOk &&
+        connectorOk &&
+        extra.every(
+          ({ check, view }) => !check.critical || view.status === 'ok',
+        );
 
       const services: Record<string, string> = {
         query: aiOk ? 'healthy' : 'unhealthy',
@@ -448,11 +585,20 @@ export function createHealthRouter(
         services.extraction = isServiceHealthy(extractionResp) ? 'healthy' : 'unhealthy';
       }
 
-      res.status(200).json({
+      const details: Record<string, string> = {};
+      for (const { check, view } of extra) {
+        services[check.name] = view.status === 'ok' ? 'healthy' : 'unhealthy';
+        if (view.detail !== undefined) details[check.name] = view.detail;
+      }
+      const report = {
         status: overallHealthy ? 'healthy' : 'unhealthy',
         timestamp: new Date().toISOString(),
         services,
-      });
+        ...(Object.keys(details).length > 0 ? { details } : {}),
+      };
+      res
+        .status(200)
+        .json(wantsDetail(res) ? report : publicServicesHealth(report));
     } catch (error: unknown) {
       logger.error('Combined services health check failed', { error });
       const services: Record<string, string> = {
@@ -466,11 +612,14 @@ export function createHealthRouter(
         services.parsing = 'unknown';
         services.extraction = 'unknown';
       }
-      res.status(200).json({
+      const report = {
         status: 'unhealthy',
         timestamp: new Date().toISOString(),
         services,
-      });
+      };
+      res
+        .status(200)
+        .json(wantsDetail(res) ? report : publicServicesHealth(report));
     }
   });
 

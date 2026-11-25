@@ -105,7 +105,11 @@ def test_two_processes_pick_the_same_place_and_share_the_slots(
         from app.services.resource_governor.shared_slots import sandbox_state_directory
         state = sandbox_state_directory()
         slots = _open_slots(state, 4)
+        # The mutex is never waited on: a "busy" try is retried, as the governor's acquire does.
         hold = slots.try_acquire_tagged(4, tag=b"org", tag_limit=None)
+        while getattr(hold, "reason", None) == "busy":
+            time.sleep(0.01)
+            hold = slots.try_acquire_tagged(4, tag=b"org", tag_limit=None)
         print(state, type(slots).__name__, flush=True)
         sys.stdin.read()  # hold the slot until the parent is done
         hold.release()

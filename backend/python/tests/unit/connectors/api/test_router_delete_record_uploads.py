@@ -7,6 +7,7 @@ from fastapi import HTTPException
 
 from app.config.constants.arangodb import EventTypes
 from app.connectors.api.router import delete_record
+from tests.support.record_access import InMemoryRecordAccess
 
 DOC_ID = "65f1c0ffee0123456789abcd"
 
@@ -22,9 +23,7 @@ def _request() -> MagicMock:
 def _provider(origin: str = "UPLOAD") -> AsyncMock:
     connector_name = "KB" if origin == "UPLOAD" else "DRIVE"
     provider = AsyncMock()
-    provider.check_record_access_with_details = AsyncMock(
-        return_value={"record": {"id": "r1", "origin": origin, "connectorName": connector_name}}
-    )
+    InMemoryRecordAccess().readable("user-a", "org-a", "r1", origin=origin, connectorName=connector_name).serve(provider)
     provider.get_document = AsyncMock(return_value={"id": "r1", "connectorId": "kb-1", "origin": origin})
     provider.get_uploaded_document_ids = AsyncMock(return_value=[DOC_ID])
     provider.delete_record = AsyncMock(return_value={"success": True, "eventData": None})

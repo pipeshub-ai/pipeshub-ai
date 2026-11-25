@@ -25,6 +25,10 @@ export interface IOrg extends Document {
   adminRoleGuardAt?: Date;
   /** Held by one admin-role change at a time on a standalone MongoDB (no transactions to serialise them). */
   adminRoleLease?: { holder: string; until: Date };
+  /** The default chat's coding engine for the org (ENGPICK); absent: none. */
+  defaultCodingEngine?: string;
+  /** DEEPROUTE: false when the org turned off handing long work to the coding engine on its own; absent: on. */
+  codingEngineAutoRoute?: boolean;
 }
 
 const orgSchema = new Schema<IOrg>(
@@ -82,6 +86,8 @@ const orgSchema = new Schema<IOrg>(
       type: { holder: { type: String }, until: { type: Date } },
       default: undefined,
     },
+    defaultCodingEngine: { type: String, maxlength: 64 },
+    codingEngineAutoRoute: { type: Boolean },
   },
   { timestamps: true },
 );

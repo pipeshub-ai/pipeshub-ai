@@ -23,7 +23,12 @@ vi.mock('@/lib/api', () => ({
   apiClient: { get: vi.fn(), post: vi.fn(async () => ({ data: [] })) },
   isProcessedError: () => false,
 }));
-vi.mock('@/config', () => ({ isMcpInstanceReadOnly: () => false, McpInheritedCallout: () => null, McpManageAccess: () => null }));
+vi.mock('@/config', () => ({
+  isMcpInstanceReadOnly: () => false,
+  McpInheritedCallout: () => null,
+  McpManageAccess: () => null,
+  McpInstanceConfigExtras: () => null,
+}));
 vi.mock('../../../api', () => ({ McpServersApi: api }));
 // jsdom has no canvas; the drawing is covered by its own tests.
 vi.mock('../../../logo-file', async (importOriginal) => ({
@@ -58,7 +63,9 @@ vi.mock('../../../../components/workspace-right-panel', () => ({
       </div>
     ) : null,
 }));
-vi.mock('../../../../components', () => ({
+vi.mock('../../../../components', async () => ({
+  // The real wrapper: the panel's fields read the mocked FormField's ids through it.
+  FormFieldTextField: (await vi.importActual<typeof import('../../../../components/form-field')>('../../../../components/form-field')).FormFieldTextField,
   FormField: ({ label, description, error, children }: { label: string; description?: string; error?: string; children: React.ReactNode }) => (
     <div role="group" aria-label={label}>
       {children}

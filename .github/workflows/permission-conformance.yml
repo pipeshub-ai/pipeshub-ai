@@ -73,10 +73,8 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install uv
           cd backend/python
-          uv pip install --system pytest pytest-asyncio pytest-timeout
-          uv pip install --system -e ".[dev]"
+          requirements/install.sh dev --project . --editable
 
       - name: Run oracle, scenario and matrix tests
         run: |
@@ -184,7 +182,7 @@ jobs:
             allow: test_conformance_kh::test_an_open_apps_member_is_matched_by_the_apps_handle_not_its_key
     services:
       neo4j:
-        image: neo4j:5.26.0
+        image: neo4j:5.26.0@sha256:5a015e53de1895e7eee1574ae0325cf8c4b89587222778108c594bdd45a474b5
         ports:
           - 7688:7687
         env:
@@ -200,7 +198,7 @@ jobs:
           --health-cmd "wget --no-verbose --tries=1 --spider http://localhost:7474 || exit 1"
           --health-interval 5s --health-timeout 5s --health-retries 30 --health-start-period 20s
       arango:
-        image: arangodb:3.12.4
+        image: arangodb:3.12.4@sha256:b7cc8dbf5f24c0fe235b6e50a26dbcfaebaf9abe0d322acefcf3dab63b5a0102
         ports:
           - 8530:8529
         env:
@@ -222,10 +220,8 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install uv
           cd backend/python
-          uv pip install --system pytest pytest-asyncio pytest-timeout
-          uv pip install --system -e ".[dev]"
+          requirements/install.sh dev --project . --editable
 
       # Every suite wipes the stores on setup; each shard has its own, so one database name serves them all.
       - name: Run shard ${{ matrix.shard }} against both stores
@@ -282,7 +278,7 @@ jobs:
     timeout-minutes: 30
     services:
       neo4j:
-        image: neo4j:5.26.0
+        image: neo4j:5.26.0@sha256:5a015e53de1895e7eee1574ae0325cf8c4b89587222778108c594bdd45a474b5
         ports:
           - 7688:7687
         env:
@@ -301,7 +297,7 @@ jobs:
       # The files run on both stores, as backend-matrix runs them: the plan kept from a small App was reproduced with their ArangoDB
       # cases between the Neo4j ones, and not with the Neo4j cases alone.
       arango:
-        image: arangodb:3.12.4
+        image: arangodb:3.12.4@sha256:b7cc8dbf5f24c0fe235b6e50a26dbcfaebaf9abe0d322acefcf3dab63b5a0102
         ports:
           - 8530:8529
         env:
@@ -328,10 +324,8 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install uv
           cd backend/python
-          uv pip install --system pytest pytest-asyncio pytest-timeout
-          uv pip install --system -e ".[dev]"
+          requirements/install.sh dev --project . --editable
 
       # The budgets run first, on plans of their own, and clear them when done. The Knowledge Hub files then run in one process in the
       # order that once kept a small App's plan for a large one (a batch check of 140 ids took 60-100 s on it); statement_trace fails a
@@ -366,7 +360,7 @@ jobs:
         seed: [7, 11, 2026]
     services:
       neo4j:
-        image: neo4j:5.26.0
+        image: neo4j:5.26.0@sha256:5a015e53de1895e7eee1574ae0325cf8c4b89587222778108c594bdd45a474b5
         ports:
           - 7688:7687
         env:
@@ -382,7 +376,7 @@ jobs:
           --health-cmd "wget --no-verbose --tries=1 --spider http://localhost:7474 || exit 1"
           --health-interval 5s --health-timeout 5s --health-retries 30 --health-start-period 20s
       arango:
-        image: arangodb:3.12.4
+        image: arangodb:3.12.4@sha256:b7cc8dbf5f24c0fe235b6e50a26dbcfaebaf9abe0d322acefcf3dab63b5a0102
         ports:
           - 8530:8529
         env:
@@ -404,10 +398,8 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install uv
           cd backend/python
-          uv pip install --system pytest pytest-asyncio pytest-timeout
-          uv pip install --system -e ".[dev]"
+          requirements/install.sh dev --project . --editable
 
       - name: Run 600 generated worlds per generator against both stores
         env:

@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING, Any
 from app.agent_loop_lib.hooks.middleware.builtin.artifact_registration import (
     InMemoryArtifactStore,
 )
-from app.models.entities import ArtifactType
+from app.models.entities import ArtifactType, ArtifactVisibility
 from app.utils.citations import rewrite_request_refs
 
 if TYPE_CHECKING:
@@ -92,28 +92,20 @@ class RegistryBackedStore:
                 "RegistryBackedStore.store: tool %r artifact stores %d citation ref(s) "
                 "as URLs, %d made uncitable", tool_name, expanded, unresolved,
             )
-        try:
-            metadata = await self._registry.register(
-                actor=self._actor,
-                name=f"tool_result_{tool_name}.json" if tool_name else "tool_result.json",
-                artifact_type=ArtifactType.TOOL_RESULT,
-                mime_type="application/json",
-                content=durable.encode("utf-8"),
-                conversation_id=self._conversation_id,
-                source_tool=tool_name or None,
-                is_temporary=True,
-                result_schema=result_schema,
-            )
-        except Exception:
-            logger.warning(
-                "RegistryBackedStore.store: registry.register() failed for "
-                "tool %r — falling back to in-memory only",
-                tool_name, exc_info=True,
-            )
-            return await self._l1.store(
-                content, tool_name=tool_name,
-                result_schema=result_schema, session_id=session_id,
-            )
+        # A failure propagates: the caller keeps the full result rather than a reference
+        # that would point at nothing on the next turn.
+        metadata = await self._registry.register(
+            actor=self._actor,
+            name=f"tool_result_{tool_name}.json" if tool_name else "tool_result.json",
+            artifact_type=ArtifactType.TOOL_RESULT,
+            mime_type="application/json",
+            content=durable.encode("utf-8"),
+            conversation_id=self._conversation_id,
+            source_tool=tool_name or None,
+            is_temporary=True,
+            visibility=ArtifactVisibility.STAGING,
+            result_schema=result_schema,
+        )
 
         aid = metadata.artifact_id
         self._l1._data[aid] = (self._l1._now(), content)

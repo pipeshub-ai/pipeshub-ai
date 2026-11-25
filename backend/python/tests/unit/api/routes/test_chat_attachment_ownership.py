@@ -158,9 +158,9 @@ async def test_delete_answers_alike_for_every_id_that_is_not_the_callers() -> No
 @pytest.mark.asyncio
 async def test_the_uploader_deletes_their_attachment() -> None:
     graph = _graph({"mine": _attachment()}, owned={"mine"}, users=USERS)
-    await delete_chat_attachment("mine", _request(), graph)
-    graph.delete_nodes_and_edges.assert_awaited_once()
-    graph.delete_nodes.assert_awaited_once()
+    await delete_chat_attachment("mine", _request(), graph, MagicMock())
+    # The FILES node, then the RECORDS node with every edge touching it (CLEANUP-G5: the bytes go first).
+    assert [c.args for c in graph.delete_nodes_and_edges.await_args_list] == [(["mine"], "files"), (["mine"], "records")]
 
 
 @pytest.mark.asyncio

@@ -23,6 +23,10 @@ def _process(runtime) -> tuple[ConfigurationService, CollectionPinStore]:
     store = PostgresKeyValueStore(lambda v: json.dumps(v).encode(), lambda b: json.loads(b), runtime=runtime)
     with patch.object(postgres_store, "listen_dsn", return_value=None):  # no listener: a missed NOTIFY is what is tested
         config = ConfigurationService(log, store)
+        # The watch thread subscribes, and with no listener empties the cache, on its own schedule: finish it under the patch,
+        # or the empty-out lands between two reads below (the stale cached read then answers None), or after the patch ends.
+        config.watch_thread.join(timeout=30)
+        assert not config.watch_thread.is_alive()
     return config, CollectionPinStore(config, log)
 
 

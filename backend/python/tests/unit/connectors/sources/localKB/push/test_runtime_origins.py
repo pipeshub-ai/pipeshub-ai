@@ -144,7 +144,6 @@ async def test_first_use_removes_nothing_on_the_loop_and_the_timer_cleans_up_at_
 
     monkeypatch.setattr(S.shutil, "rmtree", recording_rmtree)
     loop_thread = threading.get_ident()
-
     app = FastAPI()
     runtime = push_api.runtime_for(app)
     try:

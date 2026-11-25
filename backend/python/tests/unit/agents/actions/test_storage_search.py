@@ -1606,6 +1606,7 @@ class TestReviewFindings:
             'find . -name "*.json" -print0 | xargs -0 cat', cwd=str(tmp_path), timeout=20,
         )
         assert success is True
+        # wall-clock-ok: a hang waits out the 20 s pipeline timeout (and then fails success); the fix takes ms
         assert loop.time() - started < 10
 
 

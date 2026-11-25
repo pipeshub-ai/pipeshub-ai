@@ -1,14 +1,35 @@
 import 'reflect-metadata';
 import { expect } from 'chai';
 import sinon from 'sinon';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
+import winston from 'winston';
+import {
+  Logger,
+  LogLevel,
+  fileLogDirectory,
+  getLogLevel,
+} from '../../../src/libs/services/logger.service';
+import { FileSink } from '../../../src/libs/services/log-file-sink';
+import { InvalidEnvFlagError } from '../../../src/libs/utils/env-flags';
 import { Types } from 'mongoose';
-import { Logger, LogLevel, getLogLevel } from '../../../src/libs/services/logger.service';
 import { envGuard } from '../../helpers/env-guard';
 
 describe('Logger', () => {
   const env = envGuard();
+  // Modules loaded earlier in this mocha worker hold the process's logger; leaving the singleton null makes later
+  // files' `Logger.getInstance()` a different logger from the one their code under test writes to.
+  let processLogger: Logger | undefined;
 
-  // Reset the singleton between tests
+  before(() => {
+    processLogger = (Logger as any).instance;
+  });
+
+  after(() => {
+    (Logger as any).instance = processLogger;
+  });
+
   beforeEach(() => {
     env.snapshot();
     (Logger as any).instance = null;
@@ -423,6 +444,140 @@ describe('Logger', () => {
       expect(sanitize('hello')).to.equal('hello');
       expect(sanitize(true)).to.be.true;
       expect(sanitize(undefined)).to.be.undefined;
+    });
+  });
+
+  describe('file logs and sink isolation (D3)', () => {
+    let dir: string;
+    let cwd: string;
+
+    beforeEach(() => {
+      dir = fs.mkdtempSync(path.join(os.tmpdir(), 'd3-logger-'));
+      cwd = process.cwd();
+      delete process.env.NODE_LOG_FILES;
+      delete process.env.NODE_LOG_DIR;
+    });
+
+    afterEach(() => {
+      process.chdir(cwd);
+      fs.chmodSync(dir, 0o700);
+      fs.rmSync(dir, { recursive: true, force: true });
+    });
+
+    function sinks(logger: Logger): { console: winston.transport; files: FileSink[] } {
+      const transports = (logger as any).logger.transports as winston.transport[];
+      return {
+        console: transports.find((t) => t instanceof winston.transports.Console) as winston.transport,
+        files: transports.filter((t): t is FileSink => t instanceof FileSink),
+      };
+    }
+
+    // What reaches the console transport: the point a stalled pipe starves.
+    function captureConsole(logger: Logger): string[] {
+      const seen: string[] = [];
+      sinon.stub(sinks(logger).console, 'log').callsFake((info: any, next: () => void) => {
+        seen.push(String(info.message));
+        next();
+      });
+      return seen;
+    }
+
+    async function settle(seen: string[], want: number): Promise<void> {
+      for (let i = 0; i < 200 && seen.length < want; i += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+    }
+
+    async function closeFiles(logger: Logger): Promise<void> {
+      await Promise.all(
+        sinks(logger).files.map(
+          (sink) =>
+            new Promise<void>((resolve) => {
+              const stream = (sink as any).stream;
+              if (!stream) return resolve();
+              stream.once('finish', resolve);
+              sink.close();
+            }),
+        ),
+      );
+    }
+
+    it('LC-1: unset, the files are error.log and combined.log in the working directory', async () => {
+      process.chdir(dir);
+      expect(fileLogDirectory()).to.equal(process.cwd());
+      const logger = new Logger({ service: 'lc1' });
+      const files = sinks(logger).files;
+      expect(files.map((f) => (f as any).filePath)).to.deep.equal([
+        path.join(process.cwd(), 'error.log'),
+        path.join(process.cwd(), 'combined.log'),
+      ]);
+      // The file sinks open their streams asynchronously; left open, they could create the files while afterEach
+      // removes the directory (ENOTEMPTY in the round 19 run).
+      await closeFiles(logger);
+    });
+
+    it('LC-2: NODE_LOG_FILES=false logs to the console only and creates no file', async () => {
+      process.chdir(dir);
+      process.env.NODE_LOG_FILES = 'false';
+      expect(fileLogDirectory()).to.equal(null);
+      const logger = new Logger({ service: 'lc2' });
+      const seen = captureConsole(logger);
+      logger.info('only the console');
+      await settle(seen, 1);
+      expect(sinks(logger).files).to.have.length(0);
+      expect(seen).to.deep.equal(['only the console']);
+      expect(fs.readdirSync(dir)).to.deep.equal([]);
+    });
+
+    it('LC-3 / LS-4: NODE_LOG_DIR holds the files, created if missing; error.log only errors', async () => {
+      const logDir = path.join(dir, 'logs', 'node');
+      process.env.NODE_LOG_DIR = logDir;
+      expect(fileLogDirectory()).to.equal(logDir);
+      const logger = new Logger({ service: 'lc3' });
+      captureConsole(logger);
+      logger.info('an info line');
+      logger.error('an error line');
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      await closeFiles(logger);
+      const combined = fs.readFileSync(path.join(logDir, 'combined.log'), 'utf8').trim().split('\n');
+      const errors = fs.readFileSync(path.join(logDir, 'error.log'), 'utf8').trim().split('\n');
+      expect(combined.map((l) => JSON.parse(l).message)).to.deep.equal(['an info line', 'an error line']);
+      expect(errors.map((l) => JSON.parse(l).message)).to.deep.equal(['an error line']);
+    });
+
+    it('LC-4: a malformed NODE_LOG_FILES is refused with the flag named', () => {
+      process.env.NODE_LOG_FILES = 'maybe';
+      expect(() => new Logger({ service: 'lc4' })).to.throw(InvalidEnvFlagError, 'NODE_LOG_FILES');
+    });
+
+    it('LS-5: an unwritable log directory never stalls the console; the failure is reported once per sink', async function () {
+      if (process.getuid?.() === 0) this.skip(); // root ignores the mode bits
+      fs.chmodSync(dir, 0o500);
+      process.env.NODE_LOG_DIR = dir;
+      const logger = new Logger({ service: 'ls5' });
+      const seen = captureConsole(logger);
+      for (let i = 0; i < 2000; i += 1) logger.info(`line ${i}`);
+      await settle(seen, 2002);
+      const lines = seen.filter((m) => m.startsWith('line '));
+      expect(lines).to.have.length(2000);
+      expect(lines[1999]).to.equal('line 1999');
+      expect(seen.filter((m) => m === 'logger.sink_failed')).to.have.length(2);
+      for (let i = 0; i < 100; i += 1) logger.info(`more ${i}`);
+      await settle(seen, 2102);
+      expect(seen.filter((m) => m === 'logger.sink_failed')).to.have.length(2);
+      expect(sinks(logger).files.every((f) => !f.healthy)).to.equal(true);
+    });
+
+    it('LS-1: a log directory that cannot be created never stalls the console', async () => {
+      const blocker = path.join(dir, 'a-file');
+      fs.writeFileSync(blocker, '');
+      process.env.NODE_LOG_DIR = path.join(blocker, 'logs');
+      const logger = new Logger({ service: 'ls1' });
+      const seen = captureConsole(logger);
+      for (let i = 0; i < 2000; i += 1) logger.info(`line ${i}`);
+      await settle(seen, 2002);
+      expect(seen.filter((m) => m.startsWith('line '))).to.have.length(2000);
+      expect(seen.filter((m) => m === 'logger.sink_failed')).to.have.length(2);
     });
   });
 });

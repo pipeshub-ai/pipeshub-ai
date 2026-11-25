@@ -21,6 +21,8 @@ class DdgsSearch:
     id = "ddgs"
     name = "ddgs"
     cooldown_key = "ddgs"
+    # Each search already fans out over several engines; more at once gets this server rate limited.
+    max_in_flight = 2
 
     async def search(self, query: str, deadline: Deadline) -> list[WebResult]:
         if deadline.expired:

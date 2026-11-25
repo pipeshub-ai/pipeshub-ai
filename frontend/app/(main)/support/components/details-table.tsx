@@ -117,7 +117,7 @@ export function DetailsTable({
                           <li key={`${error.at}-${error.path}`} style={{ color: 'var(--slate-11)' }}>
                             <Text size="1">{describeError(error)}</Text>{' '}
                             {error.requestId && (
-                              <Text size="1" style={{ fontFamily: 'var(--code-font-family)', color: 'var(--slate-10)' }}>
+                              <Text size="1" style={{ fontFamily: 'var(--code-font-family)', color: 'var(--slate-11)' }}>
                                 {error.requestId}
                               </Text>
                             )}

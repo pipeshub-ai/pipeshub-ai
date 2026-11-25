@@ -25,7 +25,7 @@ class GoogleCalendar:
         short_description="Get calendar events",
         description="Get all events from the specified Google Calendar.",
         parameters=[],
-        tags=[Tag(key="category", value="calendar"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="calendar"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     def get_calendar_events(
         self,
@@ -112,7 +112,7 @@ class GoogleCalendar:
                 required=False
             )
         ],
-        tags=[Tag(key="category", value="calendar"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="calendar"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
     )
     def create_calendar_event(
         self,
@@ -274,7 +274,7 @@ class GoogleCalendar:
                 required=False
             )
         ],
-        tags=[Tag(key="category", value="calendar"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="calendar"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
     )
     def update_calendar_event(
         self,
@@ -377,7 +377,7 @@ class GoogleCalendar:
                 required=True
             )
         ],
-        tags=[Tag(key="category", value="calendar"), Tag(key="type", value="delete")],
+        tags=[Tag(key="category", value="calendar"), Tag(key="type", value="delete"), Tag(key="effect", value="write")],
     )
     def delete_calendar_event(
         self,
@@ -407,7 +407,7 @@ class GoogleCalendar:
         short_description="Get the list of available calendars",
         description="Get the list of all available calendars for the authenticated user.",
         parameters=[],
-        tags=[Tag(key="category", value="calendar"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="calendar"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_calendar_list(self) -> tuple[bool, str]:
         """Get the list of available calendars"""
@@ -426,7 +426,7 @@ class GoogleCalendar:
         short_description="Get the current calendar by ID",
         description="Get details of the current calendar by its ID.",
         parameters=[],
-        tags=[Tag(key="category", value="calendar"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="calendar"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     def get_calendar_list_by_id(
         self

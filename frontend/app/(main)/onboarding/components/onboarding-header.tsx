@@ -64,7 +64,7 @@ export function OnboardingHeader({
                 {orgDisplayName}
               </Text>
               {orgSubtitle && (
-                <Text size="1" style={{ color: 'var(--gray-9)', lineHeight: '1.3' }}>
+                <Text size="1" style={{ color: 'var(--gray-11)', lineHeight: '1.3' }}>
                   {orgSubtitle}
                 </Text>
               )}
@@ -92,7 +92,7 @@ export function OnboardingHeader({
                 </Text>
               )}
               {userEmail && (
-                <Text size="1" style={{ color: 'var(--gray-9)', lineHeight: '1.3' }}>
+                <Text size="1" style={{ color: 'var(--gray-11)', lineHeight: '1.3' }}>
                   {userEmail}
                 </Text>
               )}

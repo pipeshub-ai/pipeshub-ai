@@ -111,19 +111,27 @@ class FeatureFlagService:
             cls._instance = cls(provider)
             return cls._instance
 
-    def is_feature_enabled(self, flag_name: str, default: bool = False) -> bool:
+    def is_feature_enabled(self, flag_name: str, default: bool | None = None) -> bool:
         """
         Check if a feature flag is enabled
 
         Args:
             flag_name: Name of the feature flag (e.g., 'ENABLE_WORKFLOW_BUILDER')
-            default: Default value if flag is not found
+            default: Value when the flag is not stored; omitted, a Labs flag reads its release
+                default from ``PLATFORM_FLAG_DEFAULTS`` (Labs stores only what an admin changed, UX1)
+                and any other flag reads off
 
         Returns:
             bool: True if feature is enabled, False otherwise
         """
         value = self._provider.get_flag_value(flag_name)
-        return value if value is not None else default
+        if value is not None:
+            return value
+        if default is not None:
+            return default
+        from app.services.featureflag.platform_settings import PLATFORM_FLAG_DEFAULTS
+
+        return PLATFORM_FLAG_DEFAULTS.get(str(flag_name).upper(), False)
 
     async def refresh(self) -> None:
         """Refresh feature flags from the provider"""

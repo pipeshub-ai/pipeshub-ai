@@ -7,7 +7,7 @@ place that failure shows up instead.
 
 import importlib
 import inspect
-import re
+import json
 from pathlib import Path
 
 import pytest
@@ -17,10 +17,9 @@ from app.agents.registry.toolset_registry import (
     ToolsetRegistry,
 )
 
-_ES_VALIDATORS = (
-    Path(__file__).resolve().parents[4]
-    / "nodejs/apps/src/modules/enterprise_search/validators/es_validators.ts"
-)
+# The gateway's AGENT_CREATE_TOOLSET_NAMES is the release catalog's listed toolsets (es_validators.ts reads them
+# through listedReleaseNames), generated from these registries (C-29).
+_RELEASE_TOOLSETS = Path(__file__).resolve().parents[5] / "contracts/control-plane/catalog/toolsets.json"
 
 
 @pytest.mark.parametrize("module_path", STANDARD_TOOLSET_MODULES)
@@ -45,13 +44,8 @@ def test_the_agent_gateway_accepts_every_toolset_the_builder_offers() -> None:
     # The agent builder lists every non-internal toolset, but the Node gateway
     # rejects any name missing from AGENT_CREATE_TOOLSET_NAMES, so a toolset
     # registered here and not there can be added to an agent but never saved.
-    block = re.search(
-        r"AGENT_CREATE_TOOLSET_NAMES = \[(.*?)\] as const",
-        _ES_VALIDATORS.read_text(),
-        re.DOTALL,
-    )
-    assert block, f"AGENT_CREATE_TOOLSET_NAMES not found in {_ES_VALIDATORS}"
-    gateway_names = set(re.findall(r"'([^']+)'", block.group(1)))
+    items = json.loads(_RELEASE_TOOLSETS.read_text(encoding="utf-8"))["items"]
+    gateway_names = {item["name"] for item in items if not item["display"].get("hidden")}
 
     normalize = ToolsetRegistry()._normalize_toolset_name
     offered = {

@@ -1,0 +1,27 @@
+{
+ "scenario": "agent_search_tools_unavailable",
+ "parts": [
+  {
+   "type": "text",
+   "content": "",
+   "runId": "run-golden"
+  },
+  {
+   "type": "tool_call",
+   "toolCallId": "call-find",
+   "toolName": "search_tools",
+   "args": "{\"query\": \"close deal\"}",
+   "status": "completed",
+   "runId": "run-golden",
+   "argsSummary": "Searching for tools matching \"close deal\"",
+   "resultPreview": "{'matches': [], 'unavailable': [{'name': 'goldencrm__close_deal', 'toolset': 'goldencrm', 'description': 'Close a CRM deal as won or lost.', 'reason': 'not_attached'}], 'message': 'No attached tool ma",
+   "resultSummary": "Found 0 matches"
+  },
+  {
+   "type": "text",
+   "content": "I can't close deals here: the CRM toolset is not attached to this agent.",
+   "runId": "run-golden",
+   "isFinal": true
+  }
+ ]
+}

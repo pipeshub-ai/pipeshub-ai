@@ -1,0 +1,73 @@
+{
+  "security": {
+    "auth": {
+      "selectedType": "openai",
+      "enforcedType": "openai"
+    },
+    "folderTrust": {
+      "enabled": false
+    }
+  },
+  "privacy": {
+    "usageStatisticsEnabled": false
+  },
+  "general": {
+    "enableAutoUpdate": false
+  },
+  "ide": {
+    "enabled": false
+  },
+  "tools": {
+    "approvalMode": "default",
+    "toolSearch": {
+      "enabled": false
+    },
+    "exclude": [
+      "web_fetch",
+      "web_search",
+      "agent",
+      "enter_plan_mode",
+      "exit_plan_mode",
+      "cron_create",
+      "cron_list",
+      "cron_delete",
+      "enter_worktree",
+      "exit_worktree",
+      "image_gen",
+      "save_memory",
+      "manage_memory",
+      "search_memory",
+      "ask_user_question",
+      "tool_search",
+      "tool_call",
+      "get_goal",
+      "update_goal",
+      "propose_goal",
+      "list_agents",
+      "send_message",
+      "task_stop",
+      "record_artifact",
+      "report_findings"
+    ],
+    "discoveryCommand": "",
+    "callCommand": ""
+  },
+  "ui": {
+    "allowedApprovalModes": [
+      "default",
+      "plan"
+    ]
+  },
+  "disableAllHooks": true,
+  "memory": {
+    "enableManagedAutoMemory": false,
+    "enableManagedAutoDream": false,
+    "enableAutoSkill": false
+  },
+  "skills": {
+    "disabledLevels": [
+      "bundled",
+      "extension"
+    ]
+  }
+}

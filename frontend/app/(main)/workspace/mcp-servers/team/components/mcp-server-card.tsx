@@ -69,7 +69,7 @@ export function McpServerCard({
           {iconUrl ? (
             <img src={iconUrl} alt="" width={16} height={16} />
           ) : (
-            <McpServerIcon typeId={typeId} name={title} size={16} color="var(--gray-10)" />
+            <McpServerIcon typeId={typeId} name={title} size={16} color="var(--gray-11)" />
           )}
         </Flex>
         <Flex direction="column" style={{ minWidth: 0 }}>
@@ -95,7 +95,7 @@ export function McpServerCard({
             </Text>
           )}
           {categoryLabel && (
-            <Text size="1" truncate style={{ color: 'var(--gray-10)' }}>
+            <Text size="1" truncate style={{ color: 'var(--gray-11)' }}>
               {categoryLabel}
             </Text>
           )}
@@ -129,8 +129,8 @@ export function McpServerCard({
         <Flex align="center" gap="1">
           {addedCount > 0 && (
             <>
-              <MaterialIcon name="check" size={14} color="var(--gray-10)" />
-              <Text size="1" style={{ color: 'var(--gray-10)' }}>
+              <MaterialIcon name="check" size={14} color="var(--gray-11)" />
+              <Text size="1" style={{ color: 'var(--gray-11)' }}>
                 {t('workspace.mcpServers.catalog.added')}
               </Text>
             </>

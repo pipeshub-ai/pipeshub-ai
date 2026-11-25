@@ -15,6 +15,7 @@ from fastapi import HTTPException
 from app.config.constants.arangodb import CollectionNames
 from app.connectors.api.router import delete_record
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
+from tests.support.record_access import InMemoryRecordAccess
 
 ORG_A = "org-A"
 ORG_B = "org-B"
@@ -33,7 +34,11 @@ def _request(user_id: str = "user-a", org_id: str | None = ORG_A) -> MagicMock:
 
 
 def _provider(
-    record_org: str, kind: dict, kb_role: str | None = "OWNER", has_access: bool = True
+    record_org: str,
+    kind: dict,
+    kb_role: str | None = "OWNER",
+    has_access: bool = True,
+    access: InMemoryRecordAccess | None = None,
 ) -> Neo4jProvider:
     record = {
         "id": RECORD_ID,
@@ -51,9 +56,12 @@ def _provider(
     provider = Neo4jProvider(MagicMock(), MagicMock())
     provider.client = AsyncMock()
     provider.get_document = AsyncMock(side_effect=get_document)
-    provider.check_record_access_with_details = AsyncMock(
-        return_value={"record": {"id": RECORD_ID, **kind}} if has_access else None
-    )
+    # The ACL world is the caller's org even when the stored record is not, so a cross-org case
+    # reaches the provider's own org check with the access check open.
+    access = (access or InMemoryRecordAccess()).user("user-a", ORG_A).record(RECORD_ID, ORG_A, **kind)
+    if has_access:
+        access.grant(RECORD_ID, user="user-a")
+    access.serve(provider)
     provider._get_kb_context_for_record = AsyncMock(return_value={"kb_id": "kb-1"})
     provider.get_user_by_user_id = AsyncMock(return_value={"id": "ukey-a"})
     provider.get_user_kb_permission = AsyncMock(return_value=kb_role)
@@ -99,7 +107,8 @@ async def test_cross_org_delete_is_refused_and_leaves_graph_and_vectors(kind: di
 @pytest.mark.asyncio
 @pytest.mark.parametrize("kind", [CONNECTOR, KB], ids=["connector", "kb"])
 async def test_same_org_user_without_access_gets_404(kind: dict) -> None:
-    provider = _provider(record_org=ORG_A, kind=kind, kb_role="OWNER", has_access=False)
+    access = InMemoryRecordAccess()
+    provider = _provider(record_org=ORG_A, kind=kind, kb_role="OWNER", has_access=False, access=access)
     kafka = AsyncMock()
 
     with pytest.raises(HTTPException) as exc:
@@ -107,7 +116,7 @@ async def test_same_org_user_without_access_gets_404(kind: dict) -> None:
 
     assert exc.value.status_code == 404
     _assert_untouched(provider, kafka)
-    provider.check_record_access_with_details.assert_awaited_once_with("user-a", ORG_A, RECORD_ID)
+    assert access.asked_about == [("user-a", ORG_A, RECORD_ID)]
 
 
 @pytest.mark.asyncio
@@ -139,6 +148,7 @@ async def test_synced_record_is_refused_and_left_in_place() -> None:
 @pytest.mark.asyncio
 async def test_access_result_without_record_details_is_refused() -> None:
     provider = _provider(record_org=ORG_A, kind=KB, kb_role="OWNER")
+    # A details dict with no record is a provider shape no world seeded into the shared fake produces.
     provider.check_record_access_with_details = AsyncMock(return_value={"permissions": []})
     kafka = AsyncMock()
 

@@ -32,14 +32,22 @@ export function buildInlineCitationInstanceKey(
   return `${messageRowKey}::${chunkIndex}`;
 }
 
+const OUTSIDE_LIST = 'outside:';
+
 /**
- * @returns `true` if the active key still refers to a visible message row.
+ * The row scope of citations drawn outside the message list (a job's reply in its panel, BGUI-12): the list's
+ * row check below never closes their popover, since no row of the list holds them.
+ */
+export const outsideListRowKey = (id: string): string => `${OUTSIDE_LIST}${id}`;
+
+/**
+ * @returns `true` if the active key still refers to a visible message row, or to citations outside the list.
  */
 export function isCitationPopoverKeyStillValid(
   activeKey: string | null,
   messageRowKeys: string[],
 ): boolean {
-  if (!activeKey) return true;
+  if (!activeKey || activeKey.startsWith(OUTSIDE_LIST)) return true;
   return messageRowKeys.some(
     (rowKey) => activeKey.startsWith(`${rowKey}::`) && rowKey.length > 0,
   );

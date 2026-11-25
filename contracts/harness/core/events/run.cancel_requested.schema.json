@@ -1,0 +1,130 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/core/events/run.cancel_requested.schema.json",
+  "title": "RunCancelRequestedEvent",
+  "description": "Durable cancel request (LiveBus carries a hint).",
+  "x-writer": [
+    "node"
+  ],
+  "allOf": [
+    {
+      "$ref": "../envelope.schema.json#/$defs/InlineEnvelope"
+    }
+  ],
+  "properties": {
+    "type": {
+      "const": "run.cancel_requested"
+    },
+    "writer": {
+      "const": "node"
+    },
+    "data": {
+      "$ref": "#/$defs/RunCancelRequestedData"
+    }
+  },
+  "$defs": {
+    "RunCancelRequestedData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "by"
+      ],
+      "properties": {
+        "by": {
+          "$ref": "../common.schema.json#/$defs/PrincipalRef"
+        },
+        "reason": {
+          "$ref": "../common.schema.json#/$defs/Text"
+        },
+        "stop": {
+          "$ref": "#/$defs/OperatorStop"
+        }
+      }
+    },
+    "OperatorStop": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "scope",
+        "reason"
+      ],
+      "description": "The operator control that asked for the cancel (ADR-OPS-01): which scope it stops and why. Absent: the person or a parent cancelled. Additive (UP-03).",
+      "properties": {
+        "scope": {
+          "enum": [
+            "session",
+            "agent",
+            "org",
+            "engine_version",
+            "instance",
+            "egress"
+          ]
+        },
+        "reason": {
+          "enum": [
+            "security",
+            "cost",
+            "incident",
+            "maintenance",
+            "other"
+          ]
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "type": "run.cancel_requested",
+      "schemaVersion": 1,
+      "critical": true,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "node",
+      "visibility": "owner",
+      "data": {
+        "by": "p_u42"
+      }
+    },
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "type": "run.cancel_requested",
+      "schemaVersion": 1,
+      "critical": true,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "node",
+      "visibility": "owner",
+      "data": {
+        "by": "p_admin",
+        "reason": "runaway cost"
+      }
+    },
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "type": "run.cancel_requested",
+      "schemaVersion": 1,
+      "critical": true,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "node",
+      "visibility": "owner",
+      "data": {
+        "by": "p_admin",
+        "stop": {
+          "scope": "engine_version",
+          "reason": "security"
+        }
+      }
+    }
+  ]
+}

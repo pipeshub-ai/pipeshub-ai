@@ -1,4 +1,8 @@
-import { ENV_FAIR_SCHEDULING_LANE_COUNT } from '../constants/messaging.constants';
+import {
+  ENV_FAIR_SCHEDULING_LANE_COUNT,
+  ENV_MESSAGE_BROKER,
+} from '../constants/messaging.constants';
+import { MessageBrokerType } from '../types/messaging.types';
 import { parsePositiveIntSafe } from './env.utils';
 
 /**
@@ -19,4 +23,10 @@ export function laneCount(): number {
     DEFAULT_FAIR_SCHEDULING_LANE_COUNT,
     ENV_FAIR_SCHEDULING_LANE_COUNT,
   );
+}
+
+/** True when the deployment's broker is Redis Streams, where each lane is its own stream. */
+export function isRedisBroker(): boolean {
+  const redis: string = MessageBrokerType.REDIS;
+  return (process.env[ENV_MESSAGE_BROKER] ?? '').trim().toLowerCase() === redis;
 }

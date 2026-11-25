@@ -1,0 +1,106 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/ext/pipeshub/events/x.pipeshub.tool.result_presented.schema.json",
+  "title": "PipeshubToolResultPresentedEvent",
+  "description": "How a tool result is shown: status, the bounded preview and a summary. Presentation only (non-critical).",
+  "x-writer": [
+    "worker"
+  ],
+  "allOf": [
+    {
+      "$ref": "../../../core/envelope.schema.json#/$defs/InlineEnvelope"
+    }
+  ],
+  "properties": {
+    "type": {
+      "const": "x.pipeshub.tool.result_presented"
+    },
+    "writer": {
+      "const": "worker"
+    },
+    "data": {
+      "$ref": "#/$defs/PipeshubToolResultPresentedData"
+    }
+  },
+  "$defs": {
+    "PipeshubToolResultPresentedData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "callId",
+        "status",
+        "content"
+      ],
+      "properties": {
+        "callId": {
+          "$ref": "../../../core/common.schema.json#/$defs/Text"
+        },
+        "status": {
+          "enum": [
+            "completed",
+            "failed",
+            "blocked"
+          ]
+        },
+        "content": {
+          "description": "The bounded result preview (TOOL_CALL_RESULT content, parts resultPreview).",
+          "type": "string"
+        },
+        "resultSummary": {
+          "$ref": "../../../core/common.schema.json#/$defs/Text"
+        },
+        "savedContent": {
+          "description": "The preview as parts[] keep it (resultPreview), when that differs from content: this request's citation refs stored as the URLs they stand for, within the same bound.",
+          "type": "string"
+        },
+        "savedSummary": {
+          "description": "The summary as parts[] keep it, when that differs from resultSummary: citation refs stored as URLs.",
+          "type": "string"
+        },
+        "artifactId": {
+          "$ref": "../../../core/common.schema.json#/$defs/Id"
+        },
+        "resultView": {
+          "description": "The tool's small view of the full result (a table or a record's fields, Tool.result_view), within the run's view budget: TOOL_CALL_RESULT resultView, parts resultView.",
+          "type": "object"
+        },
+        "step": {
+          "$ref": "../tool-step.schema.json",
+          "description": "Which page, query, pattern or file the step used, and what came of it (WP-115): the loop's steps carry the facts an engine's do."
+        },
+        "limits": {
+          "description": "R32REPO-FU-1: what a job's step met and could not do (a code_task's clones that did not happen), from the job's journal: the parent's answer leads with them.",
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 10,
+          "items": {
+            "$ref": "../could-not-do.schema.json"
+          }
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "type": "x.pipeshub.tool.result_presented",
+      "data": {
+        "callId": "call_1",
+        "status": "completed",
+        "content": "{\"issues\": 3}",
+        "resultSummary": "Found 3 issues"
+      },
+      "attemptId": "att_1",
+      "fence": 3
+    }
+  ]
+}

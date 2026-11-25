@@ -37,7 +37,7 @@ describe('Logger: per-module service, error fields and log context', () => {
   const text = (r: Record<string, unknown>): string => String(formatted(r)[MESSAGE])
   /** The combined.log line: the file transports add json() after the same format. */
   const fileJson = (r: Record<string, unknown>): Record<string, any> =>
-    JSON.parse(winston.format.json().transform(formatted(r), {})[MESSAGE])
+    JSON.parse((winston.format.json().transform(formatted(r), {}) as any)[MESSAGE])
   const inRequest = (fn: () => void) =>
     runWithRequestContext({ rootId: 'req-1' }, () => {
       setContextIdentity({ orgId: ORG, userId: USER })

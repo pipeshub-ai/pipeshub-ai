@@ -80,4 +80,15 @@ describe('ChatResponse artifact preview', () => {
     expect(useChatStore.getState().previewFile?.url).not.toBe(SIGNED);
     expect(kb.streamRecord).toHaveBeenCalledWith('rec-1', expect.objectContaining({ suppressErrorToast: expect.any(Function) }));
   });
+
+  it('QAFIX4 B3: a pptx stored as OTHER / octet-stream previews as its PDF conversion under a presentation badge', async () => {
+    const pptx = 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
+    kb.streamRecord.mockResolvedValue(new Blob(['%PDF'], { type: 'application/pdf' }));
+
+    await clickPreview(`Done. ::artifact[deck.pptx](${SIGNED}){application/octet-stream|doc-1|rec-1|OTHER|1}`);
+
+    await waitFor(() => expect(useChatStore.getState().previewFile?.type).toBe('application/pdf'));
+    expect(kb.streamRecord).toHaveBeenCalledWith('rec-1', expect.objectContaining({ convertTo: 'application/pdf' }));
+    expect(useChatStore.getState().previewFile?.sourceType).toBe(pptx);
+  });
 });
