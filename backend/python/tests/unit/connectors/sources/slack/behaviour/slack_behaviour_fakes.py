@@ -27,7 +27,11 @@ import httpx
 
 from app.models.entities import MessageRecord, Record, RecordGroup
 from app.models.permission import EntityType
-from app.services.graph_db.common.record_visibility import is_live_record
+from app.services.graph_db.common.record_visibility import (
+    RecordVisibility,
+    is_live_record,
+    matches_visibility,
+)
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable
@@ -438,6 +442,8 @@ class FakeSlackStore:
         self.record_batches: list[list[Record]] = []
         self.content_updates: list[Record] = []
         self.reindexed: list[Record] = []
+        # Whether a full sync of the connector is in progress, as the processor tracks it.
+        self.full_sync_in_progress = False
 
     async def on_new_app_users(self, users: list[Any]) -> None:
         for user in users:
@@ -528,6 +534,40 @@ class FakeSlackStore:
             and is_live_record(r)
         ]
 
+    def full_sync_running(self, connector_id: str) -> bool:
+        return self.full_sync_in_progress
+
+    async def get_records_in_record_group(
+        self, connector_id: str, external_group_id: str, limit: int, after_key: str | None = None,
+        *, visibility: RecordVisibility = RecordVisibility.LIVE,
+    ) -> list[Record]:
+        group = self.record_groups.get(external_group_id)
+        if group is None:
+            return []
+        return await self.get_records_by_status(
+            connector_id, None, limit=limit, record_group_id=group.id, after_key=after_key, visibility=visibility,
+        )
+
+    async def get_records_by_status(
+        self, connector_id: str, status_filters: list[str] | None, limit: int | None = None, offset: int = 0,
+        record_group_id: str | None = None, is_placeholder: bool | None = None, after_key: str | None = None,
+        exclude_statuses: list[str] | None = None, visibility: RecordVisibility = RecordVisibility.LIVE,
+    ) -> list[Record]:
+        """Ordered by id and paged by ``after_key``, as the graph stores answer it."""
+        found = sorted(
+            (
+                r for r in self.records.values()
+                if (record_group_id is None or r.record_group_id == record_group_id)
+                and (status_filters is None or r.indexing_status in status_filters)
+                and r.indexing_status not in (exclude_statuses or [])
+                and (is_placeholder is None or r.is_placeholder == is_placeholder)
+                and (after_key is None or r.id > after_key)
+                and matches_visibility(r, visibility)
+            ),
+            key=lambda r: r.id,
+        )[offset:]
+        return found if limit is None else found[:limit]
+
     async def on_record_content_update(self, record: Record) -> None:
         self.content_updates.append(record)
         self.records[record.external_record_id] = record
@@ -613,7 +653,7 @@ class FakeConfigService:
             return copy.deepcopy(self.config)
         return copy.deepcopy(self.others.get(path, default))
 
-    async def set_config(self, path: str, value: Any) -> bool:  # noqa: ANN401 - any etcd value
+    async def set_config(self, path: str, value: Any, **_: object) -> bool:  # noqa: ANN401 - any etcd value
         if path == self.path:
             self.config = copy.deepcopy(value)
             self.writes.append(copy.deepcopy(value))
