@@ -5,7 +5,13 @@ local Dev MCP server used while building Canva apps.
 """
 
 from app.agents.mcp.mcp_server_decorator import mcp_server
-from app.agents.mcp.models import AuthHint, MCPAuthMode, MCPServerTemplate, MCPTransport
+from app.agents.mcp.models import (
+    AuthHint,
+    MCPAuthMode,
+    MCPCategory,
+    MCPServerTemplate,
+    MCPTransport,
+)
 
 
 @mcp_server(
@@ -35,6 +41,12 @@ from app.agents.mcp.models import AuthHint, MCPAuthMode, MCPServerTemplate, MCPT
             help_text="Sign in with your Canva account.",
         ),
         tags=["design", "graphics", "marketing"],
+        category=MCPCategory.DESIGN,
+        capabilities=[
+            "Create and edit designs",
+            "Search your designs",
+            "Export designs",
+        ],
     )
 )
 class CanvaMCPServer:
