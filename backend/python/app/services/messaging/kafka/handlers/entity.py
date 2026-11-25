@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING
 from urllib.parse import quote
 from uuid import UUID, uuid4, uuid5
 
+from app.agents.agent_loop.skills.graph_store import erase_skill_author
 from app.api.middlewares.caller_role import fetch_own_identity
 from app.config.constants.arangodb import (
     AccountType,
@@ -37,9 +38,11 @@ from app.connectors.services.event_service import evict_cached_connector
 from app.containers.connector import (
     ConnectorAppContainer,
 )
+from app.control_plane.directory.events import DIRECTORY_EVENT_TYPES
 from app.core import org_context
 from app.edition_services import get_data_entities_processor_cls
 from app.exceptions.non_retryable import NonRetryableError
+from app.harness.knowledge.service import KnowledgePublications
 from app.modules.indexing.record_diagnostics import WriteKind
 from app.modules.indexing.record_diagnostics import reference as run_reference
 from app.modules.indexing.record_republish import record_event
@@ -138,12 +141,16 @@ class EntityEventService(BaseEventService):
         logger: logging.Logger,
         graph_provider: IGraphDBProvider,
         app_container: ConnectorAppContainer,
+        *,
+        publications: KnowledgePublications | None = None,
     ) -> None:
         self.logger = logger
         self.graph_provider = graph_provider
         self.graph_data_store = GraphDataStore(logger, graph_provider)
         self._link_state: dict[str, dict] = {}
         self.app_container = app_container
+        # Erasure never reads the publications flag (C-14 rule), so no configuration is needed here.
+        self._publications = publications or KnowledgePublications(graph_provider, None)
 
     async def process_event(self, event_type: str, payload: dict) -> bool:
         """Handle entity-related events by calling appropriate handlers"""
@@ -172,6 +179,9 @@ class EntityEventService(BaseEventService):
                 return await self._handle_app_enabled(payload)
             elif event_type == "appDisabled":
                 return await self._handle_app_disabled(payload)
+            elif event_type in DIRECTORY_EVENT_TYPES:
+                # Node's directory caches follow these (CPD-9); this service keeps nothing of them.
+                return True
             else:
                 raise NonRetryableError(f"unknown entity event type {event_type}")
         except SchemaValidationError as e:
@@ -327,6 +337,9 @@ class EntityEventService(BaseEventService):
         """Handle organization deletion event"""
         try:
             org_id = payload["orgId"]
+            # Before the org is marked inactive: a failed erasure leaves the org active and reaches the consumer's
+            # classifier like any other failure of this event (logged once below, retried only when transient).
+            await self._publications.erase_org(org_id)
             org_data = {
                 "_key": org_id,
                 "isActive": False,
@@ -754,7 +767,14 @@ class EntityEventService(BaseEventService):
             )
             # At once, not after the cleanup below: until it moves, a scope read before the delete is still served.
             await notify_principals_changed(org_id)
+            # Skills may be stamped under the graph key (REST) or the user id (run time).
+            erased, reassigned = await erase_skill_author(
+                self.graph_provider, org_id, [existing_user_id, payload.get("userId")],
+            )
             self.logger.info("Soft-deleted graph user %s", existing_user_id)
+            self.logger.info(
+                "Skills of deleted graph user %s: erased=%s, passed to the org=%s", existing_user_id, erased, reassigned
+            )
             if payload.get("userId"):
                 await self._remove_mcp_data("user", payload["orgId"], payload["userId"])
                 await self._remove_personal_toolsets("user", payload["orgId"], payload["userId"])

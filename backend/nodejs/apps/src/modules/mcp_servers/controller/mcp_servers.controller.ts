@@ -30,6 +30,10 @@ import {
   handleConnectorResponse,
 } from '../../tokens_manager/utils/connector.utils';
 import { revealQuery } from '../../configuration_manager/utils/secretReveal';
+import {
+  auditSettingsChange,
+  ConfigAction,
+} from '../../configuration_manager/utils/config-audit';
 
 const logger = Logger.getInstance({
   service: 'McpServersController',
@@ -78,6 +82,17 @@ function encTypeId(req: AuthenticatedUserRequest): string {
   return encodeURIComponent(String(req.params.typeId));
 }
 
+function auditMcpServer(
+  req: AuthenticatedUserRequest,
+  action: ConfigAction,
+  reason?: string,
+): void {
+  auditSettingsChange('mcp_server', action, {
+    target: String(req.params.instanceId),
+    reason,
+  });
+}
+
 /** Builds `?k=v&...` from selected query keys, skipping undefined/empty values. */
 function queryString(query: Record<string, unknown>, keys: string[]): string {
   const params = new URLSearchParams();
@@ -101,12 +116,21 @@ function queryString(query: Record<string, unknown>, keys: string[]): string {
 // Listings that cover several servers cap each one at 10 s.
 export const MCP_PROXY_TIMEOUT_MS = 90_000;
 
-/** `sendsOnce`: a GET that changes state (an OAuth state claimed or created) — never resent. */
+/**
+ * `sendsOnce`: a GET that changes state (an OAuth state claimed or created) — never resent.
+ * `audit`: for a settings save, writes its audit line once the service answered 2xx (its answer is passed).
+ */
 function proxyMcp(
   method: HttpMethodValue,
   pathBuilder: PathBuilder,
   action: string,
-  { sendsOnce = method !== HttpMethod.GET }: { sendsOnce?: boolean } = {},
+  {
+    sendsOnce = method !== HttpMethod.GET,
+    audit,
+  }: {
+    sendsOnce?: boolean;
+    audit?: (req: AuthenticatedUserRequest, data: unknown) => void;
+  } = {},
 ) {
   return (appConfig: AppConfig) =>
     async (
@@ -137,6 +161,7 @@ function proxyMcp(
         );
 
         handleConnectorResponse(connectorResponse, res, action, `${action} failed`);
+        audit?.(req, connectorResponse.data);
       } catch (error: any) {
         next(handleBackendError(error, action));
       }
@@ -176,7 +201,18 @@ export const listMcpInstances = proxyMcp(
   'List MCP server instances',
 );
 
-export const createMcpInstance = proxyMcp(HttpMethod.POST, () => '/instances', 'Create MCP server instance');
+export const createMcpInstance = proxyMcp(
+  HttpMethod.POST,
+  () => '/instances',
+  'Create MCP server instance',
+  {
+    audit: (_req, data) => {
+      auditSettingsChange('mcp_server', 'create', {
+        target: (data as { _id?: string })._id,
+      });
+    },
+  },
+);
 
 export const getMcpInstance = proxyMcp(
   HttpMethod.GET,
@@ -188,12 +224,14 @@ export const updateMcpInstance = proxyMcp(
   HttpMethod.PUT,
   (req) => `/instances/${encInstanceId(req)}`,
   'Update MCP server instance',
+  { audit: (req) => auditMcpServer(req, 'update', 'settings') },
 );
 
 export const deleteMcpInstance = proxyMcp(
   HttpMethod.DELETE,
   (req) => `/instances/${encInstanceId(req)}`,
   'Delete MCP server instance',
+  { audit: (req) => auditMcpServer(req, 'delete') },
 );
 
 // ============================================================================
@@ -210,12 +248,14 @@ export const setMcpInstanceLogo = proxyMcp(
   HttpMethod.PUT,
   (req) => `/instances/${encInstanceId(req)}/logo`,
   'Set MCP server logo',
+  { audit: (req) => auditMcpServer(req, 'update', 'logo') },
 );
 
 export const removeMcpInstanceLogo = proxyMcp(
   HttpMethod.DELETE,
   (req) => `/instances/${encInstanceId(req)}/logo`,
   'Remove MCP server logo',
+  { audit: (req) => auditMcpServer(req, 'update', 'logo') },
 );
 
 // ============================================================================
@@ -287,6 +327,7 @@ export const updateMcpOAuthConfig = proxyMcp(
   HttpMethod.PUT,
   (req) => `/instances/${encInstanceId(req)}/oauth-config`,
   'Update MCP OAuth client configuration',
+  { audit: (req) => auditMcpServer(req, 'update', 'oauth_app') },
 );
 
 export const discoverMcpOAuthMetadata = proxyMcp(

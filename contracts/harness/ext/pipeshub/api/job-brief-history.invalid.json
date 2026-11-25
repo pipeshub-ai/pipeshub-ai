@@ -1,0 +1,53 @@
+[
+  {
+    "description": "a change of an unknown kind",
+    "instance": {
+      "runId": "run_2",
+      "startedAs": "x",
+      "changes": [
+        {
+          "kind": "granted",
+          "at": 1
+        }
+      ]
+    }
+  },
+  {
+    "description": "a choice without its stable key",
+    "instance": {
+      "runId": "run_2",
+      "startedAs": "x",
+      "changes": [
+        {
+          "kind": "choice",
+          "at": 1,
+          "decision": "approved",
+          "tool": "t",
+          "action": "T"
+        }
+      ]
+    }
+  },
+  {
+    "description": "a choice's arguments leaking into the history",
+    "instance": {
+      "runId": "run_2",
+      "startedAs": "x",
+      "changes": [
+        {
+          "kind": "choice",
+          "at": 1,
+          "decision": "approved",
+          "tool": "t",
+          "action": "T",
+          "actionKey": {
+            "name": "t",
+            "verb": null,
+            "app": null
+          },
+          "args": "{}"
+        }
+      ]
+    }
+  }
+]

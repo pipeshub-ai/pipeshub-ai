@@ -19,16 +19,23 @@ type Spec = {
 }
 
 /** The router under test, with authentication stubbed to pass. */
-function router(): any {
+function router(): any[] {
   const container: any = {
     get: sinon.stub().callsFake((key: string) =>
       key === 'AuthMiddleware'
         ? { authenticate: (_req: unknown, _res: unknown, next: () => void) => next() }
         : { connectorBackend: 'http://localhost:8088' },
     ),
+    isBound: () => false,
   }
-  return createMcpServersRouter(container)
+  return [createMcpServersRouter(container)]
 }
+
+/** Every route layer of the routers mounted at `/mcp-servers`. */
+const routeLayers = (): any[] =>
+  router()
+    .flatMap((mounted: any) => mounted.stack)
+    .filter((layer: any) => layer.route)
 
 /** An Express route as `method /mcp-servers/{param}`, the spec's path form. */
 const routeId = (method: string, path: string) =>
@@ -36,8 +43,7 @@ const routeId = (method: string, path: string) =>
 
 /** Every `method /mcp-servers...` route the router serves, in spec path form. */
 function servedRoutes(): string[] {
-  return router()
-    .stack.filter((layer: any) => layer.route)
+  return routeLayers()
     .flatMap((layer: any) => Object.keys(layer.route.methods).map((method) => routeId(method, String(layer.route.path))))
     .sort()
 }
@@ -45,7 +51,7 @@ function servedRoutes(): string[] {
 /** The scopes each route's requireScopes accepts, read from its refusal of an OAuth token without any. */
 function gateScopes(): Record<string, string[]> {
   const out: Record<string, string[]> = {}
-  for (const layer of router().stack.filter((l: any) => l.route)) {
+  for (const layer of routeLayers()) {
     let refusal: Error | undefined
     for (const handler of layer.route.stack.slice(0, 2)) {
       handler.handle({ user: { isOAuth: true, oauthScopes: [] } }, {}, (err?: Error) => (refusal = err))

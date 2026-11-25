@@ -33,7 +33,7 @@ from app.agents.agent_loop.sandbox_bridge import (
 
 from ...agent_loop_lib.sandbox.contract.conftest import (
     DOCKER_TEST_IMAGE,
-    docker_available,
+    skip_without_docker,
 )
 
 pytestmark = pytest.mark.timeout(300, method="thread")
@@ -68,9 +68,7 @@ def _context() -> AgentContext:
 @pytest.fixture(params=["local", "docker"], autouse=False)
 def sandbox_mode(request, monkeypatch):
     if request.param == "docker":
-        available, reason = docker_available()
-        if not available:
-            pytest.skip(reason)
+        skip_without_docker()
         monkeypatch.setenv("SANDBOX_MODE", "docker")
         monkeypatch.setenv("SANDBOX_DOCKER_IMAGE", DOCKER_TEST_IMAGE)
     else:

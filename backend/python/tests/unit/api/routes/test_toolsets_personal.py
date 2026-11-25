@@ -7,6 +7,7 @@ These tests go through the real routes and lookups against one in-memory store.
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -22,6 +23,7 @@ from app.api.routes.toolset_resolvers import (
     get_toolset_by_id,
 )
 from app.utils.url_fetcher import FetchError
+from tests.support.bound_org import bind_test_org
 from tests.unit.api.routes.mcp_route_fakes import FakeConfigService
 
 if TYPE_CHECKING:
@@ -532,3 +534,55 @@ class TestCleanup:
         assert await toolset_store.remove_org_personal_instances(store, "org-1") == 3  # type: ignore[arg-type]
         assert not [key for key in store.data if key.startswith("/services/toolset-user-instances/")]
         assert [i["_id"] for i in store.data[ORG_LIST]] == ["org-jira"]
+
+
+class TestTheControlPlaneFollows:
+    """SYNCFIX1: like an org instance, a personal one is synced into the control plane on every change,
+    and the facts it is synced from name its owner, so it installs as theirs alone."""
+
+    @staticmethod
+    async def _owners(store: FakeConfigService) -> dict[str, str | None]:
+        from app.agents.legacy_capabilities import LegacyCapabilityReader
+
+        async def none(*_args: object) -> list[Any]:
+            return []
+
+        reader = LegacyCapabilityReader(
+            MagicMock(), store,  # type: ignore[arg-type]
+            provider_of=lambda _kind: None, mcp_instances=none, read_manifest=none, skill_digest=none,  # type: ignore[arg-type]
+        )
+        facts = await reader.read("org-1", agents=False)
+        dumped = facts.model_dump(mode="json", by_alias=True)["toolsetInstances"]
+        return {i["instanceId"]: i["ownerId"] for i in dumped}
+
+    async def test_creating_editing_and_deleting_one_syncs_the_org_and_the_facts_name_its_owner(self) -> None:
+        store = _store()
+        sync = AsyncMock(return_value=True)
+        with patch.object(toolsets, "sync_capabilities", sync):
+            created = await toolsets.create_toolset_instance(_as(store, "u-carol", _jira()), config_service=store)
+            mine = created["instance"]["_id"]
+            assert (await self._owners(store))[mine] == "u-carol"
+            assert await self._owners(store) == {
+                "org-jira": None, "alice-jira": "u-alice", "alice-gmail": "u-alice", "bob-jira": "u-bob", mine: "u-carol",
+            }
+
+            await toolsets.update_toolset_instance(mine, _as(store, "u-carol", {"instanceName": "Renamed"}), config_service=store)
+            await toolsets.delete_toolset_instance(mine, _as(store, "u-carol"), config_service=store)
+
+        assert [c.args for c in sync.await_args_list] == [(store, "org-1")] * 3
+        assert mine not in await self._owners(store)
+
+    async def test_a_refused_change_syncs_nothing(self) -> None:
+        store = _store()
+        sync = AsyncMock(return_value=True)
+        with patch.object(toolsets, "sync_capabilities", sync):
+            body = _jira(authConfig={"baseUrl": "https://jira.corp.internal"})
+            assert await _status(toolsets.create_toolset_instance(_as(store, "u-carol", body), config_service=store)) == 400
+            assert await _status(toolsets.delete_toolset_instance("alice-jira", _as(store, "u-bob"), config_service=store)) == 403
+        sync.assert_not_awaited()
+
+
+@pytest.fixture(autouse=True)
+def _bound_org() -> Iterator[str]:
+    """The auth middleware binds the verified token's org; these tests call the route functions directly."""
+    yield from bind_test_org("org-1")

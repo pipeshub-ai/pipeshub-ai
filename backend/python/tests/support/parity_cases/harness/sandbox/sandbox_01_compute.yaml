@@ -1,0 +1,14 @@
+id: sandbox-01-compute
+category: sandbox
+chat_mode: quick
+task: What is the sum of the integers from 0 to 99? Use code.
+env: {PIPESHUB_ENABLE_CODE_EXECUTION: "true", SANDBOX_MODE: local, SANDBOX_ALLOW_LOCAL: "true"}
+requires: [local_sandbox]
+script:
+  turns:
+    - reply: {tool_calls: [{id: r1, name: run_code, args: {language: python, code: "print(sum(range(100)))"}}]}
+    - expect: {tool_result_for: run_code, status: succeeded}
+      reply: {text: "The sum is 4950."}
+grader:
+  - contains: "4950"
+  - tool_called: run_code

@@ -501,6 +501,8 @@ jobs:
       GOOGLE_DRIVE_TEST_USER_EMAIL: ${{ secrets.GOOGLE_DRIVE_TEST_USER_EMAIL }}
       GOOGLE_DRIVE_REFRESH_TOKEN: ${{ secrets.GOOGLE_DRIVE_REFRESH_TOKEN }}
 
+      # A stack made for this run: specs tagged @disposable run on it (WP-71).
+      E2E_DISPOSABLE_STACK: '1'
       SMTP_HOST: mailpit
       SMTP_PORT: '1025'
       SMTP_FROM_EMAIL: no-reply@example.com
@@ -614,7 +616,7 @@ jobs:
         if: env.RUN_PLAYWRIGHT == 'true'
         working-directory: frontend
         run: |
-          npm ci
+          npm ci --ignore-scripts
           npx playwright install chromium --with-deps
 
       # Spot runners share addresses, so anonymous pulls run into Docker Hub's
@@ -724,8 +726,8 @@ jobs:
         env:
           ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
         run: |
-          (cd backend/nodejs/apps && npm ci --no-audit --no-fund)
-          [ -d frontend/node_modules ] || (cd frontend && npm ci --no-audit --no-fund)
+          (cd backend/nodejs/apps && npm ci --ignore-scripts --no-audit --no-fund)
+          [ -d frontend/node_modules ] || (cd frontend && npm ci --ignore-scripts --no-audit --no-fund)
           echo "LOCAL_FS_DESKTOP_AGENT=$GITHUB_WORKSPACE/connectors-simulator-localfs/harness/local_fs/node/desktop_agent.ts" >> "$GITHUB_ENV"
 
       - name: Check out the BookStack simulator
@@ -848,8 +850,7 @@ jobs:
       - name: Set up Python and install dependencies
         working-directory: integration-tests
         run: |
-          uv venv
-          uv pip install -e .
+          uv sync --locked
 
       # client_credentials grant: a fresh token every run, nothing rotates or is written back.
       # Must cover every job whose markers select zendesk, or that job runs the suite without a token.
@@ -1694,8 +1695,7 @@ jobs:
       - name: Set up Python and install dependencies
         working-directory: integration-tests
         run: |
-          uv venv
-          uv pip install -e .
+          uv sync --locked
 
       - name: Run helper unit tests
         working-directory: integration-tests

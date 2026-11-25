@@ -11,6 +11,9 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.agent_loop_lib.sandbox.coding.factories.broker import (
+    BrokerCodingSandboxFactory,
+)
 from app.agent_loop_lib.sandbox.coding.factories.docker import (
     DockerCodingSandboxFactory,
 )
@@ -24,6 +27,7 @@ BUILTIN_FACTORIES: tuple[type[SandboxBackendFactory], ...] = (
     LocalCodingSandboxFactory,
     DockerCodingSandboxFactory,
     E2BCodingSandboxFactory,
+    BrokerCodingSandboxFactory,
 )
 
 

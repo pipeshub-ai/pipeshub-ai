@@ -7,30 +7,68 @@ import asyncio
 import json
 import logging
 import uuid
-from collections.abc import AsyncGenerator, Awaitable, Callable, Iterable
+from collections.abc import AsyncGenerator, Awaitable, Callable, Iterable, Mapping
 from contextlib import aclosing
 from logging import Logger
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
+from app.agents.agent_environment import AgentEnvironmentRefused, agent_environment
+from app.agents.agent_gates import (
+    GATED_AGENT_NEEDS_HARNESS,
+    AgentGatesRefused,
+    agent_gates,
+    stored_agent_gates,
+)
 from app.agents.agent_loop.cancellation.registry import RunOwner
 from app.agents.agent_loop.cancellation.validation import validate_run_id
 from app.agents.agent_loop.error_classification import classify_exception
 from app.agents.agent_loop.protocol import resolve_protocol
-from app.agents.agent_loop.protocol.agui import AGUIEventType
 from app.agents.agent_loop.protocol.stream_collector import collect_stream_outcome
+from app.agents.agent_loop.skills.graph_store import SkillVisibility
 from app.agents.agent_loop.stream_bridge import run_agent_loop_stream
 from app.agents.agent_loop.turn_log import log_turn_end
+from app.agents.capability_sync import CapabilitySync
 from app.agents.chat_modes.custom_instructions import resolve_custom_instructions
 from app.agents.chat_modes.policy import AgentCapabilities, resolve_agent_policy
+from app.agents.engine_settings import (
+    AgentEngineSettings,
+    EngineSettingsRefused,
+    agent_engine_settings,
+)
 from app.agents.openapi import attachments as api_toolset_attachments
 from app.agents.openapi.service import ApiToolsetError, connected_tool_refs
 from app.agents.openapi.store import ApiToolsetStore
+from app.agents.portable import (
+    ImportCatalog,
+    ImportPlan,
+    check_drafted_tools,
+    excluded_of,
+    plan_import,
+    portable_agent,
+    unlinked_skills,
+)
 from app.agents.registry.toolset_registry import ToolsetRegistry
-from app.api.middlewares.auth import connection_limit, require_scopes
+from app.agents.role_models import RoleModel, RoleModelsRefused, agent_role_models
+from app.agents.run_definition import ASSISTANT_AGENT_KEY, AgentRunDefinition
+from app.agents.versions import (
+    AgentVersion,
+    AgentVersionConflict,
+    AgentVersionStore,
+    VersionSource,
+    agent_definition,
+    definition_digest,
+    pinned_agent,
+)
+from app.api.middlewares.auth import (
+    connection_limit,
+    is_request_admin,
+    require_scopes,
+    require_service_token,
+)
 from app.api.middlewares.caller_role import CallerRoleStatus, fetch_caller_role
 from app.api.middlewares.request_log import (
     add_request_log_fields,
@@ -40,11 +78,15 @@ from app.api.middlewares.request_log import (
 )
 from app.api.middlewares.token_policy import is_service_token
 from app.api.routes.chatbot import (
+    get_graph_provider,
     get_llm_for_chat,
     get_run_cancellation_registry,
     load_entity_vector_store,
     load_system_prompts,
+    resolved_turn_or_401,
 )
+from app.api.routes.control_plane_directory import directory_events, owner_team_from
+from app.config.ai_models.display import model_display_name
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.ai_models import (
     REASONING_EFFORT_VALUES,
@@ -58,6 +100,20 @@ from app.connectors.core.base.data_store.graph_data_store import (
     ensure_written,
 )
 from app.connectors.core.registry.connector_builder import ConnectorScope
+from app.control_plane.directory.owner_team import OwnerTeamRefused
+from app.core.org_context import bound_org_id, current_org_id
+from app.harness.agent_deletion import agent_deletion_state
+from app.harness.agent_names import MAX_AGENT_KEYS, agent_names, latest_versions
+from app.harness.credentials.sources import configured_llm_entries
+from app.harness.knowledge.caller import UNRESOLVED_CALLER
+from app.harness.legacy.resolved_request import (
+    bind_resolved_stages,
+    bound_installations,
+    release_resolved_stages,
+    with_resolved_stages,
+)
+from app.harness.run_policy.select import engine_profiles
+from app.harness.tool_identity.settings import instance_tool_ids_enabled
 from app.modules.agents.capability_summary import (
     PARTLY_SHARED_KEY,
     fetch_connector_configs,
@@ -97,6 +153,18 @@ from app.modules.transformers.blob_storage import (
     BlobStorage,  # noqa: F401 - re-exported, see above
 )
 from app.schema.node_validator import SchemaValidationError
+from app.services.featureflag.platform_settings import is_agent_harness_on
+from app.services.graph_db.common.utils import (
+    AGENT_ENGINE_FIELDS,
+    AGENT_ENGINE_PROFILE_FIELD,
+    AGENT_ENVIRONMENT_FIELD,
+    AGENT_GATES_FIELD,
+    AGENT_MODEL_ACCOUNT_FIELD,
+    AGENT_OWNER_TEAM_FIELD,
+    AGENT_ROLE_MODELS_FIELD,
+    decode_agent_json_fields,
+    encode_agent_json_fields,
+)
 from app.services.graph_db.interface.graph_db_provider import (
     SELECTION_APPS_FILTER_KEY,
     IGraphDBProvider,
@@ -180,6 +248,8 @@ class ChatQuery(BaseModel):
     query: str
     limit: int | None = 50
     previousConversations: list[dict] = []
+    # What the conversation so far read (FG2): its messages' labels joined by Node; absent, nobody vouches for it.
+    historyLabel: dict[str, Any] | None = None
     quickMode: bool = False
     filters: dict[str, Any] | None = None
     retrievalMode: str | None = "HYBRID"
@@ -277,8 +347,9 @@ class AgentNotFoundError(AgentError):
 class AgentTemplateNotFoundError(AgentError):
     """Agent template not found"""
     def __init__(self, template_id: str) -> None:
+        # The argument stays for the callers; the detail leaves it out, as it may match nothing.
         super().__init__(
-            detail=f"Agent template '{template_id}' not found or you don't have access to it",
+            detail="Agent template not found or you don't have access to it",
             status_code=404
         )
 
@@ -357,7 +428,15 @@ async def get_services(request: Request) -> dict[str, Any]:
         "graph_provider": graph_provider,
         "config_service": config_service,
         "logger": logger,
+        "capability_sync": CapabilitySync(config_service),
     }
+
+
+async def _sync_agent(services: dict[str, Any], org_key: str, agent_key: str) -> None:
+    """CPD-7's dual write after an agent's edges changed; a services dict without the notifier syncs nothing."""
+    sync = services.get("capability_sync")
+    if isinstance(sync, CapabilitySync):
+        await sync.agent(org_key, agent_key)
 
 
 def sa_forces_org_sharing() -> bool:
@@ -434,8 +513,13 @@ async def _resolve_service_account_caller_identity(
       2. Fall back to the requesting user's document (platform-UI users have a real userId
          in the JWT, so we can look them up).
 
-    Retrieval ACL stays on the agent creator — only the LLM-visible name/email changes.
+    Retrieval ACL stays on the agent creator — only the LLM-visible name/email changes. The requesting user is
+    kept as ``callerUserId``: with knowledge publications on it bounds the creator's scope (D21, P2.13).
     """
+    requesting_user = user_context.get("userId")
+    enriched_user_info["callerUserId"] = (
+        requesting_user if isinstance(requesting_user, str) and requesting_user else UNRESOLVED_CALLER
+    )
     caller_name = chat_query.callerDisplayName
     caller_email = chat_query.callerEmail
 
@@ -536,6 +620,16 @@ async def _enrich_user_info(user_info: dict[str, Any], user_doc: dict[str, Any])
             enriched[field] = user_doc[field]
 
     return enriched
+
+
+async def _owner_user_id(agent: dict[str, Any], graph_provider: IGraphDBProvider) -> str | None:
+    """The agent creator's user id (``createdBy`` is a graph key); None when it cannot be read."""
+    creator_key = agent.get("createdBy")
+    if not creator_key:
+        return None
+    creator = await graph_provider.get_document(str(creator_key), CollectionNames.USERS.value)
+    user_id = (creator or {}).get("userId")
+    return user_id if isinstance(user_id, str) and user_id else None
 
 
 def _is_live_identity(node: dict[str, Any]) -> bool:
@@ -914,6 +1008,60 @@ def _parse_default_reasoning_effort(raw_value: Any) -> str | None:
     return value
 
 
+async def _agent_engine_settings(
+    request: Request,
+    services: dict[str, Any],
+    org_key: str,
+    agent_key: str,
+    body: dict[str, Any],
+    stored: dict[str, Any] | None,
+) -> AgentEngineSettings | None:
+    """The engine settings this write stores, checked under the org's engine ceiling (AG1); only an org
+    admin turns an agent into an engine agent (P2.11e). The ceiling is the engine-profile document's while it is
+    the record, else the org's live layer, which this process shares with its inline claimer."""
+    from app.api.routes.harness import inline_claimer
+
+    try:
+        return await agent_engine_settings(
+            org_key,
+            agent_key,
+            body,
+            stored,
+            lambda: engine_profiles(services["config_service"], lambda: inline_claimer(request).live_layer()),
+            caller_is_admin=is_request_admin(request),
+        )
+    except EngineSettingsRefused as refused:
+        raise AgentError(detail=f"{refused} [{refused.code}]", status_code=refused.status) from None
+
+
+async def _agent_role_models(
+    services: dict[str, Any], agent_key: str, body: dict[str, Any]
+) -> dict[str, RoleModel] | None:
+    """The role models this write stores (MA1), each a configured LLM; ``None``: the write does not name them."""
+    try:
+        return await agent_role_models(
+            agent_key, body, lambda: configured_llm_entries(services["config_service"], fresh=True)
+        )
+    except RoleModelsRefused as refused:
+        raise AgentError(detail=f"Invalid request: {refused} [{refused.code}]", status_code=400) from None
+
+
+def _agent_gates(body: dict[str, Any]) -> dict[str, Any] | None:
+    """The run gates this write stores (WP-31 D); ``None``: the write does not name them; ``{}``: it clears them."""
+    try:
+        return agent_gates(body)
+    except AgentGatesRefused as refused:
+        raise AgentError(detail=f"Invalid request: {refused} [{refused.code}]", status_code=400) from None
+
+
+def _agent_environment(body: dict[str, Any]) -> dict[str, Any] | None:
+    """The environment this write stores (C20.18); ``None``: the write does not name it; ``{}``: it clears it."""
+    try:
+        return agent_environment(body)
+    except AgentEnvironmentRefused as refused:
+        raise AgentError(detail=f"Invalid request: {refused} [{refused.code}]", status_code=400) from None
+
+
 _SUPPORTED_WEB_SEARCH_PROVIDERS = frozenset(WEB_SEARCH_PROVIDERS)
 
 
@@ -980,10 +1128,13 @@ def _is_web_search_enabled(selected_tools: list[str] | None, *, is_universal_age
 def _parse_toolsets(raw_toolsets: list[Any]) -> dict[str, dict[str, Any]]:
     """Parse toolsets with their tools.
 
-    The key of the returned dict is the toolset name (lowercase).
-    Each value carries the parsed fields including optional instanceId.
+    The key of the returned dict is the toolset name (lowercase); with
+    instance-scoped tool ids on (P2.2), a toolset bound to an instance is keyed
+    by name and instance, so two instances of one type stay two toolsets.
+    Each value carries the parsed fields: its ``name`` and optional instanceId.
     """
     toolsets_with_tools = {}
+    per_instance = instance_tool_ids_enabled()
 
     if not raw_toolsets or not isinstance(raw_toolsets, list):
         return toolsets_with_tools
@@ -1004,24 +1155,26 @@ def _parse_toolsets(raw_toolsets: list[Any]) -> dict[str, dict[str, Any]]:
         instance_id = toolset_data.get("instanceId", None)
         instance_name = toolset_data.get("instanceName", None)
 
-        if toolset_name not in toolsets_with_tools:
-            toolsets_with_tools[toolset_name] = {
+        entry_key = f"{toolset_name}@{instance_id}" if per_instance and instance_id else toolset_name
+        if entry_key not in toolsets_with_tools:
+            toolsets_with_tools[entry_key] = {
+                "name": toolset_name,
                 "displayName": display_name,
                 "type": toolset_type,
                 "tools": [],
                 "instanceId": instance_id,
                 "instanceName": instance_name,
             }
-        elif instance_id and not toolsets_with_tools[toolset_name].get("instanceId"):
+        elif instance_id and not toolsets_with_tools[entry_key].get("instanceId"):
             # Update instanceId if not yet set
-            toolsets_with_tools[toolset_name]["instanceId"] = instance_id
-            toolsets_with_tools[toolset_name]["instanceName"] = instance_name
+            toolsets_with_tools[entry_key]["instanceId"] = instance_id
+            toolsets_with_tools[entry_key]["instanceName"] = instance_name
 
         for tool in tools_list:
             if isinstance(tool, dict):
                 tool_name = tool.get("name", "")
                 if tool_name:
-                    toolsets_with_tools[toolset_name]["tools"].append({
+                    toolsets_with_tools[entry_key]["tools"].append({
                         "name": tool_name,
                         "fullName": tool.get("fullName", f"{toolset_name}.{tool_name}"),
                         "description": tool.get("description", "")
@@ -1296,7 +1449,8 @@ async def _create_toolset_edges(
     toolset_nodes = []
     toolset_mapping = {}  # Map toolset_name to toolset_key
 
-    for toolset_name, toolset_data in toolsets_with_tools.items():
+    for entry_key, toolset_data in toolsets_with_tools.items():
+        toolset_name = toolset_data.get("name", entry_key)
         toolset_key = str(uuid.uuid4())
         if written_toolset_keys is not None:
             written_toolset_keys.append(toolset_key)
@@ -1324,7 +1478,8 @@ async def _create_toolset_edges(
             toolset_node["instanceName"] = instance_name
 
         toolset_nodes.append(toolset_node)
-        toolset_mapping[toolset_name] = {
+        toolset_mapping[entry_key] = {
+            "name": toolset_name,
             "key": toolset_key,
             "displayName": display_name,
             "tools": tools_list
@@ -1342,7 +1497,8 @@ async def _create_toolset_edges(
     toolset_tool_edges = []
     tool_mapping = {}  # Map full_name to tool_key
 
-    for toolset_name, toolset_info in toolset_mapping.items():
+    for toolset_info in toolset_mapping.values():
+        toolset_name = toolset_info["name"]
         for tool_data in toolset_info["tools"]:
             tool_name = tool_data["name"]
             full_name = tool_data["fullName"]
@@ -1415,7 +1571,8 @@ async def _create_toolset_edges(
         raise RuntimeError("Failed to link toolsets to the agent")
 
     # Build response with created toolsets and tools
-    for toolset_name, toolset_info in toolset_mapping.items():
+    for toolset_info in toolset_mapping.values():
+        toolset_name = toolset_info["name"]
         created_tools = []
         for tool_data in toolset_info["tools"]:
             full_name = tool_data["fullName"]
@@ -1499,7 +1656,7 @@ def _parse_mcp_servers(raw_mcp_servers: list[Any]) -> dict[str, dict[str, Any]]:
             continue
 
         type_id = mcp_data.get("typeId") or None
-        if type_id:
+        if type_id and not instance_tool_ids_enabled():
             existing_instance_id = seen_type_ids.get(type_id)
             if existing_instance_id and existing_instance_id != instance_id:
                 raise InvalidRequestError(
@@ -1560,6 +1717,43 @@ def _parse_mcp_servers(raw_mcp_servers: list[Any]) -> dict[str, dict[str, Any]]:
     return mcp_servers_with_tools
 
 
+async def _refuse_unapproved_mcp_tools(services: dict[str, Any], mcp_servers_with_tools: dict[str, dict[str, Any]]) -> None:
+    """With `MCP_HUB` on, an agent is saved only with the MCP tools the build's admission policy lets it attach
+    (D-MCP-5; with no admin approval of MCP tools, every tool): a run pinned on a tool the policy holds could never
+    be built, so the attachment is refused here, naming the tools, instead of at the first chat."""
+    from app.harness.mcp_hub.settings import hub_enabled
+    from app.harness.mcp_hub.tool_admission import mcp_tool_admission
+    from harness_core.mcp_hub.errors import ManifestUnavailable, ToolUnapproved
+
+    if not mcp_servers_with_tools or not hub_enabled():
+        return
+    config_service = services["config_service"]
+    admission = mcp_tool_admission()
+    if not await admission.requires_admin_approval(bound_org_id() or "", config_service):
+        return
+    refused: dict[str, list[str]] = {}
+    try:
+        for instance_id, server in mcp_servers_with_tools.items():
+            unapproved = await admission.unapproved(config_service, instance_id, [t["name"] for t in server["tools"]])
+            if unapproved:
+                refused[instance_id] = unapproved
+    except ManifestUnavailable as e:
+        raise HTTPException(
+            status_code=HttpStatusCode.SERVICE_UNAVAILABLE.value,
+            detail={"reasonCode": e.reason_code, "message": "The approved MCP tools could not be read. Try again in a moment."},
+        ) from e
+    if refused:
+        named = "; ".join(
+            f"{mcp_servers_with_tools[i]['displayName']}: {', '.join(tools)}" for i, tools in sorted(refused.items())
+        )
+        raise HTTPException(
+            status_code=HttpStatusCode.BAD_REQUEST.value,
+            detail={
+                "reasonCode": ToolUnapproved.reason_code,
+                "message": f"These MCP tools are not approved yet and cannot be attached: {named}.",
+                "tools": refused,
+            },
+        )
 def _mcp_servers_for_chat(
     attached: list[dict[str, Any]], enabled_tools: set[str] | None,
 ) -> list[dict[str, Any]]:
@@ -2374,17 +2568,17 @@ async def _create_skill_edges(
     never creates a skill node: skills are owned by the Skills management
     API, this only links to ones that already exist.
 
-    Defense in depth (mirrors `GraphSkillStore._is_visible`): a name is
-    only linked when it resolves to an existing skill in this org AND
-    (the acting user created it OR it's a `builtin`-sourced skill) — a
-    user can only assign their own skills (or org-wide builtins) to an
-    agent, never a co-worker's. Any name that doesn't resolve is logged
+    A name is only linked when it resolves to an existing skill in this org
+    that the acting user's own `SkillVisibility` allows (their skill or a
+    builtin): assignment is how a custom skill is shared, so only its owner
+    can share it. Any name that doesn't resolve is logged
     and skipped rather than failing the whole create/update — a stale
     skill reference in the payload should never block agent creation.
     """
     if not skill_names:
         return []
 
+    assignable = SkillVisibility.of([user_key])
     skills_collection = CollectionNames.AGENT_SKILLS.value
     time = get_epoch_timestamp_in_ms()
     edges: list[dict[str, Any]] = []
@@ -2396,7 +2590,7 @@ async def _create_skill_edges(
         if not skill_doc or skill_doc.get("orgId") != org_id:
             log_event(logger, "agent.skill.skipped", reason="unknown", skill=name)
             continue
-        if skill_doc.get("source") != "builtin" and skill_doc.get("createdBy") != user_key:
+        if not assignable.allows(skill_doc):
             log_event(logger, "agent.skill.skipped", reason="not_owned", skill=name)
             continue
         if (skill_doc.get("status") or "active") != "active":
@@ -2488,7 +2682,7 @@ async def _enrich_agent_models(agent: dict[str, Any], config_service: Configurat
                     "isMultimodal": matching_config.get("isMultimodal", False),
                     "isDefault": matching_config.get("isDefault", False),
                     "modelType": "llm",
-                    "modelFriendlyName": matching_config.get("modelFriendlyName", model_name),
+                    "modelFriendlyName": model_display_name(matching_config, model_name),
                     **_stored_default_effort(matching_config, model_key, logger),
                 })
             else:
@@ -2501,7 +2695,7 @@ async def _enrich_agent_models(agent: dict[str, Any], config_service: Configurat
                     "isMultimodal": False,
                     "isDefault": False,
                     "modelType": "llm",
-                    "modelFriendlyName": model_name or model_key,
+                    "modelFriendlyName": model_display_name(None, model_name),
                 })
 
         agent["models"] = enriched_models
@@ -2546,6 +2740,24 @@ def _mark_deprecated_tools(agent: dict[str, Any], logger: Logger) -> None:
     currently a no-op until a replacement registry is wired in.
     """
     return
+
+
+async def agent_for_chat(
+    agent: dict[str, Any],
+    graph_provider: IGraphDBProvider,
+    org_key: str,
+    agent_id: str,
+    config_service: ConfigurationService | None,
+    *,
+    resolved: bool = False,
+) -> dict[str, Any]:
+    """The definition an agent chat runs: the latest published version (OWD-14), not an unpublished draft. Where the
+    agent harness is off for the org it is the saved agent, as a release without versions ran (ADR-OPS-08). Node
+    resolves a turn (``X-PipesHub-Resolved``) only for an org with the harness on, so a resolved turn reads no
+    setting for it."""
+    if not resolved and not await is_agent_harness_on(config_service):
+        return agent
+    return pinned_agent(agent, await AgentVersionStore(graph_provider).current(org_key, agent_id, agent))
 
 
 # ============================================================================
@@ -2808,15 +3020,35 @@ async def update_agent_template(request: Request, template_id: str) -> JSONRespo
 # Agent CRUD Endpoints
 # ============================================================================
 
+async def _owner_team(
+    request: Request, body: dict[str, Any], services: dict[str, Any], org_key: str, user_key: str
+) -> str | None:
+    """The ``ownerTeam`` a create or update asks for (CPD-9): a team of the org, given by an org admin or its OWNER."""
+    try:
+        return await owner_team_from(
+            request, body.get(AGENT_OWNER_TEAM_FIELD), graph=services["graph_provider"], org_id=org_key, user_key=user_key
+        )
+    except OwnerTeamRefused as exc:
+        if exc.reason_code == "owner_team_forbidden":
+            raise PermissionDeniedError("make this team the agent's owner team") from exc
+        raise InvalidRequestError(str(exc)) from exc
+
+
 @router.post("/create", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_WRITE))])
 async def create_agent(request: Request) -> JSONResponse:
     """Create a new agent using graph-based architecture"""
+    return JSONResponse(status_code=200, content=await _create_agent(request, None))
+
+
+async def _create_agent(request: Request, planned: dict[str, Any] | None) -> dict[str, Any]:
+    """Creates the agent ``planned`` describes (an import's body), else the request's body: owned by the caller,
+    in the caller's org, whatever the body says. Answers the create route's response."""
     try:
         services = await get_services(request)
         logger = services["logger"]
         user_context = _get_user_context(request)
 
-        body = _parse_request_body(await request.body())
+        body = planned if planned is not None else _parse_request_body(await request.body())
         _validate_required_fields(body, ["name"], ("description", "startMessage", "systemPrompt", "instructions"))
 
         user_doc = await _get_user_document(user_context["userId"], services["graph_provider"], logger)
@@ -2852,10 +3084,17 @@ async def create_agent(request: Request) -> JSONResponse:
             if mcp_servers_with_tools else {}
         )
         mcp_servers_with_tools = _bind_mcp_attachments_to_instances(mcp_servers_with_tools, attached_mcp_instances)
+        await _refuse_unapproved_mcp_tools(services, mcp_servers_with_tools)
         knowledge_sources = _parse_knowledge_sources(body.get("knowledge", []))
         await _refuse_limit_over_the_cap(knowledge_sources, services["graph_provider"], org_key, logger)
         skill_names = _parse_skills(body.get("skills", []))
         web_search_attachment = _parse_web_search(body.get("webSearch"))
+
+        agent_key = str(uuid.uuid4())
+        engine_settings = await _agent_engine_settings(request, services, org_key, agent_key, body, None)
+        role_models = await _agent_role_models(services, agent_key, body)
+        gates = _agent_gates(body)
+        environment = _agent_environment(body)
 
         # Validate shareWithOrg + toolsets combination BEFORE starting transaction
         is_service_account = bool(body.get("isServiceAccount", False))
@@ -2888,7 +3127,6 @@ async def create_agent(request: Request) -> JSONResponse:
         )
 
         # Create agent document
-        agent_key = str(uuid.uuid4())
         bind_request_log_fields(request, agent_id=agent_key)
         if share_with_org:
             add_request_log_fields(request, shared_with_org=True)
@@ -2914,6 +3152,20 @@ async def create_agent(request: Request) -> JSONResponse:
             "updatedAtTimestamp": time,
             "isDeleted": False,
         }
+        if engine_settings is not None and engine_settings.engine_profile is not None:
+            agent[AGENT_ENGINE_PROFILE_FIELD] = engine_settings.engine_profile
+            if engine_settings.model_account_id is not None:
+                agent[AGENT_MODEL_ACCOUNT_FIELD] = engine_settings.model_account_id
+        if role_models:
+            agent[AGENT_ROLE_MODELS_FIELD] = role_models
+        if gates:
+            agent[AGENT_GATES_FIELD] = gates
+        if environment:
+            agent[AGENT_ENVIRONMENT_FIELD] = environment
+        encode_agent_json_fields(agent)
+        owner_team = await _owner_team(request, body, services, org_key, user_key)
+        if owner_team is not None:
+            agent[AGENT_OWNER_TEAM_FIELD] = owner_team
 
         # Everything but the MCP servers is written in one transaction; those are
         # attached after it commits (see _attach_mcp_servers_to_new_agent).
@@ -2969,7 +3221,8 @@ async def create_agent(request: Request) -> JSONResponse:
                     toolset_nodes = []
 
                     # Prepare toolset nodes
-                    for toolset_name, toolset_data in toolsets_with_tools.items():
+                    for entry_key, toolset_data in toolsets_with_tools.items():
+                        toolset_name = toolset_data.get("name", entry_key)
                         from app.agents.constants.toolset_constants import (
                             normalize_app_name,
                         )
@@ -2999,7 +3252,8 @@ async def create_agent(request: Request) -> JSONResponse:
                             toolset_node["instanceName"] = instance_name
 
                         toolset_nodes.append(toolset_node)
-                        toolset_mapping[toolset_name] = {
+                        toolset_mapping[entry_key] = {
+                            "name": toolset_name,
                             "key": toolset_key,
                             "displayName": display_name,
                             "tools": tools_list
@@ -3027,7 +3281,8 @@ async def create_agent(request: Request) -> JSONResponse:
                     tool_nodes = []
                     toolset_tool_edges = []
 
-                    for toolset_name, toolset_info in toolset_mapping.items():
+                    for toolset_info in toolset_mapping.values():
+                        toolset_name = toolset_info["name"]
                         for tool_data in toolset_info["tools"]:
                             tool_name = tool_data["name"]
                             full_name = tool_data["fullName"]
@@ -3069,7 +3324,8 @@ async def create_agent(request: Request) -> JSONResponse:
                         ensure_written(await graph_provider.batch_create_edges(toolset_tool_edges, CollectionNames.TOOLSET_HAS_TOOL.value, transaction=transaction_id), "the agent's tool links")
 
                     # Build response for created toolsets
-                    for toolset_name, toolset_info in toolset_mapping.items():
+                    for toolset_info in toolset_mapping.values():
+                        toolset_name = toolset_info["name"]
                         created_tools = []
                         for tool_data in toolset_info["tools"]:
                             full_name = tool_data["fullName"]
@@ -3168,6 +3424,16 @@ async def create_agent(request: Request) -> JSONResponse:
             created_mcp_servers, failed_mcp_servers = await _attach_mcp_servers_to_new_agent(
                 agent_key, mcp_servers_with_tools, user_context, user_key, graph_provider, logger,
             )
+        await _sync_agent(services, org_key, agent_key)
+        try:
+            created_agent = await graph_provider.get_agent(agent_key, org_key)
+            if created_agent:
+                await AgentVersionStore(graph_provider).publish(
+                    org_key, agent_key, created_agent, published_by=user_context["userId"],
+                )
+        except Exception as e:
+            # Its first run or read makes version 1 instead (AgentVersionStore.current).
+            error_class.log_failure(logger, "agent.route.failed", e, op="first_version", include_error_text=False)
 
         # Build response
         response_agent = {
@@ -3181,20 +3447,18 @@ async def create_agent(request: Request) -> JSONResponse:
             response_agent.get("webSearch"),
         )
         response_agent["createdBy"] = user_context["userId"]
+        decode_agent_json_fields(response_agent)
 
         all_failed = failed_toolsets + failed_mcp_servers
         status = "partial_success" if all_failed else "success"
         message = f"Agent created with warnings: {len(all_failed)} attachment(s) failed" if all_failed else "Agent created successfully"
 
-        return JSONResponse(
-            status_code=200,
-            content={
-                "status": status,
-                "message": message,
-                "agent": response_agent,
-                "warnings": all_failed if all_failed else None,
-            }
-        )
+        return {
+            "status": status,
+            "message": message,
+            "agent": response_agent,
+            "warnings": all_failed if all_failed else None,
+        }
 
     except HTTPException:
         raise
@@ -3341,8 +3605,16 @@ async def get_agent(request: Request, agent_id: str) -> JSONResponse:
         agent = await services["graph_provider"].get_agent(agent_id, org_key)
         if not agent:
             raise AgentNotFoundError(agent_id)
+        try:
+            versioning = await _versioning(AgentVersionStore(services["graph_provider"]), org_key, agent_id, agent)
+        except Exception as e:
+            # The builder still opens the draft; only its version summary is missing.
+            services["logger"].warning(f"Versions of agent {agent_id} could not be read: {e}")
+            versioning = None
 
         agent.update(perm)
+        if versioning is not None:
+            agent["versioning"] = versioning
 
         _mark_deprecated_tools(agent, services["logger"])
 
@@ -3371,6 +3643,701 @@ async def get_agent(request: Request, agent_id: str) -> JSONResponse:
         raise
     except Exception as e:
         raise _route_failure(request, e, "load this agent") from e
+
+
+async def _versioning(store: AgentVersionStore, org_key: str, agent_id: str, draft: dict[str, Any]) -> dict[str, Any]:
+    """The builder's view of an agent's versions: the latest one, and whether the draft differs from it."""
+    latest = await store.current(org_key, agent_id, draft)
+    return {
+        "latestVersion": latest.version,
+        "latestDigest": latest.digest,
+        "unpublishedChanges": definition_digest(agent_definition(draft)) != latest.digest,
+    }
+
+
+async def _publish_draft(
+    request: Request, services: dict[str, Any], org_key: str, agent_id: str, publisher: str, note: object,
+) -> tuple[AgentVersion, bool]:
+    """Freezes the agent as it is saved now as its next version; a draft equal to the latest publishes nothing."""
+    graph = services["graph_provider"]
+    draft = await graph.get_agent(agent_id, org_key)
+    if not draft:
+        raise AgentNotFoundError(agent_id)
+    version, created = await AgentVersionStore(graph).publish(org_key, agent_id, draft, published_by=publisher, note=note)
+    if created:
+        await directory_events(request).agent_changed(org_key, agent_id, get_epoch_timestamp_in_ms())
+    return version, created
+
+
+async def _agent_access(request: Request, agent_id: str, *, edit: bool) -> tuple[dict[str, Any], dict[str, Any]]:
+    """The caller's services and context once they may read (or, with ``edit``, change) the agent; else 404/403."""
+    services = await get_services(request)
+    user_context = _get_user_context(request)
+    user_doc = await _get_user_document(user_context["userId"], services["graph_provider"], services["logger"])
+    perm = await services["graph_provider"].check_agent_permission(agent_id, user_doc["_key"], current_org_id())
+    if not perm:
+        raise AgentNotFoundError(agent_id)
+    if edit and not perm.get("can_edit", False):
+        raise PermissionDeniedError("publish this agent (only its editors can)")
+    return services, user_context
+
+
+def _version_note(body: bytes) -> object:
+    return _parse_request_body(body).get("note") if body else None
+
+
+def _version_conflict() -> HTTPException:
+    return HTTPException(status_code=409, detail="Another version was published at the same moment. Try again.")
+
+
+@router.get("/{agent_id}/versions", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_READ))])
+async def list_agent_versions(request: Request, agent_id: str) -> JSONResponse:
+    """An agent's published versions, newest first, without their definitions; and whether its draft differs."""
+    try:
+        services, user_context = await _agent_access(request, agent_id, edit=False)
+        org_key = current_org_id()
+        graph = services["graph_provider"]
+        draft = await graph.get_agent(agent_id, org_key)
+        if not draft:
+            raise AgentNotFoundError(agent_id)
+        store = AgentVersionStore(graph)
+        versioning = await _versioning(store, org_key, agent_id, draft)
+        versions = await store.history(org_key, agent_id)
+        return JSONResponse(
+            status_code=200,
+            content={"versions": [v.summary() for v in versions], **versioning},
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        _log.error(f"Error listing agent versions: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=action_failed("load this agent's versions")) from e
+
+
+@router.get("/{agent_id}/versions/{version}", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_READ))])
+async def get_agent_version(request: Request, agent_id: str, version: int) -> JSONResponse:
+    """One published version with the definition it froze."""
+    try:
+        services, user_context = await _agent_access(request, agent_id, edit=False)
+        found = await AgentVersionStore(services["graph_provider"]).get(current_org_id(), agent_id, version)
+        if found is None:
+            raise HTTPException(status_code=404, detail="This agent has no such version")
+        return JSONResponse(status_code=200, content={"version": found.wire()})
+    except HTTPException:
+        raise
+    except Exception as e:
+        _log.error(f"Error reading agent version: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=action_failed("load this version")) from e
+
+
+@router.post("/{agent_id}/versions", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_WRITE))])
+async def publish_agent_version(request: Request, agent_id: str) -> JSONResponse:
+    """Publishes the draft as the agent's next version (OWD-14). Chats run it at once; a schedule keeps the
+    version it pinned until its owner moves it. Nothing to publish answers the latest version, 200."""
+    try:
+        services, user_context = await _agent_access(request, agent_id, edit=True)
+        version, created = await _publish_draft(
+            request, services, current_org_id(), agent_id, user_context["userId"],
+            _version_note(await request.body()),
+        )
+        return JSONResponse(
+            status_code=201 if created else 200,
+            content={"version": version.summary(), "created": created},
+        )
+    except AgentVersionConflict as e:
+        raise _version_conflict() from e
+    except HTTPException:
+        raise
+    except Exception as e:
+        _log.error(f"Error publishing agent: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=action_failed("publish this agent")) from e
+
+
+# What a rollback writes back over the draft: everything a version froze that a save can set. Owner, sharing,
+# deletion and the owner team are the agent's identity, never part of a version, and are left as they are.
+_DRAFT_SCALAR_FIELDS = (
+    "name", "description", "startMessage", "systemPrompt", "instructions", "tags", "sendUserContext",
+    "webSearch", "defaultReasoningEffort",
+)
+_DRAFT_LINKED_FIELDS = ("toolsets", "mcpServers", "knowledge", "skills")
+
+
+async def _draft_body(services: dict[str, Any], definition: dict[str, Any], draft: dict[str, Any]) -> dict[str, Any]:
+    """A save body that makes the draft ``definition``: every field it sets is named, and a field the draft has
+    but the version does not is cleared, so nothing of the draft survives. Linked items are replaced whole."""
+    body: dict[str, Any] = {
+        field: definition.get(field) for field in _DRAFT_SCALAR_FIELDS if field in definition or field in draft
+    }
+    for field in _DRAFT_LINKED_FIELDS:
+        body[field] = list(definition.get(field) or [])
+    # The save path wants each model with whether it reasons, as the builder sends it; a version stores keys.
+    models = {"models": list(definition.get("models") or [])}
+    await _enrich_agent_models(models, services["config_service"], services["logger"])
+    body["models"] = models["models"]
+    # Engine settings and role models are read and checked only when one side has them (a loop agent reads no
+    # engine ceiling); null and an empty map clear them.
+    for field in AGENT_ENGINE_FIELDS:
+        if definition.get(field) is not None or draft.get(field) is not None:
+            body[field] = definition.get(field)
+    if definition.get(AGENT_ROLE_MODELS_FIELD) or draft.get(AGENT_ROLE_MODELS_FIELD):
+        body[AGENT_ROLE_MODELS_FIELD] = definition.get(AGENT_ROLE_MODELS_FIELD) or {}
+    if definition.get(AGENT_GATES_FIELD) or draft.get(AGENT_GATES_FIELD):
+        body[AGENT_GATES_FIELD] = definition.get(AGENT_GATES_FIELD) or {}
+    if definition.get(AGENT_ENVIRONMENT_FIELD) or draft.get(AGENT_ENVIRONMENT_FIELD):
+        body[AGENT_ENVIRONMENT_FIELD] = definition.get(AGENT_ENVIRONMENT_FIELD) or {}
+    return body
+
+
+@router.post(
+    "/{agent_id}/versions/{version}/rollback", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_WRITE))]
+)
+async def rollback_agent_version(request: Request, agent_id: str, version: int) -> JSONResponse:
+    """Rolls the agent back to ``version``: the draft is rewritten to that version's
+    definition, discarding unpublished changes, and then published as the next version. History only grows, and
+    runs that recorded a later version still name what they ran.
+
+    The draft is written first and published only once written, from the draft as it reads back, so the live
+    version never moves ahead of the draft and a later save cannot bring discarded edits back. A failure part-way
+    leaves the live version as it was; the rollback rewrites whole sections, so trying again finishes it."""
+    try:
+        services, user_context = await _agent_access(request, agent_id, edit=True)
+        org_key = current_org_id()
+        graph = services["graph_provider"]
+        store = AgentVersionStore(graph)
+        target = await store.get(org_key, agent_id, version)
+        if target is None:
+            raise HTTPException(status_code=404, detail="This agent has no such version")
+        draft = await graph.get_agent(agent_id, org_key)
+        if not draft:
+            raise AgentNotFoundError(agent_id)
+        latest = await store.current(org_key, agent_id, draft)
+        discarded = definition_digest(agent_definition(draft)) != latest.digest
+        note = _version_note(await request.body())
+        try:
+            await _write_draft(request, agent_id, await _draft_body(services, target.definition, draft))
+        except HTTPException:
+            raise
+        except Exception as e:
+            _log.error(f"Rolling agent {agent_id} back to version {version} failed writing its draft: {e}", exc_info=True)
+            raise HTTPException(
+                status_code=500,
+                detail="The rollback did not finish and the live version is unchanged. Try again.",
+            ) from e
+        rewritten = await graph.get_agent(agent_id, org_key)
+        if not rewritten:
+            raise AgentNotFoundError(agent_id)
+        published, created = await store.publish(
+            org_key, agent_id, rewritten,
+            published_by=user_context["userId"], note=note,
+            source=VersionSource.ROLLBACK, rolled_back_from=version,
+        )
+        if created:
+            await directory_events(request).agent_changed(org_key, agent_id, get_epoch_timestamp_in_ms())
+        return JSONResponse(
+            status_code=201 if created else 200,
+            content={
+                "version": published.summary(),
+                "created": created,
+                # The draft's edits that were never published, now gone, so a later save cannot bring them back.
+                "discardedUnpublishedChanges": discarded,
+            },
+        )
+    except AgentVersionConflict as e:
+        raise _version_conflict() from e
+    except HTTPException:
+        raise
+    except Exception as e:
+        _log.error(f"Error rolling back agent: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=action_failed("roll back this agent")) from e
+
+
+def _first_problem(error: ValidationError) -> str:
+    first = error.errors()[0]
+    where = ".".join(str(part) for part in first.get("loc", ())) or "document"
+    return f"{where}: {first.get('msg', 'not valid')}"
+
+
+async def _exported_definition(
+    store: AgentVersionStore, org_key: str, agent_id: str, draft: dict[str, Any], version: str | None,
+) -> tuple[dict[str, Any], int | None, str | None]:
+    """The definition an export carries: the latest published version by default, a named one, or the draft."""
+    if version == "draft":
+        return agent_definition(draft), None, None
+    if version is None:
+        found = await store.current(org_key, agent_id, draft)
+    else:
+        if not version.isdigit() or int(version) < 1:
+            raise InvalidRequestError("version is a published version number or 'draft'")
+        found = await store.get(org_key, agent_id, int(version))
+        if found is None:
+            raise HTTPException(status_code=404, detail="This agent has no such version")
+    return found.definition, found.version, found.digest
+
+
+@router.get("/{agent_id}/export", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_READ))])
+async def export_agent(request: Request, agent_id: str, version: str | None = None) -> JSONResponse:
+    """The agent in its portable form (C4.08), for whoever may read it: every reference by name, no id, credential
+    or sharing. Node wraps it with the agent's policy layer into the export document."""
+    try:
+        services, user_context = await _agent_access(request, agent_id, edit=False)
+        org_key = current_org_id()
+        graph = services["graph_provider"]
+        draft = await graph.get_agent(agent_id, org_key)
+        if not draft:
+            raise AgentNotFoundError(agent_id)
+        definition, number, digest = await _exported_definition(
+            AgentVersionStore(graph), org_key, agent_id, draft, version,
+        )
+        llm_entries = await configured_llm_entries(services["config_service"], fresh=True)
+        try:
+            agent = portable_agent(definition, llm_entries)
+        except ValueError as e:
+            problem = _first_problem(e) if isinstance(e, ValidationError) else str(e)
+            raise HTTPException(
+                status_code=422, detail=f"This agent's settings cannot be exported ({problem})",
+            ) from e
+        return JSONResponse(status_code=200, content={
+            "agent": agent,
+            "source": {"agentVersion": number, "digest": digest},
+            "excluded": excluded_of(draft, definition),
+        })
+    except HTTPException:
+        raise
+    except Exception as e:
+        _log.error(f"Error exporting agent: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=action_failed("export this agent")) from e
+
+
+async def _import_catalog(services: dict[str, Any], org_key: str, user_id: str) -> ImportCatalog:
+    """What the importer can bind to: the configured models, and the actions, MCP servers and sources they see.
+    A store that cannot be read fails the import rather than reading as 'nothing here'."""
+    from app.agents.mcp.service import load_visible_instances
+    from app.agents.toolset_store import load_user_instances
+    from app.connectors.core.registry.connector_builder import ConnectorScope
+    from app.edition_config import load_instances_for_mutation
+
+    config = services["config_service"]
+    llm_entries, org_toolsets, own_toolsets, mcp_instances, connectors = await asyncio.gather(
+        configured_llm_entries(config, fresh=True),
+        load_instances_for_mutation(org_key, config),
+        load_user_instances(config, org_key, user_id),
+        load_visible_instances(config, org_key, user_id),
+        services["graph_provider"].get_user_connector_instances(
+            collection=CollectionNames.APPS.value, user_id=user_id, org_id=org_key,
+            team_scope=ConnectorScope.TEAM.value, personal_scope=ConnectorScope.PERSONAL.value,
+        ),
+    )
+    return ImportCatalog(
+        llm_entries=llm_entries,
+        # The org-wide loader is an extension point and may return more than this org's instances (it is what a
+        # save writes back), so the catalog keeps only the importer's org's.
+        toolset_instances=[*(ts for ts in org_toolsets if ts.get("orgId") == org_key), *own_toolsets],
+        mcp_instances=mcp_instances,
+        connectors=list(connectors or []),
+    )
+
+
+_DRAFTED_MCP_LIST_SECONDS = 10.0
+
+
+async def _mcp_tool_list(instance: dict[str, Any], user_id: str, config: Any) -> list[dict[str, Any]] | None:  # noqa: ANN401
+    """The tools ``instance`` offers ``user_id`` (the tool cache first, then one bounded discovery, as the MCP
+    listing does), or None when they cannot be known: not signed in, unreachable, too slow."""
+    from app.agents.mcp import service as mcp_service
+    from app.agents.mcp.discovery import (
+        cached_tools_for_owner,
+        discover_tools_for_owner,
+    )
+
+    try:
+        auth = await mcp_service.resolve_effective_user_auth(instance, user_id, config)
+        if auth is None or (auth != {} and not auth.get("isAuthenticated")):
+            return None
+        owner = mcp_service.credential_owner_id(instance, user_id)
+        cached = await cached_tools_for_owner(instance, auth, owner, config)
+        if cached is not None:
+            tools = cached[0]
+        else:
+            tools, _ = await asyncio.wait_for(
+                discover_tools_for_owner(instance, auth, owner, config), timeout=_DRAFTED_MCP_LIST_SECONDS,
+            )
+    except Exception as e:
+        _log.info(f"Couldn't list the tools of MCP instance {instance.get('_id')} for a drafted agent: {e}")
+        return None
+    return [{"name": t.name, "fullName": t.namespaced_name, "description": t.description or ""} for t in tools]
+
+
+async def _drafted_tool_lists(
+    request: Request, config: Any, plan: ImportPlan, catalog: ImportCatalog, user_id: str,  # noqa: ANN401
+) -> tuple[dict[str, list[dict[str, Any]] | None], dict[str, list[dict[str, Any]] | None]]:
+    """The real tool lists a drafted agent's tools are held to (UI-ADOPT2): each named toolset type's from the
+    toolset registry (a type it does not know offers none; no registry: unknown), and each bound MCP instance's
+    that names its tools."""
+    registry = getattr(request.app.state, "toolset_registry", None)
+    toolset_tools: dict[str, list[dict[str, Any]] | None] = {}
+    for ts in plan.body.get("toolsets") or []:
+        kind = str(ts.get("name") or "").lower()
+        if not ts.get("tools") or kind in toolset_tools:
+            continue
+        if registry is None:
+            toolset_tools[kind] = None
+            continue
+        metadata = registry.get_toolset_metadata(kind) or {}
+        offered = [] if metadata.get("isInternal") else [t for t in metadata.get("tools") or [] if isinstance(t, dict)]
+        toolset_tools[kind] = [
+            {"name": str(t.get("name") or ""), "fullName": f"{kind}.{t.get('name')}", "description": str(t.get("description") or "")}
+            for t in offered if t.get("name")
+        ]
+    instances = {str(i.get("_id")): i for i in catalog.mcp_instances}
+    wanted = [
+        s["instanceId"] for s in plan.body.get("mcpServers") or []
+        if s.get("allTools") is not True and s.get("tools") and s.get("instanceId") in instances
+    ]
+    lists = await asyncio.gather(*(_mcp_tool_list(instances[i], user_id, config) for i in wanted))
+    return toolset_tools, dict(zip(wanted, lists))
+
+
+@router.post("/import", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_WRITE))])
+async def import_agent(request: Request) -> JSONResponse:
+    """Creates a new agent from a portable form (C4.08), as the create route does: owned by the caller, in the
+    caller's org, shared with no one, nothing taken from the document but the portable fields. Each name binds to
+    the one object of the importer's that carries it; the rest is left out and listed in ``rebind``. ``bind:
+    sole_instance`` (an agent drafted in chat, ADR-AGB-01) also binds an action named without an instance to the
+    importer's one instance of its type."""
+    try:
+        body = _parse_request_body(await request.body())
+        unknown = sorted(set(body) - {"agent", "bind"})
+        if unknown or not isinstance(body.get("agent"), dict) or body.get("bind", "named") not in ("named", "sole_instance"):
+            raise InvalidRequestError("the body is {'agent': <portable agent>, 'bind'?: 'named' | 'sole_instance'}")
+        services = await get_services(request)
+        user_context = _get_user_context(request)
+        catalog = await _import_catalog(services, current_org_id(), user_context["userId"])
+        try:
+            plan = plan_import(body["agent"], catalog, sole_instance=body.get("bind") == "sole_instance")
+        except ValueError as e:
+            # A schema mismatch, or an environment the agents API would refuse (a secret-looking variable).
+            problem = _first_problem(e) if isinstance(e, ValidationError) else str(e)
+            raise InvalidRequestError(f"this is not an agent export ({problem})") from e
+        if body.get("bind") == "sole_instance":
+            # A model wrote this draft's tool names: each is held to what its action or server really offers.
+            toolset_tools, mcp_tools = await _drafted_tool_lists(
+                request, services["config_service"], plan, catalog, user_context["userId"],
+            )
+            check_drafted_tools(plan, toolset_tools=toolset_tools, mcp_tools=mcp_tools)
+        created = await _create_agent(request, plan.body)
+        agent = created["agent"]
+        linked = [str(s.get("name")) for s in agent.get("skills") or [] if isinstance(s, dict)]
+        return JSONResponse(status_code=201, content={
+            "agent": {"_key": agent["_key"], "name": agent["name"]},
+            "bound": plan.bound,
+            "rebind": [*plan.rebind, *unlinked_skills(plan.body["skills"], linked)],
+            "warnings": created.get("warnings"),
+        })
+    except HTTPException:
+        raise
+    except Exception as e:
+        _log.error(f"Error importing agent: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=action_failed("import this agent")) from e
+
+
+async def require_agent_execute_for_named_agents(request: Request, agent_id: str) -> None:
+    """Ask an OAuth token for `agent:execute` unless the agent is the universal one.
+
+    Node's conversation routes (agent chat mode, `conversation:chat`) run the
+    universal agent through these routes with the caller's token, so the route
+    admits `conversation:chat` too. A named Agent Builder agent still needs
+    `agent:execute`. Session and service tokens are not scope-restricted here.
+    """
+    if agent_id == UNIVERSAL_AGENT_ID:
+        return
+    user = getattr(request.state, "user", None) or {}
+    if is_service_token(user) or not user.get("isOAuth", False):
+        return
+    if OAuthScopes.AGENT_EXECUTE.value not in user.get("oauthScopes", []):
+        raise HTTPException(
+            status_code=403,
+            detail=f"Insufficient scope. Required: {OAuthScopes.AGENT_EXECUTE.value}",
+        )
+
+
+@router.get(
+    "/{agent_id}/run-definition",
+    # The stream's own rule (main #4220): the universal agent with conversation:chat, a named one with agent:execute.
+    dependencies=[
+        Depends(
+            require_scopes(
+                OAuthScopes.AGENT_EXECUTE,
+                OAuthScopes.CONVERSATION_CHAT,
+                service_scopes=(TokenScopes.CONVERSATION_CREATE,),
+            )
+        ),
+        Depends(require_agent_execute_for_named_agents),
+    ],
+)
+async def get_agent_run_definition(
+    request: Request, agent_id: str, version: Annotated[int | None, Query(ge=1, le=2**31 - 1)] = None,
+    *, first_use: Annotated[bool, Query(alias="mcpFirstUse")] = False,
+) -> JSONResponse:
+    """What this agent grants a run by the caller, for Node's durable-run admission.
+
+    ``version`` names the published version a schedule pinned (OWD-14); absent, the latest. The
+    definition's ``definitionVersion`` is that version's number. A pinned version the store does not hold (not
+    yet migrated, a graph restored without it) answers the latest one instead, made from the live agent if the
+    agent has none: a run that ran before versions is never refused for a missing version.
+
+    ``mcpFirstUse`` (ADR-OWD-07 D-LAZY-2): Node's claim is for a worker that lists each MCP server at the run's first use
+    of it, so nothing here lists one. A saved agent's servers grant their attached tools unpinned; the default chat's
+    servers are granted whole (``atFirstUse``); under an edition's approval gate the stored approvals are pinned, as
+    before. Absent (an older worker): the listing pins what the servers offer now, as before.
+
+    Execute-scoped: an ``agent:execute``-only token may run an agent without
+    being able to read its full definition (prompts, sharing). Access is the
+    chat route's: a service-account agent may be run by anyone of its creator's
+    org (the Slack bot's service token included), any other agent needs
+    ``check_agent_permission``; no access is a 404.
+    """
+    from app.agents.agent_loop.skills.bundle_source import GraphSkillSource
+    from app.agents.mcp.service import is_mcp_enabled
+    from app.agents.run_definition import (
+        build_run_definition,
+        pin_skill_content,
+        with_offered_skills,
+    )
+    from app.harness.assembly.descriptor_pins import ToolDescriptors
+    from app.harness.mcp_hub.run_pinning import McpListing, mcp_run_pinning
+    from app.harness.mcp_hub.settings import hub_enabled as mcp_hub_enabled
+    from app.services.featureflag.platform_settings import is_actions_enabled
+
+    try:
+        services = await get_services(request)
+        graph_provider = services["graph_provider"]
+        config_service = services["config_service"]
+        user_context = _get_user_context(request)
+        org_key = current_org_id()
+
+        if agent_id == ASSISTANT_AGENT_KEY:
+            definition = await _assistant_run_definition(request, services, user_context, first_use=first_use)
+            return JSONResponse(
+                status_code=200,
+                content={"definition": definition.model_dump(by_alias=True, mode="json"), AGENT_OWNER_TEAM_FIELD: None},
+            )
+
+        agent = await graph_provider.get_agent(agent_id, org_key)
+        if not agent:
+            raise AgentNotFoundError(agent_id)
+        user_doc: dict[str, Any] = {}
+        # Whose own skills the run is offered when the agent assigns none (FIX-SKILLS): a service account has none.
+        viewers: tuple[str | None, ...] = ()
+        if agent.get("isServiceAccount", False):
+            await _assert_agent_belongs_to_caller_org(agent, graph_provider, org_key, agent_id)
+        elif is_service_token(getattr(request.state, "user", None)) or user_context["isServiceAccount"]:
+            raise AgentNotFoundError(agent_id)
+        else:
+            user_doc = await _get_user_document(user_context["userId"], graph_provider, services["logger"])
+            if not await graph_provider.check_agent_permission(agent_id, user_doc["_key"], org_key):
+                raise AgentNotFoundError(agent_id)
+            viewers = (user_context["userId"], user_doc.get("_key"))
+
+        store = AgentVersionStore(graph_provider)
+        pinned = await store.get(org_key, agent_id, version) if version is not None else None
+        if pinned is None:
+            pinned = await store.current(org_key, agent_id, agent)
+            if version is not None:
+                _log.warning(
+                    "agent.version_unavailable agentKey=%s pinned=%s used=%s", agent_id, version, pinned.version,
+                )
+        agent = pinned_agent(agent, pinned)
+        actions_enabled, mcp_enabled, owner = await asyncio.gather(
+            is_actions_enabled(config_service), is_mcp_enabled(config_service), _owner_user_id(agent, graph_provider)
+        )
+        await _enrich_agent_models(agent, config_service, services["logger"])
+        definition = build_run_definition(
+            agent,
+            agent_key=agent_id,
+            definition_version=pinned.version,
+            actions_enabled=actions_enabled,
+            mcp_enabled=mcp_enabled,
+            web_search_provider=_parse_web_search(agent.get("webSearch")),
+        )
+        definition = definition.model_copy(update={"owner": owner})
+        definition = await with_offered_skills(
+            definition, graph_provider, org_key, viewers, enabled=await _skills_on(config_service)
+        )
+        definition = await pin_skill_content(definition, GraphSkillSource(graph_provider), org_key)
+        servers = [server for server in agent.get("mcpServers") or [] if server.get("instanceId")]
+
+        async def list_servers() -> McpListing:
+            failures: list[dict[str, Any]] = []
+            live, answered = await _live_mcp_listing(
+                servers, config_service, user_context, user_doc, services["logger"],
+                agent_id=agent_id, is_service_account=bool(agent.get("isServiceAccount", False)),
+                failures=failures,
+            )
+            return McpListing(live, answered, failures)
+
+        pinning = await mcp_run_pinning(org_key, config_service, hub=mcp_hub_enabled(harness=True))
+        listing_due = not first_use and mcp_enabled and bool(servers) and bool(definition.mcp_servers)
+        definition = await pinning.agent_definition(
+            definition, ToolDescriptors(config_service), list_servers if listing_due else None
+        )
+        return JSONResponse(
+            status_code=200,
+            content={
+                "definition": definition.model_dump(by_alias=True, mode="json"),
+                # The control plane's AgentDirectory.ownerTeam (CPD-9); beside the definition, whose schema is closed.
+                AGENT_OWNER_TEAM_FIELD: agent.get(AGENT_OWNER_TEAM_FIELD),
+            },
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        _log.error(f"Error resolving agent run definition: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=action_failed("load this agent")) from e
+
+
+async def _assistant_run_definition(
+    request: Request, services: dict[str, Any], user_context: dict[str, Any], *, first_use: bool = False,
+) -> AgentRunDefinition:
+    """The system assistant definition (ASSIST1): what Universal Agent Mode gives this caller now, from the same
+    source (``get_assistant_agent``) and through the same projection as a saved agent's. The route's scope rule is the
+    agent chat route's, so a token that may use Universal Agent Mode may admit it durably, and no other."""
+    from app.agents.agent_loop.skills.bundle_source import GraphSkillSource
+    from app.agents.mcp.service import is_mcp_enabled
+    from app.agents.run_definition import (
+        build_run_definition,
+        pin_skill_content,
+        pin_tool_descriptors,
+        with_offered_skills,
+    )
+    from app.harness.assembly.descriptor_pins import ToolDescriptors
+    from app.harness.mcp_hub.run_pinning import McpListing, mcp_run_pinning
+    from app.harness.mcp_hub.settings import hub_enabled as mcp_hub_enabled
+    from app.services.featureflag.platform_settings import is_actions_enabled
+
+    logger = services["logger"]
+    graph_provider = services["graph_provider"]
+    config_service = services["config_service"]
+    actions_enabled, mcp_enabled, user_doc = await asyncio.gather(
+        is_actions_enabled(config_service),
+        is_mcp_enabled(config_service),
+        _get_user_document(user_context["userId"], graph_provider, logger),
+    )
+    assistant, _ = await get_assistant_agent(
+        user_context["userId"], current_org_id(), config_service, graph_provider,
+        getattr(request.app.state, "toolset_registry", None), logger,
+        actions_enabled=actions_enabled, mcp_enabled=mcp_enabled, user_doc=user_doc,
+    )
+    servers = list(assistant.get("mcpServers") or [])
+    listed = list(servers)
+
+    async def list_servers() -> McpListing:
+        failures: list[dict[str, Any]] = []
+        live, answered = await _live_mcp_listing(listed, config_service, user_context, user_doc, logger, failures=failures)
+        return McpListing(live, answered, failures)
+
+    pinning = await mcp_run_pinning(current_org_id(), config_service, hub=mcp_hub_enabled(harness=True))
+    servers, descriptors = await pinning.assistant_servers(
+        servers,
+        ToolDescriptors(config_service),
+        first_use=first_use,
+        list_servers=list_servers if servers and mcp_enabled else None,
+    )
+    web_search = await resolve_web_search(config_service, logger)
+    definition = build_run_definition(
+        {**assistant, "mcpServers": servers},
+        agent_key=ASSISTANT_AGENT_KEY,
+        actions_enabled=actions_enabled,
+        mcp_enabled=mcp_enabled,
+        web_search_provider=web_search["provider"] if web_search else None,
+    )
+    definition = await with_offered_skills(
+        definition,
+        graph_provider,
+        current_org_id(),
+        (user_context["userId"], user_doc.get("_key")),
+        enabled=await _skills_on(config_service),
+    )
+    definition = await pin_skill_content(definition, GraphSkillSource(graph_provider), current_org_id())
+    return await pin_tool_descriptors(definition, descriptors, mcp_approvals=True)
+
+
+async def _skills_on(config_service: ConfigurationService) -> bool:
+    """Both skills gates the loop reads (``SkillsSource``): the deployment's switch and the org's Labs flag."""
+    from app.agents.agent_loop.skills_wiring import skills_enabled
+    from app.services.featureflag.platform_settings import is_skills_enabled
+
+    return skills_enabled() and await is_skills_enabled(config_service)
+
+
+async def _live_mcp_listing(
+    servers: list[dict[str, Any]],
+    config_service: ConfigurationService,
+    user_context: dict[str, Any],
+    user_doc: dict[str, Any],
+    logger: Logger,
+    *,
+    agent_id: str = ASSISTANT_AGENT_KEY,
+    is_service_account: bool = False,
+    failures: list[dict[str, Any]] | None = None,
+) -> tuple[dict[str, dict[str, str]], frozenset[str]]:
+    """The assistant's MCP tools as a durable run's claim will discover them for this caller now, and the servers
+    whose listing answered: the same credential path (the caller's own records) and the same discovery
+    (``MCPToolProvider``, through the hub where it governs harness runs), bounded for admission. ``failures``, when
+    given, receives why each server's listing named nothing (``{instanceId, reason}``, never a credential)."""
+    from app.agents.agent_loop.context import AgentContext
+    from app.agents.agent_loop.mcp_tool_loader import MCPToolProvider
+    from app.agents.mcp.failure import MCPFailureReason
+
+    user_id = user_context["userId"]
+    # The chat route's credential owner: a service-account agent's own records, else the caller's.
+    owner = agent_id if is_service_account else user_id
+    blocked: list[dict[str, Any]] = []
+    configs, configured, _, _ = await _resolve_mcp_server_configs(
+        config_service,
+        servers,
+        org_id=current_org_id(),
+        credential_lookup_id=owner,
+        executing_user_id=user_id,
+        agent_id=agent_id,
+        is_service_account=is_service_account,
+        logger=logger,
+        blocked=blocked,
+    )
+    if failures is not None:
+        # A server whose sign-in went missing between the assistant's read and this one is never listed.
+        failures.extend(
+            {
+                "instanceId": entry["instanceId"],
+                "reason": (
+                    MCPFailureReason.UNAUTHORIZED if entry["problem"] == "not_connected" else MCPFailureReason.ERROR
+                ).value,
+            }
+            for entry in blocked
+        )
+    if not configured:
+        return {}, frozenset()
+    context = AgentContext(
+        org_id=current_org_id(),
+        user_id=user_id,
+        user_email=user_doc.get("email") or "",
+        credential_owner=owner,
+        config_service=config_service,
+        logger=logger,
+        mcp_servers=configured,
+        mcp_server_configs=configs,
+        harness_run=True,
+    )
+    try:
+        listed = await MCPToolProvider().live_listing(context)
+    finally:
+        await context.close_credentials()
+    if failures is not None:
+        failures.extend(
+            {"instanceId": failure.get("instanceId"), "reason": failure.get("reason"),
+             **({"tools": list(failure["tools"])} if isinstance(failure.get("tools"), list) else {})}
+            for failure in context.mcp_tool_load_failures
+        )
+    return listed
 
 
 @router.get("/", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_READ))])
@@ -3474,569 +4441,677 @@ async def get_agents(
         raise _route_failure(request, e, "load your agents") from e
 
 
+async def _write_draft(
+    request: Request, agent_id: str, body: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any], str]:
+    """Writes ``body`` over the agent (the draft): its document, then each of its toolsets, knowledge, MCP
+    servers and skills that ``body`` names, each replaced whole. Publishes nothing."""
+    services = await get_services(request)
+    logger = services["logger"]
+    user_context = _get_user_context(request)
+
+    user_doc = await _get_user_document(user_context["userId"], services["graph_provider"], logger)
+    user_key = user_doc["_key"]
+    org_key = current_org_id()
+
+    # Validate models if provided in update body. An empty array is valid
+    # and clears the agent's models, reverting it to the organization's
+    # default LLM at chat time. When a non-empty array is provided, at
+    # least one entry must be a reasoning model.
+    if "models" in body:
+        raw_models = body.get("models", [])
+        model_entries, has_reasoning_model = _parse_models(raw_models, logger)
+
+        if model_entries and not has_reasoning_model:
+            raise InvalidRequestError(
+                "When models are specified, at least one reasoning model is required."
+            )
+
+    if "defaultReasoningEffort" in body:
+        body["defaultReasoningEffort"] = _parse_default_reasoning_effort(
+            body.get("defaultReasoningEffort")
+        )
+
+    # Rejecting this after update_agent below would leave the rest of the edit saved.
+    mcp_servers_with_tools = (
+        _parse_mcp_servers(body.get("mcpServers", [])) if "mcpServers" in body else {}
+    )
+    attached_mcp_instances = (
+        await _assert_mcp_servers_exist(
+            mcp_servers_with_tools, services["config_service"], org_key, user_context["userId"],
+        )
+        if mcp_servers_with_tools else {}
+    )
+    mcp_servers_with_tools = _bind_mcp_attachments_to_instances(mcp_servers_with_tools, attached_mcp_instances)
+    await _refuse_unapproved_mcp_tools(services, mcp_servers_with_tools)
+    toolsets_in_body = _parse_toolsets(body.get("toolsets", [])) if "toolsets" in body else {}
+    attached_toolsets = (
+        await _assert_toolsets_visible(toolsets_in_body, services["config_service"], org_key, user_context["userId"])
+        if _names_an_instance(toolsets_in_body) else {}
+    )
+
+    # Check permissions first, then fetch full agent data
+    perm = await services["graph_provider"].check_agent_permission(agent_id, user_key, org_key)
+    if not perm:
+        raise AgentNotFoundError(agent_id)
+
+    if not perm.get("can_edit", False):
+        raise PermissionDeniedError("edit this agent (only owner can edit)")
+
+    agent = await services["graph_provider"].get_agent(agent_id, org_key)
+    if not agent:
+        raise AgentNotFoundError(agent_id)
+
+    agent.update(perm)
+
+    engine_settings = await _agent_engine_settings(request, services, org_key, agent_id, body, agent)
+    if engine_settings is not None:
+        body.update(engine_settings.document_fields())
+    role_models = await _agent_role_models(services, agent_id, body)
+    if role_models is not None:
+        # An empty map clears the stored one: every sub-agent runs on its parent's model again.
+        body[AGENT_ROLE_MODELS_FIELD] = role_models or None
+    gates = _agent_gates(body)
+    if gates is not None:
+        # An empty object clears them: the agent's runs are held to no gate of its own again.
+        body[AGENT_GATES_FIELD] = gates or None
+    environment = _agent_environment(body)
+    if environment is not None:
+        # An empty object clears it: the agent's engine runs set nothing up again.
+        body[AGENT_ENVIRONMENT_FIELD] = environment or None
+
+    # Guard: once an agent is marked as a service account it cannot be downgraded.
+    # Allowing the reverse would leave orphaned agent-scoped toolset credentials
+    # (stored under /services/toolsets/{instanceId}/{agentKey}) with no clear owner
+    # and would confuse the toolset-fetching logic on the frontend.
+    if "isServiceAccount" in body:
+        current_is_sa = bool(agent.get("isServiceAccount", False))
+        requested_is_sa = bool(body.get("isServiceAccount", False))
+        if current_is_sa and not requested_is_sa:
+            raise InvalidRequestError(
+                "A service account agent cannot be converted back to a regular agent."
+            )
+        if sa_forces_org_sharing() and requested_is_sa and not current_is_sa:
+            body["shareWithOrg"] = True
+
+    final_shared = bool(body.get("shareWithOrg", agent.get("shareWithOrg", False)))
+    final_service_account = bool(body.get("isServiceAccount", agent.get("isServiceAccount", False)))
+
+    # A service agent searches as its creator until it is bound, and is shared
+    # with the whole organisation, so an editor converting someone else's agent
+    # would hand everyone the owner's access. Only the owner or an
+    # administrator may decide that.
+    converting = final_service_account and not agent.get("isServiceAccount")
+    if converting and perm.get("user_role") != "OWNER":
+        await _only_an_administrator_may_bind(
+            request,
+            services["config_service"],
+            detail="Only the agent's owner or an administrator can turn it into a service agent.",
+        )
+    # A conversion shares the agent as a matter of course and is checked above.
+    if final_shared and not agent.get("shareWithOrg") and not converting and not perm.get("can_share", False):
+        raise PermissionDeniedError("share this agent with the organisation")
+    # An unbound service agent searches as its creator, so its sources are
+    # searched with the owner's access: changing what it reaches is the
+    # owner's or an administrator's call, like converting it.
+    if (
+        "knowledge" in body
+        and agent.get("isServiceAccount")
+        and not agent.get("serviceAccountUserId")
+        and perm.get("user_role") != "OWNER"
+        and source_reach(_parse_knowledge_sources(body.get("knowledge", [])).values())
+        != source_reach(agent.get("knowledge") or [])
+    ):
+        await _only_an_administrator_may_bind(
+            request,
+            services["config_service"],
+            detail=(
+                "Only the agent's owner or an administrator can change the knowledge "
+                "of a service agent that searches as its creator."
+            ),
+        )
+
+    if "serviceAccountUserId" in body:
+        body["serviceAccountUserId"] = await _checked_service_account_binding(
+            body["serviceAccountUserId"],
+            services["graph_provider"],
+            org_key,
+            is_service_account=final_service_account,
+            admin_check=lambda: _only_an_administrator_may_bind(
+                request, services["config_service"],
+            ),
+            # What the agent is bound to now, so re-saving it unchanged is
+            # not a change anyone needs to be an administrator to make.
+            current=agent.get("serviceAccountUserId"),
+        )
+    sharing_turned_on = (final_shared and not agent.get("shareWithOrg")) or (
+        final_service_account and not agent.get("isServiceAccount")
+    )
+    if sharing_turned_on and "mcpServers" not in body:
+        # An empty list here may only mean the read failed; it would let any server through.
+        if agent.get("mcpServersUnavailable"):
+            raise _mcp_attachments_unreadable()
+        existing_ids = {s["instanceId"] for s in agent.get("mcpServers") or [] if s.get("instanceId")}
+        try:
+            attached_mcp_instances = await _attached_personal_instances(
+                existing_ids, services["config_service"], org_key,
+            ) if existing_ids else {}
+        except Exception as e:
+            unreadable = _mcp_attachments_unreadable()
+            mark_request_failure(request, unreadable, include_error_text=False)
+            raise unreadable from e
+    _assert_no_personal_mcp_servers(
+        attached_mcp_instances, shared_with_org=final_shared, service_account=final_service_account,
+    )
+    if sharing_turned_on and "toolsets" not in body:
+        existing_toolset_ids = {ts["instanceId"] for ts in agent.get("toolsets") or [] if ts.get("instanceId")}
+        try:
+            attached_toolsets = await _attached_personal_toolsets(
+                existing_toolset_ids, services["config_service"], org_key,
+            ) if existing_toolset_ids else {}
+        except Exception as e:
+            unreadable = _toolset_attachments_unreadable()
+            mark_request_failure(request, unreadable, include_error_text=False)
+            raise unreadable from e
+    _assert_no_personal_toolsets(attached_toolsets, shared_with_org=final_shared, service_account=final_service_account)
+    if final_service_account and ("knowledge" in body or converting or "serviceAccountUserId" in body):
+        await _assert_service_account_knowledge(
+            _parse_knowledge_sources(body.get("knowledge")) if "knowledge" in body
+            else [k.get("connectorId") for k in agent.get("knowledge") or [] if k.get("connectorId")],
+            services["graph_provider"],
+            org_key,
+            user_context["userId"],
+            bound=bool(body.get("serviceAccountUserId", agent.get("serviceAccountUserId"))),
+        )
+    if "apiToolsetTools" in body or (final_service_account and not agent.get("isServiceAccount")):
+        # Becoming a service account re-checks what is already attached.
+        body["apiToolsetTools"] = await _checked_api_toolset_tools(
+            body.get("apiToolsetTools", agent.get("apiToolsetTools") or []), services,
+            org_key, service_account=final_service_account,
+        )
+
+    # Handle shareWithOrg flag changes
+    if "shareWithOrg" in body:
+        new_share_with_org = bool(body.get("shareWithOrg", False))
+        current_share_with_org = bool(agent.get("shareWithOrg", False))
+
+        if new_share_with_org and not current_share_with_org:
+            # Turning ON org sharing: validate no toolsets exist or being added
+
+            # Create the org permission edge
+            time = get_epoch_timestamp_in_ms()
+            org_permission_edge = {
+                "_from": f"{CollectionNames.ORGS.value}/{org_key}",
+                "_to": f"{CollectionNames.AGENT_INSTANCES.value}/{agent_id}",
+                "role": "READER",
+                "type": "ORG",
+                "createdAtTimestamp": time,
+                "updatedAtTimestamp": time,
+            }
+            await services["graph_provider"].batch_create_edges(
+                [org_permission_edge], CollectionNames.PERMISSION.value
+            )
+            add_request_log_fields(request, shared_with_org=True)
+
+        elif not new_share_with_org and current_share_with_org:
+            if sa_forces_org_sharing() and bool(agent.get("isServiceAccount", False)):
+                raise InvalidRequestError(
+                    "Cannot disable org-wide sharing for a service account agent. "
+                    "Service account agents must always be shared across the organisation."
+                )
+            # Turning OFF org sharing: delete the org permission edge. Not
+            # delete_edge: ArangoDB's answers False when the delete fails, and the
+            # agent stayed shared with the whole org while reporting that it was not.
+            await services["graph_provider"].batch_delete_edges(
+                [{
+                    "from_id": org_key,
+                    "from_collection": CollectionNames.ORGS.value,
+                    "to_id": agent_id,
+                    "to_collection": CollectionNames.AGENT_INSTANCES.value,
+                }],
+                CollectionNames.PERMISSION.value,
+            )
+            add_request_log_fields(request, shared_with_org=False)
+
+
+    # Normalize webSearch attachment before persisting
+    if "webSearch" in body:
+        body["webSearch"] = _parse_web_search(body.get("webSearch"))
+    if AGENT_OWNER_TEAM_FIELD in body:
+        body[AGENT_OWNER_TEAM_FIELD] = await _owner_team(request, body, services, org_key, user_key)
+
+    # Update agent document
+    # Persist update (use original body to avoid changing storage format)
+    result = await services["graph_provider"].update_agent(agent_id, body, user_key, org_key)
+    if not result:
+        raise HTTPException(status_code=500, detail="Failed to update agent")
+    await directory_events(request).agent_changed(org_key, agent_id, get_epoch_timestamp_in_ms())
+
+    # Update toolsets if provided in request (even if empty array - means delete all)
+    if "toolsets" in body:
+        # Parsed and checked before the update above
+        toolsets_with_tools = toolsets_in_body
+
+        graph_provider = services["graph_provider"]
+        transaction_id = None
+        agent_full_id = f"{CollectionNames.AGENT_INSTANCES.value}/{agent_id}"
+        toolset_keys: list[str] = []
+        toolset_full_ids: list[str] = []
+        all_tool_keys: list[str] = []
+        all_tool_full_ids: list[str] = []
+        new_toolset_keys: list[str] = []
+        new_tool_keys: list[str] = []
+        unlinked_old_ids: list[str] = []
+        try:
+            transaction_id = await graph_provider.begin_transaction(
+                read=[],
+                write=[
+                    CollectionNames.AGENT_HAS_TOOLSET.value,
+                    CollectionNames.AGENT_TOOLSETS.value,
+                    CollectionNames.TOOLSET_HAS_TOOL.value,
+                    CollectionNames.AGENT_TOOLS.value
+                ]
+            )
+
+            # ========== PHASE 1: GATHER ALL INFORMATION (READ ONLY) ==========
+
+            # Get all toolset edges from agent
+            toolset_edges = await graph_provider.get_edges_from_node(
+                agent_full_id,
+                CollectionNames.AGENT_HAS_TOOLSET.value,
+                transaction=transaction_id
+            )
+
+            # Extract toolset keys and full IDs
+            for edge in toolset_edges:
+                toolset_full_id = edge.get("_to")
+                if toolset_full_id:
+                    toolset_full_ids.append(toolset_full_id)
+                    parts = toolset_full_id.split("/", 1)
+                    if len(parts) == SPLIT_PATH_EXPECTED_PARTS:
+                        toolset_keys.append(parts[1])
+
+
+            # Get all tool edges for each toolset
+            for toolset_full_id in toolset_full_ids:
+                tool_edges = await graph_provider.get_edges_from_node(
+                    toolset_full_id,
+                    CollectionNames.TOOLSET_HAS_TOOL.value,
+                    transaction=transaction_id
+                )
+
+                for edge in tool_edges:
+                    tool_full_id = edge.get("_to")
+                    if tool_full_id:
+                        all_tool_full_ids.append(tool_full_id)
+                        parts = tool_full_id.split("/", 1)
+                        if len(parts) == SPLIT_PATH_EXPECTED_PARTS:
+                            all_tool_keys.append(parts[1])
+
+
+            # ========== PHASE 2: WRITE THE NEW TOOLSETS ==========
+
+            # New toolsets are written, with their tools, before the old ones are unlinked:
+            # on a backend whose rollback does not undo writes (Neo4j without explicit
+            # transactions), a failure then leaves the agent with its old toolsets rather
+            # than none, and the except block below removes what the failed attempt wrote.
+            if toolsets_with_tools:
+                _, failed_toolsets = await _create_toolset_edges(
+                    agent_id, toolsets_with_tools, user_context, user_key, graph_provider, logger,
+                    transaction=transaction_id,
+                    written_toolset_keys=new_toolset_keys,
+                    written_tool_keys=new_tool_keys,
+                )
+                if failed_toolsets:
+                    raise RuntimeError(f"Toolsets could not be attached: {failed_toolsets}")
+
+            # ========== PHASE 3: UNLINK, THEN REMOVE, THE OLD TOOLSETS ==========
+
+            for toolset_full_id in toolset_full_ids:
+                await graph_provider.delete_all_edges_for_node(
+                    toolset_full_id,
+                    CollectionNames.AGENT_HAS_TOOLSET.value,
+                    transaction=transaction_id
+                )
+                unlinked_old_ids.append(toolset_full_id)
+
+            # Nothing links to the old toolsets now; remove them from the leaves up.
+            for tool_full_id in all_tool_full_ids:
+                await graph_provider.delete_all_edges_for_node(
+                    tool_full_id,
+                    CollectionNames.TOOLSET_HAS_TOOL.value,
+                    transaction=transaction_id
+                )
+            if all_tool_keys:
+                await graph_provider.delete_nodes(
+                    all_tool_keys,
+                    CollectionNames.AGENT_TOOLS.value,
+                    transaction=transaction_id
+                )
+            if toolset_keys:
+                await graph_provider.delete_nodes(
+                    toolset_keys,
+                    CollectionNames.AGENT_TOOLSETS.value,
+                    transaction=transaction_id
+                )
+
+            await graph_provider.commit_transaction(transaction_id)
+            transaction_id = None
+
+        except Exception as e:
+            if transaction_id:
+                try:
+                    await graph_provider.rollback_transaction(transaction_id)
+                except Exception as abort_error:
+                    _rollback_failed(logger, abort_error)
+            # Before any old toolset is unlinked the agent is still on its old set, so the
+            # new writes go. After that the new set is the intended state: keep it.
+            if not unlinked_old_ids:
+                if new_toolset_keys or new_tool_keys:
+                    await _remove_toolsets(new_toolset_keys, new_tool_keys, graph_provider, logger)
+            elif await _finish_unlinking_old(
+                agent_full_id, CollectionNames.AGENT_HAS_TOOLSET.value, toolset_full_ids, unlinked_old_ids,
+                {f"{CollectionNames.AGENT_TOOLSETS.value}/{key}" for key in new_toolset_keys},
+                graph_provider, logger,
+            ):
+                await _remove_toolsets(toolset_keys, all_tool_keys, graph_provider, logger)
+            raise _route_failure(request, e, "save this agent", writes_body=True) from e
+
+    # Update attached MCP servers if provided in request (even if empty array - means detach all).
+    # The new servers are written, with their tools, before the old ones are unlinked: on a
+    # backend whose rollback does not undo writes (Neo4j without explicit transactions), a
+    # failure then leaves the agent with its old servers rather than none, and the except
+    # block removes what the failed attempt wrote.
+    if "mcpServers" in body:
+        graph_provider = services["graph_provider"]
+        transaction_id = None
+        agent_full_id = f"{CollectionNames.AGENT_INSTANCES.value}/{agent_id}"
+        old_server_keys: list[str] = []
+        old_server_ids: list[str] = []
+        old_tool_keys: list[str] = []
+        new_server_keys: list[str] = []
+        new_tool_keys: list[str] = []
+        unlinked_old_ids: list[str] = []
+        try:
+            transaction_id = await graph_provider.begin_transaction(
+                read=[],
+                write=[
+                    CollectionNames.AGENT_HAS_MCP_SERVER.value,
+                    CollectionNames.AGENT_MCP_SERVERS.value,
+                    CollectionNames.MCP_SERVER_HAS_TOOL.value,
+                    CollectionNames.AGENT_TOOLS.value
+                ]
+            )
+            old_server_keys, old_server_ids, old_tool_keys, old_tool_ids = await _read_agent_mcp_attachments(
+                agent_full_id, graph_provider, transaction_id,
+            )
+
+            if mcp_servers_with_tools:
+                _, failed_mcp_servers = await _create_mcp_server_edges(
+                    agent_id, mcp_servers_with_tools, user_context, user_key,
+                    graph_provider, logger, transaction=transaction_id,
+                    written_server_keys=new_server_keys, written_tool_keys=new_tool_keys,
+                )
+                if failed_mcp_servers:
+                    raise RuntimeError(f"MCP servers could not be attached: {failed_mcp_servers}")
+
+            for server_id in old_server_ids:
+                await graph_provider.delete_all_edges_for_node(
+                    server_id, CollectionNames.AGENT_HAS_MCP_SERVER.value, transaction=transaction_id,
+                )
+                unlinked_old_ids.append(server_id)
+            # Nothing links to the old servers now; remove them from the leaves up.
+            for tool_id in old_tool_ids:
+                await graph_provider.delete_all_edges_for_node(
+                    tool_id, CollectionNames.MCP_SERVER_HAS_TOOL.value, transaction=transaction_id,
+                )
+            if old_tool_keys:
+                await graph_provider.delete_nodes(
+                    old_tool_keys, CollectionNames.AGENT_TOOLS.value, transaction=transaction_id,
+                )
+            if old_server_keys:
+                await graph_provider.delete_nodes(
+                    old_server_keys, CollectionNames.AGENT_MCP_SERVERS.value, transaction=transaction_id,
+                )
+
+            await graph_provider.commit_transaction(transaction_id)
+            transaction_id = None
+        except Exception as e:
+            if transaction_id:
+                try:
+                    await graph_provider.rollback_transaction(transaction_id)
+                except Exception as abort_error:
+                    _rollback_failed(logger, abort_error)
+            # Before any old server is unlinked the agent is still on its old set, so the
+            # new writes go. After that the new set is the intended state: keep it.
+            if not unlinked_old_ids:
+                if new_server_keys or new_tool_keys:
+                    await _remove_mcp_servers(new_server_keys, new_tool_keys, graph_provider, logger)
+            elif await _finish_unlinking_old(
+                agent_full_id, CollectionNames.AGENT_HAS_MCP_SERVER.value, old_server_ids, unlinked_old_ids,
+                {f"{CollectionNames.AGENT_MCP_SERVERS.value}/{key}" for key in new_server_keys},
+                graph_provider, logger,
+            ):
+                await _remove_mcp_servers(old_server_keys, old_tool_keys, graph_provider, logger)
+            raise _route_failure(request, e, "save this agent", writes_body=True) from e
+
+    # Update knowledge if provided in request (even if empty array - means delete all)
+    if "knowledge" in body:
+        # Parse knowledge sources first to validate before deletion
+        knowledge_sources = _parse_knowledge_sources(body.get("knowledge", []))
+        await _refuse_limit_over_the_cap(
+            knowledge_sources, services["graph_provider"], org_key, logger,
+        )
+
+        graph_provider = services["graph_provider"]
+        transaction_id = None
+        new_knowledge_keys: list[str] = []
+        deleted_old_ids: list[str] = []
+        agent_full_id = f"{CollectionNames.AGENT_INSTANCES.value}/{agent_id}"
+        knowledge_keys: list[str] = []
+        knowledge_full_ids: list[str] = []
+        try:
+            transaction_id = await graph_provider.begin_transaction(
+                read=[],
+                write=[
+                    CollectionNames.AGENT_HAS_KNOWLEDGE.value,
+                    CollectionNames.AGENT_KNOWLEDGE.value
+                ]
+            )
+
+            # ========== PHASE 1: GATHER ALL INFORMATION (READ ONLY) ==========
+
+            # Get all knowledge edges from agent
+            knowledge_edges = await graph_provider.get_edges_from_node(
+                agent_full_id,
+                CollectionNames.AGENT_HAS_KNOWLEDGE.value,
+                transaction=transaction_id
+            )
+
+            # Extract knowledge keys and full IDs
+            for edge in knowledge_edges:
+                knowledge_full_id = edge.get("_to")
+                if knowledge_full_id:
+                    knowledge_full_ids.append(knowledge_full_id)
+                    parts = knowledge_full_id.split("/", 1)
+                    if len(parts) == SPLIT_PATH_EXPECTED_PARTS:
+                        knowledge_keys.append(parts[1])
+
+
+            # New knowledge is written before the old is removed: on a backend whose
+            # rollback does not undo writes (Neo4j without explicit transactions), a
+            # failure then leaves the agent with its old knowledge rather than none,
+            # and the except block below removes what the failed attempt wrote.
+            if knowledge_sources:
+                await _create_knowledge_edges(
+                    agent_id, knowledge_sources, user_key, graph_provider, logger,
+                    transaction=transaction_id, written_keys=new_knowledge_keys,
+                )
+
+            for knowledge_full_id in knowledge_full_ids:
+                await graph_provider.delete_all_edges_for_node(
+                    knowledge_full_id,
+                    CollectionNames.AGENT_HAS_KNOWLEDGE.value,
+                    transaction=transaction_id
+                )
+                deleted_old_ids.append(knowledge_full_id)
+
+            if knowledge_keys:
+                await graph_provider.delete_nodes(
+                    knowledge_keys,
+                    CollectionNames.AGENT_KNOWLEDGE.value,
+                    transaction=transaction_id
+                )
+
+            await graph_provider.commit_transaction(transaction_id)
+            transaction_id = None
+
+        except Exception as e:
+            if transaction_id:
+                try:
+                    await graph_provider.rollback_transaction(transaction_id)
+                except Exception as abort_error:
+                    _rollback_failed(logger, abort_error)
+            # Before any old link is removed the agent is still on its old set, so the
+            # new writes go. After that the new set is the intended state: keep it.
+            if not deleted_old_ids:
+                if new_knowledge_keys:
+                    await _remove_knowledge_nodes(new_knowledge_keys, graph_provider, logger)
+            else:
+                await _finish_removing_old_knowledge(
+                    agent_full_id, knowledge_full_ids, knowledge_keys, deleted_old_ids,
+                    new_knowledge_keys, graph_provider, logger,
+                )
+            raise _route_failure(request, e, "save this agent", writes_body=True) from e
+
+    # Update skill assignments if provided in request (even if empty array - means unassign all).
+    # Unlike toolsets/knowledge, this never deletes NODES — only this agent's
+    # AGENT_HAS_SKILL edges — since skills are owned by the Skills
+    # management API, not by whichever agent happens to reference them.
+    if "skills" in body:
+        skill_names = _parse_skills(body.get("skills", []))
+        graph_provider = services["graph_provider"]
+        agent_full_id = f"{CollectionNames.AGENT_INSTANCES.value}/{agent_id}"
+        transaction_id = None
+        try:
+            transaction_id = await graph_provider.begin_transaction(
+                read=[CollectionNames.AGENT_SKILLS.value],
+                write=[CollectionNames.AGENT_HAS_SKILL.value],
+            )
+            await graph_provider.delete_all_edges_for_node(
+                agent_full_id, CollectionNames.AGENT_HAS_SKILL.value, transaction=transaction_id,
+            )
+            if skill_names:
+                await _create_skill_edges(
+                    agent_id, skill_names, org_key, user_key, graph_provider, logger,
+                    transaction=transaction_id,
+                )
+            await graph_provider.commit_transaction(transaction_id)
+            transaction_id = None
+        except Exception as e:
+            if transaction_id:
+                try:
+                    await graph_provider.rollback_transaction(transaction_id)
+                except Exception as abort_error:
+                    _rollback_failed(logger, abort_error)
+            raise _route_failure(request, e, "save this agent", writes_body=True) from e
+
+    await _sync_agent(services, org_key, agent_id)
+    return services, user_context, org_key
+
+
 @router.put("/{agent_id}", dependencies=[_AGENT_ID_LOG, Depends(require_scopes(OAuthScopes.AGENT_WRITE))])
 async def update_agent(request: Request, agent_id: str) -> JSONResponse:
     """Update an agent using graph-based architecture"""
     try:
-        services = await get_services(request)
-        logger = services["logger"]
-        user_context = _get_user_context(request)
-
         body = _parse_request_body(await request.body())
-        user_doc = await _get_user_document(user_context["userId"], services["graph_provider"], logger)
-        user_key = user_doc["_key"]
-        org_key = user_context["orgId"]
-
-        # Validate models if provided in update body. An empty array is valid
-        # and clears the agent's models, reverting it to the organization's
-        # default LLM at chat time. When a non-empty array is provided, at
-        # least one entry must be a reasoning model.
-        if "models" in body:
-            raw_models = body.get("models", [])
-            model_entries, has_reasoning_model = _parse_models(raw_models, logger)
-
-            if model_entries and not has_reasoning_model:
-                raise InvalidRequestError(
-                    "When models are specified, at least one reasoning model is required."
-                )
-
-        if "defaultReasoningEffort" in body:
-            body["defaultReasoningEffort"] = _parse_default_reasoning_effort(
-                body.get("defaultReasoningEffort")
+        services, user_context, org_key = await _write_draft(request, agent_id, body)
+        logger = services["logger"]
+        # A save publishes unless it asks to stay a draft (`"publish": false`): today's builder has no
+        # publish step, and its saves must keep reaching chats as they always did.
+        if body.get("publish") is False:
+            return JSONResponse(
+                status_code=200,
+                content={"status": "success", "message": "Draft saved", "version": None},
             )
-
-        # Rejecting this after update_agent below would leave the rest of the edit saved.
-        mcp_servers_with_tools = (
-            _parse_mcp_servers(body.get("mcpServers", [])) if "mcpServers" in body else {}
-        )
-        attached_mcp_instances = (
-            await _assert_mcp_servers_exist(
-                mcp_servers_with_tools, services["config_service"], org_key, user_context["userId"],
+        try:
+            published, _ = await _publish_draft(
+                request, services, org_key, agent_id, user_context["userId"], body.get("versionNote"),
             )
-            if mcp_servers_with_tools else {}
-        )
-        mcp_servers_with_tools = _bind_mcp_attachments_to_instances(mcp_servers_with_tools, attached_mcp_instances)
-        toolsets_in_body = _parse_toolsets(body.get("toolsets", [])) if "toolsets" in body else {}
-        attached_toolsets = (
-            await _assert_toolsets_visible(toolsets_in_body, services["config_service"], org_key, user_context["userId"])
-            if _names_an_instance(toolsets_in_body) else {}
-        )
-
-        # Check permissions first, then fetch full agent data
-        perm = await services["graph_provider"].check_agent_permission(agent_id, user_key, org_key)
-        if not perm:
-            raise AgentNotFoundError(agent_id)
-
-        if not perm.get("can_edit", False):
-            raise PermissionDeniedError("edit this agent (only owner can edit)")
-
-        agent = await services["graph_provider"].get_agent(agent_id, org_key)
-        if not agent:
-            raise AgentNotFoundError(agent_id)
-
-        agent.update(perm)
-
-        # Guard: once an agent is marked as a service account it cannot be downgraded.
-        # Allowing the reverse would leave orphaned agent-scoped toolset credentials
-        # (stored under /services/toolsets/{instanceId}/{agentKey}) with no clear owner
-        # and would confuse the toolset-fetching logic on the frontend.
-        if "isServiceAccount" in body:
-            current_is_sa = bool(agent.get("isServiceAccount", False))
-            requested_is_sa = bool(body.get("isServiceAccount", False))
-            if current_is_sa and not requested_is_sa:
-                raise InvalidRequestError(
-                    "A service account agent cannot be converted back to a regular agent."
-                )
-            if sa_forces_org_sharing() and requested_is_sa and not current_is_sa:
-                body["shareWithOrg"] = True
-
-        final_shared = bool(body.get("shareWithOrg", agent.get("shareWithOrg", False)))
-        final_service_account = bool(body.get("isServiceAccount", agent.get("isServiceAccount", False)))
-
-        # A service agent searches as its creator until it is bound, and is shared
-        # with the whole organisation, so an editor converting someone else's agent
-        # would hand everyone the owner's access. Only the owner or an
-        # administrator may decide that.
-        converting = final_service_account and not agent.get("isServiceAccount")
-        if converting and perm.get("user_role") != "OWNER":
-            await _only_an_administrator_may_bind(
-                request,
-                services["config_service"],
-                detail="Only the agent's owner or an administrator can turn it into a service agent.",
+        except Exception as e:
+            # The edit is saved; it stays a draft the editor can publish again from its versions.
+            error_class.log_failure(logger, "agent.route.failed", e, op="publish", include_error_text=False)
+            return JSONResponse(
+                status_code=200,
+                content={
+                    "status": "partial_success",
+                    "message": "Agent saved, but publishing it failed. Publish it again from its versions.",
+                    "version": None,
+                },
             )
-        # A conversion shares the agent as a matter of course and is checked above.
-        if final_shared and not agent.get("shareWithOrg") and not converting and not perm.get("can_share", False):
-            raise PermissionDeniedError("share this agent with the organisation")
-        # An unbound service agent searches as its creator, so its sources are
-        # searched with the owner's access: changing what it reaches is the
-        # owner's or an administrator's call, like converting it.
-        if (
-            "knowledge" in body
-            and agent.get("isServiceAccount")
-            and not agent.get("serviceAccountUserId")
-            and perm.get("user_role") != "OWNER"
-            and source_reach(_parse_knowledge_sources(body.get("knowledge", [])).values())
-            != source_reach(agent.get("knowledge") or [])
-        ):
-            await _only_an_administrator_may_bind(
-                request,
-                services["config_service"],
-                detail=(
-                    "Only the agent's owner or an administrator can change the knowledge "
-                    "of a service agent that searches as its creator."
-                ),
-            )
-
-        if "serviceAccountUserId" in body:
-            body["serviceAccountUserId"] = await _checked_service_account_binding(
-                body["serviceAccountUserId"],
-                services["graph_provider"],
-                org_key,
-                is_service_account=final_service_account,
-                admin_check=lambda: _only_an_administrator_may_bind(
-                    request, services["config_service"],
-                ),
-                # What the agent is bound to now, so re-saving it unchanged is
-                # not a change anyone needs to be an administrator to make.
-                current=agent.get("serviceAccountUserId"),
-            )
-        sharing_turned_on = (final_shared and not agent.get("shareWithOrg")) or (
-            final_service_account and not agent.get("isServiceAccount")
-        )
-        if sharing_turned_on and "mcpServers" not in body:
-            # An empty list here may only mean the read failed; it would let any server through.
-            if agent.get("mcpServersUnavailable"):
-                raise _mcp_attachments_unreadable()
-            existing_ids = {s["instanceId"] for s in agent.get("mcpServers") or [] if s.get("instanceId")}
-            try:
-                attached_mcp_instances = await _attached_personal_instances(
-                    existing_ids, services["config_service"], org_key,
-                ) if existing_ids else {}
-            except Exception as e:
-                unreadable = _mcp_attachments_unreadable()
-                mark_request_failure(request, unreadable, include_error_text=False)
-                raise unreadable from e
-        _assert_no_personal_mcp_servers(
-            attached_mcp_instances, shared_with_org=final_shared, service_account=final_service_account,
-        )
-        if sharing_turned_on and "toolsets" not in body:
-            existing_toolset_ids = {ts["instanceId"] for ts in agent.get("toolsets") or [] if ts.get("instanceId")}
-            try:
-                attached_toolsets = await _attached_personal_toolsets(
-                    existing_toolset_ids, services["config_service"], org_key,
-                ) if existing_toolset_ids else {}
-            except Exception as e:
-                unreadable = _toolset_attachments_unreadable()
-                mark_request_failure(request, unreadable, include_error_text=False)
-                raise unreadable from e
-        _assert_no_personal_toolsets(attached_toolsets, shared_with_org=final_shared, service_account=final_service_account)
-        if final_service_account and ("knowledge" in body or converting or "serviceAccountUserId" in body):
-            await _assert_service_account_knowledge(
-                _parse_knowledge_sources(body.get("knowledge")) if "knowledge" in body
-                else [k.get("connectorId") for k in agent.get("knowledge") or [] if k.get("connectorId")],
-                services["graph_provider"],
-                org_key,
-                user_context["userId"],
-                bound=bool(body.get("serviceAccountUserId", agent.get("serviceAccountUserId"))),
-            )
-        if "apiToolsetTools" in body or (final_service_account and not agent.get("isServiceAccount")):
-            # Becoming a service account re-checks what is already attached.
-            body["apiToolsetTools"] = await _checked_api_toolset_tools(
-                body.get("apiToolsetTools", agent.get("apiToolsetTools") or []), services,
-                org_key, service_account=final_service_account,
-            )
-
-        # Handle shareWithOrg flag changes
-        if "shareWithOrg" in body:
-            new_share_with_org = bool(body.get("shareWithOrg", False))
-            current_share_with_org = bool(agent.get("shareWithOrg", False))
-
-            if new_share_with_org and not current_share_with_org:
-                # Turning ON org sharing: validate no toolsets exist or being added
-
-                # Create the org permission edge
-                time = get_epoch_timestamp_in_ms()
-                org_permission_edge = {
-                    "_from": f"{CollectionNames.ORGS.value}/{org_key}",
-                    "_to": f"{CollectionNames.AGENT_INSTANCES.value}/{agent_id}",
-                    "role": "READER",
-                    "type": "ORG",
-                    "createdAtTimestamp": time,
-                    "updatedAtTimestamp": time,
-                }
-                await services["graph_provider"].batch_create_edges(
-                    [org_permission_edge], CollectionNames.PERMISSION.value
-                )
-                add_request_log_fields(request, shared_with_org=True)
-
-            elif not new_share_with_org and current_share_with_org:
-                if sa_forces_org_sharing() and bool(agent.get("isServiceAccount", False)):
-                    raise InvalidRequestError(
-                        "Cannot disable org-wide sharing for a service account agent. "
-                        "Service account agents must always be shared across the organisation."
-                    )
-                # Turning OFF org sharing: delete the org permission edge. Not
-                # delete_edge: ArangoDB's answers False when the delete fails, and the
-                # agent stayed shared with the whole org while reporting that it was not.
-                await services["graph_provider"].batch_delete_edges(
-                    [{
-                        "from_id": org_key,
-                        "from_collection": CollectionNames.ORGS.value,
-                        "to_id": agent_id,
-                        "to_collection": CollectionNames.AGENT_INSTANCES.value,
-                    }],
-                    CollectionNames.PERMISSION.value,
-                )
-                add_request_log_fields(request, shared_with_org=False)
-
-
-        # Normalize webSearch attachment before persisting
-        if "webSearch" in body:
-            body["webSearch"] = _parse_web_search(body.get("webSearch"))
-
-        # Update agent document
-        # Persist update (use original body to avoid changing storage format)
-        result = await services["graph_provider"].update_agent(agent_id, body, user_key, org_key)
-        if not result:
-            raise HTTPException(status_code=500, detail="Failed to update agent")
-
-        # Update toolsets if provided in request (even if empty array - means delete all)
-        if "toolsets" in body:
-            # Parsed and checked before the update above
-            toolsets_with_tools = toolsets_in_body
-
-            graph_provider = services["graph_provider"]
-            transaction_id = None
-            agent_full_id = f"{CollectionNames.AGENT_INSTANCES.value}/{agent_id}"
-            toolset_keys: list[str] = []
-            toolset_full_ids: list[str] = []
-            all_tool_keys: list[str] = []
-            all_tool_full_ids: list[str] = []
-            new_toolset_keys: list[str] = []
-            new_tool_keys: list[str] = []
-            unlinked_old_ids: list[str] = []
-            try:
-                transaction_id = await graph_provider.begin_transaction(
-                    read=[],
-                    write=[
-                        CollectionNames.AGENT_HAS_TOOLSET.value,
-                        CollectionNames.AGENT_TOOLSETS.value,
-                        CollectionNames.TOOLSET_HAS_TOOL.value,
-                        CollectionNames.AGENT_TOOLS.value
-                    ]
-                )
-
-                # ========== PHASE 1: GATHER ALL INFORMATION (READ ONLY) ==========
-
-                # Get all toolset edges from agent
-                toolset_edges = await graph_provider.get_edges_from_node(
-                    agent_full_id,
-                    CollectionNames.AGENT_HAS_TOOLSET.value,
-                    transaction=transaction_id
-                )
-
-                # Extract toolset keys and full IDs
-                for edge in toolset_edges:
-                    toolset_full_id = edge.get("_to")
-                    if toolset_full_id:
-                        toolset_full_ids.append(toolset_full_id)
-                        parts = toolset_full_id.split("/", 1)
-                        if len(parts) == SPLIT_PATH_EXPECTED_PARTS:
-                            toolset_keys.append(parts[1])
-
-
-                # Get all tool edges for each toolset
-                for toolset_full_id in toolset_full_ids:
-                    tool_edges = await graph_provider.get_edges_from_node(
-                        toolset_full_id,
-                        CollectionNames.TOOLSET_HAS_TOOL.value,
-                        transaction=transaction_id
-                    )
-
-                    for edge in tool_edges:
-                        tool_full_id = edge.get("_to")
-                        if tool_full_id:
-                            all_tool_full_ids.append(tool_full_id)
-                            parts = tool_full_id.split("/", 1)
-                            if len(parts) == SPLIT_PATH_EXPECTED_PARTS:
-                                all_tool_keys.append(parts[1])
-
-
-                # ========== PHASE 2: WRITE THE NEW TOOLSETS ==========
-
-                # New toolsets are written, with their tools, before the old ones are unlinked:
-                # on a backend whose rollback does not undo writes (Neo4j without explicit
-                # transactions), a failure then leaves the agent with its old toolsets rather
-                # than none, and the except block below removes what the failed attempt wrote.
-                if toolsets_with_tools:
-                    _, failed_toolsets = await _create_toolset_edges(
-                        agent_id, toolsets_with_tools, user_context, user_key, graph_provider, logger,
-                        transaction=transaction_id,
-                        written_toolset_keys=new_toolset_keys,
-                        written_tool_keys=new_tool_keys,
-                    )
-                    if failed_toolsets:
-                        raise RuntimeError(f"Toolsets could not be attached: {failed_toolsets}")
-
-                # ========== PHASE 3: UNLINK, THEN REMOVE, THE OLD TOOLSETS ==========
-
-                for toolset_full_id in toolset_full_ids:
-                    await graph_provider.delete_all_edges_for_node(
-                        toolset_full_id,
-                        CollectionNames.AGENT_HAS_TOOLSET.value,
-                        transaction=transaction_id
-                    )
-                    unlinked_old_ids.append(toolset_full_id)
-
-                # Nothing links to the old toolsets now; remove them from the leaves up.
-                for tool_full_id in all_tool_full_ids:
-                    await graph_provider.delete_all_edges_for_node(
-                        tool_full_id,
-                        CollectionNames.TOOLSET_HAS_TOOL.value,
-                        transaction=transaction_id
-                    )
-                if all_tool_keys:
-                    await graph_provider.delete_nodes(
-                        all_tool_keys,
-                        CollectionNames.AGENT_TOOLS.value,
-                        transaction=transaction_id
-                    )
-                if toolset_keys:
-                    await graph_provider.delete_nodes(
-                        toolset_keys,
-                        CollectionNames.AGENT_TOOLSETS.value,
-                        transaction=transaction_id
-                    )
-
-                await graph_provider.commit_transaction(transaction_id)
-                transaction_id = None
-
-            except Exception as e:
-                if transaction_id:
-                    try:
-                        await graph_provider.rollback_transaction(transaction_id)
-                    except Exception as abort_error:
-                        _rollback_failed(logger, abort_error)
-                # Before any old toolset is unlinked the agent is still on its old set, so the
-                # new writes go. After that the new set is the intended state: keep it.
-                if not unlinked_old_ids:
-                    if new_toolset_keys or new_tool_keys:
-                        await _remove_toolsets(new_toolset_keys, new_tool_keys, graph_provider, logger)
-                elif await _finish_unlinking_old(
-                    agent_full_id, CollectionNames.AGENT_HAS_TOOLSET.value, toolset_full_ids, unlinked_old_ids,
-                    {f"{CollectionNames.AGENT_TOOLSETS.value}/{key}" for key in new_toolset_keys},
-                    graph_provider, logger,
-                ):
-                    await _remove_toolsets(toolset_keys, all_tool_keys, graph_provider, logger)
-                raise _route_failure(request, e, "save this agent", writes_body=True) from e
-
-        # Update attached MCP servers if provided in request (even if empty array - means detach all).
-        # The new servers are written, with their tools, before the old ones are unlinked: on a
-        # backend whose rollback does not undo writes (Neo4j without explicit transactions), a
-        # failure then leaves the agent with its old servers rather than none, and the except
-        # block removes what the failed attempt wrote.
-        if "mcpServers" in body:
-            graph_provider = services["graph_provider"]
-            transaction_id = None
-            agent_full_id = f"{CollectionNames.AGENT_INSTANCES.value}/{agent_id}"
-            old_server_keys: list[str] = []
-            old_server_ids: list[str] = []
-            old_tool_keys: list[str] = []
-            new_server_keys: list[str] = []
-            new_tool_keys: list[str] = []
-            unlinked_old_ids: list[str] = []
-            try:
-                transaction_id = await graph_provider.begin_transaction(
-                    read=[],
-                    write=[
-                        CollectionNames.AGENT_HAS_MCP_SERVER.value,
-                        CollectionNames.AGENT_MCP_SERVERS.value,
-                        CollectionNames.MCP_SERVER_HAS_TOOL.value,
-                        CollectionNames.AGENT_TOOLS.value
-                    ]
-                )
-                old_server_keys, old_server_ids, old_tool_keys, old_tool_ids = await _read_agent_mcp_attachments(
-                    agent_full_id, graph_provider, transaction_id,
-                )
-
-                if mcp_servers_with_tools:
-                    _, failed_mcp_servers = await _create_mcp_server_edges(
-                        agent_id, mcp_servers_with_tools, user_context, user_key,
-                        graph_provider, logger, transaction=transaction_id,
-                        written_server_keys=new_server_keys, written_tool_keys=new_tool_keys,
-                    )
-                    if failed_mcp_servers:
-                        raise RuntimeError(f"MCP servers could not be attached: {failed_mcp_servers}")
-
-                for server_id in old_server_ids:
-                    await graph_provider.delete_all_edges_for_node(
-                        server_id, CollectionNames.AGENT_HAS_MCP_SERVER.value, transaction=transaction_id,
-                    )
-                    unlinked_old_ids.append(server_id)
-                # Nothing links to the old servers now; remove them from the leaves up.
-                for tool_id in old_tool_ids:
-                    await graph_provider.delete_all_edges_for_node(
-                        tool_id, CollectionNames.MCP_SERVER_HAS_TOOL.value, transaction=transaction_id,
-                    )
-                if old_tool_keys:
-                    await graph_provider.delete_nodes(
-                        old_tool_keys, CollectionNames.AGENT_TOOLS.value, transaction=transaction_id,
-                    )
-                if old_server_keys:
-                    await graph_provider.delete_nodes(
-                        old_server_keys, CollectionNames.AGENT_MCP_SERVERS.value, transaction=transaction_id,
-                    )
-
-                await graph_provider.commit_transaction(transaction_id)
-                transaction_id = None
-            except Exception as e:
-                if transaction_id:
-                    try:
-                        await graph_provider.rollback_transaction(transaction_id)
-                    except Exception as abort_error:
-                        _rollback_failed(logger, abort_error)
-                # Before any old server is unlinked the agent is still on its old set, so the
-                # new writes go. After that the new set is the intended state: keep it.
-                if not unlinked_old_ids:
-                    if new_server_keys or new_tool_keys:
-                        await _remove_mcp_servers(new_server_keys, new_tool_keys, graph_provider, logger)
-                elif await _finish_unlinking_old(
-                    agent_full_id, CollectionNames.AGENT_HAS_MCP_SERVER.value, old_server_ids, unlinked_old_ids,
-                    {f"{CollectionNames.AGENT_MCP_SERVERS.value}/{key}" for key in new_server_keys},
-                    graph_provider, logger,
-                ):
-                    await _remove_mcp_servers(old_server_keys, old_tool_keys, graph_provider, logger)
-                raise _route_failure(request, e, "save this agent", writes_body=True) from e
-
-        # Update knowledge if provided in request (even if empty array - means delete all)
-        if "knowledge" in body:
-            # Parse knowledge sources first to validate before deletion
-            knowledge_sources = _parse_knowledge_sources(body.get("knowledge", []))
-            await _refuse_limit_over_the_cap(
-                knowledge_sources, services["graph_provider"], user_context["orgId"], logger,
-            )
-
-            graph_provider = services["graph_provider"]
-            transaction_id = None
-            new_knowledge_keys: list[str] = []
-            deleted_old_ids: list[str] = []
-            agent_full_id = f"{CollectionNames.AGENT_INSTANCES.value}/{agent_id}"
-            knowledge_keys: list[str] = []
-            knowledge_full_ids: list[str] = []
-            try:
-                transaction_id = await graph_provider.begin_transaction(
-                    read=[],
-                    write=[
-                        CollectionNames.AGENT_HAS_KNOWLEDGE.value,
-                        CollectionNames.AGENT_KNOWLEDGE.value
-                    ]
-                )
-
-                # ========== PHASE 1: GATHER ALL INFORMATION (READ ONLY) ==========
-
-                # Get all knowledge edges from agent
-                knowledge_edges = await graph_provider.get_edges_from_node(
-                    agent_full_id,
-                    CollectionNames.AGENT_HAS_KNOWLEDGE.value,
-                    transaction=transaction_id
-                )
-
-                # Extract knowledge keys and full IDs
-                for edge in knowledge_edges:
-                    knowledge_full_id = edge.get("_to")
-                    if knowledge_full_id:
-                        knowledge_full_ids.append(knowledge_full_id)
-                        parts = knowledge_full_id.split("/", 1)
-                        if len(parts) == SPLIT_PATH_EXPECTED_PARTS:
-                            knowledge_keys.append(parts[1])
-
-
-                # New knowledge is written before the old is removed: on a backend whose
-                # rollback does not undo writes (Neo4j without explicit transactions), a
-                # failure then leaves the agent with its old knowledge rather than none,
-                # and the except block below removes what the failed attempt wrote.
-                if knowledge_sources:
-                    await _create_knowledge_edges(
-                        agent_id, knowledge_sources, user_key, graph_provider, logger,
-                        transaction=transaction_id, written_keys=new_knowledge_keys,
-                    )
-
-                for knowledge_full_id in knowledge_full_ids:
-                    await graph_provider.delete_all_edges_for_node(
-                        knowledge_full_id,
-                        CollectionNames.AGENT_HAS_KNOWLEDGE.value,
-                        transaction=transaction_id
-                    )
-                    deleted_old_ids.append(knowledge_full_id)
-
-                if knowledge_keys:
-                    await graph_provider.delete_nodes(
-                        knowledge_keys,
-                        CollectionNames.AGENT_KNOWLEDGE.value,
-                        transaction=transaction_id
-                    )
-
-                await graph_provider.commit_transaction(transaction_id)
-                transaction_id = None
-
-            except Exception as e:
-                if transaction_id:
-                    try:
-                        await graph_provider.rollback_transaction(transaction_id)
-                    except Exception as abort_error:
-                        _rollback_failed(logger, abort_error)
-                # Before any old link is removed the agent is still on its old set, so the
-                # new writes go. After that the new set is the intended state: keep it.
-                if not deleted_old_ids:
-                    if new_knowledge_keys:
-                        await _remove_knowledge_nodes(new_knowledge_keys, graph_provider, logger)
-                else:
-                    await _finish_removing_old_knowledge(
-                        agent_full_id, knowledge_full_ids, knowledge_keys, deleted_old_ids,
-                        new_knowledge_keys, graph_provider, logger,
-                    )
-                raise _route_failure(request, e, "save this agent", writes_body=True) from e
-
-        # Update skill assignments if provided in request (even if empty array - means unassign all).
-        # Unlike toolsets/knowledge, this never deletes NODES — only this agent's
-        # AGENT_HAS_SKILL edges — since skills are owned by the Skills
-        # management API, not by whichever agent happens to reference them.
-        if "skills" in body:
-            skill_names = _parse_skills(body.get("skills", []))
-            graph_provider = services["graph_provider"]
-            agent_full_id = f"{CollectionNames.AGENT_INSTANCES.value}/{agent_id}"
-            transaction_id = None
-            try:
-                transaction_id = await graph_provider.begin_transaction(
-                    read=[CollectionNames.AGENT_SKILLS.value],
-                    write=[CollectionNames.AGENT_HAS_SKILL.value],
-                )
-                await graph_provider.delete_all_edges_for_node(
-                    agent_full_id, CollectionNames.AGENT_HAS_SKILL.value, transaction=transaction_id,
-                )
-                if skill_names:
-                    await _create_skill_edges(
-                        agent_id, skill_names, org_key, user_key, graph_provider, logger,
-                        transaction=transaction_id,
-                    )
-                await graph_provider.commit_transaction(transaction_id)
-                transaction_id = None
-            except Exception as e:
-                if transaction_id:
-                    try:
-                        await graph_provider.rollback_transaction(transaction_id)
-                    except Exception as abort_error:
-                        _rollback_failed(logger, abort_error)
-                raise _route_failure(request, e, "save this agent", writes_body=True) from e
-
         return JSONResponse(
             status_code=200,
-            content={"status": "success", "message": "Agent updated successfully"}
+            content={"status": "success", "message": "Agent updated successfully", "version": published.summary()},
         )
     except HTTPException:
         raise
     except Exception as e:
         raise _route_failure(request, e, "save this agent", writes_body=True) from e
+
+@router.get("/{agent_id}/internal/deletion")
+async def get_agent_deletion_internal(
+    agent_id: str,
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
+    claims: Mapping[str, Any] = Depends(require_service_token(TokenScopes.AGENT_ERASE)),
+) -> dict[str, str]:
+    """Whether the agent's delete committed, for Node's agent-erasure sweeper (H5): ``deleted``, ``live`` or ``absent``.
+
+    Node signs the org into the service token; an agent outside it reads as absent. A graph failure is a 503, never an
+    answer: Node erases an agent's memories only on ``deleted``.
+    """
+    org_id = (bound_org_id() or "").strip()
+    if not org_id:
+        raise HTTPException(status_code=400, detail="Service token must carry orgId")
+    try:
+        state = await agent_deletion_state(graph_provider, agent_id, org_id)
+    except Exception as e:
+        _log.warning("agent_deletion.lookup_failed errorType=%s", type(e).__name__)
+        raise HTTPException(status_code=503, detail="The agent's state could not be read") from e
+    return {"state": state.value}
+
+
+class AgentNamesRequest(BaseModel):
+    agent_keys: list[str] = Field(alias="agentKeys", max_length=MAX_AGENT_KEYS)
+    # Absent from a Node older than ADR-UI-03, which reads only ``names``.
+    include: list[Literal["latestVersion"]] = Field(default_factory=list, max_length=1)
+
+
+@router.post("/internal/names")
+async def get_agent_names_internal(
+    body: AgentNamesRequest,
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
+    claims: Mapping[str, Any] = Depends(require_service_token(TokenScopes.AGENT_NAMES)),
+) -> dict[str, dict[str, Any]]:
+    """The names of the token's org's agents by key, for Node's usage report, budget notices and admin lists (WP-51,
+    ADR-UI-03); with ``include: ["latestVersion"]`` also ``latestVersions``, each named agent's latest published
+    version (a key with none yet is absent).
+
+    Node signs the org into the service token; a key outside it is absent from the answer, as an unknown one is. A
+    graph failure is a 503, never a partial answer: Node then shows the agents unnamed.
+    """
+    org_id = (bound_org_id() or "").strip()
+    if not org_id:
+        raise HTTPException(status_code=400, detail="Service token must carry orgId")
+    try:
+        names = await agent_names(graph_provider, body.agent_keys, org_id)
+        answer: dict[str, dict[str, Any]] = {"names": names}
+        if "latestVersion" in body.include:
+            answer["latestVersions"] = await latest_versions(AgentVersionStore(graph_provider), list(names), org_id)
+    except Exception as e:
+        _log.warning("agent_names.lookup_failed errorType=%s", type(e).__name__)
+        raise HTTPException(status_code=503, detail="The agents' names could not be read") from e
+    return answer
+
 
 @router.delete("/{agent_id}", dependencies=[_AGENT_ID_LOG, Depends(require_scopes(OAuthScopes.AGENT_WRITE))])
 async def delete_agent(request: Request, agent_id: str) -> JSONResponse:
@@ -4093,6 +5168,8 @@ async def delete_agent(request: Request, agent_id: str) -> JSONResponse:
         # Commit transaction on success
         await services["graph_provider"].commit_transaction(txn_id)
         txn_id = None
+        await _sync_agent(services, org_key, agent_id)
+        await directory_events(request).agent_changed(org_key, agent_id, None)
 
         # A service-account agent's own MCP credentials go with it (agents can't be restored),
         # so nothing keeps refreshing their tokens.
@@ -4165,26 +5242,6 @@ async def delete_agent(request: Request, agent_id: str) -> JSONResponse:
 UNIVERSAL_AGENT_ID = "agentIdPlaceholder"
 
 
-async def require_agent_execute_for_named_agents(request: Request, agent_id: str) -> None:
-    """Ask an OAuth token for `agent:execute` unless the agent is the universal one.
-
-    Node's conversation routes (agent chat mode, `conversation:chat`) run the
-    universal agent through these routes with the caller's token, so the route
-    admits `conversation:chat` too. A named Agent Builder agent still needs
-    `agent:execute`. Session and service tokens are not scope-restricted here.
-    """
-    if agent_id == UNIVERSAL_AGENT_ID:
-        return
-    user = getattr(request.state, "user", None) or {}
-    if is_service_token(user) or not user.get("isOAuth", False):
-        return
-    if OAuthScopes.AGENT_EXECUTE.value not in user.get("oauthScopes", []):
-        raise HTTPException(
-            status_code=403,
-            detail=f"Insufficient scope. Required: {OAuthScopes.AGENT_EXECUTE.value}",
-        )
-
-
 @router.post(
     "/{agent_id}/chat",
     dependencies=[
@@ -4213,6 +5270,216 @@ async def chat(request: Request, agent_id: str) -> JSONResponse:
     return outcome.to_response()
 
 
+
+ToolsetConfigResolution = tuple[dict[str, Any], list[dict[str, Any]], list[str], list[str]]
+
+
+async def _resolve_toolset_configs(
+    config_service: ConfigurationService,
+    named_toolsets: list[dict[str, Any]],
+    *,
+    credential_lookup_id: str,
+    executing_user_id: str,
+    prefetched: dict[str, dict[str, Any]],
+    agent_id: str,
+    is_service_account: bool,
+    logger: Logger,
+    bound: frozenset[str] = frozenset(),
+) -> ToolsetConfigResolution:
+    """Fetch every toolset's credentials concurrently (SECURITY-CRITICAL: see the
+    chat route's "LOAD TOOLSET CONFIGS" block for the credential-owner rules).
+
+    Returns ``(toolset_configs, configured_toolsets, missing_display_names,
+    unauthenticated_display_names)``. Shared by the legacy chat route and the
+    durable run assembler, so both resolve credentials the same way.
+
+    ``bound``: the instances whose credential the turn's resolution already holds
+    ready for ``credential_lookup_id`` (CPD-10); their record is not read here.
+    """
+    from app.agents.constants.toolset_constants import get_toolset_config_path
+    from app.harness.credentials.tool_credentials import toolset_reference
+
+    async def _fetch_toolset_config(toolset: dict) -> tuple[dict, Any]:
+        """Return (toolset, config_or_None) without raising.
+
+        Uses instanceId (admin-created instance) if available, otherwise falls
+        back to the legacy toolset name for backward compatibility.
+        For service account agents, uses agentKey as the credential owner.
+        """
+        instance_id = toolset.get("instanceId")
+        toolset_name = toolset.get("name", "")
+        lookup_key = instance_id
+        if lookup_key in bound:
+            return toolset, {"isAuthenticated": True}
+        # `get_assistant_agent` already read this exact etcd path
+        # (`/services/toolsets/{instanceId}/{userId}`) for the assistant
+        # agent — reuse it rather than issuing the same read per toolset.
+        cached = (
+            prefetched.get(lookup_key)
+            if credential_lookup_id == executing_user_id
+            else None
+        )
+        if cached is not None:
+            return toolset, cached
+        try:
+            etcd_path = get_toolset_config_path(lookup_key, credential_lookup_id)
+            config = await config_service.get_config(etcd_path)
+            return toolset, config
+        except Exception as exc:
+            logger.warning(f"Failed to load config for toolset '{toolset_name}' (lookup_key='{lookup_key}'): {exc}")
+            return toolset, None
+
+    # Fetch ALL toolset configs in parallel
+    fetch_results = await asyncio.gather(*[_fetch_toolset_config(t) for t in named_toolsets])
+
+    toolset_configs: dict[str, Any] = {}  # references to credentials, never their values
+    configured_toolsets = []
+    missing_toolset_display_names: list[str] = []        # no config found at all
+    unauthenticated_toolset_display_names: list[str] = []  # config exists but OAuth not completed
+
+    for toolset, config in fetch_results:
+        instance_id = toolset.get("instanceId")
+        toolset_name = toolset.get("name", "")
+        lookup_key = instance_id
+        display_name = toolset.get("instanceName") or toolset.get("displayName") or toolset_name.replace("_", " ").title()
+
+        if config and config.get("isAuthenticated", False):
+            # Fully configured and authenticated — allow
+            # Use instanceId as the toolset_configs key so downstream code
+            # (_build_tool_to_toolset_map) can look it up correctly.
+            # A reference only: the record is resolved by handle when a client is created (P2.4a).
+            toolset_configs[lookup_key] = toolset_reference(lookup_key, credential_lookup_id)
+            configured_toolsets.append(toolset)
+        elif config:
+            # Config saved but authentication not completed (e.g. OAuth flow pending)
+            unauthenticated_toolset_display_names.append(display_name)
+            cred_owner = f"agent '{agent_id}'" if is_service_account else f"user '{executing_user_id}'"
+            logger.warning(
+                f"Toolset '{toolset_name}' (instance='{instance_id}') is configured but not "
+                f"authenticated for {cred_owner}. Auth flow needs to be completed."
+            )
+        else:
+            # No config found at all
+            missing_toolset_display_names.append(display_name)
+            cred_owner = f"agent '{agent_id}'" if is_service_account else f"user '{executing_user_id}'"
+            logger.warning(
+                f"Toolset config not found for {cred_owner} / "
+                f"toolset '{toolset_name}' (instance='{instance_id}'). "
+                "Credentials need to be configured."
+            )
+
+    return (
+        toolset_configs,
+        configured_toolsets,
+        missing_toolset_display_names,
+        unauthenticated_toolset_display_names,
+    )
+
+
+async def _resolve_mcp_server_configs(
+    config_service: ConfigurationService,
+    named_mcp_servers: list[dict[str, Any]],
+    *,
+    org_id: str,
+    credential_lookup_id: str,
+    executing_user_id: str,
+    agent_id: str,
+    is_service_account: bool,
+    logger: Logger,
+    bound: frozenset[str] = frozenset(),
+    prefetched: dict[str, dict[str, Any]] | None = None,
+    blocked: list[dict[str, Any]] | None = None,
+) -> ToolsetConfigResolution:
+    """Resolve every attached MCP server's instance and effective auth concurrently
+    (SECURITY-CRITICAL: see the chat route's "LOAD MCP SERVER CONFIGS" block).
+
+    Returns ``(mcp_server_configs, configured_mcp_servers, missing_display_names,
+    unauthenticated_display_names)``. Shared with the durable run assembler.
+
+    ``bound``: as in ``_resolve_toolset_configs``; the instance definition is still
+    read (it holds the transport), the credential record is not. ``prefetched``: instances and
+    auth the assistant's listing already read. ``blocked``, when given, receives each missing or
+    unconnected server, for the chat to offer a Connect button per server.
+    """
+    from app.agents.mcp import service as mcp_service
+    from app.agents.mcp.instance_scope import get_instance_for_org
+    from app.harness.credentials.tool_credentials import REF_KEY, mcp_reference
+
+    async def _fetch_mcp_server_config(
+        mcp_server: dict,
+    ) -> tuple[dict, dict[str, Any] | None, dict[str, Any] | None]:
+        """Return (mcp_server, instance_or_None, effective_auth) without raising."""
+        instance_id = mcp_server["instanceId"]
+        if prefetched_entry := (prefetched or {}).get(instance_id):
+            instance = prefetched_entry["instance"]
+            return mcp_server, instance, {} if instance_id in bound else prefetched_entry["auth"]
+        try:
+            # A service account's agent never reaches a user's personal server.
+            instance = await get_instance_for_org(
+                instance_id, config_service, org_id, None if is_service_account else executing_user_id,
+            )
+            if not instance:
+                return mcp_server, None, None
+            if instance_id in bound:
+                return mcp_server, instance, {}
+            effective_auth = await mcp_service.resolve_effective_user_auth(
+                instance, credential_lookup_id, config_service,
+            )
+            return mcp_server, instance, effective_auth
+        except Exception as exc:
+            logger.warning(f"Failed to load MCP server config for instance '{instance_id}': {exc}")
+            return mcp_server, None, None
+
+    mcp_fetch_results = await asyncio.gather(*[_fetch_mcp_server_config(m) for m in named_mcp_servers])
+
+    mcp_server_configs: dict[str, dict[str, Any]] = {}  # instance metadata and credential references
+    configured_mcp_servers = []
+    missing_mcp_server_display_names: list[str] = []          # instance no longer exists
+    unauthenticated_mcp_server_display_names: list[str] = []  # instance exists, auth incomplete
+
+    for mcp_server, instance, effective_auth in mcp_fetch_results:
+        instance_id = mcp_server["instanceId"]
+        display_name = mcp_server.get("displayName") or mcp_server.get("name") or instance_id
+
+        if instance is None:
+            missing_mcp_server_display_names.append(display_name)
+            if blocked is not None:
+                blocked.append({"instanceId": instance_id, "name": display_name, "problem": "not_found"})
+            logger.warning(f"MCP server instance '{instance_id}' not found for agent {agent_id}.")
+            continue
+
+        if mcp_service.is_effective_auth_authenticated(effective_auth):
+            # The auth record is resolved by handle when the session opens (P2.4a).
+            mcp_server_configs[instance_id] = {
+                "instance": instance,
+                REF_KEY: mcp_reference(instance_id, credential_lookup_id),
+                "ownerId": credential_lookup_id,
+            }
+            configured_mcp_servers.append(mcp_server)
+        else:
+            unauthenticated_mcp_server_display_names.append(display_name)
+            if blocked is not None:
+                blocked.append({
+                    "instanceId": instance_id,
+                    "name": display_name,
+                    "problem": "not_connected",
+                    "authMode": instance.get("authMode"),
+                    "sharedCredential": mcp_service.uses_shared_credential(instance),
+                })
+            cred_owner = f"agent '{agent_id}'" if is_service_account else f"user '{executing_user_id}'"
+            logger.warning(
+                f"MCP server '{display_name}' (instance='{instance_id}') is not authenticated "
+                f"for {cred_owner}."
+            )
+
+    return (
+        mcp_server_configs,
+        configured_mcp_servers,
+        missing_mcp_server_display_names,
+        unauthenticated_mcp_server_display_names,
+    )
+
+
 @router.post(
     "/{agent_id}/chat/stream",
     dependencies=[
@@ -4229,11 +5496,11 @@ async def chat(request: Request, agent_id: str) -> JSONResponse:
 async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
     """Chat with an agent using streaming response"""
     timer = StageTimer()
+    resolved = None
     try:
         services = await get_services(request)
         logger = services["logger"]
 
-        from app.agents.constants.toolset_constants import get_toolset_config_path
 
         config_service = services["config_service"]
         graph_provider = services["graph_provider"]
@@ -4242,13 +5509,6 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
         config_service = services["config_service"]
         user_context = _get_user_context(request)
         org_key = user_context["orgId"]
-        # Optional, and resolved here rather than in get_services: it costs a
-        # vector-DB round trip, which the list/read/template routes never need.
-        entity_vector_store = await load_entity_vector_store(
-            request.app.container, logger, org_key,
-        )
-
-        timer.mark("services")
         body = _parse_request_body(await request.body())
         try:
             chat_query = ChatQuery(**body)
@@ -4258,6 +5518,18 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                 status_code=400,
                 detail="; ".join(e["msg"].removeprefix("Value error, ") for e in exc.errors()),
             ) from exc
+        # Before anything is read: a header that does not verify is refused, never served from the reads below.
+        resolved = await resolved_turn_or_401(
+            request, agent_id=agent_id, conversation_id=chat_query.conversationId,
+        )
+        bind_resolved_stages(resolved)
+        # Optional, and resolved here rather than in get_services: it costs a
+        # vector-DB round trip, which the list/read/template routes never need.
+        entity_vector_store = await load_entity_vector_store(
+            request.app.container, logger, org_key,
+        )
+
+        timer.mark("services")
         protocol = _resolve_protocol(chat_query, request)
         logger.debug("chat_stream: resolved protocol=%s (body.protocol=%r, query=%r)",
                      protocol, chat_query.protocol, request.query_params.get("protocol"))
@@ -4364,9 +5636,20 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                 # Standard user path: look up the user document and verify permissions.
                 user_doc = await _get_user_document(user_context["userId"], services["graph_provider"], logger)
                 enriched_user_info = await _enrich_user_info(user_context, user_doc)
-                perm = await services["graph_provider"].check_agent_permission(agent_id, user_doc["_key"], org_key)
-                if not perm:
-                    raise AgentNotFoundError(agent_id)
+                if resolved is not None and resolved.access_run:
+                    # Node's agent directory holds a current "may run" for this caller (CPD-10).
+                    perm = {"can_edit": False, "can_share": False, "role": "viewer"}
+                else:
+                    perm = await services["graph_provider"].check_agent_permission(agent_id, user_doc["_key"], org_key)
+                    if not perm:
+                        raise AgentNotFoundError(agent_id)
+            agent = await agent_for_chat(
+                agent, graph_provider, org_key, agent_id, config_service, resolved=resolved is not None,
+            )
+            if stored_agent_gates(agent.get(AGENT_GATES_FIELD)) is not None:
+                # WP-31 D: only the agent harness holds a run to the agent's plan approval and checks; this loop
+                # would run it without them, so it does not run it at all.
+                raise HTTPException(status_code=409, detail=GATED_AGENT_NEEDS_HARNESS)
 
             _apply_user_context_gate(
                 enriched_user_info,
@@ -4518,77 +5801,28 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                 # For service account agents, credentials are keyed by agentKey not userId
                 credential_lookup_id = agent_id if is_service_account else executing_user_id
                 toolset_configs: dict = {}  # SENSITIVE: Contains user/agent credentials
+                bound = bound_installations(resolved, credential_lookup_id, service_account=is_service_account)
 
                 # Filter to toolsets that actually have a name or instanceId before the concurrent fetch
                 named_toolsets = [t for t in agent_toolsets if t.get("instanceId") or t.get("name")]
 
                 if named_toolsets:
-                    import asyncio as _asyncio
-
-                    async def _fetch_toolset_config(toolset: dict) -> tuple[dict, Any]:
-                        """Return (toolset, config_or_None) without raising.
-
-                        Uses instanceId (admin-created instance) if available, otherwise falls
-                        back to the legacy toolset name for backward compatibility.
-                        For service account agents, uses agentKey as the credential owner.
-                        """
-                        instance_id = toolset.get("instanceId")
-                        toolset_name = toolset.get("name", "")
-                        lookup_key = instance_id
-                        # `get_assistant_agent` already read this exact etcd path
-                        # (`/services/toolsets/{instanceId}/{userId}`) for the assistant
-                        # agent — reuse it rather than issuing the same read per toolset.
-                        prefetched = (
-                            prefetched_toolset_auth.get(lookup_key)
-                            if credential_lookup_id == executing_user_id
-                            else None
-                        )
-                        if prefetched is not None:
-                            return toolset, prefetched
-                        try:
-                            etcd_path = get_toolset_config_path(lookup_key, credential_lookup_id)
-                            config = await services["config_service"].get_config(etcd_path)
-                            return toolset, config
-                        except Exception as exc:
-                            logger.warning(f"Failed to load config for toolset '{toolset_name}' (lookup_key='{lookup_key}'): {exc}")
-                            return toolset, None
-
-                    # Fetch ALL toolset configs in parallel
-                    fetch_results = await _asyncio.gather(*[_fetch_toolset_config(t) for t in named_toolsets])
-
-                    configured_toolsets = []
-                    missing_toolset_display_names: list[str] = []        # no config found at all
-                    unauthenticated_toolset_display_names: list[str] = []  # config exists but OAuth not completed
-
-                    for toolset, config in fetch_results:
-                        instance_id = toolset.get("instanceId")
-                        toolset_name = toolset.get("name", "")
-                        lookup_key = instance_id
-                        display_name = toolset.get("instanceName") or toolset.get("displayName") or toolset_name.replace("_", " ").title()
-
-                        if config and config.get("isAuthenticated", False):
-                            # Fully configured and authenticated — allow
-                            # Use instanceId as the toolset_configs key so downstream code
-                            # (_build_tool_to_toolset_map) can look it up correctly.
-                            toolset_configs[lookup_key] = config
-                            configured_toolsets.append(toolset)
-                        elif config:
-                            # Config saved but authentication not completed (e.g. OAuth flow pending)
-                            unauthenticated_toolset_display_names.append(display_name)
-                            cred_owner = f"agent '{agent_id}'" if is_service_account else f"user '{executing_user_id}'"
-                            logger.warning(
-                                f"Toolset '{toolset_name}' (instance='{instance_id}') is configured but not "
-                                f"authenticated for {cred_owner}. Auth flow needs to be completed."
-                            )
-                        else:
-                            # No config found at all
-                            missing_toolset_display_names.append(display_name)
-                            cred_owner = f"agent '{agent_id}'" if is_service_account else f"user '{executing_user_id}'"
-                            logger.warning(
-                                f"Toolset config not found for {cred_owner} / "
-                                f"toolset '{toolset_name}' (instance='{instance_id}'). "
-                                "Credentials need to be configured."
-                            )
+                    (
+                        toolset_configs,
+                        configured_toolsets,
+                        missing_toolset_display_names,
+                        unauthenticated_toolset_display_names,
+                    ) = await _resolve_toolset_configs(
+                        services["config_service"],
+                        named_toolsets,
+                        credential_lookup_id=credential_lookup_id,
+                        executing_user_id=executing_user_id,
+                        prefetched=prefetched_toolset_auth,
+                        agent_id=agent_id,
+                        is_service_account=is_service_account,
+                        logger=logger,
+                        bound=bound,
+                    )
 
                     # Hard-block if ANY toolset is either unconfigured or unauthenticated
                     if missing_toolset_display_names or unauthenticated_toolset_display_names:
@@ -4640,72 +5874,26 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
 
                 named_mcp_servers = [m for m in agent_mcp_servers if m.get("instanceId")]
                 if named_mcp_servers:
-                    import asyncio as _asyncio
-
-                    from app.agents.mcp import service as mcp_service
-                    from app.edition_config import get_mcp_instance_resolved
-
-                    async def _fetch_mcp_server_config(
-                        mcp_server: dict,
-                    ) -> tuple[dict, dict[str, Any] | None, dict[str, Any] | None]:
-                        """Return (mcp_server, instance_or_None, effective_auth) without raising."""
-                        instance_id = mcp_server["instanceId"]
-                        if prefetched := prefetched_mcp.get(instance_id):
-                            return mcp_server, prefetched["instance"], prefetched["auth"]
-                        try:
-                            instance = await get_mcp_instance_resolved(
-                                instance_id, services["config_service"], org_key,
-                                None if is_service_account else executing_user_id,
-                            )
-                            if not instance:
-                                return mcp_server, None, None
-                            effective_auth = await mcp_service.resolve_effective_user_auth(
-                                instance, credential_lookup_id, services["config_service"],
-                            )
-                            return mcp_server, instance, effective_auth
-                        except Exception as exc:
-                            logger.warning(f"Failed to load MCP server config for instance '{instance_id}': {exc}")
-                            return mcp_server, None, None
-
-                    mcp_fetch_results = await _asyncio.gather(*[_fetch_mcp_server_config(m) for m in named_mcp_servers])
-
-                    configured_mcp_servers = []
-                    missing_mcp_server_display_names: list[str] = []          # instance no longer exists
-                    unauthenticated_mcp_server_display_names: list[str] = []  # instance exists, auth incomplete
                     # The same, for the chat to offer a Connect button per server.
                     blocked_mcp_servers: list[dict[str, Any]] = []
-
-                    for mcp_server, instance, effective_auth in mcp_fetch_results:
-                        instance_id = mcp_server["instanceId"]
-                        display_name = mcp_server.get("displayName") or mcp_server.get("name") or instance_id
-
-                        if instance is None:
-                            missing_mcp_server_display_names.append(display_name)
-                            blocked_mcp_servers.append(
-                                {"instanceId": instance_id, "name": display_name, "problem": "not_found"}
-                            )
-                            logger.warning(f"MCP server instance '{instance_id}' not found for agent {agent_id}.")
-                            continue
-
-                        if mcp_service.is_effective_auth_authenticated(effective_auth):
-                            mcp_server_configs[instance_id] = {
-                                "instance": instance, "auth": effective_auth or {}, "ownerId": credential_lookup_id,
-                            }
-                            configured_mcp_servers.append(mcp_server)
-                        else:
-                            unauthenticated_mcp_server_display_names.append(display_name)
-                            blocked_mcp_servers.append({
-                                "instanceId": instance_id,
-                                "name": display_name,
-                                "problem": "not_connected",
-                                "authMode": instance.get("authMode"),
-                                "sharedCredential": mcp_service.uses_shared_credential(instance),
-                            })
-                            cred_owner = f"agent '{agent_id}'" if is_service_account else f"user '{executing_user_id}'"
-                            logger.warning(
-                                f"MCP server '{display_name}' (instance='{instance_id}') is not authenticated "
-                                f"for {cred_owner}."
-                            )
+                    (
+                        mcp_server_configs,
+                        configured_mcp_servers,
+                        missing_mcp_server_display_names,
+                        unauthenticated_mcp_server_display_names,
+                    ) = await _resolve_mcp_server_configs(
+                        services["config_service"],
+                        named_mcp_servers,
+                        org_id=org_key,
+                        credential_lookup_id=credential_lookup_id,
+                        executing_user_id=executing_user_id,
+                        agent_id=agent_id,
+                        is_service_account=is_service_account,
+                        logger=logger,
+                        bound=bound,
+                        prefetched=prefetched_mcp,
+                        blocked=blocked_mcp_servers,
+                    )
 
                     if missing_mcp_server_display_names or unauthenticated_mcp_server_display_names:
                         problem_parts = []
@@ -4920,6 +6108,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                     "limit": chat_query.limit,
                     "messages": [],
                     "previous_conversations": previous_conversations,
+                    "historyLabel": chat_query.historyLabel,
                     "quickMode": chat_query.quickMode,
                     "chatMode": chat_query.chatMode,
                     "retrievalMode": chat_query.retrievalMode,
@@ -4940,7 +6129,18 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                     "connector_configs": connector_configs,
                     "toolsetConfigs": toolset_configs,
                     "conversationId": chat_query.conversationId,
+                    # Set only by the trusted in-process durable worker. This
+                    # never comes from request JSON and cannot let a public
+                    # caller select another run's execution identity.
+                    "harnessRunId": getattr(request.state, "harness_run_id", None),
+                    "harnessCheckpointStore": getattr(
+                        request.state, "harness_checkpoint_store", None
+                    ),
+                    "harnessVirtualFileSystem": getattr(
+                        request.state, "harness_virtual_filesystem", None
+                    ),
                     "is_service_account": is_service_account,
+                    "credentialOwner": credential_lookup_id,
                     "artifact_owner_user_id": artifact_owner_user_id,
                     "isPlaceholderAgent": is_placeholder,
                     "modelName": model_name,
@@ -4954,6 +6154,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                     "includeRetrievalContext": chat_query.includeRetrievalContext,
                     "keywordSearchBudget": chat_query.keywordSearchBudget,
                     "runId": chat_query.runId,
+                    "resolvedFlowRules": resolved.flow if resolved is not None else None,
                     # Per-tool approvals (`tool_approvals`) and agent sign-ins: the agent, and whether
                     # a card can be answered in this request.
                     "agentKey": None if is_placeholder else agent_id,
@@ -5027,7 +6228,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                         yield event
 
         return StreamingResponse(
-            _run(),
+            with_resolved_stages(resolved, _run()),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",
@@ -5041,6 +6242,9 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
         _log.error(f"Error in chat_stream: {e}", exc_info=True)
         _, user_message = classify_exception(e)
         raise HTTPException(status_code=400, detail=user_message) from e
+    finally:
+        # The stream binds its own task; this one may be reused after the handler returns.
+        release_resolved_stages(resolved)
 
 def _stream_error_frame(
     protocol: str, message: str, code: str = "stream_error", details: dict[str, Any] | None = None,
@@ -5095,7 +6299,8 @@ async def get_assistant_agent(
     mcp_enabled: bool | None = None,
     user_doc: dict[str, Any] | None = None,
     mcp_prefetch: dict[str, dict[str, Any]] | None = None,
-) -> tuple[dict, dict[str, dict[str, Any]]]:
+    include_withdrawn_toolsets: bool = False,
+) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
     """
     Get the assistant agent with all authenticated toolsets and accessible connectors.
 
@@ -5118,9 +6323,13 @@ async def get_assistant_agent(
         credential blob per authenticated toolset instance, handed back so the
         chat handler can skip re-reading the identical etcd paths.
     """
-    from app.agents.mcp.service import get_authenticated_mcp_servers, is_mcp_enabled
+    from app.agents.mcp.instance_scope import list_instances_for_org
+    from app.agents.mcp.service import (
+        MCPInstancesUnavailable,
+        get_authenticated_mcp_servers,
+        is_mcp_enabled,
+    )
     from app.api.routes.toolsets import get_authenticated_toolsets, is_actions_enabled
-    from app.edition_config import resolve_mcp_instances_with_inheritance
 
     toolset_auth_by_instance: dict[str, dict[str, Any]] = {}
 
@@ -5137,6 +6346,7 @@ async def get_assistant_agent(
                 org_id=org_id,
                 config_service=config_service,
                 registry=toolset_registry,
+                include_withdrawn=include_withdrawn_toolsets,
             )
         except Exception as e:
             logger.error(f"Error fetching authenticated toolsets: {e}", exc_info=True)
@@ -5153,13 +6363,16 @@ async def get_assistant_agent(
         mcp_enabled = await is_mcp_enabled(config_service)
     if mcp_enabled:
         try:
-            mcp_instances = await resolve_mcp_instances_with_inheritance(config_service, org_id, user_id)
+            mcp_instances = await list_instances_for_org(config_service, org_id, user_id)
             authenticated_mcp_servers_list = await get_authenticated_mcp_servers(
                 owner_id=user_id,
                 config_service=config_service,
                 instances=mcp_instances,
                 resolved=mcp_prefetch,
             )
+        except MCPInstancesUnavailable:
+            # The org's servers are unknown, not absent: the run says so instead of losing their tools (FB-3).
+            raise
         except Exception as e:
             logger.error(f"Error fetching authenticated MCP servers: {e}", exc_info=True)
             authenticated_mcp_servers_list = []

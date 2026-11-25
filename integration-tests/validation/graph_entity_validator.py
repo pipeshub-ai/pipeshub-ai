@@ -129,12 +129,21 @@ def _comparable_weburl(url: object) -> object:
 
 def _field_values_equal(key: str, expected: object, actual: object) -> bool:
     """Return True if expected and actual match for this field (special cases for empty
-    semantic_metadata and Google file links)."""
+    semantic_metadata, cleared edition_fields keys and Google file links)."""
     if key == "semantic_metadata" and expected in (None, {}) and actual in (None, {}):
         return True
     if key == "weburl":
         return _comparable_weburl(expected) == _comparable_weburl(actual)
+    if key == "edition_fields":
+        return _held_edition_fields(expected) == _held_edition_fields(actual)
     return expected == actual
+
+
+def _held_edition_fields(value: object) -> object:
+    """``value`` as the stored record reads back: a key written as ``None`` clears it, and no keys reads as ``None``."""
+    if not isinstance(value, dict):
+        return value
+    return {k: v for k, v in value.items() if v is not None} or None
 
 
 def _merge_schemas(base: ResponseSchema, layer: ResponseSchema) -> ResponseSchema:

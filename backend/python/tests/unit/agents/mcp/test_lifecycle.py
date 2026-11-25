@@ -158,6 +158,8 @@ class TestDeletionEventsCleanUp:
         graph.get_user_by_user_id = AsyncMock(return_value={"id": "user-key", "orgId": "org-1", "email": "alice@example.com"})
         graph.get_user_by_email = AsyncMock(return_value=MagicMock(id="user-key", user_id="u-alice"))
         graph.batch_upsert_nodes = AsyncMock()
+        # The harness also hands a deleted user's skills on (SLASH1); none here.
+        graph.get_nodes_by_filters = AsyncMock(return_value=[])
         container = MagicMock()
         container.config_service.return_value = store
         # The org-deleted handler publishes a delayed purge: a real producer's send_event is a coroutine.

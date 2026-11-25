@@ -108,6 +108,7 @@ def test_a_hung_child_is_killed_and_reported() -> None:
     started = time.monotonic()
     with pytest.raises(multiprocessing.TimeoutError):
         _in_child(_hang, timeout=1)
+    # wall-clock-ok: the child hangs 600 s; a pool that joined it instead of terminating it waits that out
     assert time.monotonic() - started < 30
 
 

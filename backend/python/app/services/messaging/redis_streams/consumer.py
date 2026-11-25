@@ -93,42 +93,44 @@ class RedisStreamsConsumer(IMessagingConsumer):
                 )
             )
             await self.redis.ping()
-
-            for topic in self.config.topics:
-                try:
-                    await self.redis.xgroup_create(  # type: ignore
-                        topic,
-                        self.config.group_id,
-                        # "0" replays everything retained. A disposable group is new on
-                        # every process start, so that would re-deliver the whole stream
-                        # each time; it only cares about what happens from now on.
-                        id="$" if self.config.ephemeral_group else "0",
-                        mkstream=True,
-                    )
-                    self.logger.info(
-                        "Created consumer group %s for stream %s",
-                        self.config.group_id,
-                        topic,
-                    )
-                except Exception as e:
-                    if _BUSYGROUP_ERROR in str(e):
-                        self.logger.debug(
-                            "Consumer group %s already exists for stream %s",
-                            self.config.group_id,
-                            topic,
-                        )
-                    else:
-                        raise
-
+            await self._join()
             self.logger.info("Successfully initialized Redis Streams consumer")
         except Exception as e:
             self.logger.error("Failed to create consumer: %s", e)
             raise
 
+    async def _join(self) -> None:
+        """Makes the group on each topic, from the head: a new group sees what is retained."""
+        for topic in self.config.topics:
+            try:
+                await self.redis.xgroup_create(  # type: ignore
+                    topic,
+                    self.config.group_id,
+                    id="0",
+                    mkstream=True,
+                )
+                self.logger.info(
+                    "Created consumer group %s for stream %s",
+                    self.config.group_id,
+                    topic,
+                )
+            except Exception as e:
+                if _BUSYGROUP_ERROR in str(e):
+                    self.logger.debug(
+                        "Consumer group %s already exists for stream %s",
+                        self.config.group_id,
+                        topic,
+                    )
+                else:
+                    raise
+
     async def cleanup(self) -> None:
         try:
             if self.redis:
-                await self._destroy_ephemeral_group()
+                # The group and this consumer's name stay: XGROUP DELCONSUMER would
+                # discard its pending entries, and a stable name lets a restarted
+                # process take its own unacked messages back at once (`_drain_pending`
+                # phase 2) instead of waiting out claim_min_idle_ms.
                 await self.redis.aclose()
                 # Null it so a second call (stop() after the loop's own finally) is a
                 # no-op rather than issuing commands on a closed client.
@@ -168,27 +170,6 @@ class RedisStreamsConsumer(IMessagingConsumer):
                 pass
 
         await self.cleanup()
-
-    async def _destroy_ephemeral_group(self) -> None:
-        """Drop this process's disposable group; Redis never expires groups itself.
-
-        Stable groups are left alone. Their consumer name is also left alone -- both
-        because XGROUP DELCONSUMER would discard that consumer's pending entries (the
-        group's last-delivered-id has already moved past them, so nothing would ever
-        redeliver them) and because a stable name is what lets a restarted process
-        recover its own unacked messages immediately, via `_drain_pending`'s phase 2,
-        instead of waiting out claim_min_idle_ms for XAUTOCLAIM.
-        """
-        if not (self.config.ephemeral_group and self.redis):
-            return
-        for topic in self.config.topics:
-            try:
-                await self.redis.xgroup_destroy(topic, self.config.group_id)  # type: ignore
-            except Exception as exc:
-                self.logger.warning(
-                    "Could not destroy consumer group %s on %s: %s",
-                    self.config.group_id, topic, exc,
-                )
 
     def is_running(self) -> bool:
         return self.running

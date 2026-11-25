@@ -4,7 +4,8 @@ import { MAPPINGS } from '../../../src/scripts/docstore-migrate/mapping';
 import { CONVERSATION_INVARIANTS, CONVERSATION_MAPPINGS } from '../../../src/scripts/docstore-migrate/mapping/conversation';
 import { PG_BINS, PgStack, haveStack, startPgStack } from '../../stores/pg-store-harness';
 import { copyAgainInserts, copyAndCompare, jobsUnit } from './roundtrip';
-import { conversationDocs, C1, S1, S3, ORG1 } from './fixtures/conversation';
+import { conversationDocs, C1, S1, S3, ORG1, U1 } from './fixtures/conversation';
+import { at, oid } from './roundtrip';
 
 const suite = haveStack ? describe : describe.skip;
 const count = async (stack: PgStack, table: string): Promise<number> =>
@@ -49,8 +50,39 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
     it('a field the importer would drop shows up as a diff on exactly the affected session', async () => {
       await stack.admin((c) => c.query("UPDATE conversation.chat_sessions SET metadata = metadata - 'k' WHERE id = $1", [String(S1)]));
       const r = await copyAndCompare({ chatSessions: conversationDocs().chatSessions }, mappings);
-      expect(r.diffs.chatSessions.map((d) => d.id)).to.deep.equal([String(S1)]);
-      expect(r.diffs.chatSessions[0]!.kind).to.equal('differs');
+      expect(r.diffs.chatSessions!.map((d) => d.id)).to.deep.equal([String(S1)]);
+      expect(r.diffs.chatSessions![0]!.kind).to.equal('differs');
+    });
+
+    it('R45-MIGR: the harness fields of a session and of a message are copied and read back equal; a dropped one is a diff', async () => {
+      const sid = oid();
+      const session = {
+        _id: sid, sessionType: 'chat', nextSeq: 2, userId: U1, orgId: ORG1, initiator: U1, lastActivityAt: 1772359200000,
+        harnessVersion: 'durable-v1', harnessLedger: { seq: 2, digest: 'd2', diverged: true }, erasureRequestedAt: 1772359300000,
+        harnessSeen: { [String(U1)]: 1772359400000 },
+        createdAt: at('2026-03-04T09:59:00.000Z'), updatedAt: at('2026-03-04T10:00:00.000Z'), __v: 0,
+      };
+      const base = { sessionId: sid, orgId: ORG1, contentFormat: 'MARKDOWN', citations: [], followUpQuestions: [], feedback: [], modelInfo: { chatMode: 'quick' }, appliedFilters: { apps: [], kb: [], recordGroups: [], records: [], recordsExact: [] }, attachments: [], referenceData: [], tools: [], reasoning: [], parts: [], createdAt: at('2026-03-04T10:00:00.000Z'), updatedAt: at('2026-03-04T10:00:00.000Z') };
+      const answer = {
+        ...base, _id: oid(), seq: 1, messageType: 'bot_response', content: 'answer', senderId: U1, runId: 'run-9', errorCode: 'mcp_tool_withdrawn', errorServers: ['Jira'],
+        errorStop: { scope: 'org', reason: 'maintenance' }, truncatedBy: 'budget', budgetScope: 'pool-a', runOutcome: { kind: 'failed', closing: 'stopped' },
+        notFound: { subject: 'Q3 plan', hits: 0, line: 'I could not find the Q3 plan.' }, limits: { items: [{ kind: 'clone' }], line: 'I could not clone it.' },
+        copied: true, foreignTurn: true, label: { complete: true, sources: [{ kind: 'record', recordId: 'r-1' }] },
+      };
+      const asked = { ...base, _id: oid(), seq: 2, messageType: 'user_query', content: '/review', command: { name: 'review', version: '1', contentDigest: 'c', typed: '/review', owner: 'builtin' } };
+      const r = await copyAndCompare({ chatSessions: [session], chatSessionMessages: [answer, asked] }, mappings);
+      expect(r.diffs).to.deep.equal({ chatSessions: [], chatSessionMessages: [] });
+      // the command without args is read as args {} (the schema default), counted
+      expect(r.report.applied.get('command without args read as args {} (the schema default)')).to.equal(1);
+      const row = (await stack.admin((c) => c.query('SELECT harness, sender_id, label FROM conversation.chat_messages WHERE id = $1', [String(answer._id)]))).rows[0];
+      expect(row.sender_id).to.equal(String(U1));
+      expect(row.harness).to.deep.include({ runId: 'run-9', notFound: answer.notFound, limits: answer.limits });
+      // a field the importer would lose is a difference on exactly that message
+      await stack.admin((c) => c.query("UPDATE conversation.chat_messages SET harness = harness - 'notFound' WHERE id = $1", [String(answer._id)]));
+      await stack.admin((c) => c.query('UPDATE conversation.chat_sessions SET harness_seen = NULL WHERE id = $1', [String(sid)]));
+      const again = await copyAndCompare({ chatSessions: [session], chatSessionMessages: [answer] }, mappings);
+      expect(again.diffs.chatSessionMessages!.map((d) => d.id)).to.deep.equal([String(answer._id)]);
+      expect(again.diffs.chatSessions!.map((d) => d.id)).to.deep.equal([String(sid)]);
     });
 
     it('the planted organisation mismatch is found', async () => {

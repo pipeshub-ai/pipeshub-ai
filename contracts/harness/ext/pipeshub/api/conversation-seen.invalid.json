@@ -1,0 +1,8 @@
+[
+  {
+    "description": "a mark that is not a time",
+    "instance": {
+      "seenUpTo": "now"
+    }
+  }
+]

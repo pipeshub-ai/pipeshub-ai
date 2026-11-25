@@ -223,7 +223,7 @@ export default function McpAccessPage() {
             <Heading size="5" weight="medium" style={{ color: 'var(--slate-12)' }}>
               {t('workspace.mcpAccess.title')}
             </Heading>
-            <Text size="2" style={{ color: 'var(--slate-10)', marginTop: 'var(--space-1)', display: 'block' }}>
+            <Text size="2" style={{ color: 'var(--slate-11)', marginTop: 'var(--space-1)', display: 'block' }}>
               {t('workspace.mcpAccess.subtitle')}
             </Text>
           </Box>
@@ -306,7 +306,7 @@ export default function McpAccessPage() {
                   >
                     <TextField.Slot>
                       <span aria-hidden="true" style={{ display: 'inline-flex' }}>
-                        <MaterialIcon name="search" size={16} color="var(--gray-10)" />
+                        <MaterialIcon name="search" size={16} color="var(--gray-11)" />
                       </span>
                     </TextField.Slot>
                   </TextField.Root>

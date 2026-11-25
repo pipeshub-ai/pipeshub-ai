@@ -1,0 +1,9 @@
+{
+  "prompts": [
+    {
+      "name": "pipeshub-agent",
+      "version": "pipeshub-agent-2026-09",
+      "text": "PipesHub agent system prompt, version pipeshub-agent-2026-09 (RUN_SPEC_PROMPT_VERSION). Its text is still assembled in code by the agent prompt builder from the agent's, project's and org's instructions; P4.5 moves the template here, and this entry then holds it."
+    }
+  ]
+}

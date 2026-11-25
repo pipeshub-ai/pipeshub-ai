@@ -1,0 +1,155 @@
+{
+  "about": "QA-AUTO browser latency budgets on the harness lane's scripted model (SLO.md, Browser latency), kept unchanged when QA-CLASSIC moved the specs to the classic chat. Measured by qa/latency.spec.ts and qa/latency-engine.spec.ts; a p50 or p95 over its budget fails the spec. Kept equal to SLO.md's table by scripts/test_qa_full.py. R30-LAT added the metrics that carry `grounds` before their first measurement (QAFINAL-FU-LAT); a metric with `source: run.sh` is read from the stack's own timings by scripts/qa_full.py, not by a spec.",
+  "metrics": {
+    "first_token_ms": {
+      "title": "First token (Enter to the first answer text)",
+      "lane": "harness",
+      "p50_ms": 1200,
+      "p95_ms": 2000,
+      "samples": 12
+    },
+    "turn_done_ms": {
+      "title": "Turn completion (Enter to the settled answer)",
+      "lane": "harness",
+      "p50_ms": 1600,
+      "p95_ms": 2500,
+      "samples": 12
+    },
+    "approval_roundtrip_ms": {
+      "title": "Approval round trip (Allow on the approval card to the answer after the write)",
+      "lane": "harness",
+      "p50_ms": 1000,
+      "p95_ms": 1800,
+      "samples": 6
+    },
+    "job_start_ms": {
+      "title": "Job start (Enter to the job card Working)",
+      "lane": "durable",
+      "p50_ms": 2000,
+      "p95_ms": 4000,
+      "samples": 10
+    },
+    "default_first_token_ms": {
+      "title": "First token on the default chat (/chat/, no agent: Enter to the first answer text)",
+      "lane": "harness",
+      "p50_ms": 1200,
+      "p95_ms": 2000,
+      "samples": 12,
+      "grounds": "first_token_ms: the same turn path without an agent; no looser"
+    },
+    "default_turn_done_ms": {
+      "title": "Turn completion on the default chat (Enter to the settled answer)",
+      "lane": "harness",
+      "p50_ms": 1600,
+      "p95_ms": 2500,
+      "samples": 12,
+      "grounds": "turn_done_ms: the same turn path without an agent; no looser"
+    },
+    "mcp_first_token_ms": {
+      "title": "First token on a chat whose agent has an MCP server the turn does not use",
+      "lane": "harness",
+      "p50_ms": 1200,
+      "p95_ms": 2000,
+      "samples": 12,
+      "grounds": "first_token_ms: SLO #12 says an MCP server must not make first token worse"
+    },
+    "mcp_first_token_delta_ms": {
+      "title": "MCP server's share of first token (each pair: the MCP agent's first token minus the plain agent's, taken back to back)",
+      "lane": "harness",
+      "p50_ms": 75,
+      "p95_ms": 800,
+      "samples": 12,
+      "grounds": "SLO #2: the whole non-model overhead of a turn is p50 <= legacy + 75 ms, so an unused MCP server may cost at most that; p95 is first_token_ms p95 minus its p50 (the band host noise already gets)"
+    },
+    "question_roundtrip_ms": {
+      "title": "Question card Submit to the answer the resumed run gives",
+      "lane": "harness",
+      "p50_ms": 1000,
+      "p95_ms": 1800,
+      "samples": 6,
+      "grounds": "approval_roundtrip_ms: the same hold-and-resume path (a held run answered by the person)"
+    },
+    "builder_load_ms": {
+      "title": "Agent builder: navigation to the form filled with the saved agent",
+      "lane": "harness",
+      "p50_ms": 1000,
+      "p95_ms": 2000,
+      "samples": 10,
+      "grounds": "Nielsen's 1 s limit for an uninterrupted flow (p50) and EV-15's 'usable within 2 s of navigation' (p95, perf/chat-large-run.perf.spec.ts)"
+    },
+    "builder_save_ms": {
+      "title": "Agent builder: Save to the saved state shown",
+      "lane": "harness",
+      "p50_ms": 1000,
+      "p95_ms": 2000,
+      "samples": 10,
+      "grounds": "Nielsen's 1 s limit for an uninterrupted flow (p50) and EV-15's 'usable within 2 s of navigation' (p95, perf/chat-large-run.perf.spec.ts)"
+    },
+    "jobs_load_ms": {
+      "title": "Jobs page: navigation to its sections drawn with their jobs",
+      "lane": "harness",
+      "p50_ms": 1000,
+      "p95_ms": 2000,
+      "samples": 10,
+      "grounds": "Nielsen's 1 s limit for an uninterrupted flow (p50) and EV-15's 'usable within 2 s of navigation' (p95, perf/chat-large-run.perf.spec.ts)"
+    },
+    "needs_you_load_ms": {
+      "title": "Needs you: navigation to its rows drawn",
+      "lane": "harness",
+      "p50_ms": 1000,
+      "p95_ms": 2000,
+      "samples": 10,
+      "grounds": "Nielsen's 1 s limit for an uninterrupted flow (p50) and EV-15's 'usable within 2 s of navigation' (p95, perf/chat-large-run.perf.spec.ts)"
+    },
+    "ai_access_load_ms": {
+      "title": "AI access: navigation to the accounts list drawn",
+      "lane": "harness",
+      "p50_ms": 1000,
+      "p95_ms": 2000,
+      "samples": 10,
+      "grounds": "Nielsen's 1 s limit for an uninterrupted flow (p50) and EV-15's 'usable within 2 s of navigation' (p95, perf/chat-large-run.perf.spec.ts)"
+    },
+    "schedules_load_ms": {
+      "title": "Schedules: navigation to the schedules list drawn",
+      "lane": "harness",
+      "p50_ms": 1000,
+      "p95_ms": 2000,
+      "samples": 10,
+      "grounds": "Nielsen's 1 s limit for an uninterrupted flow (p50) and EV-15's 'usable within 2 s of navigation' (p95, perf/chat-large-run.perf.spec.ts)"
+    },
+    "chat_delete_ms": {
+      "title": "Delete a chat: the confirm click to its row gone from the sidebar",
+      "lane": "harness",
+      "p50_ms": 1000,
+      "p95_ms": 2000,
+      "samples": 6,
+      "grounds": "Nielsen's 1 s limit (p50); EV-15's 2 s (p95)"
+    },
+    "delete_run_stopped_ms": {
+      "title": "Delete a chat with a run waiting: the confirm click to the run read as ended",
+      "lane": "harness",
+      "p50_ms": 2000,
+      "p95_ms": 2000,
+      "samples": 6,
+      "grounds": "SLO #7: cancel to stopped p95 < 2 s (Redis up); SLO #7 has no p50 bound, so p50 is held to the same 2 s"
+    },
+    "stack_ready_ms": {
+      "title": "Install: run.sh up from the first store started to stores, app, plane and UI ready (one sample per stack)",
+      "lane": "stack",
+      "p50_ms": 300000,
+      "p95_ms": 300000,
+      "samples": 1,
+      "grounds": "the lane's own deadline for the slowest service (connectors and query health, 300 s): a stack not ready inside it did not come up",
+      "source": "run.sh"
+    },
+    "upgrade_ready_ms": {
+      "title": "Upgrade: run.sh rebuild from the old app stopped to the new one ready (the downtime; one sample per upgrade)",
+      "lane": "stack",
+      "p50_ms": 120000,
+      "p95_ms": 120000,
+      "samples": 1,
+      "grounds": "SLO.md RTO: the Compose primary's RTO is the container restart, then <= 2 min",
+      "source": "run.sh"
+    }
+  }
+}

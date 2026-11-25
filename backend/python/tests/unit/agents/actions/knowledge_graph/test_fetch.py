@@ -148,6 +148,25 @@ class TestExecuteFetchRecord:
         call_kwargs = fake_tool.coroutine.call_args[1]
         assert call_kwargs["record_ids"] == ["single-id"]
 
+    @pytest.mark.parametrize(("user_info", "caller"), [({"callerUserId": "caller-1"}, "caller-1"), (None, None)])
+    @pytest.mark.asyncio
+    async def test_h1_fr9_the_read_is_checked_for_a_service_account_agents_caller(self, user_info, caller) -> None:
+        fake_tool = MagicMock()
+        fake_tool.coroutine = AsyncMock(return_value={"ok": False, "error": "x", "not_available_ids": []})
+        with patch(
+            "app.utils.fetch_full_record.create_fetch_full_record_tool",
+            return_value=fake_tool,
+        ) as created, patch(
+            "app.utils.chat_helpers.get_record_id_shortener_if_enabled",
+            return_value=None,
+        ):
+            ctx = _make_context(user_info=user_info)
+            _ = await execute_fetch_record(
+                context=ctx, virtual_records={}, citation_ref_mapper=MagicMock(), record_ids="r1",
+            )
+        assert created.call_args.kwargs["caller_user_id"] == caller
+        assert created.call_args.kwargs["user_id"] == "user-1"
+
     @pytest.mark.asyncio
     async def test_exception_returns_error(self) -> None:
         fake_tool = MagicMock()

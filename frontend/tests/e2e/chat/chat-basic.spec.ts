@@ -131,13 +131,46 @@ test.describe('Chat — page structure', () => {
     }
   });
 
-  // TODO: Update selector — chat sidebar uses SidebarBase (Flex/Box), not nav/[data-sidebar].
-  test.skip('sidebar shows conversation history', async ({ page }) => {
+  test('sidebar shows conversation history', async ({ page }) => {
     const viewport = page.viewportSize();
-    if (viewport && viewport.width > 768) {
-      const collapseBtn = page.locator('button[aria-label="Collapse sidebar"]');
-      await expect(collapseBtn).toBeVisible({ timeout: 5_000 });
-    }
+    test.skip(!viewport || viewport.width < 768, 'the chat sidebar is collapsed on narrow screens');
+    const title = 'E2E history: the quarterly plan';
+    const now = new Date().toISOString();
+    await page.route('**/api/v1/conversations*', (route) =>
+      route.request().method() === 'GET'
+        ? route.fulfill({
+            status: 200,
+            contentType: 'application/json',
+            body: JSON.stringify({
+              ...MOCK_CONVERSATIONS_RESPONSE,
+              conversations: [
+                {
+                  _id: 'conv-history-1',
+                  title,
+                  initiator: 'main',
+                  isShared: false,
+                  isDeleted: false,
+                  isArchived: false,
+                  lastActivityAt: Date.now(),
+                  status: 'active',
+                  createdAt: now,
+                  updatedAt: now,
+                  isOwner: true,
+                  accessLevel: 'owner',
+                },
+              ],
+              pagination: { page: 1, limit: 20, totalCount: 1, totalPages: 1, hasNextPage: false, hasPrevPage: false },
+            }),
+          })
+        : route.continue(),
+    );
+    await page.reload();
+    await expect(page.getByRole('button', { name: 'Collapse sidebar' })).toBeVisible({ timeout: 15_000 });
+    const recents = page.getByText('Recents', { exact: true });
+    await expect(recents).toBeVisible();
+    const listed = page.getByText(title, { exact: true }).first();
+    if (!(await listed.isVisible())) await recents.click();
+    await expect(listed).toBeVisible({ timeout: 10_000 });
   });
 
   test('model selector button is visible in the toolbar', async ({ page }) => {

@@ -1,0 +1,434 @@
+{
+  "description": "SLASH1 D3: a /command's body and arguments -> the text the turn sends, or an error code. One file, two readers: app/agent_loop_lib/commands/render.py (tests/unit/agent_loop_lib/test_command_render.py) and frontend/lib/commands/render.ts (its vitest). Lengths count UTF-16 code units, as the chat routes' query limit does. Reserved command names are not here: both readers derive them from the built-in registry, contracts/harness/ext/pipeshub/commands/builtin-commands.json (SLASH2). The pipeshub-* cases are PipesHub's own prompt commands (SLASH2 /review, /init), expanded by Node (backend/nodejs/apps/src/modules/agent-harness/application/pipeshub-prompt-commands.ts, which its test holds to these bodies).",
+  "limits": {
+    "expandedMaxUnits": 100000,
+    "argumentMaxUnits": 4000
+  },
+  "cases": [
+    {
+      "id": "arguments-placeholder",
+      "body": "Look into: $ARGUMENTS",
+      "arguments": [],
+      "args": "INC-1   and more",
+      "expected": "Look into: INC-1   and more",
+      "values": {}
+    },
+    {
+      "id": "arguments-empty",
+      "body": "Look into: $ARGUMENTS.",
+      "arguments": [],
+      "args": "",
+      "expected": "Look into: .",
+      "values": {}
+    },
+    {
+      "id": "no-placeholder-appends",
+      "body": "Summarize this conversation.",
+      "arguments": [],
+      "args": "focus on risks",
+      "expected": "Summarize this conversation.\n\nfocus on risks",
+      "values": {}
+    },
+    {
+      "id": "no-placeholder-no-args",
+      "body": "Summarize this conversation.",
+      "arguments": [],
+      "args": "",
+      "expected": "Summarize this conversation.",
+      "values": {}
+    },
+    {
+      "id": "positional",
+      "body": "Triage $incident at depth $depth.",
+      "arguments": [
+        {
+          "name": "incident",
+          "description": "Incident id",
+          "required": true
+        },
+        {
+          "name": "depth",
+          "enum": [
+            "quick",
+            "full"
+          ],
+          "default": "quick"
+        }
+      ],
+      "args": "INC-4211 full",
+      "expected": "Triage INC-4211 at depth full.",
+      "values": {
+        "incident": "INC-4211",
+        "depth": "full"
+      }
+    },
+    {
+      "id": "default",
+      "body": "Triage $incident at depth $depth.",
+      "arguments": [
+        {
+          "name": "incident",
+          "description": "Incident id",
+          "required": true
+        },
+        {
+          "name": "depth",
+          "enum": [
+            "quick",
+            "full"
+          ],
+          "default": "quick"
+        }
+      ],
+      "args": "INC-4211",
+      "expected": "Triage INC-4211 at depth quick.",
+      "values": {
+        "incident": "INC-4211",
+        "depth": "quick"
+      }
+    },
+    {
+      "id": "named",
+      "body": "Triage $incident at depth $depth.",
+      "arguments": [
+        {
+          "name": "incident",
+          "description": "Incident id",
+          "required": true
+        },
+        {
+          "name": "depth",
+          "enum": [
+            "quick",
+            "full"
+          ],
+          "default": "quick"
+        }
+      ],
+      "args": "depth=full incident=INC-9",
+      "expected": "Triage INC-9 at depth full.",
+      "values": {
+        "depth": "full",
+        "incident": "INC-9"
+      }
+    },
+    {
+      "id": "named-quoted",
+      "body": "Triage $incident.",
+      "arguments": [
+        {
+          "name": "incident",
+          "description": "Incident id",
+          "required": true
+        },
+        {
+          "name": "depth",
+          "enum": [
+            "quick",
+            "full"
+          ],
+          "default": "quick"
+        }
+      ],
+      "args": "incident=\"INC 9 \\\"west\\\"\"",
+      "expected": "Triage INC 9 \"west\".",
+      "values": {
+        "incident": "INC 9 \"west\"",
+        "depth": "quick"
+      }
+    },
+    {
+      "id": "named-then-positional",
+      "body": "Triage $incident at depth $depth.",
+      "arguments": [
+        {
+          "name": "incident",
+          "description": "Incident id",
+          "required": true
+        },
+        {
+          "name": "depth",
+          "enum": [
+            "quick",
+            "full"
+          ],
+          "default": "quick"
+        }
+      ],
+      "args": "depth=full INC-7",
+      "expected": "Triage INC-7 at depth full.",
+      "values": {
+        "depth": "full",
+        "incident": "INC-7"
+      }
+    },
+    {
+      "id": "missing-required",
+      "body": "Triage $incident.",
+      "arguments": [
+        {
+          "name": "incident",
+          "description": "Incident id",
+          "required": true
+        },
+        {
+          "name": "depth",
+          "enum": [
+            "quick",
+            "full"
+          ],
+          "default": "quick"
+        }
+      ],
+      "args": "",
+      "error": {
+        "code": "command_argument_missing",
+        "names": [
+          "incident"
+        ]
+      }
+    },
+    {
+      "id": "enum-invalid",
+      "body": "Triage $incident at depth $depth.",
+      "arguments": [
+        {
+          "name": "incident",
+          "description": "Incident id",
+          "required": true
+        },
+        {
+          "name": "depth",
+          "enum": [
+            "quick",
+            "full"
+          ],
+          "default": "quick"
+        }
+      ],
+      "args": "INC-1 deep",
+      "error": {
+        "code": "command_argument_invalid",
+        "names": [
+          "depth"
+        ]
+      }
+    },
+    {
+      "id": "last-takes-rest",
+      "body": "Summarize $topic.",
+      "arguments": [
+        {
+          "name": "topic"
+        }
+      ],
+      "args": "the last week of tickets",
+      "expected": "Summarize the last week of tickets.",
+      "values": {
+        "topic": "the last week of tickets"
+      }
+    },
+    {
+      "id": "dollar-in-value-stays-literal",
+      "body": "Triage $incident at depth $depth.",
+      "arguments": [
+        {
+          "name": "incident",
+          "description": "Incident id",
+          "required": true
+        },
+        {
+          "name": "depth",
+          "enum": [
+            "quick",
+            "full"
+          ],
+          "default": "quick"
+        }
+      ],
+      "args": "$depth",
+      "expected": "Triage $depth at depth quick.",
+      "values": {
+        "incident": "$depth",
+        "depth": "quick"
+      }
+    },
+    {
+      "id": "slash-in-value-stays-literal",
+      "body": "Echo: $ARGUMENTS",
+      "arguments": [],
+      "args": "/compact now",
+      "expected": "Echo: /compact now",
+      "values": {}
+    },
+    {
+      "id": "unknown-placeholder-literal",
+      "body": "Cost is $price and $HOME; topic $topic.",
+      "arguments": [
+        {
+          "name": "topic"
+        }
+      ],
+      "args": "x",
+      "expected": "Cost is $price and $HOME; topic x.",
+      "values": {
+        "topic": "x"
+      }
+    },
+    {
+      "id": "positional-numbers",
+      "body": "First $1, second $2, third $3.",
+      "arguments": [],
+      "args": "a b",
+      "expected": "First a, second b, third .",
+      "values": {}
+    },
+    {
+      "id": "unicode",
+      "body": "Résumé for $who: $ARGUMENTS",
+      "arguments": [
+        {
+          "name": "who"
+        }
+      ],
+      "args": "Zoë 🚀",
+      "expected": "Résumé for Zoë 🚀: Zoë 🚀",
+      "values": {
+        "who": "Zoë 🚀"
+      }
+    },
+    {
+      "id": "undeclared-key-is-positional",
+      "body": "Topic: $topic",
+      "arguments": [
+        {
+          "name": "topic"
+        }
+      ],
+      "args": "a=b",
+      "expected": "Topic: a=b",
+      "values": {
+        "topic": "a=b"
+      }
+    },
+    {
+      "id": "max-length",
+      "body": "Hi $name",
+      "arguments": [
+        {
+          "name": "name",
+          "maxLength": 3
+        }
+      ],
+      "args": "Alexandra",
+      "error": {
+        "code": "command_argument_invalid",
+        "names": [
+          "name"
+        ]
+      }
+    },
+    {
+      "id": "conf-echo",
+      "body": "conf-echo first=$first second=$second all=[$ARGUMENTS]",
+      "arguments": [
+        {
+          "name": "first",
+          "required": true
+        },
+        {
+          "name": "second"
+        }
+      ],
+      "args": "alpha second=two",
+      "expected": "conf-echo first=alpha second=two all=[alpha second=two]",
+      "values": {
+        "second": "two",
+        "first": "alpha"
+      }
+    },
+    {
+      "id": "too-long",
+      "body": "$ARGUMENTS $ARGUMENTS",
+      "arguments": [],
+      "argsRepeat": {
+        "text": "ab",
+        "times": 30000
+      },
+      "error": {
+        "code": "command_too_long",
+        "names": []
+      }
+    },
+    {
+      "id": "pipeshub-review",
+      "body": "Review the changes in this chat's workspace, shown below as a unified diff. List bugs, risks and anything unclear, most important first; for each, name the file and line and say what to change. Say so plainly if you find nothing to fix. Do not change any file.",
+      "arguments": [],
+      "args": "focus on the SQL",
+      "expected": "Review the changes in this chat's workspace, shown below as a unified diff. List bugs, risks and anything unclear, most important first; for each, name the file and line and say what to change. Say so plainly if you find nothing to fix. Do not change any file.\n\nfocus on the SQL",
+      "values": {}
+    },
+    {
+      "id": "pipeshub-init",
+      "body": "Draft instructions for this agent from our conversation so far, and from the files in its workspace if it has any: what it is for, the sources and tools it should use, how its answers should look, and what it must not do. Write them to the agent, in the second person, in at most 300 words. Reply with only the instructions, in one fenced block that starts with ```text, and nothing before or after it.",
+      "arguments": [],
+      "args": "",
+      "expected": "Draft instructions for this agent from our conversation so far, and from the files in its workspace if it has any: what it is for, the sources and tools it should use, how its answers should look, and what it must not do. Write them to the agent, in the second person, in at most 300 words. Reply with only the instructions, in one fenced block that starts with ```text, and nothing before or after it.",
+      "values": {}
+    }
+  ],
+  "typed": [
+    {
+      "text": "/triage INC-1 full",
+      "expected": {
+        "name": "triage",
+        "args": "INC-1 full"
+      }
+    },
+    {
+      "text": "  /triage  ",
+      "expected": {
+        "name": "triage",
+        "args": ""
+      }
+    },
+    {
+      "text": "/draft-reply to=\"Asha\"\nsecond line",
+      "expected": {
+        "name": "draft-reply",
+        "args": "to=\"Asha\"\nsecond line"
+      }
+    },
+    {
+      "text": "/Triage x",
+      "expected": null
+    },
+    {
+      "text": "hello /triage",
+      "expected": null
+    },
+    {
+      "text": "/",
+      "expected": null
+    },
+    {
+      "text": "/-x",
+      "expected": null
+    },
+    {
+      "text": "/a--b",
+      "expected": null
+    },
+    {
+      "text": "/etc/hosts is broken",
+      "expected": null
+    },
+    {
+      "text": "/triage\tINC-1",
+      "expected": {
+        "name": "triage",
+        "args": "INC-1"
+      }
+    }
+  ]
+}

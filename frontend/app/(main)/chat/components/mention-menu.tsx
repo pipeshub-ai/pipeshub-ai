@@ -6,7 +6,8 @@ import { Box, Flex, Text } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ChatApi, type KnowledgeBaseForChat } from '@/chat/api';
 import { useChatStore } from '@/chat/store';
-import { useAuthStore } from '@/lib/store/auth-store';
+import { useAuthStore } from '@/config';
+import { useActiveOptionInView } from '@/lib/hooks/use-active-option-in-view';
 import type { ChatKnowledgeFilters } from '@/chat/types';
 import type { MentionNode } from '@/chat/utils/node-mentions';
 import { CollectionLeadingIcon } from '@/chat/components/chat-panel/expansion-panels/connectors-collections/collection-row';
@@ -372,7 +373,7 @@ function MenuRow({
         {node.subtitle ? (
           <>
             <Box aria-hidden style={{ width: 3, height: 3, borderRadius: '50%', background: 'var(--slate-8)', flexShrink: 0 }} />
-            <Text size="2" truncate title={node.subtitle} style={{ color: 'var(--slate-9)', minWidth: 0 }}>
+            <Text size="2" truncate title={node.subtitle} style={{ color: 'var(--slate-11)', minWidth: 0 }}>
               {node.subtitle}
             </Text>
           </>
@@ -397,7 +398,7 @@ function MenuRow({
             padding: 0,
             borderRadius: 'var(--radius-1)',
             background: active ? 'var(--olive-5)' : 'transparent',
-            color: active ? 'var(--slate-12)' : 'var(--slate-10)',
+            color: active ? 'var(--slate-12)' : 'var(--slate-11)',
             cursor: 'pointer',
           }}
         >
@@ -411,7 +412,7 @@ function MenuRow({
 function Note({ children, tone = 'muted', action }: { children: React.ReactNode; tone?: 'muted' | 'error'; action?: React.ReactNode }) {
   return (
     <Flex align="center" gap="2" role={tone === 'error' ? 'alert' : 'status'} style={{ minHeight: ROW_HEIGHT, padding: '0 10px' }}>
-      <Text size="2" style={{ color: tone === 'error' ? 'var(--red-11)' : 'var(--slate-9)' }}>
+      <Text size="2" style={{ color: tone === 'error' ? 'var(--red-11)' : 'var(--slate-11)' }}>
         {children}
       </Text>
       {action}
@@ -424,7 +425,7 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
     <Text
       as="div"
       size="1"
-      style={{ color: 'var(--slate-9)', letterSpacing: '0.04px', padding: '10px 10px 6px', flexShrink: 0 }}
+      style={{ color: 'var(--slate-11)', letterSpacing: '0.04px', padding: '10px 10px 6px', flexShrink: 0 }}
     >
       {children}
     </Text>
@@ -574,9 +575,7 @@ export const MentionMenu = forwardRef<MentionMenuHandle, MentionMenuProps>(funct
     listRef.current?.scrollTo({ top: 0 });
   }, [viewKey]);
 
-  useEffect(() => {
-    listRef.current?.querySelector('[data-mention-active]')?.scrollIntoView({ block: 'nearest' });
-  }, [clampedIndex]);
+  const { fromPointer } = useActiveOptionInView(listRef, '[data-mention-active]', clampedIndex);
 
   const activeId = rows.length > 0 ? `${listId}-${clampedIndex}` : undefined;
   useEffect(() => {
@@ -807,7 +806,9 @@ export const MentionMenu = forwardRef<MentionMenuHandle, MentionMenuProps>(funct
                     row={row}
                     active={index === clampedIndex}
                     onHover={() => {
-                      if (index !== clampedIndex) setActiveIndex(index);
+                      if (index === clampedIndex) return;
+                      fromPointer();
+                      setActiveIndex(index);
                     }}
                     onPick={() => pick(row)}
                     onOpen={() => open(row)}

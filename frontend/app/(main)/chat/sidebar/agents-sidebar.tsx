@@ -17,6 +17,8 @@ import { AgentsApi } from '@/app/(main)/agents/api';
 import type { AgentListRecord } from '@/app/(main)/agents/types';
 import { AGENTS_SIDEBAR_PAGE_SIZE } from '@/chat/constants';
 import { AgentSidebarListRow, useUserPermission, usePermissionDeniedDialog } from '@/config';
+import { ImportAgentDialog } from '@/app/(main)/agents/components/import-agent-dialog';
+import { useFeatureFlagsStore, selectAgentHarnessOn } from '@/lib/store/feature-flags-store';
 
 interface AgentsSidebarProps {
   onBack: () => void;
@@ -31,6 +33,8 @@ export const AgentsSidebar = React.memo(function AgentsSidebar({ onBack }: Agent
   const searchParams = useSearchParams();
   const chatAgentId = searchParams.get('agentId');
   const onChatRoute = useIsMainChatRoute();
+  // Agent import came with the agent harness: only where it is on for the org (ADR-OPS-08).
+  const harnessOn = useFeatureFlagsStore(selectAgentHarnessOn);
   const { t } = useTranslation();
   const canCreateAgent = useUserPermission('createAgent');
   const permissionDenied = usePermissionDeniedDialog();
@@ -38,6 +42,7 @@ export const AgentsSidebar = React.memo(function AgentsSidebar({ onBack }: Agent
   const isMobile = useIsMobile();
 
   const [searchInput, setSearchInput] = useState('');
+  const [importOpen, setImportOpen] = useState(false);
   const debouncedSearch = useDebouncedSearch(searchInput, 300);
 
   const [agents, setAgents] = useState<AgentListRecord[]>([]);
@@ -177,15 +182,29 @@ export const AgentsSidebar = React.memo(function AgentsSidebar({ onBack }: Agent
           <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
             {t('nav.agents')}
           </Text>
-          <IconButton
-            variant="ghost"
-            color="gray"
-            size="2"
-            onClick={permissionDenied.guard(canCreateAgent, handleCreateAgent)}
-            aria-label={t('chat.newAgent')}
-          >
-            <MaterialIcon name="add" size={ICON_SIZE_DEFAULT} color="var(--slate-11)" />
-          </IconButton>
+          <Flex align="center" gap="1">
+            {harnessOn ? (
+              <IconButton
+                variant="ghost"
+                color="gray"
+                size="2"
+                onClick={permissionDenied.guard(canCreateAgent, () => setImportOpen(true))}
+                aria-label={t('agentTransfer.import.button')}
+                title={t('agentTransfer.import.button')}
+              >
+                <MaterialIcon name="upload_file" size={ICON_SIZE_DEFAULT} color="var(--slate-11)" />
+              </IconButton>
+            ) : null}
+            <IconButton
+              variant="ghost"
+              color="gray"
+              size="2"
+              onClick={permissionDenied.guard(canCreateAgent, handleCreateAgent)}
+              aria-label={t('chat.newAgent')}
+            >
+              <MaterialIcon name="add" size={ICON_SIZE_DEFAULT} color="var(--slate-11)" />
+            </IconButton>
+          </Flex>
         </Flex>
       }
     >
@@ -268,6 +287,10 @@ export const AgentsSidebar = React.memo(function AgentsSidebar({ onBack }: Agent
       </Flex>
     </SecondaryPanel>
     {permissionDenied.dialog}
+    <ImportAgentDialog
+      open={importOpen}
+      onOpenChange={setImportOpen}
+    />
     </>
   );
 });

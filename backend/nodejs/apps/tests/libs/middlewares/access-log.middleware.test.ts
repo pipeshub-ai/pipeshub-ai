@@ -5,7 +5,7 @@ import express, { Request } from 'express'
 import http from 'node:http'
 import { EventEmitter } from 'node:events'
 import { AddressInfo } from 'node:net'
-import { accessLog, routeParams } from '../../../src/libs/middlewares/access-log.middleware'
+import { accessLog, pathForLog, routeParams } from '../../../src/libs/middlewares/access-log.middleware'
 import { ErrorMiddleware } from '../../../src/libs/middlewares/error.middleware'
 import { requestContextMiddleware } from '../../../src/libs/middlewares/request.context'
 import { Logger } from '../../../src/libs/services/logger.service'
@@ -123,7 +123,7 @@ describe('accessLog: one http.request.end line per request', () => {
     waiters = []
     const root = Logger.getInstance()
     ;(root as any).logger.level = 'debug'
-    sinon.stub((root as any).logger, 'log').callsFake((r: Record<string, any>) => {
+    sinon.stub((root as any).logger, 'log').callsFake((r: any) => {
       records.push(r)
       for (const wake of waiters.splice(0)) wake()
     })
@@ -158,7 +158,7 @@ describe('accessLog: one http.request.end line per request', () => {
       },
     })
     expect(status).to.equal(200)
-    const [line] = await accessLines(1)
+    const line = (await accessLines(1))[0]!
     expect(line).to.include({
       level: 'info', service: 'HttpAccess', method: 'GET', route: '/api/v1/kb/:kbId/records/:rid', status: 200,
       outcome: 'success', request_id: 'req-abc', org_id: ORG, user_id: USER,
@@ -312,4 +312,64 @@ describe('routeParams: an id as sent, any other value by its name only', () => {
       expect(shown(value)).to.equal(value)
     })
   }
+})
+
+describe('pathForLog: the request path a log line may carry', () => {
+  const OBJECT_ID = '64f0c0ffee0000000000000a'
+  const UUID = '0b1c2d3e-4f50-6172-8394-a5b6c7d8e9f0'
+  const at = (path: string, baseUrl = '') => pathForLog({ baseUrl, path } as express.Request)
+  const id128 = 'a'.repeat(128)
+
+  const cases: [string, string, string, string][] = [
+    ['the root', '', '/', '/'],
+    ['ids and words', '', `/api/v1/kb/${OBJECT_ID}/records`, `/api/v1/kb/${OBJECT_ID}/records`],
+    ['a uuid and an all_ id', '', `/api/v1/x/${UUID}/all_${OBJECT_ID}`, `/api/v1/x/${UUID}/all_${OBJECT_ID}`],
+    ['a trailing slash', '', '/api/v1/users/', '/api/v1/users/'],
+    ['an email', '', '/api/v1/users/a@b.c/role', '/api/v1/users/[not an id]/role'],
+    ['a percent-encoded name', '', '/api/v1/skills/Ada%20L', '/api/v1/skills/[not an id]'],
+    ['a 128-char id', '', `/x/${id128}`, `/x/${id128}`],
+    ['a 129-char segment', '', `/x/${id128}a`, '/x/[not an id]'],
+    ['the mount, inside a router', '/api/v1/skills', '/x@y', '/api/v1/skills/[not an id]'],
+    ['the mount itself (Express gives path "/")', '/api/v1/skills', '/', '/api/v1/skills/'],
+  ]
+  for (const [name, baseUrl, path, expected] of cases) {
+    it(`${name}: ${baseUrl}${path} -> ${expected}`, () => {
+      expect(at(path, baseUrl)).to.equal(expected)
+    })
+  }
+
+  it('keeps a 256-char path whole and cuts a 257-char one after its last whole segment', () => {
+    const path256 = `/${id128}/${'b'.repeat(126)}`
+    expect(path256).to.have.length(256)
+    expect(at(path256)).to.equal(path256)
+    expect(at(`${path256}c`)).to.equal(`/${id128}/…`)
+  })
+
+  it('stays within 256 chars, "…" included, when a "/" sits at index 255', () => {
+    const slashAt255 = `/${id128}/${'b'.repeat(125)}/c`
+    expect(slashAt255.indexOf('/', 130)).to.equal(255)
+    expect(at(slashAt255)).to.equal(`/${id128}/…`)
+    expect(at('/'.repeat(257))).to.equal(`${'/'.repeat(255)}…`)
+  })
+
+  it('cuts a path the mask made longer (every "@" becomes the marker) at a "/"', () => {
+    const shown = at('/@'.repeat(8000))
+    expect(shown).to.equal(`${'/[not an id]'.repeat(21)}/…`)
+    expect(shown).to.have.length(254)
+  })
+
+  it('cuts by the masked length, not the raw one', () => {
+    expect('/@'.repeat(30)).to.have.length(60)
+    expect(at('/@'.repeat(30))).to.equal(`${'/[not an id]'.repeat(21)}/…`)
+  })
+
+  it('never splits a segment, so a JWT across the cut is dropped, not left half-redactable', () => {
+    const jwt = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJuNW5iLWZha2UifQ.bjVuYi1mYWtlLXNpZw'
+    const prefix = `/${id128}/${'b'.repeat(100)}`
+    expect(prefix.length).to.be.below(256)
+    expect(prefix.length + 1 + jwt.length).to.be.above(256)
+    const shown = at(`${prefix}/${jwt}`)
+    expect(shown).to.equal(`${prefix}/…`)
+    expect(shown).not.to.include('eyJ')
+  })
 })

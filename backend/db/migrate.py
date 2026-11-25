@@ -109,7 +109,7 @@ def _ensure_kernel_schema(conn: psycopg.Connection) -> None:
 
 
 def kv_access_mode() -> str | None:
-    """``PG_KV_ACCESS``: ``enforce`` (the default since platform_0013) refuses key-value access outside a service role's prefixes, ``shadow`` only logs it; unset keeps the stored mode."""
+    """``PG_KV_ACCESS``: ``enforce`` (the default since platform_0014) refuses key-value access outside a service role's prefixes, ``shadow`` only logs it; unset keeps the stored mode."""
     raw = os.environ.get("PG_KV_ACCESS", "").strip()
     if raw not in ("", "shadow", "enforce"):
         raise RunnerError(EXIT_CONFIG, f"PG_KV_ACCESS must be shadow or enforce (or unset to keep the stored mode), got {raw!r}")

@@ -167,6 +167,8 @@ class TestEntityFailuresRaise:
         for name in ("batch_upsert_nodes", "get_document", "get_user_by_email", "get_user_by_user_id",
                      "get_entity_id_by_email"):
             setattr(graph, name, AsyncMock(side_effect=NOT_FOUND))
+        # orgDeleted first erases the org's knowledge publications (the harness's P2.13); this org has none.
+        graph.get_nodes_by_filters = AsyncMock(return_value=[])
         handler = await _entity_handler(graph)
         with pytest.raises(ApiCallError) as caught:
             await handler(StreamMessage(eventType=event_type, payload=payload))
@@ -229,14 +231,14 @@ class TestSyncFailuresRaise:
         with patch.object(event_service.EventService, "_handle_start_sync", AsyncMock(side_effect=NOT_FOUND)):
             handler = await _sync_handler()
             with pytest.raises(ApiCallError):
-                await handler(StreamMessage(eventType="jira.start", payload={"connectorId": "c1"}))
+                await handler(StreamMessage(eventType="jira.start", payload={"connectorId": "c1", "orgId": ORG}))
 
     async def test_a_sync_handler_asking_for_redelivery_still_gets_it(self) -> None:
         from app.connectors.services import event_service
 
         with patch.object(event_service.EventService, "_handle_start_sync", AsyncMock(return_value=False)):
             handler = await _sync_handler()
-            assert await handler(StreamMessage(eventType="jira.start", payload={"connectorId": "c1"})) is False
+            assert await handler(StreamMessage(eventType="jira.start", payload={"connectorId": "c1", "orgId": ORG})) is False
 
 
 # --- AI-config wrapper + AiConfigEventService ----------------------------------------------------------------------

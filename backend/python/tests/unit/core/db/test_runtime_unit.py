@@ -832,15 +832,14 @@ def test_an_empty_pooler_setting_means_the_default(monkeypatch) -> None:
 
 
 def test_sql_start_pattern_is_linear_on_unterminated_comment_runs() -> None:
-    import time
-
     from app.core.db import sql_lint
+    from tests.support.cpu_budget import thread_cpu
 
     assert sql_lint._starts_sql("/* tag */ /* more */\n  select 1")
     assert not sql_lint._starts_sql("not sql at all")
-    started = time.monotonic()
-    sql_lint._starts_sql("/*" + "*//*" * 20000 + "x")
-    assert time.monotonic() - started < 5.0
+    with thread_cpu() as cpu:
+        sql_lint._starts_sql("/*" + "*//*" * 20000 + "x")
+    assert cpu.seconds < 5.0  # milliseconds when linear; the bound only has to catch a quadratic scan
 
 
 # ---- Opening a connection fails: no statement exists to record it, so _open stamps it text-hidden itself ------------

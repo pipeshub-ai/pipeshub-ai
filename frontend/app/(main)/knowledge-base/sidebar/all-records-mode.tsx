@@ -256,7 +256,7 @@ export function AllRecordsMode({
                   />
                 ))
               ) : (
-                <Text size="1" style={{ color: 'var(--slate-9)', padding: `${EMPTY_STATE_PADDING_Y}px ${EMPTY_STATE_PADDING_X}px` }}>
+                <Text size="1" style={{ color: 'var(--slate-11)', padding: `${EMPTY_STATE_PADDING_Y}px ${EMPTY_STATE_PADDING_X}px` }}>
                   {t('message.noItems')}
                 </Text>
               )}

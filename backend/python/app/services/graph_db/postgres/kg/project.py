@@ -10,6 +10,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from app.services.graph_db.postgres.kg import grant_marks
 from app.services.graph_db.postgres.kg.dependents import (
     children_of,
     held_apps,
@@ -54,7 +55,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 REFUSED = METRICS_BACKEND.counter("pipeshub_kg_refused_rows_total", "Rows with a value a kg writer refuses (a node written without it, a grant left out), and their connector taken off the readers", ["coll"])
-TRASH_HELD = "/* pipeshub:kg.trash_held */ SELECT sk, deleted_ms, delete_batch FROM kg.records WHERE org_id = $1 AND sk = ANY($2::bigint[])"
+TRASH_HELD = "/* pipeshub:kg.trash_held */ SELECT sk, deleted_ms, delete_batch, pc_top FROM kg.records WHERE org_id = $1 AND sk = ANY($2::bigint[])"
 # What kg's rows say of whether a node is granted before the unit writes them, and whether the row is under a verified copy (the stamper reads the flag from kg there).
 GRANTED_HELD = """/* pipeshub:kg.granted_held */ SELECT r.sk, r.granted, r.app_sk, s.app_sk IS NOT NULL AS verified FROM kg.records r
     LEFT JOIN kg.projection_state s ON s.org_id = r.org_id AND s.app_sk = r.app_sk AND s.mode IN ('shadow', 'enforce') AND s.code_epoch = $3
@@ -274,13 +275,17 @@ async def _project(tx: Tx, org: str, focus: set[Key], *, lock_for: set[str] | No
     if stamps:
         flips, st.shallow = await _grant_flags(tx, org, leaf_only, {k for k in grant_only & focus if k[0] != "apps"} - reached, snap.sk, d)
 
+    # the nodes whose rows the marks of grants read change here (``grant_marks``): read before the rows are written
+    marked = await grant_marks.changed(tx, org, sorted(d.records), d.records)
     if d.records:
         await w.records_upsert([{"sk": sk, **cols} for sk, cols in sorted(d.records.items())])
         await w.listing_set([(sk, c["coll"], c["id"], c["kind"], c["folder"], c["hide_children"], c["alien"], c["name_sort"]) for sk, c in sorted(d.records.items())])
-        # Only the rows whose trash columns change: a live record (both NULL) is no further tuple to write, nor a statement for the counters' trigger.
-        held = {r["sk"]: (r["deleted_ms"], r["delete_batch"]) for r in await tx.fetch(TRASH_HELD, org, sorted(d.records))}
+        # Only the rows whose trash columns or pc_top change: a live record (both NULL) in a folder (pc_top false, the column's default) is no further tuple to write,
+        # nor a statement for the counters' trigger.
+        held = {r["sk"]: (r["deleted_ms"], r["delete_batch"], r["pc_top"]) for r in await tx.fetch(TRASH_HELD, org, sorted(d.records))}
         await w.trash_set([(sk, c["coll"], c["id"], c["kind"], c["deleted_ms"], c["delete_batch"]) for sk, c in sorted(d.records.items())
-                           if held.get(sk, (None, None)) != (c["deleted_ms"], c["delete_batch"])])
+                           if held.get(sk, (None, None, False))[:2] != (c["deleted_ms"], c["delete_batch"])])
+        await w.pc_top_set([(sk, c["coll"], c["id"], c["kind"], c["pc_top"]) for sk, c in sorted(d.records.items()) if held.get(sk, (None, None, False))[2] != c["pc_top"]])
         st.records = len(d.records)
     if d.gone:
         st.records_deleted = await w.records_delete(sorted(d.gone))
@@ -315,6 +320,9 @@ async def _project(tx: Tx, org: str, focus: set[Key], *, lock_for: set[str] | No
     if new_g:
         await w.grants_set(new_g)
     st.grants = len(drop_g) + len(new_g)
+    # after the rows they read: the grants on what this unit wrote, and on the children of the nodes whose rows or grants changed
+    regranted = {g[1] for g in drop_g} | {g[1] for g in new_g}
+    await grant_marks.refresh(tx, org, set(d.records) | regranted, marked | set(d.gone) | regranted)
     drop_c = sorted(k for k in cur_closure if k not in d.closure)
     if drop_c:
         await w.closure_delete(drop_c)

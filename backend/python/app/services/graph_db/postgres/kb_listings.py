@@ -14,6 +14,8 @@ from app.config.constants.arangodb import FOLDER_MIME_TYPES, CollectionNames, Co
 from app.core.org_context import current_org_id
 from app.schema.node_validator import SchemaValidationError
 from app.services.graph_db.postgres.base import PgBase, _arango, _doc
+from app.services.graph_db.postgres.kg import hierarchy as kg_hier
+from app.services.graph_db.postgres.kg import kb_root as kg_kb_root
 from app.utils import error_class
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -26,6 +28,103 @@ _ORG_FIELD = "orgId"  # the org property of a stored record, returned as a field
 # a grant with any other role (an unknown or stale one) opens nothing: fail closed, unlike the other stores, which show the template
 _TEMPLATE_ROLES = ["OWNER", "ORGANIZER", "WRITER", "READER"]
 _SORT_KEYS = {"name": 1, "created_at": 2, "updated_at": 3, "size": 4}
+
+# The folders on a knowledge base's root ($2) and, below, those in a folder ($2), each page's folders with how many subfolders and live records each holds: counted for
+# the page's folders only (``cnt`` after the page), not for every folder before it is cut.
+_KB_FOLDERS = """/* pipeshub:graph.children_kb_folders */ WITH fo AS (
+      SELECT r.id, r.doc FROM graph.nodes r WHERE r.org_id = $1 AND r.coll = 'records' AND coalesce((r.doc->>'isDeleted')::boolean, false) = false
+        AND r.doc->>'mimeType' = ANY($3::text[]) AND r.doc->>'orgId' = $1
+        AND EXISTS (SELECT 1 FROM graph.edges b JOIN graph.nodes k ON k.org_id = b.org_id AND k.coll = 'apps' AND k.id = b.to_id AND k.doc->>'type' = $7
+                    WHERE b.org_id = r.org_id AND b.coll = 'belongsTo' AND b.from_coll = 'records' AND b.from_id = r.id AND b.to_coll = 'apps' AND b.to_id = $2)
+        AND NOT EXISTS (SELECT 1 FROM graph.edges p WHERE p.org_id = r.org_id AND p.coll = 'nodeRelations' AND p.doc->>'relationshipType' = 'PARENT_CHILD'
+                        AND p.from_coll = 'records' AND p.to_coll = 'records' AND p.to_id = r.id)
+        AND ($4::text IS NULL OR position(lower($4::text) IN lower(r.doc->>'recordName')) > 0))
+    SELECT (SELECT count(*) FROM fo) AS total, p.doc, cnt.subs, cnt.recs, p.rn FROM (SELECT 1) one
+    LEFT JOIN LATERAL (SELECT x.id, x.doc, row_number() OVER (ORDER BY x.doc->>'recordName' COLLATE "C", x.id) AS rn FROM fo x
+                       ORDER BY x.doc->>'recordName' COLLATE "C", x.id OFFSET $5 LIMIT $6) p ON true
+    LEFT JOIN LATERAL (SELECT count(*) FILTER (WHERE c.doc->>'mimeType' = ANY($3::text[])) AS subs,
+                              count(*) FILTER (WHERE coalesce((c.doc->>'isDeleted')::boolean, false) = false AND NOT (c.doc->>'mimeType' = ANY($3::text[]))) AS recs
+                       FROM graph.edges ce JOIN graph.nodes c ON c.org_id = ce.org_id AND c.coll = 'records' AND c.id = ce.to_id
+                       WHERE ce.org_id = $1 AND ce.coll = 'nodeRelations' AND ce.doc->>'relationshipType' = 'PARENT_CHILD' AND ce.from_coll = 'records'
+                         AND ce.from_id = p.id AND ce.to_coll = 'records') cnt ON true ORDER BY p.rn"""
+_FOLDER_FOLDERS = """/* pipeshub:graph.children_folder_folders */ WITH fo AS (
+      SELECT s.id, s.doc, sf.doc->>'path' AS path FROM graph.nodes fr
+      JOIN graph.edges e ON e.org_id = fr.org_id AND e.coll = 'nodeRelations' AND e.doc->>'relationshipType' = 'PARENT_CHILD' AND e.from_coll = 'records'
+        AND e.from_id = fr.id AND e.to_coll = 'records'
+      JOIN graph.nodes s ON s.org_id = fr.org_id AND s.coll = 'records' AND s.id = e.to_id
+      JOIN LATERAL (SELECT f.doc FROM graph.edges te JOIN graph.nodes f ON f.org_id = te.org_id AND f.coll = 'files' AND f.id = te.to_id
+                    WHERE te.org_id = s.org_id AND te.coll = 'isOfType' AND te.from_coll = 'records' AND te.from_id = s.id AND f.doc->>'isFile' = 'false'
+                    ORDER BY f.id LIMIT 1) sf ON true
+      WHERE fr.org_id = $1 AND fr.coll = 'records' AND fr.id = $2
+        AND EXISTS (SELECT 1 FROM graph.edges te JOIN graph.nodes f ON f.org_id = te.org_id AND f.coll = 'files' AND f.id = te.to_id AND f.doc->>'isFile' = 'false'
+                    WHERE te.org_id = fr.org_id AND te.coll = 'isOfType' AND te.from_coll = 'records' AND te.from_id = fr.id)
+        AND ($3::text IS NULL OR position(lower($3::text) IN lower(s.doc->>'recordName')) > 0))
+    SELECT (SELECT count(*) FROM fo) AS total, p.doc, p.path, cnt.subs, cnt.recs, p.rn FROM (SELECT 1) one
+    LEFT JOIN LATERAL (SELECT x.id, x.doc, x.path, row_number() OVER (ORDER BY x.doc->>'recordName' COLLATE "C", x.id) AS rn FROM fo x
+                       ORDER BY x.doc->>'recordName' COLLATE "C", x.id OFFSET $4 LIMIT $5) p ON true
+    LEFT JOIN LATERAL (SELECT count(*) FILTER (WHERE cf.doc->>'isFile' = 'false') AS subs,
+                              count(*) FILTER (WHERE coalesce((c.doc->>'isDeleted')::boolean, false) = false AND (cf.id IS NULL OR cf.doc->>'isFile' <> 'false')) AS recs
+                       FROM graph.edges ce JOIN graph.nodes c ON c.org_id = ce.org_id AND c.coll = 'records' AND c.id = ce.to_id
+                       LEFT JOIN LATERAL (SELECT f.id, f.doc FROM graph.edges te JOIN graph.nodes f ON f.org_id = te.org_id AND f.coll = 'files' AND f.id = te.to_id
+                                          WHERE te.org_id = c.org_id AND te.coll = 'isOfType' AND te.from_coll = 'records' AND te.from_id = c.id ORDER BY f.id LIMIT 1) cf ON true
+                       WHERE ce.org_id = $1 AND ce.coll = 'nodeRelations' AND ce.doc->>'relationshipType' = 'PARENT_CHILD' AND ce.from_coll = 'records'
+                         AND ce.from_id = p.id AND ce.to_coll = 'records') cnt ON true ORDER BY p.rn"""
+# The records directly on a knowledge base's root ($2), with the filters every one of them offers and a page in the asked order ($9 the key, $10 ascending).
+_ROOT_RECORDS = """/* pipeshub:graph.children_records */ WITH recs AS (
+      SELECT r.id, r.doc FROM graph.nodes r WHERE r.org_id = $1 AND r.coll = 'records' AND coalesce((r.doc->>'isDeleted')::boolean, false) = false AND r.doc->>'orgId' = $1
+        AND NOT (r.doc->>'mimeType' = ANY($3::text[]))
+        AND EXISTS (SELECT 1 FROM graph.edges b JOIN graph.nodes k ON k.org_id = b.org_id AND k.coll = 'apps' AND k.id = b.to_id AND k.doc->>'type' = $13
+                    WHERE b.org_id = r.org_id AND b.coll = 'belongsTo' AND b.from_coll = 'records' AND b.from_id = r.id AND b.to_coll = 'apps' AND b.to_id = $2)
+        AND NOT EXISTS (SELECT 1 FROM graph.edges p WHERE p.org_id = r.org_id AND p.coll = 'nodeRelations' AND p.doc->>'relationshipType' = 'PARENT_CHILD'
+                        AND p.from_coll = 'records' AND p.to_coll = 'records' AND p.to_id = r.id)
+        AND ($4::text IS NULL OR position(lower($4::text) IN lower(r.doc->>'recordName')) > 0 OR position(lower($4::text) IN lower(r.doc->>'externalRecordId')) > 0)
+        AND ($5::text[] IS NULL OR r.doc->>'recordType' = ANY($5::text[])) AND ($6::text[] IS NULL OR r.doc->>'origin' = ANY($6::text[]))
+        AND ($7::text[] IS NULL OR r.doc->>'connectorName' = ANY($7::text[])) AND ($8::text[] IS NULL OR r.doc->>'indexingStatus' = ANY($8::text[])))
+    SELECT s.total, s.rtypes, s.origins, s.connectors, s.statuses, p.doc, p.fdoc, p.rn FROM
+      (SELECT count(*) AS total,
+              coalesce(array_agg(DISTINCT doc->>'recordType') FILTER (WHERE doc->>'recordType' IS NOT NULL), '{}') AS rtypes,
+              coalesce(array_agg(DISTINCT doc->>'origin') FILTER (WHERE doc->>'origin' IS NOT NULL), '{}') AS origins,
+              coalesce(array_agg(DISTINCT coalesce(doc->>'connectorName', 'KNOWLEDGE_BASE')), '{}') AS connectors,
+              coalesce(array_agg(DISTINCT doc->>'indexingStatus') FILTER (WHERE doc->>'indexingStatus' IS NOT NULL), '{}') AS statuses FROM recs) s
+      LEFT JOIN LATERAL (SELECT q.doc, q.rn, (SELECT ff.doc FROM graph.edges te JOIN graph.nodes ff ON ff.org_id = te.org_id AND ff.coll = 'files' AND ff.id = te.to_id
+                                              WHERE te.org_id = $1 AND te.coll = 'isOfType' AND te.from_coll = 'records' AND te.from_id = q.id ORDER BY ff.id LIMIT 1) AS fdoc
+                         FROM (SELECT x.id, x.doc, row_number() OVER (ORDER BY
+            (CASE WHEN $9::int = 1 AND $10::boolean THEN x.doc->>'recordName' END) COLLATE "C" ASC, (CASE WHEN $9::int = 1 AND NOT $10::boolean THEN x.doc->>'recordName' END) COLLATE "C" DESC,
+            (CASE WHEN $9::int = 2 AND $10::boolean THEN x.doc->'createdAtTimestamp' END) ASC, (CASE WHEN $9::int = 2 AND NOT $10::boolean THEN x.doc->'createdAtTimestamp' END) DESC,
+            (CASE WHEN $9::int = 3 AND $10::boolean THEN x.doc->'updatedAtTimestamp' END) ASC, (CASE WHEN $9::int = 3 AND NOT $10::boolean THEN x.doc->'updatedAtTimestamp' END) DESC,
+            (CASE WHEN $9::int = 4 AND $10::boolean THEN (SELECT sf.doc->'sizeInBytes' FROM graph.edges se JOIN graph.nodes sf ON sf.org_id = se.org_id AND sf.coll = 'files' AND sf.id = se.to_id
+                    WHERE se.org_id = $1 AND se.coll = 'isOfType' AND se.from_coll = 'records' AND se.from_id = x.id ORDER BY sf.id LIMIT 1) END) ASC,
+            (CASE WHEN $9::int = 4 AND NOT $10::boolean THEN (SELECT sf.doc->'sizeInBytes' FROM graph.edges se JOIN graph.nodes sf ON sf.org_id = se.org_id AND sf.coll = 'files' AND sf.id = se.to_id
+                    WHERE se.org_id = $1 AND se.coll = 'isOfType' AND se.from_coll = 'records' AND se.from_id = x.id ORDER BY sf.id LIMIT 1) END) DESC, x.id) AS rn
+                               FROM recs x ORDER BY rn OFFSET $11 LIMIT $12) q) p ON true ORDER BY p.rn"""
+# The records in the folder $2 (each child by a PARENT_CHILD relation from it, read from its relations) that are not folders, as the root's statement lists them.
+_FOLDER_RECORDS = """/* pipeshub:graph.children_folder_records */ WITH recs AS (
+      SELECT r.id, r.doc FROM graph.nodes r WHERE r.org_id = $1 AND r.coll = 'records' AND coalesce((r.doc->>'isDeleted')::boolean, false) = false
+        AND r.id IN (SELECT p.to_id FROM graph.edges p JOIN graph.nodes pn ON pn.org_id = p.org_id AND pn.coll = 'records' AND pn.id = p.from_id
+                     WHERE p.org_id = $1 AND p.coll = 'nodeRelations' AND p.doc->>'relationshipType' = 'PARENT_CHILD' AND p.from_coll = 'records'
+                       AND p.from_id = $2 AND p.to_coll = 'records')
+        AND NOT EXISTS (SELECT 1 FROM graph.edges te JOIN graph.nodes ff ON ff.org_id = te.org_id AND ff.coll = 'files' AND ff.id = te.to_id AND ff.doc->>'isFile' = 'false'
+                        WHERE te.org_id = r.org_id AND te.coll = 'isOfType' AND te.from_coll = 'records' AND te.from_id = r.id)
+        AND ($3::text IS NULL OR position(lower($3::text) IN lower(r.doc->>'recordName')) > 0 OR position(lower($3::text) IN lower(r.doc->>'externalRecordId')) > 0)
+        AND ($4::text[] IS NULL OR r.doc->>'recordType' = ANY($4::text[])) AND ($5::text[] IS NULL OR r.doc->>'origin' = ANY($5::text[]))
+        AND ($6::text[] IS NULL OR r.doc->>'connectorName' = ANY($6::text[])) AND ($7::text[] IS NULL OR r.doc->>'indexingStatus' = ANY($7::text[])))
+    SELECT s.total, s.rtypes, s.origins, s.connectors, s.statuses, p.doc, p.fdoc, p.rn FROM
+      (SELECT count(*) AS total,
+              coalesce(array_agg(DISTINCT doc->>'recordType') FILTER (WHERE doc->>'recordType' IS NOT NULL), '{}') AS rtypes,
+              coalesce(array_agg(DISTINCT doc->>'origin') FILTER (WHERE doc->>'origin' IS NOT NULL), '{}') AS origins,
+              coalesce(array_agg(DISTINCT coalesce(doc->>'connectorName', 'KNOWLEDGE_BASE')), '{}') AS connectors,
+              coalesce(array_agg(DISTINCT doc->>'indexingStatus') FILTER (WHERE doc->>'indexingStatus' IS NOT NULL), '{}') AS statuses FROM recs) s
+      LEFT JOIN LATERAL (SELECT q.doc, q.rn, (SELECT ff.doc FROM graph.edges te JOIN graph.nodes ff ON ff.org_id = te.org_id AND ff.coll = 'files' AND ff.id = te.to_id
+                                              WHERE te.org_id = $1 AND te.coll = 'isOfType' AND te.from_coll = 'records' AND te.from_id = q.id ORDER BY ff.id LIMIT 1) AS fdoc
+                         FROM (SELECT x.id, x.doc, row_number() OVER (ORDER BY
+            (CASE WHEN $8::int = 1 AND $9::boolean THEN x.doc->>'recordName' END) COLLATE "C" ASC, (CASE WHEN $8::int = 1 AND NOT $9::boolean THEN x.doc->>'recordName' END) COLLATE "C" DESC,
+            (CASE WHEN $8::int = 2 AND $9::boolean THEN x.doc->'createdAtTimestamp' END) ASC, (CASE WHEN $8::int = 2 AND NOT $9::boolean THEN x.doc->'createdAtTimestamp' END) DESC,
+            (CASE WHEN $8::int = 3 AND $9::boolean THEN x.doc->'updatedAtTimestamp' END) ASC, (CASE WHEN $8::int = 3 AND NOT $9::boolean THEN x.doc->'updatedAtTimestamp' END) DESC,
+            (CASE WHEN $8::int = 4 AND $9::boolean THEN (SELECT sf.doc->'sizeInBytes' FROM graph.edges se JOIN graph.nodes sf ON sf.org_id = se.org_id AND sf.coll = 'files' AND sf.id = se.to_id
+                    WHERE se.org_id = $1 AND se.coll = 'isOfType' AND se.from_coll = 'records' AND se.from_id = x.id ORDER BY sf.id LIMIT 1) END) ASC,
+            (CASE WHEN $8::int = 4 AND NOT $9::boolean THEN (SELECT sf.doc->'sizeInBytes' FROM graph.edges se JOIN graph.nodes sf ON sf.org_id = se.org_id AND sf.coll = 'files' AND sf.id = se.to_id
+                    WHERE se.org_id = $1 AND se.coll = 'isOfType' AND se.from_coll = 'records' AND se.from_id = x.id ORDER BY sf.id LIMIT 1) END) DESC, x.id) AS rn
+                               FROM recs x ORDER BY rn OFFSET $10 LIMIT $11) q) p ON true ORDER BY p.rn"""
 
 
 def _file(f: Any) -> dict | None:  # noqa: ANN401
@@ -72,105 +171,38 @@ class KbListingsMixin(PgBase):
                         origins: list[str] | None, connectors: list[str] | None, indexing_status: list[str] | None, sort_by: str, sort_order: str,
                         transaction: str | None) -> dict:
         """The folders and then the records directly in the collection (``folder_id`` None) or in the folder, folders first: the page takes folders from ``skip``
-        and fills what is left of ``limit`` with records."""
+        and fills what is left of ``limit`` with records. The collection's root takes its candidates from the typed graph for a connector it serves (``kg.kb_root``)."""
         org = current_org_id()
         try:
             skip, limit = max(skip, 0), max(limit, 0)
             key, asc = _SORT_KEYS.get(sort_by, 1), sort_order.upper() != "DESC"
 
-            async def go(tx: Tx) -> dict:
+            async def read(tx: Tx, ids: list[str] | None) -> dict:
+                """The page, from the root candidates ``ids`` (the typed graph's) or, with None, from every record of the organisation (the walk)."""
                 if folder_id is None:
                     kb = await tx.fetchrow("/* pipeshub:graph.children_kb */ SELECT doc FROM graph.nodes WHERE org_id = $1 AND coll = 'apps' AND id = $2", org, kb_id)
                     if not kb:
                         return {"success": False, "reason": "Knowledge base not found", "code": 404}
-                    rows = await tx.fetch("""/* pipeshub:graph.children_kb_folders */ WITH fo AS (
-                          SELECT r.id, r.doc, cnt.subs, cnt.recs FROM graph.nodes r
-                          JOIN LATERAL (SELECT count(*) FILTER (WHERE c.doc->>'mimeType' = ANY($3::text[])) AS subs,
-                                               count(*) FILTER (WHERE coalesce((c.doc->>'isDeleted')::boolean, false) = false AND NOT (c.doc->>'mimeType' = ANY($3::text[]))) AS recs
-                                        FROM graph.edges ce JOIN graph.nodes c ON c.org_id = ce.org_id AND c.coll = 'records' AND c.id = ce.to_id
-                                        WHERE ce.org_id = r.org_id AND ce.coll = 'nodeRelations' AND ce.doc->>'relationshipType' = 'PARENT_CHILD' AND ce.from_coll = 'records'
-                                          AND ce.from_id = r.id AND ce.to_coll = 'records') cnt ON true
-                          WHERE r.org_id = $1 AND r.coll = 'records' AND coalesce((r.doc->>'isDeleted')::boolean, false) = false AND r.doc->>'mimeType' = ANY($3::text[]) AND r.doc->>'orgId' = $1
-                            AND EXISTS (SELECT 1 FROM graph.edges b JOIN graph.nodes k ON k.org_id = b.org_id AND k.coll = 'apps' AND k.id = b.to_id AND k.doc->>'type' = $7
-                                        WHERE b.org_id = r.org_id AND b.coll = 'belongsTo' AND b.from_coll = 'records' AND b.from_id = r.id AND b.to_coll = 'apps' AND b.to_id = $2)
-                            AND NOT EXISTS (SELECT 1 FROM graph.edges p WHERE p.org_id = r.org_id AND p.coll = 'nodeRelations' AND p.doc->>'relationshipType' = 'PARENT_CHILD'
-                                            AND p.from_coll = 'records' AND p.to_coll = 'records' AND p.to_id = r.id)
-                            AND ($4::text IS NULL OR position(lower($4::text) IN lower(r.doc->>'recordName')) > 0))
-                        SELECT (SELECT count(*) FROM fo) AS total, p.doc, p.subs, p.recs, p.rn FROM (SELECT 1) one
-                        LEFT JOIN LATERAL (SELECT x.doc, x.subs, x.recs, row_number() OVER (ORDER BY x.doc->>'recordName' COLLATE "C", x.id) AS rn FROM fo x
-                                           ORDER BY x.doc->>'recordName' COLLATE "C", x.id OFFSET $5 LIMIT $6) p ON true ORDER BY p.rn""",
-                                         org, kb_id, FOLDER_MIME_TYPES, search or None, skip, limit, _KB)
+                    args = (org, kb_id, FOLDER_MIME_TYPES, search or None, skip, limit, _KB)
+                    rows = await (tx.fetch(_KB_FOLDERS, *args) if ids is None else tx.fetch(kg_kb_root.FOLDERS, *args, ids))
                     container = _doc(kb["doc"])
                     box = {"id": container.get("id"), "name": container.get("groupName") or container.get("name"), "path": "/", "type": "kb",
                            "webUrl": f"/kb/{container.get('id')}", "recordGroupId": container.get("id")}
                 else:
                     box = None
-                    rows = await tx.fetch("""/* pipeshub:graph.children_folder_folders */ WITH fo AS (
-                          SELECT s.id, s.doc, sf.doc->>'path' AS path, cnt.subs, cnt.recs FROM graph.nodes fr
-                          JOIN graph.edges e ON e.org_id = fr.org_id AND e.coll = 'nodeRelations' AND e.doc->>'relationshipType' = 'PARENT_CHILD' AND e.from_coll = 'records'
-                            AND e.from_id = fr.id AND e.to_coll = 'records'
-                          JOIN graph.nodes s ON s.org_id = fr.org_id AND s.coll = 'records' AND s.id = e.to_id
-                          JOIN LATERAL (SELECT f.doc FROM graph.edges te JOIN graph.nodes f ON f.org_id = te.org_id AND f.coll = 'files' AND f.id = te.to_id
-                                        WHERE te.org_id = s.org_id AND te.coll = 'isOfType' AND te.from_coll = 'records' AND te.from_id = s.id AND f.doc->>'isFile' = 'false'
-                                        ORDER BY f.id LIMIT 1) sf ON true
-                          JOIN LATERAL (SELECT count(*) FILTER (WHERE cf.doc->>'isFile' = 'false') AS subs,
-                                               count(*) FILTER (WHERE coalesce((c.doc->>'isDeleted')::boolean, false) = false AND (cf.id IS NULL OR cf.doc->>'isFile' <> 'false')) AS recs
-                                        FROM graph.edges ce JOIN graph.nodes c ON c.org_id = ce.org_id AND c.coll = 'records' AND c.id = ce.to_id
-                                        LEFT JOIN LATERAL (SELECT f.id, f.doc FROM graph.edges te JOIN graph.nodes f ON f.org_id = te.org_id AND f.coll = 'files' AND f.id = te.to_id
-                                                           WHERE te.org_id = c.org_id AND te.coll = 'isOfType' AND te.from_coll = 'records' AND te.from_id = c.id ORDER BY f.id LIMIT 1) cf ON true
-                                        WHERE ce.org_id = s.org_id AND ce.coll = 'nodeRelations' AND ce.doc->>'relationshipType' = 'PARENT_CHILD' AND ce.from_coll = 'records'
-                                          AND ce.from_id = s.id AND ce.to_coll = 'records') cnt ON true
-                          WHERE fr.org_id = $1 AND fr.coll = 'records' AND fr.id = $2
-                            AND EXISTS (SELECT 1 FROM graph.edges te JOIN graph.nodes f ON f.org_id = te.org_id AND f.coll = 'files' AND f.id = te.to_id AND f.doc->>'isFile' = 'false'
-                                        WHERE te.org_id = fr.org_id AND te.coll = 'isOfType' AND te.from_coll = 'records' AND te.from_id = fr.id)
-                            AND ($3::text IS NULL OR position(lower($3::text) IN lower(s.doc->>'recordName')) > 0))
-                        SELECT (SELECT count(*) FROM fo) AS total, p.doc, p.path, p.subs, p.recs, p.rn FROM (SELECT 1) one
-                        LEFT JOIN LATERAL (SELECT x.doc, x.path, x.subs, x.recs, row_number() OVER (ORDER BY x.doc->>'recordName' COLLATE "C", x.id) AS rn FROM fo x
-                                           ORDER BY x.doc->>'recordName' COLLATE "C", x.id OFFSET $4 LIMIT $5) p ON true ORDER BY p.rn""",
-                                         org, folder_id, search or None, skip, limit)
+                    rows = await tx.fetch(_FOLDER_FOLDERS, org, folder_id, search or None, skip, limit)
                 total_folders = rows[0]["total"]
                 folders = [_folder_item(r["doc"], r["subs"], r["recs"], folder_id, r["path"] if folder_id else None) for r in rows if r["doc"] is not None]
                 if skip < total_folders:
                     rskip, rlimit = 0, max(limit - len(folders), 0)
                 else:
                     rskip, rlimit = skip - total_folders, limit
-                recs = await tx.fetch("""/* pipeshub:graph.children_records */ WITH recs AS (
-                      SELECT r.id, r.doc FROM graph.nodes r
-                      WHERE r.org_id = $1 AND r.coll = 'records' AND coalesce((r.doc->>'isDeleted')::boolean, false) = false
-                        AND ($3::text IS NOT NULL OR r.doc->>'orgId' = $1)
-                        AND CASE WHEN $3::text IS NULL
-                          THEN NOT (r.doc->>'mimeType' = ANY($4::text[]))
-                            AND EXISTS (SELECT 1 FROM graph.edges b JOIN graph.nodes k ON k.org_id = b.org_id AND k.coll = 'apps' AND k.id = b.to_id AND k.doc->>'type' = $14
-                                        WHERE b.org_id = r.org_id AND b.coll = 'belongsTo' AND b.from_coll = 'records' AND b.from_id = r.id AND b.to_coll = 'apps' AND b.to_id = $2)
-                            AND NOT EXISTS (SELECT 1 FROM graph.edges p WHERE p.org_id = r.org_id AND p.coll = 'nodeRelations' AND p.doc->>'relationshipType' = 'PARENT_CHILD'
-                                            AND p.from_coll = 'records' AND p.to_coll = 'records' AND p.to_id = r.id)
-                          ELSE EXISTS (SELECT 1 FROM graph.edges p JOIN graph.nodes pn ON pn.org_id = p.org_id AND pn.coll = 'records' AND pn.id = p.from_id
-                                       WHERE p.org_id = r.org_id AND p.coll = 'nodeRelations' AND p.doc->>'relationshipType' = 'PARENT_CHILD' AND p.from_coll = 'records'
-                                         AND p.from_id = $3 AND p.to_coll = 'records' AND p.to_id = r.id)
-                            AND NOT EXISTS (SELECT 1 FROM graph.edges te JOIN graph.nodes ff ON ff.org_id = te.org_id AND ff.coll = 'files' AND ff.id = te.to_id AND ff.doc->>'isFile' = 'false'
-                                            WHERE te.org_id = r.org_id AND te.coll = 'isOfType' AND te.from_coll = 'records' AND te.from_id = r.id) END
-                        AND ($5::text IS NULL OR position(lower($5::text) IN lower(r.doc->>'recordName')) > 0 OR position(lower($5::text) IN lower(r.doc->>'externalRecordId')) > 0)
-                        AND ($6::text[] IS NULL OR r.doc->>'recordType' = ANY($6::text[])) AND ($7::text[] IS NULL OR r.doc->>'origin' = ANY($7::text[]))
-                        AND ($8::text[] IS NULL OR r.doc->>'connectorName' = ANY($8::text[])) AND ($9::text[] IS NULL OR r.doc->>'indexingStatus' = ANY($9::text[])))
-                    SELECT s.total, s.rtypes, s.origins, s.connectors, s.statuses, p.doc, p.fdoc, p.rn FROM
-                      (SELECT count(*) AS total,
-                              coalesce(array_agg(DISTINCT doc->>'recordType') FILTER (WHERE doc->>'recordType' IS NOT NULL), '{}') AS rtypes,
-                              coalesce(array_agg(DISTINCT doc->>'origin') FILTER (WHERE doc->>'origin' IS NOT NULL), '{}') AS origins,
-                              coalesce(array_agg(DISTINCT coalesce(doc->>'connectorName', 'KNOWLEDGE_BASE')), '{}') AS connectors,
-                              coalesce(array_agg(DISTINCT doc->>'indexingStatus') FILTER (WHERE doc->>'indexingStatus' IS NOT NULL), '{}') AS statuses FROM recs) s
-                      LEFT JOIN LATERAL (SELECT q.doc, q.rn, (SELECT ff.doc FROM graph.edges te JOIN graph.nodes ff ON ff.org_id = te.org_id AND ff.coll = 'files' AND ff.id = te.to_id
-                                                              WHERE te.org_id = $1 AND te.coll = 'isOfType' AND te.from_coll = 'records' AND te.from_id = q.id ORDER BY ff.id LIMIT 1) AS fdoc
-                                         FROM (SELECT x.id, x.doc, row_number() OVER (ORDER BY
-                            (CASE WHEN $10::int = 1 AND $11::boolean THEN x.doc->>'recordName' END) COLLATE "C" ASC, (CASE WHEN $10::int = 1 AND NOT $11::boolean THEN x.doc->>'recordName' END) COLLATE "C" DESC,
-                            (CASE WHEN $10::int = 2 AND $11::boolean THEN x.doc->'createdAtTimestamp' END) ASC, (CASE WHEN $10::int = 2 AND NOT $11::boolean THEN x.doc->'createdAtTimestamp' END) DESC,
-                            (CASE WHEN $10::int = 3 AND $11::boolean THEN x.doc->'updatedAtTimestamp' END) ASC, (CASE WHEN $10::int = 3 AND NOT $11::boolean THEN x.doc->'updatedAtTimestamp' END) DESC,
-                            (CASE WHEN $10::int = 4 AND $11::boolean THEN (SELECT sf.doc->'sizeInBytes' FROM graph.edges se JOIN graph.nodes sf ON sf.org_id = se.org_id AND sf.coll = 'files' AND sf.id = se.to_id
-                                    WHERE se.org_id = $1 AND se.coll = 'isOfType' AND se.from_coll = 'records' AND se.from_id = x.id ORDER BY sf.id LIMIT 1) END) ASC,
-                            (CASE WHEN $10::int = 4 AND NOT $11::boolean THEN (SELECT sf.doc->'sizeInBytes' FROM graph.edges se JOIN graph.nodes sf ON sf.org_id = se.org_id AND sf.coll = 'files' AND sf.id = se.to_id
-                                    WHERE se.org_id = $1 AND se.coll = 'isOfType' AND se.from_coll = 'records' AND se.from_id = x.id ORDER BY sf.id LIMIT 1) END) DESC, x.id) AS rn
-                                               FROM recs x ORDER BY rn OFFSET $12 LIMIT $13) q) p ON true ORDER BY p.rn""",
-                                     org, kb_id, folder_id, FOLDER_MIME_TYPES, search or None, record_types or None, origins or None, connectors or None,
-                                     indexing_status or None, key, asc, rskip, rlimit, _KB)
+                filters = (search or None, record_types or None, origins or None, connectors or None, indexing_status or None, key, asc, rskip, rlimit)
+                if folder_id is not None:
+                    recs = await tx.fetch(_FOLDER_RECORDS, org, folder_id, *filters)
+                else:
+                    args = (org, kb_id, FOLDER_MIME_TYPES, *filters, _KB)
+                    recs = await (tx.fetch(_ROOT_RECORDS, *args) if ids is None else tx.fetch(kg_kb_root.RECORDS, *args, ids))
                 records = [_child_record(r["doc"], r["fdoc"]) for r in recs if r["doc"] is not None]
                 total_records = recs[0]["total"]
                 out = {"success": True, "folders": folders, "records": records, "totalCount": total_folders + total_records, "availableFilters": _filters(recs[0])}
@@ -180,7 +212,15 @@ class KbListingsMixin(PgBase):
                                        "totalFolders": total_folders, "totalRecords": total_records}}
                 return {**out, "counts": {"folders": total_folders, "records": total_records, "totalItems": total_folders + total_records,
                                           "foldersShown": len(folders), "recordsShown": len(records)}}
-            return await self._q(go, transaction)
+
+            async def walk(tx: Tx) -> dict:
+                return await read(tx, None)
+
+            async def typed(tx: Tx) -> dict:      # the candidates and the page in one snapshot
+                return await read(tx, await kg_kb_root.candidates(tx, org, kb_id))
+            if folder_id is None and (got := await kg_hier.answer(self, "kb_root", transaction, typed, walk=walk)) is not None:
+                return got
+            return await self._q(walk, transaction)
         except Exception as e:
             error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="_children")
             return {"success": False, "reason": str(e)}

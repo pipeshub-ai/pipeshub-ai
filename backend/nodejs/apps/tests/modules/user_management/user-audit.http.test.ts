@@ -50,6 +50,8 @@ import * as oauthTokenRepo from '../../../src/libs/repositories/oauth-token';
 import { ProjectService } from '../../../src/modules/projects/services/project.service';
 import { registerUpstreams } from '../../../src/libs/http/upstream-call';
 import { registerAppUpstreams } from '../../../src/modules/tokens_manager/config/config';
+import { recordOrgHarnessReader } from '../../../src/modules/agent-harness/config';
+import { setSlackUserLinkRepository } from '../../../src/libs/repositories/slack-user-link';
 
 const JWT_SECRET = 'user-audit-jwt-secret';
 const SCOPED_SECRET = 'user-audit-scoped-secret';
@@ -68,6 +70,21 @@ const mkUser = (fullName: string, email: string, role: string, extra: Row = {}):
 });
 
 describe('user and group audit lines (HTTP)', function () {
+  // An upstream suite: it runs as a release without the agent harness does (compatibility profile, Labs off).
+  let savedHardened: string | undefined;
+  beforeEach(() => {
+    savedHardened = process.env.PIPESHUB_HARDENED;
+    delete process.env.PIPESHUB_HARDENED;
+    recordOrgHarnessReader(() => Promise.resolve(false));
+    // A delete also drops the Slack accounts the user linked (ADR-SLACKID-01).
+    setSlackUserLinkRepository({ removeForUser: async () => 0 } as never);
+  });
+  afterEach(() => {
+    setSlackUserLinkRepository();
+    if (savedHardened === undefined) delete process.env.PIPESHUB_HARDENED;
+    else process.env.PIPESHUB_HARDENED = savedHardened;
+  });
+
   this.timeout(20000);
 
   let server: Server;

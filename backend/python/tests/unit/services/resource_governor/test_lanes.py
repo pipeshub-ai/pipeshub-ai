@@ -11,6 +11,7 @@ from __future__ import annotations
 import ast
 import asyncio
 import builtins
+import contextlib
 import errno
 import io
 import json
@@ -19,10 +20,12 @@ import signal
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 import pytest
 
+from app.services.resource_governor import lane_ledger
 from app.services.resource_governor import lanes as lanes_module
 from app.services.resource_governor.lanes import (
     LaneBudget,
@@ -46,7 +49,7 @@ from tests.unit.lane_gauge import (
 
 if TYPE_CHECKING:
     import subprocess
-    from collections.abc import Callable
+    from collections.abc import Callable, Iterator
 
 GIB = 2**30
 
@@ -447,28 +450,51 @@ class TestStartTogether:
 
 
 class TestStoppedHolder:
-    @staticmethod
-    def _p99_ms(budget: LaneBudget, seconds: float) -> tuple[float, float]:
-        lease_ms, count_ms = [], []
-        end = time.monotonic() + seconds
-        while time.monotonic() < end:
-            start = time.perf_counter()
-            lease = budget.try_acquire()
-            lease_ms.append((time.perf_counter() - start) * 1000)
-            if lease is not None:
-                lease.release()
-            start = time.perf_counter()
-            budget.held_count()
-            count_ms.append((time.perf_counter() - start) * 1000)
-            time.sleep(0.005)
-        lease_ms.sort()
-        count_ms.sort()
-        return lease_ms[int(0.99 * (len(lease_ms) - 1))], count_ms[int(0.99 * (len(count_ms) - 1))]
+    """Counted, not timed: a ledger transaction tries the lock once, then once more after each 1 ms sleep until its
+    budget is spent, so one that waits only for its budget makes at most budget / 1 ms retries however slowly the host
+    runs it; a wall-clock p99 would also hold the time the host kept this thread off the CPU."""
 
-    def test_pollers_behind_a_stopped_holder_do_not_stall_leases(self, lane_dir: Path) -> None:
+    def test_pollers_behind_a_stopped_holder_do_not_stall_leases(
+        self, lane_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         budget = LaneBudget.open(plan(8), lane_dir, memory_reader=Mem(10 * GIB, GIB), fallback_seconds=0.5)
         holder = start_role("hold_lock", {"dir": str(lane_dir)})
         stop = threading.Event()
+        caller = threading.get_ident()
+        retries = 0
+        most: list[int] = []
+        real_transaction = lane_ledger.DomainLedger.transaction
+
+        def retry_sleep(seconds: float) -> None:
+            nonlocal retries
+            if threading.get_ident() == caller:
+                retries += 1
+            time.sleep(seconds)
+
+        @contextlib.contextmanager
+        def counted_transaction(ledger: lane_ledger.DomainLedger) -> Iterator[lane_ledger.LedgerTxn | None]:
+            nonlocal retries
+            mine = threading.get_ident() == caller
+            if mine:
+                retries = 0
+            with real_transaction(ledger) as txn:
+                if mine:
+                    most.append(retries)
+                yield txn
+
+        monkeypatch.setattr(lane_ledger, "time", SimpleNamespace(monotonic=time.monotonic, sleep=retry_sleep))
+        monkeypatch.setattr(lane_ledger.DomainLedger, "transaction", counted_transaction)
+
+        def calls(seconds: float) -> list[int]:
+            most.clear()
+            end = time.monotonic() + seconds
+            while time.monotonic() < end:
+                lease = budget.try_acquire()
+                if lease is not None:
+                    lease.release()
+                budget.held_count()
+                time.sleep(0.005)
+            return list(most)
 
         def poll() -> None:
             while not stop.is_set():
@@ -481,10 +507,10 @@ class TestStoppedHolder:
             os.kill(holder.pid, signal.SIGSTOP)
             for t in pollers:
                 t.start()
-            lease_before, count_before = self._p99_ms(budget, 0.4)  # not yet degraded
+            before = calls(0.4)  # not yet degraded
             time.sleep(0.8)
             assert budget.stats()["ledger"] == "degraded"
-            lease_after, count_after = self._p99_ms(budget, 0.8)
+            after = calls(0.8)
         finally:
             stop.set()
             for t in pollers:
@@ -492,11 +518,13 @@ class TestStoppedHolder:
             os.kill(holder.pid, signal.SIGCONT)
             reap(holder)
             budget.close()
-        # The lock budget is 20 ms; an unrelated caller must not wait for it at all.
-        for value in (lease_before, count_before, lease_after, count_after):
-            assert value < 80, (lease_before, count_before, lease_after, count_after)
+        # The lock budget is 20 ms: a transaction waits for no more than it, and once degraded not at all.
+        assert before and max(before) <= round(lane_ledger.LEDGER_LOCK_BUDGET / 0.001), before
+        assert after and max(after) == 0, after
 
-    def test_a_degraded_process_tries_the_lock_once_per_call(self, lane_dir: Path) -> None:
+    def test_a_degraded_process_tries_the_lock_once_per_call(
+        self, lane_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         budget = LaneBudget.open(plan(8), lane_dir, memory_reader=Mem(10 * GIB, GIB), fallback_seconds=0.0)
         holder = start_role("hold_lock", {"dir": str(lane_dir)})
         try:
@@ -504,10 +532,13 @@ class TestStoppedHolder:
             os.kill(holder.pid, signal.SIGSTOP)
             budget.admit_spawn(0)  # fails the lock: now degraded
             assert budget._ledger.degraded
-            start = time.perf_counter()
+            retry_sleeps: list[float] = []
+            monkeypatch.setattr(
+                lane_ledger, "time", SimpleNamespace(monotonic=time.monotonic, sleep=retry_sleeps.append)
+            )
             for _ in range(20):
                 budget.admit_spawn(0)
-            assert (time.perf_counter() - start) / 20 < 0.01  # no 20 ms retry loop per call
+            assert retry_sleeps == []  # no 20 ms retry loop per call
         finally:
             os.kill(holder.pid, signal.SIGCONT)
             reap(holder)

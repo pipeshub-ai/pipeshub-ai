@@ -10,9 +10,22 @@ import {
 } from '../types/oauth.types'
 import { AuthenticatedUserRequest } from '../../../libs/middlewares/types'
 import { isUserOrgAdmin } from '../../user_management/services/user-admin.service'
+import {
+  auditSettingsChange,
+  ConfigAction,
+} from '../../configuration_manager/utils/config-audit';
 
 const callerIsAdmin = (userId: unknown, orgId: unknown): Promise<boolean> =>
   isUserOrgAdmin(userId as string, orgId as string);
+
+/** One `config.oauth_client.*` audit line for a change the service saved (it threw otherwise). */
+const auditAppChange = (
+  action: ConfigAction,
+  appId: string,
+  reason?: string,
+): void => {
+  auditSettingsChange('oauth_client', action, { target: appId, reason });
+};
 
 @injectable()
 export class OAuthAppController {
@@ -73,6 +86,7 @@ export class OAuthAppController {
       const data: CreateOAuthAppRequest = req.body
 
       const app = await this.oauthAppService.createApp(orgId, userId, isAdmin, data)
+      auditAppChange('create', app.id);
 
       res.status(201).json({
         message: 'OAuth app created successfully',
@@ -136,6 +150,7 @@ export class OAuthAppController {
         userId,
         serviceAccountId,
       )
+      auditAppChange('update', appId, 'token_identity');
 
       res.json({
         message:
@@ -162,6 +177,7 @@ export class OAuthAppController {
       const data: UpdateOAuthAppRequest = req.body
 
       const app = await this.oauthAppService.updateApp(appId, orgId, userId, isAdmin, data)
+      auditAppChange('update', appId, 'settings');
 
       res.json({
         message: 'OAuth app updated successfully',
@@ -188,6 +204,7 @@ export class OAuthAppController {
       const isAdmin = await callerIsAdmin(userId, orgId);
       // The service revokes the app's tokens after marking it revoked.
       await this.oauthAppService.deleteApp(appId, orgId, userId, isAdmin);
+      auditAppChange('delete', appId);
 
       res.json({
         message: 'OAuth app deleted successfully',
@@ -211,6 +228,7 @@ export class OAuthAppController {
       const appId = req.params.appId!
 
       const app = await this.oauthAppService.regenerateSecret(appId, orgId, userId)
+      auditAppChange('update', appId, 'secret_rotate');
 
       res.json({
         message: 'Client secret regenerated successfully',
@@ -243,6 +261,7 @@ export class OAuthAppController {
         userId,
         isAdmin,
       );
+      auditAppChange('update', appId, 'suspend');
 
       res.json({
         message: 'OAuth app suspended successfully',
@@ -274,6 +293,7 @@ export class OAuthAppController {
         userId,
         isAdmin,
       );
+      auditAppChange('update', appId, 'activate');
 
       res.json({
         message: 'OAuth app activated successfully',
@@ -361,6 +381,7 @@ export class OAuthAppController {
         isAdmin,
       );
       await this.oauthTokenService.revokeAllTokensForApp(app.clientId)
+      auditAppChange('update', appId, 'tokens_revoked');
 
       res.json({
         message: 'All tokens revoked successfully',

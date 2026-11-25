@@ -209,8 +209,8 @@ class PgMessagingConsumer(IMessagingConsumer):
             created = await self.queue.ensure_group(
                 topic,
                 self.config.group_id,
-                from_start=not self.config.ephemeral_group,
-                ephemeral=self.config.ephemeral_group,
+                from_start=not self.config.broadcast,
+                ephemeral=self.config.broadcast,
             )
             if created:
                 self.logger.info(
@@ -223,7 +223,7 @@ class PgMessagingConsumer(IMessagingConsumer):
         if self._listener is not None:
             await self._listener.stop()
             self._listener = None
-        if self.config.ephemeral_group:
+        if self.config.broadcast:
             for topic in self.config.topics:
                 try:
                     await self.queue.drop_group(topic, self.config.group_id)
@@ -396,7 +396,7 @@ class PgMessagingConsumer(IMessagingConsumer):
         """Keep the claims being worked on hidden, keep an ephemeral group alive, and sweep (whether or not the consumer is idle)."""
         while self.running:
             # an idle consumer with nothing held wakes only for the sweep; claiming something wakes it at once
-            busy = bool(self._held) or self.config.ephemeral_group
+            busy = bool(self._held) or self.config.broadcast
             self._beat_wake.clear()
             woken = True
             try:
@@ -415,7 +415,7 @@ class PgMessagingConsumer(IMessagingConsumer):
                         self.config.group_id, held, self._visibility_s
                     )
                 await self._renew_leases()
-                if self.config.ephemeral_group:
+                if self.config.broadcast:
                     await self.queue.touch(self.config.group_id, self.config.topics)
                 if time.monotonic() - self._last_sweep > _SWEEP_EVERY_S:
                     self._last_sweep = time.monotonic()

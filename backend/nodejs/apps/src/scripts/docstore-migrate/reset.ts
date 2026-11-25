@@ -7,6 +7,8 @@ import { readMongoFence } from './fence';
 import { clearMarkers } from './follow';
 import type { MigrationRuntime } from './runtime';
 import { COPY_LOCK_KEY, JobState } from './state';
+import { clearCarried } from './carry/run';
+import { clearRefusals } from './refusals';
 
 const IDENT = /^[a-z_][a-z0-9_]*\.[a-z_][a-z0-9_]*$/;
 
@@ -40,6 +42,9 @@ export async function reset(
       '/* pipeshub:migrate.copy_lock */ SELECT pg_advisory_xact_lock($1)',
       [COPY_LOCK_KEY],
     );
+    // the carriers' rows first (a carried field hangs on a user, an org or a chat), and the whole key map
+    await clearCarried(k);
+    await clearRefusals(k);
     for (const t of unique)
       await k.query(`/* pipeshub:reset.delete */ DELETE FROM ${t}`);
   });

@@ -11,7 +11,7 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.exc import DBAPIError
 
-from db import epoch_lint
+from db import epoch_lint, locations
 from db.lib import ddl
 from db.locations import version_locations
 
@@ -75,16 +75,20 @@ def write_probe(tmp_path, second_sql="CREATE TABLE probe.t2 (id int);\nSELECT ke
 # the modules besides the kernel: platform (the store fence, background jobs and the runtime tables), the document store's branches and the vector retrieval module
 DOCSTORE_BRANCHES = ("content", "conversation", "identity", "integrations", "oauth", "platform_data")
 MODULES = ("platform", *DOCSTORE_BRANCHES, "retrieval")
-# read from the revision files, not pinned by hand: every pull request that adds a revision would edit the same line
-HEADS, REVISION_HEADS = epoch_lint.expected_heads(version_locations())
+# read from the revision files, not pinned by hand: every pull request that adds a revision would edit the same line.
+# HEADS is this tree's branches; BUILT_HEADS adds the running edition's (``EXTRA_MIGRATION_LOCATIONS``), which is what a
+# run of the migrations leaves (a test that sets its own edition file compares with HEADS)
+_EXTRA = locations.extra_locations()
+HEADS, REVISION_HEADS = epoch_lint.expected_heads([p for p in version_locations() if p not in _EXTRA])
+BUILT_HEADS, BUILT_REVISION_HEADS = epoch_lint.expected_heads(version_locations())
 
 
 def test_fresh_install(db):
     cluster, name = db
     r = run_migrate(cluster.url(name, MIGRATE))
     assert r.returncode == 0, r.stdout + r.stderr
-    assert all(f"epoch {b}={e} min_code={m}" in r.stdout for b, (e, m) in HEADS.items())
-    assert epochs(cluster, name) == HEADS
+    assert all(f"epoch {b}={e} min_code={m}" in r.stdout for b, (e, m) in BUILT_HEADS.items())
+    assert epochs(cluster, name) == BUILT_HEADS
     with connect(cluster, name) as c:
         assert {n for (n,) in c.execute("SELECT DISTINCT tableowner FROM pg_tables WHERE schemaname IN ('kernel','platform')")} \
             == {"pipeshub_owner"}
@@ -92,7 +96,7 @@ def test_fresh_install(db):
         assert c.execute("SELECT kernel.pg_major()").fetchone()[0] == cluster.major
         assert c.execute("SELECT kernel.has_extension('plpgsql'), kernel.has_extension('nope')").fetchone() == (True, False)
         assert {v for (v,) in c.execute("SELECT version_num FROM kernel.alembic_version")} \
-            == REVISION_HEADS
+            == BUILT_REVISION_HEADS
 
 
 def test_service_role_grants(db):
@@ -139,7 +143,7 @@ def test_bare_database_as_superuser(bare_db):
     skip = {"PG_MIGRATE_SURFACE_CHECK": "skip"}                   # a bare database has a different (migration-made) role layout
     assert run_migrate(url, **skip).returncode == 0
     assert run_migrate(url, **skip).returncode == 0                                            # second run: ownership is consistent
-    assert epochs(cluster, name) == HEADS
+    assert epochs(cluster, name) == BUILT_HEADS
     with connect(cluster, name) as c:
         assert c.execute("SELECT count(*) FROM pg_roles WHERE rolname LIKE 'pipeshub\\_%' AND NOT rolcanlogin").fetchone()[0] == 18
         assert c.execute("SELECT count(*) FROM pg_tables WHERE schemaname = 'kernel' AND tableowner <> 'pipeshub_owner'").fetchone()[0] == 0
@@ -175,7 +179,7 @@ def test_concurrent_runners_serialise(db):
         holder.close()
     out, _ = p.communicate(timeout=120)
     assert p.returncode == 0, out
-    assert epochs(cluster, name) == HEADS
+    assert epochs(cluster, name) == BUILT_HEADS
 
 
 def test_two_runners_at_once_apply_once(db):
@@ -184,7 +188,7 @@ def test_two_runners_at_once_apply_once(db):
     procs = [start_migrate(url), start_migrate(url)]
     outs = [p.communicate(timeout=120)[0] for p in procs]
     assert [p.returncode for p in procs] == [0, 0], outs
-    assert epochs(cluster, name) == HEADS
+    assert epochs(cluster, name) == BUILT_HEADS
     with connect(cluster, name) as c:
         assert c.execute("SELECT count(*) FROM platform.deployment_profile").fetchone()[0] == 1
 
@@ -220,7 +224,7 @@ def test_failed_revision_rolls_back_cleanly(db, tmp_path):
         assert c.execute("SELECT note FROM probe.t1 LIMIT 1").fetchone() is None
         versions = {v for (v,) in c.execute("SELECT version_num FROM kernel.alembic_version")}
         # the probe fails mid-run; the branches that ran before it (in an order Alembic does not fix) are complete revisions, never partial
-        assert "probe_0001" in versions and all(v == "probe_0001" or v.startswith(("kernel_", *(f"{b}_" for b in (*MODULES, "graph", "kg")))) for v in versions)
+        assert "probe_0001" in versions and all(v == "probe_0001" or v.startswith(("kernel_", *(f"{b}_" for b in (*MODULES, "graph", "kg", "harness")))) for v in versions)
     assert epochs(cluster, name)["probe"] == (1, 0)
     write_probe(tmp_path)                                                              # the fix is a plain re-run
     r = run_migrate(url, **env)
@@ -261,7 +265,7 @@ def test_one_module_down_and_up_leaves_a_clean_catalog(db):
             assert [tuple(x) for x in c.execute("SELECT rule, object FROM kernel.rls_violations")] == []
     r = run_migrate(url)
     assert r.returncode == 0, r.stdout
-    assert epochs(cluster, name) == HEADS
+    assert epochs(cluster, name) == BUILT_HEADS
 
 
 def test_violations_in_the_catalog_view_fail_the_run(db):
@@ -501,7 +505,7 @@ def test_a_downgrade_to_the_previous_revision_leaves_a_clean_catalog_and_upgrade
         assert [tuple(x) for x in c.execute("SELECT rule, object FROM kernel.rls_violations")] == []
     r = run_migrate(url)
     assert r.returncode == 0, r.stdout
-    assert epochs(cluster, name) == HEADS
+    assert epochs(cluster, name) == BUILT_HEADS
 
 
 def test_the_jobs_role_reads_the_organisation_gauges_only_through_functions_and_the_revisions_round_trip(db):
@@ -512,10 +516,12 @@ def test_the_jobs_role_reads_the_organisation_gauges_only_through_functions_and_
     grants = "SELECT table_name, privilege_type FROM information_schema.role_table_grants WHERE grantee = 'pipeshub_jobs' AND table_schema = 'identity' ORDER BY 1, 2"
     gauges = {"gauge_user_counts": ["org_id", "n"], "gauge_live_orgs": ["org_id", "account_type", "domain"], "gauge_auth_configs": ["org_id", "auth_steps"]}
     readable_before = ("users", "orgs", "org_auth_config")      # what identity_0004 left the jobs role and identity_0006 takes away
+    # identity_0007 (session families) gives the jobs role SELECT and DELETE on that one table, for the expiry sweep, under its own policy
+    families = [("session_families", "DELETE"), ("session_families", "SELECT")]
 
-    def as_jobs(c, readable):
+    def as_jobs(c, readable, n_tables):
         tables = [r[0] for r in c.execute("SELECT table_name FROM information_schema.tables WHERE table_schema = 'identity' AND table_type = 'BASE TABLE'").fetchall()]
-        assert len(tables) == 11
+        assert len(tables) == n_tables
         c.execute("SET ROLE pipeshub_jobs")      # no app.org_id: the system context of the gauges
         for fn, cols in gauges.items():
             cur = c.execute(f"SELECT * FROM identity.{fn}()")
@@ -523,6 +529,8 @@ def test_the_jobs_role_reads_the_organisation_gauges_only_through_functions_and_
         for t in tables:
             if t in readable:
                 assert len(c.execute(f"SELECT 1 FROM identity.{t}").fetchall()) == 2
+            elif t == "session_families":
+                assert c.execute(f"SELECT 1 FROM identity.{t}").fetchall() == []
             else:
                 with pytest.raises(psycopg.errors.InsufficientPrivilege):
                     c.execute(f"SELECT 1 FROM identity.{t}")
@@ -533,9 +541,9 @@ def test_the_jobs_role_reads_the_organisation_gauges_only_through_functions_and_
             c.execute("INSERT INTO identity.orgs (org_id, domain, contact_email, account_type, created_at, updated_at) VALUES (%s, 'x.test', 'a@x.test', 'business', now(), now())", (org,))
             c.execute("INSERT INTO identity.users (org_id, id, slug, email, created_at, updated_at) VALUES (%s, %s, 'user-1', 'a@x.test', now(), now())", (org, "a" * 24))
             c.execute("INSERT INTO identity.org_auth_config (org_id, id, auth_steps, created_at, updated_at) VALUES (%s, %s, '[1]', now(), now())", (org, "a" * 24))
-        assert c.execute(policies).fetchone()[0] == 0
-        assert c.execute(grants).fetchall() == []
-        as_jobs(c, ())      # every identity table refused, the gauges still answer
+        assert c.execute(policies).fetchone()[0] == 1
+        assert [tuple(x) for x in c.execute(grants)] == families
+        as_jobs(c, (), 12)      # every identity table refused, the gauges still answer
         for fn in gauges:
             who = [r[0] for r in c.execute("SELECT r.rolname FROM pg_roles r WHERE has_function_privilege(r.oid, %s::regprocedure, 'EXECUTE') AND NOT r.rolsuper ORDER BY 1", (f"identity.{fn}()",))]
             assert who == ["pipeshub_jobs", "pipeshub_vetted_identity"], who      # the grant, and the owner
@@ -544,7 +552,7 @@ def test_the_jobs_role_reads_the_organisation_gauges_only_through_functions_and_
     with connect(cluster, name) as c:      # the downgrade gives the jobs role back what identity_0005's code may still read
         assert [tuple(x) for x in c.execute(grants)] == [(t, "SELECT") for t in ("org_auth_config", "orgs", "users")]
         assert c.execute(policies).fetchone()[0] == 3
-        as_jobs(c, readable_before)
+        as_jobs(c, readable_before, 11)
         assert [tuple(x) for x in c.execute("SELECT rule, object FROM kernel.rls_violations")] == []
         c.execute("DELETE FROM identity.org_auth_config; DELETE FROM identity.users; DELETE FROM identity.orgs")
     r = run_migrate(url, "downgrade", "identity_0004", PG_MIGRATE_ALLOW_DOWNGRADE="1")
@@ -558,10 +566,10 @@ def test_the_jobs_role_reads_the_organisation_gauges_only_through_functions_and_
         c.execute("ALTER ROLE pipeshub_migrate SET search_path = identity, public")
     r = run_migrate(url, PG_MIGRATE_SURFACE_CHECK="skip")      # the surface lists the role setting; the asserts below check what the run left
     assert r.returncode == 0, r.stdout
-    assert epochs(cluster, name) == HEADS
+    assert epochs(cluster, name) == BUILT_HEADS
     with connect(cluster, name) as c:      # the tables are found whatever the session's search_path is
-        assert c.execute(policies).fetchone()[0] == 0
-        assert c.execute(grants).fetchall() == []
+        assert c.execute(policies).fetchone()[0] == 1
+        assert [tuple(x) for x in c.execute(grants)] == families
         assert c.execute("SELECT count(*) FROM information_schema.routine_privileges WHERE grantee = 'pipeshub_jobs' AND routine_schema = 'identity'").fetchone()[0] == 3
         assert [tuple(x) for x in c.execute("SELECT rule, object FROM kernel.rls_violations")] == []
 
@@ -580,7 +588,7 @@ def test_the_one_running_job_index_comes_and_goes_with_the_platform_job_function
         assert c.execute(index).fetchone()[0] is False and c.execute("SELECT to_regclass('platform.jobs') IS NOT NULL").fetchone()[0] is True
     r = run_migrate(url)
     assert r.returncode == 0, r.stdout
-    assert epochs(cluster, name) == HEADS
+    assert epochs(cluster, name) == BUILT_HEADS
     with connect(cluster, name) as c:
         assert c.execute(index).fetchone()[0] is True
 
@@ -610,7 +618,7 @@ def test_the_runtime_tables_come_and_go_with_platform_0003_to_0005(db):
         assert [tuple(x) for x in c.execute("SELECT rule, object FROM kernel.rls_violations")] == []
     r = run_migrate(url)
     assert r.returncode == 0, r.stdout
-    assert epochs(cluster, name) == HEADS
+    assert epochs(cluster, name) == BUILT_HEADS
 
 
 def test_the_runtimes_read_the_profile_epoch_through_the_definer_reader(db):
@@ -701,7 +709,8 @@ def _grant_revision(tmp_path):
     '''))
     (d / "0001_grant.sql").write_text("GRANT USAGE ON SCHEMA kernel TO pipeshub_ext_reader;\n")
     ed = tmp_path / "edition.py"
-    ed.write_text(f"EXTRA_MIGRATION_LOCATIONS = {[str(d)]!r}\n")
+    # beside the running edition's own modules, so the only change the run sees is this one
+    ed.write_text(f"EXTRA_MIGRATION_LOCATIONS = {[*locations.extra_locations(), str(d)]!r}\n")
     return {"PIPESHUB_EDITION_FILE": str(ed)}
 
 
@@ -710,7 +719,7 @@ def test_a_refused_upgrade_leaves_the_revisions_and_epochs_as_they_were(db, tmp_
     url = cluster.url(name, MIGRATE)
     assert run_migrate(url).returncode == 0
     before = _applied(cluster, name)
-    assert before[0] and before[1] == HEADS
+    assert before[0] and before[1] == BUILT_HEADS
     with cluster.admin() as admin:
         admin.execute("CREATE ROLE pipeshub_ext_reader NOLOGIN")
     r = run_migrate(url, **_grant_revision(tmp_path))
@@ -908,7 +917,7 @@ def test_pg_kv_access_sets_the_mode_and_unset_keeps_it(db):
             return c.execute("SELECT enforce FROM platform.kv_access").fetchone()[0]
 
     r = run_migrate(url)
-    assert r.returncode == 0 and mode() is True and "shadow mode" not in r.stdout   # enforce by default (platform_0013)
+    assert r.returncode == 0 and mode() is True and "shadow mode" not in r.stdout   # enforce by default (platform_0014)
     r = run_migrate(url, PG_KV_ACCESS="shadow")
     assert r.returncode == 0 and "key-value access by prefix: shadow" in r.stdout and mode() is False
     assert "WARNING key-value access by prefix is in shadow mode" in r.stdout, r.stdout
@@ -962,7 +971,7 @@ KV_MATRIX = [
     ("indexing", "/services/entityCleanup/pending/c1", True, True), ("indexing", "/migrations/class_units_backfill/1", True, True),
     ("indexing", "state:lease:record:r1:o1", True, True),
     *[("indexing", k, True, True) for k in ("/migrations/pdf_page_limit_audit", "/migrations/pdf_page_limit_audit_cursor",
-                                            "/migrations/pdf_page_limit_audit_reruns")],      # the PDF page limit audit (platform_0012)
+                                            "/migrations/pdf_page_limit_audit_reruns")],      # the PDF page limit audit (platform_0013)
     ("kv", "/migrations/pdf_page_limit_audit", False, False), ("query", "/migrations/pdf_page_limit_audit", True, False),
     *[("indexing", k, False, False) for k in ("/services/connectors/c1/config", "/services/connectors/c1/configx/metadataSchemas",
                                               "/services/oauth/jira", "/services/toolsets/i1/u1", "/services/mcp/credentials/i1/u1",
@@ -978,6 +987,21 @@ KV_MATRIX = [
     ("indexing", "/services/indexing/spendGuard", True, False), ("indexing", "/services/indexing/spendGuard/hmacKey", True, True),
     ("kv", "/services/indexing/spendGuard/hmacKey", True, True), ("kv", "/services/indexing/spendGuard", False, False), ("kv", "/services/redis", True, False),
     ("kv", "/services/indexing/spendGuard/hmacKeyx", False, False), ("indexing", "/services/indexing/other", False, False),
+    # the agent harness's vault, key ring and control-plane credentials: written by connectors and query (platform_0012), the
+    # repository cache and stored revocation list by the harness worker on the connectors login; indexing and kv neither read nor write any harness key
+    *[(r, k, True, True) for r in ("connectors", "query") for k in ("/services/agentHarness/credentials/o1/acct",
+                                                                    "/services/agentHarness/credentialKeys",
+                                                                    "/services/controlPlane/credentials/o1/i1/u1")],
+    *[(r, k, True, r == "connectors") for r in ("connectors", "query") for k in ("/services/agentHarness/repositoryCache",
+                                                                                "/services/harness/revokedReleaseKeys")],
+    ("connectors", "/services/harness/revokedReleaseKeysx", True, False),
+    *[(r, k, True, False) for r in ("connectors", "query") for k in ("/services/agentHarness/workerCredential",
+                                                                     "/services/agentHarness/approvals", "/services/controlPlane/bindings/o1/b1",
+                                                                     "/services/agentHarness/credentialKeysx")],
+    *[(r, k, False, False) for r in ("indexing", "kv") for k in ("/services/agentHarness/credentials/o1/acct", "/services/agentHarness/credentialKeys",
+                                                                 "/services/agentHarness/workerCredential", "/services/agentHarness/roleCredentials/scrape",
+                                                                 "/services/agentHarness/components/egressProxy", "/services/agentHarness/approvals",
+                                                                 "/services/controlPlane/credentials/o1/i1/u1", "/services/controlPlane/bindings/o1/b1")],
     # the class admission's live numbers: indexing reads them; kv never does
     ("indexing", "/services/indexing/parseAdmission", True, False), ("kv", "/services/indexing/parseAdmission", False, False),
     ("indexing", "/services/indexing/parseAdmissionx", False, False),
@@ -1170,7 +1194,33 @@ def test_platform_0011_downgrades_to_the_matrix_of_platform_0010_and_upgrades_ag
         c.rollback()
 
 
-def test_platform_0013_turns_enforce_on_for_an_upgraded_install_unless_the_operator_keeps_shadow(kv_db):
+def test_platform_0012_downgrades_to_the_matrix_of_platform_0011_and_the_guard_of_platform_0006_and_upgrades_again(kv_db):
+    cluster, name = kv_db
+    url = cluster.url(name, MIGRATE)
+    vault, guarded = "/services/agentHarness/credentials/o1/acct", "/services/agentHarness/workerCredential"
+    assert run_migrate(url, "downgrade", "platform_0011", PG_MIGRATE_ALLOW_DOWNGRADE="1").returncode == 0
+    _set_mode(cluster, name, True)
+    with _as(cluster, name, "query") as c:
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            c.execute(UPSERT, (vault,))
+    with _as(cluster, name, "query") as c:                                       # platform_0011's sandbox alert claims are kept
+        c.execute(UPSERT, ("/services/sandbox/alerts/org/o1/critical",))
+        c.rollback()
+    with _as(cluster, name, "connectors") as c:                                  # platform_0010's epoch grant is kept
+        c.execute(UPSERT, ("/services/vectordb/embedding_epoch/records/current",))
+        c.rollback()
+    with connect(cluster, name) as c:
+        assert c.execute("SELECT platform.kv_admin_or_credential(%s)", (guarded,)).fetchone()[0] is False
+    _set_mode(cluster, name, False)
+    assert run_migrate(url).returncode == 0
+    _set_mode(cluster, name, True)
+    with _as(cluster, name, "query") as c:
+        c.execute(UPSERT, (vault,))
+        c.rollback()
+    with connect(cluster, name) as c:
+        assert c.execute("SELECT platform.kv_admin_or_credential(%s)", (guarded,)).fetchone()[0] is True
+
+def test_platform_0014_turns_enforce_on_for_an_upgraded_install_unless_the_operator_keeps_shadow(kv_db):
     cluster, name = kv_db
     url = cluster.url(name, MIGRATE)
 
@@ -1178,12 +1228,12 @@ def test_platform_0013_turns_enforce_on_for_an_upgraded_install_unless_the_opera
         with connect(cluster, name) as c:
             return c.execute("SELECT enforce FROM platform.kv_access").fetchone()[0]
 
-    assert run_migrate(url, "downgrade", "platform_0012", PG_MIGRATE_ALLOW_DOWNGRADE="1").returncode == 0 and mode() is False
+    assert run_migrate(url, "downgrade", "platform_0013", PG_MIGRATE_ALLOW_DOWNGRADE="1").returncode == 0 and mode() is False
     assert run_migrate(url).returncode == 0 and mode() is True                     # an install upgraded with nothing set: enforce
     with _as(cluster, name, "query") as c:                                       # refused outside the prefixes, not only logged
         with pytest.raises(psycopg.errors.InsufficientPrivilege):
             c.execute(UPSERT, ("/services/smtp",))
-    assert run_migrate(url, "downgrade", "platform_0012", PG_MIGRATE_ALLOW_DOWNGRADE="1").returncode == 0
+    assert run_migrate(url, "downgrade", "platform_0013", PG_MIGRATE_ALLOW_DOWNGRADE="1").returncode == 0
     r = run_migrate(url, PG_KV_ACCESS="shadow")                                  # the escape hatch is applied after the upgrade
     assert r.returncode == 0 and mode() is False and "WARNING key-value access by prefix is in shadow mode" in r.stdout, r.stdout
 

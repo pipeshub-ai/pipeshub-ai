@@ -1566,7 +1566,8 @@ class TestToolImageRelocationRespectsTheCap:
 
         assert isinstance(retry[-1], HumanMessage)
         assert retry[-1].content[0]["type"] == "text"
-        assert RELOCATED_IMAGES_NOTE in retry[-1].content[0]["text"]
+        # The note names the calls the images came from: "Images returned by the tool results above (ids):".
+        assert RELOCATED_IMAGES_NOTE[:-1] in retry[-1].content[0]["text"]
         assert all(isinstance(m.content, str) for m in retry if isinstance(m, LCToolMessage))
 
     def test_no_retry_when_the_cap_already_removed_every_tool_image(self) -> None:

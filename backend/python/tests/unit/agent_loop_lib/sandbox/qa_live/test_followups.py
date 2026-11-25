@@ -147,8 +147,10 @@ class TestDamagedRecord:
 
 
 class _Proxy:
-    def __init__(self, delay: float = 0.0) -> None:
+    def __init__(self, delay: float = 0.0, *, gate: threading.Event | None = None) -> None:
         self.delay = delay
+        # A proxy that answers only once the test opens the gate: what the reader does before then took no wait for it.
+        self.gate = gate
         self.calls = 0
         self.used = 2 * GiB
         self.lock = threading.Lock()
@@ -157,6 +159,8 @@ class _Proxy:
         with self.lock:
             self.calls += 1
         time.sleep(self.delay)
+        if self.gate is not None:
+            self.gate.wait(30)
         return 200, {"sidecar": {"memLimitBytes": 16 * GiB, "memWorkingSetBytes": self.used}}
 
 
@@ -198,12 +202,12 @@ class TestSidecarMemory:
         assert proxy.calls == 1 and results == [(14 * GiB, 16 * GiB)] * 16
 
     def test_a_slow_proxy_admits_within_the_wait_then_the_answer_is_used(self) -> None:
-        proxy, now = _Proxy(delay=0.3), _Now()
+        gate = threading.Event()
+        proxy, now = _Proxy(gate=gate), _Now()
         reader = _reader(proxy, now)
-        started = time.perf_counter()
-        assert reader.memory() == (None, None)
-        assert time.perf_counter() - started < 0.2
+        assert reader.memory() == (None, None)  # answered while the proxy still has not
         assert reader.memory() == (None, None) and proxy.calls == 1  # joined, not a second request
+        gate.set()
         time.sleep(0.4)
         assert reader.memory() == (14 * GiB, 16 * GiB) and proxy.calls == 1
 
@@ -211,13 +215,12 @@ class TestSidecarMemory:
         proxy, now = _Proxy(), _Now()
         reader = _reader(proxy, now)
         reader.memory()
-        proxy.delay = 0.3
+        proxy.gate = gate = threading.Event()
         now.now += 3.0
-        started = time.perf_counter()
-        assert reader.memory() == (14 * GiB, 16 * GiB)
-        assert time.perf_counter() - started < 0.2
+        assert reader.memory() == (14 * GiB, 16 * GiB)  # answered while the refresh still waits on the proxy
         now.now += 3.0  # 6 s old, no answer yet: admit
         assert reader.memory() == (None, None)
+        gate.set()
         time.sleep(0.4)
 
     def test_a_failing_proxy_is_none_and_retried(self) -> None:
@@ -240,14 +243,15 @@ class TestSidecarMemory:
             _helm_capacity,
         )
 
-        proxy = _Proxy(delay=0.3)
+        gate = threading.Event()
+        proxy = _Proxy(gate=gate)
         reader = SidecarReader(proxy, "sidecar", memory_bytes=16 * GiB, cpu_millis=16000)
         clock = FakeClock()
         live = _live(tmp_path, clock, reader, cap=_helm_capacity(), mode="on:sidecar", profile="sidecar")
-        started = time.perf_counter()
         results = await asyncio.gather(*(live.admit_and_charge(held=0) for _ in range(8)))
-        assert results == [None] * 8 and time.perf_counter() - started < 0.25
+        assert results == [None] * 8  # admitted while the proxy still has not answered
         assert proxy.calls == 1
+        gate.set()
         await asyncio.sleep(0.4)
         # The shared answer is in: the next admission is checked and charged.
         assert await live.admit_and_charge(held=0) is None

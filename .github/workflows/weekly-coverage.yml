@@ -36,7 +36,7 @@ jobs:
 
       - name: Install frontend dependencies
         working-directory: frontend
-        run: npm ci
+        run: npm ci --ignore-scripts
 
       - name: Run frontend unit tests with coverage
         working-directory: frontend
