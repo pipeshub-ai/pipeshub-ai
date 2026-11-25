@@ -803,7 +803,7 @@ class BoxDataSource:
         usemarker: Optional[bool] = None,
         marker: Optional[str] = None,
         user_type: Optional[str] = None,
-        fields: Optional[List[str]] = None,
+        fields: Optional[list[str]] = None,
         **kwargs,
     ) -> BoxResponse:
         """Get all users in the enterprise

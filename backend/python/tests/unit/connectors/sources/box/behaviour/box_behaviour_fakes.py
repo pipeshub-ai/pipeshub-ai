@@ -636,7 +636,7 @@ class FakeBoxRecordsDb:
         )
         return [r for r in rows if after_key is None or r.id > after_key][:limit]
 
-    async def on_updated_record_permissions(self, record: Any, permissions: list[Any]) -> None:
+    async def on_updated_record_permissions(self, record: Record, permissions: list[Any]) -> None:
         """Replaces the record's stored grants with ``permissions``, as the real processor does."""
         self._check("on_updated_record_permissions")
         self.permissions[record.external_record_id] = {f"{p.entity_type.value}:{p.external_id}": p for p in permissions}
