@@ -172,14 +172,17 @@ class HelmSecurityProfile(unittest.TestCase):
 
 
 def _upstream_base() -> str | None:
-    """The commit this branch left origin/main at, when git and that ref are there."""
+    """The newest release tag: what an operator upgrades from. Not the merge base with main, which already has
+    the change once it is merged, so the comparison would test nothing. helm-chart.yml fetches just that tag."""
     if not shutil.which("git"):
         return None
-    out = subprocess.run(["git", "merge-base", "HEAD", "origin/main"], cwd=REPO, capture_output=True, text=True)
-    return out.stdout.strip() or None
+    out = subprocess.run(["git", "tag", "--list", "v[0-9]*", "--sort=-v:refname"],
+                         cwd=REPO, capture_output=True, text=True)
+    tags = out.stdout.split()
+    return tags[0] if tags else None
 
 
-@unittest.skipUnless(shutil.which("helm") and _upstream_base(), "helm, git or origin/main is not available")
+@unittest.skipUnless(shutil.which("helm") and _upstream_base(), "helm, git or a release tag is not available")
 class HelmUpgradeFromUpstream(unittest.TestCase):
     def test_pr5_the_compatibility_render_keeps_what_an_upgrade_would_change(self) -> None:
         base = _upstream_base()
