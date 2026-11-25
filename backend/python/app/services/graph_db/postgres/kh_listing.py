@@ -262,7 +262,7 @@ class KhListingMixin(PgBase):
                 crumbs = self._kh_browse_scope(app_id, app_doc, start["sk"], trail, opened, set(gated_app_ids))
         elif max_depth < 50:
             scope = await self._kh_flat_within(org, app_id, app_sk, max_depth, transaction)
-        else:
+        elif snapshot:      # its reads (the graph's names, the change log, the rows) must be of one commit: a caller's transaction reads each at a new one, and walks
             scope = await self._kh_name_hits(org, app_id, filters, transaction)
         if filtered_out(app_id, app_doc, filters):
             return self._kh_v3_empty_page(start_id, include_scope=include_scope, include_total=include_total, admitted=True)
@@ -394,7 +394,8 @@ class KhListingMixin(PgBase):
     async def _kh_name_hits(self, org: str, app_id: str, filters: dict[str, Any], transaction: str | None) -> list[int] | None:
         """The rows of the connector a name search can match, found by the trigram index of the graph nodes' names (``kgl.name_pattern``): every row the search keeps
         and some more, which the page's own conditions (the search's among them) drop. None, so that the page walks its sort order as before, when the search has
-        nothing the index can look up, matches more than NAME_HITS_MAX nodes, or runs as a job (the vetted read is the services' only).
+        nothing the index can look up, matches more than NAME_HITS_MAX nodes, or runs as a job (the vetted read is the services' only). Called for a page that
+        reads one snapshot only.
         The org is the session's: ``graph.records_by_name`` reads ``app.org_id`` itself.
         The index reads the graph's names and the search's condition kg's, which differ for a node whose change the drain has not projected: those nodes (the
         connector's keys in the change log, read in the same snapshot as the rows, since a drain projects and acknowledges in one commit) are candidates too, so

@@ -953,3 +953,42 @@ async def test_a_name_search_lists_what_the_walk_lists_while_a_rename_waits_for_
     for q, want in (("alpha", ["n02"]), ("bravo", ["n00"]), ("report", ["n00", "n01"])):
         by_index, by_walk = await both(q)
         assert by_index == by_walk == want, (q, by_index, by_walk)
+
+
+async def test_a_name_search_in_a_callers_transaction_lists_what_its_later_statements_read(pg_db, monkeypatch) -> None:
+    """In a caller's own transaction (read committed) the page's statements read different commits. A rename and its drain that commit between the name lookup
+    and the lookup of the rows waiting for the drain must not make the page empty for the new name: such a page walks, as it did before the name index, and lists
+    the record that its own statements read under the new name."""
+    import asyncio
+    import contextvars
+
+    from app.services.graph_db.postgres.kg.drainer import drain_org
+    p, org = prov(pg_db), new_org()
+    await _seed_named(p, pg_db, org, {"n00": "alpha report", "n01": "other report"})
+    real_kq, fired = kh_listing.KhListingMixin._kq, []
+
+    class Between:      # the page's reads, with the rename and its drain committed before the read of the rows that wait for the drain, or before the page's rows
+        def __init__(self, tx) -> None:
+            self._tx = tx
+
+        def __getattr__(self, name: str) -> object:
+            return getattr(self._tx, name)
+
+        async def fetch(self, sql: str, *args) -> object:
+            if (sql == kgl.NAME_PENDING or sql.startswith("/* pipeshub:kg.listing_page")) and not fired:
+                fired.append(True)
+                await _admin("UPDATE graph.nodes SET doc = jsonb_set(doc, '{recordName}', '\"bravo report\"') WHERE org_id = $1 AND coll = 'records' AND id = 'n00'", org)
+                # another session's drain: a context of its own, outside the page's unit of work
+                await asyncio.get_running_loop().create_task(drain_org(pg_db, org), context=contextvars.Context())
+            return await self._tx.fetch(sql, *args)
+
+    async def kq(self, fn, transaction) -> object:
+        return await real_kq(self, lambda tx: fn(Between(tx)), transaction)
+    monkeypatch.setattr(kh_listing.KhListingMixin, "_kq", kq)
+    with ctx(org):
+        tid = await p.begin_transaction([], [])
+        try:
+            page = await p.get_knowledge_hub_connector_page_v3(**asks(org, granted_ids=["n00", "n01"]), limit=50, transaction=tid, filters={"search_query": "bravo"})
+        finally:
+            await p.rollback_transaction(tid)
+    assert fired and [r["id"] for r in page["rows"]] == ["n00"] and page["total"] == 1, (fired, page["rows"], page["total"])
