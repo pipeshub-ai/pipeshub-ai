@@ -5,8 +5,12 @@ name: permission-conformance
 #
 #   oracle     scenarios, round-trip, deltas and coverage matrix; no services, every pull request.
 #   graph      the oracle against the real graph check, and the Knowledge Hub listing and its counts, on Neo4j and ArangoDB (corpus + 50 generated worlds), plus
-#              the graph-permissions integration suite, which ran in no workflow before; each shard with its own stores. Shards 8 and 9 run the
-#              Knowledge Hub conformance again with Neo4j on the split browse (KH_BROWSE_MODE=split).
+#              the graph-permissions integration suite, which ran in no workflow before; each shard with its own stores. Shards 1-7 run Neo4j on
+#              the default browse (split); shards 8 and 9 run the Knowledge Hub conformance again with Neo4j on the legacy browse
+#              (KH_BROWSE_MODE=legacy, the opt-out).
+#   kh-browse-cost  what a Knowledge Hub browse costs on Neo4j, as Compose ships it: statements, batch-check ids and db hits per request
+#              held to budgets (tests/integration/kh_browse_cost), and the Knowledge Hub real-graph tests run in one process with no
+#              statement slow on a cached plan (a plan kept from a smaller App).
 #   nightly    600 generated worlds per generator for each standing seed (7, 11, 2026).
 
 on:
@@ -17,6 +21,8 @@ on:
       - 'backend/python/app/**'
       - 'backend/python/tests/permissions/**'
       - 'backend/python/tests/integration/graph_permissions/**'
+      - 'backend/python/tests/integration/kh_browse_cost/**'
+      - 'backend/python/tests/integration/graph_db/test_kh_split_numbered_pages_real_neo4j.py'
       - 'backend/python/tests/unit/services/permissions/**'
       - 'backend/python/pyproject.toml'
       - 'backend/python/pytest.ini'
@@ -160,19 +166,20 @@ jobs:
             tests: tests/permissions --ignore=tests/permissions/test_conformance_kh.py
             pytest_args: -p no:logging --timeout=3000
             allow: test_generation_paths::test_an_edge_another_transaction_removed_and_this_write_put_back_moves_the_generation[arango]
-          # The Knowledge Hub conformance again with Neo4j browsing by the split browse (KH_BROWSE_MODE=split, docs/knowledge-hub-browse.md),
-          # Neo4j only: the other stores have no browse mode. A second pass, outside the once-each split above; its two shards hold each test once.
+          # The Knowledge Hub conformance again with Neo4j browsing by the legacy browse (KH_BROWSE_MODE=legacy, the opt-out from the default
+          # split browse, docs/knowledge-hub-browse.md), Neo4j only: the other stores have no browse mode. A second pass, outside the once-each
+          # split above; its two shards hold each test once.
           - shard: 8
             suite: tests.permissions
             tests: tests/permissions/test_conformance_kh.py
             k: '[adversarial-1of2] or [adversarial-2of2]'
-            browse_mode: split
+            browse_mode: legacy
             pytest_args: -p no:logging --timeout=3000
           - shard: 9
             suite: tests.permissions
             tests: tests/permissions/test_conformance_kh.py
             k: not [adversarial-1of2] and not [adversarial-2of2]
-            browse_mode: split
+            browse_mode: legacy
             pytest_args: -p no:logging --timeout=3000
             allow: test_conformance_kh::test_an_open_apps_member_is_matched_by_the_apps_handle_not_its_key
     services:
@@ -228,7 +235,8 @@ jobs:
           TESTS: ${{ matrix.tests }}
           K: ${{ matrix.k }}
           PYTEST_ARGS: ${{ matrix.pytest_args }}
-          KH_BROWSE_MODE: ${{ matrix.browse_mode || 'legacy' }}
+          # Unset (empty) is the shipped default, split.
+          KH_BROWSE_MODE: ${{ matrix.browse_mode }}
         run: |
           cd backend/python
           # Log capture off in the conformance shards: pytest keeps every record a test logs, and the Knowledge Hub layer's whole-tree browse
@@ -266,6 +274,87 @@ jobs:
           name: permission-regressions-graph-${{ matrix.shard }}
           path: backend/python/tests/permissions/scenarios/regressions/
           if-no-files-found: ignore
+
+  kh-browse-cost:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    # The tests take about 12 minutes on a 4-CPU machine; most of it is the real-graph files, whose legacy statements take seconds to plan.
+    timeout-minutes: 30
+    services:
+      neo4j:
+        image: neo4j:5.26.0
+        ports:
+          - 7688:7687
+        env:
+          NEO4J_AUTH: neo4j/khpermpass
+          NEO4J_PLUGINS: '["apoc"]'
+          NEO4J_dbms_security_procedures_unrestricted: apoc.*
+          # As the Compose default ships (deployment/docker-compose/docker-compose.yml), the plan cache included: a plan is kept for 30
+          # minutes whatever the statistics do, so a plan made for a small App is the one a larger App gets.
+          NEO4J_server_memory_heap_initial__size: 1G
+          NEO4J_server_memory_heap_max__size: 2G
+          NEO4J_server_memory_pagecache_size: 1G
+          NEO4J_dbms_cypher_min__replan__interval: 30m
+        options: >-
+          --health-cmd "wget --no-verbose --tries=1 --spider http://localhost:7474 || exit 1"
+          --health-interval 5s --health-timeout 5s --health-retries 30 --health-start-period 20s
+      # The files run on both stores, as backend-matrix runs them: the plan kept from a small App was reproduced with their ArangoDB
+      # cases between the Neo4j ones, and not with the Neo4j cases alone.
+      arango:
+        image: arangodb:3.12.4
+        ports:
+          - 8530:8529
+        env:
+          ARANGO_ROOT_PASSWORD: khpermpass
+          ARANGODB_OVERRIDE_DETECTED_TOTAL_MEMORY: 768M
+        options: >-
+          --health-cmd "arangosh --server.endpoint tcp://localhost:8529 --server.password khpermpass --javascript.execute-string 'db._version()' || exit 1"
+          --health-interval 5s --health-timeout 10s --health-retries 30
+    env:
+      NEO4J_IT_URI: bolt://localhost:7688
+      NEO4J_IT_PASSWORD: khpermpass
+      ARANGO_IT_URL: http://localhost:8530
+      ARANGO_IT_PASSWORD: khpermpass
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          pip install uv
+          cd backend/python
+          uv pip install --system pytest pytest-asyncio pytest-timeout
+          uv pip install --system -e ".[dev]"
+
+      # The budgets run first, on plans of their own, and clear them when done. The Knowledge Hub files then run in one process in the
+      # order that once kept a small App's plan for a large one (a batch check of 140 ids took 60-100 s on it); statement_trace fails a
+      # test during which any statement ran over its bound on a plan already made.
+      - name: Run the cost budgets and the Knowledge Hub files on one Neo4j
+        run: |
+          cd backend/python
+          sel=(
+            tests/integration/kh_browse_cost
+            tests/integration/graph_db/test_kh_browse_arrow_property_real_backends.py
+            tests/integration/graph_db/test_kh_browse_denied_children_real_backends.py
+            tests/integration/graph_db/test_kh_declared_group_cross_connector_real_backends.py
+            tests/integration/graph_db/test_permitted_entity_records_differential.py
+            tests/integration/graph_db/test_record_diagnostics_conformance.py
+            tests/integration/test_tool_bounds_neo4j_e2e.py
+            tests/integration/graph_db/test_kh_split_numbered_pages_real_neo4j.py
+            -m "integration and not redis_restart"
+          )
+          python "$GITHUB_WORKSPACE/scripts/assert_no_skips.py" --collect "$RUNNER_TEMP/kh-cost.collected" "${sel[@]}"
+          pytest -p tests.integration.kh_browse_cost.statement_trace "${sel[@]}" -v -s --timeout=900 --junitxml="$RUNNER_TEMP/kh-cost-junit.xml"
+
+      - name: Check the run for skips
+        run: python3 scripts/assert_no_skips.py "$RUNNER_TEMP/kh-cost-junit.xml" --collected "$RUNNER_TEMP/kh-cost.collected"
 
   nightly:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'

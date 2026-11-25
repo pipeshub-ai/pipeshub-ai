@@ -7,8 +7,12 @@ import {
 } from '../../../../src/libs/commands/ai_service/ai.service.command'
 import { HttpMethod } from '../../../../src/libs/enums/http-methods.enum'
 import { Logger } from '../../../../src/libs/services/logger.service'
+import { registerUpstreams } from '../../../../src/libs/http/upstream-call'
 
 describe('AIServiceCommand', () => {
+  beforeEach(() => registerUpstreams({ query: ['http://ai.local'] }))
+  afterEach(() => registerUpstreams({}))
+
   let fetchStub: sinon.SinonStub
 
   beforeEach(() => {
@@ -450,8 +454,7 @@ describe('AIServiceCommand', () => {
           headers: { 'content-type': 'application/json' },
           body: { prompt: 'p' },
         })
-      // On the shared prototype, and another file's timer may log meanwhile: count only the call lines.
-      const BACKGROUND_LINES = new Set(['Outbox dispatcher pass failed'])
+      // On the shared prototype: count only the call lines.
       const callLines = (stub: sinon.SinonStub) =>
         stub.getCalls().filter((c) => c.args[0] === 'upstream.call.end').map((c) => c.args[1])
       const level = () => ({
@@ -492,9 +495,8 @@ describe('AIServiceCommand', () => {
           [2, 'unavailable', 'ECONNREFUSED'],
           [3, 'unavailable', 'ECONNREFUSED'],
         ])
-        expect(callLines(logs.warn)[0]).to.include({ upstream: 'external', method: 'POST', route: 'ai.local' })
-        // Only this command's lines: in the Redis-cluster job another suite leaves the outbox dispatcher running, and it logs its own ERRORs.
-        expect(logs.error.getCalls().map((c) => c.args[0]).filter((m) => !BACKGROUND_LINES.has(m))).to.deep.equal([])
+        expect(callLines(logs.warn)[0]).to.include({ upstream: 'query', method: 'POST', route: '/api/v1/chat/stream' })
+        expect(logs.error.getCalls().map((c) => c.args[0])).to.deep.equal([])
       })
 
       it('ends a stream when its body ends, at DEBUG, and logs nothing at INFO when it opens', async () => {

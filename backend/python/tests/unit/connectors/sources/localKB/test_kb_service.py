@@ -3261,9 +3261,8 @@ class TestMoveRecord:
 
 
 # ===========================================================================
-# list_kb_records
+# get_folder_children
 # ===========================================================================
-
 
 
 class TestGetFolderChildren:
@@ -3376,43 +3375,6 @@ class TestGetKbChildrenExtended:
         result = await service.get_kb_children("kb1", "user1")
         assert result["success"] is False
         assert result["code"] == 500
-
-
-class TestListKbRecordsExtended:
-    @pytest.mark.asyncio
-    async def test_exception(self, service):
-        service.graph_provider.get_user_by_user_id = AsyncMock(return_value={"id": "uk1"})
-        service.graph_provider.list_kb_records = AsyncMock(side_effect=RuntimeError("db"))
-        result = await service.list_kb_records("kb1", "user1", "org1")
-        assert "error" in result
-        assert result["pagination"]["totalCount"] == 0
-
-
-class TestListKbRecords:
-    @pytest.mark.asyncio
-    async def test_a_failed_user_read_is_an_error_not_a_missing_user(self, service):
-        service.graph_provider.get_user_by_user_id = AsyncMock(side_effect=RuntimeError("graph down"))
-        result = await service.list_kb_records("kb1", "user1", "org1")
-        service.graph_provider.get_user_by_user_id.assert_awaited_once_with("user1", raise_on_error=True)
-        assert result.get("code") != 404
-        assert "error" in result
-
-    @pytest.mark.asyncio
-    async def test_user_not_found(self, service):
-        service.graph_provider.get_user_by_user_id = AsyncMock(return_value=None)
-        result = await service.list_kb_records("kb1", "ghost", "org1")
-        assert result["success"] is False
-        assert result["code"] == 404
-
-    @pytest.mark.asyncio
-    async def test_pagination(self, service):
-        service.graph_provider.get_user_by_user_id = AsyncMock(return_value={"id": "uk1"})
-        service.graph_provider.list_kb_records = AsyncMock(
-            return_value=([{"id": "r1"}], 25, {"recordTypes": ["FILE"]})
-        )
-        result = await service.list_kb_records("kb1", "user1", "org1", page=2, limit=10)
-        assert result["pagination"]["page"] == 2
-        assert result["pagination"]["totalPages"] == 3
 
 
 # ===========================================================================

@@ -134,7 +134,7 @@ def _validate_uuid_format(value: Optional[str], field_name: str) -> None:
     if not uuid_pattern.match(value):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid UUID format for {field_name}: {value}"
+            detail=f"Invalid UUID format for {field_name}"
         )
 
 def _parse_date_range(value: Optional[str]) -> Optional[Dict[str, Optional[int]]]:

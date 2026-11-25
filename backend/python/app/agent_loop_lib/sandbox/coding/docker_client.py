@@ -24,6 +24,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, TypeVar
 
+from app.agent_loop_lib.sandbox.capacity import slot_file_count
 from app.agent_loop_lib.sandbox.coding.egress_firewall import ensure_egress_network_sync
 
 __all__ = [
@@ -47,10 +48,17 @@ class DockerClientProvider:
     already serialized by the Docker daemon itself."""
 
     def __init__(self, *, max_workers: int = 4) -> None:
+        self._max_workers = max_workers
         self._client: Any | None = None
         self._lock = threading.Lock()
         self._executor = ThreadPoolExecutor(
             max_workers=max_workers, thread_name_prefix="docker-sandbox",
+        )
+        # Stop and remove calls get their own small pool: the run pool is
+        # full exactly when a run has to be stopped, and a remove queued
+        # behind the runs it is meant to end would wait for them.
+        self._control_executor = ThreadPoolExecutor(
+            max_workers=2, thread_name_prefix="docker-sandbox-ctl",
         )
         self._image_cache: set[str] = set()
         self._network_cidrs: dict[str, list[str]] = {}
@@ -66,7 +74,9 @@ class DockerClientProvider:
         with self._lock:
             if self._client is None:
                 import docker
-                self._client = docker.from_env()
+                # One connection per pool thread: a run holds its connection for the
+                # container's life (container.wait), and docker-py's default pool is 10.
+                self._client = docker.from_env(max_pool_size=max(self._max_workers, 10))
                 logger.debug("DockerClientProvider: created shared docker client")
             return self._client
 
@@ -76,6 +86,14 @@ class DockerClientProvider:
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(
             self._executor, lambda: fn(*args, **kwargs),
+        )
+
+    async def run_control(self, fn: Any, *args: Any, **kwargs: Any) -> Any:
+        """Run a short blocking call that stops or removes a container, on
+        the control pool, so it never waits behind running containers."""
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            self._control_executor, lambda: fn(*args, **kwargs),
         )
 
     async def ensure_image(self, image: str) -> bool:
@@ -160,6 +178,7 @@ class DockerClientProvider:
                 pass
             self._client = None
         self._executor.shutdown(wait=False)
+        self._control_executor.shutdown(wait=False)
         logger.debug("DockerClientProvider: closed")
 
 
@@ -169,18 +188,25 @@ _default_provider: DockerClientProvider | None = None
 _default_lock = threading.Lock()
 
 
-def get_default_provider(*, max_workers: int = 4) -> DockerClientProvider:
+def get_default_provider(*, max_workers: int | None = None) -> DockerClientProvider:
     """The process-wide provider.
 
     Shared deliberately: `max_workers` doubles as the ceiling on concurrent
     blocking docker operations, which only bounds anything if every sandbox
-    in the process draws from the same pool.
+    in the process draws from the same pool. Defaults to the number of
+    shared sandbox slots plus a few for pings and inspects.
     """
     global _default_provider
     if _default_provider is not None:
         return _default_provider
     with _default_lock:
         if _default_provider is None:
+            if max_workers is None:
+                # A run blocks its thread for the container's life (`container.wait`),
+                # and any one worker may hold every slot the workers share, so the
+                # pool covers all of them. Threads start lazily, so this costs
+                # nothing until used.
+                max_workers = slot_file_count() + 4
             _default_provider = DockerClientProvider(max_workers=max_workers)
             atexit.register(_default_provider.close)
         return _default_provider

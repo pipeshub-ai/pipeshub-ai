@@ -1039,6 +1039,18 @@ class TestCandidateRoutes:
             resp = await reject_candidate(req, "c1")
         assert resp.status_code == 200
 
+    @pytest.mark.asyncio
+    async def test_reject_unknown_or_foreign_candidate_is_404(self) -> None:
+        req = _mock_request()
+        manager, ctx = _mock_manager_and_ctx()
+        manager.reject_candidate = AsyncMock(side_effect=RegistryError("Candidate 'c1' not found"))
+
+        with patch(f"{MODULE}._build_manager", new_callable=AsyncMock, return_value=(manager, ctx)):
+            from app.api.routes.skills import reject_candidate
+            with pytest.raises(HTTPException) as exc:
+                await reject_candidate(req, "c1")
+        assert exc.value.status_code == 404
+
 
 # ============================================================================
 # Import routes

@@ -26,7 +26,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
-from app.core.db import DbError, DbTimeout, PoolTimeout
+from app.core.db import ConnectionLost, DbError, DbTimeout, PoolTimeout
 from app.core.org_context import spawn_in_request
 from app.services.vector_db.pgvector.errors import PgVectorError
 from app.telemetry.modules import pgvector_search_metrics as telemetry
@@ -394,29 +394,37 @@ class Sizer:
 async def search(db: KernelDB, sizer: Sizer, q: Query, t: Tuning, *, bq_ok: bool = True) -> tuple[Leg, Sizing]:
     """The dense leg. Never returns a silent shortfall: a leg that could not run in its tier (no slot, a timeout, a sizing that
     could not be read) is answered by the bounded exact path, flagged on the leg (``degraded``) and counted; only when that fails too
-    is it empty, which is counted as well."""
+    is it empty, which is counted as well. A database that cannot be reached (``ConnectionLost``) raises."""
     band = telemetry.leg_band(q.leg)
+    started = time.monotonic()
     narrow = False
     try:
         sz = await sizer.of(q)
+    except ConnectionLost:
+        raise                   # the database is out, not busy: the search retry answers it as unavailable
     except DbError:
         sz = Sizing(0, False, False, 0, t.tombstone_hash_max + 1)
         plan = Plan(Tier.E0, 0, t.degraded_timeout_ms, None, "unknown")
         telemetry.TIER.inc(plan.tier.value, band)
-        return await _degrade(db, q, t, plan, sz, "sizing", narrow=False, band=band), sz
+        leg = await _degrade(db, q, t, plan, sz, "sizing", narrow=False, band=band)
+        telemetry.observe_leg("degraded", q.leg, started)
+        return leg, sz
     plan = choose(sz, q.leg, t, bq_ok=bq_ok)
     q = dataclasses.replace(q, anti=sz.tombstones > t.tombstone_hash_max)
     telemetry.TIER.inc(plan.tier.value, band)
     narrow = sz.n_hat <= t.n_e0 and not sz.capped
     try:
         rows = await db.run(lambda tx: _run(tx, q, plan, t), timeout_ms=plan.timeout_ms, custom_plan=True)
+        telemetry.observe_leg(plan.tier.value, q.leg, started)
         return Leg(rows, plan, plan.flag), sz
     except Rejected:
         reason = "admission"
     except DbTimeout:
         reason = "timeout"
         telemetry.TIMEOUT.inc("dense", plan.tier.value)
-    return await _degrade(db, q, t, plan, sz, reason, narrow=narrow, band=band), sz
+    leg = await _degrade(db, q, t, plan, sz, reason, narrow=narrow, band=band)
+    telemetry.observe_leg("degraded", q.leg, started)
+    return leg, sz
 
 
 async def _degrade(db: KernelDB, q: Query, t: Tuning, plan: Plan, sz: Sizing, reason: str, *, narrow: bool, band: str) -> Leg:
@@ -427,6 +435,8 @@ async def _degrade(db: KernelDB, q: Query, t: Tuning, plan: Plan, sz: Sizing, re
     try:
         rows = await db.run(lambda tx: _bounded(tx, q, t, narrow=narrow), timeout_ms=t.degraded_timeout_ms, custom_plan=True)
         return Leg(rows, plan, reason)
+    except ConnectionLost:
+        raise
     except DbError:
         telemetry.DEGRADED.inc("overload", plan.tier.value, band)
         telemetry.EMPTY_LEG.inc(plan.tier.value)

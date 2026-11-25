@@ -15,6 +15,7 @@ import { useRevealScope, useSecretRevealAvailable } from '@/lib/hooks/use-secret
 import { useBotsStore } from '../store';
 import { BotsApi } from '../api';
 import type { BotType, BotTypeInfo, SlackBotConfig } from '../types';
+import { SecretTextField } from '@/app/components/ui/secret-text-field';
 
 const DEFAULT_ASSISTANT_ID = '__default_assistant__';
 
@@ -390,9 +391,9 @@ function SlackBotFormView({ editingConfig, agents, agentsComplete, onClose, onSa
         ) : null}
 
         <FormField label={t('workspace.bots.form.botToken')}>
-          <TextField.Root
+          <SecretTextField
             size="2"
-            type={showBotToken ? 'text' : 'password'}
+            masked={!showBotToken}
             placeholder="xoxb-..."
             value={botToken}
             onChange={(e) => setBotToken(e.target.value)}
@@ -412,13 +413,13 @@ function SlackBotFormView({ editingConfig, agents, agentsComplete, onClose, onSa
                 />
               </IconButton>
             </TextField.Slot>
-          </TextField.Root>
+          </SecretTextField>
         </FormField>
 
         <FormField label={t('workspace.bots.form.signingSecret')}>
-          <TextField.Root
+          <SecretTextField
             size="2"
-            type={showSigningSecret ? 'text' : 'password'}
+            masked={!showSigningSecret}
             placeholder={t('workspace.bots.form.signingSecretPlaceholder')}
             value={signingSecret}
             onChange={(e) => setSigningSecret(e.target.value)}
@@ -438,7 +439,7 @@ function SlackBotFormView({ editingConfig, agents, agentsComplete, onClose, onSa
                 />
               </IconButton>
             </TextField.Slot>
-          </TextField.Root>
+          </SecretTextField>
         </FormField>
 
         <FormField label={t('workspace.bots.form.agent')}>

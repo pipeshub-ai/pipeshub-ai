@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+from collections.abc import Collection
 from logging import Logger
 from typing import Any, AsyncContextManager, Optional
 
@@ -351,6 +352,10 @@ class BaseDataStore(ABC):
         (no USER_APP_RELATION edge), checked in the same statement. Returns how many were deleted."""
         raise NotImplementedError
 
+    async def get_user_granted_records(self, connector_id: str, user_id: str) -> list[dict[str, Any]]:
+        """The connector's records the user holds a direct USER grant on (``id``, ``externalRecordId``, ``recordType``)."""
+        raise NotImplementedError
+
     @abstractmethod
     async def delete_user_group_by_id(self, group_id: str) -> None:
         pass
@@ -501,6 +506,7 @@ class BaseDataStore(ABC):
     @abstractmethod
     async def replace_record_entity_relations(
         self, record_id: str, to_collections: list[str], origin: str, edges: list[dict],
+        *, keep_edge_types: Collection[str] = (),
     ) -> None:
         """Replace the record's ``entityRelations`` edges of ``origin`` to
         ``to_collections`` with ``edges``, atomically; see
@@ -571,6 +577,10 @@ class TransactionStore(BaseDataStore):
 
     def is_transient_error(self, error: BaseException) -> bool:
         """Whether *error* rolled this transaction back cleanly so it can be run again."""
+        return False
+
+    async def publish_with_commit(self, producer: Any, topic: str, messages: list[tuple[str | None, dict]]) -> bool:  # noqa: ANN401
+        """Publish *messages* inside this transaction; False when the store cannot, and the caller publishes after the commit."""
         return False
 
     @abstractmethod

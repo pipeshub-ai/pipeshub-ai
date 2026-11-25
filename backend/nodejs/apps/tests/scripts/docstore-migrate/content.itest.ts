@@ -15,7 +15,7 @@ import { REPOSITORIES } from '../../../src/libs/repositories/all';
 import type { Importable } from '../../../src/libs/repositories/import';
 import { SourceReport, prepareSource, toNeutral } from '../../../src/scripts/docstore-migrate/source';
 import { decodeDoc } from '../../../src/scripts/docstore-migrate/decode';
-import { readDecoded } from '../../../src/scripts/docstore-migrate/pg-read';
+import { countByOrg, readDecoded } from '../../../src/scripts/docstore-migrate/pg-read';
 import { compareDocs } from '../../../src/scripts/docstore-migrate/compare';
 import { copyAgainInserts, copyAndCompare, jobsUnit, oid } from './roundtrip';
 import { ORG_A, ORG_B, SESSION_1, SESSION_2, USER_1, contentDocs, ids } from './fixtures/content';
@@ -24,10 +24,10 @@ const suite = haveStack ? describe : describe.skip;
 const sha = (s: string): string => createHash('sha256').update(s).digest('hex');
 
 describe('docstore-migrate: content mappings (no database)', () => {
-  it('lists every collection of the group once and ignores one with a reason', () => {
+  it('lists every collection of the group once and gives each ignored one a reason', () => {
     const names = CONTENT_MAPPINGS.map((m) => m.collection);
     expect(new Set(names).size).to.equal(names.length);
-    expect(CONTENT_IGNORED.map((i) => i.collection).sort()).to.deep.equal(['crawlingManagerConfigs']);
+    expect(CONTENT_IGNORED.map((i) => i.collection).sort()).to.deep.equal(['agentCallEvents', 'crawlingManagerConfigs']);
     for (const i of CONTENT_IGNORED) expect(i.reason.length).to.be.greaterThan(20);
   });
   it('mapping files import no repository code', () => {
@@ -183,6 +183,22 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
       expect(rows[2].last_error).to.equal('broker down');
     });
 
+    it('outbox: the verifier counts only the rows a copy holds, not the delivered rows the dispatcher keeps for a week', async () => {
+      const m = CONTENT_MAPPINGS.find((x) => x.collection === 'outbox_events')!;
+      const before = await jobsUnit((_tx, k) => countByOrg(k, m));
+      await stack.admin((c) => c.query(
+        "INSERT INTO platform.outbox (org_id, topic, msg_key, value, status, next_attempt_at, published_at, created_at, updated_at) VALUES ($1, 'entity-events', 'k', '{}', 'published', now(), now(), now(), now())",
+        [String(ORG_A)],
+      ));
+      try {
+        // published events are skipped on the MongoDB side (history, not copied); counting them here failed every verify after the
+        // application had delivered an event from PostgreSQL, which is what `rollback --online` runs
+        expect(await jobsUnit((_tx, k) => countByOrg(k, m))).to.deep.equal(before);
+      } finally {
+        await stack.admin((c) => c.query("DELETE FROM platform.outbox WHERE status = 'published'"));
+      }
+    });
+
     it('authorization codes are stored hashed and the plain code is nowhere', async () => {
       const rows = (await stack.admin((c) => c.query('SELECT code_hash FROM oauth.authorization_codes ORDER BY created_at'))).rows;
       expect(rows.map((r: { code_hash: string }) => r.code_hash).sort()).to.deep.equal([sha('plain-code-1'), sha('plain-code-2')].sort());
@@ -200,6 +216,18 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
       const by = new Map(r.map((x) => [x.type, x]));
       expect(by.get('scheduled')?.visible_at?.toISOString()).to.equal('2026-10-02T10:00:00.000Z');
       expect(by.get('sync')?.visible_at).to.equal(null);
+    });
+
+    it('a notification changed in MongoDB is written in place by the follower (a partitioned table: no system column in the upsert)', async () => {
+      const m = CONTENT_MAPPINGS.find((x) => x.collection === 'notifications')!;
+      const repo = REPOSITORIES[m.repository]!() as Importable;
+      const neutral = docs.notifications!.map((d) => toNeutral(d, new SourceReport(), m.collection));
+      const before = await count('platform.notifications');
+      const changed = neutral.map((d, i) => (i === 0 ? { ...d, status: 'read' } : d));
+      const st = await jobsUnit((tx) => withUpsert(['platform.notifications'], () => repo.importBatch(m.collection, changed, tx)));
+      expect(st.inserted['platform.notifications'] ?? 0, 'every row was there: none counts as inserted').to.equal(0);
+      expect(await count('platform.notifications')).to.equal(before);
+      expect(await count('platform.notifications', `id = '${String(neutral[0]!._id)}' AND status = 'read'`)).to.equal(1);
     });
 
     it('connector_id follows the customMetadata entry', async () => {

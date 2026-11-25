@@ -23,3 +23,13 @@ def unit_test_fixtures() -> dict[str, object]:
     needs extra per-test setup or clean-up returns its fixtures here. Here there are none.
     """
     return {}
+
+
+# The share of the code sandbox slots one org may hold (app.edition.sandbox_org_share).
+SANDBOX_ORG_SHARE: float | None = None
+
+
+def parser_identity_writers_extra() -> dict[tuple[str, str], str]:
+    """Writers of ``hasIndexedCopy`` this build adds, ``(file under app/, function) -> why it writes no parser
+    identity``, for ``tests/unit/modules/indexing/test_parser_identity_writers.py``. Here there are none."""
+    return {}

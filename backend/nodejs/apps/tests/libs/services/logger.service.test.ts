@@ -339,6 +339,21 @@ describe('Logger', () => {
       expect(result.error.stack).to.be.a('string');
     });
 
+    it('logs binary data by its size, never its bytes', () => {
+      const logger = new Logger({ service: 'test' });
+      const sanitize = (logger as any).sanitizeForLogging.bind(logger);
+
+      const result = sanitize({
+        file: Buffer.from('document body'),
+        nested: { bytes: new Uint8Array(4), raw: new ArrayBuffer(8) },
+      });
+
+      expect(result.file).to.equal('[binary 13 bytes]');
+      expect(result.nested.bytes).to.equal('[binary 4 bytes]');
+      expect(result.nested.raw).to.equal('[binary 8 bytes]');
+      expect(JSON.stringify(result)).to.not.include('document body');
+    });
+
     it('should redact secrets carried in an error message and stack', () => {
       const logger = new Logger({ service: 'test' });
       const sanitize = (logger as any).sanitizeForLogging.bind(logger);

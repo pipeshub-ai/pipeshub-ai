@@ -85,7 +85,7 @@ class TestGetEntityAccessContext:
             f"INHERIT_PERMISSIONS*1..{CONTAINER_INHERIT_MAX_DEPTH}",
             # Records inherit too; the walk must not expand through them.
             # Whole path, not a slice: only this form prunes the expand.
-            "all(n IN nodes(p) WHERE n:RecordGroup)",
+            "all(n IN nodes(p) WHERE n:RecordGroup AND n.connectorId = seed.connectorId)",
             "{type: 'TEAM'}",
             "{type: 'ORG'}",
             "USER_APP_RELATION",

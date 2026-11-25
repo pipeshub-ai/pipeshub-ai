@@ -21,6 +21,9 @@ import { scopedStorageServiceJwtGenerator } from '../../../../src/libs/utils/cre
 import { DefaultStorageConfig } from '../../../../src/modules/tokens_manager/services/cm.service'
 import { FakeBackend } from '../../tokens_manager/routes/connectors-http-harness'
 import { FakeKeyValueStore } from '../../knowledge_base/routes/kb-http-harness'
+import { registerUpstreams } from '../../../../src/libs/http/upstream-call'
+import LocalStorageAdapter from '../../../../src/modules/storage/providers/local-storage.provider'
+import { captureLogRecords, type LogRecord } from '../../../helpers/log-capture'
 
 const JWT_SECRET = 'artifact-http-test-jwt-secret'
 const SCOPED_JWT_SECRET = 'artifact-http-test-scoped-secret'
@@ -175,12 +178,14 @@ describe('Artifact sets over HTTP: the local disk path', () => {
     baseUrl = `${origin}/api/v1/document`
     // The URLs presign hands out must reach this server.
     kv.values.set(ENDPOINTS_KEY, JSON.stringify({ cm: { endpoint: backend.url }, storage: { endpoint: origin } }))
+    registerUpstreams({ nodejs: [backend.url, origin] })
     kv.changed(storageEtcdPaths)
   })
 
   afterEach(async () => {
     kv.changed(storageEtcdPaths)
     sinon.restore()
+    registerUpstreams({})
     await new Promise<void>((resolve) => server.close(() => resolve()))
     await backend.stop()
     fs.rmSync(home, { recursive: true, force: true })
@@ -417,5 +422,42 @@ describe('Artifact sets over HTTP: the local disk path', () => {
 
     expect(res.status).to.equal(400)
     expect(filesOnDisk()).to.have.length(0)
+  })
+
+  describe('storage that refuses', () => {
+    const diskFull = () => Object.assign(new Error('ENOSPC: no space left on device, write n5d-vendor-text'), { code: 'ENOSPC' })
+    /** The failure is the error middleware's one line, whose cause is the OS code; nothing else at WARN or ERROR. */
+    const expectOneLine = (records: LogRecord[]) => {
+      const failure = records.filter((r) => r.message === 'http.request.error')
+      expect(failure.map((r) => r.status)).to.deep.equal([503])
+      expect((failure[0]!.metadata.error as { cause?: unknown }).cause).to.deep.equal({ code: 'ENOSPC' })
+      expect(records.filter((r) => ['error', 'warning'].includes(String(r.level)) && r.message !== 'http.request.error')).to.deep.equal([])
+      expect(JSON.stringify(records)).to.not.contain('n5d-vendor-text')
+    }
+
+    it('a file it cannot write is a 503 whose cause is the OS code, with no line of its own', async () => {
+      const p = await presign([{ path: 'manifest.json', contentType: 'application/json' }])
+      const f = p.body.files[0]
+      sinon.stub(LocalStorageAdapter.prototype, 'writeObject').rejects(diskFull())
+      const records = captureLogRecords()
+
+      const put = await fetch(f.url, { method: 'PUT', headers: f.headers, body: Buffer.from('{}') })
+
+      expect(put.status).to.equal(503)
+      expectOneLine(records)
+    })
+
+    it('a revision it cannot remove is a 503 whose cause is the OS code, and the document is kept', async () => {
+      const p = await presign([{ path: 'manifest.json', contentType: 'application/json' }])
+      await fetch(p.body.files[0].url, { method: 'PUT', headers: p.body.files[0].headers, body: Buffer.from('{}') })
+      sinon.stub(LocalStorageAdapter.prototype, 'deleteTree').rejects(diskFull())
+      const records = captureLogRecords()
+
+      const r = await call('DELETE', `/internal/artifacts/${p.body.documentId as string}`)
+
+      expect(r.status).to.equal(503)
+      expectOneLine(records)
+      expect(rows).to.have.length(1)
+    })
   })
 })

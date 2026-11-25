@@ -35,6 +35,8 @@ class config_node_constants(Enum):
     # Org-wide rules for which identity fields may be sent to a model gateway.
     # Written by the Node admin API; read-only from Python.
     AI_GATEWAY_IDENTITY_POLICY = "/services/aiGateway/identityPolicy"
+    # Cooldown claims of the code sandbox load alerts, one key per scope and level.
+    SANDBOX_ALERTS = "/services/sandbox/alerts"
 
 
     # Non-service paths
@@ -168,8 +170,10 @@ class Routes(Enum):
     STORAGE_PAID_RESULTS_PRESIGN = "/api/v1/document/internal/paid-results/presign"
     STORAGE_PAID_RESULTS_ORG = "/api/v1/document/internal/paid-results/org"
     STORAGE_PAID_RESULTS_RECORD = "/api/v1/document/internal/paid-results/{recordId}"
+    STORAGE_PAID_RESULTS_PURGE_BATCH = "/api/v1/document/internal/paid-results/purge-batch"
     STORAGE_PAID_RESULTS_PURGE_CUTOFF = "/api/v1/document/internal/paid-results/{recordId}/purge-cutoff"
     STORAGE_PAID_RESULTS_DELETE = "/api/v1/document/internal/paid-results/{recordId}/delete"
+    STORAGE_PAID_RESULTS_DELETE_IF_MATCH = "/api/v1/document/internal/paid-results/{recordId}/delete-if-match"
 
     # User-facing, permission-checked record bytes
     KB_STREAM_RECORD = "/api/v1/knowledgeBase/stream/record/{recordId}"

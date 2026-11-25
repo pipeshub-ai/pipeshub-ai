@@ -1,0 +1,21 @@
+"""graph: a record that is not COMPLETED holds every revision of its virtual record (the unheld-revisions read of the stage sweep)"""
+from alembic import op
+from db.lib.vetted import run_vetted
+
+revision = "graph_0016"
+down_revision = "graph_0015"
+branch_labels = None
+depends_on = None
+older_code_compatible = "replaces the body of one function with one that answers alike or with fewer rows; older code calls it with the same arguments"
+
+FUNCTIONS = {"stage_states_unheld": "text[]"}
+
+
+def upgrade():
+    op.execute("DROP FUNCTION IF EXISTS graph.stage_states_unheld(text[])")
+    op.execute("DELETE FROM kernel.function_registry WHERE proc::oid NOT IN (SELECT oid FROM pg_proc)")
+    run_vetted(__file__, *FUNCTIONS)
+
+
+def downgrade():
+    pass      # the earlier body answers with more rows; graph_0010 owns the function and drops it on its own downgrade

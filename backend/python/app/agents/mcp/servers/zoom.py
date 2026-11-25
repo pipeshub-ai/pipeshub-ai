@@ -6,7 +6,13 @@ Zoom rejects ``localhost`` redirects; the admin registers the public frontend
 callback shown on the form (HTTPS). A General App is required — no DCR or CIMD.
 """
 from app.agents.mcp.mcp_server_decorator import mcp_server
-from app.agents.mcp.models import AuthHint, MCPAuthMode, MCPServerTemplate, MCPTransport
+from app.agents.mcp.models import (
+    AuthHint,
+    MCPAuthMode,
+    MCPCategory,
+    MCPServerTemplate,
+    MCPTransport,
+)
 
 
 @mcp_server(
@@ -53,6 +59,12 @@ from app.agents.mcp.models import AuthHint, MCPAuthMode, MCPServerTemplate, MCPT
             ),
         ),
         tags=["meetings", "collaboration"],
+        category=MCPCategory.MEETINGS,
+        capabilities=[
+            "Search past meetings",
+            "Find meeting recordings",
+            "Get a meeting's summary or transcript",
+        ],
     )
 )
 class ZoomMCPServer:

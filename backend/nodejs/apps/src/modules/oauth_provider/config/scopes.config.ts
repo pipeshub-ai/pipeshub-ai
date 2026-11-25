@@ -371,6 +371,9 @@ export const DefaultMcpScopes = [
   'kb:upload',
   'team:read',
   'user:read',
+  // No /mcp tool needs it, so discovery leaves it out (McpToolScopes). It
+  // stays in the cap so a client registered with it, and the tokens it holds,
+  // keep working.
   'usergroup:read',
   'config:read',
   'agent:read',
@@ -438,7 +441,6 @@ export const McpToolScopes = [
   'config:read',
   'user:read',
   'team:read',
-  'usergroup:read',
   'code:read',
 ] as const;
 

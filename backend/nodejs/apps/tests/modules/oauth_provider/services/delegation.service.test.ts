@@ -10,11 +10,15 @@ import {
 import { Users } from '../../../../src/modules/user_management/schema/users.schema';
 import { ServiceAccountDelegation } from '../../../../src/modules/oauth_provider/schema/service-account-delegation.schema';
 import { DelegationEvent } from '../../../../src/modules/oauth_provider/schema/delegation-event.schema';
+import { createSnakeCaseLogKeyGuard } from '../../../helpers/mock-logger';
 
 const orgId = new mongoose.Types.ObjectId().toString();
 const adminId = new mongoose.Types.ObjectId().toString();
 const accountId = new mongoose.Types.ObjectId().toString();
 const subjectId = new mongoose.Types.ObjectId().toString();
+
+// Every logger a test builds, for the snake_case check after it.
+const madeLoggers: Record<'info' | 'debug' | 'warn' | 'error', sinon.SinonStub>[] = [];
 
 function makeService() {
   const logger = {
@@ -23,6 +27,7 @@ function makeService() {
     warn: sinon.stub(),
     error: sinon.stub(),
   };
+  madeLoggers.push(logger);
   return { service: new DelegationService(logger as any), logger };
 }
 
@@ -43,7 +48,12 @@ function stubUsers(...docs: (Record<string, unknown> | null)[]) {
 const SERVICE_ACCOUNT = { email: 'svc-x@service.pipeshub.internal' };
 
 describe('DelegationService', () => {
-  afterEach(() => sinon.restore());
+  const snakeCaseKeys = createSnakeCaseLogKeyGuard();
+  after(() => snakeCaseKeys.report());
+  afterEach(function () {
+    snakeCaseKeys.check(this, ...madeLoggers.splice(0));
+    sinon.restore();
+  });
 
   describe('resolveSubject', () => {
     it('refuses an administrator, which is the rule the whole feature rests on', async () => {
@@ -286,7 +296,7 @@ describe('DelegationService', () => {
         createdAt: new Date(),
       } as any);
       const created = sinon.stub(DelegationEvent, 'create').resolves({} as any);
-      const { service } = makeService();
+      const { service, logger } = makeService();
 
       await service.grant(
         orgId,
@@ -295,6 +305,11 @@ describe('DelegationService', () => {
         'person@example.com',
         'nightly digest',
       );
+
+      expect(logger.info.args).to.deep.include([
+        'Delegation granted',
+        { org_id: orgId, service_account_id: accountId, subject_user_id: subjectId, granted_by: adminId },
+      ]);
 
       const record = created.firstCall.args[0] as Record<string, unknown>;
       expect(record.outcome).to.equal('granted');
@@ -308,9 +323,14 @@ describe('DelegationService', () => {
         exec: async () => ({ _id: new mongoose.Types.ObjectId() }),
       } as any);
       const created = sinon.stub(DelegationEvent, 'create').resolves({} as any);
-      const { service } = makeService();
+      const { service, logger } = makeService();
 
       await service.revoke(orgId, adminId, accountId, subjectId);
+
+      expect(logger.info.args).to.deep.include([
+        'Delegation revoked',
+        { org_id: orgId, service_account_id: accountId, subject_user_id: subjectId, revoked_by: adminId },
+      ]);
 
       const record = created.firstCall.args[0] as Record<string, unknown>;
       expect(record.outcome).to.equal('revoked');
@@ -353,6 +373,37 @@ describe('DelegationService', () => {
 
       expect(entry.inactive).to.equal(true);
       expect(entry.inactiveReason).to.contain('administrator');
+    });
+  });
+
+  describe('revokeAllForServiceAccount', () => {
+    function stubDeleted(deletedCount: number) {
+      return sinon.stub(ServiceAccountDelegation, 'deleteMany').returns({
+        exec: async () => ({ deletedCount }),
+      } as any);
+    }
+
+    it('logs how many delegations it removed, with snake_case ids', async () => {
+      stubDeleted(2);
+      const { service, logger } = makeService();
+
+      await service.revokeAllForServiceAccount(orgId, accountId);
+
+      expect(logger.info.args).to.deep.equal([
+        [
+          'Removed every delegation held by a service account',
+          { org_id: orgId, service_account_id: accountId, removed: 2 },
+        ],
+      ]);
+    });
+
+    it('logs nothing when there was nothing to remove', async () => {
+      stubDeleted(0);
+      const { service, logger } = makeService();
+
+      await service.revokeAllForServiceAccount(orgId, accountId);
+
+      expect(logger.info.called).to.equal(false);
     });
   });
 

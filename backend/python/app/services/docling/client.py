@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any, Optional
 from app.exceptions.indexing_exceptions import DocumentProcessingError, IndexingError
 from app.models.blocks import BlocksContainer
 from app.services.base_client import (
+    TRANSIENT_STATUS_CODES,
     BaseServiceClient,
     ServiceAuthRefusedError,
     ServiceBackpressureError,
@@ -15,6 +16,7 @@ from app.services.base_client import (
     ServiceUnavailableError,
 )
 from app.services.messaging.backpressure import get_default_backpressure_coordinator
+from app.services.messaging.consumer_concurrency import RequeueWithoutAttempt
 from app.utils.env_config import env_int
 from app.utils.error_class import classify_error, mark_error
 
@@ -35,7 +37,8 @@ PARSE_DEADLINE_HEADER = "X-Parse-Deadline-Ms"
 
 
 class DoclingUnavailableError(IndexingError):
-    """Docling could not be asked: it is down, refused this service, or is shedding load.
+    """Docling was not serving: it is down, refused this service, is shedding load,
+    or failed outside the conversion (a 5xx, a connection dropped mid-answer).
 
     An ``IndexingError`` so that the record is retried later. Read as a failed
     parse, it sent every PDF to the per-page OCR fallback while Docling was down.
@@ -46,6 +49,27 @@ class DoclingUnavailableError(IndexingError):
     def __init__(self, message: str, *, status_code: int | None = None) -> None:
         super().__init__(message)
         self.status_code = status_code
+
+
+class DoclingNotServing(DoclingUnavailableError, RequeueWithoutAttempt):
+    """Docling never received the file (a refused or timed-out connection, an open circuit, load shed before any work).
+
+    The record waits for Docling: the consumer hands it back every ``HANDBACK_DELAY_S`` without counting an attempt,
+    until the delivery backstop gives up on it. A failure after the file reached Docling stays a counted
+    ``DoclingUnavailableError``, since the file may have caused it (a PDF that brings Docling down).
+    """
+
+    counts_toward_backstop = True
+    pauses_consumer = False  # one record's wait; records that do not need Docling keep flowing
+    give_up_label = "Docling stayed unavailable"
+    HANDBACK_DELAY_S = 60.0
+
+    def __init__(self, message: str, *, status_code: int | None = None) -> None:
+        super().__init__(message, status_code=status_code)
+        # Set after super(): through the MRO, IndexingError's init runs RequeueWithoutAttempt's, which resets both.
+        self.delay_s = self.HANDBACK_DELAY_S
+        # The outage is already reported by the client at WARNING; each waiting record's hand-back is routine.
+        self.log_level = logging.INFO
 
 
 class DoclingParseError(DocumentProcessingError):
@@ -59,10 +83,6 @@ class DoclingParseError(DocumentProcessingError):
         super().__init__(message)
         self.status_code = status_code
         self.reason = reason
-
-
-# A 500 is most often Docling failing on this file; these say it is not serving.
-_UNAVAILABLE_STATUSES = frozenset({502, 503, 504})
 
 
 def within_docling_size_limit(size_bytes: int) -> bool:
@@ -120,10 +140,18 @@ def _refusal(status: int, code: object) -> DoclingParseError:
 
 
 def _docling_unavailable(exc: ServiceCallError) -> bool:
+    """Docling answers a file it cannot parse with a 422 and its errorCode. A status the base client retried and gave
+    up on (a 5xx, a 429 without Retry-After) or a connection dropped mid-answer means it was not serving."""
     return (
         isinstance(exc, (ServiceUnavailableError, ServiceAuthRefusedError, ServiceBackpressureError))
-        or exc.status_code in _UNAVAILABLE_STATUSES
+        or exc.status_code in TRANSIENT_STATUS_CODES
+        or isinstance(exc.__cause__, (httpx.ReadError, httpx.RemoteProtocolError))
     )
+
+
+def _docling_never_saw_it(exc: ServiceCallError) -> bool:
+    """No attempt of the call reached Docling: it refused, timed out connecting, or shed the load from the first answer."""
+    return isinstance(exc, (ServiceUnavailableError, ServiceBackpressureError)) and not exc.delivered
 
 
 class DoclingClient(BaseServiceClient):
@@ -230,7 +258,8 @@ class DoclingClient(BaseServiceClient):
             Serialized parse result (JSON-encoded document).
 
         Raises:
-            DoclingUnavailableError: Docling could not be asked (down, refused this service, shedding load).
+            DoclingUnavailableError: Docling was not serving (down, refused this service, shedding load,
+                failed outside the conversion).
             DoclingParseError: Docling gave no document for this PDF.
         """
         self._validate_pdf_binary(pdf_binary)
@@ -243,15 +272,17 @@ class DoclingClient(BaseServiceClient):
         try:
             response = await self._call_parse_pdf(record_name, pdf_binary, form_data)
         except ServiceCallError as exc:
+            if _docling_never_saw_it(exc):
+                raise DoclingNotServing("Docling is not serving", status_code=exc.status_code) from exc
             if _docling_unavailable(exc):
                 raise DoclingUnavailableError(
-                    "Docling could not parse the document", status_code=exc.status_code,
+                    "Docling is not serving", status_code=exc.status_code,
                 ) from exc
             failed = DoclingParseError(
                 "Docling request failed" if exc.status_code is None else f"Docling failed with status {exc.status_code}",
                 status_code=exc.status_code,
             )
-            # The cause says why: a 500 is upstream_5xx, a connection lost mid-answer is unavailable.
+            # Only a client-side request error is left (a wrong URL scheme, a bad header): ours, not the file's.
             mark_error(failed, classify_error(exc))
             raise failed from exc
 

@@ -9,7 +9,9 @@ import { DefaultMcpScopes } from '../../../../src/modules/oauth_provider/config/
 import { InvalidScopeError } from '../../../../src/libs/errors/oauth.errors'
 import { NotFoundError } from '../../../../src/libs/errors/http.errors'
 import { Users } from '../../../../src/modules/user_management/schema/users.schema'
-import { createMockLogger } from '../../../helpers/mock-logger'
+import { createMockLogger, createSnakeCaseLogKeyGuard } from '../../../helpers/mock-logger'
+import { Logger } from '../../../../src/libs/services/logger.service'
+import { captureLogRecords, inRequestContext, newRequestId, recordsOf } from '../../../helpers/log-capture'
 
 const SECONDS_PER_DAY = 86400
 
@@ -59,7 +61,11 @@ describe('PatService', () => {
     )
   })
 
-  afterEach(() => {
+  const snakeCaseKeys = createSnakeCaseLogKeyGuard()
+  after(() => snakeCaseKeys.report())
+
+  afterEach(function () {
+    snakeCaseKeys.check(this, mockLogger)
     sinon.restore()
   })
 
@@ -184,6 +190,16 @@ describe('PatService', () => {
       expect(result.name).to.equal('my token')
     })
 
+    it("logs one INFO with the scopes and the expiry, never the token's name", async () => {
+      sinon.stub(OAuthApp, 'findOne').resolves(existingApp)
+
+      await service.createToken(orgId, userId, 'Test User', { name: 'n5a7-pat-label', expiryDays: 7 })
+
+      expect(mockLogger.info.args).to.deep.equal([
+        ['Personal access token created', { org_id: orgId, user_id: userId, scopes: DefaultMcpScopes, expiry_days: 7 }],
+      ])
+    })
+
     it('prefixes the returned access token with phpat_', async () => {
       sinon.stub(OAuthApp, 'findOne').resolves(existingApp)
 
@@ -298,7 +314,9 @@ describe('PatService', () => {
         userId,
         'no longer needed',
       ])
-      expect(mockLogger.info.called).to.be.true
+      expect(mockLogger.info.args).to.deep.equal([
+        ['Personal access token revoked', { org_id: orgId, user_id: userId, pat_id: 'tok-1' }],
+      ])
     })
   })
 
@@ -480,7 +498,9 @@ describe('PatService', () => {
         userId,
         'departed employee',
       ])
-      expect(mockLogger.info.called).to.be.true
+      expect(mockLogger.info.args).to.deep.equal([
+        ['Personal access token revoked by admin', { org_id: orgId, user_id: userId, pat_id: 'tok-1' }],
+      ])
     })
   })
 
@@ -495,6 +515,114 @@ describe('PatService', () => {
 
       expect(mockOAuthTokenService.generateTokens.firstCall.args[7]).to.deep.include({ knowledgeLimit })
       expect(created.knowledgeLimit).to.deep.equal(knowledgeLimit)
+    })
+  })
+
+  describe('updateKnowledgeLimit', () => {
+    const tokenId = new Types.ObjectId().toString()
+    const stored = {
+      id: tokenId,
+      tokenType: 'access',
+      userId,
+      scopes: ['kb:read'],
+      createdAt: new Date('2026-01-01'),
+      expiresAt: new Date('2026-02-01'),
+      isRevoked: false,
+      name: 'ci',
+      lastUsedAt: undefined,
+    }
+
+    it('throws NotFoundError when the org has no PAT app yet', async () => {
+      sinon.stub(OAuthApp, 'findOne').resolves(null)
+      mockOAuthTokenService.setAccessTokenKnowledgeLimit = sinon.stub()
+
+      let caught: unknown
+      try {
+        await service.updateKnowledgeLimit(orgId, userId, tokenId, null)
+      } catch (e) {
+        caught = e
+      }
+      expect(caught).to.be.instanceOf(NotFoundError)
+      expect(mockOAuthTokenService.setAccessTokenKnowledgeLimit.called).to.be.false
+    })
+
+    it('throws NotFoundError when the caller has no such live token', async () => {
+      sinon.stub(OAuthApp, 'findOne').resolves({ clientId: patClientId } as any)
+      mockOAuthTokenService.setAccessTokenKnowledgeLimit = sinon.stub().resolves(null)
+
+      let caught: unknown
+      try {
+        await service.updateKnowledgeLimit(orgId, userId, tokenId, null)
+      } catch (e) {
+        caught = e
+      }
+      expect(caught).to.be.instanceOf(NotFoundError)
+    })
+
+    it("changes only the caller's own token under the org's PAT client and returns it", async () => {
+      sinon.stub(OAuthApp, 'findOne').resolves({ clientId: patClientId } as any)
+      const knowledgeLimit = { apps: [], recordGroups: ['rg-1'], records: [] }
+      mockOAuthTokenService.setAccessTokenKnowledgeLimit = sinon
+        .stub()
+        .resolves({ ...stored, knowledgeLimit })
+
+      const updated = await service.updateKnowledgeLimit(orgId, userId, tokenId, knowledgeLimit)
+
+      expect(mockOAuthTokenService.setAccessTokenKnowledgeLimit.firstCall.args).to.deep.equal([
+        tokenId,
+        patClientId,
+        userId,
+        knowledgeLimit,
+      ])
+      expect(updated).to.deep.equal({
+        id: tokenId,
+        name: 'ci',
+        scopes: ['kb:read'],
+        createdAt: stored.createdAt,
+        expiresAt: stored.expiresAt,
+        lastUsedAt: undefined,
+        knowledgeLimit,
+      })
+      expect(mockLogger.info.args).to.deep.equal([
+        [
+          'Personal access token knowledge limit changed',
+          { org_id: orgId, user_id: userId, pat_id: tokenId, limited: true, item_count: 1 },
+        ],
+      ])
+    })
+
+    it('removes the limit when given null, so the token sees everything its owner can', async () => {
+      sinon.stub(OAuthApp, 'findOne').resolves({ clientId: patClientId } as any)
+      mockOAuthTokenService.setAccessTokenKnowledgeLimit = sinon.stub().resolves({ ...stored })
+
+      const updated = await service.updateKnowledgeLimit(orgId, userId, tokenId, null)
+
+      expect(mockOAuthTokenService.setAccessTokenKnowledgeLimit.firstCall.args[3]).to.equal(null)
+      expect(updated.knowledgeLimit).to.equal(undefined)
+    })
+  })
+
+  describe('the log record (real Logger)', () => {
+    it('shows which token was revoked; a key with "token" in it was masked', async () => {
+      const records = captureLogRecords()
+      const logged = new PatService(
+        Logger.getInstance({ service: 'PatService' }),
+        mockEncryptionService,
+        mockConfigService,
+        mockOAuthTokenService,
+        scopeValidatorService,
+      )
+      sinon.stub(OAuthApp, 'findOne').resolves({ clientId: patClientId } as any)
+      const tokenId = new Types.ObjectId().toString()
+      const id = newRequestId('pat')
+
+      await inRequestContext(id, () => logged.revokeToken(orgId, userId, tokenId))
+
+      const [line, ...others] = recordsOf(records, id)
+      expect(line?.message).to.equal('Personal access token revoked')
+      expect(others).to.deep.equal([])
+      expect(line?.metadata.pat_id).to.equal(tokenId)
+      expect(JSON.stringify(line)).to.not.include('[REDACTED]')
     })
   })
 })

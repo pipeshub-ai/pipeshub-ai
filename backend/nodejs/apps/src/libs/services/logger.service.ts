@@ -126,6 +126,9 @@ const EVENT_FIELD_KEYS = [
   'actor',
   'target',
   'group_id',
+  'team_id',
+  'key_id',
+  'scopes',
   'reason',
   'auth_method',
   'code',
@@ -171,6 +174,9 @@ const NETWORK_CODE = /^[A-Z][A-Z0-9_]{1,63}$/;
 /** An SSE frame type (`RUN_FINISHED`). */
 const FRAME_TYPE = /^[A-Z][A-Z_]{0,31}$/;
 const SHOWN_ID = /^[A-Za-z0-9._:-]{1,128}$/;
+/** An id as a log line may show it: never an email, a name, a path or free text. */
+export const isShownId = (value: unknown): value is string =>
+  typeof value === 'string' && SHOWN_ID.test(value);
 /** A dotted lowercase event name (`http.request.end`). */
 export const EVENT_NAME = /^[a-z][a-z0-9_]*(\.[a-z0-9_]+)+$/;
 /** The ids PipesHub issues: Mongo ObjectId, UUID, or a `sys-`/`anon-` root. */
@@ -179,6 +185,16 @@ const PIPESHUB_ID =
 
 export const isPipesHubId = (value: unknown): value is string =>
   typeof value === 'string' && PIPESHUB_ID.test(value);
+
+/** A team id: a PipesHub id, or the org's default All team (`all_<org id>`). */
+export const isTeamId = (value: unknown): value is string =>
+  isPipesHubId(value) ||
+  (typeof value === 'string' &&
+    value.startsWith('all_') &&
+    isPipesHubId(value.slice('all_'.length)));
+
+/** Comma-joined OAuth scope names (`kb:read,semantic:write`). */
+export const SCOPE_LIST = /^[a-z_]+(?::[a-z_]+)*(?:,[a-z_]+(?::[a-z_]+)*)*$/;
 
 const isText = (v: unknown): boolean => typeof v === 'string';
 const isIdValue = (v: unknown): boolean =>
@@ -209,9 +225,13 @@ const FIELD_TYPES: Readonly<Record<string, (value: unknown) => boolean>> = {
   network_code: matches(NETWORK_CODE),
   outcome: (v) => typeof v === 'string' && OUTCOMES.has(v),
   // An id as shown (raw, or a provider's hash); never an email or a name.
-  actor: matches(SHOWN_ID),
-  target: matches(SHOWN_ID),
+  actor: isShownId,
+  target: isShownId,
   group_id: isPipesHubId,
+  team_id: isTeamId,
+  // A service-account key's record id, never the key.
+  key_id: isPipesHubId,
+  scopes: matches(SCOPE_LIST),
   reason: matches(SNAKE_TOKEN),
   auth_method: matches(TYPE_NAME),
   // A chat stream's (`chat_stream.end`): the AI service's error code, and what it sent.
@@ -537,6 +557,10 @@ export class Logger {
     seen = new WeakSet(),
     withStack = true,
   ): any {
+    // Here, not only in the JSON console format: the text format and the log files print strings as they are.
+    if (typeof obj === 'string') {
+      return redactSecretsInText(obj);
+    }
     // Handle non-object types
     if (obj === null || typeof obj !== 'object') {
       return obj;
@@ -555,6 +579,10 @@ export class Logger {
 
     if (obj instanceof Error) {
       return this.serializeError(obj, seen, withStack);
+    }
+    // A Buffer's toJSON lists every byte, so one file in the metadata would log its whole content.
+    if (ArrayBuffer.isView(obj) || obj instanceof ArrayBuffer) {
+      return `[binary ${String(obj.byteLength)} bytes]`;
     }
     // Dates and Mongo ids have no own keys worth walking; JSON shows them through toJSON.
     const { toJSON } = obj as { toJSON?: unknown };
@@ -662,6 +690,21 @@ export class Logger {
     }
   }
 
+  /** Every console line to stderr, for a command whose stdout is its result (docstore-migrate prints a JSON report there). */
+  static consoleToStderr(): void {
+    const root = Logger.getInstance().logger;
+    for (const t of root.transports.filter(
+      (x) => x instanceof winston.transports.Console,
+    ))
+      root.remove(t);
+    root.add(
+      new winston.transports.Console({
+        format: consoleFormat(),
+        stderrLevels: Object.keys(customLevels.levels),
+      }),
+    );
+  }
+
   /** Adds to this logger's own metadata only; its service is fixed by the name it was created with. */
   updateDefaultMeta(metadata: Record<string, any>): void {
     this.defaultMeta = {
@@ -722,7 +765,8 @@ export class Logger {
     const { fields, rest } = splitFields(meta as unknown);
     this.logger.log({
       level,
-      message,
+      message:
+        typeof message === 'string' ? redactSecretsInText(message) : message,
       metadata:
         rest === undefined
           ? undefined

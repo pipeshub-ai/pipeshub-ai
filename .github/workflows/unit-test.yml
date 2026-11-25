@@ -17,6 +17,8 @@ on:
       - 'backend/python/pyproject.toml'
       - 'backend/python/pytest.ini'
       - 'backend/python/.coveragerc'
+      # The sandbox-live job builds the sandbox image from it.
+      - 'deployment/sandbox/**'
       # The knowledge-hub sort-field parity test reads it (pr_changes.py python_unit).
       - 'frontend/app/(main)/knowledge-base/sort-fields.json'
       - 'scripts/unit_shards.py'
@@ -70,6 +72,7 @@ jobs:
       node_unit: ${{ steps.changes.outputs.node_unit }}
       python_unit: ${{ steps.changes.outputs.python_unit }}
       redis_cluster: ${{ steps.changes.outputs.redis_cluster }}
+      sandbox_live: ${{ steps.changes.outputs.sandbox_live }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -180,9 +183,37 @@ jobs:
 
       # Real-file conversions run in the modules shard and must not skip there (checked below). The
       # same LibreOffice components as the application image: Writer (doc, odt, rtf), Calc (xls), Impress (ppt).
+      # The ~108 MB download once took 16-26 minutes from the runner's mirror (azure.archive.ubuntu.com, ~100 kB/s)
+      # and the job hit its 30-minute limit mid-pytest. apt only fails over between the image's mirrors
+      # (/etc/apt/apt-mirrors.txt) on an error, never on a slow transfer, so each download attempt is bounded and the
+      # second one goes to archive.ubuntu.com. Rewriting the mirror list keeps the package lists the image shipped:
+      # their names follow the source URI (mirror+file:...), not the mirror. Only the download is bounded; the
+      # install reads local files, so a timeout can never interrupt dpkg.
       - name: Install LibreOffice
         if: ${{ matrix.shard == 'modules' }}
-        run: sudo apt-get install -y --no-install-recommends libreoffice-writer-nogui libreoffice-calc-nogui libreoffice-impress-nogui
+        timeout-minutes: 10
+        env:
+          ATTEMPT_SECONDS: '240'
+        run: |
+          packages=(libreoffice-writer-nogui libreoffice-calc-nogui libreoffice-impress-nogui)
+          download() {
+            sudo timeout --kill-after=10 "$ATTEMPT_SECONDS" apt-get install -y --no-install-recommends --download-only \
+              -o Acquire::Retries=3 -o Acquire::http::Timeout=30 "${packages[@]}"
+          }
+          if ! download; then
+            echo "::warning::The LibreOffice download from the runner's apt mirror failed or took over ${ATTEMPT_SECONDS}s; retrying from archive.ubuntu.com"
+            if ! grep -rqs 'mirror+file:/etc/apt/apt-mirrors.txt' /etc/apt/sources.list /etc/apt/sources.list.d/; then
+              echo "::error::The runner's apt sources no longer use /etc/apt/apt-mirrors.txt, so there is no mirror to fall back to"
+              exit 1
+            fi
+            printf 'https://archive.ubuntu.com/ubuntu/\tpriority:1\nhttps://security.ubuntu.com/ubuntu/\tpriority:2\n' \
+              | sudo tee /etc/apt/apt-mirrors.txt >/dev/null
+            if ! download; then
+              echo "::error::The LibreOffice download failed or took over ${ATTEMPT_SECONDS}s from both the runner's apt mirror and archive.ubuntu.com"
+              exit 1
+            fi
+          fi
+          sudo apt-get install -y --no-install-recommends "${packages[@]}"
 
       - name: Install uv
         run: pip install uv
@@ -477,6 +508,73 @@ jobs:
             --ignore=tests/integration/skills/test_npm_import_live.py \
             --ignore=tests/integration/spend \
             -v --timeout=300 --session-timeout=900
+
+  # The `-m docker` tests (real containers from the sandbox image, the Docker
+  # proxy, out-of-memory kills, the in-container deadline, the reaper, cancel
+  # and Stop) skip everywhere else, because nothing else builds the image.
+  sandbox-live:
+    needs: changes
+    if: needs.changes.outputs.sandbox_live == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Docker daemon details
+        run: docker info --format 'cgroup v{{.CgroupVersion}} ({{.CgroupDriver}}), storage {{.Driver}}, {{.NCPU}} CPUs, {{.MemTotal}} bytes'
+
+      - name: Build the sandbox image
+        run: |
+          docker pull pipeshubai/pipeshub-sandbox:latest || true
+          docker build --cache-from pipeshubai/pipeshub-sandbox:latest \
+            -t pipeshubai/pipeshub-sandbox:local deployment/sandbox
+
+      # Where Docker's embedded DNS forwards from: host(...) entries from the
+      # host, bare addresses from the container, through the egress firewall.
+      - name: Container DNS forwarding
+        run: |
+          ps -o args= -C dockerd || true
+          sudo cat /etc/docker/daemon.json 2>/dev/null || echo "no daemon.json"
+          docker network create sandbox-dns-probe >/dev/null
+          docker run --rm --network sandbox-dns-probe pipeshubai/pipeshub-sandbox:local \
+            grep -E '^# (ExtServers|Overrides|Based on)' /etc/resolv.conf || true
+          docker network rm sandbox-dns-probe >/dev/null
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12'
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libmariadb-dev
+
+      - name: Install uv
+        run: pip install uv
+
+      - name: Install dependencies
+        run: |
+          cd backend/python
+          uv pip install --system pytest pytest-asyncio pytest-timeout
+          uv pip install --system -e ".[dev]"
+
+      - name: Run the live Docker tests
+        working-directory: backend/python
+        env:
+          SANDBOX_TEST_IMAGE: pipeshubai/pipeshub-sandbox:local
+        # The fixtures skip without a daemon or the image, and an all-skipped
+        # run passes, so check the same condition first and fail instead.
+        run: |
+          python -c 'import sys; from tests.unit.agent_loop_lib.sandbox.contract.conftest import docker_available; ok, why = docker_available(); sys.exit(0 if ok else f"live Docker tests would skip: {why}")'
+          pytest -m docker -rs \
+            tests/unit/agent_loop_lib/sandbox/test_docker_live.py \
+            tests/unit/sandbox/test_docker_proxy_live.py \
+            --timeout=600
 
   # The spend-safety suites (the fleet breaker's Lua, the pause budget, the wire contract of every model wrapper)
   # against a real Redis, the same tests the unit tier runs on fakeredis's Lua engine. They fail, never skip, when

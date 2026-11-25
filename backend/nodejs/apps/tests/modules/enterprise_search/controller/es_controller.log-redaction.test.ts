@@ -2,7 +2,9 @@ import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
 import { Logger } from '../../../../src/libs/services/logger.service'
-import { flows, startStream, finalAnswer, Flow, RUN } from './streaming-flows'
+import { flows, startStream, finalAnswer, Flow, RUN, appConfig } from './streaming-flows'
+import { registerUpstreams } from '../../../../src/libs/http/upstream-call'
+import { registerAppUpstreams } from '../../../../src/modules/tokens_manager/config/config'
 
 const SECRET_QUERY = 'merger terms for project nightjar'
 const EARLIER_QUERY = 'What changed in the release?'
@@ -19,6 +21,9 @@ const withSecretQuery = (flow: Flow): Flow => ({
 })
 
 describe('es_controller logs no prompt or history text', () => {
+  beforeEach(() => registerAppUpstreams(appConfig))
+  afterEach(() => registerUpstreams({}))
+
   let logged: string[]
 
   beforeEach(() => {

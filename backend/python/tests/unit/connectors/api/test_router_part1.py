@@ -539,6 +539,21 @@ class TestEncodeDecodeState:
         with pytest.raises(ValueError, match="Invalid state format"):
             _decode_state_with_instance(encoded)
 
+    @pytest.mark.parametrize("payload", [
+        ["s"], "s", None, 7, {"state": "s"}, {"connector_id": "c"}, {"state": 1, "connector_id": "c"},
+        {"state": "s", "connector_id": ["c"]},
+    ], ids=["list", "string", "null", "number", "no_connector_id", "no_state", "state_not_a_string",
+            "connector_id_not_a_string"])
+    def test_decode_wrong_shape_raises_valueerror(self, payload: object) -> None:
+        encoded = base64.urlsafe_b64encode(json.dumps(payload).encode()).decode()
+        with pytest.raises(ValueError, match="Invalid state format"):
+            _decode_state_with_instance(encoded)
+
+    def test_decode_keeps_the_other_keys_of_a_user_sign_in_state(self) -> None:
+        encoded = base64.urlsafe_b64encode(
+            json.dumps({"state": "s", "connector_id": "c", "userAccess": True}).encode()).decode()
+        assert _decode_state_with_instance(encoded) == {"state": "s", "connector_id": "c", "userAccess": True}
+
     def test_encode_special_characters(self):
         encoded = _encode_state_with_instance("state/with+special=chars", "conn-id")
         decoded = _decode_state_with_instance(encoded)
@@ -2245,7 +2260,7 @@ class TestReindexAccessBeforeLock:
     def _locked_connector_record_gp() -> AsyncMock:
         gp = AsyncMock()
 
-        async def get_document(key, collection) -> dict[str, str]:
+        async def get_document(key, collection, *_a, **_k) -> dict[str, str]:
             if collection == CollectionNames.RECORDS.value:
                 return {"origin": OriginTypes.CONNECTOR.value, "connectorId": "conn-1"}
             if collection == CollectionNames.RECORD_GROUPS.value:

@@ -88,6 +88,10 @@ class IParser(Protocol):
         ...  # pragma: no cover
 
 
+# ``details.reason`` of a ``PARSE_BACKPRESSURE`` answer whose cause is that Docling never received the file.
+DOCLING_UNAVAILABLE_REASON = "docling_unavailable"
+
+
 class ParseErrorCode(str, Enum):
     UNSUPPORTED_FORMAT = "UNSUPPORTED_FORMAT"
     PARSE_FAILED = "PARSE_FAILED"
@@ -103,6 +107,9 @@ class ParseErrorCode(str, Enum):
     # The file is encrypted and needs a password to open. A fact about the
     # file: answered with a 422 and never retried.
     PASSWORD_REQUIRED = "PASSWORD_REQUIRED"
+    # The record's delete marker changed while the service was parsing it (a stop, not a fact about the file): answered
+    # with a 410. The caller confirms with the graph before it drains, and never retries it as a transient error.
+    RECORD_GONE = "RECORD_GONE"
 
 
 class ParseError(Exception):

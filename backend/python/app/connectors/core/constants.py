@@ -133,6 +133,7 @@ class ConnectorStateKeys:
     PENDING_RESYNC = "pendingResync"
     LAST_SYNC_STARTED_AT = "lastSyncStartedAtTimestamp"
     LAST_SYNC_FINISHED_AT = "lastSyncFinishedAtTimestamp"
+    USER_LINK_STARTED_AT = "userLinkStartedAtTimestamp"
     LAST_SYNC_OUTCOME = "lastSyncOutcome"
     LAST_SYNC_SUMMARY = "lastSyncSummary"
     ACTION_ITEMS = "actionItems"
@@ -213,6 +214,12 @@ CONNECTOR_MINIO_INFO = (
     "This connector only lists and reads objects, so give it a read-only key. Its MinIO policy "
     "needs s3:ListBucket and s3:GetObject on the buckets to sync. It needs s3:ListAllMyBuckets "
     "to discover the buckets and to load the Bucket Names options."
+    "\n\n" + _OBJECT_STORE_TEAM_ACCESS_INFO
+)
+CONNECTOR_CLOUDFLARE_R2_INFO = (
+    "This connector only lists and reads objects, so give it a read-only R2 API token that can list "
+    "buckets and read objects. An Admin Read only token can do both, and it can read every bucket in "
+    "the account. An Object Read only token limited to the buckets to sync is tighter, if it can list them."
     "\n\n" + _OBJECT_STORE_TEAM_ACCESS_INFO
 )
 

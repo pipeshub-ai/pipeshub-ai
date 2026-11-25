@@ -201,3 +201,10 @@ export function isSkillConflictError(error: unknown): boolean {
   const detail = response.data?.detail;
   return Boolean(detail && typeof detail === 'object' && detail !== null && 'currentUpdatedAt' in detail);
 }
+
+/** A candidate action answered 404: the candidate is no longer pending (another reviewer handled it). */
+export function isCandidateGoneError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const loose = error as { statusCode?: number; response?: { status?: number } };
+  return loose.response?.status === 404 || loose.statusCode === 404;
+}

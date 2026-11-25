@@ -1,8 +1,9 @@
 import asyncio
+import gc
 import logging
 import os
 import sys
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager
 
 import uvicorn
@@ -11,7 +12,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
-import app.utils.runtime_threads  # noqa: E402 - must precede all ML library imports
+import app.utils.runtime_threads
 from app.api.middlewares.admin_gate import require_admin_caller
 from app.api.middlewares.request_log import (
     install_request_logging,
@@ -39,6 +40,7 @@ from app.utils.request_context import set_service_suffix
 
 set_service_suffix("-qs")
 from app.api.routes.code_graph import router as code_graph_router  # noqa: E402 - after set_service_suffix(), like the imports around it
+from app.api.routes.entity_tools import router as entity_tools_router  # noqa: E402 - after set_service_suffix(), like the imports around it
 from app.api.routes.graph_view import router as graph_view_router  # noqa: E402
 from app.api.routes.health import router as health_router
 from app.api.routes.knowledge_search import router as knowledge_search_router  # noqa: E402 - after set_service_suffix(), like the imports around it
@@ -199,6 +201,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.debug("🚀 Starting retrieval application")
 
     await configure_envelope(app_container.config_service())
+    from app.modules.indexing.replay_set import check_main_redis_eviction_policy
+
+    await check_main_redis_eviction_policy(app_container.config_service(), logger, "query")
 
     from app.agents.actions.storage_search.storage_search import (
         sweep_orphan_views_at_startup,
@@ -390,6 +395,20 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
         try:
             settings = await EnvSandboxSettingsLoader().load(SandboxContext())
+            # Size the code sandbox ceiling from the machine in the background;
+            # runs use the minimum until it is known.
+            from app.agent_loop_lib.sandbox.capacity import get_sandbox_capacity
+
+            get_sandbox_capacity().start_sizing()
+            # The live limit samples the machine in every worker; the governor
+            # builds it for the modes that have a reading.
+            from app.agent_loop_lib.sandbox.governor import get_default_governor
+            from app.agent_loop_lib.sandbox.live_limit import get_live_limit
+
+            get_default_governor()
+            live_limit = get_live_limit()
+            if live_limit is not None:
+                live_limit.start()
             registry = build_default_registry(
                 shared_config=SharedSandboxConfig(max_lifetime_s=settings.max_lifetime_s),
                 backend_options=settings.backend_options,
@@ -423,6 +442,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     app.state.sandbox_warmup_task = spawn_detached(_warmup_coding_sandbox())
 
+    # Admin alerts when code runs keep waiting for a sandbox; one worker of
+    # the container evaluates, the others wait to take over.
+    from app.services.sandbox_alerts.loop import run_sandbox_alert_loop
+
+    app.state.sandbox_alert_task = spawn_detached(
+        run_sandbox_alert_loop(app_container.config_service(), logger),
+    )
+
     # Initialize toolset registry for agent tool execution.
     # auto_discover_toolsets() imports ~20 heavy SDK modules (Google, Microsoft,
     # Slack, …) synchronously. Offload to a worker thread so the event loop
@@ -448,6 +475,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.state.mcp_registry = mcp_registry
     logger.info(f"✅ Loaded {len(mcp_registry.list_templates())} MCP server templates in memory")
 
+    # Each answer allocates and drops many short-lived objects; a gen-0 threshold
+    # of 10,000 (default 700) makes young collections rarer while generations 1
+    # and 2 keep their default ratios.
+    gc.set_threshold(10_000, 10, 10)
+
     yield
     # Shutdown
     logger.info("🔄 Shutting down application")
@@ -459,6 +491,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     for _warmup_attr in (
         "embedding_warmup_task", "knn_warmup_task", "sandbox_warmup_task",
         "lexical_reconcile_task", "entity_store_warmup_task", "skills_seed_task",
+        "sandbox_alert_task",
     ):
         warmup_task: asyncio.Task | None = getattr(app.state, _warmup_attr, None)
         if warmup_task is not None and not warmup_task.done():
@@ -467,6 +500,24 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 await warmup_task
             except (asyncio.CancelledError, Exception):
                 pass
+
+    try:
+        from app.agent_loop_lib.sandbox.live_limit import get_live_limit
+
+        live_limit = get_live_limit()
+        if live_limit is not None:
+            await live_limit.stop()
+    except Exception as e:
+        logger.error(f"Error stopping the sandbox live limit: {e}")
+
+    try:
+        from app.agent_loop_lib.sandbox.load_ledger import peek_default_load_ledger
+
+        load_ledger = peek_default_load_ledger()
+        if load_ledger is not None:
+            await asyncio.to_thread(load_ledger.close)
+    except Exception as e:
+        logger.error(f"Error flushing the sandbox load ledger: {e}")
 
     # Stop all message consumers
     try:
@@ -540,19 +591,36 @@ configure_app(app, "query")
 EXCLUDE_PATHS = ["/health"]  # Exclude health endpoint from authentication for monitoring purposes
 
 
-@app.middleware("http")
-async def authenticate_requests(request: Request, call_next) -> JSONResponse:
-    # Check if path should be excluded from authentication
-    if any(request.url.path.startswith(path) for path in EXCLUDE_PATHS):
-        return await call_next(request)
+class AuthenticateRequests:
+    """Authenticates every request outside EXCLUDE_PATHS.
 
-    try:
-        authenticated_request = await authMiddleware(request)
-    except HTTPException as exc:
-        mark_request_failure(request, exc)
-        return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
-    # A route's exception is logged and answered by http.request.end (request_log).
-    return await call_next(authenticated_request)
+    Plain ASGI rather than ``@app.middleware("http")``: ``BaseHTTPMiddleware``
+    pushes every chunk of a streamed answer through an anyio memory stream.
+    A route's exception is logged and answered by http.request.end (request_log).
+    """
+
+    def __init__(self, app: Callable[..., Awaitable[None]]) -> None:
+        self.app = app
+
+    async def __call__(self, scope: dict, receive: Callable, send: Callable) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        request = Request(scope, receive)
+        if any(request.url.path.startswith(path) for path in EXCLUDE_PATHS):
+            await self.app(scope, receive, send)
+            return
+        try:
+            # request.state lives in the scope, so the route sees what auth set.
+            await authMiddleware(request)
+        except HTTPException as exc:
+            mark_request_failure(request, exc)
+            await JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})(scope, receive, send)
+            return
+        await self.app(scope, receive, send)
+
+
+app.add_middleware(AuthenticateRequests)
 
 
 # Trace context and the request line — outside auth, so both see every request.
@@ -598,6 +666,7 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 # Include routes from routes.py
 app.include_router(search_router, prefix="/api/v1")
 app.include_router(knowledge_search_router, prefix="/api/v1")
+app.include_router(entity_tools_router, prefix="/api/v1")
 app.include_router(records_router, prefix="/api/v1")
 app.include_router(chatbot_router, prefix="/api/v1")
 app.include_router(speech_router, prefix="/api/v1")

@@ -1,4 +1,5 @@
-"""The connectors service starts the projection worker only for a PostgreSQL graph with the projection on."""
+"""The connectors service starts the projection worker for a PostgreSQL graph, and refuses to start with the projection off there: the knowledge hub lists a PostgreSQL
+graph's sources from the typed graph, so with no projection every source would stay "preparing"."""
 import logging
 from unittest.mock import MagicMock
 
@@ -10,14 +11,18 @@ from app.services.graph_db.postgres.provider import PostgresGraphProvider
 LOG = logging.getLogger("test")
 
 
-def test_a_graph_that_is_not_postgresql_starts_no_worker(monkeypatch) -> None:
+@pytest.mark.parametrize("value", [None, "0"])
+def test_a_graph_that_is_not_postgresql_starts_no_worker(monkeypatch, value) -> None:
     monkeypatch.delenv("PG_KG_PROJECT", raising=False)
+    if value is not None:
+        monkeypatch.setenv("PG_KG_PROJECT", value)
     assert worker.start_for(object(), LOG) is None
 
 
-def test_the_projection_off_starts_no_worker(monkeypatch) -> None:
+def test_the_projection_off_on_a_postgresql_graph_is_refused_with_a_message_that_names_the_setting(monkeypatch) -> None:
     monkeypatch.setenv("PG_KG_PROJECT", "0")
-    assert worker.start_for(MagicMock(spec=PostgresGraphProvider), LOG) is None
+    with pytest.raises(ValueError, match="PG_KG_PROJECT=0"):
+        worker.start_for(MagicMock(spec=PostgresGraphProvider), LOG)
 
 
 @pytest.mark.parametrize("value", [None, "1"])

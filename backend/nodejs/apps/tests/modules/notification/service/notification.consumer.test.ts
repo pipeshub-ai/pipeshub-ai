@@ -2,15 +2,17 @@ import 'reflect-metadata';
 import { expect } from 'chai';
 import sinon from 'sinon';
 import mongoose from 'mongoose';
-import { NotificationConsumer } from '../../../../src/modules/notification/service/notification.consumer';
+import { NotificationConsumer, notificationEventRefused } from '../../../../src/modules/notification/service/notification.consumer';
 import { NotificationService } from '../../../../src/modules/notification/service/notification.service';
 import { setNotificationRepository } from '../../../../src/libs/repositories/notification';
 import { getCurrentOrgId } from '../../../../src/libs/context/orgContext';
+import { configureInbox, runWithEnvelope } from '../../../../src/libs/context/envelope';
+import { MemInbox } from '../../../helpers/memory-inbox';
 import { DocStoreFencedError, DocStoreReadOnlyError } from '../../../../src/libs/repositories/errors';
 import { GatewayTimeoutError, ServiceUnavailableError } from '../../../../src/libs/errors/http.errors';
-import { metricsBackend } from '../../../../src/libs/services/telemetry/metrics-backend';
 import * as NotificationSchema from '../../../../src/modules/notification/schema/notification.schema';
 import * as RecipientResolver from '../../../../src/modules/notification/utils/notification-recipient.resolver';
+import * as PayloadResolver from '../../../../src/modules/notification/utils/notification-payload.resolver';
 
 describe('notification/service/notification.consumer', () => {
   let consumer: NotificationConsumer;
@@ -159,6 +161,32 @@ describe('notification/service/notification.consumer', () => {
       expect(userHandler.calledOnce).to.be.true;
     });
 
+    it('a copy of an event another delivery already stored is acknowledged without a write, a push or an error log', async () => {
+      mockConsumer.isConnected.returns(true);
+      const inbox = new MemInbox();
+      configureInbox(inbox);
+      try {
+        const user = new mongoose.Types.ObjectId().toString();
+        const value = { orgId: new mongoose.Types.ObjectId().toString(), type: 'CONNECTOR_SYNC_ERROR', recipientUserIds: [user], eventId: 'evt-1' };
+        sinon.stub(RecipientResolver, 'resolveNotificationRecipientUserIds').resolves([new mongoose.Types.ObjectId(user)]);
+        const insertMany = sinon.stub().resolves([{ _id: 'n1', assignedTo: user }]);
+        setNotificationRepository({ insertMany } as never);
+        // the other delivery recorded the event after this one passed the inbox check
+        inbox.seen = async () => false;
+        await inbox.record('notification-consumer-group', 'evt-1', value.orgId);
+        await consumer.consume(sinon.stub().resolves());
+        const wrapped = mockConsumer.consume.firstCall.args[0];
+        const out = await runWithEnvelope('notification', value, (v) => wrapped({ value: v }), 'notification-consumer-group');
+        expect(out).to.equal(undefined);
+        expect(insertMany.called).to.be.false;
+        expect((mockNotificationService.sendToUser as sinon.SinonStub).called).to.be.false;
+        expect(mockLogger.error.called).to.be.false;
+      } finally {
+        configureInbox(null);
+        setNotificationRepository();
+      }
+    });
+
     it('skips persist when event has no valid recipients', async () => {
       mockConsumer.isConnected.returns(true);
       const userHandler = sinon.stub().resolves();
@@ -179,6 +207,78 @@ describe('notification/service/notification.consumer', () => {
       expect(createStub.called).to.be.false;
       expect(mockLogger.warn.called).to.be.true;
       expect(userHandler.calledOnce).to.be.true;
+    });
+
+    describe('an event for the installation admins', () => {
+      const platformEvent = { audience: 'platformAdmins', type: 'SANDBOX_CAPACITY_WARNING', payload: { v: 1, alertId: 'a1' } };
+
+      it('goes to the platform alert handler and not through the org path', async () => {
+        mockConsumer.isConnected.returns(true);
+        const platformHandler = { handle: sinon.stub().resolves() };
+        const toBroker = sinon.spy(PayloadResolver, 'toBrokerMessage');
+        consumer = new NotificationConsumer(
+          mockConsumer,
+          mockLogger,
+          mockNotificationService as unknown as NotificationService,
+          platformHandler as never,
+        );
+        const handler = sinon.stub().resolves();
+        await consumer.consume(handler);
+        await mockConsumer.consume.firstCall.args[0]({ value: platformEvent });
+
+        expect(platformHandler.handle.calledOnceWith(platformEvent)).to.be.true;
+        expect(toBroker.called).to.be.false;
+        expect(handler.calledOnce).to.be.true;
+      });
+
+      it('is acknowledged when the handler delivers nothing or fails for good', async () => {
+        mockConsumer.isConnected.returns(true);
+        const platformHandler = { handle: sinon.stub().rejects(new Error('bad')) };
+        consumer = new NotificationConsumer(
+          mockConsumer,
+          mockLogger,
+          mockNotificationService as unknown as NotificationService,
+          platformHandler as never,
+        );
+        const handler = sinon.stub().resolves();
+        await consumer.consume(handler);
+        await mockConsumer.consume.firstCall.args[0]({ value: platformEvent });
+
+        expect(handler.calledOnce).to.be.true;
+        expect(mockLogger.error.calledOnce).to.be.true;
+      });
+
+      it('is delivered again after a retryable store error', async () => {
+        mockConsumer.isConnected.returns(true);
+        const err = new DocStoreReadOnlyError();
+        const platformHandler = { handle: sinon.stub().rejects(err) };
+        consumer = new NotificationConsumer(
+          mockConsumer,
+          mockLogger,
+          mockNotificationService as unknown as NotificationService,
+          platformHandler as never,
+        );
+        const handler = sinon.stub().resolves();
+        await consumer.consume(handler);
+        let thrown: unknown;
+        try {
+          await mockConsumer.consume.firstCall.args[0]({ value: platformEvent });
+        } catch (e) {
+          thrown = e;
+        }
+        expect(thrown).to.equal(err);
+        expect(handler.called).to.be.false;
+      });
+
+      it('is acknowledged with a warning when no handler is configured', async () => {
+        mockConsumer.isConnected.returns(true);
+        const handler = sinon.stub().resolves();
+        await consumer.consume(handler);
+        await mockConsumer.consume.firstCall.args[0]({ value: platformEvent });
+
+        expect(mockLogger.warn.calledWithMatch('Platform alert skipped')).to.be.true;
+        expect(handler.calledOnce).to.be.true;
+      });
     });
 
     describe('the store', () => {
@@ -210,23 +310,24 @@ describe('notification/service/notification.consumer', () => {
 
       describe('a supplied _id', () => {
         const other = new mongoose.Types.ObjectId().toString();
-        const refusedCount = async () =>
-          Number(/notification_event_refused_total\{reason="id_with_many_recipients"\} (\d+)/.exec(await metricsBackend.serialize())?.[1] ?? 0);
         it('refuses an event with an _id and several recipients: logged, counted, nothing written, marked handled', async () => {
           mockConsumer.isConnected.returns(true);
           sinon.stub(RecipientResolver, 'resolveNotificationRecipientUserIds').resolves([new mongoose.Types.ObjectId(user), new mongoose.Types.ObjectId(other)]);
           const insertMany = sinon.stub().resolves([]);
           setNotificationRepository({ insertMany } as never);
-          const before = await refusedCount();
+          const refused = sinon.spy(notificationEventRefused, 'inc');
           const handler = sinon.stub().resolves();
           await consumer.consume(handler);
           await mockConsumer.consume.firstCall.args[0]({ value: { ...event, _id: 'fixed-id', recipientUserIds: [user, other] } });
           expect(insertMany.called).to.be.false;
           expect(mockNotificationService.sendToUser.called).to.be.false;
-          expect(mockLogger.error.calledOnce).to.be.true;
-          expect(mockLogger.error.firstCall.args[1].error).to.equal('Notification event refused');
+          // the producer's fault: one WARNING with the error, never the event's value
+          expect(mockLogger.error.called).to.be.false;
+          expect(mockLogger.warn.calledOnce).to.be.true;
+          expect(mockLogger.warn.firstCall.args[1].error.message).to.equal('Notification event refused');
+          expect(mockLogger.warn.firstCall.args[1]).to.not.have.property('messageValue');
           expect(handler.calledOnce).to.be.true;
-          expect(await refusedCount()).to.equal(before + 1);
+          expect(refused.calledOnceWithExactly({ reason: 'id_with_many_recipients' })).to.be.true;
         });
 
         it('keeps the _id for one recipient', async () => {

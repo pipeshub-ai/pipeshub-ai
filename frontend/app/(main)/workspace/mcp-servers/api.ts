@@ -4,6 +4,8 @@ import { desktopAuthorizeParams } from '@/lib/electron';
 import type {
   McpAuthenticatePayload,
   McpCatalogResponse,
+  McpCategory,
+  McpPopularServer,
   McpInstancesResponse,
   McpLogoResponse,
   McpLogosResponse,
@@ -27,9 +29,15 @@ const BASE_URL = '/api/v1/mcp-servers';
 export const McpServersApi = {
   // ── Catalog (read-only, in-memory templates) ──
 
-  async getCatalog(params?: { page?: number; limit?: number; search?: string }): Promise<McpCatalogResponse> {
+  async getCatalog(params?: { page?: number; limit?: number; search?: string; category?: McpCategory }): Promise<McpCatalogResponse> {
     const { data } = await apiClient.get(`${BASE_URL}/catalog`, { params });
     return data;
+  },
+
+  /** The organization's servers people signed in to, most used first (counts only). */
+  async getPopular(limit = 6): Promise<McpPopularServer[]> {
+    const { data } = await apiClient.get<{ servers: McpPopularServer[] }>(`${BASE_URL}/popular`, { params: { limit } });
+    return data.servers ?? [];
   },
 
   async getCatalogTemplate(typeId: string): Promise<McpServerTemplate> {

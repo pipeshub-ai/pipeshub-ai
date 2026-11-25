@@ -31,8 +31,8 @@ export function unitsAreAtomic(rsAvailable: boolean): boolean {
 const CONVERSATION_EPOCH = 2;
 const CONTENT_EPOCH = 2;
 const PLATFORM_DATA_EPOCH = 5;
-const IDENTITY_EPOCH = 5;
-const OAUTH_EPOCH = 5;
+const IDENTITY_EPOCH = 6;
+const OAUTH_EPOCH = 6;
 const INTEGRATIONS_EPOCH = 2;
 const IDENTITY_REPOSITORIES = [
   'identity',
@@ -64,7 +64,13 @@ export function schemaRequirements(): SchemaRequirements {
           },
         }
       : {}),
-    ...(['oauth-app', 'oauth-token', 'identity-lookup', 'delegation'].some(onPg)
+    ...([
+      'oauth-app',
+      'oauth-token',
+      'identity-lookup',
+      'delegation',
+      'agent-call-event',
+    ].some(onPg)
       ? { oauth: { requires: OAUTH_EPOCH, code: OAUTH_EPOCH } }
       : {}),
     ...(onPg('slack-thread')

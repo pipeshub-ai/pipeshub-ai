@@ -799,7 +799,11 @@
       "collectionExists": "你已有名为“{{name}}”的集合。请换一个名称。"
     },
     "sourcesNotReady": "部分来源仍在准备中，尚未列出（{{count}}）。请稍后再试。",
-    "sourcePreparing": "正在准备此来源… 其中的项目稍后将显示在这里。"
+    "sourcePreparing": "正在准备此来源… 其中的项目稍后将显示在这里。",
+    "selectionActionsNotice": "优先索引",
+    "selectionActionsNoticeEnterprise": "选择先为哪些已选项目建立索引属于企业版。",
+    "uploadExtrasNotice": "优先索引这些文件",
+    "uploadExtrasNoticeEnterprise": "选择先为哪些上传文件建立索引属于企业版。"
   },
   "connectorTypes": {
     "slack": "Slack",
@@ -1332,7 +1336,15 @@
         },
         "toolNeedsApproval": "需要批准",
         "toolNeedsApprovalHint": "此工具可能会删除数据。在项目对话中，它只有在获得批准后才会运行。",
-        "indexingStatusLabel": "索引：{{status}}"
+        "indexingStatusLabel": "索引：{{status}}",
+        "collectionsTitle": "集合",
+        "collectionsSubtitle": "此项目中的对话将搜索所选集合和已上传的项目文件。",
+        "noCollectionsAvailable": "尚无可用集合添加。",
+        "failedToLoadCollections": "加载集合失败",
+        "updateCollectionsFailed": "更新集合失败",
+        "collectionsStatusCount": "已选 {{count}} 个",
+        "collectionsStatusNone": "无",
+        "untitledCollection": "未命名集合"
       },
       "moveDialog": {
         "title": "移至项目",
@@ -2201,9 +2213,29 @@
         "pasteBlockLabel": "可直接粘贴到您的 MCP 配置中",
         "copyPasteBlockAria": "复制粘贴块",
         "copySuccessTitle": "已复制",
-        "copyErrorTitle": "无法复制"
+        "copyErrorTitle": "无法复制",
+        "knowledgeLimitLaterHint": "你之后可以更改此项，无需更换令牌。"
       },
-      "scopeCount_other": "{{count}} 个权限范围"
+      "scopeCount_other": "{{count}} 个权限范围",
+      "access": {
+        "panelTitle": "更改访问权限",
+        "intro": "选择 {{name}} 可以查看的内容。令牌会继续有效，更改从它的下一次请求起生效，因此无需更新任何使用它的地方。",
+        "save": "保存",
+        "savedTitle": "访问权限已更改",
+        "savedEverything": "{{name}} 现在可以查看你能查看的所有内容。",
+        "savedSome_other": "{{name}} 现在可以查看所选的 {{count}} 项。",
+        "undo": "撤销",
+        "undoneTitle": "已撤销更改",
+        "undoErrorTitle": "无法撤销更改。请打开“更改访问权限”重新设置。",
+        "errorTitle": "无法更改访问权限",
+        "errorDescription": "未做任何更改。请重试。",
+        "unknownTitle": "无法确认更改",
+        "unknownDescription": "更改可能已保存。请先检查此处显示的访问范围，再重试。",
+        "unknownReloadFailedDescription": "更改可能已保存，但无法加载最新的访问范围。请先重新加载页面，再以显示内容为准。",
+        "rowAction": "更改访问权限",
+        "rowActionAria": "更改 {{name}} 可以查看的内容",
+        "rowActionTooltip": "更改访问权限：选择此令牌可以查看的内容"
+      }
     },
     "agentSignIns": {
       "title": "代理登录",
@@ -2477,7 +2509,8 @@
         "security": "安全",
         "personal": "个人",
         "people": "成员",
-        "developerSettings": "开发者设置"
+        "developerSettings": "开发者设置",
+        "help": "帮助"
       },
       "nav": {
         "general": "常规",
@@ -2799,7 +2832,7 @@
           "pipeshub_search": "在用户可读取的连接器和集合中按语义搜索已索引的文档，并返回匹配的段落及其所属记录。",
           "pipeshub_get_record_content": "读取一条记录的全文。还可以通过 URL、问题编号或外部 ID 查找记录，浏览文件夹、空间或史诗下的内容，以及读取整个 Slack 会话串。",
           "pipeshub_download_record": "下载记录存储的原始文件，可选择转换为 PDF。",
-          "pipeshub_directory": "查询当前登录的用户、工作区的用户和群组，以及该用户所属的团队。不会更改任何内容。",
+          "pipeshub_directory": "查询当前登录的用户、工作区的用户，以及该用户所属的团队。不会更改任何内容。",
           "pipeshub_create_collection": "创建一个归用户所有的新空集合，可向其中上传文件。",
           "pipeshub_upload": "将文档上传到集合，以便建立索引并可供搜索。每次调用最多 20 个文档、约 3 MB。",
           "pipeshub_indexing_status": "报告集合的索引进度，以及哪些文档失败及其原因。",
@@ -2820,7 +2853,95 @@
           "pipeshub_code_impact": "显示依赖某个符号的内容：所有调用、导入或基于它的代码，以及覆盖到它的测试。可回答谁调用了它、修改后会影响什么。",
           "pipeshub_code_impact_of_diff": "接收一个统一格式的 diff，例如 git diff 的输出或拉取请求的 diff，显示它更改的符号、涉及这些符号的文件和测试，以及没有测试覆盖的调用方。",
           "pipeshub_code_history": "列出修改过某个文件的已索引拉取请求，包括作者、审阅者、合并者及其提到的工单。",
-          "pipeshub_code_entry_points": "列出执行进入仓库的位置，例如路由、命令行工具、任务和钩子。是阅读陌生代码的起点。"
+          "pipeshub_code_entry_points": "列出执行进入仓库的位置，例如路由、命令行工具、任务和钩子。是阅读陌生代码的起点。",
+          "pipeshub_entities": "在工作区的知识图谱中查找人员、团队、主题、项目、文件夹、客户和文档标题，列出与其中某一项关联的记录，以及与其一同被提及的人员、公司或产品。查找和列出在实体完成索引后提供；一同提及的列表还需要命名实体提取。OAuth 应用或访问令牌还需要 semantic:read 或 semantic:write 权限范围。",
+          "pipeshub_find_records": "按记录属于谁或提及了什么来列出记录，而不是按其文字：分配给某人或由其创建、撰写或拥有的记录，提及金额、日期、数量或百分比的记录，以及记录中提到指定人员、公司或产品的段落。金额和日期需要命名实体提取，段落仅在部署同时开启实体搜索时提供。OAuth 应用或访问令牌还需要 semantic:read 或 semantic:write 权限范围。"
+        },
+        "count": "提供 {{offered}}/{{total}} 个",
+        "searchPlaceholder": "搜索工具、参数或权限范围",
+        "searchLabel": "搜索工具",
+        "filterLabel": "显示",
+        "filters": {
+          "all": "全部",
+          "read": "只读",
+          "writes": "写入或更改数据",
+          "off": "已关闭"
+        },
+        "expandAll": "全部展开",
+        "collapseAll": "全部收起",
+        "noMatch": "没有与此搜索匹配的工具。",
+        "groupCount": "已开启 {{offered}}/{{total}}",
+        "groupSwitch": "{{group}}中的所有工具",
+        "showDetails": "显示 {{tool}} 的详情",
+        "hideDetails": "隐藏 {{tool}} 的详情",
+        "groups": {
+          "read": {
+            "label": "查找和阅读",
+            "description": "搜索、阅读和下载用户可访问的内容。"
+          },
+          "people": {
+            "label": "人员和实体",
+            "description": "工作区的用户，以及其知识图谱中的人员、项目、主题和数值。"
+          },
+          "chat": {
+            "label": "聊天和智能体",
+            "description": "向 PipesHub 的助手或工作区的某个智能体提问。"
+          },
+          "add": {
+            "label": "添加内容",
+            "description": "创建集合、上传文档、添加网站和连接来源。"
+          },
+          "viewer": {
+            "label": "引用查看器",
+            "description": "在能够显示它的客户端中展示回答背后的来源。"
+          },
+          "code": {
+            "label": "代码",
+            "description": "浏览已索引的代码仓库。",
+            "availability": "仅提供给可读取已索引代码仓库的用户。"
+          },
+          "other": {
+            "label": "其他",
+            "description": "此版本页面尚不认识的工具。"
+          }
+        },
+        "kinds": {
+          "readOnly": "只读",
+          "changes": "可更改数据",
+          "openWorld": "会访问 PipesHub 之外"
+        },
+        "blocked": {
+          "writesOff": "在不允许写入工具期间关闭。",
+          "chatOff": "在与 PipesHub 聊天关闭期间关闭。"
+        },
+        "details": {
+          "scopes": "所需的 OAuth 权限范围",
+          "noScopes": "无：它不调用 PipesHub 中的任何内容。",
+          "availability": "何时提供",
+          "arguments": "参数 · {{n}}",
+          "noArguments": "不接受参数。",
+          "columns": {
+            "name": "名称",
+            "type": "类型",
+            "description": "说明"
+          },
+          "required": "必填",
+          "oneOf": "取值之一：{{values}}",
+          "modelText": "AI 看到的内容",
+          "hideModelText": "隐藏 AI 看到的内容",
+          "modelTextHint": "AI 模型在选择此工具前读取的说明。"
+        },
+        "availability": {
+          "default": "开启时始终提供。",
+          "pipeshub_chat": "开启时始终提供。仅在允许写入工具时运行已连接的操作。",
+          "pipeshub_agents": "仅在与 PipesHub 聊天开启时提供。",
+          "pipeshub_create_collection": "仅在允许写入工具时提供。",
+          "pipeshub_upload": "仅在允许写入工具时提供。",
+          "pipeshub_add_web_source": "仅在允许写入工具时提供。",
+          "pipeshub_show_citations": "仅提供给能显示引用查看器的客户端，例如 Claude。",
+          "pipeshub_preview_record": "仅提供给引用查看器，从不提供给 AI 模型。",
+          "pipeshub_entities": "实体完成索引后，提供查找实体和列出其记录。一同提及的列表还需要命名实体提取。",
+          "pipeshub_find_records": "某人的记录始终提供。金额和日期需要命名实体提取，提到人员或公司的段落还需要部署开启实体搜索。"
         }
       },
       "appliesNote": "更改会在几秒内应用于新的 MCP 请求。",
@@ -2829,6 +2950,45 @@
         "saveSuccess": "MCP 访问设置已保存",
         "saveError": "无法保存 MCP 访问设置",
         "saveErrorDescription": "请检查网络连接后重试。"
+      },
+      "status": {
+        "on": "已开启 · 提供 {{offered}}/{{total}} 个工具",
+        "off": "已关闭 · AI 客户端无法连接"
+      },
+      "connect": {
+        "title": "连接 AI 客户端",
+        "description": "客户端连接到此端点，每位用户使用自己的 PipesHub 账号登录。也可以使用个人访问令牌。",
+        "endpointLabel": "MCP 端点",
+        "copy": "复制",
+        "copied": "已复制",
+        "copyEndpoint": "复制 MCP 端点",
+        "copySnippet": "复制配置",
+        "clientsLabel": "AI 客户端",
+        "clients": {
+          "claude": {
+            "label": "Claude",
+            "steps": "在 Claude 中打开“自定义 › 连接器”，选择 +，然后选择“添加自定义连接器”。粘贴上面的端点，然后选择“连接”并登录 PipesHub。如果是 Team 或 Enterprise 套餐，需先由所有者在组织设置中添加该连接器。",
+            "tip": "Claude 从 Anthropic 的云端连接，而不是从你的电脑连接，因此端点必须能从互联网访问。localhost 或私有网络地址将无法使用。"
+          },
+          "chatgpt": {
+            "label": "ChatGPT",
+            "steps": "在 chatgpt.com 上打开“插件”，选择 +，然后选择“添加自定义 MCP 服务器”。将上面的端点粘贴为服务器 URL，选择 OAuth，接受警告并选择“创建为插件”，然后登录 PipesHub。在 Business、Enterprise 或 Edu 工作区中，需要管理员允许自定义 MCP 服务器。",
+            "tip": "ChatGPT 从 OpenAI 的服务器连接，而不是从你的电脑连接，因此端点必须能从互联网访问。localhost 或私有网络地址将无法使用。"
+          },
+          "cursor": {
+            "label": "Cursor",
+            "steps": "将服务器添加到 ~/.cursor/mcp.json，或项目中的 .cursor/mcp.json。Cursor 首次使用工具时会要求你登录。"
+          },
+          "vscode": {
+            "label": "VS Code",
+            "steps": "将服务器添加到 .vscode/mcp.json，然后从 MCP 服务器列表中启动它并登录。"
+          },
+          "claudeCode": {
+            "label": "Claude Code",
+            "steps": "在终端中运行以下命令，然后在 Claude Code 中运行 /mcp 登录。",
+            "tip": "如果只问代码相关的问题，请在端点后加上 ?tools=code：客户端将只获得代码工具。"
+          }
+        }
       }
     },
     "labs": {
@@ -3226,7 +3386,8 @@
             "max_pages": "已达到最大页数限制",
             "time_limit": "已达到时间限制；下次同步将继续",
             "stalled": "网站停止响应；下次同步将继续",
-            "rate_limited": "网站一再要求减少请求；下次同步将继续"
+            "rate_limited": "网站一再要求减少请求；下次同步将继续",
+            "start_not_recorded": "同步无法保存其开始记录，因此未运行；下次同步将重试"
           },
           "pagesSaved": "已保存 {{count}} 个页面",
           "failed": "{{count}} 个页面失败",
@@ -3648,6 +3809,25 @@
         "reach": "{{connector}} 中的更改会在{{interval}}内同步到 PipesHub。",
         "reachUnknown": "{{connector}} 中的更改会在下次同步时到达 PipesHub。",
         "syncNow": "立即同步权限",
+        "filter": {
+          "label": "搜索如何检查访问权限",
+          "mode": {
+            "inherit": "部署默认值",
+            "legacy": "经典检查",
+            "scopes": "更快的搜索"
+          },
+          "effective": {
+            "scopes": "{{connector}} 的搜索使用更快的搜索：在找到结果之前，就已将结果限定为每个人有权查看的内容，并且每个结果仍会被检查。",
+            "legacy": "{{connector}} 的搜索使用经典检查：结果在找到后再检查。"
+          },
+          "waiting": "{{connector}} 的权限更新完成后，更快的搜索就会开始。",
+          "applies": "此更改会在 30 秒内应用于搜索。",
+          "blocker": {
+            "serving_off": "此部署已关闭更快的搜索。",
+            "store_unsupported": "此部署的向量存储不支持更快的搜索。"
+          },
+          "saveError": "无法更改此设置。请重试。"
+        },
         "span": {
           "minutes": "{{count, number(style: unit; unit: minute; unitDisplay: long)}}",
           "hours": "{{count, number(style: unit; unit: hour; unitDisplay: long)}}",
@@ -3682,7 +3862,94 @@
           "other": "此连接器的权限需要有人查看。",
           "unreadable": "无法读取等待更新的文件夹列表。请让运行 PipesHub 的人员重建此连接器的权限索引。在此期间，搜索会逐条检查结果。"
         }
-      }
+      },
+      "userAccess": {
+        "connect": "连接",
+        "reconnect": "重新连接",
+        "connected": "已连接",
+        "connectedAs": "已以 {{account}} 连接",
+        "connectDialog": {
+          "title": "将你的账户连接到 {{name}}",
+          "description": "粘贴你自己的 {{source}} 账户中的个人访问令牌。PipesHub 只会向你显示你的账户可以打开的页面。",
+          "howTo": "如何创建个人访问令牌",
+          "tokenLabel": "个人访问令牌",
+          "submitting": "正在连接…",
+          "errorFallback": "无法连接你的账户，请重试。",
+          "signInHint": "{{source}} 只列出你拥有完全访问权限的页面。所选页面的子页面（包括新建的）都会包含在内。之后如需添加更多页面，请重新登录。",
+          "signingIn": "正在等待 {{source}}…",
+          "signInFailed": "登录未完成。请重试。",
+          "popupBlocked": "浏览器拦截了登录窗口。请允许此网站的弹出窗口后重试。"
+        },
+        "admin": {
+          "title": "已连接的用户",
+          "description": "此连接器只向每个人显示其自己账户可以打开的内容。未连接的人看不到任何内容。",
+          "remove": "移除",
+          "removeTitle": "移除 {{email}} 的连接？",
+          "removeMessage": "在重新连接之前，对方将看不到此连接器的结果。",
+          "removing": "正在移除…",
+          "removed": "连接已移除",
+          "status": {
+            "connected": "已连接",
+            "needs_reconnect": "需要重新连接",
+            "invited": "已邀请",
+            "not_invited": "未邀请",
+            "opted_out": "不希望收到提醒",
+            "no_account": "没有 PipesHub 账户"
+          },
+          "noAccountHint": "请先邀请他们加入 PipesHub",
+          "invite": "邀请",
+          "remind": "提醒",
+          "sent_other": "已发送给 {{count}} 人",
+          "notEmailed_other": "有 {{count}} 人的邮件未能发送；他们仍收到了应用内通知。",
+          "lastSent": "上次发送于 {{time}}",
+          "connectedAt": "连接于 {{time}}",
+          "membersUpdated": "成员列表上次读取于 {{time}}",
+          "membersPending": "成员列表将在下次同步后显示",
+          "queued_other": "正在发送给 {{count}} 人。他们会收到一条通知和一封邮件。",
+          "nothingSent": "未发送任何内容",
+          "skipReason": {
+            "connected": "已连接。",
+            "not_found": "已不是成员。",
+            "opted_out": "不希望收到提醒。",
+            "recently_sent": "过去一天内已发送过。",
+            "not_sent": "无法发送。请稍后重试。"
+          },
+          "inviteWho": "邀请 {{name}}",
+          "remindWho": "提醒 {{name}}",
+          "removeWho": "移除 {{name}} 的连接",
+          "yourAccount": "你的账号",
+          "connectedOf": "{{total}} 人中已有 {{connected}} 人连接",
+          "needReconnect_other": "{{count}} 人需要重新连接",
+          "search": "按姓名或邮箱搜索",
+          "inviteEveryoneHint": "所有尚未连接的人",
+          "inviteEveryone": "全部邀请（{{count}}）",
+          "noMatches": "没有与“{{q}}”匹配的人",
+          "nobody": "暂时没有人。下次同步后会显示。"
+        },
+        "link": {
+          "title": "连接你的 {{source}} 账户",
+          "forEmail": "适用于 {{email}}",
+          "continue": "继续前往 {{source}}",
+          "loading": "正在检查链接…",
+          "alreadyConnected": "你的 {{source}} 账户已连接。",
+          "openApp": "打开 PipesHub",
+          "expired": "此链接已过期或已被使用。请向管理员索取新链接，或在 PipesHub 的“您的个人连接器”中连接。",
+          "optedOut": "你将不会再收到此连接器的提醒。",
+          "error": "出了点问题。请一分钟后重试。",
+          "noSignIn": "此连接器使用个人访问令牌。打开 PipesHub，在通知中选择“连接”来粘贴你的令牌。",
+          "done": "{{name}} 已连接。几分钟后，你的页面将出现在 PipesHub 搜索中。",
+          "doneUnnamed": "你的账户已连接。几分钟后，你的页面将出现在 PipesHub 搜索中。",
+          "failedTitle": "无法连接",
+          "failedRetry": "请使用邮件中的链接重试。",
+          "confirmOptOut": "停止 {{name}} 的提醒？",
+          "stopReminders": "停止提醒",
+          "rateLimited": "尝试次数过多，请一分钟后重试。",
+          "cancelled": "你取消了登录。",
+          "signInFailed": "登录未完成。请重试。"
+        }
+      },
+      "indexPriorityNotice": "为此连接器优先建立索引",
+      "indexPriorityNoticeEnterprise": "索引优先级属于企业版。"
     },
     "mcpServers": {
       "searchPlaceholder": "搜索 MCP 服务器...",
@@ -3706,7 +3973,6 @@
         "confirm": "保存并移除登录"
       },
       "cta": {
-        "manage": "管理",
         "delete": "删除",
         "reauthenticate": "重新认证",
         "reconnect": "重新连接",
@@ -3728,6 +3994,17 @@
         "needsAuth": "需要认证",
         "disabled": "已禁用"
       },
+      "filters": {
+        "label": "按状态筛选",
+        "needsAction": "需要处理",
+        "unavailable": "不可用"
+      },
+      "catalog": {
+        "description": "现成的服务器。添加后登录即可使用。",
+        "personalDescription": "你在这里添加的服务器只有你能看到。",
+        "added": "已添加",
+        "addAnother": "再添加一个"
+      },
       "team": {
         "title": "MCP 服务器",
         "subtitle": "连接 Model Context Protocol 服务器，扩展团队智能体的能力。",
@@ -3739,36 +4016,16 @@
         "subtitle": "连接管理员提供的 MCP 服务器，或添加您自己的服务器。",
         "emptyTitle": "没有可用的 MCP 服务器",
         "emptyDescription": "添加您自己的服务器，或请管理员为所有人添加一个。",
-        "yourServersDescription": "您添加的服务器。只有您可以查看和使用，且不能添加到与组织共享的智能体中。",
         "tabs": {
           "all": "全部",
-          "connected": "已连接",
-          "notConnected": "未连接"
+          "connected": "已连接"
         },
         "yours": "我的",
         "noneInTab": "这里没有 MCP 服务器。"
       },
       "details": {
         "breadcrumbLabel": "MCP 服务器",
-        "refreshAll": "全部刷新",
-        "addInstance": "添加另一个实例",
-        "configuration": "配置",
-        "transport": "传输方式",
-        "tools": "工具",
-        "discoverTools": "发现工具",
-        "discoveredTools_one": "{{count}} 个可用工具",
-        "discoveredTools_other": "{{count}} 个可用工具",
-        "discovering": "正在发现工具…",
-        "discoveryError": "工具发现失败",
-        "discoveryNeedsAuth": "请先认证以发现工具",
-        "retry": "重试",
-        "noInstances": "未配置任何实例",
-        "authBannerTitle": "需要认证",
-        "authBannerDescription": "认证此 MCP 服务器，让您团队的智能体可以使用它。",
-        "authBannerAuthenticatedTitle": "已连接",
-        "reconnectBannerDescription": "此服务器的登录已过期或被拒绝。请重新连接以继续使用。",
-        "authBannerAuthenticatedDescription": "您可以重新认证或断开此 MCP 服务器的连接。",
-        "createdBy": "创建者"
+        "tools": "工具"
       },
       "deleteDialog": {
         "title": "删除 MCP 服务器？",
@@ -3828,27 +4085,29 @@
         "tokenUrl": "Token URL",
         "scopes": "权限范围",
         "scopesPlaceholder": "添加权限范围",
-        "useAdminAuth": "为所有用户使用共享的管理员认证",
         "headerValue": "{{headerName}}",
         "apiToken": "API token",
         "credentialsHeading": "凭证（可选）",
-        "credentialsHint": "现在添加凭证，或跳过并稍后在“连接与工具”标签页中连接。",
+        "credentialsHint": "现在添加，或稍后在服务器页面登录。",
         "multiEnvIncomplete": "请填写所有必需的环境变量，或全部留空以便稍后连接。",
         "oauthPairRequired": "请同时输入客户端 ID 和客户端密钥，或两者都留空。",
-        "connectAfterCreateHint": "保存此服务器，然后重新打开“管理”进行连接。",
         "timeoutsHeading": "超时",
         "connectTimeout": "连接超时（秒）",
         "callTimeout": "工具调用超时（秒）",
-        "timeoutRange": "请输入 {{min}} 到 {{max}} 之间的数字，或留空以使用默认值。"
+        "timeoutRange": "请输入 {{min}} 到 {{max}} 之间的数字，或留空以使用默认值。",
+        "whoSignsIn": "成员如何登录",
+        "signIn": {
+          "personal": "每人使用自己的凭据",
+          "personalHint": "每个人用自己的凭据登录，只获得这些凭据拥有的权限。",
+          "shared": "所有人共用一个凭据",
+          "sharedHint": "你在下方添加一次。所有人都以它的权限操作。"
+        },
+        "advanced": "高级",
+        "nameTaken": "已有其他服务器使用这个名称。请换一个。"
       },
       "configPanel": {
         "editTitle": "编辑 MCP 服务器",
         "createTitle": "新建 MCP 服务器",
-        "tabs": {
-          "configuration": "配置",
-          "tools": "工具与审批",
-          "toolList": "工具"
-        },
         "synced": "{{time}}同步",
         "refreshTools": "刷新工具列表",
         "signInForTools": "登录以查看此服务器的工具。",
@@ -3888,7 +4147,8 @@
           "remove": "删除服务器",
           "removeHint": "为所有人删除它。",
           "removeHintPersonal": "删除它及您的登录信息。"
-        }
+        },
+        "addTemplateTitle": "添加 {{name}}"
       },
       "oauthConfig": {
         "saved": "OAuth 应用已保存",
@@ -3923,7 +4183,6 @@
         "noState": "未返回 state 参数。",
         "backendRejected": "服务器拒绝了授权请求。"
       },
-      "deleteDisabledTooltip": "此服务器无法删除",
       "stdioPolicy": {
         "disabledTitle": "此部署已禁用",
         "disabledDescription": "自定义 STDIO 服务器会在 PipesHub 服务器上运行命令，因此在运维人员于部署环境中设置 {{flag}}=true（Docker Compose 的 .env，或 Helm 的 config.mcpAllowCustomStdio）之前保持关闭。在此之前，智能体无法使用此服务器的工具。你可以删除它，或将其改为远程（HTTP）服务器。",
@@ -3937,8 +4196,6 @@
         "customDescription": "通过 URL 连接任意远程 MCP 服务器。"
       },
       "toolRules": {
-        "open": "工具审批",
-        "title": "工具审批：{{name}}",
         "description": {
           "personal": "选择当助手或智能体想在您的聊天中使用这些工具时会发生什么。"
         },
@@ -3991,6 +4248,73 @@
         "orgRulesDescription": "为组织中的所有人决定哪些工具直接运行、先询问或从不运行。在这里，每个人在自己的 MCP 服务器页面设置自己的规则。",
         "userServersTitle": "成员自己的 MCP 服务器",
         "userServersDescription": "查看并移除组织成员为自己添加的 MCP 服务器。"
+      },
+      "added": {
+        "ready": "{{name}} 已添加，可以使用了。",
+        "signIn": "{{name}} 已添加。请在下方登录，以便运行它的工具。",
+        "other": "{{name}} 已添加，但还不能使用。原因见下方。",
+        "dismiss": "完成"
+      },
+      "searchYourServers": "搜索你的服务器",
+      "categories": {
+        "communication": "沟通",
+        "meetings": "会议与日历",
+        "docs": "文档与文件",
+        "projects": "项目管理",
+        "developer": "开发者工具",
+        "data": "数据与分析",
+        "sales": "销售与 CRM",
+        "support": "客户支持",
+        "finance": "财务与法务",
+        "design": "设计与白板",
+        "automation": "自动化",
+        "search": "搜索与研究",
+        "security": "安全与身份"
+      },
+      "discover": {
+        "title": "发现服务器",
+        "searchPlaceholder": "按名称或想做的事（英文）搜索，例如“schedule meetings”",
+        "searchLabel": "搜索现成的服务器",
+        "clearSearch": "清除搜索",
+        "categoriesLabel": "类别",
+        "all": "全部",
+        "allServers": "所有服务器",
+        "resultsFor_one": "“{{query}}”的结果：{{count}} 个服务器",
+        "resultsFor_other": "“{{query}}”的结果：{{count}} 个服务器",
+        "searching": "正在搜索…",
+        "catalogLoadFailed": "无法加载目录。",
+        "noMatch": "没有现成的服务器匹配“{{query}}”。你仍可以通过 URL 添加任何服务器。",
+        "whatItDoes": "能做什么",
+        "beforeYouAdd": "添加之前",
+        "readOnly": "只读",
+        "changesData": "读取并更改数据",
+        "readOnlyNote": "它只查询信息。",
+        "changesDataNote": "会更改数据的工具在运行前会先询问，除非你允许它们直接运行。",
+        "signIn": "登录",
+        "signInOauth": "每个人用自己的 {{name}} 账号登录",
+        "signInToken": "API 令牌",
+        "signInNone": "无需登录",
+        "documentation": "文档",
+        "added_one": "已添加",
+        "added_other": "已添加 {{count}} 个",
+        "addOrg": "添加到你的组织",
+        "addPersonal": "仅为自己添加",
+        "orgNote": "组织中的所有人都能看到它。每个人登录后使用。",
+        "personalNote": "只有你能看到它。",
+        "popularTitle": "你的组织中常用的服务器",
+        "popularHint": "按登录人数",
+        "peopleUse_one": "{{count}} 人在用",
+        "peopleUse_other": "{{count}} 人在用",
+        "browse": "浏览 MCP 服务器",
+        "browseHint": "添加服务器并登录后，它会出现在列表中，可拖到画布上。",
+        "fromCatalog": "来自目录",
+        "add": "添加",
+        "view": "查看",
+        "askAdmin": "共享的智能体只能使用你的组织添加的服务器。请让管理员添加一个。",
+        "sharedAgentNote": "只有管理员能添加共享智能体可用的服务器。请让管理员为你的组织添加 {{name}}。",
+        "addedSignIn": "已添加 {{name}}。在列表中登录后即可使用它的工具。",
+        "emptyBuilder": "还没有 MCP 服务器。添加一个，让这个智能体使用 Linear、Slack 或 GitHub 等应用的工具。",
+        "noAddedMatch": "你的服务器中没有匹配项。"
       }
     },
     "bots": {
@@ -4126,6 +4450,7 @@
         "candidateApproved": "已批准“{{name}}”",
         "candidateRejected": "已拒绝“{{name}}”",
         "candidateActionError": "更新候选技能失败",
+        "candidateGone": "该候选技能已审核过",
         "conflict": "此技能已在其他位置被更改",
         "conflictDescription": "请重新加载最新版本，然后再次应用您的编辑。",
         "conflictReload": "重新加载"
@@ -4615,6 +4940,9 @@
           "label": "提取服务",
           "description": "基于 LLM 的文档分类和元数据提取"
         }
+      },
+      "healthWarnings": {
+        "title": "需要注意"
       },
       "vectorDbMemory": {
         "title": "搜索索引超出了向量数据库的内存",
@@ -5439,7 +5767,6 @@
     "mcpServerAlreadyAttachedNotify": "此智能体已有另一个与 {{name}} 同类型的服务器。每种类型的服务器，一个智能体只能使用一个。",
     "webSearchOnlyOne": "只能附加一个网络搜索提供方",
     "mcpServerNodeSubtitle": "来自 MCP 服务器的工具",
-    "noMcpServersAvailable": "没有可用的 MCP 服务器",
     "webSearchLocked": "此智能体的网络搜索无法更改",
     "webSearchLoading": "正在加载网络搜索提供方…",
     "webSearchConfigureFirst": "请先配置 {{name}}",
@@ -6152,5 +6479,151 @@
       "copyDetails": "复制详细信息给管理员",
       "copied": "详细信息已复制"
     }
+  },
+  "support": {
+    "menuLabel": "联系支持",
+    "title": "联系支持",
+    "steps": {
+      "area": "类别",
+      "details": "详细信息"
+    },
+    "close": "关闭",
+    "cancel": "取消",
+    "back": "返回",
+    "continue": "继续",
+    "send": "发送请求",
+    "sending": "正在发送…",
+    "changeArea": "更改类别",
+    "change": "更改",
+    "issueOther": "其他（未列出）",
+    "areaStep": {
+      "title": "您需要哪方面的帮助？",
+      "subtitle": "请选择与您的问题最相关的类别。",
+      "suggested": "推荐",
+      "suggestion": "{{area}} 在 {{time}} 出现错误，因此我们推荐了此类别。",
+      "idea": "有想法要分享？发送反馈"
+    },
+    "areas": {
+      "connectors": {
+        "label": "连接器与同步",
+        "hint": "连接应用、同步错误或数据缺失"
+      },
+      "chat": {
+        "label": "聊天与搜索",
+        "hint": "回答、引用或搜索结果"
+      },
+      "agents": {
+        "label": "智能体与操作",
+        "hint": "创建、运行或共享智能体"
+      },
+      "files": {
+        "label": "文件与集合",
+        "hint": "上传、文件夹或文件预览"
+      },
+      "access": {
+        "label": "登录与访问",
+        "hint": "登录、密码或单点登录"
+      },
+      "people": {
+        "label": "成员与权限",
+        "hint": "邀请用户、角色或群组"
+      },
+      "other": {
+        "label": "其他",
+        "hint": "此处未列出的任何问题"
+      }
+    },
+    "details": {
+      "descriptionLabel": "发生了什么？",
+      "descriptionPlaceholder": "您当时想做什么？实际发生了什么？",
+      "descriptionMin_other": "至少 {{count}} 个字符。",
+      "descriptionMax_other": "已达到 {{count}} 个字符的上限。",
+      "attach": "附加截图",
+      "removeFile": "移除 {{name}}",
+      "fileUnsupported": "{{name}}：不支持此文件类型。",
+      "fileTooLarge": "{{name}} 超过 5 MB。",
+      "tooManyFiles": "最多可附加 5 个文件。",
+      "filesTotalTooLarge": "文件总大小不能超过 8 MB。",
+      "smtpTitle": "此工作区尚未设置邮件",
+      "smtpBody": "我们会为您生成一封邮件，您可以用自己的邮件应用发送到 {{email}}。",
+      "smtpAdmin": "如需直接发送请求，请在工作区设置中配置 SMTP。",
+      "smtpMember": "如需直接发送请求，请让管理员配置 SMTP。",
+      "includeErrors_other": "包含最近的 {{count}} 个错误",
+      "errorLine": "{{area}}：{{time}} 出现错误 {{status}}",
+      "errorLineUnknown": "{{time}} 出现错误 {{status}}",
+      "sentWith": "随请求一并发送：{{list}}。",
+      "sentParts": {
+        "workspace": "您的工作区",
+        "identity": "您的姓名和邮箱",
+        "browser": "您的浏览器",
+        "errors": "最近的错误"
+      },
+      "viewDetails": "查看详细信息",
+      "hideDetails": "隐藏详细信息",
+      "rows": {
+        "issue": "问题类别",
+        "workspace": "工作区",
+        "signedInAs": "登录身份",
+        "browser": "浏览器",
+        "recentErrors": "最近的错误"
+      }
+    },
+    "blocked": {
+      "area": "请选择一个类别以继续。",
+      "description": "“发生了什么？”至少需要 {{min}} 个字符（还差 {{left}} 个）。"
+    },
+    "result": {
+      "sentTitle": "请求已发送",
+      "sentBody": "支持团队已收到您的请求。我们已向您发送一份副本，回复将发送到您的收件箱。",
+      "pendingTitle": "仍在发送",
+      "pendingBody": "发送到 {{email}} 的邮件比平时慢。如果没有收到回复，请凭此编号联系我们。",
+      "referenceLabel": "您的编号",
+      "copyReference": "复制编号",
+      "quote": "就同一问题再次联系我们时，请提供此编号。",
+      "done": "完成"
+    },
+    "email": {
+      "title": "通过您的邮件应用发送",
+      "noSmtp": "此处尚未设置邮件，因此请求 {{reference}} 未发送。请用您自己的邮件应用发送此邮件，以便支持团队收到。",
+      "failed": "我们无法通过邮件发送请求 {{reference}}。请用您自己的邮件应用发送此邮件，以便支持团队收到。",
+      "limit": "您在过去一小时内已发送多个请求。请通过您的邮件应用发送这一条。",
+      "unsaved": "我们未能发送您的请求。请用您自己的邮件应用发送此邮件，以便支持团队收到。",
+      "to": "收件人",
+      "subject": "主题",
+      "copy": "复制邮件",
+      "copied": "已复制",
+      "open": "打开邮件应用",
+      "shortened": "邮件应用中的内容已缩短。使用“复制邮件”可获取完整内容。",
+      "attachFiles_other": "您的 {{count}} 个文件不在这封邮件中，请在邮件应用中自行添加附件。",
+      "copyFallback": "无法自动复制。邮件内容已选中，请按 Ctrl+C（Mac 上按 ⌘C）。"
+    },
+    "errors": {
+      "load": "无法加载支持选项。",
+      "retry": "重试",
+      "send": "无法发送您的请求，请重试。",
+      "emailInstead": "改用邮件发送"
+    }
+  },
+  "feedback": {
+    "menuLabel": "发送反馈",
+    "title": "发送反馈",
+    "subtitle": "告诉我们哪些好用、哪些不好用，以及您希望看到什么。",
+    "kindIssue": "一般反馈",
+    "kindFeedback": "功能请求",
+    "descriptionPlaceholder": "发生了什么，或我们应该改进什么？",
+    "addFiles": "添加文件",
+    "removeFile": "移除",
+    "fileHint": "可选。最多 5 个文件，每个 5 MB。图片、PDF、文本或 CSV。",
+    "cancel": "取消",
+    "submit": "提交",
+    "needReply": "需要回复？联系支持",
+    "success": "谢谢，我们已收到你的反馈。",
+    "pending": "发送到 {{email}} 的邮件耗时比平时更长。如果您没有收到回复，请联系我们。",
+    "submitError": "提交失败，请重试。",
+    "descriptionTooShort": "请再补充一些细节（至少 10 个字符）。",
+    "invalidType": "不支持该文件类型。",
+    "fileTooLarge": "每个文件不能超过 5 MB。",
+    "tooManyFiles": "最多只能附加 5 个文件。",
+    "filesTotalTooLarge": "文件总大小不能超过 8 MB。"
   }
 }

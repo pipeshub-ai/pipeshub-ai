@@ -14,10 +14,8 @@ pytestmark = pytest.mark.asyncio
 
 @pytest.fixture(autouse=True)
 def _tracking() -> Iterator[None]:
-    token = degraded_notice._seen.set(None)
-    degraded_notice.track()
-    yield
-    degraded_notice._seen.reset(token)
+    with degraded_notice.tracking():      # every list of the module, reset after: a sync fixture's context is the worker's own
+        yield
 
 
 async def _complete(gen: AsyncGenerator[dict, None]) -> dict:

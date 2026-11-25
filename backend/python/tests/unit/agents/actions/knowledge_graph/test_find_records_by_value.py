@@ -19,7 +19,8 @@ from app.modules.named_entities.linking.service import Linking, LinkResult, Link
 from app.modules.retrieval.entity_permissions import EntityAccessContext
 from app.modules.retrieval.selection_scope import SelectionScope
 from app.services.graph_db.interface.graph_db_provider import AccessCheck
-from tests.support.provider_errors import assert_text_free, openai_error, with_cause
+from tests.support.log_capture import assert_text_free
+from tests.support.provider_errors import SENTINELS, openai_error, with_cause
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -988,4 +989,4 @@ async def test_a_failed_name_link_is_logged_by_type_without_the_provider_text(
     assert (line.levelno, line.error_type, line.cause_type, line.exc_info) == (
         logging.WARNING, "EntityAccessError", "RateLimitError", None,
     )
-    assert_text_free(caplog.records)
+    assert_text_free(caplog.records, *SENTINELS)

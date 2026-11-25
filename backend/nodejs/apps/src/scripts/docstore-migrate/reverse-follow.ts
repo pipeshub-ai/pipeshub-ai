@@ -451,7 +451,7 @@ async function rollbackOnlineLocked(
         ok: true,
         stage: 'done',
         freezeMs: Date.now() - t0,
-        message: `MongoDB is the store again at a new epoch and PostgreSQL is closed, but the job record could not be finished (${e instanceof Error ? e.message : String(e)}): end the job and remove the follower's markers by hand, then roll the application back to DOC_STORE=mongo now`,
+        message: `MongoDB is the store again at a new epoch and PostgreSQL is closed, but the job record could not be finished (${e instanceof Error ? e.message : String(e)}): end the job and remove the follower's markers by hand, then roll the application back to DOC_STORE=mongo now.${h.note}`,
       };
     }
     return {
@@ -460,8 +460,7 @@ async function rollbackOnlineLocked(
       verify: v,
       applied: r.applied,
       freezeMs: Date.now() - t0,
-      message:
-        'MongoDB is the store again at a new epoch and PostgreSQL is closed: roll the application back to DOC_STORE=mongo now',
+      message: `MongoDB is the store again at a new epoch and PostgreSQL is closed: roll the application back to DOC_STORE=mongo now.${h.note}`,
     };
   } catch (e) {
     const why = e instanceof Error ? e.message : String(e);

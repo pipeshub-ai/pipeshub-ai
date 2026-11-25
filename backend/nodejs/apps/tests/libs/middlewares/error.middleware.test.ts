@@ -13,11 +13,13 @@ import {
   ServiceUnavailableError,
 } from '../../../src/libs/errors/http.errors'
 import { ValidationError } from '../../../src/libs/errors/validation.error'
+import { StorageUrlParseError } from '../../../src/libs/errors/storage.errors'
 import { markClientSafe } from '../../../src/libs/errors/reader-friendly'
 import { KafkaError } from '../../../src/libs/errors/kafka.errors'
 import { RedisServiceNotInitializedError } from '../../../src/libs/errors/redis.errors'
 import { ConnectionError } from '../../../src/libs/errors/database.errors'
 import { SERVICE_UNAVAILABLE_MESSAGE } from '../../../src/libs/errors/backend-error'
+import { INVALID_PATH_SEGMENT_MESSAGE } from '../../../src/libs/middlewares/safe-path-params.middleware'
 import { Logger } from '../../../src/libs/services/logger.service'
 import { MongoNetworkError, MongoServerSelectionError } from 'mongodb'
 
@@ -275,6 +277,57 @@ describe('ErrorMiddleware', () => {
     })
   })
 
+  describe('a path segment Express cannot decode', () => {
+    const RAW = 'n5nc-fake%40example.com%ZZ'
+    // Built as Express 4's Layer.match builds it from decode_param's URIError.
+    const routerError = (): Error =>
+      Object.assign(new URIError(`Failed to decode param '${RAW}'`), { status: 400, statusCode: 400 })
+
+    it('answers 400 with a fixed sentence and does not echo the segment', () => {
+      const res = createMockResponse()
+
+      handler(routerError(), createMockRequest(), res, createMockNext())
+
+      expect(res.status.calledWith(400)).to.be.true
+      const response = res.json.firstCall.args[0]
+      expect(response.error.code).to.equal('HTTP_BAD_REQUEST')
+      expect(response.error.message).to.equal(INVALID_PATH_SEGMENT_MESSAGE)
+      expect(JSON.stringify(response)).to.not.include(RAW)
+    })
+
+    it('logs it once at warn as bad_request, without the router error or its text', () => {
+      const error = routerError()
+
+      handler(error, createMockRequest(), createMockResponse(), createMockNext())
+
+      expect(loggerErrorStub.called).to.be.false
+      expect(loggerWarnStub.calledOnce).to.be.true
+      const fields = loggerWarnStub.firstCall.args[1]
+      expect(fields).to.include({ status: 400, error_class: 'bad_request', error_type: 'BadRequestError' })
+      expect(fields.error).to.not.equal(error)
+      expect(fields.error.cause).to.equal(undefined)
+      expect(fields.error.message).to.not.include(RAW)
+    })
+
+    it('keeps a URIError without a status (our own decode) on the 500 path', () => {
+      const res = createMockResponse()
+
+      handler(new URIError('URI malformed'), createMockRequest(), res, createMockNext())
+
+      expect(res.status.calledWith(500)).to.be.true
+      expect(loggerErrorStub.calledOnce).to.be.true
+      expect(loggerErrorStub.firstCall.args[1]).to.include({ error_class: 'internal' })
+    })
+
+    it('keeps a 400-status error that is not a URIError on the 500 path', () => {
+      const res = createMockResponse()
+
+      handler(Object.assign(new Error('boom'), { status: 400 }), createMockRequest(), res, createMockNext())
+
+      expect(res.status.calledWith(500)).to.be.true
+    })
+  })
+
   describe('BaseError handling', () => {
     it('should respond with correct status code for BadRequestError', () => {
       const error = new BadRequestError('Invalid input')
@@ -397,6 +450,19 @@ describe('ErrorMiddleware', () => {
 
       const response = res.json.firstCall.args[0]
       expect(response.error.metadata).to.deep.equal({ extra: 'info' })
+    })
+
+    it("never answers a storage vendor's text, in development either", () => {
+      process.env.NODE_ENV = 'development'
+      const error = new StorageUrlParseError('Invalid S3 URL format', { originalError: 'n5o-vendor-text bucket/org/report.pdf', code: 'ERR_INVALID_URL' })
+      const res = createMockResponse()
+
+      handler(error, createMockRequest(), res, createMockNext())
+
+      expect(res.status.calledWith(400)).to.be.true
+      const response = res.json.firstCall.args[0]
+      expect(response.error.metadata).to.include({ code: 'ERR_INVALID_URL' })
+      expect(JSON.stringify(response)).to.not.contain('n5o-vendor-text')
     })
 
     for (const mode of ['development', 'production']) {

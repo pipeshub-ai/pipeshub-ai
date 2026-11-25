@@ -639,6 +639,46 @@ export class PgOAuthTokenRepository
     return this.revokeById(id, clientId, null, revokedBy, reason);
   }
 
+  setAccessKnowledgeLimit(
+    id: string,
+    clientId: string,
+    userId: string,
+    limit: KnowledgeLimit | null,
+  ): Promise<AccessTokenDto | null> {
+    const tid = id24(id);
+    const u = id24(userId);
+    if (tid === undefined || u === undefined || !goodKey(clientId)) {
+      return Promise.resolve(null);
+    }
+    return inKeyUnit<AccessTokenDto | null>(
+      () => clientOrg(clientId),
+      true,
+      null,
+      async (k) => {
+        const now = new Date();
+        const { rows } = await k.query<AccessRow>(
+          `/* pipeshub:oauth.access_set_knowledge_limit */ UPDATE oauth.access_tokens SET knowledge_limit = $5::jsonb, updated_at = $6
+           WHERE org_id = $1 AND id = $2 AND client_id = $3 AND user_id = $4 AND NOT is_revoked AND expires_at > $6 RETURNING ${ACCESS}`,
+          [
+            k.orgId,
+            tid,
+            clientId,
+            u,
+            limit === null
+              ? null
+              : JSON.stringify({
+                  apps: limit.apps,
+                  recordGroups: limit.recordGroups,
+                  records: limit.records,
+                }),
+            now,
+          ],
+        );
+        return rows[0] ? accessDto(rows[0]) : null;
+      },
+    );
+  }
+
   // ---- list -----------------------------------------------------------------------------------------------------------------
   async listLiveForClient(
     clientId: string,

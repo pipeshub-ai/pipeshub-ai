@@ -11,7 +11,7 @@ from app.services.messaging.config import (
     StreamMessage,
     messaging_env,
 )
-from app.core.envelope import DuplicateEnvelope, EnvelopeRejected, decode_message, open_configured
+from app.core.envelope import DuplicateEnvelope, EnvelopeRejected, Inbox, decode_message, open_configured, record_processed
 from app.core.org_context import spawn_detached
 from app.services.messaging import message_log
 from app.services.messaging.error_classifier import MessageErrorClassifier, MessageErrorType
@@ -47,10 +47,12 @@ class RedisStreamsConsumer(IMessagingConsumer):
         config: RedisStreamsConfig,
         retry_manager: Optional[IRetryTracker] = None,
         provider: "Optional[IRedisConnectionProvider]" = None,
+        inbox: Inbox | None = None,
     ) -> None:
         self.logger = logger
         self.config = config
         self.retry_manager = retry_manager
+        self.inbox = inbox  # skips events this group already finished (see app.services.messaging.inbox)
         # Constructor accepts an explicit provider so callers sharing one
         # connection provider process-wide can inject it (R11); otherwise
         # one is looked up/created from this config, so behaviour for
@@ -574,12 +576,12 @@ class RedisStreamsConsumer(IMessagingConsumer):
             # Carry the producer's trace id into consumer-side logs.
             message_log.bind_envelope(raw)
             try:
-                opened = await open_configured(stream_name, raw)
+                opened = await open_configured(stream_name, raw, inbox=self.inbox, consumer=self.config.group_id)
             except DuplicateEnvelope:
                 message_log.note(outcome="skipped", reason="duplicate")
                 return True, False
             except EnvelopeRejected as e:
-                message_log.note(reason="envelope_rejected", code=e.reason)
+                message_log.note(reason="envelope_rejected", code=e.reason, **e.facts())
                 return False, True
             message_log.bind_opened(opened.ctx, opened.message)
             try:
@@ -590,6 +592,8 @@ class RedisStreamsConsumer(IMessagingConsumer):
             result = await self.message_handler(message)
             if not result:
                 message_log.note(reason="handler_false")
+            else:
+                await record_processed(self.inbox, self.config.group_id, opened.ctx)
             return result, False
 
         except Exception as e:

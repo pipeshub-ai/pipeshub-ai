@@ -20,6 +20,7 @@ import pytest
 
 from app.config.constants.arangodb import OriginTypes
 from app.services.record_content.models import (
+    RecordAccessDeniedError,
     RecordContentUnavailableError,
     RecordTooLargeError,
     ResolvedRecordContent,
@@ -452,7 +453,7 @@ class TestConnectorFetch:
         mock_ctx.__aexit__ = AsyncMock(return_value=False)
         mock_session.get = MagicMock(return_value=mock_ctx)
 
-        with pytest.raises(RecordContentUnavailableError, match="denied"):
+        with pytest.raises(RecordAccessDeniedError, match="denied"):
             await self.strategy.fetch(
                 record,
                 actor=self.actor,

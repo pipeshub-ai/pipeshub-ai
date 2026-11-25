@@ -354,6 +354,14 @@ body {
   outline-offset: -2px;
 }
 
+/* MCP catalog card titles reset every style inline (all: unset), outline included, so the
+   keyboard ring has to win over the inline style */
+.mcp-card-title:focus-visible {
+  outline: 2px solid var(--focus-8) !important;
+  outline-offset: 2px !important;
+  border-radius: var(--radius-1) !important;
+}
+
 /* Records table column boundaries (kb-column-widths.tsx): a hairline appears on hover / drag */
 .kb-col-resize::after {
   content: '';
@@ -596,6 +604,23 @@ input[type="submit"],
 input[type="reset"],
 summary {
   cursor: pointer;
+}
+
+/* ========================
+   Secret fields
+   ======================== */
+
+/* API keys, tokens and client secrets are masked text inputs, not type="password":
+   browsers treat every password input as a login and fill saved credentials into it
+   (app/components/ui/secret-text-field.tsx). The placeholder stays readable. */
+.secret-field-masked input,
+input.secret-field-masked {
+  -webkit-text-security: disc;
+}
+
+.secret-field-masked input::placeholder,
+input.secret-field-masked::placeholder {
+  -webkit-text-security: none;
 }
 
 /* ========================

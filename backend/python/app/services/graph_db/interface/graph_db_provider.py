@@ -12,6 +12,7 @@ import time
 import unicodedata
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable, Collection, Iterable, Mapping, Sequence
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Optional, Protocol, TypeVar
 
@@ -35,12 +36,18 @@ from app.services.graph_db.common.record_visibility import (
 from app.services.graph_db.conditions import Cond
 from app.services.graph_db.push_claim import PushClaim, PushExpect, PushSet
 from app.services.graph_db.taxonomy import MAX_TAXONOMY_ALIASES
+from app.utils import error_class
 from app.utils.concurrency import GRAPH_FANOUT_CONCURRENCY, gather_with_concurrency
 from app.utils.kh_breadcrumbs import browse_scope
 from app.utils.kh_chain_tops import place_chain_tops
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 _T = TypeVar("_T")
+
+# Set by `KnowledgeHubService._walk_pages` while it reads the rows before a numbered page, for that one request: those reads only place the
+# page, so a backend may decide its listing once for all of them and leave out what only a row on show needs. The page itself is read without it.
+# ``page_rows`` is the page's own size, for a backend that must read no more than a page at a time.
+KH_SKIP_READS: ContextVar[dict[str, Any] | None] = ContextVar("kh_skip_reads", default=None)
 
 # Set once `stamp_kh_listing_state` has covered every node written before.
 KH_LISTING_STATE_FLAG = "/migrations/kh_listing_state_v1"
@@ -770,7 +777,9 @@ class IGraphDBProvider(ABC):
         services, so it must be idempotent.
 
         Returns:
-            bool: True if schema was ensured successfully, False otherwise
+            bool: True if schema was ensured successfully, False otherwise. The connector
+            service tries 3 times at startup; if every try returns False it logs one error,
+            counts ``graph_schema_not_ensured`` and starts anyway.
         """
         pass
 
@@ -1652,6 +1661,30 @@ class IGraphDBProvider(ABC):
             collection (str): Collection name
             graph_name (str): Graph name (default: "knowledgeGraph")
             transaction (Optional[Any]): Optional transaction context
+        """
+        pass
+
+    @abstractmethod
+    async def delete_node_if_match(
+        self,
+        key: str,
+        collection: str,
+        expected: dict[str, Any],
+        graph_name: str = "knowledgeGraph",
+        transaction: str | None = None,
+    ) -> bool:
+        """Delete the node and every edge touching it only while every field in
+        ``expected`` still holds its value (``None`` means absent), as one atomic
+        unit: the check and the delete cannot be split by another writer.
+
+        Returns:
+            True iff this call deleted the node; False when it is missing or a
+            field no longer matches (the node and its edges are left unchanged).
+
+        Raises:
+            ValueError: when ``expected`` is empty, or for ``records``, whose
+                type documents go with them (use ``delete_nodes_and_edges``).
+            Exception: on query failure.
         """
         pass
 
@@ -2567,15 +2600,20 @@ class IGraphDBProvider(ABC):
         transaction: str | None = None,
         *,
         clock_at_most: float | None = None,
+        unset: Sequence[str] = (),
     ) -> bool:
         """Merge ``updates`` into the node only while every field in
         ``expected`` still holds its value (``None`` means absent), in one
         statement. Unlike ``update_node_if_match`` the document is merged,
-        not replaced. A ``None`` in ``updates`` removes or nulls the field.
+        not replaced. A ``None`` in ``updates`` removes or nulls the field,
+        as the store does (with ``unset`` given, a ``None`` in ``updates`` removes it).
         ``clock_at_most`` (epoch seconds): also only while the store's own
         clock (`store_time`), read by the statement as it writes, is not past
         it, so a value computed from an earlier read of that clock is never
-        written later than the caller allowed.
+        written later than the caller allowed. ``unset`` names fields the same
+        write removes (the attribute is gone, never left null: an older strict
+        schema rejects a stored null it does not list); with ``unset`` given, a
+        ``None`` in ``updates`` removes its field in that write too.
 
         Returns:
             True iff the write applied.
@@ -2593,10 +2631,13 @@ class IGraphDBProvider(ABC):
         updates: dict[str, Any],
         conditions: Sequence[Cond],
         transaction: str | None = None,
+        *,
+        unset: Sequence[str] = (),
     ) -> bool:
         """Merge ``updates`` into the node only while every condition holds, in
-        one statement. ``update_node_fields_if_match`` with named operators
-        (``Cond``: ``eq``, ``is_null``, ``null_or_eq``, ``null_or_le``) instead of
+        one statement; ``unset`` names fields the same write removes (never left
+        null). ``update_node_fields_if_match`` with named operators
+        (``Cond``: ``eq``, ``is_null``, ``null_or_eq``, ``null_or_le``, ``one_of``) instead of
         equality only, so "unset or not newer than" can be asked. A ``None`` in
         ``updates`` removes or nulls the field.
 
@@ -2768,7 +2809,7 @@ class IGraphDBProvider(ABC):
 
     @abstractmethod
     async def update_indexing_status_for_record_ids(
-        self, record_ids: list[str], status: str
+        self, record_ids: list[str], status: str, *, fields: dict[str, Any] | None = None
     ) -> None:
         """
         Set indexingStatus to the specified status for each id (deduplicated).
@@ -2779,8 +2820,24 @@ class IGraphDBProvider(ABC):
         Args:
             record_ids: List of record IDs to update
             status: Target status (e.g., ProgressStatus.NOT_STARTED.value, ProgressStatus.QUEUED.value)
+            fields: Further fields set in the same statement (a Force reindex's refresh intent); a null value
+                clears the field. With ``fields`` a failed statement **raises** (a lost write must not be read as a
+                request that was made); without it errors are logged and swallowed
         """
         pass
+
+    async def update_record_fields_for_ids(self, record_ids: list[str], fields: dict[str, Any]) -> int:
+        """Set ``fields`` on each existing record that is neither internal nor a placeholder, **whatever its status**,
+        and write nothing else. Returns how many records were written; a failure raises (the caller must not read a
+        lost write as a request that was made). Implemented for ArangoDB, Neo4j and PostgreSQL."""
+        raise NotImplementedError
+
+    async def get_records_with_refresh_intent(
+        self, org_id: str, *, after_key: str | None = None, limit: int = 100
+    ) -> list[dict[str, Any]]:
+        """Live records of the org that carry a ``refreshIntentId``, whatever their status, in key order after
+        ``after_key``. Served by an index that holds only such records. A failure raises."""
+        raise NotImplementedError
 
     @abstractmethod
     async def reset_indexing_status_for_connector(
@@ -3312,6 +3369,10 @@ class IGraphDBProvider(ABC):
         Get all child records for a parent record by parent_external_record_id.
         Optionally filter by record_type.
 
+        Matched on the child's stored ``externalParentId``, not on hierarchy
+        edges: a child whose PARENT_CHILD edge was removed is still returned,
+        which the web connector's relink after a full sync relies on.
+
         Live children only by default, so a folder whose children are all in
         the trash reads as empty.
 
@@ -3697,26 +3758,47 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def get_graph_user_keys_by_mongo_user_ids_all_orgs(
+        self,
+        user_ids: list[str],
+        *,
+        chunk_size: int,
+    ) -> dict[str, str]:
+        """System-scope variant of ``get_graph_user_keys_by_mongo_user_ids`` for maintenance jobs that hold ids of every
+        organisation (the service-account kind backfill). A Mongo ``userId`` is unique across organisations.
+
+        Refuses (PermissionError) unless the ambient context is an explicit ``system(...)`` scope, so a request handler
+        cannot run it. Returns the ids that were found, in any organisation; an id nobody holds is absent from the answer
+        (it does not raise). On ArangoDB and Neo4j it is one lookup over the whole graph; on PostgreSQL, where every
+        statement is bound to one organisation, it visits each active organisation in turn and joins the answers.
+        The call sites are pinned by ``tests/unit/services/graph_db/test_system_scope_lookups_allowlist.py``.
+        """
+        pass
+
+    @abstractmethod
     async def get_graph_user_keys_by_mongo_user_ids(
         self,
         user_ids: list[str],
         org_id: str | None = None,
         *,
         chunk_size: int,
+        allow_missing: bool = False,
     ) -> dict[str, str]:
         """
         Look up graph user document keys for Mongo user IDs.
 
         Args:
             user_ids: Mongo user IDs (user.userId)
-            org_id: Optional organization ID to scope results
+            org_id: Organization ID the users must belong to; required (a missing or empty
+                value raises ValueError instead of matching users of any organization)
             chunk_size: Max IDs per graph query batch
+            allow_missing: Return the ids that were found instead of raising when some are not
 
         Returns:
             Mapping of Mongo userId -> graph _key
 
         Raises:
-            ValueError: If any user_id was not found in the graph for org_id
+            ValueError: If org_id is missing, or any user_id was not found in the graph for org_id
         """
         pass
 
@@ -4150,32 +4232,6 @@ class IGraphDBProvider(ABC):
         transaction: str | None = None,
     ) -> list[dict]:
         """List all permissions for a KB with entity details."""
-        pass
-
-    @abstractmethod
-    async def list_kb_records(
-        self,
-        kb_id: str,
-        user_id: str,
-        org_id: str,
-        skip: int,
-        limit: int,
-        search: str | None,
-        record_types: list[str] | None,
-        origins: list[str] | None,
-        connectors: list[str] | None,
-        indexing_status: list[str] | None,
-        date_from: int | None,
-        date_to: int | None,
-        sort_by: str,
-        sort_order: str,
-        folder_id: str | None = None,
-    ) -> tuple[list[dict], int, dict]:
-        """List records in a KB. Returns (records, total_count, available_filters).
-
-        An empty list means no matching record or no access. A query that could
-        not be read raises; it is never reported as an empty list.
-        """
         pass
 
     @abstractmethod
@@ -5466,7 +5522,8 @@ class IGraphDBProvider(ABC):
 
         Returns:
             Dict with record, knowledgeBase, folder, metadata, permissions if accessible;
-            None if not, and always None for a record in the trash.
+            None if not, and always None for a record in the trash. Any failure to read
+            the graph raises: a read that failed is never None.
         """
         pass
 
@@ -6005,6 +6062,17 @@ class IGraphDBProvider(ABC):
         edges were deleted."""
         raise NotImplementedError
 
+    async def get_user_granted_records(
+        self,
+        connector_id: str,
+        user_id: str,
+        transaction: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """The connector's records the user holds a direct USER grant on, as ``{id, externalRecordId, recordType}``.
+        Grants through groups, teams, the organization or inheritance are not included. A failed read raises: an
+        empty list must mean the user holds no such grant, since callers add and remove grants from it."""
+        raise NotImplementedError
+
     @abstractmethod
     async def get_uploaded_document_ids(
         self,
@@ -6439,22 +6507,6 @@ class IGraphDBProvider(ABC):
                 - deleted_groups_count (int): Number of groups deleted
                 - deleted_drives_count (int): Number of drives deleted
                 - error (str, optional): Error message if deletion failed
-        """
-        pass
-
-    @abstractmethod
-    async def get_key_by_external_file_id(
-        self,
-        external_file_id: str
-    ) -> str | None:
-        """
-        Get internal key by external file ID.
-
-        Args:
-            external_file_id (str): External file ID
-
-        Returns:
-            Optional[str]: Internal key if found, None otherwise
         """
         pass
 
@@ -7146,24 +7198,6 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
-    async def get_key_by_external_message_id(
-        self,
-        external_message_id: str,
-        transaction: str | None = None
-    ) -> str | None:
-        """
-        Get internal key by external message ID.
-
-        Args:
-            external_message_id (str): External message ID
-            transaction (Optional[str]): Optional transaction ID
-
-        Returns:
-            Optional[str]: Internal key if found, None otherwise
-        """
-        pass
-
-    @abstractmethod
     async def get_message_id_header_by_key(
         self,
         record_key: str,
@@ -7180,28 +7214,6 @@ class IGraphDBProvider(ABC):
 
         Returns:
             Optional[str]: messageIdHeader value if found, None otherwise
-        """
-        pass
-
-    @abstractmethod
-    async def get_related_mails_by_message_id_header(
-        self,
-        message_id_header: str,
-        exclude_key: str,
-        collection: str,
-        transaction: str | None = None
-    ) -> list[str]:
-        """
-        Find all mail records with the same messageIdHeader, excluding a specific key.
-
-        Args:
-            message_id_header (str): messageIdHeader value to search for
-            exclude_key (str): Record key to exclude from results
-            collection (str): Collection name (e.g., "records" or "mails")
-            transaction (Optional[str]): Optional transaction ID
-
-        Returns:
-            List[str]: List of record keys (_key or id) matching the criteria
         """
         pass
 
@@ -7446,6 +7458,9 @@ class IGraphDBProvider(ABC):
 
         Returns:
             List[Dict]: List of deleted permission edges (OLD values)
+
+        Raises:
+            Exception: the delete failed. Inside a transaction a write conflict must reach its owner to re-run the block.
         """
         pass
 
@@ -7468,6 +7483,9 @@ class IGraphDBProvider(ABC):
 
         Returns:
             List[Dict]: List of updated permission edges
+
+        Raises:
+            Exception: the update failed. Inside a transaction a write conflict must reach its owner to re-run the block.
         """
         pass
 
@@ -7638,6 +7656,10 @@ class IGraphDBProvider(ABC):
         Returns:
             List of dicts with ``{name, _key, creatorName}`` for each matching
             agent.  Returns an empty list when no agents match.
+
+        Raises:
+            Exception: the store's error when it cannot be read. Deletes are
+            refused on this answer, so a failure must never read as no agents.
         """
         pass
 
@@ -7661,6 +7683,10 @@ class IGraphDBProvider(ABC):
         Returns:
             List of dicts with ``{name, _key, creatorName}`` for each matching
             agent.  Returns an empty list when no agents match.
+
+        Raises:
+            Exception: the store's error when it cannot be read. Deletes are
+            refused on this answer, so a failure must never read as no agents.
         """
         pass
 
@@ -7747,6 +7773,14 @@ class IGraphDBProvider(ABC):
     # (a dict it fills as ``{app_id: granted ids}``): the global listing then lets
     # every connector's page read its grants beside the others.
     kh_grants_per_connector = False
+    # Rows one read of the rows before a numbered page may take (``KnowledgeHubService._walk_pages``); 0 is a page's worth, a read per page. Raised by a backend
+    # whose connector page costs about the same for a large window as for one page: its cost is per read, not per row (and whose memory does not grow with it).
+    kh_skip_rows = 0
+
+    @property
+    def kh_browse_skip_rows(self) -> int:
+        """``kh_skip_rows`` for a browse below a start (``flatten=False``), for a backend whose browse page costs otherwise than its flatten."""
+        return self.kh_skip_rows
 
     async def get_knowledge_hub_warm_samples(self) -> list[dict[str, str]]:
         """Samples for warming the listing statements' plans, in order of preference, at most one per App: each a user
@@ -7754,6 +7788,11 @@ class IGraphDBProvider(ABC):
         ``recordId``). Empty when the backend has no use for it. The caller drops a sample whose App the user has
         switched off (demo data), which only it can read."""
         return []
+
+    async def kh_refresh_plans(self, max_age: float | None = None) -> int:
+        """Plan again, off the request path, the listing statements in use whose cached plan is older than ``max_age``;
+        how many were planned. 0 for a backend with no plan cache to keep."""
+        return 0
 
     async def kh_scope_enabled(self) -> bool:
         return False
@@ -7850,10 +7889,12 @@ class IGraphDBProvider(ABC):
         except NotImplementedError:
             raise
         except Exception as exc:
-            self.logger.error(
-                "check_access failed for %d nodes and %d vrids: %s",
-                len(asked_nodes), len(asked_vrids), type(exc).__name__,
-            )
+            if not error_class.chain_stamped(exc):  # a client failure already wrote db.query.failed
+                self.logger.log(
+                    error_class.level_for(error_class.classify_error(exc)),
+                    "check_access failed for %d nodes and %d vrids: %s",
+                    len(asked_nodes), len(asked_vrids), type(exc).__name__,
+                )
             raise PermissionVerificationUnavailableError() from exc
         records_by_vrid: dict[str, str] = {}
         for row in rows:
@@ -9326,10 +9367,14 @@ class IGraphDBProvider(ABC):
         origin: str,
         edges: list[dict],
         transaction: str | None = None,
+        *,
+        keep_edge_types: Collection[str] = (),
     ) -> None:
         """Replace the record's ``entityRelations`` edges of ``origin`` to nodes of
         ``to_collections`` with *edges*. A failed write must leave the old edges,
         even with no transaction, or a caller that logs the failure and commits.
+        Old edges whose ``edgeType`` is in *keep_edge_types* are not deleted;
+        new edges of those types are still written.
         """
 
     @abstractmethod

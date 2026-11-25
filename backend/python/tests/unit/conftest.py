@@ -9,6 +9,9 @@ from collections.abc import Iterator
 import pytest
 
 from tests.support.edition_defaults import unit_test_fixtures
+from tests.support.mock_config_epoch import (
+    _epoch_of_a_collection_whose_config_is_a_mock,  # noqa: F401  (autouse)
+)
 
 
 @pytest.fixture(autouse=True)
@@ -33,6 +36,15 @@ def _record_and_org_deletes_do_not_reach_storage(monkeypatch: pytest.MonkeyPatch
     from app.services.paid_cache.cache import NullPaidResultCache
 
     monkeypatch.setattr(access, "paid_cache_for", lambda *_a, **_k: NullPaidResultCache())
+
+
+@pytest.fixture(autouse=True)
+def _no_neo4j_restart_check(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A knowledge-hub listing on Neo4j first reads the server's start time (`_kh_server_restarted`); unit tests script
+    and count the statements a client is sent, so the read is off unless a test turns it on."""
+    neo4j_provider = sys.modules.get("app.services.graph_db.neo4j.neo4j_provider")
+    if neo4j_provider is not None:
+        monkeypatch.setattr(neo4j_provider.Neo4jProvider, "_KH_SERVER_CHECK_S", 0)
 
 
 @pytest.fixture(autouse=True)
