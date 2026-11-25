@@ -26,6 +26,7 @@ from tests.integration.graph_permissions.write_path_support import (
     _suffix,
 )
 
+from .layers import as_org
 from .scenario import load_all
 from .test_generation_paths import backend  # noqa: F401
 
@@ -145,7 +146,7 @@ async def test_another_organisations_start_id_gives_nothing(backend) -> None:
     conn, ids = await _records(backend, ["a", "b"])
     await backend.add_node_relation(ids["a"], ids["b"], {"relationshipType": "PARENT_CHILD", **STAMPS})
     assert len(await _subtree(backend, [ids["a"]])) == 2
-    with for_org("another-org", job="test"):
+    with as_org("another-org"):
         assert await backend.provider.permission_stamp_graph().subtree_vrids("another-org", [ids["a"]]) == []
 
 

@@ -10,6 +10,7 @@ import uuid
 import pytest
 
 from app.services.pg_runtime import RuntimeDb
+from tests.integration.org_context_enforced import enforced_org_context  # noqa: F401  (autouse: enforce, no violation)
 from tests.support.require_service import missing
 
 URL = os.environ.get("PG_RUNTIME_TEST_URL", "")

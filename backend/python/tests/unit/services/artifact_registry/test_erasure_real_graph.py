@@ -27,6 +27,7 @@ from unittest.mock import patch
 import pytest
 
 from app.config.constants.arangodb import CollectionNames
+from app.core.org_context import for_org
 from app.models.entities import ArtifactType
 from app.services.artifact_registry.copies import ArtifactCopier, CopyRequest
 from app.services.artifact_registry.erasure import ArtifactEraser
@@ -430,7 +431,9 @@ async def test_qa15g_5_a_deactivated_uploader_and_one_gone_from_the_graph(graph:
         graph, blobs, org_id=org_id, canary=kept_canary, recorded=False, reader_key=f"ukey-{reader}", **_member(gone),
     )
     handler = EntityEventService(logging.getLogger("qa15g.entity"), graph, app_container=None)  # type: ignore[arg-type]
-    assert await handler.process_event("userDeleted", {"email": f"{deactivated}@corp.example", "orgId": org_id})
+    # The consumer binds the message's org before it calls the handler (message_log.bind_envelope); this calls it directly.
+    with for_org(org_id, job="entity-event"):
+        assert await handler.process_event("userDeleted", {"email": f"{deactivated}@corp.example", "orgId": org_id})
     await graph.delete_nodes_and_edges([f"ukey-{gone}"], CollectionNames.USERS.value)
     kept_before = await census(graph, blobs, [kept_canary, *gone_older])
     eraser = _attachment_eraser(graph, blobs)

@@ -78,6 +78,7 @@ from .kh_worlds import (
     XLINKBADGE,
     XSTUB,
 )
+from .layers import world_org
 from .runner import OracleLayer
 from .scenario import Scenario, load_all
 
@@ -324,8 +325,9 @@ async def test_a_grant_to_another_connectors_principal_lists_opens_and_passes_th
             assert await children_of(layer, XGRANT, "u", "f", "recordGroup") == {"m": False}, layer.name
             assert await children_of(layer, XGRANT, "u", "m", "record") == {}, layer.name
             assert await children_of(layer, XGRANT, "u", "n", "record") is None or not await children_of(layer, XGRANT, "u", "n", "record")
-            assert await layer._provider.check_record_access_with_details(ns.id("u"), ns.org, ns.id("m")), layer.name
-            assert await layer._provider.check_record_access_with_details(ns.id("u"), ns.org, ns.id("n")) is None, layer.name
+            with world_org(ns):
+                assert await layer._provider.check_record_access_with_details(ns.id("u"), ns.org, ns.id("m")), layer.name
+                assert await layer._provider.check_record_access_with_details(ns.id("u"), ns.org, ns.id("n")) is None, layer.name
             bad = _bad(await check_world(layer, XGRANT, "xgrant"))
             assert not bad, f"{layer.name}\n{_describe(bad)}"
         finally:
@@ -462,8 +464,9 @@ async def test_a_depth_bound_counts_hops_through_a_deleted_folder(graph_layers) 
             service = KnowledgeHubService(logging.getLogger("kh-depth"), layer._provider, _Config())
             got = {}
             for depth in (2, 3):
-                page = await service.get_nodes(user_id=ns.id("u"), org_id=ns.org, parent_id=ns.id("A"), parent_type="app", limit=50, sort_by="name",
-                                               sort_order="asc", flattened=True, depth=depth)
+                with world_org(ns):
+                    page = await service.get_nodes(user_id=ns.id("u"), org_id=ns.org, parent_id=ns.id("A"), parent_type="app", limit=50,
+                                                   sort_by="name", sort_order="asc", flattened=True, depth=depth)
                 got[depth] = {ns.local(i.id) for i in page.items} if page.success else None
             assert got == {2: {"G"}, 3: {"G", "r"}}, (layer.name, got)
         finally:
@@ -555,8 +558,9 @@ async def test_a_role_grants_on_any_gated_app_and_a_source_accounts_role_only_in
             if layer.name == "neo4j":       # the other connectors' grants a page of A reads in one list (`_kh_v3_cross`)
                 for world, want in ((XBADGE, {"x"}), (XLINKBADGE, {"y"})):
                     ns = await layer._ns(world)
-                    gate = await layer._provider.get_knowledge_hub_access_context_v2(ns.id("u"), ns.org)
-                    cross = await layer._provider._kh_v3_cross(ns.id("u"), ns.org, gate["gated_app_ids"], ns.id("A"), None)
+                    with world_org(ns):
+                        gate = await layer._provider.get_knowledge_hub_access_context_v2(ns.id("u"), ns.org)
+                        cross = await layer._provider._kh_v3_cross(ns.id("u"), ns.org, gate["gated_app_ids"], ns.id("A"), None)
                     assert {ns.local(i) for i in cross or []} == want, (layer.name, cross)
             bad = [f for world in (XBADGE, XLINKBADGE) for f in _bad(await check_world(layer, world, "xbadge"))]
             assert not bad, f"{layer.name}\n{_describe(bad)}"
