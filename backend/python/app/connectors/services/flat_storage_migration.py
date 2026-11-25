@@ -122,15 +122,18 @@ class FlatStorageMigration:
         failed = int(progress.get("failed") or 0)
         passes = int(progress.get("passes") or 0) + 1
         moved_in_all = int(progress.get("movedBefore") or 0) + int(progress.get("moved") or 0)
+        partly_moved = int(progress.get("partlyMoved") or 0)
         if failed and passes < MAX_PASSES:
             self.logger.warning(
                 "Flat storage migration for org %s: %d copies failed to move; another pass (%d/%d)",
                 org_id, failed, passes + 1, MAX_PASSES,
             )
             # Copies that moved left the flat listing, so the next pass sees only the rest.
-            await self.config_service.set_config(_key(org_id), {"passes": passes, "movedBefore": moved_in_all})
+            await self.config_service.set_config(_key(org_id), {
+                "passes": passes, "movedBefore": moved_in_all, "partlyMoved": partly_moved,
+            })
             return await self.run_org(org_id)
-        if failed and not moved_in_all:
+        if failed and not moved_in_all and not partly_moved:
             # One shared cause, not a few bad copies: once it is fixed they can all move.
             await self.config_service.set_config(_key(org_id), {"movedNothingAt": get_epoch_timestamp_in_ms()})
             self.logger.error(
@@ -184,7 +187,7 @@ class FlatStorageMigration:
     ) -> dict[str, int]:
         from app.modules.transformers.blob_storage import get_shared_session
 
-        counts = {"moved": 0, "unowned": 0, "failed": 0}
+        counts = {"moved": 0, "unowned": 0, "failed": 0, "partlyMoved": 0}
         try:
             holders = await self.graph_provider.get_virtual_record_holders(vrids, org_id)
         except Exception as e:
@@ -210,6 +213,9 @@ class FlatStorageMigration:
                 if result.get("moved") and not result.get("failed"):
                     counts["moved"] += 1
                     continue
+                # A copy is several documents. One that moved only some is a failed copy, but not "moved nothing".
+                if result.get("moved"):
+                    counts["partlyMoved"] += 1
                 self._note_failure(
                     vrid,
                     "the storage service could not move every document" if result.get("failed")

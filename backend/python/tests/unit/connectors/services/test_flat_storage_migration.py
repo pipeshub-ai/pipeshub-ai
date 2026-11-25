@@ -241,6 +241,18 @@ async def test_orgs_are_listed_cross_org_and_each_runs_inside_its_own_org() -> N
 
 
 @pytest.mark.asyncio
+async def test_a_copy_moved_in_part_is_progress_and_still_a_failure() -> None:
+    m, kv = _migration([_docs("v1")] * MAX_PASSES, {"v1": [_holder("r1")]})
+    partly = {"moved": 1, "failed": ["d1"]}
+    # Its record moved in the first pass; nothing has moved since.
+    with patch(MOVE, new_callable=AsyncMock, side_effect=[partly, *[RuntimeError("503")] * (MAX_PASSES - 1)]):
+        await m.run_org("org-1")
+    assert kv.data[KEY]["done"] is True and "movedNothingAt" not in kv.data[KEY]
+    call = m.logger.error.call_args
+    assert "finished: 0 moved, 0 with no record to own them, 1 failed" in call.args[0] % call.args[1:]
+
+
+@pytest.mark.asyncio
 async def test_error_texts_that_differ_for_every_copy_do_not_pile_up() -> None:
     vrids = [f"v{i}" for i in range(200)]
     m, _ = _migration([_docs(*vrids)] * MAX_PASSES, {v: [_holder(v)] for v in vrids})
