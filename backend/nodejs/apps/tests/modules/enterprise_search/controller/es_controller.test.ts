@@ -21,6 +21,7 @@ import {
   listAllArchivesConversation,
   searchArchivedConversations,
   search,
+  retrieve,
   searchHistory,
   getSearchById,
   deleteSearchById,
@@ -2979,6 +2980,31 @@ describe('Enterprise Search Controller', () => {
       return { status: res.status.firstCall.args[0], body: res.json.firstCall.args[0] }
     }
     const NOTICES = [{ code: 'connector_syncing', connectorId: 'c1', connectorName: 'Jira' }]
+
+    it('relays the Retry-After of a search the embedding provider refused as rate limited', async () => {
+      const message =
+        "Search is busy right now because the embedding model's provider is limiting requests, so no results are shown. Please try again in a minute."
+      const execute = sinon.stub(AIServiceCommand.prototype, 'execute')
+      execute.resolves({
+        statusCode: 503,
+        data: { searchResults: [], status: 'embedding_rate_limited', status_code: 503, message },
+        headers: { 'retry-after': '12' },
+      } as any)
+
+      for (const handler of [search(createMockAppConfig()), retrieve(createMockAppConfig())]) {
+        const next = createMockNext()
+        await handler(
+          createMockRequest({ body: { query: 'q' }, user: { userId: VALID_OID, orgId: VALID_OID2 } }),
+          createMockResponse(),
+          next,
+        )
+
+        const error: any = next.firstCall.args[0]
+        expect(error.statusCode).to.equal(503)
+        expect(error.message).to.equal(message)
+        expect(error.metadata).to.deep.equal({ retryAfter: '12' })
+      }
+    })
 
     for (const [status, notices] of [
       [404, NOTICES],

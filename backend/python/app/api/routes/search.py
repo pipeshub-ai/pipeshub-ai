@@ -483,6 +483,12 @@ def _timed_out_response(seconds: float) -> dict[str, Any]:
     }
 
 
+def _failed_search_headers(results: dict[str, Any]) -> dict[str, str] | None:
+    """Retry-After for a search that failed with a wait the provider named, else None."""
+    retry_after = results.get("retryAfter")
+    return {"Retry-After": str(retry_after)} if retry_after else None
+
+
 # A date-bounded search that found nothing in its dates answers 404 (no
 # accessible records); with matches from outside them it answers 200.
 _NOTHING_IN_DATES_STATUS = 404
@@ -707,7 +713,9 @@ async def search(
                     "search_type": "timeline" if timeline else "search",
                 })
 
-                return JSONResponse(status_code=custom_status_code, content=results)
+                return JSONResponse(
+                    status_code=custom_status_code, content=results, headers=_failed_search_headers(results),
+                )
 
     except HTTPException:
         raise
@@ -1066,7 +1074,10 @@ async def retrieve(
                             "incomplete": bool(results.get("searchIncomplete")),
                             "message": message,
                         })
-                    return JSONResponse(status_code=status_code, content={"message": results.get("message")})
+                    return JSONResponse(
+                        status_code=status_code, content={"message": results.get("message")},
+                        headers=_failed_search_headers(results),
+                    )
                 return JSONResponse(status_code=200, content={
                     "chunks": _retrieve_chunks(results, body.maxChunksPerRecord)[: body.limit],
                     "incomplete": bool(results.get("searchIncomplete")),

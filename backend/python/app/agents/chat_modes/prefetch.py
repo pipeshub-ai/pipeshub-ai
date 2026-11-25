@@ -63,6 +63,7 @@ _SEARCH_FAILED_STATUSES = frozenset({
     Status.ERROR.value,
     Status.SEARCH_INDEX_UNAVAILABLE.value,
     Status.EMBEDDING_OUT_OF_CREDIT.value,
+    Status.EMBEDDING_RATE_LIMITED.value,
     Status.PERMISSION_CHECK_UNAVAILABLE.value,
     Status.VECTOR_DB_NOT_READY.value,
 })

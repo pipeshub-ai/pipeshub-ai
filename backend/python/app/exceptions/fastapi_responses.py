@@ -20,6 +20,9 @@ class Status(Enum):
     # The embedding model's provider account has no credit left, so the query could not be embedded. Not ERROR: the
     # reader is told what to fix, and trying again does not fix it.
     EMBEDDING_OUT_OF_CREDIT = "embedding_out_of_credit"
+    # The embedding model's provider was still rate limiting the query after the retries. Unlike an empty balance,
+    # trying again later fixes it.
+    EMBEDDING_RATE_LIMITED = "embedding_rate_limited"
     # The search ran past its deadline (SEARCH_DEADLINE_SECONDS) outside the
     # vector store, and was stopped so its caller hears why instead of timing out.
     SEARCH_TIMED_OUT = "search_timed_out"
