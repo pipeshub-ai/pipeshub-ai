@@ -7,9 +7,15 @@ a development database). Unit tests mock the processor, which is how a connector
 can pass its unit tests while its writes leave the graph wrong.
 """
 
+import sys
+from pathlib import Path
+
 import pytest
 
 from ..write_path_support import _ArangoBackend, _Neo4jBackend
+
+# The simulated Google Workspace the unit behaviour tests run on.
+sys.path.insert(0, str(Path(__file__).parents[3] / "unit" / "connectors" / "sources" / "google" / "behaviour"))
 
 
 @pytest.fixture(params=["arango", "neo4j"])

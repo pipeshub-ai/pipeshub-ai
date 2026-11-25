@@ -17,6 +17,7 @@ from app.config.constants.arangodb import (
 )
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.registry.filters import FilterCollection
+from app.connectors.sources.google.drive.team.drive_access import DrivePermissionBatch
 from app.models.entities import (
     AppUser,
     AppUserGroup,
@@ -2171,6 +2172,69 @@ class TestForeignSharedDrive:
 
         connector.data_entities_processor.on_new_record_groups.assert_not_awaited()
         assert _drives(state)["0APG"]["members"] == ["a@example.com", "b@example.com"]
+
+    async def test_a_member_who_joins_or_rejoins_reads_the_drive_from_the_start(self, connector) -> None:
+        self._store(connector)
+        connector.drive_delta_sync_point.delete_sync_point = AsyncMock()
+        alice = self._user("a@example.com")
+
+        await connector._note_foreign_drives_reached(alice, [self.FOREIGN])
+        await connector._note_foreign_drives_reached(alice, [self.FOREIGN])
+        assert connector.drive_delta_sync_point.delete_sync_point.await_count == 1
+        await connector._note_foreign_drives_reached(alice, [])
+        await connector._note_foreign_drives_reached(alice, [self.FOREIGN])
+
+        assert connector.drive_delta_sync_point.delete_sync_point.await_count == 2
+        key = connector.drive_delta_sync_point.delete_sync_point.await_args.args[0]
+        assert key.endswith("a@example.com_0APG")
+
+    async def test_a_join_whose_position_cannot_be_dropped_is_not_stored(self, connector) -> None:
+        state = self._store(connector)
+        connector.drive_delta_sync_point.delete_sync_point = AsyncMock(side_effect=RuntimeError("store down"))
+
+        with pytest.raises(RuntimeError):
+            await connector._note_foreign_drives_reached(self._user("a@example.com"), [self.FOREIGN])
+
+        assert _drives(state) == {}
+
+    async def test_members_read_a_drive_again_when_its_limited_folder_is_opened(self, connector) -> None:
+        state = self._store(connector)
+        connector.drive_delta_sync_point.delete_sync_point = AsyncMock()
+        await connector._note_foreign_drives_reached(self._user("a@example.com"), [self.FOREIGN])
+        connector.synced_users = [self._user("a@example.com"), self._user("z@example.com")]
+        await connector._note_foreign_folder_limited("0APG", "folder-F", limited=True)
+        assert await connector._note_foreign_folder_limited("0APG", "folder-F", limited=False) is False
+        connector.drive_delta_sync_point.delete_sync_point.reset_mock()
+
+        await connector._read_reopened_drives_again()
+        await connector._read_reopened_drives_again()
+
+        assert [c.args[0].rpartition("/")[2] for c in connector.drive_delta_sync_point.delete_sync_point.await_args_list] == [
+            "a@example.com_0APG"
+        ]
+        assert json.loads(state["foreign_limited_subtrees"]["reopened"]) == []
+
+    @pytest.mark.parametrize(("drive", "inherits"), [("0APG", False), ("own-drive", True)], ids=["foreign", "own"])
+    async def test_a_readable_item_with_a_hidden_unknown_folder_inherits_only_in_an_own_drive(
+        self, connector, drive, inherits
+    ) -> None:
+        self._store(connector)
+        batch = DrivePermissionBatch(
+            [Permission(email="w@example.com", type=PermissionType.WRITE, entity_type=EntityType.USER)],
+            saw_permission_details=True,
+        )
+        connector._fetch_permissions = AsyncMock(return_value=(batch, False, []))
+        connector._drive_sharing_readers = AsyncMock(return_value=set())
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
+        metadata = _make_file_metadata(parents=["x"], owners=[])
+        del metadata["parents"]
+        metadata["driveId"], metadata["capabilities"] = drive, {"canShare": True}
+
+        result = await connector._process_drive_item(
+            metadata=metadata, user_id="u1", user_email="w@example.com", drive_id=drive, is_shared_drive=True
+        )
+
+        assert result.record.inherit_permissions is inherits
 
     async def test_a_failed_removal_does_not_stop_the_other_members_check(self, connector) -> None:
         state = self._store(connector)

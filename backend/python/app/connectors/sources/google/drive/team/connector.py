@@ -5722,6 +5722,14 @@ class GoogleDriveTeamConnector(BaseConnector):
                         inherited_permissions_disabled=limited_access,
                         is_fallback=False,
                     )
+                    if (
+                        file_record.inherit_permissions and item_drive_id and not in_scope
+                        and not metadata.get("parents") and not file_record.parent_external_record_id
+                        and await self._is_foreign_drive(item_drive_id)
+                    ):
+                        # Its folder is hidden from this reader and not known: hung off the drive's group it could
+                        # skip a limited folder above. They open it through a grant on the item itself, stored here.
+                        file_record.inherit_permissions = False
                     if existing_record:
                         is_updated = True
 
@@ -7074,7 +7082,7 @@ class GoogleDriveTeamConnector(BaseConnector):
             drive_id = drive.get("id")
             if drive_id and self._pass_drive_ids_filter(drive_id) and await self._is_foreign_drive(drive_id):
                 reached[drive_id] = drive.get("name") or drive_id
-        await self._reconcile_foreign_drives(email, reached)
+        await self._reconcile_foreign_drives(email, reached, user.source_user_id)
 
     async def _is_foreign_drive(self, drive_id: str) -> bool:
         """Whether a drive is another organization's: missing from the admin listing, and confirmed by the admin's
@@ -7090,6 +7098,12 @@ class GoogleDriveTeamConnector(BaseConnector):
             self._foreign_drive_confirmed[drive_id] = await self._shared_drive_exists(drive_id)
         return self._foreign_drive_confirmed[drive_id]
 
+    async def _read_drive_from_the_start(self, source_user_id: str, drive_id: str) -> None:
+        """Forget how far this user read the drive's changes, so their next pass lists all of it."""
+        await self.drive_delta_sync_point.delete_sync_point(
+            generate_record_sync_point_key(RecordType.DRIVE.value, "drives", f"{source_user_id}_{drive_id}")
+        )
+
     async def _active_member_emails(self) -> set[str]:
         """The active users this deployment syncs, read afresh; a failed read raises rather than answer nobody."""
         users = await self._get_users_to_sync(self.synced_users, raise_on_error=True)
@@ -7103,6 +7117,7 @@ class GoogleDriveTeamConnector(BaseConnector):
             stored = await self.drive_delta_sync_point.read_sync_point(FOREIGN_LIMITED_SUBTREES_SYNC_POINT_KEY) or {}
             known = json.loads(stored.get("known") or "[]")
             pending = json.loads(stored.get("folders") or "[]")
+            reopened = json.loads(stored.get("reopened") or "[]")
             if limited == (item in known):
                 return False
             if limited:
@@ -7111,11 +7126,40 @@ class GoogleDriveTeamConnector(BaseConnector):
                     pending.append(item)
             else:
                 known.remove(item)
+                # Its members lost their own grants below it, and no feed reports those files again.
+                if drive_id not in reopened:
+                    reopened.append(drive_id)
             await self.drive_delta_sync_point.update_sync_point(
                 FOREIGN_LIMITED_SUBTREES_SYNC_POINT_KEY,
-                {"known": json.dumps(sorted(known)), "folders": json.dumps(sorted(pending))},
+                {"known": json.dumps(sorted(known)), "folders": json.dumps(sorted(pending)),
+                 "reopened": json.dumps(sorted(reopened))},
             )
             return limited
+
+    async def _read_reopened_drives_again(self) -> None:
+        """Once a run, after every user's pass: the members of a foreign drive one of whose limited folders was opened
+        again read it from the start next run, which gives back their own grants below it. A drive with a member a
+        cut user listing left out stays listed for the next run."""
+        async with self._foreign_limited_lock:
+            stored = await self.drive_delta_sync_point.read_sync_point(FOREIGN_LIMITED_SUBTREES_SYNC_POINT_KEY) or {}
+            reopened = json.loads(stored.get("reopened") or "[]")
+            if not reopened:
+                return
+            drives = json.loads(
+                (await self.drive_delta_sync_point.read_sync_point(FOREIGN_SHARED_DRIVES_SYNC_POINT_KEY) or {}).get("drives")
+                or "{}"
+            )
+            users = {(u.email or "").lower(): u.source_user_id for u in self.synced_users if u.email}
+            left = []
+            for drive_id in reopened:
+                for email in (drives.get(drive_id) or {}).get("members") or []:
+                    if email in users:
+                        await self._read_drive_from_the_start(users[email], drive_id)
+                    elif self._listing_cut and drive_id not in left:
+                        left.append(drive_id)
+            await self.drive_delta_sync_point.update_sync_point(
+                FOREIGN_LIMITED_SUBTREES_SYNC_POINT_KEY, {"reopened": json.dumps(left)}
+            )
 
     async def _check_foreign_limited_subtrees(self) -> None:
         """Once a run, after every write: for each foreign drive's folder that turned limited (this run's, and any a
@@ -7203,7 +7247,9 @@ class GoogleDriveTeamConnector(BaseConnector):
             return
         await self._reconcile_foreign_drives(None, {})
 
-    async def _reconcile_foreign_drives(self, email: str | None, reached: dict[str, str]) -> None:
+    async def _reconcile_foreign_drives(
+        self, email: str | None, reached: dict[str, str], source_user_id: str | None = None
+    ) -> None:
         """Make ``email`` a member of the ``reached`` foreign drives and of no other, keep only members this
         deployment syncs, and write each drive whose membership changed."""
         # A cut user listing leaves people out who are still there, so nobody is pruned on it but those known to be
@@ -7252,6 +7298,11 @@ class GoogleDriveTeamConnector(BaseConnector):
                     to_write.add(drive_id)
                     if not entry["cursors"]:
                         entry.pop("cursors")
+                if email not in entry["members"] and source_user_id:
+                    # They join, perhaps again: a change feed from before they left has none of the files they hold
+                    # no grant on, so they read the drive from the start. Before the membership is stored, or a
+                    # failure here would leave a member who never reads it.
+                    await self._read_drive_from_the_start(source_user_id, drive_id)
                 if email not in entry["members"] or entry["name"] != name:
                     to_write.add(drive_id)
                 entry["members"] = sorted({*entry["members"], email})
@@ -7956,6 +8007,11 @@ class GoogleDriveTeamConnector(BaseConnector):
             except Exception as e:
                 self._sync_ledger.note_incomplete()
                 self.logger.error(f"Foreign shared drive members not pruned: {e}", exc_info=True)
+            try:
+                await self._read_reopened_drives_again()
+            except Exception as e:
+                self._sync_ledger.note_incomplete()
+                self.logger.error(f"Foreign shared drives with a reopened folder not queued: {e}", exc_info=True)
             try:
                 await self._check_foreign_limited_subtrees()
             except Exception as e:

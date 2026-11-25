@@ -752,7 +752,8 @@ class DriveWorld:
         if req.query.get("useDomainAdminAccess") != "true" or self._caller(req) != self.admin_email:
             return google_error(403, "forbidden")
         drive = self.drives.get(req.path.split("/drives/")[1])
-        if drive is None:
+        # Another organization's drive is not this admin's to see.
+        if drive is None or drive.get("foreign"):
             return google_error(404, "notFound")
         if self.restrictions_unreadable:
             return google_error(500, "backendError")
