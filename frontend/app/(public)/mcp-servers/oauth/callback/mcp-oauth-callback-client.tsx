@@ -148,7 +148,7 @@ export function McpOAuthCallbackClient({
             <Text as="p" size="4" weight="medium" style={{ margin: 0, color: 'var(--gray-12)', letterSpacing: '-0.04px', lineHeight: '26px' }}>
               {t('workspace.mcpServers.oauth.completingTitle')}
             </Text>
-            <Text as="p" size="3" style={{ margin: 0, color: 'var(--gray-10)', lineHeight: '24px', maxWidth: 432 }}>
+            <Text as="p" size="3" style={{ margin: 0, color: 'var(--gray-11)', lineHeight: '24px', maxWidth: 432 }}>
               {t('workspace.mcpServers.oauth.processingHint')}
             </Text>
           </Flex>
@@ -175,7 +175,7 @@ export function McpOAuthCallbackClient({
             <Text as="p" size="4" weight="medium" style={{ margin: 0, color: 'var(--accent-11)', letterSpacing: '-0.04px', lineHeight: '26px' }}>
               {t('workspace.mcpServers.oauth.successTitle')}
             </Text>
-            <Text as="p" size="3" style={{ margin: 0, color: 'var(--gray-10)', lineHeight: '24px' }}>
+            <Text as="p" size="3" style={{ margin: 0, color: 'var(--gray-11)', lineHeight: '24px' }}>
               {message}
             </Text>
           </Flex>
@@ -199,10 +199,10 @@ export function McpOAuthCallbackClient({
             <MaterialIcon name="error_outline" size={21} color="var(--red-11)" />
           </Box>
           <Flex direction="column" align="center" gap="1">
-            <Text as="p" size="4" weight="medium" style={{ margin: 0, color: 'var(--red-10)', letterSpacing: '-0.04px', lineHeight: '26px' }}>
+            <Text as="p" size="4" weight="medium" style={{ margin: 0, color: 'var(--red-11)', letterSpacing: '-0.04px', lineHeight: '26px' }}>
               {t('workspace.mcpServers.oauth.failedTitle')}
             </Text>
-            <Text as="p" size="3" style={{ margin: 0, color: 'var(--gray-10)', lineHeight: '24px', wordBreak: 'break-word' }}>
+            <Text as="p" size="3" style={{ margin: 0, color: 'var(--gray-11)', lineHeight: '24px', wordBreak: 'break-word' }}>
               {error}
             </Text>
           </Flex>

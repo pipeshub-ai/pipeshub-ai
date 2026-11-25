@@ -39,7 +39,7 @@ export function InfoRow({ label, value }: { label: string; value: string }) {
         size="1"
         weight="medium"
         style={{
-          color: 'var(--slate-10)',
+          color: 'var(--slate-11)',
           width: isMobile ? 'auto' : 164,
           flexShrink: 0,
           textTransform: 'uppercase',

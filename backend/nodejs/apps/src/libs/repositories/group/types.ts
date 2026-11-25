@@ -3,6 +3,8 @@
  * organisation has an "everyone" group that new accounts join.
  */
 
+import type { Tx } from '../uow';
+
 export type GroupType = 'admin' | 'standard' | 'custom' | 'everyone';
 
 export const GROUP_TYPES: readonly GroupType[] = [
@@ -56,6 +58,11 @@ export interface GroupRepository {
   /** The group whether or not it was deleted. */
   get(orgId: string, id: string): Promise<GroupDto | null>;
   getLive(orgId: string, id: string): Promise<GroupDto | null>;
+  /** The live groups among `ids`, in one read (a list that names the groups it holds, ADR-UI-03); others are absent. */
+  listLiveByIds(
+    orgId: string,
+    ids: readonly string[],
+  ): Promise<GroupSummaryDto[]>;
   /** A live group with this name; `exceptId` leaves one group out (a rename). */
   nameTaken(orgId: string, name: string, exceptId?: string): Promise<boolean>;
   /** Throws `UniqueConstraintError{key:'name'}` when a live group has the name. */
@@ -103,6 +110,16 @@ export interface GroupRepository {
   ): Promise<void>;
 
   groupsOfUser(orgId: string, userId: string): Promise<GroupSummaryDto[]>;
+  /**
+   * Inside `tx`, holds the person's membership of one of these live groups until `tx` ends, so their removal from it
+   * (or its deletion) and the caller's write (an approval decision) cannot both commit; false when they are in none.
+   */
+  holdLiveMembership(
+    orgId: string,
+    groupIds: readonly string[],
+    userId: string,
+    tx?: Tx,
+  ): Promise<boolean>;
   /** Member ids (as stored, repeats possible) of the live groups of these types. */
   memberIdsOfTypes(orgId: string, types: string[]): Promise<string[]>;
   /** Live groups containing any of these people, with their member lists. */

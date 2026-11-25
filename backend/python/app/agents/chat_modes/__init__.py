@@ -1,10 +1,11 @@
-"""Agent-loop-backed implementation of the three `/chat/stream` modes.
+"""The built-in assistant's `/chat/stream` modes, run on the agent loop.
 
-See `bridge.py`'s module docstring for the full design; `policy.py` for
-why no `ToolPolicy`/`factory.py`/`tool_loader.py` changes were needed.
+`setup.py` builds a turn (the mode's tools, prefetch and instructions);
+`policy.py` explains why no `ToolPolicy`/`factory.py`/`tool_loader.py`
+changes were needed. The legacy stream is `stream_bridge.run_chat_stream`;
+a durable run assembles the same turn in `app.harness.assembly`.
 """
 
-from app.agents.chat_modes.bridge import run_chat_stream
 from app.agents.chat_modes.policy import (
     AgentCapabilities,
     ChatModePolicy,
@@ -17,5 +18,4 @@ __all__ = [
     "ChatModePolicy",
     "resolve_agent_policy",
     "resolve_chat_mode_policy",
-    "run_chat_stream",
 ]

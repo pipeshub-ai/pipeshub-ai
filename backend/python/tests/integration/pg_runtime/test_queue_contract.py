@@ -25,6 +25,9 @@ from app.services.messaging.interface.producer import IMessagingProducer
 from app.services.messaging.postgres.consumer import PgMessagingConsumer
 from app.services.messaging.postgres.producer import PgMessagingProducer
 from app.services.messaging.postgres.queue import Delivery, PgQueue
+from app.services.messaging.redis_streams.broadcast_consumer import (
+    RedisStreamsBroadcastConsumer,
+)
 from app.services.messaging.redis_streams.consumer import RedisStreamsConsumer
 from app.services.messaging.redis_streams.producer import RedisStreamsProducer
 from app.services.redis.config import RedisConnectionConfig
@@ -75,7 +78,9 @@ class Backend:
         if self.kind == "postgres":
             c = PgMessagingConsumer(LOG, cfg, queue=self.queue)
         else:
-            c = RedisStreamsConsumer(LOG, cfg, provider=self.provider)
+            # A broadcast subscriber is its own class on Redis (it joins no group), as MessagingFactory builds it.
+            consumer_cls = RedisStreamsBroadcastConsumer if cfg.broadcast else RedisStreamsConsumer
+            c = consumer_cls(LOG, cfg, provider=self.provider)
         self.consumers.append(c)
         await c.start(handler)
         return c
@@ -161,7 +166,7 @@ async def test_an_ephemeral_group_starts_at_the_tail(backend) -> None:
     seen, h = collector()
     await backend.consume("stay", collector()[1])  # keeps the topic's messages retained
     await send(backend, 3)
-    await backend.consume("temp", h, ephemeral_group=True)
+    await backend.consume("temp", h, broadcast=True)
     await send(backend, 2, start=3)
     await until(lambda: len(seen) == 2)
     assert sorted(seen) == [3, 4]
@@ -812,7 +817,7 @@ async def test_pg_a_forged_row_is_not_admitted(pg, monkeypatch) -> None:
         return (key,)
 
     monkeypatch.setenv("ORG_CONTEXT_MODE", "enforce")
-    envelope.configure(keys, None, key)
+    envelope.configure(keys, key)
     try:
         old_a = _old_signed(pg.topic, int(time.time()) - 10 * 900, "a")
         old_b = _old_signed(pg.topic, int(time.time()) - 10 * 900, "b")
@@ -856,7 +861,7 @@ async def test_pg_a_forged_row_is_not_admitted(pg, monkeypatch) -> None:
         (copied,) = [x for x in await pg.queue.claim("h", [pg.topic], "c", 5, 30.0) if x.message_id == genuine.message_id]
         assert copied.admission_mac == genuine.admission_mac and not await admitted(copied, "h")
     finally:
-        envelope.configure(None, None, None)
+        envelope.configure(None)
 
 
 async def test_pg_the_statements_per_delivery_are_counted(pg) -> None:

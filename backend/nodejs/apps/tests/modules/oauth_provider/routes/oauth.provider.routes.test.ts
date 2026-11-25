@@ -56,7 +56,7 @@ describe('OAuth Provider Routes', () => {
         (layer: any) => layer.route?.path === '/authorize' && layer.route.methods.post,
       )
       expect(consent).to.exist
-      const names = consent!.route.stack.map((s: any) => s.name)
+      const names = consent!.route!.stack.map((s: any) => s.name)
       const authIdx = names.indexOf('bound authenticate')
       expect(authIdx).to.be.greaterThan(-1)
       expect(names[authIdx + 1]).to.equal('requireSessionAuth')
@@ -81,7 +81,7 @@ describe('OAuth Provider Routes', () => {
       for (const path of ['/token', '/revoke', '/introspect']) {
         const layer = router.stack.find((l: any) => l.route?.path === path)
         expect(layer, path).to.exist
-        const names = layer!.route.stack.map((s: any) => s.name)
+        const names = layer!.route!.stack.map((s: any) => s.name)
         expect(names, path).to.not.include('requireSessionAuth')
       }
     })

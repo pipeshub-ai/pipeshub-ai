@@ -79,6 +79,19 @@ def _children(kind: str, n: int) -> str:
 
 
 @pytest.mark.parametrize("kind", ["hyperlink", "mergeCell", "conditionalFormatting", "dataValidation", "row"])
-def test_sheet_children_other_than_cells_are_refused(kind: str) -> None:
+def test_sheet_children_other_than_cells_are_refused(kind: str, monkeypatch: pytest.MonkeyPatch) -> None:
     # Measured (500k each, openpyxl 3.1.5): 0.7 to 1.5 KB of memory per item, more than a cell.
-    assert_refused_as_too_large(workbook_zip(_children(kind, 120_000)))
+    # An 8 MB allowance is passed by 5 000 to 20 000 of them; 60 000 refuse in about a second, where
+    # 120 000 against 32 MB took two (conditionalFormatting, the slowest) and once ran past the
+    # 30 s timeout in a full -n 4 run (R46FIX-FU-3). 2 000 fit, so the refusal is the children's.
+    monkeypatch.setattr(module, "EXCEL_LOAD_MAX_BYTES", 8 * 1024 * 1024)
+    assert load(workbook_zip(_children(kind, 2_000))).workbook.sheetnames == ["S"]
+    assert_refused_as_too_large(workbook_zip(_children(kind, 60_000)))
+
+
+def test_an_allowance_smaller_than_a_thread_stack_still_loads(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The growth watcher's thread used to start under the cap: its 8 MB stack was charged to the
+    # file's allowance, and a thread that could not get one left Thread.start() waiting forever.
+    monkeypatch.setattr(module, "EXCEL_LOAD_MAX_BYTES", 4 * 1024 * 1024)
+    monkeypatch.setattr(module, "EXCEL_LOAD_MAX_SECONDS", 10)
+    assert load(workbook_zip(_children("conditionalFormatting", 50))).workbook.sheetnames == ["S"]

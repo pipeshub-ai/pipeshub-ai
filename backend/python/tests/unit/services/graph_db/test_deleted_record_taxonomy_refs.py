@@ -14,6 +14,7 @@ from app.services.graph_db.common.utils import (
     cleans_taxonomy_points,
     deleted_record_taxonomy_refs,
     record_taxonomy_refs,
+    taxonomy_refs_from_links,
 )
 from app.services.graph_db.taxonomy import (
     TAXONOMY_COLLECTIONS,
@@ -153,3 +154,27 @@ class TestDeletedRecordTaxonomyRefs:
 
         assert await deleted_record_taxonomy_refs(graph, [drive], MagicMock()) == {}
         graph.get_record_taxonomy_links.assert_not_awaited()
+
+
+def test_refs_from_links_are_grouped_per_record_and_deduplicated() -> None:
+    topics = CollectionNames.TOPICS.value
+    links = [_link("r1", topics, "t1"), _link("r1", topics, "t1"), _link("r2", topics, "t1"), _link("r1", topics, "t2")]
+    assert taxonomy_refs_from_links(links) == {
+        "r1": [{"id": "t1", "type": "topic"}, {"id": "t2", "type": "topic"}],
+        "r2": [{"id": "t1", "type": "topic"}],
+    }
+
+
+@pytest.mark.parametrize("link", [
+    {"recordId": "r1", "collection": "nodes", "entityId": "x"},
+    {"recordId": "r1", "collection": CollectionNames.TOPICS.value},
+    {"collection": CollectionNames.TOPICS.value, "entityId": "x"},
+])
+def test_a_link_that_names_no_taxonomy_entity_is_skipped(link: dict) -> None:
+    assert taxonomy_refs_from_links([link]) == {}
+
+
+async def test_record_taxonomy_refs_reads_through_the_same_helper() -> None:
+    topics = CollectionNames.TOPICS.value
+    links = [_link("r1", topics, "t1")]
+    assert await record_taxonomy_refs(_graph(links), ["r1"], logging.getLogger("t")) == taxonomy_refs_from_links(links)

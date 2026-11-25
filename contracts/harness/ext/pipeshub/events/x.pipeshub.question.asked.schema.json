@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/ext/pipeshub/events/x.pipeshub.question.asked.schema.json",
+  "title": "PipeshubQuestionAskedEvent",
+  "description": "A question the run asks the user (ask_user_question); the run ends with needs_input.",
+  "x-writer": [
+    "worker"
+  ],
+  "allOf": [
+    {
+      "$ref": "../../../core/envelope.schema.json#/$defs/InlineEnvelope"
+    }
+  ],
+  "properties": {
+    "type": {
+      "const": "x.pipeshub.question.asked"
+    },
+    "writer": {
+      "const": "worker"
+    },
+    "data": {
+      "$ref": "#/$defs/PipeshubQuestionAskedData"
+    }
+  },
+  "$defs": {
+    "PipeshubQuestionAskedData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "callId",
+        "status",
+        "toolData"
+      ],
+      "properties": {
+        "callId": {
+          "$ref": "../../../core/common.schema.json#/$defs/Text"
+        },
+        "status": {
+          "enum": [
+            "success",
+            "error"
+          ]
+        },
+        "toolData": {
+          "description": "The question card payload as the tool returned it (parsed JSON, or the raw text when it was not JSON).",
+          "type": [
+            "object",
+            "string"
+          ]
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "type": "x.pipeshub.question.asked",
+      "data": {
+        "callId": "call_1",
+        "status": "success",
+        "toolData": {
+          "name": "ask_user_question",
+          "questions": [
+            {
+              "question": "Which region?",
+              "options": []
+            }
+          ]
+        }
+      },
+      "attemptId": "att_1",
+      "fence": 3
+    }
+  ]
+}

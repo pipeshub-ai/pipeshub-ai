@@ -107,7 +107,7 @@ export function StepEmbeddingModel({
           <Text
             as="div"
             size="1"
-            style={{ color: 'var(--gray-9)', marginBottom: '4px', letterSpacing: '0.02em' }}
+            style={{ color: 'var(--gray-11)', marginBottom: '4px', letterSpacing: '0.02em' }}
           >
             {t('onboarding.systemConfig')}
           </Text>

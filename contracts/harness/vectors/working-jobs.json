@@ -1,0 +1,17 @@
+{
+  "description": "CJ14-FU-1: which of a person's runs the sidebar's Jobs entry counts, the Jobs page's Working section. A job is a child run (`parent` set); it works once it started (`queued` is Up next) and while no ask waits on the person (`needs_you`). Node (`domain/run-lists.ts` `isWorkingJob`, and `runListState` for `state`) and the frontend (`lib/harness-jobs` `statusOfPersonRun` and `sectionOf`, from the list's `state` and `status`) are both tested against this table.",
+  "cases": [
+    { "name": "a running job", "status": "running", "openInteractions": [], "job": true, "state": "working", "working": true },
+    { "name": "a job not started yet is Up next", "status": "queued", "openInteractions": [], "job": true, "state": "working", "working": false },
+    { "name": "a paused job", "status": "paused", "openInteractions": [], "job": true, "state": "working", "working": true },
+    { "name": "a job recovering after a lost attempt", "status": "recovering", "openInteractions": [], "job": true, "state": "working", "working": true },
+    { "name": "a job being reconciled", "status": "needs_reconciliation", "openInteractions": [], "job": true, "state": "working", "working": true },
+    { "name": "a job being cancelled", "status": "cancelling", "openInteractions": [], "job": true, "state": "working", "working": true },
+    { "name": "a running job that asks", "status": "running", "openInteractions": ["ix-1"], "job": true, "state": "needs_you", "working": false },
+    { "name": "a job held for an approval", "status": "waiting_approval", "openInteractions": [], "job": true, "state": "needs_you", "working": false },
+    { "name": "a finished job", "status": "completed", "openInteractions": [], "job": true, "state": "finished", "working": false },
+    { "name": "a failed job", "status": "failed", "openInteractions": [], "job": true, "state": "failed", "working": false },
+    { "name": "a stopped job", "status": "cancelled", "openInteractions": [], "job": true, "state": "stopped", "working": false },
+    { "name": "a chat's own answer is not a job", "status": "running", "openInteractions": [], "job": false, "state": "working", "working": false }
+  ]
+}

@@ -185,7 +185,7 @@ describe('IamService - full branch coverage via real method calls', () => {
         ? { statusCode: 404, data: { message: 'Account not found' } }
         : { statusCode: 200, data: users[0] }
       expect(result.statusCode).to.equal(200)
-      expect(result.data.email).to.equal('test@test.com')
+      expect(result.data!.email).to.equal('test@test.com')
     })
   })
 

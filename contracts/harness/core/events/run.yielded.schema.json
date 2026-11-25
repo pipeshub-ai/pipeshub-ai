@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/core/events/run.yielded.schema.json",
+  "title": "RunYieldedEvent",
+  "description": "Running run returned to the queue.",
+  "x-writer": [
+    "node"
+  ],
+  "allOf": [
+    {
+      "$ref": "../envelope.schema.json#/$defs/InlineEnvelope"
+    }
+  ],
+  "properties": {
+    "type": {
+      "const": "run.yielded"
+    },
+    "writer": {
+      "const": "node"
+    },
+    "data": {
+      "$ref": "#/$defs/RunYieldedData"
+    }
+  },
+  "$defs": {
+    "RunYieldedData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "notBefore",
+        "reason"
+      ],
+      "properties": {
+        "notBefore": {
+          "$ref": "../common.schema.json#/$defs/Timestamp"
+        },
+        "reason": {
+          "$ref": "../common.schema.json#/$defs/YieldReason"
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "type": "run.yielded",
+      "schemaVersion": 1,
+      "critical": true,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "node",
+      "visibility": "owner",
+      "data": {
+        "notBefore": "2026-10-01T12:00:00.123Z",
+        "reason": "llm_backoff"
+      }
+    }
+  ]
+}

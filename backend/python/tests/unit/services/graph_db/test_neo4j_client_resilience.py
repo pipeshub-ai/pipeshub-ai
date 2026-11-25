@@ -340,6 +340,26 @@ class TestReconnect:
         built[0].close.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_a_rebuild_logs_the_failure_class_never_its_text(self, ensure_db) -> None:
+        driver_text = "Couldn't connect to 10.0.0.7:7687"
+        outcomes: list = [ServiceUnavailable(driver_text), ServiceUnavailable(driver_text)]
+        built: list = []
+
+        def factory(*a, **kw) -> MagicMock:
+            built.append(_driver(outcomes))
+            return built[-1]
+
+        with patch("app.services.graph_db.neo4j.neo4j_client.AsyncGraphDatabase.driver", side_effect=factory):
+            client = _client()
+            await client.connect()
+            built[0].verify_connectivity = AsyncMock(side_effect=ServiceUnavailable(driver_text))
+            await client.execute_query("RETURN 1")
+
+        (warning,) = [c for c in client.logger.warning.call_args_list if "rebuilding" in c.args[0]]
+        assert warning.args[1:] == ("ServiceUnavailable",)
+        assert driver_text not in repr(client.logger.mock_calls)
+
+    @pytest.mark.asyncio
     async def test_rebuilds_are_rate_limited(self, ensure_db) -> None:
         # Two failures, a success on the rebuilt driver, then two more failures.
         outcomes: list = [

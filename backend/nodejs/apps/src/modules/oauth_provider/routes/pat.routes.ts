@@ -11,6 +11,7 @@ import {
   createPatTokenSchema,
   listAdminPatQuerySchema,
   tokenIdParamsSchema,
+  updatePatKnowledgeLimitSchema,
 } from '../validators/pat.validators'
 import { userAdminCheck } from '../../user_management/middlewares/userAdminCheck'
 import { refuseServiceAccountCaller } from '../../user_management/middlewares/refuseServiceAccountCaller'
@@ -51,6 +52,12 @@ export function createPatRouter(container: Container): Router {
   )
 
   router.get('/scopes', (req, res, next) => controller.listScopes(req, res, next))
+
+  router.patch(
+    '/:tokenId',
+    ValidationMiddleware.validate(updatePatKnowledgeLimitSchema),
+    (req, res, next) => controller.updateKnowledgeLimit(req, res, next),
+  );
 
   router.delete(
     '/:tokenId',

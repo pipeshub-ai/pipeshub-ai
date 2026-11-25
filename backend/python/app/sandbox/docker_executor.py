@@ -34,24 +34,43 @@ Security model:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import io
 import logging
 import os
+import shlex
 import shutil
 import tarfile
-import tempfile
 import time
 from uuid import uuid4
 
+from app.agent_loop_lib.sandbox.coding.credentials import (
+    ProxiedRegistry,
+    Registry,
+    credentialed_needs_broker,
+    database,
+    registry,
+)
+from app.agent_loop_lib.sandbox.coding.docker import (
+    create_bounded_container,
+    disk_watch_note,
+    start_disk_watch,
+)
 from app.agent_loop_lib.sandbox.coding.egress_firewall import (
     CONTAINER_HARDENING,
-    create_sandbox_container,
     ensure_egress_network_sync,
     firewall_unavailable,
     firewalled_container_kwargs,
+    limited,
     new_firewall_token,
     parse_cidrs,
 )
+from app.agent_loop_lib.sandbox.coding.output_limits import (
+    ExtractBudget,
+    extract_tar_stream,
+    read_capped_stream,
+)
+from app.harness.sandbox.docker_client import proxied_docker_client
 from app.sandbox.base_executor import BaseExecutor, build_sandbox_env
 from app.sandbox.models import (
     DEFAULT_CPU_LIMIT,
@@ -62,10 +81,14 @@ from app.sandbox.models import (
     SandboxLanguage,
     validate_packages,
 )
+from app.sandbox.roots import DOCKER, ensure_private_dir, sandbox_root
 
 logger = logging.getLogger(__name__)
 
-_SANDBOX_ROOT = os.path.join(tempfile.gettempdir(), "pipeshub_sandbox_docker")
+def _sandbox_root() -> str:
+    """The running user's own folder, never a shared name another user could own or plant (R13-ROOT). Read at each
+    use, as the artifact reader reads it, so a temp folder that moves after import moves both."""
+    return sandbox_root(DOCKER)
 
 #: Name of the Docker network used ONLY for the install phase. Kept
 #: separate from the compose project's default network so sibling
@@ -99,7 +122,7 @@ class DockerExecutor(BaseExecutor):
             or _DEFAULT_EGRESS_NETWORK
         )
         self.egress_allow_cidrs = parse_cidrs(os.environ.get("SANDBOX_EGRESS_ALLOW_CIDRS"))
-        os.makedirs(_SANDBOX_ROOT, exist_ok=True)
+        _ = ensure_private_dir(_sandbox_root())
 
     async def execute(
         self,
@@ -111,7 +134,7 @@ class DockerExecutor(BaseExecutor):
         env: dict[str, str] | None = None,
     ) -> ExecutionResult:
         execution_id = str(uuid4())
-        work_dir = os.path.join(_SANDBOX_ROOT, execution_id)
+        work_dir = os.path.join(_sandbox_root(), execution_id)
         output_dir = os.path.join(work_dir, "output")
         src_dir = os.path.join(work_dir, "src")
         os.makedirs(output_dir, exist_ok=True)
@@ -138,6 +161,9 @@ class DockerExecutor(BaseExecutor):
                     timeout_seconds,
                 )
 
+            refused = credentialed_database(lang, env)
+            if refused is not None:
+                return ExecutionResult(success=False, error=refused, execution_time_ms=_now_ms() - start_ms)
             cmd = self._build_command(code, lang, src_dir)
             # Pass only the shared allowlist + caller-provided env into the
             # container. Do NOT forward the host's full environ (OPENAI_API_KEY,
@@ -179,44 +205,8 @@ class DockerExecutor(BaseExecutor):
                 execution_time_ms=_now_ms() - start_ms,
             )
 
-    def _build_command(
-        self,
-        code: str,
-        language: SandboxLanguage,
-        src_dir: str,
-    ) -> list[str]:
-        """Write source file and return the container command.
-
-        The install step is no longer concatenated into this command; it
-        runs in a separate container (see :meth:`_install_dependencies`).
-        """
-        parts: list[str] = []
-
-        if language == SandboxLanguage.PYTHON:
-            script = os.path.join(src_dir, "main.py")
-            with open(script, "w") as f:
-                f.write(code)
-            parts.append("python3 /src/main.py")
-
-        elif language == SandboxLanguage.TYPESCRIPT:
-            script = os.path.join(src_dir, "main.ts")
-            with open(script, "w") as f:
-                f.write(code)
-            parts.append("npx tsx /src/main.ts")
-
-        elif language == SandboxLanguage.SQLITE:
-            sql_file = os.path.join(src_dir, "query.sql")
-            with open(sql_file, "w") as f:
-                f.write(code)
-            parts.append("sqlite3 -header -csv /tmp/sandbox.db < /src/query.sql")
-
-        elif language == SandboxLanguage.POSTGRESQL:
-            sql_file = os.path.join(src_dir, "query.sql")
-            with open(sql_file, "w") as f:
-                f.write(code)
-            parts.append("psql $DATABASE_URL -f /src/query.sql --csv")
-
-        return ["sh", "-c", " ".join(parts)]
+    def _build_command(self, code: str, language: SandboxLanguage, src_dir: str) -> list[str]:
+        return write_run_command(code, language, src_dir)
 
     # ------------------------------------------------------------------
     # Install phase
@@ -235,41 +225,26 @@ class DockerExecutor(BaseExecutor):
         (``/deps`` for Python, ``/node_modules`` for TypeScript).
         """
         try:
-            import docker
-            from docker.errors import ImageNotFound  # noqa: F401 (re-exported for tests)
+            import docker  # noqa: F401 - whether docker-py is installed
+            from docker.errors import (
+                ImageNotFound,  # noqa: F401 (re-exported for tests)
+            )
         except ImportError as exc:
             raise RuntimeError(
                 "docker Python package is not installed. Install with: pip install docker"
             ) from exc
 
-        client = docker.from_env()
+        client = proxied_docker_client()
         try:
             egress_cidrs = ensure_egress_network_sync(
                 client, self.egress_network, {"pipeshub.sandbox": "egress"},
             )
             network_name = self.egress_network
 
-            if language == SandboxLanguage.PYTHON:
-                cmd = [
-                    "sh", "-c",
-                    f"pip install --quiet --no-cache-dir --target /deps "
-                    f"--index-url {_DEFAULT_PIP_INDEX_URL} "
-                    + " ".join(packages),
-                ]
-                extract_path = "/deps"
-                mount_point = "/deps"
-            elif language == SandboxLanguage.TYPESCRIPT:
-                cmd = [
-                    "sh", "-c",
-                    f"mkdir -p /install && cd /install && "
-                    f"npm install --prefix /install --no-save --loglevel=error "
-                    f"--registry={_DEFAULT_NPM_REGISTRY} "
-                    + " ".join(packages),
-                ]
-                extract_path = "/install/node_modules"
-                mount_point = "/node_modules"
-            else:
-                raise ValueError(f"Cannot install packages for language: {language}")
+            found = registry_for(language)
+            if found is not None and found.credential is not None:
+                raise RuntimeError(f"Package install refused: {credentialed_needs_broker('package registry')}")
+            cmd, extract_path, mount_point = install_command(packages, language)
 
             # Fail closed: pip builds sdists and npm runs lifecycle scripts,
             # so an unfiltered install would hand package code the host,
@@ -304,11 +279,12 @@ class DockerExecutor(BaseExecutor):
         token: str,
     ) -> bytes:
         """Deps tar from one firewalled install container."""
-        container = create_sandbox_container(
+        container = create_bounded_container(
             client,
+            purpose="install",
             image=SANDBOX_IMAGE,
             environment={},
-            mem_limit=self.memory_limit_mb * 1024 * 1024,
+            **limited(self.memory_limit_mb * 1024 * 1024),
             nano_cpus=int(self.cpu_limit * 1e9),
             network=network_name,
             network_disabled=False,
@@ -316,16 +292,23 @@ class DockerExecutor(BaseExecutor):
             **command_kwargs,
         )
         try:
-            if language == SandboxLanguage.PYTHON:
-                container.put_archive("/", _tar_empty_dir("deps", mode=0o777))
-            elif language == SandboxLanguage.TYPESCRIPT:
-                container.put_archive("/", _tar_empty_dir("install", mode=0o777))
             container.start()
-            exit_info = container.wait(timeout=timeout + 30)
+            # Same disk watch as the coding sandbox: where the daemon ignores
+            # the per-run quota, a run past it (or one whose size cannot be
+            # read) is stopped.
+            watch = start_disk_watch(client, container.id)
+            try:
+                exit_info = container.wait(timeout=timeout + 30)
+            finally:
+                if watch is not None:
+                    watch.stop()
             exit_code = exit_info.get("StatusCode", -1)
+            stopped = disk_watch_note(watch, install=True)
+            if stopped:
+                raise RuntimeError(stopped.strip())
             if exit_code != 0:
-                stderr = container.logs(stdout=False, stderr=True).decode(errors="replace")
-                stdout = container.logs(stdout=True, stderr=False).decode(errors="replace")
+                stderr = _capped_logs(container, stdout=False)
+                stdout = _capped_logs(container, stdout=True)
                 if firewall_unavailable(exit_code, stderr, token):
                     raise RuntimeError(
                         f"Package install refused: sandbox image {SANDBOX_IMAGE} cannot install "
@@ -339,7 +322,7 @@ class DockerExecutor(BaseExecutor):
             return _get_archive_bytes(container, extract_path)
         finally:
             try:
-                container.remove(force=True)
+                container.remove(force=True, v=True)
             except Exception:
                 pass
 
@@ -381,7 +364,7 @@ class DockerExecutor(BaseExecutor):
         ignore ``network_disabled``.
         """
         try:
-            import docker
+            import docker  # noqa: F401 - whether docker-py is installed
             from docker.errors import ImageNotFound
         except ImportError:
             return ExecutionResult(
@@ -389,7 +372,7 @@ class DockerExecutor(BaseExecutor):
                 error="docker Python package is not installed. Install with: pip install docker",
             )
 
-        client = docker.from_env()
+        client = proxied_docker_client()
 
         try:
             client.images.get(image)
@@ -412,47 +395,40 @@ class DockerExecutor(BaseExecutor):
                 )
 
         container = None
+        watch = None
         try:
             mem_bytes = self.memory_limit_mb * 1024 * 1024
             nano_cpus = int(self.cpu_limit * 1e9)
 
-            container = create_sandbox_container(
+            container = create_bounded_container(
                 client,
                 image=image,
                 command=command,
                 environment=env,
                 working_dir="/src",
-                mem_limit=mem_bytes,
+                **limited(mem_bytes),
                 nano_cpus=nano_cpus,
                 network_mode="none",
                 network_disabled=self.network_disabled,
-                read_only=False,
                 tmpfs={"/tmp": "size=100M"},
                 detach=True,
                 **CONTAINER_HARDENING,
             )
 
-            # Ensure /src is writable by the sandbox user, then inject source
-            # files and create the output directory (no host-path volume mounts).
-            container.put_archive("/", _tar_empty_dir("src", mode=0o777))
+            # The root is read-only: /src, /output and the deps target are the container's own volumes
+            # (``limited``), so the files go straight in (no host-path volume mounts).
             container.put_archive("/src", _tar_directory(src_dir))
-            container.put_archive("/", _tar_empty_dir("output", mode=0o777))
             if deps_tar and deps_target:
-                # Create the target directory then extract the deps tar into
-                # it. The tar from ``get_archive`` has a leading directory
-                # entry (the basename of the source path), so we put it at
-                # the container root and rely on the directory name being
-                # correct by construction.
-                container.put_archive("/", _tar_empty_dir(deps_target.lstrip("/"), mode=0o755))
                 container.put_archive(deps_target, deps_tar)
 
             container.start()
+            watch = start_disk_watch(client, container.id)
 
             def _blocking_wait():
                 exit_info = container.wait(timeout=timeout + 30)
                 exit_code = exit_info.get("StatusCode", -1)
-                stdout = container.logs(stdout=True, stderr=False).decode(errors="replace")
-                stderr = container.logs(stdout=False, stderr=True).decode(errors="replace")
+                stdout = _capped_logs(container, stdout=True)
+                stderr = _capped_logs(container, stdout=False)
                 return exit_code, stdout, stderr
 
             try:
@@ -460,15 +436,24 @@ class DockerExecutor(BaseExecutor):
                     asyncio.to_thread(_blocking_wait),
                     timeout=timeout + 5,
                 )
-            except (asyncio.TimeoutError, asyncio.CancelledError):
+            except asyncio.CancelledError:
+                # Stop the container, then let the cancellation through (it is not a timeout).
+                if watch is not None:
+                    watch.stop()
+                with contextlib.suppress(Exception):
+                    container.kill()
+                raise
+            except asyncio.TimeoutError:
+                if watch is not None:
+                    watch.stop()
                 logger.warning("Container execution timed out after %ds, killing container", timeout)
                 try:
                     container.kill()
                 except Exception:
                     pass
                 try:
-                    stdout = container.logs(stdout=True, stderr=False).decode(errors="replace")
-                    stderr = container.logs(stdout=False, stderr=True).decode(errors="replace")
+                    stdout = _capped_logs(container, stdout=True)
+                    stderr = _capped_logs(container, stdout=False)
                 except Exception:
                     stdout, stderr = "", ""
                 return ExecutionResult(
@@ -479,16 +464,29 @@ class DockerExecutor(BaseExecutor):
                     error=f"Execution timed out after {timeout}s",
                 )
 
+            if watch is not None:
+                watch.stop()
+            stopped = disk_watch_note(watch)
+            if stopped:
+                return ExecutionResult(
+                    success=False,
+                    stdout=stdout,
+                    stderr=stopped + stderr,
+                    exit_code=exit_code or 137,
+                    error=stopped.strip(),
+                )
+
             # Pull output artifacts from the container into the local output_dir.
-            _extract_container_dir(container, "/output", output_dir)
+            budget = _extract_container_dir(container, "/output", output_dir)
 
             return ExecutionResult(
                 success=exit_code == 0,
                 stdout=stdout,
-                stderr=stderr,
+                # Tells the caller which outputs were left out, and why.
+                stderr=stderr + budget.note(),
                 exit_code=exit_code,
             )
-        except Exception as exc:
+        except Exception:
             if container:
                 try:
                     container.kill()
@@ -496,9 +494,11 @@ class DockerExecutor(BaseExecutor):
                     pass
             raise
         finally:
+            if watch is not None:
+                watch.stop()
             if container:
                 try:
-                    container.remove(force=True)
+                    container.remove(force=True, v=True)
                 except Exception:
                     pass
             try:
@@ -508,13 +508,79 @@ class DockerExecutor(BaseExecutor):
 
     @staticmethod
     def cleanup_execution(execution_id: str) -> None:
-        path = os.path.join(_SANDBOX_ROOT, execution_id)
+        path = os.path.join(_sandbox_root(), execution_id)
         if os.path.isdir(path):
             shutil.rmtree(path, ignore_errors=True)
 
     @staticmethod
     def get_sandbox_root() -> str:
-        return _SANDBOX_ROOT
+        return _sandbox_root()
+
+
+def credentialed_database(language: SandboxLanguage, env: dict[str, str] | None) -> str | None:
+    """Why a PostgreSQL run cannot happen here: its password is added by the egress proxy, which this executor has
+    not (``None``: nothing to refuse)."""
+    url = (env or {}).get("DATABASE_URL")
+    if language != SandboxLanguage.POSTGRESQL or not url or database(url).password is None:
+        return None
+    return credentialed_needs_broker("database")
+
+
+def write_run_command(code: str, language: SandboxLanguage, src_dir: str) -> list[str]:
+    """Write *code* as the source file under *src_dir* (seen as ``/src``) and return the run command.
+
+    Shared by every executor that runs the image's own toolchain, so a run is
+    the same command wherever it happens.
+    """
+    if language == SandboxLanguage.PYTHON:
+        name, run = "main.py", "python3 /src/main.py"
+    elif language == SandboxLanguage.TYPESCRIPT:
+        name, run = "main.ts", "npx tsx /src/main.ts"
+    elif language == SandboxLanguage.SQLITE:
+        name, run = "query.sql", "sqlite3 -header -csv /tmp/sandbox.db < /src/query.sql"
+    elif language == SandboxLanguage.POSTGRESQL:
+        name, run = "query.sql", 'psql "$DATABASE_URL" -f /src/query.sql --csv'
+    else:
+        raise ValueError(f"Unsupported language: {language}")
+    with open(os.path.join(src_dir, name), "w") as f:
+        f.write(code)
+    return ["sh", "-c", run]
+
+
+def registry_for(language: SandboxLanguage) -> Registry | None:
+    """The package registry an install of *language* uses, split from any credential it carries."""
+    if language == SandboxLanguage.PYTHON:
+        return registry(_DEFAULT_PIP_INDEX_URL)
+    if language == SandboxLanguage.TYPESCRIPT:
+        return registry(_DEFAULT_NPM_REGISTRY)
+    return None
+
+
+def install_command(
+    packages: list[str], language: SandboxLanguage, proxied: ProxiedRegistry | None = None
+) -> tuple[list[str], str, str]:
+    """``(command, path the deps land in, where the run sees them)`` for validated *packages*; ``proxied``: the
+    registry is reached through the egress proxy, which adds its credential."""
+    if language == SandboxLanguage.PYTHON:
+        index = proxied.pip_url() if proxied is not None else registry(_DEFAULT_PIP_INDEX_URL).url
+        command = [
+            "sh", "-c",
+            f"pip install --quiet --no-cache-dir --target /deps "
+            f"--index-url {index} "
+            + _shell_words(packages),
+        ]
+        return (proxied.command(command) if proxied else command), "/deps", "/deps"
+    if language == SandboxLanguage.TYPESCRIPT:
+        auth = f"{proxied.npm_auth_flag()} " if proxied is not None else ""
+        command = [
+            "sh", "-c",
+            f"mkdir -p /install && cd /install && "
+            f"npm install --prefix /install --no-save --loglevel=error "
+            f"--registry={registry(_DEFAULT_NPM_REGISTRY).url} {auth}"
+            + _shell_words(packages),
+        ]
+        return (proxied.command(command) if proxied else command), "/install/node_modules", "/node_modules"
+    raise ValueError(f"Cannot install packages for language: {language}")
 
 
 def _now_ms() -> int:
@@ -535,72 +601,79 @@ def _tar_directory(src_dir: str) -> bytes:
     return buf.read()
 
 
-def _tar_empty_dir(name: str, *, mode: int = 0o755) -> bytes:
-    """Create an in-memory tar containing a single empty directory."""
-    buf = io.BytesIO()
-    with tarfile.open(fileobj=buf, mode="w") as tar:
-        info = tarfile.TarInfo(name=name)
-        info.type = tarfile.DIRTYPE
-        info.mode = mode
-        tar.addfile(info)
-    buf.seek(0)
-    return buf.read()
 
 
-def _get_archive_bytes(container: object, path: str) -> bytes:
-    """Stream ``container.get_archive(path)`` into a bytes blob."""
+# The most dependency archive one install may hand back. It is held in
+# memory until the run container gets it, so it is bounded.
+_DEPS_ARCHIVE_MAX_BYTES = 512 * 1024 * 1024
+
+
+def _shell_words(specs: list[str]) -> str:
+    """Package specs as literal ``sh`` words: ``numpy>=1.26`` would
+    otherwise be read as a redirection, and ``lodash@4.*`` as a glob."""
+    return " ".join(shlex.quote(spec) for spec in specs)
+
+
+def _capped_logs(container: object, *, stdout: bool) -> str:
+    """One output stream of a finished container, keeping only its first
+    and last bytes; the rest is read past and dropped."""
+    try:
+        try:
+            # `follow` defaults to `stream`: a container still running (a kill
+            # that failed) would keep this read open.
+            stream = container.logs(stdout=stdout, stderr=not stdout, stream=True, follow=False)
+        except TypeError:
+            # A client without streaming logs.
+            stream = container.logs(stdout=stdout, stderr=not stdout)
+    except Exception as exc:
+        logger.debug("reading container logs failed: %s", exc)
+        return ""
+    return read_capped_stream(stream)
+
+
+def _get_archive_bytes(container: object, path: str, *, limit: int = _DEPS_ARCHIVE_MAX_BYTES) -> bytes:
+    """Stream ``container.get_archive(path)`` into a bytes blob of at most
+    ``limit`` bytes; a larger archive fails the install instead of filling
+    this process's memory."""
     bits, _ = container.get_archive(path)
-    return b"".join(bits)
+    buf = bytearray()
+    try:
+        for chunk in bits:
+            if not chunk:
+                continue
+            if len(buf) + len(chunk) > limit:
+                raise RuntimeError(
+                    f"Package install produced more than {limit // (1024 * 1024)} MiB of "
+                    "dependencies; install fewer or smaller packages"
+                )
+            buf += chunk
+    finally:
+        close = getattr(bits, "close", None)
+        if callable(close):
+            with contextlib.suppress(Exception):
+                close()
+    return bytes(buf)
 
 
-# Keep up to 16 MiB of tar data in memory; anything larger spills to disk.
-# This avoids OOM on large artifact directories while still being fast for
-# the common small-output case.
-_TAR_SPOOL_MAX_SIZE = 16 * 1024 * 1024
-
-
-def _extract_container_dir(container: object, container_path: str, local_dir: str) -> None:
+def _extract_container_dir(container: object, container_path: str, local_dir: str) -> ExtractBudget:
     """Pull a directory from a container via ``get_archive`` and extract to *local_dir*.
 
-    The archive is streamed chunk-by-chunk into a ``SpooledTemporaryFile`` so
-    small archives stay in memory while large ones transparently spill to
-    disk. This prevents high memory consumption / OOM on large outputs.
+    The archive is read as it streams in, within the run output limits
+    (``output_limits.ExtractLimits.for_output``): oversized files are
+    skipped, collection stops at the total or file-count limit, and nothing
+    is spooled.
 
     Only regular files are extracted. A symlink (or hardlink/device) member is
     never a legitimate artifact and, left on the host, would be followed by the
     next run's readers and copy host files back into the sandbox (SB-5), so
     non-regular members are dropped and ``filter="data"`` sanitises the rest.
     """
+    budget = ExtractBudget.for_output()
     try:
         bits, _ = container.get_archive(container_path)
-        with tempfile.SpooledTemporaryFile(max_size=_TAR_SPOOL_MAX_SIZE) as tar_stream:
-            for chunk in bits:
-                if chunk:
-                    tar_stream.write(chunk)
-            tar_stream.seek(0)
-            resolved_root = os.path.realpath(local_dir)
-            with tarfile.open(fileobj=tar_stream, mode="r|*") as tar:
-                prefix = os.path.basename(container_path.rstrip("/")) + "/"
-                for member in tar:
-                    if member.isdir():
-                        continue
-                    if not member.isfile():
-                        logger.warning(
-                            "Skipping non-regular tar member %r (type %r) from %s",
-                            member.name, member.type, container_path,
-                        )
-                        continue
-                    if member.name.startswith(prefix):
-                        member.name = member.name[len(prefix):]
-                    if not member.name:
-                        continue
-                    target = os.path.realpath(os.path.join(local_dir, member.name))
-                    if not target.startswith(resolved_root + os.sep) and target != resolved_root:
-                        logger.warning(
-                            "Skipping tar member with path traversal: %s -> %s",
-                            member.name, target,
-                        )
-                        continue
-                    tar.extract(member, local_dir, filter="data")
+        extract_tar_stream(bits, container_path, local_dir, budget)
     except Exception:
         logger.debug("No output artifacts to extract from container %s", container_path)
+    if budget.note():
+        logger.warning("sandbox output %s: %s", container_path, budget.note().strip())
+    return budget

@@ -2,7 +2,7 @@
 
 import React, { createContext, useContext, useId } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Flex, Text } from '@radix-ui/themes';
+import { Flex, Select, Text, TextArea, TextField } from '@radix-ui/themes';
 
 // ========================================
 // Types
@@ -19,8 +19,8 @@ interface FormFieldProps {
   description?: string;
   /** Error message displayed below the field */
   error?: string;
-  /** Field content */
-  children: React.ReactNode;
+  /** Field content; a function gets the control ids, for a control that is not one of the FormField* wrappers */
+  children: React.ReactNode | ((control: FormFieldControlIds) => React.ReactNode);
 }
 
 /** Ids a control inside {@link FormField} sets so the label, help and error describe it. */
@@ -34,6 +34,24 @@ const FormFieldControlContext = createContext<FormFieldControlIds | null>(null);
 /** Spread on the input (or Select trigger) inside a FormField; empty outside one. */
 export function useFormFieldControl(): FormFieldControlIds | Record<string, never> {
   return useContext(FormFieldControlContext) ?? {};
+}
+
+/** A text field inside a FormField, labelled by it and described by its help and error. */
+export function FormFieldTextField(props: React.ComponentProps<typeof TextField.Root>) {
+  const control = useFormFieldControl();
+  return <TextField.Root {...control} {...props} />;
+}
+
+/** A text area inside a FormField, labelled by it and described by its help and error. */
+export function FormFieldTextArea(props: React.ComponentProps<typeof TextArea>) {
+  const control = useFormFieldControl();
+  return <TextArea {...control} {...props} />;
+}
+
+/** A Select trigger inside a FormField, labelled by it and described by its help and error. */
+export function FormFieldSelectTrigger(props: React.ComponentProps<typeof Select.Trigger>) {
+  const control = useFormFieldControl();
+  return <Select.Trigger {...control} {...props} />;
 }
 
 /** True when a label (often a backend display name) already says "(optional)", in English or `suffix`. */
@@ -79,16 +97,18 @@ export function FormField({
           <Text
             size="1"
             weight="regular"
-            style={{ color: 'var(--slate-9)', marginLeft: 'var(--space-1)' }}
+            style={{ color: 'var(--slate-11)', marginLeft: 'var(--space-1)' }}
             as="span"
           >
             {t('form.optional')}
           </Text>
         )}
       </Text>
-      <FormFieldControlContext.Provider value={control}>{children}</FormFieldControlContext.Provider>
+      <FormFieldControlContext.Provider value={control}>
+        {typeof children === 'function' ? children(control) : children}
+      </FormFieldControlContext.Provider>
       {description && (
-        <Text id={helpId} size="1" style={{ color: 'var(--gray-10)', marginTop: 2 }}>
+        <Text id={helpId} size="1" style={{ color: 'var(--gray-11)', marginTop: 2 }}>
           {description}
         </Text>
       )}

@@ -1,0 +1,163 @@
+{
+  "description": "The activity bus (UX5): sandbox command output for the activity panel. Same wire encoding as the LiveBus (livebus-frames.json) on its own capped, expiring Redis stream per run, so output never evicts the chat's text deltas. Python app.harness.livebus writes (RedisLiveBus with the activity prefix), Node's activity route reads. fence is the attempt's fence, modelAttempt is 0, n counts frames per publisher; readers order by the Redis entry id. data.text is redacted before publishing. A run's suggested next questions follow its terminal commit as one followups frame (n 0).",
+  "keys": [
+    {
+      "runId": "run_1",
+      "namespace": "",
+      "key": "harness:activity:run_1",
+      "notifyChannel": "harness:activity-notify:run_1"
+    },
+    {
+      "runId": "run_1",
+      "namespace": "tenant-a",
+      "key": "tenant-a:harness:activity:run_1",
+      "notifyChannel": "tenant-a:harness:activity-notify:run_1"
+    }
+  ],
+  "frames": [
+    {
+      "frame": {
+        "runId": "7a1c0e52-5b1d-4c3e-9f0a-2d4e6b8c0f11",
+        "fence": 3,
+        "modelAttempt": 0,
+        "n": 1,
+        "kind": "command_started",
+        "data": {
+          "commandId": "inv_1",
+          "source": "run_code",
+          "command": "print('hello')",
+          "language": "python",
+          "startedAt": 1759320000000,
+          "attemptId": "att_1",
+          "invocationId": "inv_1"
+        }
+      },
+      "fields": {
+        "v": "1",
+        "f": "3",
+        "a": "0",
+        "n": "1",
+        "k": "command_started",
+        "d": "{\"commandId\":\"inv_1\",\"source\":\"run_code\",\"command\":\"print('hello')\",\"language\":\"python\",\"startedAt\":1759320000000,\"attemptId\":\"att_1\",\"invocationId\":\"inv_1\"}"
+      }
+    },
+    {
+      "frame": {
+        "runId": "7a1c0e52-5b1d-4c3e-9f0a-2d4e6b8c0f11",
+        "fence": 3,
+        "modelAttempt": 0,
+        "n": 2,
+        "kind": "command_output",
+        "data": {
+          "commandId": "inv_1",
+          "stream": "stdout",
+          "text": "hello é \"quoted\"\n"
+        }
+      },
+      "fields": {
+        "v": "1",
+        "f": "3",
+        "a": "0",
+        "n": "2",
+        "k": "command_output",
+        "d": "{\"commandId\":\"inv_1\",\"stream\":\"stdout\",\"text\":\"hello é \\\"quoted\\\"\\n\"}"
+      }
+    },
+    {
+      "frame": {
+        "runId": "7a1c0e52-5b1d-4c3e-9f0a-2d4e6b8c0f11",
+        "fence": 3,
+        "modelAttempt": 0,
+        "n": 3,
+        "kind": "command_output",
+        "data": {
+          "commandId": "inv_1",
+          "stream": "stderr",
+          "dropped": 4096
+        }
+      },
+      "fields": {
+        "v": "1",
+        "f": "3",
+        "a": "0",
+        "n": "3",
+        "k": "command_output",
+        "d": "{\"commandId\":\"inv_1\",\"stream\":\"stderr\",\"dropped\":4096}"
+      }
+    },
+    {
+      "frame": {
+        "runId": "7a1c0e52-5b1d-4c3e-9f0a-2d4e6b8c0f11",
+        "fence": 3,
+        "modelAttempt": 0,
+        "n": 4,
+        "kind": "command_finished",
+        "data": {
+          "commandId": "inv_1",
+          "status": "completed",
+          "exitCode": 0,
+          "durationMs": 412
+        }
+      },
+      "fields": {
+        "v": "1",
+        "f": "3",
+        "a": "0",
+        "n": "4",
+        "k": "command_finished",
+        "d": "{\"commandId\":\"inv_1\",\"status\":\"completed\",\"exitCode\":0,\"durationMs\":412}"
+      }
+    },
+    {
+      "frame": {
+        "runId": "7a1c0e52-5b1d-4c3e-9f0a-2d4e6b8c0f11",
+        "fence": 3,
+        "modelAttempt": 0,
+        "n": 0,
+        "kind": "followups",
+        "data": {
+          "items": [
+            {
+              "text": "Compare this with Q2"
+            },
+            {
+              "text": "Draft an email with these numbers"
+            }
+          ]
+        }
+      },
+      "fields": {
+        "v": "1",
+        "f": "3",
+        "a": "0",
+        "n": "0",
+        "k": "followups",
+        "d": "{\"items\":[{\"text\":\"Compare this with Q2\"},{\"text\":\"Draft an email with these numbers\"}]}"
+      }
+    }
+  ],
+  "rejected": [
+    {
+      "description": "a chat delta kind is not an activity frame",
+      "fields": {
+        "v": "1",
+        "f": "3",
+        "a": "0",
+        "n": "9",
+        "k": "text_delta",
+        "d": "{\"text\":\"x\"}"
+      }
+    },
+    {
+      "description": "wire version 2",
+      "fields": {
+        "v": "2",
+        "f": "3",
+        "a": "0",
+        "n": "9",
+        "k": "command_output",
+        "d": "{}"
+      }
+    }
+  ]
+}

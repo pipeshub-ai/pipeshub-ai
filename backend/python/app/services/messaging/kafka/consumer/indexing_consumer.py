@@ -34,6 +34,8 @@ from app.modules.indexing.record_progress import (
     new_progress,
 )
 from app.services.messaging import consumer_concurrency as concurrency
+from app.services.messaging import record_budget
+from app.services.messaging.backpressure import BackpressureEpisode
 from app.services.messaging.config import (
     IndexingEvent,
     IndexingMessageHandler,
@@ -65,6 +67,10 @@ from app.services.messaging.kafka.consumer.backlog import read_partition_backlog
 from app.services.messaging.kafka.consumer.remembered import (
     OffsetFetcher,
     RememberedOffsets,
+)
+from app.services.messaging.kafka.consumer.watermark_committer import (
+    CommitDropped,
+    WatermarkCommitter,
 )
 from app.services.messaging.lanes.backlog import LaneBacklog
 from app.services.messaging.lease import LeaseRenewer
@@ -113,6 +119,9 @@ if TYPE_CHECKING:
 
 FUTURE_CLEANUP_INTERVAL = 100  # Cleanup completed futures every N messages
 _MAIN_LOOP_OP_TIMEOUT = 5.0
+# Bounds every wait for an offset commit (a settle, the revocation and stop flushes). Under the bridge's
+# _MAIN_LOOP_OP_TIMEOUT, so a slow commit reports itself rather than as a bridge that got no reply.
+_COMMIT_WAIT_SECONDS = 4.0
 # The backlog read opens its own short-lived connection, so it gets longer
 # than a commit does; the caller's wait is a little longer still, so the read
 # reports its own timeout rather than being abandoned mid-way.
@@ -128,11 +137,8 @@ _DWELL_SWEEP_INTERVAL_SECONDS = 30.0
 # Longest the fair loop waits for a delivery to finish while it has work it
 # cannot dispatch yet. A finish ends the wait at once; this bounds it for what
 # no finish signals (a backoff coming due, a downstream pause lifting, records
-# on another partition). Also the poll timeout parallel dispatch keeps.
+# on another partition).
 _BUSY_POLL_TIMEOUT_MS = 50
-# A finish frees an index permit for one loop turn and that turn's dispatch takes it back, so a backpressure
-# episode ends only once later turns have seen it stay clear for this long: one WARNING and one INFO per episode.
-_BACKPRESSURE_CLEAR_SETTLE_SECONDS = 5.0
 # Sentinel CompositeKeyExtractor uses for an absent fairness field.
 _DEFAULT_KEY_LEVEL = "__default__"
 # A message the read phase has not parsed yet (see __parse_batch).
@@ -269,6 +275,12 @@ class _SchedulerRebalanceListener(ConsumerRebalanceListener):
         await self._consumer._on_partitions_assigned(assigned)
 
 
+# aiokafka keeps one fetch per broker in flight, and a partition paused for its record is left out of it: once resumed it
+# waits for the idle partitions' long-poll to come back. aiokafka's 500 ms default capped a busy partition beside an idle
+# one at 2 records/s (FIFO) or one batch per 500 ms (fair).
+_FETCH_MAX_WAIT_MS = 50
+
+
 class IndexingKafkaConsumer(IMessagingConsumer):
     """Kafka consumer with nested concurrency control for indexing.
 
@@ -338,9 +350,10 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         # Shared with the ParsingClient/DoclingClient/EmbeddingServerEmbeddings
         # instances that this consumer's records flow through — see
         # app.services.messaging.backpressure. __apply_backpressure() also
-        # pauses partitions whenever any of them last saw a 429+Retry-After,
-        # instead of pulling more work a saturated downstream would just
-        # reject again.
+        # pauses partitions whenever one every record calls last saw a
+        # 429+Retry-After (a Docling one holds only Docling's records at
+        # dispatch), instead of pulling more work a saturated downstream would
+        # just reject again.
         self.backpressure_coordinator = backpressure_coordinator
         self._consumer_instance_id = uuid.uuid4().hex
         self._distributed_log_times: dict[str, float] = {}
@@ -377,8 +390,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         # run one at a time: when the process dies again, the record that
         # took it down is the only suspect in flight. Used on the worker loop.
         self._suspects = asyncio.Lock()
-        self._backpressure_logged = False
-        self._backpressure_clear_since: float | None = None
+        self._backpressure_episode = BackpressureEpisode()
         # Reads are paused because no record could be admitted (not a downstream service asking for a pause).
         self._admission_paused = False
         self._partition_lock = threading.Lock()
@@ -414,6 +426,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             DRRScheduler[tuple[TopicPartition, ConsumerRecord, StreamMessage]] | None
         ) = None
         self._offset_tracker: PartitionOffsetTracker | None = None
+        self._committer = WatermarkCommitter(self.__broker_commit, _COMMIT_WAIT_SECONDS)
         self._last_dwell_sweep = 0.0
         # Lanes (partitions) paused because one key on them is at its cap,
         # mapped to the key that blocked them. Main-loop-only state.
@@ -507,6 +520,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             'heartbeat_interval_ms': kafka_config.heartbeat_interval_ms,
             'max_poll_interval_ms': kafka_config.max_poll_interval_ms,
             'rebalance_timeout_ms': kafka_config.rebalance_timeout_ms,
+            'fetch_max_wait_ms': _FETCH_MAX_WAIT_MS,
         }
 
         config.update(kafka_security_kwargs(ssl_enabled=kafka_config.ssl, sasl=kafka_config.sasl))
@@ -791,6 +805,10 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         """Whether reads are paused because no record could be admitted (not a downstream pause)."""
         return self._admission_paused
 
+    def downstream_read_pause(self) -> float:
+        """Seconds every read must still wait out a downstream 429 (see ``consumer_concurrency.downstream_read_pause``)."""
+        return concurrency.downstream_read_pause(self, scoped=self._scheduler is not None)
+
     def admission_explain(self) -> dict[str, Any]:
         """Why this consumer is or is not admitting records (see consumer_concurrency)."""
         return concurrency.admission_explain(self)
@@ -849,8 +867,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             self.main_loop = asyncio.get_running_loop()
             self._finished = asyncio.Event()
             # An episode a previous run left open must not hide this run's first WARNING.
-            self._backpressure_logged = False
-            self._backpressure_clear_since = None
+            self._backpressure_episode.reset()
 
             if not self.consumer:
                 await self.initialize()
@@ -897,6 +914,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         except Exception as exc:
             self.logger.error("Error stopping worker thread: %s", exc)
 
+        await self._committer.close(None)
         # Stop the Kafka consumer last
         if self.consumer:
             try:
@@ -1050,6 +1068,8 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                 len(purged),
                 len(revoked_set),
             )
+        # Last: everything above runs without an await, so no dispatch can interleave with it.
+        await self._committer.close(revoked_set)
 
     async def _on_partitions_assigned(self, assigned: "list[TopicPartition]") -> None:
         if assigned:
@@ -1065,16 +1085,15 @@ class IndexingKafkaConsumer(IMessagingConsumer):
 
         This ensures getmany() is always called (keeping the consumer alive
         and resetting max_poll_interval_ms), while preventing new messages
-        from being returned when at capacity OR when any downstream service
-        (parsing/docling/embedding) last signalled 429+Retry-After via
-        ``backpressure_coordinator`` — pulling more work in that case would
-        just queue up behind the same saturated service.
+        from being returned when at capacity OR when a downstream service
+        every record calls (parsing/embedding) last signalled 429+Retry-After
+        via ``backpressure_coordinator`` — pulling more work in that case would
+        just queue up behind the same saturated service. With the fair
+        scheduler a Docling 429 leaves the partitions read: the dispatch phase
+        holds the records that call Docling (``downstream_read_pause``).
         """
         budget = self._dispatch_budget()
-        downstream_paused = (
-            self.backpressure_coordinator is not None
-            and self.backpressure_coordinator.is_paused()
-        )
+        downstream_paused = self.downstream_read_pause() > 0.0
 
         # Saturation matters as much as queue depth: with both index pools
         # full and nothing queued behind them, the waiter count reads zero
@@ -1099,14 +1118,13 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             if not_paused:
                 self.consumer.pause(*not_paused)
             self._admission_paused = bool(budget.blocked or saturated or scheduler_full)
-            self._backpressure_clear_since = None
-            if not self._backpressure_logged:
+            if self._backpressure_episode.engaged():
                 if downstream_paused:
                     self.logger.warning(
                         "Downstream backpressure from %s: pausing Kafka "
                         "partition reads for %.1fs",
-                        ", ".join(sorted(self.backpressure_coordinator.paused_services)),
-                        self.backpressure_coordinator.pause_remaining(),
+                        ", ".join(concurrency.read_pausing_services(self, scoped=self._scheduler is not None)),
+                        self.downstream_read_pause(),
                     )
                 elif saturated:
                     # Distinct from the queue-depth case below: here the
@@ -1132,7 +1150,6 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                         "admission %s; pausing Kafka partition reads",
                         budget.describe(),
                     )
-                self._backpressure_logged = True
         else:
             # A partition remains paused while one of its messages is in flight;
             # this preserves Kafka's per-partition processing/commit order.
@@ -1148,14 +1165,8 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             if resumable:
                 self.consumer.resume(*resumable)
             self._admission_paused = False
-            if self._backpressure_logged:
-                now = time.monotonic()
-                if self._backpressure_clear_since is None:
-                    self._backpressure_clear_since = now
-                if now - self._backpressure_clear_since >= _BACKPRESSURE_CLEAR_SETTLE_SECONDS:
-                    self.logger.info("Backpressure cleared: %s", budget.describe())
-                    self._backpressure_logged = False
-                    self._backpressure_clear_since = None
+            if self._backpressure_episode.cleared(time.monotonic()):
+                self.logger.info("Backpressure cleared: %s", budget.describe())
 
     def __parallel_dispatch(self) -> bool:
         """Whether several records from one partition may run at once.
@@ -1802,13 +1813,9 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         if retry_offset is not None and self._scheduler is None:
             self.consumer.seek(topic_partition, retry_offset)
             self._rewound_since_poll.add(topic_partition)
-        downstream_paused = (
-            self.backpressure_coordinator is not None
-            and self.backpressure_coordinator.is_paused()
-        )
         if (
             self.running
-            and not downstream_paused
+            and self.downstream_read_pause() <= 0.0
             and topic_partition not in self._lane_paused
             and not self._dispatch_budget().blocked
             and not self.__is_held(topic_partition)
@@ -1968,11 +1975,9 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             or self._records_released
         )
         with self._partition_lock:
-            in_flight = bool(self._in_flight_partitions)
-        # shortcut: parallel dispatch keeps the busy poll timeout. It commits once
-        # per record and aiokafka commits one at a time, so waking on every finish
-        # outruns the commits; upgrade once commits are coalesced per partition.
-        wait_for_finish = in_flight and not self.__parallel_dispatch()
+            # Parallel dispatch tracks its work per record, not per partition.
+            in_flight = bool(self._in_flight_partitions or self._in_flight_records)
+        wait_for_finish = in_flight
         poll_timeout_ms = (
             0
             if wait_for_finish
@@ -2297,7 +2302,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             )
         if commits:
             try:
-                await self.consumer.commit(commits)  # type: ignore
+                await self._committer.commit(commits)
             except Exception as e:
                 # The next commit on these partitions carries them.
                 self.logger.warning(
@@ -2757,7 +2762,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         if not commits:
             return
         try:
-            await self.consumer.commit(commits)  # type: ignore
+            await self._committer.commit(commits)
         except Exception as e:
             self.logger.warning(
                 "Could not commit past %d resolved offset(s): %s", len(positions), e
@@ -2823,7 +2828,10 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                 )
             )
             if watermark is not None:
-                await self.consumer.commit({tp: watermark})  # type: ignore
+                try:
+                    await self._committer.commit({tp: watermark})
+                except CommitDropped:
+                    return False
             return True
 
         return await self._run_on_main_loop(do_resolve())
@@ -2914,15 +2922,18 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         self._finished.clear()
         parallel = self.__parallel_dispatch()
         budget = self._dispatch_budget()
+        held = concurrency.held_pools(self)
 
         def can_dispatch(
             item: tuple[TopicPartition, ConsumerRecord, StreamMessage],
         ) -> bool:
             tp, message, parsed = item
-            # A tier at its ceiling is passed over, not waited on: DRR skips
-            # the leaf without charging it and moves to the entity's other
-            # tier or the next entity.
+            # A tier at its ceiling, or a record whose downstream asked for a
+            # pause, is passed over, not waited on: DRR skips the leaf without
+            # charging it and moves to the entity's other tier or the next entity.
             if not budget.allows(concurrency.dispatch_tier(self, parsed)):
+                return False
+            if concurrency.held_downstream(self, parsed, held):
                 return False
             if parallel:
                 # A busy record is not refused here: refusing the head stalls
@@ -2933,14 +2944,12 @@ class IndexingKafkaConsumer(IMessagingConsumer):
 
         self.__reoffer_released()
         while self.running:
+            # Per record, like the budget: a 429 arriving mid-pass holds the rest of it.
             budget = self._dispatch_budget()
-            downstream_paused = (
-                self.backpressure_coordinator is not None
-                and self.backpressure_coordinator.is_paused()
-            )
+            held = concurrency.held_pools(self)
             if (
                 budget.blocked
-                or downstream_paused
+                or self.downstream_read_pause() > 0.0
                 or concurrency.index_gates_saturated(self)
             ):
                 break
@@ -3086,7 +3095,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                         parsed = await offload_if_large(decode_message, message_value)
                         return await open_stream_message(message.topic, parsed, StreamMessage)
                     except EnvelopeRejected as e:
-                        self.logger.error(f"Envelope rejected for {message_id}: {e.reason}")
+                        self.logger.error(f"Envelope rejected for {message_id}: {e.describe()}")
                         return None
                     except (ValidationError, TypeError) as e:
                         # Valid JSON that is not a StreamMessage never becomes one: poison, as in the Redis twin.
@@ -3283,6 +3292,12 @@ class IndexingKafkaConsumer(IMessagingConsumer):
     ) -> tuple[int, bool]:
         return await concurrency.increment_retry_and_check(self, message_id)
 
+    async def __broker_commit(self, offsets: dict[TopicPartition, int]) -> None:
+        consumer = self.consumer
+        if consumer is None:  # stopped while this commit waited for its turn
+            raise CommitDropped
+        await consumer.commit(offsets)  # type: ignore
+
     async def _commit_offset(self, message: ConsumerRecord) -> None:
         """Commit offset on the main loop where the Kafka consumer was started."""
         if not self.consumer:
@@ -3425,6 +3440,22 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         await self._commit_offset(message)
         return True
 
+    async def __settle_noted(
+        self, message: ConsumerRecord, in_flight: "_InFlightOffset | None"
+    ) -> bool:
+        """``__settle_done``, with what went wrong noted for index.end. A failed commit is
+        written once, without its text, and raised: the offset is not settled. False when
+        the partition was revoked: its next owner reads the offset again."""
+        try:
+            settled = await self.__settle_done(message, in_flight)
+        except Exception as e:
+            timing.note(disposition="retry", reason="commit_failed")
+            log_failure(self.logger, "index.commit_failed", e, level=logging.WARNING, include_error_text=False)
+            raise
+        if not settled:
+            timing.note(disposition="retry", reason="claim_lost")
+        return settled
+
     async def __commit_if_appropriate(
         self,
         message: ConsumerRecord,
@@ -3509,15 +3540,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                 )
 
         # ALWAYS commit - message is either done, dead-lettered, or re-queued
-        try:
-            settled = await self.__settle_done(message, in_flight)
-        except Exception as e:
-            timing.note(disposition="retry", reason="commit_failed")
-            log_failure(self.logger, "index.commit_failed", e, level=logging.WARNING, include_error_text=False)
-            raise
-        if not settled:
-            # The partition was revoked under this delivery: its next owner reads the offset again.
-            timing.note(disposition="retry", reason="claim_lost")
+        if not await self.__settle_noted(message, in_flight):
             return
         self.logger.debug(f"Committed offset for {message_id}")
         timing.note(**decision)
@@ -3614,7 +3637,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         suspect_held = False
         attempt_started = False
         abandoned = False
-        # Set once the handler returned cleanly: an exception after it is the commit's, not the handler's.
+        # Set once settlement starts: what it raises is already noted, so it propagates and is never settled again.
         settling = False
         parsing_held = False
         indexing_held = False
@@ -3685,7 +3708,8 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         )
 
         async def give_up(reason: str, attempts: int) -> None:
-            nonlocal abandoned
+            nonlocal abandoned, settling
+            settling = True
             # Our own record lease reads as a live holder, which keeps the
             # sink from failing a record left IN_PROGRESS.
             if distributed_leases.discard(record_pool) is not None:
@@ -3693,10 +3717,8 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             await self.__abandon_message(
                 message_id, stable_message_id, parsed_message, reason=reason, attempts=attempts,
             )
-            if await self.__settle_done(message, in_flight):
+            if await self.__settle_noted(message, in_flight):
                 timing.note(disposition="dead_letter")
-            else:  # the partition was revoked: its next owner reads the offset again
-                timing.note(disposition="retry", reason="claim_lost")
             abandoned = True
 
         try:
@@ -3748,6 +3770,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                     # Capacity leases only give up when self.running flips,
                     # so this is a clean shutdown: redeliver, do not commit.
                     outcome = "stopped"
+                    settling = True
                     await self.__resolve_offset(in_flight, done=False)
                     return False
                 lease_handle, renewal_task = concurrency.start_lease_guard(
@@ -3765,6 +3788,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                 if not record_lease_held:
                     if not self.running:
                         outcome = "stopped"
+                        settling = True
                         await self.__resolve_offset(in_flight, done=False)
                         return False
                     # Re-published, not left unresolved: redelivery by offset
@@ -3813,14 +3837,17 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                 progress = new_progress()
                 begin_progress(progress)
 
-                processing_budget: asyncio.Timeout | None = None
+                processing_budget: record_budget.RecordBudget | None = None
 
                 async def consume_handler_events() -> None:
                     nonlocal download_admission, memory_admission, parsing_held, indexing_held, success, shutting_down, parsing_admission, parse_lease_pool, class_ctx, processing_budget
                     event_gen = self.message_handler(parsed_message)
                     try:
-                        async with asyncio.timeout(processing_timeout) as budget:
-                            processing_budget = budget
+                        async with (
+                            asyncio.timeout(processing_timeout) as budget,
+                            record_budget.armed(budget, processing_timeout) as armed,
+                        ):
+                            processing_budget = armed
                             progress.attach(budget)
                             async for event in event_gen:
                                 if (
@@ -3877,6 +3904,9 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                                     async with concurrency.parse_admission_wait(
                                         self, budget, message_id
                                     ) as wait:
+                                        await concurrency.wait_out_held_service(
+                                            self, parse_tier, parsed_message, wait, scoped=self._scheduler is not None
+                                        )
                                         size_bytes = event.data.size_bytes if event.data else None
                                         # The size and what the inspection found are known now: the index permit
                                         # moves to its class in place.
@@ -4009,8 +4039,8 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                             raise concurrency.lease_guard_error(lease_handle)
                     await handler_task
                 except TimeoutError:
-                    if processing_budget is not None and processing_budget.expired():
-                        timing.note(timeout_s=processing_timeout)
+                    if processing_budget is not None and processing_budget.timeout.expired():
+                        timing.note(timeout_s=processing_budget.seconds)
                     elif success:  # the bookkeeping after INDEXING_COMPLETE ran out of its own time, not the record's budget
                         timing.note(phase="after_indexing_complete")
                     await concurrency.requeue_after_productive_cut(
@@ -4031,6 +4061,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                     end_progress()
             else:
                 self.logger.error(f"No message handler available for {message_id}")
+                settling = True
                 await self.__commit_if_appropriate(
                     message, parsed_message, success=False, is_terminal_error=True,
                     in_flight=in_flight,
@@ -4045,6 +4076,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                 self.logger.debug(
                     f"Consumer stopping, abandoning {message_id} without commit"
                 )
+                settling = True
                 await self.__resolve_offset(in_flight, done=False)
                 return False
 
@@ -4107,21 +4139,14 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                         message, parsed_message, in_flight, e.delay_s
                     )
                     return False
-            try:
-                settled = await self.__settle_done(message, in_flight)
-            except Exception as commit_error:
-                # Published again, but this offset is not settled: say so on index.end, not "requeued".
-                timing.note(disposition="retry", reason="commit_failed")
-                log_failure(
-                    self.logger, "index.commit_failed", commit_error, level=logging.WARNING, include_error_text=False,
-                )
-                raise
-            if not settled:  # revoked after the publish: the offset is its next owner's
-                timing.note(disposition="retry", reason="claim_lost")
+            # Published again: a failed commit or a revoked partition says so on index.end, not "requeued".
+            await self.__settle_noted(message, in_flight)
             return False
         except Exception as e:
             timing.note(exc=e)  # index.end writes it once, after the decision below
-            if success and not settling:
+            if settling:
+                raise  # settlement started: settling again would charge the handler and publish a copy
+            if success:
                 outcome = "failed"  # the handler raised after INDEXING_COMPLETE: a failed commit later does not make it a success
             concurrency.report_memory_incident_if_applicable(self, message_id, e)
 

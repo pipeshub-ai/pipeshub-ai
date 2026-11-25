@@ -13,8 +13,9 @@ import contextlib
 import json
 import logging
 import os
+import secrets
 import time
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from contextvars import ContextVar
 from dataclasses import dataclass
 from time import time as wall_clock
@@ -22,6 +23,13 @@ from typing import Any, Generic, TypeVar
 
 from app.core.org_context import spawn_in_request
 from app.services.paid_cache import locks as lock_limits
+from app.services.paid_cache.bump import (
+    BUMP_AFTER_MS,
+    PROCESS_BYTE_BUDGET,
+    BumpEntry,
+    BumpQueue,
+    _refreshed_since,
+)
 from app.services.paid_cache.keys import CacheKey, valid_record_id
 from app.services.paid_cache.locks import (
     DELETED_TTL_MS,
@@ -31,11 +39,20 @@ from app.services.paid_cache.locks import (
     deleted_name,
     lock_name,
     manifest_lock_name,
+    refresh_done_name,
     refresh_name,
 )
 from app.services.paid_cache.orphan import STOPPED, RecordGone, current_guard
 from app.services.paid_cache.run import RunScope, current_run
-from app.services.paid_cache.store import PAID_RESULT_ROUTES, ListedFile
+from app.services.paid_cache.store import (
+    PAID_RESULT_ROUTES,
+    BumpOutcome,
+    FinalFence,
+    GuardUnsupported,
+    ListedFile,
+    PurgeCutoffNoMarker,
+    VersionedBytes,
+)
 from app.telemetry.backend import METRICS_BACKEND
 
 T = TypeVar("T")
@@ -121,13 +138,33 @@ class ResultStore:
     async def list_files(self, org_id: str, record_id: str, prefix: str = "") -> list[ListedFile]: ...
     async def delete_files(self, org_id: str, record_id: str, paths: list[str]) -> None: ...
     async def purge_record(self, org_id: str, record_id: str, *, before_ms: int | None = None) -> None: ...
+    async def purge_records(self, org_id: str, record_ids: Sequence[str]) -> dict[str, BaseException | None]: ...
     async def purge_cutoff(self, org_id: str, record_id: str) -> int | None: ...
     async def purge_org(self, org_id: str) -> None: ...
 
 
+#: How long a record's refresh marker read stays good for the bumped objects it is compared with.
+MARKER_CACHE_S = 30.0
+
+
+def _origin_ms(raw: bytes) -> int | None:
+    """The ``originMs`` a bump wrote into the envelope, when there is one."""
+    if b'"originMs"' not in raw:
+        return None
+    try:
+        body = json.loads(raw)
+    except ValueError:
+        return None
+    origin = body.get("originMs") if isinstance(body, dict) else None
+    return origin if isinstance(origin, int) and not isinstance(origin, bool) else None
+
+
 def _encode(key: CacheKey, value: object) -> bytes:
+    # ``w``: one value per write, so two writes of the same result are not the same bytes (on S3 and MinIO the ETag is the
+    # content hash, and a delete that names a version must not match a later write that happens to equal it).
     return json.dumps(
-        {"v": FORMAT, "kind": key.kind, "value": value}, ensure_ascii=False, separators=(",", ":"),
+        {"v": FORMAT, "kind": key.kind, "value": value, "w": secrets.token_hex(8)},
+        ensure_ascii=False, separators=(",", ":"),
     ).encode("utf-8")
 
 
@@ -198,10 +235,60 @@ class _FencedStore:
     async def delete_files(self, org_id: str, record_id: str, paths: list[str]) -> None:
         await self._inner.delete_files(org_id, record_id, paths)
 
+    async def delete_files_if_match(self, org_id: str, record_id: str, items: Mapping[str, str]) -> list[str]:
+        """Deletes each path only while it is still the version named; the paths kept (changed since listed). Raises
+        ``GuardUnsupported`` when the storage cannot delete by version. A store with no such operation (a test fake with no
+        versions) raises it too: nothing was deleted, and the caller takes its fallback."""
+        guarded = getattr(self._inner, "delete_files_if_match", None)
+        if guarded is None:
+            raise GuardUnsupported("this store cannot delete by version")
+        return list(await guarded(org_id, record_id, items))
+
+    async def fenced(self, org_id: str, record_id: str) -> bool:
+        """The record or its org is deleted: nothing more is written for it."""
+        return await self._fenced(org_id, record_id)
+
+    # -- bump support: a store without these (a test fake, a service of an earlier release) bumps nothing --------
+
+    @property
+    def supports_bump(self) -> bool:
+        return bool(getattr(self._inner, "supports_bump", False))
+
+    def honours(self, org_id: str, capability: str) -> bool:
+        """What the storage behind the org honours; a store that says nothing per org falls back to its overall flags."""
+        per_org = getattr(self._inner, "honours", None)
+        if per_org is not None:
+            return bool(per_org(org_id, capability))
+        return bool(getattr(self._inner, "supports_bump", False)) if capability == "bump" else False
+
+    async def presign(self, org_id: str, record_id: str, files: Sequence[Any]) -> Mapping[tuple[str, str], Any]:
+        return await self._inner.presign(org_id, record_id, files)  # type: ignore[attr-defined,no-any-return]
+
+    async def get_versioned(self, org_id: str, record_id: str, path: str) -> VersionedBytes | None:
+        versioned = getattr(self._inner, "get_versioned", None)
+        if versioned is None:
+            raw = await self._inner.get(org_id, record_id, path)
+            return None if raw is None else VersionedBytes(raw, None, None)
+        return await versioned(org_id, record_id, path)  # type: ignore[no-any-return]
+
+    async def refresh_marker_ms(self, org_id: str, record_id: str) -> int | None:
+        return await self._inner.refresh_marker_ms(org_id, record_id)  # type: ignore[attr-defined,no-any-return]
+
+    async def bump_to(
+        self, entry: Any, data: bytes, charge: Callable[[int], None] | None = None,  # noqa: ANN401 - a JSON value or opaque signed-URL entry of any shape
+        eligible: Callable[[], bool] | None = None,
+    ) -> tuple[BumpOutcome, str | None]:
+        return await self._inner.bump_to(entry, data, charge, eligible)  # type: ignore[attr-defined,no-any-return]
+
     async def purge_record(self, org_id: str, record_id: str, *, before_ms: int | None = None) -> None:
         await self._inner.purge_record(org_id, record_id, before_ms=before_ms)
 
-    async def purge_cutoff(self, org_id: str, record_id: str) -> int | None:
+    async def purge_records(self, org_id: str, record_ids: Sequence[str]) -> dict[str, BaseException | None]:
+        return await self._inner.purge_records(org_id, record_ids)
+
+    async def purge_cutoff(self, org_id: str, record_id: str, *, require_marker: bool = False) -> int | None:
+        if require_marker and getattr(self._inner, "supports_cutoff_marker", False):
+            return await self._inner.purge_cutoff(org_id, record_id, require_marker=True)  # type: ignore[call-arg,no-any-return]
         return await self._inner.purge_cutoff(org_id, record_id)
 
     async def purge_org(self, org_id: str) -> None:
@@ -222,10 +309,42 @@ class PaidResultCache:
         #: Callers of one key on one event loop attach to the first one's computation. The indexing service runs
         #: more than one loop, and a future cannot be awaited from another loop, so the loop is part of the key.
         self._inflight: dict[tuple[int, str], asyncio.Future[Any]] = {}
+        self._bumps: dict[int, BumpQueue] = {}
+        #: (org, record) -> (read at, a refresh marker's store time that rejected an object): see ``_predates_refresh``.
+        self._markers: dict[tuple[str, str], tuple[float, int]] = {}
 
     @property
     def store(self) -> ResultStore:
         return self._store
+
+    @property
+    def bumps(self) -> BumpQueue:
+        """The queue of reuse bumps (``bump.py``) of the running event loop, made on first use."""
+        # One queue (and worker) per event loop: the indexing service runs more than one, and a queue's worker and
+        # counters belong to the loop that drains it. The byte and entry caps are per queue.
+        loop = id(asyncio.get_running_loop())
+        queue = self._bumps.get(loop)
+        if queue is None:
+            queue = self._bumps[loop] = BumpQueue(self._store, self.logger, budget=PROCESS_BYTE_BUDGET)  # type: ignore[arg-type]
+        return queue
+
+    def _bump_after_hit(
+        self, key: CacheKey, path: str, hit: "VersionedBytes | None", scope: RunScope | None, *, noted: bool,
+        started: float,
+    ) -> None:
+        """Queues the version refresh of a reused object that could be swept (see ``bump.py``). Never raises."""
+        try:
+            if hit is None or not writes_enabled() or not self._store.honours(key.org_id, "bump"):  # type: ignore[attr-defined]
+                return
+            if not hit.etag or hit.last_modified_ms is None:
+                return
+            age_ms = int(time.time() * 1000) - hit.last_modified_ms
+            if noted and age_ms < BUMP_AFTER_MS:
+                return
+            entry = BumpEntry(key.org_id, key.record_id, path, hit.data, hit.etag, hit.last_modified_ms, scope, started)
+            self.bumps.offer(entry)
+        except Exception as exc:
+            self.logger.debug("Paid-result bump not queued (%s)", type(exc).__name__)
 
     # -- public ---------------------------------------------------------------------------------
 
@@ -308,18 +427,38 @@ class PaidResultCache:
             return  # no result was ever stored under such an id (see ``valid_record_id``)
         await self._store.purge_record(org_id, record_id, before_ms=before_ms)
 
-    async def purge_cutoff(self, org_id: str, record_id: str) -> int | None:
-        """The store's clock now (ms): the cutoff for one refresh purge, taken once so that every DELETE of it agrees."""
+    async def purge_records(self, org_id: str, record_ids: Sequence[str]) -> dict[str, BaseException | None]:
+        """Removes every stored result of many records in few storage requests (a re-purge page). One entry per id:
+        ``None`` when done, else the error. An id no result can be stored under has nothing to remove (done)."""
+        valid = [r for r in record_ids if valid_record_id(r)]
+        outcomes: dict[str, BaseException | None] = dict.fromkeys(record_ids)
+        if valid:
+            outcomes.update(await self._store.purge_records(org_id, valid))
+        return outcomes
+
+    async def purge_cutoff(self, org_id: str, record_id: str, *, require_marker: bool = False) -> int | None:
+        """The store's clock now (ms): the cutoff for one refresh purge, taken once so that every DELETE of it agrees.
+
+        ``require_marker``: raises ``PurgeCutoffNoMarker`` when the storage service took it without writing the refresh
+        marker (an earlier release)."""
         if not valid_record_id(record_id):
             return None
+        if require_marker:
+            return await self._store.purge_cutoff(org_id, record_id, require_marker=True)  # type: ignore[call-arg]
         return await self._store.purge_cutoff(org_id, record_id)
 
     async def require_purge_cutoff(self, org_id: str, record_id: str) -> int | None:
         """The cutoff of a refresh purge. ``None`` only while paid-result writes are off (a purge without a cutoff
         removes what a delivery that took over has stored, which cannot exist then); with writes on, a storage
         service that cannot name one raises ``PurgeCutoffUnavailable``."""
-        cutoff = await self.purge_cutoff(org_id, record_id)
-        if cutoff is None and valid_record_id(record_id) and writes_enabled():
+        writes = writes_enabled()
+        try:
+            cutoff = await self.purge_cutoff(org_id, record_id, require_marker=writes)
+        except PurgeCutoffNoMarker as exc:
+            # With writes on, a reuse may bump an object past this purge unless the refresh marker is there: the refresh
+            # fails and is retried until the storage service (every replica) is updated.
+            raise PurgeCutoffUnavailable("the storage service takes no refresh marker with its cutoff; update it") from exc
+        if cutoff is None and valid_record_id(record_id) and writes:
             raise PurgeCutoffUnavailable("the storage service cannot yet give a purge cutoff; update it")
         return cutoff
 
@@ -332,6 +471,28 @@ class PaidResultCache:
         if held is not None and (held.lost or not await held.still_owned()):
             raise RefreshPurgeInProgress("the purge lease was lost before the delete; another delivery owns it")
         await self.purge_record(org_id, record_id, before_ms=cutoff)
+
+    async def mark_refresh_done(self, org_id: str, record_id: str, event_id: str) -> bool:
+        """Records that the refresh run under ``event_id`` has ended, for ``DELETED_TTL_MS``. True when the marker is written; False when
+        it could not be. This is the second copy of a fact the record carries (``refreshDoneId``, written with the clear of the request):
+        the backend may be this process's own (Redis unreachable), where no other worker sees it, which the record's copy covers."""
+        try:
+            backend = await self._backend()
+            await backend.mark(refresh_done_name(org_id, record_id, event_id), DELETED_TTL_MS)
+            return True
+        except Exception:
+            self.logger.debug("Paid-result refresh-done marker not written", exc_info=True)
+            return False
+
+    async def refresh_state(self, org_id: str, record_id: str, event_id: str) -> str:
+        """``"done"`` when the refresh under ``event_id`` ran, ``"open"`` when the marker can be read and is not set, ``"unavailable"``
+        when it could not be read (not the same as a miss: the caller must not start a refresh on it without bound). By identity only."""
+        try:
+            backend = await self._backend()
+            return "done" if await backend.is_marked(refresh_done_name(org_id, record_id, event_id)) else "open"
+        except Exception:
+            self.logger.debug("Paid-result refresh-done marker not read", exc_info=True)
+            return "unavailable"
 
     async def claim_refresh(self, org_id: str, record_id: str, event_id: str) -> str | None:
         """Claims the refresh named ``event_id`` for its first request, atomically (``SET NX`` with a TTL on Redis).
@@ -517,11 +678,14 @@ class PaidResultCache:
             refresh = False
         #: Bytes sit at the key that cannot be used: the next store replaces them.
         unusable = False
+        lead_started = time.monotonic()
+        hit: list[VersionedBytes] = []
         if not refresh:
-            found, value, unusable = await self._lookup(key, path, validate)
+            found, value, unusable = await self._lookup(key, path, validate, hit_out=hit)
             if found:
                 self._count(key, "hit")
-                await self._note(scope, key, path, stored=False)
+                noted = await self._note(scope, key, path, stored=False)
+                self._bump_after_hit(key, path, hit[0] if hit else None, scope, noted=noted, started=lead_started)
                 return value
         self._count(key, "miss")
         lock = await self._acquire(key)
@@ -540,10 +704,11 @@ class PaidResultCache:
                 return value
         try:
             if lock is not None and lock.token is not None and not refresh:
-                found, value, unusable = await self._lookup(key, path, validate, report=False)
+                found, value, unusable = await self._lookup(key, path, validate, report=False, hit_out=hit)
                 if found:
                     self._count(key, "hit")
-                    await self._note(scope, key, path, stored=False)
+                    noted = await self._note(scope, key, path, stored=False)
+                    self._bump_after_hit(key, path, hit[0] if hit else None, scope, noted=noted, started=lead_started)
                     return value
             held = lock if lock is not None and lock.token is not None else None
             started = time.monotonic()
@@ -615,19 +780,41 @@ class PaidResultCache:
 
     async def _lookup(
         self, key: CacheKey, path: str, validate: Callable[[Any], object] | None = None, *, report: bool = True,
+        hit_out: "list[VersionedBytes] | None" = None,
     ) -> tuple[bool, Any, bool]:
         """(found, value, unusable): ``unusable`` when bytes are stored that this release cannot read.
 
         ``report`` is False for the lookups after the first of one call, which would say the same thing again.
         """
+        got: VersionedBytes | None = None
+        if hit_out is not None:
+            hit_out.clear()          # what an earlier lookup of this call saw is not what a bump may be built on
         try:
-            raw = await self._store.get(key.org_id, key.record_id, path)
+            if hit_out is not None:
+                # The version and write time travel with the bytes (what a bump of this hit needs). Asked whatever the
+                # storage is known to honour: the read that discovers bump support must carry them too.
+                got = await self._store.get_versioned(key.org_id, key.record_id, path)  # type: ignore[attr-defined]
+                raw = None if got is None else got.data
+            else:
+                raw = await self._store.get(key.org_id, key.record_id, path)
         except Exception as exc:
             self._storage_error(key, "read", exc)
             return False, None, False
         if raw is None:
             return False, None, False
         found, value = _decode(key, raw)
+        if found:
+            predates = await self._predates_refresh(key, raw)
+            if predates is None:
+                # The marker could not be read: the result is neither reused nor replaced (an unknown marker proves
+                # nothing about it), so the call is made and the stored object is left as it is.
+                self._count(key, "error")
+                return False, None, False
+            if predates:
+                # A bumped result whose original write is not after the latest refresh survived a purge it should not
+                # have (a stop between the bump and its check): replaced like an unreadable one, never reused.
+                self._count(key, "predates_refresh")
+                return False, None, True
         if found and validate is not None:
             try:
                 validate(value)
@@ -637,9 +824,42 @@ class PaidResultCache:
                     self._unreadable(key, f"the stored value no longer decodes ({type(exc).__name__})")
         elif not found and report:
             self._unreadable(key, "the stored object is not a whole result of this kind")
+        if found and got is not None and hit_out is not None:
+            hit_out.append(got)          # only a version the caller accepted can be bumped or restored
         if not found and report:
             self._count(key, "error")
         return found, value, not found
+
+    async def _predates_refresh(self, key: CacheKey, raw: bytes) -> bool | None:
+        """Only a bumped object carries ``originMs`` (``bump.py``); for one, the record's refresh marker is read (kept for
+        ``MARKER_CACHE_S``). True: the marker proves the object predates a refresh. None: the marker could not be read, so the
+        object is neither reused nor replaced."""
+        origin = _origin_ms(raw)
+        if origin is None:
+            return False
+        read = getattr(self._store, "refresh_marker_ms", None)
+        if read is None:
+            return None
+        name = (key.org_id, key.record_id)
+        now = time.monotonic()
+        cached = self._markers.get(name)
+        # A marker only moves later: one read that already rejects an object rejects it (and every older one) for good. A
+        # read that did not reject is never reused, since a refresh may have begun since.
+        if cached is not None and now - cached[0] < MARKER_CACHE_S and _refreshed_since(cached[1], origin):
+            return True
+        try:
+            marker = await read(key.org_id, key.record_id)
+        except Exception as exc:
+            self.logger.debug("Paid-result refresh marker unreadable (%s)", type(exc).__name__)
+            return None
+        rejects = _refreshed_since(marker, origin)
+        # Only a fence that is final (the cutoff) is kept: a provisional marker can still move to a cutoff that accepts this
+        # object, and a rejection cached from it would hold for the whole window.
+        if rejects and isinstance(marker, FinalFence):
+            if len(self._markers) > 4096:
+                self._markers.clear()
+            self._markers[name] = (now, marker)
+        return rejects
 
     def _unreadable(self, key: CacheKey, why: str) -> None:
         # Logged once per key: the compute that follows replaces the object, so the next lookup hits.
@@ -693,14 +913,18 @@ class PaidResultCache:
             if held is not None:
                 await _uninterrupted(_stop_and_release(held))
 
-    async def _note(self, scope: RunScope | None, key: CacheKey, path: str, *, stored: bool) -> None:
+    async def _note(self, scope: RunScope | None, key: CacheKey, path: str, *, stored: bool) -> bool:
+        """Notes the key in the run's manifest. False when the note could not be written (the manifest does not
+        protect the key then, so a reuse bumps it whatever its age)."""
         if scope is None or not writes_enabled():
-            return
+            return True
         scope.manifest_guard = self.manifest_lock
         try:
             await scope.note(self._store, path, opens=stored)
         except Exception as exc:
             self._storage_error(key, "manifest", exc)
+            return False
+        return not scope.past_deadline()
 
     async def _acquire(self, key: CacheKey) -> "_Held | None":
         """The lock on the key: held (token set), contended (token None), or None when no lock can be had."""
@@ -864,6 +1088,9 @@ class NullPaidResultCache:
     async def purge_record(self, org_id: str, record_id: str, *, before_ms: int | None = None) -> None:
         return None
 
+    async def purge_records(self, org_id: str, record_ids: Sequence[str]) -> dict[str, BaseException | None]:
+        return dict.fromkeys(record_ids)
+
     async def read_markers(self, org_id: str, record_id: str) -> tuple[str | None, str | None] | None:
         return (None, None)
 
@@ -874,7 +1101,7 @@ class NullPaidResultCache:
             STOPPED.inc(site)
             raise RecordGone(record_id)
 
-    async def purge_cutoff(self, org_id: str, record_id: str) -> int | None:
+    async def purge_cutoff(self, org_id: str, record_id: str, *, require_marker: bool = False) -> int | None:
         return None
 
     async def require_purge_cutoff(self, org_id: str, record_id: str) -> int | None:
@@ -885,6 +1112,12 @@ class NullPaidResultCache:
 
     async def claim_refresh(self, org_id: str, record_id: str, event_id: str) -> str | None:
         return "unclaimed"
+
+    async def mark_refresh_done(self, org_id: str, record_id: str, event_id: str) -> bool:
+        return True                  # no marker store to keep a record in: nothing is lost by clearing
+
+    async def refresh_state(self, org_id: str, record_id: str, event_id: str) -> str:
+        return "open"
 
     @contextlib.asynccontextmanager
     async def refresh_purge(self, org_id: str, record_id: str, event_id: str) -> AsyncIterator[bool]:

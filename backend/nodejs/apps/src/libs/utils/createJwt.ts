@@ -169,19 +169,41 @@ export const newAccountPasswordLink = (
   return `${frontendUrl}/reset-password#token=${passwordResetToken}`;
 };
 
+/**
+ * A refresh token's place in its session family (ADR-WEB-02 D9): `sid` names the sign-in, `jti` this token of it.
+ * `expiresAtSeconds` is the end of the sign-in, which a rotated token keeps rather than restarting the lifetime.
+ */
+export interface RefreshTokenSession {
+  sid: string;
+  jti: string;
+  expiresAtSeconds?: number;
+}
+
 export const refreshTokenJwtGenerator = (
   userId: string,
   orgId: string,
   scopedJwtSecret: string,
+  session?: RefreshTokenSession,
 ) => {
+  const claims = {
+    userId: userId,
+    orgId: orgId,
+    scopes: [TokenScopes.TOKEN_REFRESH],
+    ...(session ? { sid: session.sid, jti: session.jti } : {}),
+  };
+  if (session?.expiresAtSeconds !== undefined) {
+    return signUserActionToken(
+      { ...claims, exp: session.expiresAtSeconds },
+      scopedJwtSecret,
+      {},
+    );
+  }
   // Read expiry time from environment variable, default to 720h (30 days) if not set
   const expiryTime = (process.env.REFRESH_TOKEN_EXPIRY || '720h') as string;
 
-  return signUserActionToken(
-    { userId: userId, orgId: orgId, scopes: [TokenScopes.TOKEN_REFRESH] },
-    scopedJwtSecret,
-    { expiresIn: expiryTime } as jwt.SignOptions,
-  );
+  return signUserActionToken(claims, scopedJwtSecret, {
+    expiresIn: expiryTime,
+  } as jwt.SignOptions);
 };
 
 export const iamJwtGenerator = (email: string, scopedJwtSecret: string) => {
@@ -199,6 +221,12 @@ export interface SlackTokenClaims {
    * bot process does not get to choose which tenant it is talking to.
    */
   configId?: string;
+  /** The organisation the bot serves. The gateway refuses a token whose org disagrees with the one it resolves. */
+  orgId?: string;
+  /** The Slack workspace and person who sent the event. Node answers as the
+   * PipesHub account they linked (ADR-SLACKID-01), never by the email claim. */
+  slackTeamId?: string;
+  slackUserId?: string;
 }
 
 export const slackJwtGenerator = (
@@ -214,6 +242,9 @@ export const slackJwtGenerator = (
   if (claims?.configId) {
     payload.configId = claims.configId;
   }
+  if (claims?.orgId) payload.orgId = claims.orgId;
+  if (claims?.slackTeamId) payload.slackTeamId = claims.slackTeamId;
+  if (claims?.slackUserId) payload.slackUserId = claims.slackUserId;
   return jwt.sign(payload, scopedJwtSecret, { expiresIn: '1h' });
 };
 
@@ -238,9 +269,13 @@ export const authJwtGenerator = (
   fullName?: string | null,
   accountType?: string | null,
   role?: 'admin' | 'member' | null,
+  expiresIn?: string,
 ) => {
   // Read expiry time from environment variable, default to 24h if not set
-  const expiryTime = (process.env.ACCESS_TOKEN_EXPIRY || '24h') as string;
+  const configured = process.env.ACCESS_TOKEN_EXPIRY;
+  const expiryTime =
+    expiresIn ??
+    (configured !== undefined && configured !== '' ? configured : '24h');
 
   const payload: Record<string, unknown> = {
     userId,

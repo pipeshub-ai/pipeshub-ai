@@ -25,10 +25,13 @@ describe('oauth_provider/config/scopes.config - coverage', () => {
     expect(result.invalid).to.include('not-a-real-scope')
   })
 
-  // pipeshub_directory lists groups through GET /userGroups, which requires
-  // usergroup:read; without it in MCP_SCOPES that call always returns 403.
-  it('DefaultMcpScopes covers group listing and grants nothing admin-only', () => {
+  // No /mcp tool lists user groups, so discovery does not ask for
+  // usergroup:read. The cap keeps it, so a client registered with it is not
+  // refused when it asks again, and its tokens keep working.
+  it('DefaultMcpScopes keeps usergroup:read and grants nothing admin-only, though discovery leaves it out', () => {
     expect(DefaultMcpScopes).to.include('usergroup:read')
+    expect(McpToolScopes).to.not.include('usergroup:read')
+    expect(mcpDiscoveryScopes(DefaultMcpScopes)).to.not.include('usergroup:read')
     expect(DefaultMcpScopes.filter((s) => AdminOnlyScopes.has(s))).to.deep.equal([])
     expect(DefaultMcpScopes.every((s) => isValidScope(s))).to.be.true
   })
@@ -95,6 +98,15 @@ describe('oauth_provider/config/scopes.config - coverage', () => {
     expect(compose.split('\n').filter((l) => l.includes('MCP_SCOPES=')).join('')).to.not.contain('code:write')
   })
 
+  // Opt-in for the presets, but not admin-only: a pushed repository becomes the pusher's own personal connector, which a
+  // member's session can already create, and the device login app (one for every user, cut to what a member may hold)
+  // would lose code:write for everyone, admins included, if it were admin-only.
+  it('code:write is a scope a member may register on an app and the device login app may carry', () => {
+    expect(AdminOnlyScopes.has('code:write')).to.equal(false)
+    expect(getAllowedScopeNamesForRole(false)).to.include('code:write')
+    expect(getAllowedScopeNamesForRole(true)).to.include('code:write')
+  })
+
   // MCP clients request every scope discovery lists, so it lists only what
   // the /mcp tools use, never more than MCP_SCOPES allows.
   it('mcpDiscoveryScopes keeps the MCP_SCOPES the tools use, in order', () => {
@@ -112,12 +124,13 @@ describe('oauth_provider/config/scopes.config - coverage', () => {
     for (const list of [stock, DefaultMcpScopes]) {
       expect(mcpDiscoveryScopes(list)).to.have.members([...McpToolScopes])
     }
-    // Project scopes cap personal access tokens and OAuth apps; no MCP tool calls a project route.
+    // Project scopes cap personal access tokens and OAuth apps; no MCP tool calls a project route, or lists user groups.
     expect(stock.filter((s) => !mcpDiscoveryScopes(stock).includes(s))).to.have.members([
       'openid',
       'profile',
       'email',
       'conversation:write',
+      'usergroup:read',
       'project:read',
       'project:write',
       'project:delete',
@@ -135,7 +148,7 @@ describe('oauth_provider/config/scopes.config - coverage', () => {
   it('getAllScopesGroupedByCategory returns every category bucket', () => {
     const grouped = getAllScopesGroupedByCategory()
     expect(Object.keys(grouped).length).to.be.greaterThan(5)
-    expect(grouped.Identity.some((s) => s.name === 'openid')).to.be.true
+    expect(grouped.Identity!.some((s) => s.name === 'openid')).to.be.true
   })
 
   it('isValidScope and getScopeDefinition', () => {

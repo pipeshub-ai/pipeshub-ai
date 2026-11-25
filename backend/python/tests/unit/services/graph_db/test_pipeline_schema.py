@@ -1,5 +1,6 @@
 """ensure_pipeline_schema on both engines, against recorded client calls."""
 
+import logging
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -135,7 +136,10 @@ class TestNeo4jPipelineSchema:
         queries = _queries(execute)
         assert sum(query.startswith("CREATE CONSTRAINT") for query in queries) == 2
         assert any("DETACH DELETE" in query for query in queries)
-        provider.logger.warning.assert_called_once()
+        provider.logger.warning.assert_not_called()  # not a failure: the event says what was removed
+        provider.logger.log.assert_called_once()
+        assert provider.logger.log.call_args.args == (logging.WARNING, "graph.provider.duplicates_removed")
+        assert provider.logger.log.call_args.kwargs["extra"]["op"] == "ensure_pipeline_schema"
 
     async def test_a_constraint_failure_with_no_duplicates_raises(self) -> None:
         execute = _engine(constraint_errors=1, duplicates=0)

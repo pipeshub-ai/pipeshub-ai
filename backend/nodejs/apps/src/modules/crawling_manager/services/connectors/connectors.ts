@@ -31,55 +31,34 @@ export class ConnectorsCrawlingService implements ICrawlingTaskService {
     connectorId: string,
   ): Promise<CrawlingResult> {
     this.logger.debug('Starting Connectors crawling', {
-      orgId,
-      userId,
-      config,
-      connector,
-      connectorId,
+      schedule_type: config.scheduleType,
     });
 
-    try {
-      // A Local FS pull needs a desktop on the socket. Returning success (not
-      // throwing) keeps BullMQ from retrying against a machine that is still
-      // offline; unknown presence publishes as usual. Whether the *owner*
-      // device is the one connected is deliberately not checked here: the job
-      // has no request to authorize an instance lookup with, the relay only
-      // ever routes the pull to the owner, and run_sync treats an offline
-      // owner as a skipped sync rather than a failure.
-      if (
-        isLocalFsConnector(connector) &&
-        isDesktopConnected(orgId, userId) === false
-      ) {
-        this.logger.info('Skipping scheduled Local FS sync: no desktop connected', {
-          orgId,
-          userId,
-          connectorId,
-        });
-        return { success: true };
-      }
-
-      const event = constructSyncConnectorEvent(orgId, connector, connectorId, userId);
-
-      await this.syncEventsService.publishEvent(event);
-
-      this.logger.debug('Sync event published successfully', {
-        orgId,
-        connector,
-        connectorId,
-      });
-
-      return {
-        success: true,
-      };
-    } catch (error) {
-      this.logger.error('Connectors crawling failed', {
-        orgId,
-        userId,
-        connector,
-        error: error instanceof Error ? error.message : 'Unknown error',
-        connectorId,
-      });
-      throw error;
+    // A Local FS pull needs a desktop on the socket. Returning success (not
+    // throwing) keeps BullMQ from retrying against a machine that is still
+    // offline; unknown presence publishes as usual. Whether the *owner*
+    // device is the one connected is deliberately not checked here: the job
+    // has no request to authorize an instance lookup with, the relay only
+    // ever routes the pull to the owner, and run_sync treats an offline
+    // owner as a skipped sync rather than a failure.
+    if (
+      isLocalFsConnector(connector) &&
+      isDesktopConnected(orgId, userId) === false
+    ) {
+      // The run's crawling_job.end reports it (outcome=skipped reason=desktop_offline).
+      this.logger.debug('Skipping scheduled Local FS sync: no desktop connected');
+      return { success: true, skipped: 'desktop_offline' };
     }
+
+    const event = constructSyncConnectorEvent(orgId, connector, connectorId, userId);
+
+    // A failure propagates unlogged: the worker's crawling_job.end reports the run once.
+    await this.syncEventsService.publishEvent(event);
+
+    this.logger.debug('Sync event published successfully');
+
+    return {
+      success: true,
+    };
   }
 }

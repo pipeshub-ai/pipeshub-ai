@@ -118,7 +118,7 @@ describe('AgentClaimView', () => {
     await waitFor(() =>
       expect(post).toHaveBeenLastCalledWith(
         '/api/v1/agent/identity/claim/complete',
-        { claim_attempt_token: 'att_123', user_code: '123456', action: 'approve' },
+        { claim_attempt_token: 'att_123', user_code: '123456', action: 'approve', scopes: ['org:read'] },
         { suppressErrorToast: true },
       ),
     );
@@ -132,7 +132,7 @@ describe('AgentClaimView', () => {
     await waitFor(() =>
       expect(post).toHaveBeenLastCalledWith(
         '/api/v1/agent/identity/claim/complete',
-        { claim_attempt_token: 'att_123', user_code: '', action: 'deny' },
+        { claim_attempt_token: 'att_123', user_code: '', action: 'deny', scopes: ['org:read'] },
         { suppressErrorToast: true },
       ),
     );

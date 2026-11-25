@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/core/sink.schema.json",
+  "title": "SinkDescriptor",
+  "description": "Where a tool's arguments go (REPORT 6.5, 6.5.1). Unclassified tools default to egress=external.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "egress",
+    "argsLeaveBoundary"
+  ],
+  "properties": {
+    "egress": {
+      "enum": [
+        "none",
+        "self",
+        "internal_audience",
+        "external"
+      ]
+    },
+    "argsLeaveBoundary": {
+      "type": "boolean"
+    },
+    "audienceResolver": {
+      "$ref": "common.schema.json#/$defs/Name"
+    }
+  },
+  "examples": [
+    {
+      "egress": "internal_audience",
+      "argsLeaveBoundary": false,
+      "audienceResolver": "jira.project_members"
+    },
+    {
+      "egress": "external",
+      "argsLeaveBoundary": true
+    },
+    {
+      "egress": "none",
+      "argsLeaveBoundary": false
+    }
+  ]
+}

@@ -1,0 +1,577 @@
+{
+  "description": "Authorizer matrix (CPA-16, 03-interfaces \u00a75.1): role (member, agent editor, team admin, delegated team admin, org admin, owner) x action x resource scope. `world` gives each user's live org role, team memberships and the agents they edit; `delegation` is the org's catalog.delegation for the case. Read by the Node RoleAuthorizer tests (CPD-9).",
+  "orgId": "org-a",
+  "world": {
+    "roles": {
+      "u-admin": "admin",
+      "u-member": "member",
+      "u-team-admin": "member",
+      "u-team-reader": "member",
+      "u-editor": "member",
+      "u-other-team-admin": "member"
+    },
+    "teams": {
+      "u-team-admin": [
+        {
+          "teamId": "t9",
+          "role": "OWNER"
+        }
+      ],
+      "u-team-reader": [
+        {
+          "teamId": "t9",
+          "role": "READER"
+        }
+      ],
+      "u-other-team-admin": [
+        {
+          "teamId": "t1",
+          "role": "OWNER"
+        }
+      ]
+    },
+    "agents": {
+      "a7": {
+        "editors": [
+          "u-editor"
+        ],
+        "ownerTeam": "t9"
+      },
+      "a8": {
+        "editors": [
+          "u-editor"
+        ],
+        "ownerTeam": null
+      }
+    }
+  },
+  "cases": [
+    {
+      "id": "AZV-1",
+      "behaviour": "an org admin installs for the org",
+      "actor": "u-admin",
+      "action": "installation.create",
+      "resource": {
+        "orgId": "org-a",
+        "type": "installation",
+        "owner": "org"
+      },
+      "delegation": [
+        "installation.create",
+        "grant.write",
+        "approval.decide"
+      ],
+      "expect": "allow"
+    },
+    {
+      "id": "AZV-2",
+      "behaviour": "an org admin writes a team's grant without being in the team",
+      "actor": "u-admin",
+      "action": "grant.write",
+      "resource": {
+        "orgId": "org-a",
+        "type": "installation",
+        "owner": "team:t9"
+      },
+      "delegation": [
+        "installation.create",
+        "grant.write",
+        "approval.decide"
+      ],
+      "expect": "allow"
+    },
+    {
+      "id": "AZV-3",
+      "behaviour": "a member reads the catalog",
+      "actor": "u-member",
+      "action": "catalog.read",
+      "resource": {
+        "orgId": "org-a",
+        "type": "installation",
+        "owner": "org"
+      },
+      "delegation": [
+        "installation.create",
+        "grant.write",
+        "approval.decide"
+      ],
+      "expect": "allow"
+    },
+    {
+      "id": "AZV-4",
+      "behaviour": "a member may not install for the org",
+      "actor": "u-member",
+      "action": "installation.create",
+      "resource": {
+        "orgId": "org-a",
+        "type": "installation",
+        "owner": "org"
+      },
+      "delegation": [
+        "installation.create",
+        "grant.write",
+        "approval.decide"
+      ],
+      "expect": "deny",
+      "reason": "not_authorized"
+    },
+    {
+      "id": "AZV-5",
+      "behaviour": "a member installs for themselves",
+      "actor": "u-member",
+      "action": "installation.create",
+      "resource": {
+        "orgId": "org-a",
+        "type": "installation",
+        "owner": "user:u-member"
+      },
+      "delegation": [
+        "installation.create",
+        "grant.write",
+        "approval.decide"
+      ],
+      "expect": "allow"
+    },
+    {
+      "id": "AZV-6",
+      "behaviour": "a member may not install for another user",
+      "actor": "u-member",
+      "action": "installation.create",
+      "resource": {
+        "orgId": "org-a",
+        "type": "installation",
+        "owner": "user:u-admin"
+      },
+      "delegation": [
+        "installation.create",
+        "grant.write",
+        "approval.decide"
+      ],
+      "expect": "deny",
+      "reason": "not_authorized"
+    },
+    {
+      "id": "AZV-7",
+      "behaviour": "a member may not read the audit log",
+      "actor": "u-member",
+      "action": "audit.read",
+      "resource": {
+        "orgId": "org-a",
+        "type": "installation",
+        "owner": "org"
+      },
+      "delegation": [
+        "installation.create",
+        "grant.write",
+        "approval.decide"
+      ],
+      "expect": "deny",
+      "reason": "not_authorized"
+    },
+    {
+      "id": "AZV-8",
+      "behaviour": "a delegated team admin installs for their team (FR-21)",
+      "actor": "u-team-admin",
+      "action": "installation.create",
+      "resource": {
+        "orgId": "org-a",
+        "type": "installation",
+        "owner": "team:t9"
+      },
+      "delegation": [
+        "installation.create",
+        "grant.write",
+        "approval.decide"
+      ],
+      "expect": "allow"
+    },
+    {
+      "id": "AZV-9",
+      "behaviour": "a delegated team admin grants within their team",
+      "actor": "u-team-admin",
+      "action": "grant.write",
+      "resource": {
+        "orgId": "org-a",
+        "type": "installation",
+        "owner": "team:t9"
+      },
+      "delegation": [
+        "installation.create",
+        "grant.write",
+        "approval.decide"
+      ],
+      "expect": "allow"
+    },
+    {
+      "id": "AZV-10",
+      "behaviour": "a delegated team admin decides their team's approvals",
+      "actor": "u-team-admin",
+      "action": "approval.decide",
+      "resource": {
+        "orgId": "org-a",
+        "type": "installation",
+        "owner": "team:t9"
+      },
+      "delegation": [
+        "installation.create",
+        "grant.write",
+        "approval.decide"
+      ],
+      "expect": "allow"
+    },
+    {
+      "id": "AZV-11",
+      "behaviour": "a team admin outside the delegation is refused",
+      "actor": "u-team-admin",
+      "action": "installation.delete",
+      "resource": {
+        "orgId": "org-a",
+        "type": "installation",
+        "owner": "team:t9"
+      },
+      "delegation": [
+        "installation.create",
+        "grant.write",
+        "approval.decide"
+      ],
+      "expect": "deny",
+      "reason": "not_delegated"
+    },
+    {
+      "id": "AZV-12",
+      "behaviour": "nothing is delegated until the org names it",
+      "actor": "u-team-admin",
+      "action": "installation.create",
+      "resource": {
+        "orgId": "org-a",
+        "type": "installation",
+        "owner": "team:t9"
+      },
+      "delegation": [],
+      "expect": "deny",
+      "reason": "not_delegated"
+    },
+    {
+      "id": "AZV-13",
+      "behaviour": "a team admin of another team is refused",
+      "actor": "u-other-team-admin",
+      "action": "installation.create",
+      "resource": {
+        "orgId": "org-a",
+        "type": "installation",
+        "owner": "team:t9"
+      },
+      "delegation": [
+        "installation.create",
+        "grant.write",
+        "approval.decide"
+      ],
+      "expect": "deny",
+      "reason": "not_team_admin"
+    },
+    {
+      "id": "AZV-14",
+      "behaviour": "a team reader is not a team admin",
+      "actor": "u-team-reader",
+      "action": "grant.write",
+      "resource": {
+        "orgId": "org-a",
+        "type": "installation",
+        "owner": "team:t9"
+      },
+      "delegation": [
+        "installation.create",
+        "grant.write",
+        "approval.decide"
+      ],
+      "expect": "deny",
+      "reason": "not_team_admin"
+    },
+    {
+      "id": "AZV-15",
+      "behaviour": "a team admin may not install for the org",
+      "actor": "u-team-admin",
+      "action": "installation.create",
+      "resource": {
+        "orgId": "org-a",
+        "type": "installation",
+        "owner": "org"
+      },
+      "delegation": [
+        "installation.create",
+        "grant.write",
+        "approval.decide"
+      ],
+      "expect": "deny",
+      "reason": "not_authorized"
+    },
+    {
+      "id": "AZV-16",
+      "behaviour": "a team admin writes the grant of an agent their team owns",
+      "actor": "u-team-admin",
+      "action": "grant.write",
+      "resource": {
+        "orgId": "org-a",
+        "type": "installation",
+        "owner": "agent:a7"
+      },
+      "delegation": [
+        "installation.create",
+        "grant.write",
+        "approval.decide"
+      ],
+      "expect": "allow"
+    },
+    {
+      "id": "AZV-17",
+      "behaviour": "a team admin may not write an agent no team owns",
+      "actor": "u-team-admin",
+      "action": "grant.write",
+      "resource": {
+        "orgId": "org-a",
+        "type": "installation",
+        "owner": "agent:a8"
+      },
+      "delegation": [
+        "installation.create",
+        "grant.write",
+        "approval.decide"
+      ],
+      "expect": "deny",
+      "reason": "not_authorized"
+    },
+    {
+      "id": "AZV-18",
+      "behaviour": "an agent's editor writes its grant",
+      "actor": "u-editor",
+      "action": "grant.write",
+      "resource": {
+        "orgId": "org-a",
+        "type": "installation",
+        "owner": "agent:a8"
+      },
+      "delegation": [
+        "installation.create",
+        "grant.write",
+        "approval.decide"
+      ],
+      "expect": "allow"
+    },
+    {
+      "id": "AZV-20",
+      "behaviour": "an agent's editor may not install for the org",
+      "actor": "u-editor",
+      "action": "installation.create",
+      "resource": {
+        "orgId": "org-a",
+        "type": "installation",
+        "owner": "org"
+      },
+      "delegation": [
+        "installation.create",
+        "grant.write",
+        "approval.decide"
+      ],
+      "expect": "deny",
+      "reason": "not_authorized"
+    },
+    {
+      "id": "AZV-21",
+      "behaviour": "a member who is not the editor may not write the agent's grant",
+      "actor": "u-member",
+      "action": "grant.write",
+      "resource": {
+        "orgId": "org-a",
+        "type": "installation",
+        "owner": "agent:a8"
+      },
+      "delegation": [
+        "installation.create",
+        "grant.write",
+        "approval.decide"
+      ],
+      "expect": "deny",
+      "reason": "not_authorized"
+    },
+    {
+      "id": "AZV-22",
+      "behaviour": "an org id in the resource that is not the actor's: denied for an admin too",
+      "actor": "u-admin",
+      "action": "catalog.read",
+      "resource": {
+        "orgId": "org-b",
+        "type": "installation",
+        "owner": "org"
+      },
+      "delegation": [
+        "installation.create",
+        "grant.write",
+        "approval.decide"
+      ],
+      "expect": "deny",
+      "reason": "wrong_org"
+    },
+    {
+      "id": "AZV-23",
+      "behaviour": "someone not in the org is denied a read",
+      "actor": "u-nobody",
+      "action": "catalog.read",
+      "resource": {
+        "orgId": "org-a",
+        "type": "installation",
+        "owner": "org"
+      },
+      "delegation": [
+        "installation.create",
+        "grant.write",
+        "approval.decide"
+      ],
+      "expect": "deny",
+      "reason": "not_in_org"
+    },
+    {
+      "id": "AZV-24",
+      "behaviour": "a team admin may not write the org's policy",
+      "actor": "u-team-admin",
+      "action": "policy.write:org",
+      "resource": {
+        "orgId": "org-a",
+        "type": "installation",
+        "owner": "org"
+      },
+      "delegation": [
+        "installation.create",
+        "grant.write",
+        "approval.decide"
+      ],
+      "expect": "deny",
+      "reason": "not_authorized"
+    },
+    {
+      "id": "AZV-25",
+      "behaviour": "a team admin writes their team's policy layer when delegated",
+      "actor": "u-team-admin",
+      "action": "policy.write:team",
+      "resource": {
+        "orgId": "org-a",
+        "type": "installation",
+        "owner": "team:t9"
+      },
+      "delegation": [
+        "installation.create",
+        "grant.write",
+        "approval.decide"
+      ],
+      "expect": "deny",
+      "reason": "not_delegated"
+    },
+    {
+      "id": "AZV-26",
+      "behaviour": "a team admin writes their team's policy layer when the org delegates it",
+      "actor": "u-team-admin",
+      "action": "policy.write:team",
+      "resource": {
+        "orgId": "org-a",
+        "type": "policy-layer",
+        "owner": "team:t9"
+      },
+      "delegation": [
+        "policy.write:team"
+      ],
+      "expect": "allow"
+    },
+    {
+      "id": "AZV-27",
+      "behaviour": "WP-56: an agent's editor reads the agent's own spend",
+      "actor": "u-editor",
+      "action": "usage.read",
+      "resource": {
+        "orgId": "org-a",
+        "type": "usage",
+        "owner": "agent:a7"
+      },
+      "delegation": [
+        "installation.create",
+        "grant.write",
+        "approval.decide",
+        "policy.write:team"
+      ],
+      "expect": "allow"
+    },
+    {
+      "id": "AZV-28",
+      "behaviour": "WP-56: a member who does not edit the agent cannot read its spend",
+      "actor": "u-member",
+      "action": "usage.read",
+      "resource": {
+        "orgId": "org-a",
+        "type": "usage",
+        "owner": "agent:a7"
+      },
+      "delegation": [
+        "installation.create",
+        "grant.write",
+        "approval.decide",
+        "policy.write:team"
+      ],
+      "expect": "deny",
+      "reason": "not_delegated"
+    },
+    {
+      "id": "AZV-29",
+      "behaviour": "WP-56: a team admin of the agent's owner team cannot read its spend (never delegated)",
+      "actor": "u-team-admin",
+      "action": "usage.read",
+      "resource": {
+        "orgId": "org-a",
+        "type": "usage",
+        "owner": "agent:a7"
+      },
+      "delegation": [
+        "installation.create",
+        "grant.write",
+        "approval.decide",
+        "policy.write:team"
+      ],
+      "expect": "deny",
+      "reason": "not_delegated"
+    },
+    {
+      "id": "AZV-30",
+      "behaviour": "WP-56: an agent's editor cannot read the organization's spend",
+      "actor": "u-editor",
+      "action": "usage.read",
+      "resource": {
+        "orgId": "org-a",
+        "type": "usage",
+        "owner": "org"
+      },
+      "delegation": [
+        "installation.create",
+        "grant.write",
+        "approval.decide",
+        "policy.write:team"
+      ],
+      "expect": "deny",
+      "reason": "not_authorized"
+    },
+    {
+      "id": "AZV-31",
+      "behaviour": "WP-56: an org admin reads any agent's spend",
+      "actor": "u-admin",
+      "action": "usage.read",
+      "resource": {
+        "orgId": "org-a",
+        "type": "usage",
+        "owner": "agent:a7"
+      },
+      "delegation": [
+        "installation.create",
+        "grant.write",
+        "approval.decide",
+        "policy.write:team"
+      ],
+      "expect": "allow"
+    }
+  ]
+}

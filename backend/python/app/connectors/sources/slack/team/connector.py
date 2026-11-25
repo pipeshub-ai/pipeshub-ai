@@ -159,6 +159,7 @@ if TYPE_CHECKING:
     from app.config.configuration_service import ConfigurationService
     from app.connectors.core.base.data_store.data_store import DataStoreProvider
     from app.connectors.core.thread_pool import ThreadPoolLease
+    from app.services.rate_budget import AccountBudget
 
 # ── Constants ──────────────────────────────────────────────────────────────────
 BURST_WINDOW_SECONDS        = 300           # 5-minute conversational burst window
@@ -311,6 +312,7 @@ class RateLimiter:
         limits: Optional[dict[int, int]] = None,
         headroom: float = RATE_LIMIT_HEADROOM,
         logger: Optional[Logger] = None,
+        shared: "AccountBudget | None" = None,
     ) -> None:
         src = limits if limits is not None else SLACK_TIER_LIMITS_PER_MINUTE
         self._limits: dict[int, int] = {
@@ -321,6 +323,8 @@ class RateLimiter:
             t: asyncio.Lock() for t in self._limits
         }
         self._logger = logger
+        # The org's Slack budget, which agent toolsets spend too (G-31); taken after the tier's own window.
+        self._shared = shared
 
     async def acquire(self, tier: Tier) -> None:
         key = int(tier)
@@ -343,6 +347,8 @@ class RateLimiter:
                     ]
 
             window.append(datetime.now())
+        if self._shared is not None:
+            await self._shared.acquire()
 
 
 # ── Connector declaration ──────────────────────────────────────────────────────
@@ -529,7 +535,7 @@ class SlackConnector(BaseConnector):
         self.audit_log_sync_point = _sp(SyncDataPointType.RECORDS)
 
         # ── Rate limiter ─────────────────────────────────────────────────────
-        self.rate_limiter = RateLimiter(logger=logger)
+        self.rate_limiter = RateLimiter(logger=logger, shared=self.rate_budget)
 
         # ── Workspace-wide caches ────────────────────────────────────────────
         # Populated during _sync_users(); re-populated on every run_sync().

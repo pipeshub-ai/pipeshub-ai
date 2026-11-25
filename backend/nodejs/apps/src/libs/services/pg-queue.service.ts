@@ -6,6 +6,8 @@ import {
   IMessageAdmin,
   StreamMessage,
   TopicDefinition,
+  IdleGroupSweep,
+  IdleGroupSweepResult,
 } from '../types/messaging.types';
 import {
   contextFromEnvelope,
@@ -19,6 +21,7 @@ import {
 } from '../context/envelope';
 import { redactSecretsInText } from '../utils/log-redaction.utils';
 import { spawnDetached } from '../context/orgContext';
+import { untilMongoWritable } from '../repositories/fence';
 import { ensurePgRuntime } from '../db/runtime-boot';
 import { PgListener, listenUrl } from '../db/listen';
 import type { Tx } from '../db/uow';
@@ -453,6 +456,8 @@ export abstract class BasePgQueueConsumerConnection implements IMessageConsumer 
           await this.idle();
           continue;
         }
+        // a store move (F3): a claim counts a delivery attempt, so none is made while the store is moved
+        if (!(await untilMongoWritable(() => this.isRunning()))) break;
         const rows = (
           await unit(true, (tx) =>
             tx.query<ClaimedRow>(SQL.claim, [
@@ -475,7 +480,8 @@ export abstract class BasePgQueueConsumerConnection implements IMessageConsumer 
             attempts: r.attempts,
           });
         for (const r of rows) {
-          if (!this.isRunning()) break;
+          // a row claimed just before a move began waits too; the heartbeat keeps its claim
+          if (!(await untilMongoWritable(() => this.isRunning()))) break;
           await this.settle(r, handler);
         }
       } catch (error) {
@@ -513,8 +519,11 @@ export abstract class BasePgQueueConsumerConnection implements IMessageConsumer 
         message.headers = JSON.parse(r.headers) as Record<string, string>;
       try {
         await runWithRequestContext(contextFromEnvelope(message.value), () =>
-          runWithEnvelope(r.topic, message.value, (value) =>
-            handler({ ...message, value }),
+          runWithEnvelope(
+            r.topic,
+            message.value,
+            (value) => handler({ ...message, value }),
+            this.groupId,
           ),
         );
       } catch (error) {
@@ -576,5 +585,13 @@ export class PgQueueAdminService implements IMessageAdmin {
       tx.query<{ topic: string }>(SQL.topics),
     );
     return r.rows.map((x) => x.topic);
+  }
+
+  /**
+   * The queue removes a process's own group itself: an ephemeral group whose consumer has not polled for ten minutes
+   * goes with its deliveries in the consumers' sweep (`sweepGroups`), so there is nothing left here to remove.
+   */
+  removeIdleGroups(_sweep?: IdleGroupSweep): Promise<IdleGroupSweepResult> {
+    return Promise.resolve({ removed: [], left: [] });
   }
 }

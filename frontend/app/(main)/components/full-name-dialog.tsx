@@ -1,7 +1,8 @@
 'use client';
 
 import { overlayWidth } from '@/app/components/ui/responsive';
-import React, { useState } from 'react';
+import React, { useId, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import {
   Dialog,
   Flex,
@@ -10,8 +11,8 @@ import {
   Box,
   TextField,
   Spinner,
-  VisuallyHidden,
 } from '@radix-ui/themes';
+import { DialogHeading } from '@/app/components/ui/dialog-heading';
 import { ProfileApi, getUserIdFromToken, getUserEmailFromToken } from '@/app/(main)/workspace/profile/api';
 
 // ========================================
@@ -34,6 +35,9 @@ export interface FullNameDialogProps {
  * before continuing. It cannot be dismissed without saving a valid name.
  */
 export function FullNameDialog({ open, onSuccess }: FullNameDialogProps) {
+  const { t } = useTranslation();
+  const inputId = useId();
+  const errorId = useId();
   const [fullName, setFullName] = useState('');
   const [error, setError] = useState<string | undefined>(undefined);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -57,11 +61,11 @@ export function FullNameDialog({ open, onSuccess }: FullNameDialogProps) {
   const handleSubmit = async () => {
     const trimmed = fullName.trim();
     if (!trimmed) {
-      setError('Full name is required');
+      setError(t('fullNameDialog.required'));
       return;
     }
     if (trimmed.length < 2) {
-      setError('Full name must be at least 2 characters');
+      setError(t('fullNameDialog.tooShort'));
       return;
     }
 
@@ -73,7 +77,7 @@ export function FullNameDialog({ open, onSuccess }: FullNameDialogProps) {
       const email = getUserEmailFromToken();
 
       if (!userId) {
-        setError('Unable to identify user. Please refresh and try again.');
+        setError(t('fullNameDialog.noUser'));
         return;
       }
 
@@ -84,7 +88,7 @@ export function FullNameDialog({ open, onSuccess }: FullNameDialogProps) {
 
       onSuccess(trimmed);
     } catch {
-      setError('Failed to save your name. Please try again.');
+      setError(t('fullNameDialog.saveFailed'));
     } finally {
       setIsSubmitting(false);
     }
@@ -118,29 +122,19 @@ export function FullNameDialog({ open, onSuccess }: FullNameDialogProps) {
       )}
 
       <Dialog.Content style={contentStyle}>
-        <VisuallyHidden>
-          <Dialog.Title>Complete Your Profile</Dialog.Title>
-        </VisuallyHidden>
-
         <Flex direction="column" gap="4">
-          {/* Header */}
-          <Flex direction="column" gap="1">
-            <Text size="5" weight="bold" style={{ color: 'var(--gray-12)' }}>
-              Complete Your Profile
-            </Text>
-            <Text size="2" style={{ color: 'var(--gray-10)', lineHeight: '20px' }}>
-              Please set your full name to continue. This helps your teammates identify you across
-              workspaces.
-            </Text>
-          </Flex>
+          <DialogHeading title={t('fullNameDialog.title')} description={t('fullNameDialog.description')} />
 
           {/* Full name input */}
           <Flex direction="column" gap="1">
-            <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
-              Full name
+            <Text as="label" htmlFor={inputId} size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
+              {t('fullNameDialog.label')}
             </Text>
             <TextField.Root
-              placeholder="e.g. Jane Smith"
+              id={inputId}
+              aria-invalid={error ? true : undefined}
+              aria-describedby={error ? errorId : undefined}
+              placeholder={t('fullNameDialog.placeholder')}
               value={fullName}
               onChange={(e) => {
                 setFullName(e.target.value);
@@ -152,7 +146,7 @@ export function FullNameDialog({ open, onSuccess }: FullNameDialogProps) {
               autoFocus
             />
             {error && (
-              <Text size="1" style={{ color: 'var(--red-a11)' }}>
+              <Text id={errorId} role="alert" size="1" style={{ color: 'var(--red-a11)' }}>
                 {error}
               </Text>
             )}
@@ -171,10 +165,10 @@ export function FullNameDialog({ open, onSuccess }: FullNameDialogProps) {
               {isSubmitting ? (
                 <Flex align="center" gap="2">
                   <Spinner size="1" />
-                  <span>Saving…</span>
+                  <span>{t('common.saving')}</span>
                 </Flex>
               ) : (
-                'Save & continue'
+                t('fullNameDialog.submit')
               )}
             </Button>
           </Flex>

@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/ext/pipeshub/api/coding-engine-view.schema.json",
+  "title": "CodingEngineView",
+  "description": "`GET`/`PUT /api/v1/agent-harness/model-accounts/coding-engine` and `PUT /api/v1/agent-harness/admin/coding-engine` (ENGPICK): the coding engines the caller's org allows, each with why it cannot be used now, the org's default engine and the caller's own choice.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["engines", "orgDefault", "choice"],
+  "properties": {
+    "engines": {
+      "type": "array",
+      "maxItems": 32,
+      "description": "The release engines the org may use, in release order (all of them, or those an org's engine profile ceiling allows where one is set). An ACP engine (acp-<agent>) is listed only when this deployment has its profile installed and it is opted in.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "available"],
+        "properties": {
+          "kind": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_.-]{0,63}$"},
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "description": "How the list names an engine the product has no name of its own for: an ACP agent's (acp-<agent>) from its release entry. Absent for the native engines, whose names the UI holds."
+          },
+          "available": {"type": "boolean"},
+          "reason": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["code"],
+            "description": "Why the engine cannot be used now: a catalogue code without its wire prefix (ENGINE_UNAVAILABLE, ENGINE_ISOLATION_UNAVAILABLE when the server lacks the sandbox runtime the engine's floor needs, or the vendor rule's for the org's configured models, such as OFFERING_NOT_PERMITTED or ROUTE_NOT_CONFIGURED). Absent when it can.",
+            "properties": {
+              "code": {"type": "string", "pattern": "^[A-Z][A-Z0-9_]{0,63}$"},
+              "reasonCode": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9_]{0,63}$",
+                "description": "A finer machine reason under the code, when there is one: engine_profile_untrusted under ENGINE_UNAVAILABLE when the engine's image is there but its profile is signed by no key this deployment trusts (ADR-SEC-01 D7), so the page says that and not that the engine is not installed."
+              }
+            }
+          }
+        }
+      }
+    },
+    "orgDefault": {
+      "type": ["string", "null"],
+      "pattern": "^[a-z0-9][a-z0-9_.-]{0,63}$",
+      "description": "The org's default engine for the default chat's Agent mode; null: none."
+    },
+    "withoutGvisor": {
+      "type": "boolean",
+      "description": "True while this install runs coding engines below the gVisor floor through the dev/test override (policy/release.json engineIsolation.devOverride): the override is on and the sandbox broker offers no runtime at the floor, or cannot be asked. Admins see a persistent weaker-isolation warning. Absent on a production install, and where the broker offers gVisor (a run takes the strongest runtime offered, R31-GVISO)."
+    },
+    "gvisorSyscallFilter": {
+      "type": "boolean",
+      "description": "Present only while the sandbox broker offers gVisor: whether its runsc is registered with --oci-seccomp, so Docker's seccomp profile also filters each sandbox's syscalls inside gVisor's kernel (R32-SECCOMP, ADR-OWD-03). False: engines still run on gVisor, one layer short, and admins see a warning naming the install guide's fix. Absent where gVisor is not offered or the broker cannot be asked, and from a Node older than R32-SECCOMP."
+    },
+    "vendorSignIn": {
+      "type": "boolean",
+      "description": "Whether this server can carry a person's own vendor sign-in in a coding engine (Claude in Claude Code): a live worker advertises `vendor_signin` (the sign-in add-on, EGRESS_CONNECT_TUNNELS, and the signed host list; SIGNGAP). False: the personal-account switches are greyed and a turn runs on the org's model access. Absent from a Node older than SIGNGAP."
+    },
+    "choice": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9_.-]{0,63}$",
+      "description": "The caller's choice: `org_default`, `none` or an engine kind."
+    },
+    "autoRoute": {
+      "type": "boolean",
+      "description": "DEEPROUTE: whether a chat turn that may use a coding engine hands work bigger than a chat reply (research across many sources, planning, long reports, many tool calls) to it on its own, up front or once the turn outgrows a reply. The org's switch, on by default; `PUT …/admin/coding-engine` sets it. Absent from a Node older than DEEPROUTE."
+    }
+  },
+  "examples": [
+    {"engines": [], "orgDefault": null, "vendorSignIn": false, "choice": "org_default", "autoRoute": true},
+    {
+      "engines": [
+        {"kind": "opencode", "available": true},
+        {"kind": "codex", "available": true},
+        {"kind": "claude_code", "available": false, "reason": {"code": "OFFERING_NOT_PERMITTED"}},
+        {"kind": "acp-opencode", "name": "opencode (ACP)", "available": true},
+        {"kind": "acp-gemini", "name": "Gemini CLI (ACP)", "available": false, "reason": {"code": "ENGINE_UNAVAILABLE", "reasonCode": "engine_profile_untrusted"}}
+      ],
+      "orgDefault": "codex",
+      "choice": "none"
+    }
+  ]
+}

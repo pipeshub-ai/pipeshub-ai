@@ -7,6 +7,7 @@ import { useUserStore, selectIsProfileInitialized } from '@/lib/store/user-store
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { EntityEmptyState, ConfirmationDialog, EntityRowActionMenu } from '../components';
+import { isOwnerHandoverRefusal } from '../components/owner-handover';
 import { useToastStore } from '@/lib/store/toast-store';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { pagePaddingX } from '@/app/components/ui/responsive';
@@ -139,8 +140,12 @@ function ServiceAccountsPageContent() {
       addToast({
         variant: 'error',
         title: t('workspace.serviceAccounts.deleteErrorTitle'),
-        description: err instanceof Error ? err.message : undefined,
-        duration: 4000,
+        description: isOwnerHandoverRefusal(err)
+          ? t('workspace.serviceAccounts.deleteNoAdminForHandover')
+          : err instanceof Error
+            ? err.message
+            : undefined,
+        duration: isOwnerHandoverRefusal(err) ? 8000 : 4000,
       });
     } finally {
       setIsDeleting(false);
@@ -283,7 +288,7 @@ function ServiceAccountsPageContent() {
                     <Text
                       size="1"
                       style={{
-                        color: 'var(--slate-10)',
+                        color: 'var(--slate-11)',
                         fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
                       }}
                     >

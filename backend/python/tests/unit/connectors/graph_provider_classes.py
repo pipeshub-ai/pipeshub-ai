@@ -16,6 +16,7 @@ A method added to the interface fails `test_every_provider_method_is_classified`
 """
 
 READS = frozenset("""
+    kh_refresh_plans
     check_access check_agent_permission check_api_toolset_in_use check_collection_has_document check_connector_in_use
     check_connector_name_exists check_connector_name_uniqueness check_edge_exists check_mcp_instance_in_use
     check_record_access_with_details check_toolset_instance_in_use count_active_apps_by_type count_connector_instances_by_scope
@@ -35,8 +36,8 @@ READS = frozenset("""
     get_entity_candidate_records get_entity_id_by_email get_entity_index_candidate get_existing_keys get_existing_record_keys
     get_failed_records_by_org get_file_paths_for_records get_file_record_by_id get_filtered_connector_instances
     get_first_user_with_permission_to_node get_folder_children get_folder_depth get_folder_subtree_height get_gated_apps
-    get_graph_user_keys_by_mongo_user_ids get_groups_with_permission_to_node get_hidden_app_ids get_issue_sites get_kb_children
-    get_kb_permissions get_key_by_external_file_id get_key_by_external_message_id get_knowledge_base
+    get_graph_user_keys_by_mongo_user_ids get_graph_user_keys_by_mongo_user_ids_all_orgs get_groups_with_permission_to_node get_hidden_app_ids get_issue_sites get_kb_children
+    get_kb_permissions get_knowledge_base
     get_knowledge_hub_access_context_v2 get_knowledge_hub_access_v3 get_knowledge_hub_breadcrumbs
     get_knowledge_hub_connector_grants get_knowledge_hub_connector_page_v3 get_knowledge_hub_context_permissions
     get_knowledge_hub_filter_options get_knowledge_hub_node_access get_knowledge_hub_parent_node get_knowledge_hub_root_nodes_v2
@@ -54,21 +55,22 @@ READS = frozenset("""
     get_records_by_parent_record get_records_by_record_group get_records_by_record_ids get_records_by_record_type
     get_records_by_status get_records_by_virtual_record_id get_records_by_weburls get_records_for_named_entities
     get_records_in_delete_batch get_records_linking_to_weburls get_records_pending_duplicate_reconcile get_ref_access
-    get_related_mails_by_message_id_header get_related_node_field get_revision_pointers get_selection_nodes
+    get_related_node_field get_revision_pointers get_selection_nodes
     get_stage_states_with_records get_structure_of_nodes get_switch_pointers get_sync_point get_taxonomy_entities_for_record
     get_taxonomy_entity_membership get_team_owner_removal_info get_team_permissions_and_owner_count get_team_users
     get_team_with_users get_template get_trash_purge_stats get_typed_records_batch get_unreached_taxonomy_entities
     get_uploaded_document_ids get_user_app_ids get_user_apps get_user_by_email get_user_by_source_id get_user_by_user_id
     get_users_by_emails get_user_connector_instances get_user_directory_groups get_user_group_by_external_id get_user_groups get_user_kb_permission
-    get_user_permission_app_ids get_user_sync_state get_user_teams get_users get_users_with_permission_to_node
+    get_user_granted_records get_user_permission_app_ids get_user_sync_state get_user_teams get_users get_users_with_permission_to_node
     get_virtual_record_holders get_virtual_record_ids_for_record_ids get_virtual_record_ids_in_use has_nodes_by_filters
     has_records_indexed_since is_named_entity_write_retryable is_record_descendant_of is_record_folder is_transient_error
-    is_trash_walk_index_ready is_write_conflict list_accessible_artifacts list_kb_permissions list_kb_records
-    list_unsupported_page
+    is_trash_walk_index_ready is_write_conflict list_accessible_artifacts list_kb_permissions
+    list_unsupported_page get_records_with_refresh_intent
     get_record_group_organization get_record_organizations get_record_people
-    list_trashed_records list_user_knowledge_bases opens_explicit_transaction page_record_ids_by_type query_named_entities
+    list_sync_points list_trashed_records list_user_knowledge_bases opens_explicit_transaction page_record_ids_by_type query_named_entities
     resolve_named_entity_redirects search_nodes_by_field_terms stage_state_org_for_virtual_record validate_folder_exists_in_kb validate_folder_for_upload
     validate_folder_in_kb
+    get_records_by_external_ids get_user_team_roles
 """.split())
 
 HARMLESS = frozenset("""
@@ -95,7 +97,7 @@ HARMLESS = frozenset("""
     schedule_named_entity_persist_retry schedule_named_entity_reextract schedule_named_entity_reproject set_record_properties
     stage_state_compare_and_set stage_state_create stage_state_get stage_states_delete_for_virtual_records
     stage_states_delete_unheld_revisions stage_states_for_revision stage_states_stale stage_states_unheld_revisions
-    stamp_kh_listing_state store_page_token sweep_deleted_connector_writes update_drive_sync_state update_indexing_status_for_record_ids update_kb_permission
+    stamp_kh_listing_state store_page_token sweep_deleted_connector_writes update_drive_sync_state update_indexing_status_for_record_ids update_kb_permission update_record_fields_for_ids
     update_knowledge_base update_queued_duplicates_status update_sync_point_if update_user_sync_state upsert_authenticated_as
     upsert_person_by_email upsert_person_by_source_key upsert_sync_point
 """.split())
@@ -106,7 +108,7 @@ STRUCTURAL = frozenset("""
     create_record_group_relation create_record_groups_relation create_record_relation delete_all_edges_for_node
     delete_connector_instance delete_connector_sync_edges delete_edge delete_edges_between_collections
     delete_edges_by_relationship_types delete_edges_by_source_keys delete_edges_from delete_edges_to delete_edges_to_groups
-    delete_edges_touching_nodes delete_inherit_permissions_relation_record_group delete_kb_hub_app delete_nodes
+    delete_edges_touching_nodes delete_inherit_permissions_relation_record_group delete_kb_hub_app delete_node_if_match delete_nodes
     delete_nodes_and_edges delete_parent_child_edge_to_record delete_record delete_record_by_external_id
     delete_records_and_relations delete_records_recursive delete_single_record drop_redundant_group_edges link_record_to_group
     migrate_legacy_kb_to_app migrate_legacy_relation_edge purge_trash_kept_record_groups purge_trashed_records

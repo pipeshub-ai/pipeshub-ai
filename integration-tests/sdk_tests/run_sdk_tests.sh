@@ -20,6 +20,9 @@ shift 3
 LANGS=("$@")
 [ ${#LANGS[@]} -gt 0 ] || LANGS=(typescript python go)
 
+# The Python suite's test tools; the suites run from inside their checkouts.
+TEST_TOOLS_LOCK=$(realpath "$(dirname "$0")/requirements/tests.lock")
+
 # A test that calls the LLM takes about 30 s and a lifecycle makes several calls.
 TEST_TIMEOUT_SECONDS=${SDK_TEST_TIMEOUT_SECONDS:-600}
 
@@ -35,9 +38,16 @@ run_typescript() {
 
 run_python() {
   python3 -m venv .venv-sdk-tests || return 1
+  local py=.venv-sdk-tests/bin/python
+  # The lock is resolved for CPython 3.12 only; on another Python pip would skip every line and install nothing.
+  "$py" -c 'import sys; sys.exit(sys.version_info[:2] != (3, 12))' || { echo "python3 must be CPython 3.12" >&2; return 1; }
+  # The test tools from their hashed lock (SEC-SC-07), first, so the SDK's install below keeps them.
+  "$py" -m pip install --disable-pip-version-check --quiet --require-hashes --no-deps --only-binary=:all: \
+    -r "$TEST_TOOLS_LOCK" || return 1
+  # The SDK from its own pyproject, as its users install it: its dependencies resolve as theirs do.
   # The retriever tests import the extras and skip without them; the report counts a skip as a
   # failure. pip only warns when an older SDK lacks an extra.
-  .venv-sdk-tests/bin/pip install --quiet -e ".[langchain,llamaindex]" pytest pytest-asyncio pytest-xdist pytest-timeout || return 1
+  "$py" -m pip install --disable-pip-version-check --quiet --editable ".[langchain,llamaindex]" || return 1
   .venv-sdk-tests/bin/pytest tests/ -n 4 --timeout="$TEST_TIMEOUT_SECONDS" --junitxml="$1"
 }
 

@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional
 
 from docx import Document  # type: ignore
 
+from app.agents.actions.util.live_record import LiveCitations, live_file_record, toolset_instance_of
 from app.agents.actions.util.parse_file import (
     FileContentParser,
 )
@@ -18,8 +19,7 @@ from app.connectors.core.registry.types import AuthField, DocumentationLink
 from msgraph.generated.drives.item.items.item.invite.invite_post_request_body import InvitePostRequestBody  # type: ignore
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.config.constants.arangodb import Connectors, OriginTypes
-from app.models.entities import FileRecord, RecordType
+from app.config.constants.arangodb import Connectors
 
 from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
 from app.agent_loop_lib.tools.decorators import tool
@@ -31,6 +31,7 @@ from app.connectors.core.registry.auth_builder import (
 from app.connectors.core.constants import IconPaths
 from app.connectors.core.registry.connector_builder import CommonFields
 from app.connectors.core.registry.tool_builder import (
+    ToolProvider,
     ToolsetBuilder,
     ToolsetCategory,
 )
@@ -495,7 +496,7 @@ class _SharedItemFetchResult(BaseModel):
 # ToolsetBuilder registration
 # ---------------------------------------------------------------------------
 
-@ToolsetBuilder("OneDrive")\
+@ToolsetBuilder("OneDrive", provider=ToolProvider.CONNECTOR)\
     .in_group("Microsoft 365")\
     .with_description("OneDrive integration for file storage, search, and collaboration")\
     .with_category(ToolsetCategory.APP)\
@@ -880,7 +881,7 @@ class OneDrive:
             ToolParameter(name="top", type=ParameterType.INTEGER, description="Maximum number of drives to return", required=False),
             ToolParameter(name="skip", type=ParameterType.INTEGER, description="Number of drives to skip for pagination", required=False),
         ],
-        tags=[Tag(key="category", value="file_management"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="file_management"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_drives(
         self,
@@ -920,7 +921,7 @@ class OneDrive:
             ToolParameter(name="select", type=ParameterType.STRING, description="Comma-separated list of fields to return", required=False),
             ToolParameter(name="expand", type=ParameterType.STRING, description="Related entities to expand", required=False),
         ],
-        tags=[Tag(key="category", value="file_management"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="file_management"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_drive(
         self,
@@ -971,7 +972,7 @@ class OneDrive:
             ToolParameter(name="select", type=ParameterType.STRING, description="Comma-separated list of fields to return", required=False),
             ToolParameter(name="top", type=ParameterType.INTEGER, description="Maximum number of items to return", required=False),
         ],
-        tags=[Tag(key="category", value="file_management"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="file_management"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_files(
         self,
@@ -1029,7 +1030,7 @@ class OneDrive:
             ToolParameter(name="select", type=ParameterType.STRING, description="Comma-separated list of fields to return", required=False),
             ToolParameter(name="top", type=ParameterType.INTEGER, description="Maximum number of items to return", required=False),
         ],
-        tags=[Tag(key="category", value="file_management"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="file_management"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_folder_children(
         self,
@@ -1081,7 +1082,7 @@ class OneDrive:
             ToolParameter(name="select", type=ParameterType.STRING, description="Comma-separated list of fields to return", required=False),
             ToolParameter(name="expand", type=ParameterType.STRING, description="Related entities to expand (e.g. 'thumbnails', 'children')", required=False),
         ],
-        tags=[Tag(key="category", value="file_management"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="file_management"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_file(
         self,
@@ -1132,7 +1133,7 @@ class OneDrive:
             ToolParameter(name="top", type=ParameterType.INTEGER, description="Maximum number of results to return", required=False),
             ToolParameter(name="select", type=ParameterType.STRING, description="Comma-separated list of fields to return", required=False),
         ],
-        tags=[Tag(key="category", value="file_management"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="file_management"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def search_files(
         self,
@@ -1180,7 +1181,7 @@ class OneDrive:
         parameters=[
             ToolParameter(name="top", type=ParameterType.INTEGER, description="Maximum number of items to return (default 10)", required=False),
         ],
-        tags=[Tag(key="category", value="file_management"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="file_management"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_shared_with_me(
         self,
@@ -1208,7 +1209,7 @@ class OneDrive:
             ToolParameter(name="per_drive_top", type=ParameterType.INTEGER, description="Maximum number of search hits to return per drive", required=False),
             ToolParameter(name="select", type=ParameterType.STRING, description="Comma-separated list of fields to return for each hit", required=False),
         ],
-        tags=[Tag(key="category", value="file_management"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="file_management"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def search_shared_with_me(
         self,
@@ -1290,7 +1291,7 @@ class OneDrive:
             ToolParameter(name="folder_name", type=ParameterType.STRING, description="Name of the new folder to create", required=True),
             ToolParameter(name="parent_folder_id", type=ParameterType.STRING, description="ID of the parent folder (defaults to root)", required=False),
         ],
-        tags=[Tag(key="category", value="file_management"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="file_management"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
     )
     async def create_folder(
         self,
@@ -1340,7 +1341,7 @@ class OneDrive:
             ToolParameter(name="item_id", type=ParameterType.STRING, description="The ID of the file or folder to rename", required=True),
             ToolParameter(name="new_name", type=ParameterType.STRING, description="The new name for the item", required=True),
         ],
-        tags=[Tag(key="category", value="file_management"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="file_management"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
     )
     async def rename_item(
         self,
@@ -1400,7 +1401,7 @@ class OneDrive:
             ToolParameter(name="new_parent_id", type=ParameterType.STRING, description="The ID of the destination folder", required=True),
             ToolParameter(name="new_name", type=ParameterType.STRING, description="Optional new name after moving", required=False),
         ],
-        tags=[Tag(key="category", value="file_management"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="file_management"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
     )
     async def move_item(
         self,
@@ -1455,7 +1456,7 @@ class OneDrive:
             ToolParameter(name="select", type=ParameterType.STRING, description="Comma-separated list of fields to return", required=False),
             ToolParameter(name="expand", type=ParameterType.STRING, description="Related entities to expand", required=False),
         ],
-        tags=[Tag(key="category", value="file_management"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="file_management"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_root_folder(
         self,
@@ -1504,7 +1505,7 @@ class OneDrive:
             ToolParameter(name="destination_drive_id", type=ParameterType.STRING, description="The ID of the destination drive (defaults to same drive)", required=False),
             ToolParameter(name="new_name", type=ParameterType.STRING, description="Optional new name for the copied item", required=False),
         ],
-        tags=[Tag(key="category", value="file_management"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="file_management"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
     )
     async def copy_item(
         self,
@@ -1573,7 +1574,7 @@ class OneDrive:
             ToolParameter(name="require_sign_in", type=ParameterType.BOOLEAN, description="Whether recipients must sign in to access the item", required=False),
             ToolParameter(name="send_invitation", type=ParameterType.BOOLEAN, description="Whether to send an email invitation to recipients", required=False),
         ],
-        tags=[Tag(key="category", value="file_management"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="file_management"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
     )
     async def share_item(
         self,
@@ -1652,7 +1653,7 @@ class OneDrive:
             ToolParameter(name="drive_id", type=ParameterType.STRING, description="The ID of the drive", required=True),
             ToolParameter(name="item_id", type=ParameterType.STRING, description="The ID of the file", required=True),
         ],
-        tags=[Tag(key="category", value="file_management"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="file_management"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_download_url(
         self,
@@ -1708,7 +1709,7 @@ class OneDrive:
             ToolParameter(name="drive_id", type=ParameterType.STRING, description="The ID of the drive", required=True),
             ToolParameter(name="item_id", type=ParameterType.STRING, description="The ID of the text-based file (e.g. .txt, .md, .csv, .json, .html)", required=True),
         ],
-        tags=[Tag(key="category", value="file_management"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="file_management"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_file_content(
         self,
@@ -1751,18 +1752,15 @@ class OneDrive:
                 ext = (file_extension or "").strip().lower().lstrip(".")
 
                 record_name = data_dict.get("data", {}).get("name", f"document.{ext}")
-                file_record = FileRecord(
-                    org_id="",  # not used for tenancy gating in the parser; "" is the Record sentinel
-                    record_name=record_name,
-                    record_type=RecordType.FILE,
+                file_record = live_file_record(
+                    self.state,
+                    tool="onedrive.get_file_content",
+                    instance_id=toolset_instance_of(self),
+                    connector=Connectors.ONEDRIVE,
                     external_record_id=item_id,
-                    version=1,
-                    origin=OriginTypes.CONNECTOR,
-                    connector_name=Connectors.ONEDRIVE,
-                    connector_id=drive_id or "onedrive",
-                    mime_type=mime_type or "application/octet-stream",
+                    record_name=record_name,
+                    mime_type=mime_type,
                     extension=ext,
-                    is_file=True,
                 )
 
                 parser = FileContentParser(logger=logger, config_service=configuration_service)
@@ -1772,6 +1770,7 @@ class OneDrive:
                     model_name,
                     model_key,
                     configuration_service,
+                    citations=LiveCitations(self.state),
                 )
                 serialized = [item.model_dump() for item in payload]
                 if status:
@@ -1800,7 +1799,7 @@ class OneDrive:
             ToolParameter(name="parent_folder_id", type=ParameterType.STRING, description="ID of the parent folder (defaults to root)", required=False),
             ToolParameter(name="content", type=ParameterType.STRING, description="Content of the file", required=False),
         ],
-        tags=[Tag(key="category", value="file_management"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="file_management"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
     )
     async def create_word_file(
         self,
@@ -1905,7 +1904,7 @@ class OneDrive:
         parameters=[
             ToolParameter(name="notebook_name", type=ParameterType.STRING, description="Display name for the new OneNote notebook", required=True),
         ],
-        tags=[Tag(key="category", value="file_management"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="file_management"), Tag(key="type", value="write"), Tag(key="effect", value="write"), Tag(key="sink", value="self")],
     )
     async def create_onenote_notebook(
         self,
@@ -1944,7 +1943,7 @@ class OneDrive:
             ToolParameter(name="web_url", type=ParameterType.STRING, description="The webUrl of the OneNote notebook to create the section in", required=True),
             ToolParameter(name="section_name", type=ParameterType.STRING, description="Display name for the new section", required=True),
         ],
-        tags=[Tag(key="category", value="file_management"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="file_management"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
     )
     async def create_onenote_section(
         self,
@@ -1998,7 +1997,7 @@ class OneDrive:
             ToolParameter(name="page_title", type=ParameterType.STRING, description="Title for the new page", required=True),
             ToolParameter(name="page_body_html", type=ParameterType.STRING, description="Optional HTML body content for the page", required=False),
         ],
-        tags=[Tag(key="category", value="file_management"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="file_management"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
     )
     async def create_onenote_page(
         self,
@@ -2043,7 +2042,7 @@ class OneDrive:
         parameters=[
             ToolParameter(name="web_url", type=ParameterType.STRING, description="The webUrl of the OneNote notebook to list sections from", required=True),
         ],
-        tags=[Tag(key="category", value="file_management"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="file_management"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_onenote_sections(
         self,

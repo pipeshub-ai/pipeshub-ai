@@ -382,7 +382,7 @@ describe('knowledge_base/validators/validators', () => {
       const result = createFolderSchema.safeParse(data);
       expect(result.success).to.be.false;
       if (!result.success) {
-        expect(result.error.issues[0].message).to.equal(
+        expect(result.error.issues[0]!.message).to.equal(
           'To create a subfolder, use the subfolder route.',
         );
       }
@@ -400,7 +400,7 @@ describe('knowledge_base/validators/validators', () => {
       const result = createFolderSchema.safeParse(data);
       expect(result.success).to.be.false;
       if (!result.success) {
-        expect(result.error.issues[0].message).to.equal(
+        expect(result.error.issues[0]!.message).to.equal(
           'To create a subfolder, use the subfolder route.',
         );
       }
@@ -418,7 +418,7 @@ describe('knowledge_base/validators/validators', () => {
       const result = createFolderSchema.safeParse(data);
       expect(result.success).to.be.false;
       if (!result.success) {
-        expect(result.error.issues[0].message).to.equal(
+        expect(result.error.issues[0]!.message).to.equal(
           'To create a subfolder, use the subfolder route.',
         );
       }
@@ -433,7 +433,7 @@ describe('knowledge_base/validators/validators', () => {
       const result = createFolderSchema.safeParse(data);
       expect(result.success).to.be.false;
       if (!result.success) {
-        expect(result.error.issues[0].message).to.equal(
+        expect(result.error.issues[0]!.message).to.equal(
           'To create a subfolder, use the subfolder route.',
         );
       }
@@ -448,7 +448,7 @@ describe('knowledge_base/validators/validators', () => {
       const result = createFolderSchema.safeParse(data);
       expect(result.success).to.be.false;
       if (!result.success) {
-        expect(result.error.issues[0].message).to.equal(
+        expect(result.error.issues[0]!.message).to.equal(
           'To create a subfolder, use the subfolder route.',
         );
       }
@@ -738,6 +738,42 @@ describe('knowledge_base/validators/validators', () => {
       const result = listKnowledgeBasesSchema.safeParse(data);
       expect(result.success).to.be.false;
     });
+
+    it('should report a search over 1000 characters as too_big on query.search, not throw', () => {
+      const result = listKnowledgeBasesSchema.safeParse({
+        query: { search: 'q'.repeat(1001) },
+      });
+      expect(result.success).to.be.false;
+      if (!result.success) {
+        expect(
+          result.error.issues.map((i) => [i.path, i.code, i.message]),
+        ).to.deep.equal([
+          [
+            ['query', 'search'],
+            'too_big',
+            'Search term too long (max 1000 characters)',
+          ],
+        ]);
+      }
+    });
+
+    it('should accept a search of exactly 1000 characters', () => {
+      const result = listKnowledgeBasesSchema.safeParse({
+        query: { search: 'q'.repeat(1000) },
+      });
+      expect(result.success).to.be.true;
+    });
+
+    it('should apply the length limit to the trimmed search', () => {
+      const search = 'q'.repeat(1000);
+      const result = listKnowledgeBasesSchema.safeParse({
+        query: { search: `  ${search}  ` },
+      });
+      expect(result.success).to.be.true;
+      if (result.success) {
+        expect(result.data.query.search).to.equal(search);
+      }
+    });
   });
 
   // -----------------------------------------------------------------------
@@ -847,6 +883,27 @@ describe('Knowledge Base Validators - branch coverage', () => {
       });
       expect(result.success).to.be.true;
     });
+
+    for (const isVersioned of ['maybe', 'yes', 'TRUE']) {
+      it(`should report "${isVersioned}" as an issue on body.isVersioned, not throw`, () => {
+        const result = uploadRecordsSchema.safeParse({
+          body: { isVersioned },
+          params: { kbId: '123e4567-e89b-12d3-a456-426614174000' },
+        });
+        expect(result.success).to.be.false;
+        if (!result.success) {
+          expect(
+            result.error.issues.map((i) => [i.path, i.code, i.message]),
+          ).to.deep.equal([
+            [
+              ['body', 'isVersioned'],
+              'custom',
+              'isVersioned must be true, false, 1 or 0',
+            ],
+          ]);
+        }
+      });
+    }
   });
 
   // =========================================================================

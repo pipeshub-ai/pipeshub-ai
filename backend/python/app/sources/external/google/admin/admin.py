@@ -1,4 +1,5 @@
 import asyncio
+import contextvars
 import functools
 import logging
 import threading
@@ -47,8 +48,10 @@ class GoogleAdminDataSource:
     async def execute(self, operation: Callable[[], T]) -> T:
         """Run one blocking operation without overlapping this client's HTTP transport."""
         loop = asyncio.get_running_loop()
+        # The copied context carries the running tool call's send tracker into the worker thread.
         return await loop.run_in_executor(
             self._executor,
+            contextvars.copy_context().run,
             self._run_transport_operation,
             operation,
         )

@@ -14,8 +14,11 @@ import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from fastapi import HTTPException
+
 from app.config.configuration_service import delete_config_confirmed
 from app.config.constants.arangodb import Connectors, ProgressStatus
+from app.config.constants.http_status_code import HttpStatusCode
 from app.utils.error_class import log_failure
 
 if TYPE_CHECKING:
@@ -262,6 +265,24 @@ async def is_hidden_demo_record(
     if not connector_id:
         return False
     return connector_id in await excluded_demo_connector_ids(graph_provider, config_service, org_id, user_id)
+
+
+async def refuse_hidden_demo_record(
+    graph_provider: IGraphDBProvider,
+    config_service: ConfigurationService,
+    org_id: str,
+    user_id: str,
+    connector_id: str | None,
+) -> None:
+    """Opening a switched-off demo record by id answers like a record the user cannot see (404)."""
+    try:
+        hidden = await is_hidden_demo_record(graph_provider, config_service, org_id, user_id, connector_id)
+    except Exception as exc:
+        # Like search (search.demo_setting_failed): an unreadable setting hides nothing.
+        log_failure(_logger, "record_open.demo_setting_failed", exc, include_error_text=False)
+        return
+    if hidden:
+        raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found")
 
 
 def clear_caches() -> None:

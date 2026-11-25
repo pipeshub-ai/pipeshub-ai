@@ -17,6 +17,7 @@ from app.migrations.file_type_requeue.migration import (
     OUTBOX_DIRECTORY,
     PAGE_SIZE,
     count_still_selected,
+    is_selected,
     run_file_type_requeue,
 )
 from app.models.entities import FileRecord, RecordType
@@ -300,16 +301,24 @@ async def test_only_what_the_old_gate_refused_and_the_new_one_reads_is_selected(
               reason="This file is too large to index"),
         _file("g-msg", "mail.msg", ext="msg"),
         _file("h-heic", "photo.heic", ext="heic"),
+        _file("i-pptm", "deck.pptm", ext="pptm"),
     ]
     graph = FakeGraph([DRIVE], records)
 
     _, _, kafka = await _run(graph)
 
-    assert sorted(kafka.ids()) == ["b-pdf", "c-gradle", "e-log", "g-msg"]
+    assert sorted(kafka.ids()) == ["b-pdf", "c-gradle", "e-log", "g-msg", "i-pptm"]
     # settings.gradle as text/plain was read before; a status it holds now is not this gate's.
     for untouched in ("a-zip", "c-gradle-text", "d-log-big", "f-code-big", "h-heic"):
         assert graph.status(untouched) == FTNS, untouched
     assert graph.records["f-code-big"].reason == "This file is too large to index"
+
+
+@pytest.mark.parametrize(("off", "expected"), [({"docx"}, (True, None)), ({"yaml"}, (False, "yaml"))])
+def test_the_type_that_reads_a_record_is_the_one_that_holds_it_back(off: set[str], expected: tuple) -> None:
+    # A YAML file named like a document is read by YAML: the docx switch no longer holds it back.
+    record = _file("y", "Report.DOCX", ext="unknown", mime="TEXT/YAML")
+    assert is_selected(record, {"mimeType": "TEXT/YAML"}, frozenset(off)) == expected
 
 
 async def test_placeholders_internal_and_trashed_records_are_left_alone() -> None:
@@ -713,3 +722,11 @@ def test_the_page_row_carries_the_reason_the_selection_reads() -> None:
     )
 
     assert "reason" in UNSUPPORTED_PAGE_FIELDS
+
+
+def test_a_pdf_refused_for_its_page_count_is_never_selected() -> None:
+    from app.migrations.file_type_requeue.migration import is_selected
+    from app.utils.user_errors import pdf_over_page_limit
+
+    record = _file("long", "big.pdf", ext="pdf", mime="application/pdf", reason=pdf_over_page_limit(900))
+    assert is_selected(record, {"mimeType": "application/pdf", "reason": pdf_over_page_limit(900)}, frozenset()) == (False, None)

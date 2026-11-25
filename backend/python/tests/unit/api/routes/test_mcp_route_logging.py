@@ -43,6 +43,7 @@ from app.api.routes import mcp_servers
 from app.utils.logger import log_record_fields
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_messages import action_failed
+from tests.support.bound_org import bound_like_auth
 from tests.support.refresh_log_fakes import (
     SEEDED_RT,
     SEEDED_SECRET,
@@ -70,7 +71,8 @@ def _app(config_service: FakeConfigService) -> FastAPI:
     @app.middleware("http")
     async def authenticate(request: Request, call_next: Callable[[Request], Awaitable[Response]]) -> Response:
         request.state.user = {"userId": USER, "orgId": ORG}
-        return await call_next(request)
+        with bound_like_auth(request.state.user):
+            return await call_next(request)
 
     install_request_logging(app)
     app.include_router(mcp_servers.router)
@@ -730,3 +732,56 @@ async def test_a_listed_server_whose_sign_in_cannot_be_renewed_is_unreachable(ca
     assert (attempt.levelno, log_record_fields(attempt)["error_class"]) == (logging.WARNING, cls)
     assert not any(r.exc_text for r in capture.records) and SENTINEL not in _text_outside_attempts(capture)
     assert store.data[CRED_PATH]["isAuthenticated"] is True
+
+
+# --- a token answer with a malformed field (F26e) ---------------------------------------------------------------------
+# The real token client parses the provider's 200: a field of the wrong shape is the provider's or the OAuth app's
+# setup, so it is misconfigured, never quoted, and each route answers the way it answers any token-endpoint failure.
+
+MALFORMED = {"access_token": "at-new", "refresh_token": "rt-new", "expires_in": f"soon-{SENTINEL}"}
+
+
+@contextmanager
+def _token_endpoint_answering(body: dict[str, Any]) -> Iterator[None]:
+    transport = httpx.MockTransport(lambda _request: httpx.Response(200, json=body))
+    with patch("app.agents.mcp.oauth_client.GuardedTransport", new=lambda *_a, **_k: transport):
+        yield
+
+
+async def test_a_callback_whose_provider_answers_a_malformed_token_says_so_and_saves_nothing(capture) -> None:
+    flow = _Flow()
+    flow.exchange = exchange_code_for_token  # the real one
+    with flow.patched(), _token_endpoint_answering(MALFORMED):
+        response = await _call(_app(flow.store), "GET", f"{BASE}/oauth/callback?code=c&state={flow.start('s')}")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "success": False, "error": "token_exchange_failed",
+        "errorMessage": (
+            "The sign-in provider sent an invalid token, so connecting again won't help. "
+            "Ask your administrator to check this server's OAuth app with the provider."
+        ),
+    }
+    _, fields = _end(capture)
+    assert (fields["error_class"], fields["reason"], fields["error_type"]) == (
+        "misconfigured", "token_exchange_failed", "MCPMalformedTokenError")
+    assert not [key for key in flow.store.data if key.startswith("/services/mcp/credentials/")]
+    assert SENTINEL not in _all_text(capture)
+
+
+async def test_a_refresh_whose_provider_answers_a_malformed_token_is_a_bad_gateway(capture) -> None:
+    store, auth = _signed_in()
+    saved = dict(auth["oauthTokens"])
+    with patch.object(mcp_servers, "_get_org_instance", new=AsyncMock(return_value=_instance())), \
+         _token_endpoint_answering(MALFORMED):
+        response = await _call(_app(store), "POST", f"{BASE}/instances/inst-1/oauth/refresh")
+
+    assert (response.status_code, response.json()) == (
+        502, {"detail": "Failed to refresh the OAuth token. Please try again or reconnect this MCP server."})
+    attempt = next(r for r in capture.records if r.getMessage() == "credential_refresh.end")
+    assert (attempt.levelno, log_record_fields(attempt)["error_class"], log_record_fields(attempt)["reason"]) == (
+        logging.ERROR, "misconfigured", "malformed_token")
+    _, fields = _end(capture)
+    assert fields["error_class"] == "misconfigured"
+    assert store.data[CRED_PATH]["oauthTokens"] == saved
+    assert SENTINEL not in _all_text(capture)

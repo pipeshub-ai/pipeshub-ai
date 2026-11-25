@@ -6,6 +6,7 @@ import { useSearchParams, useRouter } from 'next/navigation';
 import { Flex, Text, Badge } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { useToastStore } from '@/lib/store/toast-store';
+import { useNewestRequest } from '@/lib/hooks/use-newest-request';
 import { useUserStore, selectIsAdmin, selectIsProfileInitialized } from '@/lib/store/user-store';
 import { formatDate } from '@/lib/utils/formatters';
 import { DateRangePicker } from '@/app/components/ui';
@@ -87,7 +88,9 @@ function GroupsPageContent() {
   }, [isProfileInitialized, isAdmin, router]);
 
   // ── Fetch groups (server-paginated + server-filtered) ──────────────────
+  const beginRequest = useNewestRequest();
   const fetchGroups = useCallback(async () => {
+    const isStale = beginRequest();
     setLoading(true);
     setError(null);
     try {
@@ -98,14 +101,16 @@ function GroupsPageContent() {
         createdAfter: filters.createdAfter || undefined,
         createdBefore: filters.createdBefore || undefined,
       });
+      if (isStale()) return;
       setGroups(result.groups, result.totalCount);
     } catch (err: unknown) {
+      if (isStale()) return;
       const message = err instanceof Error ? err.message : 'Failed to load groups';
       setError(message);
     } finally {
-      setLoading(false);
+      if (!isStale()) setLoading(false);
     }
-  }, [page, limit, searchQuery, filters, setGroups, setLoading, setError]);
+  }, [beginRequest, page, limit, searchQuery, filters, setGroups, setLoading, setError]);
 
   useEffect(() => {
     if (isProfileInitialized && isAdmin) {
@@ -482,11 +487,11 @@ function GroupsPageContent() {
                 gap="2"
                 style={{ flex: 1, padding: 'var(--space-6)' }}
               >
-                <MaterialIcon name="filter_list_off" size={32} color="var(--slate-8)" />
+                <MaterialIcon name="filter_list_off" size={32} color="var(--slate-11)" />
                 <Text size="2" weight="medium" style={{ color: 'var(--slate-11)' }}>
                   {t('workspace.groups.noFilterResults', 'No groups match the applied filters')}
                 </Text>
-                <Text size="1" style={{ color: 'var(--slate-9)' }}>
+                <Text size="1" style={{ color: 'var(--slate-11)' }}>
                   {t('workspace.groups.noFilterResultsHint', 'Try adjusting or clearing the filters above')}
                 </Text>
               </Flex>
@@ -502,6 +507,7 @@ function GroupsPageContent() {
                   renderRowActions={renderRowActions}
                   isLoading={isLoading}
                   onRowClick={(group) => navigateToDetailPanel(group)}
+                  ariaLabel={t('workspace.groups.title')}
                 />
 
                 {/* Pagination */}

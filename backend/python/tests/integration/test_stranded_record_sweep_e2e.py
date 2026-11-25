@@ -16,12 +16,13 @@ the Arango run is also what proves the sweep's claim marker, its re-send count
 and the queue clock are declared there: an undeclared field is rejected and
 nothing is recovered.
 
-Needs Docker services, and skips cleanly when they are not reachable:
+Needs Docker services, and skips each one whose variable is unset:
 
   docker compose -f deployment/docker-compose/docker-compose.integration.graph-db.yml \
     -f deployment/docker-compose/docker-compose.integration.messaging.yml \
     up -d --wait neo4j-graph-it arango-graph-it redis-messaging-it
-  cd backend/python && pytest tests/integration/test_stranded_record_sweep_e2e.py -m integration
+  cd backend/python && NEO4J_IT_URI=bolt://localhost:17687 ARANGO_IT_URL=http://localhost:18529 REDIS_IT_HOST=localhost \
+    pytest tests/integration/test_stranded_record_sweep_e2e.py -m integration
 
 Environment: NEO4J_IT_URI, NEO4J_IT_PASSWORD, ARANGO_IT_URL, ARANGO_IT_PASSWORD,
 REDIS_IT_HOST, REDIS_IT_PORT.
@@ -60,6 +61,7 @@ from app.services.messaging.kafka.handlers.record import RecordEventHandler
 from app.services.messaging.redis_streams.producer import RedisStreamsProducer
 from app.utils.api_call import ApiCallError
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from tests.support import it_backends
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -69,12 +71,9 @@ if TYPE_CHECKING:
 # Well past the suite's 30s default: a first run creates Arango's collections.
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(300)]
 
-NEO4J_URI = os.environ.get("NEO4J_IT_URI", "bolt://localhost:17687")
 NEO4J_PASSWORD = os.environ.get("NEO4J_IT_PASSWORD", "ensure-it-pass")
-ARANGO_URL = os.environ.get("ARANGO_IT_URL", "http://localhost:18529")
 ARANGO_PASSWORD = os.environ.get("ARANGO_IT_PASSWORD", "ensure-it-pass")
 ARANGO_DB = "stranded_sweep_it"
-REDIS_HOST = os.environ.get("REDIS_IT_HOST", "localhost")
 REDIS_PORT = int(os.environ.get("REDIS_IT_PORT", "6389"))
 
 HOUR_MS = 3600 * 1000
@@ -136,7 +135,8 @@ class _Env:
 
 
 async def _connect_neo4j(monkeypatch: pytest.MonkeyPatch) -> IGraphDBProvider:
-    monkeypatch.setenv("NEO4J_URI", NEO4J_URI)
+    neo4j_uri = it_backends.endpoint("NEO4J_IT_URI")
+    monkeypatch.setenv("NEO4J_URI", neo4j_uri)
     monkeypatch.setenv("NEO4J_USERNAME", "neo4j")
     monkeypatch.setenv("NEO4J_PASSWORD", NEO4J_PASSWORD)
     monkeypatch.setenv("NEO4J_DATABASE", "neo4j")
@@ -147,9 +147,10 @@ async def _connect_neo4j(monkeypatch: pytest.MonkeyPatch) -> IGraphDBProvider:
 
 
 async def _connect_arango() -> IGraphDBProvider:
+    arango_url = it_backends.endpoint("ARANGO_IT_URL")
     config_service = MagicMock()
     config_service.get_config = AsyncMock(
-        return_value={"url": ARANGO_URL, "username": "root", "password": ARANGO_PASSWORD, "db": ARANGO_DB}
+        return_value={"url": arango_url, "username": "root", "password": ARANGO_PASSWORD, "db": ARANGO_DB}
     )
     provider = ArangoHTTPProvider(logger, config_service)
     if not await asyncio.wait_for(provider.connect(), timeout=60):
@@ -179,6 +180,7 @@ async def _remove_connector_data(graph: IGraphDBProvider, connector_id: str) -> 
 
 @pytest.fixture(params=["neo4j", "arango"])
 async def env(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[_Env]:
+    redis_host = it_backends.endpoint("REDIS_IT_HOST")
     redis_mod = pytest.importorskip("redis.asyncio")
     monkeypatch.setenv("STRANDED_RECORD_REPUBLISH_AFTER_SECONDS", "3600")
 
@@ -193,12 +195,12 @@ async def env(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -
         if disconnect is not None:
             cleanup.push_async_callback(disconnect)
 
-        redis = redis_mod.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
+        redis = redis_mod.Redis(host=redis_host, port=REDIS_PORT, decode_responses=True)
         cleanup.push_async_callback(redis.aclose)
         try:
             await asyncio.wait_for(redis.ping(), timeout=10)
         except Exception as exc:
-            pytest.skip(f"Redis not available at {REDIS_HOST}:{REDIS_PORT}: {exc}")
+            pytest.skip(f"Redis not available at {redis_host}:{REDIS_PORT}: {exc}")
 
         suffix = uuid.uuid4().hex[:10]
         connector_id = f"jira-it-{suffix}"
@@ -216,6 +218,7 @@ async def _seeded_env(
     cleanup: contextlib.AsyncExitStack,
 ) -> _Env:
     """Seed a live Jira connector and wire the real processor to this test's stream."""
+    redis_host = it_backends.endpoint("REDIS_IT_HOST")
     now = get_epoch_timestamp_in_ms()
     await graph.batch_upsert_nodes(
         [{
@@ -231,7 +234,7 @@ async def _seeded_env(
         collection=CollectionNames.APPS.value,
     )
 
-    inner = RedisStreamsProducer(logger, RedisStreamsConfig(host=REDIS_HOST, port=REDIS_PORT, client_id="stranded-it"))
+    inner = RedisStreamsProducer(logger, RedisStreamsConfig(host=redis_host, port=REDIS_PORT, client_id="stranded-it"))
     cleanup.push_async_callback(inner.cleanup)
     await inner.initialize()
     producer = _OneStreamProducer(inner, stream)

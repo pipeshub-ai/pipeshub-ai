@@ -72,7 +72,7 @@ class MessagingUtils:
         topics: list[str],
         batch_size: int | None = None,
         *,
-        ephemeral_group: bool = False,
+        broadcast: bool = False,
     ) -> RedisStreamsConfig:
         """Build RedisStreamsConfig with optional batch_size override.
         
@@ -93,7 +93,7 @@ class MessagingUtils:
             "client_id": client_id,
             "group_id": group_id,
             "topics": topics,
-            "ephemeral_group": ephemeral_group,
+            "broadcast": broadcast,
         }
         if batch_size is not None:
             config_dict["batch_size"] = batch_size
@@ -106,7 +106,7 @@ class MessagingUtils:
         group_id: str,
         topics: list[str],
         *,
-        ephemeral_group: bool = False,
+        broadcast: bool = False,
     ) -> KafkaConsumerConfig:
         config_service = app_container.config_service()
         kafka_config = await config_service.get_config(
@@ -124,7 +124,7 @@ class MessagingUtils:
             group_id=group_id,
             # A disposable group is new on every process start, so "earliest" would
             # replay the whole retention window each time.
-            auto_offset_reset="latest" if ephemeral_group else "earliest",
+            auto_offset_reset="latest" if broadcast else "earliest",
             enable_auto_commit=False,
             bootstrap_servers=brokers,
             topics=topics,
@@ -140,7 +140,7 @@ class MessagingUtils:
         topics: list[str],
         is_indexing: bool = False,
         *,
-        ephemeral_group: bool = False,
+        broadcast: bool = False,
     ) -> KafkaConsumerConfig | RedisStreamsConfig:
         """Create consumer config based on the configured broker type.
         
@@ -150,11 +150,16 @@ class MessagingUtils:
             group_id: Consumer group ID
             topics: List of topics to consume
             is_indexing: Whether this is an indexing consumer (affects batch size)
+            broadcast: Every process that subscribes sees every message, so
+                ``group_id`` must be the process's own. Kafka: that group, read
+                from the latest offset; the broker removes it once it is empty
+                and its offsets expire. Redis Streams: no group at all
+                (``RedisStreamsBroadcastConsumer``), since Redis never expires one.
         """
         broker_type = get_message_broker_type()
         if broker_type == MessageBrokerType.KAFKA:
             return await MessagingUtils._create_kafka_consumer_config(
-                app_container, client_id, group_id, topics, ephemeral_group=ephemeral_group
+                app_container, client_id, group_id, topics, broadcast=broadcast
             )
         else:
             redis_config = await MessagingUtils._get_redis_config(app_container)
@@ -165,7 +170,7 @@ class MessagingUtils:
             )
             return MessagingUtils._build_redis_streams_config(
                 redis_config, client_id, group_id, topics, batch_size=batch_size,
-                ephemeral_group=ephemeral_group,
+                broadcast=broadcast,
             )
 
     @staticmethod
@@ -314,17 +319,31 @@ class MessagingUtils:
         )
 
     @staticmethod
+    async def create_control_plane_events_consumer_config(
+        app_container: AppContainer,
+    ) -> KafkaConsumerConfig | RedisStreamsConfig:
+        # Every process holding control-plane state must see every change, so each is a broadcast subscriber, as the
+        # AI-config consumer below does; a process that starts later recovers by the revision gap rule, not by replay.
+        return await MessagingUtils.create_consumer_config(
+            app_container,
+            "control_plane_events_client",
+            f"control_plane_events_group-{_process_identity()}",
+            [Topic.CONTROL_PLANE_EVENTS.value],
+            broadcast=True,
+        )
+
+    @staticmethod
     async def create_aiconfig_consumer_config(
         app_container: QueryAppContainer,
     ) -> KafkaConsumerConfig | RedisStreamsConfig:
         # An AI-config change must reach EVERY query process, but a consumer group
-        # delivers each message to only one member. So each process joins a group of
-        # its own -- otherwise the workers that miss the event keep serving the
+        # delivers each message to only one member. So each process subscribes as a
+        # broadcast consumer -- otherwise the workers that miss the event keep serving the
         # previously cached LLM (see `retrieval_service.llm`) until they restart.
         return await MessagingUtils.create_consumer_config(
             app_container,
             "aiconfig_consumer_client",
             f"aiconfig_consumer_group-{_process_identity()}",
             [Topic.AI_CONFIG_EVENTS.value],
-            ephemeral_group=True,
+            broadcast=True,
         )

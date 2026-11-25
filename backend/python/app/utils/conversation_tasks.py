@@ -13,6 +13,7 @@ from contextvars import ContextVar
 from typing import Any
 
 from app.utils.logger import create_logger
+from harness_core.security.spreadsheet_cells import spreadsheet_row
 
 logger = create_logger("conversation_tasks")
 
@@ -56,11 +57,12 @@ def register_task(conversation_id: str, task: asyncio.Task) -> None:
     )
 
 def _rows_to_csv_bytes(columns: list[str], rows: list[tuple]) -> bytes:
-    """Serialise columns + rows into UTF-8 encoded CSV bytes."""
+    """Serialise columns + rows into UTF-8 encoded CSV bytes, every text cell (a column name too: a query names
+    its own) as a spreadsheet must read it (SEC-B-06)."""
     buf = io.StringIO()
     writer = csv.writer(buf)
-    writer.writerow(columns)
-    writer.writerows(rows)
+    writer.writerow(spreadsheet_row(columns))
+    writer.writerows(spreadsheet_row(row) for row in rows)
     return buf.getvalue().encode("utf-8")
 
 def pop_tasks(conversation_id: str) -> list[asyncio.Task]:

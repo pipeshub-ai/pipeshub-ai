@@ -164,7 +164,7 @@ export default function MailPage() {
             <Heading size="5" weight="medium" style={{ color: 'var(--slate-12)' }}>
               {t('workspace.mail.title')}
             </Heading>
-            <Text size="2" style={{ color: 'var(--slate-10)', marginTop: 'var(--space-1)', display: 'block' }}>
+            <Text size="2" style={{ color: 'var(--slate-11)', marginTop: 'var(--space-1)', display: 'block' }}>
               {t('workspace.mail.subtitle')}
             </Text>
           </Box>
@@ -200,7 +200,7 @@ export default function MailPage() {
             </Text>
             <Text
               size="1"
-              style={{ color: 'var(--slate-10)', display: 'block', marginTop: 2, fontWeight: 300 }}
+              style={{ color: 'var(--slate-11)', display: 'block', marginTop: 2, fontWeight: 300 }}
             >
               {t('workspace.mail.serverConfigDescription')}
             </Text>
@@ -248,7 +248,7 @@ export default function MailPage() {
                   <Text
                     size="1"
                     style={{
-                      color: 'var(--slate-10)',
+                      color: 'var(--slate-11)',
                       display: 'block',
                       marginTop: 2,
                       fontWeight: 300,
@@ -301,7 +301,7 @@ export default function MailPage() {
                   onClick={() => setPanelOpen(true)}
                   style={{ cursor: 'pointer', flexShrink: 0 }}
                 >
-                  <MaterialIcon name="settings" size={18} color="var(--slate-10)" />
+                  <MaterialIcon name="settings" size={18} color="var(--slate-11)" />
                 </IconButton>
 
                 {canManage && (

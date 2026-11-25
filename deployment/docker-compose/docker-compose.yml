@@ -5,7 +5,9 @@
 # Manual quick-start — env.template ships a working slim stack (Neo4j, Redis
 # Streams, Redis KV). Set the passwords in it, then start:
 #
-#   cp env.template .env && $EDITOR .env      # set NEO4J_PASSWORD and MONGO_PASSWORD
+#   cp env.template .env && $EDITOR .env      # set SECRET_KEY (openssl rand -base64 32), NEO4J_PASSWORD
+#                                             # and MONGO_PASSWORD; with the sandbox profile, EGRESS_PROXY_COMPONENT_KEY
+#                                             # and SANDBOX_BROKER_COMPONENT_KEY too
 #   docker compose -p pipeshub-ai up -d
 #
 # Do not pass COMPOSE_PROFILES on the command line: it replaces the value in
@@ -18,9 +20,16 @@
 #   graph-arango  — ArangoDB          (with DATA_STORE=arangodb)
 #   kv-etcd       — etcd              (with KV_STORE_TYPE=etcd)
 #   broker-kafka  — Zookeeper + Kafka (with MESSAGE_BROKER=kafka)
-#   sandbox       — coding-sandbox image pull + Docker API proxy (SANDBOX_MODE=docker)
-#   postgres      — PostgreSQL + PgBouncer (opt-in; the app uses it only with docker-compose.postgres-docstore.yml, see ./postgres/README.md)
+#   sandbox       — code execution: sandbox image pull and the Docker API
+#                   policy proxy (SANDBOX_MODE=docker, the default: the app
+#                   creates sandboxes through the proxy, never the socket)
+#   sandbox-broker — the sandbox broker and egress proxy (with
+#                   SANDBOX_MODE=broker, and the agent harness); add it to
+#                   sandbox
+#   postgres      — PostgreSQL + PgBouncer (opt-in; the app uses it only with docker-compose.postgres-docstore.yml or
+#                   docker-compose.postgres-only.yml, see ./postgres/README.md)
 #   postgres-migrate — the schema migration job (needs the `postgres` profile too)
+#   postgres-metrics — Prometheus exporters for PostgreSQL and PgBouncer (needs `postgres` and PG_MONITOR_PASSWORD, see ./postgres/README.md)
 #   search-searxng — SearXNG metasearch (then add SearXNG at http://searxng:8080 under
 #                    Workspace → Web search)
 #   fetch-crawl4ai — Crawl4AI page reader for JavaScript-heavy sites (then add Crawl4AI at
@@ -32,9 +41,68 @@
 # already use etcd or Kafka.
 #
 # Always-on: pipeshub-ai, redis, mongodb, qdrant.
-# Eval omits the sandbox profile (run_code is unavailable).
+# Eval omits the sandbox profile and sets SANDBOX_MODE= (run_code is off).
+# No PipesHub process holds the Docker socket: only docker-socket-proxy mounts it.
+# With SANDBOX_MODE=docker the app reaches Docker through it; with broker, the
+# sandbox broker does, and the app holds no credential the proxy accepts.
+#
+# Security profile (ADR-OPS-07): PIPESHUB_HARDENED=true adopts the hardened
+# defaults (stores refuse anonymous clients, a weak SECRET_KEY is refused, the
+# CSP is enforced, ...). Unset is the compatibility profile: an .env from a
+# release without them keeps working as before, with a warning in the log for
+# each fallback. install.sh writes true on a fresh install.
 #
 # Requires Docker Compose v2.20+ for `required: false` on depends_on.
+
+# Every service starts from this baseline (ADR-OPS-02, SEC-D-02/SEC-D-10) and adds
+# back only what its image proves it needs, with the reason beside it. Docker's
+# own seccomp and AppArmor profiles stay on: no service may set them unconfined.
+# The cohesion test (tests/unit/harness/security/test_container_baseline.py)
+# fails on a service that leaves the baseline.
+x-hardened: &hardened
+  cap_drop: [ALL]
+  security_opt:
+    - no-new-privileges:true
+
+# A service whose image writes only to its volumes also gets a read-only root.
+x-read-only-root: &read-only-root
+  read_only: true
+  tmpfs:
+    - /tmp:size=64m,mode=1777
+
+# What the sandbox broker and egress proxy need to read their own credential and
+# /services/endpoints. They face sandbox code, so they hold no SECRET_KEY and no
+# Redis password (ADR-KEY-02, SEC-D-03): each has its own key (PIPESHUB_COMPONENT_KEY,
+# set per service below), from which it opens only the document Node seals for it and
+# derives its own Redis ACL login.
+x-sandbox-plane-env: &sandbox-plane-env
+  LOG_LEVEL: ${LOG_LEVEL:-info}
+  KV_STORE_TYPE: ${KV_STORE_TYPE:-redis}
+  ETCD_URL: https://etcd:2379
+  ETCD_HOST: etcd
+  # This component's certificate from etcd-tls (SEC-D-06); its CN names the component.
+  ETCD_CA_FILE: /run/pipeshub/etcd-tls/ca.crt
+  ETCD_CERT_FILE: /run/pipeshub/etcd-tls/tls.crt
+  ETCD_KEY_FILE: /run/pipeshub/etcd-tls/tls.key
+  ETCD_TIMEOUT: ${ETCD_TIMEOUT:-5000}
+  REDIS_HOST: ${REDIS_HOST:-redis}
+  REDIS_PORT: ${REDIS_PORT:-6379}
+  REDIS_DB: ${REDIS_DB:-0}
+  REDIS_KV_PREFIX: ${REDIS_KV_PREFIX:-pipeshub:kv:}
+  REDIS_TIMEOUT: ${REDIS_TIMEOUT:-10000}
+  REDIS_KEY_NAMESPACE: ${REDIS_KEY_NAMESPACE:-}
+  REDIS_MODE: ${REDIS_MODE:-standalone}
+  REDIS_CLUSTER_ENDPOINTS: ${REDIS_CLUSTER_ENDPOINTS:-}
+  REDIS_TLS_ENABLED: ${REDIS_TLS_ENABLED:-false}
+  REDIS_TLS_REJECT_UNAUTHORIZED: ${REDIS_TLS_REJECT_UNAUTHORIZED:-true}
+  REDIS_TLS_CA_PATH: ${REDIS_TLS_CA_PATH:-}
+  # One /29 per sandbox with an allowlist; change it if it overlaps a network
+  # this host routes to. The broker allocates from it; the egress proxy never
+  # binds its control plane inside it.
+  SANDBOX_EGRESS_SUBNETS: ${SANDBOX_EGRESS_SUBNETS:-10.213.0.0/16}
+  # The one bridge open-egress sandboxes share takes a /22 from this pool, not
+  # from Docker's default pools (a busy host has none left).
+  SANDBOX_OPEN_EGRESS_SUBNETS: ${SANDBOX_OPEN_EGRESS_SUBNETS:-10.212.0.0/16}
 
 services:
 
@@ -42,11 +110,21 @@ services:
   # PipesHub AI — the all-in-one application container
   # ---------------------------------------------------------------------------
   pipeshub-ai:
-    image: ${PIPESHUB_IMAGE:-pipeshubai/pipeshub-ai}:${IMAGE_TAG:-latest}
+    <<: *hardened
+    image: ${PIPESHUB_APP_PINNED:-${PIPESHUB_IMAGE:-pipeshubai/pipeshub-ai}:${IMAGE_TAG:-latest}}
     restart: always
-    # Node drains in-flight requests for up to 8s before closing Mongo, Redis
-    # and the brokers; Docker's 10s default would leave too little for that.
-    stop_grace_period: 30s
+    # Only the image entrypoint holds these, as root, for its first moments: it
+    # hands earlier root-owned volumes to uid 1000 (CHOWN, DAC_OVERRIDE, FOWNER),
+    # then drops to that user (SETUID, SETGID) and empties its bounding set
+    # (SETPCAP) before any service starts, so no service process has any of them.
+    # KILL is for the init (`init: true`), which stays root as PID 1: a root
+    # process without it may not signal uid 1000, so `docker stop` killed the
+    # container at once instead of draining durable runs (R43SOCK-FU-3).
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETUID, SETGID, SETPCAP, KILL]
+    # Durable agent runs drain on stop (finish the boundary, commit, yield):
+    # the process monitor waits up to 40 s for them before stopping Node, which
+    # then drains in-flight requests for up to 8 s before closing its stores.
+    stop_grace_period: 60s
     # build: is used only when `docker compose up --build` (or install.sh --build) is run.
     # It is ignored for the default prebuilt-image path. context is the repo root.
     build:
@@ -63,11 +141,15 @@ services:
         memlock:
           soft: -1
           hard: -1
+    # Every interface unless APP_BIND_ADDRESS says otherwise, as before (compatibility, ADR-OPS-07). Docker's
+    # published ports bypass ufw and firewalld, so "local only" has to be the bind address (SEC-D-08): install.sh
+    # writes 127.0.0.1 on a hardened install without a public URL (ADVANCED_DEPLOYMENT.md "Remote access and HTTPS").
     ports:
-      - "${APP_PORT:-3000}:3000"
+      - "${APP_BIND_ADDRESS:-0.0.0.0}:${APP_PORT:-3000}:3000"
     deploy:
       resources:
         limits:
+          pids: ${APP_PIDS_LIMIT:-16384}
           # OOM cap only (not reserved). Lower via APP_MEMORY_LIMIT on smaller hosts.
           memory: ${APP_MEMORY_LIMIT:-10G}
     # Lets the kernel page out memory that a co-located idle service (e.g.
@@ -132,11 +214,26 @@ services:
       - CONNECTOR_EGRESS_IPS=${CONNECTOR_EGRESS_IPS:-}
       - PIPESHUB_BLOCK_PRIVATE_ADDRESSES=${PIPESHUB_BLOCK_PRIVATE_ADDRESSES:-}
       - PIPESHUB_NEXTCLOUD_ALLOW_INSECURE_HTTP=${PIPESHUB_NEXTCLOUD_ALLOW_INSECURE_HTTP:-}
-      - STRICT_MODE=${STRICT_MODE:-false}
+      # Browser security headers are always on (ADR-WEB-01). Origins that may frame the app, comma-separated (never the
+      # sign-in pages); true to report the CSP without enforcing it while diagnosing a page; extra CSP host sources.
+      - CSP_FRAME_ANCESTORS=${CSP_FRAME_ANCESTORS:-}
+      - CSP_REPORT_ONLY=${CSP_REPORT_ONLY:-}
+      - CSP_CONNECT_SRCS=${CSP_CONNECT_SRCS:-}
+      - CSP_SCRIPT_SRCS=${CSP_SCRIPT_SRCS:-}
+      - CSP_FRAME_SRCS=${CSP_FRAME_SRCS:-}
       - SKIP_DOMAIN_CHECK=${SKIP_DOMAIN_CHECK:-false}
       - TELEMETRY_COLLECTION_FLAG=${TELEMETRY_COLLECTION_FLAG:-}
       - SAML_SP_ENTITY_ID=${SAML_SP_ENTITY_ID:-}
+      # The security profile (ADR-OPS-07): true adopts the hardened defaults; unset keeps the behaviour of a release
+      # without them. install.sh writes it.
+      - PIPESHUB_HARDENED=${PIPESHUB_HARDENED:-false}
+      - SUPPORT_EMAIL=${SUPPORT_EMAIL:-}
       - SECRET_KEY=${SECRET_KEY:-}
+      - SECRET_KEY_PREVIOUS=${SECRET_KEY_PREVIOUS:-}
+      - SECRET_KEY_NEXT=${SECRET_KEY_NEXT:-}
+      # ADR-KEY-02: the sandbox-plane components' own keys; Node seals each one's document under its key.
+      - EGRESS_PROXY_COMPONENT_KEY=${EGRESS_PROXY_COMPONENT_KEY:-}
+      - SANDBOX_BROKER_COMPONENT_KEY=${SANDBOX_BROKER_COMPONENT_KEY:-}
       - JWT_SECRET=${JWT_SECRET:-}
       - SCOPED_JWT_SECRET=${SCOPED_JWT_SECRET:-}
       - COOKIE_SECRET=${COOKIE_SECRET:-}
@@ -152,7 +249,7 @@ services:
       - EMBEDDING_SERVER_URL=http://localhost:8002
 
       # Graph database selection — set by install.sh
-      # DATA_STORE accepted values: "neo4j" (default) | "arangodb"
+      # DATA_STORE accepted values: "neo4j" (default) | "arangodb" | "postgres" (with docker-compose.postgres-only.yml)
       - DATA_STORE=${DATA_STORE:-neo4j}
 
       # ArangoDB (active when DATA_STORE=arangodb)
@@ -175,9 +272,13 @@ services:
       # Key-value store: "redis" (default, no extra container) | "etcd"
       - KV_STORE_TYPE=${KV_STORE_TYPE:-redis}
 
-      # etcd (active when KV_STORE_TYPE=etcd)
-      - ETCD_URL=http://etcd:2379
+      # etcd (active when KV_STORE_TYPE=etcd): TLS with the app's own client certificate, which etcd-tls writes
+      # (SEC-D-06). etcd refuses a client without one.
+      - ETCD_URL=https://etcd:2379
       - ETCD_HOST=etcd
+      - ETCD_CA_FILE=/run/pipeshub/etcd-tls/ca.crt
+      - ETCD_CERT_FILE=/run/pipeshub/etcd-tls/tls.crt
+      - ETCD_KEY_FILE=/run/pipeshub/etcd-tls/tls.key
       - ETCD_TIMEOUT=${ETCD_TIMEOUT:-5000}
 
       # Message broker: "redis" (default, uses Redis Streams) | "kafka"
@@ -190,12 +291,42 @@ services:
       - FAIR_SCHEDULING_LANE_COUNT=${FAIR_SCHEDULING_LANE_COUNT:-8}
       - FAIR_SCHEDULING_LANE_ASSIGNMENT=${FAIR_SCHEDULING_LANE_ASSIGNMENT:-assigned}
 
+      # The agent harness (Beta) and its switch (ADR-OPS-06, amended 2026-11-20), on by default: the worker and its
+      # gateways run idle until an org admin turns on Agent harness in Labs, which is off by default.
+      # AGENT_HARNESS_WORKER_ENABLED=false in .env runs no harness process, route, Labs flag or UI at all.
+      - AGENT_HARNESS_RELAY_ENABLED=${AGENT_HARNESS_RELAY_ENABLED:-true}
+      - AGENT_HARNESS_WORKER_ENABLED=${AGENT_HARNESS_WORKER_ENABLED:-true}
+      # Before an external write (a Slack post, an email, any MCP tool) in a conversation that read private
+      # content, the agent asks the user (UX1). false: approvals decide by tool class alone.
+      - HARNESS_FLOW_GUARD=${HARNESS_FLOW_GUARD:-true}
+      # The model gateway (E3, port 8096) follows the worker unless set: engines run only as durable runs.
+      - MODEL_GATEWAY_ENABLED=${MODEL_GATEWAY_ENABLED:-}
+      # Calls one model provider takes at once, the gateway's and the workers' together (G-45); empty: 64.
+      - MODEL_GATEWAY_PROVIDER_CONCURRENCY=${MODEL_GATEWAY_PROVIDER_CONCURRENCY:-}
+      # Priority classes (G-45): every n-th claim takes the oldest due run of any class (empty: 5; 0 strict
+      # priority); slots past a worker's own a higher class may take while it preempts (empty: 2; 0 off); seconds a
+      # background run holds its slot before it may be preempted (empty: 5).
+      - AGENT_HARNESS_CLAIM_FLOOR_EVERY=${AGENT_HARNESS_CLAIM_FLOOR_EVERY:-}
+      - AGENT_HARNESS_PREEMPT_OVERCOMMIT=${AGENT_HARNESS_PREEMPT_OVERCOMMIT:-}
+      - AGENT_HARNESS_PREEMPT_MIN_SLICE_S=${AGENT_HARNESS_PREEMPT_MIN_SLICE_S:-}
+      # Node serves the worker-only routes on their own port (AGENT_HARNESS_INTERNAL_PORT, default 3002), which no service
+      # publishes (the cohesion test test_sec_c_09_internal_port holds every Compose file to it). It listens on
+      # every interface of this container on purpose: the egress proxy reaches it on sandbox_plane and Prometheus
+      # on pipeshub. Every route checks the worker credential or a run's token before it reads a body (SEC-C-09).
+      - AGENT_HARNESS_INTERNAL_HOST=0.0.0.0
+      - AGENT_HARNESS_STATE_URL=http://localhost:3002
+      # The durable worker's tool gateway, as the egress proxy reaches it on the sandbox plane (E1, E2E-2 FB).
+      - HARNESS_TOOL_GATEWAY_URL=${HARNESS_TOOL_GATEWAY_URL:-http://tool-gateway:8098/harness/tool-gateway}
+
       # Kafka (active when MESSAGE_BROKER=kafka)
       - KAFKA_BROKERS=${KAFKA_BROKERS:-kafka-1:9092}
       - KAFKA_SSL=${KAFKA_SSL:-false}
-      - KAFKA_USERNAME=${KAFKA_USERNAME:-}
+      # The SCRAM login kafka-init writes (SEC-D-06). Without KAFKA_PASSWORD (an .env from before it) the bundled
+      # broker runs without SASL as before and the app signs in with nothing (compatibility, ADR-OPS-07); a hardened
+      # install refuses that store. An external broker without SASL needs KAFKA_USERNAME= (empty).
+      - KAFKA_USERNAME=${KAFKA_USERNAME-${KAFKA_PASSWORD:+pipeshub}}
       - KAFKA_PASSWORD=${KAFKA_PASSWORD:-}
-      - KAFKA_SASL_MECHANISM=${KAFKA_SASL_MECHANISM:-}
+      - KAFKA_SASL_MECHANISM=${KAFKA_SASL_MECHANISM:-scram-sha-512}
 
       # Redis (always on). REDIS_MODE selects the connection provider:
       # "standalone" (default, this compose file's own `redis` container) or
@@ -208,6 +339,8 @@ services:
       - REDIS_PASSWORD=${REDIS_PASSWORD:-}
       - REDIS_USERNAME=${REDIS_USERNAME:-}
       - REDIS_URL=redis://:${REDIS_PASSWORD:-}@${REDIS_HOST:-redis}:${REDIS_PORT:-6379}
+      # Optional separate Redis for caches (see backend/env.template).
+      - REDIS_CACHE_URL=${REDIS_CACHE_URL:-}
       - REDIS_KV_PREFIX=${REDIS_KV_PREFIX:-pipeshub:kv:}
       - REDIS_TIMEOUT=${REDIS_TIMEOUT:-10000}
       - REDIS_DB=${REDIS_DB:-0}
@@ -229,10 +362,12 @@ services:
       - CELERY_BROKER_URL=${CELERY_BROKER_URL:-}
       - CELERY_RESULT_BACKEND=${CELERY_RESULT_BACKEND:-}
 
-      # MongoDB
-      - MONGO_URI=mongodb://${MONGO_USERNAME:-admin}:${MONGO_PASSWORD:-}@mongodb:27017/?authSource=admin
+      # MongoDB. The bundled mongodb service is a single-node replica set, so
+      # transactions are available. Pointing MONGO_URI at an external
+      # standalone server requires REPLICA_SET_AVAILABLE=false as well.
+      - MONGO_URI=${MONGO_URI:-mongodb://${MONGO_USERNAME:-admin}:${MONGO_PASSWORD:-}@mongodb:27017/?authSource=admin&replicaSet=rs0&w=majority}
       - MONGO_DB_NAME=${MONGO_DB_NAME:-es}
-      - REPLICA_SET_AVAILABLE=false
+      - REPLICA_SET_AVAILABLE=${REPLICA_SET_AVAILABLE:-true}
 
       # Qdrant
       - QDRANT_API_KEY=${QDRANT_API_KEY:-}
@@ -334,6 +469,11 @@ services:
       - PIPESHUB_ACCESSIBLE_RECORDS_CACHE=${PIPESHUB_ACCESSIBLE_RECORDS_CACHE:-}
       - PIPESHUB_ACCESSIBLE_RECORDS_CACHE_TTL=${PIPESHUB_ACCESSIBLE_RECORDS_CACHE_TTL:-300}
       - PIPESHUB_SIGNED_URL_CACHE_SECONDS=${PIPESHUB_SIGNED_URL_CACHE_SECONDS:-0}
+      # Stored-record cache: memory (default, per worker, up to 512 MiB) | redis.
+      - PIPESHUB_RECORD_CACHE_BACKEND=${PIPESHUB_RECORD_CACHE_BACKEND:-memory}
+      - PIPESHUB_RECORD_CACHE_BYTES=${PIPESHUB_RECORD_CACHE_BYTES:-}
+      # ripgrep threads per search; blank = half the container's CPUs (also the cap).
+      - GREP_THREADS=${GREP_THREADS:-}
       # Most characters one agent turn may stream before it is stopped as a
       # runaway. Blank keeps the built-in 1000000; 0 removes the limit.
       - PIPESHUB_AGENT_MAX_TURN_OUTPUT_CHARS=${PIPESHUB_AGENT_MAX_TURN_OUTPUT_CHARS:-}
@@ -367,6 +507,9 @@ services:
       - TARGETED_RETRIEVAL=${TARGETED_RETRIEVAL:-}
       # Opt-in only: HIGH_ACCURACY_MODE does not turn this one on.
       - SEARCH_SOURCE_DIVERSITY=${SEARCH_SOURCE_DIVERSITY:-}
+      - SEARCH_DIVERSITY_WINDOW=${SEARCH_DIVERSITY_WINDOW:-}
+      - SEARCH_DIVERSITY_PER_SOURCE=${SEARCH_DIVERSITY_PER_SOURCE:-}
+      - SEARCH_DIVERSITY_POOL=${SEARCH_DIVERSITY_POOL:-}
 
       # Storage config
       - BLOB_STORAGE_COMPRESSION=${BLOB_STORAGE_COMPRESSION:-false}
@@ -443,7 +586,9 @@ services:
       - BOT_TOKEN=${BOT_TOKEN:-}
       - SLACK_BOT_PORT=${SLACK_BOT_PORT:-3020}
 
-      # Observability (optional)
+      # Observability (optional). Setting either Opik variable sends prompts, model answers, tool arguments
+      # and results, and indexed document text to Opik. A conversation's traces are deleted there when it
+      # is erased (only traces written by this version or later); nothing else sent is deleted by PipesHub.
       - OPIK_API_KEY=${OPIK_API_KEY:-}
       - OPIK_WORKSPACE=${OPIK_WORKSPACE:-}
 
@@ -452,23 +597,109 @@ services:
       # and remote (HTTP) MCP servers are unaffected.
       - MCP_ALLOW_CUSTOM_STDIO=${MCP_ALLOW_CUSTOM_STDIO:-false}
 
-      # Code sandbox
-      - SANDBOX_MODE=${SANDBOX_MODE:-docker}
+      # Code sandbox. Unset means docker, as before: the app creates sandboxes
+      # through docker-socket-proxy (the sandbox profile). install.sh writes
+      # broker on a hardened install or with the agent harness (the
+      # sandbox-broker profile). Set but blank turns code execution off (eval),
+      # which `:-` would hide.
+      - SANDBOX_MODE=${SANDBOX_MODE-docker}
+      # The Docker API policy proxy, for SANDBOX_MODE=docker. The token is the app's credential there (SEC-A-04);
+      # install.sh writes it only in docker mode, so on the broker the proxy admits the app to nothing. Unset (an
+      # .env from before it), a compatibility proxy admits the app tokenless, as before.
+      - DOCKER_HOST=tcp://docker-socket-proxy:2375
+      - DOCKER_PROXY_TOKEN=${DOCKER_PROXY_TOKEN:-}
       # SANDBOX_MODE=local is refused unless this is "true" (single-user dev only).
       - SANDBOX_ALLOW_LOCAL=${SANDBOX_ALLOW_LOCAL:-false}
       # Generated code gets no network unless set to true; even then private,
-      # link-local and cloud-metadata addresses are firewalled. CIDRs in
-      # SANDBOX_EGRESS_ALLOW_CIDRS (comma-separated, e.g. a pip mirror) are exempt.
+      # link-local and cloud-metadata addresses are firewalled (the broker installs
+      # the rules in broker mode). CIDRs in SANDBOX_EGRESS_ALLOW_CIDRS
+      # (comma-separated, e.g. a pip mirror) are exempt, except the sandbox
+      # bridge, its gateway and metadata, which stay blocked.
       - SANDBOX_ALLOW_NETWORK=${SANDBOX_ALLOW_NETWORK:-false}
       - SANDBOX_EGRESS_ALLOW_CIDRS=${SANDBOX_EGRESS_ALLOW_CIDRS:-}
-      # Per-run writable-layer cap (default 10g; 0 disables). Enforced only where
-      # the storage driver supports it; logs a warning once otherwise.
+      # Extra resolvers sandboxes may query on port 53 only (comma-separated IPv4).
+      - SANDBOX_EGRESS_DNS_SERVERS=${SANDBOX_EGRESS_DNS_SERVERS:-}
+      # Per-run writable-layer cap for docker-mode sandboxes (default 10g; 0
+      # disables). Enforced only where the storage driver supports it; logs a
+      # warning once otherwise.
       - SANDBOX_DISK_QUOTA=${SANDBOX_DISK_QUOTA:-10g}
-      - SANDBOX_DOCKER_IMAGE=${SANDBOX_DOCKER_IMAGE:-pipeshubai/pipeshub-sandbox:${IMAGE_TAG:-latest}}
+      # The most seconds one code run may take (10..3600); a larger timeout
+      # asked for by the model is lowered to it.
+      - SANDBOX_MAX_RUN_TIMEOUT_S=${SANDBOX_MAX_RUN_TIMEOUT_S:-300}
+      # Code sandbox capacity, shared by every query worker. Empty = sized
+      # from the machine: min(25% of memory / 512 MB, 75% of CPUs / 0.5, processes),
+      # at least SANDBOX_MIN_TOTAL (2). SANDBOX_MAX_TOTAL replaces it; set it when
+      # several stacks share one Docker host.
+      - SANDBOX_MAX_TOTAL=${SANDBOX_MAX_TOTAL:-}
+      - SANDBOX_MAX_PER_ORG=${SANDBOX_MAX_PER_ORG:-}
+      - SANDBOX_MAX_PER_REQUEST=${SANDBOX_MAX_PER_REQUEST:-}
+      - SANDBOX_MIN_TOTAL=${SANDBOX_MIN_TOTAL:-}
+      - SANDBOX_MEMORY_SHARE=${SANDBOX_MEMORY_SHARE:-}
+      - SANDBOX_CPU_FACTOR=${SANDBOX_CPU_FACTOR:-}
+      # How long a run waits for a free sandbox before it is refused (default 120).
+      - SANDBOX_SLOT_WAIT_S=${SANDBOX_SLOT_WAIT_S:-}
+      # The sandbox host's size, when the daemon is remote and cannot be read.
+      - SANDBOX_HOST_MEMORY_BYTES=${SANDBOX_HOST_MEMORY_BYTES:-}
+      - SANDBOX_HOST_CPU_MILLIS=${SANDBOX_HOST_CPU_MILLIS:-}
+      # Live limit: holds new runs back while the host is short of memory or CPU
+      # (off disables it). Empty = defaults; see env.template.
+      - SANDBOX_LIVE_LIMIT=${SANDBOX_LIVE_LIMIT:-}
+      - SANDBOX_LIVE_INTERVAL_S=${SANDBOX_LIVE_INTERVAL_S:-}
+      - SANDBOX_HOST_MEM_FLOOR_MB=${SANDBOX_HOST_MEM_FLOOR_MB:-}
+      - SANDBOX_HOST_MEM_SOFT_MB=${SANDBOX_HOST_MEM_SOFT_MB:-}
+      - SANDBOX_HOST_CPU_BRAKE=${SANDBOX_HOST_CPU_BRAKE:-}
+      - SANDBOX_HOST_CPU_PSI_BRAKE=${SANDBOX_HOST_CPU_PSI_BRAKE:-}
+      - SANDBOX_MEMORY_OVERCOMMIT=${SANDBOX_MEMORY_OVERCOMMIT:-}
+      # Runs waiting for memory ask indexing to slow down (off disables it).
+      - SANDBOX_YIELD_INDEXING=${SANDBOX_YIELD_INDEXING:-}
+      - SANDBOX_YIELD_TTL_S=${SANDBOX_YIELD_TTL_S:-}
+      - SANDBOX_ALERTS=${SANDBOX_ALERTS:-}
+      - SANDBOX_ALERT_WINDOW_S=${SANDBOX_ALERT_WINDOW_S:-}
+      - SANDBOX_ALERT_EVAL_S=${SANDBOX_ALERT_EVAL_S:-}
+      - SANDBOX_ALERT_WARN_BUSY_PCT=${SANDBOX_ALERT_WARN_BUSY_PCT:-}
+      - SANDBOX_ALERT_WARN_MIN_WAITED=${SANDBOX_ALERT_WARN_MIN_WAITED:-}
+      - SANDBOX_ALERT_CRIT_MIN_REFUSED=${SANDBOX_ALERT_CRIT_MIN_REFUSED:-}
+      - SANDBOX_ALERT_CRIT_REFUSED_PCT=${SANDBOX_ALERT_CRIT_REFUSED_PCT:-}
+      - SANDBOX_ALERT_COOLDOWN_S=${SANDBOX_ALERT_COOLDOWN_S:-}
+      - SANDBOX_ALERT_SCOPE=${SANDBOX_ALERT_SCOPE:-}
+      # Shared state place, disk checks, container log rotation and output caps
+      # (empty: the app's defaults; see ADVANCED_DEPLOYMENT.md).
+      - SANDBOX_STATE_DIR=${SANDBOX_STATE_DIR:-}
+      - SANDBOX_DISK_WATCHDOG=${SANDBOX_DISK_WATCHDOG:-}
+      - SANDBOX_DISK_WATCH_CHECK_TIMEOUT_S=${SANDBOX_DISK_WATCH_CHECK_TIMEOUT_S:-}
+      - SANDBOX_DISK_WATCH_MAX_FAILURES=${SANDBOX_DISK_WATCH_MAX_FAILURES:-}
+      - SANDBOX_LOG_MAX_SIZE=${SANDBOX_LOG_MAX_SIZE:-}
+      - SANDBOX_LOG_MAX_FILES=${SANDBOX_LOG_MAX_FILES:-}
+      - SANDBOX_STDIO_HEAD_BYTES=${SANDBOX_STDIO_HEAD_BYTES:-}
+      - SANDBOX_STDIO_TAIL_BYTES=${SANDBOX_STDIO_TAIL_BYTES:-}
+      - SANDBOX_OUTPUT_MAX_FILE_BYTES=${SANDBOX_OUTPUT_MAX_FILE_BYTES:-}
+      - SANDBOX_OUTPUT_MAX_TOTAL_BYTES=${SANDBOX_OUTPUT_MAX_TOTAL_BYTES:-}
+      - SANDBOX_OUTPUT_MAX_FILES=${SANDBOX_OUTPUT_MAX_FILES:-}
+      - SANDBOX_OUTPUT_MAX_SANDBOX_BYTES=${SANDBOX_OUTPUT_MAX_SANDBOX_BYTES:-}
+      - SANDBOX_OUTPUT_MAX_SANDBOX_FILES=${SANDBOX_OUTPUT_MAX_SANDBOX_FILES:-}
+      - SANDBOX_DEPS_MAX_TOTAL_BYTES=${SANDBOX_DEPS_MAX_TOTAL_BYTES:-}
+      - SANDBOX_DOCKER_IMAGE=${PIPESHUB_SANDBOX_PINNED:-${SANDBOX_DOCKER_IMAGE:-pipeshubai/pipeshub-sandbox:${IMAGE_TAG:-latest}}}
       - SANDBOX_EGRESS_NETWORK=${SANDBOX_EGRESS_NETWORK:-pipeshub_sandbox_egress}
-      # The app never sees the Docker socket; sandbox containers are created
-      # through docker-socket-proxy, which only admits sandbox-shaped requests.
-      - DOCKER_HOST=tcp://docker-socket-proxy:2375
+      - SANDBOX_OPEN_EGRESS_SUBNETS=${SANDBOX_OPEN_EGRESS_SUBNETS:-10.212.0.0/16}
+      # Node writes these into /services/endpoints for every process. The
+      # gateway ports are E3's and E2's inside this container; until they
+      # listen, the egress proxy answers upstream_unavailable.
+      - SANDBOX_BROKER_BACKEND=http://sandbox-broker:8095
+      # Coding engines need gVisor (runsc) on this server (GVISOR.md). Dev and test
+      # only: true runs them on hardened runc, with a warning to admins.
+      - PIPESHUB_ENGINES_WITHOUT_GVISOR=${PIPESHUB_ENGINES_WITHOUT_GVISOR:-false}
+      # Dev only: true reads the ACP agent profiles while unsigned; a release build signs them (ADR-SEC-01 D7).
+      - PIPESHUB_ACP_PROFILES_UNSIGNED=${PIPESHUB_ACP_PROFILES_UNSIGNED:-false}
+      # Coding engines, off by default: set HARNESS_ENGINE_RUNS=true in .env to let the worker run them.
+      - HARNESS_ENGINE_RUNS=${HARNESS_ENGINE_RUNS:-false}
+      # The restart-time floor (ADR-OPS-01): true sends new chats to the standard path and the egress proxy binds
+      # no harness sandbox. Workspace settings > Security > Controls is the live switch.
+      - AGENT_HARNESS_KILL_SWITCH=${AGENT_HARNESS_KILL_SWITCH:-false}
+      # A registry for the coding-engine images, `{registry}/{image}`; the bare names are refused once it is set.
+      - HARNESS_ENGINE_IMAGE_REGISTRY=${HARNESS_ENGINE_IMAGE_REGISTRY:-}
+      - EGRESS_PROXY_CONTROL_BACKEND=http://egress-proxy:8098
+      - MODEL_GATEWAY_BACKEND=http://model-gateway:8096
+      - TOOL_GATEWAY_BACKEND=http://tool-gateway:8098
       # Eval deploy type skips the Slack bot process inside the app container.
       - PIPESHUB_SKIP_SLACKBOT=${PIPESHUB_SKIP_SLACKBOT:-false}
 
@@ -512,18 +743,27 @@ services:
         condition: service_started
         required: false
 
-    security_opt:
-      - no-new-privileges:true
-
     volumes:
       - pipeshub_data:/data/pipeshub
       - pipeshub_root_local:/root/.local
       - pipeshub_hf_cache:/root/.cache/huggingface
+      # Empty unless the kv-etcd profile runs etcd-tls.
+      - etcd_tls_pipeshub_ai:/run/pipeshub/etcd-tls:ro
 
     networks:
-      - pipeshub
-      - sandbox-control
-      - web-gateway
+      pipeshub: {}
+      # Sandboxes reach the gateways only through the egress proxy, which
+      # knows them by these names.
+      sandbox_plane:
+        aliases:
+          - model-gateway
+          - tool-gateway
+          # Node's state API, for the egress proxy's run-bound gateway tokens.
+          - harness-state
+      # The optional web search and page-reading servers, through their gateway.
+      web-gateway: {}
+      # The Docker API policy proxy, for SANDBOX_MODE=docker (the proxy alone is on it besides the app).
+      sandbox-control: {}
 
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -544,95 +784,174 @@ services:
       retries: 5
       start_period: 300s
 
-  # The only container with the Docker socket. It forwards just the calls the
-  # coding sandbox makes, refuses any container create that would reach the
-  # host (privileged, binds, devices, host namespaces, other images or
-  # networks), and only acts on containers it created. See
-  # backend/python/app/sandbox/docker_proxy.py.
-  docker-socket-proxy:
-    profiles: ["sandbox"]
-    image: ${PIPESHUB_IMAGE:-pipeshubai/pipeshub-ai}:${IMAGE_TAG:-latest}
-    restart: always
-    # Root only to open the root-owned socket; it holds no capabilities.
-    user: "0:0"
-    working_dir: /app/python
-    # Bypasses the image entrypoint, which drops privileges for the app and
-    # needs capabilities this container deliberately does not have.
-    entrypoint: ["python", "-m", "app.docker_proxy_main"]
-    environment:
-      - SANDBOX_DOCKER_IMAGE=${SANDBOX_DOCKER_IMAGE:-pipeshubai/pipeshub-sandbox:${IMAGE_TAG:-latest}}
-      - SANDBOX_EGRESS_NETWORK=${SANDBOX_EGRESS_NETWORK:-pipeshub_sandbox_egress}
-      - PYTHONDONTWRITEBYTECODE=1
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-    read_only: true
-    cap_drop: [ALL]
-    security_opt:
-      - no-new-privileges:true
-    deploy:
-      resources:
-        limits:
-          memory: 256M
-    networks:
-      - sandbox-control
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:2375/_ping', timeout=3)"]
-      interval: 15s
-      timeout: 5s
-      retries: 3
-      start_period: 10s
-
   # ---------------------------------------------------------------------------
   # Always-on stateful services
   # ---------------------------------------------------------------------------
 
   mongodb:
+    <<: *hardened
+    # Its entrypoint, as root, writes the replica-set key and hands it and the data
+    # to the mongodb user (CHOWN, DAC_OVERRIDE, FOWNER), then drops to that user
+    # with gosu (SETUID, SETGID); mongod itself runs with none of them.
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETUID, SETGID]
     # Pin via MONGO_IMAGE_TAG to recover from host-specific MongoDB 8.x crashes.
     image: mongo:${MONGO_IMAGE_TAG:-8.0.17}
+    # mongod keeps the open-file limit it is started with and asks for 64000;
+    # at Docker's 1024 it stops accepting connections and then crashes.
+    ulimits:
+      nofile:
+        soft: 64000
+        hard: 64000
     restart: always
+    # A single-node replica set (rs0) so multi-document transactions work;
+    # standalone mongod has none. Other presets extend this service rather
+    # than restating it. The internal-auth key is written once to its own
+    # volume (from MONGO_REPLICA_SET_KEY when set) before the image entrypoint
+    # runs; mongod refuses a key readable by anyone but its owner.
+    # The key turns authentication on, so it is passed only with a root password: an .env from a release whose
+    # MONGO_PASSWORD was empty has no root user and runs without authentication as it did (compatibility,
+    # ADR-OPS-07); install.sh --upgrade creates the user and writes the password (R50OFF-FU-2).
+    entrypoint:
+      - bash
+      - -ec
+      - |
+        key=/mongodb-keyfile/keyfile
+        if [ ! -s "$$key" ]; then
+          umask 077
+          if [ -n "$${MONGO_REPLICA_SET_KEY:-}" ]; then
+            printf '%s\n' "$$MONGO_REPLICA_SET_KEY" > "$$key"
+          else
+            openssl rand -base64 756 > "$$key"
+          fi
+        fi
+        chown 999:999 "$$key"
+        chmod 400 "$$key"
+        unset MONGO_REPLICA_SET_KEY
+        if [ -z "$${MONGO_INITDB_ROOT_PASSWORD:-}" ]; then
+          echo "WARNING: MONGO_PASSWORD is empty: MongoDB runs without authentication, as before (compatibility). Run ./install.sh --upgrade to create its root user." >&2
+          unset MONGO_INITDB_ROOT_USERNAME MONGO_INITDB_ROOT_PASSWORD
+          args=()
+          while [ "$$#" -gt 0 ]; do
+            if [ "$$1" = "--keyFile" ]; then shift 2; continue; fi
+            args+=("$$1"); shift
+          done
+          set -- "$${args[@]}"
+        fi
+        exec docker-entrypoint.sh "$$@"
+      - mongodb-entrypoint
     # Shared ~16 GB hosts: WiredTiger otherwise grabs ~half of RAM. Cap cache at
     # 1 GB / container at 2 GB. Sibling deploy.limits (app/graph/vector) are OOM
     # caps, not concurrent reservations — they need not sum to host RAM.
-    command: ["mongod", "--bind_ip_all", "--wiredTigerCacheSizeGB", "${MONGO_CACHE_GB:-1}"]
+    # --oplogSize only applies when the oplog is first created (rs.initiate).
+    command:
+      - mongod
+      - --bind_ip_all
+      - --replSet
+      - rs0
+      - --oplogSize
+      - "1024"
+      - --keyFile
+      - /mongodb-keyfile/keyfile
+      - --wiredTigerCacheSizeGB
+      - ${MONGO_CACHE_GB:-1}
     environment:
       - MONGO_INITDB_ROOT_USERNAME=${MONGO_USERNAME:-admin}
       - MONGO_INITDB_ROOT_PASSWORD=${MONGO_PASSWORD:-}
+      - MONGO_REPLICA_SET_KEY=${MONGO_REPLICA_SET_KEY:-}
       # Keep the official image's rseq=0 default for TCMalloc performance; set
       # MONGO_GLIBC_TUNABLES=glibc.pthread.rseq=1 if MongoDB exits 139 on newer kernels.
       - GLIBC_TUNABLES=${MONGO_GLIBC_TUNABLES:-glibc.pthread.rseq=0}
     volumes:
       - mongodb_data:/data/db
+      - mongodb_replset_key:/mongodb-keyfile
     networks:
       - pipeshub
     deploy:
       resources:
         limits:
+          pids: 4096
           memory: ${MONGO_MEMORY_LIMIT:-2G}
         reservations:
           memory: ${MONGO_MEMORY_RESERVATION:-512M}
+    # Initiates rs0 on first start (and on a standalone data volume being
+    # converted in place), then reports healthy only once this member is a
+    # writable primary. A member that already has a config is never
+    # re-initiated. The member host is the service name, which every client
+    # on the Compose network resolves.
     healthcheck:
-      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
+      # mongosh boots a whole Node.js runtime per check. Under load that alone
+      # can outlast a 3s timeout while mongod keeps serving, so give each check
+      # 10s and tolerate about a minute of slow checks before calling it
+      # unhealthy; every 10s rather than 15s, since the first checks also bring
+      # up rs0. (start_interval would shorten the first wait but needs Docker
+      # Engine 25+.)
+      test:
+        - CMD
+        - mongosh
+        - --quiet
+        - --norc
+        - --host
+        - localhost
+        - --eval
+        - >-
+          const user = process.env.MONGO_INITDB_ROOT_USERNAME;
+          const pass = process.env.MONGO_INITDB_ROOT_PASSWORD;
+          if (!db.hello().setName) {
+            if (pass) db.getSiblingDB("admin").auth(user, pass);
+            try {
+              rs.initiate({_id: "rs0", members: [{_id: 0, host: "mongodb:27017"}]});
+            } catch (error) {
+              if (error.codeName !== "AlreadyInitialized") throw error;
+            }
+          }
+          const hello = db.hello();
+          quit(hello.setName === "rs0" && hello.isWritablePrimary ? 0 : 1);
+      interval: 10s
+      timeout: 10s
+      retries: 6
+      start_period: 60s
 
   redis:
-    image: redis:7.4-bookworm
+    <<: [*hardened, *read-only-root]
+    # The image entrypoint hands /data to the redis user (CHOWN, and DAC_READ_SEARCH
+    # to reach into the 0700 folder an earlier root-running redis left) and drops to
+    # it (SETUID, SETGID); redis-server holds none of them. The command goes through
+    # that entrypoint: started straight from sh, redis-server ran as root.
+    cap_add: [CHOWN, DAC_READ_SEARCH, SETUID, SETGID]
+    image: redis:7.4.12-bookworm
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
     restart: always
+    # Redis requires its password (SEC-D-06), which install.sh generates. Without one (an .env from before it) it
+    # starts open, as it did, and says so in its log (compatibility, ADR-OPS-07); a hardened app refuses it.
+    # REDISCLI_AUTH signs in the healthcheck and an operator's `compose exec redis redis-cli`. The sandbox plane's
+    # own ACL users (ADR-KEY-02) are applied by Node over this default login.
+    environment:
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-}
+      - REDISCLI_AUTH=${REDIS_PASSWORD:-}
     command: >
-      sh -c "redis-server
+      sh -c 'if [ -n "$$REDIS_PASSWORD" ]; then set -- --requirepass "$$REDIS_PASSWORD";
+      else echo "WARNING: REDIS_PASSWORD is empty: Redis accepts clients without a password, as before (compatibility). Run ./install.sh --upgrade to generate one." >&2; fi;
+      exec docker-entrypoint.sh redis-server
       --appendonly yes
-      --appendfsync everysec
-      ${REDIS_PASSWORD:+--requirepass ${REDIS_PASSWORD}}"
+      --appendfsync everysec "$$@"'
     volumes:
       - redis_data:/data
     networks:
       - pipeshub
+      - sandbox_kv
     healthcheck:
-      test: ["CMD-SHELL", "redis-cli --no-auth-warning ${REDIS_PASSWORD:+-a ${REDIS_PASSWORD}} ping | grep -q PONG"]
+      test: ["CMD-SHELL", "[ -n \"$$REDISCLI_AUTH\" ] || unset REDISCLI_AUTH; redis-cli ping | grep -q PONG"]
       interval: 5s
       timeout: 3s
       retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: ${REDIS_MEMORY_LIMIT:-2G}
+          pids: 4096
 
   # ---------------------------------------------------------------------------
   # PostgreSQL + PgBouncer — profile: postgres (opt-in)
@@ -641,8 +960,17 @@ services:
   # with ${VAR:?}: the image's entrypoint refuses to start (exit 78) when one is empty.
   # ---------------------------------------------------------------------------
   postgres:
+    <<: *hardened
     profiles: ["postgres"]
     image: ${PG_IMAGE:-pipeshubai/postgres}:${PG_MAJOR:-18}-${PG_IMAGE_REV:-1}
+    # The stock entrypoint starts as root: it owns the data directory and the verifier volume for the postgres user
+    # (CHOWN, DAC_OVERRIDE, FOWNER) and drops to it with gosu (SETUID, SETGID).
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETUID, SETGID]
+    # PostgreSQL holds at most max_files_per_process (1000) per backend, judged against this soft limit.
+    ulimits:
+      nofile:
+        soft: 4096
+        hard: 4096
     pull_policy: build
     build:
       context: ./postgres
@@ -668,6 +996,7 @@ services:
       - PG_JOBS_PASSWORD=${PG_JOBS_PASSWORD:-}
       - PG_MIGRATE_PASSWORD=${PG_MIGRATE_PASSWORD:-}
       - PG_BACKUP_PASSWORD=${PG_BACKUP_PASSWORD:-}
+      - PG_MONITOR_PASSWORD=${PG_MONITOR_PASSWORD:-}   # optional: the metrics exporters' login (profile postgres-metrics)
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - pgbouncer_auth:/pgbouncer-auth
@@ -675,6 +1004,7 @@ services:
       resources:
         limits:
           memory: ${PG_MEMORY_LIMIT:-4G}
+          pids: 4096
         reservations:
           memory: 1G
     networks:
@@ -691,9 +1021,21 @@ services:
 
   # Same image, other command. Transaction pooling with the session reset in postgres/pgbouncer.ini.
   pgbouncer:
+    <<: *hardened
     profiles: ["postgres"]
     image: ${PG_IMAGE:-pipeshubai/postgres}:${PG_MAJOR:-18}-${PG_IMAGE_REV:-1}
     user: postgres
+    # One descriptor per client (max_client_conn 1000 in postgres/pgbouncer.ini) and per server connection: the runtime's
+    # default soft limit of 1024 refuses clients before max_client_conn does.
+    ulimits:
+      nofile:
+        soft: 4096
+        hard: 4096
+    deploy:
+      resources:
+        limits:
+          memory: ${PGBOUNCER_MEMORY_LIMIT:-256M}
+          pids: 512
     # Waits for the verifier file the postgres service writes (pgbouncer reads it only at start). After a role or password change,
     # restart this service so it reads the new file.
     entrypoint: ["sh", "-c"]
@@ -723,6 +1065,7 @@ services:
   # PG_MIGRATE_PASSWORD is not checked here (compose interpolates inactive services, so a required-variable check would break the default
   # config); the postgres service refuses to start with one, so the job fails closed.
   pipeshub-migrate:
+    <<: *hardened
     profiles: ["postgres-migrate"]
     image: ${PIPESHUB_MIGRATE_IMAGE:-pipeshubai/pipeshub-migrate}:${IMAGE_TAG:-latest}
     pull_policy: build
@@ -735,19 +1078,87 @@ services:
       - PG_MIGRATE_LOCK_TIMEOUT_S=${PG_MIGRATE_LOCK_TIMEOUT_S:-600}
       # key-value access by prefix per service role: shadow (logs what enforce would refuse) or enforce; empty keeps the stored mode
       - PG_KV_ACCESS=${PG_KV_ACCESS:-}
+      # maintenance_work_mem (MB) of the session that builds new indexes before the upgrade; empty keeps the server's
+      - PG_INDEX_BUILD_MEMORY_MB=${PG_INDEX_BUILD_MEMORY_MB:-}
     depends_on:
       postgres:
         condition: service_healthy
     restart: "no"
+    deploy:
+      resources:
+        limits:
+          memory: ${PG_MIGRATE_MEMORY_LIMIT:-1G}
+          pids: 512
+    networks:
+      - pipeshub
+
+  # PostgreSQL and PgBouncer metrics for Prometheus — profile: postgres-metrics (opt-in, together with `postgres`). Both exporters log in
+  # as pipeshub_monitor, a member of pg_monitor and nothing else (no privilege on any table of ours), which the postgres service creates
+  # when PG_MONITOR_PASSWORD is set; with it empty they cannot log in. Scrape http://<host>:9187/metrics (server: connections, locks,
+  # long transactions, replication and WAL, dead rows, autovacuum, wraparound) and :9127/metrics (pooler: client waits, pool use).
+  # The ports are published on 127.0.0.1 unless PG_METRICS_BIND says otherwise. sslmode=disable: the server and the pooler of this
+  # file serve no TLS, and the traffic stays on the compose network.
+  postgres-exporter:
+    # A static binary that writes nothing: no capability, no privilege gain, a read-only root.
+    <<: [*hardened, *read-only-root]
+    profiles: ["postgres-metrics"]
+    image: quay.io/prometheuscommunity/postgres-exporter:v0.20.1@sha256:ac5ec343104fae0e2d84a27bb8d69b38430a11910c5382cad85d478d2bab713e
+    command:
+      - --collector.long_running_transactions
+      - --collector.database_wraparound
+      - --collector.stat_activity_autovacuum
+    environment:
+      - DATA_SOURCE_URI=postgres:5432/pipeshub?sslmode=disable
+      - DATA_SOURCE_USER=pipeshub_monitor
+      - DATA_SOURCE_PASS=${PG_MONITOR_PASSWORD:-}
+      - PG_EXPORTER_COLLECTION_TIMEOUT=10s
+    ports:
+      - "${PG_METRICS_BIND:-127.0.0.1}:${PG_EXPORTER_PORT:-9187}:9187"
+    restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+          pids: 256
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - pipeshub
+
+  pgbouncer-exporter:
+    <<: [*hardened, *read-only-root]
+    profiles: ["postgres-metrics"]
+    image: quay.io/prometheuscommunity/pgbouncer-exporter:v0.12.1@sha256:30f31b6c2efdad3647f8182cc7c1a3a19e42bae5d17387694989f969371c230d
+    environment:
+      # the console database of PgBouncer; pipeshub_monitor is its only stats user (postgres/pgbouncer.ini)
+      - PGBOUNCER_EXPORTER_CONNECTION_STRING=postgres://pipeshub_monitor:${PG_MONITOR_PASSWORD:-}@pgbouncer:6432/pgbouncer?sslmode=disable
+    ports:
+      - "${PG_METRICS_BIND:-127.0.0.1}:${PGBOUNCER_EXPORTER_PORT:-9127}:9127"
+    restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 64M
+          pids: 256
+    depends_on:
+      pgbouncer:
+        condition: service_healthy
     networks:
       - pipeshub
 
   qdrant:
-    image: qdrant/qdrant:v1.15
+    <<: *hardened
+    image: qdrant/qdrant:v1.15.5
     stop_grace_period: 120s
+    # The image's entrypoint.sh, as PID 1, exits as soon as it has passed SIGTERM on, and its exit kills qdrant
+    # mid-shutdown (exit 143). Under the init, qdrant finishes its own shutdown and exits 0 (R44-STOP).
+    init: true
+    command: ["./qdrant"]
     restart: always
     environment:
       - QDRANT__STORAGE__ON_DISK_PAYLOAD=true
+      # Empty (an .env from before SEC-D-06): no API key, as before (compatibility); a hardened app refuses it.
       - QDRANT__SERVICE__API_KEY=${QDRANT_API_KEY:-}
       - QDRANT__SERVICE__MAX_REQUEST_SIZE_MB=64
       - QDRANT__SERVICE__GRPC_PORT=6334
@@ -763,6 +1174,7 @@ services:
     deploy:
       resources:
         limits:
+          pids: 4096
           cpus: '4'
           # Search slows sharply once the index outgrows this; size it from
           # docs/deployment/vector-db-sizing.md. QDRANT_MEMORY_LIMIT also tells
@@ -791,8 +1203,9 @@ services:
   # Profile-gated so eval can skip the pull; slim/full include `sandbox` in
   # COMPOSE_PROFILES. depends_on above is required:false for the same reason.
   sandbox-image:
+    <<: [*hardened, *read-only-root]
     profiles: ["sandbox"]
-    image: ${SANDBOX_DOCKER_IMAGE:-pipeshubai/pipeshub-sandbox:${IMAGE_TAG:-latest}}
+    image: ${PIPESHUB_SANDBOX_PINNED:-${SANDBOX_DOCKER_IMAGE:-pipeshubai/pipeshub-sandbox:${IMAGE_TAG:-latest}}}
     build:
       context: ../../deployment/sandbox
       dockerfile: Dockerfile
@@ -800,6 +1213,240 @@ services:
     command: ["sh", "-c", "echo 'sandbox image ready'"]
     networks:
       - pipeshub
+    deploy:
+      resources:
+        limits:
+          memory: 64M
+          pids: 4096
+
+  # Docker API policy proxy: the only container with the Docker socket
+  # (R38IDENT-FU-1, SEC-D-02). The sandbox broker reaches it on sandbox_docker,
+  # an internal network only the two of them are on, with its own credential, and
+  # it admits only the calls the broker makes on this install's sandboxes
+  # (backend/python/app/sandbox/docker_proxy_broker.py): no privileged or host-
+  # mount or host-network create, no exec outside a sandbox. The app reaches it
+  # on sandbox-control (SANDBOX_MODE=docker), held to the legacy profile, with
+  # DOCKER_PROXY_TOKEN; install.sh writes that token only in docker mode, so on
+  # the broker the app holds nothing the proxy accepts. With neither token (an
+  # .env from before them), a compatibility proxy admits the app tokenless, as
+  # before (ADR-OPS-07); a hardened one refuses to start.
+  docker-socket-proxy:
+    <<: [*hardened, *read-only-root]
+    # uid 1000 with the socket's group: install.sh writes DOCKER_GID from the socket's owner group (0 fits Docker
+    # Desktop, whose socket is root:root). Without it (an .env from a release that ran this proxy as root) the
+    # proxy starts as root, takes the socket's group and drops to uid 1000 before serving (ADR-OPS-07), which is
+    # what SETUID/SETGID are for; a process started as 1000 never holds them.
+    user: "${DOCKER_GID:+1000:1000}"
+    cap_add: [SETUID, SETGID]
+    group_add:
+      - "${DOCKER_GID:-0}"
+    profiles: ["sandbox", "sandbox-broker"]
+    image: ${PIPESHUB_APP_PINNED:-${PIPESHUB_IMAGE:-pipeshubai/pipeshub-ai}:${IMAGE_TAG:-latest}}
+    restart: always
+    init: true
+    working_dir: /app/python
+    entrypoint: ["python", "-m", "app.docker_proxy_main"]
+    environment:
+      PIPESHUB_HARDENED: ${PIPESHUB_HARDENED:-false}
+      # install.sh generates them: the broker's, and the app's in docker mode only (SEC-A-04).
+      DOCKER_PROXY_BROKER_TOKEN: ${DOCKER_PROXY_BROKER_TOKEN:-}
+      DOCKER_PROXY_TOKEN: ${DOCKER_PROXY_TOKEN:-}
+      # The broker's scope, read from the variables the broker reads: whose sandboxes, volumes and networks it is.
+      SANDBOX_INSTALL_ID: ${SANDBOX_INSTALL_ID:-${COMPOSE_PROJECT_NAME}}
+      SANDBOX_DATA_VOLUME: ${SANDBOX_DATA_VOLUME:-pipeshub_sandbox_data}
+      SANDBOX_EGRESS_NETWORK: ${SANDBOX_EGRESS_NETWORK:-pipeshub_sandbox_egress}
+      SANDBOX_EGRESS_PROXY_CONTAINER: ${COMPOSE_PROJECT_NAME}-egress-proxy-1
+      SANDBOX_EGRESS_SUBNETS: ${SANDBOX_EGRESS_SUBNETS:-10.213.0.0/16}
+      SANDBOX_OPEN_EGRESS_SUBNETS: ${SANDBOX_OPEN_EGRESS_SUBNETS:-10.212.0.0/16}
+      # The only image the egress firewall's root helper may run: the broker's pinned sandbox image (R44STOP-FU-3).
+      SANDBOX_DOCKER_IMAGE: ${PIPESHUB_SANDBOX_PINNED:-${SANDBOX_DOCKER_IMAGE:-pipeshubai/pipeshub-sandbox:${IMAGE_TAG:-latest}}}
+      # Same value as the app's, so the reaper never removes a run still in time.
+      SANDBOX_MAX_RUN_TIMEOUT_S: ${SANDBOX_MAX_RUN_TIMEOUT_S:-300}
+      # All interfaces of this container, which is only on the internal
+      # sandbox networks (the proxy itself defaults to loopback).
+      DOCKER_PROXY_HOST: 0.0.0.0
+      # Names this stack on the containers it creates. Blank: the Compose project (compose:<project>).
+      DOCKER_PROXY_INSTANCE: ${DOCKER_PROXY_INSTANCE:-compose:${COMPOSE_PROJECT_NAME}}
+      # Also remove leftover sandbox containers that carry no stack name (from a
+      # proxy before this one). Off: another stack on the daemon may still run one.
+      DOCKER_PROXY_REAP_UNLABELED: ${DOCKER_PROXY_REAP_UNLABELED:-false}
+      PYTHONDONTWRITEBYTECODE: "1"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - sandbox_docker
+      - sandbox-control
+    logging:
+      driver: local
+      options:
+        max-size: "${LOG_MAX_SIZE:-20m}"
+        max-file: "${LOG_MAX_FILE:-15}"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:2375/_ping', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          pids: 256
+
+  # Sandbox broker: starts every sandbox. The app and the harness worker reach it
+  # at sandbox-broker:8095 with the worker credential; it attaches the egress
+  # proxy to the sandbox's own network. No published port, and no Docker socket:
+  # docker-socket-proxy holds that. Sandboxes it leaves running on restart are
+  # adopted by key or reaped.
+  sandbox-broker:
+    <<: [*hardened, *read-only-root]
+    # The entrypoint below bypasses the image's privilege drop, so the service
+    # declares its user itself (SEC-D-02). It holds no Docker socket (R38IDENT-FU-1):
+    # it reaches the daemon only through docker-socket-proxy, held to the broker's profile.
+    user: "1000:1000"
+    profiles: ["sandbox-broker"]
+    image: ${PIPESHUB_APP_PINNED:-${PIPESHUB_IMAGE:-pipeshubai/pipeshub-ai}:${IMAGE_TAG:-latest}}
+    restart: always
+    init: true
+    stop_grace_period: 30s
+    working_dir: /app/python
+    entrypoint: ["python", "-m", "app.sandbox_broker_main"]
+    environment:
+      <<: *sandbox-plane-env
+      PIPESHUB_COMPONENT: sandbox-broker
+      # install.sh generates it; pipeshub-ai holds the same value to seal for the broker.
+      PIPESHUB_COMPONENT_KEY: ${SANDBOX_BROKER_COMPONENT_KEY:-}
+      SANDBOX_DOCKER_IMAGE: ${PIPESHUB_SANDBOX_PINNED:-${SANDBOX_DOCKER_IMAGE:-pipeshubai/pipeshub-sandbox:${IMAGE_TAG:-latest}}}
+      SANDBOX_EGRESS_NETWORK: ${SANDBOX_EGRESS_NETWORK:-pipeshub_sandbox_egress}
+      # Private ranges a sandbox with open egress (SANDBOX_ALLOW_NETWORK) may still reach, e.g. a pip mirror.
+      SANDBOX_EGRESS_ALLOW_CIDRS: ${SANDBOX_EGRESS_ALLOW_CIDRS:-}
+      # Docker container name of egress-proxy below: the broker connects it to
+      # each sandbox's network, so both must use this one daemon.
+      SANDBOX_EGRESS_PROXY_CONTAINER: ${COMPOSE_PROJECT_NAME}-egress-proxy-1
+      # Persistent sandbox folders sit under this install's id on the shared
+      # data volume; erasure and reaping never leave it.
+      SANDBOX_INSTALL_ID: ${SANDBOX_INSTALL_ID:-${COMPOSE_PROJECT_NAME}}
+      # The daemon volume holding sessions' workspaces and other persistent sandbox folders; size its disk for them.
+      SANDBOX_DATA_VOLUME: ${SANDBOX_DATA_VOLUME:-pipeshub_sandbox_data}
+      # What a session's persistent workspace may hold on this host's disk, in MB.
+      SANDBOX_WORKSPACE_QUOTA_MB: ${SANDBOX_WORKSPACE_QUOTA_MB:-4096}
+      # The disk under the daemon's volumes (install.sh finds it) and each sandbox's write cap on it, MiB/s: how far a
+      # workspace can run past its quota between two measures is then this rate times ten seconds (SEC-A-03).
+      SANDBOX_DATA_DEVICE: ${SANDBOX_DATA_DEVICE:-}
+      SANDBOX_WRITE_MBPS: ${SANDBOX_WRITE_MBPS:-32}
+      # Live sandboxes on this install, every broker's counted; 0 is no ceiling.
+      SANDBOX_MAX_TOTAL: ${SANDBOX_MAX_TOTAL:-50}
+      # A runtime the daemon has that the broker must not offer (runsc); engines then follow the gVisor floor.
+      SANDBOX_WITHHOLD_RUNTIMES: ${SANDBOX_WITHHOLD_RUNTIMES:-}
+      PIPESHUB_ENGINES_WITHOUT_GVISOR: ${PIPESHUB_ENGINES_WITHOUT_GVISOR:-false}
+      # The same dev switch as pipeshub-ai's: with it, the broker also counts an unsigned ACP agent profile
+      # (acp_agents.json) as installed, as the worker does, so both agree on which ACP engines can run.
+      PIPESHUB_ACP_PROFILES_UNSIGNED: ${PIPESHUB_ACP_PROFILES_UNSIGNED:-false}
+      # pipeshub-ai's engine-image registry: the broker allows only the names the worker asks for.
+      HARNESS_ENGINE_IMAGE_REGISTRY: ${HARNESS_ENGINE_IMAGE_REGISTRY:-}
+      # The Docker API, through the policy proxy, with the broker's own credential (install.sh generates it).
+      DOCKER_HOST: tcp://docker-socket-proxy:2375
+      DOCKER_PROXY_BROKER_TOKEN: ${DOCKER_PROXY_BROKER_TOKEN:-}
+    volumes:
+      - etcd_tls_sandbox_broker:/run/pipeshub/etcd-tls:ro
+    networks:
+      - pipeshub
+      - sandbox_plane
+      - sandbox_docker
+    depends_on:
+      docker-socket-proxy:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      etcd:
+        condition: service_healthy
+        required: false
+    logging:
+      driver: local
+      options:
+        max-size: "${LOG_MAX_SIZE:-20m}"
+        max-file: "${LOG_MAX_FILE:-15}"
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8095/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: ${SANDBOX_BROKER_MEMORY_LIMIT:-512M}
+          pids: 4096
+
+  # Egress proxy: the only way out of a sandbox with an allowlist. Sandboxes
+  # reach it on their own networks (the broker attaches it); it forwards only
+  # to the gateways, swapping each sandbox's placeholder for a run-bound
+  # token. Its networks are internal: no route off the host, and nothing but
+  # the gateways' host, the broker and the KV store to talk to (C-12).
+  egress-proxy:
+    <<: [*hardened, *read-only-root]
+    # It parses sandbox-driven HTTP and TLS first, so it holds the least of any
+    # service: uid 1000, no capabilities, a read-only root (SEC-D-02).
+    user: "1000:1000"
+    profiles: ["sandbox-broker"]
+    image: ${PIPESHUB_APP_PINNED:-${PIPESHUB_IMAGE:-pipeshubai/pipeshub-ai}:${IMAGE_TAG:-latest}}
+    restart: always
+    init: true
+    stop_grace_period: 30s
+    working_dir: /app/python
+    entrypoint: ["python", "-m", "app.egress_proxy_main"]
+    environment:
+      <<: *sandbox-plane-env
+      PIPESHUB_COMPONENT: egress-proxy
+      # install.sh generates it; pipeshub-ai holds the same value to seal for the proxy.
+      PIPESHUB_COMPONENT_KEY: ${EGRESS_PROXY_COMPONENT_KEY:-}
+      EGRESS_BLOCKED_CIDRS: ${EGRESS_BLOCKED_CIDRS:-}
+      # G-21: the deployment's forward proxy and private host:port entries (ADVANCED_DEPLOYMENT.md, "Forward proxy
+      # and private hosts"). Both need a network with a route off the host, as docker-compose.egress-tunnels.yml adds.
+      EGRESS_UPSTREAM_PROXY: ${EGRESS_UPSTREAM_PROXY:-}
+      EGRESS_UPSTREAM_PROXY_AUTH: ${EGRESS_UPSTREAM_PROXY_AUTH:-}
+      EGRESS_UPSTREAM_NO_PROXY: ${EGRESS_UPSTREAM_NO_PROXY:-}
+      EGRESS_PRIVATE_ALLOW: ${EGRESS_PRIVATE_ALLOW:-}
+      # C6.12: per-run egress volume alerts and the optional hard cap (docs/agent-harness-v2/FLAGS.md); blank keeps
+      # the defaults, and EGRESS_RUN_MAX_MB is no cap unless set.
+      EGRESS_VOLUME_ALERT_UP_MB: ${EGRESS_VOLUME_ALERT_UP_MB:-}
+      EGRESS_VOLUME_ALERT_DOWN_MB: ${EGRESS_VOLUME_ALERT_DOWN_MB:-}
+      EGRESS_VOLUME_BASELINE_FACTOR: ${EGRESS_VOLUME_BASELINE_FACTOR:-}
+      EGRESS_VOLUME_BASELINE_MIN_RUNS: ${EGRESS_VOLUME_BASELINE_MIN_RUNS:-}
+      EGRESS_VOLUME_BASELINE_FLOOR_MB: ${EGRESS_VOLUME_BASELINE_FLOOR_MB:-}
+      EGRESS_RUN_MAX_MB: ${EGRESS_RUN_MAX_MB:-}
+      # Node's state API on sandbox_plane: run-bound tokens and the operator egress stops it polls.
+      AGENT_HARNESS_STATE_URL: http://harness-state:3002
+      # pipeshub-ai's restart-time floor: while true no harness sandbox is bound or restored.
+      AGENT_HARNESS_KILL_SWITCH: ${AGENT_HARNESS_KILL_SWITCH:-false}
+      # The control plane (8098) listens only on its address on sandbox_plane,
+      # the network the broker reaches it on: the alias below exists there and
+      # nowhere else, so no per-sandbox network the broker attaches can open it.
+      EGRESS_CONTROL_HOST: egress-proxy-control
+    volumes:
+      - etcd_tls_egress_proxy:/run/pipeshub/etcd-tls:ro
+    networks:
+      sandbox_plane:
+        aliases:
+          - egress-proxy-control
+      sandbox_kv: {}
+    depends_on:
+      redis:
+        condition: service_healthy
+      etcd:
+        condition: service_healthy
+        required: false
+    logging:
+      driver: local
+      options:
+        max-size: "${LOG_MAX_SIZE:-20m}"
+        max-file: "${LOG_MAX_FILE:-15}"
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://egress-proxy-control:8098/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
 
   # ---------------------------------------------------------------------------
   # Web search and page reading — profiles: search-searxng, fetch-crawl4ai
@@ -808,7 +1455,19 @@ services:
   # databases. The app reaches them through the gateway as http://searxng:8080 and
   # http://crawl4ai:11235.
   # ---------------------------------------------------------------------------
+    deploy:
+      resources:
+        limits:
+          memory: ${EGRESS_PROXY_MEMORY_LIMIT:-512M}
+          pids: 4096
   web-readers-gateway:
+    <<: [*hardened, *read-only-root]
+    # nginx as its own user: it listens above 1024 and needs no capability.
+    user: "101:101"
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+      - /var/cache/nginx:size=16m,uid=101,gid=101
+      - /var/run:size=1m,uid=101,gid=101
     profiles: ["search-searxng", "fetch-crawl4ai"]
     image: nginx:1.27.5-alpine
     restart: always
@@ -818,8 +1477,14 @@ services:
       web-gateway:
         aliases: [searxng, crawl4ai]
       web-readers: {}
+    deploy:
+      resources:
+        limits:
+          memory: 64M
+          pids: 4096
 
   searxng:
+    <<: *hardened
     profiles: ["search-searxng"]
     image: searxng/searxng:2026.9.30-a9d990033
     restart: always
@@ -832,8 +1497,14 @@ services:
     networks:
       web-readers:
         aliases: [searxng-reader]
+    deploy:
+      resources:
+        limits:
+          memory: ${SEARXNG_MEMORY_LIMIT:-1G}
+          pids: 4096
 
   crawl4ai:
+    <<: *hardened
     profiles: ["fetch-crawl4ai"]
     # 0.9.4 or later: earlier servers let anyone who can reach them run code or reach internal addresses.
     image: unclecode/crawl4ai:0.9.4
@@ -850,9 +1521,19 @@ services:
   # ---------------------------------------------------------------------------
   # Graph DB — profile: graph-arango  (set DATA_STORE=arangodb)
   # ---------------------------------------------------------------------------
+    deploy:
+      resources:
+        limits:
+          memory: ${CRAWL4AI_MEMORY_LIMIT:-4G}
+          pids: 4096
   arango:
+    <<: *hardened
     profiles: ["graph-arango"]
     image: arangodb:3.12.4
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
     restart: always
     environment:
       - ARANGO_ROOT_PASSWORD=${ARANGO_PASSWORD:-}
@@ -861,17 +1542,35 @@ services:
     networks:
       - pipeshub
     healthcheck:
+      # arangosh is a full JavaScript shell; same budget as mongodb's check.
       test: ["CMD-SHELL", "arangosh --server.endpoint tcp://localhost:8529 --server.password '${ARANGO_PASSWORD:-}' --javascript.execute-string 'db._version()' || exit 1"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
+      interval: 15s
+      timeout: 10s
+      retries: 4
 
   # ---------------------------------------------------------------------------
   # Graph DB — profile: graph-neo4j  (set DATA_STORE=neo4j)
   # ---------------------------------------------------------------------------
+    deploy:
+      resources:
+        limits:
+          memory: ${ARANGO_MEMORY_LIMIT:-4G}
+          pids: 4096
   neo4j:
+    <<: *hardened
+    # Its entrypoint, as root, hands /data, /logs and the plugin folder to the
+    # neo4j user (CHOWN, DAC_OVERRIDE, FOWNER) and drops to it (SETUID, SETGID).
+    # KILL: the image's tini stays root as PID 1 and forwards the stop signal to
+    # the neo4j user's process; without it neo4j was killed, not shut down.
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETUID, SETGID, KILL]
     profiles: ["graph-neo4j"]
     image: neo4j:5.26.0
+    # A clean shutdown checkpoints the store; it took 11 s on an idle database, past Compose's 10 s default.
+    stop_grace_period: 120s
+    ulimits:
+      nofile:
+        soft: 60000
+        hard: 60000
     restart: always
     environment:
       - NEO4J_AUTH=neo4j/${NEO4J_PASSWORD:-}
@@ -890,8 +1589,10 @@ services:
     deploy:
       resources:
         limits:
+          pids: 4096
           cpus: '4'
-          memory: ${NEO4J_MEMORY_LIMIT:-3G}
+          # 2G heap + 1G page cache still needs JVM/native headroom.
+          memory: ${NEO4J_MEMORY_LIMIT:-4G}
         reservations:
           cpus: '2'
           memory: ${NEO4J_MEMORY_RESERVATION:-2G}
@@ -906,25 +1607,71 @@ services:
   # KV store — profile: kv-etcd  (set KV_STORE_TYPE=etcd)
   # When KV_STORE_TYPE=redis (default), no extra container is needed.
   # ---------------------------------------------------------------------------
+  # Issues etcd's certificates (SEC-D-06): a CA kept in its own volume, etcd's server certificate, and one client
+  # certificate per component, each in a volume only that component mounts. It runs on every start, keeps what is
+  # current and renews what nears expiry. Root only to give each consumer its own files (CHOWN); no network.
+  etcd-tls:
+    <<: [*hardened, *read-only-root]
+    profiles: ["kv-etcd"]
+    image: ${PIPESHUB_IMAGE:-pipeshubai/pipeshub-ai}:${IMAGE_TAG:-latest}
+    restart: "no"
+    user: "0:0"
+    cap_add: [CHOWN]
+    network_mode: none
+    working_dir: /app/python
+    entrypoint: ["python", "-m", "app.utils.internal_tls", "/tls"]
+    environment:
+      # etcd runs as root; the app, the broker and the proxy as uid 1000.
+      ETCD_TLS_SERVER_OWNER: "0:0"
+      ETCD_TLS_CLIENT_OWNER: "1000:1000"
+    volumes:
+      - etcd_tls_ca:/tls/ca
+      - etcd_tls_server:/tls/server
+      - etcd_tls_pipeshub_ai:/tls/pipeshub-ai
+      - etcd_tls_egress_proxy:/tls/egress-proxy
+      - etcd_tls_sandbox_broker:/tls/sandbox-broker
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          pids: 256
+
   etcd:
+    <<: [*hardened, *read-only-root]
     profiles: ["kv-etcd"]
     image: quay.io/coreos/etcd:v3.5.17
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
     restart: always
+    depends_on:
+      etcd-tls:
+        condition: service_completed_successfully
+    # TLS only, and only for a client with a certificate etcd-tls issued (SEC-D-06): a container on pipeshub or
+    # sandbox_kv without one cannot read or write a key. The peer port serves no other member, so it listens on
+    # loopback only.
     command: >
       etcd
       --name etcd-node
       --data-dir /etcd-data
-      --listen-client-urls http://0.0.0.0:2379
-      --advertise-client-urls http://etcd:2379
-      --listen-peer-urls http://0.0.0.0:2380
+      --listen-client-urls https://0.0.0.0:2379
+      --advertise-client-urls https://etcd:2379
+      --client-cert-auth
+      --trusted-ca-file /tls/ca.crt
+      --cert-file /tls/tls.crt
+      --key-file /tls/tls.key
+      --listen-peer-urls http://127.0.0.1:2380
       --initial-advertise-peer-urls http://etcd:2380
       --initial-cluster etcd-node=http://etcd:2380
     volumes:
       - etcd_data:/etcd-data
+      - etcd_tls_server:/tls:ro
     networks:
       - pipeshub
+      - sandbox_kv
     healthcheck:
-      test: ["CMD", "etcdctl", "endpoint", "health"]
+      test: ["CMD", "etcdctl", "--endpoints=https://localhost:2379", "--cacert=/tls/ca.crt", "--cert=/tls/tls.crt", "--key=/tls/tls.key", "endpoint", "health"]
       interval: 5s
       timeout: 3s
       retries: 5
@@ -933,9 +1680,19 @@ services:
   # Message broker — profile: broker-kafka  (set MESSAGE_BROKER=kafka)
   # When MESSAGE_BROKER=redis (default), Redis Streams are used; no extra containers.
   # ---------------------------------------------------------------------------
+    deploy:
+      resources:
+        limits:
+          memory: ${ETCD_MEMORY_LIMIT:-1G}
+          pids: 4096
   zookeeper:
+    <<: *hardened
     profiles: ["broker-kafka"]
     image: confluentinc/cp-zookeeper:7.9.0
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
     restart: always
     environment:
       - ZOOKEEPER_CLIENT_PORT=2181
@@ -943,28 +1700,82 @@ services:
     volumes:
       - zookeeper_data:/var/lib/zookeeper/data
       - zookeeper_log:/var/lib/zookeeper/log
+    # Only Kafka and kafka-init reach ZooKeeper (SEC-D-06): it holds the SCRAM credentials and takes no login.
     networks:
-      - pipeshub
+      - broker_zk
     healthcheck:
       test: ["CMD-SHELL", "echo srvr | nc localhost 2181 || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: ${ZOOKEEPER_MEMORY_LIMIT:-1G}
+          pids: 4096
 
-  kafka-1:
+  # Writes the SCRAM-SHA-512 login Kafka and its clients use into ZooKeeper before the broker starts (SEC-D-06).
+  # Idempotent: it runs on every start, so changing KAFKA_PASSWORD and restarting rotates it.
+  kafka-init:
+    <<: *hardened
     profiles: ["broker-kafka"]
     image: confluentinc/cp-kafka:7.9.0
-    restart: always
+    ulimits:
+      nofile:
+        soft: 100000
+        hard: 100000
+    restart: "no"
     depends_on:
       zookeeper:
         condition: service_healthy
     environment:
+      - KAFKA_SCRAM_USERNAME=${KAFKA_USERNAME:-pipeshub}
+      - KAFKA_SCRAM_PASSWORD=${KAFKA_PASSWORD:-}
+    entrypoint: ["bash", "-c"]
+    # Without KAFKA_PASSWORD (an .env from before SEC-D-06) there is no login to write: the broker runs without SASL.
+    command:
+      - >-
+        if [ -z "$$KAFKA_SCRAM_PASSWORD" ]; then echo "WARNING: KAFKA_PASSWORD is empty: no SCRAM login written; Kafka runs without SASL, as before (compatibility)." >&2; exit 0; fi;
+        exec kafka-configs --zookeeper zookeeper:2181 --alter --entity-type users
+        --entity-name "$$KAFKA_SCRAM_USERNAME"
+        --add-config "SCRAM-SHA-512=[iterations=8192,password=$$KAFKA_SCRAM_PASSWORD]"
+    networks:
+      - broker_zk
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          pids: 1024
+
+  kafka-1:
+    <<: *hardened
+    profiles: ["broker-kafka"]
+    image: confluentinc/cp-kafka:7.9.0
+    ulimits:
+      nofile:
+        soft: 100000
+        hard: 100000
+    restart: always
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+    environment:
       - KAFKA_BROKER_ID=1
       - KAFKA_ZOOKEEPER_CONNECT=zookeeper:2181
-      - KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=ACCESS:PLAINTEXT
+      # One SASL/SCRAM listener for clients and the broker itself (SEC-D-06): nothing on the network speaks to Kafka
+      # without the login. Internal TLS is a follow-up (R41OPS-FU-1). Without KAFKA_PASSWORD (an .env from before
+      # it) the entrypoint below drops the SASL settings and the listener is PLAINTEXT, as before (compatibility).
+      # Not KAFKA_*: cp-kafka writes every KAFKA_ variable into server.properties.
+      - PXH_KAFKA_SASL_LOGIN=${KAFKA_PASSWORD:+true}
+      - KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=ACCESS:SASL_PLAINTEXT
       - KAFKA_LISTENERS=ACCESS://0.0.0.0:9092
       - KAFKA_ADVERTISED_LISTENERS=ACCESS://kafka-1:9092
       - KAFKA_INTER_BROKER_LISTENER_NAME=ACCESS
+      - KAFKA_SASL_ENABLED_MECHANISMS=SCRAM-SHA-512
+      - KAFKA_SASL_MECHANISM_INTER_BROKER_PROTOCOL=SCRAM-SHA-512
+      - KAFKA_LISTENER_NAME_ACCESS_SCRAM___SHA___512_SASL_JAAS_CONFIG=org.apache.kafka.common.security.scram.ScramLoginModule required username="${KAFKA_USERNAME:-pipeshub}" password="${KAFKA_PASSWORD:-}";
       - KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR=1
       - KAFKA_TRANSACTION_STATE_LOG_MIN_ISR=1
       - KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR=1
@@ -976,19 +1787,39 @@ services:
       - KAFKA_LOG_RETENTION_HOURS=24
       - KAFKA_NUM_NETWORK_THREADS=3
       - KAFKA_NUM_IO_THREADS=8
+    entrypoint:
+      - bash
+      - -c
+      - >-
+        if [ -z "$$PXH_KAFKA_SASL_LOGIN" ]; then
+        echo "WARNING: KAFKA_PASSWORD is empty: Kafka accepts clients without a login, as before (compatibility). Run ./install.sh --upgrade to generate one." >&2;
+        export KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=ACCESS:PLAINTEXT;
+        unset KAFKA_SASL_ENABLED_MECHANISMS KAFKA_SASL_MECHANISM_INTER_BROKER_PROTOCOL KAFKA_LISTENER_NAME_ACCESS_SCRAM___SHA___512_SASL_JAAS_CONFIG;
+        fi;
+        exec /etc/confluent/docker/run
     volumes:
       - kafka_data:/var/lib/kafka/data
     networks:
       - pipeshub
+      - broker_zk
     healthcheck:
-      test: ["CMD-SHELL", "kafka-broker-api-versions --bootstrap-server localhost:9092 || exit 1"]
+      # The broker's own login, from its JAAS setting, so the check authenticates like every client.
+      test: ["CMD-SHELL", "if [ -z \"$$PXH_KAFKA_SASL_LOGIN\" ]; then exec kafka-broker-api-versions --bootstrap-server localhost:9092 >/dev/null; fi; printf 'security.protocol=SASL_PLAINTEXT\\nsasl.mechanism=SCRAM-SHA-512\\nsasl.jaas.config=%s\\n' \"$$KAFKA_LISTENER_NAME_ACCESS_SCRAM___SHA___512_SASL_JAAS_CONFIG\" > /tmp/healthcheck.properties && kafka-broker-api-versions --bootstrap-server localhost:9092 --command-config /tmp/healthcheck.properties >/dev/null || exit 1"]
       interval: 10s
       timeout: 10s
       retries: 5
       start_period: 40s
+    deploy:
+      resources:
+        limits:
+          memory: ${KAFKA_MEMORY_LIMIT:-3G}
+          pids: 4096
 
 volumes:
   mongodb_data:
+    driver: local
+  # MongoDB replica-set internal-auth key. Back it up with mongodb_data.
+  mongodb_replset_key:
     driver: local
   redis_data:
     driver: local
@@ -1015,6 +1846,17 @@ volumes:
   # KV store volume (only populated when kv-etcd profile is active)
   etcd_data:
     driver: local
+  # etcd's TLS material (SEC-D-06): the CA, etcd's own, and one per client, so each mounts only its own.
+  etcd_tls_ca:
+    driver: local
+  etcd_tls_server:
+    driver: local
+  etcd_tls_pipeshub_ai:
+    driver: local
+  etcd_tls_egress_proxy:
+    driver: local
+  etcd_tls_sandbox_broker:
+    driver: local
   # Broker volumes (only populated when broker-kafka profile is active)
   zookeeper_data:
     driver: local
@@ -1026,9 +1868,24 @@ volumes:
 networks:
   pipeshub:
     driver: bridge
-  # App <-> docker-socket-proxy only. Internal: no route out, and nothing else
-  # can reach the proxy.
+  # The app (gateway names), the sandbox broker and the egress proxy.
+  sandbox_plane:
+    driver: bridge
+    internal: true
+  # The sandbox broker and the Docker API policy proxy only (R38IDENT-FU-1).
+  sandbox_docker:
+    driver: bridge
+    internal: true
+  # The app and the Docker API policy proxy only (SANDBOX_MODE=docker). Internal: no route out.
   sandbox-control:
+    driver: bridge
+    internal: true
+  # The KV store, for the egress proxy's credential and endpoint reads.
+  sandbox_kv:
+    driver: bridge
+    internal: true
+  # Kafka, kafka-init and ZooKeeper only (SEC-D-06).
+  broker_zk:
     driver: bridge
     internal: true
   # App <-> web-readers-gateway only. Internal: no route out.

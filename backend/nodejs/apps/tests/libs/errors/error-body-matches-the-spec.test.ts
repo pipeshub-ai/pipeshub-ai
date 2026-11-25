@@ -6,7 +6,7 @@ import { join } from 'path'
 import yaml from 'js-yaml'
 import type { NextFunction, Request, Response } from 'express'
 import { ErrorMiddleware } from '../../../src/libs/middlewares/error.middleware'
-import { UnauthorizedError } from '../../../src/libs/errors/http.errors'
+import { BadRequestError, UnauthorizedError } from '../../../src/libs/errors/http.errors'
 
 /**
  * What the middleware sends must be what the published spec promises.
@@ -155,5 +155,16 @@ describe('the error body matches the published spec', () => {
   it('still names the request when one was assigned', () => {
     const sent = bodyFromMiddleware(new UnauthorizedError('No token provided'), 'req-123')
     expect(sent.requestId).to.equal('req-123')
+  })
+
+  // H3 RL-9: the routes that relay a Python refusal answer with ErrorResponse.
+  it('allows the reasonCode a relayed refusal carries, as a string, in ErrorResponse', () => {
+    const shared = errorPayloadSchemas().find(({ where }) => where === '.components.schemas.ErrorResponse.properties.error')
+    expect(shared, 'ErrorResponse.error').to.not.equal(undefined)
+    const body = bodyFromMiddleware(new BadRequestError('not an image reference', { reasonCode: 'runner_spec_invalid' }))
+    expect(body.reasonCode).to.equal('runner_spec_invalid')
+    const declared = shared?.schema.properties ?? {}
+    expect(Object.keys(body).filter((key) => !(key in declared))).to.deep.equal([])
+    expect(declared.reasonCode?.type).to.equal('string')
   })
 })

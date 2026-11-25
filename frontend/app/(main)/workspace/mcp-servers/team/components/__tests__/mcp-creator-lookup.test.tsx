@@ -16,9 +16,13 @@ vi.mock('@/lib/store/toast-store', () => ({ toast: { success: vi.fn(), error: vi
 vi.mock('@/lib/api', () => ({ apiClient: { get: vi.fn(), post: vi.fn() }, isProcessedError: () => false }));
 const readOnly = vi.hoisted(() => ({ value: false }));
 vi.mock('@/config', () => ({
+  EnterpriseFeatureNotice: () => null,
   isMcpInstanceReadOnly: () => readOnly.value,
   McpInheritedBadge: () => null,
+  McpInstanceBadges: () => null,
   McpInheritedCallout: () => null,
+  useMcpInstanceAdminTab: () => null,
+  McpInstanceConfigExtras: () => null,
   McpManageAccess: () => null,
 }));
 vi.mock('@radix-ui/themes', async (importOriginal) => ({
@@ -26,7 +30,11 @@ vi.mock('@radix-ui/themes', async (importOriginal) => ({
   Avatar: ({ src }: { src?: string }) => <span data-testid="avatar" data-src={src ?? ''} />,
 }));
 vi.mock('../../../api', () => ({
-  McpServersApi: { getOAuthConfig: vi.fn(async () => ({ configured: false })), discoverOAuthMetadata: vi.fn(async () => ({})) },
+  McpServersApi: {
+    getOAuthConfig: vi.fn(async () => ({ configured: false })),
+    discoverOAuthMetadata: vi.fn(async () => ({})),
+    getInstanceTools: vi.fn(async () => ({ tools: [] })),
+  },
 }));
 vi.mock('../../../components', () => ({
   McpDisabledCallout: () => null,
@@ -38,7 +46,9 @@ vi.mock('../../../../components/workspace-right-panel', () => ({
   WorkspaceRightPanel: ({ open, headerActions }: { open: boolean; headerActions?: React.ReactNode }) =>
     open ? <div>{headerActions}</div> : null,
 }));
-vi.mock('../../../../components', () => ({
+vi.mock('../../../../components', async () => ({
+  // The real wrapper: the panel's fields read the mocked FormField's ids through it.
+  FormFieldTextField: (await vi.importActual<typeof import('../../../../components/form-field')>('../../../../components/form-field')).FormFieldTextField,
   FormField: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
   SelectDropdown: () => null,
   TagInput: () => null,
@@ -62,8 +72,7 @@ vi.mock('@/lib/hooks/use-user-directory-entry', () => ({
   },
 }));
 
-import { McpInstanceRow } from '../mcp-instance-row';
-import { McpInstanceConfigPanel } from '../mcp-instance-config-panel';
+import { McpServerPage } from '../../../components/mcp-server-page';
 
 const CREATOR = '507f1f77bcf86cd799439011';
 const ADA: User = {
@@ -79,43 +88,22 @@ function server(overrides: Partial<McpMyServerEntry> = {}): McpMyServerEntry {
   } as McpMyServerEntry;
 }
 
-function row(instance = server()) {
+function page(instance = server()) {
   const noop = vi.fn();
-  return render(
+  render(
     <Theme>
-      <McpInstanceRow
+      <McpServerPage
         instance={instance}
+        templates={[]}
+        isAdmin
+        rulesEditable={false}
         isBusy={false}
-        onManage={noop}
-        onDelete={noop}
+        onBack={noop}
         onAuthenticate={noop}
         onReauthenticate={noop}
         onDisconnect={noop}
-        onDiscoverTools={noop}
+        onDelete={noop}
       />
-    </Theme>,
-  );
-}
-
-type PanelProps = React.ComponentProps<typeof McpInstanceConfigPanel>;
-function panel(open: boolean) {
-  const editingInstance = server() as unknown as NonNullable<PanelProps['state']['editingInstance']>;
-  const props = {
-    state: { open, mode: 'edit', editingInstance, prefillTemplate: null },
-    templates: [],
-    instances: [],
-    customStdioAllowed: true,
-    onOpenChange: vi.fn(),
-    onSaved: vi.fn(),
-    onRequestDelete: vi.fn(),
-    busyInstanceId: null,
-    onAuthenticate: vi.fn(),
-    onReauthenticate: vi.fn(),
-    onDisconnect: vi.fn(),
-  } as PanelProps;
-  return render(
-    <Theme>
-      <McpInstanceConfigPanel {...props} />
     </Theme>,
   );
 }
@@ -127,48 +115,27 @@ beforeEach(() => {
 });
 afterEach(() => cleanup());
 
-describe('McpInstanceRow: created by', () => {
-  it('shows the creator name and picture', () => {
-    row();
-
-    expect(screen.getByText('Ada Lovelace')).toBeTruthy();
-    expect(screen.getByTestId('avatar').getAttribute('data-src')).toBe(ADA.profilePicture);
-  });
-
-  it('shows the raw id when the directory has no name for the creator', () => {
-    directory.user = null;
-    row();
-
-    expect(screen.getByText(CREATOR)).toBeTruthy();
-  });
-
-  it('does not look the creator up for a read-only server', () => {
-    readOnly.value = true;
-    row();
-
-    expect(directory.asked.every((id) => id === null)).toBe(true);
-    expect(screen.queryByText('Ada Lovelace')).toBeNull();
-  });
-});
-
-describe('McpInstanceConfigPanel: added by', () => {
-  it('names the creator in the menu while the panel is open', () => {
-    panel(true);
+describe('McpServerPage: added by', () => {
+  it('names the creator in the menu', () => {
+    page();
 
     expect(screen.getByText('workspace.mcpServers.configPanel.menu.addedBy: Ada Lovelace')).toBeTruthy();
     expect(directory.asked).toContain(CREATOR);
   });
 
-  it('does not look the creator up while the panel is closed', () => {
-    panel(false);
+  it('does not look the creator up for a read-only server', () => {
+    readOnly.value = true;
+    page();
 
     expect(directory.asked.every((id) => id === null)).toBe(true);
+    expect(screen.queryByText(/configPanel\.menu\.addedBy/)).toBeNull();
   });
 
   it('leaves "Added by" out when the creator is unknown or the lookup failed', () => {
     directory.user = null;
-    panel(true);
+    page();
 
+    expect(screen.getByText('workspace.mcpServers.configPanel.menu.remove')).toBeTruthy();
     expect(screen.queryByText(/configPanel\.menu\.addedBy/)).toBeNull();
   });
 });

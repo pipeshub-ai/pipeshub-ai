@@ -34,6 +34,8 @@ from app.modules.indexing.record_progress import (
 )
 from app.services.distributed.interface import IDistributedLeaseManager, IRetryTracker
 from app.services.messaging import consumer_concurrency as concurrency
+from app.services.messaging import record_budget
+from app.services.messaging.backpressure import BackpressureEpisode
 from app.services.messaging.config import (
     IndexingEvent,
     IndexingMessageHandler,
@@ -106,7 +108,7 @@ from app.utils import error_class
 from app.utils import indexing_timing as timing
 from app.utils.cpu_offload import offload_if_large
 from app.utils.error_class import log_failure, logged_level, quotes_content
-from app.utils.logging_fields import log_fields, log_once
+from app.utils.logging_fields import log_fields
 from app.utils.loop_lag_monitor import LoopLagMonitor, loop_lag_monitor_from_env
 from app.utils.request_context import (
     context_from_envelope,
@@ -139,11 +141,10 @@ _MAIN_LOOP_OP_TIMEOUT = 5.0
 _DELAY_POLL_INTERVAL_SECONDS = 1.0
 # The longest the fair loop waits for a finished delivery before looking again, while
 # buffered work waits for capacity; it bounds what no finish signals (a retry coming due).
+# Also the block of a read that takes only some lanes (either loop): the others may hold work.
 _BUSY_BLOCK_MS = 50
-# The longest the read phase waits for a finish while backpressure holds reads.
+# The longest either loop waits for a finish while backpressure holds reads.
 _BACKPRESSURE_WAIT_SECONDS = 0.5
-# Waking on every finish makes short backpressure episodes frequent: log at most one a minute.
-_BACKPRESSURE_LOG_INTERVAL_SECONDS = 60.0
 # Pending entries this consumer is not holding are looked for this often
 # while it reads (see __recover_while_reading), and at most this many are
 # taken back per look. The batch matches __recovery_claim_budget's cap.
@@ -389,8 +390,9 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         self._shared_worker = worker
         # Shared with the ParsingClient/DoclingClient/EmbeddingServerEmbeddings
         # instances that this consumer's records flow through — see
-        # app.services.messaging.backpressure. Reading is paused whenever any
-        # of them last saw a 429+Retry-After, instead of pulling more work a
+        # app.services.messaging.backpressure. Reading is paused whenever one
+        # every record calls last saw a 429+Retry-After (a Docling one holds
+        # only Docling's records at dispatch), instead of pulling more work a
         # saturated downstream would just reject again.
         self.backpressure_coordinator = backpressure_coordinator
         self._downstream_backpressure_active = False
@@ -426,8 +428,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             self.admission_backlog.observer = fairness.observer
         self._suspects_waiting = 0
         self._backpressure_active = False
-        # The fair read phase's "engaged" WARN was logged and its "cleared" INFO is still owed (throttled).
-        self._backpressure_logged = False
+        self._backpressure_episode = BackpressureEpisode()
         self._consecutive_empty_polls = 0
         # Set (on the main loop) whenever a dispatched task ends: the only event that frees
         # the capacity buffered work waits for. Made again in start(): an Event binds to its loop.
@@ -810,6 +811,8 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             self.message_handler = message_handler
             self.main_loop = asyncio.get_running_loop()
             self._finished = asyncio.Event()
+            # An episode a previous run left open must not hide this run's first WARNING.
+            self._backpressure_episode.reset()
 
             if not self.redis:
                 await self.initialize()
@@ -1131,6 +1134,10 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
     def read_paused_for_admission(self) -> bool:
         """Whether reads are paused because no record could be admitted (not a downstream pause)."""
         return self._backpressure_active
+
+    def downstream_read_pause(self) -> float:
+        """Seconds every read must still wait out a downstream 429 (see ``consumer_concurrency.downstream_read_pause``)."""
+        return concurrency.downstream_read_pause(self, scoped=self._scheduler is not None)
 
     def admission_explain(self) -> dict[str, Any]:
         """Why this consumer is or is not admitting records (see consumer_concurrency)."""
@@ -1867,9 +1874,11 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         await self._clear_retry_tracking(tracking_id)
 
     async def _wait_out_backpressure(self) -> None:
-        """Block while any downstream service has an active 429+Retry-After
-        pause signalled, so this consumer stops pulling new work a saturated
-        parser/embedder/Docling instance would just reject again.
+        """Block while a downstream service has an active 429+Retry-After
+        pause signalled that holds every record, so this consumer stops pulling
+        new work a saturated parser/embedder would just reject again. With the
+        fair scheduler a Docling pause does not stop reads: the dispatch phase
+        holds the records that call Docling (``downstream_read_pause``).
 
         Polls in small increments and re-checks ``self.running`` between
         them, mirroring ``_delay_if_retry_not_ready``, so shutdown interrupts
@@ -1877,20 +1886,20 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         """
         if self.backpressure_coordinator is None:
             return
-        while self.running and self.backpressure_coordinator.is_paused():
+        while self.running and (remaining := self.downstream_read_pause()) > 0.0:
             if not self._downstream_backpressure_active:
                 self._downstream_backpressure_active = True
                 self.logger.warning(
                     "Downstream backpressure from %s: pausing new stream "
                     "reads for %.1fs",
-                    ", ".join(sorted(self.backpressure_coordinator.paused_services)),
-                    self.backpressure_coordinator.pause_remaining(),
+                    ", ".join(concurrency.read_pausing_services(self, scoped=self._scheduler is not None)),
+                    remaining,
                 )
             # Buffered entries stay un-ACKed through a pause of any length;
             # keep their ownership confirmed, or the sweep would read a long
             # pause as a failed refresh and release them.
             await self.__refresh_held_ownership()
-            remaining = self.backpressure_coordinator.pause_remaining()
+            remaining = self.downstream_read_pause()
             await asyncio.sleep(min(_DELAY_POLL_INTERVAL_SECONDS, remaining) if remaining > 0 else _DELAY_POLL_INTERVAL_SECONDS)
         if self._downstream_backpressure_active:
             self._downstream_backpressure_active = False
@@ -2228,6 +2237,19 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             - scheduler.pending_count
             - len(self._deferred_entries)
         )
+
+    def __lanes_for_room(self, readable: list[str], room: int) -> list[str]:
+        """The lanes one read takes so that an entry from each fits in ``room`` places (COUNT is per stream): all
+        of them when they fit, else ``room`` of them after the last lane such a read took. The cursor is in topic
+        order, which never changes, so a readable set that changes between reads cannot skip a lane for good."""
+        if room >= len(readable):
+            return readable
+        topics = list(self.config.topics)
+        start = self._read_offset % len(topics)
+        wanted = set(readable)
+        chosen = [t for t in topics[start:] + topics[:start] if t in wanted][:room]
+        self._read_offset = topics.index(chosen[-1]) + 1
+        return chosen
 
     def __held_count_by_stream(self) -> dict[str, int]:
         counts: dict[str, int] = {}
@@ -3365,9 +3387,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
 
         if budget.blocked or saturated or scheduler_full:
             self._backpressure_active = True
-            if not self._backpressure_logged and log_once(
-                f"redis_indexing:backpressure:{self.config.group_id}", _BACKPRESSURE_LOG_INTERVAL_SECONDS
-            ):
+            if self._backpressure_episode.engaged():
                 self.logger.warning(
                     "Backpressure engaged: tasks waiting for indexing "
                     "admission %s (index gates saturated: %s, scheduler "
@@ -3376,13 +3396,11 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                     saturated,
                     scheduler_full,
                 )
-                self._backpressure_logged = True
             await self.__wait_for_finish(_BACKPRESSURE_WAIT_SECONDS)
             return
         self._backpressure_active = False
-        if self._backpressure_logged:
+        if self._backpressure_episode.cleared(time.monotonic()):
             self.logger.info("Backpressure cleared: %s", budget.describe())
-            self._backpressure_logged = False
 
         await self.__reclaim_while_reading()
         if not self.__buffer_has_room():
@@ -3422,16 +3440,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         # Kafka there is no reason to issue a read with no room for it.
         buffer_room = max(1, self.__buffer_room() or 0)
         short_read = buffer_room < len(readable)
-        if short_read:
-            # COUNT is per stream, so one entry from each of these lanes would not fit: read as many lanes as
-            # there are places, after the last lane such a read took. The cursor is in topic order, which never
-            # changes, so a readable set that changes between reads cannot skip a lane for good.
-            topics = list(self.config.topics)
-            start = self._read_offset % len(topics)
-            wanted = set(readable)
-            readable = [t for t in topics[start:] + topics[:start] if t in wanted][:buffer_room]
-            self._read_offset = topics.index(readable[-1]) + 1
-        streams = dict.fromkeys(readable, ">")
+        streams = dict.fromkeys(self.__lanes_for_room(readable, buffer_room), ">")
         # COUNT applies to each stream in the request, not to the call, so
         # reading N lanes with count=C can return N*C entries. Anything past
         # the buffer budget would land in this consumer's pending list with
@@ -3685,32 +3694,32 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         with self._futures_lock:
             self._finishes_seen = self._finishes
         budget = self._dispatch_budget()
+        held = concurrency.held_pools(self)
 
         def can_dispatch(
             item: tuple[str, str, dict[str, str], StreamMessage, float],
         ) -> bool:
             _stream_name, message_id, _fields, parsed, _buffered_at = item
-            # A tier at its ceiling is passed over, not waited on: DRR skips
-            # the leaf without charging it and moves to the entity's other
-            # tier or the next entity.
-            return not self._is_in_flight(message_id, _stream_name) and budget.allows(
-                concurrency.dispatch_tier(self, parsed)
+            # A tier at its ceiling, or a record whose downstream asked for a
+            # pause, is passed over, not waited on: DRR skips the leaf without
+            # charging it and moves to the entity's other tier or the next entity.
+            return (
+                not self._is_in_flight(message_id, _stream_name)
+                and budget.allows(concurrency.dispatch_tier(self, parsed))
+                and not concurrency.held_downstream(self, parsed, held)
             )
 
         while self.running:
             # Re-checked inside the loop, not just once per iteration in
             # _consume_loop: a dispatch pass can start many records, and a
-            # downstream 429 arriving part-way through must stop the rest of
-            # them rather than being honoured only on the next poll. Mirrors
-            # the Kafka dispatch phase.
+            # downstream 429 arriving part-way through must stop (or, for a
+            # service one tier calls, hold) the rest of them rather than being
+            # honoured only on the next poll. Mirrors the Kafka dispatch phase.
             budget = self._dispatch_budget()
-            downstream_paused = (
-                self.backpressure_coordinator is not None
-                and self.backpressure_coordinator.is_paused()
-            )
+            held = concurrency.held_pools(self)
             if (
                 budget.blocked
-                or downstream_paused
+                or self.downstream_read_pause() > 0.0
                 or concurrency.index_gates_saturated(self)
             ):
                 break
@@ -3774,6 +3783,9 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                     # its running entries fresh and is not taken for stopped.
                     await self.__refresh_held_ownership()
                     await self.__retry_unhanded_when_due()
+                    # Before the look at capacity: nothing awaits between here and the wait below, so any finish
+                    # from now on ends that wait, and one from an earlier turn cannot.
+                    self._finished.clear()
                     budget = self._dispatch_budget()
                     # Saturation matters as much as queue depth: with both
                     # index pools full and nothing queued behind them, the
@@ -3782,40 +3794,45 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                     # grows this consumer's PEL.
                     saturated = concurrency.index_gates_saturated(self)
                     if not self.__fifo_admission_open(budget=budget, saturated=saturated):
-                        if not self._backpressure_active:
+                        self._backpressure_active = True
+                        if self._backpressure_episode.engaged():
                             self.logger.warning(
                                 "Backpressure engaged: tasks waiting for "
                                 "indexing admission %s (index gates saturated: %s)",
                                 budget.describe(),
                                 saturated,
                             )
-                            self._backpressure_active = True
-                        await asyncio.sleep(0.5)
+                        await self.__wait_for_finish(_BACKPRESSURE_WAIT_SECONDS)
                         continue
-                    elif self._backpressure_active:
+                    self._backpressure_active = False
+                    if self._backpressure_episode.cleared(time.monotonic()):
                         self.logger.info(
                             "Backpressure cleared: %s", budget.describe()
                         )
-                        self._backpressure_active = False
 
                     await self.__recover_while_reading()
                     await self.__reclaim_while_reading()
                     budget = self._dispatch_budget()
                     if budget.remaining <= 0:
                         continue
-                    streams = dict.fromkeys(self.config.topics, ">")
-                    available_capacity = budget.remaining
+                    # COUNT is per stream: an entry read past the budget is neither started nor kept, and its
+                    # recovery later starts it behind newer entries of its stream.
+                    room = budget.remaining
+                    streams = dict.fromkeys(self.__lanes_for_room(list(self.config.topics), room), ">")
+                    full_read = len(streams) == len(self.config.topics)
                     results = await self._xreadgroup_grouped(
                         streams,
-                        count=min(
-                            max(1, self.config.batch_size),
-                            available_capacity,
-                        ),
-                        block_ms=self.config.block_ms,
+                        count=min(max(1, self.config.batch_size), max(1, room // max(1, len(streams)))),
+                        # A short read must not wait out block_ms on an empty lane while the others hold work.
+                        block_ms=self.config.block_ms if full_read else _BUSY_BLOCK_MS,
                     )
 
                     if not results:
-                        # No new messages - increment idle counter
+                        # Only a read of every stream finding nothing is idleness; an empty short read saw some lanes.
+                        if not full_read:
+                            # Room comes back only as tasks finish: wait for one rather than poll the lanes again.
+                            await self.__wait_for_finish(_BACKPRESSURE_WAIT_SECONDS)
+                            continue
                         self._consecutive_empty_polls += 1
                         if self._consecutive_empty_polls >= self._idle_threshold:
                             # Idle: process pending messages. Re-check backpressure
@@ -3833,9 +3850,9 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
 
                     for stream_name, messages in results:
                         for message_id, fields in messages:
+                            # No budget check here: the read fit the budget at its look, and an entry left
+                            # unstarted would be recovered later, behind newer entries of its stream.
                             if not self.running:
-                                break
-                            if self._dispatch_budget().blocked:
                                 break
                             try:
                                 self.logger.debug(
@@ -3900,7 +3917,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                 raw = await offload_if_large(decode_message, value_str)
                 return await open_stream_message(stream_name, raw, StreamMessage)
             except EnvelopeRejected as e:
-                self.logger.error("Envelope rejected for %s on %s: %s", message_id, stream_name, e.reason)
+                self.logger.error("Envelope rejected for %s on %s: %s", message_id, stream_name, e.describe())
             except (json.JSONDecodeError, ValidationError, TypeError) as e:
                 # The type only: a ValidationError's text quotes the payload's values. The cause names nesting or a
                 # too-long number behind a JSONDecodeError (decode_json).
@@ -4012,7 +4029,9 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
 
     async def __wait_for_finish(self, timeout: float) -> bool:
         """Wait until a dispatched task ends, at most ``timeout`` seconds; False when none did.
-        The dispatch phase clears the event before it looks at capacity, so no finish is missed."""
+        Either loop clears the event before it looks at capacity, so no finish after that look is missed. A
+        finish is a hint, not a freed place: the budget frees when the next waiter is admitted, which can come
+        after the wake, so the caller looks again and may wait again, ``timeout`` bounding any miss."""
         try:
             await asyncio.wait_for(self._finished.wait(), timeout=timeout)
         except asyncio.TimeoutError:
@@ -4543,14 +4562,17 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                 progress = new_progress()
                 begin_progress(progress)
 
-                processing_budget: asyncio.Timeout | None = None
+                processing_budget: record_budget.RecordBudget | None = None
 
                 async def consume_handler_events() -> None:
                     nonlocal download_admission, memory_admission, parsing_held, indexing_held, indexing_complete, shutting_down, parsing_admission, parse_lease_pool, class_ctx, processing_budget
                     event_gen = self.message_handler(parsed_message)
                     try:
-                        async with asyncio.timeout(processing_timeout) as budget:
-                            processing_budget = budget
+                        async with (
+                            asyncio.timeout(processing_timeout) as budget,
+                            record_budget.armed(budget, processing_timeout) as armed,
+                        ):
+                            processing_budget = armed
                             progress.attach(budget)
                             async for event in event_gen:
                                 if (
@@ -4607,6 +4629,9 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                                     async with concurrency.parse_admission_wait(
                                         self, budget, message_id
                                     ) as wait:
+                                        await concurrency.wait_out_held_service(
+                                            self, parse_tier, parsed_message, wait, scoped=self._scheduler is not None
+                                        )
                                         size_bytes = event.data.size_bytes if event.data else None
                                         # The size and what the inspection found are known now: the index permit
                                         # moves to its class in place.
@@ -4730,8 +4755,8 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                             raise concurrency.lease_guard_error(lease_handle)
                     await handler_task
                 except TimeoutError:
-                    if processing_budget is not None and processing_budget.expired():
-                        timing.note(timeout_s=processing_timeout)
+                    if processing_budget is not None and processing_budget.timeout.expired():
+                        timing.note(timeout_s=processing_budget.seconds)
                     elif indexing_complete:  # the bookkeeping after INDEXING_COMPLETE ran out of its own time, not the record's budget
                         timing.note(phase="after_indexing_complete")
                     await concurrency.requeue_after_productive_cut(

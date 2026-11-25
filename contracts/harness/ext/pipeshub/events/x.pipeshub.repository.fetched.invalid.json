@@ -1,0 +1,74 @@
+[
+  {
+    "description": "written by Node",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 9,
+      "runId": "run_1",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-11-01T12:00:00.123Z",
+      "visibility": "owner",
+      "writer": "node",
+      "type": "x.pipeshub.repository.fetched",
+      "data": {
+        "host": "github.com",
+        "repository": "onyx-dot-app/onyx",
+        "bytes": 44040192,
+        "cached": false,
+        "full": false,
+        "commit": "4f83564c1f0e8596be3f71d78f847a96447a3bdd"
+      }
+    }
+  },
+  {
+    "description": "a URL, not a repository path",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 9,
+      "runId": "run_1",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-11-01T12:00:00.123Z",
+      "visibility": "owner",
+      "writer": "worker",
+      "type": "x.pipeshub.repository.fetched",
+      "data": {
+        "host": "github.com",
+        "repository": "https://github.com/onyx-dot-app/onyx",
+        "bytes": 44040192,
+        "cached": false,
+        "full": false,
+        "commit": "4f83564c1f0e8596be3f71d78f847a96447a3bdd"
+      }
+    }
+  },
+  {
+    "description": "a host is a bare name",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 9,
+      "runId": "run_1",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-11-01T12:00:00.123Z",
+      "visibility": "owner",
+      "writer": "worker",
+      "type": "x.pipeshub.repository.fetched",
+      "data": {
+        "host": "github.com/onyx?token=x",
+        "repository": "onyx-dot-app/onyx",
+        "bytes": 44040192,
+        "cached": false,
+        "full": false,
+        "commit": "4f83564c1f0e8596be3f71d78f847a96447a3bdd"
+      }
+    }
+  }
+]

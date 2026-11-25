@@ -159,3 +159,5 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+.c8_pg_harness
+coverage-pg-harness

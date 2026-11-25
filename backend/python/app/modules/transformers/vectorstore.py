@@ -98,7 +98,6 @@ from app.modules.transformers.code_units import (
 )
 from app.modules.transformers.transformer import TransformContext, Transformer
 from app.services.embeddings.multimodal.config import MultimodalProviderConfig
-from app.services.embeddings.multimodal.factory import MultimodalEmbeddingFactory
 from app.services.embeddings.multimodal.interface import ImageEmbeddingResult
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.llm_gateway import wire
@@ -145,8 +144,6 @@ from app.utils.aimodels import (
     INDEXING_SDK_RETRIES,
     EmbeddingProvider,
     embedding_config_hash,
-    get_default_embedding_model,
-    get_embedding_model,
     is_local_cpu_embedding_provider,
 )
 from app.utils.embedding_gate import GateFailFast
@@ -159,7 +156,14 @@ from app.utils.embedding_server_client import EmbeddingServerEmbeddings
 from app.utils.error_class import innermost_type
 from app.utils.image_utils import normalize_image_to_base64
 from app.utils.indexing_timing import note, stage
-from app.utils.llm import load_ai_models
+from app.utils.llm import (
+    LLMUnavailableError,
+    ModelNotAllowedError,
+    build_embeddings,
+    build_multimodal_embeddings,
+    load_ai_models,
+    require_embeddings_placement,
+)
 from app.utils.openai_hosts import is_openai_api_url
 from app.utils.precision_witness import get_precision_witness
 
@@ -2399,6 +2403,13 @@ class VectorStore(Transformer):
         # HTTP connection pool that the previous one never gets to reuse, and
         # the dimension probe costs an extra embed round trip per record.
         if self.dense_embeddings is not None and self._embedding_config_hash == config_hash:
+            # A pin saved after the client was built binds it from the next record on (MG-15).
+            await require_embeddings_placement(
+                self.config_service,
+                next((c for c in embedding_configs if c.get("isDefault")), embedding_configs[0])
+                if embedding_configs
+                else None,
+            )
             return self.is_multimodal_embedding
 
         async with self._embedding_model_lock:
@@ -2420,7 +2431,9 @@ class VectorStore(Transformer):
                 "falling back to the local embedding service."
             )
             try:
-                dense_embeddings = get_default_embedding_model()
+                dense_embeddings = await build_embeddings(self.config_service, None)
+            except (ModelNotAllowedError, LLMUnavailableError):
+                raise
             except Exception as e:
                 raise EmbeddingNotConfiguredError(
                     "No embedding model is configured for this organisation "
@@ -2433,7 +2446,7 @@ class VectorStore(Transformer):
             )
             provider = config["provider"]
             configuration = config["configuration"]
-            dense_embeddings = get_embedding_model(provider, config, sdk_retries=INDEXING_SDK_RETRIES)
+            dense_embeddings = await build_embeddings(self.config_service, config, sdk_retries=INDEXING_SDK_RETRIES)
             is_multimodal = config.get("isMultimodal")
 
         try:
@@ -2734,7 +2747,7 @@ class VectorStore(Transformer):
         if not image_base64s:
             return []
 
-        provider = MultimodalEmbeddingFactory.create(self._multimodal_provider_config())
+        provider = await build_multimodal_embeddings(self.config_service, self._multimodal_provider_config())
         if provider is None or not provider.supports_multimodal():
             self.logger.warning(
                 f"Unsupported embedding provider for images: {self.embedding_provider}"
@@ -3218,6 +3231,9 @@ class VectorStore(Transformer):
             todo = documents
             present = set()
         else:
+            # An attempt stopped before its full delete leaves the older revision's points, under the ids this one wants (the id
+            # follows the block and its text, not the revision). Counted as present, they would be skipped and then fenced.
+            await self._drop_points_of_other_runs(attempt, key, virtual_record_id, collection_name, org_id)
             with stage("vector.exists"):
                 present = await self._existing_ids(collection_name, list(dict.fromkeys(point_ids)))
             todo = [d for d, pid in zip(documents, point_ids) if pid not in present]
@@ -3245,6 +3261,21 @@ class VectorStore(Transformer):
             attempt, key, point_ids, record_id, virtual_record_id, collection_name, org_id
         )
 
+    async def _drop_points_of_other_runs(
+        self, attempt: EmbedAttempt, key: str, virtual_record_id: str, collection_name: str, org_id: str | None,
+    ) -> None:
+        """Delete the virtual record's points of another revision or embedding setup; a missing field counts as different. Both
+        deletes pin the org and the virtual record."""
+        org = org_for_filter(org_id, match_bound=True)
+        with stage("vector.delete"):
+            for field, value in ((POINT_REV, attempt.rev), (POINT_KEY, key)):
+                stale = await self.vector_db_service.filter_collection(
+                    must={"orgId": org, "virtualRecordId": virtual_record_id},
+                    must_not={field: value},
+                )
+                async with _fenced("the fence of a resumed run"):
+                    await self.vector_db_service.delete_points(collection_name, stale)
+
     async def _fence_and_verify(
         self,
         attempt: EmbedAttempt,
@@ -3259,17 +3290,9 @@ class VectorStore(Transformer):
 
         A pod that lost its lease can still land a write after this run began, and points written
         before the revision and setup were recorded on them carry neither field; a missing field
-        counts as different. Both deletes pin the org and the virtual record.
+        counts as different.
         """
-        org = org_for_filter(org_id, match_bound=True)
-        with stage("vector.delete"):
-            for field, value in ((POINT_REV, attempt.rev), (POINT_KEY, key)):
-                stale = await self.vector_db_service.filter_collection(
-                    must={"orgId": org, "virtualRecordId": virtual_record_id},
-                    must_not={field: value},
-                )
-                async with _fenced("the fence of a resumed run"):
-                    await self.vector_db_service.delete_points(collection_name, stale)
+        await self._drop_points_of_other_runs(attempt, key, virtual_record_id, collection_name, org_id)
         wanted = list(dict.fromkeys(point_ids))
         with stage("vector.exists"):
             present = await self._existing_ids(collection_name, wanted)
