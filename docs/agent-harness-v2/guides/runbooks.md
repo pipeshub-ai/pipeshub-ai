@@ -145,14 +145,15 @@ and 240 s, about 8 minutes in all); `sandbox.capacity_reached` (`sandbox_capacit
 2. How many sandboxes exist: `docker ps --filter label=io.pipeshub.sandbox-broker.managed=1`; and their
    networks: `docker network ls --filter label=io.pipeshub.sandbox-broker.managed=1`.
 3. The host's memory and CPU against the limits in [sizing.md](sizing.md#how-the-code-shares-a-host-out): the
-   broker holds at most `floor(memory × 0.75 ÷ 1,024 MiB)` sandboxes and never more than `SANDBOX_MAX_TOTAL`.
+   broker holds at most `floor(memory × 0.75 ÷ 1,024 MiB)` sandboxes and never more than its ceiling, which its log's
+   `sandbox capacity:` line shows (`SANDBOX_MAX_TOTAL`, or sized from the daemon when empty).
 4. Warm pool: the dashboard's "Pool depth (warm pool)" and "Warm sandbox claims" panels
    (`pipeshub_harness_sandbox_warm_pool_depth`, `pipeshub_harness_sandbox_warm_claims_total{outcome}`; outcome
    `org_capped` means one org used its share while another waited).
 
 **Act.**
 
-- At `SANDBOX_MAX_TOTAL` with memory and CPU to spare: raise it and recreate the broker
+- At the ceiling with memory and CPU to spare: raise `SANDBOX_MAX_TOTAL` and recreate the broker
   (`docker compose --profile sandbox up -d sandbox-broker`). At the memory limit: add memory or a host; do not
   raise the limit past what the host holds.
 - Sandboxes left over from a crash: restarting the broker reconciles what it owns, removing orphan sandboxes and
