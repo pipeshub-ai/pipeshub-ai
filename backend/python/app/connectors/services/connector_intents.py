@@ -53,6 +53,19 @@ def _merged(older: dict[str, Any] | None, newer: dict[str, Any] | None) -> dict[
     return merged
 
 
+# Under an org's own key: the ``requestedAt`` of an earlier version's entry that is done with.
+SETTLED = "settledUnscopedAt"
+
+
+def is_settled_marker(value: object) -> bool:
+    """Whether the value only says that an earlier version's entry is done with: there is no intent in it."""
+    return isinstance(value, dict) and SETTLED in value and "requestedAt" not in value
+
+
+def _settles(scoped: object, unscoped: dict[str, Any]) -> bool:
+    return isinstance(scoped, dict) and SETTLED in scoped and scoped[SETTLED] == unscoped.get("requestedAt")
+
+
 class ConnectorIntentStore:
     def __init__(self, directory: str, error_type: type[Exception], what: str) -> None:
         self.directory = directory
@@ -64,17 +77,31 @@ class ConnectorIntentStore:
         return f"{self.directory}{org_id}/{connector_id}"
 
     def _unscoped_key(self, connector_id: str) -> str:
-        """Where earlier versions kept the intent: read and cleared, never written."""
+        """Where earlier versions kept the intent, one for all orgs. Only ever read: a replica of such a version may put
+        another org's intent there at any time, so neither a write nor a delete is safe. See ``clear``."""
         return f"{self.directory}{connector_id}"
 
     async def read(self, config_service: ConfigurationService, org_id: str, connector_id: str) -> dict[str, Any] | None:
         """The org's intent, whichever version recorded it. Raises when the store cannot answer."""
-        found = None
-        for key in (self._unscoped_key(connector_id), self.key(org_id, connector_id)):
-            value = await config_service.get_config(key, use_cache=False, raise_on_error=True)
-            if isinstance(value, dict) and owner_of(value) == org_id:
-                found = _merged(found, value)
-        return found
+        scoped, unscoped = await self._stored(config_service, org_id, connector_id)
+        if unscoped is not None and _settles(scoped, unscoped):
+            unscoped = None
+        if is_settled_marker(scoped):
+            scoped = None
+        return _merged(unscoped, scoped) if scoped or unscoped else None
+
+    async def _stored(
+        self, config_service: ConfigurationService, org_id: str, connector_id: str,
+    ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+        """What the org's own key holds, and the earlier version's entry when it is this org's."""
+        unscoped, scoped = [
+            value if isinstance(value, dict) and owner_of(value) == org_id else None
+            for value in [
+                await config_service.get_config(key, use_cache=False, raise_on_error=True)
+                for key in (self._unscoped_key(connector_id), self.key(org_id, connector_id))
+            ]
+        ]
+        return scoped, unscoped
 
     async def record(
         self,
@@ -96,21 +123,24 @@ class ConnectorIntentStore:
             raise self.error_type(f"could not record {self.what} for connector {connector_id}")
 
     async def clear(self, config_service: ConfigurationService, org_id: str, connector_id: str) -> bool:
-        """A failed read or delete is returned, not raised: the intent then runs again,
-        and every cleanup behind one is idempotent."""
-        # Absent for deletes made before intents existed and for ones already
-        # settled; Redis reports deleting a missing key as a failure.
-        cleared = True
-        for key in (self._unscoped_key(connector_id), self.key(org_id, connector_id)):
-            try:
-                value = await config_service.get_config(key, use_cache=False, raise_on_error=True)
-                # An earlier version's key may hold another org's intent: that one is left. Only a replica of that
-                # version can put one there between this read and the delete.
-                if isinstance(value, dict) and owner_of(value) == org_id:
-                    cleared = bool(await config_service.delete_config(key)) and cleared
-            except Exception:
-                cleared = False
-        return cleared
+        """A failed read or write is returned, not raised: the intent then runs again,
+        and every cleanup behind one is idempotent.
+
+        An earlier version's entry is left where it is and marked as settled under the org's own key: it may have become
+        another org's by the time a delete reached it."""
+        key = self.key(org_id, connector_id)
+        try:
+            scoped, unscoped = await self._stored(config_service, org_id, connector_id)
+            if unscoped is not None:
+                marker = {"orgId": org_id, "connectorId": connector_id, SETTLED: unscoped.get("requestedAt")}
+                return scoped == marker or bool(await config_service.set_config(key, marker))
+            # Absent for deletes made before intents existed and for ones already
+            # settled; Redis reports deleting a missing key as a failure.
+            if scoped is None or is_settled_marker(scoped):
+                return True
+            return bool(await config_service.delete_config(key))
+        except Exception:
+            return False
 
     async def reschedule(
         self, config_service: ConfigurationService, intent: dict[str, Any], *, next_attempt_at: int,
@@ -120,7 +150,7 @@ class ConnectorIntentStore:
         # Raised, not None: what was added to the stored intent since the caller read it is kept.
         # An earlier version's entry is merged by the list, and one that cannot be read must not stop this.
         current = await config_service.get_config(self.key(org_id, connector_id), use_cache=False, raise_on_error=True)
-        current = current if isinstance(current, dict) else None
+        current = current if isinstance(current, dict) and not is_settled_marker(current) else None
         updated = {
             **_merged(current, intent),
             "attempts": int(intent.get("attempts") or 0) + 1, "nextAttemptAt": next_attempt_at,
@@ -143,5 +173,8 @@ class ConnectorIntentStore:
                 unscoped.append(value)
         for value in unscoped:
             at = (str(owner_of(value)), str(value["connectorId"]))
-            intents[at] = _merged(value, intents.get(at))
-        return sorted(intents.values(), key=lambda i: (int(i.get("requestedAt") or 0), str(i["connectorId"])))
+            if not _settles(intents.get(at), value):
+                scoped = intents.get(at)
+                intents[at] = value if scoped is None or is_settled_marker(scoped) else _merged(value, scoped)
+        pending = [i for i in intents.values() if not is_settled_marker(i)]
+        return sorted(pending, key=lambda i: (int(i.get("requestedAt") or 0), str(i["connectorId"])))
