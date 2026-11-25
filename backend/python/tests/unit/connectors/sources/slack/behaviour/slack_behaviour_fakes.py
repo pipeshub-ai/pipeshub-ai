@@ -613,10 +613,14 @@ class FakeConfigService:
             return copy.deepcopy(self.config)
         return copy.deepcopy(self.others.get(path, default))
 
-    async def set_config(self, path: str, value: Any) -> bool:  # noqa: ANN401 - any etcd value
+    async def set_config(self, path: str, value: Any, **_: object) -> bool:  # noqa: ANN401 - any etcd value
         if path == self.path:
             self.config = copy.deepcopy(value)
             self.writes.append(copy.deepcopy(value))
         else:
             self.others[path] = copy.deepcopy(value)
         return True
+
+    async def delete_config(self, path: str) -> bool:
+        """False for a key that was not set, as the store answers."""
+        return self.others.pop(path, None) is not None

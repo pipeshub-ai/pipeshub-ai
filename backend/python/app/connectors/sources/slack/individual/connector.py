@@ -53,6 +53,7 @@ import httpx
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 
+from app.config.configuration_service import delete_config_confirmed
 from app.config.constants.arangodb import (
     Connectors,
     MimeTypes,
@@ -3093,21 +3094,14 @@ class SlackIndividualConnector(BaseConnector):
         Slack refused as kept by the full sync in progress: they may still be in Slack.
 
         Thread groups cannot be listed per channel, so the connector's records are scanned
-        once, and only when one of those channels holds something. A lookup that fails
-        marks the read incomplete, so nothing is unlinked.
+        once. The scan does not wait for a record directly in the channel: thread growth
+        writes a thread group and its records without one. A lookup that fails marks the
+        read incomplete, so nothing is unlinked.
         """
         processor = self.data_entities_processor
         if not self._kept_channel_ids or processor.full_sync_running(self.connector_id) is not True:
             return
         try:
-            held = {
-                cid for cid in self._kept_channel_ids
-                if await processor.get_records_in_record_group(
-                    self.connector_id, cid, 1, visibility=RecordVisibility.ALL,
-                )
-            }
-            if not held:
-                return
             thread_groups: set[str] = set()
             page_size = 1000
             after_key: Optional[str] = None
@@ -3118,7 +3112,7 @@ class SlackIndividualConnector(BaseConnector):
                 )
                 kept = [
                     r for r in page
-                    if r.external_record_group_id and self._channel_ext_id(r.external_record_group_id) in held
+                    if r.external_record_group_id and self._channel_ext_id(r.external_record_group_id) in self._kept_channel_ids
                     and not self._read_this_run(r)
                 ]
                 processor.note_kept_records(self.connector_id, [r.id for r in kept])
@@ -3188,15 +3182,19 @@ class SlackIndividualConnector(BaseConnector):
     # Threads whose replies Slack refused, read again on later syncs
     # =========================================================================
 
-    def _pending_threads_key(self, channel_id: str) -> str:
-        return generate_record_sync_point_key(
-            RecordType.MESSAGE.value, "slack_pending_threads", channel_id
-        )
+    def _pending_threads_path(self, channel_id: str) -> str:
+        # In the KV store, not a sync point: a full sync deletes every sync point first,
+        # and a refused parent older than the sync window would never be read again.
+        return f"/services/connectors/{self.connector_id}/slack_pending_threads/{channel_id}"
 
     async def _read_pending_threads(self, channel_id: str) -> list[str]:
         """Parent ts of the channel's threads whose replies Slack refused, oldest refusal first."""
-        data = await self.audit_log_sync_point.read_sync_point(self._pending_threads_key(channel_id))
-        return [str(ts) for ts in (data or {}).get("thread_ts") or []]
+        data = await self.config_service.get_config(
+            self._pending_threads_path(channel_id), use_cache=False, keep_in_cache=False, raise_on_error=True,
+        )
+        if not isinstance(data, dict):
+            return []
+        return [str(ts) for ts in data.get("thread_ts") or []]
 
     async def _write_pending_threads(self, channel_id: str, pending: list[str]) -> None:
         if len(pending) > MAX_PENDING_THREADS_PER_CHANNEL:
@@ -3207,10 +3205,13 @@ class SlackIndividualConnector(BaseConnector):
                 f"refusing are no longer retried (ts {dropped}); a full sync reads them again "
                 f"if they are inside the sync window"
             )
-        # A list, so the stored value is replaced rather than merged.
-        await self.audit_log_sync_point.update_sync_point(
-            self._pending_threads_key(channel_id), {"thread_ts": pending}
-        )
+        path = self._pending_threads_path(channel_id)
+        if pending:
+            saved = await self.config_service.set_config(path, {"thread_ts": pending}, keep_in_cache=False)
+        else:
+            saved = await delete_config_confirmed(self.config_service, path)
+        if not saved:
+            raise RuntimeError(f"Pending threads of channel {channel_id} could not be saved")
 
     async def _add_pending_thread(self, channel_id: str, ts: str) -> None:
         pending = await self._read_pending_threads(channel_id)

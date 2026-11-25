@@ -73,6 +73,10 @@ def _make_connector() -> Any:
     dep.org_id = "org-test"
     data_store = MagicMock()
     config_svc = MagicMock()
+    # The pending threads of each channel live in the KV store.
+    config_svc.get_config = AsyncMock(return_value=None)
+    config_svc.set_config = AsyncMock(return_value=True)
+    config_svc.delete_config = AsyncMock(return_value=True)
 
     with patch.object(SlackIndividualConnector, "__init__", lambda self, *a, **kw: None):
         c = SlackIndividualConnector.__new__(SlackIndividualConnector)
@@ -1033,15 +1037,17 @@ class TestKeepUnreadChannels:
         assert c._full_sync_read_failed is False
 
     @pytest.mark.asyncio
-    async def test_a_kept_channel_holding_nothing_skips_the_scan(self) -> None:
+    async def test_a_kept_channel_holding_only_thread_records_keeps_them(self) -> None:
         c = self._keeping_connector()
         proc = c.data_entities_processor
-        proc.get_records_in_record_group = AsyncMock(return_value=[])
+        proc.get_records_by_status = AsyncMock(return_value=[
+            self._stored("t1", "thread_C1_5.0"), self._stored("o1", "thread_C2_6.0"),
+        ])
 
         await c._keep_unread_channels()
 
-        proc.get_records_by_status.assert_not_awaited()
-        proc.note_kept_records.assert_not_called()
+        proc.note_kept_records.assert_called_once_with(c.connector_id, ["t1"])
+        proc.note_kept_record_group.assert_awaited_once_with(c.connector_id, "thread_C1_5.0")
         assert c.full_sync_coverage().complete is True
 
     @pytest.mark.asyncio
@@ -4298,9 +4304,10 @@ class TestFailedPageDoesNotAdvanceCheckpoint:
         _key, payload = c.messages_sync_point.update_sync_point.call_args[0]
         assert payload == {"last_sync_time": "5.0"}
         # The stored replies were kept, not read: no thread sync point, but it is pending a retry.
-        c.audit_log_sync_point.update_sync_point.assert_awaited_once()
-        key, payload = c.audit_log_sync_point.update_sync_point.call_args[0]
-        assert "slack_pending_threads" in key
+        c.audit_log_sync_point.update_sync_point.assert_not_awaited()
+        c.config_service.set_config.assert_awaited_once()
+        key, payload = c.config_service.set_config.call_args[0]
+        assert key == f"/services/connectors/{c.connector_id}/slack_pending_threads/C1"
         assert payload == {"thread_ts": ["5.0"]}
         # Refused, not partly read.
         assert not any("partly fetched" in str(call) for call in c.logger.warning.call_args_list)
