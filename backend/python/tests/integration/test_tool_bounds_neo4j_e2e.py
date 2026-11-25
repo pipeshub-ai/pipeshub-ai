@@ -255,6 +255,46 @@ _SEEK_BESIDE_ID = re.compile(r"INDEX \w+:(?:Record|RecordGroup|App)\((?=[^)]*,)[
 # Nor does any read every record or group of the org or the label: these reads start from ids, an App or a group.
 _SCANS = ("NodeIndexScan", "NodeByLabelScan", "UnionNodeByLabelsScan")
 _RECORDS = re.compile(r"\b\w+:(?:Record|RecordGroup)\b")
+# Nor seeks the org's or the App's index alone (the plan that read the App once per listed id): a per-id read never needs it.
+_ORG_OR_APP_ONLY = re.compile(r"INDEX (\w+):(Record|RecordGroup)\((orgId|connectorId)\)")
+# The reads that are of the whole App by design, each by its variable in the provider's statements.
+_APP_WIDE_READS = {
+    ("dg", "RecordGroup", "connectorId"): "the App's declared groups (RECORD_GROUP_LEVEL): the batch check, the chain tops and the walk "
+                                          "below a seed read every one, and an App has few",
+    ("sd", "Record", "connectorId"): "the chain tops' seeds: the App's open records the viewer is granted, read once per flatten",
+    ("sd", "RecordGroup", "connectorId"): "the chain tops' seeds: the App's open groups the viewer is granted, read once per flatten",
+}
+
+
+def _plan_hazards(plan: Any) -> list[str]:  # noqa: ANN401
+    """The leaves of ``plan`` that read records or groups other than by id: a seek of an index that holds the id beside the org or App, a
+    seek of the org's or App's index alone that is not one of `_APP_WIDE_READS`, or an index or label scan."""
+    out = []
+    for o in _plan_ops(plan):
+        op, details = o["operatorType"], (o.get("args") or {}).get("Details", "")
+        seek = "IndexSeek" in op and not op.startswith("NodeUniqueIndexSeek")
+        only = _ORG_OR_APP_ONLY.search(details) if seek else None
+        if ((seek and _SEEK_BESIDE_ID.search(details)) or (only and tuple(only.groups()) not in _APP_WIDE_READS)
+                or (op.startswith(_SCANS) and _RECORDS.search(details))):
+            out.append(f"{op} {details[:120]}")
+    return out
+
+
+def test_the_plan_check_rejects_a_per_id_read_on_the_org_or_app_index() -> None:
+    """The check itself, on plans of the shapes it must tell apart (no store needed)."""
+    def plan(op: str, details: str) -> dict[str, Any]:
+        return {"operatorType": "ProduceResults@neo4j", "args": {}, "children": [
+            {"operatorType": "Filter@neo4j", "args": {"Details": "kh_x.id = kh_lid"}, "children": [
+                {"operatorType": op, "args": {"Details": details}, "children": []}]}]}
+    # The incident's plan: the App's index sought for every listed id, the id tested after.
+    assert _plan_hazards(plan("NodeIndexSeek@neo4j", "RANGE INDEX kh_x:Record(connectorId) WHERE connectorId = $app_id"))
+    assert _plan_hazards(plan("NodeIndexSeek@neo4j", "RANGE INDEX t:RecordGroup(orgId) WHERE orgId = $org_id"))
+    assert _plan_hazards(plan("NodeIndexSeek@neo4j", "RANGE INDEX t:Record(orgId, id) WHERE orgId = $org_id AND id = kh_key"))
+    assert _plan_hazards(plan("NodeIndexScan@neo4j", "RANGE INDEX kh_x:RecordGroup(connectorId) WHERE connectorId IS NOT NULL"))
+    # A unique id seek, an App-wide read by design, and a paged read are not.
+    assert not _plan_hazards(plan("NodeUniqueIndexSeek@neo4j", "UNIQUE kh_x:Record(id) WHERE id = kh_lid"))
+    assert not _plan_hazards(plan("NodeIndexSeek@neo4j", "RANGE INDEX dg:RecordGroup(connectorId) WHERE connectorId = cache[app.id]"))
+    assert not _plan_hazards(plan("NodeIndexSeekByRange@neo4j", "RANGE INDEX r:Record(connectorId, id) WHERE connectorId = $app AND id > $after"))
 
 
 def _calls(w: W) -> dict[str, Any]:
@@ -286,7 +326,8 @@ def _calls(w: W) -> dict[str, Any]:
     "stamp nodes", "stamp subtree", "uploads under a folder", "purge failure"])
 async def test_a_statement_seeks_nodes_by_id_on_the_unique_id_index(w, monkeypatch, call: str) -> None:
     """Every statement these reads run seeks a record or group it has the id of on the label's unique id index, never on an index that
-    holds the id beside the org or App, and scans no index or label of records or groups. The planner picks such a seek only when the
+    holds the id beside the org or App or on the org's or App's index alone (outside `_APP_WIDE_READS`), and scans no index or label
+    of records or groups. The planner picks such a seek only when the
     statement tests the org or App beside the match by id, and on other statistics it then seeks the org or App index alone and tests
     the id after (`LISTED`): every node of the org or App read once per id. Read from each statement's plan (EXPLAIN), so nothing is
     written."""
@@ -308,9 +349,7 @@ async def test_a_statement_seeks_nodes_by_id_on_the_unique_id_index(w, monkeypat
                 continue
             prefix, body = re.match(r"\s*((?:CYPHER [^\n]*?replan=\w+\s+)?)(.*)", query, re.S).groups()
             plan = (await (await s.run(f"{prefix}EXPLAIN {body}", parameters)).consume()).plan
-            beside += [f"{' '.join(body.split())[:120]} :: {o['operatorType']} {o['args'].get('Details', '')[:120]}" for o in _plan_ops(plan)
-                       if (o["operatorType"].startswith("NodeIndexSeek") and _SEEK_BESIDE_ID.search((o.get("args") or {}).get("Details", "")))
-                       or (o["operatorType"].startswith(_SCANS) and _RECORDS.search((o.get("args") or {}).get("Details", "")))]
+            beside += [f"{' '.join(body.split())[:120]} :: {h}" for h in _plan_hazards(plan)]
     assert not beside, beside
 
 
