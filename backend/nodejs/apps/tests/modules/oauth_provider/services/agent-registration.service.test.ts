@@ -3,6 +3,7 @@ import { expect } from 'chai';
 import sinon from 'sinon';
 import jwt from 'jsonwebtoken';
 import { AgentRegistrationService } from '../../../../src/modules/oauth_provider/services/agent-registration.service';
+import { FirstPartyDeviceAppService } from '../../../../src/modules/oauth_provider/services/oauth.first_party_device.service';
 import { OAuthTokenService } from '../../../../src/modules/oauth_provider/services/oauth_token.service';
 import {
   AgentRegistrationStatus,
@@ -128,12 +129,14 @@ describe('AgentRegistrationService', () => {
   let generate: sinon.SinonStub;
   let user: { fullName: string } | null;
   let app: { clientId: string; allowedScopes: string[] };
+  let cap: string[] | null;
   let logger: MockLogger;
   let tokensLogger: MockLogger;
 
   beforeEach(() => {
     delete process.env.PIPESHUB_ENABLE_DEVICE_GRANT;
     app = { clientId: 'pipeshub-agent', allowedScopes: [...SCOPES] };
+    cap = null;
     repo = new FakeRepo();
     setOAuthTokenRepository(repo as any);
     user = { fullName: 'Ada' };
@@ -167,7 +170,14 @@ describe('AgentRegistrationService', () => {
         resolveGrantedScopes: (r: string[]) => ({ granted: r, notGranted: [] }),
         getScopeDefinitions: (s: string[]) => s.map((name) => ({ name })),
       } as any,
-      { getOrCreate: sinon.stub().resolves('pipeshub-agent') } as any,
+      {
+        getOrCreate: sinon.stub().resolves('pipeshub-agent'),
+        // The real cap over a stubbed preset: the current MCP_SCOPES when set, else whatever the app holds.
+        resolveScopes: () => cap ?? app.allowedScopes,
+        capScopes(a: any) {
+          return FirstPartyDeviceAppService.prototype.capScopes.call(this as any, a);
+        },
+      } as any,
       { frontendUrl: 'https://app.test', oauthIssuer: ISSUER } as any,
     );
   });
@@ -199,15 +209,14 @@ describe('AgentRegistrationService', () => {
     service.register('service_auth', email);
   const attemptToken = (uri: string) =>
     new URL(uri).searchParams.get('claim_attempt_token')!;
+  /** The scope names the claim page shows for this attempt, which an approval sends back. */
+  const shownFor = async (token: string) =>
+    (await service.getClaimContext(token, USER)).scopes.map((s) => s.name);
   /** Registers, then has the person approve it. */
   const claimed = async () => {
     const r = await register();
-    await service.completeClaim(
-      attemptToken(r.claim.verification_uri),
-      r.claim.user_code,
-      'approve',
-      USER,
-    );
+    const token = attemptToken(r.claim.verification_uri);
+    await service.completeClaim(token, r.claim.user_code, 'approve', USER, await shownFor(token));
     return r;
   };
 
@@ -299,6 +308,7 @@ describe('AgentRegistrationService', () => {
         again.claim_attempt.user_code,
         'approve',
         USER,
+        await shownFor(attemptToken(again.claim_attempt.verification_uri)),
       );
     });
 
@@ -386,6 +396,24 @@ describe('AgentRegistrationService', () => {
         service.completeClaim(t, r.claim.user_code, 'approve', USER),
         'invalid_request',
       );
+    });
+
+    it('refuses an approval once MCP_SCOPES widened after the page was shown, and records exactly what was shown', async () => {
+      app.allowedScopes = ['org:read', 'kb:read', 'offline_access'];
+      cap = ['org:read', 'offline_access'];
+      const r = await register();
+      const token = attemptToken(r.claim.verification_uri);
+      const shown = await shownFor(token);
+      expect(shown).to.deep.equal(['org:read']);
+      cap = null; // MCP_SCOPES widened and the server restarted while the page was open
+      await expectFail(service.completeClaim(token, r.claim.user_code, 'approve', USER, shown), 'invalid_request');
+      await expectFail(service.completeClaim(token, r.claim.user_code, 'approve', USER), 'invalid_request');
+      expect([...repo.rows.values()][0]!.status).to.equal('pending');
+      // Reloaded, the page shows the new list, and that is what the approval records.
+      const again = await shownFor(token);
+      expect(again).to.deep.equal(['org:read', 'kb:read']);
+      await service.completeClaim(token, r.claim.user_code, 'approve', USER, again);
+      expect([...repo.rows.values()][0]!.approvedScopes).to.deep.equal(['org:read', 'kb:read']);
     });
 
     it('marks the registration revoked on deny', async () => {
@@ -529,6 +557,28 @@ describe('AgentRegistrationService', () => {
         service.jwtBearerGrant(out.identity_assertion!),
         'invalid_grant',
       );
+    });
+
+    it('approves and mints only what MCP_SCOPES allows now, not the agent app\'s stored list', async () => {
+      app.allowedScopes = ['org:read', 'kb:read', 'offline_access'];
+      cap = ['org:read', 'offline_access'];
+      const r = await claimed();
+      const out = await service.claimGrant(r.claim_token);
+      expect(generate.firstCall.args[3]).to.deep.equal(['org:read']);
+      generate.resetHistory();
+      await service.jwtBearerGrant(out.identity_assertion!);
+      expect(generate.firstCall.args[3]).to.deep.equal(['org:read']);
+    });
+
+    it('drops a scope MCP_SCOPES lost after the approval, at the claim and at every assertion', async () => {
+      app.allowedScopes = ['org:read', 'kb:read', 'offline_access'];
+      const r = await claimed(); // approved with org:read and kb:read
+      cap = ['org:read', 'offline_access'];
+      const out = await service.claimGrant(r.claim_token);
+      expect(generate.firstCall.args[3]).to.deep.equal(['org:read']);
+      generate.resetHistory();
+      await service.jwtBearerGrant(out.identity_assertion!);
+      expect(generate.firstCall.args[3]).to.deep.equal(['org:read']);
     });
 
     it('works once: afterwards invalid_grant', async () => {

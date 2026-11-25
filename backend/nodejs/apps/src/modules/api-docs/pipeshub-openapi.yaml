@@ -25985,6 +25985,16 @@ components:
           enum:
             - approve
             - deny
+        scopes:
+          type: array
+          maxItems: 64
+          items:
+            type: string
+            maxLength: 64
+          description: |
+            The scope names the claim page showed (`POST /agent/identity/claim/verify`). Required to approve: the
+            approval records exactly these, and is refused with `invalid_request` when the scopes the agent would get
+            have changed since.
       required:
         - claim_attempt_token
         - action
@@ -47420,8 +47430,9 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '503':
           description: |
-            Connector service unavailable or connection refused, or (with `X-Record-Content-Open: 1`)
-            the record's connector could not be read because the database was unreachable. Safe to retry.
+            Connector service unavailable or connection refused, or the database could not answer a read of this
+            record (connection lost, timed out or restarting), including (with `X-Record-Content-Open: 1`) the read of
+            the record's connector. Safe to retry; a database answer carries `Retry-After`.
           content:
             application/json:
               schema:
@@ -50706,9 +50717,11 @@ paths:
                         type: string
         '503':
           description: |
-            The database could not give this listing the memory it needs right now, because other requests were using
-            it (nothing is wrong with the request). Retry after `Retry-After` seconds; the web app retries by itself.
-            The body is the gateway's own busy message, not the service's wording.
+            The database could not answer this listing right now (nothing is wrong with the request): other requests
+            were using the memory it needs, or the graph store lost its connection, timed out or is restarting. Retry
+            after `Retry-After` seconds; the web app retries by itself. The body is the gateway's own busy message, or
+            "We couldn't reach PipesHub's database just now. Please try again in a few seconds." when the store could
+            not be reached.
           headers:
             Retry-After:
               description: Seconds to wait before retrying (5).
@@ -51268,9 +51281,11 @@ paths:
                         type: string
         '503':
           description: |
-            The database could not give this listing the memory it needs right now, because other requests were using
-            it (nothing is wrong with the request). Retry after `Retry-After` seconds; the web app retries by itself.
-            The body is the gateway's own busy message, not the service's wording.
+            The database could not answer this listing right now (nothing is wrong with the request): other requests
+            were using the memory it needs, or the graph store lost its connection, timed out or is restarting. Retry
+            after `Retry-After` seconds; the web app retries by itself. The body is the gateway's own busy message, or
+            "We couldn't reach PipesHub's database just now. Please try again in a few seconds." when the store could
+            not be reached.
           headers:
             Retry-After:
               description: Seconds to wait before retrying (5).
@@ -91672,7 +91687,8 @@ paths:
         '400':
           description: |
             `invalid_user_code` (wrong code), or `invalid_request` (the link is unknown, used,
-            replaced, or the registration expired after too many wrong codes).
+            replaced, or the registration expired after too many wrong codes; or, to approve, `scopes`
+            is missing or no longer the list the agent would get).
           content:
             application/json:
               schema:

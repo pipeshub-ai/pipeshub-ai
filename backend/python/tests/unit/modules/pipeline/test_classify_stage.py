@@ -9,7 +9,10 @@ from app.modules.pipeline.models import Priority, StageJob, StageOutcome
 from app.modules.pipeline.policy import DEFAULT_POLICY, PipelinePolicy
 from app.modules.pipeline.stage import Deadline
 from app.modules.pipeline.stages.classify import ClassifyStage
-from app.modules.transformers.document_extraction import ExtractionLLMError
+from app.modules.transformers.document_extraction import (
+    ExtractionContentFilteredError,
+    ExtractionLLMError,
+)
 from app.services.base_client import (
     ServiceBackpressureError,
     ServiceCallError,
@@ -154,6 +157,7 @@ async def test_an_unreadable_stored_record_is_retried() -> None:
         (LLMNotConfiguredError("No LLM is configured"), StageOutcome.SKIPPED),
         (ServiceUnavailableError("breaker open"), StageOutcome.PAUSED),
         (ExtractionLLMError("no output"), StageOutcome.RETRY),
+        (ExtractionContentFilteredError(), StageOutcome.FAILED),
         (ExtractionClientError(message="500"), StageOutcome.RETRY),
         (ServiceCallError("422 invalid", status_code=422), StageOutcome.FAILED),
         (LLMUnavailableError("provider refused the connection"), StageOutcome.PAUSED),
@@ -266,3 +270,11 @@ async def test_a_service_outage_counts_a_send_only_when_the_request_may_have_rea
         requests=result.requests, now_ms=1, ledger_now=0, limits=PauseLimits(),
     )
     assert (decision.state.sends, decision.state.charged) == (sends, 0)
+
+
+@pytest.mark.asyncio
+async def test_a_content_filter_refusal_says_so_in_the_reason() -> None:
+    io = _IO()
+    io.outcome = ExtractionContentFilteredError()
+    result = await ClassifyStage().run(_job(), io)
+    assert result.outcome is StageOutcome.FAILED and "content filter" in (result.reason or "")

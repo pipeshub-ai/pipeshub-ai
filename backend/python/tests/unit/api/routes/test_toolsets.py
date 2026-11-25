@@ -1240,6 +1240,24 @@ class TestEncodeDecodeStateWithInstance:
         with pytest.raises(OAuthConfigError, match="Missing required fields"):
             _decode_state_with_instance(encoded)
 
+    @pytest.mark.parametrize("value", [
+        "state instance_id user_id",  # passed the old `in` check as a substring
+        ["state", "instance_id", "user_id"],
+        {"state": 1, "instance_id": "i", "user_id": "u"},
+        {"state": "s", "instance_id": "i", "user_id": 1},
+        {"state": "s", "instance_id": {"owner": "o"}, "user_id": "u"},
+    ])
+    def test_decode_json_not_a_dict_of_strings_raises(self, value: object) -> None:
+        import base64
+
+        from app.api.routes.toolsets import (
+            OAuthConfigError,
+            _decode_state_with_instance,
+        )
+        encoded = base64.urlsafe_b64encode(json.dumps(value).encode()).decode()
+        with pytest.raises(OAuthConfigError, match="Missing required fields"):
+            _decode_state_with_instance(encoded)
+
     def test_decode_json_missing_state_raises(self) -> None:
         import base64
 

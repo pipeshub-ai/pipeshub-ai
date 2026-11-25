@@ -173,6 +173,58 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
       }
     });
 
+    it('the notification consumer stores every event once while the server keeps cutting its sessions mid-statement', async () => {
+      configureInbox(inbox);
+      const topic = `notification-${randomUUID().slice(0, 8)}`;
+      const queue = new Consumer({ groupId: 'notification-consumer-group', clientId: 'c1', claimMinIdleMs: 1_000 }, logger);
+      const consumer = new NotificationConsumer(queue, logger, { sendToUser: () => undefined } as never);
+      const user = newId();
+      const events = Array.from({ length: 40 }, (_, i) => ({ orgId: B, type: 'inbox.cut', recipientUserIds: [user], title: `t${i}`, eventId: randomUUID() }));
+      await consumer.start();
+      await consumer.subscribe([topic], true);
+      await consumer.consume(async () => {});
+      let cutting = true;
+      let cuts = 0;
+      const cut = (async () => {
+        while (cutting) {
+          const [r] = await sql("SELECT count(*) FILTER (WHERE pg_terminate_backend(pid))::int AS n FROM pg_stat_activity WHERE usename = 'pipeshub_node_login' AND datname = current_database()");
+          cuts += Number(r.n);
+          await sleep(150);
+        }
+      })();
+      try {
+        try {
+          const producer = new Producer(logger);
+          // bounded, so a publish that never recovers fails the test and still stops the cuts and the consumer
+          const deadline = Date.now() + 45_000;
+          for (const event of events) {
+            // a send that failed may have committed: send the same event again until one returns, as a retrying producer does
+            for (;;) {
+              try {
+                await producer.publish(topic, { key: 'k', value: event as never });
+                break;
+              } catch (error) {
+                if (Date.now() > deadline) throw error;
+                await sleep(50);
+              }
+            }
+          }
+          await sleep(2_000);
+        } finally {
+          cutting = false;
+          await cut;
+        }
+        await until(async () => (await sql('SELECT count(*)::int AS n FROM platform.queue_deliveries WHERE topic = $1', [topic]))[0].n === 0, 60_000);
+        const rows = await sql('SELECT title, count(*)::int AS n FROM platform.notifications WHERE org_id = $1 AND type = $2 GROUP BY title', [B, 'inbox.cut']);
+        expect(cuts).to.be.greaterThan(0);
+        expect(Object.fromEntries(rows.map((r: { title: string; n: number }) => [r.title, r.n]))).to.deep.equal(
+          Object.fromEntries(events.map((e) => [e.title, 1])),
+        );
+      } finally {
+        await consumer.stop();
+      }
+    });
+
     it('the sweep removes rows past the replay window in every org and keeps newer ones; the service login cannot delete', async () => {
       const [oldA, oldB, fresh] = [randomUUID(), randomUUID(), randomUUID()];
       await inbox.record('g', oldA, A);
