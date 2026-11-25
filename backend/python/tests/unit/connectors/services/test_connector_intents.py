@@ -199,3 +199,47 @@ async def test_a_malformed_group_list_does_not_stop_the_listing() -> None:
     config.kv[EARLIER] = {"orgId": "org-a", "connectorId": "c1", "recordGroupIds": 3}
     await STORE.record(config, org_id="org-b", connector_id="c2", now_ms=1)
     assert {i["orgId"] for i in await STORE.list(config)} == {"org-a", "org-b"}
+
+
+async def test_an_unreadable_earlier_entry_does_not_keep_the_orgs_own_intent_from_settling() -> None:
+    class Corrupt(Config):
+        async def get_config(self, key: str, *a: object, **kw: object) -> object:
+            if key == EARLIER and kw.get("raise_on_error"):
+                raise ValueError("cannot decrypt")
+            return await super().get_config(key, *a, **kw)
+
+    config = Corrupt()
+    config.kv[EARLIER] = "corrupt"
+    await STORE.record(config, org_id="org-a", connector_id="c1", now_ms=1)
+    assert (await STORE.read(config, "org-a", "c1") or {})["requestedAt"] == 1
+    assert await STORE.clear(config, "org-a", "c1") and A not in config.kv
+
+
+@pytest.mark.parametrize("key", [A, EARLIER])
+async def test_a_delete_recorded_since_the_intent_was_read_stays_pending(key: str) -> None:
+    config = Config()
+    old = {"orgId": "org-a", "connectorId": "c1", "requestedAt": 1}
+    config.kv[key] = {**old, "requestedAt": 5}
+    assert await STORE.clear(config, "org-a", "c1", intent=old)
+    assert [i["requestedAt"] for i in await STORE.list(config)] == [5]
+
+
+async def test_settling_an_earlier_entry_keeps_a_newer_intent_of_the_org() -> None:
+    config = Config()
+    old = {"orgId": "org-a", "connectorId": "c1", "requestedAt": 1}
+    config.kv[EARLIER] = old
+    await STORE.record(config, org_id="org-a", connector_id="c1", now_ms=5, recordGroupIds=["g"])
+    assert await STORE.clear(config, "org-a", "c1", intent=old)
+    assert [(i["requestedAt"], i["recordGroupIds"]) for i in await STORE.list(config)] == [(5, ["g"])]
+    assert await STORE.clear(config, "org-a", "c1") and await STORE.list(config) == []
+
+
+async def test_an_intent_another_completer_already_removed_counts_as_cleared() -> None:
+    class Gone(Config):
+        async def delete_config(self, key: str) -> bool:
+            self.kv.pop(key, None)
+            return False
+
+    config = Gone()
+    await STORE.record(config, org_id="org-a", connector_id="c1", now_ms=1)
+    assert await STORE.clear(config, "org-a", "c1")

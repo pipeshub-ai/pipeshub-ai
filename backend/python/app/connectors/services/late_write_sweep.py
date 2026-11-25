@@ -21,6 +21,7 @@ from app.config.constants.arangodb import CollectionNames
 from app.connectors.services.connector_intents import (
     ConnectorIntentStore,
     held_by_another_org,
+    owner_of,
 )
 from app.core.org_context import for_org
 from app.modules.indexing.vector_membership_backfill import (
@@ -161,11 +162,11 @@ class LateWriteSweeper:
                         if requested > now - STALE_MS:
                             return None
                         # It can never be settled.
-                        await self._clear(org_id, connector_id)
+                        await self._clear(intent)
                         return "dropped"
                     if app.get("status") == APP_STATUS_DELETING or requested > now - STALE_MS:
                         return None
-                    await self._clear(org_id, connector_id)
+                    await self._clear(intent)
                     self.logger.info(
                         "Late-write sweep dropped; the connector still exists | org=%s connector=%s",
                         org_id, connector_id,
@@ -176,7 +177,7 @@ class LateWriteSweeper:
                 )
         except Exception:
             if now - requested >= GIVE_UP_MS:
-                await self._clear(org_id, connector_id)
+                await self._clear(intent)
                 self.logger.error(
                     "Late-write sweep given up: its passes for connector %s in org %s have failed for a week "
                     "after its delete", connector_id, org_id, exc_info=True,
@@ -198,11 +199,11 @@ class LateWriteSweeper:
             intent = {**intent, "lastFoundAt": now}
         quiet_since = max(requested, int(intent.get("lastFoundAt") or 0))
         if not left and now - quiet_since >= QUIET_MS:
-            await self._clear(org_id, connector_id)
+            await self._clear(intent)
             self.logger.info("Late-write sweep finished | org=%s connector=%s", org_id, connector_id)
             return "cleared"
         if now - requested >= GIVE_UP_MS:
-            await self._clear(org_id, connector_id)
+            await self._clear(intent)
             self.logger.error(
                 "Late-write sweep given up: something still writes for connector %s in org %s a week after "
                 "its delete (%d left after the last pass)", connector_id, org_id, left,
@@ -220,9 +221,10 @@ class LateWriteSweeper:
                 "Late-write sweep intent not updated | connector=%s", intent.get("connectorId"), exc_info=True,
             )
 
-    async def _clear(self, org_id: str, connector_id: str) -> None:
+    async def _clear(self, intent: dict[str, Any]) -> None:
+        org_id, connector_id = str(owner_of(intent)), str(intent["connectorId"])
         try:
-            if await _STORE.clear(self.config_service, org_id, connector_id):
+            if await _STORE.clear(self.config_service, org_id, connector_id, intent=intent):
                 return
         except Exception:
             self.logger.warning("Late-write sweep intent not cleared | connector=%s", connector_id, exc_info=True)

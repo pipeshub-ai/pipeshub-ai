@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from app.config.configuration_service import delete_config_confirmed
 from app.config.constants.arangodb import CollectionNames
 from app.core.org_context import spawn_detached, system
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -94,13 +95,18 @@ class ConnectorIntentStore:
         self, config_service: ConfigurationService, org_id: str, connector_id: str,
     ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
         """What the org's own key holds, and the earlier version's entry when it is this org's."""
-        unscoped, scoped = [
-            value if isinstance(value, dict) and owner_of(value) == org_id else None
-            for value in [
-                await config_service.get_config(key, use_cache=False, raise_on_error=True)
-                for key in (self._unscoped_key(connector_id), self.key(org_id, connector_id))
-            ]
-        ]
+        try:
+            unscoped = await config_service.get_config(
+                self._unscoped_key(connector_id), use_cache=False, raise_on_error=True,
+            )
+        except Exception:
+            # Not only this org's, so it must not keep this org's own intent from settling. Its entry is then run once
+            # more, or as the list does, skipped for as long as it cannot be read.
+            unscoped = None
+        scoped = await config_service.get_config(self.key(org_id, connector_id), use_cache=False, raise_on_error=True)
+        scoped, unscoped = (
+            value if isinstance(value, dict) and owner_of(value) == org_id else None for value in (scoped, unscoped)
+        )
         return scoped, unscoped
 
     async def record(
@@ -122,23 +128,32 @@ class ConnectorIntentStore:
         if not await config_service.set_config(self.key(org_id, connector_id), intent):
             raise self.error_type(f"could not record {self.what} for connector {connector_id}")
 
-    async def clear(self, config_service: ConfigurationService, org_id: str, connector_id: str) -> bool:
+    async def clear(
+        self, config_service: ConfigurationService, org_id: str, connector_id: str, *,
+        intent: dict[str, Any] | None = None,
+    ) -> bool:
         """A failed read or write is returned, not raised: the intent then runs again,
-        and every cleanup behind one is idempotent.
+        and every cleanup behind one is idempotent. With ``intent``, one recorded since it was read stays pending.
 
         An earlier version's entry is left where it is and marked as settled under the org's own key: it may have become
         another org's by the time a delete reached it."""
         key = self.key(org_id, connector_id)
+
+        def newer(value: dict[str, Any]) -> bool:
+            return intent is not None and int(value.get("requestedAt") or 0) > int(intent.get("requestedAt") or 0)
+
         try:
             scoped, unscoped = await self._stored(config_service, org_id, connector_id)
-            if unscoped is not None:
-                marker = {"orgId": org_id, "connectorId": connector_id, SETTLED: unscoped.get("requestedAt")}
+            kept = scoped if scoped is not None and not is_settled_marker(scoped) and newer(scoped) else None
+            if unscoped is not None and not newer(unscoped):
+                marker = {
+                    **(kept or {"orgId": org_id, "connectorId": connector_id}), SETTLED: unscoped.get("requestedAt"),
+                }
                 return scoped == marker or bool(await config_service.set_config(key, marker))
-            # Absent for deletes made before intents existed and for ones already
-            # settled; Redis reports deleting a missing key as a failure.
-            if scoped is None or is_settled_marker(scoped):
+            # Absent for deletes made before intents existed and for ones already settled.
+            if scoped is None or kept is not None or is_settled_marker(scoped):
                 return True
-            return bool(await config_service.delete_config(key))
+            return await delete_config_confirmed(config_service, key)
         except Exception:
             return False
 

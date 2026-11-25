@@ -87,9 +87,9 @@ async def record_pending_storage_release(
 
 
 async def clear_pending_storage_release(
-    config_service: ConfigurationService, connector_id: str, *, org_id: str,
+    config_service: ConfigurationService, connector_id: str, *, org_id: str, intent: dict[str, Any] | None = None,
 ) -> bool:
-    return await _STORE.clear(config_service, org_id, connector_id)
+    return await _STORE.clear(config_service, org_id, connector_id, intent=intent)
 
 
 async def list_pending_storage_releases(config_service: ConfigurationService) -> list[dict[str, Any]]:
@@ -144,7 +144,7 @@ async def release_connector_storage(
         completed = False
     try:
         if completed:
-            if await clear_pending_storage_release(config_service, connector_id, org_id=org_id):
+            if await clear_pending_storage_release(config_service, connector_id, org_id=org_id, intent=intent):
                 logger.info("Storage release intent cleared | org=%s connector=%s", org_id, connector_id)
                 return True
             # Held back like a failed attempt: released again at once, it would keep every later intent waiting.
@@ -236,7 +236,7 @@ class StorageReleaseReconciler:
                 if requested > now - STALE_MS:
                     continue
                 # It can never be settled.
-                if await clear_pending_storage_release(self.config_service, connector_id, org_id=org_id):
+                if await clear_pending_storage_release(self.config_service, connector_id, org_id=org_id, intent=intent):
                     return "dropped"
                 continue
             if app is not None:
@@ -250,7 +250,7 @@ class StorageReleaseReconciler:
                     return outcome
                 if requested > now - STALE_MS:
                     continue
-                if not await clear_pending_storage_release(self.config_service, connector_id, org_id=org_id):
+                if not await clear_pending_storage_release(self.config_service, connector_id, org_id=org_id, intent=intent):
                     # "dropped" would look again at once, and find the same intent before the later ones.
                     self.logger.warning(
                         "Storage release intent not cleared | org=%s connector=%s", org_id, connector_id,

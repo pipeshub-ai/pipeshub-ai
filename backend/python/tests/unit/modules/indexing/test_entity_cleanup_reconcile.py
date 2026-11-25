@@ -366,3 +366,18 @@ async def test_the_reconcile_reads_and_cleans_inside_the_intents_org() -> None:
     graph.get_document, store.delete_entities_by_connector = reading, cleaning
     assert await rebuilder.tick() == "entity_cleanup"
     assert seen == ["org-9", "org-9"] and peek() is None
+
+
+async def test_an_intent_that_cannot_be_cleared_does_not_hold_up_another_orgs(monkeypatch: pytest.MonkeyPatch) -> None:
+    _, store, config, rebuilder = _setup(
+        {"orgId": "org-8", "connectorId": "stuck", "requestedAt": 0}, {"orgId": "org-9", "connectorId": "gone", "requestedAt": 1},
+    )
+    delete = config.delete_config
+
+    async def refuse(key: str) -> bool:
+        return False if key.endswith("/stuck") else await delete(key)
+
+    monkeypatch.setattr(config, "delete_config", refuse)
+    assert await rebuilder.tick() == "entity_cleanup"
+    assert [c["org"] for c in store.cleanups] == ["org-8", "org-9"]
+    assert f"{PENDING_DIRECTORY}org-9/gone" not in config.kv
