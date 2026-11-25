@@ -72,13 +72,13 @@ function PromptSectionCard({
             flexShrink: 0,
           }}
         >
-          <MaterialIcon name={iconName} size={20} color="var(--accent-9)" />
+          <MaterialIcon name={iconName} size={20} color="var(--accent-11)" />
         </Flex>
         <Flex direction="column" gap="1" style={{ flex: 1 }}>
           <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
             {title}
           </Text>
-          <Text size="1" style={{ color: 'var(--slate-9)', fontWeight: 300, lineHeight: '16px' }}>
+          <Text size="1" style={{ color: 'var(--slate-11)', fontWeight: 300, lineHeight: '16px' }}>
             {description}
           </Text>
         </Flex>
@@ -140,7 +140,7 @@ function PromptEditor({
         style={{ resize: 'vertical' }}
       />
 
-      <Text size="1" style={{ color: 'var(--slate-10)', lineHeight: '16px', fontWeight: 300 }}>
+      <Text size="1" style={{ color: 'var(--slate-11)', lineHeight: '16px', fontWeight: 300 }}>
         {helperText}
       </Text>
     </>
@@ -158,7 +158,7 @@ function PromptConfigCallout() {
         padding: 'var(--space-3) var(--space-4)',
       }}
     >
-       <IconButton variant="soft" size="2" style={{ flexShrink: 0, cursor: 'default', background: 'var(--slate-a2)' }} tabIndex={-1}>
+       <IconButton aria-hidden variant="soft" size="2" style={{ flexShrink: 0, cursor: 'default', background: 'var(--slate-a2)' }} tabIndex={-1}>
         <MaterialIcon name="info" size={16} color="var(--accent-11)" />
       </IconButton>
       <Flex direction="column" gap="1">
@@ -309,7 +309,7 @@ export default function PromptsPage() {
             <Heading size="5" weight="medium" style={{ color: 'var(--slate-12)' }}>
               {t('workspace.prompts.customInstructionsTitle')}
             </Heading>
-            <Text size="2" style={{ color: 'var(--slate-10)', marginTop: 4, display: 'block' }}>
+            <Text size="2" style={{ color: 'var(--slate-11)', marginTop: 4, display: 'block' }}>
               {t('workspace.prompts.customInstructionsDescription')}
             </Text>
           </Box>
@@ -337,7 +337,7 @@ export default function PromptsPage() {
             borderRadius: 'var(--radius-1)',
           }}
         >
-          <IconButton variant="soft" size="2" style={{ flexShrink: 0, cursor: 'default', background: 'var(--slate-a3)' }} tabIndex={-1}>
+          <IconButton aria-hidden variant="soft" size="2" style={{ flexShrink: 0, cursor: 'default', background: 'var(--slate-a3)' }} tabIndex={-1}>
             <MaterialIcon name="info" size={16} color="var(--slate-11)" />
           </IconButton>
           <Text size="1" style={{ color: 'var(--slate-11)', lineHeight: '16px', fontWeight: 300 }}>

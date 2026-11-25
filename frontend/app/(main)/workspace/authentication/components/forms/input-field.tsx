@@ -23,12 +23,12 @@ export function InputField({ field, value, onChange }: InputFieldProps) {
       >
         {field.icon && (
           <TextField.Slot>
-            <MaterialIcon name={field.icon} size={14} color="var(--slate-9)" />
+            <MaterialIcon name={field.icon} size={14} color="var(--slate-11)" />
           </TextField.Slot>
         )}
       </TextField.Root>
       {field.helperText && (
-        <Text size="1" style={{ color: 'var(--slate-10)' }}>
+        <Text size="1" style={{ color: 'var(--slate-11)' }}>
           {field.helperText}
         </Text>
       )}

@@ -28,7 +28,7 @@ export type { StatusBadgeProps, UserStatus } from './status-badge';
 export { WorkspaceRightPanel } from './workspace-right-panel';
 export type { WorkspaceRightPanelProps } from './workspace-right-panel';
 
-export { FormField } from './form-field';
+export { FormField, FormFieldSelectTrigger, FormFieldTextArea, FormFieldTextField, useFormFieldControl } from './form-field';
 export type { FormFieldProps } from './form-field';
 
 export { ConfirmationDialog } from './confirmation-dialog';
@@ -60,6 +60,9 @@ export type { SettingsSectionProps } from './settings-section';
 
 export { SettingsRow } from './settings-row';
 export type { SettingsRowProps } from './settings-row';
+
+export { CursorPagination } from './cursor-pagination';
+export type { CursorPaginationProps } from './cursor-pagination';
 
 export { PaginatedMembersList } from './paginated-members-list';
 export type { PaginatedMembersListProps, PaginatedMembersListHandle } from './paginated-members-list';

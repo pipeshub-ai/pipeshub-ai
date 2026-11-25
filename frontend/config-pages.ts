@@ -31,3 +31,5 @@ export { notFound as GithubAuthCallbackPage } from 'next/navigation';
 export { notFound as SamlSsoSuccessPage } from 'next/navigation';
 export { notFound as OAuthAuthCallbackPage } from 'next/navigation';
 export { notFound as AuthSignInErrorPage } from 'next/navigation';
+export { notFound as ApprovalsInboxPage } from 'next/navigation';
+export { notFound as ApprovalLinkPage } from 'next/navigation';

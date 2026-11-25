@@ -10,10 +10,42 @@ const BYTES_PER_MB = 1024 * 1024;
 // Types
 // ========================================
 
-/** Shape returned / accepted by the settings endpoint */
+/** The admin's answer to the one-time notice about durable agent chat (UX1). */
+export type DurableDefaultChoice = 'adopted' | 'kept' | 'dismissed';
+export type DurableDefaultNotice = 'pending' | DurableDefaultChoice;
+
+/** Shape returned by the settings endpoint */
 export interface PlatformSettingsPayload {
   fileUploadMaxSizeBytes: number;
+  /** Every flag's effective value. */
   featureFlags: Record<string, boolean>;
+  /** Only the flags an admin changed; the rest follow their release default. */
+  featureFlagOverrides?: Record<string, boolean>;
+  notices?: { durableAgentDefault?: DurableDefaultNotice };
+}
+
+/** What a save sends: only what changed. A flag set to its release default follows that default again. */
+export interface PlatformSettingsChanges {
+  fileUploadMaxSizeBytes?: number;
+  featureFlags?: Record<string, boolean>;
+  notices?: { durableAgentDefault: DurableDefaultChoice };
+  /** What the page showed for each setting sent (UX2): the server refuses a save over someone else's newer choice. */
+  expected?: { featureFlags?: Record<string, boolean>; fileUploadMaxSizeBytes?: number };
+}
+
+/** The server's reason code when someone else changed a setting this save decides (UX2). */
+export const LABS_CHANGED = 'labs_changed';
+
+/** A save refused because another admin changed what it decides since the page loaded. */
+export function isLabsChanged(error: unknown): boolean {
+  const failure = error as {
+    statusCode?: number;
+    originalError?: { response?: { data?: { error?: { reasonCode?: unknown } } } };
+  } | null;
+  return (
+    failure?.statusCode === 409 &&
+    failure.originalError?.response?.data?.error?.reasonCode === LABS_CHANGED
+  );
 }
 
 /** A single available feature flag descriptor */
@@ -24,6 +56,8 @@ export interface AvailableFlag {
   defaultEnabled: boolean;
   /** Labs shows these only after "Show advanced feature flags" is opened. */
   advanced?: boolean;
+  /** A switch of the agent harness, which is in beta; listed only where the install turned the harness on. */
+  requiresAgentHarness?: boolean;
 }
 
 export interface AvailableFlagsResponse {
@@ -48,9 +82,9 @@ export const LabsApi = {
     return data;
   },
 
-  /** POST /platform/settings — accepts raw bytes */
-  async saveSettings(payload: PlatformSettingsPayload): Promise<void> {
-    await apiClient.post(SETTINGS_URL, payload, { suppressErrorToast: true });
+  /** POST /platform/settings — records only what is sent */
+  async saveSettings(changes: PlatformSettingsChanges): Promise<void> {
+    await apiClient.post(SETTINGS_URL, changes, { suppressErrorToast: true });
   },
 
   /** GET /platform/feature-flags/available — list of toggleable flags */

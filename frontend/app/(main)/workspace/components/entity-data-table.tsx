@@ -2,7 +2,7 @@
 
 import { useTranslation } from 'react-i18next';
 
-import React, { useState } from 'react';
+import React, { useId, useState } from 'react';
 import { Flex, Box, Text, Checkbox } from '@radix-ui/themes';
 import { EmptyIcon } from '@/app/components/ui/empty-icon';
 import { Spinner } from '@/app/components/ui/spinner';
@@ -36,9 +36,11 @@ export interface EntityDataTableProps<T> {
   /** Extract unique ID from an item */
   getItemId: (item: T) => string;
   /** Currently selected item IDs */
-  selectedIds: Set<string>;
+  selectedIds?: Set<string>;
   /** Called when selection changes */
-  onSelectionChange: (ids: Set<string>) => void;
+  onSelectionChange?: (ids: Set<string>) => void;
+  /** Show the checkbox column (default true); a read-only list with no bulk actions turns it off */
+  selectable?: boolean;
   /** Optional render function for row action cell (⋯ menu) */
   renderRowActions?: (item: T) => React.ReactNode;
   /** Whether data is currently loading */
@@ -47,6 +49,10 @@ export interface EntityDataTableProps<T> {
   hoveredRowId?: string | null;
   /** Callback when a row is clicked (not checkbox or actions) */
   onRowClick?: (item: T) => void;
+  /** Accessible name of the row list at phone width, e.g. the page title */
+  ariaLabel?: string;
+  /** Rows to mark (e.g. those matching a search), with a tinted background and an accent edge */
+  isRowHighlighted?: (item: T) => boolean;
 }
 
 // ========================================
@@ -65,16 +71,23 @@ const CELL_PADDING = '0 var(--space-3)';
  * - Configurable columns via ColumnConfig[]
  * - Hover state on rows
  * - Optional action menu column
+ * - At phone width (≤768 px) a list of cards: first column as the title, the rest as label/value lines
  */
+const EMPTY_SELECTION: Set<string> = new Set();
+const NO_SELECTION_CHANGE = (): void => undefined;
+
 export function EntityDataTable<T>({
   columns: allColumns,
   data,
   getItemId,
-  selectedIds,
-  onSelectionChange,
+  selectedIds = EMPTY_SELECTION,
+  onSelectionChange = NO_SELECTION_CHANGE,
+  selectable = true,
   renderRowActions,
   isLoading,
   onRowClick,
+  ariaLabel,
+  isRowHighlighted,
 }: EntityDataTableProps<T>) {
   const { t } = useTranslation();
   const isMobile = useIsMobile();
@@ -85,6 +98,7 @@ export function EntityDataTable<T>({
   const tableMinWidth =
     38 + columns.reduce((sum, c) => sum + (px(c.width) || px(c.minWidth) || 160), 0) + 80;
   const [hoveredRowId, setHoveredRowId] = useState<string | null>(null);
+  const baseId = useId();
   // Below desktop the table scrolls sideways; pin the ⋯ menu to the right edge so it stays in view.
   const stickyActions: React.CSSProperties = isBelowDesktop
     ? { position: 'sticky', right: 0, zIndex: 1, backgroundColor: 'inherit', boxShadow: '-1px 0 0 var(--olive-3)' }
@@ -135,87 +149,118 @@ export function EntityDataTable<T>({
       </Box>
     ) : null;
 
-  // Phones get a list: a row of desktop columns does not fit 390px, and scrolling it sideways
-  // under a pinned actions cell hid most of each row. The first column leads; the rest follow
-  // as labelled values on one wrapping line.
+  const bodyStyle: React.CSSProperties = {
+    position: 'relative',
+    flex: 1,
+    overflowY: 'auto',
+    opacity: isLoading && data.length > 0 ? 0.55 : 1,
+    transition: 'opacity 150ms ease',
+  };
+
   if (isMobile) {
-    const [primary, ...rest] = columns;
+    const [titleColumn, ...detailColumns] = columns;
     return (
-      <Flex direction="column" data-testid="entity-data-table" style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
+      <Flex direction="column" data-testid="entity-data-table" style={{ flex: 1, overflow: 'hidden' }}>
+        {selectable && (
         <Flex
           align="center"
-          gap="2"
           style={{
             minHeight: 44,
-            padding: '0 var(--space-3)',
             borderBottom: '1px solid var(--olive-6)',
             backgroundColor: 'var(--olive-2)',
-            position: 'sticky',
-            top: 0,
-            zIndex: 2,
             flexShrink: 0,
           }}
         >
-          <Checkbox
-            size="2"
-            checked={allSelected ? true : someSelected ? 'indeterminate' : false}
-            onCheckedChange={handleSelectAll}
-            aria-label={t('table.selectAll')}
-            style={{ cursor: 'pointer' }}
-          />
-          <Text size="1" weight="medium" style={{ color: 'var(--slate-9)' }}>
-            {t('table.selectAll')}
+          <Text as="label" size="1" weight="medium" style={{ color: 'var(--slate-11)' }}>
+            <Flex as="span" align="center" gap="2" style={{ minHeight: 44, padding: '0 var(--space-3)', cursor: 'pointer' }}>
+              <Checkbox
+                size="1"
+                checked={allSelected ? true : someSelected ? 'indeterminate' : false}
+                onCheckedChange={handleSelectAll}
+                aria-label={t('table.selectAll')}
+              />
+              {t('table.selectAll')}
+            </Flex>
           </Text>
         </Flex>
-        <Box style={{ position: 'relative', flex: '1 0 auto', opacity: isLoading && data.length > 0 ? 0.55 : 1 }}>
+        )}
+
+        <Box className="no-scrollbar" style={bodyStyle}>
           {isLoading && data.length === 0 ? (
             <TableSkeleton rows={6} columns={[{ barWidth: 0.6 }]} hasRowActions={Boolean(renderRowActions)} />
           ) : null}
-          {refreshingStatus('52px')}
-          {data.map((item) => {
-            const id = getItemId(item);
-            const isSelected = selectedIds.has(id);
-            return (
-              <Flex
-                key={id}
-                align="start"
-                gap="3"
-                tabIndex={0}
-                role="row"
-                aria-selected={isSelected}
-                onClick={() => onRowClick?.(item)}
-                style={{
-                  padding: 'var(--space-3)',
-                  borderBottom: '1px solid var(--olive-3)',
-                  backgroundColor: isSelected ? 'var(--accent-3)' : 'var(--olive-1)',
-                  cursor: 'pointer',
-                  userSelect: 'none',
-                }}
-              >
-                <Flex align="center" justify="center" className="touch-hit" style={{ paddingTop: 10 }} onClick={(e) => e.stopPropagation()}>
-                  <Checkbox size="2" checked={isSelected} onCheckedChange={() => handleSelectItem(id)} style={{ cursor: 'pointer' }} />
-                </Flex>
-                <Flex direction="column" gap="2" style={{ flex: 1, minWidth: 0 }}>
-                  {primary && <Flex align="center" style={{ minWidth: 0, overflow: 'hidden' }}>{primary.render(item)}</Flex>}
-                  {rest.length > 0 && (
-                    <Flex align="center" wrap="wrap" gap="3" style={{ rowGap: 'var(--space-1)' }}>
-                      {rest.map((col) => (
-                        <Flex key={col.key} align="center" gap="1" style={{ minWidth: 0, maxWidth: '100%' }}>
-                          <Text size="1" style={{ color: 'var(--slate-9)', flexShrink: 0 }}>{col.label}</Text>
-                          <Flex align="center" style={{ minWidth: 0, overflow: 'hidden' }}>{col.render(item)}</Flex>
+          {refreshingStatus('8px')}
+
+          <Box role="list" aria-label={ariaLabel}>
+            {data.map((item, index) => {
+              const id = getItemId(item);
+              const isSelected = selectedIds.has(id);
+              const titleId = `${baseId}-title-${index}`;
+              return (
+                <Flex
+                  key={id}
+                  role="listitem"
+                  tabIndex={0}
+                  align="start"
+                  gap="1"
+                  onClick={() => onRowClick?.(item)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && e.target === e.currentTarget) onRowClick?.(item);
+                  }}
+                  style={{
+                    padding: 'var(--space-2) var(--space-2) var(--space-3) 0',
+                    borderBottom: '1px solid var(--olive-3)',
+                    backgroundColor: isSelected ? 'var(--accent-3)' : isRowHighlighted?.(item) ? 'var(--accent-2)' : 'var(--olive-1)',
+                    boxShadow: isRowHighlighted?.(item) ? 'inset 3px 0 0 var(--accent-9)' : undefined,
+                    cursor: 'pointer',
+                  }}
+                >
+                  {/* A label so the whole 44 px square toggles the small checkbox */}
+                  {selectable ? (
+                  <label
+                    onClick={(e) => e.stopPropagation()}
+                    style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: 44, height: 44, flexShrink: 0, cursor: 'pointer' }}
+                  >
+                    <Checkbox
+                      size="1"
+                      checked={isSelected}
+                      onCheckedChange={() => handleSelectItem(id)}
+                      aria-labelledby={titleId}
+                    />
+                  </label>
+                  ) : (
+                    <Box style={{ width: 'var(--space-4)', flexShrink: 0 }} />
+                  )}
+
+                  <Flex direction="column" gap="1" style={{ flex: 1, minWidth: 0, paddingTop: 'var(--space-2)' }}>
+                    <Flex id={titleId} align="center" style={{ minWidth: 0, minHeight: 28, overflow: 'hidden' }}>
+                      {titleColumn?.render(item)}
+                    </Flex>
+                    <dl style={{ margin: 0, display: 'flex', flexDirection: 'column', gap: 'var(--space-1)' }}>
+                      {detailColumns.map((col) => (
+                        <Flex key={col.key} align="center" gap="2" style={{ minWidth: 0, minHeight: 24 }}>
+                          <dt style={{ width: 96, flexShrink: 0 }}>
+                            <Text size="1" style={{ color: 'var(--slate-11)' }}>
+                              {col.label}
+                            </Text>
+                          </dt>
+                          <dd style={{ margin: 0, minWidth: 0, flex: 1, display: 'flex', alignItems: 'center', overflow: 'hidden' }}>
+                            {col.render(item)}
+                          </dd>
                         </Flex>
                       ))}
+                    </dl>
+                  </Flex>
+
+                  {renderRowActions && (
+                    <Flex align="center" onClick={(e) => e.stopPropagation()} style={{ minHeight: 44, flexShrink: 0 }}>
+                      {renderRowActions(item)}
                     </Flex>
                   )}
                 </Flex>
-                {renderRowActions && (
-                  <Flex align="center" gap="1" style={{ flexShrink: 0, paddingTop: 4 }} onClick={(e) => e.stopPropagation()}>
-                    {renderRowActions(item)}
-                  </Flex>
-                )}
-              </Flex>
-            );
-          })}
+              );
+            })}
+          </Box>
         </Box>
       </Flex>
     );
@@ -244,6 +289,7 @@ export function EntityDataTable<T>({
         }}
       >
         {/* Checkbox column */}
+        {selectable ? (
         <Flex
           align="center"
           style={{ width: CHECKBOX_COL_WIDTH, flexShrink: 0, paddingLeft: 'var(--space-3)', boxSizing: 'border-box' }}
@@ -256,6 +302,9 @@ export function EntityDataTable<T>({
             style={{ cursor: 'pointer' }}
           />
         </Flex>
+        ) : (
+          <Box style={{ width: 'var(--space-2)', flexShrink: 0 }} />
+        )}
 
         {/* Data columns */}
         {columns.map((col) => (
@@ -269,7 +318,7 @@ export function EntityDataTable<T>({
               padding: CELL_PADDING,
             }}
           >
-            <Text size="1" style={{ color: 'var(--olive-9)' }}>
+            <Text size="1" style={{ color: 'var(--olive-11)' }}>
               {col.label}
             </Text>
           </Flex>
@@ -312,6 +361,7 @@ export function EntityDataTable<T>({
           const id = getItemId(item);
           const isSelected = selectedIds.has(id);
           const isHovered = hoveredRowId === id;
+          const isHighlighted = isRowHighlighted?.(item) === true;
 
           return (
             <Flex
@@ -319,7 +369,10 @@ export function EntityDataTable<T>({
               align="center"
               tabIndex={0}
               role="row"
-              aria-selected={isSelected}
+              aria-selected={selectable ? isSelected : undefined}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && e.target === e.currentTarget) onRowClick?.(item);
+              }}
               onMouseEnter={() => setHoveredRowId(id)}
               onMouseLeave={() => setHoveredRowId(null)}
               onClick={() => onRowClick?.(item)}
@@ -330,15 +383,19 @@ export function EntityDataTable<T>({
                 // Opaque so the sticky actions cell (backgroundColor: inherit) still covers what scrolls under it
                 backgroundColor: isSelected
                   ? 'var(--accent-3)'
-                  : isHovered
-                    ? 'var(--olive-3)'
-                    : 'var(--olive-1)',
+                  : isHighlighted
+                    ? isHovered ? 'var(--accent-3)' : 'var(--accent-2)'
+                    : isHovered
+                      ? 'var(--olive-3)'
+                      : 'var(--olive-1)',
+                boxShadow: isHighlighted ? 'inset 3px 0 0 var(--accent-9)' : undefined,
                 transition: 'background-color 120ms ease',
                 cursor: 'pointer',
                 userSelect: 'none',
               }}
             >
               {/* Checkbox cell */}
+              {selectable ? (
               <Flex
                 align="center"
                 style={{ width: CHECKBOX_COL_WIDTH, flexShrink: 0, paddingLeft: 'var(--space-3)', boxSizing: 'border-box' }}
@@ -351,6 +408,9 @@ export function EntityDataTable<T>({
                   style={{ cursor: 'pointer' }}
                 />
               </Flex>
+              ) : (
+                <Box style={{ width: 'var(--space-2)', flexShrink: 0 }} />
+              )}
 
               {/* Data cells */}
               {columns.map((col) => (
