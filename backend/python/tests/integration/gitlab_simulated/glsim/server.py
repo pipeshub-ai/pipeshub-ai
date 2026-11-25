@@ -360,7 +360,10 @@ class Api:
         u = self.gl.users.get(int(uid))
         if u is None:
             raise not_found("404 User Not Found")
-        return self.r.user_full(u, me=False)
+        out = self.r.user_full(u, me=False)
+        if me.is_admin:
+            out["email"] = u.email
+        return out
 
     # ------------------------------------------------------------ projects
 

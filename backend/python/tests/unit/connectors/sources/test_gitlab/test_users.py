@@ -295,6 +295,19 @@ class TestEnrichMembersWithFullUser:
         assert enriched[8] is member
         c.runtime.ds_call.assert_not_called()
 
+    async def test_an_admin_token_looks_up_a_member_listed_with_its_email(self) -> None:
+        """Only the profile shows an admin the account's own address."""
+        c = make_mock_connector()
+        c._is_admin = True
+        users = UsersSync(c)
+        member = SimpleNamespace(id=8, attributes={"public_email": "dev@example.com"})
+        profile = SimpleNamespace(id=8, public_email="dev@example.com", email="private@example.com")
+        c.runtime.ds_call = AsyncMock(return_value=SimpleNamespace(success=True, data=profile))
+
+        enriched = await users._enrich_members_with_full_user({8: member})
+
+        assert enriched[8] is profile
+
     async def test_get_user_failure_uses_member_payload(self) -> None:
         """When get_user fails, the original member payload is kept."""
         c = make_mock_connector()

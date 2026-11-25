@@ -33,9 +33,9 @@ def _filter_op_val(f: Any) -> str:
     return (op.value if hasattr(op, "value") else str(op)).lower()
 
 
-def _shown_emails(*members: Any) -> list[str]:
-    """Every address GitLab shows on these objects of one user, account and public ones alike."""
-    values = [getattr(member, field, None) for member in members for field in ("public_email", "email")]
+def _shown_emails(field: str, *members: object) -> list[str]:
+    """The addresses GitLab shows in this field of these objects of one user."""
+    values = [getattr(member, field, None) for member in members]
     return list(dict.fromkeys(v.strip() for v in values if isinstance(v, str) and v.strip()))
 
 
@@ -613,10 +613,12 @@ class UsersSync:
         token account row stays a member whose identity is unknown.
 
         Every row GitLab listed goes into this sync's user listing, under every
-        address GitLab shows for it; the listing is then finished. Only after that is the creator stub added (an
-        ``AppUser`` under the token account's GitLab id, for an Admin or
-        Auditor persona GitLab lists no row for): it is never a row, and
-        only a creator who gets the token's view has it, since its user
+        address GitLab shows for it; the listing is then finished. Only the
+        account's own ``email``, which GitLab shows to an admin token, identifies
+        a row: a public one is an address the user chose to show. Only after that
+        is the creator stub added (an ``AppUser`` under the token account's GitLab
+        id, for an Admin or Auditor persona GitLab lists no row for): it is never a
+        row, and only a creator who gets the token's view has it, since its user
         takes over the token account's pseudo-group grants.
         """
         c = self.c
@@ -646,11 +648,16 @@ class UsersSync:
                     user_email, member_id,
                 )
 
-            shown = _shown_emails(member, (listed or {}).get(member_id))
-            if user_email and user_email not in shown:
-                shown.append(user_email)
-            for email in shown or [None]:
+            seen_as = (member, (listed or {}).get(member_id))
+            own = _shown_emails("email", *seen_as)
+            public = _shown_emails("public_email", *seen_as)
+            if user_email and user_email not in (*own, *public):
+                own.append(user_email)  # the creator's, on the row of the token account they hold
+            for email in (*own, *public):
                 listing.add_row(email, str(member_id))
+            if not own:
+                # This member may be the authenticator under an address GitLab does not show.
+                listing.add_row(None, str(member_id))
             if not user_email:
                 total_users_skipped += 1
                 self.logger.debug(
