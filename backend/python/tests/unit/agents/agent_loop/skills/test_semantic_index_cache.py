@@ -243,13 +243,14 @@ class TestStalledEmbedderDoesNotHoldTheTurn:
     @pytest.mark.asyncio
     async def test_a_slow_catalog_embed_still_fills_the_cache(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """This turn falls back to keywords; the embed finishes in the background, so the next turn
-        neither waits nor embeds again."""
-        monkeypatch.setattr(si, "SKILL_BULK_EMBED_TIMEOUT_SECONDS", 0.05)
+        finds the vectors cached and embeds nothing."""
+        monkeypatch.setattr(si, "SKILL_BULK_EMBED_TIMEOUT_SECONDS", 0.01)
         embedder = _embedder()
         fast = embedder.aembed_documents.side_effect
+        release = asyncio.Event()
 
         async def slow(texts: list[str]) -> list[list[float]]:
-            await asyncio.sleep(0.2)
+            await release.wait()
             return fast(texts)
 
         embedder.aembed_documents = AsyncMock(side_effect=slow)
@@ -258,9 +259,14 @@ class TestStalledEmbedderDoesNotHoldTheTurn:
         first = _index_with(embedder)
         await first.rebuild(skills)
         assert first._vectors == {}
+        pending = list(si._bulk_embeds.values())
+        assert len(pending) == 1
 
-        await asyncio.sleep(0.3)
+        release.set()
+        await asyncio.gather(*pending)
+        await asyncio.sleep(0)  # let the done-callback store the vectors
+
         second = _index_with(embedder)
-        await asyncio.wait_for(second.rebuild(skills), timeout=0.1)
+        await second.rebuild(skills)
         assert set(second._vectors) == {"a", "b"}
         assert embedder.aembed_documents.await_count == 1
