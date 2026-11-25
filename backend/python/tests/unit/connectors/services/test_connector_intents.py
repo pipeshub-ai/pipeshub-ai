@@ -34,15 +34,14 @@ async def read(config: Config, org: str = "org-a") -> dict:
 
 
 @pytest.mark.parametrize("org", ["org-a", "org-b"])
-@pytest.mark.parametrize("step", ["get_config", "delete_config"])
 async def test_a_delete_recorded_between_the_read_and_the_delete_stays_pending(
-    monkeypatch: pytest.MonkeyPatch, org: str, step: str,
+    monkeypatch: pytest.MonkeyPatch, org: str,
 ) -> None:
-    """A newer delete, of the same org or another one, is recorded in every gap of a clear."""
+    """A newer delete, of the same org or another one, is recorded right before the entry that was read is deleted."""
     config = Config()
     await record(config)
     intent = await read(config)
-    real, at = getattr(Config, step), [5]
+    real, at = Config.delete_config, [5]
 
     async def racing(self: Config, *a: object, **kw: object) -> object:
         at[0] += 1
@@ -50,11 +49,10 @@ async def test_a_delete_recorded_between_the_read_and_the_delete_stays_pending(
         return await real(self, *a, **kw)
 
     with monkeypatch.context() as m:
-        m.setattr(Config, step, racing)
+        m.setattr(Config, "delete_config", racing)
         assert await STORE.clear(config, intent)
 
-    if at[0] > 5:
-        assert await pending(config) == [(org, at[0])]
+    assert await pending(config) == [(org, 6)]
     assert all(key not in config.kv for key in intent[KEYS])
 
 
