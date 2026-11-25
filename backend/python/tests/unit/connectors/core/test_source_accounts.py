@@ -25,6 +25,7 @@ from app.connectors.core.base.data_processor.source_accounts import (
 )
 from app.models.entities import AppUser
 from app.models.permission import EntityType, Permission, PermissionType
+from tests.support.settle import settle
 
 CONNECTOR = "c1"
 
@@ -943,7 +944,7 @@ async def test_a_change_of_hands_waits_for_a_grant_write_under_way_and_removes_a
             await accounts.ensure_loaded(["ana@x.com"])
             assert accounts.holds("ana@x.com", "old-oid")
             judged.set()
-            await asyncio.wait_for(release.wait(), 1)
+            await settle(release.wait())
             directory.calls.append(("write", "ana@x.com"))
 
     async def admit() -> None:
@@ -963,7 +964,7 @@ async def test_a_listing_with_no_change_of_hands_does_not_wait_for_grant_writes(
     directory, accounts, _ = world
     await _admit(directory, accounts, [_user("ana@x.com", "ana-oid")])
     async with grant_fence().shared():
-        await asyncio.wait_for(_admit(directory, accounts, [_user("ana@x.com", "ana-oid")]), 1)
+        await settle(_admit(directory, accounts, [_user("ana@x.com", "ana-oid")]))
 
 
 @pytest.mark.asyncio
