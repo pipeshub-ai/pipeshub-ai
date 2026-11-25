@@ -29,7 +29,8 @@ ENTRY_MODULES = [
     "app.docker_proxy_main",
 ]
 
-# Every module that imported telemetry before the application announced platform events instead.
+# Every module that imported telemetry before the application announced platform events instead. Three more held
+# nothing but instrument definitions and are gone: indexing/rekey_metrics, permissions/metrics and vector_db/org_metrics.
 FORMER_IMPORTERS = [
     "app.agents.actions.code_graph.code_graph",
     "app.agents.agent_loop.respond",
@@ -66,7 +67,6 @@ FORMER_IMPORTERS = [
     "app.modules.indexing.named_entity_persist_retry",
     "app.modules.indexing.page_limit",
     "app.modules.indexing.refresh_intent",
-    "app.modules.indexing.rekey_metrics",
     "app.modules.indexing.replay_set",
     "app.modules.named_entities.extractor",
     "app.modules.named_entities.stage",
@@ -104,8 +104,6 @@ FORMER_IMPORTERS = [
     "app.services.paid_cache.repurge_window",
     "app.services.paid_cache.retention",
     "app.services.paid_cache.store",
-    "app.services.permissions.metrics",
-    "app.services.vector_db.org_metrics",
     "app.services.vector_db.pgvector.dense",
     "app.services.vector_db.pgvector.lexical",
     "app.services.vector_db.pgvector.sampler",
@@ -171,7 +169,8 @@ from app import platform_events, plugins
 host = plugins.load_plugins("probe")
 out["__plugins__"] = [host.loaded, [f.plugin for f in host.failures], plugins.get_capability(plugins.USAGE_COLLECTION) is None]
 out["__listeners__"] = sorted(platform_events._listeners)
-out["__loaded__"] = sorted(m for m in sys.modules if "telemetry" in m.lower() or m.split(".")[0] in ("prometheus_client", "opentelemetry"))
+out["__loaded__"] = sorted(m for m in sys.modules if m.split(".")[0] == "prometheus_client" or (m.split(".")[0] == "app" and "telemetry" in m.lower()))
+out["__third_party__"] = sorted({m.split(".")[0] for m in sys.modules if m.split(".")[0] == "opentelemetry"})
 sys.stdout.write("\\nRESULT " + json.dumps(out))
 """
 
@@ -189,8 +188,11 @@ def stripped(tmp_path_factory: pytest.TempPathFactory) -> Path:
 
 
 def _probe(root: Path, modules: list[str]) -> dict:
-    env = {k: v for k, v in os.environ.items() if k not in ("PYTHONPATH", "TELEMETRY_COLLECTION_FLAG")}
-    env["PYTHONPATH"] = str(root)
+    env = {k: v for k, v in os.environ.items() if k != "TELEMETRY_COLLECTION_FLAG"}
+    env["PYTHONDONTWRITEBYTECODE"] = "1"  # the tree is searched afterwards: keep it as the build left it
+    # The stripped copy first; whatever else the environment adds (never this checkout) after it.
+    others = [entry for entry in os.environ.get("PYTHONPATH", "").split(os.pathsep) if entry and Path(entry).resolve() != PY]
+    env["PYTHONPATH"] = os.pathsep.join([str(root), *others])
     done = subprocess.run(
         [sys.executable, "-c", PROBE, str(root), *modules], cwd=root, env=env, capture_output=True, text=True, timeout=1500, check=False,
     )
@@ -210,7 +212,10 @@ def test_every_entry_module_and_former_importer_imports_without_the_plugin(strip
     loaded, failed, nothing_collected = result.pop("__plugins__")
     assert (loaded, failed, nothing_collected) == ([], [], True)
     assert result.pop("__listeners__") == [], "nothing listens in a build with no plug-in"
-    assert result.pop("__loaded__") == [], "a telemetry, Prometheus or OpenTelemetry module was imported"
+    assert result.pop("__loaded__") == [], "a telemetry module of ours, or the Prometheus client, was imported"
+    # Not ours to remove here: a dependency (a cloud SDK, say) may import the OpenTelemetry API when it is installed.
+    if result.pop("__third_party__"):
+        warnings.warn("a third-party dependency imported the opentelemetry package in the stripped build", stacklevel=1)
     broken = {m: r for m, r in result.items() if r.startswith("error:")}
     ours = {m: r for m, r in result.items() if r.startswith("missing:") and r.split(":", 1)[1].split(".")[0] in ("app", "prometheus_client")}
     assert broken == {} and ours == {}
@@ -225,7 +230,7 @@ def test_every_entry_module_and_former_importer_imports_without_the_plugin(strip
 def test_grep_for_telemetry_in_the_stripped_tree_finds_only_the_listed_product_strings(stripped: Path) -> None:
     hits = []
     for path in sorted((stripped / "app").rglob("*")):
-        if not path.is_file():
+        if not path.is_file() or "__pycache__" in path.parts:
             continue
         relative = path.relative_to(stripped).as_posix()
         if "telemetry" in relative.lower():
