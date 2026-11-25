@@ -86,9 +86,9 @@ async def record_pending_storage_release(
 
 
 async def clear_pending_storage_release(
-    config_service: ConfigurationService, connector_id: str, *, org_id: str | None = None,
+    config_service: ConfigurationService, connector_id: str, *, org_id: str,
 ) -> bool:
-    return await _STORE.clear(config_service, connector_id, org_id=org_id)
+    return await _STORE.clear(config_service, org_id, connector_id)
 
 
 async def list_pending_storage_releases(config_service: ConfigurationService) -> list[dict[str, Any]]:
@@ -236,7 +236,7 @@ class StorageReleaseReconciler:
                 )
                 if requested > now - STALE_MS:
                     continue
-                # It can never be settled, and would keep the connector's own org from recording its delete.
+                # It can never be settled.
                 if await clear_pending_storage_release(self.config_service, connector_id, org_id=org_id):
                     return "dropped"
                 continue

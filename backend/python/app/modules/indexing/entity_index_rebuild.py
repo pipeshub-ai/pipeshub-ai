@@ -395,7 +395,7 @@ class EntityIndexRebuilder:
                 except Exception:
                     self.logger.warning("entity_index_rebuild: cleanup intent not rescheduled", exc_info=True)
                 return False
-            if not await clear_pending_entity_cleanup(self.config_service, connector_id):
+            if not await clear_pending_entity_cleanup(self.config_service, connector_id, org_id=org_id):
                 self.logger.warning("entity_index_rebuild: cleanup intent not cleared | connector=%s", connector_id)
             return True
         return False

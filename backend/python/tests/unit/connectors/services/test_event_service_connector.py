@@ -1612,7 +1612,7 @@ class TestHandleDelete:
 
     @pytest.mark.asyncio
     async def test_a_failed_pre_read_still_cleans_a_gone_connector(self, service) -> None:
-        service.graph_provider.get_document = AsyncMock(side_effect=[ConnectionError("store down"), None])
+        service.graph_provider.get_document = AsyncMock(side_effect=[ConnectionError("store down"), None, None])
         service.graph_provider.delete_connector_instance = AsyncMock(return_value={"success": False, "error": "reply lost"})
         with current_coordinator() as mock_stm, patch.object(event_service_module, "free_lane_of_deleted_connector", new_callable=AsyncMock):
             mock_stm.cancel_sync = AsyncMock()
@@ -1620,6 +1620,15 @@ class TestHandleDelete:
         calls = service.app_container.messaging_producer.send_message.await_args_list
         assert [(c.kwargs["topic"], c.kwargs["message"]["eventType"]) for c in calls] == [
             ("record-events", "deleteConnectorEmbeddings"), ("record-events", "deleteConnectorEntities")]
+
+    @pytest.mark.asyncio
+    async def test_a_connector_that_cannot_be_read_is_not_deleted(self, service) -> None:
+        service.graph_provider.get_document = AsyncMock(side_effect=ConnectionError("store down"))
+        service.graph_provider.delete_connector_instance = AsyncMock()
+        with current_coordinator():
+            assert await service._handle_delete("drive", {"orgId": "org1", "connectorId": "c1"}) is False
+        service.graph_provider.delete_connector_instance.assert_not_awaited()
+        service.graph_provider.batch_upsert_nodes.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_a_gone_connector_whose_cleanup_publish_fails_is_still_acked(self, service) -> None:
@@ -1716,9 +1725,9 @@ class TestHandleDelete:
             mock_stm.cancel_sync = AsyncMock()
             assert await service._handle_delete("gmail", {"orgId": "org1", "connectorId": "c1"}) is True
         assert calls[:4] == [
-            "intent:/services/entityCleanup/pending/c1:org1",
-            "intent:/services/storageRelease/pending/c1:org1",
-            "intent:/services/lateWriteSweep/pending/c1:org1",
+            "intent:/services/entityCleanup/pending/org1/c1:org1",
+            "intent:/services/storageRelease/pending/org1/c1:org1",
+            "intent:/services/lateWriteSweep/pending/org1/c1:org1",
             "graph-delete",
         ]
 
@@ -1729,7 +1738,6 @@ class TestHandleDelete:
         config_svc = AsyncMock()
         config_svc.get_config = AsyncMock(return_value=None)
         config_svc.set_config = AsyncMock(side_effect=lambda key, value: written.__setitem__(key, value) or True)
-        config_svc.create_config_if_absent = config_svc.set_config
         service.graph_provider.get_nodes_by_filters = AsyncMock(return_value=[{"_key": "rg-1"}, {"_key": "rg-2"}])
         service.graph_provider.delete_connector_instance = AsyncMock(return_value={"success": True, "virtual_record_ids": []})
         service.app_container.config_service.return_value = config_svc
@@ -1737,7 +1745,7 @@ class TestHandleDelete:
             mock_stm.cancel_sync = AsyncMock()
             assert await service._handle_delete("gmail", {"orgId": "org1", "connectorId": "c1"}) is True
 
-        assert written["/services/lateWriteSweep/pending/c1"]["recordGroupIds"] == ["rg-1", "rg-2"]
+        assert written["/services/lateWriteSweep/pending/org1/c1"]["recordGroupIds"] == ["rg-1", "rg-2"]
         assert service.graph_provider.get_nodes_by_filters.await_args.kwargs["filters"] == {"connectorId": "c1"}
 
     @pytest.mark.asyncio
@@ -1748,7 +1756,6 @@ class TestHandleDelete:
         config_svc = AsyncMock()
         config_svc.get_config = AsyncMock(return_value=None)
         config_svc.set_config = AsyncMock(side_effect=lambda key, value: written.__setitem__(key, value) or True)
-        config_svc.create_config_if_absent = config_svc.set_config
         service.graph_provider.get_nodes_by_filters = AsyncMock(side_effect=RuntimeError("timeout"))
         service.graph_provider.delete_connector_instance = AsyncMock()
         service.app_container.config_service.return_value = config_svc
@@ -1756,7 +1763,7 @@ class TestHandleDelete:
             mock_stm.cancel_sync = AsyncMock()
             assert await service._handle_delete("gmail", {"orgId": "org1", "connectorId": "c1"}) is False
 
-        assert "/services/lateWriteSweep/pending/c1" not in written
+        assert "/services/lateWriteSweep/pending/org1/c1" not in written
         service.graph_provider.delete_connector_instance.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -1841,7 +1848,7 @@ class TestConfigServiceFor:
         service.app_container.config_service.return_value.delete_config.assert_not_awaited()
         # Cleanup intents are service-wide: the reconcilers read them back.
         written = [c.args[0] for c in service.app_container.config_service.return_value.set_config.await_args_list]
-        assert written[:2] == ["/services/entityCleanup/pending/c1", "/services/storageRelease/pending/c1"]
+        assert written[:2] == ["/services/entityCleanup/pending/org1/c1", "/services/storageRelease/pending/org1/c1"]
 
 
 class TestConnectorClassComesFromStoredType:

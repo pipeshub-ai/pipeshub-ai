@@ -681,7 +681,7 @@ class TestReconciler:
         )
 
         await record_pending_storage_release(config, org_id=ORG, connector_id="conn-a", now_ms=self.NOW - age_ms)
-        key = "/services/storageRelease/pending/conn-a"
+        key = f"/services/storageRelease/pending/{ORG}/conn-a"
         config.kv[key] = {**config.kv[key], **fields}
         return key
 

@@ -44,9 +44,9 @@ async def record_pending_entity_cleanup(
     )
 
 
-async def clear_pending_entity_cleanup(config_service: ConfigurationService, connector_id: str) -> bool:
+async def clear_pending_entity_cleanup(config_service: ConfigurationService, connector_id: str, *, org_id: str) -> bool:
     """Forget the intent once the cleanup finished."""
-    return await _STORE.clear(config_service, connector_id)
+    return await _STORE.clear(config_service, org_id, connector_id)
 
 
 async def reschedule_pending_entity_cleanup(

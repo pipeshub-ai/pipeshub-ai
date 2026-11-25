@@ -32,12 +32,6 @@ class Config:
         self.kv[key] = value
         return True
 
-    async def create_config_if_absent(self, key, value, **_kw) -> bool:
-        if key in self.kv:
-            return False
-        self.kv[key] = value
-        return True
-
     async def delete_config(self, key) -> bool:
         return self.kv.pop(key, None) is not None
 
@@ -57,7 +51,7 @@ async def reconciler(app: dict | None, *, age_ms: int, finish=None, lease=None, 
     config = Config()
     await record_pending_storage_release(config, org_id=ORG, connector_id=KB, now_ms=NOW - age_ms)
     if attempts:
-        key = f"/services/storageRelease/pending/{KB}"
+        key = f"/services/storageRelease/pending/{ORG}/{KB}"
         config.kv[key] = {**config.kv[key], "attempts": attempts}
     lock = SimpleNamespace(try_acquire=AsyncMock(return_value=leader), refresh=AsyncMock(return_value=True))
     return StorageReleaseReconciler(

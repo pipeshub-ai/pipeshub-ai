@@ -977,7 +977,7 @@ class RecordEventHandler(BaseEventService):
                 details={"org_id": org_id, "connector_id": connector_id},
             ) from exc
         self.logger.info("Entity points removed for connector %s (org %s)", connector_id, org_id)
-        if not await clear_pending_entity_cleanup(self.config_service, connector_id):
+        if not await clear_pending_entity_cleanup(self.config_service, connector_id, org_id=org_id):
             # The rebuild loop runs the intent again; cleanup is idempotent.
             self.logger.warning("Entity cleanup intent for connector %s not cleared", connector_id)
 

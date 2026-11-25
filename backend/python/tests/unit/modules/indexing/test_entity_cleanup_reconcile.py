@@ -68,7 +68,7 @@ def _setup(*intents: dict, clock: dict | None = None) -> tuple[Graph, Store, Fak
     clock = clock if clock is not None else {"now": NOW}
     graph.docs[ORGS]["org-1"] = _done_org()  # nothing else to do
     for intent in intents:
-        config.kv[f"{PENDING_DIRECTORY}{intent['connectorId']}"] = intent
+        config.kv[f"{PENDING_DIRECTORY}{intent['orgId']}/{intent['connectorId']}"] = intent
     rebuilder = EntityIndexRebuilder(
         logger=logging.getLogger("t"), graph_provider=graph, store=store, lock=FakeLock(),
         config_service=config, now_ms=lambda: clock["now"],
@@ -251,7 +251,7 @@ async def test_a_failed_removal_for_a_deleted_connector_leaves_an_intent_for_the
 
     await rebuilder.tick()
 
-    intent = config.kv[f"{PENDING_DIRECTORY}app-1"]
+    intent = config.kv[f"{PENDING_DIRECTORY}org-1/app-1"]
     assert (intent["orgId"], intent["connectorId"], intent["connectorName"]) == ("org-1", "app-1", "Drive")
 
 
@@ -333,7 +333,7 @@ async def test_a_failed_post_write_check_leaves_an_intent_for_the_reconcile_pass
     with pytest.raises(RuntimeError, match="graph down"):
         await rebuilder.tick()
 
-    assert f"{PENDING_DIRECTORY}app-1" in config.kv
+    assert f"{PENDING_DIRECTORY}org-1/app-1" in config.kv
 
 
 async def test_losing_the_lock_after_the_write_leaves_an_intent_for_the_reconcile_pass() -> None:
@@ -343,5 +343,5 @@ async def test_losing_the_lock_after_the_write_leaves_an_intent_for_the_reconcil
 
     await rebuilder.tick()
 
-    assert f"{PENDING_DIRECTORY}app-1" in config.kv
+    assert f"{PENDING_DIRECTORY}org-1/app-1" in config.kv
     assert graph.updates == []

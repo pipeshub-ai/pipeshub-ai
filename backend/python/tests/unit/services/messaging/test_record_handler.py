@@ -491,10 +491,11 @@ class TestDeleteConnectorEntitiesEvent:
         store = AsyncMock()
         handler = self._handler_with_store(store)
         handler.config_service.delete_config = AsyncMock(return_value=True)
+        handler.config_service.get_config = AsyncMock(side_effect=lambda key, *_a, **_k: {"orgId": "o"} if "/pending/o/" in key else None)
         await _collect_events(
             handler, EventTypes.DELETE_CONNECTOR_ENTITIES.value, {"orgId": "o", "connectorId": "c"},
         )
-        handler.config_service.delete_config.assert_awaited_once_with("/services/entityCleanup/pending/c")
+        handler.config_service.delete_config.assert_awaited_once_with("/services/entityCleanup/pending/o/c")
 
     @pytest.mark.asyncio
     async def test_a_failed_cleanup_keeps_its_pending_intent(self) -> None:

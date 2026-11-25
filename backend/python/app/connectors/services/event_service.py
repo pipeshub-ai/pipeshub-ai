@@ -1830,9 +1830,16 @@ class EventService:
             # rows are gone, fail to build, and be redelivered forever. The stop
             # endpoint clears it first for exactly this reason.
             # Before anything is stopped, recorded or deleted: not every store scopes this read by org.
-            current = await self.graph_provider.get_document(
-                connector_id, CollectionNames.APPS.value, raise_on_error=True
-            )
+            # Read again once when it fails; a second failure fails the delete, whose connector could be anyone's.
+            try:
+                current = await self.graph_provider.get_document(
+                    connector_id, CollectionNames.APPS.value, raise_on_error=True
+                )
+            except Exception as read_err:
+                self.logger.warning("Connector %s not read before its delete: %s", connector_id, type(read_err).__name__)
+                current = await self.graph_provider.get_document(
+                    connector_id, CollectionNames.APPS.value, raise_on_error=True
+                )
             if current and held_by_another_org(current, org_id):
                 self.logger.error("Connector delete refused: the connector is another org's | org=%s connector=%s", org_id, connector_id)
                 return False

@@ -28,12 +28,6 @@ class FakeConfig:
         assert use_cache is False  # another process wrote it
         return self.kv.get(key, default)
 
-    async def create_config_if_absent(self, key: str, value: object, **_: object) -> bool:
-        if self.fail_set or key in self.kv:
-            return False
-        self.kv[key] = value
-        return True
-
     async def delete_config(self, key: str) -> bool:
         if self.fail_delete:
             return False
@@ -49,11 +43,11 @@ class FakeConfig:
 async def test_an_intent_is_recorded_listed_and_cleared() -> None:
     config = FakeConfig()
     await record_pending_entity_cleanup(config, org_id="o", connector_id="c", connector_name="DRIVE", now_ms=5)
-    assert list(config.kv) == [f"{PENDING_DIRECTORY}c"]
+    assert list(config.kv) == [f"{PENDING_DIRECTORY}o/c"]
     assert await list_pending_entity_cleanups(config) == [
         {"orgId": "o", "connectorId": "c", "connectorName": "DRIVE", "requestedAt": 5},
     ]
-    assert await clear_pending_entity_cleanup(config, "c") is True
+    assert await clear_pending_entity_cleanup(config, "c", org_id="o") is True
     assert await list_pending_entity_cleanups(config) == []
 
 
@@ -76,7 +70,7 @@ async def test_a_failed_clear_is_reported_not_raised() -> None:
     config = FakeConfig()
     await record_pending_entity_cleanup(config, org_id="o", connector_id="c", connector_name=None)
     config.fail_delete = True
-    assert await clear_pending_entity_cleanup(config, "c") is False
+    assert await clear_pending_entity_cleanup(config, "c", org_id="o") is False
 
 
 async def test_clearing_an_absent_intent_writes_nothing() -> None:
@@ -84,4 +78,4 @@ async def test_clearing_an_absent_intent_writes_nothing() -> None:
     settled: the store would log a failed delete for a missing key."""
     config = FakeConfig()
     config.fail_delete = True
-    assert await clear_pending_entity_cleanup(config, "never-recorded") is True
+    assert await clear_pending_entity_cleanup(config, "never-recorded", org_id="o") is True

@@ -637,6 +637,7 @@ class TestHandleDelete:
         calls = []
         config = mock_container.config_service.return_value
         config.set_config = AsyncMock(side_effect=lambda key, _v: calls.append(key) or True)
+        config.get_config = AsyncMock(side_effect=lambda key, *_a, **_k: {"orgId": "org1"} if "/pending/org1/" in key else None)
         config.delete_config = AsyncMock(side_effect=lambda key: calls.append(f"clear:{key}") or True)
         service.graph_provider.delete_connector_instance = AsyncMock(
             side_effect=lambda **kw: calls.append("graph") or {"success": True}
@@ -646,13 +647,13 @@ class TestHandleDelete:
         assert await self._delete_with_helper(service, helper) is True
 
         assert [c for c in calls if "/services/connectors/" not in c][:5] == [
-            "/services/entityCleanup/pending/c1",
-            "/services/storageRelease/pending/c1",
-            "/services/lateWriteSweep/pending/c1",
+            "/services/entityCleanup/pending/org1/c1",
+            "/services/storageRelease/pending/org1/c1",
+            "/services/lateWriteSweep/pending/org1/c1",
             "graph",
             "release",
         ]
-        assert "clear:/services/storageRelease/pending/c1" in calls
+        assert "clear:/services/storageRelease/pending/org1/c1" in calls
         helper.release_connector_storage.assert_awaited_once_with("org1", "c1")
         helper.close.assert_awaited_once()
 
@@ -666,9 +667,9 @@ class TestHandleDelete:
         assert await self._delete_with_helper(service, self._helper([], completed=False)) is True
 
         cleared = [c.args[0] for c in config.delete_config.await_args_list]
-        assert "/services/storageRelease/pending/c1" not in cleared
+        assert "/services/storageRelease/pending/org1/c1" not in cleared
         key, intent = config.set_config.await_args.args
-        assert key == "/services/storageRelease/pending/c1" and intent["attempts"] == 1
+        assert key == "/services/storageRelease/pending/org1/c1" and intent["attempts"] == 1
 
     @pytest.mark.asyncio
     async def test_a_release_that_raises_does_not_fail_the_delete(self, service):

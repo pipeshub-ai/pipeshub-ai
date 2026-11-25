@@ -27,14 +27,37 @@ def held_by_another_org(app: dict[str, Any], org_id: str) -> bool:
     return owner_of(app) not in (None, "", org_id)
 
 
+def _merged(older: dict[str, Any] | None, newer: dict[str, Any] | None) -> dict[str, Any]:
+    """``newer``, with the record groups only ``older`` names."""
+    merged = {**(newer or older or {})}
+    groups = [*((newer or {}).get("recordGroupIds") or []), *((older or {}).get("recordGroupIds") or [])]
+    if groups:
+        merged["recordGroupIds"] = list(dict.fromkeys(groups))
+    return merged
+
+
 class ConnectorIntentStore:
     def __init__(self, directory: str, error_type: type[Exception], what: str) -> None:
         self.directory = directory
         self.error_type = error_type
         self.what = what
 
-    def key(self, connector_id: str) -> str:
+    def key(self, org_id: str, connector_id: str) -> str:
+        """One key per org and connector, so no write or delete for one org can reach another's intent."""
+        return f"{self.directory}{org_id}/{connector_id}"
+
+    def _unscoped_key(self, connector_id: str) -> str:
+        """Where earlier versions kept the intent: read and cleared, never written."""
         return f"{self.directory}{connector_id}"
+
+    async def read(self, config_service: ConfigurationService, org_id: str, connector_id: str) -> dict[str, Any] | None:
+        """The org's intent, whichever version recorded it. Raises when the store cannot answer."""
+        found = None
+        for key in (self._unscoped_key(connector_id), self.key(org_id, connector_id)):
+            value = await config_service.get_config(key, use_cache=False, raise_on_error=True)
+            if isinstance(value, dict) and owner_of(value) == org_id:
+                found = _merged(found, value)
+        return found
 
     async def record(
         self,
@@ -45,77 +68,60 @@ class ConnectorIntentStore:
         now_ms: int | None = None,
         **fields: Any,  # noqa: ANN401
     ) -> None:
-        """Raises ``error_type`` when the KV store refuses the write, or the connector already has an
-        intent of another org: its cleanup is never replaced."""
-        try:
-            earlier = await config_service.get_config(self.key(connector_id), use_cache=False, raise_on_error=True)
-        except Exception as e:
-            raise self.error_type(f"could not read the earlier {self.what} of connector {connector_id}") from e
-        if isinstance(earlier, dict) and owner_of(earlier) not in (None, org_id):
-            raise self.error_type(f"the {self.what} of connector {connector_id} is recorded for another org")
+        """Raises ``error_type`` when the KV store refuses the write."""
         intent = {
             "orgId": org_id,
             "connectorId": connector_id,
             **fields,
             "requestedAt": get_epoch_timestamp_in_ms() if now_ms is None else now_ms,
         }
-        if earlier is None:
-            try:
-                if await config_service.create_config_if_absent(self.key(connector_id), intent):
-                    return
-                # Created since the read: whose it is decides.
-                earlier = await config_service.get_config(self.key(connector_id), use_cache=False, raise_on_error=True)
-            except Exception as e:
-                raise self.error_type(f"could not record {self.what} for connector {connector_id}") from e
-            if isinstance(earlier, dict) and owner_of(earlier) not in (None, org_id):
-                raise self.error_type(f"the {self.what} of connector {connector_id} is recorded for another org")
-        if not await config_service.set_config(self.key(connector_id), intent):
+        if not await config_service.set_config(self.key(org_id, connector_id), intent):
             raise self.error_type(f"could not record {self.what} for connector {connector_id}")
 
-    async def clear(
-        self, config_service: ConfigurationService, connector_id: str, *, org_id: str | None = None,
-    ) -> bool:
-        """A failed delete is returned, not raised: the intent then runs again,
-        and every cleanup behind one is idempotent. With ``org_id``, an intent of another org is left."""
+    async def clear(self, config_service: ConfigurationService, org_id: str, connector_id: str) -> bool:
+        """A failed read or delete is returned, not raised: the intent then runs again,
+        and every cleanup behind one is idempotent."""
         # Absent for deletes made before intents existed and for ones already
         # settled; Redis reports deleting a missing key as a failure.
-        try:
-            current = await config_service.get_config(self.key(connector_id), use_cache=False, raise_on_error=True)
-        except Exception:
-            return False
-        if current is None:
-            return True
-        if org_id is not None and isinstance(current, dict) and owner_of(current) not in (None, org_id):
-            return False
-        return bool(await config_service.delete_config(self.key(connector_id)))
+        cleared = True
+        for key in (self._unscoped_key(connector_id), self.key(org_id, connector_id)):
+            try:
+                value = await config_service.get_config(key, use_cache=False, raise_on_error=True)
+                # An earlier version's key may hold another org's intent: that one is left.
+                if isinstance(value, dict) and owner_of(value) == org_id:
+                    cleared = bool(await config_service.delete_config(key)) and cleared
+            except Exception:
+                cleared = False
+        return cleared
 
     async def reschedule(
         self, config_service: ConfigurationService, intent: dict[str, Any], *, next_attempt_at: int,
     ) -> bool:
-        """Count a failed attempt on ``intent`` and hold it until ``next_attempt_at``. Another org's intent is left."""
-        key = self.key(str(intent["connectorId"]))
-        # Raised, not None: a failed read must never pass for an absent intent and be written over.
-        current = await config_service.get_config(key, use_cache=False, raise_on_error=True)
-        if isinstance(current, dict):
-            if owner_of(current) not in (None, owner_of(intent)):
-                return False
-            # Added to the stored intent since the caller read it.
-            groups = [g for g in current.get("recordGroupIds") or [] if g not in (intent.get("recordGroupIds") or [])]
-            if groups:
-                intent = {**intent, "recordGroupIds": [*(intent.get("recordGroupIds") or []), *groups]}
-        updated = {**intent, "attempts": int(intent.get("attempts") or 0) + 1, "nextAttemptAt": next_attempt_at}
-        return bool(await config_service.set_config(key, updated))
+        """Count a failed attempt on ``intent`` and hold it until ``next_attempt_at``."""
+        org_id, connector_id = str(owner_of(intent)), str(intent["connectorId"])
+        # Raised, not None: what was added to the stored intent since the caller read it is kept.
+        current = await self.read(config_service, org_id, connector_id)
+        updated = {
+            **_merged(current, intent),
+            "attempts": int(intent.get("attempts") or 0) + 1, "nextAttemptAt": next_attempt_at,
+        }
+        # An earlier version's entry stays until the intent is cleared; the list merges the two.
+        return bool(await config_service.set_config(self.key(org_id, connector_id), updated))
 
     async def list(self, config_service: ConfigurationService) -> list[dict[str, Any]]:
         """Every recorded intent, oldest first; malformed entries are skipped."""
-        intents = []
+        intents: dict[tuple[str, str], dict[str, Any]] = {}
+        unscoped: list[dict[str, Any]] = []
         for key in await config_service.list_keys_in_directory(self.directory):
             value = await config_service.get_config(key, use_cache=False)
-            if (
-                isinstance(value, dict)
-                and owner_of(value)
-                and value.get("connectorId")
-                and key == self.key(str(value["connectorId"]))
-            ):
-                intents.append(value)
-        return sorted(intents, key=lambda i: (int(i.get("requestedAt") or 0), str(i["connectorId"])))
+            if not isinstance(value, dict) or not owner_of(value) or not value.get("connectorId"):
+                continue
+            org_id, connector_id = str(owner_of(value)), str(value["connectorId"])
+            if key == self.key(org_id, connector_id):
+                intents[org_id, connector_id] = value
+            elif key == self._unscoped_key(connector_id):
+                unscoped.append(value)
+        for value in unscoped:
+            at = (str(owner_of(value)), str(value["connectorId"]))
+            intents[at] = _merged(value, intents.get(at))
+        return sorted(intents.values(), key=lambda i: (int(i.get("requestedAt") or 0), str(i["connectorId"])))

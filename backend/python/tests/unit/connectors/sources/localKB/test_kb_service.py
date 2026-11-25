@@ -871,9 +871,9 @@ class TestDeleteKnowledgeBase:
         result = await service.delete_knowledge_base("kb1", "user1", "org1")
         assert result["success"] is True
         assert calls[:4] == [
-            "intent:/services/entityCleanup/pending/kb1",
-            "intent:/services/storageRelease/pending/kb1",
-            "intent:/services/lateWriteSweep/pending/kb1",
+            "intent:/services/entityCleanup/pending/org1/kb1",
+            "intent:/services/storageRelease/pending/org1/kb1",
+            "intent:/services/lateWriteSweep/pending/org1/kb1",
             "graph-delete",
         ]
 
@@ -892,10 +892,9 @@ class TestDeleteKnowledgeBase:
         service.graph_provider.delete_connector_instance = AsyncMock(return_value={"success": True, "virtual_record_ids": []})
         mock_config_service.get_config = AsyncMock(return_value=None)
         mock_config_service.set_config = AsyncMock(side_effect=record)
-        mock_config_service.create_config_if_absent = mock_config_service.set_config
 
         assert (await service.delete_knowledge_base("kb1", "user1", "org1"))["success"] is True
-        assert written["/services/lateWriteSweep/pending/kb1"]["recordGroupIds"] == ["kb1"]
+        assert written["/services/lateWriteSweep/pending/org1/kb1"]["recordGroupIds"] == ["kb1"]
         # The harness also reads the KB's publications on delete; the group read is the one on record groups.
         group_reads = [
             c.kwargs for c in service.graph_provider.get_nodes_by_filters.await_args_list
@@ -1008,11 +1007,12 @@ class TestDeleteKBStorageCleanup:
     @pytest.mark.asyncio
     async def test_a_completed_release_clears_its_intent(self, service, mock_config_service):
         helper = self._helper()
+        mock_config_service.get_config = AsyncMock(side_effect=lambda key, *_a, **_k: {"orgId": "org1"} if "/pending/org1/" in key else None)
 
         await self._cleanup(service, helper)
 
         helper.release_connector_storage.assert_awaited_once_with("org1", "kb1")
-        mock_config_service.delete_config.assert_awaited_once_with("/services/storageRelease/pending/kb1")
+        mock_config_service.delete_config.assert_awaited_once_with("/services/storageRelease/pending/org1/kb1")
         helper.close.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -1025,7 +1025,7 @@ class TestDeleteKBStorageCleanup:
 
         mock_config_service.delete_config.assert_not_awaited()
         key, intent = mock_config_service.set_config.await_args.args
-        assert key == "/services/storageRelease/pending/kb1"
+        assert key == "/services/storageRelease/pending/org1/kb1"
         assert intent["attempts"] == 1 and intent["nextAttemptAt"] > 0
         helper.close.assert_awaited_once()
 
@@ -1055,8 +1055,8 @@ class TestDeleteKBStorageCleanup:
             mock_asyncio.create_task.call_args[0][0].close()
 
         assert calls == [
-            "/services/entityCleanup/pending/kb1", "/services/storageRelease/pending/kb1",
-            "/services/lateWriteSweep/pending/kb1", "delete",
+            "/services/entityCleanup/pending/org1/kb1", "/services/storageRelease/pending/org1/kb1",
+            "/services/lateWriteSweep/pending/org1/kb1", "delete",
         ]
 
     @pytest.mark.asyncio

@@ -122,7 +122,7 @@ async def test_an_intent_never_finishes_or_settles_another_orgs_connector(releas
 async def test_a_connector_that_cannot_be_read_does_not_hold_up_another_orgs_release(released: list) -> None:
     outcome, config, _ = await tick_all({"bad": RuntimeError("unreadable")}, {"bad": ORG_A, "gone": ORG_B})
     assert outcome == "released" and [c for c, _ in released] == ["gone"]
-    assert "/services/storageRelease/pending/bad" in config.kv
+    assert f"/services/storageRelease/pending/{ORG_A}/bad" in config.kv
 
 
 async def test_a_store_that_reads_nothing_fails_the_tick_so_the_loop_backs_off(released: list) -> None:

@@ -25,7 +25,7 @@ from app.core.org_context import current_org_id
 
 NOW = 30 * 24 * 60 * 60 * 1000
 ORG, CONNECTOR = "org1", "conn1"
-KEY = f"{PENDING_DIRECTORY}{CONNECTOR}"
+KEY = f"{PENDING_DIRECTORY}{ORG}/{CONNECTOR}"
 
 
 class Config:
@@ -44,12 +44,6 @@ class Config:
         return self.kv.get(key, default)
 
     async def set_config(self, key, value, **_kw) -> bool:
-        self.kv[key] = value
-        return True
-
-    async def create_config_if_absent(self, key, value, **_kw) -> bool:
-        if key in self.kv:
-            return False
         self.kv[key] = value
         return True
 
@@ -328,7 +322,7 @@ async def test_an_intent_never_sweeps_or_settles_another_orgs_connector() -> Non
 @pytest.mark.asyncio
 async def test_another_orgs_pending_sweep_is_neither_replaced_nor_merged() -> None:
     config = await recorded(age_ms=GRACE_MS, recordGroupIds=["theirs"])
-    before = dict(config.kv)
-    with pytest.raises(LateWriteSweepIntentError):
-        await record_pending_late_write_sweep(config, Graph(), org_id="org2", connector_id=CONNECTOR, now_ms=NOW)
-    assert config.kv == before
+    theirs = config.kv[KEY]
+    await record_pending_late_write_sweep(config, Graph(), org_id="org2", connector_id=CONNECTOR, now_ms=NOW)
+    assert config.kv[KEY] == theirs
+    assert config.kv[f"{PENDING_DIRECTORY}org2/{CONNECTOR}"]["recordGroupIds"] == []
