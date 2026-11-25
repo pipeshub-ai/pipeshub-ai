@@ -58,6 +58,7 @@ from app.connectors.services.storage_release import (
 )
 from app.connectors.services.vector_cleanup_events import (
     build_connector_cleanup_events,
+    build_gone_connector_cleanup_events,
     log_cleanup_publish_failure,
 )
 from app.connectors.sources.local_repo.cleanup import remove_mirror
@@ -74,6 +75,7 @@ from app.modules.indexing import refresh_intent
 from app.modules.pipeline.models import RETRYABLE_STAGES, HeadlineField, stage_state_rev
 from app.services.cache.invalidation_hooks import notify_principals_changed
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.services.graph_db.vector_membership_queries import can_use_membership_cleanup
 from app.services.messaging.lanes.lifecycle import free_lane_of_deleted_connector
 from app.utils.logging_fields import log_event, log_fields
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -1768,6 +1770,28 @@ class EventService:
         finally:
             await cleanup_helper.close()
 
+    async def _send_cleanup_events(self, connector_id: str, events: list[dict[str, Any]]) -> None:
+        """Publish a deleted connector's vector-cleanup events (failures logged, never raised), then free its lane."""
+        published = 0
+        for event in events:
+            try:
+                await self.app_container.messaging_producer.send_message(
+                    topic="record-events",
+                    message=event,
+                )
+                published += 1
+            except Exception as kafka_err:
+                log_cleanup_publish_failure(
+                    self.logger, event, f"connector {connector_id}", kafka_err
+                )
+        if events:
+            level = self.logger.info if published == len(events) else self.logger.error
+            level(
+                f"Published {published}/{len(events)} vector-cleanup event(s) "
+                f"for connector {connector_id}"
+            )
+        await free_lane_of_deleted_connector(self.logger, connector_id)
+
     async def _handle_delete(self, connector_name: str, payload: dict[str, Any]) -> bool:
         """
         Handle the async connector deletion event.
@@ -1789,6 +1813,7 @@ class EventService:
 
         graph_deleted = False
         owner_id: str | None = None
+        current: dict | None = None
         try:
             # Stop any sync before deleting the data underneath it.
             #
@@ -1889,6 +1914,12 @@ class EventService:
                         f"Connector {connector_id} is already deleted from the graph; "
                         f"its storage release stays pending"
                     )
+                    if current is not None and not can_use_membership_cleanup(current):
+                        self.logger.error("Connector predates the membership arrays; its untagged embeddings may persist")
+                    # None on a redelivery whose first delivery removed the app: only a collection name, the purge spans them all.
+                    await self._send_cleanup_events(connector_id, build_gone_connector_cleanup_events(
+                        org_id=org_id, connector_id=connector_id, connector_name=(current or {}).get("type"),
+                    ))
                     return True
                 if result.get("partial"):
                     # Part of it is gone and the app's grants with it: reverting the status would show an active connector nobody can open.
@@ -1926,25 +1957,7 @@ class EventService:
                 record_group_ids=result.get("record_group_ids"),
                 virtual_record_ids=result.get("virtual_record_ids", []),
             )
-            published = 0
-            for event in events:
-                try:
-                    await self.app_container.messaging_producer.send_message(
-                        topic="record-events",
-                        message=event,
-                    )
-                    published += 1
-                except Exception as kafka_err:
-                    log_cleanup_publish_failure(
-                        self.logger, event, f"connector {connector_id}", kafka_err
-                    )
-            if events:
-                level = self.logger.info if published == len(events) else self.logger.error
-                level(
-                    f"Published {published}/{len(events)} vector-cleanup event(s) "
-                    f"for connector {connector_id}"
-                )
-            await free_lane_of_deleted_connector(self.logger, connector_id)
+            await self._send_cleanup_events(connector_id, events)
 
             # Shared content is handed over before the connector's storage goes,
             # and its credentials go with it; an unfinished release keeps its

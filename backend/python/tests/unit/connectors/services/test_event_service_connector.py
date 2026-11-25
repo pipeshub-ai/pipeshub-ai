@@ -1555,6 +1555,7 @@ class TestHandleDelete:
             result = await service._handle_delete("gmail", {"orgId": "org1", "connectorId": "c1", "previousIsActive": True})
         assert result is False
         service.graph_provider.batch_upsert_nodes.assert_not_awaited()
+        service.app_container.messaging_producer.send_message.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_a_connector_the_graph_delete_already_removed_is_acked_not_recreated(self, service):
@@ -1572,6 +1573,60 @@ class TestHandleDelete:
         service.graph_provider.batch_upsert_nodes.assert_not_awaited()
         # Its credentials and storage are left to the release its intent keeps.
         config_svc.delete_config.assert_not_awaited()
+
+    async def _delete_gone(self, service, pre_read: dict | None) -> tuple[bool, AsyncMock]:
+        """The cascade's answer is lost and the connector then reads as gone; *pre_read* is the app read before it."""
+        service.graph_provider.get_document = AsyncMock(side_effect=[pre_read, None])
+        service.graph_provider.delete_connector_instance = AsyncMock(return_value={"success": False, "error": "reply lost"})
+        with current_coordinator() as mock_stm, patch.object(
+            event_service_module, "free_lane_of_deleted_connector", new_callable=AsyncMock,
+        ) as free:
+            mock_stm.cancel_sync = AsyncMock()
+            result = await service._handle_delete("drive", {"orgId": "org1", "connectorId": "c1"})
+        return result, free
+
+    @pytest.mark.parametrize("pre_read,name", [
+        ({"type": "Drive", "vectorMembershipBackfilled": True}, "Drive"),
+        (None, None),  # a redelivery whose first delivery removed the app
+    ])
+    @pytest.mark.asyncio
+    async def test_a_connector_that_is_gone_still_has_its_vectors_cleaned(self, service, pre_read, name) -> None:
+        result, free = await self._delete_gone(service, pre_read)
+        assert result is True
+        sent = [(c.kwargs["message"]["eventType"], c.kwargs["message"]["payload"])
+                for c in service.app_container.messaging_producer.send_message.await_args_list]
+        assert sent == [
+            ("deleteConnectorEmbeddings", {"orgId": "org1", "connectorId": "c1", "connectorName": name, "recordGroupIds": []}),
+            ("deleteConnectorEntities", {"orgId": "org1", "connectorId": "c1", "connectorName": name, "recordGroupIds": None}),
+        ]
+        free.assert_awaited_once_with(service.logger, "c1")
+        service.logger.error.assert_not_called()
+
+    @pytest.mark.parametrize("flags", [{}, {"vectorMembershipBackfilled": True, "vectorMembershipBackfillExhausted": True}])
+    @pytest.mark.asyncio
+    async def test_a_gone_connector_whose_points_are_untagged_says_they_persist(self, service, flags) -> None:
+        result, _ = await self._delete_gone(service, {"type": "Drive", **flags})
+        assert result is True
+        errors = [c.args[0] for c in service.logger.error.call_args_list]
+        assert errors == ["Connector predates the membership arrays; its untagged embeddings may persist"]
+
+    @pytest.mark.asyncio
+    async def test_a_failed_pre_read_still_cleans_a_gone_connector(self, service) -> None:
+        service.graph_provider.get_document = AsyncMock(side_effect=[ConnectionError("store down"), None])
+        service.graph_provider.delete_connector_instance = AsyncMock(return_value={"success": False, "error": "reply lost"})
+        with current_coordinator() as mock_stm, patch.object(event_service_module, "free_lane_of_deleted_connector", new_callable=AsyncMock):
+            mock_stm.cancel_sync = AsyncMock()
+            assert await service._handle_delete("drive", {"orgId": "org1", "connectorId": "c1"}) is True
+        calls = service.app_container.messaging_producer.send_message.await_args_list
+        assert [(c.kwargs["topic"], c.kwargs["message"]["eventType"]) for c in calls] == [
+            ("record-events", "deleteConnectorEmbeddings"), ("record-events", "deleteConnectorEntities")]
+
+    @pytest.mark.asyncio
+    async def test_a_gone_connector_whose_cleanup_publish_fails_is_still_acked(self, service) -> None:
+        service.app_container.messaging_producer.send_message = AsyncMock(side_effect=RuntimeError("broker down"))
+        result, free = await self._delete_gone(service, {"type": "Drive", "vectorMembershipBackfilled": True})
+        assert result is True
+        free.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_a_failure_after_the_graph_delete_committed_is_acked_without_a_revert(self, service):
