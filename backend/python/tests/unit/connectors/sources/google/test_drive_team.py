@@ -2066,6 +2066,112 @@ class TestForeignSharedDrive:
         await read(True)
         assert connector._foreign_limited_folders == {("0APG", "folder-F")}
 
+    def _own_drive_viewer(self, connector, existing: MagicMock, *, inherits: bool) -> dict:
+        """A Viewer's read of an item in a drive this Workspace holds, whose sharing no Manager can read."""
+        self._store(connector)
+        metadata = self._viewer_item(connector, parents=["x"], records={"file-1": existing})
+        metadata["driveId"] = "own-drive"
+        del metadata["parents"]
+        connector._drive_sharing_readers = AsyncMock(return_value=set())
+        connector._permissions_as_drive_manager = AsyncMock(return_value=None)
+        connector._is_drive_member = AsyncMock(return_value=True)
+        connector._drive_role_of = AsyncMock(return_value=PermissionType.READ.value)
+        connector._drop_grants_the_drive_keeps_out = AsyncMock()
+        connector.data_entities_processor.inheritance_when_unreadable = AsyncMock(return_value=inherits)
+        return metadata
+
+    @pytest.mark.parametrize(("group", "parent"), [("0OLD", "old-folder"), ("own-drive", None)],
+                             ids=["the-move-itself", "a-later-viewer-pass"])
+    async def test_an_item_moved_into_an_own_drive_with_its_parent_hidden_does_not_start_inheriting(
+        self, connector, group, parent
+    ) -> None:
+        """Its place is unknown: hung off the drive's group it would skip a limited folder above it."""
+        existing = MagicMock(id="rec-1", external_record_group_id=group, parent_external_record_id=parent,
+                             parent_record_type=None, record_name="test.txt")
+        metadata = self._own_drive_viewer(connector, existing, inherits=False)
+
+        result = await connector._process_drive_item(
+            metadata=metadata, user_id="u1", user_email="viewer@example.com", drive_id="own-drive", is_shared_drive=True
+        )
+
+        assert result.record.parent_external_record_id is None
+        assert result.record.inherit_permissions is False
+        connector.data_entities_processor.delete_permission_from_record.assert_not_awaited()
+        connector.data_entities_processor.add_permission_to_record.assert_awaited_once()
+
+    async def test_an_own_drives_item_with_a_known_folder_still_reads_through_the_drive(self, connector) -> None:
+        existing = MagicMock(id="rec-1", external_record_group_id="own-drive", parent_external_record_id="folder-F",
+                             parent_record_type=RecordType.FILE, record_name="test.txt")
+        metadata = self._own_drive_viewer(connector, existing, inherits=False)
+
+        result = await connector._process_drive_item(
+            metadata=metadata, user_id="u1", user_email="viewer@example.com", drive_id="own-drive", is_shared_drive=True
+        )
+
+        assert result.record.parent_external_record_id == "folder-F"
+        assert result.record.inherit_permissions is True
+        connector.data_entities_processor.delete_permission_from_record.assert_awaited_once()
+
+    async def test_a_limited_folder_whose_save_failed_is_queued_when_read_again(self, connector) -> None:
+        """The failed read still stops its inheritance, so a replay must not depend on that edge."""
+        state = self._store(connector)
+        connector._sync_ledger = MagicMock()
+        existing = MagicMock(id="rec-F", external_record_group_id="0APG", parent_external_record_id=None)
+        dep = connector.data_entities_processor
+        dep.get_record_by_external_id = AsyncMock(return_value=existing)
+        inherits = {"rec-F"}
+        dep.inheritance_when_unreadable = AsyncMock(side_effect=lambda _c, record_id: record_id in inherits)
+        dep.stop_inheriting_permissions = AsyncMock(side_effect=lambda record_id, _c: inherits.discard(record_id))
+        connector._fetch_permissions = AsyncMock(return_value=([], True, []))
+        metadata = _make_file_metadata(file_id="folder-F", mime_type="application/vnd.google-apps.folder",
+                                       parents=["0APG"], owners=[])
+        metadata["driveId"] = "0APG"
+        metadata["inheritedPermissionsDisabled"] = True
+        real_update = connector.drive_delta_sync_point.update_sync_point
+        connector.drive_delta_sync_point.update_sync_point = AsyncMock(side_effect=RuntimeError("store down"))
+
+        async def read() -> None:
+            await connector._process_drive_item(
+                metadata=metadata, user_id="u1", user_email="viewer@example.com", drive_id="0APG", is_shared_drive=True
+            )
+
+        await read()
+        connector._sync_ledger.fail_item.assert_called_once_with("folder-F")
+        assert inherits == set() and "foreign_limited_subtrees" not in state
+        connector.drive_delta_sync_point.update_sync_point = real_update
+        await read()
+
+        assert json.loads(state["foreign_limited_subtrees"]["folders"]) == [["0APG", "folder-F"]]
+
+    async def test_a_run_that_stops_after_a_revocation_does_not_bring_the_leaver_back(self, connector) -> None:
+        state = self._store(connector)
+        await connector._note_foreign_drives_reached(self._user("a@example.com"), [self.FOREIGN])
+        await connector._note_foreign_drives_reached(self._user("b@example.com"), [self.FOREIGN])
+        connector._drop_leaver_grants = AsyncMock(side_effect=asyncio.CancelledError)
+        with pytest.raises(asyncio.CancelledError):
+            await connector._note_foreign_drives_reached(self._user("a@example.com"), [])
+        self._next_run(connector)
+        connector._drop_leaver_grants = AsyncMock()
+
+        await connector._note_foreign_drives_reached(self._user("b@example.com"), [self.FOREIGN])
+
+        assert self._last_group_write(connector)[1] == ["b@example.com"]
+        connector._drop_leaver_grants.assert_awaited_once()
+        assert _drives(state)["0APG"]["members"] == ["b@example.com"]
+
+    async def test_a_revocation_that_cannot_be_saved_is_not_written(self, connector) -> None:
+        state = self._store(connector)
+        await connector._note_foreign_drives_reached(self._user("a@example.com"), [self.FOREIGN])
+        await connector._note_foreign_drives_reached(self._user("b@example.com"), [self.FOREIGN])
+        connector.data_entities_processor.on_new_record_groups.reset_mock()
+        connector.drive_delta_sync_point.update_sync_point = AsyncMock(side_effect=RuntimeError("store down"))
+
+        with pytest.raises(RuntimeError):
+            await connector._reconcile_foreign_drives("a@example.com", {})
+
+        connector.data_entities_processor.on_new_record_groups.assert_not_awaited()
+        assert _drives(state)["0APG"]["members"] == ["a@example.com", "b@example.com"]
+
     async def test_a_failed_removal_does_not_stop_the_other_members_check(self, connector) -> None:
         state = self._store(connector)
         await connector._note_foreign_drives_reached(self._user("a@example.com"), [self.FOREIGN])

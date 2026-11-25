@@ -5622,7 +5622,22 @@ class GoogleDriveTeamConnector(BaseConnector):
                         own = [Permission(email=user_email, type=PermissionType.READ, entity_type=EntityType.USER)]
                         new_permissions = await restrict(own) if user_email else []
                         is_fallback_permissions, individually_shared_emails = True, []
-                    if managed is None and read_as["inherits_from_drive"] and user_email and (
+                    # A stored item whose folder in this drive is not known (moved in, or stored without one, and this
+                    # reader is not shown `parents`) is not hung off the drive: that could skip a limited folder above.
+                    # The reader's own grant is their access until a read shows where it sits.
+                    starts_at_unknown_place = (
+                        existing_record is not None and not metadata.get("parents")
+                        and (
+                            moved_between_drives
+                            or (
+                                not existing_record.parent_external_record_id
+                                and not await self.data_entities_processor.inheritance_when_unreadable(
+                                    CollectionNames.RECORDS.value, existing_record.id
+                                )
+                            )
+                        )
+                    )
+                    if managed is None and not starts_at_unknown_place and read_as["inherits_from_drive"] and user_email and (
                         await self._is_drive_member(item_drive_id, user_email)
                     ):
                         # No Manager can list it: a member reaches it from the drive through the folders above, as in
