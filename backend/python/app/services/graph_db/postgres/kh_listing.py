@@ -76,6 +76,9 @@ class LeadBudget:
 
 LINKS = "/* pipeshub:kg.listing_links */ SELECT child_sk, parent_sk, kind FROM kg.links WHERE org_id = $1 AND child_sk = ANY($2::bigint[])"
 APP_DOC = "/* pipeshub:kg.chain_app */ SELECT doc FROM graph.nodes WHERE org_id = $1 AND coll = 'apps' AND id = $2"
+# Whether the user $2 is linked to a source account in the connector $3: kg keys no source account (kg.model.PRINCIPALS), so kg.grant_marks holds none of its grants.
+LINKED_ACCOUNT = """/* pipeshub:kg.chain_linked_account */ SELECT EXISTS (SELECT 1 FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'authenticatedAs'
+    AND e.from_coll = 'users' AND e.from_id = $2 AND e.to_coll = 'sourceAccounts' AND e.doc->>'connectorId' = $3)"""
 KEYS = "/* pipeshub:kg.listing_keys */ SELECT sk, coll, id FROM kg.node_keys WHERE org_id = $1 AND sk = ANY($2::bigint[])"
 DOCS = """/* pipeshub:kg.listing_docs */ SELECT n.coll, n.id, n.doc FROM unnest($2::text[], $3::text[]) AS q(coll, id)
     JOIN graph.nodes n ON n.org_id = $1 AND n.coll = q.coll AND n.id = q.id"""
@@ -475,6 +478,9 @@ class KhListingMixin(PgBase):
             by: dict[int | None, list[int]] = {}
             if (app := await tx.fetchval(APP_DOC, org, app_id)) is None or not chain_tops_apply(_doc(app)):
                 return by, {}
+            # shortcut: a viewer linked to a source account here gets every grant (the walk's input, as before kg.grant_marks); key source accounts in kg to read theirs
+            if await tx.fetchval(LINKED_ACCOUNT, org, user_key, app_id):
+                raise kg_hierarchy.Fallback("source_account")
             for sk, g in (await grant_marks.candidates(tx, org, app_sk, user_key)).items():
                 by.setdefault(g, []).append(sk)
             loose = {r["sk"]: r["id"] for r in await tx.fetch(KEYS, org, by[None])} if by.get(None) else {}      # read here: ``TopGrants.held`` runs inside the caller's units
