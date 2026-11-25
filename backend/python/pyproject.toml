@@ -207,7 +207,7 @@ dependencies = [
     "chardet==7.7.0",
     "confluent-kafka==2.16.0",
     # 8.0.0 (main #5673) clears the lock cooldown on 2026-11-15; SYNCMAIN1114-FU-1 moves to it then.
-    "cachetools==7.2.4",
+    "cachetools==8.0.2",
     "cloudscraper==1.2.71",
     # Outlook .msg bodies kept as compressed RTF (MIT).
     "compressed-rtf==1.0.7",
