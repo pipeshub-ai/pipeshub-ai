@@ -256,7 +256,7 @@ dependencies = [
     "google-cloud-storage==3.17.1",
     # Upper bounds: the model-call wire hooks (app/services/llm_gateway/wire.py) reach into these SDKs'
     # private clients (google-genai's _api_client, anthropic's _client); a new major must be checked first.
-    "google-genai>=1.72.0,<3",
+    "google-genai>=1.72.0,<4",
     "anthropic<1",
     "Jinja2==3.1.6",
     "jsonschema==4.26.0",
