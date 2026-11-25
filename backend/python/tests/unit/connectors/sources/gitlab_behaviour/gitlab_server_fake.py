@@ -59,7 +59,7 @@ class GLUser:
     username: str
     name: str
     public_email: str | None = None
-    # The account's own address: GitLab returns it only to the account itself (GET /user).
+    # The account's own address: GitLab returns it to the account itself (GET /user) and to an admin (GET /users/:id).
     private_email: str | None = None
     is_admin: bool = False
     is_auditor: bool = False
@@ -388,7 +388,9 @@ class FakeGitLab:
             return _json(viewer.to_json(with_roles=True)) if viewer else _not_found("User")
         if len(rest) == 2 and rest[0] == "users":
             user = self.users.get(int(rest[1]))
-            return _json(user.to_json()) if user else _not_found("User")
+            viewer = self._viewer(req)
+            own = {"email": user.private_email} if user and user.private_email and viewer and viewer.is_admin else {}
+            return _json({**user.to_json(), **own}) if user else _not_found("User")
         if rest[:1] == ["groups"]:
             return self._groups(req, rest[1:], raw_path, query)
         if rest[:1] == ["projects"]:

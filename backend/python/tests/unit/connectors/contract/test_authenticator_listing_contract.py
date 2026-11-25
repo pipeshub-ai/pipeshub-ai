@@ -396,11 +396,12 @@ class Slack(Source):
 
 
 class GitLab(Source):
-    """The unscoped walk: each page is one group's member listing."""
+    """The unscoped walk: each page is one group's member listing. The token is an admin's, which GitLab shows
+    every account's own address."""
 
     name = "gitlab"
     connector = GitLabConnector
-    can = frozenset({Can.INACTIVE, Can.SECOND_ADDRESS})
+    can = frozenset({Can.INACTIVE, Can.SECOND_ADDRESS, Can.PUBLIC_ADDRESS})
     failures = (SimpleNamespace(success=False, data=None, error="403"), RuntimeError("reset"))
     # A row with no id, and one whose profile, which holds its email, cannot be read.
     broken = (SimpleNamespace(username="no-id"), SimpleNamespace(id=900, username="u900", name="U900"))
@@ -439,9 +440,9 @@ class GitLab(Source):
         member = {
             "id": uid, "username": f"u{uid}", "name": f"U{uid}", "state": "active" if person.active else "blocked",
         }
-        # An admin's token is shown a user's own address beside the public one.
+        public = person.email if person.public else next(iter(person.also), None)
         self.profiles[uid] = SimpleNamespace(
-            **member, public_email=person.email, email=person.also[0] if person.also else None,
+            **member, public_email=public, email=None if person.public else person.email,
         )
         return SimpleNamespace(**member)
 

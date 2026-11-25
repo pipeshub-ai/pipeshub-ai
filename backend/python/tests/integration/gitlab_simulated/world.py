@@ -472,21 +472,27 @@ class World:
 
     def creator_listed(self) -> bool:
         """Whether the member listing of the scoped project names the creator under their own GitLab
-        account, one that is not the token's: a member whose profile shows the creator's email."""
+        account, one that is not the token's: a member whose profile shows the creator's email. An admin's token
+        is shown every account's own email, any other only the public one."""
         p, creator = self.scoped(), self.gl_user(self.creator_email)
         token_user = self.gl.sync_token.user if self.gl.sync_token else None
-        return (p is not None and creator is not None and creator is not token_user
-                and creator.public_email.lower() == self.creator_email.lower()
-                and creator.id in self.gl.project_member_rows(p))
+        if p is None or creator is None or creator is token_user:
+            return False
+        shown = {creator.public_email.lower()}
+        if token_user is not None and token_user.is_admin:
+            shown.add(creator.email.lower())
+        return self.creator_email.lower() in shown and creator.id in self.gl.project_member_rows(p)
 
     def creator_proved_absent(self) -> bool:
-        """Whether that listing names every member by email and the creator is none of them: one whose profile
-        shows no email may be the creator."""
+        """Whether that listing identifies every member and the creator is none of them. Only the account's own
+        email identifies a member, so only an admin's token proves it: a member who shows a public email alone,
+        or none, may be the creator."""
         p = self.scoped()
-        if p is None or self.creator_listed():
+        token_user = self.gl.sync_token.user if self.gl.sync_token else None
+        if p is None or token_user is None or not token_user.is_admin or self.creator_listed():
             return False
         rows = self.gl.project_member_rows(p)
-        return bool(rows) and all(self.gl.users[uid].public_email for uid in rows)
+        return bool(rows) and all(self.gl.users[uid].email for uid in rows)
 
     def scoped(self) -> Project | None:
         p = self.gl.projects.get(self.scope) if self.scope else None

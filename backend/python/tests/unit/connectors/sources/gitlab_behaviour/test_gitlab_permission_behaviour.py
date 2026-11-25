@@ -135,9 +135,9 @@ async def test_an_admin_token_that_is_not_the_creators_gives_a_creator_with_an_a
 
 
 async def test_an_admin_token_that_is_not_the_creators_gives_an_unlisted_creator_its_view(harness, gitlab, db) -> None:
-    # Every member row names its person and none is the creator: they have no GitLab account.
+    # Every account's own address is shown to the admin and none is the creator's: they have no GitLab account.
     gitlab.add_user(1, "root", is_admin=True, private_email="root@example.com")
-    gitlab.add_user(ALICE, "alice", email="alice@example.com")
+    gitlab.add_user(ALICE, "alice", email="alice@example.com", private_email="alice@corp.example.com")
     gitlab.token_for(1)
     gitlab.add_group("solo")
     gitlab.add_project(21, "solo/one", members={ALICE: REPORTER}, files={"a.py": "x = 1\n"})
@@ -146,6 +146,33 @@ async def test_an_admin_token_that_is_not_the_creators_gives_an_unlisted_creator
     await harness.sync()
 
     assert "owner@example.com" in db.group_access("22-code-repository")
+
+
+async def test_an_admin_token_lists_a_creator_under_the_address_only_an_admin_is_shown(harness, gitlab, db) -> None:
+    gitlab.add_user(1, "root", is_admin=True, private_email="root@example.com")
+    gitlab.add_user(ALICE, "alice", email="alice@home.example.com", private_email="owner@example.com")
+    gitlab.token_for(1)
+    gitlab.add_group("solo")
+    gitlab.add_project(21, "solo/one", members={ALICE: REPORTER}, files={"a.py": "x = 1\n"})
+    gitlab.add_project(22, "solo/two", files={"b.py": "y = 2\n"})
+
+    await harness.sync()
+
+    assert "owner@example.com" not in db.group_access("22-code-repository")
+
+
+async def test_a_token_shown_public_addresses_only_gives_an_unlisted_creator_no_view(harness, gitlab, db) -> None:
+    # alice may be the creator under an address GitLab does not show this token.
+    gitlab.add_user(1, "bot", email="bot@example.com")
+    gitlab.add_user(ALICE, "alice", email="alice@example.com")
+    gitlab.token_for(1)
+    gitlab.add_group("solo")
+    gitlab.add_project(21, "solo/one", members={1: OWNER, ALICE: REPORTER}, files={"a.py": "x = 1\n"})
+
+    await harness.sync()
+
+    assert "alice@example.com" in db.group_access("21-code-repository")
+    assert "owner@example.com" not in db.group_access("21-code-repository")
 
 
 async def test_project_listing_follows_keyset_pages_to_the_end(harness, gitlab, db) -> None:

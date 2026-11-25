@@ -172,6 +172,37 @@ class TestTheListing:
         assert not c._user_listing.is_cut
         assert _presence(c) is Presence.UNKNOWN, "that member may be the creator under their own account"
 
+    async def test_a_member_known_only_by_a_public_email_is_listed_but_proves_nobody_absent(self) -> None:
+        rows = [_member(1, "a@corp.com"), SimpleNamespace(
+            id=2, email=None, public_email="b@home.com", username="u2", name="U2",
+        )]
+        c, users = _scoped(_ok(rows))
+
+        await users.sync_users()
+
+        assert _presence(c, "b@home.com") is Presence.PRESENT
+        assert _presence(c) is Presence.UNKNOWN, "that member may be the creator under an address GitLab hides"
+
+    async def test_a_members_own_and_public_emails_are_both_listed(self) -> None:
+        rows = [SimpleNamespace(id=1, email="a@corp.com", public_email="a@home.com", username="u1", name="U1")]
+        c, users = _scoped(_ok(rows))
+
+        await users.sync_users()
+
+        assert c._user_listing.emails == {"a@corp.com", "a@home.com"}
+        assert _presence(c) is Presence.ABSENT
+        assert _app_user_ids(c) == {"1": "a@home.com"}, "the user is bound as before"
+
+    async def test_an_address_only_the_member_row_shows_is_kept_beside_the_profiles(self) -> None:
+        row = SimpleNamespace(id=1, email="a@corp.com", public_email=None, username="u1", name="U1")
+        profile = SimpleNamespace(id=1, email=None, public_email="a@home.com", username="u1", name="U1")
+        c, users = _scoped(_ok([row]))
+        users._enrich_members_with_full_user = AsyncMock(return_value={1: profile})
+
+        await users.sync_users()
+
+        assert c._user_listing.emails == {"a@corp.com", "a@home.com"}
+
     async def test_an_injected_creator_is_no_row(self) -> None:
         c, users = _scoped(_ok([_member(1, "a@corp.com")]))
         c._gitlab_user_id, c.creator_email = 9, "Creator@Corp.com"

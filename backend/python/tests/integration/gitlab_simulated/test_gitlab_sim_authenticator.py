@@ -3,8 +3,9 @@ when GitLab's member listing proves they have no account of their own there.
 
 A creator the listing names reads what their own membership gives, nothing more: no owner grant made for
 the creator alone, and no link to the token's account. A creator a whole listing does not name gets the
-token's view, and is linked to its account. A member whose email GitLab does not show may be the creator,
-so such a listing proves nothing and gives them nothing.
+token's view, and is linked to its account. Only the account's own email identifies a member, and GitLab shows
+it only to an admin's token: a member known by a public email alone, or by none, may be the creator, so such a
+listing proves nothing and gives them nothing.
 """
 
 from typing import Any
@@ -89,11 +90,11 @@ async def test_a_listed_creator_without_the_token_gets_no_creator_only_owner_and
     assert diff.clean(), diff
 
 
-async def test_an_unlisted_creator_gets_the_token_view(world, org) -> None:
-    """The creator has no GitLab account the listing names: they read what the bot reads, through the link to the
-    bot's account and the owner grant on the group."""
+async def test_an_unlisted_creator_gets_nothing_from_a_token_shown_public_emails_only(world, org) -> None:
+    """The bot is no admin: GitLab shows it each member's public email, which the member chose. Any of them may be
+    the creator under another address, so nothing is proved."""
     gl, p = world.gl, org["project"]
-    bot = bot_token(world, org)
+    bot_token(world, org)
     become_creator(world, world.email("carol"))
     gl.add_issue(p, "Open issue", author=org["dev"])
     gl.add_issue(p, "Confidential", author=org["dev"], confidential=True)
@@ -101,11 +102,27 @@ async def test_an_unlisted_creator_gets_the_token_view(world, org) -> None:
     await world.sync()
 
     assert not world.creator_listed()
-    assert await linked_to(world, world.creator_email) == {await user_key(world, bot.email)}
-    assert (await own_roles(world, world.creator_email)).get(org["group"].full_path) == "OWNER"
+    assert not world.creator_proved_absent()
+    assert await linked_to(world, world.creator_email) == set()
+    assert await own_roles(world, world.creator_email) == {}
+    assert await world.visible_to(world.creator_email) == set()
     assert marker(world) == []
     diff = await world.diff()
     assert diff.clean(), diff
+
+
+async def test_a_creator_an_admin_token_lists_by_their_own_email_alone_is_not_linked(world, org) -> None:
+    """The creator's public email is another address: only the admin's token is shown the one they use here."""
+    gl, p = world.gl, org["project"]
+    admin_token(world, org)
+    become_creator(world, org["gus"].email)
+    org["gus"].public_email = world.email("gus-public")
+    gl.add_issue(p, "Confidential", author=org["dev"], confidential=True)
+    await world.sync()
+
+    assert world.creator_listed()
+    assert await linked_to(world, world.creator_email) == set()
+    assert marker(world) == [await user_key(world, world.creator_email)]
 
 
 async def test_an_unlisted_creator_gets_the_view_of_an_admin_token_with_no_membership(world, org) -> None:
@@ -120,8 +137,10 @@ async def test_an_unlisted_creator_gets_the_view_of_an_admin_token_with_no_membe
     await world.sync()
     await world.sync()      # the row the first sync wrote for the creator must not read as a listing on the next
 
+    assert world.creator_proved_absent()
     assert marker(world) == []
     assert await linked_to(world, world.creator_email) == {await user_key(world, root.email)}
+    assert (await own_roles(world, world.creator_email)).get(org["group"].full_path) == "OWNER"
     diff = await world.diff()
     assert diff.clean(), diff
 
