@@ -3815,6 +3815,31 @@ class TestAFullSyncKeepsWhatItCouldNotWrite:
         assert self._missed(db, graph, stored) == {"1001", "attachment_200", "1005", "1008"}, (
             "still stored with its old grants, so the unlink takes its edges")
 
+    async def test_a_closed_looking_issue_with_grants_whose_close_is_quarantined_is_not_kept(
+        self, jira, db, store, search,
+    ) -> None:
+        connector, stored = await self._synced(jira, db, store, search)
+        unclosed = db.records["1001"].model_copy(update={"access_rule": AccessRule.RESTRICTED, "source_updated_at": 0})
+        db.records["1001"] = unclosed
+        db.record_permissions["1001"] = [Permission(entity_type=EntityType.USER, email="dave@example.com", type=PermissionType.READ)]
+        db.fail_lookup_for = {"1001"}
+        write = db.on_new_records
+
+        async def schema_rejects_the_close(records: list[tuple[Any, list[Any]]]) -> None:
+            if any(r.external_record_id == "1001" and r.rewrite_permissions for r, _ in records):
+                db.records["1001"] = unclosed
+                db.fail_lookup_for = set()
+                db.quarantined.add("1001")
+                return
+            await write(records)
+        db.on_new_records = schema_rejects_the_close
+
+        graph = await run_full_sync(connector, db)
+
+        assert db.record_permissions["1001"], "the quarantined close left its grants"
+        assert stored["1001"] not in db.kept_records, "reads back closed, but still has grants"
+        assert self._missed(db, graph, stored) == {"1001", "attachment_200", "1005", "1008"}
+
     async def test_an_issue_built_this_sync_keeps_its_access(self, jira, db, store, search) -> None:
         connector, stored = await self._synced(jira, db, store, search)
         db.record_permissions["1004"] = [Permission(entity_type=EntityType.USER, email="dave@example.com", type=PermissionType.READ)]

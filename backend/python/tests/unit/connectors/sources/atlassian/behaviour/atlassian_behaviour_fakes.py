@@ -130,6 +130,36 @@ def as_base_record(record: Record) -> Record:
     return Record.model_validate(record.model_dump(include=set(Record.model_fields)))
 
 
+class FakeGrantEdges:
+    """``DataStoreProvider.transaction()`` of a ``FakeRecordsDb`` for its permission edges: an edge into a record per
+    stored grant. ``fail`` makes the read fail as the real providers do: it raises with ``raise_on_error`` and
+    otherwise returns no edges."""
+
+    def __init__(self, db: "FakeRecordsDb") -> None:
+        self.db = db
+        self.fail = False
+
+    @asynccontextmanager
+    async def transaction(self, explicit: bool | None = None) -> AsyncIterator["FakeGrantEdges"]:
+        yield self
+
+    async def get_edges_to_node(self, node_id: str, edge_collection: str, *, raise_on_error: bool = False) -> list[dict]:
+        from app.config.constants.arangodb import CollectionNames
+
+        if self.fail:
+            if raise_on_error:
+                raise RuntimeError("database unavailable")
+            return []
+        assert edge_collection == CollectionNames.PERMISSION.value
+        collection, _, key = node_id.partition("/")
+        assert collection == CollectionNames.RECORDS.value
+        return [
+            {"_from": f"grantee/{i}", "_to": node_id}
+            for external_id, record in self.db.records.items() if record.id == key
+            for i, _ in enumerate(self.db.record_permissions.get(external_id) or [])
+        ]
+
+
 class FakeRecordsDb:
     """In-memory stand-in for ``DataSourceEntitiesProcessor``.
 
@@ -164,6 +194,7 @@ class FakeRecordsDb:
         self.unlinked_record_groups: list[str] = []
         self.fail_group_listing = False
         self.fail_note_kept_group = False
+        self.data_store_provider = FakeGrantEdges(self)
 
     async def get_user_by_user_id(self, user_id: str) -> Optional[SimpleNamespace]:
         if not self.creator_email:
