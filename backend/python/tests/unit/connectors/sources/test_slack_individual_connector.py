@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 from urllib.parse import urlparse
 
@@ -32,6 +32,11 @@ from app.connectors.core.registry.filters import (
 from app.connectors.sources.slack.individual.connector import _numeric_epoch_to_ms
 from app.models.blocks import ChildRecord, ChildType
 from app.models.entities import FileRecord, MessageRecord, Record, RecordGroup, RecordType
+
+if TYPE_CHECKING:
+    from app.connectors.sources.slack.individual.connector import (
+        SlackIndividualConnector,
+    )
 
 
 def _flexible_base_connector_init(self, *args: Any, **kwargs: Any) -> None:
@@ -96,6 +101,8 @@ def _make_connector() -> Any:
     c.channel_groups_cache = {}
     c.channel_id_to_name_cache = {}
     c.channel_type_cache = {}
+    c._kept_channel_ids = set()
+    c._kept_channel_read_from = {}
     c.channel_filter_cache = {}
     c._cache_rebuild_event = None
     c.sync_filters = FilterCollection(filters=[])
@@ -929,6 +936,132 @@ class TestRunSyncOrchestration:
         assert await c.get_signed_url(MagicMock()) == ""
         await c.handle_webhook_notification({})
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("full_sync_running", [False, None], ids=["not-running", "mock-processor"])
+    async def test_an_incremental_sync_does_no_keep_lookups(self, full_sync_running: bool | None) -> None:
+        """Only a full sync unlinks, so an unreadable channel needs no lookups otherwise.
+        ``None`` leaves the processor's MagicMock answer, as older callers do."""
+        c = _make_connector()
+        c.channel_groups_cache["C1"] = "rg"
+        proc = c.data_entities_processor
+        if full_sync_running is not None:
+            proc.full_sync_running = MagicMock(return_value=full_sync_running)
+        proc.get_records_in_record_group = AsyncMock(return_value=[MagicMock()])
+        proc.get_records_by_status = AsyncMock(return_value=[])
+        ds = MagicMock()
+        ds.conversations_history = AsyncMock(return_value=MagicMock(success=False, error="not_in_channel"))
+
+        with (
+            patch(
+                "app.connectors.sources.slack.individual.connector.load_connector_filters",
+                new_callable=AsyncMock,
+                return_value=(c.sync_filters, c.indexing_filters),
+            ),
+            patch.object(type(c), "_sync_users", new=AsyncMock()),
+            patch.object(
+                type(c), "_sync_channels",
+                new=AsyncMock(return_value=[MagicMock(external_group_id="C1")]),
+            ),
+            patch.object(type(c), "_fresh_datasource", new=AsyncMock(return_value=ds)),
+            patch.object(type(c), "_sync_thread_growth", new=AsyncMock()),
+        ):
+            await c.run_sync()
+
+        assert c._kept_channel_ids == {"C1"}
+        proc.get_records_in_record_group.assert_not_awaited()
+        proc.get_records_by_status.assert_not_awaited()
+        assert c._full_sync_read_failed is False
+
+
+class TestKeepUnreadChannels:
+    """A full sync keeps the stored records of a listed channel whose history Slack refused."""
+
+    @staticmethod
+    def _keeping_connector() -> SlackIndividualConnector:
+        c = _make_connector()
+        c._full_sync_read_failed = False
+        c._kept_channel_ids = {"C1"}
+        proc = c.data_entities_processor
+        proc.full_sync_running = MagicMock(return_value=True)
+        proc.get_records_in_record_group = AsyncMock(return_value=[MagicMock()])
+        proc.get_records_by_status = AsyncMock(return_value=[])
+        proc.note_kept_records = MagicMock()
+        proc.note_kept_record_group = AsyncMock()
+        return c
+
+    @staticmethod
+    def _stored(rid: str, group: str) -> SimpleNamespace:
+        return SimpleNamespace(id=rid, external_record_group_id=group, start_ts=None, source_created_at=None)
+
+    @pytest.mark.asyncio
+    async def test_a_failed_keep_lookup_marks_the_full_sync_incomplete(self) -> None:
+        c = self._keeping_connector()
+        proc = c.data_entities_processor
+        proc.get_records_by_status = AsyncMock(side_effect=RuntimeError("graph down"))
+
+        await c._keep_unread_channels()
+
+        assert c._full_sync_read_failed is True
+        assert c.full_sync_coverage().complete is False
+        proc.note_kept_records.assert_not_called()
+        proc.note_kept_record_group.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_the_keep_scan_pages_past_the_first_thousand(self) -> None:
+        from app.services.graph_db.common.record_visibility import RecordVisibility
+
+        c = self._keeping_connector()
+        proc = c.data_entities_processor
+        first = (
+            [self._stored(f"a{i:04d}", "C1") for i in range(600)]
+            + [self._stored(f"b{i:04d}", "thread_C1_5.0") for i in range(200)]
+            + [self._stored(f"c{i:04d}", "C2") for i in range(200)]
+        )
+        last = [self._stored("d0", "C1"), self._stored("d1", "C2"), self._stored("d2", "thread_C2_6.0")]
+        proc.get_records_by_status = AsyncMock(side_effect=[first, last])
+
+        await c._keep_unread_channels()
+
+        calls = proc.get_records_by_status.await_args_list
+        assert len(calls) == 2
+        assert calls[0].kwargs["after_key"] is None
+        assert calls[1].kwargs["after_key"] == first[-1].id
+        assert all(call.kwargs["visibility"] == RecordVisibility.ALL for call in calls)
+        kept = [rid for call in proc.note_kept_records.call_args_list for rid in call.args[1]]
+        assert kept == [r.id for r in first[:800]] + ["d0"]
+        proc.note_kept_record_group.assert_awaited_once_with(c.connector_id, "thread_C1_5.0")
+        assert c._full_sync_read_failed is False
+
+    @pytest.mark.asyncio
+    async def test_a_kept_channel_holding_nothing_skips_the_scan(self) -> None:
+        c = self._keeping_connector()
+        proc = c.data_entities_processor
+        proc.get_records_in_record_group = AsyncMock(return_value=[])
+
+        await c._keep_unread_channels()
+
+        proc.get_records_by_status.assert_not_awaited()
+        proc.note_kept_records.assert_not_called()
+        assert c.full_sync_coverage().complete is True
+
+    @pytest.mark.asyncio
+    async def test_a_first_page_refusal_writes_no_checkpoint_and_stays_complete(self) -> None:
+        c = _pipeline_connector()
+        c._full_sync_read_failed = False
+        ds = MagicMock()
+        ds.conversations_history = _pages(_slack_failure("channel_not_found"))
+
+        with (
+            patch.object(type(c), "_fresh_datasource", new=AsyncMock(return_value=ds)),
+            patch.object(type(c), "_channel_group_map", new=AsyncMock(return_value={"C1": "rg"})),
+        ):
+            await c.sync_channel_messages("C1")
+
+        c.messages_sync_point.update_sync_point.assert_not_awaited()
+        assert c._kept_channel_ids == {"C1"}
+        assert "C1" not in c._kept_channel_read_from
+        assert c._full_sync_read_failed is False
+
 
 class TestTestConnection:
     @pytest.mark.asyncio
@@ -1130,6 +1263,7 @@ class TestProcessFileAndLink:
         parent.external_record_id = "1.0"
         parent.external_record_group_id = "C1"
         parent.record_group_id = "rg-int"
+        parent.source_created_at = None
         lr = await c._process_link("https://x.atlassian.net/browse/ABC-9", parent, ctx, {})
         assert lr.related_external_records == []
 
@@ -1142,6 +1276,7 @@ class TestProcessFileAndLink:
         parent.external_record_id = "1.0"
         parent.external_record_group_id = "C1"
         parent.record_group_id = "rg-int"
+        parent.source_created_at = None
         lr = await c._process_link(
             "https://x.atlassian.net/browse/ABC-9", parent, ctx, {"attachments": []}
         )
@@ -1152,6 +1287,24 @@ class TestProcessFileAndLink:
             side_effect=ValueError,
         ):
             assert await c._process_link("https://z", parent, ctx, {}) is None
+
+    @pytest.mark.asyncio
+    async def test_a_link_takes_the_creation_time_of_its_message(self) -> None:
+        from app.config.constants.arangodb import Connectors, OriginTypes
+
+        c = _make_connector()
+        ctx = _ctx(c)
+        parent = MessageRecord(
+            org_id="org-test", record_name="p", record_type=RecordType.MESSAGE,
+            external_record_id="2.0", external_record_group_id="C1", record_group_id="rg-int",
+            version=1, origin=OriginTypes.CONNECTOR, connector_name=Connectors.SLACK,
+            connector_id="conn", mime_type=MimeTypes.BLOCKS.value,
+            source_created_at=1700000000000,
+        )
+
+        link = await c._process_link("https://example.com/doc", parent, ctx, {})
+
+        assert link.source_created_at == 1700000000000
 
     @pytest.mark.asyncio
     async def test_enrich_link_records(self):
@@ -1400,6 +1553,84 @@ class TestProcessThread:
             ):
                 await c._process_thread_incremental(parent, ctx, "trg", "0.5")
 
+    @staticmethod
+    def _unreadable_thread_connector(full_sync_running: bool | None) -> tuple[Any, Any]:
+        c = _pipeline_connector()
+        rg = MagicMock(id="trg", external_group_id="thread_C1_1.0", group_type="SLACK_THREAD")
+        proc = c.data_entities_processor
+        if full_sync_running is not None:
+            proc.full_sync_running = MagicMock(return_value=full_sync_running)
+        proc.get_records_in_record_group = AsyncMock(return_value=[])
+        proc.note_kept_records = MagicMock()
+        return c, rg
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("full_sync_running", [False, None], ids=["not-running", "mock-processor"])
+    async def test_unreadable_replies_outside_a_full_sync_write_nothing(self, full_sync_running: bool | None) -> None:
+        c, rg = self._unreadable_thread_connector(full_sync_running)
+        parent = {"ts": "1.0", "user": "U1", "text": "root", "reply_count": 2, "thread_ts": "1.0"}
+        with (
+            patch.object(c, "_create_thread_record_group", return_value=rg),
+            patch.object(c, "_fetch_thread_replies_raw", new=AsyncMock(return_value=([], True))),
+        ):
+            assert await c._process_thread(parent, _ctx(c), "rg") is None
+
+        c.data_entities_processor.on_new_records.assert_not_awaited()
+        c.data_entities_processor.get_records_in_record_group.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_unreadable_replies_in_a_full_sync_keep_every_stored_page(self) -> None:
+        from app.services.graph_db.common.record_visibility import RecordVisibility
+
+        c, rg = self._unreadable_thread_connector(True)
+        first = [MagicMock(id=f"r{i:04d}") for i in range(1000)]
+        last = [MagicMock(id="r9999")]
+        proc = c.data_entities_processor
+        proc.get_records_in_record_group = AsyncMock(side_effect=[first, last])
+        parent = {"ts": "1.0", "user": "U1", "text": "root", "reply_count": 2, "thread_ts": "1.0"}
+        with (
+            patch.object(c, "_create_thread_record_group", return_value=rg),
+            patch.object(c, "_fetch_thread_replies_raw", new=AsyncMock(return_value=([], True))),
+        ):
+            assert await c._process_thread(parent, _ctx(c), "rg") is None
+
+        proc.on_new_records.assert_not_awaited()
+        assert [call.args for call in proc.get_records_in_record_group.await_args_list] == [
+            (c.connector_id, "thread_C1_1.0", 1000, None),
+            (c.connector_id, "thread_C1_1.0", 1000, "r0999"),
+        ]
+        assert all(call.kwargs == {"visibility": RecordVisibility.ALL}
+                   for call in proc.get_records_in_record_group.await_args_list)
+        kept = [rid for call in proc.note_kept_records.call_args_list for rid in call.args[1]]
+        assert kept == [r.id for r in first + last]
+
+    @pytest.mark.asyncio
+    async def test_a_failed_keep_of_an_unreadable_thread_marks_the_read_incomplete(self) -> None:
+        """Phase 5 only logs a thread that raises, so the keep itself marks the read incomplete."""
+        c, _ = self._unreadable_thread_connector(True)
+        c._full_sync_read_failed = False
+        c.data_entities_processor.get_records_in_record_group = AsyncMock(side_effect=RuntimeError("graph down"))
+
+        with pytest.raises(RuntimeError):
+            await c._keep_unread_thread("thread_C1_1.0")
+
+        assert c._full_sync_read_failed is True
+
+    @pytest.mark.asyncio
+    async def test_a_thread_whose_replies_were_all_deleted_is_rewritten_in_a_full_sync(self) -> None:
+        """No replies with a reply_count of 0 is a complete read, not a refusal."""
+        c, rg = self._unreadable_thread_connector(True)
+        parent = {"ts": "1.0", "user": "U1", "text": "root", "reply_count": 0, "thread_ts": "1.0"}
+        with (
+            patch.object(c, "_create_thread_record_group", return_value=rg),
+            patch.object(c, "_fetch_thread_replies_raw", new=AsyncMock(return_value=([], True))),
+        ):
+            assert await c._process_thread(parent, _ctx(c), "rg") is True
+
+        c.data_entities_processor.get_records_in_record_group.assert_not_awaited()
+        c.data_entities_processor.note_kept_records.assert_not_called()
+        c.data_entities_processor.on_new_records.assert_awaited()
+
 
 # ---------------------------------------------------------------------------
 # sync_channel_messages & thread growth & change detection
@@ -1560,7 +1791,12 @@ class TestSyncChannelMessages:
         ):
             await c.sync_channel_messages("C1")
 
-        c.audit_log_sync_point.read_sync_point = AsyncMock(side_effect=RuntimeError("sp"))
+        async def thread_sync_point_fails(key: str) -> None:
+            # The channel's pending threads read fine; the thread's own sync point does not.
+            if "slack_thread" in key:
+                raise RuntimeError("sp")
+
+        c.audit_log_sync_point.read_sync_point = AsyncMock(side_effect=thread_sync_point_fails)
         with (
             patch.object(type(c), "_fresh_datasource", new=AsyncMock(return_value=ds)),
             patch.object(type(c), "_channel_group_map", new=AsyncMock(return_value={"C1": "rg"})),
@@ -1990,6 +2226,20 @@ class TestHandleNewThread:
         c.data_entities_processor.get_record_group_by_external_id = AsyncMock(side_effect=[RuntimeError("x"), MagicMock(id="trg")])
         with patch.object(type(c), "_process_thread_incremental", new=AsyncMock()):
             await c._handle_new_thread(md, "C1", "1.0")
+
+    @pytest.mark.asyncio
+    async def test_refused_replies_return_none_and_write_no_checkpoint(self) -> None:
+        c = _make_connector()
+        md = {"ts": "1.0", "user": "U1", "text": "t", "reply_count": 1, "thread_ts": "1.0", "latest_reply": "1.1"}
+        c.data_entities_processor.get_record_group_by_external_id = AsyncMock(return_value=None)
+        c.audit_log_sync_point.read_sync_point = AsyncMock(return_value=None)
+
+        with patch.object(type(c), "_process_thread", new=AsyncMock(return_value=None)):
+            assert await c._handle_new_thread(md, "C1", "1.0") is None
+
+        c.audit_log_sync_point.update_sync_point.assert_not_awaited()
+        # Refused, not partly read.
+        assert not any("partly fetched" in str(call) for call in c.logger.warning.call_args_list)
 
 
 # ---------------------------------------------------------------------------
@@ -3813,8 +4063,11 @@ class TestFailedPageDoesNotAdvanceCheckpoint:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("error", ["channel_not_found", "not_in_channel"])
-    async def test_permanent_skip_on_page_two_still_writes_checkpoint(self, error: str | None) -> None:
+    async def test_permanent_skip_on_page_two_keeps_the_checkpoint(self, error: str | None) -> None:
+        """The run stays complete (the channel's stored records are kept), but the older
+        pages were never read, so the next sync must still read them."""
         c = _pipeline_connector()
+        c._full_sync_read_failed = False
         ds = MagicMock()
         ds.conversations_history = _pages(
             _slack_ok([{"ts": "10.0", "user": "U1", "text": "newest"}], next_cursor="c2"),
@@ -3827,7 +4080,10 @@ class TestFailedPageDoesNotAdvanceCheckpoint:
         ):
             await c.sync_channel_messages("C1")
 
-        c.messages_sync_point.update_sync_point.assert_awaited_once()
+        c.messages_sync_point.update_sync_point.assert_not_awaited()
+        assert c._kept_channel_ids == {"C1"}
+        assert c._kept_channel_read_from == {"C1": "10.0"}
+        assert c._full_sync_read_failed is False
 
     @pytest.mark.asyncio
     async def test_partial_thread_replies_do_not_write_thread_checkpoint(self) -> None:
@@ -4041,7 +4297,37 @@ class TestFailedPageDoesNotAdvanceCheckpoint:
         c.messages_sync_point.update_sync_point.assert_awaited_once()
         _key, payload = c.messages_sync_point.update_sync_point.call_args[0]
         assert payload == {"last_sync_time": "5.0"}
+        # The stored replies were kept, not read: no thread sync point, but it is pending a retry.
         c.audit_log_sync_point.update_sync_point.assert_awaited_once()
+        key, payload = c.audit_log_sync_point.update_sync_point.call_args[0]
+        assert "slack_pending_threads" in key
+        assert payload == {"thread_ts": ["5.0"]}
+        # Refused, not partly read.
+        assert not any("partly fetched" in str(call) for call in c.logger.warning.call_args_list)
+
+    @pytest.mark.asyncio
+    async def test_a_failed_keep_of_refused_replies_holds_the_channel_checkpoint(self) -> None:
+        c = _pipeline_connector()
+        c._full_sync_read_failed = False
+        c.data_entities_processor.full_sync_running = MagicMock(return_value=True)
+        c.data_entities_processor.get_records_in_record_group = AsyncMock(side_effect=RuntimeError("graph down"))
+        root = {
+            "ts": "5.0", "user": "U1", "text": "root",
+            "thread_ts": "5.0", "reply_count": 2, "latest_reply": "5.2",
+        }
+        ds = MagicMock()
+        ds.conversations_history = _pages(_slack_ok([root]))
+        ds.conversations_replies = _pages(_slack_failure("thread_not_found"))
+
+        with (
+            patch.object(type(c), "_fresh_datasource", new=AsyncMock(return_value=ds)),
+            patch.object(type(c), "_channel_group_map", new=AsyncMock(return_value={"C1": "rg"})),
+        ):
+            await c.sync_channel_messages("C1")
+
+        c.messages_sync_point.update_sync_point.assert_not_awaited()
+        c.audit_log_sync_point.update_sync_point.assert_not_awaited()
+        assert c._full_sync_read_failed is True
 
 
 class TestFullSyncCoverage:
@@ -4078,6 +4364,26 @@ class TestFullSyncCoverage:
             await c.sync_channel_messages("C1")
 
         assert c.full_sync_coverage().complete is False
+
+    def test_a_stored_record_without_start_ts_is_judged_by_its_creation_time(self) -> None:
+        """A record with no start_ts (a file, a link) counts as read from its creation time."""
+        c = _make_connector()
+        c._kept_channel_read_from = {"C1": "100.5"}
+
+        def record(created_ms: int | None) -> SimpleNamespace:
+            return SimpleNamespace(external_record_group_id="C1", start_ts=None, source_created_at=created_ms)
+
+        assert c._read_this_run(record(100_500)) is True
+        assert c._read_this_run(record(100_499)) is False
+        assert c._read_this_run(record(None)) is False
+        # A burst whose first message is the oldest one read was rewritten from the read pages.
+        burst = SimpleNamespace(external_record_group_id="C1", start_ts="100.5", source_created_at=None)
+        assert c._read_this_run(burst) is True
+        # A thread is judged by its parent's ts.
+        older = SimpleNamespace(external_record_group_id="thread_C1_100.4", start_ts="200.0", source_created_at=None)
+        newer = SimpleNamespace(external_record_group_id="thread_C1_100.6", start_ts=None, source_created_at=None)
+        assert c._read_this_run(older) is False
+        assert c._read_this_run(newer) is True
 
 
     @pytest.mark.asyncio
