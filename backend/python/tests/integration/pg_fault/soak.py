@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import collections
 import contextlib
 import json
 import os
@@ -33,6 +34,7 @@ from tests.integration.pg_fault.load import (
     Stack,
     login,
     maintainers_work,
+    until,
 )
 
 if TYPE_CHECKING:
@@ -40,7 +42,7 @@ if TYPE_CHECKING:
 
 
 def _docker(*args: str) -> str:
-    return subprocess.run(["docker", *args], check=True, capture_output=True, text=True).stdout.strip()
+    return subprocess.run(["docker", *args], check=True, capture_output=True, text=True, timeout=300).stdout.strip()
 
 
 def _stack() -> Stack:
@@ -69,9 +71,19 @@ def _faults(stack: Stack, pg: str, pooler: str, outage_s: float) -> dict[str, Ca
         await asyncio.to_thread(_docker, "restart", "-t", "60", pg)        # the image stops with SIGINT: a fast shutdown
 
     async def restart_immediate() -> None:
-        await asyncio.to_thread(_docker, "kill", "-s", "QUIT", pg)         # SIGQUIT to the postmaster: an immediate shutdown, crash recovery at start
-        await asyncio.to_thread(_docker, "wait", pg)
-        await asyncio.to_thread(_docker, "start", pg)
+        # SIGQUIT to the postmaster: an immediate shutdown, crash recovery at start. The restart policy may bring the container back
+        # before anything could wait for its exit, so watch its start time instead of waiting on the exit.
+        before = await asyncio.to_thread(_docker, "inspect", "-f", "{{.State.StartedAt}}", pg)
+        await asyncio.to_thread(_docker, "kill", "-s", "QUIT", pg)
+        for _ in range(600):
+            status, started = (await asyncio.to_thread(_docker, "inspect", "-f", "{{.State.Status}} {{.State.StartedAt}}", pg)).split(" ", 1)
+            if status == "running" and started != before:
+                return
+            if status == "exited":
+                await asyncio.to_thread(_docker, "start", pg)
+                return
+            await asyncio.sleep(0.5)
+        raise RuntimeError("the server container did not stop and start again after SIGQUIT")
 
     async def pooler_restart() -> None:
         await asyncio.to_thread(_docker, "restart", "-t", "10", pooler)
@@ -132,10 +144,19 @@ async def _cycle(stack: Stack, reads: Reads, fault: Callable[[], Awaitable[None]
         await fault()
         await _wait_up(stack)
         took = time.monotonic() - t0
+        # what had worked before the fault must work again after it, as in test_fault_recovery.py: totals alone would pass a load
+        # that stopped at the fault
+        before = {c.name: collections.Counter(c.done) for c in comps}
         await asyncio.sleep(run_s / 2)
+
+        async def recovered() -> bool:
+            return not any(c.stalled_since(before[c.name]) for c in comps)
+        await until(recovered, 180)
         await asyncio.gather(*(c.stop_load() for c in comps))
         await asyncio.gather(*(c.settle(180) for c in comps))
         problems = {c.name: await c.check() for c in comps}
+        for c in comps:
+            problems[c.name] += [f"no {kind} succeeded after the fault" for kind in c.stalled_since(before[c.name])]
         problems["maintainers"] = await maintainers_work(stack)
         return {"fault_s": round(took, 1), "errors": {c.name: dict(c.errors) for c in comps if c.errors},
                 "problems": {k: v[:20] for k, v in problems.items() if v},
