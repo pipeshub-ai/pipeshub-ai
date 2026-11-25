@@ -307,7 +307,7 @@ describe('createUserAccountRouter', () => {
       );
       expect(initAuthRoute).to.not.be.undefined;
       // validation + handler
-      expect(initAuthRoute.route.stack.length).to.be.greaterThanOrEqual(2);
+      expect(initAuthRoute!.route!.stack.length).to.be.greaterThanOrEqual(2);
     });
 
     it('should have auth session middleware on authenticate route', () => {
@@ -319,7 +319,7 @@ describe('createUserAccountRouter', () => {
       );
       expect(authenticateRoute).to.not.be.undefined;
       // authSessionMiddleware + validation + handler
-      expect(authenticateRoute.route.stack.length).to.be.greaterThanOrEqual(2);
+      expect(authenticateRoute!.route!.stack.length).to.be.greaterThanOrEqual(2);
     });
 
     it('should have scoped token validator on refresh/token route', () => {
@@ -331,7 +331,7 @@ describe('createUserAccountRouter', () => {
       );
       expect(refreshRoute).to.not.be.undefined;
       // scopedTokenValidator + handler
-      expect(refreshRoute.route.stack.length).to.be.greaterThanOrEqual(2);
+      expect(refreshRoute!.route!.stack.length).to.be.greaterThanOrEqual(2);
     });
 
     // A PAT or OAuth token signed with the same secret as a session must not
@@ -342,7 +342,6 @@ describe('createUserAccountRouter', () => {
         ['/password/status', 'get'],
         ['/password/setup/email', 'post'],
         ['/password/reset', 'post'],
-        ['/logout/manual', 'post'],
       ]) {
         const layer = (router.stack as any[]).find(
           (l) => l.route?.path === path && l.route.methods[method],
@@ -355,6 +354,22 @@ describe('createUserAccountRouter', () => {
       }
     });
 
+    // R41OPS-FU-7: sign-out clears the session cookie first; with a bearer it is the live-session check as before.
+    it('signs out a bearer caller through the live interactive session check', () => {
+      const router = createUserAccountRouter(container);
+      const layer = (router.stack as any[]).find(
+        (l) => l.route?.path === '/logout/manual' && l.route.methods.post,
+      );
+      const chain = layer.route.stack.map((l: any) => l.handle);
+      const req: any = { headers: { authorization: 'Bearer access' } };
+      const res: any = { locals: {}, clearCookie: sinon.stub() };
+      mockAuthMiddleware.authenticate.resetHistory();
+      chain[0](req, res, () => undefined);
+      expect(res.clearCookie.callCount).to.equal(2);
+      chain[1](req, res, () => undefined);
+      expect(mockAuthMiddleware.authenticate.calledOnce).to.be.true;
+    });
+
     it('should have scoped token validator on internal/password/check route', () => {
       const router = createUserAccountRouter(container);
       const routes = router.stack.filter((layer: any) => layer.route);
@@ -364,7 +379,7 @@ describe('createUserAccountRouter', () => {
       );
       expect(checkRoute).to.not.be.undefined;
       // scopedTokenValidator + handler
-      expect(checkRoute.route.stack.length).to.be.greaterThanOrEqual(2);
+      expect(checkRoute!.route!.stack.length).to.be.greaterThanOrEqual(2);
     });
   });
 
@@ -374,7 +389,8 @@ describe('createUserAccountRouter', () => {
         (l: any) => l.route && l.route.path === path && l.route.methods[method],
       );
       if (!layer) return undefined;
-      const handlers = layer.route.stack.map((s: any) => s.handle);
+      // An error handler (four parameters) may close a chain; the route's handler is the last before it.
+      const handlers = layer.route.stack.map((s: any) => s.handle).filter((h: any) => h.length < 4);
       return handlers[handlers.length - 1];
     }
 

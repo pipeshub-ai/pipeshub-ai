@@ -1,0 +1,89 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/ext/pipeshub/events/x.pipeshub.native.unknown.schema.json",
+  "title": "PipeshubNativeUnknownEvent",
+  "description": "A message an engine sent whose kind its adapter does not know, from a newer engine (EV-13, C2.40): never a failure, never shown, kept sealed for audit and for an improved adapter, at most 20 a turn (the worker's log counts every one). Non-critical: the fold and the chat ignore it. Written only when the claim's Node lists native_events.",
+  "x-writer": [
+    "worker"
+  ],
+  "allOf": [
+    {
+      "$ref": "../../../core/envelope.schema.json#/$defs/InlineEnvelope"
+    }
+  ],
+  "properties": {
+    "type": {
+      "const": "x.pipeshub.native.unknown"
+    },
+    "writer": {
+      "const": "worker"
+    },
+    "data": {
+      "$ref": "#/$defs/PipeshubNativeUnknownData"
+    }
+  },
+  "$defs": {
+    "PipeshubNativeUnknownData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "turnId",
+        "kind",
+        "sizeBytes",
+        "truncated",
+        "content"
+      ],
+      "properties": {
+        "turnId": {
+          "$ref": "../../../core/common.schema.json#/$defs/Id",
+          "description": "The engine turn (turn_id_for(run, index)): the same on every attempt of the turn."
+        },
+        "kind": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_./:-]{1,64}$",
+          "description": "The message's kind as the engine names it (a JSON-RPC method, an event or update type), reduced to protocol characters; never free text."
+        },
+        "sizeBytes": {
+          "$ref": "../../../core/common.schema.json#/$defs/UInt",
+          "description": "The message's whole length as JSON."
+        },
+        "truncated": {
+          "type": "boolean",
+          "description": "The sealed bytes are the message's first 16 KiB only."
+        },
+        "content": {
+          "$ref": "../../../core/common.schema.json#/$defs/ContentRef",
+          "description": "The message's JSON, sealed in the run's content store (erased with the conversation)."
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "attemptId": "att_1",
+      "fence": 3,
+      "type": "x.pipeshub.native.unknown",
+      "data": {
+        "turnId": "trn_1",
+        "kind": "item/newThing/delta",
+        "sizeBytes": 412,
+        "truncated": false,
+        "content": {
+          "ref": "sealed:org_1/ses_1/c1",
+          "hash": "sha256:abababababababababababababababababababababababababababababababab",
+          "size": 412
+        }
+      }
+    }
+  ]
+}

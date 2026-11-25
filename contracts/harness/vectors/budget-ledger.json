@@ -1,0 +1,258 @@
+{
+  "description": "Budget ledger semantics (P6.5). One table for Node (domain/budget-ledger.ts over its in-memory and Mongo stores) and Python (harness_core.budget, InMemoryBudgetLedger). Amounts are {usd, tokens} with usd in integer micro-USD; a cap dimension of null has no limit of its own (it draws from its parent), an available dimension of null is unbounded. Each scenario starts from an empty ledger at a fixed time for tenant `org-v`; steps run in order. `expect` lists only the fields checked: reserve → granted; commit/release → charged, crossed, state; remaining → available, committed, reserved, exhausted; a refusal is {\"refused\": <reason code>}. `advance` moves the clock by seconds. `pin` registers what the host pinned for a run (lazy opening). A commit's `usage` ({input, output, cacheRead, cacheWrite}, as the settler reported the call) is added to the run's own `used` with its first commit only, never to an ancestor's; remaining → used (OWD-8: the ledger is the authority on a run's usage). WP-66: a commit with `hold` ({usd, tokens}) and `holdTtlS` charges `actual` as the gateway's estimate: the call counts in remaining → estimated (on every account of the path, as committed is) and `hold` stays reserved on the path past any cap until a `reconcile` (the provider's `actual` and `usage` replace the estimate's, once; the hold goes back) or until `holdTtlS` passes, closing the run notwithstanding. A reconcile of a commit that was not estimated leaves it as it is; of a reservation never committed is refused.",
+  "scenarios": [
+    {
+      "id": "LV-1 reserve within a root's cap",
+      "steps": [
+        {"op": "open_root", "run": "R", "cap": {"usd": 1000, "tokens": 100}},
+        {"op": "reserve", "run": "R", "key": "k1", "requested": {"usd": 300, "tokens": 30}, "minimum": {"usd": 100, "tokens": 10}, "ttlS": 60, "expect": {"granted": {"usd": 300, "tokens": 30}}},
+        {"op": "remaining", "run": "R", "expect": {"available": {"usd": 700, "tokens": 70}, "committed": {"usd": 0, "tokens": 0}, "reserved": {"usd": 300, "tokens": 30}, "exhausted": false}}
+      ]
+    },
+    {
+      "id": "LV-2 partial grant between minimum and requested",
+      "steps": [
+        {"op": "open_root", "run": "R", "cap": {"usd": 1000, "tokens": null}},
+        {"op": "reserve", "run": "R", "key": "k1", "requested": {"usd": 800, "tokens": 0}, "minimum": {"usd": 0, "tokens": 0}, "ttlS": 60, "expect": {"granted": {"usd": 800, "tokens": 0}}},
+        {"op": "reserve", "run": "R", "key": "k2", "requested": {"usd": 500, "tokens": 0}, "minimum": {"usd": 100, "tokens": 0}, "ttlS": 60, "expect": {"granted": {"usd": 200, "tokens": 0}}}
+      ]
+    },
+    {
+      "id": "LV-3 below the minimum, then nothing left",
+      "steps": [
+        {"op": "open_root", "run": "R", "cap": {"usd": 1000, "tokens": null}},
+        {"op": "reserve", "run": "R", "key": "k1", "requested": {"usd": 900, "tokens": 0}, "minimum": {"usd": 900, "tokens": 0}, "ttlS": 60, "expect": {"granted": {"usd": 900, "tokens": 0}}},
+        {"op": "reserve", "run": "R", "key": "k2", "requested": {"usd": 300, "tokens": 0}, "minimum": {"usd": 200, "tokens": 0}, "ttlS": 60, "expect": {"refused": "budget_insufficient"}},
+        {"op": "commit", "run": "R", "key": "k1", "actual": {"usd": 1000, "tokens": 0}, "expect": {"charged": {"usd": 1000, "tokens": 0}, "crossed": true, "state": "committed"}},
+        {"op": "reserve", "run": "R", "key": "k3", "requested": {"usd": 10, "tokens": 0}, "minimum": {"usd": 1, "tokens": 0}, "ttlS": 60, "expect": {"refused": "budget_exhausted"}},
+        {"op": "remaining", "run": "R", "expect": {"available": {"usd": 0, "tokens": null}, "committed": {"usd": 1000, "tokens": 0}, "reserved": {"usd": 0, "tokens": 0}, "exhausted": true}}
+      ]
+    },
+    {
+      "id": "LV-4 commit less, then more, than granted",
+      "steps": [
+        {"op": "open_root", "run": "R", "cap": {"usd": 1000, "tokens": null}},
+        {"op": "reserve", "run": "R", "key": "k1", "requested": {"usd": 600, "tokens": 0}, "minimum": {"usd": 0, "tokens": 0}, "ttlS": 60, "expect": {"granted": {"usd": 600, "tokens": 0}}},
+        {"op": "commit", "run": "R", "key": "k1", "actual": {"usd": 200, "tokens": 7}, "expect": {"charged": {"usd": 200, "tokens": 7}, "crossed": false, "state": "committed"}},
+        {"op": "remaining", "run": "R", "expect": {"available": {"usd": 800, "tokens": null}, "committed": {"usd": 200, "tokens": 7}, "reserved": {"usd": 0, "tokens": 0}}},
+        {"op": "reserve", "run": "R", "key": "k2", "requested": {"usd": 500, "tokens": 0}, "minimum": {"usd": 0, "tokens": 0}, "ttlS": 60, "expect": {"granted": {"usd": 500, "tokens": 0}}},
+        {"op": "commit", "run": "R", "key": "k2", "actual": {"usd": 900, "tokens": 0}, "expect": {"charged": {"usd": 900, "tokens": 0}, "crossed": true}},
+        {"op": "remaining", "run": "R", "expect": {"available": {"usd": 0, "tokens": null}, "committed": {"usd": 1100, "tokens": 7}, "exhausted": true}}
+      ]
+    },
+    {
+      "id": "LV-5 release returns everything",
+      "steps": [
+        {"op": "open_root", "run": "R", "cap": {"usd": 1000, "tokens": null}},
+        {"op": "reserve", "run": "R", "key": "k1", "requested": {"usd": 400, "tokens": 0}, "minimum": {"usd": 0, "tokens": 0}, "ttlS": 60, "expect": {"granted": {"usd": 400, "tokens": 0}}},
+        {"op": "release", "run": "R", "key": "k1", "expect": {"charged": {"usd": 0, "tokens": 0}, "crossed": false, "state": "released"}},
+        {"op": "remaining", "run": "R", "expect": {"available": {"usd": 1000, "tokens": null}, "reserved": {"usd": 0, "tokens": 0}}}
+      ]
+    },
+    {
+      "id": "LV-6 idempotent per key and per reservation",
+      "steps": [
+        {"op": "open_root", "run": "R", "cap": {"usd": 1000, "tokens": null}},
+        {"op": "reserve", "run": "R", "key": "k1", "requested": {"usd": 400, "tokens": 0}, "minimum": {"usd": 0, "tokens": 0}, "ttlS": 60, "expect": {"granted": {"usd": 400, "tokens": 0}}},
+        {"op": "reserve", "run": "R", "key": "k1", "requested": {"usd": 900, "tokens": 0}, "minimum": {"usd": 0, "tokens": 0}, "ttlS": 60, "expect": {"granted": {"usd": 400, "tokens": 0}}},
+        {"op": "remaining", "run": "R", "expect": {"reserved": {"usd": 400, "tokens": 0}}},
+        {"op": "commit", "run": "R", "key": "k1", "actual": {"usd": 300, "tokens": 0}, "expect": {"charged": {"usd": 300, "tokens": 0}, "state": "committed"}},
+        {"op": "commit", "run": "R", "key": "k1", "actual": {"usd": 300, "tokens": 0}, "expect": {"charged": {"usd": 300, "tokens": 0}, "state": "committed"}},
+        {"op": "release", "run": "R", "key": "k1", "expect": {"state": "committed"}},
+        {"op": "remaining", "run": "R", "expect": {"committed": {"usd": 300, "tokens": 0}, "reserved": {"usd": 0, "tokens": 0}}},
+        {"op": "reserve", "run": "R", "key": "k2", "requested": {"usd": 100, "tokens": 0}, "minimum": {"usd": 0, "tokens": 0}, "ttlS": 60, "expect": {"granted": {"usd": 100, "tokens": 0}}},
+        {"op": "release", "run": "R", "key": "k2", "expect": {"state": "released"}},
+        {"op": "release", "run": "R", "key": "k2", "expect": {"state": "released"}},
+        {"op": "commit", "run": "R", "key": "k2", "actual": {"usd": 50, "tokens": 0}, "expect": {"refused": "budget_reservation_settled"}},
+        {"op": "commit", "run": "R", "key": "nope", "actual": {"usd": 50, "tokens": 0}, "expect": {"refused": "budget_reservation_missing"}},
+        {"op": "remaining", "run": "R", "expect": {"committed": {"usd": 300, "tokens": 0}, "reserved": {"usd": 0, "tokens": 0}}}
+      ]
+    },
+    {
+      "id": "LV-7 a child draws from its parent and the root",
+      "steps": [
+        {"op": "open_root", "run": "R", "cap": {"usd": 1000, "tokens": 1000}},
+        {"op": "open_child", "parent": "R", "run": "C1", "cap": {"usd": 300, "tokens": null}},
+        {"op": "open_child", "parent": "R", "run": "C2", "cap": {"usd": null, "tokens": null}},
+        {"op": "reserve", "run": "C1", "key": "k", "requested": {"usd": 500, "tokens": 0}, "minimum": {"usd": 0, "tokens": 0}, "ttlS": 60, "expect": {"granted": {"usd": 300, "tokens": 0}}},
+        {"op": "reserve", "run": "C2", "key": "k", "requested": {"usd": 800, "tokens": 0}, "minimum": {"usd": 0, "tokens": 0}, "ttlS": 60, "expect": {"granted": {"usd": 700, "tokens": 0}}},
+        {"op": "remaining", "run": "R", "expect": {"available": {"usd": 0, "tokens": 1000}, "reserved": {"usd": 1000, "tokens": 0}}},
+        {"op": "commit", "run": "C1", "key": "k", "actual": {"usd": 100, "tokens": 50}, "expect": {"charged": {"usd": 100, "tokens": 50}, "crossed": false}},
+        {"op": "remaining", "run": "R", "expect": {"available": {"usd": 200, "tokens": 950}, "committed": {"usd": 100, "tokens": 50}, "reserved": {"usd": 700, "tokens": 0}}},
+        {"op": "remaining", "run": "C1", "expect": {"available": {"usd": 200, "tokens": 950}, "committed": {"usd": 100, "tokens": 50}, "reserved": {"usd": 0, "tokens": 0}}},
+        {"op": "remaining", "run": "C2", "expect": {"available": {"usd": 200, "tokens": 950}, "committed": {"usd": 0, "tokens": 0}, "reserved": {"usd": 700, "tokens": 0}}}
+      ]
+    },
+    {
+      "id": "LV-7b a grandchild's explicit cap and its parent's both bind",
+      "steps": [
+        {"op": "open_root", "run": "R", "cap": {"usd": 1000, "tokens": null}},
+        {"op": "open_child", "parent": "R", "run": "C", "cap": {"usd": 500, "tokens": null}},
+        {"op": "open_child", "parent": "C", "run": "G", "cap": {"usd": 400, "tokens": null}},
+        {"op": "reserve", "run": "C", "key": "k", "requested": {"usd": 200, "tokens": 0}, "minimum": {"usd": 0, "tokens": 0}, "ttlS": 60, "expect": {"granted": {"usd": 200, "tokens": 0}}},
+        {"op": "reserve", "run": "G", "key": "k", "requested": {"usd": 400, "tokens": 0}, "minimum": {"usd": 0, "tokens": 0}, "ttlS": 60, "expect": {"granted": {"usd": 300, "tokens": 0}}},
+        {"op": "commit", "run": "G", "key": "k", "actual": {"usd": 300, "tokens": 0}, "expect": {"crossed": false}},
+        {"op": "commit", "run": "C", "key": "k", "actual": {"usd": 200, "tokens": 0}, "expect": {"crossed": true}},
+        {"op": "remaining", "run": "R", "expect": {"available": {"usd": 500, "tokens": null}, "committed": {"usd": 500, "tokens": 0}, "exhausted": false}},
+        {"op": "remaining", "run": "G", "expect": {"available": {"usd": 0, "tokens": null}, "committed": {"usd": 300, "tokens": 0}, "exhausted": true}}
+      ]
+    },
+    {
+      "id": "LV-8 siblings exhaust the root",
+      "steps": [
+        {"op": "open_root", "run": "R", "cap": {"usd": 1000, "tokens": null}},
+        {"op": "open_child", "parent": "R", "run": "C1", "cap": {"usd": null, "tokens": null}},
+        {"op": "open_child", "parent": "R", "run": "C2", "cap": {"usd": null, "tokens": null}},
+        {"op": "open_child", "parent": "R", "run": "C3", "cap": {"usd": null, "tokens": null}},
+        {"op": "reserve", "run": "C1", "key": "k", "requested": {"usd": 400, "tokens": 0}, "minimum": {"usd": 100, "tokens": 0}, "ttlS": 60, "expect": {"granted": {"usd": 400, "tokens": 0}}},
+        {"op": "reserve", "run": "C2", "key": "k", "requested": {"usd": 400, "tokens": 0}, "minimum": {"usd": 100, "tokens": 0}, "ttlS": 60, "expect": {"granted": {"usd": 400, "tokens": 0}}},
+        {"op": "reserve", "run": "C3", "key": "k", "requested": {"usd": 400, "tokens": 0}, "minimum": {"usd": 100, "tokens": 0}, "ttlS": 60, "expect": {"granted": {"usd": 200, "tokens": 0}}},
+        {"op": "reserve", "run": "C1", "key": "k2", "requested": {"usd": 100, "tokens": 0}, "minimum": {"usd": 1, "tokens": 0}, "ttlS": 60, "expect": {"refused": "budget_insufficient"}},
+        {"op": "reserve", "run": "R", "key": "k", "requested": {"usd": 100, "tokens": 0}, "minimum": {"usd": 1, "tokens": 0}, "ttlS": 60, "expect": {"refused": "budget_insufficient"}},
+        {"op": "remaining", "run": "R", "expect": {"available": {"usd": 0, "tokens": null}, "reserved": {"usd": 1000, "tokens": 0}, "exhausted": false}}
+      ]
+    },
+    {
+      "id": "LV-9 an expired reservation returns; a late commit still charges",
+      "steps": [
+        {"op": "open_root", "run": "R", "cap": {"usd": 1000, "tokens": null}},
+        {"op": "reserve", "run": "R", "key": "k1", "requested": {"usd": 800, "tokens": 0}, "minimum": {"usd": 0, "tokens": 0}, "ttlS": 60, "expect": {"granted": {"usd": 800, "tokens": 0}}},
+        {"op": "reserve", "run": "R", "key": "k2", "requested": {"usd": 500, "tokens": 0}, "minimum": {"usd": 300, "tokens": 0}, "ttlS": 60, "expect": {"refused": "budget_insufficient"}},
+        {"op": "advance", "seconds": 61},
+        {"op": "remaining", "run": "R", "expect": {"available": {"usd": 1000, "tokens": null}, "reserved": {"usd": 0, "tokens": 0}}},
+        {"op": "reserve", "run": "R", "key": "k3", "requested": {"usd": 500, "tokens": 0}, "minimum": {"usd": 300, "tokens": 0}, "ttlS": 60, "expect": {"granted": {"usd": 500, "tokens": 0}}},
+        {"op": "commit", "run": "R", "key": "k1", "actual": {"usd": 300, "tokens": 0}, "expect": {"charged": {"usd": 300, "tokens": 0}, "state": "committed"}},
+        {"op": "remaining", "run": "R", "expect": {"available": {"usd": 200, "tokens": null}, "committed": {"usd": 300, "tokens": 0}, "reserved": {"usd": 500, "tokens": 0}}},
+        {"op": "release", "run": "R", "key": "k3", "expect": {"state": "released"}}
+      ]
+    },
+    {
+      "id": "LV-10 dimensions are separate; unbounded dimensions",
+      "steps": [
+        {"op": "open_root", "run": "R", "cap": {"usd": null, "tokens": 100}},
+        {"op": "reserve", "run": "R", "key": "k1", "requested": {"usd": 5000, "tokens": 80}, "minimum": {"usd": 0, "tokens": 10}, "ttlS": 60, "expect": {"granted": {"usd": 5000, "tokens": 80}}},
+        {"op": "reserve", "run": "R", "key": "k2", "requested": {"usd": 5000, "tokens": 50}, "minimum": {"usd": 0, "tokens": 10}, "ttlS": 60, "expect": {"granted": {"usd": 5000, "tokens": 20}}},
+        {"op": "remaining", "run": "R", "expect": {"available": {"usd": null, "tokens": 0}}},
+        {"op": "open_root", "run": "S", "cap": {"usd": 100, "tokens": null}},
+        {"op": "reserve", "run": "S", "key": "k1", "requested": {"usd": 100, "tokens": 0}, "minimum": {"usd": 0, "tokens": 0}, "ttlS": 60, "expect": {"granted": {"usd": 100, "tokens": 0}}},
+        {"op": "commit", "run": "S", "key": "k1", "actual": {"usd": 100, "tokens": 5}, "expect": {"crossed": true}},
+        {"op": "reserve", "run": "S", "key": "vendor-plan", "requested": {"usd": 0, "tokens": 10}, "minimum": {"usd": 0, "tokens": 10}, "ttlS": 60, "expect": {"granted": {"usd": 0, "tokens": 10}}},
+        {"op": "reserve", "run": "S", "key": "paid", "requested": {"usd": 10, "tokens": 10}, "minimum": {"usd": 1, "tokens": 10}, "ttlS": 60, "expect": {"refused": "budget_exhausted"}}
+      ]
+    },
+    {
+      "id": "LV-11 close",
+      "steps": [
+        {"op": "open_root", "run": "R", "cap": {"usd": 1000, "tokens": null}},
+        {"op": "open_child", "parent": "R", "run": "C", "cap": {"usd": null, "tokens": null}},
+        {"op": "reserve", "run": "R", "key": "k1", "requested": {"usd": 300, "tokens": 0}, "minimum": {"usd": 0, "tokens": 0}, "ttlS": 60, "expect": {"granted": {"usd": 300, "tokens": 0}}},
+        {"op": "close", "run": "R"},
+        {"op": "close", "run": "R"},
+        {"op": "reserve", "run": "R", "key": "k2", "requested": {"usd": 10, "tokens": 0}, "minimum": {"usd": 0, "tokens": 0}, "ttlS": 60, "expect": {"refused": "budget_account_closed"}},
+        {"op": "reserve", "run": "C", "key": "k2", "requested": {"usd": 10, "tokens": 0}, "minimum": {"usd": 0, "tokens": 0}, "ttlS": 60, "expect": {"refused": "budget_account_closed"}},
+        {"op": "open_child", "parent": "R", "run": "C9", "cap": {"usd": null, "tokens": null}, "expect": {"refused": "budget_account_closed"}},
+        {"op": "commit", "run": "R", "key": "k1", "actual": {"usd": 100, "tokens": 0}, "expect": {"charged": {"usd": 100, "tokens": 0}, "state": "committed"}}
+      ]
+    },
+    {
+      "id": "LV-12 open_child checks the parent's remaining",
+      "steps": [
+        {"op": "open_root", "run": "R", "cap": {"usd": 1000, "tokens": null}},
+        {"op": "reserve", "run": "R", "key": "k1", "requested": {"usd": 700, "tokens": 0}, "minimum": {"usd": 0, "tokens": 0}, "ttlS": 60, "expect": {"granted": {"usd": 700, "tokens": 0}}},
+        {"op": "open_child", "parent": "R", "run": "C1", "cap": {"usd": 400, "tokens": null}, "expect": {"refused": "budget_share_exceeds_remaining"}},
+        {"op": "open_child", "parent": "R", "run": "C1", "cap": {"usd": 300, "tokens": null}, "expect": {"available": {"usd": 300, "tokens": null}}},
+        {"op": "commit", "run": "R", "key": "k1", "actual": {"usd": 1000, "tokens": 0}, "expect": {"crossed": true}},
+        {"op": "open_child", "parent": "R", "run": "C1", "cap": {"usd": 300, "tokens": null}, "expect": {"available": {"usd": 0, "tokens": null}}},
+        {"op": "open_child", "parent": "R", "run": "C2", "cap": {"usd": null, "tokens": null}, "expect": {"refused": "budget_share_exceeds_remaining"}},
+        {"op": "remaining", "run": "C2", "expect": {"refused": "budget_account_missing"}}
+      ]
+    },
+    {
+      "id": "LV-13 lazy opening from a pinned budget, with opening spend",
+      "steps": [
+        {"op": "pin", "run": "R", "cap": {"usd": 1000, "tokens": null}},
+        {"op": "pin", "run": "C", "parent": "R", "cap": {"usd": null, "tokens": null}},
+        {"op": "reserve", "run": "C", "key": "k1", "requested": {"usd": 100, "tokens": 0}, "minimum": {"usd": 0, "tokens": 0}, "ttlS": 60, "opening": {"usd": 250, "tokens": 40}, "expect": {"granted": {"usd": 100, "tokens": 0}}},
+        {"op": "remaining", "run": "R", "expect": {"available": {"usd": 650, "tokens": null}, "committed": {"usd": 250, "tokens": 40}, "reserved": {"usd": 100, "tokens": 0}}},
+        {"op": "reserve", "run": "R", "key": "k2", "requested": {"usd": 10, "tokens": 0}, "minimum": {"usd": 0, "tokens": 0}, "ttlS": 60, "opening": {"usd": 999, "tokens": 0}, "expect": {"granted": {"usd": 10, "tokens": 0}}},
+        {"op": "remaining", "run": "R", "expect": {"committed": {"usd": 250, "tokens": 40}}},
+        {"op": "reserve", "run": "X", "key": "k1", "requested": {"usd": 10, "tokens": 0}, "minimum": {"usd": 0, "tokens": 0}, "ttlS": 60, "expect": {"refused": "budget_account_missing"}}
+      ]
+    },
+    {
+      "id": "LV-14 a commit's usage is the run's own, counted once",
+      "steps": [
+        {"op": "open_root", "run": "R", "cap": {"usd": null, "tokens": null}},
+        {"op": "open_child", "parent": "R", "run": "C", "cap": {"usd": null, "tokens": null}},
+        {"op": "remaining", "run": "R", "expect": {"used": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0}}},
+        {"op": "reserve", "run": "R", "key": "a", "requested": {"usd": 0, "tokens": 500}, "minimum": {"usd": 0, "tokens": 0}, "ttlS": 60},
+        {"op": "reserve", "run": "R", "key": "b", "requested": {"usd": 0, "tokens": 500}, "minimum": {"usd": 0, "tokens": 0}, "ttlS": 60},
+        {"op": "reserve", "run": "C", "key": "c", "requested": {"usd": 0, "tokens": 500}, "minimum": {"usd": 0, "tokens": 0}, "ttlS": 60},
+        {"op": "commit", "run": "R", "key": "a", "actual": {"usd": 0, "tokens": 30}, "usage": {"input": 120, "output": 7, "cacheRead": 100, "cacheWrite": 3}, "expect": {"state": "committed"}},
+        {"op": "commit", "run": "R", "key": "a", "actual": {"usd": 0, "tokens": 30}, "usage": {"input": 120, "output": 7, "cacheRead": 100, "cacheWrite": 3}, "expect": {"charged": {"usd": 0, "tokens": 30}}},
+        {"op": "commit", "run": "R", "key": "b", "actual": {"usd": 0, "tokens": 8}, "usage": {"input": 1, "output": 7, "cacheRead": 0, "cacheWrite": 0}},
+        {"op": "commit", "run": "C", "key": "c", "actual": {"usd": 0, "tokens": 9}, "usage": {"input": 500, "output": 50, "cacheRead": 0, "cacheWrite": 0}},
+        {"op": "remaining", "run": "R", "expect": {"used": {"input": 121, "output": 14, "cacheRead": 100, "cacheWrite": 3}, "committed": {"usd": 0, "tokens": 47}}},
+        {"op": "remaining", "run": "C", "expect": {"used": {"input": 500, "output": 50, "cacheRead": 0, "cacheWrite": 0}}}
+      ]
+    },
+    {
+      "id": "LV-15 an estimated commit charges the estimate and holds the bound (WP66-HOLD)",
+      "steps": [
+        {"op": "open_root", "run": "R", "cap": {"usd": 1000, "tokens": 1000}},
+        {"op": "reserve", "run": "R", "key": "k1", "requested": {"usd": 600, "tokens": 600}, "minimum": {"usd": 100, "tokens": 100}, "ttlS": 60},
+        {"op": "commit", "run": "R", "key": "k1", "actual": {"usd": 200, "tokens": 100}, "usage": {"input": 120, "output": 30, "cacheRead": 0, "cacheWrite": 0}, "hold": {"usd": 500, "tokens": 300}, "holdTtlS": 600, "expect": {"charged": {"usd": 200, "tokens": 100}, "state": "committed", "crossed": false}},
+        {"op": "remaining", "run": "R", "expect": {"committed": {"usd": 200, "tokens": 100}, "reserved": {"usd": 500, "tokens": 300}, "available": {"usd": 300, "tokens": 600}, "estimated": 1, "used": {"input": 120, "output": 30, "cacheRead": 0, "cacheWrite": 0}}},
+        {"op": "reserve", "run": "R", "key": "k2", "requested": {"usd": 400, "tokens": 10}, "minimum": {"usd": 400, "tokens": 10}, "ttlS": 60, "expect": {"refused": "budget_insufficient"}},
+        {"op": "commit", "run": "R", "key": "k1", "actual": {"usd": 200, "tokens": 100}, "hold": {"usd": 500, "tokens": 300}, "holdTtlS": 600, "expect": {"charged": {"usd": 200, "tokens": 100}}},
+        {"op": "remaining", "run": "R", "expect": {"reserved": {"usd": 500, "tokens": 300}, "estimated": 1}}
+      ]
+    },
+    {
+      "id": "LV-16 a reconcile replaces the estimate, once, and gives the hold back (WP66-RECON)",
+      "steps": [
+        {"op": "open_root", "run": "R", "cap": {"usd": 1000, "tokens": 1000}},
+        {"op": "reserve", "run": "R", "key": "up", "requested": {"usd": 600, "tokens": 600}, "minimum": {"usd": 0, "tokens": 0}, "ttlS": 60},
+        {"op": "commit", "run": "R", "key": "up", "actual": {"usd": 200, "tokens": 100}, "usage": {"input": 120, "output": 30, "cacheRead": 0, "cacheWrite": 0}, "hold": {"usd": 500, "tokens": 300}, "holdTtlS": 600},
+        {"op": "reconcile", "run": "R", "key": "up", "actual": {"usd": 350, "tokens": 150}, "usage": {"input": 120, "output": 90, "cacheRead": 0, "cacheWrite": 0}, "expect": {"charged": {"usd": 350, "tokens": 150}, "state": "committed", "crossed": false}},
+        {"op": "remaining", "run": "R", "expect": {"committed": {"usd": 350, "tokens": 150}, "reserved": {"usd": 0, "tokens": 0}, "estimated": 0, "used": {"input": 120, "output": 90, "cacheRead": 0, "cacheWrite": 0}}},
+        {"op": "reconcile", "run": "R", "key": "up", "actual": {"usd": 999, "tokens": 999}, "usage": {"input": 120, "output": 90, "cacheRead": 0, "cacheWrite": 0}, "expect": {"charged": {"usd": 350, "tokens": 150}}},
+        {"op": "reserve", "run": "R", "key": "down", "requested": {"usd": 400, "tokens": 400}, "minimum": {"usd": 0, "tokens": 0}, "ttlS": 60},
+        {"op": "commit", "run": "R", "key": "down", "actual": {"usd": 300, "tokens": 300}, "usage": {"input": 120, "output": 90, "cacheRead": 0, "cacheWrite": 0}, "hold": {"usd": 100, "tokens": 100}, "holdTtlS": 600},
+        {"op": "reconcile", "run": "R", "key": "down", "actual": {"usd": 50, "tokens": 40}, "usage": {"input": 120, "output": 30, "cacheRead": 0, "cacheWrite": 0}, "expect": {"charged": {"usd": 50, "tokens": 40}}},
+        {"op": "remaining", "run": "R", "expect": {"committed": {"usd": 400, "tokens": 190}, "reserved": {"usd": 0, "tokens": 0}, "estimated": 0, "used": {"input": 240, "output": 120, "cacheRead": 0, "cacheWrite": 0}}},
+        {"op": "reserve", "run": "R", "key": "plain", "requested": {"usd": 10, "tokens": 10}, "minimum": {"usd": 0, "tokens": 0}, "ttlS": 60},
+        {"op": "commit", "run": "R", "key": "plain", "actual": {"usd": 10, "tokens": 10}},
+        {"op": "reconcile", "run": "R", "key": "plain", "actual": {"usd": 500, "tokens": 500}, "expect": {"charged": {"usd": 10, "tokens": 10}}},
+        {"op": "reserve", "run": "R", "key": "open", "requested": {"usd": 10, "tokens": 10}, "minimum": {"usd": 0, "tokens": 0}, "ttlS": 60},
+        {"op": "reconcile", "run": "R", "key": "open", "actual": {"usd": 5, "tokens": 5}, "expect": {"refused": "budget_reservation_settled"}}
+      ]
+    },
+    {
+      "id": "LV-17 without a reconcile the hold goes after its time and the estimate stands (WP66-TTL)",
+      "steps": [
+        {"op": "open_root", "run": "R", "cap": {"usd": 1000, "tokens": 1000}},
+        {"op": "reserve", "run": "R", "key": "k1", "requested": {"usd": 600, "tokens": 600}, "minimum": {"usd": 0, "tokens": 0}, "ttlS": 60},
+        {"op": "commit", "run": "R", "key": "k1", "actual": {"usd": 200, "tokens": 100}, "hold": {"usd": 500, "tokens": 300}, "holdTtlS": 600},
+        {"op": "close", "run": "R"},
+        {"op": "advance", "seconds": 599},
+        {"op": "remaining", "run": "R", "expect": {"reserved": {"usd": 500, "tokens": 300}, "estimated": 1}},
+        {"op": "advance", "seconds": 2},
+        {"op": "remaining", "run": "R", "expect": {"committed": {"usd": 200, "tokens": 100}, "reserved": {"usd": 0, "tokens": 0}, "available": {"usd": 800, "tokens": 900}, "estimated": 1}}
+      ]
+    },
+    {
+      "id": "LV-18 a hold is kept past the cap and on every ancestor (WP66-CAP)",
+      "steps": [
+        {"op": "open_root", "run": "P", "cap": {"usd": 1000, "tokens": null}},
+        {"op": "open_child", "parent": "P", "run": "C", "cap": {"usd": 300, "tokens": null}},
+        {"op": "reserve", "run": "C", "key": "a", "requested": {"usd": 300, "tokens": 0}, "minimum": {"usd": 0, "tokens": 0}, "ttlS": 60, "expect": {"granted": {"usd": 300, "tokens": 0}}},
+        {"op": "commit", "run": "C", "key": "a", "actual": {"usd": 250, "tokens": 0}, "hold": {"usd": 400, "tokens": 0}, "holdTtlS": 600, "expect": {"crossed": false}},
+        {"op": "remaining", "run": "C", "expect": {"committed": {"usd": 250, "tokens": 0}, "reserved": {"usd": 400, "tokens": 0}, "available": {"usd": 0, "tokens": null}, "exhausted": false, "estimated": 1}},
+        {"op": "remaining", "run": "P", "expect": {"committed": {"usd": 250, "tokens": 0}, "reserved": {"usd": 400, "tokens": 0}, "available": {"usd": 350, "tokens": null}, "estimated": 1}},
+        {"op": "reserve", "run": "C", "key": "b", "requested": {"usd": 10, "tokens": 0}, "minimum": {"usd": 1, "tokens": 0}, "ttlS": 60, "expect": {"refused": "budget_insufficient"}},
+        {"op": "reserve", "run": "P", "key": "p", "requested": {"usd": 400, "tokens": 0}, "minimum": {"usd": 400, "tokens": 0}, "ttlS": 60, "expect": {"refused": "budget_insufficient"}}
+      ]
+    }
+  ]
+}

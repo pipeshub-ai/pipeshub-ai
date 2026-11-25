@@ -1,0 +1,107 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/core/events/session.erased.schema.json",
+  "title": "SessionErasedEvent",
+  "description": "The session's data was erased (ARCHITECTURE 5.7 step 4; E7): its runs cancelled, its workspace key destroyed, its messages, citations, artifacts, payloads and LiveBus streams deleted, and every earlier event of the session reduced to a tombstone (ids, type, size). Node writes it once, last, on the session's root stream with no runId, in the transaction that completes the erasure; its audit record carries the reason and the counts only. Nothing folds a session after it.",
+  "x-writer": [
+    "node"
+  ],
+  "allOf": [
+    {
+      "$ref": "../envelope.schema.json#/$defs/InlineEnvelope"
+    }
+  ],
+  "properties": {
+    "type": {
+      "const": "session.erased"
+    },
+    "writer": {
+      "const": "node"
+    },
+    "data": {
+      "$ref": "#/$defs/SessionErasedData"
+    }
+  },
+  "$defs": {
+    "SessionErasedData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "reason",
+        "counts"
+      ],
+      "properties": {
+        "by": {
+          "$ref": "../common.schema.json#/$defs/PrincipalRef",
+          "description": "Who deleted the conversation, from the delete route's verified credential; absent when the org's retention period expired it."
+        },
+        "reason": {
+          "description": "user_delete: the owner deleted the conversation; retention: the org's retention period passed.",
+          "enum": [
+            "user_delete",
+            "retention"
+          ]
+        },
+        "counts": {
+          "$ref": "#/$defs/ErasureCounts"
+        }
+      }
+    },
+    "ErasureCounts": {
+      "description": "How many items each erasure step removed or tombstoned. Counts only, never ids or content.",
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "../common.schema.json#/$defs/UInt"
+      },
+      "maxProperties": 32
+    }
+  },
+  "examples": [
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 42,
+      "type": "session.erased",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-03T12:00:00.123Z",
+      "writer": "node",
+      "visibility": "audit",
+      "data": {
+        "by": "p_owner1",
+        "reason": "user_delete",
+        "counts": {
+          "runs": 3,
+          "events": 41,
+          "payloads": 2,
+          "messages": 6,
+          "citations": 4,
+          "artifacts": 1,
+          "blobs": 1,
+          "workspaces": 2,
+          "liveStreams": 3
+        }
+      }
+    },
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_2",
+      "streamId": "ses_2",
+      "seq": 7,
+      "type": "session.erased",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-03T12:00:00.123Z",
+      "writer": "node",
+      "visibility": "audit",
+      "data": {
+        "reason": "retention",
+        "counts": {
+          "events": 6,
+          "messages": 2
+        }
+      }
+    }
+  ]
+}

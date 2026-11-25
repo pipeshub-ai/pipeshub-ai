@@ -8,7 +8,8 @@
  *
  *   SEAM_RATCHET_UPDATE=1 npx cross-env TS_NODE_PROJECT=tsconfig.test.json mocha --no-config --require ts-node/register --exit tests/libs/repositories/mongo-seam-ratchet.test.ts
  *
- * Exempt entirely: libs/repositories/**\/mongo.ts, the boot migrations and the
+ * Exempt entirely: any libs/repositories/**\/mongo.ts (an edition keeps its stores under its own
+ * libs/repositories), the boot migrations and the
  * connection service (libs/services/mongo.service.ts). Schema definition files
  * (`**\/schema/**`, `*.schema.ts`, enterprise_search/types/conversation.interfaces.ts)
  * may import Mongoose, but a `.save()`, `new Model()` or model query in them counts.
@@ -29,7 +30,7 @@ interface Baseline {
 
 /** Files that may use Mongoose freely: the Mongo repositories, the connection, the boot migrations. */
 const isExempt = (rel: string): boolean =>
-  /^libs\/repositories\/(.*\/)?mongo\.ts$/.test(rel) ||
+  /(^|\/)libs\/repositories\/(.*\/)?mongo\.ts$/.test(rel) ||
   rel === 'libs/services/mongo.service.ts' ||
   // the migration tool: the collection list loads every model
   rel === 'scripts/docstore-migrate/mongo-collections.ts' ||
@@ -268,6 +269,12 @@ describe('repository seam ratchet: Mongoose use outside the Mongo repositories',
     expect(walk(SRC).length).to.be.greaterThan(500);
     expect(isExempt('libs/repositories/org/mongo.ts')).to.equal(true);
     expect(isExempt('modules/oauth_provider/services/pat.service.ts')).to.equal(false);
+    // an edition's own stores, under its own libs/repositories
+    expect(isExempt('ext/libs/repositories/approvals/mongo.ts')).to.equal(true);
+    expect(isExempt('ext/libs/repositories/mongo.ts')).to.equal(true);
+    expect(isExempt('ext/mylibs/repositories/approvals/mongo.ts')).to.equal(false);
+    expect(isExempt('ext/libs/repositories/approvals/service.ts')).to.equal(false);
+    expect(isExempt('ext/libs/repositories/approvals/notmongo.ts')).to.equal(false);
     // The file committed here must stay empty: only the extra directories record uses, so a new
     // use in this repository's own files can't be authorised by editing the committed baseline.
     const committed = loadBaseline([]);

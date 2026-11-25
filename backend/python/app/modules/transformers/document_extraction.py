@@ -369,6 +369,25 @@ class ExtractionLLMError(Exception):
     code = "LLM_FAILED"
 
 
+class ExtractionContentFilteredError(ExtractionLLMError):
+    """The provider's content filter refused the document, as it would on every retry."""
+
+    code = "LLM_CONTENT_FILTERED"
+
+    def __init__(self) -> None:
+        super().__init__("The AI provider's content filter refused this document, so it was not classified")
+
+
+# The machine codes only: a provider's message, or a model answer quoted in a schema error, can hold the document's text.
+_CONTENT_FILTER_CODES = frozenset({"content_filter", "content_policy_violation", "responsibleaipolicyviolation"})
+
+
+def _call_failed(call: str, exc: Exception) -> ExtractionLLMError:
+    if (error_class.provider_code(exc) or "").lower() in _CONTENT_FILTER_CODES:
+        return ExtractionContentFilteredError()
+    return ExtractionLLMError(f"{call} call failed: {exc}")
+
+
 def extraction_error_class(exc: BaseException) -> str | None:
     """The class of a classification failure for its log line; None lets ``classify_error`` read the chain.
 
@@ -788,7 +807,7 @@ class DocumentExtraction(Transformer):
                 # document to the same model, doubling every record's cost while
                 # it is down; only a reply that did not fit the schema earns one.
                 # Not None: that reads as nothing to classify, which is final.
-                raise ExtractionLLMError(f"Document classification call failed: {e}") from e
+                raise _call_failed("Document classification", e) from e
 
         try:
             parsed_response = await classify(document)
@@ -967,7 +986,7 @@ class DocumentExtraction(Transformer):
         except (NonRetryableError, LLMUnavailableError):
             raise
         except Exception as e:
-            raise ExtractionLLMError(f"Code classification call failed: {e}") from e
+            raise _call_failed("Code classification", e) from e
         if parsed is not None:
             self.logger.debug("✅ Code classification parsed successfully")
             return semantic_metadata_from_code(parsed)

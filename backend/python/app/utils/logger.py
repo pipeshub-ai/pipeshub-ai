@@ -6,6 +6,7 @@ redacted. ``LOG_LEVEL`` and ``LOG_LEVELS`` set the levels.
 """
 
 import asyncio
+import errno
 import functools
 import json
 import logging
@@ -443,6 +444,13 @@ class AccessLogRedactionFilter(logging.Filter):
 # Created by create_logger only when the provider keeps file logging, so a
 # read-only container filesystem never has to be written.
 log_dir = "logs"
+# Set once the log folder could not be made or opened: every later logger skips
+# the file, so a command run from a read-only working directory (an operator's
+# step on a read-only code mount, KEYRING-FU-1) logs to the console instead of
+# dying at import.
+class _FileLogging:
+    failed = False
+
 
 # Force UTF-8 for stdout/stderr in Windows
 if sys.platform == "win32":
@@ -649,6 +657,24 @@ def install_log_redaction() -> None:
     _redact_all_handlers()
 
 
+def _file_handler(service_name: str) -> logging.FileHandler | None:
+    """The service's log file, or ``None`` (said once on stderr, by the kind of
+    path and the errno, never the path itself) when its folder is not writable."""
+    if _FileLogging.failed:
+        return None
+    try:
+        os.makedirs(log_dir, exist_ok=True)
+        return logging.FileHandler(os.path.join(log_dir, f"{service_name}.log"), encoding="utf-8")
+    except OSError as exc:
+        _FileLogging.failed = True
+        where = "an absolute path" if os.path.isabs(log_dir) else "the working directory"
+        reason = errno.errorcode.get(exc.errno or 0, type(exc).__name__)
+        sys.stderr.write(
+            f"logging: file logging off, the log folder under {where} is not writable ({reason}); console only\n"
+        )
+        return None
+
+
 def create_logger(service_name: str) -> logging.Logger:
     """The logger named ``service_name``. Its lines go to the one console
     handler on root, and to ``logs/<service_name>.log`` when the logging
@@ -663,8 +689,8 @@ def create_logger(service_name: str) -> logging.Logger:
     provider = get_provider()
     _route_root_handlers(provider)
     if not logger.handlers and provider.file_logging_enabled():
-        os.makedirs(log_dir, exist_ok=True)
-        file_handler = logging.FileHandler(os.path.join(log_dir, f"{service_name}.log"), encoding="utf-8")
-        file_handler.setFormatter(_formatter(color=False))
-        logger.addHandler(file_handler)
+        file_handler = _file_handler(service_name)
+        if file_handler is not None:
+            file_handler.setFormatter(_formatter(color=False))
+            logger.addHandler(file_handler)
     return logger

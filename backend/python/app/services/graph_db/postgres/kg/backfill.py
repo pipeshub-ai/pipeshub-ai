@@ -6,9 +6,6 @@
 2. Drain the change log (the rows of writers that ran meanwhile).
 3. Verify, full, in one unit under the connector's lock; with no change waiting and no difference the state becomes ``shadow`` with the digest and the code epoch.
 The principals of the org (users, groups, roles, teams, organizations) are one pseudo-connector (app_sk 0), done once per org.
-
-A backfill needs the change log to be kept: with the projection off (``PG_KG_PROJECT=0``) the connectors service takes its log rows back, so nothing could tell a writer's change from
-the copy, and the call raises. The same take-back is why a connector goes back to the walk when it deletes rows (flush._take_back, modes.demote_org): the next backfill starts over.
 """
 from __future__ import annotations
 
@@ -16,10 +13,10 @@ import datetime as dt
 import json
 import logging
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from app.core.org_context import OrgContext, bind
-from app.services.graph_db.postgres.kg import flush, modes
+from app.services.graph_db.postgres.kg import grant_marks, modes
 from app.services.graph_db.postgres.kg.drainer import drain_org
 from app.services.graph_db.postgres.kg.locks import NeedLocks, lock_apps
 from app.services.graph_db.postgres.kg.model import CODE_EPOCH, COLL_CODE, Key, _ms, _s
@@ -38,6 +35,7 @@ from app.telemetry.backend import METRICS_BACKEND
 
 if TYPE_CHECKING:
     import asyncio
+    from collections.abc import Awaitable, Callable
 
     from app.core.db import KernelDB, Tx
 
@@ -45,10 +43,6 @@ logger = logging.getLogger(__name__)
 PRINCIPAL_COLLS = ("organizations", "users", "groups", "roles", "teams")
 BATCHES = METRICS_BACKEND.counter("pipeshub_kg_backfill_batches_total", "Backfill batches committed", ["scope"])
 FLIPS = METRICS_BACKEND.counter("pipeshub_kg_backfill_flips_total", "Backfills that ended in a verify, by outcome", ["outcome"])
-
-
-class ProjectionOff(RuntimeError):
-    """A backfill or a promotion was asked for while the projection is off: the change log is not being kept."""
 
 
 @dataclass
@@ -66,11 +60,6 @@ def _ctx(org: str) -> OrgContext:
     return OrgContext(org, None, "job", "job:kg-backfill", "kg-backfill")
 
 
-def _need_log() -> None:
-    if flush.mode() == "off":
-        raise ProjectionOff("the projection is off (PG_KG_PROJECT=0): the change log is not kept, so a copy could not be told from a change; turn it on first")
-
-
 def _parse(cursor: str | None) -> Key | None:
     if not cursor or cursor == "done":
         return None
@@ -84,7 +73,7 @@ def _fmt(k: Key) -> str:
     return f"{RECORDS_BYTE_ORDER if k[0] == 'records' else k[0]}|{k[1]}"
 
 
-# A copy carries this in its (unused until verified) digest once a batch of it was taken off the readers: it then ends not listed from. A restart or a take-back clears it with the cursor.
+# A copy carries this in its (unused until verified) digest once a batch of it was taken off the readers: it then ends not listed from. A restart or a demotion clears it with the cursor.
 INEXACT = "copy:inexact"
 COPY_STATE = "/* pipeshub:kg.copy_state */ SELECT backfill_cursor, verify_digest FROM kg.projection_state WHERE org_id = $1 AND app_sk = $2"
 
@@ -109,7 +98,6 @@ async def principal_page(tx: Tx, org: str, after: Key | None, limit: int) -> lis
 async def backfill_scope(db: KernelDB, org: str, app_id: str | None, *, page: int = PAGE, max_batches: int | None = None, restart: bool = False,
                          stop: asyncio.Event | None = None) -> int:
     """Copy one connector (``app_id``) or the org's principals (None) in batches; returns the batches committed in this call. Resumable: a call goes on from the saved cursor."""
-    _need_log()
     done = 0
     scope = "app" if app_id else "principals"
     with bind(_ctx(org)):
@@ -215,9 +203,12 @@ async def _copied(db: KernelDB, org: str, app_id: str) -> bool:
         return await db.run(go)
 
 
-# A copy finished by epoch 7 code holds no trash columns (kg_0019) and nothing else this code derives differently: its trash columns are read from the connector's nodes, derived
-# as the projection derives them and written where they differ, then the copy is relabelled this code's epoch with its mode and its verify. It is never copied again.
+# A copy finished by epoch 7 code holds no trash columns (kg_0019) and nothing else epoch 9 code derives differently: its trash columns are read from the connector's nodes,
+# derived as the projection derives them and written where they differ, then the copy is relabelled epoch 9 with its mode and its verify (``fill_pc_tops`` takes it on from
+# there). It is never copied again.
 FILL_FROM = 7
+TOPS_FROM = 9
+MARKS_FROM = 10
 FILL_STATE = """/* pipeshub:kg.trash_fill_state */ SELECT code_epoch, backfill_cursor, mode, verify_digest, verified_at FROM kg.projection_state WHERE org_id = $1 AND app_sk = $2"""
 # One page of the connector's records in id order, whatever they hold (``has``: a delete time or batch to derive): a page reads at most ``page`` rows, so a large connector with
 # few deleted records never scans past its page under the connector's lock.
@@ -234,11 +225,9 @@ FILL_HELD = """/* pipeshub:kg.trash_fill_held */ SELECT k.sk, k.coll, k.id, k.ki
 
 async def fill_trash(db: KernelDB, org: str, app_id: str, *, page: int = PAGE, after: str = "", max_pages: int | None = None,
                      stop: asyncio.Event | None = None) -> tuple[str | None, str | None]:
-    """Bring a copy finished by epoch 7 code up to this code's epoch in place, from ``after`` (a record id) for at most ``max_pages`` pages. Returns (the mode it was relabelled
+    """Bring a copy finished by epoch 7 code up to epoch 9 in place, from ``after`` (a record id) for at most ``max_pages`` pages. Returns (the mode it was relabelled
     with, None) when done, (None, where to go on) when a bound or ``stop`` came first, and (None, None) when the connector holds no such copy. Each page holds the connector's
     lock, as a copy batch does, so the drain never interleaves with it; a call started again from the beginning writes only what still differs."""
-    pages = 0
-
     async def write(tx: Tx, rows: list) -> None:
         derived = {(COLL_CODE[r["coll"]], r["id"]): (_ms(_json(r["ts"])), _s(_json(r["batch"]))) for r in rows}
         if not derived:
@@ -247,7 +236,7 @@ async def fill_trash(db: KernelDB, org: str, app_id: str, *, page: int = PAGE, a
         await KgWriter(tx).trash_set([(h["sk"], h["coll"], h["id"], h["kind"], *derived[(h["coll"], h["id"])]) for h in held
                                       if (h["deleted_ms"], h["delete_batch"]) != derived[(h["coll"], h["id"])]])
 
-    async def step(tx: Tx) -> tuple[str, str] | str | None:
+    async def step(tx: Tx, after: str) -> tuple[str, str] | str | None:
         await lock_apps(tx, org, {app_id}, org_wide=False)
         state = await tx.fetchrow(FILL_STATE, org, await _app_sk(tx, app_id))
         if state is None or state["code_epoch"] != FILL_FROM or state["backfill_cursor"] != "done":
@@ -257,18 +246,74 @@ async def fill_trash(db: KernelDB, org: str, app_id: str, *, page: int = PAGE, a
         if len(rows) == page:
             return ("next", rows[-1]["id"])           # the cursor moves only once this unit has committed: a retried unit reads the same page again
         await write(tx, await tx.fetch(FILL_REST, org, app_id))
-        await KgWriter(tx).projection_set(await _app_sk(tx, app_id), epoch=CODE_EPOCH, mode=state["mode"], digest=state["verify_digest"], cursor="done",
+        await KgWriter(tx).projection_set(await _app_sk(tx, app_id), epoch=TOPS_FROM, mode=state["mode"], digest=state["verify_digest"], cursor="done",
                                           verified_at=state["verified_at"])
         return state["mode"]
+    return await _pages(db, org, step, after, max_pages, stop)
+
+
+async def _pages(db: KernelDB, org: str, step: Callable[[Tx, Any], Awaitable[Any]], after: Any, max_pages: int | None, stop: asyncio.Event | None) -> tuple[str | None, Any]:  # noqa: ANN401
+    """Run a fill's ``step`` unit by unit from ``after`` (see :func:`fill_trash`): each unit reads from where the last committed one stopped."""
+    pages = 0
     with bind(_ctx(org)):
         while True:
             if (stop is not None and stop.is_set()) or (max_pages is not None and pages >= max_pages):
                 return None, after
-            out = await db.run(step, write=True)
+            out = await db.run(lambda tx, at=after: step(tx, at), write=True)
             if not isinstance(out, tuple):
                 return out, None
             after = out[1]
             pages += 1
+
+
+# A copy finished by epoch 9 code has pc_top false on every row (kg_0024's default) and nothing else this code derives differently. A record's pc_top is what the copy's own
+# kind-3 links say (no PARENT_CHILD parent that is a record: ``model.record_row`` derives both from the same edges), which that copy holds and its verify compared: a page
+# of the connector's rows is read with that answer and written where it differs, then the copy is relabelled epoch 10 with its mode and its verify (``fill_grant_marks`` takes it
+# on from there). No graph row
+# is read, and the copy is never copied again. A page is a range of the connector's index, each answer one seek of the links by child.
+TOPS_FILL = """/* pipeshub:kg.pc_top_fill */ SELECT r.sk, r.coll, r.id, r.kind, r.pc_top,
+    r.kind = 3 AND NOT EXISTS (SELECT 1 FROM kg.links l JOIN kg.records p ON p.org_id = l.org_id AND p.sk = l.parent_sk
+                               WHERE l.org_id = $1 AND l.child_sk = r.sk AND l.kind = 3 AND p.kind = 3) AS derived
+  FROM kg.records r WHERE r.org_id = $1 AND r.app_sk = $2 AND r.sk > $3 ORDER BY r.sk LIMIT $4"""
+
+
+async def fill_pc_tops(db: KernelDB, org: str, app_id: str, *, page: int = PAGE, after: int = 0, max_pages: int | None = None,
+                       stop: asyncio.Event | None = None) -> tuple[str | None, int | None]:
+    """Bring a copy finished by epoch 9 code up to epoch 10 in place, from ``after`` (an sk) for at most ``max_pages`` pages; returns as :func:`fill_trash` does.
+    Each page holds the connector's lock, as a copy batch does, so the drain never interleaves with it."""
+    async def step(tx: Tx, after: int) -> tuple[str, int] | str | None:
+        await lock_apps(tx, org, {app_id}, org_wide=False)
+        app_sk = await _app_sk(tx, app_id)
+        state = await tx.fetchrow(FILL_STATE, org, app_sk)
+        if state is None or state["code_epoch"] != TOPS_FROM or state["backfill_cursor"] != "done":
+            return None
+        rows = await tx.fetch(TOPS_FILL, org, app_sk, after, page)
+        await KgWriter(tx).pc_top_set([(r["sk"], r["coll"], r["id"], r["kind"], r["derived"]) for r in rows if r["pc_top"] != r["derived"]])
+        if len(rows) == page:
+            return ("next", rows[-1]["sk"])           # the cursor moves only once this unit has committed: a retried unit reads the same page again
+        await KgWriter(tx).projection_set(app_sk, epoch=MARKS_FROM, mode=state["mode"], digest=state["verify_digest"], cursor="done", verified_at=state["verified_at"])
+        return state["mode"]
+    return await _pages(db, org, step, after, max_pages, stop)
+
+
+# A copy finished by epoch 10 code holds every grant with the marks' defaults (kg_0025), which leave nothing out, and nothing else this code derives differently. The marks are
+# functions of the copy's own rows (``grant_marks``): a page of the connector's grants is read with what they should be and written where they differ, then the copy is
+# relabelled this code's epoch with its mode and its verify. No graph row is read, and the copy is never copied again.
+async def fill_grant_marks(db: KernelDB, org: str, app_id: str, *, page: int = PAGE, after: tuple[int, int, str] = (0, 0, ""), max_pages: int | None = None,
+                           stop: asyncio.Event | None = None) -> tuple[str | None, tuple[int, int, str] | None]:
+    """Bring a copy finished by epoch 10 code up to this code's epoch in place, from ``after`` (a grant's key) for at most ``max_pages`` pages; returns as :func:`fill_trash`
+    does. Each page holds the connector's lock, as a copy batch does, so the drain never interleaves with it."""
+    async def step(tx: Tx, after: tuple[int, int, str]) -> tuple[str, tuple[int, int, str]] | str | None:
+        await lock_apps(tx, org, {app_id}, org_wide=False)
+        app_sk = await _app_sk(tx, app_id)
+        state = await tx.fetchrow(FILL_STATE, org, app_sk)
+        if state is None or state["code_epoch"] != MARKS_FROM or state["backfill_cursor"] != "done":
+            return None
+        if (nxt := await grant_marks.fill_page(tx, org, app_sk, after, page)) is not None:
+            return ("next", nxt)                    # the cursor moves only once this unit has committed: a retried unit reads the same page again
+        await KgWriter(tx).projection_set(app_sk, epoch=CODE_EPOCH, mode=state["mode"], digest=state["verify_digest"], cursor="done", verified_at=state["verified_at"])
+        return state["mode"]
+    return await _pages(db, org, step, after, max_pages, stop)
 
 
 def _json(v: object) -> object:
@@ -289,7 +334,6 @@ async def backfill(db: KernelDB, org: str, app_id: str, *, page: int = PAGE, max
     nothing is stamped or verified past it: "unfinished" (a copy or the stamping stopped at its budget or at ``stop``; the copy keeps its cursor and the stamping goes on from
     ``Outcome.stamp_after``) or "pending" (the log still has rows). The verify itself is one unit and is not interrupted. ``enforce``: a verify that passes promotes at once (the
     bootstrap's), with what :func:`promote` checks and writes, instead of a second full verify in a unit of its own."""
-    _need_log()
     n = await backfill_scope(db, org, None, page=page, max_batches=max_batches, restart=restart, stop=stop)
     n += await backfill_scope(db, org, app_id, page=page, max_batches=max_batches, restart=restart, stop=stop)
     if not await _copied(db, org, app_id):
@@ -315,7 +359,7 @@ async def backfill(db: KernelDB, org: str, app_id: str, *, page: int = PAGE, max
         async def flip(tx: Tx) -> Outcome:
             await lock_apps(tx, org, {app_id}, org_wide=False)
             res = await verify_app(tx, org, app_id) + await verify_principals(tx, org)
-            pending = await _pending(tx, org, app_id)       # after the verify, under the lock: a change that committed meanwhile is in the log, and no take-back can delete it while we hold the lock
+            pending = await _pending(tx, org, app_id)       # after the verify, under the lock: a change that committed meanwhile is in the log, and the drain cannot take it while we hold the lock
             app_sk = await _app_sk(tx, app_id)
             cursor, mode = await modes.state(tx, org, app_sk)
             if pending:      # the log explains a difference: nothing is decided, the caller drains and asks again
@@ -345,7 +389,6 @@ class Refused(ValueError):
 
 async def promote(db: KernelDB, org: str, app_id: str) -> Result:
     """``shadow`` to ``enforce``: the connector must be in ``shadow`` at this code's epoch, and a verify under its lock, now, finds no difference and nothing waiting in the log."""
-    _need_log()
     with bind(_ctx(org)):
         async def go(tx: Tx) -> Result:
             await lock_apps(tx, org, {app_id}, org_wide=False)

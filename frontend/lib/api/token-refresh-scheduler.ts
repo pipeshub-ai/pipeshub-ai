@@ -12,24 +12,21 @@
  * 1. Zustand subscription on `useAuthStore` — every time `accessToken`
  *    changes (login / setTokens / logout, including refreshes initiated
  *    here) the timer is recomputed from the new token.
- * 2. `storage` event — when another tab writes a new access token to
- *    `localStorage`, this tab adopts it (no extra refresh call) and
- *    reschedules.
+ * 2. `storage` event on the signed-in mark — another tab signed out (this
+ *    one follows), signed in as someone else (this one reloads), or signed
+ *    in while this one was signed out (this one restores from the session).
  * 3. `visibilitychange` — when the tab returns to foreground (e.g. after
  *    laptop sleep, where setTimeout firing is unreliable) the scheduler
  *    re-checks expiry and refreshes immediately if needed.
  */
 
-import {
-  ACCESS_TOKEN_STORAGE_KEY,
-  REFRESH_TOKEN_STORAGE_KEY,
-} from '@/lib/store/auth-store';
+import { restoreSession } from '@/lib/store/auth-store';
 import { useAuthStore } from '@/config';
+import { accountOfToken, SESSION_HINT_KEY } from '@/lib/auth/session-credential';
 import {
   refreshOrSignOut,
   isTokenExpired,
   getTokenExpirySeconds,
-  decodeJwtPayload,
   DEFAULT_EXPIRY_BUFFER_SECONDS,
 } from './token-refresh';
 /**
@@ -117,43 +114,28 @@ export function cancel(): void {
 }
 
 function handleStorageEvent(event: StorageEvent): void {
-  if (event.key !== ACCESS_TOKEN_STORAGE_KEY) return;
-
+  if (event.key !== SESSION_HINT_KEY && event.key !== null) return;
+  if (event.oldValue === event.newValue) return;
   const current = useAuthStore.getState().accessToken;
-  // Same value as we already hold → skip; re-applying it would write
-  // localStorage again and fan out a redundant `storage` event in N tabs.
-  if (event.newValue === current) return;
 
-  // Another tab logged out → mirror that here.
+  // Another tab signed out (or cleared the site's storage) → mirror that here.
   if (event.newValue === null) {
-    useAuthStore.getState().logout();
+    if (current) useAuthStore.getState().logout();
     return;
   }
 
-  // Another tab refreshed the access token → adopt it locally so we don't
-  // re-issue a refresh of our own. The refresh-token key may also flip in
-  // the same write batch; pick up whichever one we have.
-  const refreshToken =
-    window.localStorage.getItem(REFRESH_TOKEN_STORAGE_KEY) ??
-    useAuthStore.getState().refreshToken;
-  if (refreshToken) {
-    useAuthStore.getState().setTokens(event.newValue, refreshToken);
-  } else {
-    useAuthStore.getState().setAccessToken(event.newValue);
+  // Another tab signed in while this one was signed out → sign in here too.
+  if (!current) {
+    void restoreSession();
+    return;
   }
+
   // Another tab signed in as someone else without this one signing out. Every
   // cache, store and the open chat here belong to the previous account, and a
   // page load is the one reset that leaves none of it on screen. Web only in
   // practice: the desktop app has a single window, so no other tab writes.
-  const before = accountOf(current);
-  if (before && before !== accountOf(event.newValue)) window.location.assign('/chat/');
-  // The zustand subscription will then call `scheduleFromToken`.
-}
-
-/** The user and org a token is for, or null when it does not say. */
-function accountOf(token: string | null): string | null {
-  const payload = decodeJwtPayload(token);
-  return typeof payload?.userId === 'string' ? `${payload.userId}:${String(payload.orgId ?? '')}` : null;
+  const before = accountOfToken(current);
+  if (before && before !== event.newValue) window.location.assign('/chat/');
 }
 
 function handleVisibilityChange(): void {

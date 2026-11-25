@@ -1,0 +1,128 @@
+[
+  {
+    "description": "wrong type for this schema",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "type": "turn.aborted",
+      "schemaVersion": 1,
+      "critical": true,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "node",
+      "visibility": "owner",
+      "data": {
+        "runKind": "interactive",
+        "principalRef": "p_u42"
+      }
+    }
+  },
+  {
+    "description": "writer allowlist: only node writes run.admitted",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "type": "run.admitted",
+      "schemaVersion": 1,
+      "critical": true,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "data": {
+        "runKind": "interactive",
+        "principalRef": "p_u42"
+      },
+      "attemptId": "att_1",
+      "fence": 3
+    }
+  },
+  {
+    "description": "unknown data field",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "type": "run.admitted",
+      "schemaVersion": 1,
+      "critical": true,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "node",
+      "visibility": "owner",
+      "data": {
+        "runKind": "interactive",
+        "principalRef": "p_u42",
+        "unexpected": true
+      }
+    }
+  },
+  {
+    "description": "principal must be a reference",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "type": "run.admitted",
+      "schemaVersion": 1,
+      "critical": true,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "node",
+      "visibility": "owner",
+      "data": {
+        "runKind": "interactive",
+        "principalRef": "u42"
+      }
+    }
+  },
+  {
+    "description": "unknown via",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "type": "run.admitted",
+      "schemaVersion": 1,
+      "critical": true,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "node",
+      "visibility": "owner",
+      "data": {
+        "runKind": "interactive",
+        "principalRef": "p_u42",
+        "via": "cookie"
+      }
+    }
+  },
+  {
+    "description": "a viewer never sends a turn: sessionRole viewer",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 9,
+      "runId": "run_2",
+      "type": "run.admitted",
+      "schemaVersion": 1,
+      "critical": true,
+      "ts": "2026-10-04T12:00:00.123Z",
+      "writer": "node",
+      "visibility": "owner",
+      "data": {
+        "runKind": "interactive",
+        "principalRef": "p_u43",
+        "via": "session",
+        "sessionRole": "viewer"
+      }
+    }
+  }
+]

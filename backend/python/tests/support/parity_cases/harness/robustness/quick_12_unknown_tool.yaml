@@ -1,0 +1,14 @@
+id: quick-12-unknown-tool
+category: robustness
+chat_mode: quick
+task: Close ticket PROJ-42.
+notes: The model calls a tool that does not exist; the harness must return an error, not crash.
+script:
+  turns:
+    - reply: {tool_calls: [{id: c1, name: jira__close_issue, args: {issue_key: PROJ-42}}]}
+    - expect: {tool_result_for: jira__close_issue, status: failed}
+      reply: {text: "I can't close issues with the tools I have."}
+grader:
+  - contains: can't close
+  - no_effects: true
+  - status: completed

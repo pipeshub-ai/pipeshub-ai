@@ -47,9 +47,9 @@ describe('Connector routes: why a person cannot read a record', () => {
     expect(r.body).to.deep.equal(ANSWER)
     const forwarded = h.backend.callsTo('GET', BACKEND_PATH)
     expect(forwarded).to.have.length(1)
-    expect(forwarded[0].query.get('user_id')).to.equal(MEMBER_ID)
-    expect(forwarded[0].query.get('record_id')).to.equal(RECORD_ID)
-    expect(forwarded[0].headers.authorization).to.equal(`Bearer ${token}`)
+    expect(forwarded[0]!.query.get('user_id')).to.equal(MEMBER_ID)
+    expect(forwarded[0]!.query.get('record_id')).to.equal(RECORD_ID)
+    expect(forwarded[0]!.headers.authorization).to.equal(`Bearer ${token}`)
   })
 
   it('gives a member the 404 of a route that is not there, before anything reaches the connector service', async () => {
@@ -118,10 +118,10 @@ describe('The explanation route in the OpenAPI spec', () => {
     .schema as Schema
 
   it('makes the container nullable in a schema of its own, and a path item not nullable', () => {
-    const container = answer.properties!.container
+    const container = answer.properties!.container!
     expect(container.allOf).to.equal(undefined)
-    expect(spec.components.schemas[container.$ref!.split('/').pop()!].nullable).to.equal(true)
-    const item = spec.components.schemas[answer.properties!.path.items!.$ref!.split('/').pop()!]
-    expect(item.nullable).to.not.equal(true)
+    expect(spec.components.schemas[container.$ref!.split('/').pop()!]!.nullable).to.equal(true)
+    const item = spec.components.schemas[answer.properties!.path!.items!.$ref!.split('/').pop()!]
+    expect(item!.nullable).to.not.equal(true)
   })
 })

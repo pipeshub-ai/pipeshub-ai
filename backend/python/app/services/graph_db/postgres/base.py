@@ -280,6 +280,10 @@ class PgBase:
         self._txns[tid] = _Txn(self._db, current_or_system(), snapshot=True)
         return tid
 
+    async def run_in_transaction(self, transaction: str, fn: Callable[[Tx], Awaitable[Any]]) -> Any:  # noqa: ANN401
+        """``fn`` on the open unit of an explicit transaction: what it writes commits or rolls back with the graph writes."""
+        return await self._txn(transaction).run(fn)
+
     async def commit_transaction(self, transaction: str) -> None:
         self._txn(transaction)
         await self._txns.pop(transaction).finish("commit")

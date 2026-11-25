@@ -36,8 +36,8 @@ vi.mock('@/app/(main)/agents/agent-builder/components/user-toolset-config-dialog
 }));
 
 import { apiClient } from '@/lib/api/axios-instance';
+import { useAuthStore } from '@/config';
 import { useChatStore } from '@/chat/store';
-import { useAuthStore } from '@/lib/store/auth-store';
 import { useFeatureFlagsStore } from '@/lib/store/feature-flags-store';
 import { UniversalAgentResourcesPanel } from '../universal-agent-resources-panel';
 
@@ -104,18 +104,18 @@ async function flush() {
 
 function signOutAndIn() {
   act(() => useAuthStore.getState().logout());
-  useAuthStore.setState({ accessToken: 'token-b', refreshToken: 'refresh-b', isAuthenticated: true });
+  useAuthStore.setState({ accessToken: 'token-b', isAuthenticated: true });
 }
 
 beforeEach(() => {
   installBrowserShims();
   pending.length = 0;
   apiClient.defaults.adapter = deferredAdapter;
-  useAuthStore.setState({ accessToken: 'token-a', refreshToken: 'refresh-a', isAuthenticated: true });
+  useAuthStore.setState({ accessToken: 'token-a', isAuthenticated: true });
   useFeatureFlagsStore.setState({ flags: { ENABLE_ACTIONS: true, ENABLE_MCP: true } });
   // A fresh session per test: the panel's lists and the chat store start empty.
   act(() => useAuthStore.getState().logout());
-  useAuthStore.setState({ accessToken: 'token-a', refreshToken: 'refresh-a', isAuthenticated: true });
+  useAuthStore.setState({ accessToken: 'token-a', isAuthenticated: true });
   useFeatureFlagsStore.setState({ flags: { ENABLE_ACTIONS: true, ENABLE_MCP: true } });
   apiActionsApi.listInstances.mockResolvedValue([]);
   vi.spyOn(console, 'error').mockImplementation(() => undefined);

@@ -171,6 +171,11 @@ class Tenant:
 
     def download_url(self, item_id: str, drive: str = DRIVE) -> None:
         self.cloud.on("GET", f"/v1.0/drives/{drive}/items/{item_id}", {"id": item_id, "@microsoft.graph.downloadUrl": f"https://download.example/{item_id}"})
+        self.list_item(item_id, {}, drive)
+
+    def list_item(self, item_id: str, fields: dict[str, Any], drive: str = DRIVE) -> None:
+        """The file's list item, with the columns its library keeps for it."""
+        self.cloud.on("GET", f"/v1.0/drives/{drive}/items/{item_id}/listItem", {"id": f"li-{item_id}", "fields": fields})
 
     def add_group(self, group_id: str, name: str, members: object) -> None:
         self.groups.append({"id": group_id, "displayName": name, "description": f"{name} group"})
@@ -421,6 +426,26 @@ class TestDriveDeltaSync:
         assert sorted(db.records) == ["f1", "f3"]
         assert [r.external_record_id for batch in db.record_batches for r in batch] == ["f1", "f3"]
         assert drive_checkpoint(checkpoints)["deltaLink"] == delta_link("u-ana", "D2")
+
+    async def test_cl_lbl_7_with_no_metadata_reader_nothing_beyond_the_item_is_read(self, cloud, tenant, db, checkpoints) -> None:
+        """CL-LBL-7: reading source metadata is an extension point; with none, a file whose list item carries more
+        columns gets no edition fields, and a change to them (a new eTag) changes nothing."""
+        feed = tenant.add_user("u-ana", "ana@acme.com", "Ana")
+        feed.by_token[None] = page([drive_item("f1", "one.pdf")], delta_link=delta_link("u-ana", "D1"))
+        feed.by_token["D1"] = page([drive_item("f1", "one.pdf", etag="v2")], delta_link=delta_link("u-ana", "D2"))
+        tenant.share("f1", [user_grant("u-ana", "ana@acme.com", "owner")])
+        tenant.download_url("f1")
+        tenant.list_item("f1", {"Tag": "One"})
+        connector = await ready_connector(db, checkpoints)
+
+        await connector.run_sync()
+        assert db.records["f1"].edition_fields is None
+        assert "editionFields" not in db.records["f1"].to_arango_base_record()
+
+        tenant.list_item("f1", {"Tag": "Two"})
+        await connector.run_sync()
+        assert db.records["f1"].edition_fields is None
+        assert cloud.unrouted == []
 
     async def test_an_empty_page_in_the_middle_does_not_end_the_sync(self, cloud, tenant, db, checkpoints) -> None:
         feed = tenant.add_user("u-ana", "ana@acme.com", "Ana")

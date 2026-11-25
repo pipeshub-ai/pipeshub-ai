@@ -1,6 +1,11 @@
 """monday.com MCP server template — official hosted server, OAuth + DCR."""
 from app.agents.mcp.mcp_server_decorator import mcp_server
-from app.agents.mcp.models import MCPAuthMode, MCPServerTemplate, MCPTransport
+from app.agents.mcp.models import (
+    MCPAuthMode,
+    MCPCategory,
+    MCPServerTemplate,
+    MCPTransport,
+)
 
 
 @mcp_server(
@@ -22,6 +27,12 @@ from app.agents.mcp.models import MCPAuthMode, MCPServerTemplate, MCPTransport
         supports_dcr=True,
         documentation_url="https://developer.monday.com/api-reference/docs/mondaycom-mcp",
         tags=["project-management", "productivity"],
+        category=MCPCategory.PROJECTS,
+        capabilities=[
+            "Manage boards and items",
+            "Update an item's status",
+            "Post updates to a board",
+        ],
     )
 )
 class MondayMCPServer:

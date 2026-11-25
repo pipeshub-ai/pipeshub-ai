@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.sources.client.mariadb.mariadb import (
+    DEFAULT_CONNECT_TIMEOUT_S,
     AuthConfig,
     MariaDBClient,
     MariaDBClientBuilder,
@@ -74,7 +75,7 @@ class TestMariaDBConfig:
         assert config.port == 3306
         assert config.database is None
         assert config.password == ""
-        assert config.timeout == 30
+        assert config.timeout == DEFAULT_CONNECT_TIMEOUT_S
         assert config.charset == "utf8mb4"
 
     def test_custom(self):
@@ -129,7 +130,7 @@ class TestMariaDBConnectorConfig:
     def test_defaults(self):
         auth = AuthConfig(host="localhost", user="root")
         config = MariaDBConnectorConfig(auth=auth)
-        assert config.timeout == 30
+        assert config.timeout == DEFAULT_CONNECT_TIMEOUT_S
 
 
 # ============================================================================

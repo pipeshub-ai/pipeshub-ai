@@ -8,7 +8,9 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from app.agent_loop_lib.core.types import Goal
-from app.agent_loop_lib.hooks.middleware.builtin.skill_preloading import skill_preloading
+from app.agent_loop_lib.hooks.middleware.builtin.skill_preloading import (
+    skill_preloading,
+)
 from app.agent_loop_lib.hooks.middleware.context import AgentLifecycleContext
 from app.agent_loop_lib.modules.providers.skills.base import (
     Skill,
@@ -26,6 +28,13 @@ class _FakeSpec:
 class _FakeScope:
     extra_prompt_sections: dict[str, str] = field(default_factory=dict)
     spec: _FakeSpec = field(default_factory=_FakeSpec)
+    slots: dict[Any, Any] = field(default_factory=dict)
+
+    def get(self, slot: Any) -> Any:  # noqa: ANN401
+        return self.slots.get(slot, slot.default_factory())
+
+    def set(self, slot: Any, value: Any) -> None:  # noqa: ANN401
+        self.slots[slot] = value
 
 
 def _skill(name: str) -> Skill:

@@ -17,7 +17,8 @@ import { Logger } from '../../../src/libs/services/logger.service';
 import { ErrorMiddleware } from '../../../src/libs/middlewares/error.middleware';
 import { requestContextMiddleware } from '../../../src/libs/middlewares/request.context';
 import { accessLog } from '../../../src/libs/middlewares/access-log.middleware';
-import { AuthMiddleware } from '../../../src/libs/middlewares/auth.middleware';
+// The class the crawling router resolves (from src/config), as tests/modules/crawling_manager/routes/cm_routes.test.ts binds it.
+import { AuthMiddleware } from '../../../src/config';
 import { AuthTokenService } from '../../../src/libs/services/authtoken.service';
 import { registerUpstreams } from '../../../src/libs/http/upstream-call';
 import * as requestContext from '../../../src/libs/context/request-context';
@@ -29,6 +30,7 @@ import { CrawlingWorkerService } from '../../../src/modules/crawling_manager/ser
 import { ConnectorsCrawlingService } from '../../../src/modules/crawling_manager/services/connectors/connectors';
 import { Users } from '../../../src/modules/user_management/schema/users.schema';
 import { UserActivities } from '../../../src/modules/auth/schema/userActivities.schema';
+import { UserCredentials } from '../../../src/modules/auth/schema/userCredentials.schema';
 import { Org } from '../../../src/modules/user_management/schema/org.schema';
 import { AppConfig, registerAppUpstreams } from '../../../src/modules/tokens_manager/config/config';
 import { FakeBackend, buildConfig } from '../tokens_manager/routes/connectors-http-harness';
@@ -74,8 +76,10 @@ describe('crawling manager logging', function () {
   beforeEach(() => {
     records = captureLogRecords();
     requestId = newRequestId('crawling-logging');
+    // Every account lookup the build's AuthMiddleware (from src/config) may make, so the test holds whichever one it wires.
     sinon.stub(Users, 'findOne').callsFake((() => query(ADMIN)) as any);
     sinon.stub(UserActivities, 'findOne').callsFake((() => query(null)) as any);
+    sinon.stub(UserCredentials, 'findOne').callsFake((() => query(null)) as any);
     sinon.stub(Org, 'findOne').callsFake((() => query(orgActive ? { _id: ORG } : null)) as any);
   });
   afterEach(() => {

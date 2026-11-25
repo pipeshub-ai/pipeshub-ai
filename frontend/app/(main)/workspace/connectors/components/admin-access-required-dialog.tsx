@@ -71,7 +71,7 @@ export function AdminAccessRequiredDialog({
           <MaterialIcon
             name={isQuestion ? 'admin_panel_settings' : 'info'}
             size={20}
-            color={isQuestion ? 'var(--amber-9)' : 'var(--blue-9)'}
+            color={isQuestion ? 'var(--amber-11)' : 'var(--blue-11)'}
           />
           <Dialog.Title style={{ color: 'var(--slate-12)', margin: 0 }}>
             {isQuestion

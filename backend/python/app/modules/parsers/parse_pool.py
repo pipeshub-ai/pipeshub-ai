@@ -90,6 +90,12 @@ IDLE_SECONDS = 60.0
 WORKER_START_SECONDS = 120.0
 # How often a waiting lane checks whether its job was abandoned.
 _POLL_SECONDS = 0.25
+# A worker whose data segment stays this close to its own RLIMIT_DATA (the Excel load's memory
+# cap) for this long is stopped from here. At that cap a load can sit inside one C call for
+# minutes, where no signal handler runs and the worker's own watcher thread cannot allocate
+# either; the worker's watcher stops every other at-cap load within half a second.
+_AT_DATA_LIMIT_MARGIN_KB = 4096
+_AT_DATA_LIMIT_SECONDS = 3.0
 _PYTHON_ROOT = str(Path(__file__).resolve().parents[3])
 
 
@@ -259,6 +265,24 @@ class _Worker:
             self.process.wait(timeout=5)
 
 
+def _at_data_limit(worker: object) -> bool:
+    """True while *worker*'s data segment is within ``_AT_DATA_LIMIT_MARGIN_KB`` of its soft
+    RLIMIT_DATA. False with no limit set, and wherever /proc cannot say."""
+    pid = getattr(getattr(worker, "process", None), "pid", None)
+    if not isinstance(pid, int):
+        return False
+    try:
+        with open(f"/proc/{pid}/limits", encoding="ascii") as limits:
+            soft = next((line.split()[3] for line in limits if line.startswith("Max data size")), "unlimited")
+        if not soft.isdigit():
+            return False
+        with open(f"/proc/{pid}/status", encoding="ascii") as status:
+            vm_data_kb = next((int(line.split()[1]) for line in status if line.startswith("VmData:")), 0)
+    except (OSError, ValueError, IndexError):
+        return False
+    return vm_data_kb >= int(soft) // 1024 - _AT_DATA_LIMIT_MARGIN_KB
+
+
 class _Lane:
     """One thread and the worker it owns. Nothing else touches that worker."""
 
@@ -353,11 +377,24 @@ class _Lane:
 
         timeout = job.timeout if job.timeout is not None else messaging_env.record_processing_timeout
         deadline = time.monotonic() + timeout
+        at_limit_since: float | None = None
         while not worker.reply_ready(_POLL_SECONDS):
             if self._abandoned(job):
                 self._drop_worker()
                 raise ParseAbandonedError("parse abandoned while it was running")
-            if time.monotonic() >= deadline:
+            now = time.monotonic()
+            if not _at_data_limit(worker):
+                at_limit_since = None
+            elif at_limit_since is None:
+                at_limit_since = now
+            elif now - at_limit_since >= _AT_DATA_LIMIT_SECONDS:
+                self._drop_worker()
+                _logger.warning(
+                    "Parsing %s (%d bytes) sat at its memory limit for %.0fs; its worker was replaced",
+                    job.label, job.size, _AT_DATA_LIMIT_SECONDS,
+                )
+                raise ParseWorkerError(PARSE_WORKER_OUT_OF_MEMORY, "at_memory_limit")
+            if now >= deadline:
                 self._drop_worker()
                 _logger.warning(
                     "Parsing %s (%d bytes) was stopped after %.0fs; its worker was replaced",
@@ -531,6 +568,7 @@ async def submit(
     interactive: bool = False,
     kind: object | None = None,
     permit: Permit | None = None,
+    process_only: bool = False,
 ) -> T:
     """Run ``fn(*args)`` in a worker process and return its result.
 
@@ -546,7 +584,12 @@ async def submit(
     *interactive* (a chat attachment a person is waiting on) runs on a pool of
     its own under ``PARSE_LANES=on`` so background indexing cannot hold it up;
     it is ignored otherwise.
+
+    *process_only* never falls back to a thread (which *timeout* cannot stop): with no worker process, or a pool that
+    closed under the job, it raises ``ParseWorkerError``.
     """
+    if process_only and parse_pool_workers() <= 0:
+        raise ParseWorkerError("No parse worker process is available", "no_worker")
     # PIPESHUB_CAPACITY_PROFILE=auto only: the lane adopts the caller's permit, or reserves one when it is given none.
     if permit is None and wiring.classes_enabled():
         permit = class_pools.lane_permit(kind)  # the admission's own permit, never reserved twice
@@ -558,8 +601,10 @@ async def submit(
     release_here = held is not None
     try:
         pool = _pool(interactive=interactive, kind=kind)
+        if pool is None and process_only:
+            raise ParseWorkerError("No parse worker process is available", "no_worker")
         if pool is not None:
-            job = _Job(fn, args, label, size, timeout, kind=kind, covered=_covered(kind))
+            job = _Job(fn, args, label, size, timeout, require_worker=process_only, kind=kind, covered=_covered(kind))
             if held is not None:
                 # The lane decides when the job is over: it finishes it, kills its worker after a cancel, or drops it
                 # while still queued. The tokens go back then, not when the awaiting caller goes away.
@@ -569,6 +614,8 @@ async def submit(
                 return await pool.submit(job)
             except _PoolClosed:
                 release_here = held is not None  # never enqueued: nothing else will release it
+                if process_only:
+                    raise ParseWorkerError("The parse worker pool closed", "pool_closed") from None
         # A thread cannot be stopped: if this coroutine is cancelled, the work goes on and keeps its tokens until it
         # ends, so the permit is released when the thread does, not when the caller goes away.
         future = asyncio.get_running_loop().run_in_executor(None, contextvars.copy_context().run, fn, *args)

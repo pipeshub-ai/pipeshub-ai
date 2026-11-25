@@ -286,12 +286,20 @@ async def _slack_thread_tool(caplog: pytest.LogCaptureFixture) -> None:
 async def _slack_nearby_tool(caplog: pytest.LogCaptureFixture) -> None:
     from app.utils import fetch_slack_nearby_messages as fsn
 
-    with patch.object(fsn, "_fetch_nearby_messages_impl", AsyncMock(side_effect=_pvue_from(unmarked()))):
+    # the anchor is a Slack message the user may read, so the call reaches the read that fails
+    graph = AsyncMock()
+    graph.get_record_by_id = AsyncMock(return_value={
+        "id": "rec-1", "org_id": "org-1", "connector_name": "SLACK", "connector_id": "conn-1", "external_record_group_id": "C123",
+    })
+    gate = MagicMock()
+    gate.decide = AsyncMock(return_value="own")
+    with patch.object(fsn, "_fetch_nearby_messages_impl", AsyncMock(side_effect=_pvue_from(unmarked()))), \
+            patch.object(fsn, "RecordReadGate", MagicMock(return_value=gate)):
         tool = fsn.create_fetch_slack_nearby_messages_tool(
-            config_service=MagicMock(), graph_provider=AsyncMock(), org_id="org-1", user_id="u1",
+            config_service=MagicMock(), graph_provider=graph, org_id="org-1", user_id="u1",
         )
         result = await tool.ainvoke({
-            "timestamp": "2023-11-14T22:13:20Z", "direction": "before", "channel_id": "C123", "connector_id": "conn-1",
+            "record_id": "rec-1", "timestamp": "2023-11-14T22:13:20Z", "direction": "before",
         })
     assert result.ok is False
 

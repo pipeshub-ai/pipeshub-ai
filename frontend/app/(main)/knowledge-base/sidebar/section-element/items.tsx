@@ -115,7 +115,7 @@ export function ConnectorItemComponent({
         <ConnectorIcon
           type={connectorType}
           size={16}
-          color={isSelected ? 'var(--accent-9)' : 'var(--slate-11)'}
+          color={isSelected ? 'var(--accent-11)' : 'var(--slate-11)'}
           style={{ marginRight: 'var(--space-1)' }}
         />
         <Text

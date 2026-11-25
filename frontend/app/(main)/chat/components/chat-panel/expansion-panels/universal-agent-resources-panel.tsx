@@ -97,7 +97,7 @@ function UniversalAgentFilterTablist({
 const OLIVE_ROW = {
   backgroundColor: 'var(--olive-2)',
   border: '1px solid var(--olive-3)',
-  borderRadius: 'var(--radius-1-max, 3px)',
+  borderRadius: '3px',
 } as const;
 
 const CHECKBOX_ALIGN: React.CSSProperties = {
@@ -750,7 +750,7 @@ export function UniversalAgentResourcesPanel({
       return (
         <Flex align="center" justify="center" gap="2" style={{ padding: 'var(--space-4)' }}>
           <Spinner size="2" />
-          <Text size="2" style={{ color: 'var(--gray-10)' }}>
+          <Text size="2" style={{ color: 'var(--gray-11)' }}>
             {loadingText}
           </Text>
         </Flex>
@@ -759,7 +759,7 @@ export function UniversalAgentResourcesPanel({
 
     if (error) {
       return (
-        <Text size="2" style={{ color: 'var(--red-9)', padding: 'var(--space-3)' }}>
+        <Text size="2" style={{ color: 'var(--red-11)', padding: 'var(--space-3)' }}>
           {error}
         </Text>
       );
@@ -768,7 +768,7 @@ export function UniversalAgentResourcesPanel({
     if (groups.length === 0 && !extraRows) {
       return (
         <Flex direction="column" gap="2" style={{ padding: 'var(--space-3)' }}>
-          <Text size="2" style={{ color: 'var(--slate-9)' }}>
+          <Text size="2" style={{ color: 'var(--slate-11)' }}>
             {hasAnyBeforeFilter ? noMatchText : noDataText}
           </Text>
           {renderBrowseMoreRow({
@@ -823,10 +823,10 @@ export function UniversalAgentResourcesPanel({
                     </Text>
                     {subtitle ? (
                       <>
-                        <Text size="2" weight="medium" style={{ color: 'var(--gray-10)' }}>
+                        <Text size="2" weight="medium" style={{ color: 'var(--gray-11)' }}>
                           ·
                         </Text>
-                        <Text size="2" weight="medium" style={{ color: 'var(--gray-10)' }} truncate>
+                        <Text size="2" weight="medium" style={{ color: 'var(--gray-11)' }} truncate>
                           {subtitle}
                         </Text>
                       </>
@@ -897,7 +897,7 @@ export function UniversalAgentResourcesPanel({
                         <Text size="2" weight="medium" style={{ color: 'var(--gray-11)' }} truncate>
                           {short}
                         </Text>
-                        <Text size="1" style={{ color: 'var(--gray-9)' }} truncate>
+                        <Text size="1" style={{ color: 'var(--gray-11)' }} truncate>
                           {fn}
                         </Text>
                       </Flex>
@@ -960,6 +960,7 @@ export function UniversalAgentResourcesPanel({
           hiddenTabs={hiddenTabs}
         />
         <IconButton
+          aria-label={viewMode === 'overlay' ? t('recordView.exitFullscreen') : t('recordView.openFullscreen')}
           variant="ghost"
           color="gray"
           size="1"
@@ -977,7 +978,7 @@ export function UniversalAgentResourcesPanel({
           <MaterialIcon
             name={viewMode === 'overlay' ? 'close_fullscreen' : 'open_in_full'}
             size={16}
-            color="var(--slate-9)"
+            color="var(--slate-11)"
           />
         </IconButton>
       </Flex>
@@ -993,7 +994,7 @@ export function UniversalAgentResourcesPanel({
             style={{ flex: 1, minWidth: 0 }}
           >
             <TextField.Slot>
-              <MaterialIcon name="search" size={16} color="var(--gray-9)" />
+              <MaterialIcon name="search" size={16} color="var(--gray-11)" />
             </TextField.Slot>
           </TextField.Root>
         </Flex>
@@ -1063,7 +1064,7 @@ export function UniversalAgentResourcesPanel({
                     background: 'none',
                     border: 'none',
                     cursor: isLoadingMore ? 'default' : 'pointer',
-                    color: 'var(--olive-9)',
+                    color: 'var(--olive-11)',
                     fontSize: 12,
                     padding: 0,
                     textAlign: 'left',
@@ -1130,7 +1131,7 @@ export function UniversalAgentResourcesPanel({
               <McpServerIcon instanceId={group.instanceId} typeId={group.typeId} name={group.label} size={18} />
             ),
             renderToolIcon: (_fn, group) => (
-              <McpServerIcon instanceId={group.instanceId} typeId={group.typeId} name={group.label} size={16} color="var(--gray-9)" />
+              <McpServerIcon instanceId={group.instanceId} typeId={group.typeId} name={group.label} size={16} color="var(--gray-11)" />
             ),
             extraRows:
               filteredMcpToConnect.length > 0 ? (
@@ -1160,7 +1161,7 @@ export function UniversalAgentResourcesPanel({
         </Button>
         {(tab === 'actions' || tab === 'mcp') && (
           <Flex align="center" gap="2">
-            <Text size="1" style={{ color: 'var(--gray-9)' }}>
+            <Text size="1" style={{ color: 'var(--gray-11)' }}>
               {t('chat.universalAgent.toolCount', {
                 count: selectedCount,
                 defaultValue: `{{count}} tools`,

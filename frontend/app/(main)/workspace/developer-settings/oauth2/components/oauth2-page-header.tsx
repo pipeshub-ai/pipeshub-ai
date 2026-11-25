@@ -64,7 +64,7 @@ export function Oauth2PageHeader({
           style={{ width: '100%' }}
         >
           <TextField.Slot>
-            <MaterialIcon name="search" size={16} color="var(--slate-9)" />
+            <MaterialIcon name="search" size={16} color="var(--slate-11)" />
           </TextField.Slot>
         </TextField.Root>
       </Box>

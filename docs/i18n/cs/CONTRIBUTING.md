@@ -131,13 +131,13 @@ Spusťte Redis, Qdrant, Neo4j a MongoDB. Hesla a klíče musí odpovídat výše
 **Redis** (konfigurační KV a Redis Streams jako sběrnice událostí):
 
 ```bash
-docker run -d --name redis --restart always -p 6379:6379 redis:7.4-bookworm
+docker run -d --name redis --restart always -p 6379:6379 redis:7.4.12-bookworm
 ```
 
 **Qdrant** (vektory). API klíč musí odpovídat `QDRANT_API_KEY` v `.env`:
 
 ```bash
-docker run -p 6333:6333 -p 6334:6334 -e QDRANT__SERVICE__API_KEY=your_qdrant_secret_api_key qdrant/qdrant:v1.15
+docker run -p 6333:6333 -p 6334:6334 -e QDRANT__SERVICE__API_KEY=your_qdrant_secret_api_key qdrant/qdrant:v1.15.5
 ```
 
 **Neo4j** (graf). Heslo musí odpovídat `NEO4J_PASSWORD` v `.env`. Místo kontejneru lze použít i Neo4j Desktop; Bolt zůstává na `localhost:7687`.
@@ -170,7 +170,7 @@ Pokud přepínáte grafový nebo KV backend nad existujícími daty, nejprve v K
 
 ```bash
 cd backend/nodejs/apps
-npm install
+npm ci
 npm run dev
 ```
 
@@ -182,8 +182,7 @@ Virtualenv vytvořte jen jednou. Poté spusťte každý proces ve vlastním term
 cd backend/python
 python3.12 -m venv venv
 source venv/bin/activate  # Windows: venv\Scripts\activate
-pip install uv
-uv pip install -e .
+PYTHON=venv/bin/python requirements/install.sh dev --project . --editable
 python -c "import nltk; nltk.download('punkt')"
 
 python -m app.embedding_main
@@ -202,7 +201,7 @@ Pokud není nastaven `PORT`, Next.js použije port 3000, který koliduje s API.
 ```bash
 cd frontend
 cp env.template .env
-npm install
+npm ci
 PORT=3001 npm run dev
 ```
 
@@ -369,7 +368,7 @@ Frontend (`frontend/`) používá pro end-to-end testování [Playwright](https:
 1. Nainstalujte závislosti (zahrnuje `@playwright/test`):
    ```bash
    cd frontend
-   npm install
+   npm ci
    ```
 
 2. Nainstalujte prohlížeče pro Playwright:

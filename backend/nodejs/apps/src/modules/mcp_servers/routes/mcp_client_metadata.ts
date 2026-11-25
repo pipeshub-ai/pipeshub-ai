@@ -1,5 +1,6 @@
 import { NextFunction, Request, Response } from 'express';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
+import { parseKvObject } from '../../../libs/utils/kv-object.utils';
 import { configPaths } from '../../configuration_manager/paths/paths';
 
 /**
@@ -48,7 +49,7 @@ export function createMcpClientMetadataHandler(
       const stored = await keyValueStore.get<string>(configPaths.endpoint);
       const endpoints =
         typeof stored === 'string' && stored !== ''
-          ? (JSON.parse(stored) as StoredEndpoints | null)
+          ? (parseKvObject(stored) as StoredEndpoints | null)
           : null;
       const frontendUrl = endpoints?.frontend?.publicEndpoint;
       if (typeof frontendUrl !== 'string' || frontendUrl.trim() === '') {

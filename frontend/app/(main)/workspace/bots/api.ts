@@ -1,6 +1,6 @@
 import { apiClient } from '@/lib/api';
 import { REVEAL_PARAMS } from '@/lib/hooks/use-secret-reveal-available';
-import type { SlackBotConfig, SlackBotConfigPayload, AgentOption } from './types';
+import type { SlackBotConfig, SlackBotConfigPayload, AgentOption, SlackIdentityLink } from './types';
 
 const SLACK_BOT_BASE_URL = '/api/v1/configurationManager/slack-bot';
 const AGENTS_PAGE_SIZE = 200;
@@ -36,6 +36,19 @@ export const BotsApi = {
 
   async deleteSlackBotConfig(configId: string): Promise<void> {
     await apiClient.delete(`${SLACK_BOT_BASE_URL}/${configId}`);
+  },
+
+  // ── Slack identity links (who each Slack person acts as) ──
+
+  async getSlackIdentityLinks(): Promise<SlackIdentityLink[]> {
+    const { data } = await apiClient.get(`${SLACK_BOT_BASE_URL}/identity-links`);
+    return data?.links || [];
+  },
+
+  async revokeSlackIdentityLink(teamId: string, slackUserId: string): Promise<void> {
+    await apiClient.delete(
+      `${SLACK_BOT_BASE_URL}/identity-links/${encodeURIComponent(teamId)}/${encodeURIComponent(slackUserId)}`
+    );
   },
 
   // ── Agents ──

@@ -25,7 +25,7 @@ import {
 } from '../../src/modules/user_management/services/user-admin.service';
 import { createOrgLikeSignUp } from './contract/rest.contract';
 import { adminInviter, withoutSideStores } from './admin-invite-race';
-import { deleteRace, gate, waitUntil, type DeleteOutcome, type DeleteRace } from './admin-delete-race';
+import { deleteRace, gate, parkAfter, waitUntil, type DeleteOutcome, type DeleteRace } from './admin-delete-race';
 import { createRace, type CreateOutcome, type CreateRace } from './admin-create-race';
 import { USER_PROMOTED_DURING_DELETE } from '../../src/modules/user_management/controller/users.controller';
 import type { UserRepository } from '../../src/libs/repositories/user/types';
@@ -379,6 +379,17 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
           }
         });
 
+        it(`a member invite brings a removed admin back as a member, with the org at ${MAX_ORG_ADMINS} admins`, async () => {
+          const org = await world.newOrg();
+          const actor = await world.adminOf(org);
+          for (let i = 1; i < MAX_ORG_ADMINS; i += 1) await account(org, { role: 'admin' });
+          const gone = await account(org, { role: 'admin', isDeleted: true });
+          await inOrg(org, () => adminInviter(false, 'member')(org, [gone.email]), actor);
+          const back = await inOrg(org, () => users.getAny(org, gone._id));
+          expect([back?.isDeleted, back?.role]).to.deep.equal([false, 'member']);
+          expect(await inOrg(org, () => users.countActiveAdmins(org))).to.equal(MAX_ORG_ADMINS);
+        });
+
         it('a taken address inside the locked unit is still a unique-key error on email', async () => {
           const { org, actor } = await orgWithOneSeat();
           const taken = (await account(org)).email;
@@ -430,6 +441,23 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
           await inOrg(org, () => saveUserEnsuringOrgRetainsAdmin(org, a, { role: 'member' }, false), a);
           del.release();
           await expectKeptAsAdmin(org, u, a, await del.done);
+        });
+
+        it('an admin invite that read a pending member before their removal still answers, and leaves them a removed member', async () => {
+          const org = await world.newOrg();
+          const a = await world.adminOf(org);
+          const p = await account(org);
+          const park = parkAfter(users, 'listByEmails');
+          const inviting = inOrg(org, () => adminInviter(false)(org, [p.email]), a);
+          await park.reached;
+          const del = inOrg(org, () => race.start(org, a, p._id), a);
+          await del.parked;
+          del.release();
+          expect((await del.done).status).to.equal('deleted');
+          park.release();
+          expect(await inviting).to.be.an('object');
+          expect(await inOrg(org, () => users.getAny(org, p._id))).to.include({ role: 'member', isDeleted: true });
+          expect(await inOrg(org, () => users.countActiveAdmins(org))).to.equal(1);
         });
 
         it('a removal sent while the promotion holds the row lock waits for it, then keeps the new admin', async () => {

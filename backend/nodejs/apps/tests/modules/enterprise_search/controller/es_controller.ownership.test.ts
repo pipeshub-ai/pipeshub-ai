@@ -201,6 +201,34 @@ describe('es_controller ownership: nobody reads or changes a conversation that i
     })
   }
 
+  // SS0: `write` is the collaborator role. Until SS2 it adds nothing a manager could use: the
+  // owner alone shares, deletes, archives and sends turns (the turn guard answers with a code).
+  for (const c of chatCases.filter((x) => x.name !== 'getConversationById' && x.name !== 'updateFeedback')) {
+    it(`RO-6 ${c.name}: a collaborator (write share) gets 404 and nothing is written`, async () => {
+      const s = setup()
+      s.store.session(s.chatId)?.set({ sharedWith: [{ userId: RECIPIENT, accessLevel: 'write' }] })
+
+      const out = await callJson(c.handler(), request(recipient, c.params(s), c.body))
+
+      expect(out.error?.statusCode).to.equal(404)
+      expect(s.store.writes).to.deep.equal([])
+    })
+  }
+
+  it('RO-7 getConversationById: access.role names the reader\'s role', async () => {
+    const s = setup()
+    // Real requests carry the user id as a string.
+    const role = async (user: User): Promise<unknown> => {
+      const asString = { ...user, userId: String(user.userId) } as unknown as User
+      const out = await callJson(controller.getConversationById(appConfig) as JsonHandler, request(asString, { conversationId: s.chatId }))
+      return (out.body as { conversation: { access: unknown } }).conversation.access
+    }
+    expect(await role(owner)).to.deep.equal({ isOwner: true, accessLevel: 'read', role: 'owner' })
+    expect(await role(recipient)).to.deep.equal({ isOwner: false, accessLevel: 'read', role: 'viewer' })
+    s.store.session(s.chatId)?.set({ sharedWith: [{ userId: RECIPIENT, accessLevel: 'write' }] })
+    expect(await role(recipient)).to.deep.equal({ isOwner: false, accessLevel: 'write', role: 'collaborator' })
+  })
+
   it('getConversationById: a user from another organisation gets 404 even with the right id', async () => {
     const s = setup()
     const out = await callJson(controller.getConversationById(appConfig) as JsonHandler, request(outsider, { conversationId: s.chatId }))

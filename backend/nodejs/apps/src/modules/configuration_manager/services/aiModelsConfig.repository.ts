@@ -13,6 +13,16 @@ import {
 
 const MAX_CAS_RETRIES = 5;
 
+/**
+ * Writes `encrypted` only if the stored ciphertext is still `expected`;
+ * false when another writer got there first.
+ */
+export type AiModelsCommit = (
+  expected: string | null,
+  encrypted: string,
+  config: AIModelsConfig,
+) => Promise<boolean>;
+
 /** Thrown when every compare-and-set attempt lost to a concurrent writer. */
 export class AiModelsConfigConflictError extends Error {
   constructor() {
@@ -84,7 +94,21 @@ function sleep(ms: number): Promise<void> {
  * the latest document, so two adds cannot drop each other.
  */
 export class AiModelsConfigRepository {
-  constructor(private readonly keyValueStore: KeyValueStoreService) {}
+  private readonly commit: AiModelsCommit;
+
+  constructor(
+    private readonly keyValueStore: KeyValueStoreService,
+    commit?: AiModelsCommit,
+  ) {
+    this.commit =
+      commit ??
+      ((expected, encrypted) =>
+        keyValueStore.compareAndSet<string>(
+          configPaths.aiModels,
+          expected,
+          encrypted,
+        ));
+  }
 
   private cipher(): EncryptionService {
     const configManagerConfig = loadConfigurationManagerConfig();
@@ -109,11 +133,7 @@ export class AiModelsConfigRepository {
     for (let attempt = 0; attempt < MAX_CAS_RETRIES; attempt++) {
       const ciphertext = await this.keyValueStore.get<string>(configPaths.aiModels);
       const encrypted = this.cipher().encrypt(JSON.stringify(next));
-      const wrote = await this.keyValueStore.compareAndSet<string>(
-        configPaths.aiModels,
-        ciphertext,
-        encrypted,
-      );
+      const wrote = await this.commit(ciphertext, encrypted, next);
       if (wrote) return;
       await sleep(50 * (attempt + 1));
     }
@@ -133,11 +153,7 @@ export class AiModelsConfigRepository {
       ensureAiModelBuckets(config);
       mutate(config);
       const encrypted = this.cipher().encrypt(JSON.stringify(config));
-      const wrote = await this.keyValueStore.compareAndSet<string>(
-        configPaths.aiModels,
-        ciphertext,
-        encrypted,
-      );
+      const wrote = await this.commit(ciphertext, encrypted, config);
       if (wrote) return config;
       await sleep(50 * (attempt + 1));
     }

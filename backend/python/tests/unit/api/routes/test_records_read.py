@@ -17,6 +17,7 @@ from fastapi import HTTPException
 from app.api.routes import records as route
 from app.models.blocks import BlockType
 from app.modules.demo_data import access as demo_access
+from tests.support.record_access import InMemoryRecordAccess
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Iterator
@@ -40,14 +41,10 @@ def _record(record_id: str, *texts: str, created: int = 0) -> dict:
     }
 
 
-def _request(*, access: bool = True) -> tuple[SimpleNamespace, MagicMock, MagicMock]:
+def _request(*, access: bool = True, record_id: str = "r-1") -> tuple[SimpleNamespace, MagicMock, MagicMock]:
     graph = MagicMock()
-    graph.get_user_by_user_id = AsyncMock(return_value={"id": "k-1"})
-    graph.check_access = AsyncMock(
-        side_effect=lambda _user, _org, node_ids, **_kw: SimpleNamespace(
-            node_ids=set(node_ids) if access else set(), placeholder_ids=frozenset()
-        )
-    )
+    records = InMemoryRecordAccess().user("u-1", "o-1")
+    (records.readable("u-1", "o-1", record_id) if access else records).serve(graph)
     graph.get_document = AsyncMock(return_value={"connectorId": "c-1"})
     retrieval = MagicMock()
     retrieval.search_with_filters = AsyncMock(return_value={"searchResults": []})
@@ -98,6 +95,7 @@ class TestAccess:
 
     async def test_one_access_check_is_made_and_the_fetch_reuses_it(self) -> None:
         request, graph, _ = _request()
+        graph.check_access = AsyncMock(wraps=graph.check_access)
         fetch = AsyncMock(return_value={"ok": False})
         with patch.object(route, "_fetch_multiple_records_impl", fetch):
             await _read(request)
@@ -213,7 +211,7 @@ class TestRecordMode:
         with pytest.raises(HTTPException) as err:
             await _read(request, extract=True, **params)
         assert err.value.status_code == 422
-        graph.check_access.assert_not_awaited()
+        assert graph.check_access.__self__.asked_about == [], "refused before any access check"
 
     async def test_a_record_without_indexed_content_is_described(self) -> None:
         request, _, _ = _request()
@@ -359,7 +357,7 @@ class TestThreadMode:
     async def test_a_channel_record_reads_with_its_threads_and_says_so_first(self) -> None:
         """A run of channel messages reads as itself, then its threads' replies,
         with the note leading the first page and inside the budget."""
-        request, _, _ = _request()
+        request, _, _ = _request(record_id="burst")
         records = [
             _record("burst", "parent: deploy failing\n\nReply Count: 2", created=1),
             _record("t-1", "reply: cache", "reply: fixed", created=2),
@@ -394,7 +392,7 @@ class TestThreadMode:
         assert "reply" in body["content"]
 
     async def test_a_message_without_replies_reads_as_itself(self) -> None:
-        request, _, _ = _request()
+        request, _, _ = _request(record_id="msg")
         records = [_record("msg", "just one message", created=1)]
         thread = AsyncMock(return_value={
             "ok": True, "records": records, "note": "No replies: returned on its own.", "threads": [],

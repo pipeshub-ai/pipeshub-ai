@@ -146,6 +146,13 @@ async def check_record_access_or_503(
         raise _database_unreachable(e) from e
 
 
+def raise_if_unavailable(cause: BaseException) -> None:
+    """Raise the 503 (with Retry-After) for a failure the store could not answer just now (``error_class.retry_later``), so
+    the web app asks again by itself; any other failure returns, for the caller's own 500."""
+    if error_class.retry_later(cause):
+        raise _database_unreachable(cause) from cause
+
+
 def _database_unreachable(cause: BaseException) -> HTTPException:
     error_class.mark_error(cause, hide_text=True)  # a driver's text can quote what was sent (an email, a value)
     return HTTPException(

@@ -74,57 +74,64 @@ export class WebSearchDuckDuckGoDefaultMigration {
     return result;
   }
 
-  /** True when DuckDuckGo was stored as the default, false when a provider was already chosen. */
   private async seedDefault(): Promise<boolean> {
-    const config = loadConfigurationManagerConfig();
-    const encryption = EncryptionService.getInstance(
-      config.algorithm,
-      config.secretKey,
-    );
-
-    for (let attempt = 1; attempt <= CAS_MAX_ATTEMPTS; attempt++) {
-      const encrypted = await this.kvStore.get<string>(configPaths.webSearch);
-      // A value that cannot be read throws here and is left as it is: seeding
-      // over it would replace every stored provider.
-      const stored: WebSearchConfig =
-        encrypted !== null && encrypted !== ''
-          ? (JSON.parse(encryption.decrypt(encrypted)) as WebSearchConfig)
-          : { providers: [] };
-      const providers = Array.isArray(stored.providers) ? stored.providers : [];
-
-      if (providers.some((p) => p.isDefault && canSearch(p.provider))) {
-        return false;
-      }
-
-      for (const provider of providers) {
-        provider.isDefault = false;
-      }
-      const existing = providers.find(
-        (p) => p.provider === DUCKDUCKGO_PROVIDER,
-      );
-      if (existing) {
-        existing.isDefault = true;
-      } else {
-        providers.push({
-          provider: DUCKDUCKGO_PROVIDER,
-          configuration: {},
-          providerKey: randomUUID(),
-          isDefault: true,
-        });
-      }
-
-      const saved = await this.kvStore.compareAndSet<string>(
-        configPaths.webSearch,
-        encrypted ?? null,
-        encryption.encrypt(JSON.stringify({ ...stored, providers })),
-      );
-      if (saved) {
-        return true;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 50 * attempt));
-    }
-    throw new Error(
-      'Web search settings kept changing; will retry on next boot',
-    );
+    return seedDuckDuckGoDefault(this.kvStore);
   }
+}
+
+/**
+ * Stores DuckDuckGo as the default web search provider in `store`, unless a
+ * provider that can search is already the default. True when it stored it. An
+ * edition whose web search settings live per organisation seeds each
+ * organisation's store.
+ */
+export async function seedDuckDuckGoDefault(
+  store: Pick<KeyValueStoreService, 'get' | 'compareAndSet'>,
+): Promise<boolean> {
+  const config = loadConfigurationManagerConfig();
+  const encryption = EncryptionService.getInstance(
+    config.algorithm,
+    config.secretKey,
+  );
+
+  for (let attempt = 1; attempt <= CAS_MAX_ATTEMPTS; attempt++) {
+    const encrypted = await store.get<string>(configPaths.webSearch);
+    // A value that cannot be read throws here and is left as it is: seeding
+    // over it would replace every stored provider.
+    const stored: WebSearchConfig =
+      encrypted !== null && encrypted !== ''
+        ? (JSON.parse(encryption.decrypt(encrypted)) as WebSearchConfig)
+        : { providers: [] };
+    const providers = Array.isArray(stored.providers) ? stored.providers : [];
+
+    if (providers.some((p) => p.isDefault && canSearch(p.provider))) {
+      return false;
+    }
+
+    for (const provider of providers) {
+      provider.isDefault = false;
+    }
+    const existing = providers.find((p) => p.provider === DUCKDUCKGO_PROVIDER);
+    if (existing) {
+      existing.isDefault = true;
+    } else {
+      providers.push({
+        provider: DUCKDUCKGO_PROVIDER,
+        configuration: {},
+        providerKey: randomUUID(),
+        isDefault: true,
+      });
+    }
+
+    const saved = await store.compareAndSet<string>(
+      configPaths.webSearch,
+      encrypted ?? null,
+      encryption.encrypt(JSON.stringify({ ...stored, providers })),
+    );
+    if (saved) {
+      return true;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50 * attempt));
+  }
+  throw new Error('Web search settings kept changing; will retry on next boot');
 }

@@ -1,0 +1,163 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/core/tool-descriptor.schema.json",
+  "title": "ToolDescriptor",
+  "description": "Tool catalog descriptor (REPORT 6.5). Unclassified tools default to effect=write, sink.egress=external.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "toolId",
+    "modelName",
+    "effect",
+    "idempotent",
+    "reconcile",
+    "sink",
+    "resultLabels",
+    "concurrency",
+    "timeoutS",
+    "resultCapTokens",
+    "scopes",
+    "schemaDigest"
+  ],
+  "properties": {
+    "toolId": {
+      "$ref": "common.schema.json#/$defs/ToolId"
+    },
+    "modelName": {
+      "$ref": "common.schema.json#/$defs/ModelToolName"
+    },
+    "effect": {
+      "$ref": "common.schema.json#/$defs/Effect"
+    },
+    "risk": {
+      "$ref": "common.schema.json#/$defs/RiskClass"
+    },
+    "idempotent": {
+      "description": "True only when the provider's dedup window exceeds the retry horizon.",
+      "type": "boolean"
+    },
+    "dedupWindowS": {
+      "$ref": "common.schema.json#/$defs/UInt"
+    },
+    "reconcile": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "#/$defs/Reconcile"
+        }
+      ]
+    },
+    "sink": {
+      "$ref": "sink.schema.json"
+    },
+    "resultLabels": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "integrity"
+      ],
+      "properties": {
+        "integrity": {
+          "$ref": "labels.schema.json#/$defs/Integrity"
+        }
+      }
+    },
+    "concurrency": {
+      "enum": [
+        "parallel_safe",
+        "serialize_per_resource",
+        "exclusive"
+      ]
+    },
+    "timeoutS": {
+      "$ref": "common.schema.json#/$defs/PosInt"
+    },
+    "resultCapTokens": {
+      "$ref": "common.schema.json#/$defs/PosInt"
+    },
+    "scopes": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z0-9_]+(?::[a-z0-9_*-]+)*$"
+      }
+    },
+    "schemaDigest": {
+      "$ref": "common.schema.json#/$defs/Digest"
+    }
+  },
+  "$defs": {
+    "Reconcile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "lookup",
+        "readAfterWrite",
+        "indexLagS"
+      ],
+      "properties": {
+        "lookup": {
+          "$ref": "common.schema.json#/$defs/ModelToolName"
+        },
+        "readAfterWrite": {
+          "type": "boolean"
+        },
+        "indexLagS": {
+          "$ref": "common.schema.json#/$defs/UInt"
+        }
+      },
+      "description": "How to find out whether an unknown write happened."
+    }
+  },
+  "examples": [
+    {
+      "toolId": "jira@inst_42/create_issue",
+      "modelName": "pipeshub_jira_create_issue",
+      "effect": "write",
+      "risk": "write_internal",
+      "idempotent": false,
+      "reconcile": {
+        "lookup": "jira_get_issue_by_client_id",
+        "readAfterWrite": true,
+        "indexLagS": 0
+      },
+      "sink": {
+        "egress": "internal_audience",
+        "argsLeaveBoundary": false,
+        "audienceResolver": "jira.project_members"
+      },
+      "resultLabels": {
+        "integrity": "internal"
+      },
+      "concurrency": "serialize_per_resource",
+      "timeoutS": 60,
+      "resultCapTokens": 8000,
+      "scopes": [
+        "connector:jira:write"
+      ],
+      "schemaDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "toolId": "mcp@mcp_9/fetch-page",
+      "modelName": "web_fetch",
+      "effect": "read",
+      "idempotent": true,
+      "reconcile": null,
+      "sink": {
+        "egress": "external",
+        "argsLeaveBoundary": true
+      },
+      "resultLabels": {
+        "integrity": "external"
+      },
+      "concurrency": "parallel_safe",
+      "timeoutS": 60,
+      "resultCapTokens": 8000,
+      "scopes": [],
+      "schemaDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "dedupWindowS": 86400
+    }
+  ]
+}

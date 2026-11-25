@@ -797,7 +797,8 @@ export class MongoUserRepository implements UserRepository {
   ): Promise<UserDto[]> {
     const session = sessionOf(tx);
     const filter = { email: { $in: emails }, isDeleted: true, orgId };
-    const restore = { $set: { isDeleted: false } };
+    // A restore grants nothing: an admin invite promotes afterwards, cap-checked.
+    const restore = { $set: { isDeleted: false, role: 'member' as const } };
     if (session) await Users.updateMany(filter, restore, { session });
     else await Users.updateMany(filter, restore);
     const query = Users.find({
@@ -810,14 +811,14 @@ export class MongoUserRepository implements UserRepository {
   }
 
   async promoteToAdmin(orgId: string, ids: string[], tx?: Tx): Promise<void> {
-    // Narrowed to people. The schema refuses to promote a service account, so
-    // without this a batch that happened to include one would fail as a whole
-    // and take the genuine invites with it.
     const session = sessionOf(tx);
     const filter = {
       _id: { $in: ids },
       orgId,
+      // Skips service accounts in the write; the schema hook still refuses a batch that names one.
       kind: { $ne: 'service' as const },
+      // Live accounts only: one removed since the caller read it stays a removed member.
+      isDeleted: { $ne: true },
     };
     const promote = { $set: { role: 'admin' as const } };
     if (session) await Users.updateMany(filter, promote, { session });
@@ -842,6 +843,24 @@ export class MongoUserRepository implements UserRepository {
       { $set: { adminRoleGuardAt: new Date() } },
       { session: sessionOf(tx) },
     );
+  }
+
+  async holdLiveAdmin(orgId: string, id: string, tx?: Tx): Promise<boolean> {
+    if (!mongoose.isValidObjectId(orgId) || !mongoose.isValidObjectId(id))
+      return false;
+    // A write in the transaction: a concurrent demotion of the same document conflicts with it.
+    const fenced = await Users.updateOne(
+      {
+        _id: id,
+        orgId,
+        role: 'admin',
+        kind: { $ne: 'service' },
+        isDeleted: { $ne: true },
+      },
+      { $inc: { approvalDecisionFence: 1 } },
+      { session: sessionOf(tx), strict: false },
+    ).exec();
+    return fenced.matchedCount > 0;
   }
 
   async withAdminLease<T>(
@@ -900,6 +919,39 @@ export class MongoUserRepository implements UserRepository {
     const result = await Users.updateMany(filter, {
       $set: { isDisabled: disabled },
     });
+    return result.modifiedCount;
+  }
+
+  async disableEnabledAccounts(orgId: string): Promise<string[]> {
+    if (!mongoose.Types.ObjectId.isValid(orgId)) return [];
+    const filter = { orgId, isDeleted: false, isDisabled: { $ne: true } };
+    const ids = (await Users.find(filter).select('_id').lean().exec()).map(
+      (u) => String(u._id),
+    );
+    if (ids.length === 0) return [];
+    await Users.updateMany(
+      { ...filter, _id: { $in: ids } },
+      { $set: { isDisabled: true } },
+    );
+    return ids.sort();
+  }
+
+  async setAccountsDisabled(
+    orgId: string,
+    ids: string[],
+    disabled: boolean,
+  ): Promise<number> {
+    const valid = ids.filter((id) => mongoose.Types.ObjectId.isValid(id));
+    if (valid.length === 0 || !mongoose.Types.ObjectId.isValid(orgId)) return 0;
+    const result = await Users.updateMany(
+      {
+        _id: { $in: valid },
+        orgId,
+        isDeleted: false,
+        isDisabled: disabled ? { $ne: true } : true,
+      },
+      { $set: { isDisabled: disabled } },
+    );
     return result.modifiedCount;
   }
 

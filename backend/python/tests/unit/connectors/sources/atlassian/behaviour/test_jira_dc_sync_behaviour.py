@@ -34,6 +34,7 @@ from app.connectors.sources.atlassian.core.jira_issue_security import (
 from app.connectors.sources.atlassian.core.read_outcome import StoredAccessReadError
 from app.connectors.sources.atlassian.jira_data_center.connector import (
     DC_EPIC_LINK_SCHEMA_CUSTOM,
+    MAX_FAILED_ISSUE_ATTEMPTS,
     JiraDataCenterConnector,
     _parse_jira_dc_user_list_page,
 )
@@ -3655,3 +3656,290 @@ class TestPersonalFullSyncCoverage:
         assert connector.full_sync_coverage().complete is True
         assert not {stored[key] for key in ("1001", "attachment_200", "1002")} & set(db.kept_records)
         assert unlinked_records(graph, db, stored) == {"1001", "attachment_200", "1002", "2002"}
+
+
+class TestAFullSyncKeepsWhatItCouldNotWrite:
+    """A full sync unlinks every stored record it neither wrote nor noted as kept. An issue still in
+    Jira that it could not write in full must keep its edges, and so must its files. OPS-8, removed
+    in Jira from a project read in full, still loses them."""
+
+    @staticmethod
+    async def _synced(
+        jira, db, store, search, eng_1: dict[str, Any] | None = None, eng_4: dict[str, Any] | None = None,
+    ) -> tuple[JiraDataCenterConnector, dict[str, str]]:
+        stub_site(jira, search)
+        jira.on("GET", f"{API}/project", json_response([
+            {"id": "10000", "key": "ENG", "name": "Engineering", "lead": {"key": "alice-key", "displayName": "Alice"}},
+            {"id": "10001", "key": "OPS", "name": "Operations", "lead": {"key": "alice-key", "displayName": "Alice"}},
+        ]))
+        jira.on("GET", f"{API}/project/OPS/permissionscheme", {"id": 7})
+        jira.on("GET", f"{API}/project/OPS/role", {})
+        jira.on("GET", f"{API}/project/OPS/issuesecuritylevelscheme", json_response(
+            {"errorMessages": ["The project has no issue security scheme."], "errors": {}}, status=404))
+        search.add("ENG", 0, [eng_1 or issue("1001", "ENG-1", attachments=[attachment("200")]),
+                              eng_4 or issue("1004", "ENG-4"), issue("1005", "ENG-5")])
+        search.add("OPS", 0, [ops_issue("1007", "OPS-7"), ops_issue("1008", "OPS-8")])
+        connector, _ = await make_connector(db, store)
+        await connector.run_sync()
+        stored = {ext: r.id for ext, r in db.records.items()}
+        assert set(stored) >= {"1001", "1004", "1005", "1007", "1008", "attachment_200"}
+        store.sync_points.clear()  # a full sync's prep
+        db.kept_records.clear()
+        search.add("ENG", 0, [issue("1001", "ENG-1", attachments=[attachment("200")]), issue("1004", "ENG-4")])
+        search.add("OPS", 0, [ops_issue("1007", "OPS-7")])
+        return connector, stored
+
+    @staticmethod
+    def _missed(db: JiraRecordsDb, graph: AsyncMock, stored: dict[str, str]) -> set[str]:
+        """The stored records the unlink takes the edges of: still stored, neither written nor noted as kept."""
+        if not graph.unlink_nodes_missed_by_full_sync.await_count:
+            return set()
+        seen = graph.unlink_nodes_missed_by_full_sync.await_args.args[1][CollectionNames.RECORDS.value]
+        return {ext for ext, record_id in stored.items()
+                if ext in db.records and ext not in seen and record_id not in db.kept_records}
+
+    async def test_an_issue_that_fails_to_build_keeps_itself_and_its_file(self, jira, db, store, search) -> None:
+        connector, stored = await self._synced(jira, db, store, search)
+        db.fail_lookup_for = {"1001"}
+
+        graph = await run_full_sync(connector, db)
+
+        missed = self._missed(db, graph, stored)
+        assert missed - {"1005", "1008"} == set(), "ENG-1 is still in Jira: it and its file keep their edges"
+        assert "1008" in missed or "1008" not in db.records, "OPS-8 is gone from a project read in full"
+        assert "1005" in missed, "ENG-5 is gone: only what the sync could not write is kept"
+        assert connector.full_sync_coverage().complete is True
+        graph.unlink_nodes_missed_by_full_sync.assert_awaited_once()
+
+    async def test_an_issue_that_fails_to_build_keeps_only_its_own_project(self, jira, db, store, search) -> None:
+        connector, _ = await self._synced(jira, db, store, search)
+        db.fail_lookup_for = {"1001"}
+        keeps: list[tuple[str, set[str] | None]] = []
+        keep = connector._keep_stored_records
+
+        async def spy(project_id: str, issue_ids: set[str] | None = None, **kwargs: Any) -> None:  # noqa: ANN401
+            keeps.append((project_id, issue_ids))
+            await keep(project_id, issue_ids, **kwargs)
+        connector._keep_stored_records = spy
+
+        await run_full_sync(connector, db)
+
+        assert keeps == [("10000", {"1001"})]
+
+    async def test_a_file_whose_read_fails_keeps_its_edges(self, jira, db, store, search) -> None:
+        connector, stored = await self._synced(jira, db, store, search)
+        db.fail_lookup_for = {"attachment_200"}
+
+        graph = await run_full_sync(connector, db)
+
+        missed = self._missed(db, graph, stored)
+        assert missed - {"1005", "1008"} == set(), "diagram.png is still on ENG-1"
+        assert "1008" in missed or "1008" not in db.records, "OPS-8 is gone from a project read in full"
+        assert "1005" in missed, "ENG-5 is gone: only what the sync could not write is kept"
+        assert connector.full_sync_coverage().complete is True
+        graph.unlink_nodes_missed_by_full_sync.assert_awaited_once()
+
+    async def test_one_bad_file_keeps_every_file_of_its_issue(self, jira, db, store, search) -> None:
+        both = [attachment("200"), attachment("201", "notes.txt", "text/plain")]
+        connector, stored = await self._synced(jira, db, store, search, eng_1=issue("1001", "ENG-1", attachments=both))
+        search.add("ENG", 0, [issue("1001", "ENG-1", attachments=both), issue("1004", "ENG-4")])
+        db.fail_lookup_for = {"attachment_201"}
+
+        graph = await run_full_sync(connector, db)
+
+        missed = self._missed(db, graph, stored)
+        assert missed == {"1005", "1008"}, "the issue's files were not written, so both stay as stored"
+        assert {stored["attachment_200"], stored["attachment_201"]} <= set(db.kept_records)
+        assert "1001" in graph.unlink_nodes_missed_by_full_sync.await_args.args[1][CollectionNames.RECORDS.value]
+
+    async def test_a_file_removed_from_another_issue_is_still_unlinked(self, jira, db, store, search) -> None:
+        connector, stored = await self._synced(
+            jira, db, store, search, eng_4=issue("1004", "ENG-4", attachments=[attachment("300")]))
+        db.fail_lookup_for = {"1001"}
+
+        graph = await run_full_sync(connector, db)
+
+        missed = self._missed(db, graph, stored)
+        assert "attachment_300" in missed or "attachment_300" not in db.records, "ENG-4 was read, without the file"
+        assert set(db.kept_records) == {stored["1001"], stored["attachment_200"]}
+
+    async def test_an_issue_given_up_on_in_a_full_sync_keeps_its_file(self, jira, db, store, search) -> None:
+        connector, stored = await self._synced(jira, db, store, search)
+        await connector._update_project_sync_checkpoint("ENG", failed_issue_attempts={"1001": MAX_FAILED_ISSUE_ATTEMPTS - 1})
+        db.fail_lookup_for = {"1001"}
+        db.full_sync = True
+
+        await connector._sync_project_issues(db.record_groups["10000"], [], None)
+
+        assert json.loads(store.values_for("project_ENG")["given_up_issues"]) == {"1001": ts(1)}
+        assert {stored["1001"], stored["attachment_200"]} <= set(db.kept_records)
+
+    async def test_a_soft_deleted_file_of_an_issue_that_fails_to_build_is_kept(self, jira, db, store, search) -> None:
+        connector, stored = await self._synced(jira, db, store, search)
+        db.records["attachment_200"].is_deleted = True  # in the trash: a restored file must come back with its edges
+        db.fail_lookup_for = {"1001"}
+
+        await run_full_sync(connector, db)
+
+        assert stored["attachment_200"] in db.kept_records
+
+    async def test_an_issue_that_fails_to_build_is_kept_closed(self, jira, db, store, search) -> None:
+        connector, stored = await self._synced(jira, db, store, search)
+        # Grants Jira may no longer give: its access was not read again.
+        db.record_permissions["1001"] = [Permission(entity_type=EntityType.USER, email="dave@example.com", type=PermissionType.READ)]
+        db.fail_lookup_for = {"1001"}
+
+        graph = await run_full_sync(connector, db)
+
+        eng_1 = db.records["1001"]
+        assert eng_1.access_rule == AccessRule.RESTRICTED and eng_1.rewrite_permissions is True
+        assert db.record_permissions["1001"] == [], "no one reads it, nor its file, until a sync builds it"
+        assert eng_1.id == stored["1001"], "the same record: its links stay"
+        assert self._missed(db, graph, stored) == {"1005", "1008"}, "it and its file keep their edges"
+        assert json.loads(store.values_for("project_ENG")["failed_issue_attempts"]) == {"1001": 1}, "a first failure"
+
+    async def test_an_issue_closed_after_a_failed_build_keeps_its_links(self, jira, db, store, search) -> None:
+        connector, _ = await self._synced(jira, db, store, search)
+        db.records["1001"].related_external_records = []  # as the scan loads it: the links are not read
+        db.fail_lookup_for = {"1001"}
+        closes: list[Any] = []
+        write = db.on_new_records
+
+        async def spy(records: list[tuple[Any, list[Any]]]) -> None:
+            closes.extend(r for r, _ in records if r.external_record_id == "1001" and r.access_rule == AccessRule.RESTRICTED)
+            await write(records)
+        db.on_new_records = spy
+
+        await run_full_sync(connector, db)
+
+        assert closes and all(r.related_external_records is None for r in closes), (
+            "not read, so the processor keeps its stored link edges")
+
+    async def test_an_issue_that_fails_to_build_and_cannot_be_closed_is_not_kept(self, jira, db, store, search) -> None:
+        connector, stored = await self._synced(jira, db, store, search)
+        db.fail_lookup_for = {"1001"}
+        write = db.on_new_records
+
+        async def closing_fails(records: list[tuple[Any, list[Any]]]) -> None:
+            if any(r.external_record_id == "1001" and r.access_rule == AccessRule.RESTRICTED for r, _ in records):
+                raise RuntimeError("graph unavailable")
+            await write(records)
+        db.on_new_records = closing_fails
+
+        graph = await run_full_sync(connector, db)
+
+        assert self._missed(db, graph, stored) == {"1001", "attachment_200", "1005", "1008"}, (
+            "its access cannot be shown to match Jira, so the unlink takes its edges, as before the keep")
+        graph.unlink_nodes_missed_by_full_sync.assert_awaited_once()
+
+    async def test_an_issue_whose_close_is_quarantined_is_not_kept(self, jira, db, store, search) -> None:
+        connector, stored = await self._synced(jira, db, store, search)
+        unclosed = db.records["1001"].model_copy()
+        assert unclosed.source_updated_at, "a close would change it"
+        db.fail_lookup_for = {"1001"}
+        write = db.on_new_records
+
+        async def schema_rejects_the_close(records: list[tuple[Any, list[Any]]]) -> None:
+            if any(r.external_record_id == "1001" and r.access_rule == AccessRule.RESTRICTED for r, _ in records):
+                # The processor quarantines a write the schema refuses: nothing is stored and nothing is raised.
+                db.records["1001"] = unclosed
+                db.fail_lookup_for = set()
+                db.quarantined.add("1001")
+                return
+            await write(records)
+        db.on_new_records = schema_rejects_the_close
+
+        graph = await run_full_sync(connector, db)
+
+        assert stored["1001"] not in db.kept_records
+        assert self._missed(db, graph, stored) == {"1001", "attachment_200", "1005", "1008"}, (
+            "still stored with its old grants, so the unlink takes its edges")
+
+    async def test_a_closed_looking_issue_with_grants_whose_close_is_quarantined_is_not_kept(
+        self, jira, db, store, search,
+    ) -> None:
+        connector, stored = await self._synced(jira, db, store, search)
+        unclosed = db.records["1001"].model_copy(update={"access_rule": AccessRule.RESTRICTED, "source_updated_at": 0})
+        db.records["1001"] = unclosed
+        db.record_permissions["1001"] = [Permission(entity_type=EntityType.USER, email="dave@example.com", type=PermissionType.READ)]
+        db.fail_lookup_for = {"1001"}
+        write = db.on_new_records
+
+        async def schema_rejects_the_close(records: list[tuple[Any, list[Any]]]) -> None:
+            if any(r.external_record_id == "1001" and r.rewrite_permissions for r, _ in records):
+                db.records["1001"] = unclosed
+                db.fail_lookup_for = set()
+                db.quarantined.add("1001")
+                return
+            await write(records)
+        db.on_new_records = schema_rejects_the_close
+
+        graph = await run_full_sync(connector, db)
+
+        assert db.record_permissions["1001"], "the quarantined close left its grants"
+        assert stored["1001"] not in db.kept_records, "reads back closed, but still has grants"
+        assert self._missed(db, graph, stored) == {"1001", "attachment_200", "1005", "1008"}
+
+    async def test_an_issue_built_this_sync_keeps_its_access(self, jira, db, store, search) -> None:
+        connector, stored = await self._synced(jira, db, store, search)
+        db.record_permissions["1004"] = [Permission(entity_type=EntityType.USER, email="dave@example.com", type=PermissionType.READ)]
+        before = (db.records["1001"].access_rule, list(db.record_permissions["1001"]))
+        # ENG-1 is built, but its file cannot be read: it is kept as it is. ENG-4 fails to build.
+        db.fail_lookup_for = {"attachment_200", "1004"}
+
+        graph = await run_full_sync(connector, db)
+
+        assert before[0] != AccessRule.RESTRICTED
+        assert (db.records["1001"].access_rule, db.record_permissions["1001"]) == before
+        assert db.records["1004"].access_rule == AccessRule.RESTRICTED and db.record_permissions["1004"] == []
+        assert self._missed(db, graph, stored) == {"1005", "1008"}
+
+    async def test_an_issue_closed_after_a_failed_build_opens_again_next_sync(self, jira, db, store, search) -> None:
+        connector, stored = await self._synced(jira, db, store, search)
+        before = (db.records["1001"].access_rule, list(db.record_permissions["1001"]))
+        assert before[0] != AccessRule.RESTRICTED, "a close would change it"
+        db.fail_lookup_for = {"1001"}
+        await run_full_sync(connector, db)
+        assert db.records["1001"].access_rule == AccessRule.RESTRICTED, "closed"
+        db.fail_lookup_for = set()
+
+        await connector.run_sync()  # incremental: ENG-1 is unchanged in Jira
+
+        assert (db.records["1001"].access_rule, db.record_permissions["1001"]) == before, "built with its access"
+        assert db.records["1001"].id == stored["1001"]
+        assert json.loads(store.values_for("project_ENG").get("failed_issue_attempts") or "{}") == {}
+
+    async def test_an_incremental_sync_scans_nothing(self, jira, db, store, search) -> None:
+        connector, _ = await self._synced(jira, db, store, search)
+        await connector.run_sync()
+        db.kept_records.clear()
+        search.add("ENG", 0, [issue("1001", "ENG-1", ts(2), attachments=[attachment("200")])])
+        db.fail_lookup_for = {"1001"}
+        scanned: list[str] = []
+        scan = db.get_records_in_record_group
+
+        async def spy(connector_id: str, external_group_id: str, *args: Any, **kwargs: Any) -> list[Any]:  # noqa: ANN401
+            scanned.append(external_group_id)
+            return await scan(connector_id, external_group_id, *args, **kwargs)
+        db.get_records_in_record_group = spy
+
+        await connector.run_sync()
+
+        assert "10000" not in scanned
+        assert db.kept_records == []
+        assert json.loads(store.values_for("project_ENG")["failed_issue_attempts"]) == {"1001": 1}
+
+    async def test_the_personal_connector_keeps_an_issue_that_fails_to_build(self, jira, db, store, search) -> None:
+        _, stored = await self._synced(jira, db, store, search)
+        config = {"auth": {"authType": "API_TOKEN", "baseUrl": f"{BASE}/", "apiToken": FAKE_PAT}, "filters": {}}
+        personal = JiraDataCenterPersonalConnector(
+            logging.getLogger("test.jira_dc_personal"), db, store, FakeConfigService(CONNECTOR_ID, config),
+            CONNECTOR_ID, "personal", "creator-user-1",
+        )
+        assert await personal.init() is True
+        db.fail_lookup_for = {"1001"}
+        db.full_sync = True
+
+        await personal._sync_project_issues(db.record_groups["10000"], [], None)
+
+        assert set(db.kept_records) == {stored["1001"], stored["attachment_200"]}

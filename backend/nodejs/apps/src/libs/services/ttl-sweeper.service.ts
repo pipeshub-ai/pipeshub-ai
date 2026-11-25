@@ -5,6 +5,7 @@ import { docstoreMetrics } from '../repositories/metrics';
 import { AGENT_CALL_EVENT_RETENTION_DAYS } from '../repositories/agent-call-event/types';
 import { retentionCutoff } from '../../modules/notification/utils/notification-api.utils';
 import { trimActivitiesPage } from '../repositories/activity/pg';
+import { replayWindowSeconds } from '../context/envelope';
 
 const DEFAULT_INTERVAL_MS = 60_000;
 const BATCH = 5000;
@@ -94,16 +95,29 @@ const TARGETS: Target[] = [
     cutoff: (now) => new Date(now.getTime() - DELEGATION_EVENTS_KEEP_MS),
   },
   {
+    name: 'session_families',
+    sql: `/* pipeshub:identity.ttl_sweep_session_families */ DELETE FROM identity.session_families
+            WHERE ctid IN (SELECT ctid FROM identity.session_families WHERE expires_at < $1 LIMIT $2)`,
+    cutoff: expiredAnHourAgo,
+  },
+  {
     name: 'agent_call_events',
     sql: `/* pipeshub:oauth.ttl_sweep_agent_call_events */ DELETE FROM oauth.agent_call_events
             WHERE ctid IN (SELECT ctid FROM oauth.agent_call_events WHERE created_at < $1 LIMIT $2)`,
     cutoff: (now) => new Date(now.getTime() - AGENT_CALL_EVENTS_KEEP_MS),
   },
+  {
+    name: 'consumer_inbox',
+    sql: `/* pipeshub:platform.ttl_sweep_consumer_inbox */ DELETE FROM platform.consumer_inbox
+            WHERE ctid IN (SELECT ctid FROM platform.consumer_inbox WHERE received_at < $1 LIMIT $2)`,
+    cutoff: (now) => new Date(now.getTime() - replayWindowSeconds() * 1000),
+  },
 ];
 
 /**
  * Removes what the document store no longer shows: notifications past retention, delivered outbox rows, expired OAuth tokens,
- * codes and device authorizations, and delegation events past their retention (the work Mongo's TTL indexes did). Runs as the jobs role across every org, in batches so no pass holds a long lock.
+ * codes and device authorizations, delegation events past their retention (the work Mongo's TTL indexes did), and consumer inbox
+ * rows past the replay window. Runs as the jobs role across every org, in batches so no pass holds a long lock.
  * Once a day it also trims each live organisation's sign-in history (`identity.user_activities`) as that organisation: the jobs role
  * holds no privilege on identity tables, and only lists the organisations.
  */

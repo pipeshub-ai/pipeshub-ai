@@ -35,7 +35,10 @@ from app.services.messaging.config import (
     PipelineEventData,
     StreamMessage,
 )
-from app.services.messaging.consumer_concurrency import backstop_give_up_reason
+from app.services.messaging.consumer_concurrency import (
+    ParseAdmissionTimeout,
+    backstop_give_up_reason,
+)
 from app.services.messaging.error_classifier import MessageErrorType
 from app.services.messaging.kafka.handlers import record as record_module
 from app.services.messaging.kafka.handlers.record import (
@@ -46,6 +49,7 @@ from app.services.messaging.kafka.handlers.record import (
 from app.services.vector_db.rebuild_state import PHASE_FAILED, PHASE_READY
 from app.utils import indexing_timing, user_errors
 from tests.support.record_handler import make_record_handler
+from tests.support.settle import settle
 from tests.unit.attempt_start import attempt_start_via
 
 # ---------------------------------------------------------------------------
@@ -4284,7 +4288,7 @@ class TestProcessEventErrors:
             )
             assert (await anext(event_generator)).event == IndexingEvent.START_DOWNLOAD
             processing = asyncio.create_task(anext(event_generator))
-            await asyncio.wait_for(entered_processor.wait(), timeout=1)
+            await settle(entered_processor.wait())
             processing.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await processing
@@ -4349,7 +4353,7 @@ class TestProcessEventErrors:
             )
             assert (await anext(event_generator)).event == IndexingEvent.START_DOWNLOAD
             processing = asyncio.create_task(anext(event_generator))
-            await asyncio.wait_for(entered_processor.wait(), timeout=1)
+            await settle(entered_processor.wait())
             processing.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await processing
@@ -7106,3 +7110,73 @@ class TestMembershipRepairAfterAGiveUp:
 
         handler.producer.send_event.assert_not_awaited()
         handler.event_processor.graph_provider.update_node_fields_if_match.assert_not_awaited()
+
+
+class TestAParseSlotWaitIsHandedBack:
+    """A parse that waited out its slot is queue time: it reaches the consumer as itself and is never written FAILED.
+
+    The consumer hands a message back only for a bare ``RequeueWithoutAttempt``; on the last counted delivery
+    (``is_final_failure``) anything else is written FAILED and its queued duplicates are failed with it.
+    """
+
+    @staticmethod
+    def _handler_for_last_delivery() -> RecordEventHandler:
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        record = {
+            "_key": "r1",
+            "virtualRecordId": "vr1",
+            "indexingStatus": ProgressStatus.NOT_STARTED.value,
+            "mimeType": "application/pdf",
+        }
+        gp.get_document = AsyncMock(return_value=record)
+        gp.update_node = AsyncMock(return_value=True)
+        gp.write_attempt_start = attempt_start_via(gp)
+        gp.update_queued_duplicates_status = AsyncMock(return_value=0)
+        handler._trigger_next_queued_duplicate = AsyncMock()
+        handler._propagate_primary_failure_to_queued_duplicates = AsyncMock()
+
+        def timed_out(event_data: object) -> AsyncIterator[PipelineEvent]:
+            return _failing_async_gen(ParseAdmissionTimeout("parsing", 30.0))
+
+        handler.event_processor.on_event = timed_out
+        return handler
+
+    @staticmethod
+    def _assert_handed_back(handler: RecordEventHandler, raised: pytest.ExceptionInfo) -> None:
+        assert type(raised.value) is ParseAdmissionTimeout
+        gp = handler.event_processor.graph_provider
+        written = [c.args[2] for c in gp.update_node.call_args_list if len(c.args) > 2 and isinstance(c.args[2], dict)]
+        assert all(w.get("indexingStatus") != ProgressStatus.FAILED.value for w in written)
+        handler._propagate_primary_failure_to_queued_duplicates.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_from_a_file_streamed_by_its_connector(self) -> None:
+        handler = self._handler_for_last_delivery()
+        payload = {
+            "recordId": "r1", "virtualRecordId": "vr1", "orgId": "org-1",
+            "mimeType": "application/pdf", "extension": "pdf", "is_final_failure": True,
+        }
+        with patch("app.services.messaging.kafka.handlers.record.generate_jwt", new_callable=AsyncMock) as mock_jwt, \
+             patch("app.services.messaging.kafka.handlers.record.make_api_call", new_callable=AsyncMock) as mock_api:
+            mock_jwt.return_value = "token"
+            mock_api.return_value = {"data": b"%PDF-1.7"}
+            handler.config_service.get_config = AsyncMock(
+                return_value={"connectors": {"endpoint": "http://localhost:8088"}}
+            )
+            with pytest.raises(Exception) as raised:
+                await _collect_events(handler, EventTypes.NEW_RECORD.value, payload)
+        self._assert_handed_back(handler, raised)
+
+    @pytest.mark.asyncio
+    async def test_from_a_file_behind_a_signed_url(self) -> None:
+        handler = self._handler_for_last_delivery()
+        payload = {
+            "recordId": "r1", "virtualRecordId": "vr1", "orgId": "org-1", "mimeType": "application/pdf",
+            "extension": "pdf", "signedUrl": "https://example.com/file.pdf", "is_final_failure": True,
+        }
+        with patch.object(handler, "_download_from_signed_url", new_callable=AsyncMock) as mock_dl:
+            mock_dl.return_value = b"%PDF-1.7"
+            with pytest.raises(Exception) as raised:
+                await _collect_events(handler, EventTypes.NEW_RECORD.value, payload)
+        self._assert_handed_back(handler, raised)

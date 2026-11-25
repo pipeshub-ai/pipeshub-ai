@@ -249,3 +249,47 @@ class TestClose:
         await mgr.close()
         assert mgr.client is None
         assert mgr.state == ConnectionState.DISCONNECTED
+
+
+class TestTwoEventLoops:
+    """QA6-F10: ConfigurationService's watch thread runs its own event loop on the manager the service's loop uses."""
+
+    def test_two_loops_connecting_at_once_both_get_the_one_client(self) -> None:
+        import asyncio
+        import threading
+
+        mgr = Etcd3ConnectionManager(ConnectionConfig(hosts=["localhost"]))
+        client, entered, release, created = MagicMock(), threading.Event(), threading.Event(), []
+
+        def slow_create() -> MagicMock:
+            created.append(1)
+            entered.set()
+            assert release.wait(10)
+            return client
+
+        results: dict[str, object] = {}
+
+        def in_own_loop(name: str) -> None:
+            try:
+                results[name] = asyncio.run(asyncio.wait_for(mgr.get_client(), 8))
+            except BaseException as error:  # the failure is the assertion below
+                results[name] = error
+
+        with patch.object(mgr, "_create_client", side_effect=slow_create):
+            first = threading.Thread(target=in_own_loop, args=("service",))
+            first.start()
+            assert entered.wait(10)
+            second = threading.Thread(target=in_own_loop, args=("watch",))
+            second.start()
+            # The second loop is waiting on the connect in progress, not skipping it or failing on the lock.
+            second.join(0.3)
+            assert second.is_alive()
+            release.set()
+            first.join(10)
+            # Promptly: an asyncio.Lock released from the other loop's thread left this loop asleep.
+            second.join(3)
+            woken = not second.is_alive()
+            second.join(10)
+        assert woken, "the waiting loop was not woken when the connect finished"
+        assert results == {"service": client, "watch": client}
+        assert created == [1]

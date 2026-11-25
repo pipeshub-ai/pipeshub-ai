@@ -52,7 +52,7 @@ export function ChatRow({ conversation, onClick, showDate }: ChatRowProps) {
       <Text
         size="1"
         style={{
-          color: 'var(--slate-a9)',
+          color: 'var(--slate-a11)',
           overflow: 'hidden',
           textOverflow: 'ellipsis',
           whiteSpace: 'nowrap',
@@ -65,7 +65,7 @@ export function ChatRow({ conversation, onClick, showDate }: ChatRowProps) {
       <Text
         size="1"
         style={{
-          color: 'var(--slate-a9)',
+          color: 'var(--slate-a11)',
           overflow: 'hidden',
           textOverflow: 'ellipsis',
           whiteSpace: 'nowrap',

@@ -41,6 +41,9 @@ SITES: dict[tuple[str, str, str], str] = {
     ("indexing_main.py", "_republish_refresh_intents", "update_node_fields_if_match"): NO_RUN_FIELDS,
     ("indexing_main.py", "recover_in_progress_records", "update_node"): QUEUE_NO_FILL,
     ("modules/indexing/duplicate_reconcile.py", "DuplicateReconciler.reconcile", "update_node_fields_if_match"): NO_RUN_FIELDS,
+    ("events/events.py", "EventProcessor._put_back_kept_record", "update_node_fields_if_match"): NO_RUN_FIELDS,
+    ("modules/indexing/page_limit.py", "_write_if_same_revision", "update_node_fields_if_match"): NO_RUN_FIELDS,
+    ("modules/indexing/pdf_page_limit_audit.py", "_note", "update_node_fields_if_match"): NO_RUN_FIELDS,
     ("modules/indexing/duplicate_reconcile.py", "_retry_one", "update_node_fields_if_match"): NO_RUN_FIELDS,
     ("modules/indexing/duplicate_reconcile.py", "rearm_failed_reconcile", "update_node_fields_if_match"): NO_RUN_FIELDS,
     ("modules/transformers/pipeline.py", "IndexingPipeline.apply", "update_node"): NO_RUN_FIELDS,
@@ -96,7 +99,7 @@ SITES: dict[tuple[str, str, str], str] = {
 # (enclosing function suffix) -> class; the helper body carries the rule.
 HELPER_WRITERS: dict[tuple[str, str], str] = {
     # builds the record the upload route writes (a new record: it starts its run); tests/unit/events/test_record_diagnostics_call_sites.py
-    ("api/routes/chatbot.py", "attachment_record_doc"): START,
+    ("services/chat_attachments/uploads.py", "attachment_record_doc"): START,
     ("modules/transformers/sink_orchestrator.py", "sink_only_end_fields"): SINK_END,
     ("services/messaging/kafka/handlers/record.py", "requeue_updates"): QUEUE,
     ("services/messaging/kafka/handlers/record.py", "RecordEventHandler.__update_document_status"): FAILED,

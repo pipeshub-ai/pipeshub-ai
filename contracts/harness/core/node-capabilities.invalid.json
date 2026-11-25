@@ -1,0 +1,32 @@
+[
+  {
+    "description": "another harness major",
+    "instance": {
+      "harnessMajor": 1,
+      "features": []
+    }
+  },
+  {
+    "description": "no features list",
+    "instance": {
+      "harnessMajor": 2
+    }
+  },
+  {
+    "description": "feature name that is not a machine name",
+    "instance": {
+      "harnessMajor": 2,
+      "features": [
+        "approval reasons"
+      ]
+    }
+  },
+  {
+    "description": "a field this schema does not define",
+    "instance": {
+      "harnessMajor": 2,
+      "features": [],
+      "foldVersion": 9
+    }
+  }
+]

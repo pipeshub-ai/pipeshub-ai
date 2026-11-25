@@ -845,6 +845,16 @@ class DataSourceEntitiesProcessor:
         payload["runSyncId"] = get_run_sync_id()
         return payload
 
+    def _record_event(self, record: Record, event_type: str) -> dict[str, Any]:
+        return {"eventType": event_type, "timestamp": get_epoch_timestamp_in_ms(), "payload": self._record_event_payload(record)}
+
+    async def _publish_with_commit(self, tx_store: TransactionStore, messages: list[tuple[str, dict]]) -> bool:
+        """``record-events`` inside the write's own transaction where the stores allow it (see
+        ``GraphTransactionStore.publish_with_commit``); False when the caller must publish after the commit."""
+        if not messages:
+            return False
+        return await tx_store.publish_with_commit(self.messaging_producer, "record-events", messages) is True
+
     # A deployment where several orgs share the graph turns this off, so a
     # caller that forgets the org fails instead of writing into another org.
     allow_first_org_fallback: bool = True
@@ -908,14 +918,20 @@ class DataSourceEntitiesProcessor:
             )
 
     async def cleanup(self) -> None:
-        """Close the messaging producer initialize() opened. Safe to call twice.
+        """Close the messaging producer initialize() opened, and the HTTP session
+        a storage move opened. Safe to call twice.
 
         Each producer holds its own broker connection, so a processor dropped
         without this leaks one socket for the life of the process.
         """
         producer = getattr(self, "messaging_producer", None)
-        if producer is not None:
-            await producer.cleanup()
+        storage_cleanup = getattr(self, "_storage_cleanup", None)
+        try:
+            if producer is not None:
+                await producer.cleanup()
+        finally:
+            if storage_cleanup is not None:
+                await storage_cleanup.close()
 
     async def initialize(self, org_id: Optional[str] = None, *, org_agnostic: bool = False) -> None:
         config = await MessagingUtils.create_producer_config_from_service(
@@ -2667,6 +2683,7 @@ class DataSourceEntitiesProcessor:
         moved_virtual_record_ids: list[tuple[str, str | None]] = []
         membership_moved = False
         unlisted_group_ids: set[str] = set()
+        relink_people = False
         try:
             async with self._sync_transaction() as tx_store:
                 # Every write below goes to record.id, whoever stored it.
@@ -2827,14 +2844,25 @@ class DataSourceEntitiesProcessor:
                     )
 
                 self.logger.debug(f"Successfully updated permissions for record: {record.id}")
+                relink_people = record.shared_with is not None and bool(belongs_to_edges)
 
             await self._access_changed([record.connector_id], record.org_id)
             await self._publish_membership_sync(moved_virtual_record_ids)
             await self._flush_pending_blob_moves(pending_moves)
+            if relink_people:
+                await self._relink_people_after_share_change(record)
 
         except Exception as e:
             self._log_failure(f"Failed to update permissions for record {record.id}: {e}", e, exc_info=True)
             raise
+
+    async def _relink_people_after_share_change(self, record: Record) -> None:
+        """A share or unshare reaches a connector as a permission change only, so the people the record names are
+        rewritten after its grants. In a transaction of their own, so a failure cannot roll the grant change back,
+        an unshare least. It is still raised: the connector then fails the item and holds its checkpoint, so the
+        change is read, and the people written, again."""
+        async with self._sync_transaction() as tx_store:
+            await self._handle_record_people(record, tx_store)
 
     async def _write_content_edges(
         self, record: Record, tx_store: TransactionStore, *, may_have_edges: bool,
@@ -2847,15 +2875,16 @@ class DataSourceEntitiesProcessor:
         # are the addresses and issue keys in its text (see record_links). An
         # edit can remove one, so they are always cleaned up as well.
         # None, unlike [], means the connector did not read the record's links on
-        # this save (a Slack reindex): its link edges are kept as they are.
+        # this save (a Slack reindex, a Jira issue stored closed after its build
+        # failed): its link edges are kept as they are.
         if (
             isinstance(
                 record,
                 (TicketRecord, ProjectRecord, SQLTableRecord, SQLViewRecord, MessageRecord, PullRequestRecord),
             )
-            and not (isinstance(record, MessageRecord) and record.related_external_records is None)
+            and record.related_external_records is not None
         ):
-            await self._handle_related_external_records(record, record.related_external_records or [], tx_store)
+            await self._handle_related_external_records(record, record.related_external_records, tx_store)
 
         # Records that pasted this record's address before it was indexed. On
         # every save: on Neo4j's default auto-commit sessions the record row is
@@ -3527,9 +3556,11 @@ class DataSourceEntitiesProcessor:
         pending_moves: list[PendingMove],
         moved_virtual_record_ids: list[tuple[str, str | None]],
         title_changes: dict[str, Record] | None = None,
+        *,
+        published: bool = False,
     ) -> None:
-        """Move the blobs, publish the indexing events and send the membership
-        refreshes of one committed slice of ``on_new_records``."""
+        """Move the blobs, publish the indexing events (unless the slice's transaction carried them: ``published``) and
+        send the membership refreshes of one committed slice of ``on_new_records``."""
         # Before the indexing events and for every record, AUTO_INDEX_OFF ones included:
         # the filters below are about whether there is anything to index.
         await self._publish_record_titles((title_changes or {}).values())
@@ -3545,20 +3576,11 @@ class DataSourceEntitiesProcessor:
 
         await self._flush_pending_blob_moves(pending_moves)
 
-        if publishable:
+        if publishable and published:
+            await self._mark_queued_after_publish([r.id for r in publishable])
+        elif publishable:
             acked = await self.messaging_producer.send_messages(
-                "record-events",
-                [
-                    (
-                        record.id,
-                        {
-                            "eventType": "newRecord",
-                            "timestamp": get_epoch_timestamp_in_ms(),
-                            "payload": self._record_event_payload(record),
-                        },
-                    )
-                    for record in publishable
-                ],
+                "record-events", [(record.id, self._record_event(record, "newRecord")) for record in publishable],
             )
             await self._mark_queued_after_publish(
                 [r.id for r, ok in zip(publishable, acked) if ok]
@@ -3572,8 +3594,9 @@ class DataSourceEntitiesProcessor:
         narrowed_connectors: set[str],
         *,
         replace_permissions: bool,
-    ) -> tuple[list[Record], list[PendingMove], list[tuple[str, str | None]], dict[str, Record]]:
-        """Write one slice of records in one transaction; returns what to publish once it committed."""
+    ) -> tuple[list[Record], list[PendingMove], list[tuple[str, str | None]], dict[str, Record], bool]:
+        """Write one slice of records in one transaction; returns what to publish once it committed, and whether its
+        indexing events went out with the commit."""
         records_to_publish: list[Record] = []
         # Deliberately a separate list from records_to_publish: the publish
         # filters (AUTO_INDEX_OFF, internal, COMPLETED, KB folders,
@@ -3606,7 +3629,12 @@ class DataSourceEntitiesProcessor:
 
                 if processed_record:
                     records_to_publish.append(processed_record)
-        return records_to_publish, pending_moves, moved_virtual_record_ids, title_changes
+            # shortcut: a slice that moves stored files publishes after the commit and the moves, as before, so indexing finds them
+            # moved (lost to a crash in between, until the stranded-record sweep); upgrade if the moves become part of the transaction.
+            published = not pending_moves and await self._publish_with_commit(store, [
+                (r.id, self._record_event(r, "newRecord")) for r in records_to_publish if _requests_index_event(r)
+            ])
+        return records_to_publish, pending_moves, moved_virtual_record_ids, title_changes, published
 
     def _quarantine_record(self, record: Record, error: SchemaValidationError) -> None:
         """Skip a record whose write the schema refused: it cannot succeed on a re-run."""
@@ -3654,14 +3682,13 @@ class DataSourceEntitiesProcessor:
                         # This record's transaction has committed: its post-commit work runs now,
                         # before the next record is written, so an error on a later record (a
                         # deadlock, say) cannot leave it unpublished with a re-run finding it unchanged.
-                        await self._after_slice_committed(*one)
+                        *written_slice, published = one
+                        await self._after_slice_committed(*written_slice, published=published)
                 # Before the next slice starts: a re-run finds this slice's records
                 # unchanged and would redo none of it. A slice that rolled back
                 # does not get here.
-                for records_to_publish, pending_moves, moved_virtual_record_ids, title_changes in written:
-                    await self._after_slice_committed(
-                        records_to_publish, pending_moves, moved_virtual_record_ids, title_changes
-                    )
+                for *written_slice, published in written:
+                    await self._after_slice_committed(*written_slice, published=published)
         except Exception as e:
             if not will_retry(self, e):
                 # A retry re-runs the whole call, so after a partial commit this also counts
@@ -3710,17 +3737,19 @@ class DataSourceEntitiesProcessor:
                 # repeat work. Callers that do not say keep publishing: several store the new revision through a
                 # metadata update first, so the save alone cannot tell their content changed.
                 should_publish = content_changed or _requests_index_event(processed_record)
+            # moved files first (see _write_records_slice)
+            published = should_publish and not pending_moves and await self._publish_with_commit(
+                tx_store, [(record.id, self._record_event(processed_record, "updateRecord"))])
 
         await self._publish_record_titles(title_changes.values())
         await self._publish_membership_sync(moved_virtual_record_ids)
         await self._flush_pending_blob_moves(pending_moves)
 
         if should_publish:
-            await self.messaging_producer.send_message(
-                "record-events",
-                {"eventType": "updateRecord", "timestamp": get_epoch_timestamp_in_ms(), "payload": self._record_event_payload(processed_record)},
-                key=record.id
-            )
+            if not published:
+                await self.messaging_producer.send_message(
+                    "record-events", self._record_event(processed_record, "updateRecord"), key=record.id,
+                )
             await self._mark_queued_after_publish([record.id])
 
     # No @retry_on_deadlock: the push owns its retry loop (bounded in attempts and time), so a
@@ -3740,7 +3769,8 @@ class DataSourceEntitiesProcessor:
         upsert skips (one in the trash), raises and rolls everything back, so nothing is half
         written and the caller re-decides from what is stored. After the commit a content change
         publishes ``newRecord`` (a create) or ``updateRecord``; a failed publish leaves the
-        record NOT_STARTED with a fresh ``queuedAt`` for the stranded-record sweep.
+        record NOT_STARTED with a fresh ``queuedAt`` for the stranded-record sweep. Where the
+        event can go into the transaction (``_publish_with_commit``) it commits with the write.
         """
         moved_virtual_record_ids: list[tuple[str, str | None]] = []
         narrowed_connectors: set[str] = set()
@@ -3778,17 +3808,18 @@ class DataSourceEntitiesProcessor:
             # A push opened before the delete's marker read the KB as live in its snapshot (Arango).
             # Read it again outside the transaction, so a marker committed since is seen.
             await self._refuse_if_kb_not_live(record.connector_id)
+            event = "newRecord" if expected is None else "updateRecord"
+            # moved files first (see _write_records_slice)
+            published = content_changed and not pending_moves and await self._publish_with_commit(
+                tx_store, [(record.id, self._record_event(processed, event))])
         await self._publish_record_titles(title_changes.values())
         await self._publish_membership_sync(moved_virtual_record_ids)
         await self._flush_pending_blob_moves(pending_moves)
         if not content_changed:
             return PushOutcome(event=None, published=False)
-        event = "newRecord" if expected is None else "updateRecord"
         try:
-            if await self.messaging_producer.send_message(
-                "record-events",
-                {"eventType": event, "timestamp": get_epoch_timestamp_in_ms(), "payload": self._record_event_payload(processed)},
-                key=record.id,
+            if not published and await self.messaging_producer.send_message(
+                "record-events", self._record_event(processed, event), key=record.id,
             ) is False:
                 raise RuntimeError("the message broker did not accept the event")
         except Exception as e:
@@ -4456,8 +4487,18 @@ class DataSourceEntitiesProcessor:
             missing=sorted(set(ids) - set(restored)),
         )
 
-    async def _publish_delete_events(self, event_data: dict | None) -> list[str]:
-        """Publish deleteRecord events (Qdrant vector cleanup) for a delete result.
+    @staticmethod
+    def _delete_messages(event_data: dict | None) -> list[tuple[str, dict]]:
+        """The deleteRecord events of a delete result, for ``_publish_with_commit`` (malformed payloads are left to
+        ``_publish_delete_events``, which reports them)."""
+        return [
+            (p["recordId"], {"eventType": "deleteRecord", "timestamp": get_epoch_timestamp_in_ms(), "payload": p})
+            for p in (event_data or {}).get("payloads", []) if isinstance(p, dict) and p.get("recordId")
+        ]
+
+    async def _publish_delete_events(self, event_data: dict | None, *, published: bool = False) -> list[str]:
+        """Publish deleteRecord events (Qdrant vector cleanup) for a delete result; with ``published`` the
+        transaction already carried them and only malformed payloads are reported.
 
         Called AFTER the DB transaction commits so the graph vertex is gone before
         the indexing consumer runs its cleanup — a guard there skips vector deletion
@@ -4483,6 +4524,8 @@ class DataSourceEntitiesProcessor:
                 # unpublished cleanup instead of crashing the whole batch.
                 self.logger.error(f"Skipping malformed deleteRecord payload: {payload!r}")
                 unpublished_record_ids.append(str(payload))
+                continue
+            if published:
                 continue
             async def publish(payload: dict = payload, record_id: str = record_id) -> None:
                 event = {
@@ -4541,7 +4584,7 @@ class DataSourceEntitiesProcessor:
         # its own otherwise, and a parent-edge delete that landed alone left the
         # record live and searchable but in no folder.
         result: dict | None = None
-        trashed = False
+        trashed = published = False
         async with self.data_store_provider.transaction(explicit=True) as tx_store:
             # A failed read must raise: None would read as "already gone", and
             # the caller does not deliver this delete again. The value is the
@@ -4563,6 +4606,7 @@ class DataSourceEntitiesProcessor:
                         f"Deleting record {record_id} failed: {(result or {}).get('reason')}"
                     )
                 await self._reparent_orphans(tx_store, orphans)
+                published = await self._publish_with_commit(tx_store, self._delete_messages((result or {}).get("eventData")))
         if trashed:
             # The single-record delete leaves a record in the trash where it is,
             # and a connector removes what the source no longer has wherever it
@@ -4577,7 +4621,7 @@ class DataSourceEntitiesProcessor:
                 )
             return False
         _count_deleted(result)
-        await self._publish_delete_events((result or {}).get("eventData"))
+        await self._publish_delete_events((result or {}).get("eventData"), published=published)
         # A record that was never indexed has no deleteRecord event, but has a title point.
         await self._publish_record_titles(deletes=[(record_id, existing.get("connectorId") or None)])
         return False
@@ -4801,6 +4845,7 @@ class DataSourceEntitiesProcessor:
                 return {"success": False, "code": 409, "reason": FOLDER_CHANGED_DURING_DELETE_MESSAGE, "eventData": None}
         result: dict | None = None
         for attempt in range(_DELETE_CONFLICT_ATTEMPTS):
+            published = False  # only what the committed attempt carried
             try:
                 async with self.data_store_provider.transaction(explicit=True) as tx_store:
                     root_of_child: dict[str, str] = {}
@@ -4823,6 +4868,7 @@ class DataSourceEntitiesProcessor:
                         (result or {}).get("reparented") or [], root_of_child, above_root,
                         {d.get("record_id") for d in (result or {}).get("deleted_records") or []},
                     ))
+                    published = await self._publish_with_commit(tx_store, self._delete_messages((result or {}).get("eventData")))
                 break
             except _DeleteFailed:
                 break
@@ -4867,7 +4913,7 @@ class DataSourceEntitiesProcessor:
             # No-ops unless connector_id is a KB; connectors invalidate on sync
             # completion instead, so a mid-sync delete does not thrash the cache.
             await notify_kb_records_changed(connector_id, getattr(self, "org_id", None) or None)
-        unpublished_record_ids = await self._publish_delete_events((result or {}).get("eventData"))
+        unpublished_record_ids = await self._publish_delete_events((result or {}).get("eventData"), published=published)
         await self._publish_record_titles(deletes=[
             (d["record_id"], connector_id)
             for d in (result or {}).get("deleted_records") or []

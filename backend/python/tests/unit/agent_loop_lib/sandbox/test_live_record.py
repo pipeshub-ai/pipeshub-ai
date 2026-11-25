@@ -78,6 +78,7 @@ class TestLedger:
             started = time.monotonic()
             with other.transaction(0.02) as txn:
                 assert txn is None
+            # wall-clock-ok: the holder keeps the lock for the whole block; 0.2 s is ten times the 20 ms budget
             assert time.monotonic() - started < 0.2
             with other.transaction(0.0) as txn:
                 assert txn is None

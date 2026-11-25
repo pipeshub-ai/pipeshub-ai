@@ -2,7 +2,7 @@
 
 ``pipeshub_kg_changes`` is sent at commit by a write unit that changed the graph (flush.wake, coalesced); it only wakes
 the worker, which reads the log itself, so a lost notification costs at most ``poll_s``. The projection is on: the connectors service starts the worker, which also takes each connector
-to ``enforce`` (:mod:`bootstrap`), and refuses to start with ``PG_KG_PROJECT=0`` on a PostgreSQL graph (:func:`start_for`).
+to ``enforce`` (:mod:`bootstrap`), and refuses to start with a kg setting it does not understand, ``PG_KG_PROJECT=0`` among them (:func:`start_for`).
 """
 from __future__ import annotations
 
@@ -15,6 +15,7 @@ import uuid
 from typing import TYPE_CHECKING
 
 from app.core.org_context import bind, spawn_detached
+from app.services.graph_db.postgres import connector_stats
 from app.services.graph_db.postgres.kg import (
     bootstrap,
     counts,
@@ -39,10 +40,6 @@ RECHECK_S = 0.3
 STOP_TIMEOUT_S = 10.0                              # how long stop() lets the pass in flight end before it cancels it
 MAX_DOUBLINGS = 8                                  # RECHECK_S * 2**8 is past any sensible poll interval
 LOOP_FAILED = METRICS_BACKEND.counter("pipeshub_kg_worker_loop_failed_total", "Iterations of the projection worker's loop that raised and were continued", ["where"])
-
-
-def enabled() -> bool:
-    return flush.mode() != "off"
 
 
 class KgWorker:
@@ -95,6 +92,12 @@ class KgWorker:
                 rows += await counts.run(self._db, org, stop=self._stop)
             except Exception:
                 logger.exception("kg counters failed for an org; retrying")
+            if self._stop.is_set():
+                break
+            try:
+                rows += await connector_stats.run(self._db, org, stop=self._stop)
+            except Exception:
+                logger.exception("connector stats counts failed for an org; retrying")
             if self._stop.is_set():
                 break
             try:
@@ -203,16 +206,14 @@ class KgWorker:
 def start_for(graph_provider: object, logger: logging.Logger) -> KgWorker | None:
     """The worker of the connectors service: started when the graph is PostgreSQL, else None (Neo4j and ArangoDB never reach this). It serves every org of the graph. Two processes
     (replicas) may each start one: a page of an org's log is taken under an advisory lock (``drainer.drain``), restamp jobs are claimed, and a promotion verifies under the connector's
-    lock, so they never apply a change twice; the second only waits its turn. With the projection off (``PG_KG_PROJECT=0``) it raises ``ValueError``, and the service does not start:
-    the knowledge hub lists a PostgreSQL graph's sources from kg, so no copy would ever be made and every source that holds data would stay "preparing"."""
+    lock, so they never apply a change twice; the second only waits its turn. A kg setting it does not understand raises ``ValueError`` (``flush.check_env``), and the service does
+    not start: with ``PG_KG_PROJECT=0`` no copy would ever be made and every source that holds data would stay "preparing"."""
     from app.core.org_context import system
     from app.services.graph_db.postgres.provider import PostgresGraphProvider
     from app.services.pg_runtime import listen_dsn
     if not isinstance(graph_provider, PostgresGraphProvider):
         return None
-    if not enabled():
-        raise ValueError("PG_KG_PROJECT=0 is not supported with a PostgreSQL graph (DATA_STORE=postgres): the knowledge hub lists sources from the typed graph, so every source "
-                         "would show as preparing. Unset PG_KG_PROJECT; to answer access checks from the graph walk instead of the typed graph, set PG_KG_READ=0")
+    flush.check_env()
 
     async def orgs() -> list[str]:
         with system("kg_worker"):

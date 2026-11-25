@@ -36,8 +36,8 @@ READS = frozenset("""
     get_entity_candidate_records get_entity_id_by_email get_entity_index_candidate get_existing_keys get_existing_record_keys
     get_failed_records_by_org get_file_paths_for_records get_file_record_by_id get_filtered_connector_instances
     get_first_user_with_permission_to_node get_folder_children get_folder_depth get_folder_subtree_height get_gated_apps
-    get_graph_user_keys_by_mongo_user_ids get_groups_with_permission_to_node get_hidden_app_ids get_issue_sites get_kb_children
-    get_kb_permissions get_key_by_external_file_id get_key_by_external_message_id get_knowledge_base
+    get_graph_user_keys_by_mongo_user_ids get_graph_user_keys_by_mongo_user_ids_all_orgs get_groups_with_permission_to_node get_hidden_app_ids get_issue_sites get_kb_children
+    get_kb_permissions get_knowledge_base
     get_knowledge_hub_access_context_v2 get_knowledge_hub_access_v3 get_knowledge_hub_breadcrumbs
     get_knowledge_hub_connector_grants get_knowledge_hub_connector_page_v3 get_knowledge_hub_context_permissions
     get_knowledge_hub_filter_options get_knowledge_hub_node_access get_knowledge_hub_parent_node get_knowledge_hub_root_nodes_v2
@@ -55,7 +55,7 @@ READS = frozenset("""
     get_records_by_parent_record get_records_by_record_group get_records_by_record_ids get_records_by_record_type
     get_records_by_status get_records_by_virtual_record_id get_records_by_weburls get_records_for_named_entities
     get_records_in_delete_batch get_records_linking_to_weburls get_records_pending_duplicate_reconcile get_ref_access
-    get_related_mails_by_message_id_header get_related_node_field get_revision_pointers get_selection_nodes
+    get_related_node_field get_revision_pointers get_selection_nodes
     get_stage_states_with_records get_structure_of_nodes get_switch_pointers get_sync_point get_taxonomy_entities_for_record
     get_taxonomy_entity_membership get_team_owner_removal_info get_team_permissions_and_owner_count get_team_users
     get_team_with_users get_template get_trash_purge_stats get_typed_records_batch get_unreached_taxonomy_entities
@@ -67,9 +67,10 @@ READS = frozenset("""
     is_trash_walk_index_ready is_write_conflict list_accessible_artifacts list_kb_permissions
     list_unsupported_page get_records_with_refresh_intent
     get_record_group_organization get_record_organizations get_record_people
-    list_trashed_records list_user_knowledge_bases opens_explicit_transaction page_record_ids_by_type query_named_entities
+    list_sync_points list_trashed_records list_user_knowledge_bases opens_explicit_transaction page_record_ids_by_type query_named_entities
     resolve_named_entity_redirects search_nodes_by_field_terms stage_state_org_for_virtual_record validate_folder_exists_in_kb validate_folder_for_upload
     validate_folder_in_kb
+    get_records_by_external_ids get_user_team_roles
 """.split())
 
 HARMLESS = frozenset("""
@@ -107,7 +108,7 @@ STRUCTURAL = frozenset("""
     create_record_group_relation create_record_groups_relation create_record_relation delete_all_edges_for_node
     delete_connector_instance delete_connector_sync_edges delete_edge delete_edges_between_collections
     delete_edges_by_relationship_types delete_edges_by_source_keys delete_edges_from delete_edges_to delete_edges_to_groups
-    delete_edges_touching_nodes delete_inherit_permissions_relation_record_group delete_kb_hub_app delete_nodes
+    delete_edges_touching_nodes delete_inherit_permissions_relation_record_group delete_kb_hub_app delete_node_if_match delete_nodes
     delete_nodes_and_edges delete_parent_child_edge_to_record delete_record delete_record_by_external_id
     delete_records_and_relations delete_records_recursive delete_single_record drop_redundant_group_edges link_record_to_group
     migrate_legacy_kb_to_app migrate_legacy_relation_edge purge_trash_kept_record_groups purge_trashed_records

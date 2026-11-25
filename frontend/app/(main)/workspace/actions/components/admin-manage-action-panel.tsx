@@ -27,7 +27,7 @@ import {
   type ToolsetOauthConfigListRow,
 } from '@/app/(main)/toolsets/api';
 import { SchemaFormField } from '@/app/(main)/workspace/connectors/components/schema-form-field';
-import { FormField } from '@/app/(main)/workspace/components/form-field';
+import { FormField, FormFieldSelectTrigger, FormFieldTextField } from '@/app/(main)/workspace/components/form-field';
 import type { AuthSchemaField, SchemaField } from '@/app/(main)/workspace/connectors/types';
 import {
   apiErrorDetail,
@@ -727,7 +727,7 @@ export function AdminManageActionPanel({
                 style={{ flex: 1 }}
                 onClick={() => void copyRedirect()}
               />
-              <IconButton type="button" variant="soft" color="gray" onClick={() => void copyRedirect()}>
+              <IconButton aria-label={t('workspace.actions.copyRedirectUri')} type="button" variant="soft" color="gray" onClick={() => void copyRedirect()}>
                 <MaterialIcon name="content_copy" size={16} color="var(--gray-11)" />
               </IconButton>
             </Flex>
@@ -756,7 +756,7 @@ export function AdminManageActionPanel({
                   setSelectedOauthConfigId(val);
                 }}
               >
-                <Select.Trigger style={{ width: '100%' }} />
+                <FormFieldSelectTrigger style={{ width: '100%' }} />
                 <Select.Content
                   position="popper"
                   container={nestedModalHost ?? undefined}
@@ -780,7 +780,7 @@ export function AdminManageActionPanel({
           required
           error={instanceNameError ?? undefined}
         >
-          <TextField.Root
+          <FormFieldTextField
             value={instanceName}
             onChange={(e) => {
               setInstanceName(e.target.value);

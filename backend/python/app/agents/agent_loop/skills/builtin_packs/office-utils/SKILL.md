@@ -1,6 +1,6 @@
 ---
 name: office-utils
-description: "Low-level support skill for hand-editing the raw XML inside a .docx or .pptx file (both formats are just ZIP archives of XML parts). Use this directly only when you need to unpack, inspect, or repack Open XML yourself — for example fixing a validation error in generated markup, or making one small targeted edit without regenerating a whole document from scratch. The docx and pptx skills already use this internally for their 'edit an existing file' workflow, so you rarely need to load this on its own."
+description: "Low-level support skill for hand-editing the raw XML inside a .docx or .pptx file (both formats are just ZIP archives of XML parts). Use this directly only when you need to unpack, inspect, or repack Open XML yourself — for example fixing a validation error in generated markup, or making one small targeted edit without regenerating a whole document from scratch. The docx and pptx skills already use this internally for their 'edit an existing file' workflow, and the pdf, docx and pptx skills run its layout checker (scripts/check_layout.py) before delivering a file, so you rarely need to load this on its own."
 metadata:
   agent-loop:
     version: 1.0.0
@@ -10,7 +10,7 @@ metadata:
     status: active
     source: builtin
     pack_name: office-utils
-    pack_version: 1.0.2
+    pack_version: 1.1.1
 ---
 
 # Office Open XML utilities
@@ -27,6 +27,7 @@ Note on language: the `docx`/`pptx`/`xlsx`/`pdf` skills default to Node (`docx`/
 |------|---------|
 | Unpack a file to a directory tree | `python skills/office-utils/scripts/unpack.py <file.docx\|pptx> <out_dir/>` |
 | Repack a directory tree back to a file | `python skills/office-utils/scripts/pack.py <out_dir/> <file.docx\|pptx>` |
+| Check a generated file's layout before delivering it | `python skills/office-utils/scripts/check_layout.py <file.pdf\|pptx\|docx>` (the pdf, pptx and docx skills say when) |
 
 ## Workflow
 
@@ -39,8 +40,8 @@ Note on language: the `docx`/`pptx`/`xlsx`/`pdf` skills default to Node (`docx`/
 - **Don't reorder ZIP entries.** Some parsers (notably older Office/PowerPoint) are sensitive to `[Content_Types].xml` and `_rels/.rels` being near the start of the archive. `pack.py`'s manifest-driven ordering exists specifically to avoid this — don't hand-roll your own zipping.
 - **Keep relationship IDs (`r:id`) consistent.** If you add a new part (e.g. an image), you must add both a `<Relationship>` entry in the owning part's `_rels/*.rels` file AND a reference to that same ID from the XML that uses it. Adding one without the other produces a file that "opens" but shows a broken-image icon or corruption warning.
 - **Escape XML special characters** (`&`, `<`, `>`) in any text you insert into a `<w:t>`/`<a:t>` run — a raw ampersand will make the part invalid XML and fail the pack-time validation.
-- **This skill has no way to render a preview.** Visual verification (rendering the file to an image) requires LibreOffice, which is not available in this environment yet — verify structurally (does it still parse? do the relationship IDs still resolve?) rather than visually.
+- **A .docx or .pptx cannot be rendered here.** Rendering one to an image requires LibreOffice, which is not available in this environment yet — verify structurally (does it still parse? do the relationship IDs still resolve?) and with `check_layout.py`, which checks a deck's shape geometry. A PDF can be rendered: `check_layout.py` renders every page to PNG.
 
 ## Dependencies
 
-Pure Python standard library (`zipfile`, `xml.dom.minidom`, `json`) — no packages to install.
+`unpack.py` and `pack.py`: the Python standard library only. `check_layout.py`: `pdfplumber`, `pypdfium2`, `numpy` and `Pillow` for a PDF, `python-pptx` or `python-docx` for the others — all installed in every sandbox image.

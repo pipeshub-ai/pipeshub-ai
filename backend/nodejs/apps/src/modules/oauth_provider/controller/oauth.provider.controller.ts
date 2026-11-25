@@ -37,6 +37,7 @@ import {
 import {
   answerOAuthServerFailure,
   isOAuthRefusal,
+  logOAuthRefusal,
   logOAuthServerFailure,
   OAUTH_SERVER_FAILURE,
   oauthErrorBody,
@@ -349,12 +350,6 @@ export class OAuthProviderController {
       const redirectUrl = new URL(redirect_uri);
       redirectUrl.searchParams.set('code', code);
       redirectUrl.searchParams.set('state', state);
-
-      this.logger.info('Authorization code issued', {
-        clientId: client_id,
-        userId: user.userId,
-        scopes: granted,
-      });
 
       res.json({ redirectUrl: redirectUrl.toString() });
     } catch (error) {
@@ -890,11 +885,6 @@ export class OAuthProviderController {
       throw new InvalidGrantError('Authorization code has already been used');
     }
 
-    this.logger.info('Authorization code grant completed', {
-      clientId,
-      userId: codeResult.userId,
-    });
-
     return {
       access_token: tokens.accessToken,
       token_type: tokens.tokenType,
@@ -995,8 +985,6 @@ export class OAuthProviderController {
       { recheckAppScopes: true },
     );
 
-    this.logger.info('Client credentials grant completed', { clientId });
-
     return {
       access_token: tokens.accessToken,
       token_type: tokens.tokenType,
@@ -1046,15 +1034,14 @@ export class OAuthProviderController {
       ? this.scopeValidatorService.parseScopes(request.scope)
       : undefined;
 
-    // Refresh tokens (implements token rotation per RFC 9700)
+    // Refresh tokens (implements token rotation per RFC 9700). The agent app's tokens are cut to the current
+    // MCP_SCOPES as every other grant of it is: its stored list only ever grows.
     const tokens = await this.oauthTokenService.refreshTokens(
-      app,
+      { ...app, allowedScopes: this.oauthDeviceService.allowedScopesOf(app) },
       request.refresh_token,
       requestedScopes,
       this.oauthTokenService.audienceFor(request.resource),
     );
-
-    this.logger.info('Refresh token grant completed', { clientId });
 
     return {
       access_token: tokens.accessToken,
@@ -1075,7 +1062,7 @@ export class OAuthProviderController {
   }
 
   private logRefusal(error: BaseError): void {
-    this.logger.debug('oauth.request.refused', { code: oauthErrorCode(error) });
+    logOAuthRefusal(this.logger, oauthErrorCode(error));
   }
 
   private answerRefusal(res: Response, error: BaseError): void {

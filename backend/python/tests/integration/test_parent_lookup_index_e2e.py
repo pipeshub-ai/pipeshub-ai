@@ -7,7 +7,7 @@ does, and PROFILEs the statement the provider sends: it must be a NodeIndexSeek 
   cd backend/python && NEO4J_IT_URI=bolt://localhost:17687 NEO4J_IT_PASSWORD=... \
       pytest tests/integration/test_parent_lookup_index_e2e.py -m integration
 
-Environment: NEO4J_IT_URI, NEO4J_IT_PASSWORD (skips when unset and not reachable).
+Environment: NEO4J_IT_URI (skips when unset, fails when set and not reachable), NEO4J_IT_PASSWORD.
 """
 from __future__ import annotations
 
@@ -21,6 +21,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
+from tests.support import it_backends
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -33,7 +34,7 @@ MAX_DB_HITS = 100  # a seek plus its rows; the scan this guards against read REC
 
 @pytest.fixture
 async def graph(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[Neo4jProvider]:
-    uri = os.environ.get("NEO4J_IT_URI", "bolt://localhost:17687")
+    uri = it_backends.endpoint("NEO4J_IT_URI")
     monkeypatch.setenv("NEO4J_URI", uri)
     monkeypatch.setenv("NEO4J_USERNAME", "neo4j")
     monkeypatch.setenv("NEO4J_PASSWORD", os.environ.get("NEO4J_IT_PASSWORD", "ensure-it-pass"))
@@ -43,9 +44,7 @@ async def graph(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[Neo4jProvider]
         if not await asyncio.wait_for(provider.connect(), timeout=60):
             raise ConnectionError("Neo4jProvider.connect returned False")
     except Exception as exc:
-        if os.environ.get("NEO4J_IT_URI"):
-            pytest.fail(f"neo4j is configured (NEO4J_IT_URI) but not reachable: {exc!r}")
-        pytest.skip(f"neo4j not configured and not reachable locally: {exc!r}")
+        it_backends.unavailable("NEO4J_IT_URI", exc)
     yield provider
     await provider.disconnect()
 

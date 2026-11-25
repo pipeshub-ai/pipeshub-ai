@@ -19,6 +19,7 @@ import { UserActivities } from '../../../../src/modules/auth/schema/userActiviti
 import { CrawlingSchedulerService } from '../../../../src/modules/crawling_manager/services/crawling_service'
 import { AppConfig, registerAppUpstreams } from '../../../../src/modules/tokens_manager/config/config'
 import { createConnectorRouter } from '../../../../src/modules/tokens_manager/routes/connectors.routes'
+import { VECTOR_STORE_REBUILD_AVAILABLE } from '../../../../src/edition'
 import { createOAuthRouter } from '../../../../src/modules/tokens_manager/routes/oauth.routes'
 import { FakeBackend, RecordingProducer, buildConfig } from './connectors-http-harness'
 
@@ -176,14 +177,15 @@ describe('Connector routes: a request is logged once, with its connector', funct
     expect(mine().filter((r) => CONTROLLER_LOGGERS.has(r.service))).to.deep.equal([])
   })
 
-  for (const [name, method, path, backendMethod, backendPath, body] of [
-    ['a read', 'GET', '/active', 'GET', '/api/v1/connectors/active', undefined],
-    ['an instance read', 'GET', `/${CONNECTOR}`, 'GET', `/api/v1/connectors/${CONNECTOR}`, undefined],
-    ['a delete', 'DELETE', `/${CONNECTOR}`, 'DELETE', `/api/v1/connectors/${CONNECTOR}`, undefined],
-    ['an agent toggle', 'POST', `/${CONNECTOR}/toggle`, 'POST', `/api/v1/connectors/${CONNECTOR}/toggle`, { type: 'agent' }],
-    ['a create', 'POST', '/', 'POST', '/api/v1/connectors/', { connectorType: 'Jira', instanceName: INSTANCE_NAME, scope: 'team' }],
+  // A save also writes its settings audit line, on the `audit` logger.
+  for (const [name, method, path, backendMethod, backendPath, body, auditEvent] of [
+    ['a read', 'GET', '/active', 'GET', '/api/v1/connectors/active', undefined, null],
+    ['an instance read', 'GET', `/${CONNECTOR}`, 'GET', `/api/v1/connectors/${CONNECTOR}`, undefined, null],
+    ['a delete', 'DELETE', `/${CONNECTOR}`, 'DELETE', `/api/v1/connectors/${CONNECTOR}`, undefined, 'config.connector.delete'],
+    ['an agent toggle', 'POST', `/${CONNECTOR}/toggle`, 'POST', `/api/v1/connectors/${CONNECTOR}/toggle`, { type: 'agent' }, 'config.connector.update'],
+    ['a create', 'POST', '/', 'POST', '/api/v1/connectors/', { connectorType: 'Jira', instanceName: INSTANCE_NAME, scope: 'team' }, 'config.connector.create'],
   ] as const) {
-    it(`${name} that succeeds writes one line at INFO or above: the access line`, async () => {
+    it(`${name} that succeeds writes one line at INFO or above besides any audit line: the access line`, async () => {
       backend.on(backendMethod, backendPath, { status: 200, body: { success: true, connector: { _key: CONNECTOR }, connectors: [] } })
 
       const status = await send(method, `/api/v1/connectors${path}`, body)
@@ -191,8 +193,11 @@ describe('Connector routes: a request is logged once, with its connector', funct
       await new Promise((resolve) => setTimeout(resolve, 20))
 
       expect(status).to.equal(200)
-      expect(visible().map((r) => r.message)).to.deep.equal(['http.request.end'])
-      if (path.includes(CONNECTOR)) expect(visible()[0].connector_id).to.equal(CONNECTOR)
+      expect(visible().map((r) => [r.service, r.message])).to.deep.equal([
+        ...(auditEvent === null ? [] : [['audit', auditEvent]]),
+        ['HttpAccess', 'http.request.end'],
+      ])
+      if (path.includes(CONNECTOR)) expect(visible().map((r) => r.connector_id)).to.deep.equal(visible().map(() => CONNECTOR))
     })
   }
 
@@ -222,6 +227,28 @@ describe('Connector routes: a request is logged once, with its connector', funct
     expect(await send('GET', '/api/v1/connectors/registry/Jira/schema')).to.equal(200)
 
     expect(visible().map((r) => [r.message, r.connector_type])).to.deep.equal([['http.request.end', 'Jira']])
+  })
+
+  // N5n: a value the caller put in the path is logged only if it is an id (or, for a type, a name).
+  const EMAIL = 'n5n-fake-ada@example.com'
+  const carriesEmail = (): boolean => [EMAIL, encodeURIComponent(EMAIL)].some((v) => JSON.stringify(mine()).includes(v))
+
+  it('an email pasted as a connector id on resync: refused, and on no line, the error message included', async () => {
+    backend.on('GET', '/api/v1/connectors/active', { status: 200, body: { connectors: [{ _key: CONNECTOR }] } })
+
+    expect(await send('POST', `/api/v1/connectors/${encodeURIComponent(EMAIL)}/resync`, { connectorName: 'Jira' })).to.equal(400)
+
+    expect(byMessage('http.request.error').map((r) => [r.metadata.params, r.metadata.error.message])).to.deep.equal([
+      [{ connectorId: '[not an id]' }, 'Connector not allowed'],
+    ])
+    expect(carriesEmail()).to.equal(false)
+  })
+
+  it('an email as an OAuth connector type is not a name: not bound, on no line', async () => {
+    await send('GET', `/api/v1/oauth/${encodeURIComponent(EMAIL)}`)
+
+    expect(mine().some((r) => r.connector_type !== undefined)).to.equal(false)
+    expect(carriesEmail()).to.equal(false)
   })
 
   it('a record read names the record on its lines', async () => {
@@ -268,8 +295,13 @@ describe('Connector routes: a request is logged once, with its connector', funct
     ['POST', `/api/v1/connectors/${CONNECTOR}/reindex`, {}],
     ['POST', `/api/v1/connectors/${CONNECTOR}/sync/stop`, undefined],
     ['POST', `/api/v1/connectors/${CONNECTOR}/resync`, { connectorName: 'Jira' }],
-    ['POST', '/api/v1/connectors/vector-store/cleanup', {}],
-    ['POST', '/api/v1/connectors/vector-store/reindex', {}],
+    // These two reach the service only where the deployment offers them (edition.ts); elsewhere they answer 403 first.
+    ...(VECTOR_STORE_REBUILD_AVAILABLE
+      ? ([
+          ['POST', '/api/v1/connectors/vector-store/cleanup', {}],
+          ['POST', '/api/v1/connectors/vector-store/reindex', {}],
+        ] as const)
+      : []),
     ['GET', '/api/v1/oauth/registry', undefined],
     ['GET', '/api/v1/oauth/registry/Jira', undefined],
     ['GET', '/api/v1/oauth/', undefined],
@@ -295,5 +327,15 @@ describe('Connector routes: a request is logged once, with its connector', funct
       expect(text).to.not.include(INSTANCE_NAME)
       expect(text).to.not.include(ADMIN.email)
     })
+  }
+
+  if (!VECTOR_STORE_REBUILD_AVAILABLE) {
+    for (const path of ['/api/v1/connectors/vector-store/cleanup', '/api/v1/connectors/vector-store/reindex']) {
+      it(`POST ${path}: refused here (403) without reaching the service, logged once`, async () => {
+        expect(await send('POST', path, {})).to.equal(403)
+        expect(backend.calls).to.have.length(0)
+        expect(byMessage('http.request.error')).to.have.length(1)
+      })
+    }
   }
 })

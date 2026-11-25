@@ -1,8 +1,6 @@
 """What counts as a plain read for the SQL tools, and that deciding it stays fast on hostile text."""
 from __future__ import annotations
 
-import time
-
 import pytest
 
 from app.agents.actions.util.read_only_sql import (
@@ -11,6 +9,7 @@ from app.agents.actions.util.read_only_sql import (
     read_only_statement,
 )
 from app.utils.execute_query import _is_query_safe
+from tests.support.cpu_budget import thread_cpu
 
 
 @pytest.mark.parametrize("sql", [
@@ -226,10 +225,10 @@ HOSTILE = {
 def test_hostile_text_is_decided_quickly(name: str) -> None:
     read_only_statement("SELECT 1")  # the first call imports the validator
     sql = HOSTILE[name]
-    started = time.perf_counter()
-    read_only_statement(sql)
-    calls_side_effect_function(sql)
+    with thread_cpu() as cpu:
+        read_only_statement(sql)
+        calls_side_effect_function(sql)
     # The bad pattern took seconds (17 s at 40 characters); CI workers with coverage run ~3x slower
     # than a laptop, so the bound only has to separate linear from exponential.
-    assert time.perf_counter() - started < 2.0
+    assert cpu.seconds < 2.0
 

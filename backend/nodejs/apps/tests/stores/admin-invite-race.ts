@@ -10,13 +10,17 @@ import { setActivityRepository } from '../../src/libs/repositories/activity';
 
 type Invite = (orgId: string, emails: string[]) => Promise<unknown>;
 
+/** The group and activity writes an invite makes, as no-ops. */
+export const noopInviteGroups = {
+  addToEveryone: async () => undefined,
+  addMemberToGroups: async () => undefined,
+};
+export const noopInviteActivity = { recordMany: async () => undefined };
+
 /** Installs no-op group and activity stores; returns the function that puts the defaults back. */
 export function withoutSideStores(): () => void {
-  setGroupRepository({
-    addToEveryone: async () => undefined,
-    addMemberToGroups: async () => undefined,
-  } as never);
-  setActivityRepository({ recordMany: async () => undefined } as never);
+  setGroupRepository(noopInviteGroups as never);
+  setActivityRepository(noopInviteActivity as never);
   return () => {
     setGroupRepository();
     setActivityRepository();
@@ -54,8 +58,8 @@ export function raceController(rsAvailable: boolean): UserController {
   );
 }
 
-/** `invite(orgId, emails)` runs an admin invite of `emails` the way `POST /users/bulk/invite` does. */
-export function adminInviter(rsAvailable: boolean): Invite {
+/** `invite(orgId, emails)` runs an invite of `emails` (admin unless `role` says member) the way `POST /users/bulk/invite` does. */
+export function adminInviter(rsAvailable: boolean, role: 'admin' | 'member' = 'admin'): Invite {
   const controller = raceController(rsAvailable) as unknown as {
     processInvites(...args: unknown[]): Promise<unknown>;
   };
@@ -66,6 +70,6 @@ export function adminInviter(rsAvailable: boolean): Invite {
       orgId,
       'Inviter',
       { registeredName: 'Race Org' },
-      'admin',
+      role,
     );
 }

@@ -27,12 +27,13 @@ import {
   saveUserEnsuringOrgRetainsAdmin,
 } from '../../src/modules/user_management/services/user-admin.service';
 import sinon from 'sinon';
+import { Logger } from '../../src/libs/services/logger.service';
 import { BadRequestError, ServiceUnavailableError } from '../../src/libs/errors/http.errors';
 import { setUserRepository, type UserRepository } from '../../src/libs/repositories/user';
 import { MongoUserRepository, adminLeaseTiming } from '../../src/libs/repositories/user/mongo';
 import { MongoOrgRepository } from '../../src/libs/repositories/org/mongo';
 import { adminInviter, withoutSideStores } from './admin-invite-race';
-import { deleteRace, gate, waitUntil, type DeleteOutcome, type DeleteRace } from './admin-delete-race';
+import { deleteRace, gate, parkAfter, waitUntil, type DeleteOutcome, type DeleteRace } from './admin-delete-race';
 import { createRace, type CreateOutcome, type CreateRace } from './admin-create-race';
 import { USER_PROMOTED_DURING_DELETE } from '../../src/modules/user_management/controller/users.controller';
 
@@ -314,6 +315,58 @@ describe('MongoDB code paths against a real MongoDB', function () {
         }
       }
       expect(ok).to.equal(1);
+    });
+
+    // A removed admin row is what a delete racing a promotion left behind. A restore grants nothing; only an admin
+    // invite promotes, within the cap and audited.
+    const removedAdmin = (orgId: string) =>
+      Users.create({ orgId, email: `gone-admin-${randomUUID().slice(0, 8)}@example.com`, fullName: 'Removed Admin', role: 'admin', isDeleted: true });
+
+    it(`a member invite brings a removed admin back as a member, with the org at ${MAX_ORG_ADMINS} admins`, async () => {
+      const orgId = await newOrg();
+      for (let i = 0; i < MAX_ORG_ADMINS; i += 1) await newUser(orgId, 'admin');
+      const gone = await removedAdmin(orgId);
+
+      await adminInviter(rsAvailable, 'member')(orgId, [gone.email]);
+
+      const back = await Users.findById(gone._id).lean();
+      expect([back?.isDeleted, back?.role]).to.deep.equal([false, 'member']);
+      expect(await adminCount(orgId)).to.equal(MAX_ORG_ADMINS);
+    });
+
+    it(`an admin invite of a removed admin still counts it: refused at ${MAX_ORG_ADMINS} admins, the account stays removed`, async () => {
+      const orgId = await newOrg();
+      for (let i = 0; i < MAX_ORG_ADMINS; i += 1) await newUser(orgId, 'admin');
+      const gone = await removedAdmin(orgId);
+
+      const refused = await adminInviter(rsAvailable)(orgId, [gone.email]).then(() => null, (error: unknown) => error);
+
+      expect(refused).to.be.instanceOf(BadRequestError);
+      expect((await Users.findById(gone._id).lean())?.isDeleted).to.equal(true);
+      expect(await adminCount(orgId)).to.equal(MAX_ORG_ADMINS);
+    });
+
+    it('an admin invite of a removed admin under the cap restores it, then promotes it with a role-change line', async () => {
+      const orgId = await newOrg();
+      await newUser(orgId, 'admin');
+      const gone = await removedAdmin(orgId);
+      const info = sinon.spy(Logger.prototype, 'info');
+      try {
+        await adminInviter(rsAvailable)(orgId, [gone.email]);
+        const events = info.getCalls().map((c) => c.args[0]).filter((e) => e === 'user.restore' || e === 'user.role.change');
+        expect(events).to.deep.equal(['user.restore', 'user.role.change']);
+      } finally {
+        info.restore();
+      }
+      expect((await Users.findById(gone._id).lean())?.role).to.equal('admin');
+      expect(await adminCount(orgId)).to.equal(2);
+    });
+
+    it('a restore of an address whose account is already live leaves its role alone', async () => {
+      const orgId = await newOrg();
+      const live = await newUser(orgId, 'admin');
+      await new MongoUserRepository().restoreByEmails(orgId, [live.email]);
+      expect((await Users.findById(live._id).lean())?.role).to.equal('admin');
     });
   });
 
@@ -701,6 +754,43 @@ describe('MongoDB code paths against a real MongoDB', function () {
       expect(demote).to.be.instanceOf(BadRequestError);
       expect(await adminCount(orgId)).to.equal(1);
     });
+
+    /** Removes `target` to the end while an admin invite of `email` is parked after `method`; returns what the invite answered. */
+    const removeDuringAdminInvite = async (
+      orgId: string, a: string, target: string, email: string, method: 'listByEmails' | 'restoreByEmails',
+    ) => {
+      const park = parkAfter(new MongoUserRepository(), method);
+      const inviting = adminInviter(rsAvailable)(orgId, [email]);
+      await park.reached;
+      const del = race.start(orgId, a, target);
+      await del.parked;
+      del.release();
+      expect((await del.done).status).to.equal('deleted');
+      park.release();
+      return inviting;
+    };
+
+    it('an admin invite that read a pending member before their removal still answers, and leaves them a removed member', async () => {
+      const orgId = await newOrg();
+      const a = String((await newUser(orgId, 'admin'))._id);
+      const p = await newUser(orgId, 'member');
+      expect(await removeDuringAdminInvite(orgId, a, String(p._id), p.email, 'listByEmails')).to.be.an('object');
+      expect(await Users.findById(p._id).lean()).to.include({ role: 'member', isDeleted: true });
+      expect(await adminCount(orgId)).to.equal(1);
+    });
+
+    // Standalone only: on a replica set the removal waits on the grant's transaction, which holds the restored row.
+    if (!rsAvailable) {
+      it('an account the admin invite restored, removed again before the grant, stays a removed member', async () => {
+        const orgId = await newOrg();
+        const a = String((await newUser(orgId, 'admin'))._id);
+        const r = await newUser(orgId, 'member');
+        await new MongoUserRepository().markDeleted(orgId, String(r._id), { signedOut: true });
+        expect(await removeDuringAdminInvite(orgId, a, String(r._id), r.email, 'restoreByEmails')).to.be.an('object');
+        expect(await Users.findById(r._id).lean()).to.include({ role: 'member', isDeleted: true });
+        expect(await adminCount(orgId)).to.equal(1);
+      });
+    }
 
     if (rsAvailable) {
       it('a removal sent while the promotion is still uncommitted waits for it, then keeps the new admin', async () => {

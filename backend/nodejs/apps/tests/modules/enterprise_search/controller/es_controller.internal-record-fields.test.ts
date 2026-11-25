@@ -30,6 +30,8 @@ const INTERNAL = {
   failedAt: 1_700_000_100_000,
   indexingAttempts: 2,
   pageCount: 12,
+  indexedMd5: '0123456789abcdef0123456789abcdef',
+  pendingTaxonomyRefs: [{ id: 'c1', type: 'category' }],
   republishCount: 3,
   pendingVirtualRecordId: 'vrid-replacement',
   indexedParser: 'inproc:txt@1',
@@ -167,7 +169,8 @@ describe('records in search responses and history carry no internal field', () =
   it('POST /search without saving returns none', async () => {
     aiAnswers(searchData())
     const r = res()
-    await controller.search(appConfig)(req({ body: { query: 'q', limit: 10, saveHistory: false } }), r, sinon.stub())
+    const next = sinon.stub()
+    await controller.search(appConfig)(req({ body: { query: 'q', limit: 10, saveHistory: false } }), r, next)
     expect(leaked(r.json.firstCall.args[0].searchResponse)).to.deep.equal([])
   })
 
@@ -175,7 +178,8 @@ describe('records in search responses and history carry no internal field', () =
     aiAnswers({})
     useRepository({ findVisible: async () => savedSearch() as any })
     const r = res()
-    await controller.getSearchById(appConfig)(req(), r, sinon.stub())
+    const next = sinon.stub()
+    await controller.getSearchById(appConfig)(req(), r, next)
 
     const [out] = r.json.firstCall.args[0]
     expect(JSON.parse(out.records['rec-1'])).to.deep.equal(KEPT)
@@ -186,7 +190,8 @@ describe('records in search responses and history carry no internal field', () =
     aiAnswers({})
     useRepository({ listVisible: async () => ({ rows: [savedSearch() as any], total: 1 }) })
     const r = res()
-    await controller.searchHistory(appConfig)(req(), r, sinon.stub())
+    const next = sinon.stub()
+    await controller.searchHistory(appConfig)(req(), r, next)
 
     const [out] = r.json.firstCall.args[0].searchHistory
     expect(JSON.parse(out.records['rec-1'])).to.deep.equal(KEPT)

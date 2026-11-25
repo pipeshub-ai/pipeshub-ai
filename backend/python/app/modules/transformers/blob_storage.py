@@ -883,11 +883,7 @@ async def get_shared_signed_url_cache(config_service: Any, logger: Any) -> ISign
         client = None
         try:
             cfg = await config_service.get_redis_config()
-            provider = get_redis_provider(
-                RedisConnectionConfig.from_host_port(
-                    host=cfg.host, port=cfg.port, password=cfg.password, db=cfg.db, tls=cfg.tls
-                )
-            )
+            provider = get_redis_provider(RedisConnectionConfig.for_cache(cfg))
             client = provider.create_client(
                 ClientOptions(
                     decode_responses=True,
@@ -929,11 +925,7 @@ async def _record_redis_client(config_service: Any, logger: Any) -> "tuple[Any, 
         client = None
         try:
             cfg = await config_service.get_redis_config()
-            provider = get_redis_provider(
-                RedisConnectionConfig.from_host_port(
-                    host=cfg.host, port=cfg.port, password=cfg.password, db=cfg.db, tls=cfg.tls
-                )
-            )
+            provider = get_redis_provider(RedisConnectionConfig.for_cache(cfg))
             client = provider.create_client(
                 ClientOptions(
                     decode_responses=False,
@@ -3314,6 +3306,61 @@ class BlobStorage(Transformer):
 
         return resolved
 
+    async def read_stored_prefix(
+        self, virtual_record_id: str, org_id: str, max_bytes: int
+    ) -> tuple[bytes, int | None] | None:
+        """The first ``max_bytes`` of a stored record's document and its total size, read with one ranged request and
+        never decoded, so a very large record costs ``max_bytes`` and not its size.
+
+        None when there is no stored document, or the gateway answers inline instead of with a signed URL (there is no
+        range to read then): local storage does, and its answer is the whole record, which is not downloaded here.
+        Raises on a storage failure."""
+        headers, nodejs_endpoint, storage_type = await self._get_auth_and_config(org_id)
+        if storage_type == "local":
+            return None
+        lookup = await self.get_document_id_by_virtual_record_id(virtual_record_id)
+        document_id = (lookup or {}).get("record_doc_id")
+        if not document_id:
+            return None
+        session = get_shared_session()
+        download_url = f"{nodejs_endpoint}{Routes.STORAGE_DOWNLOAD.value.format(documentId=document_id)}"
+
+        async def read(url: str) -> tuple[bytes, int | None]:
+            async with session.get(URL(url, encoded=True), headers={"Range": f"bytes=0-{max_bytes - 1}"}) as response:
+                if response.status not in (HttpStatusCode.SUCCESS.value, HttpStatusCode.PARTIAL_CONTENT.value):
+                    raise _storage_status_error(
+                        response.status, f"Failed to read a stored record prefix: status {response.status}"
+                    )
+                total: int | None = None
+                content_range = response.headers.get("Content-Range", "")
+                if "/" in content_range and content_range.rsplit("/", 1)[-1].isdigit():
+                    total = int(content_range.rsplit("/", 1)[-1])
+                elif response.headers.get("Content-Length", "").isdigit() and response.status == HttpStatusCode.SUCCESS.value:
+                    total = int(response.headers["Content-Length"])
+                chunks: list[bytes] = []
+                remaining = max_bytes
+                while remaining > 0:
+                    chunk = await response.content.read(min(remaining, 1 << 20))
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                    remaining -= len(chunk)
+                return b"".join(chunks), total
+
+        cached = await self._cached_signed_url(org_id, document_id)
+        if cached:
+            try:
+                return await read(cached)
+            except Exception as error:
+                # An expired or revoked cached URL: ask the gateway for a fresh one once, as the stored-record reader does.
+                self.logger.debug("Cached signed URL failed for %s, re-signing: %s", document_id, error)
+        data = await self._fetch_record_envelope(session, download_url, headers, virtual_record_id)
+        url = data.get("signedUrl")
+        if not url:
+            return None
+        await self._store_signed_url(org_id, document_id, url)
+        return await read(url)
+
     async def get_record_from_storage(
         self,
         virtual_record_id: str,
@@ -4304,6 +4351,51 @@ class BlobStorage(Transformer):
         public_base_url = await self._get_public_download_base_url()
         version_query = f"?version={version}" if version is not None else ""
         return f"{public_base_url}{Routes.KB_STREAM_RECORD.value.format(recordId=record_id)}{version_query}"
+
+    async def read_binary_from_storage(
+        self,
+        org_id: str,
+        document_id: str,
+        *,
+        version: int | None = None,
+    ) -> bytes:
+        """Read raw bytes through the tenant-scoped internal storage API.
+
+        This is the provider-neutral read counterpart to
+        :meth:`save_binary_to_storage`. The Node storage controller sends the
+        raw bytes (main #4398); a Node from before that sent a JSON-serialized
+        Buffer, still accepted while a rollout mixes versions. Callers must
+        still verify the returned bytes against their immutable content ref.
+        """
+        headers, nodejs_endpoint, _storage_type = await self._get_auth_and_config(org_id)
+        version_query = f"?version={version}" if version is not None else ""
+        url = (
+            f"{nodejs_endpoint}{Routes.STORAGE_BUFFER.value.format(documentId=document_id)}"
+            f"{version_query}"
+        )
+        async with _borrowed_session() as session:
+            async with session.get(url, headers=headers) as response:
+                if response.status != HttpStatusCode.SUCCESS.value:
+                    await response.read()
+                    # Typed by status: a 5xx is an outage the caller may wait out, a 404 is gone for good.
+                    raise _storage_status_error(
+                        response.status,
+                        f"Failed to read binary object {document_id} (status: {response.status})",
+                    )
+                raw = await response.read()
+                content_type = response.headers.get("Content-Type", "").lower()
+
+        if "application/json" not in content_type:
+            return raw
+        payload = json.loads(raw)
+        if isinstance(payload, dict) and payload.get("type") == "Buffer":
+            payload = payload.get("data")
+        if not isinstance(payload, list) or any(
+            not isinstance(value, int) or isinstance(value, bool) or value < 0 or value > 255
+            for value in payload
+        ):
+            raise Exception(f"Storage returned an invalid binary object for {document_id}")
+        return bytes(payload)
 
     async def get_direct_upload_url(self, org_id: str, document_id: str) -> str:
         """Signed PUT URL for an EXISTING document — the first phase of the

@@ -7,13 +7,13 @@ take a few seconds on an unbudgeted renderer; at depth 30 they would not finish.
 from __future__ import annotations
 
 import base64
-import contextlib
 import time
 
 import pytest
 
 from app.exceptions.indexing_exceptions import DocumentProcessingError
 from app.modules.parsers.image_parser import svg_worker
+from tests.unit.modules.parsers.test_svg_worker import record_deadlines
 
 NS = 'xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"'
 
@@ -82,13 +82,22 @@ DEADLINE = 2.0
 
 
 @pytest.mark.parametrize("name", sorted(CASES))
-def test_an_svg_under_the_counts_is_still_bounded(name: str) -> None:
+def test_an_svg_under_the_counts_is_still_bounded(name: str, monkeypatch: pytest.MonkeyPatch) -> None:
     """These pass the static counts by design; only the renderer's deadline bounds
-    them. The render runs in a child process, so this is wall-clock time: the
-    parent's own CPU time would stay near zero however long the child ran."""
+    them. The render runs in a child process, so its duration here also holds whatever
+    kept either process off the CPU; what is asserted is that the parent waited only
+    until the deadline it set."""
     svg = CASES[name]
     assert len(svg) < 1_000_000
-    start = time.monotonic()
-    with contextlib.suppress(DocumentProcessingError):
-        svg_worker.run_bounded(base64.b64encode(svg.encode()).decode(), timeout=DEADLINE)
-    assert time.monotonic() - start < DEADLINE + 1.0
+    applied = record_deadlines(monkeypatch)
+    encoded = base64.b64encode(svg.encode()).decode()  # before the deadline is set, so encoding uses none of it
+    deadline = time.monotonic() + DEADLINE
+    error: DocumentProcessingError | None = None
+    try:
+        svg_worker.run_bounded(encoded, deadline=deadline)
+    except DocumentProcessingError as refused:
+        error = refused
+    if applied:
+        assert set(applied) == {deadline}, (applied, deadline)
+    else:
+        assert error is not None and "before it started" in str(error), error

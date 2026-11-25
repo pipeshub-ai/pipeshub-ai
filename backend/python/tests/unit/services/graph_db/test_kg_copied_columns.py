@@ -34,8 +34,10 @@ COUNTS = "python/app/services/graph_db/postgres/kg/counts.py"
 ALLOWED = {
     (LISTING, "record_type"),                                                       # the listing's filter: a connector kg serves only
     ("python/app/services/graph_db/postgres/kg/verify.py", "*"),                    # the verify compares the whole row with the graph: what must see the difference
-    (COUNTS, "record_type"), (COUNTS, "origin"),                                    # the seed's recount of the counters' facet 2, which nothing serves to a viewer
     ("db/versions/kg/0015_counts.sql", "*"),                                        # the counter trigger takes each changed row whole; its facet keys are read as the line above says
+    # a grant's parent_held and the chain-top rows read the rule: both are read for a connector kg serves only (a row written without its rule takes the connector off the
+    # readers), and the projection that writes the rule again refreshes the marks below it, which the verify compares with the rows
+    ("python/app/services/graph_db/postgres/kg/grant_marks.py", "rule"),
 }
 # (source, tag or start of the statement): statements that name kg.records and that sqlglot does not parse, with the reason they need no reading
 UNPARSED: dict[tuple[str, str], str] = {}
@@ -500,8 +502,9 @@ def hierarchy_statements() -> list[str]:
 
 
 def counts_statements() -> list[str]:
-    """The counters' recount: composed once, at import, from the listing's own predicates."""
-    return [importlib.import_module("app.services.graph_db.postgres.kg.counts").RECOUNT]
+    """The counters' recount and their check: composed once, at import, from the listing's own predicates."""
+    counts = importlib.import_module("app.services.graph_db.postgres.kg.counts")
+    return [counts.RECOUNT, counts.DRIFT]
 
 
 TRASH = "python/app/services/graph_db/postgres/kg/trash.py"
@@ -513,7 +516,16 @@ def trash_statements() -> list[str]:
     return [t.PAGE, t.COUNT]
 
 
-RENDERED = {LISTING: listing_statements, HIERARCHY: hierarchy_statements, COUNTS: counts_statements, TRASH: trash_statements}
+KB_ROOT = "python/app/services/graph_db/postgres/kg/kb_root.py"
+
+
+def kb_root_statements() -> list[str]:
+    """A knowledge base's root over the typed graph's candidates: composed once, at import, from the module's seek builders."""
+    k = importlib.import_module("app.services.graph_db.postgres.kg.kb_root")
+    return [k.FOLDERS, k.RECORDS]
+
+
+RENDERED = {LISTING: listing_statements, HIERARCHY: hierarchy_statements, COUNTS: counts_statements, TRASH: trash_statements, KB_ROOT: kb_root_statements}
 
 
 def sources() -> dict[str, tuple[list[str], list[str]]]:
@@ -678,8 +690,9 @@ def test_a_module_s_constants_fill_its_f_strings_and_a_computed_statement_is_nam
 
 
 def test_a_run_of_comments_is_scanned_in_linear_time() -> None:
-    import time
-    t0 = time.perf_counter()
-    assert not _starts_statement("/*" + "*//*" * 5000) and not reads(["/*" + "*//*" * 5000])
-    assert _starts_statement("/* a */ /* b */ SELECT 1") and not _starts_statement("/* never closed SELECT 1")
-    assert time.perf_counter() - t0 < 1.0
+    from tests.support.cpu_budget import thread_cpu
+
+    with thread_cpu() as cpu:
+        assert not _starts_statement("/*" + "*//*" * 5000) and not reads(["/*" + "*//*" * 5000])
+        assert _starts_statement("/* a */ /* b */ SELECT 1") and not _starts_statement("/* never closed SELECT 1")
+    assert cpu.seconds < 1.0

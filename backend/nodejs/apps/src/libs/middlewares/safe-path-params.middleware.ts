@@ -1,6 +1,7 @@
 import { NextFunction, Request, Response, Router } from 'express';
 import { BadRequestError } from '../errors/http.errors';
 import { bindLogContext, LogContextFields } from '../context/request-context';
+import { isShownId } from '../services/logger.service';
 
 // Express has already percent-decoded path params. Pasted into another
 // service's URL, `/` and `\` add path segments, `?` and `#` end the path,
@@ -43,9 +44,13 @@ export const guardPathParams = (router: Router, ...names: string[]): void => {
   }
 };
 
+// A name as a log line may show it (`SHAREPOINT ONLINE`): never an email, a path or encoded text.
+const SHOWN_NAME = /^[A-Za-z0-9 _.:-]{1,128}$/;
+
 /**
  * Names the path's ids on every line of the request (the call, error and access
  * lines). Register after `guardPathParams`, so only a checked segment is bound.
+ * This runs before validation, so a field takes only an id-shaped (`_id`) or name-shaped value.
  */
 export const bindPathLogFields = (
   router: Router,
@@ -55,7 +60,9 @@ export const bindPathLogFields = (
     router.param(
       param,
       (_req: Request, _res: Response, next: NextFunction, value: string) => {
-        bindLogContext({ [key]: value });
+        if (key.endsWith('_id') ? isShownId(value) : SHOWN_NAME.test(value)) {
+          bindLogContext({ [key]: value });
+        }
         next();
       },
     );

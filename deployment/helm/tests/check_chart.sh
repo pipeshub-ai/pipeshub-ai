@@ -48,29 +48,41 @@ INGRESS=(
   --set 'ingress.hosts[0].paths[0].path=/'
   --set 'ingress.hosts[0].paths[0].pathType=Prefix'
 )
-LOCAL=(-f values-local.yaml)
+# The presets render the hardened profile here (ADR-OPS-07): their network graph is what netpol_check.py proves.
+# defaults-dind and compat-kafka-builtin-mongo render the compatibility default.
+LOCAL=(-f values-local.yaml --set hardened=true)
 EXTERNAL=(--set config.dockerHost=tcp://d:2375 --set persistence.accessModes={ReadWriteMany})
 
 # name, then the helm arguments for that variant. They come after SECRETS so a
 # variant can override one of them.
 VARIANTS=(
   "local-neo4j-kafka|${LOCAL[*]}"
-  "local-parsing|${LOCAL[*]} --set parsing.enabled=true --set parsing.replicas=3 --set parsing.maxConcurrent=2 --set parsing.clientConcurrency=8 --set-string parsing.nodeSelector.pool=parse --set parsing.tolerations[0].key=parse --set parsing.tolerations[0].operator=Exists --set parsing.extraEnv[0].name=PARSING_UVICORN_WORKERS --set-string parsing.extraEnv[0].value=4 --set parsing.extraEnv[1].name=extra-marker --set-string parsing.extraEnv[1].value=x"
+  "local-parsing|${LOCAL[*]} --set networkPolicy.enabled=false --set parsing.enabled=true --set parsing.replicas=3 --set parsing.maxConcurrent=2 --set parsing.clientConcurrency=8 --set-string parsing.nodeSelector.pool=parse --set parsing.tolerations[0].key=parse --set parsing.tolerations[0].operator=Exists --set parsing.extraEnv[0].name=PARSING_UVICORN_WORKERS --set-string parsing.extraEnv[0].value=4 --set parsing.extraEnv[1].name=extra-marker --set-string parsing.extraEnv[1].value=x"
   "local-parsing-netpol|${LOCAL[*]} --set parsing.enabled=true --set networkPolicy.enabled=true --set parsing.networkPolicy.extraIngress[0].from[0].namespaceSelector.matchLabels.team=monitoring --set parsing.networkPolicy.extraIngress[0].ports[0].port=8092"
   "local-redis-streams|${LOCAL[*]} --set messageBroker.type=redis"
   "local-arangodb|${LOCAL[*]} --set neo4j.enabled=false --set arango.enabled=true --set arango.auth.rootPassword=ci-arango"
   "local-etcd|${LOCAL[*]} --set etcd.enabled=true --set config.kvStoreType=etcd"
   "local-redis-cluster-external|${LOCAL[*]} --set redis.enabled=false --set redis.external.enabled=true --set redis.mode=cluster --set redis.external.clusterEndpoints=redis-0:6379 --set celery.brokerUrl=redis://celery:6379/0"
   "local-metrics|${LOCAL[*]}"
+  "local-postgres-exporter|${LOCAL[*]} --set postgresExporter.enabled=true --set postgresExporter.dataSource=pg.example:5432/pipeshub?sslmode=require --set postgresExporter.passwordSecret.name=pg-monitor"
   "local-metrics-bind|${LOCAL[*]} --set metrics.bind=0.0.0.0"
   "local-extras|${LOCAL[*]} --set networkPolicy.enabled=true ${INGRESS[*]}"
   "local-external-secrets|${LOCAL[*]} --set secretManagement.externalSecrets.enabled=true --set secretManagement.externalSecrets.secretStoreRef.name=vault --set secretManagement.externalSecrets.remoteRefs.secretKey=pipeshub/secret-key --set secretManagement.externalSecrets.remoteRefs.mongodbPassword=pipeshub/mongo --set secretManagement.externalSecrets.remoteRefs.redisPassword=pipeshub/redis --set secretManagement.externalSecrets.remoteRefs.neo4jPassword=pipeshub/neo4j"
   "local-existing-secrets|${LOCAL[*]} --set secretManagement.existingSecrets.enabled=true --set secretManagement.existingSecrets.appSecretName=pipeshub-app"
   "defaults-dind|--set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany}"
+  "hardened-dind|--set hardened=true --set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany} --set messageBroker.type=kafka --set mongodb.enabled=false --set mongodb.builtin.enabled=true"
+  "compat-kafka-builtin-mongo|--set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany} --set messageBroker.type=kafka --set mongodb.enabled=false --set mongodb.builtin.enabled=true"
+  "node-log-files|--set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany} --set logging.nodeFiles.enabled=true"
+  "broker-netpol|--set config.sandboxMode=broker --set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany} --set networkPolicy.enabled=true"
+  "broker-etcd|--set hardened=true --set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany} --set etcd.enabled=true --set config.kvStoreType=etcd"
+  "netpol-off|--set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany} --set networkPolicy.enabled=false"
+  "hpa-event-loop|--set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany} --set monitoring.serviceMonitor.enabled=true --set autoscaling.eventLoopUtilization.enabled=true"
+  "harness-metrics|--set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany} --set metrics.harness.enabled=true --set metrics.harness.remoteWrite.url=http://prometheus.monitoring:9090/api/v1/write --set metrics.harness.remoteWrite.peers[0].namespaceSelector.matchLabels.kubernetes\\.io/metadata\\.name=monitoring --set metrics.harness.remoteWrite.bearerTokenSecret.name=prom-rw --set metrics.harness.remoteWrite.bearerTokenSecret.key=token"
+  "legacy-docker-dind|--set hardened=true --set config.sandboxMode=docker --set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany}"
   "dind-run-cap|--set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany} --set config.sandboxMaxRunTimeoutS=900"
   "dind-live-off|--set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany} --set sandbox.dind.liveLimit.enabled=false"
   "dind-live-tuned|--set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany} --set sandbox.dind.liveLimit.memHigh=0.85 --set sandbox.dind.liveLimit.cpuThrottle=0.3 --set sandbox.capacity.memoryOvercommit=2"
-  "cloud|-f values-cloud.yaml --set config.sandboxMode=e2b ${INGRESS[*]}"
+  "cloud|--set hardened=true -f values-cloud.yaml --set config.sandboxMode=e2b ${INGRESS[*]}"
   "external-daemon-2-pods|${EXTERNAL[*]} --set replicaCount=2 --set autoscaling.enabled=false"
   "external-daemon-max-total|${EXTERNAL[*]} --set replicaCount=2 --set autoscaling.enabled=false --set sandbox.capacity.maxTotal=10"
   "external-daemon-max-total-0|${EXTERNAL[*]} --set replicaCount=2 --set autoscaling.enabled=false --set sandbox.capacity.maxTotal=0"
@@ -80,9 +92,13 @@ VARIANTS=(
   "external-daemon-1-pod|${EXTERNAL[*]} --set replicaCount=1 --set autoscaling.enabled=false"
   "external-daemon-autoscaled|${EXTERNAL[*]} --set replicaCount=1 --set autoscaling.enabled=true --set autoscaling.maxReplicas=3"
   "eks|-f values-eks.yaml --set secretManagement.existingSecrets.enabled=true --set secretManagement.existingSecrets.appSecretName=pipeshub-ai-secrets --set config.frontendPublicUrl=https://pipeshub.example.com --set config.allowedOrigins=https://pipeshub.example.com ${INGRESS[*]}"
+  "eks-hardened|--set hardened=true -f values-eks.yaml --set secretManagement.existingSecrets.enabled=true --set secretManagement.existingSecrets.appSecretName=pipeshub-ai-secrets --set config.frontendPublicUrl=https://pipeshub.example.com --set config.allowedOrigins=https://pipeshub.example.com ${INGRESS[*]}"
+  "eks-single-az|--set hardened=true -f values-eks.yaml -f values-eks-single-az.yaml --set secretManagement.existingSecrets.enabled=true --set secretManagement.existingSecrets.appSecretName=pipeshub-ai-secrets --set config.frontendPublicUrl=https://pipeshub.example.com --set config.allowedOrigins=https://pipeshub.example.com ${INGRESS[*]} --set-string nodeSelector.topology\\.kubernetes\\.io/zone=us-east-1a --set-string mongodb.builtin.nodeSelector.topology\\.kubernetes\\.io/zone=us-east-1a --set-string redis.builtin.nodeSelector.topology\\.kubernetes\\.io/zone=us-east-1a --set-string qdrant.nodeSelector.topology\\.kubernetes\\.io/zone=us-east-1a --set-string neo4j.nodeSelector.topology\\.kubernetes\\.io/zone=us-east-1a --set redis.builtin.enabled=false --set redis.external.enabled=true --set redis.external.host=redis.example.internal --set redis.clientTls.enabled=true"
   "eks-parsing|-f values-eks.yaml --set parsing.enabled=true --set secretManagement.existingSecrets.enabled=true --set secretManagement.existingSecrets.appSecretName=pipeshub-ai-secrets --set config.frontendPublicUrl=https://pipeshub.example.com --set config.allowedOrigins=https://pipeshub.example.com ${INGRESS[*]}"
   "eks-single-az-parsing|-f values-eks.yaml -f values-eks-single-az.yaml --set parsing.enabled=true --set secretManagement.existingSecrets.enabled=true --set secretManagement.existingSecrets.appSecretName=pipeshub-ai-secrets --set config.frontendPublicUrl=https://pipeshub.example.com --set config.allowedOrigins=https://pipeshub.example.com ${INGRESS[*]} --set redis.builtin.enabled=false --set redis.external.enabled=true --set redis.external.host=redis.example.internal --set redis.clientTls.enabled=true"
-  "eks-single-az|-f values-eks.yaml -f values-eks-single-az.yaml --set secretManagement.existingSecrets.enabled=true --set secretManagement.existingSecrets.appSecretName=pipeshub-ai-secrets --set config.frontendPublicUrl=https://pipeshub.example.com --set config.allowedOrigins=https://pipeshub.example.com ${INGRESS[*]} --set-string nodeSelector.topology\\.kubernetes\\.io/zone=us-east-1a --set-string mongodb.builtin.nodeSelector.topology\\.kubernetes\\.io/zone=us-east-1a --set-string redis.builtin.nodeSelector.topology\\.kubernetes\\.io/zone=us-east-1a --set-string qdrant.nodeSelector.topology\\.kubernetes\\.io/zone=us-east-1a --set-string neo4j.nodeSelector.topology\\.kubernetes\\.io/zone=us-east-1a --set redis.builtin.enabled=false --set redis.external.enabled=true --set redis.external.host=redis.example.internal --set redis.clientTls.enabled=true"
+  "hardened-parsing|--set hardened=true --set parsing.enabled=true --set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany}"
+  "old-image-local|-f values-local.yaml --set hardened=false --set image.capabilities=none"
+  "old-image-hardened-dind|--set hardened=true --set image.capabilities=none --set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany}"
 )
 
 KUBECONFORM=(
@@ -129,15 +145,57 @@ expect() { # variant, grep -F pattern, "present" | "absent" [, only in the docum
     echo "ok $1: '$2' $3${4:+ in $4}"
   fi
 }
+# The security profile (ADR-OPS-07): default values render what the chart before the programme rendered, so a
+# `helm upgrade` changes nothing until the operator sets hardened=true (test_security_profile.py has the detail).
+if [[ -f "$OUT/compat-kafka-builtin-mongo.yaml" ]]; then
+  expect compat-kafka-builtin-mongo 'kind: NetworkPolicy' absent
+  expect compat-kafka-builtin-mongo 'readOnlyRootFilesystem: false' present
+  expect compat-kafka-builtin-mongo 'value: "docker"' present 'name: SANDBOX_MODE'
+  expect compat-kafka-builtin-mongo 'value: "false"' present 'name: PIPESHUB_HARDENED'
+  expect compat-kafka-builtin-mongo 'SASL_PLAINTEXT' absent
+  expect compat-kafka-builtin-mongo 'chown 999:999 /keyfile/keyfile' present
+fi
+if [[ -f "$OUT/hardened-dind.yaml" ]]; then
+  expect hardened-dind 'name: ci-pipeshub-ai-default-deny' present
+  expect hardened-dind 'readOnlyRootFilesystem: true' present
+  expect hardened-dind 'value: "broker"' present 'name: SANDBOX_MODE'
+  expect hardened-dind 'value: "true"' present 'name: PIPESHUB_HARDENED'
+  expect hardened-dind 'INTERNAL:SASL_PLAINTEXT,EXTERNAL:SASL_PLAINTEXT' present
+  expect hardened-dind 'chown 999:999 /keyfile/keyfile' absent
+fi
+# An image older than ai.pipeshub.capabilities (image.capabilities=none) gets what the upstream chart rendered for it:
+# SECRET_KEY as a variable, docker code execution and no broker even when hardened, the harness off.
+if [[ -f "$OUT/old-image-local.yaml" ]]; then
+  expect old-image-local 'name: SECRET_KEY_FILE' absent
+  expect old-image-local 'key: secret-key' present 'name: SECRET_KEY'
+  expect old-image-local 'mountPath: /run/secrets/pipeshub' absent
+  expect old-image-local 'value: "false"' present 'name: AGENT_HARNESS_WORKER_ENABLED'
+  expect old-image-hardened-dind 'value: "docker"' present 'name: SANDBOX_MODE'
+  expect old-image-hardened-dind 'name: ci-pipeshub-ai-sandbox-broker' absent
+  expect old-image-hardened-dind 'name: SECRET_KEY_FILE' absent
+  # This release's image (the default): the file form, the broker when hardened, the harness on.
+  expect local-neo4j-kafka 'name: SECRET_KEY_FILE' present
+  expect local-neo4j-kafka 'value: "true"' present 'name: AGENT_HARNESS_WORKER_ENABLED'
+  expect hardened-dind 'name: ci-pipeshub-ai-sandbox-broker' present
+fi
 if [[ -f "$OUT/local-metrics.yaml" ]]; then
   expect local-metrics 'kind: PodMonitor' absent
   expect local-metrics 'name: metrics' present
+  expect local-metrics 'name: node-metrics' present
   expect local-metrics 'name: PIPESHUB_METRICS_ENABLED' present
   expect local-metrics 'name: PIPESHUB_METRICS_BIND' present
   expect local-metrics 'fieldPath: status.podIP' present
   expect local-metrics-bind 'name: PIPESHUB_METRICS_BIND' present
   expect local-metrics-bind 'fieldPath: status.podIP' absent
   expect local-neo4j-kafka 'name: PIPESHUB_METRICS_PORT' present
+fi
+# The PostgreSQL exporter: nothing by default; enabled, its own pods (not selected by the main Deployment) log in as the monitoring role.
+if [[ -f "$OUT/local-postgres-exporter.yaml" ]]; then
+  expect local-neo4j-kafka 'postgres-exporter' absent
+  expect local-postgres-exporter 'app.kubernetes.io/name: pipeshub-ai-postgres-exporter' present 'name: ci-pipeshub-ai-postgres-exporter'
+  expect local-postgres-exporter 'value: "pipeshub_monitor"' present 'name: DATA_SOURCE_USER'
+  expect local-postgres-exporter 'name: "pg-monitor"' present 'name: DATA_SOURCE_PASS'
+  expect local-postgres-exporter 'kind: Service' present 'port: 9187'
 fi
 if [[ -f "$OUT/cloud.yaml" ]]; then
   # shellcheck disable=SC2016 # the literal template text, not an expansion
@@ -178,7 +236,7 @@ if [[ -f "$OUT/local-parsing.yaml" ]]; then
   expect local-neo4j-kafka 'PARSING_MAX_CONCURRENT' absent
   expect local-neo4j-kafka 'PARSING_SERVICE_CONCURRENCY' absent
 fi
-# The parsing pods' own NetworkPolicy: only with networkPolicy.enabled and parsing.enabled, selecting only the
+# The parsing pods' own NetworkPolicy: only with network policy on (networkPolicy.enabled, or hardened) and parsing.enabled, selecting only the
 # parsing pods, admitting the application's selector on the parsing port (and what extraIngress lists).
 netpol_check() { # rendered file, "present" | "absent"
   python3 - "$1" "$2" <<'PY' || failed=1
@@ -194,7 +252,8 @@ spec = parsing[0]["spec"]
 sel = spec["podSelector"]["matchLabels"]
 assert sel["app.kubernetes.io/name"].endswith("-parsing") and sel["pipeshub.ai/workload"] == "parsing", sel
 main = [d for d in docs if d is not parsing[0]]
-assert all(d["spec"]["podSelector"]["matchLabels"]["app.kubernetes.io/name"] != sel["app.kubernetes.io/name"] for d in main), "main policy selects parsing pods"
+# the default-deny policy (an empty selector under hardened) is the only one that may select every pod
+assert all(d["spec"]["podSelector"].get("matchLabels", {}).get("app.kubernetes.io/name") != sel["app.kubernetes.io/name"] for d in main), "main policy selects parsing pods"
 first = spec["ingress"][0]
 assert first["ports"] == [{"protocol": "TCP", "port": 8092}], first
 (source,) = first["from"]
@@ -256,11 +315,14 @@ if [[ -f "$OUT/eks.yaml" ]]; then
   expect eks 'pipeshubai/pipeshub-sandbox:0.8.0' present
   expect eks 'force-sigv4.js' absent
   # The image drops root itself with setpriv, which fails once capabilities are dropped.
-  expect eks 'runAsUser: 1000' present 'name: DOCKER_PROXY_UPSTREAM'
+  # eks runs the sandbox broker (no docker-proxy in the app pod), so check the app Deployment itself.
+  expect eks 'runAsUser: 1000' present 'name: NODE_LOG_FILES'
   expect local-neo4j-kafka 'force-sigv4.js' absent
   expect eks 'name: ci-mongodb-initiate-1' present
   expect eks 'helm.sh/hook' absent
-  expect eks 'cidr: 169.254.170.23/32' present
+  # The preset's policies follow `hardened` (ADR-OPS-07): an upgraded EKS release gets none, a hardened one the rules.
+  expect eks 'kind: NetworkPolicy' absent
+  expect eks-hardened 'cidr: 169.254.170.23/32' present
   expect eks 'name: DOCKER_HOST' present
   expect eks 'storageClassName: "gp3"' present
   # Neo4j is one pod. Qdrant is three. Count the StatefulSet replica lines by name.
@@ -303,9 +365,95 @@ if [[ -f "$OUT/eks-single-az.yaml" ]]; then
   expect eks-single-az 'app.kubernetes.io/instance: pipeshub-ai' absent
 fi
 
-# The DinD daemon must be reachable only through the policy proxy: no TCP
-# listener (pod containers share one network namespace), and its socket volume
-# mounted into dind and docker-proxy alone, never the app container.
+# MongoDB topology per preset: data-bearing members, arbiters, and the
+# connection string the app gets. Local is a single-node replica set; the
+# harness preset (cloud) and EKS are three data members with no arbiter, and
+# only arbiter-free sets get w=majority. The chart default keeps its PSA set.
+mongo_topology() { # variant, members, arbiters, "majority" | "no-majority"
+  local doc="$OUT/$1.yaml" got
+  [[ -f "$doc" ]] || return 0
+  got="$(python3 - "$doc" <<'PY'
+import sys, yaml
+members = arbiters = 0
+uri = rs_available = ""
+for doc in yaml.safe_load_all(open(sys.argv[1], encoding="utf-8")):
+    if not doc:
+        continue
+    name = doc.get("metadata", {}).get("name", "")
+    if doc.get("kind") == "StatefulSet" and name == "ci-mongodb":
+        members = doc["spec"]["replicas"]
+    if doc.get("kind") == "StatefulSet" and name == "ci-mongodb-arbiter":
+        arbiters = doc["spec"]["replicas"]
+    if doc.get("kind") == "Deployment" and name == "ci-pipeshub-ai":
+        for env in doc["spec"]["template"]["spec"]["containers"][0].get("env", []):
+            if env["name"] == "MONGO_URI":
+                uri = env.get("value", "")
+            if env["name"] == "REPLICA_SET_AVAILABLE":
+                rs_available = env.get("value", "")
+majority = "majority" if "w=majority" in uri else "no-majority"
+rs = "rs" if "replicaSet=rs0" in uri and rs_available == "true" else "no-rs"
+print(members, arbiters, majority, rs)
+PY
+)"
+  if [[ "$got" != "$2 $3 $4 rs" ]]; then
+    echo "!! $1: expected mongodb '$2 $3 $4 rs' (members arbiters write-concern replicaSet), got '$got'"; failed=1
+  else
+    echo "ok $1: mongodb $got"
+  fi
+}
+mongo_topology local-neo4j-kafka 1 0 majority
+mongo_topology local-arangodb 1 0 majority
+mongo_topology cloud 3 0 majority
+mongo_topology eks 3 0 majority
+mongo_topology defaults-dind 2 1 no-majority
+
+# D1: the Docker daemon (privileged DinD) lives in the sandbox-broker pod, never
+# in the app pods, unless the legacy sandboxMode=docker is chosen explicitly.
+sandbox_topology() { # variant, broker | docker [, --netpol]
+  local doc="$OUT/$1.yaml"
+  [[ -f "$doc" ]] || return 0
+  if python3 ../tests/sandbox_topology.py "$doc" "${@:2}"; then
+    echo "ok $1: sandbox daemon topology ${*:2}"
+  else
+    echo "!! $1: sandbox daemon topology ${*:2}"; failed=1
+  fi
+}
+# Unset config.sandboxMode follows `hardened` (ADR-OPS-07): docker by default, as before the broker; broker hardened.
+sandbox_topology defaults-dind docker
+sandbox_topology hardened-dind broker --netpol
+sandbox_topology broker-netpol broker --netpol
+sandbox_topology eks docker
+sandbox_topology eks-hardened broker --netpol
+sandbox_topology eks-single-az broker --netpol
+sandbox_topology legacy-docker-dind docker
+sandbox_topology broker-etcd broker --netpol
+
+# ADR-OPS-04 (SEC-D-09): every pod default-denied, and the allowed paths exactly
+# the expected ones; the broker reaches DNS, its KV port and public 443 only.
+netpol() { # variant [netpol_check.py flags]
+  local doc="$OUT/$1.yaml"
+  [[ -f "$doc" ]] || return 0
+  if python3 ../tests/netpol_check.py "$doc" "${@:2}"; then
+    echo "ok $1: network policy paths"
+  else
+    echo "!! $1: network policy paths"; failed=1
+  fi
+}
+for variant in local-neo4j-kafka local-redis-streams local-arangodb local-etcd local-redis-cluster-external \
+               local-extras hardened-dind broker-netpol broker-etcd legacy-docker-dind cloud; do
+  netpol "$variant"
+done
+netpol eks-hardened --pod-identity --allow-world-ingress 3001 8088
+netpol eks-single-az --pod-identity --allow-world-ingress 3001 8088
+[[ -f "$OUT/netpol-off.yaml" ]] && expect netpol-off 'kind: NetworkPolicy' absent
+# The component, not the word: the app pod names the broker's key (ADR-KEY-02) in every mode.
+[[ -f "$OUT/local-neo4j-kafka.yaml" ]] && expect local-neo4j-kafka 'app.kubernetes.io/component: sandbox-broker' absent
+[[ -f "$OUT/local-neo4j-kafka.yaml" ]] && expect local-neo4j-kafka '--oplogSize=1024' present
+# Legacy sandboxMode=docker: the app pod's DinD daemon must be reachable only
+# through the policy proxy: no TCP listener (pod containers share one network
+# namespace), and its socket volume mounted into dind and docker-proxy alone,
+# never the app container. (Broker mode: sandbox_topology above checks the
+# broker pod the same way.)
 check_docker_proxy() { # variant [expected SANDBOX_MAX_RUN_TIMEOUT_S, default 300]
   local doc="$OUT/$1.yaml"
   [[ -f "$doc" ]] || return 0
@@ -328,6 +476,12 @@ if env.get("DOCKER_PROXY_HOST") != "127.0.0.1":
 app_env = {e["name"]: e.get("value") for e in containers["pipeshub-ai"].get("env") or []}
 if app_env.get("DOCKER_HOST") != f"tcp://127.0.0.1:{env.get('DOCKER_PROXY_PORT')}":
     errors.append(f"app DOCKER_HOST {app_env.get('DOCKER_HOST')!r} is not the docker-proxy listener")
+# SEC-A-04: the proxy and the app share the app's credential; the proxy runs as no root.
+for name, holder in (("docker-proxy", env), ("pipeshub-ai", app_env)):
+    if "DOCKER_PROXY_TOKEN" not in holder:
+        errors.append(f"{name} lacks DOCKER_PROXY_TOKEN")
+if (containers["docker-proxy"].get("securityContext") or {}).get("runAsUser") in (None, 0):
+    errors.append("docker-proxy runs as root")
 # The proxy's reaper age follows the run-time cap, so both must get the same value.
 cap = sys.argv[2]
 if app_env.get("SANDBOX_MAX_RUN_TIMEOUT_S") != cap or env.get("SANDBOX_MAX_RUN_TIMEOUT_S") != cap:
@@ -346,7 +500,7 @@ check_docker_proxy defaults-dind
 check_docker_proxy dind-run-cap 900
 check_docker_proxy dind-live-off
 check_docker_proxy eks
-check_docker_proxy eks-single-az
+check_docker_proxy legacy-docker-dind
 
 # The code sandbox cap is sized from the dind sidecar's limits, passed in as
 # env; pods sharing an external daemon each take their share of it.
@@ -563,7 +717,9 @@ REFUSED=(
   "no qdrant api key|qdrant.apiKey is required|${LOCAL[*]} --set qdrant.apiKey="
   "placeholder qdrant api key|qdrant.apiKey must not use default placeholder 'api_key'|${LOCAL[*]} --set qdrant.apiKey=api_key"
   "default arango password|arango.auth.rootPassword must not use default placeholder 'root'|${LOCAL[*]} --set neo4j.enabled=false --set arango.enabled=true --set arango.auth.rootPassword=root"
-  "docker sandbox without a daemon|no Docker daemon is configured|--set persistence.accessModes={ReadWriteMany}"
+  "broker sandbox without a daemon|config.sandboxMode is \"broker\" but no Docker daemon is configured|--set hardened=true --set persistence.accessModes={ReadWriteMany}"
+  "default sandbox without a daemon, as before the broker|config.sandboxMode is \"docker\" but no Docker daemon is configured|--set persistence.accessModes={ReadWriteMany}"
+  "legacy docker sandbox without a daemon|config.sandboxMode is \"docker\" but no Docker daemon is configured|--set config.sandboxMode=docker --set persistence.accessModes={ReadWriteMany}"
   "dind without a memory limit|the code sandbox cap is sized from the dind limits|--set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany} --set sandbox.dind.resources.limits.memory=null"
   "dind without limits|the code sandbox cap is sized from the dind limits|--set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany} --set sandbox.dind.resources.limits=null"
   "live limit memHigh above memHard|memHigh must be below memHard|--set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany} --set sandbox.dind.liveLimit.memHigh=0.95 --set sandbox.dind.liveLimit.memHard=0.9"
@@ -595,12 +751,19 @@ REFUSED=(
   "neo4j community replicas|requires an Enterprise image|${LOCAL[*]} --set neo4j.replicaCount=2"
   "both mongodb charts|cannot both be true|--set mongodb.enabled=true --set mongodb.builtin.enabled=true --set persistence.enabled=false --set config.sandboxMode=local --set config.sandboxAllowLocal=true"
   "local sandbox without the dev flag|refuses it unless config.sandboxAllowLocal=true|${LOCAL[*]} --set config.sandboxAllowLocal=false"
+  "broker on an image without it|does not list sandbox-broker|--set config.sandboxMode=broker --set image.capabilities=none --set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany}"
+  "postgres exporter without a server|postgresExporter.dataSource is required|${LOCAL[*]} --set postgresExporter.enabled=true --set postgresExporter.passwordSecret.name=pg-monitor"
+  "postgres exporter name colliding with the app name|the postgres exporter name|${LOCAL[*]} --set postgresExporter.enabled=true --set postgresExporter.dataSource=pg.example:5432/pipeshub --set postgresExporter.passwordSecret.name=pg-monitor --set fullnameOverride=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-postgres-exporter"
+  "postgres exporter selector colliding with the app selector|the postgres exporter pods' application name|${LOCAL[*]} --set postgresExporter.enabled=true --set postgresExporter.dataSource=pg.example:5432/pipeshub --set postgresExporter.passwordSecret.name=pg-monitor --set nameOverride=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-postgres-exporter"
+  "postgres exporter without its password|postgresExporter.passwordSecret.name is required|${LOCAL[*]} --set postgresExporter.enabled=true --set postgresExporter.dataSource=pg.example:5432/pipeshub"
   "parsing name colliding with the app name|equals the main application's name|${LOCAL[*]} --set parsing.enabled=true --set nameOverride=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-parsing"
   "parsing object names colliding with the app names|equals the main application's name|${LOCAL[*]} --set parsing.enabled=true --set nameOverride=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-parsing"
   "parsing object names colliding, shorter override|equals the main application's name|${LOCAL[*]} --set parsing.enabled=true --set nameOverride=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-parsing"
   "external daemon shared by more pods than the capacity split allows|splits its capacity at most 64 ways|${EXTERNAL[*]} --set replicaCount=1 --set autoscaling.enabled=true --set autoscaling.maxReplicas=65"
   "run-time cap set through extraEnv|Set config.sandboxMaxRunTimeoutS instead|--set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany} --set extraEnv[0].name=SANDBOX_MAX_RUN_TIMEOUT_S --set-string extraEnv[0].value=900"
   "local sandbox with a string false flag|refuses it unless config.sandboxAllowLocal=true|${LOCAL[*]} --set-string config.sandboxAllowLocal=false"
+  "harness metrics with nowhere to write|needs metrics.harness.remoteWrite.url|--set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany} --set metrics.harness.enabled=true"
+  "event-loop autoscaling without metrics|needs metrics.enabled|--set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany} --set autoscaling.eventLoopUtilization.enabled=true --set metrics.enabled=false"
   "negative neo4j memory limit|neo4j.resources.limits.memory \"-8Gi\" is not a memory quantity|${LOCAL[*]} --set-string neo4j.resources.limits.memory=-8Gi"
   "neo4j memory limit with two suffixes|neo4j.resources.limits.memory \"8e3Gi\" is not a memory quantity|${LOCAL[*]} --set-string neo4j.resources.limits.memory=8e3Gi"
   "neo4j memory limit that is not a quantity|neo4j.resources.limits.memory \"lots\" is not a memory quantity|${LOCAL[*]} --set-string neo4j.resources.limits.memory=lots"

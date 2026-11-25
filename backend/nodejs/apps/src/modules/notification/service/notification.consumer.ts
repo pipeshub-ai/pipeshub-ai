@@ -5,6 +5,7 @@ import {
 import { Logger } from '../../../libs/services/logger.service';
 import { injectable, inject, optional } from 'inversify';
 import { isRetryableStoreError } from '../../../libs/repositories/errors';
+import { DuplicateEnvelope } from '../../../libs/context/envelope';
 import { NotificationService } from './notification.service';
 import { toBrokerMessage } from '../utils/notification-payload.resolver';
 import { ValidationError } from '../../../libs/errors/validation.error';
@@ -88,6 +89,8 @@ export class NotificationConsumer {
               redeliver = true;
               throw error;
             }
+            // Another delivery of the event stored it first: the consumer acknowledges this one.
+            if (error instanceof DuplicateEnvelope) throw error;
             // A refused event is the producer's fault (WARNING); anything else is ours.
             const level = error instanceof ValidationError ? 'warn' : 'error';
             this.logger[level]('Failed to process notification message', {
