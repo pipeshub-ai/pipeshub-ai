@@ -1005,6 +1005,7 @@ class LinearConnector(BaseConnector):
             async for users_list, _, _ in self._api.pages(
                 "users", ["users"], page_size=50,
                 fetch=lambda ds, first, after: ds.users(first=first, after=after, includeDisabled=True),
+                explicit_end=True,
             ):
                 for user in users_list:
                     # A row without an email may be anyone: an unidentified row.
@@ -1015,7 +1016,7 @@ class LinearConnector(BaseConnector):
             if self._stops_the_sync(e):
                 raise
             raise RuntimeError(f"Failed to fetch users: {e}") from e
-        # pages() raises when Linear says more follows without a way to continue, so a return is the end.
+        # pages() raises unless Linear says the list ends, so a return is the end.
         listing.finish()
 
         # Convert Linear users to AppUser objects
