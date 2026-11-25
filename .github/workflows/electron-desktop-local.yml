@@ -90,7 +90,7 @@ jobs:
             cache_path: ~/.cache/electron
           # GitHub's macOS arm64 runner (owner-approved): hdiutil is needed for the dmg.
           - name: macOS dmg (arm64)
-            os: macos-14
+            os: macos-15
             target: mac
             arch: arm64
             cache_path: ~/Library/Caches/electron

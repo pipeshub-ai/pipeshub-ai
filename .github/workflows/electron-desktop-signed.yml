@@ -15,7 +15,7 @@ permissions:
 jobs:
   package-signed:
     name: Package macOS dmg (arm64, signed)
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 60
     defaults:
       run:
