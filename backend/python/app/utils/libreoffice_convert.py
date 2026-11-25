@@ -21,8 +21,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from app.core.org_context import spawn_detached
-from app.core.org_context import spawn_in_request
+from app.core.org_context import spawn_detached, spawn_in_request
 from app.exceptions.indexing_exceptions import DocumentProcessingError
 from app.services.llm_gateway.limiter import CrossLoopSemaphore
 from app.services.parsing.interface import (
