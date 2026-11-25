@@ -464,8 +464,8 @@ async def test_every_trash_statement_is_answered_by_index_searches(pg_provider, 
     await _admin("DELETE FROM kg.graph_changes WHERE org_id = $1", org)        # what the rows above log is in kg already: page() reads the connector from kg
     with ctx(org):
         app = await pg_db.run(lambda tx: tx.fetchval("SELECT app_sk FROM kg.records WHERE org_id = $1 AND coll = 3 AND id = 'e'", org))
-    cases = {"page": (kg_trash.PAGE, [app, KB, org, False, None, None, 26, 25]), "page_after": (kg_trash.PAGE, [app, KB, org, True, 1790000000700, "pb-700", 26, 25]),
-             "count": (kg_trash.COUNT, [app, KB, org, False, None, None, 10001])}
+    cases = {"page": (kg_trash.PAGE, [app, False, None, None, 26, 25]), "page_after": (kg_trash.PAGE, [app, True, 1790000000700, "pb-700", 26, 25]),
+             "count": (kg_trash.COUNT, [app, False, None, None, 10001])}
     for state in ("fresh", "analysed"):
         if state == "analysed":
             await _admin("ANALYZE kg.records; ANALYZE graph.nodes; ANALYZE graph.edges")

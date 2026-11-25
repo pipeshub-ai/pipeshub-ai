@@ -152,12 +152,12 @@ class TestBothGraphBackends:
 
         async def neo(updates: dict[str, Any]) -> dict[str, Any]:
             neo4j.client.execute_query = AsyncMock(return_value=[{"n": {"id": "a1"}}])
-            assert await neo4j.update_agent("a1", updates, "u1", "o1") is True
+            assert await neo4j.update_agent("a1", updates, "u1", "org-1") is True
             return neo4j.client.execute_query.await_args.kwargs["parameters"]["updates"]
 
         async def aran(updates: dict[str, Any]) -> dict[str, Any]:
             arango.http_client.update_document = AsyncMock(return_value={"_key": "a1"})
-            assert await arango.update_agent("a1", updates, "u1", "o1") is True
+            assert await arango.update_agent("a1", updates, "u1", "org-1") is True
             return arango.http_client.update_document.await_args.args[2]
 
         for written in (await neo({"environment": ENVIRONMENT}), await aran({"environment": ENVIRONMENT})):

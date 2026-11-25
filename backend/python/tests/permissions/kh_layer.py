@@ -39,6 +39,7 @@ from app.connectors.sources.localKB.handlers.kh_search import search_page
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
 from . import oracle
+from .layers import world_org
 from .runner import OracleLayer
 
 if TYPE_CHECKING:
@@ -88,9 +89,10 @@ async def listing(layer: GraphCheckLayer, world: World, viewer: str, filters: di
     first = None
     totals: set[int] = set()
     for _ in range(MAX_PAGES):
-        page = await search_page(
-            layer._provider, user_key=ns.id(viewer), user_id=ns.id(viewer), org_id=ns.org, limit=PAGE,
-            filters=filters, cursor_token=token, secret=None)
+        with world_org(ns):
+            page = await search_page(
+                layer._provider, user_key=ns.id(viewer), user_id=ns.id(viewer), org_id=ns.org, limit=PAGE,
+                filters=filters, cursor_token=token, secret=None)
         first = first or page
         totals.add(page.total or 0)
         rows += [{**r, "id": ns.local(r["id"])} for r in page.rows]
@@ -309,9 +311,10 @@ async def children_of(
     )
 
     ns = await layer._ns(world)
-    page = await KnowledgeHubService(logging.getLogger("kh-layer"), layer._provider, _Config()).get_nodes(
-        user_id=ns.id(viewer), org_id=ns.org, parent_id=ns.id(node), parent_type=parent_type, limit=PAGE, sort_by="name", sort_order="asc",
-        only_containers=only_containers, flattened=flattened)
+    with world_org(ns):
+        page = await KnowledgeHubService(logging.getLogger("kh-layer"), layer._provider, _Config()).get_nodes(
+            user_id=ns.id(viewer), org_id=ns.org, parent_id=ns.id(node), parent_type=parent_type, limit=PAGE, sort_by="name", sort_order="asc",
+            only_containers=only_containers, flattened=flattened)
     return {ns.local(i.id): bool(i.hasChildren) for i in page.items} if _opened(page) else None
 
 
@@ -360,7 +363,8 @@ async def browse_pages(
                 "sort_by": "name", "sort_order": "asc", "include": ["counts"], "only_containers": only_containers}
         if cursor:
             args["cursor"] = cursor
-        page = await service.get_nodes(**args)
+        with world_org(ns):
+            page = await service.get_nodes(**args)
         if not _opened(page):
             return None
         items += page.items
@@ -390,13 +394,15 @@ async def counts_from_the_second_page(
     service = KnowledgeHubService(logging.getLogger("kh-layer"), layer._provider, _Config())
     args = {"user_id": ns.id(viewer), "org_id": ns.org, "parent_id": ns.id(node), "parent_type": parent_type, "limit": page_size,
             "sort_by": "name", "sort_order": "asc"}
-    first = await service.get_nodes(**args)
+    with world_org(ns):
+        first = await service.get_nodes(**args)
     assert first.success and first.counts is None, first.error
     items, cursor, pages = list(first.items), first.pagination.nextCursor, []
     for _ in range(MAX_PAGES):
         if not cursor:
             return items, pages
-        page = await service.get_nodes(**args, cursor=cursor, include=["counts"])
+        with world_org(ns):
+            page = await service.get_nodes(**args, cursor=cursor, include=["counts"])
         assert page.success, page.error
         items += page.items
         by_type = {labels[c.label]: c.count for c in page.counts.items}

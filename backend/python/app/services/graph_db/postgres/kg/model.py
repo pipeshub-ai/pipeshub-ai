@@ -27,7 +27,7 @@ HIERARCHY = ("PARENT_CHILD", "ATTACHMENT")
 EDGE_COLLS = ("permission", "belongsTo", "nodeRelations", "inheritPermissions", "userAppRelation", "authenticatedAs")
 LINK_HIERARCHY, LINK_GROUP, LINK_PARENT_CHILD = 1, 2, 3     # kg.links.kind; 3 (kg_0014): every PARENT_CHILD parent, the primary one too
 UAR = "@uar"                                                 # gtype of a userAppRelation row in kg.scope_members (a permission edge's gtype is its type)
-CODE_EPOCH = 11                                              # kg.projection_state.code_epoch this code writes after a verified backfill
+CODE_EPOCH = 12                                              # kg.projection_state.code_epoch this code writes after a verified backfill
 
 Key = tuple[str, str]                                        # (collection, id)
 
@@ -57,7 +57,7 @@ def hierarchy_edge(e: GEdge) -> bool:
 def edge_ends(coll: str, frm: Key, to: Key, doc: dict) -> set[Key]:
     """The end(s) of an edge whose kg rows depend on the edge: the same rule as the SQL function kg.edge_ends (a test holds them equal).
     A hierarchy link changes the child; belongs-to and inherits-permissions, the source; a grant, the node it is on or, for a membership of a group, role or team,
-    the member; a user-app link, the app; an authenticated-as link, the user."""
+    the member; a user-app link, the app; an authenticated-as link, the user; a record's isOfType link to a file, the record."""
     if coll == "nodeRelations":
         out = {to} if doc.get("relationshipType") in HIERARCHY else set()
     elif coll in ("belongsTo", "inheritPermissions", "authenticatedAs"):
@@ -66,6 +66,8 @@ def edge_ends(coll: str, frm: Key, to: Key, doc: dict) -> set[Key]:
         out = {to} if to[0] in RECORD_COLLS else {frm} if to[0] in GROUP_LIKE else {frm, to}
     elif coll == "userAppRelation":
         out = {to}
+    elif coll == "isOfType":
+        out = {frm} if frm[0] == "records" and to[0] == "files" else set()
     else:
         out = set()
     return {k for k in out if k[0] in COLL_CODE}
@@ -124,6 +126,7 @@ class Snapshot:
     has_children: set[Key] = field(default_factory=set)                       # record-like nodes (of those loaded) with at least one existing hierarchy child
     org: str = ""                                                             # the organization read; a node whose document names another is not listed
     accounts: set[Key] = field(default_factory=set)                           # the source accounts that grant a loaded node and exist (kg keys none of them)
+    files: dict[Key, list[dict | None]] = field(default_factory=dict)         # a focus record's isOfType targets in 'files', by id: the projected document, None when it is gone
 
     def leaf(self, k: Key) -> bool:
         """A record with no hierarchy children. Record groups and apps carry record-group-level literals whatever their children are, so never."""
@@ -162,6 +165,65 @@ def listing_ts(doc: dict, source: str, ingest: str) -> int | None:
     return _ms(v)
 
 
+# file_kind: what the file a record is typed as says of itself (``isFile`` as the listing's walk reads it, ``doc->>'isFile'``); NULL when the record is typed as no file document.
+KB_COLS = ("indexing_status", "connector_name", "doc_created_ms", "doc_updated_ms", "file_size", "file_kind", "kb_odd")     # w_kb_listing_set's columns
+FILE_DIR, FILE_FILE, FILE_OTHER, FILE_UNSAID = 0, 1, 2, 3
+KB_TEXT_MAX = 256       # the longest status or connector name w_kb_listing_set takes; a longer one is no value of the columns (kb_odd)
+
+
+class _Odd(Exception):
+    pass
+
+
+def _kb_num(v: object) -> int | None:
+    """A number a knowledge-base listing orders by (``doc->'x'``, a jsonb compared as jsonb), as the bigint that orders the same: absent is NULL; anything but a whole number in
+    int64 has no such bigint."""
+    if v is None:
+        return None
+    if isinstance(v, bool) or not isinstance(v, (int, float)) or (isinstance(v, float) and not v.is_integer()) or not -(2 ** 63) <= v < 2 ** 63:
+        raise _Odd
+    return int(v)
+
+
+def _kb_text(v: object, limit: int | None = None) -> str | None:
+    """A text a knowledge-base listing filters by (``doc->>'x'``): a string the column holds as it is; anything else reads differently from SQL and Python."""
+    if v is None:
+        return None
+    if not isinstance(v, str) or (limit is not None and len(v) > limit):
+        raise _Odd
+    return v
+
+
+def file_kind(f: dict | None) -> int | None:
+    if f is None:
+        return None
+    v = f.get("isFile")
+    return FILE_DIR if v is False or v == "false" else FILE_FILE if v is True or v == "true" else FILE_UNSAID if v is None else FILE_OTHER
+
+
+def kb_listing(doc: dict, files: list[dict | None], name: str | None) -> dict:
+    """The columns a knowledge base's folder listing and its trash's single-file view read (KbListingsMixin, kg/kb_folder.py, kg/trash.py), as the walk reads the record and the
+    file it is typed as: its status, connector name, own created and updated times, the file's kind and size. ``kb_odd``: a value these columns cannot hold as the walk reads it
+    (a time or a size that is not a whole number, a text field that is not a string, a name that is not the record's own, more than one file): the listing that meets the record
+    is the walk's.
+    shortcut: a JSON null time or size reads as absent (kg.proj_doc drops nulls); the walk orders a jsonb null before every number. The writers store numbers; a sampled comparison
+    that meets one takes the connector back to the walk."""
+    target = [f for f in files if f is not None]
+    out = {"indexing_status": None, "connector_name": None, "doc_created_ms": None, "doc_updated_ms": None, "file_size": None,
+           "file_kind": file_kind(target[0]) if len(target) == 1 else None, "kb_odd": False}
+    try:
+        if len(files) > 1 or _s(doc.get("recordName")) != name:
+            raise _Odd
+        for f in ("externalRecordId", "recordType", "origin"):
+            _kb_text(doc.get(f))
+        out |= {"indexing_status": _kb_text(doc.get("indexingStatus"), KB_TEXT_MAX), "connector_name": _kb_text(doc.get("connectorName"), KB_TEXT_MAX),
+                "doc_created_ms": _kb_num(doc.get("createdAtTimestamp")), "doc_updated_ms": _kb_num(doc.get("updatedAtTimestamp")),
+                "file_size": _kb_num(target[0].get("sizeInBytes")) if target else None}
+    except _Odd:
+        out = {**dict.fromkeys(out, None), "kb_odd": True}
+    return out
+
+
 def _rank_parent(snap: Snapshot, e: GEdge, app: str | None) -> tuple[int, int, int]:
     """Which hierarchy parent is the record's primary one: a PARENT_CHILD parent before an ATTACHMENT one, a parent in the record's own connector before one in
     another, then the lowest sk. The walk of the graph has no primary parent (it visits all of them); the others are in ``kg.links``, and whoever reads ``parent_sk``
@@ -172,7 +234,8 @@ def _rank_parent(snap: Snapshot, e: GEdge, app: str | None) -> tuple[int, int, i
 
 def record_row(k: Key, doc: dict, snap: Snapshot) -> dict:
     """The kg.records columns of a node (everything but the sk and the stamper's columns). ``w_records_upsert`` writes all but ``folder``, ``hide_children`` and ``alien``, which
-    ``w_listing_set`` writes, ``deleted_ms`` and ``delete_batch``, which ``w_trash_set`` writes, and ``pc_top``, which ``w_pc_top_set`` writes; the verify compares them all."""
+    ``w_listing_set`` writes, ``deleted_ms`` and ``delete_batch``, which ``w_trash_set`` writes, ``pc_top``, which ``w_pc_top_set`` writes, and the knowledge-base listing's
+    (:func:`kb_listing`), which ``w_kb_listing_set`` writes; the verify compares them all."""
     coll, nid = k
     app = app_id_of(k, doc)
     # the name a listing shows and sorts by: ``name`` first, then the record's or the group's own
@@ -204,6 +267,7 @@ def record_row(k: Key, doc: dict, snap: Snapshot) -> dict:
         "deleted_ms": _ms(doc.get("deletedAtTimestamp")), "delete_batch": _s(doc.get("deleteBatchId")),
         # a record with no PARENT_CHILD parent that is a record: what a knowledge base's root lists (KbListingsMixin), as its kind-3 links say
         "pc_top": coll == "records" and not any(e.frm[0] == "records" and e.doc.get("relationshipType") == "PARENT_CHILD" for e in parent_edges),
+        **(kb_listing(doc, snap.files.get(k, []), name) if coll == "records" else {**dict.fromkeys(KB_COLS, None), "kb_odd": False}),
         "_parents": parents[1:], "_groups": groups[1:],
         # the parents by a PARENT_CHILD relation, which the move guards follow (ATTACHMENT is a hierarchy parent too, but not one a folder move may cycle through)
         "_parent_child": sorted({snap.sk[e.frm] for e in parent_edges if e.doc.get("relationshipType") == "PARENT_CHILD"}),

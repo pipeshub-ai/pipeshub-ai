@@ -242,7 +242,8 @@ jobs:
         working-directory: backend/python
         run: |
           # the package does not always create "main" (the runner image already has PostgreSQL 16 configured), and the cluster that
-          # exists is on another port than 5432
+          # exists is on another port than 5432. Both switches at their default, enforce: key-value access by prefix (the migrated
+          # database) and the org context (tests/integration/pg_runtime/conftest.py also fails a test that counted a violation)
           PG_PORT="$("$GITHUB_WORKSPACE/scripts/ensure_pg_cluster.sh" "${{ matrix.pg }}")"
           eval "$(PG_ADMIN_URL="postgresql://postgres@127.0.0.1:${PG_PORT}/postgres" PREPARE_PG_PYTHON="$RUNNER_TEMP/migrate-venv/bin/python" "$GITHUB_WORKSPACE/scripts/prepare_pg_test_db.sh")"
           export REDIS_RUNTIME_TEST_URL=127.0.0.1:6379
@@ -250,19 +251,27 @@ jobs:
           python "$GITHUB_WORKSPACE/scripts/assert_no_skips.py" --collect "$RUNNER_TEMP/py-runtime.collected" "${args[@]}"
           python -m pytest "${args[@]}" --timeout=600 --junitxml="$RUNNER_TEMP/py-runtime-junit.xml"
 
-      - name: Python runtime stores with key-value access by prefix enforced
+      - name: Python runtime stores with key-value access by prefix in shadow, nothing outside a role's prefixes
         if: ${{ matrix.shard == 2 }}
         working-directory: backend/python
         run: |
-          # the same suite on a database migrated with PG_KV_ACCESS=enforce: the services' key prefixes must be enough for it
+          # the step above runs on the default, enforce, where a read outside a role's prefixes finds nothing instead of failing; in
+          # shadow every such access is admitted and written to the server log, so the same suite must log none. The one test that
+          # writes outside the kv role's prefixes on purpose (it checks the shadow behaviour) is left out.
           PG_PORT="$("$GITHUB_WORKSPACE/scripts/ensure_pg_cluster.sh" "${{ matrix.pg }}")"
-          eval "$(PG_KV_ACCESS=enforce PG_ADMIN_URL="postgresql://postgres@127.0.0.1:${PG_PORT}/postgres" PREPARE_PG_PYTHON="$RUNNER_TEMP/migrate-venv/bin/python" "$GITHUB_WORKSPACE/scripts/prepare_pg_test_db.sh" pipeshub_ci_kv_enforce)"
+          eval "$(PG_KV_ACCESS=shadow PG_ADMIN_URL="postgresql://postgres@127.0.0.1:${PG_PORT}/postgres" PREPARE_PG_PYTHON="$RUNNER_TEMP/migrate-venv/bin/python" "$GITHUB_WORKSPACE/scripts/prepare_pg_test_db.sh" pipeshub_ci_kv_shadow)"
           export REDIS_RUNTIME_TEST_URL=127.0.0.1:6379
-          args=(tests/integration/pg_runtime -m "not chaos" -p no:cacheprovider)
-          python "$GITHUB_WORKSPACE/scripts/assert_no_skips.py" --collect "$RUNNER_TEMP/py-runtime-enforce.collected" "${args[@]}"
-          python -m pytest "${args[@]}" --timeout=600 --junitxml="$RUNNER_TEMP/py-runtime-enforce-junit.xml"
-          # checked here, not in the job's last step: its node ids are the same as the shadow run's, so a set there would hide a missing run
-          python3 "$GITHUB_WORKSPACE/scripts/assert_no_skips.py" "$RUNNER_TEMP/py-runtime-enforce-junit.xml" --collected "$RUNNER_TEMP/py-runtime-enforce.collected"
+          log="/var/log/postgresql/postgresql-${{ matrix.pg }}-main.log"
+          before="$(sudo wc -l < "$log")"
+          args=(tests/integration/pg_runtime -m "not chaos" -k "not writes_only_while_access_by_prefix_is_in_shadow" -p no:cacheprovider)
+          python "$GITHUB_WORKSPACE/scripts/assert_no_skips.py" --collect "$RUNNER_TEMP/py-runtime-shadow.collected" "${args[@]}"
+          python -m pytest "${args[@]}" --timeout=600 --junitxml="$RUNNER_TEMP/py-runtime-shadow-junit.xml"
+          # checked here, not in the job's last step: its node ids are the same as the enforce run's, so a set there would hide a missing run
+          python3 "$GITHUB_WORKSPACE/scripts/assert_no_skips.py" "$RUNNER_TEMP/py-runtime-shadow-junit.xml" --collected "$RUNNER_TEMP/py-runtime-shadow.collected"
+          if sudo tail -n "+$((before + 1))" "$log" | grep "outside the role's prefixes"; then
+            echo "::error::a key-value access outside a service role's prefixes (above): grant it in platform.kv_may or stop the access"
+            exit 1
+          fi
 
       - name: Python runtime window store as the indexing service, key-value access by prefix enforced
         if: ${{ matrix.shard == 2 }}

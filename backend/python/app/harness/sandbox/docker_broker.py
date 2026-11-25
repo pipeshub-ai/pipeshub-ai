@@ -46,6 +46,7 @@ from app.harness.sandbox.docker_policy import (
     unsafe_runsc_args,
 )
 from app.harness.sandbox.image_binaries import TMPFS, DockerImageBinaryReader
+from harness_core.archive_reader import COMPRESSED_TAR_MAGIC
 from harness_core.engines.binary import ImageBinaryVerifier, vouched_binaries
 from harness_core.failpoints import afailpoint
 from harness_core.logs import HarnessLog
@@ -2487,6 +2488,11 @@ def _strip_top(chunks: Iterator[bytes], out: IO[bytes], *, max_bytes: int = MAX_
             if size > max_bytes:
                 raise InvalidSandboxRequest(f"archive exceeds {max_bytes} bytes")
             _ = source.write(chunk)
+        _ = source.seek(0)
+        # Read as plain tar, a compressed stream's bytes can pass tar's header checksum (about 1 in 450 gzip mtimes), so
+        # the signature is checked first and the stream refused, not skipped through.
+        if source.read(6).startswith(COMPRESSED_TAR_MAGIC):
+            raise tarfile.ReadError("a compressed archive is refused, not inflated")
         _ = source.seek(0)
         with tarfile.open(fileobj=source, mode="r|") as reader, tarfile.open(fileobj=out, mode="w") as writer:
             links: set[str] = set()
