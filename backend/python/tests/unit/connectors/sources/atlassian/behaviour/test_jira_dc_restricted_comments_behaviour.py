@@ -18,6 +18,7 @@ from atlassian_behaviour_fakes import (
     AtlassianApiStub,
     FakeCheckpointStore,
     json_response,
+    run_full_sync,
 )
 from test_jira_dc_sync_behaviour import (  # the stub site and fakes the sync tests use
     API,
@@ -30,7 +31,7 @@ from test_jira_dc_sync_behaviour import (  # the stub site and fakes the sync te
     ts,
 )
 
-from app.config.constants.arangodb import AccessRule
+from app.config.constants.arangodb import AccessRule, CollectionNames
 from app.connectors.sources.atlassian.jira_data_center import connector as dc
 from app.models.entities import CommentRecord, RecordType
 from app.models.permission import EntityType
@@ -674,3 +675,23 @@ async def test_a_group_that_is_not_stored_keeps_its_comment_on_the_retry_list(si
     await connector.run_sync()
 
     assert to_retry(store) == ["1001"]
+
+
+async def test_a_full_sync_keeps_the_comment_records_of_an_issue_it_closed_for_failing_to_build(
+    site, db, store, search,
+) -> None:
+    """An issue whose build fails is closed and kept by a full sync, and so are its restricted comments: they read
+    through it (``PARENT_AND_GRANT``), so they are hidden with it, and the next sync writes both again."""
+    search.add("ENG", 0, [with_comments(ts(2), [comment("501", group="devs")])])
+    connector, _ = await make_connector(db, store)
+    await connector.run_sync()
+    comment_id = comment_records(db)["comment_501"].id
+    store.sync_points.clear()  # a full sync's prep
+    db.kept_records.clear()
+    db.fail_lookup_for = {"1001"}
+
+    graph = await run_full_sync(connector, db)
+
+    assert tickets(db)["1001"].access_rule == AccessRule.RESTRICTED and db.record_permissions["1001"] == []
+    seen = graph.unlink_nodes_missed_by_full_sync.await_args.args[1][CollectionNames.RECORDS.value]
+    assert "comment_501" in seen or comment_id in db.kept_records, "the comment record keeps its edges"

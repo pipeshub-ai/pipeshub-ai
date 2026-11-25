@@ -818,10 +818,11 @@ class JiraDataCenterConnector(BaseConnector):
         """Note this project's stored records as seen by a full sync in progress: its issues
         could not be read, so they stay as stored and must survive the unlink after it. So does
         the project's record group, even with no grants of its own, for the records' links into it.
-        With ``issue_ids``, only those issues and the files filed under them, soft-deleted ones too (a restored issue must
-        come back with its edges): their sub-tasks are written when still in Jira. Those of them in ``close`` (whose build
-        failed) are first stored closed, as their access was not read again (``close_kept_issues``); one that cannot be
-        closed is not kept, nor are its files, so the unlink takes their edges."""
+        With ``issue_ids``, only those issues and the files and restricted comments filed under them, soft-deleted ones
+        too (a restored issue must come back with its edges): their sub-tasks are written when still in Jira. Those of
+        them in ``close`` (whose build failed) are first stored closed, as their access was not read again
+        (``close_kept_issues``); one that cannot be closed is not kept, nor is anything under it, so the unlink takes
+        their edges. A kept comment reads through its closed issue (``PARENT_AND_GRANT``), so no one reads it either."""
         await self.data_entities_processor.note_kept_record_group(self.connector_id, project_id)
         page_size = 1000
         after_key: Optional[str] = None
@@ -839,7 +840,8 @@ class JiraDataCenterConnector(BaseConnector):
                 stored += [
                     record for record in page
                     if record.external_record_id in issue_ids
-                    or (record.parent_external_record_id in issue_ids and record.record_type == RecordType.FILE)
+                    or (record.parent_external_record_id in issue_ids
+                        and record.record_type in (RecordType.FILE, RecordType.COMMENT))
                 ]
             if len(page) < page_size:
                 break
