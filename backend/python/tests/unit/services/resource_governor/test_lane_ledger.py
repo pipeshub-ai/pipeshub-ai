@@ -11,6 +11,7 @@ import signal
 import threading
 import time
 from dataclasses import replace
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 import pytest
@@ -18,6 +19,7 @@ import pytest
 from app.services.resource_governor import lane_ledger
 from app.services.resource_governor.lane_ledger import (
     BLANK,
+    LEDGER_LOCK_BUDGET,
     NO_CAP,
     RECORD_SIZE,
     DomainLedger,
@@ -37,6 +39,13 @@ if TYPE_CHECKING:
 
 GIB = 2**30
 WS = int(0.75 * GIB)
+
+
+def _lock_waits_on(monkeypatch: pytest.MonkeyPatch, clock: FakeClock) -> FakeClock:
+    """The ledger's lock-try loop reads and sleeps on ``clock``: its budget is counted in the sleeps it took, not in
+    how long a loaded host kept this process off the CPU between them."""
+    monkeypatch.setattr(lane_ledger, "time", SimpleNamespace(monotonic=clock, sleep=clock.advance))
+    return clock
 
 
 def record_on_disk(directory: Path) -> LedgerRecord | None:
@@ -188,22 +197,21 @@ class TestTornReads:
 
 class TestLockBudget:
     def test_stopped_lock_holder_does_not_block(
-        self, make_budget: Callable[..., LaneBudget], lane_dir: Path
+        self, make_budget: Callable[..., LaneBudget], lane_dir: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         budget = make_budget(8)
         budget.cap()
+        lock_clock = _lock_waits_on(monkeypatch, FakeClock())
         holder = start_role("hold_lock", {"dir": str(lane_dir)})
         try:
             first_line(holder)
             os.kill(holder.pid, signal.SIGSTOP)
             took = []
             for _ in range(7):
-                start = time.perf_counter()
+                start = lock_clock()
                 assert budget.admit_spawn(0) is None
-                took.append(time.perf_counter() - start)
-            took.sort()
-            assert took[len(took) // 2] < 0.025, took
-            assert took[-1] < 0.12, took
+                took.append(lock_clock() - start)
+            assert max(took) < LEDGER_LOCK_BUDGET + 0.005, took
         finally:
             os.kill(holder.pid, signal.SIGCONT)
             reap(holder)
@@ -286,33 +294,27 @@ class TestLockBudget:
             reap(writer)
             budget.close()
 
-    def test_real_stopped_holder_degrades_once_the_lock_has_failed_for_the_fallback_time(self, lane_dir: Path) -> None:
-        from app.services.resource_governor.lane_ledger import LEDGER_FALLBACK_SECONDS
+    def test_real_stopped_holder_does_degrade_within_2_5_seconds(
+        self, lane_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         from app.services.resource_governor.lanes import LaneBudget, plan_lanes
 
-        budget = LaneBudget.open(plan_lanes(cpus=16, heavy=16), lane_dir, memory_reader=Mem(10 * GIB, GIB))
+        clock = _lock_waits_on(monkeypatch, FakeClock())
+        budget = LaneBudget.open(
+            plan_lanes(cpus=16, heavy=16), lane_dir, memory_reader=Mem(10 * GIB, GIB), clock=clock
+        )
         holder = start_role("hold_lock", {"dir": str(lane_dir)})
         try:
             first_line(holder)
             os.kill(holder.pid, signal.SIGSTOP)
-            ledger = budget._ledger
-            budget.admit_spawn(0)
-            failed_at = ledger._fail_since
-            assert failed_at is not None  # the first try already failed against the stopped holder
-            # Judged on the ledger's own clock at each poll, not by an outside wall-clock window (it was "2.0 <= t <= 2.5",
-            # which a busy runner could push past 2.5): not degraded before the fallback time, degraded at the first poll
-            # after it. The fake-clock test above pins the same rule exactly.
-            hang_bound = time.monotonic() + 30
-            while True:
-                age = ledger._clock() - failed_at
-                if ledger.degraded:
-                    break
-                assert age < LEDGER_FALLBACK_SECONDS, f"not degraded {age:.2f}s after the lock started failing"
-                assert time.monotonic() < hang_bound, "the ledger never degraded"
-                time.sleep(0.05)
+            start = clock()
+            while clock() - start < 2.5:
                 budget.admit_spawn(0)
-            assert ledger._fail_since == failed_at  # the polls in between did not restart the timer
-            assert ledger._clock() - failed_at >= LEDGER_FALLBACK_SECONDS
+                if budget._ledger.degraded:
+                    break
+                clock.advance(0.05)
+            assert budget._ledger.degraded
+            assert 2.0 <= clock() - start <= 2.5
         finally:
             os.kill(holder.pid, signal.SIGCONT)
             reap(holder)

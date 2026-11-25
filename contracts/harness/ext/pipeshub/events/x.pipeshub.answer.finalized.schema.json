@@ -1,0 +1,349 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/ext/pipeshub/events/x.pipeshub.answer.finalized.schema.json",
+  "title": "PipeshubAnswerFinalizedEvent",
+  "description": "The run's final answer as the product finalizes it: citation-normalized text parts, citations, confidence and the legacy answer shape. Written with the terminal commit.",
+  "x-writer": [
+    "worker"
+  ],
+  "allOf": [
+    {
+      "$ref": "../../../core/envelope.schema.json#/$defs/InlineEnvelope"
+    }
+  ],
+  "properties": {
+    "type": {
+      "const": "x.pipeshub.answer.finalized"
+    },
+    "writer": {
+      "const": "worker"
+    },
+    "data": {
+      "$ref": "#/$defs/PipeshubAnswerFinalizedData"
+    }
+  },
+  "$defs": {
+    "PipeshubAnswerFinalizedData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "outcome",
+        "answer",
+        "partTexts",
+        "citations"
+      ],
+      "properties": {
+        "outcome": {
+          "enum": [
+            "answered",
+            "needs_input",
+            "stopped",
+            "error"
+          ]
+        },
+        "answer": {
+          "type": "string"
+        },
+        "partTexts": {
+          "description": "Normalized content of the run's text parts, in order; one more than the text parts when the answer was appended.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "citations": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "confidence": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "answerMatchType": {
+          "$ref": "../../../core/common.schema.json#/$defs/Text"
+        },
+        "errorCode": {
+          "$ref": "../../../core/common.schema.json#/$defs/Text"
+        },
+        "reasoning": {
+          "description": "The legacy completion's reasoning: one entry per turn that reasoned ({turnIndex, content}), truncated and gated as legacy persists it.",
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "label": {
+          "description": "The run's own-work confidentiality label (P2.5a): the sources its tool results and pre-run steps journaled, complete only when every tool outcome its model saw is accounted for. Node joins it with the labels of the runs the turn saw. Absent from a worker older than P2.5a: the turn is unlabelled and shown to nobody else.",
+          "$ref": "../turn-label.schema.json"
+        },
+        "mcpSignIn": {
+          "description": "The MCP servers whose sign-in lacked a scope during the run, for main's sign-in card (the `mcp_sign_in` part, Python mcp_sign_in.py); only on a run started in the web app. Absent when none.",
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 100,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "instanceId",
+              "serverName",
+              "scopes"
+            ],
+            "properties": {
+              "instanceId": {
+                "type": "string"
+              },
+              "serverName": {
+                "type": "string"
+              },
+              "scopes": {
+                "type": "array",
+                "maxItems": 50,
+                "items": {
+                  "type": "string"
+                }
+              },
+              "agentKey": {
+                "type": "string",
+                "description": "Set when the sign-in is the agent's own (a service-account agent's): only someone who can edit the agent may redo it."
+              }
+            }
+          }
+        },
+        "truncatedBy": {
+          "description": "Set when a limit cut the run's work short (BUDGETEND): the answer is what the run had gathered, and the chat shows a notice naming the limit (the spending limit, the turn limit or the working time).",
+          "$ref": "../../../core/common.schema.json#/$defs/CutShortReason"
+        },
+        "budgetScope": {
+          "description": "With truncatedBy budget: which budget beyond the run's own ran out (C9.06), as the extension that keeps such budgets names it, so its stop line can name it. Absent: the run's own spending limit, or a worker older than WP-51.",
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]{0,31}$"
+        },
+        "notFound": {
+          "description": "ANSWER-CONTRACT-FU-2 (ADR-RUN-03 D4): the subject the request names was not found in the person's knowledge. The web chat words it above the answer in the reader's language; line is the presenter's English opening the answer starts with, kept for a surface with no UI (the Slack bot, an API text consumer), which the web chat leaves out. Absent when the subject was found, nothing was named, or the worker is older than FU-2 (its answer then starts with the English line alone).",
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "subject",
+            "hits",
+            "line"
+          ],
+          "properties": {
+            "subject": {
+              "description": "The subject as the request names it.",
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 80
+            },
+            "hits": {
+              "description": "How many records the searches showed, none of which is about the subject.",
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 10000
+            },
+            "near": {
+              "description": "The names of the closest records, most relevant first: shown when the person was not asked (a schedule's run, or a turn with no card left), as the question it could not ask.",
+              "type": "array",
+              "maxItems": 3,
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 120
+              }
+            },
+            "proceeded": {
+              "description": "The person was asked and chose to go on with what was found.",
+              "type": "boolean"
+            },
+            "line": {
+              "description": "The English opening the answer starts with (its first paragraph).",
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2000
+            },
+            "places": {
+              "description": "ANSWER-CONTRACT-SOURCES: the connected sources searched besides the person's PipesHub knowledge (an MCP server's or a toolset's name), which the words name with it. Absent: only the knowledge was searched.",
+              "type": "array",
+              "maxItems": 4,
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              }
+            }
+          }
+        },
+        "limits": {
+          "description": "R32REPO-FU-1 (ADR-RUN-03 D5): what the run, or a job it handed work to, tried and could not do, read from the journal (a clone declined, refused, not allowed or failed). The web chat words the items above the answer in the reader's language; line is the presenter's English the answer starts with (after the notFound line, when there is one), kept for a surface with no UI, which the web chat leaves out. Absent when nothing was met, or the worker is older than R33-WORDS.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "items",
+            "line"
+          ],
+          "properties": {
+            "items": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 10,
+              "items": {
+                "$ref": "../could-not-do.schema.json"
+              }
+            },
+            "line": {
+              "description": "The English sentences the answer starts with, one per item.",
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4000
+            }
+          }
+        }
+      }
+    },
+    "AnswerErrorCode": {
+      "description": "The errorCode of an error answer (answerMatchType Error) the web app words in the reader's language (ERR-UX): the worker's model-failure classes and run budget stops (error_classification._USER_MESSAGES) and Node's own error answers (deadline_exceeded, approval_expired). The answer's English text is a fallback for older clients only.",
+      "x-constant": "ANSWER_ERROR_CODES",
+      "enum": [
+        "content_filter",
+        "quota_exceeded",
+        "rate_limit",
+        "auth_error",
+        "model_not_found",
+        "request_too_large",
+        "invalid_request",
+        "server_error",
+        "timeout",
+        "unknown",
+        "needs_reconciliation",
+        "deadline_exceeded",
+        "approval_expired",
+        "budget_exhausted",
+        "budget_insufficient"
+      ],
+      "x-extensible-enum": true
+    }
+  },
+  "examples": [
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "type": "x.pipeshub.answer.finalized",
+      "data": {
+        "outcome": "answered",
+        "answer": "You get 25 days.",
+        "partTexts": [
+          "",
+          "You get 25 days."
+        ],
+        "citations": [],
+        "confidence": null
+      },
+      "attemptId": "att_1",
+      "fence": 3
+    },
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 9,
+      "runId": "run_2",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "type": "x.pipeshub.answer.finalized",
+      "data": {
+        "outcome": "answered",
+        "answer": "The policy grants 25 days [1].",
+        "partTexts": [
+          "The policy grants 25 days [1]."
+        ],
+        "citations": [],
+        "confidence": "High",
+        "label": {
+          "complete": true,
+          "sources": [
+            {
+              "kind": "indexed",
+              "recordId": "r1"
+            }
+          ]
+        }
+      },
+      "attemptId": "att_1",
+      "fence": 3
+    },
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "type": "x.pipeshub.answer.finalized",
+      "data": {
+        "outcome": "answered",
+        "answer": "You get 25 days.",
+        "partTexts": [
+          "",
+          "You get 25 days."
+        ],
+        "citations": [],
+        "confidence": null,
+        "truncatedBy": "budget"
+      },
+      "attemptId": "att_1",
+      "fence": 3
+    },
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 11,
+      "runId": "run_1",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "type": "x.pipeshub.answer.finalized",
+      "data": {
+        "outcome": "answered",
+        "answer": "I couldn't read github.com/onyx-dot-app/onyx: the clone was declined.\n\nOnyx's docs say...",
+        "partTexts": [
+          "I couldn't read github.com/onyx-dot-app/onyx: the clone was declined.\n\nOnyx's docs say..."
+        ],
+        "citations": [],
+        "confidence": null,
+        "limits": {
+          "items": [
+            {
+              "kind": "repository.declined",
+              "repository": "github.com/onyx-dot-app/onyx"
+            }
+          ],
+          "line": "I couldn't read github.com/onyx-dot-app/onyx: the clone was declined."
+        }
+      },
+      "attemptId": "att_1",
+      "fence": 3
+    }
+  ]
+}

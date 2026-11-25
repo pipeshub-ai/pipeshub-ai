@@ -59,7 +59,8 @@ jobs:
           # A renamed file counts under its old path too: moving a guard or a model
           # out of a watched path is a change to it.
           files=$(gh api --paginate "repos/$REPO/pulls/$PR/files" --jq '.[] | .filename, (.previous_filename // empty)')
-          if printf '%s\n' "$files" | grep -qE "$WATCHED_PATHS"; then
+          # A here-string, not a pipe: grep -q stops at the first match and the writer would log a broken pipe.
+          if grep -qE "$WATCHED_PATHS" <<< "$files"; then
             echo "run=true" >> "$GITHUB_OUTPUT"
           else
             echo "No file the guards read changed; nothing to check."
@@ -81,11 +82,10 @@ jobs:
       - name: Install dependencies
         if: steps.scope.outputs.run == 'true'
         run: |
-          pip install uv
           cd backend/python
           # The guards import the backend's models and connector registry; the
           # same install as the unit-test job they used to run in.
-          uv pip install --system pytest pyyaml -e ".[dev]"
+          requirements/install.sh dev --project . --editable
 
       - name: Run the integration-suite guards
         if: steps.scope.outputs.run == 'true'

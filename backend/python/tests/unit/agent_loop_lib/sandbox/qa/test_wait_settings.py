@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import math
 
 import pytest
@@ -14,6 +13,7 @@ from app.agent_loop_lib.sandbox.governor import (
     SandboxLimitExceeded,
     SandboxResourceGovernor,
 )
+from tests.support.settle import settle
 
 _KEYS = {
     "SANDBOX_SLOT_WAIT_S": ("slot_wait_s", 120.0),
@@ -55,6 +55,6 @@ async def test_a_nan_or_negative_wait_refuses_at_once_without_spinning(wait_s: f
 
     governor._slots.try_acquire_tagged = counted  # type: ignore[method-assign]
     with pytest.raises(SandboxLimitExceeded):
-        await asyncio.wait_for(governor.acquire(wait_s=wait_s), 1.0)
+        await settle(governor.acquire(wait_s=wait_s))
     assert tries == 1
     await governor.release(held)

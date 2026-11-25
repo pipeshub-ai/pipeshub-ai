@@ -1,0 +1,145 @@
+[
+  {
+    "description": "wrong type for this schema",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "attemptId": "att_1",
+      "fence": 3,
+      "type": "turn.aborted",
+      "data": {
+        "tool": "code_task",
+        "taskId": "run_1",
+        "kind": "command",
+        "text": "python report.py",
+        "data": {
+          "callId": "c1"
+        },
+        "turnId": "trn_0123456789abcdef0123456789abcdef",
+        "seq": 3
+      }
+    }
+  },
+  {
+    "description": "writer allowlist: only worker writes x.pipeshub.engine.progress",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "node",
+      "visibility": "owner",
+      "type": "x.pipeshub.engine.progress",
+      "data": {
+        "tool": "code_task",
+        "taskId": "run_1",
+        "kind": "command",
+        "text": "python report.py",
+        "data": {
+          "callId": "c1"
+        },
+        "turnId": "trn_0123456789abcdef0123456789abcdef",
+        "seq": 3
+      }
+    }
+  },
+  {
+    "description": "unknown data field",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "attemptId": "att_1",
+      "fence": 3,
+      "type": "x.pipeshub.engine.progress",
+      "data": {
+        "tool": "code_task",
+        "taskId": "run_1",
+        "kind": "command",
+        "text": "python report.py",
+        "data": {
+          "callId": "c1"
+        },
+        "turnId": "trn_0123456789abcdef0123456789abcdef",
+        "seq": 3,
+        "unexpected": true
+      }
+    }
+  },
+  {
+    "description": "taskId is required",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "attemptId": "att_1",
+      "fence": 3,
+      "type": "x.pipeshub.engine.progress",
+      "data": {
+        "tool": "code_task",
+        "kind": "command",
+        "text": "python report.py",
+        "data": {
+          "callId": "c1"
+        },
+        "turnId": "trn_0123456789abcdef0123456789abcdef",
+        "seq": 3
+      }
+    }
+  },
+  {
+    "description": "unknown kind",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "attemptId": "att_1",
+      "fence": 3,
+      "type": "x.pipeshub.engine.progress",
+      "data": {
+        "tool": "code_task",
+        "taskId": "run_1",
+        "kind": "telemetry",
+        "text": "python report.py",
+        "data": {
+          "callId": "c1"
+        },
+        "turnId": "trn_0123456789abcdef0123456789abcdef",
+        "seq": 3
+      }
+    }
+  }
+]

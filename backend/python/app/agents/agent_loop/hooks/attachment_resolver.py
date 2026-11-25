@@ -73,11 +73,10 @@ def default_message_budget(context: "AgentContext") -> int:
     ).effective_max_tokens
 
 
-
-
 async def resolve_attachments_for_goal(
     context: "AgentContext",
     log: logging.Logger,
+    attachments: list[dict[str, Any]] | None = None,
     *,
     max_chars: int | None = None,
     outcomes: "list[RecordRenderOutcome] | None" = None,
@@ -95,6 +94,8 @@ async def resolve_attachments_for_goal(
     LangChain ``{"type": "image_url", ...}`` dicts to be injected into the
     initial ``UserMessage`` when the LLM supports vision.
 
+    ``attachments``: another message's (a message the user sent while the run
+    worked); the turn's own ``resolved_attachment_blocks`` are left as they are.
     Documents render within *max_chars* (by default the current attachments'
     share of the model's message budget): a document is inlined into the
     current request, which no compaction layer shortens, so an unbounded one
@@ -103,7 +104,9 @@ async def resolve_attachments_for_goal(
     user's own (`ImageOrigin.ATTACHMENT`), so the per-model cap, dedup and
     downscale apply to them as to every other image.
     """
-    attachments = context.tool_state.get("attachments") or []
+    own = attachments is None
+    if attachments is None:
+        attachments = context.tool_state.get("attachments") or []
     if not attachments:
         return "", []
 
@@ -116,6 +119,7 @@ async def resolve_attachments_for_goal(
     from app.utils.attachment_utils import resolve_attachments
     from app.utils.chat_helpers import CitationRefMapper
     from app.utils.image_admission import admission_from_state
+    from app.utils.record_access import attachment_reader_id
     from app.utils.render_budget import RenderBudget
 
     state = context.tool_state
@@ -142,7 +146,7 @@ async def resolve_attachments_for_goal(
             out_records=attachment_records,
             image_budget=image_budget,
             image_admission=admission_from_state(state),
-            user_id=context.user_id,
+            user_id=attachment_reader_id(context.user_id, context.user_info),
             graph_provider=context.graph_provider,
             is_service_account=context.is_service_account,
             render_budget=RenderBudget(max_chars=max(max_chars, 0)),
@@ -150,11 +154,13 @@ async def resolve_attachments_for_goal(
         )
     except Exception as exc:
         log.warning("Failed to resolve attachments: %s", exc)
-        state["resolved_attachment_blocks"] = []
+        if own:
+            state["resolved_attachment_blocks"] = []
         return "", []
 
     _merge_records_into_state(state, attachment_records)
-    state["resolved_attachment_blocks"] = blocks
+    if own:
+        state["resolved_attachment_blocks"] = blocks
 
     if not blocks:
         return "", []
@@ -162,6 +168,12 @@ async def resolve_attachments_for_goal(
     text_parts = [
         b["text"] for b in blocks if b.get("type") == "text" and b.get("text")
     ]
+    from app.web.addresses import web_addresses
+
+    # A link in a file the person attached is theirs to open, after a private read too.
+    addresses = web_addresses(state)
+    for part in text_parts:
+        addresses.note_user_text(part)
     image_blocks = [
         {**b, USER_ATTACHED_KEY: True} for b in blocks if b.get("type") == "image_url"
     ]
@@ -303,7 +315,10 @@ async def _rehydrate_citation_maps(
     """
     from app.modules.artifacts.reader import record_artifact_reader
     from app.utils.chat_helpers import CitationRefMapper, record_to_message_content
-    from app.utils.record_access import caller_can_read_virtual_record
+    from app.utils.record_access import (
+        attachment_reader_id,
+        caller_can_read_virtual_record,
+    )
 
     state = context.tool_state
 
@@ -328,7 +343,7 @@ async def _rehydrate_citation_maps(
             continue
         if not await caller_can_read_virtual_record(
             context.graph_provider,
-            user_id=context.user_id,
+            user_id=attachment_reader_id(context.user_id, context.user_info),
             org_id=context.org_id,
             virtual_record_id=vrid,
             logger=logger,

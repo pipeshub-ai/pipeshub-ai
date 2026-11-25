@@ -1,0 +1,831 @@
+# QA-10 (TGW-17, TEST-STRATEGY 2.3): the approval and flow-guard decision table.
+#
+# One row is one tool call. Inputs: the path (`durable` loop, `legacy` loop, `engine` run), the tool's tags as a
+# toolset declares them (`<effect>/<sink egress>`, `unclassified` = no tags, `world:<name>` = the replay world's tool),
+# what the run has read before the call (`context`: P2.5a's ledger; `child-*`: the label a parent passed at the
+# spawn), the approvals document (`document`), the deployment's flow settings (`deployment`), the engine profile's
+# approvals (`profile`) and the conversation's grants (`grant`). Omitted inputs take their first preset.
+#
+# `expect` is what the run does with the call: `allow`, `ask/<rule>` (the rule the card explains: `flow_external_write`;
+# `writes`, `effect_class` or `tool` when a layer's own approval rule asks, an engine run's included, since no grant
+# answers it (QA6-F6); `engine_writes` when an engine run's default alone asks) or `deny/<rule>` (the rule the model is told;
+# `approval_unavailable` is today's loop's refusal where the durable paths ask). Rows were written from the documented
+# rules (P2.6c, SEC1, SEC2, UX1, UX2, UX3, UX4), not from the code; `test_policy_table.py` runs each on the product's
+# own composition for its path.
+#
+# `xfail` (strict): the row states the intended behaviour, which today's code does not have yet; the reason names
+# the WP or finding that changes it. When that lands, the row passes, the strict xfail fails, and the marker goes.
+# `mandatory`: one of TEST-STRATEGY 2.3's mandatory row classes; the runner checks each is present.
+
+presets:
+  # The approvals document (/services/agentHarness/approvals) for org-1, agent-1; `unreadable`: the store fails.
+  document:
+    none: null
+    empty: {}
+    writes-allow: {"default": {"writes": "allow"}}
+    writes-ask: {"default": {"writes": "ask"}}
+    writes-deny: {"default": {"writes": "deny"}}
+    tool-ask: {"default": {"tools": {"local@default/acme_send": "ask"}}}
+    tool-deny: {"default": {"tools": {"local@default/acme_send": "deny"}}}
+    read-ask: {"default": {"classes": {"read": "ask"}}}
+    default-writes-ask: {"default": {"writes": "ask"}}
+    agent-writes-deny: {"agents": {"agent-1": {"writes": "deny"}}}
+    agent-writes-ask: {"agents": {"agent-1": {"writes": "ask"}}}
+    layers-deny-ask-allow: {"default": {"writes": "allow"}, "agents": {"agent-1": {"writes": "ask", "tools": {"local@default/acme_send": "deny"}}}}
+    layers-ask-allow: {"default": {"writes": "allow"}, "agents": {"agent-1": {"writes": "ask"}}}
+    other-agent-deny: {"agents": {"agent-2": {"writes": "deny"}}}
+    invalid-layer: {"default": {"writes": "maybe"}}
+    invalid-document: {"org": {"org-1": {"writes": "allow"}}}
+    unreadable: !unreadable
+    flow-ask: {"default": {"flow": {"level": "ask"}}}
+    flow-deny: {"default": {"flow": {"level": "deny"}}}
+    flow-off: {"default": {"flow": {"level": "off"}}}
+    flow-ask-private: {"default": {"flow": {"level": "ask", "above": "private"}}}
+    flow-deny-private: {"default": {"flow": {"level": "deny", "above": "private"}}}
+    agent-flow-deny: {"agents": {"agent-1": {"flow": {"level": "deny"}}}}
+    flow-ask-writes-ask: {"default": {"writes": "ask", "flow": {"level": "ask"}}}
+  # The deployment's flow settings (HARNESS_FLOW_GUARD*); every variable not named is unset.
+  deployment:
+    default: {}
+    off: {"HARNESS_FLOW_GUARD": "false"}
+    deny: {"HARNESS_FLOW_GUARD_LEVEL": "deny"}
+    ask-private: {"HARNESS_FLOW_GUARD_ABOVE": "private"}
+    deny-private: {"HARNESS_FLOW_GUARD_LEVEL": "deny", "HARNESS_FLOW_GUARD_ABOVE": "private"}
+    invalid-level: {"HARNESS_FLOW_GUARD_LEVEL": "sometimes"}
+    invalid-above: {"HARNESS_FLOW_GUARD_ABOVE": "secret"}
+  # The engine profile's approvals (ProfileApprovals); the release profile asks before writes and executes.
+  profile:
+    release: {}
+    write-deny: {"write": "deny"}
+    execute-deny: {"execute": "deny"}
+    write-allow: {"write": "allow"}
+    read-ask: {"read": "ask"}
+    workspace-ask: {"workspace": "ask"}
+
+rows:
+  # A. Effect class x sink x what the run has read; every path, shipped defaults (flow guard on, ask, public).
+  - {id: PT-001, path: durable, tool: read/none, expect: allow}
+  - {id: PT-002, path: durable, tool: read/none, context: private, expect: allow}
+  - {id: PT-003, path: durable, tool: read/none, context: unknown, expect: allow}
+  - {id: PT-004, path: durable, tool: read/external, expect: allow}
+  - {id: PT-005, path: durable, tool: read/external, context: private, expect: ask/flow_external_write}
+  - {id: PT-006, path: durable, tool: read/external, context: unknown, expect: ask/flow_external_write}
+  - {id: PT-007, path: durable, tool: workspace/none, expect: allow}
+  - {id: PT-008, path: durable, tool: workspace/none, context: private, expect: allow}
+  - {id: PT-009, path: durable, tool: workspace/none, context: unknown, expect: allow}
+  - {id: PT-010, path: durable, tool: write/none, expect: allow}
+  - {id: PT-011, path: durable, tool: write/none, context: private, expect: allow}
+  - {id: PT-012, path: durable, tool: write/none, context: unknown, expect: allow}
+  - {id: PT-013, path: durable, tool: write/self, expect: allow}
+  - {id: PT-014, path: durable, tool: write/self, context: private, expect: allow}
+  - {id: PT-015, path: durable, tool: write/self, context: unknown, expect: allow}
+  - {id: PT-016, path: durable, tool: write/internal_audience, expect: allow}
+  - {id: PT-017, path: durable, tool: write/internal_audience, context: private, expect: allow}
+  - {id: PT-018, path: durable, tool: write/internal_audience, context: unknown, expect: allow}
+  - {id: PT-019, path: durable, tool: write/external, expect: allow}
+  - {id: PT-020, path: durable, tool: write/external, context: private, expect: ask/flow_external_write}
+  - {id: PT-021, path: durable, tool: write/external, context: unknown, expect: ask/flow_external_write}
+  - {id: PT-022, path: durable, tool: execute/none, expect: allow}
+  - {id: PT-023, path: durable, tool: execute/none, context: private, expect: allow}
+  - {id: PT-024, path: durable, tool: execute/none, context: unknown, expect: allow}
+  - {id: PT-025, path: durable, tool: execute/self, expect: allow}
+  - {id: PT-026, path: durable, tool: execute/self, context: private, expect: allow}
+  - {id: PT-027, path: durable, tool: execute/self, context: unknown, expect: allow}
+  - {id: PT-028, path: durable, tool: execute/internal_audience, expect: allow}
+  - {id: PT-029, path: durable, tool: execute/internal_audience, context: private, expect: allow}
+  - {id: PT-030, path: durable, tool: execute/internal_audience, context: unknown, expect: allow}
+  - {id: PT-031, path: durable, tool: execute/external, expect: allow}
+  - {id: PT-032, path: durable, tool: execute/external, context: private, expect: ask/flow_external_write}
+  - {id: PT-033, path: durable, tool: execute/external, context: unknown, expect: ask/flow_external_write}
+  - {id: PT-034, path: durable, tool: unclassified, expect: allow, mandatory: unclassified-is-external-write}
+  - {id: PT-035, path: durable, tool: unclassified, context: private, expect: ask/flow_external_write, mandatory: unclassified-is-external-write}
+  - {id: PT-036, path: durable, tool: unclassified, context: unknown, expect: ask/flow_external_write, mandatory: unclassified-is-external-write}
+  - {id: PT-037, path: engine, tool: read/none, expect: allow}
+  - {id: PT-038, path: engine, tool: read/none, context: private, expect: allow}
+  - {id: PT-039, path: engine, tool: read/none, context: unknown, expect: allow}
+  - {id: PT-040, path: engine, tool: read/external, expect: allow}
+  - {id: PT-041, path: engine, tool: read/external, context: private, expect: ask/flow_external_write}
+  - {id: PT-042, path: engine, tool: read/external, context: unknown, expect: ask/flow_external_write}
+  - {id: PT-043, path: engine, tool: workspace/none, expect: allow}
+  - {id: PT-044, path: engine, tool: workspace/none, context: private, expect: allow}
+  - {id: PT-045, path: engine, tool: workspace/none, context: unknown, expect: allow}
+  - {id: PT-046, path: engine, tool: write/none, expect: allow}
+  - {id: PT-047, path: engine, tool: write/none, context: private, expect: allow}
+  - {id: PT-048, path: engine, tool: write/none, context: unknown, expect: allow}
+  - {id: PT-049, path: engine, tool: write/self, expect: allow}
+  - {id: PT-050, path: engine, tool: write/self, context: private, expect: allow}
+  - {id: PT-051, path: engine, tool: write/self, context: unknown, expect: allow}
+  - {id: PT-052, path: engine, tool: write/internal_audience, expect: ask/engine_writes}
+  - {id: PT-053, path: engine, tool: write/internal_audience, context: private, expect: ask/engine_writes}
+  - {id: PT-054, path: engine, tool: write/internal_audience, context: unknown, expect: ask/engine_writes}
+  - {id: PT-055, path: engine, tool: write/external, expect: ask/engine_writes}
+  - {id: PT-056, path: engine, tool: write/external, context: private, expect: ask/flow_external_write}
+  - {id: PT-057, path: engine, tool: write/external, context: unknown, expect: ask/flow_external_write}
+  - {id: PT-058, path: engine, tool: execute/none, expect: allow}
+  - {id: PT-059, path: engine, tool: execute/none, context: private, expect: allow}
+  - {id: PT-060, path: engine, tool: execute/none, context: unknown, expect: allow}
+  - {id: PT-061, path: engine, tool: execute/self, expect: allow}
+  - {id: PT-062, path: engine, tool: execute/self, context: private, expect: allow}
+  - {id: PT-063, path: engine, tool: execute/self, context: unknown, expect: allow}
+  - {id: PT-064, path: engine, tool: execute/internal_audience, expect: ask/engine_writes}
+  - {id: PT-065, path: engine, tool: execute/internal_audience, context: private, expect: ask/engine_writes}
+  - {id: PT-066, path: engine, tool: execute/internal_audience, context: unknown, expect: ask/engine_writes}
+  - {id: PT-067, path: engine, tool: execute/external, expect: ask/engine_writes}
+  - {id: PT-068, path: engine, tool: execute/external, context: private, expect: ask/flow_external_write}
+  - {id: PT-069, path: engine, tool: execute/external, context: unknown, expect: ask/flow_external_write}
+  - {id: PT-070, path: engine, tool: unclassified, expect: ask/engine_writes, mandatory: unclassified-is-external-write}
+  - {id: PT-071, path: engine, tool: unclassified, context: private, expect: ask/flow_external_write, mandatory: unclassified-is-external-write}
+  - {id: PT-072, path: engine, tool: unclassified, context: unknown, expect: ask/flow_external_write, mandatory: unclassified-is-external-write}
+  - {id: PT-073, path: legacy, tool: read/none, expect: allow}
+  - {id: PT-074, path: legacy, tool: read/none, context: private, expect: allow}
+  - {id: PT-075, path: legacy, tool: read/none, context: unknown, expect: allow}
+  - {id: PT-076, path: legacy, tool: read/external, expect: allow}
+  - {id: PT-077, path: legacy, tool: read/external, context: private, expect: deny/approval_unavailable}
+  - {id: PT-078, path: legacy, tool: read/external, context: unknown, expect: deny/approval_unavailable}
+  - {id: PT-079, path: legacy, tool: workspace/none, expect: allow}
+  - {id: PT-080, path: legacy, tool: workspace/none, context: private, expect: allow}
+  - {id: PT-081, path: legacy, tool: workspace/none, context: unknown, expect: allow}
+  - {id: PT-082, path: legacy, tool: write/none, expect: allow}
+  - {id: PT-083, path: legacy, tool: write/none, context: private, expect: allow}
+  - {id: PT-084, path: legacy, tool: write/none, context: unknown, expect: allow}
+  - {id: PT-085, path: legacy, tool: write/self, expect: allow}
+  - {id: PT-086, path: legacy, tool: write/self, context: private, expect: allow}
+  - {id: PT-087, path: legacy, tool: write/self, context: unknown, expect: allow}
+  - {id: PT-088, path: legacy, tool: write/internal_audience, expect: allow}
+  - {id: PT-089, path: legacy, tool: write/internal_audience, context: private, expect: allow}
+  - {id: PT-090, path: legacy, tool: write/internal_audience, context: unknown, expect: allow}
+  - {id: PT-091, path: legacy, tool: write/external, expect: allow}
+  - {id: PT-092, path: legacy, tool: write/external, context: private, expect: deny/approval_unavailable}
+  - {id: PT-093, path: legacy, tool: write/external, context: unknown, expect: deny/approval_unavailable}
+  - {id: PT-094, path: legacy, tool: execute/none, expect: allow}
+  - {id: PT-095, path: legacy, tool: execute/none, context: private, expect: allow}
+  - {id: PT-096, path: legacy, tool: execute/none, context: unknown, expect: allow}
+  - {id: PT-097, path: legacy, tool: execute/self, expect: allow}
+  - {id: PT-098, path: legacy, tool: execute/self, context: private, expect: allow}
+  - {id: PT-099, path: legacy, tool: execute/self, context: unknown, expect: allow}
+  - {id: PT-100, path: legacy, tool: execute/internal_audience, expect: allow}
+  - {id: PT-101, path: legacy, tool: execute/internal_audience, context: private, expect: allow}
+  - {id: PT-102, path: legacy, tool: execute/internal_audience, context: unknown, expect: allow}
+  - {id: PT-103, path: legacy, tool: execute/external, expect: allow}
+  - {id: PT-104, path: legacy, tool: execute/external, context: private, expect: deny/approval_unavailable}
+  - {id: PT-105, path: legacy, tool: execute/external, context: unknown, expect: deny/approval_unavailable}
+  - {id: PT-106, path: legacy, tool: unclassified, expect: allow, mandatory: unclassified-is-external-write}
+  - {id: PT-107, path: legacy, tool: unclassified, context: private, expect: deny/approval_unavailable, mandatory: unclassified-is-external-write}
+  - {id: PT-108, path: legacy, tool: unclassified, context: unknown, expect: deny/approval_unavailable, mandatory: unclassified-is-external-write}
+  - {id: PT-109, path: durable, tool: write/external, context: after-write, expect: ask/flow_external_write}
+  - {id: PT-110, path: durable, tool: execute/external, context: after-write, expect: ask/flow_external_write}
+  - {id: PT-111, path: durable, tool: unclassified, context: after-write, expect: ask/flow_external_write}
+  - {id: PT-112, path: durable, tool: write/self, context: after-write, expect: allow}
+  - {id: PT-113, path: engine, tool: write/external, context: after-write, expect: ask/flow_external_write}
+  - {id: PT-114, path: engine, tool: execute/external, context: after-write, expect: ask/flow_external_write}
+  - {id: PT-115, path: engine, tool: unclassified, context: after-write, expect: ask/flow_external_write}
+  - {id: PT-116, path: engine, tool: write/self, context: after-write, expect: allow}
+  - {id: PT-117, path: legacy, tool: write/external, context: after-write, expect: deny/approval_unavailable}
+  - {id: PT-118, path: legacy, tool: execute/external, context: after-write, expect: deny/approval_unavailable}
+  - {id: PT-119, path: legacy, tool: unclassified, context: after-write, expect: deny/approval_unavailable}
+  - {id: PT-120, path: legacy, tool: write/self, context: after-write, expect: allow}
+
+  # B. Org and agent rules (P2.6c): deny > ask > allow over layers; unreadable or invalid fails closed.
+  - {id: PT-121, path: durable, tool: read/none, document: empty, expect: allow}
+  - {id: PT-122, path: durable, tool: write/self, document: empty, expect: allow}
+  - {id: PT-123, path: durable, tool: write/external, document: empty, expect: allow}
+  - {id: PT-124, path: durable, tool: write/external, context: private, document: empty, expect: ask/flow_external_write}
+  - {id: PT-125, path: engine, tool: read/none, document: empty, expect: allow}
+  - {id: PT-126, path: engine, tool: write/self, document: empty, expect: allow}
+  - {id: PT-127, path: engine, tool: write/external, document: empty, expect: ask/engine_writes}
+  - {id: PT-128, path: engine, tool: write/external, context: private, document: empty, expect: ask/flow_external_write}
+  - {id: PT-129, path: durable, tool: read/none, document: writes-allow, expect: allow}
+  - {id: PT-130, path: durable, tool: write/self, document: writes-allow, expect: allow}
+  - {id: PT-131, path: durable, tool: write/external, document: writes-allow, expect: allow}
+  - {id: PT-132, path: durable, tool: write/external, context: private, document: writes-allow, expect: ask/flow_external_write}
+  - {id: PT-133, path: engine, tool: read/none, document: writes-allow, expect: allow}
+  - {id: PT-134, path: engine, tool: write/self, document: writes-allow, expect: allow}
+  - {id: PT-135, path: engine, tool: write/external, document: writes-allow, expect: ask/engine_writes}
+  - {id: PT-136, path: engine, tool: write/external, context: private, document: writes-allow, expect: ask/flow_external_write}
+  - {id: PT-137, path: durable, tool: read/none, document: writes-ask, expect: allow}
+  - {id: PT-138, path: durable, tool: write/self, document: writes-ask, expect: ask/writes}
+  - {id: PT-139, path: durable, tool: write/external, document: writes-ask, expect: ask/writes}
+  - {id: PT-140, path: durable, tool: write/external, context: private, document: writes-ask, expect: ask/flow_external_write}
+  - {id: PT-141, path: engine, tool: read/none, document: writes-ask, expect: allow}
+  - {id: PT-142, path: engine, tool: write/self, document: writes-ask, expect: ask/writes}
+  - {id: PT-143, path: engine, tool: write/external, document: writes-ask, expect: ask/writes}
+  - {id: PT-144, path: engine, tool: write/external, context: private, document: writes-ask, expect: ask/flow_external_write}
+  - {id: PT-145, path: durable, tool: read/none, document: writes-deny, expect: allow}
+  - {id: PT-146, path: durable, tool: write/self, document: writes-deny, expect: deny/policy}
+  - {id: PT-147, path: durable, tool: write/external, document: writes-deny, expect: deny/policy}
+  - {id: PT-148, path: durable, tool: write/external, context: private, document: writes-deny, expect: deny/policy}
+  - {id: PT-149, path: engine, tool: read/none, document: writes-deny, expect: allow}
+  - {id: PT-150, path: engine, tool: write/self, document: writes-deny, expect: deny/policy}
+  - {id: PT-151, path: engine, tool: write/external, document: writes-deny, expect: deny/policy}
+  - {id: PT-152, path: engine, tool: write/external, context: private, document: writes-deny, expect: deny/policy}
+  - {id: PT-153, path: legacy, tool: write/external, document: writes-deny, expect: allow}
+  - {id: PT-154, path: legacy, tool: write/external, context: private, document: writes-deny, expect: deny/approval_unavailable}
+  - {id: PT-155, path: durable, tool: read/none, document: tool-ask, expect: ask/tool}
+  - {id: PT-156, path: durable, tool: write/self, document: tool-ask, expect: ask/tool}
+  - {id: PT-157, path: durable, tool: write/external, document: tool-ask, expect: ask/tool}
+  - {id: PT-158, path: durable, tool: write/external, context: private, document: tool-ask, expect: ask/flow_external_write}
+  - {id: PT-159, path: engine, tool: read/none, document: tool-ask, expect: ask/tool}
+  - {id: PT-160, path: engine, tool: write/self, document: tool-ask, expect: ask/tool}
+  - {id: PT-161, path: engine, tool: write/external, document: tool-ask, expect: ask/tool}
+  - {id: PT-162, path: engine, tool: write/external, context: private, document: tool-ask, expect: ask/flow_external_write}
+  - {id: PT-163, path: durable, tool: read/none, document: tool-deny, expect: deny/policy}
+  - {id: PT-164, path: durable, tool: write/self, document: tool-deny, expect: deny/policy}
+  - {id: PT-165, path: durable, tool: write/external, document: tool-deny, expect: deny/policy}
+  - {id: PT-166, path: durable, tool: write/external, context: private, document: tool-deny, expect: deny/policy}
+  - {id: PT-167, path: engine, tool: read/none, document: tool-deny, expect: deny/policy}
+  - {id: PT-168, path: engine, tool: write/self, document: tool-deny, expect: deny/policy}
+  - {id: PT-169, path: engine, tool: write/external, document: tool-deny, expect: deny/policy}
+  - {id: PT-170, path: engine, tool: write/external, context: private, document: tool-deny, expect: deny/policy}
+  - {id: PT-171, path: durable, tool: read/none, document: read-ask, expect: ask/effect_class}
+  - {id: PT-172, path: durable, tool: write/self, document: read-ask, expect: allow}
+  - {id: PT-173, path: durable, tool: write/external, document: read-ask, expect: allow}
+  - {id: PT-174, path: durable, tool: write/external, context: private, document: read-ask, expect: ask/flow_external_write}
+  - {id: PT-175, path: engine, tool: read/none, document: read-ask, expect: ask/effect_class}
+  - {id: PT-176, path: engine, tool: write/self, document: read-ask, expect: allow}
+  - {id: PT-177, path: engine, tool: write/external, document: read-ask, expect: ask/engine_writes}
+  - {id: PT-178, path: engine, tool: write/external, context: private, document: read-ask, expect: ask/flow_external_write}
+  - {id: PT-179, path: durable, tool: read/none, document: default-writes-ask, expect: allow}
+  - {id: PT-180, path: durable, tool: write/self, document: default-writes-ask, expect: ask/writes}
+  - {id: PT-181, path: durable, tool: write/external, document: default-writes-ask, expect: ask/writes}
+  - {id: PT-182, path: durable, tool: write/external, context: private, document: default-writes-ask, expect: ask/flow_external_write}
+  - {id: PT-183, path: engine, tool: read/none, document: default-writes-ask, expect: allow}
+  - {id: PT-184, path: engine, tool: write/self, document: default-writes-ask, expect: ask/writes}
+  - {id: PT-185, path: engine, tool: write/external, document: default-writes-ask, expect: ask/writes}
+  - {id: PT-186, path: engine, tool: write/external, context: private, document: default-writes-ask, expect: ask/flow_external_write}
+  - {id: PT-187, path: durable, tool: read/none, document: agent-writes-deny, expect: allow}
+  - {id: PT-188, path: durable, tool: write/self, document: agent-writes-deny, expect: deny/policy}
+  - {id: PT-189, path: durable, tool: write/external, document: agent-writes-deny, expect: deny/policy}
+  - {id: PT-190, path: durable, tool: write/external, context: private, document: agent-writes-deny, expect: deny/policy}
+  - {id: PT-191, path: engine, tool: read/none, document: agent-writes-deny, expect: allow}
+  - {id: PT-192, path: engine, tool: write/self, document: agent-writes-deny, expect: deny/policy}
+  - {id: PT-193, path: engine, tool: write/external, document: agent-writes-deny, expect: deny/policy}
+  - {id: PT-194, path: engine, tool: write/external, context: private, document: agent-writes-deny, expect: deny/policy}
+  - {id: PT-195, path: durable, tool: read/none, document: agent-writes-ask, expect: allow}
+  - {id: PT-196, path: durable, tool: write/self, document: agent-writes-ask, expect: ask/writes}
+  - {id: PT-197, path: durable, tool: write/external, document: agent-writes-ask, expect: ask/writes}
+  - {id: PT-198, path: durable, tool: write/external, context: private, document: agent-writes-ask, expect: ask/flow_external_write}
+  - {id: PT-199, path: engine, tool: read/none, document: agent-writes-ask, expect: allow}
+  - {id: PT-200, path: engine, tool: write/self, document: agent-writes-ask, expect: ask/writes}
+  - {id: PT-201, path: engine, tool: write/external, document: agent-writes-ask, expect: ask/writes}
+  - {id: PT-202, path: engine, tool: write/external, context: private, document: agent-writes-ask, expect: ask/flow_external_write}
+  - {id: PT-203, path: durable, tool: read/none, document: layers-deny-ask-allow, expect: deny/policy, mandatory: deny-over-ask-over-allow}
+  - {id: PT-204, path: durable, tool: write/self, document: layers-deny-ask-allow, expect: deny/policy, mandatory: deny-over-ask-over-allow}
+  - {id: PT-205, path: durable, tool: write/external, document: layers-deny-ask-allow, expect: deny/policy, mandatory: deny-over-ask-over-allow}
+  - {id: PT-206, path: durable, tool: write/external, context: private, document: layers-deny-ask-allow, expect: deny/policy, mandatory: deny-over-ask-over-allow}
+  - {id: PT-207, path: engine, tool: read/none, document: layers-deny-ask-allow, expect: deny/policy, mandatory: deny-over-ask-over-allow}
+  - {id: PT-208, path: engine, tool: write/self, document: layers-deny-ask-allow, expect: deny/policy, mandatory: deny-over-ask-over-allow}
+  - {id: PT-209, path: engine, tool: write/external, document: layers-deny-ask-allow, expect: deny/policy, mandatory: deny-over-ask-over-allow}
+  - {id: PT-210, path: engine, tool: write/external, context: private, document: layers-deny-ask-allow, expect: deny/policy, mandatory: deny-over-ask-over-allow}
+  - {id: PT-211, path: legacy, tool: write/external, document: layers-deny-ask-allow, expect: allow}
+  - {id: PT-212, path: legacy, tool: write/external, context: private, document: layers-deny-ask-allow, expect: deny/approval_unavailable}
+  - {id: PT-213, path: durable, tool: read/none, document: layers-ask-allow, expect: allow, mandatory: deny-over-ask-over-allow}
+  - {id: PT-214, path: durable, tool: write/self, document: layers-ask-allow, expect: ask/writes, mandatory: deny-over-ask-over-allow}
+  - {id: PT-215, path: durable, tool: write/external, document: layers-ask-allow, expect: ask/writes, mandatory: deny-over-ask-over-allow}
+  - {id: PT-216, path: durable, tool: write/external, context: private, document: layers-ask-allow, expect: ask/flow_external_write, mandatory: deny-over-ask-over-allow}
+  - {id: PT-217, path: engine, tool: read/none, document: layers-ask-allow, expect: allow, mandatory: deny-over-ask-over-allow}
+  - {id: PT-218, path: engine, tool: write/self, document: layers-ask-allow, expect: ask/writes, mandatory: deny-over-ask-over-allow}
+  - {id: PT-219, path: engine, tool: write/external, document: layers-ask-allow, expect: ask/writes, mandatory: deny-over-ask-over-allow}
+  - {id: PT-220, path: engine, tool: write/external, context: private, document: layers-ask-allow, expect: ask/flow_external_write, mandatory: deny-over-ask-over-allow}
+  - {id: PT-221, path: durable, tool: read/none, document: other-agent-deny, expect: allow}
+  - {id: PT-222, path: durable, tool: write/self, document: other-agent-deny, expect: allow}
+  - {id: PT-223, path: durable, tool: write/external, document: other-agent-deny, expect: allow}
+  - {id: PT-224, path: durable, tool: write/external, context: private, document: other-agent-deny, expect: ask/flow_external_write}
+  - {id: PT-225, path: engine, tool: read/none, document: other-agent-deny, expect: allow}
+  - {id: PT-226, path: engine, tool: write/self, document: other-agent-deny, expect: allow}
+  - {id: PT-227, path: engine, tool: write/external, document: other-agent-deny, expect: ask/engine_writes}
+  - {id: PT-228, path: engine, tool: write/external, context: private, document: other-agent-deny, expect: ask/flow_external_write}
+  - {id: PT-229, path: durable, tool: read/none, document: invalid-layer, expect: allow, mandatory: fail-closed}
+  - {id: PT-230, path: durable, tool: write/self, document: invalid-layer, expect: ask/writes, mandatory: fail-closed}
+  - {id: PT-231, path: durable, tool: write/external, document: invalid-layer, expect: ask/writes, mandatory: fail-closed}
+  - {id: PT-232, path: durable, tool: write/external, context: private, document: invalid-layer, expect: ask/flow_external_write, mandatory: fail-closed}
+  - {id: PT-233, path: engine, tool: read/none, document: invalid-layer, expect: allow, mandatory: fail-closed}
+  - {id: PT-234, path: engine, tool: write/self, document: invalid-layer, expect: ask/writes, mandatory: fail-closed}
+  - {id: PT-235, path: engine, tool: write/external, document: invalid-layer, expect: ask/writes, mandatory: fail-closed}
+  - {id: PT-236, path: engine, tool: write/external, context: private, document: invalid-layer, expect: ask/flow_external_write, mandatory: fail-closed}
+  - {id: PT-237, path: durable, tool: read/none, document: invalid-document, expect: allow, mandatory: fail-closed}
+  - {id: PT-238, path: durable, tool: write/self, document: invalid-document, expect: ask/writes, mandatory: fail-closed}
+  - {id: PT-239, path: durable, tool: write/external, document: invalid-document, expect: ask/writes, mandatory: fail-closed}
+  - {id: PT-240, path: durable, tool: write/external, context: private, document: invalid-document, expect: ask/flow_external_write, mandatory: fail-closed}
+  - {id: PT-241, path: engine, tool: read/none, document: invalid-document, expect: allow, mandatory: fail-closed}
+  - {id: PT-242, path: engine, tool: write/self, document: invalid-document, expect: ask/writes, mandatory: fail-closed}
+  - {id: PT-243, path: engine, tool: write/external, document: invalid-document, expect: ask/writes, mandatory: fail-closed}
+  - {id: PT-244, path: engine, tool: write/external, context: private, document: invalid-document, expect: ask/flow_external_write, mandatory: fail-closed}
+  - {id: PT-245, path: durable, tool: read/none, document: unreadable, expect: allow, mandatory: fail-closed}
+  - {id: PT-246, path: durable, tool: write/self, document: unreadable, expect: ask/writes, mandatory: fail-closed}
+  - {id: PT-247, path: durable, tool: write/external, document: unreadable, expect: ask/writes, mandatory: fail-closed}
+  - {id: PT-248, path: durable, tool: write/external, context: private, document: unreadable, expect: ask/flow_external_write, mandatory: fail-closed}
+  - {id: PT-249, path: engine, tool: read/none, document: unreadable, expect: allow, mandatory: fail-closed}
+  - {id: PT-250, path: engine, tool: write/self, document: unreadable, expect: ask/writes, mandatory: fail-closed}
+  - {id: PT-251, path: engine, tool: write/external, document: unreadable, expect: ask/writes, mandatory: fail-closed}
+  - {id: PT-252, path: engine, tool: write/external, context: private, document: unreadable, expect: ask/flow_external_write, mandatory: fail-closed}
+  - {id: PT-253, path: legacy, tool: write/external, document: unreadable, expect: allow}
+  - {id: PT-254, path: legacy, tool: write/external, context: private, document: unreadable, expect: deny/approval_unavailable}
+
+  # C. The deployment's flow setting x an org's or agent's flow rule (SEC1, SEC2): the strictest applies.
+  - {id: PT-255, path: durable, tool: write/external, context: private, document: flow-ask, expect: ask/flow_external_write}
+  - {id: PT-256, path: durable, tool: write/external, context: unknown, document: flow-ask, expect: ask/flow_external_write}
+  - {id: PT-257, path: durable, tool: write/external, context: private, document: flow-deny, expect: deny/flow_external_write}
+  - {id: PT-258, path: durable, tool: write/external, context: unknown, document: flow-deny, expect: deny/flow_external_write}
+  - {id: PT-259, path: durable, tool: write/external, context: private, document: flow-off, expect: ask/flow_external_write}
+  - {id: PT-260, path: durable, tool: write/external, context: unknown, document: flow-off, expect: ask/flow_external_write}
+  - {id: PT-261, path: durable, tool: write/external, context: private, document: flow-ask-private, expect: ask/flow_external_write}
+  - {id: PT-262, path: durable, tool: write/external, context: unknown, document: flow-ask-private, expect: ask/flow_external_write}
+  - {id: PT-263, path: durable, tool: write/external, context: private, document: flow-deny-private, expect: ask/flow_external_write}
+  - {id: PT-264, path: durable, tool: write/external, context: unknown, document: flow-deny-private, expect: deny/flow_external_write}
+  - {id: PT-265, path: durable, tool: write/external, context: private, deployment: off, expect: allow}
+  - {id: PT-266, path: durable, tool: write/external, context: unknown, deployment: off, expect: allow}
+  - {id: PT-267, path: durable, tool: write/external, context: private, document: flow-ask, deployment: off, expect: ask/flow_external_write}
+  - {id: PT-268, path: durable, tool: write/external, context: unknown, document: flow-ask, deployment: off, expect: ask/flow_external_write}
+  - {id: PT-269, path: durable, tool: write/external, context: private, document: flow-deny, deployment: off, expect: deny/flow_external_write}
+  - {id: PT-270, path: durable, tool: write/external, context: unknown, document: flow-deny, deployment: off, expect: deny/flow_external_write}
+  - {id: PT-271, path: durable, tool: write/external, context: private, document: flow-off, deployment: off, expect: allow}
+  - {id: PT-272, path: durable, tool: write/external, context: unknown, document: flow-off, deployment: off, expect: allow}
+  - {id: PT-273, path: durable, tool: write/external, context: private, document: flow-ask-private, deployment: off, expect: allow}
+  - {id: PT-274, path: durable, tool: write/external, context: unknown, document: flow-ask-private, deployment: off, expect: ask/flow_external_write}
+  - {id: PT-275, path: durable, tool: write/external, context: private, document: flow-deny-private, deployment: off, expect: allow}
+  - {id: PT-276, path: durable, tool: write/external, context: unknown, document: flow-deny-private, deployment: off, expect: deny/flow_external_write}
+  - {id: PT-277, path: durable, tool: write/external, context: private, deployment: deny, expect: deny/flow_external_write}
+  - {id: PT-278, path: durable, tool: write/external, context: unknown, deployment: deny, expect: deny/flow_external_write}
+  - {id: PT-279, path: durable, tool: write/external, context: private, document: flow-ask, deployment: deny, expect: deny/flow_external_write}
+  - {id: PT-280, path: durable, tool: write/external, context: unknown, document: flow-ask, deployment: deny, expect: deny/flow_external_write}
+  - {id: PT-281, path: durable, tool: write/external, context: private, document: flow-deny, deployment: deny, expect: deny/flow_external_write}
+  - {id: PT-282, path: durable, tool: write/external, context: unknown, document: flow-deny, deployment: deny, expect: deny/flow_external_write}
+  - {id: PT-283, path: durable, tool: write/external, context: private, document: flow-off, deployment: deny, expect: deny/flow_external_write}
+  - {id: PT-284, path: durable, tool: write/external, context: unknown, document: flow-off, deployment: deny, expect: deny/flow_external_write}
+  - {id: PT-285, path: durable, tool: write/external, context: private, document: flow-ask-private, deployment: deny, expect: deny/flow_external_write}
+  - {id: PT-286, path: durable, tool: write/external, context: unknown, document: flow-ask-private, deployment: deny, expect: deny/flow_external_write}
+  - {id: PT-287, path: durable, tool: write/external, context: private, document: flow-deny-private, deployment: deny, expect: deny/flow_external_write}
+  - {id: PT-288, path: durable, tool: write/external, context: unknown, document: flow-deny-private, deployment: deny, expect: deny/flow_external_write}
+  - {id: PT-289, path: durable, tool: write/external, context: private, deployment: ask-private, expect: allow}
+  - {id: PT-290, path: durable, tool: write/external, context: unknown, deployment: ask-private, expect: ask/flow_external_write}
+  - {id: PT-291, path: durable, tool: write/external, context: private, document: flow-ask, deployment: ask-private, expect: ask/flow_external_write}
+  - {id: PT-292, path: durable, tool: write/external, context: unknown, document: flow-ask, deployment: ask-private, expect: ask/flow_external_write}
+  - {id: PT-293, path: durable, tool: write/external, context: private, document: flow-deny, deployment: ask-private, expect: deny/flow_external_write}
+  - {id: PT-294, path: durable, tool: write/external, context: unknown, document: flow-deny, deployment: ask-private, expect: deny/flow_external_write}
+  - {id: PT-295, path: durable, tool: write/external, context: private, document: flow-off, deployment: ask-private, expect: allow}
+  - {id: PT-296, path: durable, tool: write/external, context: unknown, document: flow-off, deployment: ask-private, expect: ask/flow_external_write}
+  - {id: PT-297, path: durable, tool: write/external, context: private, document: flow-ask-private, deployment: ask-private, expect: allow}
+  - {id: PT-298, path: durable, tool: write/external, context: unknown, document: flow-ask-private, deployment: ask-private, expect: ask/flow_external_write}
+  - {id: PT-299, path: durable, tool: write/external, context: private, document: flow-deny-private, deployment: ask-private, expect: allow}
+  - {id: PT-300, path: durable, tool: write/external, context: unknown, document: flow-deny-private, deployment: ask-private, expect: deny/flow_external_write}
+  - {id: PT-301, path: durable, tool: write/external, context: private, deployment: deny-private, expect: allow}
+  - {id: PT-302, path: durable, tool: write/external, context: unknown, deployment: deny-private, expect: deny/flow_external_write}
+  - {id: PT-303, path: durable, tool: write/external, context: private, document: flow-ask, deployment: deny-private, expect: ask/flow_external_write}
+  - {id: PT-304, path: durable, tool: write/external, context: unknown, document: flow-ask, deployment: deny-private, expect: deny/flow_external_write}
+  - {id: PT-305, path: durable, tool: write/external, context: private, document: flow-deny, deployment: deny-private, expect: deny/flow_external_write}
+  - {id: PT-306, path: durable, tool: write/external, context: unknown, document: flow-deny, deployment: deny-private, expect: deny/flow_external_write}
+  - {id: PT-307, path: durable, tool: write/external, context: private, document: flow-off, deployment: deny-private, expect: allow}
+  - {id: PT-308, path: durable, tool: write/external, context: unknown, document: flow-off, deployment: deny-private, expect: deny/flow_external_write}
+  - {id: PT-309, path: durable, tool: write/external, context: private, document: flow-ask-private, deployment: deny-private, expect: allow}
+  - {id: PT-310, path: durable, tool: write/external, context: unknown, document: flow-ask-private, deployment: deny-private, expect: deny/flow_external_write}
+  - {id: PT-311, path: durable, tool: write/external, context: private, document: flow-deny-private, deployment: deny-private, expect: allow}
+  - {id: PT-312, path: durable, tool: write/external, context: unknown, document: flow-deny-private, deployment: deny-private, expect: deny/flow_external_write}
+  - {id: PT-313, path: durable, tool: write/external, context: private, document: agent-flow-deny, deployment: off, expect: deny/flow_external_write}
+  - {id: PT-314, path: durable, tool: write/external, context: unknown, document: agent-flow-deny, deployment: off, expect: deny/flow_external_write}
+  - {id: PT-315, path: durable, tool: write/external, context: private, deployment: invalid-level, expect: ask/flow_external_write}
+  - {id: PT-316, path: durable, tool: write/external, context: unknown, deployment: invalid-level, expect: ask/flow_external_write}
+  - {id: PT-317, path: durable, tool: write/external, context: private, deployment: invalid-above, expect: ask/flow_external_write}
+  - {id: PT-318, path: durable, tool: write/external, context: unknown, deployment: invalid-above, expect: ask/flow_external_write}
+  - {id: PT-319, path: engine, tool: write/external, context: private, document: flow-ask, expect: ask/flow_external_write}
+  - {id: PT-320, path: legacy, tool: write/external, context: private, document: flow-ask, expect: deny/approval_unavailable}
+  - {id: PT-321, path: engine, tool: write/external, context: unknown, document: flow-ask, expect: ask/flow_external_write}
+  - {id: PT-322, path: legacy, tool: write/external, context: unknown, document: flow-ask, expect: deny/approval_unavailable}
+  - {id: PT-323, path: engine, tool: write/external, context: private, document: flow-deny, expect: deny/flow_external_write}
+  - {id: PT-324, path: legacy, tool: write/external, context: private, document: flow-deny, expect: deny/approval_unavailable}
+  - {id: PT-325, path: engine, tool: write/external, context: unknown, document: flow-deny, expect: deny/flow_external_write}
+  - {id: PT-326, path: legacy, tool: write/external, context: unknown, document: flow-deny, expect: deny/approval_unavailable}
+  - {id: PT-327, path: engine, tool: write/external, context: private, document: flow-off, expect: ask/flow_external_write}
+  - {id: PT-328, path: legacy, tool: write/external, context: private, document: flow-off, expect: deny/approval_unavailable}
+  - {id: PT-329, path: engine, tool: write/external, context: unknown, document: flow-off, expect: ask/flow_external_write}
+  - {id: PT-330, path: legacy, tool: write/external, context: unknown, document: flow-off, expect: deny/approval_unavailable}
+  - {id: PT-331, path: engine, tool: write/external, context: private, document: flow-deny-private, expect: ask/flow_external_write}
+  - {id: PT-332, path: legacy, tool: write/external, context: private, document: flow-deny-private, expect: deny/approval_unavailable}
+  - {id: PT-333, path: engine, tool: write/external, context: unknown, document: flow-deny-private, expect: deny/flow_external_write}
+  - {id: PT-334, path: legacy, tool: write/external, context: unknown, document: flow-deny-private, expect: deny/approval_unavailable}
+  - {id: PT-335, path: engine, tool: write/external, context: private, deployment: off, expect: ask/engine_writes}
+  - {id: PT-336, path: legacy, tool: write/external, context: private, deployment: off, expect: allow}
+  - {id: PT-337, path: engine, tool: write/external, context: unknown, deployment: off, expect: ask/engine_writes}
+  - {id: PT-338, path: legacy, tool: write/external, context: unknown, deployment: off, expect: allow}
+  - {id: PT-339, path: engine, tool: write/external, context: private, document: flow-ask, deployment: off, expect: ask/flow_external_write}
+  - {id: PT-340, path: legacy, tool: write/external, context: private, document: flow-ask, deployment: off, expect: deny/approval_unavailable}
+  - {id: PT-341, path: engine, tool: write/external, context: unknown, document: flow-ask, deployment: off, expect: ask/flow_external_write}
+  - {id: PT-342, path: legacy, tool: write/external, context: unknown, document: flow-ask, deployment: off, expect: deny/approval_unavailable}
+  - {id: PT-343, path: engine, tool: write/external, context: private, document: flow-deny, deployment: off, expect: deny/flow_external_write}
+  - {id: PT-344, path: legacy, tool: write/external, context: private, document: flow-deny, deployment: off, expect: deny/approval_unavailable}
+  - {id: PT-345, path: engine, tool: write/external, context: unknown, document: flow-deny, deployment: off, expect: deny/flow_external_write}
+  - {id: PT-346, path: legacy, tool: write/external, context: unknown, document: flow-deny, deployment: off, expect: deny/approval_unavailable}
+  - {id: PT-347, path: engine, tool: write/external, context: private, document: flow-off, deployment: off, expect: ask/engine_writes}
+  - {id: PT-348, path: legacy, tool: write/external, context: private, document: flow-off, deployment: off, expect: allow}
+  - {id: PT-349, path: engine, tool: write/external, context: unknown, document: flow-off, deployment: off, expect: ask/engine_writes}
+  - {id: PT-350, path: legacy, tool: write/external, context: unknown, document: flow-off, deployment: off, expect: allow}
+  - {id: PT-351, path: engine, tool: write/external, context: private, document: flow-deny-private, deployment: off, expect: ask/engine_writes}
+  - {id: PT-352, path: legacy, tool: write/external, context: private, document: flow-deny-private, deployment: off, expect: deny/approval_unavailable}
+  - {id: PT-353, path: engine, tool: write/external, context: unknown, document: flow-deny-private, deployment: off, expect: deny/flow_external_write}
+  - {id: PT-354, path: legacy, tool: write/external, context: unknown, document: flow-deny-private, deployment: off, expect: deny/approval_unavailable}
+  - {id: PT-355, path: engine, tool: write/external, context: private, deployment: deny, expect: deny/flow_external_write}
+  - {id: PT-356, path: legacy, tool: write/external, context: private, deployment: deny, expect: deny/approval_unavailable}
+  - {id: PT-357, path: engine, tool: write/external, context: unknown, deployment: deny, expect: deny/flow_external_write}
+  - {id: PT-358, path: legacy, tool: write/external, context: unknown, deployment: deny, expect: deny/approval_unavailable}
+  - {id: PT-359, path: engine, tool: write/external, context: private, document: flow-ask, deployment: deny, expect: deny/flow_external_write}
+  - {id: PT-360, path: legacy, tool: write/external, context: private, document: flow-ask, deployment: deny, expect: deny/approval_unavailable}
+  - {id: PT-361, path: engine, tool: write/external, context: unknown, document: flow-ask, deployment: deny, expect: deny/flow_external_write}
+  - {id: PT-362, path: legacy, tool: write/external, context: unknown, document: flow-ask, deployment: deny, expect: deny/approval_unavailable}
+  - {id: PT-363, path: engine, tool: write/external, context: private, document: flow-deny, deployment: deny, expect: deny/flow_external_write}
+  - {id: PT-364, path: legacy, tool: write/external, context: private, document: flow-deny, deployment: deny, expect: deny/approval_unavailable}
+  - {id: PT-365, path: engine, tool: write/external, context: unknown, document: flow-deny, deployment: deny, expect: deny/flow_external_write}
+  - {id: PT-366, path: legacy, tool: write/external, context: unknown, document: flow-deny, deployment: deny, expect: deny/approval_unavailable}
+  - {id: PT-367, path: engine, tool: write/external, context: private, document: flow-off, deployment: deny, expect: deny/flow_external_write}
+  - {id: PT-368, path: legacy, tool: write/external, context: private, document: flow-off, deployment: deny, expect: deny/approval_unavailable}
+  - {id: PT-369, path: engine, tool: write/external, context: unknown, document: flow-off, deployment: deny, expect: deny/flow_external_write}
+  - {id: PT-370, path: legacy, tool: write/external, context: unknown, document: flow-off, deployment: deny, expect: deny/approval_unavailable}
+  - {id: PT-371, path: engine, tool: write/external, context: private, document: flow-deny-private, deployment: deny, expect: deny/flow_external_write}
+  - {id: PT-372, path: legacy, tool: write/external, context: private, document: flow-deny-private, deployment: deny, expect: deny/approval_unavailable}
+  - {id: PT-373, path: engine, tool: write/external, context: unknown, document: flow-deny-private, deployment: deny, expect: deny/flow_external_write}
+  - {id: PT-374, path: legacy, tool: write/external, context: unknown, document: flow-deny-private, deployment: deny, expect: deny/approval_unavailable}
+  - {id: PT-375, path: engine, tool: write/external, context: private, deployment: ask-private, expect: ask/engine_writes}
+  - {id: PT-376, path: legacy, tool: write/external, context: private, deployment: ask-private, expect: deny/approval_unavailable}
+  - {id: PT-377, path: engine, tool: write/external, context: unknown, deployment: ask-private, expect: ask/flow_external_write}
+  - {id: PT-378, path: legacy, tool: write/external, context: unknown, deployment: ask-private, expect: deny/approval_unavailable}
+  - {id: PT-379, path: engine, tool: write/external, context: private, document: flow-ask, deployment: ask-private, expect: ask/flow_external_write}
+  - {id: PT-380, path: legacy, tool: write/external, context: private, document: flow-ask, deployment: ask-private, expect: deny/approval_unavailable}
+  - {id: PT-381, path: engine, tool: write/external, context: unknown, document: flow-ask, deployment: ask-private, expect: ask/flow_external_write}
+  - {id: PT-382, path: legacy, tool: write/external, context: unknown, document: flow-ask, deployment: ask-private, expect: deny/approval_unavailable}
+  - {id: PT-383, path: engine, tool: write/external, context: private, document: flow-deny, deployment: ask-private, expect: deny/flow_external_write}
+  - {id: PT-384, path: legacy, tool: write/external, context: private, document: flow-deny, deployment: ask-private, expect: deny/approval_unavailable}
+  - {id: PT-385, path: engine, tool: write/external, context: unknown, document: flow-deny, deployment: ask-private, expect: deny/flow_external_write}
+  - {id: PT-386, path: legacy, tool: write/external, context: unknown, document: flow-deny, deployment: ask-private, expect: deny/approval_unavailable}
+  - {id: PT-387, path: engine, tool: write/external, context: private, document: flow-off, deployment: ask-private, expect: ask/engine_writes}
+  - {id: PT-388, path: legacy, tool: write/external, context: private, document: flow-off, deployment: ask-private, expect: deny/approval_unavailable}
+  - {id: PT-389, path: engine, tool: write/external, context: unknown, document: flow-off, deployment: ask-private, expect: ask/flow_external_write}
+  - {id: PT-390, path: legacy, tool: write/external, context: unknown, document: flow-off, deployment: ask-private, expect: deny/approval_unavailable}
+  - {id: PT-391, path: engine, tool: write/external, context: private, document: flow-deny-private, deployment: ask-private, expect: ask/engine_writes}
+  - {id: PT-392, path: legacy, tool: write/external, context: private, document: flow-deny-private, deployment: ask-private, expect: deny/approval_unavailable}
+  - {id: PT-393, path: engine, tool: write/external, context: unknown, document: flow-deny-private, deployment: ask-private, expect: deny/flow_external_write}
+  - {id: PT-394, path: legacy, tool: write/external, context: unknown, document: flow-deny-private, deployment: ask-private, expect: deny/approval_unavailable}
+  - {id: PT-395, path: durable, tool: write/external, document: flow-deny, deployment: off, expect: allow}
+  - {id: PT-396, path: engine, tool: write/external, document: flow-deny, deployment: off, expect: ask/engine_writes}
+  - {id: PT-397, path: legacy, tool: write/external, document: flow-deny, deployment: off, expect: allow}
+  - {id: PT-398, path: durable, tool: write/external, document: flow-deny, deployment: deny, expect: allow}
+  - {id: PT-399, path: engine, tool: write/external, document: flow-deny, deployment: deny, expect: ask/engine_writes}
+  - {id: PT-400, path: legacy, tool: write/external, document: flow-deny, deployment: deny, expect: allow}
+
+  # D. Conversation grants (UX1, UX2): one tool, one destination; never past an org rule; deny absorbs.
+  - {id: PT-401, path: durable, tool: write/external, context: private, document: flow-ask-writes-ask, expect: ask/flow_external_write, mandatory: grant-never-past-org-rule}
+  - {id: PT-402, path: durable, tool: write/external, context: private, grant: same, expect: allow}
+  - {id: PT-403, path: durable, tool: write/external, context: private, document: writes-ask, grant: same, expect: ask/writes, mandatory: grant-never-past-org-rule}
+  - {id: PT-404, path: durable, tool: write/external, context: private, document: tool-deny, grant: same, expect: deny/policy, mandatory: deny-absorbing}
+  - {id: PT-405, path: durable, tool: write/external, context: private, deployment: deny, grant: same, expect: deny/flow_external_write, mandatory: deny-absorbing}
+  - {id: PT-406, path: durable, tool: write/external, context: private, document: flow-ask-writes-ask, grant: same, expect: ask/writes, mandatory: grant-never-past-org-rule}
+  - {id: PT-407, path: durable, tool: write/external, grant: same, expect: allow}
+  - {id: PT-408, path: durable, tool: write/external, context: private, grant: other-destination, expect: ask/flow_external_write}
+  - {id: PT-409, path: durable, tool: write/external, context: private, document: writes-ask, grant: other-destination, expect: ask/flow_external_write, mandatory: grant-never-past-org-rule}
+  - {id: PT-410, path: durable, tool: write/external, context: private, document: tool-deny, grant: other-destination, expect: deny/policy, mandatory: deny-absorbing}
+  - {id: PT-411, path: durable, tool: write/external, context: private, deployment: deny, grant: other-destination, expect: deny/flow_external_write, mandatory: deny-absorbing}
+  - {id: PT-412, path: durable, tool: write/external, context: private, document: flow-ask-writes-ask, grant: other-destination, expect: ask/flow_external_write, mandatory: grant-never-past-org-rule}
+  - {id: PT-413, path: durable, tool: write/external, grant: other-destination, expect: allow}
+  - {id: PT-414, path: durable, tool: write/external, context: private, grant: other-tool, expect: ask/flow_external_write}
+  - {id: PT-415, path: durable, tool: write/external, context: private, document: writes-ask, grant: other-tool, expect: ask/flow_external_write, mandatory: grant-never-past-org-rule}
+  - {id: PT-416, path: durable, tool: write/external, context: private, document: tool-deny, grant: other-tool, expect: deny/policy, mandatory: deny-absorbing}
+  - {id: PT-417, path: durable, tool: write/external, context: private, deployment: deny, grant: other-tool, expect: deny/flow_external_write, mandatory: deny-absorbing}
+  - {id: PT-418, path: durable, tool: write/external, context: private, document: flow-ask-writes-ask, grant: other-tool, expect: ask/flow_external_write, mandatory: grant-never-past-org-rule}
+  - {id: PT-419, path: durable, tool: write/external, grant: other-tool, expect: allow}
+  - {id: PT-420, path: durable, tool: write/external, context: private, grant: not-granted, expect: ask/flow_external_write}
+  - {id: PT-421, path: durable, tool: write/external, context: private, document: writes-ask, grant: not-granted, expect: ask/flow_external_write, mandatory: grant-never-past-org-rule}
+  - {id: PT-422, path: durable, tool: write/external, context: private, document: tool-deny, grant: not-granted, expect: deny/policy, mandatory: deny-absorbing}
+  - {id: PT-423, path: durable, tool: write/external, context: private, deployment: deny, grant: not-granted, expect: deny/flow_external_write, mandatory: deny-absorbing}
+  - {id: PT-424, path: durable, tool: write/external, context: private, document: flow-ask-writes-ask, grant: not-granted, expect: ask/flow_external_write, mandatory: grant-never-past-org-rule}
+  - {id: PT-425, path: durable, tool: write/external, grant: not-granted, expect: allow}
+  - {id: PT-426, path: durable, tool: write/external, context: private, grant: declined, expect: ask/flow_external_write}
+  - {id: PT-427, path: durable, tool: write/external, context: private, document: writes-ask, grant: declined, expect: ask/flow_external_write, mandatory: grant-never-past-org-rule}
+  - {id: PT-428, path: durable, tool: write/external, context: private, document: tool-deny, grant: declined, expect: deny/policy, mandatory: deny-absorbing}
+  - {id: PT-429, path: durable, tool: write/external, context: private, deployment: deny, grant: declined, expect: deny/flow_external_write, mandatory: deny-absorbing}
+  - {id: PT-430, path: durable, tool: write/external, context: private, document: flow-ask-writes-ask, grant: declined, expect: ask/flow_external_write, mandatory: grant-never-past-org-rule}
+  - {id: PT-431, path: durable, tool: write/external, grant: declined, expect: allow}
+  - {id: PT-432, path: engine, tool: write/external, context: private, document: flow-ask-writes-ask, expect: ask/flow_external_write, mandatory: grant-never-past-org-rule}
+  - {id: PT-433, path: engine, tool: write/external, context: private, grant: same, expect: allow}
+  - {id: PT-434, path: engine, tool: write/external, context: private, document: writes-ask, grant: same, expect: ask/writes, mandatory: grant-never-past-org-rule}
+  - {id: PT-435, path: engine, tool: write/external, context: private, document: tool-deny, grant: same, expect: deny/policy, mandatory: deny-absorbing}
+  - {id: PT-436, path: engine, tool: write/external, context: private, deployment: deny, grant: same, expect: deny/flow_external_write, mandatory: deny-absorbing}
+  - {id: PT-437, path: engine, tool: write/external, context: private, document: flow-ask-writes-ask, grant: same, expect: ask/writes, mandatory: grant-never-past-org-rule}
+  - {id: PT-438, path: engine, tool: write/external, grant: same, expect: allow}
+  - {id: PT-439, path: engine, tool: write/external, context: private, grant: other-destination, expect: ask/flow_external_write}
+  - {id: PT-440, path: engine, tool: write/external, context: private, document: writes-ask, grant: other-destination, expect: ask/flow_external_write, mandatory: grant-never-past-org-rule}
+  - {id: PT-441, path: engine, tool: write/external, context: private, document: tool-deny, grant: other-destination, expect: deny/policy, mandatory: deny-absorbing}
+  - {id: PT-442, path: engine, tool: write/external, context: private, deployment: deny, grant: other-destination, expect: deny/flow_external_write, mandatory: deny-absorbing}
+  - {id: PT-443, path: engine, tool: write/external, context: private, document: flow-ask-writes-ask, grant: other-destination, expect: ask/flow_external_write, mandatory: grant-never-past-org-rule}
+  - {id: PT-444, path: engine, tool: write/external, grant: other-destination, expect: ask/engine_writes}
+  - {id: PT-445, path: engine, tool: write/external, context: private, grant: other-tool, expect: ask/flow_external_write}
+  - {id: PT-446, path: engine, tool: write/external, context: private, document: writes-ask, grant: other-tool, expect: ask/flow_external_write, mandatory: grant-never-past-org-rule}
+  - {id: PT-447, path: engine, tool: write/external, context: private, document: tool-deny, grant: other-tool, expect: deny/policy, mandatory: deny-absorbing}
+  - {id: PT-448, path: engine, tool: write/external, context: private, deployment: deny, grant: other-tool, expect: deny/flow_external_write, mandatory: deny-absorbing}
+  - {id: PT-449, path: engine, tool: write/external, context: private, document: flow-ask-writes-ask, grant: other-tool, expect: ask/flow_external_write, mandatory: grant-never-past-org-rule}
+  - {id: PT-450, path: engine, tool: write/external, grant: other-tool, expect: ask/engine_writes}
+  - {id: PT-451, path: engine, tool: write/external, context: private, grant: not-granted, expect: ask/flow_external_write}
+  - {id: PT-452, path: engine, tool: write/external, context: private, document: writes-ask, grant: not-granted, expect: ask/flow_external_write, mandatory: grant-never-past-org-rule}
+  - {id: PT-453, path: engine, tool: write/external, context: private, document: tool-deny, grant: not-granted, expect: deny/policy, mandatory: deny-absorbing}
+  - {id: PT-454, path: engine, tool: write/external, context: private, deployment: deny, grant: not-granted, expect: deny/flow_external_write, mandatory: deny-absorbing}
+  - {id: PT-455, path: engine, tool: write/external, context: private, document: flow-ask-writes-ask, grant: not-granted, expect: ask/flow_external_write, mandatory: grant-never-past-org-rule}
+  - {id: PT-456, path: engine, tool: write/external, grant: not-granted, expect: ask/engine_writes}
+  - {id: PT-457, path: engine, tool: write/external, context: private, grant: declined, expect: ask/flow_external_write}
+  - {id: PT-458, path: engine, tool: write/external, context: private, document: writes-ask, grant: declined, expect: ask/flow_external_write, mandatory: grant-never-past-org-rule}
+  - {id: PT-459, path: engine, tool: write/external, context: private, document: tool-deny, grant: declined, expect: deny/policy, mandatory: deny-absorbing}
+  - {id: PT-460, path: engine, tool: write/external, context: private, deployment: deny, grant: declined, expect: deny/flow_external_write, mandatory: deny-absorbing}
+  - {id: PT-461, path: engine, tool: write/external, context: private, document: flow-ask-writes-ask, grant: declined, expect: ask/flow_external_write, mandatory: grant-never-past-org-rule}
+  - {id: PT-462, path: engine, tool: write/external, grant: declined, expect: ask/engine_writes}
+  - {id: PT-463, path: engine, tool: write/external, profile: write-deny, expect: deny/policy, mandatory: deny-absorbing}
+  - {id: PT-464, path: engine, tool: execute/external, context: private, profile: execute-deny, expect: deny/policy, mandatory: deny-absorbing}
+  - {id: PT-465, path: engine, tool: write/external, profile: write-deny, grant: same, expect: deny/policy, mandatory: deny-absorbing}
+  - {id: PT-466, path: engine, tool: execute/external, context: private, profile: execute-deny, grant: same, expect: deny/policy, mandatory: deny-absorbing}
+  - {id: PT-467, path: engine, tool: write/external, profile: write-deny, grant: other-destination, expect: deny/policy, mandatory: deny-absorbing}
+  - {id: PT-468, path: engine, tool: execute/external, context: private, profile: execute-deny, grant: other-destination, expect: deny/policy, mandatory: deny-absorbing}
+  - {id: PT-469, path: engine, tool: write/external, profile: write-deny, grant: other-tool, expect: deny/policy, mandatory: deny-absorbing}
+  - {id: PT-470, path: engine, tool: execute/external, context: private, profile: execute-deny, grant: other-tool, expect: deny/policy, mandatory: deny-absorbing}
+  - {id: PT-471, path: engine, tool: write/external, profile: write-deny, grant: not-granted, expect: deny/policy, mandatory: deny-absorbing}
+  - {id: PT-472, path: engine, tool: execute/external, context: private, profile: execute-deny, grant: not-granted, expect: deny/policy, mandatory: deny-absorbing}
+  - {id: PT-473, path: engine, tool: write/external, profile: write-deny, grant: declined, expect: deny/policy, mandatory: deny-absorbing}
+  - {id: PT-474, path: engine, tool: execute/external, context: private, profile: execute-deny, grant: declined, expect: deny/policy, mandatory: deny-absorbing}
+  - {id: PT-475, path: engine, tool: write/self, grant: same, expect: allow}
+  - {id: PT-476, path: engine, tool: write/external, document: writes-ask, grant: same, expect: ask/writes, mandatory: grant-never-past-org-rule}
+
+  # E. Child runs: the label the parent passed at the spawn (UX2); none passed is unknown.
+  - {id: PT-477, path: durable, tool: write/external, context: child-private, expect: ask/flow_external_write}
+  - {id: PT-478, path: durable, tool: write/external, context: child-private, deployment: ask-private, expect: allow}
+  - {id: PT-479, path: durable, tool: write/external, context: child-private, deployment: deny, expect: deny/flow_external_write}
+  - {id: PT-480, path: durable, tool: write/external, context: child-public, expect: allow}
+  - {id: PT-481, path: durable, tool: write/external, context: child-public, deployment: ask-private, expect: allow}
+  - {id: PT-482, path: durable, tool: write/external, context: child-public, deployment: deny, expect: allow}
+  - {id: PT-483, path: durable, tool: write/external, context: child-unlabelled, expect: ask/flow_external_write}
+  - {id: PT-484, path: durable, tool: write/external, context: child-unlabelled, deployment: ask-private, expect: ask/flow_external_write}
+  - {id: PT-485, path: durable, tool: write/external, context: child-unlabelled, deployment: deny, expect: deny/flow_external_write}
+  - {id: PT-486, path: engine, tool: write/external, context: child-private, expect: ask/flow_external_write}
+  - {id: PT-487, path: engine, tool: write/external, context: child-private, deployment: ask-private, expect: ask/engine_writes}
+  - {id: PT-488, path: engine, tool: write/external, context: child-private, deployment: deny, expect: deny/flow_external_write}
+  - {id: PT-489, path: engine, tool: write/external, context: child-public, expect: ask/engine_writes}
+  - {id: PT-490, path: engine, tool: write/external, context: child-public, deployment: ask-private, expect: ask/engine_writes}
+  - {id: PT-491, path: engine, tool: write/external, context: child-public, deployment: deny, expect: ask/engine_writes}
+  - {id: PT-492, path: engine, tool: write/external, context: child-unlabelled, expect: ask/flow_external_write}
+  - {id: PT-493, path: engine, tool: write/external, context: child-unlabelled, deployment: ask-private, expect: ask/flow_external_write}
+  - {id: PT-494, path: engine, tool: write/external, context: child-unlabelled, deployment: deny, expect: deny/flow_external_write}
+
+  # F. The engine default: ENGINE_APPROVALS narrowed by the profile (UX2), by sink (UX4).
+  - {id: PT-495, path: engine, tool: read/none, profile: write-deny, expect: allow}
+  - {id: PT-496, path: engine, tool: workspace/none, profile: write-deny, expect: allow}
+  - {id: PT-497, path: engine, tool: write/none, profile: write-deny, expect: deny/policy}
+  - {id: PT-498, path: engine, tool: write/self, profile: write-deny, expect: deny/policy}
+  - {id: PT-499, path: engine, tool: write/internal_audience, profile: write-deny, expect: deny/policy}
+  - {id: PT-500, path: engine, tool: execute/none, profile: write-deny, expect: allow}
+  - {id: PT-501, path: engine, tool: execute/external, profile: write-deny, expect: ask/engine_writes}
+  - {id: PT-502, path: engine, tool: read/none, profile: execute-deny, expect: allow}
+  - {id: PT-503, path: engine, tool: workspace/none, profile: execute-deny, expect: allow}
+  - {id: PT-504, path: engine, tool: write/none, profile: execute-deny, expect: allow}
+  - {id: PT-505, path: engine, tool: write/self, profile: execute-deny, expect: allow}
+  - {id: PT-506, path: engine, tool: write/internal_audience, profile: execute-deny, expect: ask/engine_writes}
+  - {id: PT-507, path: engine, tool: write/external, profile: execute-deny, expect: ask/engine_writes}
+  - {id: PT-508, path: engine, tool: execute/none, profile: execute-deny, expect: deny/policy}
+  - {id: PT-509, path: engine, tool: execute/external, profile: execute-deny, expect: deny/policy}
+  - {id: PT-510, path: engine, tool: read/none, profile: write-allow, expect: allow}
+  - {id: PT-511, path: engine, tool: workspace/none, profile: write-allow, expect: allow}
+  - {id: PT-512, path: engine, tool: write/none, profile: write-allow, expect: allow}
+  - {id: PT-513, path: engine, tool: write/self, profile: write-allow, expect: allow}
+  - {id: PT-514, path: engine, tool: write/internal_audience, profile: write-allow, expect: ask/engine_writes}
+  - {id: PT-515, path: engine, tool: write/external, profile: write-allow, expect: ask/engine_writes}
+  - {id: PT-516, path: engine, tool: execute/none, profile: write-allow, expect: allow}
+  - {id: PT-517, path: engine, tool: execute/external, profile: write-allow, expect: ask/engine_writes}
+  - {id: PT-518, path: engine, tool: read/none, profile: read-ask, expect: ask/effect_class}
+  - {id: PT-519, path: engine, tool: workspace/none, profile: read-ask, expect: allow}
+  - {id: PT-520, path: engine, tool: write/none, profile: read-ask, expect: allow}
+  - {id: PT-521, path: engine, tool: write/self, profile: read-ask, expect: allow}
+  - {id: PT-522, path: engine, tool: write/internal_audience, profile: read-ask, expect: ask/engine_writes}
+  - {id: PT-523, path: engine, tool: write/external, profile: read-ask, expect: ask/engine_writes}
+  - {id: PT-524, path: engine, tool: execute/none, profile: read-ask, expect: allow}
+  - {id: PT-525, path: engine, tool: execute/external, profile: read-ask, expect: ask/engine_writes}
+  - {id: PT-526, path: engine, tool: write/external, context: private, profile: write-deny, expect: deny/policy}
+  - {id: PT-527, path: engine, tool: write/external, context: private, profile: execute-deny, expect: ask/flow_external_write}
+  - {id: PT-528, path: engine, tool: write/external, context: private, profile: write-allow, expect: ask/flow_external_write}
+  - {id: PT-529, path: engine, tool: write/external, context: private, profile: read-ask, expect: ask/flow_external_write}
+  - {id: PT-530, path: engine, tool: write/self, document: writes-ask, profile: write-deny, expect: deny/policy, mandatory: grant-never-past-org-rule}
+  - {id: PT-531, path: engine, tool: write/self, document: writes-ask, profile: execute-deny, expect: ask/writes, mandatory: grant-never-past-org-rule}
+  - {id: PT-532, path: engine, tool: write/self, document: writes-ask, profile: write-allow, expect: ask/writes, mandatory: grant-never-past-org-rule}
+  - {id: PT-533, path: engine, tool: write/self, document: writes-ask, profile: read-ask, expect: ask/writes, mandatory: grant-never-past-org-rule}
+
+  # G. The eval and replay world's tools (UX4 RT): reads are never held; writes after a read are.
+  - {id: PT-534, path: durable, tool: world:knowledge__read_document, context: private, expect: allow}
+  - {id: PT-535, path: legacy, tool: world:knowledge__read_document, context: private, expect: allow}
+  - {id: PT-536, path: durable, tool: world:knowledge__search, context: private, expect: allow}
+  - {id: PT-537, path: legacy, tool: world:knowledge__search, context: private, expect: allow}
+  - {id: PT-538, path: durable, tool: world:jira__get_issue, context: private, expect: allow}
+  - {id: PT-539, path: legacy, tool: world:jira__get_issue, context: private, expect: allow}
+  - {id: PT-540, path: durable, tool: world:jira__search_issues, context: private, expect: allow}
+  - {id: PT-541, path: legacy, tool: world:jira__search_issues, context: private, expect: allow}
+  - {id: PT-542, path: durable, tool: world:slack__read_channel, context: private, expect: allow}
+  - {id: PT-543, path: legacy, tool: world:slack__read_channel, context: private, expect: allow}
+  - {id: PT-544, path: durable, tool: world:gmail__read_email, context: private, expect: allow}
+  - {id: PT-545, path: legacy, tool: world:gmail__read_email, context: private, expect: allow}
+  - {id: PT-546, path: durable, tool: world:gmail__search_emails, context: private, expect: allow}
+  - {id: PT-547, path: legacy, tool: world:gmail__search_emails, context: private, expect: allow}
+  - {id: PT-548, path: durable, tool: world:drive__read_file, context: private, expect: allow}
+  - {id: PT-549, path: legacy, tool: world:drive__read_file, context: private, expect: allow}
+  - {id: PT-550, path: durable, tool: world:web__fetch_url, context: private, expect: ask/flow_external_write}
+  - {id: PT-551, path: legacy, tool: world:web__fetch_url, context: private, expect: deny/approval_unavailable}
+  - {id: PT-552, path: durable, tool: world:jira__add_comment, context: private, expect: ask/flow_external_write}
+  - {id: PT-553, path: legacy, tool: world:jira__add_comment, context: private, expect: deny/approval_unavailable}
+  - {id: PT-554, path: durable, tool: world:jira__create_issue, context: private, expect: ask/flow_external_write}
+  - {id: PT-555, path: legacy, tool: world:jira__create_issue, context: private, expect: deny/approval_unavailable}
+  - {id: PT-556, path: durable, tool: world:slack__send_message, context: private, expect: ask/flow_external_write}
+  - {id: PT-557, path: legacy, tool: world:slack__send_message, context: private, expect: deny/approval_unavailable}
+  - {id: PT-558, path: durable, tool: world:gmail__send_email, context: private, expect: ask/flow_external_write}
+  - {id: PT-559, path: legacy, tool: world:gmail__send_email, context: private, expect: deny/approval_unavailable}
+  - {id: PT-560, path: durable, tool: world:drive__share_file, context: private, expect: ask/flow_external_write}
+  - {id: PT-561, path: legacy, tool: world:drive__share_file, context: private, expect: deny/approval_unavailable}
+
+  # H. QA10-F3: what the engine profile narrows below the release default is an org rule: it asks
+  # whatever the sink, and no "allow for this conversation" answers it. Only ENGINE_APPROVALS follows the sink rule.
+  - {id: PT-562, path: engine, tool: read/external, profile: read-ask, expect: ask/effect_class}
+  - {id: PT-563, path: engine, tool: read/none, profile: read-ask, grant: same, expect: ask/effect_class, mandatory: grant-never-past-org-rule}
+  - {id: PT-564, path: engine, tool: read/external, context: private, profile: read-ask, grant: same, expect: ask/effect_class, mandatory: grant-never-past-org-rule}
+  - {id: PT-565, path: engine, tool: workspace/none, profile: workspace-ask, expect: ask/effect_class}
+  - {id: PT-566, path: engine, tool: workspace/none, profile: workspace-ask, grant: same, expect: ask/effect_class, mandatory: grant-never-past-org-rule}
+  - {id: PT-567, path: engine, tool: write/self, profile: workspace-ask, expect: allow}
+  - {id: PT-568, path: engine, tool: write/external, profile: workspace-ask, grant: same, expect: allow}
+  - {id: PT-569, path: engine, tool: write/external, profile: release, grant: same, expect: allow}
+
+  # I. FG2: a read's request goes to the system it reads (sink `self` untagged) and is never held; a
+  # read whose request carries what the model chose to an outside host (`sink=external`: the replay world's fetch, an
+  # open-world MCP read) is held after a private or unknown read, on every path, and never before one or after only
+  # public web pages (plain browsing). The product's own web search always runs, whatever the run read
+  # (`flow=platform_web`), and so does its fetch_url for an address the run was given (`address`: a search result, the
+  # person's message); after a private or unknown read a made-up address is refused, with no card, and no grant or
+  # switched-off deployment rule changes that while a flow rule holds (PT-708..PT-731; `linked`: a link in a page the run
+  # opened, PT-724..PT-731). No approval layer here asks about them or refuses them, a class rule for reads included
+  # (PT-704..PT-707).
+  - {id: PT-570, path: durable, tool: read/self, expect: allow}
+  - {id: PT-571, path: durable, tool: read/self, context: private, expect: allow}
+  - {id: PT-572, path: durable, tool: read/self, context: unknown, expect: allow}
+  - {id: PT-573, path: durable, tool: read/self, context: after-write, expect: allow}
+  - {id: PT-574, path: engine, tool: read/self, expect: allow}
+  - {id: PT-575, path: engine, tool: read/self, context: private, expect: allow}
+  - {id: PT-576, path: engine, tool: read/self, context: unknown, expect: allow}
+  - {id: PT-577, path: engine, tool: read/self, context: after-write, expect: allow}
+  - {id: PT-578, path: legacy, tool: read/self, expect: allow}
+  - {id: PT-579, path: legacy, tool: read/self, context: private, expect: allow}
+  - {id: PT-580, path: legacy, tool: read/self, context: unknown, expect: allow}
+  - {id: PT-581, path: legacy, tool: read/self, context: after-write, expect: allow}
+  - {id: PT-582, path: durable, tool: read, expect: allow}
+  - {id: PT-583, path: durable, tool: read, context: private, expect: allow}
+  - {id: PT-584, path: durable, tool: read, context: unknown, expect: allow}
+  - {id: PT-585, path: durable, tool: read, context: after-write, expect: allow}
+  - {id: PT-586, path: engine, tool: read, expect: allow}
+  - {id: PT-587, path: engine, tool: read, context: private, expect: allow}
+  - {id: PT-588, path: engine, tool: read, context: unknown, expect: allow}
+  - {id: PT-589, path: engine, tool: read, context: after-write, expect: allow}
+  - {id: PT-590, path: legacy, tool: read, expect: allow}
+  - {id: PT-591, path: legacy, tool: read, context: private, expect: allow}
+  - {id: PT-592, path: legacy, tool: read, context: unknown, expect: allow}
+  - {id: PT-593, path: legacy, tool: read, context: after-write, expect: allow}
+  - {id: PT-594, path: durable, tool: read/external, context: after-write, expect: ask/flow_external_write}
+  - {id: PT-595, path: durable, tool: read/external, context: after-web, expect: allow}
+  - {id: PT-596, path: engine, tool: read/external, context: after-write, expect: ask/flow_external_write}
+  - {id: PT-597, path: engine, tool: read/external, context: after-web, expect: allow}
+  - {id: PT-598, path: legacy, tool: read/external, context: after-write, expect: deny/approval_unavailable}
+  - {id: PT-599, path: legacy, tool: read/external, context: after-web, expect: allow}
+  - {id: PT-600, path: durable, tool: product:dynamic__fetch_url, expect: allow}
+  - {id: PT-601, path: durable, tool: product:dynamic__fetch_url, context: after-web, expect: allow}
+  - {id: PT-602, path: durable, tool: product:dynamic__fetch_url, context: private, expect: deny/web_address}
+  - {id: PT-603, path: durable, tool: product:dynamic__fetch_url, context: unknown, expect: deny/web_address}
+  - {id: PT-604, path: engine, tool: product:dynamic__fetch_url, expect: allow}
+  - {id: PT-605, path: engine, tool: product:dynamic__fetch_url, context: after-web, expect: allow}
+  - {id: PT-606, path: engine, tool: product:dynamic__fetch_url, context: private, expect: deny/web_address}
+  - {id: PT-607, path: engine, tool: product:dynamic__fetch_url, context: unknown, expect: deny/web_address}
+  - {id: PT-608, path: legacy, tool: product:dynamic__fetch_url, expect: allow}
+  - {id: PT-609, path: legacy, tool: product:dynamic__fetch_url, context: after-web, expect: allow}
+  - {id: PT-610, path: legacy, tool: product:dynamic__fetch_url, context: private, expect: deny/web_address}
+  - {id: PT-611, path: legacy, tool: product:dynamic__fetch_url, context: unknown, expect: deny/web_address}
+  - {id: PT-612, path: durable, tool: product:dynamic__web_search, expect: allow}
+  - {id: PT-613, path: durable, tool: product:dynamic__web_search, context: after-web, expect: allow}
+  - {id: PT-614, path: durable, tool: product:dynamic__web_search, context: private, expect: allow}
+  - {id: PT-615, path: durable, tool: product:dynamic__web_search, context: unknown, expect: allow}
+  - {id: PT-616, path: engine, tool: product:dynamic__web_search, expect: allow}
+  - {id: PT-617, path: engine, tool: product:dynamic__web_search, context: after-web, expect: allow}
+  - {id: PT-618, path: engine, tool: product:dynamic__web_search, context: private, expect: allow}
+  - {id: PT-619, path: engine, tool: product:dynamic__web_search, context: unknown, expect: allow}
+  - {id: PT-620, path: legacy, tool: product:dynamic__web_search, expect: allow}
+  - {id: PT-621, path: legacy, tool: product:dynamic__web_search, context: after-web, expect: allow}
+  - {id: PT-622, path: legacy, tool: product:dynamic__web_search, context: private, expect: allow}
+  - {id: PT-623, path: legacy, tool: product:dynamic__web_search, context: unknown, expect: allow}
+  - {id: PT-624, path: durable, tool: world:web__fetch_url, expect: allow}
+  - {id: PT-625, path: durable, tool: world:web__fetch_url, context: after-web, expect: allow}
+  - {id: PT-626, path: durable, tool: world:web__fetch_url, context: unknown, expect: ask/flow_external_write}
+  - {id: PT-627, path: engine, tool: world:web__fetch_url, expect: allow}
+  - {id: PT-628, path: engine, tool: world:web__fetch_url, context: after-web, expect: allow}
+  - {id: PT-629, path: engine, tool: world:web__fetch_url, context: private, expect: ask/flow_external_write}
+  - {id: PT-630, path: engine, tool: world:web__fetch_url, context: unknown, expect: ask/flow_external_write}
+  - {id: PT-631, path: legacy, tool: world:web__fetch_url, expect: allow}
+  - {id: PT-632, path: legacy, tool: world:web__fetch_url, context: after-web, expect: allow}
+  - {id: PT-633, path: legacy, tool: world:web__fetch_url, context: unknown, expect: deny/approval_unavailable}
+  - {id: PT-634, path: durable, tool: product:dynamic__fetch_url, context: private, deployment: off, expect: allow}
+  - {id: PT-635, path: durable, tool: product:dynamic__fetch_url, context: private, document: flow-ask, deployment: off, expect: deny/web_address}
+  - {id: PT-636, path: engine, tool: product:dynamic__fetch_url, context: private, deployment: off, expect: allow}
+  - {id: PT-637, path: engine, tool: product:dynamic__fetch_url, context: private, document: flow-ask, deployment: off, expect: deny/web_address}
+  - {id: PT-638, path: legacy, tool: product:dynamic__fetch_url, context: private, deployment: off, expect: allow}
+  - {id: PT-639, path: legacy, tool: product:dynamic__fetch_url, context: private, document: flow-ask, deployment: off, expect: deny/web_address}
+  - {id: PT-640, path: durable, tool: product:dynamic__fetch_url, context: private, grant: same, expect: deny/web_address}
+  - {id: PT-641, path: durable, tool: product:dynamic__fetch_url, context: private, grant: other-destination, expect: deny/web_address}
+  - {id: PT-642, path: durable, tool: product:dynamic__fetch_url, context: child-private, expect: deny/web_address}
+  - {id: PT-643, path: durable, tool: product:dynamic__fetch_url, context: child-public, expect: allow}
+  - {id: PT-644, path: engine, tool: product:dynamic__fetch_url, context: private, grant: same, expect: deny/web_address}
+  - {id: PT-645, path: engine, tool: product:dynamic__fetch_url, context: private, grant: other-destination, expect: deny/web_address}
+  - {id: PT-646, path: engine, tool: product:dynamic__fetch_url, context: child-private, expect: deny/web_address}
+  - {id: PT-647, path: engine, tool: product:dynamic__fetch_url, context: child-public, expect: allow}
+
+  # J. FG2: an MCP tool by its spec annotations. Read-only is a read, openWorldHint false keeps it
+  # in the user's own space, a read-only tool declaring the open world is held like a page fetch, none is a send.
+  # The hint is the server's claim: an org's rule for the tool or its class still holds it (durable and engine).
+  - {id: PT-648, path: durable, tool: mcp:read-only, expect: allow}
+  - {id: PT-649, path: durable, tool: mcp:read-only+closed, expect: allow}
+  - {id: PT-650, path: durable, tool: mcp:read-only+open, expect: allow}
+  - {id: PT-651, path: durable, tool: mcp:closed, expect: allow}
+  - {id: PT-652, path: durable, tool: mcp:none, expect: allow}
+  # SEC-B-02 (R38-AUTHZ, ADR-OWD-09 D-MCP-OPENWORLD): `read-only` without openWorldHint is open world, as `read-only+open`;
+  # the org's read rule (PT-679, PT-681) is shown on a closed-world read, which the flow rule leaves alone.
+  - {id: PT-653, path: durable, tool: mcp:read-only, context: unknown, expect: ask/flow_external_write}
+  - {id: PT-654, path: durable, tool: mcp:read-only+closed, context: unknown, expect: allow}
+  - {id: PT-655, path: durable, tool: mcp:read-only+open, context: unknown, expect: ask/flow_external_write}
+  - {id: PT-656, path: durable, tool: mcp:closed, context: unknown, expect: allow}
+  - {id: PT-657, path: durable, tool: mcp:none, context: unknown, expect: ask/flow_external_write}
+  - {id: PT-658, path: engine, tool: mcp:read-only, expect: allow}
+  - {id: PT-659, path: engine, tool: mcp:read-only+closed, expect: allow}
+  - {id: PT-660, path: engine, tool: mcp:read-only+open, expect: allow}
+  - {id: PT-661, path: engine, tool: mcp:closed, expect: allow}
+  - {id: PT-662, path: engine, tool: mcp:none, expect: ask/engine_writes}
+  - {id: PT-663, path: engine, tool: mcp:read-only, context: unknown, expect: ask/flow_external_write}
+  - {id: PT-664, path: engine, tool: mcp:read-only+closed, context: unknown, expect: allow}
+  - {id: PT-665, path: engine, tool: mcp:read-only+open, context: unknown, expect: ask/flow_external_write}
+  - {id: PT-666, path: engine, tool: mcp:closed, context: unknown, expect: allow}
+  - {id: PT-667, path: engine, tool: mcp:none, context: unknown, expect: ask/flow_external_write}
+  - {id: PT-668, path: legacy, tool: mcp:read-only, expect: allow}
+  - {id: PT-669, path: legacy, tool: mcp:read-only+closed, expect: allow}
+  - {id: PT-670, path: legacy, tool: mcp:read-only+open, expect: allow}
+  - {id: PT-671, path: legacy, tool: mcp:closed, expect: allow}
+  - {id: PT-672, path: legacy, tool: mcp:none, expect: allow}
+  - {id: PT-673, path: legacy, tool: mcp:read-only, context: unknown, expect: deny/approval_unavailable}
+  - {id: PT-674, path: legacy, tool: mcp:read-only+closed, context: unknown, expect: allow}
+  - {id: PT-675, path: legacy, tool: mcp:read-only+open, context: unknown, expect: deny/approval_unavailable}
+  - {id: PT-676, path: legacy, tool: mcp:closed, context: unknown, expect: allow}
+  - {id: PT-677, path: legacy, tool: mcp:none, context: unknown, expect: deny/approval_unavailable}
+  - {id: PT-678, path: durable, tool: mcp:read-only, context: unknown, document: tool-deny, expect: deny/policy}
+  - {id: PT-679, path: durable, tool: mcp:read-only+closed, context: unknown, document: read-ask, expect: ask/effect_class}
+  - {id: PT-680, path: engine, tool: mcp:read-only, context: unknown, document: tool-deny, expect: deny/policy}
+  - {id: PT-681, path: engine, tool: mcp:read-only+closed, context: unknown, document: read-ask, expect: ask/effect_class}
+
+  # K. KN2: the Slack context tools are the platform's knowledge reads behind the record-access gate
+  # (sink `none`): never held, before or after any read, on every path; an org's rule for reads still holds them.
+  - {id: PT-682, path: durable, tool: product:slack__fetch_slack_thread, expect: allow}
+  - {id: PT-683, path: durable, tool: product:slack__fetch_slack_thread, context: private, expect: allow}
+  - {id: PT-684, path: durable, tool: product:slack__fetch_slack_thread, context: unknown, expect: allow}
+  - {id: PT-685, path: engine, tool: product:slack__fetch_slack_thread, expect: allow}
+  - {id: PT-686, path: engine, tool: product:slack__fetch_slack_thread, context: private, expect: allow}
+  - {id: PT-687, path: engine, tool: product:slack__fetch_slack_thread, context: unknown, expect: allow}
+  - {id: PT-688, path: legacy, tool: product:slack__fetch_slack_thread, expect: allow}
+  - {id: PT-689, path: legacy, tool: product:slack__fetch_slack_thread, context: private, expect: allow}
+  - {id: PT-690, path: legacy, tool: product:slack__fetch_slack_thread, context: unknown, expect: allow}
+  - {id: PT-691, path: durable, tool: product:slack__fetch_slack_nearby_messages, expect: allow}
+  - {id: PT-692, path: durable, tool: product:slack__fetch_slack_nearby_messages, context: private, expect: allow}
+  - {id: PT-693, path: durable, tool: product:slack__fetch_slack_nearby_messages, context: unknown, expect: allow}
+  - {id: PT-694, path: engine, tool: product:slack__fetch_slack_nearby_messages, expect: allow}
+  - {id: PT-695, path: engine, tool: product:slack__fetch_slack_nearby_messages, context: private, expect: allow}
+  - {id: PT-696, path: engine, tool: product:slack__fetch_slack_nearby_messages, context: unknown, expect: allow}
+  - {id: PT-697, path: legacy, tool: product:slack__fetch_slack_nearby_messages, expect: allow}
+  - {id: PT-698, path: legacy, tool: product:slack__fetch_slack_nearby_messages, context: private, expect: allow}
+  - {id: PT-699, path: legacy, tool: product:slack__fetch_slack_nearby_messages, context: unknown, expect: allow}
+  - {id: PT-700, path: durable, tool: product:slack__fetch_slack_thread, context: private, document: read-ask, expect: ask/effect_class}
+  - {id: PT-701, path: engine, tool: product:slack__fetch_slack_thread, context: private, document: read-ask, expect: ask/effect_class}
+  - {id: PT-702, path: durable, tool: product:slack__fetch_slack_nearby_messages, context: private, document: read-ask, expect: ask/effect_class}
+  - {id: PT-703, path: engine, tool: product:slack__fetch_slack_nearby_messages, context: private, document: read-ask, expect: ask/effect_class}
+  - {id: PT-704, path: durable, tool: product:dynamic__fetch_url, context: private, document: read-ask, address: searched, expect: allow}
+  - {id: PT-705, path: engine, tool: product:dynamic__fetch_url, context: private, document: read-ask, address: searched, expect: allow}
+  - {id: PT-706, path: durable, tool: product:dynamic__web_search, context: private, document: read-ask, expect: allow}
+  - {id: PT-707, path: engine, tool: product:dynamic__web_search, context: private, document: read-ask, expect: allow}
+  - {id: PT-708, path: durable, tool: product:dynamic__fetch_url, context: private, address: searched, expect: allow}
+  - {id: PT-709, path: durable, tool: product:dynamic__fetch_url, context: private, address: user, expect: allow}
+  - {id: PT-710, path: durable, tool: product:dynamic__fetch_url, context: unknown, address: searched, expect: allow}
+  - {id: PT-711, path: durable, tool: product:dynamic__fetch_url, context: unknown, address: user, expect: allow}
+  - {id: PT-712, path: engine, tool: product:dynamic__fetch_url, context: private, address: searched, expect: allow}
+  - {id: PT-713, path: engine, tool: product:dynamic__fetch_url, context: private, address: user, expect: allow}
+  - {id: PT-714, path: engine, tool: product:dynamic__fetch_url, context: unknown, address: searched, expect: allow}
+  - {id: PT-715, path: engine, tool: product:dynamic__fetch_url, context: unknown, address: user, expect: allow}
+  - {id: PT-716, path: legacy, tool: product:dynamic__fetch_url, context: private, address: searched, expect: allow}
+  - {id: PT-717, path: legacy, tool: product:dynamic__fetch_url, context: private, address: user, expect: allow}
+  - {id: PT-718, path: legacy, tool: product:dynamic__fetch_url, context: unknown, address: searched, expect: allow}
+  - {id: PT-719, path: legacy, tool: product:dynamic__fetch_url, context: unknown, address: user, expect: allow}
+  - {id: PT-720, path: durable, tool: product:dynamic__fetch_url, context: child-private, address: searched, expect: allow}
+  - {id: PT-721, path: durable, tool: product:dynamic__fetch_url, context: child-unlabelled, expect: deny/web_address, mandatory: fail-closed}
+  - {id: PT-722, path: engine, tool: product:dynamic__fetch_url, context: child-private, address: searched, expect: allow}
+  - {id: PT-723, path: engine, tool: product:dynamic__fetch_url, context: child-unlabelled, expect: deny/web_address, mandatory: fail-closed}
+  - {id: PT-724, path: durable, tool: product:dynamic__fetch_url, context: private, address: linked, expect: allow}
+  - {id: PT-725, path: durable, tool: product:dynamic__fetch_url, context: unknown, address: linked, expect: allow}
+  - {id: PT-726, path: engine, tool: product:dynamic__fetch_url, context: private, address: linked, expect: allow}
+  - {id: PT-727, path: engine, tool: product:dynamic__fetch_url, context: unknown, address: linked, expect: allow}
+  - {id: PT-728, path: legacy, tool: product:dynamic__fetch_url, context: private, address: linked, expect: allow}
+  - {id: PT-729, path: legacy, tool: product:dynamic__fetch_url, context: unknown, address: linked, expect: allow}
+  - {id: PT-730, path: durable, tool: product:dynamic__fetch_url, context: child-private, address: linked, expect: allow}
+  - {id: PT-731, path: engine, tool: product:dynamic__fetch_url, context: child-private, address: linked, expect: allow}

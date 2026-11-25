@@ -18,11 +18,15 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
-from typing import TYPE_CHECKING
+from collections.abc import Awaitable, Callable
+from datetime import timedelta
+from typing import TYPE_CHECKING, Any
 
 from app.agent_loop_lib.core.exceptions import TransportError
 from app.agent_loop_lib.transport.base import RetryConfig, llm_error_class
 from app.utils.logging_fields import log_event, log_fields
+from harness_core.clock import Clock, SystemClock
+from harness_core.models.retry_after import provider_wait_s
 
 if TYPE_CHECKING:
     from app.agent_loop_lib.core.responses import ModelResponse
@@ -55,8 +59,20 @@ def _retry_status_message(exc: TransportError, attempt: int, max_attempts: int) 
     return f"{reason}, retrying ({attempt}/{max_attempts})..."
 
 
+WaitFrames = Callable[[str, str], list[dict[str, Any]]]
+
+
+def _legacy_status(retry_at: str, message: str) -> list[dict[str, Any]]:
+    return [{"event": "status", "data": {"status": "retrying", "message": message}}]
+
+
 def retry_with_status(
-    event_sink: "EventSink | None", config: RetryConfig | None = None
+    event_sink: "EventSink | None",
+    config: RetryConfig | None = None,
+    *,
+    wait_frames: WaitFrames = _legacy_status,
+    clock: Clock | None = None,
+    sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
 ) -> "WrapMiddleware[ModelResponse]":
     """Returns a `PRE_MODEL_CALL` wrap-middleware: retries `TransportError`s
     flagged `retryable=True` with exponential backoff + jitter (same policy
@@ -67,10 +83,15 @@ def retry_with_status(
     `event_sink=None` (e.g. non-streaming/background runs) silently skips
     the SSE emission and just retries.
 
+    ``wait_frames(retry_at, message)`` shapes the wait for the request's protocol (``ProtocolFormatter.provider_wait``:
+    on AG-UI the durable path's ``waiting_provider`` snapshot, ERR-UX2). A 429 that names its wait (``Retry-After``)
+    is retried after it, capped; otherwise the backoff applies.
+
     Each attempt runs with `attempt` (1-based) bound, so the `llm_call.end`
     line of that model call carries it; each retry logs one WARN `llm_call.retry`.
     """
     cfg = config or RetryConfig()
+    now = (clock or SystemClock()).now
 
     async def _wrapper(next_fn: "WrapNext[ModelResponse]") -> "ModelResponse":
         delay = cfg.initial_delay
@@ -84,26 +105,24 @@ def retry_with_status(
                 if not _is_retryable(exc, cfg) or attempt >= cfg.max_retries:
                     raise
                 last_exc = exc
-                sleep_s = delay + random.uniform(0, delay * 0.1)
+                started = now()
+                wait = delay + random.uniform(0, delay * 0.1)
+                if exc.status_code == 429:
+                    wait = provider_wait_s(exc, now=started, default_s=wait)
                 log_event(
                     logger, "llm_call.retry", level=logging.WARNING,
                     attempt=attempt + 1, max_attempts=cfg.max_retries + 1, status=exc.status_code,
-                    error_class=llm_error_class(exc), delay_ms=round(sleep_s * 1000),
+                    error_class=llm_error_class(exc), delay_ms=round(wait * 1000),
                 )
                 if event_sink is not None:
+                    retry_at = (started + timedelta(seconds=wait)).isoformat(timespec="milliseconds")
+                    message = _retry_status_message(exc, attempt + 2, cfg.max_retries + 1)
                     try:
-                        await event_sink.write({
-                            "event": "status",
-                            "data": {
-                                "status": "retrying",
-                                "message": _retry_status_message(
-                                    exc, attempt + 2, cfg.max_retries + 1
-                                ),
-                            },
-                        })
+                        for evt in wait_frames(retry_at.replace("+00:00", "Z"), message):
+                            await event_sink.write(evt)
                     except Exception:
                         logger.debug("retry_with_status: event_sink.write failed", exc_info=True)
-                await asyncio.sleep(sleep_s)
+                await sleep(wait)
                 delay = min(delay * cfg.backoff_factor, cfg.max_delay)
 
         # Unreachable: loop either returns or raises on the last attempt.

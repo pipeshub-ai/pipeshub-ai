@@ -77,6 +77,9 @@ class PartitionOffsetTracker:
         self._redeliver: dict["TopicPartition", dict[int, float]] = {}
         self._high_water_seen: dict["TopicPartition", int] = {}
         self._committed: dict["TopicPartition", int] = {}
+        # Revoked and not read since: a delivery still in flight at the revoke may finish after the next poll,
+        # and folding it into high-water-seen would commit past every offset the new owner has yet to read.
+        self._revoked: set["TopicPartition"] = set()
 
     def track(self, tp: "TopicPartition", offset: int) -> None:
         """Record that ``offset`` has entered the scheduler buffer (or is
@@ -87,6 +90,7 @@ class PartitionOffsetTracker:
         not-yet-dispatched: a re-read is a fresh delivery attempt, so it must
         not inherit the dwell clock of the attempt before it.
         """
+        self._revoked.discard(tp)
         self._outstanding.setdefault(tp, {})[offset] = None
         redeliver = self._redeliver.get(tp)
         if redeliver is not None:
@@ -111,6 +115,8 @@ class PartitionOffsetTracker:
         offset + 1) if it advanced past the last one reported, else ``None``
         -- so the caller only issues a commit when there is genuine progress.
         """
+        if tp in self._revoked:
+            return None
         if self._resolve(tp, offset, "mark_done") is None:
             return None
         return self._advance(tp)
@@ -138,6 +144,8 @@ class PartitionOffsetTracker:
         by a restart or rebalance and would otherwise pin the partition's
         commits until then, which is the situation the sweep exists for.
         """
+        if tp in self._revoked:
+            return None
         held_since = self._resolve(tp, offset, "mark_redeliver")
         if held_since is None:
             return None
@@ -268,3 +276,4 @@ class PartitionOffsetTracker:
         self._redeliver.pop(tp, None)
         self._high_water_seen.pop(tp, None)
         self._committed.pop(tp, None)
+        self._revoked.add(tp)

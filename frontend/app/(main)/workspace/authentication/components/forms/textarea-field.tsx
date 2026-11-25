@@ -25,7 +25,7 @@ export function TextareaField({ field, value, onChange }: TextareaFieldProps) {
         }}
       />
       {field.helperText && (
-        <Text size="1" style={{ color: 'var(--slate-10)' }}>
+        <Text size="1" style={{ color: 'var(--slate-11)' }}>
           {field.helperText}
         </Text>
       )}

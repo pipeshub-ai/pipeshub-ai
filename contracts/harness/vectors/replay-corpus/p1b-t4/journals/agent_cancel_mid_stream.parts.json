@@ -1,0 +1,22 @@
+{
+ "scenario": "agent_cancel_mid_stream",
+ "parts": [
+  {
+   "type": "text",
+   "content": "",
+   "runId": "run-golden",
+   "isFinal": true
+  },
+  {
+   "type": "tool_call",
+   "toolCallId": "call-export",
+   "toolName": "goldendocs__export_report",
+   "args": "{\"name\": \"q3\"}",
+   "status": "completed",
+   "runId": "run-golden",
+   "argsSummary": "Export Report: \"q3\"",
+   "resultPreview": "{\"name\": \"q3\", \"rows\": 3}",
+   "resultSummary": "Completed successfully"
+  }
+ ]
+}

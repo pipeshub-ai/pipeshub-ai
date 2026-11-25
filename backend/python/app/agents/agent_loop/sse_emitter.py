@@ -3,10 +3,11 @@
 progress to the same SSE connection `RespondPipeline` (Phase 6) streams the
 final answer through.
 
-`Agent.emit()` (`agent/__init__.py`) fires BOTH the legacy vocabulary
-(`AGENT_START`, `TOOL_CALL`, `TOOL_RESULT`, `TOOL_BLOCKED`, ...) and its
-AG-UI-aligned alias (`RUN_STARTED`, `TOOL_CALL_START`, `TOOL_CALL_END`, ...)
-for the same occurrence, with the SAME payload — see `_AG_UI_ALIASES` there.
+`Agent.emit()` fires BOTH the legacy vocabulary (`AGENT_START`,
+`TOOL_CALL`, `TOOL_RESULT`, `TOOL_BLOCKED`, ...) and its AG-UI-aligned alias
+(`RUN_STARTED`, `TOOL_CALL_START`, `TOOL_CALL_END`, ...) for the same
+occurrence, with the SAME payload — see `AG_UI_ALIASES` in
+`app/agent_loop_lib/ag_ui.py`.
 This emitter maps ONLY the AG-UI vocabulary (matching the migration plan's
 event-bridge table) and no-ops on the legacy duplicates, so each occurrence
 produces exactly one SSE event instead of two.

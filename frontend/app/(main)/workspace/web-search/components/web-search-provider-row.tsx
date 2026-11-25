@@ -118,7 +118,7 @@ export function WebSearchProviderRow({
         <Text
           size="1"
           style={{
-            color: 'var(--slate-10)',
+            color: 'var(--slate-11)',
             display: 'block',
             marginTop: 2,
             fontWeight: 300,
@@ -155,7 +155,7 @@ export function WebSearchProviderRow({
             disabled={setDefaultDisabled}
             style={{ cursor: setDefaultDisabled ? 'not-allowed' : 'pointer', gap: 4 }}
           >
-            <MaterialIcon name="star" size={14} color="var(--slate-10)" />
+            <MaterialIcon name="star" size={14} color="var(--slate-11)" />
             {isSettingDefault
               ? t('workspace.webSearch.actions.settingDefault')
               : t('workspace.webSearch.actions.setDefault')}
@@ -178,7 +178,7 @@ export function WebSearchProviderRow({
               <MaterialIcon
                 name={isConfigured ? 'edit' : 'settings'}
                 size={16}
-                color="var(--slate-10)"
+                color="var(--slate-11)"
               />
             </IconButton>
           </Tooltip>
@@ -197,7 +197,7 @@ export function WebSearchProviderRow({
               disabled={anyActionInProgress}
               style={{ cursor: anyActionInProgress ? 'not-allowed' : 'pointer' }}
             >
-              <MaterialIcon name="delete" size={16} color="var(--red-10)" />
+              <MaterialIcon name="delete" size={16} color="var(--red-11)" />
             </IconButton>
           </Tooltip>
         )}

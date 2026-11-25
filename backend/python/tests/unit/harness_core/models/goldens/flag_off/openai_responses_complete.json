@@ -1,0 +1,72 @@
+{
+ "input": [
+  {
+   "content": "be brief",
+   "role": "system",
+   "type": "message"
+  },
+  {
+   "content": "find the bug",
+   "role": "user",
+   "type": "message"
+  },
+  {
+   "content": [
+    {
+     "annotations": [],
+     "text": "looking",
+     "type": "output_text"
+    }
+   ],
+   "role": "assistant",
+   "type": "message"
+  },
+  {
+   "arguments": "{\"q\": \"bug\"}",
+   "call_id": "toolu_01",
+   "name": "lookup",
+   "type": "function_call"
+  },
+  {
+   "call_id": "toolu_01",
+   "output": "found PROJ-1",
+   "type": "function_call_output"
+  },
+  {
+   "content": "now file it",
+   "role": "user",
+   "type": "message"
+  }
+ ],
+ "model": "gpt-x",
+ "reasoning": {
+  "effort": "low"
+ },
+ "store": false,
+ "tools": [
+  {
+   "description": "Look up",
+   "name": "lookup",
+   "parameters": {
+    "properties": {
+     "q": {
+      "type": "string"
+     }
+    },
+    "type": "object"
+   },
+   "strict": false,
+   "type": "function"
+  },
+  {
+   "description": "File",
+   "name": "create_issue",
+   "parameters": {
+    "properties": {},
+    "type": "object"
+   },
+   "strict": false,
+   "type": "function"
+  }
+ ]
+}

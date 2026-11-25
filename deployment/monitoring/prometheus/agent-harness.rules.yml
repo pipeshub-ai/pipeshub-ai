@@ -1,0 +1,272 @@
+# Alert rules for the agent harness (C9.04 OB-04, C9.05 OB-05). Every expression reads a series of Node's merged
+# metrics route (prometheus.yml); thresholds are starting points an operator tunes for their install.
+groups:
+  - name: pipeshub-agent-harness-runs
+    rules:
+      - alert: HarnessRunLeaseExpiredStuck
+        expr: max(pipeshub_agent_harness_runs_lease_expired) > 0
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: Running runs have lost their worker and are not being picked up again
+          description: >-
+            {{ $value }} running runs have had an expired lease for 10 minutes: their worker is gone and the sweeper
+            has not re-queued them, so these chats are stuck. Check that Node's run sweeper and the workers are up.
+      - alert: HarnessRunsStranded
+        expr: sum(increase(pipeshub_agent_harness_stranded_runs_total{outcome="failed"}[15m])) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: Runs failed because no live worker supports what they need
+          description: >-
+            Queued runs needed a feature (for example coding engines) that no live worker advertises and were
+            failed. Check the worker's flags and the sandbox broker.
+      - alert: HarnessRunsQuarantined
+        expr: sum(increase(pipeshub_agent_harness_quarantined_runs_total[1h])) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: A run was quarantined after crashing its worker repeatedly
+          description: >-
+            {{ $value }} runs were quarantined in the last hour after repeated failed attempts. Read the worker's
+            run.quarantine and engine.kernel.quarantine log lines for the error type.
+      - alert: HarnessRunsQuarantinedBurst
+        expr: sum(increase(pipeshub_agent_harness_quarantined_runs_total[1h])) > 5
+        labels:
+          severity: critical
+        annotations:
+          summary: Many runs were quarantined in the last hour
+          description: >-
+            {{ $value }} runs were quarantined in an hour: a release or a dependency is crashing workers, not one
+            bad run.
+      - alert: HarnessOldestRunningRunTooOld
+        expr: max(pipeshub_agent_harness_oldest_running_run_age_seconds) > 6 * 3600
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: A run has been running for more than six hours
+          description: >-
+            The oldest running run was admitted {{ $value | humanizeDuration }} ago. A run past its working deadline
+            should have been ended by the sweeper; check the sweeper and that run's worker.
+      - alert: HarnessClaimLatencyHigh
+        expr: >-
+          histogram_quantile(0.95, sum by (le) (rate(pipeshub_agent_harness_run_claim_wait_seconds_bucket[10m]))) > 5
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: New runs wait more than 5 s for a worker (p95)
+          description: >-
+            The 95th percentile from admission to a worker's first claim is {{ $value | humanize }} s, over the 5 s
+            session-ready target (SLO #20). Workers are saturated or down.
+  - name: pipeshub-agent-harness-services
+    rules:
+      - alert: HarnessMetricsScrapeDown
+        expr: max by (harness_service) (pipeshub_harness_metrics_scrape_up) == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: An internal harness service cannot be read
+          description: >-
+            Node could not read {{ $labels.harness_service }}'s metrics for 5 minutes: it is down, refusing the
+            worker credential, or too slow.
+      - alert: HarnessGatewayErrorRatioHigh
+        expr: >-
+          sum by (gateway) (rate(pipeshub_harness_gateway_requests_total{outcome="error"}[5m]))
+          / sum by (gateway) (rate(pipeshub_harness_gateway_requests_total[5m])) > 0.05
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: More than 5% of a gateway's requests fail
+          description: >-
+            {{ $value | humanizePercentage }} of the {{ $labels.gateway }} gateway's requests ended in an error over
+            10 minutes.
+      - alert: HarnessModelCostSpike
+        expr: >-
+          sum(rate(pipeshub_agent_harness_model_cost_usd_total[10m])) * 60 > 0.5
+          and sum(rate(pipeshub_agent_harness_model_cost_usd_total[10m]))
+          > 3 * sum(rate(pipeshub_agent_harness_model_cost_usd_total[1d]))
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Model spend per minute is three times the day's average
+          description: >-
+            The harness is spending {{ $value | humanize }} USD a minute on model calls, over three times its
+            24-hour average. Budgets still stop each run; this flags a change in load or a looping agent.
+      - alert: HarnessWarmPoolEmptyClaimsCold
+        expr: >-
+          max(pipeshub_harness_sandbox_warm_pool_depth) == 0
+          and sum(rate(pipeshub_harness_sandbox_warm_claims_total{outcome="cold"}[10m])) > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: The warm sandbox pool is empty while runs start cold
+          description: >-
+            Coding-engine runs have started on cold sandboxes for 15 minutes with no warm sandbox left. Raise
+            SANDBOX_WARM_POOL_MAX or the broker host's memory.
+  # SLO.md "Availability, error budget, RPO and RTO" (C20.48) and SLO #11 (C5.05). Availability here is the run
+  # execution row: a durable chat turn that ends failed spends the budget; cancelled and waiting turns do not.
+  - name: pipeshub-agent-harness-slo
+    rules:
+      - alert: HarnessAvailabilityBudgetFastBurn
+        expr: >-
+          (
+            sum(rate(pipeshub_agent_chat_turns_total{path="durable",outcome="failed"}[1h]))
+            / sum(rate(pipeshub_agent_chat_turns_total{path="durable"}[1h]))
+          ) > 14.4 * 0.001
+          and
+          (
+            sum(rate(pipeshub_agent_chat_turns_total{path="durable",outcome="failed"}[5m]))
+            / sum(rate(pipeshub_agent_chat_turns_total{path="durable"}[5m]))
+          ) > 14.4 * 0.001
+        labels:
+          severity: critical
+        annotations:
+          summary: Failed chat turns are spending the 30-day error budget fast
+          description: >-
+            Durable chat turns fail at {{ $value | humanizePercentage }}, over 14.4 times the 0.1% a 99.9% target
+            allows: at this rate the month's error budget is gone in about two days. Read the failed runs'
+            errorType in the worker log and the gateways' error ratio.
+      - alert: HarnessAvailabilityBudgetSlowBurn
+        expr: >-
+          (
+            sum(rate(pipeshub_agent_chat_turns_total{path="durable",outcome="failed"}[6h]))
+            / sum(rate(pipeshub_agent_chat_turns_total{path="durable"}[6h]))
+          ) > 6 * 0.001
+          and
+          (
+            sum(rate(pipeshub_agent_chat_turns_total{path="durable",outcome="failed"}[30m]))
+            / sum(rate(pipeshub_agent_chat_turns_total{path="durable"}[30m]))
+          ) > 6 * 0.001
+        labels:
+          severity: warning
+        annotations:
+          summary: Failed chat turns are spending the 30-day error budget
+          description: >-
+            Durable chat turns fail at {{ $value | humanizePercentage }}, over six times the 0.1% a 99.9% target
+            allows: at this rate the month's error budget is gone in about five days. On Compose (99.5%) raise
+            the 0.001 to 0.005.
+      - alert: HarnessSessionApiBudgetFastBurn
+        expr: >-
+          (
+            sum(rate(pipeshub_agent_harness_session_api_requests_total{outcome="server_error"}[1h]))
+            / sum(rate(pipeshub_agent_harness_session_api_requests_total[1h]))
+          ) > 14.4 * 0.001
+          and
+          (
+            sum(rate(pipeshub_agent_harness_session_api_requests_total{outcome="server_error"}[5m]))
+            / sum(rate(pipeshub_agent_harness_session_api_requests_total[5m]))
+          ) > 14.4 * 0.001
+        labels:
+          severity: critical
+        annotations:
+          summary: The session API's 5xx answers are spending the 30-day error budget fast
+          description: >-
+            {{ $value | humanizePercentage }} of the session API's requests (conversation runs, agent
+            conversations, /api/v1/agent-harness) answer 5xx, over 14.4 times the 0.1% a 99.9% target allows: at this
+            rate the month's error budget is gone in about two days. Read Node's log for the failing route; on Compose
+            (99.5%) raise the 0.001 to 0.005.
+      - alert: HarnessSessionApiBudgetSlowBurn
+        expr: >-
+          (
+            sum(rate(pipeshub_agent_harness_session_api_requests_total{outcome="server_error"}[6h]))
+            / sum(rate(pipeshub_agent_harness_session_api_requests_total[6h]))
+          ) > 6 * 0.001
+          and
+          (
+            sum(rate(pipeshub_agent_harness_session_api_requests_total{outcome="server_error"}[30m]))
+            / sum(rate(pipeshub_agent_harness_session_api_requests_total[30m]))
+          ) > 6 * 0.001
+        labels:
+          severity: warning
+        annotations:
+          summary: The session API's 5xx answers are spending the 30-day error budget
+          description: >-
+            {{ $value | humanizePercentage }} of the session API's requests (conversation runs, agent
+            conversations, /api/v1/agent-harness) answer 5xx, over 6 times the 0.1% a 99.9% target allows: at this
+            rate the month's error budget is gone in about five days. Read Node's log for the failing route; on Compose
+            (99.5%) raise the 0.001 to 0.005.
+      - alert: HarnessCacheReadShareLow
+        expr: >-
+          histogram_quantile(0.5, sum by (le) (rate(pipeshub_agent_harness_run_cache_read_ratio_bucket[6h]))) < 0.7
+          and sum(increase(pipeshub_agent_harness_run_cache_read_ratio_count[6h])) >= 20
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: The median run reads less than 70% of its prompt from the provider's cache
+          description: >-
+            Half of the runs that ended in the last six hours read under {{ $value | humanizePercentage }} of their
+            input tokens from the cache, below SLO #11's 70% floor. A prompt that changes early in the context (a
+            date, an id, a reordered tool list) defeats caching and raises every call's cost and latency.
+  # SEC-D-13 (ADR-OPS-03): security decisions are counted where they are made; these say when they look like an
+  # attack rather than a person's mistake. Every label is a fixed set: none names an account, a token or a host.
+  - name: pipeshub-agent-harness-security
+    rules:
+      - alert: PipesHubAuthFailureBurst
+        expr: >-
+          sum(increase(pipeshub_auth_attempts_total{outcome="failure",method=~"password|otp|google|microsoft|azure_ad|oauth|github|saml|other"}[10m]))
+          > 60
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Sign-in attempts are failing far more often than people mistype
+          description: >-
+            {{ $value | humanize }} sign-in attempts failed in 10 minutes, across all accounts. Credential stuffing
+            spreads guesses over many accounts to stay under each account's own lock, so only the total shows it.
+          runbook_url: https://github.com/pipeshub-ai/pipeshub-ai/blob/main/docs/agent-harness-v2/guides/runbooks.md#auth-failure-burst
+      - alert: HarnessEgressRefusalBurst
+        expr: >-
+          sum by (reason) (increase(pipeshub_agent_harness_egress_decisions_total{decision="refused"}[10m])) > 30
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: The egress proxy keeps refusing sandbox requests for one reason
+          description: >-
+            {{ $value | humanize }} sandbox requests were refused in 10 minutes for {{ $labels.reason }}: an agent
+            probing the allowlist or trying to send data out, usually after reading injected text.
+          runbook_url: https://github.com/pipeshub-ai/pipeshub-ai/blob/main/docs/agent-harness-v2/guides/runbooks.md#egress-refusal-burst
+      - alert: HarnessGatewayTokenRejected
+        expr: >-
+          sum by (kind, reason) (increase(pipeshub_agent_harness_token_rejected_total{reason=~"malformed|algorithm|unknown_key|signature|issuer|audience|credential"}[10m]))
+          > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: A harness service was shown a forged or foreign credential
+          description: >-
+            A {{ $labels.kind }} was refused for {{ $labels.reason }}. Only something without the key presents one:
+            these listeners are reachable only from inside the deployment, so treat it as a compromise until a
+            rotation explains it.
+          runbook_url: https://github.com/pipeshub-ai/pipeshub-ai/blob/main/docs/agent-harness-v2/guides/runbooks.md#gateway-token-rejected
+      - alert: HarnessApprovalRequestFlood
+        expr: >-
+          sum by (org_bucket) (increase(pipeshub_agent_harness_approvals_requested_total[15m])) > 60
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Runs in one org are asking people for far more approvals than usual
+          description: >-
+            {{ $value | humanize }} approvals or questions were asked in 15 minutes in org bucket
+            {{ $labels.org_bucket }}. A flood of asks wears people down until one is allowed without reading it.
+          runbook_url: https://github.com/pipeshub-ai/pipeshub-ai/blob/main/docs/agent-harness-v2/guides/runbooks.md#approval-request-flood
+      - alert: HarnessKillSwitchEngaged
+        expr: >-
+          max by (scope) (pipeshub_agent_harness_kill_switch{scope=~"instance|org|engine_version|egress"}) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: An operator stop is in force
+          description: >-
+            {{ $value }} {{ $labels.scope }} stop(s) are in force: agent work or sandbox internet access is stopped
+            for some or all people. Confirm it is intended, and clear it once the incident is over.
+          runbook_url: https://github.com/pipeshub-ai/pipeshub-ai/blob/main/docs/agent-harness-v2/guides/runbooks.md#kill-switch-engaged

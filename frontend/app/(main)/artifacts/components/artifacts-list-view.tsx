@@ -41,7 +41,7 @@ function HeaderCell({
 }) {
   const cellStyle = { width, flex: flex ? `${flex} 1 0` : undefined, flexShrink: width ? 0 : undefined, minWidth: 0, padding: '0 var(--space-2)', whiteSpace: 'nowrap' as const, overflow: 'hidden', textOverflow: 'ellipsis', boxSizing: 'border-box' as const, display: 'flex', alignItems: 'center' };
   const text = (
-    <Text size="1" weight="medium" style={{ color: 'var(--slate-10)' }}>
+    <Text size="1" weight="medium" style={{ color: 'var(--slate-11)' }}>
       {label}
     </Text>
   );
@@ -66,7 +66,7 @@ function HeaderCell({
         <MaterialIcon
           name={isActive ? (sortOrder === 'asc' ? 'arrow_drop_up' : 'arrow_drop_down') : 'unfold_more'}
           size={14}
-          color={isActive ? 'var(--slate-12)' : 'var(--slate-8)'}
+          color={isActive ? 'var(--slate-12)' : 'var(--slate-11)'}
         />
       </Button>
     </Box>
@@ -90,7 +90,7 @@ function ListRow({
   const typeLabel = t(`artifacts.types.${item.artifactType}`, { defaultValue: item.artifactType });
   const chatTitle = item.conversationTitle || t('artifacts.untitledChat');
   // border-box: these are inline spans, and padding would otherwise widen the fixed columns past the header's.
-  const muted = { color: 'var(--slate-10)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', boxSizing: 'border-box' } as const;
+  const muted = { color: 'var(--slate-11)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', boxSizing: 'border-box' } as const;
 
   const onKeyDown = (event: KeyboardEvent) => {
     if (event.target !== event.currentTarget) return;

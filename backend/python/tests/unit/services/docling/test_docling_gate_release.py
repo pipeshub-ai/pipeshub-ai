@@ -13,6 +13,7 @@ from fastapi.responses import JSONResponse
 
 import app.services.docling.docling_service as mod
 from app.services.docling.docling_service import DoclingService
+from harness_core.testing.virtual_time import run_on_virtual_time
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine, Iterator
@@ -142,24 +143,31 @@ async def test_failed_bookkeeping_after_hand_off_does_not_release_twice(ledger: 
     assert (ledger.acquired, ledger.released) == (1, 1)
 
 
-@pytest.mark.asyncio
-async def test_timeout_answers_at_the_deadline_and_holds_the_permit(ledger: _Ledger) -> None:
-    stop = threading.Event()
-    _wire(_hanging_parse(stop))
-    loop = asyncio.get_running_loop()
-    started = loop.time()
-    try:
+def test_timeout_answers_at_the_deadline_and_holds_the_permit(ledger: _Ledger) -> None:
+    async def main() -> None:
+        stop = asyncio.Event()
+
+        async def parse(*_a: object, **_k: object) -> MagicMock:
+            await stop.wait()
+            return _doc()
+
+        _wire(parse)
+        loop = asyncio.get_running_loop()
+        started = loop.time()
         resp = await _call()
         assert resp.status_code == 422
         assert b"PARSE_TIMEOUT" in resp.body
-        assert loop.time() - started < 0.6
+        assert 0.3 <= loop.time() - started < 0.6
         assert ledger.released == 0
         assert len(mod._parse_tasks) == 1
-    finally:
         stop.set()
-    await ledger.settle()
-    assert (ledger.acquired, ledger.released) == (1, 1)
-    assert not mod._parse_tasks
+        await ledger.settle()
+        assert (ledger.acquired, ledger.released) == (1, 1)
+        assert not mod._parse_tasks
+        # The result is serialized on a thread; the runner's own executor join has a 300 s timer this clock skips.
+        await loop.shutdown_default_executor()
+
+    run_on_virtual_time(main)
 
 
 @pytest.mark.asyncio

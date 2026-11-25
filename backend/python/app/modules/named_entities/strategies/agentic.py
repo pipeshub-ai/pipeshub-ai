@@ -238,6 +238,10 @@ def _reason(result: AgentResult, forced: str | None) -> str:
         return forced
     if getattr(result, "cancelled", False):
         return "no_progress"
+    # The loop ends a run its budget or turn limit stopped on a final answer, flagged (BUDGETEND).
+    truncated = getattr(result, "truncated_by", None)
+    if truncated in ("budget", "turns"):
+        return "budget_tokens" if truncated == "budget" else "budget_turns"
     budget = _budget_reason(getattr(result, "error", None) or "")
     if budget:
         return budget

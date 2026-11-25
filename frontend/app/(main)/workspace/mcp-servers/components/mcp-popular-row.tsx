@@ -37,7 +37,7 @@ export function McpPopularRow({ catalog, onOpen }: McpPopularRowProps) {
         <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
           {t('workspace.mcpServers.discover.popularTitle')}
         </Text>
-        <Text size="1" style={{ color: 'var(--gray-10)' }}>
+        <Text size="1" style={{ color: 'var(--gray-11)' }}>
           {t('workspace.mcpServers.discover.popularHint')}
         </Text>
       </Flex>
@@ -66,7 +66,7 @@ export function McpPopularRow({ catalog, onOpen }: McpPopularRowProps) {
               <Text size="2" weight="medium" truncate style={{ color: 'var(--gray-12)' }}>
                 {s.name}
               </Text>
-              <Text size="1" style={{ color: 'var(--gray-10)' }}>
+              <Text size="1" style={{ color: 'var(--gray-11)' }}>
                 {t('workspace.mcpServers.discover.peopleUse', { count: s.people })}
               </Text>
             </Flex>

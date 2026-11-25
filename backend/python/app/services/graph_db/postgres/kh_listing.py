@@ -30,12 +30,14 @@ from app.exceptions.graph_db_exceptions import (
 from app.services.graph_db.postgres import access as access_sql
 from app.services.graph_db.postgres.base import PgBase, _doc
 from app.services.graph_db.postgres.kg import counts as kg_counts
+from app.services.graph_db.postgres.kg import grant_marks
+from app.services.graph_db.postgres.kg import hierarchy as kg_hierarchy
 from app.services.graph_db.postgres.kg import listing as kgl
 from app.services.graph_db.postgres.kg import read as kg_read
 from app.services.graph_db.postgres.kg.model import CODE_COLL, CODE_EPOCH, COLL_CODE
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
+    from collections.abc import Awaitable, Callable, Collection
 
     from app.core.db import Tx
 
@@ -76,11 +78,40 @@ class LeadBudget:
 
 
 LINKS = "/* pipeshub:kg.listing_links */ SELECT child_sk, parent_sk, kind FROM kg.links WHERE org_id = $1 AND child_sk = ANY($2::bigint[])"
+APP_DOC = "/* pipeshub:kg.chain_app */ SELECT doc FROM graph.nodes WHERE org_id = $1 AND coll = 'apps' AND id = $2"
 KEYS = "/* pipeshub:kg.listing_keys */ SELECT sk, coll, id FROM kg.node_keys WHERE org_id = $1 AND sk = ANY($2::bigint[])"
 DOCS = """/* pipeshub:kg.listing_docs */ SELECT n.coll, n.id, n.doc FROM unnest($2::text[], $3::text[]) AS q(coll, id)
     JOIN graph.nodes n ON n.org_id = $1 AND n.coll = q.coll AND n.id = q.id"""
 FILES = """/* pipeshub:kg.listing_files */ SELECT e.from_id, f.doc->>'extension' AS ext, f.doc->>'sizeInBytes' AS size FROM graph.edges e
     JOIN graph.nodes f ON f.org_id = e.org_id AND f.coll = 'files' AND f.id = e.to_id WHERE e.org_id = $1 AND e.coll = 'isOfType' AND e.from_coll = 'records' AND e.from_id = ANY($2::text[])"""
+
+
+class TopGrants:
+    """The viewer's grants of one connector that can be chain-tops (``kg.grant_marks``: no parent the same principal holds covers them), by the record group of their node
+    (None: none, several, a group), as the chain-top walk takes them: ids of granted nodes. Without kg's answer (``by_group`` None: a connector kg does not serve, no user, the
+    walk) every grant, of no known group: the walk's own input. Every grant that is a chain-top is among them, so the walk over them places exactly what it places over all."""
+
+    def __init__(self, granted: set[str], by_group: dict[int | None, list[int]] | None, loose: dict[int, str], keys: Callable[[list[int]], Awaitable[dict[int, str]]]) -> None:
+        self.granted, self.by_group, self._ids, self._keys = granted, by_group, dict(loose), keys
+
+    @property
+    def groups(self) -> set[int]:
+        return {g for g in self.by_group or () if g is not None}
+
+    async def ids(self, groups: Collection[int] | None = None) -> list[str]:
+        """Those of the record groups ``groups`` (sks) and of no known group; every one when ``groups`` is None. Not inside a read unit of the caller (it may read the ids)."""
+        if self.by_group is None:
+            return sorted(self.granted)
+        sks = [sk for g, gs in self.by_group.items() if groups is None or g is None or g in groups for sk in gs]
+        if need := [sk for sk in sks if sk not in self._ids]:
+            self._ids |= await self._keys(need)
+        return sorted({i for sk in sks if (i := self._ids.get(sk)) in self.granted})
+
+    async def held(self, tx: Tx, org: str, groups: list[int]) -> set[int]:
+        """Of the groups ``groups`` (sks), the ones that hold one of them: never fewer than the groups a chain-top is placed under. In the caller's unit."""
+        loose = sorted(self.granted) if self.by_group is None else sorted({i for sk in self.by_group.get(None, []) if (i := self._ids.get(sk)) in self.granted})
+        found = {r["sk"] for r in await tx.fetch(kgl.HELD, org, groups, loose)} if loose and groups else set()
+        return found | (set(groups) & self.groups)
 
 
 def _node_type(coll: str, doc: dict) -> str:
@@ -318,9 +349,10 @@ class KhListingMixin(PgBase):
             total, counts, capped = await self._kh_flat_exact(org, app_sk, where, base, viewer, transaction) if viewer is not None else await self._kh_flat_count(org, app_sk, where, base, admit, transaction)
         # the arrow of a group or a folder: on exactly when a browse of it lists something
         containers = [c for c in kept[:need] if c["kind"] == 2 or c["folder"]]
+        top = await self._kh_top_grants(org, app_id, user_key, gset, transaction) if chain_tops_apply(app_doc) and containers else None
         rows, read = await self._kh_flat_rows(org, app_id, app_doc, kept[:need], sort_field, transaction,
-                                              also=lambda tx: self._kh_arrows_read(tx, org, containers, hidden, sets, gset, access, tops=chain_tops_apply(app_doc)))
-        tops = self._kh_tops_under(org, app_id, access, gset, transaction, apply=chain_tops_apply(app_doc))
+                                              also=lambda tx: self._kh_arrows_read(tx, org, containers, hidden, sets, gset, access, tops=top))
+        tops = self._kh_tops_under(org, app_id, access, top, transaction, apply=True) if top else None
         lists = await self._kh_lists(read, hidden, admitted_of, org, transaction, tops) if read else set()
         lists |= await self._kh_held_lists(kept[:need], read, lists, tops)
         for row, c in zip(rows, kept[:need], strict=True):
@@ -465,26 +497,53 @@ class KhListingMixin(PgBase):
                 left.append(r)
         return ok, left
 
-    def _kh_tops_under(self, org: str, app_id: str, access: dict[str, Any], gset: set[str], transaction: str | None, *, apply: bool) -> Callable[[list[Any]], Awaitable[set[int]]] | None:
-        """Of group rows, the sks the chain-top walk places a record under (``_kh_v3_chain_tops``, the rule every store shares), for the placeholder walk and the arrows. Resolved once
-        per request and held: the groups that hold a granted record (``kgl.HELD_ANY``, by key from the grants), then, only if there are any, the placements of every granted record
-        of the App in one pass; each question after that is answered from them. None in an App that opens everything."""
-        if not apply or not gset:
+    async def _kh_top_grants(self, org: str, app_id: str, user_key: str | None, granted: set[str], transaction: str | None) -> TopGrants:
+        """The viewer's grants of the connector that can be chain-tops (:class:`TopGrants`), read from kg by the principals the user holds in it (``kg.grant_marks``) for a
+        connector kg serves; every grant otherwise (``kg.hierarchy.answer``: the switch off, a caller's own transaction, the system role, a connector not served, an error)."""
+        async def keys(sks: list[int]) -> dict[int, str]:
+            return {r["sk"]: r["id"] for r in await self._kq(lambda tx: tx.fetch(KEYS, org, sks), transaction)}
+
+        async def read(tx: Tx) -> tuple[dict[int | None, list[int]], dict[int, str]]:
+            app_sk = await kg_hierarchy._served(tx, org, app_id)
+            by: dict[int | None, list[int]] = {}
+            if (app := await tx.fetchval(APP_DOC, org, app_id)) is None or not chain_tops_apply(_doc(app)):
+                return by, {}
+            for sk, g in (await grant_marks.candidates(tx, org, app_sk, user_key)).items():
+                by.setdefault(g, []).append(sk)
+            loose = {r["sk"]: r["id"] for r in await tx.fetch(KEYS, org, by[None])} if by.get(None) else {}      # read here: ``TopGrants.held`` runs inside the caller's units
+            return by, loose
+        got = await kg_hierarchy.answer(self, "chain_top_grants", transaction, read) if user_key and granted else None
+        return TopGrants(granted, *(got or (None, {})), keys)
+
+    async def _kh_open_groups(self, org_id: str, top: TopGrants, access: dict[str, Any], transaction: str | None) -> set[int]:
+        """Of the record groups the grants ``top`` are in, the ones the viewer may open (as the chain-top walk asks: ``check_access``): a chain-top in one is listed there, not under the App."""
+        org = current_org_id()
+        ids = {r["sk"]: r["id"] for r in await self._kq(lambda tx: tx.fetch(KEYS, org, sorted(top.groups)), transaction)} if top.groups else {}
+        opened = (await self.check_access("", org_id, node_ids=set(ids.values()), access=access, transaction=transaction)).node_ids if ids else frozenset()
+        return {sk for sk, i in ids.items() if i in opened}
+
+    def _kh_tops_under(self, org: str, app_id: str, access: dict[str, Any], top: TopGrants, transaction: str | None, *, apply: bool) -> Callable[[list[Any]], Awaitable[set[int]]] | None:
+        """Of group rows, the sks the chain-top walk places a record under (``_kh_v3_chain_tops``, the rule every store shares), for the placeholder walk and the arrows. Held for
+        the request: the groups that hold a grant that can be a chain-top (``kgl.HELD_ANY`` for those of no known group), then, for the groups asked that hold one, the
+        placements of the grants of those groups (and of no known group) in one pass; each question after that is answered from them. None in an App that opens everything."""
+        if not apply or not top.granted:
             return None
         held: set[int] | None = None
-        placed: set[str] | None = None
+        placed: set[str] = set()
+        done: set[int] = set()
 
         async def under(groups: list[Any]) -> set[int]:
-            nonlocal held, placed
+            nonlocal held
             if held is None:
-                held = {r["sk"] for r in await self._kq(lambda tx: tx.fetch(kgl.HELD_ANY, org, sorted(gset)), transaction)}
+                loose = await top.ids(())
+                held = top.groups | ({r["sk"] for r in await self._kq(lambda tx: tx.fetch(kgl.HELD_ANY, org, loose), transaction)} if loose else set())
             asked = [g for g in groups if g["sk"] in held]
-            if not asked:
-                return set()
-            if placed is None:
-                by_groups = await self._kh_v3_chain_top_groups(app_id, org, sorted(gset), ANY_GROUP, transaction)
+            if new := {g["sk"] for g in asked} - done:
+                ids = await top.ids(new)
+                by_groups = await self._kh_v3_chain_top_groups(app_id, org, ids, ANY_GROUP, transaction) if ids else []
                 found = await self._kh_v3_chain_tops(app_id, org, access, transaction, only_group=ANY_GROUP, by_groups=by_groups) if by_groups else {}
-                placed = {g for g, rows in found.items() if rows and g != app_id}
+                placed.update(g for g, rows in found.items() if rows and g != app_id)
+                done.update(new if top.by_group is not None else held)      # without kg's groups the one pass placed every grant
             return {g["sk"] for g in asked if g["id"] in placed}
         return under
 
@@ -584,17 +643,17 @@ class KhListingMixin(PgBase):
         return False, used
 
     async def _kh_arrows_read(self, tx: Tx, org: str, page: list[Any], hidden: list[int], sets: dict[str, Any] | None, gset: set[str], access: dict[str, Any], *,
-                              tops: bool, bound: int | None = None, cut: set[int] | None = None) -> tuple[set[int], list[Any], set[str], set[int]]:
+                              tops: TopGrants | None, bound: int | None = None, cut: set[int] | None = None) -> tuple[set[int], list[Any], set[str], set[int]]:
         """The read behind the arrows of a page's rows, in the caller's unit: the rows a statement over the classes finds a child for (a connector kg serves: exact), and for the
         others a sample of their children with the ones the viewer may open (the classes, then the live check for what they do not decide). Last, with ``tops``, the groups that
-        hold a granted record that may be a chain-top listed under them (``kgl.HELD``). ``bound``: the sample reads at most that many rows in all, the rows in the order asked;
+        hold a grant that can be a chain-top listed under them (``TopGrants.held``). ``bound``: the sample reads at most that many rows in all, the rows in the order asked;
         the rows whose sample it cut or did not reach go into ``cut`` (their arrow is unknown unless a child read lights it)."""
         asked = [c["sk"] for c in page if not c["hide_children"]]
         lists: set[int] = set()
         if not asked:
             return lists, [], set(), set()
         groups = [c["sk"] for c in page if c["kind"] == 2 and not c["hide_children"]]
-        held = {r["sk"] for r in await tx.fetch(kgl.HELD, org, groups, sorted(gset))} if tops and groups and gset else set()
+        held = await tops.held(tx, org, groups) if tops and groups else set()
         rest = asked
         if sets is not None and sets["known"] is not None:      # a browse decides by the classes it has read: those of these rows' children too
             sets = await cover_children(tx, org, sets, asked, hidden)

@@ -204,8 +204,8 @@ describe('Knowledge Base Utils', () => {
         },
       ]
       expect(results).to.have.length(2)
-      expect(results[0].placeholderResult.documentName).to.equal('a.pdf')
-      expect(results[1].placeholderResult.documentName).to.equal('b.txt')
+      expect(results[0]!.placeholderResult.documentName).to.equal('a.pdf')
+      expect(results[1]!.placeholderResult.documentName).to.equal('b.txt')
     })
   })
 

@@ -1,0 +1,82 @@
+name: Harness Fault Suite
+
+# The L4 crash-point catalog and the rolling-upgrade scenarios (integration-tests/harness/fault, TEST-STRATEGY
+# 6.1) on real processes: the shipped MongoDB replica set, Node's production
+# harness composition and app.harness_main's worker, with a scripted model and
+# tools, once per message broker. Each scenario SIGKILLs a process and waits
+# for lease expiry, so it is nightly (with integration-tests.yml), on demand,
+# or on a PR labelled `harness-fault`. It needs no secrets.
+on:
+  schedule:
+    - cron: '30 18 * * *'
+  workflow_dispatch:
+    inputs:
+      broker:
+        description: 'Message broker'
+        type: choice
+        options: [all, redis, kafka]
+        default: all
+  pull_request:
+    types: [labeled, synchronize]
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: harness-fault-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  crash-points:
+    name: Crash points (${{ matrix.broker }})
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'harness-fault')
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        broker: ${{ fromJSON((github.event.inputs.broker == 'redis' && '["redis"]') || (github.event.inputs.broker == 'kafka' && '["kafka"]') || '["redis","kafka"]') }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: backend/nodejs/apps/package-lock.json
+
+      - name: Install Node dependencies
+        working-directory: backend/nodejs/apps
+        run: npm ci --ignore-scripts
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Python dependencies
+        working-directory: backend/python
+        run: |
+          requirements/install.sh dev --project . --editable
+
+      - name: Run the crash catalog
+        working-directory: integration-tests/harness/fault
+        run: |
+          mkdir -p "$RUNNER_TEMP/harness-fault"
+          python -m pytest -v --broker "${{ matrix.broker }}" \
+            --fault-artifacts "$RUNNER_TEMP/harness-fault" \
+            --junitxml "$RUNNER_TEMP/harness-fault/junit.xml"
+
+      # Logs carry ids, counts and reason codes only; the suite fails if one holds content or a secret.
+      - name: Upload logs and results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: harness-fault-${{ matrix.broker }}
+          path: ${{ runner.temp }}/harness-fault
+          retention-days: 14

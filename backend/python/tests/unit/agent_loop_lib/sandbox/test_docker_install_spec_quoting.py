@@ -1,6 +1,6 @@
 """Package specs reach the Docker install command as single, literal words.
 
-The install runs as ``sh -c "<pip|npm> install ... <specs>"``. A version
+The install runs as ``sh -c "<pip|npm> install ... <specs>"`` (pip: its specs as the script's arguments). A version
 range such as ``mpmath<1.0`` or ``numpy>=1.26`` passes spec validation, but
 unquoted the shell reads ``<`` and ``>`` as redirections: the first fails
 with "cannot open 1.0", the second installs any version and writes the
@@ -28,7 +28,7 @@ pytestmark = pytest.mark.skipif(shutil.which("sh") is None, reason="needs a POSI
 _FAKE_TOOL = '#!/bin/sh\nfor a in "$@"; do printf "%s\\n" "$a"; done\n'
 
 
-def _install_script(tmp_path: Path, specs: list[str], language: str) -> str:
+def _install_command(tmp_path: Path, specs: list[str], language: str) -> list[str]:
     sandbox = DockerCodingSandbox(working_dir=str(tmp_path / "wd"))
     captured: dict[str, Any] = {}
 
@@ -39,11 +39,11 @@ def _install_script(tmp_path: Path, specs: list[str], language: str) -> str:
     sandbox._firewalled = lambda command, cidrs, token: {"command": command}  # type: ignore[method-assign]
     sandbox._install_in_container = fake_install  # type: ignore[method-assign]
     sandbox._install_packages_sync(specs, language, client=None, network_name="egress", egress_cidrs=["10.9.0.0/16"])
-    # deadline_command(["sh", "-c", script], s) keeps the script as its last word.
-    return captured["command"][-1]
+    # The whole command, deadline wrapper included: the pip install takes its specs as arguments, not in its script.
+    return captured["command"]
 
 
-def _run(script: str, tmp_path: Path) -> tuple[list[str], list[str]]:
+def _run(command: list[str], tmp_path: Path) -> tuple[list[str], list[str]]:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     for tool in ("pip", "npm", "mkdir"):
@@ -54,7 +54,7 @@ def _run(script: str, tmp_path: Path) -> tuple[list[str], list[str]]:
     work.mkdir()
     (work / "lodash@4.17.21").write_text("")  # a glob target for `lodash@4.*`
     result = subprocess.run(
-        ["sh", "-c", script], cwd=work, capture_output=True, text=True, timeout=30,
+        command, cwd=work, capture_output=True, text=True, timeout=30,
         env={"PATH": f"{bin_dir}{os.pathsep}/usr/bin:/bin"},
     )
     assert result.returncode == 0, result.stderr
@@ -63,14 +63,14 @@ def _run(script: str, tmp_path: Path) -> tuple[list[str], list[str]]:
 
 def test_python_version_ranges_are_passed_to_pip_unchanged(tmp_path: Path) -> None:
     specs = ["mpmath<1.0", "numpy>=1.26", "pandas!=2.0"]
-    words, files = _run(_install_script(tmp_path, specs, "python"), tmp_path)
+    words, files = _run(_install_command(tmp_path, specs, "python"), tmp_path)
     for spec in specs:
         assert spec in words
     assert files == ["lodash@4.17.21"], "no file may be created by a redirection"
 
 
 def test_npm_ranges_are_not_glob_expanded(tmp_path: Path) -> None:
-    words, files = _run(_install_script(tmp_path, ["lodash@4.*"], "typescript"), tmp_path)
+    words, files = _run(_install_command(tmp_path, ["lodash@4.*"], "typescript"), tmp_path)
     assert "lodash@4.*" in words
     assert "lodash@4.17.21" not in words
     assert files == ["lodash@4.17.21"]

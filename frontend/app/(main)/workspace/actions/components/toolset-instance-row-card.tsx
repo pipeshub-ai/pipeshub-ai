@@ -1,5 +1,6 @@
 'use client';
 
+import { rejectedTime } from '@/app/(main)/chat/connect-cards';
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Avatar, Badge, Button, Flex, IconButton, Separator, Text } from '@radix-ui/themes';
@@ -101,6 +102,16 @@ export function ToolsetInstanceRowCard({
           {integrationSubtitle && integrationSubtitle.toLowerCase() !== primaryTitle.toLowerCase() ? (
             <Text size="1" color="gray" truncate>
               {integrationSubtitle}
+            </Text>
+          ) : null}
+          {!ok && instance.deauthReason === 'sign_in_rejected' ? (
+            <Text size="1" style={{ color: 'var(--amber-11)' }} data-testid="toolset-sign-in-rejected">
+              {instance.deauthAt
+                ? t('workspace.actions.instanceCard.signInRejectedAt', {
+                    item: integrationSubtitle || primaryTitle,
+                    time: rejectedTime(new Date(instance.deauthAt).toISOString()),
+                  })
+                : t('workspace.actions.instanceCard.signInRejected', { item: integrationSubtitle || primaryTitle })}
             </Text>
           ) : null}
         </Flex>

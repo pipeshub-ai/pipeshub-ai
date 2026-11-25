@@ -74,9 +74,12 @@ describe('ErrorMiddleware: a failed axios call is logged without its request (re
     server = http.createServer((req, res) => {
       req.resume()
       req.on('end', () => {
-        const path = (req.url ?? '').split('?')[0]
+        const path = (req.url ?? '').split('?')[0] ?? ''
         // A request that never gets an answer, without depending on the host's network.
-        if (path === '/hang-up') return req.socket.destroy()
+        if (path === '/hang-up') {
+          req.socket.destroy()
+          return
+        }
         const handler = answers.get(path)
         ;(typeof handler === 'function' ? handler : tokenHandler)(res)
       })
@@ -128,8 +131,8 @@ describe('ErrorMiddleware: a failed axios call is logged without its request (re
     process.env.LOG_FORMAT = format
     Logger.applyEnv()
     const console = root().logger.transports.find((t) => t instanceof winston.transports.Console)!
-    const shaped = root().logger.format.transform({ ...record }, {}) as Record<string | symbol, unknown>
-    return String((console.format!.transform(shaped, {}) as Record<symbol, unknown>)[MESSAGE])
+    const shaped = root().logger.format.transform({ ...record } as any, {}) as Record<string | symbol, unknown>
+    return String((console.format!.transform(shaped as any, {}) as Record<symbol, unknown>)[MESSAGE])
   }
   const response = (): any => {
     const res: any = { headersSent: false, status: sinon.stub(), json: sinon.stub(), setHeader: sinon.stub() }
@@ -143,7 +146,7 @@ describe('ErrorMiddleware: a failed axios call is logged without its request (re
     const thrown = level === 'error' ? error : withCause(new BadRequestError('Bad request'), error)
     // The stub is on the shared root, and the awaited HTTP call let timers other files left running log on it.
     winstonLog.resetHistory()
-    ErrorMiddleware.handleError()(thrown as Error, { method: 'POST', params: {} } as any, response(), sinon.stub())
+    ErrorMiddleware.handleError()(thrown as Error, { method: 'POST', params: {} } as any, response(), sinon.stub() as any)
     expect(winstonLog.callCount).to.equal(1)
     const record = winstonLog.firstCall.args[0]
     for (const format of ['text', 'json'] as const) expectNoSecret(consoleLine(record, format))
@@ -264,8 +267,8 @@ describe('ErrorMiddleware: a failed axios call is logged without its request (re
     logger.error('under error', { error })
     logger.error('under err', { err: error })
     logger.error('as a cause', wrapped)
-    ErrorMiddleware.handleError()(wrapped, { method: 'GET', params: {} } as any, response(), sinon.stub())
-    ErrorMiddleware.handleError()(new InternalServerError('x', { error }), { method: 'GET', params: {} } as any, response(), sinon.stub())
+    ErrorMiddleware.handleError()(wrapped, { method: 'GET', params: {} } as any, response(), sinon.stub() as any)
+    ErrorMiddleware.handleError()(new InternalServerError('x', { error }), { method: 'GET', params: {} } as any, response(), sinon.stub() as any)
     expect(winstonLog.callCount).to.equal(6)
     for (const call of winstonLog.getCalls()) {
       expectNoSecret(call.args[0])

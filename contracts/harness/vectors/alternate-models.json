@@ -1,0 +1,16 @@
+{
+  "description": "G-48 (C20.49) cross-language vector: the alternates Node pins for a loop run of an agent that grants more than one model (domain/run-spec.ts alternateModelRoutes) and the failures each takes over, which the worker's model policy (P4.7, harness_core.models.policy) moves on. An outage only: never a content filter, never a budget or credential refusal. At most `max` alternates, the agent's other models in its order.",
+  "on": ["5xx", "timeout", "429_exhausted"],
+  "max": 2,
+  "agentModels": [
+    {"provider": "openAI", "modelName": "gpt-x"},
+    {"provider": "anthropic", "modelName": "claude-x"},
+    {"provider": "azureOpenAI", "modelName": "gpt-y"},
+    {"provider": "gemini", "modelName": "gem-z"}
+  ],
+  "policy": [
+    {"provider": "openai", "model": "gpt-x"},
+    {"provider": "anthropic", "model": "claude-x", "on": ["5xx", "timeout", "429_exhausted"]},
+    {"provider": "azureopenai", "model": "gpt-y", "on": ["5xx", "timeout", "429_exhausted"]}
+  ]
+}

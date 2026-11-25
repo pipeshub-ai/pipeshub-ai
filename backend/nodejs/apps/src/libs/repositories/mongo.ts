@@ -1,4 +1,5 @@
 import mongoose, { ClientSession } from 'mongoose';
+import type { Db, Document } from 'mongodb';
 import { UniqueConstraintError, VersionConflictError } from './errors';
 import {
   FENCE_COLLECTION,
@@ -167,6 +168,36 @@ export class MongoUnitOfWork implements UnitOfWork {
   }
 }
 
+/** The application's MongoDB database, once connected: for repository code that uses the driver directly. */
+export const mongoDb = (): Db | undefined => mongoose.connection.db;
+
+/**
+ * The default connection for a one-shot operator command, opened on `uri` without building indexes (the migrations own
+ * them): its database, and how to close it.
+ */
+export async function connectMongo(
+  uri: string,
+  dbName: string,
+): Promise<{ db: Db; close: () => Promise<void> }> {
+  await mongoose.connect(uri, { dbName, autoIndex: false });
+  const db = mongoose.connection.db;
+  if (!db) throw new Error('No database connection');
+  return { db, close: () => mongoose.disconnect() };
+}
+
+/** A connection of its own (the default one untouched), for a command that works on one database through the driver. */
+export async function openMongoConnection(
+  uri: string,
+  dbName: string,
+): Promise<{ db: Db; close: () => Promise<void> }> {
+  const connection = await mongoose
+    .createConnection(uri, { dbName })
+    .asPromise();
+  const db = connection.db;
+  if (!db) throw new Error('No database connection');
+  return { db, close: () => connection.close() };
+}
+
 /** Whether a string is a well-formed document id for this store. */
 export const isValidId = (id: string): boolean =>
   mongoose.Types.ObjectId.isValid(id);
@@ -194,4 +225,15 @@ export async function mongoDrainRequested(): Promise<boolean> {
     draining = false;
   }
   return draining;
+}
+
+/**
+ * The server's `hello` reply (topology, wire version, clock): read-only, so the store fence has nothing to wrap. The one admin
+ * command repository code outside this file sends goes through here, so the write lint can tell it from an unfenced write.
+ */
+export async function mongoHello(
+  db: Db | undefined = mongoose.connection.db,
+): Promise<Document> {
+  if (!db) throw new Error('MongoDB is not connected');
+  return db.admin().command({ hello: 1 });
 }

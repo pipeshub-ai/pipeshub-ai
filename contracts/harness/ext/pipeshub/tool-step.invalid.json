@@ -1,0 +1,35 @@
+[
+  {
+    "description": "a step names its action",
+    "instance": {
+      "target": "onyx.app"
+    }
+  },
+  {
+    "description": "an action the chat does not name is refused",
+    "instance": {
+      "action": "runCommand"
+    }
+  },
+  {
+    "description": "a link is http or https only",
+    "instance": {
+      "action": "readPage",
+      "href": "javascript:alert(1)"
+    }
+  },
+  {
+    "description": "a step never carries the call's raw arguments",
+    "instance": {
+      "action": "webSearch",
+      "args": "{\"query\": \"q\"}"
+    }
+  },
+  {
+    "description": "a count is never negative",
+    "instance": {
+      "action": "findFiles",
+      "count": -1
+    }
+  }
+]

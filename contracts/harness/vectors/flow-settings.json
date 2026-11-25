@@ -1,0 +1,151 @@
+{
+  "_comment": "CPD-6: the deployment's flow rule (SEC1) from its environment, as Node pins it in the deployment layer (domain/deployment-policy.ts deploymentFlow over config.ts flowSettings) and as the worker reads it (app/harness/approvals.py flow_rule). `env` holds the three variables (absent: unset); `rule` is the rule or null while the guard is off; `invalid` names the settings (`level`, `above`) whose value was not one of theirs and fell back to the strictest, logged once; `refusesToStart`: the process exits naming the flag (InvalidEnvFlag / InvalidEnvFlagError).",
+  "cases": [
+    {
+      "id": "FS-1",
+      "env": {},
+      "rule": {
+        "level": "ask",
+        "above": "public"
+      },
+      "invalid": [],
+      "note": "the guard is on by default"
+    },
+    {
+      "id": "FS-2",
+      "env": {
+        "HARNESS_FLOW_GUARD": "false"
+      },
+      "rule": null,
+      "invalid": []
+    },
+    {
+      "id": "FS-3",
+      "env": {
+        "HARNESS_FLOW_GUARD": "0",
+        "HARNESS_FLOW_GUARD_LEVEL": "deny",
+        "HARNESS_FLOW_GUARD_ABOVE": "private"
+      },
+      "rule": null,
+      "invalid": [],
+      "note": "off: no rule whatever the other two say"
+    },
+    {
+      "id": "FS-4",
+      "env": {
+        "HARNESS_FLOW_GUARD": "true",
+        "HARNESS_FLOW_GUARD_LEVEL": "deny"
+      },
+      "rule": {
+        "level": "deny",
+        "above": "public"
+      },
+      "invalid": []
+    },
+    {
+      "id": "FS-5",
+      "env": {
+        "HARNESS_FLOW_GUARD_LEVEL": "ask",
+        "HARNESS_FLOW_GUARD_ABOVE": "private"
+      },
+      "rule": {
+        "level": "ask",
+        "above": "private"
+      },
+      "invalid": []
+    },
+    {
+      "id": "FS-6",
+      "env": {
+        "HARNESS_FLOW_GUARD": " ON ",
+        "HARNESS_FLOW_GUARD_LEVEL": " Deny ",
+        "HARNESS_FLOW_GUARD_ABOVE": " PRIVATE "
+      },
+      "rule": {
+        "level": "deny",
+        "above": "private"
+      },
+      "invalid": [],
+      "note": "trimmed, any case"
+    },
+    {
+      "id": "FS-7",
+      "env": {
+        "HARNESS_FLOW_GUARD_LEVEL": "",
+        "HARNESS_FLOW_GUARD_ABOVE": ""
+      },
+      "rule": {
+        "level": "ask",
+        "above": "public"
+      },
+      "invalid": [],
+      "note": "blank is unset (Compose renders ${X:-} as blank)"
+    },
+    {
+      "id": "FS-8",
+      "env": {
+        "HARNESS_FLOW_GUARD_LEVEL": "block"
+      },
+      "rule": {
+        "level": "ask",
+        "above": "public"
+      },
+      "invalid": [
+        "level"
+      ],
+      "note": "a level that is not one asks"
+    },
+    {
+      "id": "FS-9",
+      "env": {
+        "HARNESS_FLOW_GUARD_LEVEL": "off"
+      },
+      "rule": {
+        "level": "ask",
+        "above": "public"
+      },
+      "invalid": [
+        "level"
+      ],
+      "note": "off is not a level: the guard flag switches the rule off"
+    },
+    {
+      "id": "FS-10",
+      "env": {
+        "HARNESS_FLOW_GUARD_LEVEL": "deny",
+        "HARNESS_FLOW_GUARD_ABOVE": "internal"
+      },
+      "rule": {
+        "level": "deny",
+        "above": "public"
+      },
+      "invalid": [
+        "above"
+      ],
+      "note": "a threshold that is not one is the lowest"
+    },
+    {
+      "id": "FS-11",
+      "env": {
+        "HARNESS_FLOW_GUARD_LEVEL": "allow",
+        "HARNESS_FLOW_GUARD_ABOVE": "unknown"
+      },
+      "rule": {
+        "level": "ask",
+        "above": "public"
+      },
+      "invalid": [
+        "level",
+        "above"
+      ]
+    },
+    {
+      "id": "FS-12",
+      "env": {
+        "HARNESS_FLOW_GUARD": "maybe"
+      },
+      "refusesToStart": true,
+      "note": "a guard flag that is not a boolean refuses to start"
+    }
+  ]
+}

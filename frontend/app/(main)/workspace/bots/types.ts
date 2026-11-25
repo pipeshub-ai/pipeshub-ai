@@ -45,3 +45,15 @@ export interface AgentOption {
   id: string;
   name: string;
 }
+
+/** A Slack person and the PipesHub account they linked by signing in; `active` is false once that account is gone. */
+export interface SlackIdentityLink {
+  teamId: string;
+  slackUserId: string;
+  slackName: string | null;
+  userId: string;
+  email: string | null;
+  fullName: string | null;
+  linkedAt: string;
+  active: boolean;
+}

@@ -24,6 +24,7 @@ from app.connectors.sources.localKB.api.knowledge_hub_models import BreadcrumbIt
 from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
 from app.models.entities import RecordType, Status, TicketRecord
 from app.services.graph_db.interface.graph_db_provider import AccessCheck
+from tests.support.record_access import InMemoryRecordAccess
 
 
 def _short_id_for(state: dict, full_id: str) -> str:
@@ -928,7 +929,7 @@ class TestNavigateRemembersRecordIds:
         gp.get_knowledge_hub_breadcrumbs = AsyncMock(return_value=[])
         gp.get_linked_records = AsyncMock(return_value=[])
         gp.get_record_by_id = AsyncMock(return_value=None)
-        gp.check_record_access_with_details = AsyncMock(return_value=None)
+        InMemoryRecordAccess().serve(gp)
         unknown = "deadbeef-0000-4000-8000-000000000000"
 
         def check_access(_user_key, _org_id, node_ids=(), **_kwargs) -> AccessCheck:
@@ -986,7 +987,7 @@ class TestNavigateRemembersRecordIds:
             {"id": f"{i:08x}-2222-4222-8333-944445555666", "name": f"Linked {i}"} for i in range(5)
         ])
         gp.get_record_by_id = AsyncMock(return_value=None)
-        gp.check_record_access_with_details = AsyncMock(return_value=None)
+        InMemoryRecordAccess().serve(gp)
         unknown = "8a2cfb7d-04fc-4647-8d43-5d0527800009"
 
         def check_access(_user_key, _org_id, node_ids=(), **_kwargs) -> AccessCheck:

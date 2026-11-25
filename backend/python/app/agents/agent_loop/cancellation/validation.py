@@ -13,7 +13,7 @@ __all__ = ["validate_run_id"]
 
 def validate_run_id(value: str | None) -> str | None:
     """`None` (absent) is valid on the STREAM side — the agent loop falls
-    back to generating one (see `stream_bridge.py`/`bridge.py`). The cancel
+    back to generating one (see `stream_bridge.py`). The cancel
     endpoint's `runId` field is not optional, so `None` never reaches this
     validator there. Any non-`None` value must be a valid UUID string."""
     if value is None:

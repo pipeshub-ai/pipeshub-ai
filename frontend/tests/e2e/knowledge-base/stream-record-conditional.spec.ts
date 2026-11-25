@@ -8,7 +8,7 @@ import { request } from '@playwright/test';
 import { test, expect, apiBaseURL } from '../fixtures/api-context.fixture';
 import { ensureSmtpConfigured } from '../helpers/smtp.helper';
 import { acceptInvite, deleteUserByEmail, signInAs, uniqueMemberEmail } from '../helpers/members.helper';
-import { accessTokenOf } from '../helpers/cited-chat.helper';
+import { accessTokenFromSession } from '../helpers/session.helper';
 import { createTestKb, deleteTestKb, makeKbName, uploadFileByApi } from './kb-upload.helpers';
 
 test.describe('Conditional record stream', () => {
@@ -38,7 +38,7 @@ test.describe('Conditional record stream', () => {
       const memberPage = await signInAs(browser, member);
       let token: string;
       try {
-        token = await accessTokenOf(memberPage);
+        token = await accessTokenFromSession(memberPage);
       } finally {
         await memberPage.context().close();
       }

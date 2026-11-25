@@ -136,13 +136,28 @@ The bundled embedding server (`app/embedding_main.py`) holds a local model in me
 
 Set `EMBEDDING_QUERY_INSTRUCTION=true` to enable; unset, queries are sent unchanged. Ranking evidence is mixed (dense gains, hybrid neutral, one slice regressed), so it stays opt-in. When on, BGE v1/v1.5 English embedding models (`bge-small|base|large[-en][-v1.5]`, local or hosted, by the configured model id) expect `Represent this sentence for searching relevant passages: ` in front of search *queries*. `app/utils/query_instruction.py` (`instruct_query`) adds it on the dense query embedding in chunk search (`retrieval_service.py`), entity search and the skill index. Passages and chunks are embedded as-is at index time, so stored vectors are unchanged, and the sparse (BM25) query is never prefixed. bge-m3 and the zh models are left alone, as is every non-BGE model. New query-embedding paths should call `instruct_query`.
 
+## Model-call placement (MG-15)
+
+Whether an org's model calls may go to a given model is an extension point that refuses nothing in this build. Every model call PipesHub makes for an org asks it first: agent runs, classic chat and search, the Slack bot (which streams the chat and agent routes), indexing and extraction (table and image descriptions, VLM OCR, classification, entities), embeddings at index and query time, image generation, speech and the decision model.
+
+**The extension points.**
+
+- `ModelPlacementPort` (`backend/python/app/utils/model_placement.py`): the verdict `app/utils/llm.py` asks (`require_placement`, `require_embeddings_placement`) before it builds any model or embedding client (`build_chat_model`, `build_embeddings`, `get_llm`, `get_llm_for_role`, …). A holder of a built embedding client asks again before each use. Default `ALLOW_EVERY_MODEL`: every call is allowed and its region is not known.
+- `RunModelPlacement` (`backend/python/app/harness/run_policy/ports.py`): what a run's resolved model policy is handed through before its routes are used. Default `NO_RUN_MODEL_PLACEMENT`: the policy is handed out as is.
+- `ModelRegions` (`backend/python/harness_core/models/placement.py`): where a route's calls are served and which region pins an org's narrowing holds, asked by the model gateway's guard. Default `NO_MODEL_REGIONS`: no region, no pin.
+- `ModelPlacementSource` (Node, `backend/nodejs/apps/src/modules/agent-harness/ports/model-access.ts`, bound to `AGENT_HARNESS_MODEL_PLACEMENT`): what the model picker shows beyond each choice's own members. Unbound: nothing more.
+
+`backend/python/tests/unit/harness/policy/test_placement_ports.py` (RSP-1..RSP-5) holds the defaults. `tests/cohesion/test_mg15_one_model_funnel.py` fails when a model client is built anywhere but `app/utils/llm.py`, and `tests/cohesion/test_mg15_one_placement_funnel.py` when a run's model route is built outside the placement funnel; the admin's model health checks (`app/api/routes/health.py`, a fixed probe with no org content) are the named exception.
+
+**When a call is refused.** `require_placement` raises `ModelNotAllowedError` with the error code the verdict names: chat and the Slack bot say nothing was sent to the model and to pick another or ask a workspace admin; background work says the file was not processed and an admin can choose another model. Rules that cannot be read send nothing: the call fails as a provider outage (`LLMUnavailableError`) and is retried.
+
 ## Where to change it
 
 | Concern | Location |
 | --- | --- |
 | Provider form fields | `backend/python/app/config/ai_models/providers/` |
 | List-model strategies | `backend/python/app/services/ai_models/discovery/` |
-| Runtime model construction | `backend/python/app/utils/aimodels.py` |
+| Runtime model construction | `backend/python/app/utils/aimodels.py`, built only through `backend/python/app/utils/llm.py` (placement check) |
 | Stored document and batch save | `backend/nodejs/apps/src/modules/configuration_manager/` |
 | Picker and onboarding | `frontend/app/(main)/workspace/ai-models/` |
 | Decision model clients | `backend/python/app/services/ai_models/decision/` |
