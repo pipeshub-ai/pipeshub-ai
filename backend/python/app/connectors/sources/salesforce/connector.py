@@ -978,7 +978,7 @@ class SalesforceConnector(BaseConnector):
         if not response.success:
             self._raise_failed_request(response, "SOQL query", q[:300])
 
-        yield list(response.data.get("records") or [])
+        yield self._soql_records(response)
 
         while not response.data.get("done", True):
             next_url = response.data.get("nextRecordsUrl")
@@ -988,7 +988,16 @@ class SalesforceConnector(BaseConnector):
             response = await self.data_source.soql_query_next(next_url=next_url)
             if not response.success:
                 self._raise_failed_request(response, "SOQL pagination", next_url)
-            yield list(response.data.get("records") or [])
+            yield self._soql_records(response)
+
+    def _soql_records(self, response: SalesforceResponse) -> list[SalesforceRawRecord]:
+        """The records of one query page. A page without its ``records``, or that does not say whether
+        it is the last (``done``), marks the query as cut."""
+        records = response.data.get("records")
+        if not isinstance(records, list) or not isinstance(response.data.get("done"), bool):
+            self._soql_cut = True
+            self.logger.warning("A Salesforce query page has no records list or does not say whether more follow")
+        return list(records or [])
 
     def _raise_failed_request(self, response: SalesforceResponse, what: str, where: str) -> None:
         """Log what Salesforce answered, then raise the stream error for its status from the
