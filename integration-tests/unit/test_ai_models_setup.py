@@ -270,6 +270,9 @@ def test_a_caller_s_model_name_stands_in_for_the_gateway_s_env_model(monkeypatch
     monkeypatch.delenv("TEST_OPENAI_COMPATIBLE_LLM_MODEL")
     monkeypatch.delenv("TEST_OPENAI_COMPATIBLE_EMBEDDING_MODEL")
     monkeypatch.delenv("TEST_AZURE_OPENAI_API_KEY")
+    # No provider is named here, so any other LLM key in the environment would be found.
+    monkeypatch.delenv("TEST_GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("TEST_GROQ_API_KEY", raising=False)
 
     assert setup.llm_configuration(model_name="openai/gpt-5.6-luna") == (
         "openAICompatible",
