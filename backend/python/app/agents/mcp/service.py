@@ -18,7 +18,7 @@ from typing import Any, Optional
 
 from app.agents.constants.mcp_server_constants import (
     get_mcp_credentials_path,
-    get_mcp_instance_credentials_prefix,
+    get_mcp_credentials_prefix,
     get_mcp_instance_path,
     get_mcp_instances_prefix,
     get_mcp_org_user_instances_prefix,
@@ -172,17 +172,27 @@ async def load_visible_instances(
 _PERSON_ID = re.compile(r"[0-9a-f]{24}")
 
 
-async def count_signed_in_people(config_service: ConfigurationService, instance_id: str) -> int:
-    """How many people keep their own sign-in for `instance_id`. Never says who."""
-    marker = f"/credentials/{instance_id}/"
+async def count_signed_in_people(config_service: ConfigurationService) -> dict[str, int]:
+    """How many people keep their own sign-in, per instance id. Never says who.
+
+    One listing for every instance: a listing costs as much as the store's whole keyspace on
+    Redis, so one per instance made the count slower with every server an org added.
+    """
+    marker = get_mcp_credentials_prefix()
     try:
-        keys = await config_service.list_keys_in_directory(get_mcp_instance_credentials_prefix(instance_id))
+        keys = await config_service.list_keys_in_directory(marker)
     except Exception as e:
-        logger.warning(f"Failed to list MCP credential keys for {instance_id}: {e}")
-        return 0
-    # One owner can have several keys (the credential, its OAuth tokens, a registered client).
-    owners = {key.split(marker, 1)[1].split("/", 1)[0] for key in keys if marker in key}
-    return sum(1 for owner in owners if _PERSON_ID.fullmatch(owner))
+        logger.warning(f"Failed to list MCP credential keys: {e}")
+        return {}
+    owners: dict[str, set[str]] = {}
+    for key in keys:
+        if marker not in key:
+            continue
+        parts = key.split(marker, 1)[1].split("/")
+        # One owner can have several keys (the credential, its OAuth tokens, a registered client).
+        if len(parts) >= 2 and _PERSON_ID.fullmatch(parts[1]):
+            owners.setdefault(parts[0], set()).add(parts[1])
+    return {instance_id: len(people) for instance_id, people in owners.items()}
 
 
 async def popular_org_servers(
@@ -191,13 +201,11 @@ async def popular_org_servers(
     """Of the `visible` instances, the org's servers that people signed in to, most used first,
     with how many people."""
     instances = [i for i in visible if not is_personal(i)]
-    counts = await gather_with_concurrency(
-        _PREFIX_READ_CONCURRENCY, *[count_signed_in_people(config_service, i["_id"]) for i in instances],
-    )
+    counts = await count_signed_in_people(config_service) if instances else {}
     rows = [
-        {"instanceId": i["_id"], "typeId": i.get("typeId"), "name": i.get("name") or "", "people": n}
-        for i, n in zip(instances, counts)
-        if n > 0
+        {"instanceId": i["_id"], "typeId": i.get("typeId"), "name": i.get("name") or "", "people": counts.get(i["_id"], 0)}
+        for i in instances
+        if counts.get(i["_id"], 0) > 0
     ]
     rows.sort(key=lambda r: (-r["people"], r["name"].casefold()))
     return rows

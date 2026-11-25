@@ -82,7 +82,7 @@ class FakeRedisClient:
         self.server.check()
         return 1 if self.server.data.pop(key, None) is not None else 0
 
-    async def scan_iter(self, match: str) -> AsyncIterator[bytes]:
+    async def scan_iter(self, match: str, count: int | None = None) -> AsyncIterator[bytes]:
         self.server.check()
         self.server.scans.append(match)
         for key in list(self.server.data):
