@@ -17,6 +17,7 @@ from zammad_behaviour_fakes import (
     FakeZammad,
     epoch_ms,
     iso,
+    run_full_sync,
 )
 
 from app.connectors.sources.zammad import connector as zammad_connector
@@ -837,3 +838,224 @@ async def test_a_role_list_that_fails_still_syncs_tickets_and_fails_the_run(worl
     assert "21" in world.db.external_ids()
     assert world.zammad.role_reads[-1] is True  # roles are always read with expand=true
 
+
+
+# ---- full sync: the runner unlinks every held node the run did not note ----
+
+# Ticket 20 and group 3 (no tickets) are deleted in Zammad before the full sync; everything else is still there.
+GONE_FROM_ZAMMAD = frozenset({"recordGroup:group_3", "userGroup:3"})
+
+
+async def _full_sync(world: World) -> tuple[bool, list[str], list[str]]:
+    """(no further full sync owed, nodes still in Zammad that were unlinked or deleted, gone nodes unlinked)."""
+    held = {f"record:{ext}" for ext in world.db.external_ids()}
+    done, unlinked = await run_full_sync(world.connector, world.db, world.store.clear)
+    removed = unlinked | (held - {f"record:{ext}" for ext in world.db.external_ids()})
+    still_there = removed - GONE_FROM_ZAMMAD - {"record:20"}
+    return done, sorted(still_there), sorted(unlinked & GONE_FROM_ZAMMAD)
+
+
+@pytest.fixture
+async def gone_world(world: World) -> World:
+    world.zammad.groups[3] = "Archive"
+    await world.sync()
+    assert {"group_3"} <= set(world.db.record_groups) and "3" in world.db.user_groups
+    world.zammad.delete_ticket(20)
+    del world.zammad.groups[3]
+    return world
+
+
+async def test_a_full_sync_unlinks_only_what_is_gone_from_zammad(gone_world: World) -> None:
+    done, wrongly_removed, gone_unlinked = await _full_sync(gone_world)
+
+    assert done is True
+    assert (wrongly_removed, gone_unlinked) == ([], sorted(GONE_FROM_ZAMMAD))
+    assert "20" in gone_world.db.deleted
+
+
+async def test_a_full_sync_keeps_the_links_of_a_ticket_the_search_index_has_not_caught_up_with(
+    gone_world: World,
+) -> None:
+    """The ticket is read back, found in its group and kept: the unlink must not strip it."""
+    gone_world.zammad.unindexed.add(11)
+
+    done, wrongly_removed, gone_unlinked = await _full_sync(gone_world)
+
+    assert (wrongly_removed, gone_unlinked) == ([], sorted(GONE_FROM_ZAMMAD))
+    assert done is True
+    assert 11 in gone_world.zammad.ticket_reads
+
+
+async def test_a_full_sync_keeps_the_links_of_a_ticket_read_back_without_a_group(gone_world: World) -> None:
+    """``_settle_ticket`` keeps a ticket Zammad reads back with no group_id; the unlink must not strip it."""
+    gone_world.zammad.tickets[11]["group_id"] = None
+
+    done, wrongly_removed, gone_unlinked = await _full_sync(gone_world)
+
+    assert (wrongly_removed, gone_unlinked) == ([], sorted(GONE_FROM_ZAMMAD))
+    assert done is True
+
+
+async def test_a_full_sync_still_removes_a_ticket_the_search_misses_that_reads_back_as_gone(
+    gone_world: World,
+) -> None:
+    gone_world.zammad.unindexed.add(11)
+    gone_world.zammad.delete_ticket(11)
+
+    done, unlinked = await run_full_sync(gone_world.connector, gone_world.db, gone_world.store.clear)
+
+    assert done is True
+    assert sorted(gone_world.db.deleted) == ["11", "11_1_1", "20"]
+    assert unlinked == GONE_FROM_ZAMMAD
+
+
+async def test_a_full_sync_whose_read_back_fails_keeps_the_ticket_and_unlinks_nothing(gone_world: World) -> None:
+    gone_world.zammad.unindexed.add(11)
+    gone_world.zammad.ticket_read_status[11] = 500
+
+    assert await run_full_sync(gone_world.connector, gone_world.db, gone_world.store.clear) == (False, set())
+
+    assert {"11", "11_1_1"} <= gone_world.db.external_ids()
+    assert "11" not in gone_world.db.deleted
+    assert "the check for deleted tickets of group 'Support'" in gone_world.connector._incomplete
+
+
+async def test_a_full_sync_writes_a_ticket_moved_to_another_synced_group_the_search_has_not_caught_up_with(
+    gone_world: World,
+) -> None:
+    gone_world.zammad.move_ticket(11, 2, day=6)
+    gone_world.zammad.unindexed.add(11)
+
+    done, wrongly_removed, gone_unlinked = await _full_sync(gone_world)
+
+    assert (wrongly_removed, gone_unlinked) == ([], sorted(GONE_FROM_ZAMMAD))
+    assert done is True
+    assert gone_world.db.records["11"].external_record_group_id == "group_2"
+
+
+async def test_a_full_sync_does_not_drop_an_attachment_whose_record_could_not_be_looked_up(
+    gone_world: World,
+) -> None:
+    """A lookup that fails while the attachment is built must not cost the attachment, now or after the retry."""
+    lookup = gone_world.db.get_record_by_external_id
+
+    async def failing_lookup(connector_id: str, external_record_id: str, **kwargs: object) -> object:
+        if external_record_id == "11_1_1":
+            raise RuntimeError("graph unavailable")
+        return await lookup(connector_id, external_record_id)
+
+    gone_world.db.get_record_by_external_id = failing_lookup
+    _, wrongly_removed, _ = await _full_sync(gone_world)
+    assert wrongly_removed == []
+
+    gone_world.db.get_record_by_external_id = lookup
+    done, wrongly_removed, gone_unlinked = await _full_sync(gone_world)
+    assert (wrongly_removed, gone_unlinked) == ([], sorted(GONE_FROM_ZAMMAD))
+    assert done is True
+
+
+def _fail_lookup_of(world: World, external_id: str) -> object:
+    """Makes the graph lookup of one record raise; returns the real lookup to restore."""
+    lookup = world.db.get_record_by_external_id
+
+    async def failing_lookup(connector_id: str, external_record_id: str, **kwargs: object) -> object:
+        if external_record_id == external_id:
+            raise RuntimeError("graph unavailable")
+        return await lookup(connector_id, external_record_id)
+
+    world.db.get_record_by_external_id = failing_lookup
+    return lookup
+
+
+async def test_an_incremental_sync_does_not_delete_an_attachment_whose_record_could_not_be_looked_up(
+    world: World,
+) -> None:
+    world.zammad.move_ticket(11, 1, day=9)
+    lookup = _fail_lookup_of(world, "11_1_1")
+
+    assert await world.sync_incomplete() == ["the tickets of group 'Support'"]
+    assert "11_1_1" in world.db.external_ids()
+    assert world.db.deleted == []
+
+    world.db.get_record_by_external_id = lookup
+    await world.sync()
+    assert {"11", "11_1_1"} <= world.db.external_ids()
+    assert world.db.deleted == []
+    assert world.db.records["11"].source_updated_at == epoch_ms(9)
+
+
+async def test_a_ticket_whose_attachment_never_builds_is_given_up_without_losing_the_attachment(
+    world: World,
+) -> None:
+    world.zammad.move_ticket(11, 1, day=9)
+    _fail_lookup_of(world, "11_1_1")
+
+    await world.sync_incomplete()
+    await world.sync_incomplete()
+    await world.sync()
+
+    assert {"11", "11_1_1"} <= world.db.external_ids()
+    assert world.db.deleted == []
+
+
+def _fail_build_of(world: World, external_id: str) -> None:
+    """Makes the build of one attachment record raise on every sync, as a bad attachment would."""
+    build = world.connector._transform_attachment_to_file_record
+
+    async def failing_build(*args: object, **kwargs: object) -> object:
+        if kwargs.get("external_record_id") == external_id:
+            raise ValueError("attachment cannot be built")
+        return await build(*args, **kwargs)
+
+    world.connector._transform_attachment_to_file_record = failing_build
+
+
+async def test_a_ticket_attachment_that_never_builds_does_not_wedge_full_syncs(gone_world: World) -> None:
+    """Each full sync resets the read-failure counts, so failing the ticket would fail every full sync."""
+    gone_world.zammad.move_ticket(11, 1, day=9)
+    _fail_build_of(gone_world, "11_1_1")
+
+    for _ in range(2):
+        done, wrongly_removed, _ = await _full_sync(gone_world)
+        assert (done, wrongly_removed) == (True, [])
+        assert gone_world.db.records["11"].source_updated_at == epoch_ms(9)
+        assert "11_1_1" in gone_world.db.external_ids()
+    assert "11_1_1" not in gone_world.db.deleted
+
+
+async def test_an_incremental_sync_writes_a_ticket_whose_attachment_fails_to_build_and_keeps_the_attachment(
+    world: World,
+) -> None:
+    world.zammad.move_ticket(11, 1, day=9)
+    _fail_build_of(world, "11_1_1")
+
+    await world.sync()
+
+    assert world.db.records["11"].source_updated_at == epoch_ms(9)
+    assert "11_1_1" in world.db.external_ids()
+    assert world.db.deleted == []
+
+
+@pytest.mark.parametrize("full", [False, True], ids=["incremental", "full"])
+async def test_an_attachment_removed_from_a_ticket_is_deleted_beside_one_kept_as_stored(
+    world: World, full: bool,
+) -> None:
+    """Keeping the attachment that fails to build must not stop the comparison that removes the other one."""
+    world.zammad.tickets[11]["attachments"] = 2
+    world.zammad.move_ticket(11, 1, day=5)
+    await world.sync()
+    assert {"11_1_1", "11_1_2"} <= world.db.external_ids()
+
+    world.zammad.tickets[11]["attachments"] = 1
+    world.zammad.move_ticket(11, 1, day=9)
+    _fail_build_of(world, "11_1_1")
+    if full:
+        await run_full_sync(world.connector, world.db, world.store.clear)
+    else:
+        await world.sync()
+
+    assert "11_1_2" in world.db.deleted
+    assert "11_1_2" not in world.db.external_ids()
+    assert "11_1_1" in world.db.external_ids()
+    assert "11_1_1" not in world.db.deleted
+    assert world.db.records["11"].source_updated_at == epoch_ms(9)

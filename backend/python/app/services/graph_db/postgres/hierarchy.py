@@ -643,7 +643,8 @@ class HubMixin(PgBase):
 
     async def _hub_trail(self, tx: Tx, org: str, node_id: str) -> list[dict[str, Any]]:
         """The trail from the node up to its root, every step's parent in the trail: a record's hierarchy parent, else the group it belongs to, else the app (a
-        collection's folders); a group's group, else its app. It stops at a node with no name, and before a node it has passed."""
+        collection's folders); a group's group, else its app. Of several, the lowest id, except that a record's own group (``recordGroupId``) comes first among its
+        groups, then one with a hierarchy edge to it. It stops at a node with no name, and before a node it has passed."""
         trail: list[dict[str, Any]] = []
         seen: set[str] = set()
         cur: str | None = node_id
@@ -654,11 +655,16 @@ class HubMixin(PgBase):
                 break
             trail.append({k: info[k] for k in ("id", "name", "nodeType", "subType")})
             cur = await tx.fetchval("""/* pipeshub:graph.hub_parent */ SELECT pid FROM (
-                  SELECT 1 AS pri, e.from_id AS pid FROM graph.edges e WHERE $2 = 'records' AND e.org_id = $1 AND e.coll = 'nodeRelations' AND e.to_coll = 'records' AND e.to_id = $3
-                    AND e.from_coll = 'records' AND e.doc->>'relationshipType' IN ('PARENT_CHILD', 'ATTACHMENT')
-                  UNION ALL SELECT 2, b.to_id FROM graph.edges b WHERE $2 <> 'apps' AND b.org_id = $1 AND b.coll = 'belongsTo' AND b.from_coll = $2 AND b.from_id = $3 AND b.to_coll = 'recordGroups'
-                  UNION ALL SELECT 3, b.to_id FROM graph.edges b WHERE $2 <> 'apps' AND b.org_id = $1 AND b.coll = 'belongsTo' AND b.from_coll = $2 AND b.from_id = $3 AND b.to_coll = 'apps') p
-                ORDER BY pri, pid LIMIT 1""", org, info["coll"], cur)
+                  SELECT 1 AS pri, 0 AS sub, e.from_id AS pid FROM graph.edges e WHERE $2 = 'records' AND e.org_id = $1 AND e.coll = 'nodeRelations' AND e.to_coll = 'records'
+                    AND e.to_id = $3 AND e.from_coll = 'records' AND e.doc->>'relationshipType' IN ('PARENT_CHILD', 'ATTACHMENT')
+                  UNION ALL SELECT 2, CASE WHEN $2 <> 'records' THEN 0
+                      WHEN b.to_id = (SELECT n.doc->>'recordGroupId' FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = 'records' AND n.id = $3) THEN 0
+                      WHEN EXISTS (SELECT 1 FROM graph.edges h WHERE h.org_id = $1 AND h.coll = 'nodeRelations' AND h.to_coll = 'records' AND h.to_id = $3
+                        AND h.from_coll = 'recordGroups' AND h.from_id = b.to_id AND h.doc->>'relationshipType' IN ('PARENT_CHILD', 'ATTACHMENT')) THEN 1 ELSE 2 END, b.to_id
+                    FROM graph.edges b WHERE $2 <> 'apps' AND b.org_id = $1 AND b.coll = 'belongsTo' AND b.from_coll = $2 AND b.from_id = $3 AND b.to_coll = 'recordGroups'
+                  UNION ALL SELECT 3, 0, b.to_id FROM graph.edges b WHERE $2 <> 'apps' AND b.org_id = $1 AND b.coll = 'belongsTo' AND b.from_coll = $2 AND b.from_id = $3
+                    AND b.to_coll = 'apps') p
+                ORDER BY pri, sub, pid LIMIT 1""", org, info["coll"], cur)
         return trail
 
     async def _hub_trail_kg(self, tx: Tx, org: str, node_id: str) -> list[dict[str, Any]]:
@@ -700,7 +706,9 @@ class HubMixin(PgBase):
 
     async def get_knowledge_hub_parent_node(self, node_id: str, folder_mime_types: list[str], transaction: str | None = None) -> dict[str, Any] | None:
         """The node's parent as ``{id, name, nodeType, subType}``: a group's group (by ``parentId``) else its app (by ``connectorId``); a record's hierarchy
-        parent, else the group, record or app it belongs to, else what it inherits permissions from (an app for a collection item, a group otherwise)."""
+        parent (the lowest id when several), else the group, record or app it belongs to, else what it inherits permissions from (an app for a collection
+        item, a group otherwise; the lowest id). Of several it belongs to, its own group (``recordGroupId``) comes first, then one with a hierarchy edge to it,
+        then the lowest id."""
         org = current_org_id()
 
         async def go(tx: Tx) -> dict[str, Any] | None:
@@ -723,12 +731,16 @@ class HubMixin(PgBase):
             cid = rec.get("connectorId")
             is_kb = rec.get("connectorName") == "KB" or any((x or {}).get("type") == "KB" for x in (await node("recordGroups", cid), await node("apps", cid)))
             pid = await tx.fetchval("""/* pipeshub:graph.hub_record_parent */ SELECT pid FROM (
-                  SELECT 1 AS pri, e.from_id AS pid FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'nodeRelations' AND e.to_coll = 'records' AND e.to_id = $2
+                  SELECT 1 AS pri, 0 AS sub, e.from_id AS pid FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'nodeRelations' AND e.to_coll = 'records' AND e.to_id = $2
                     AND e.from_coll = 'records' AND e.doc->>'relationshipType' IN ('PARENT_CHILD', 'ATTACHMENT')
-                  UNION ALL SELECT 2, b.to_id FROM graph.edges b WHERE b.org_id = $1 AND b.coll = 'belongsTo' AND b.from_coll = 'records' AND b.from_id = $2
+                  UNION ALL SELECT 2, CASE WHEN b.to_id = $4 THEN 0 WHEN EXISTS (SELECT 1 FROM graph.edges h WHERE h.org_id = $1 AND h.coll = 'nodeRelations'
+                      AND h.to_coll = 'records' AND h.to_id = $2 AND h.from_coll = b.to_coll AND h.from_id = b.to_id
+                      AND h.doc->>'relationshipType' IN ('PARENT_CHILD', 'ATTACHMENT')) THEN 1 ELSE 2 END, b.to_id
+                    FROM graph.edges b WHERE b.org_id = $1 AND b.coll = 'belongsTo' AND b.from_coll = 'records' AND b.from_id = $2
                     AND b.to_coll IN ('recordGroups', 'records', 'apps')
-                  UNION ALL SELECT 3, i.to_id FROM graph.edges i WHERE i.org_id = $1 AND i.coll = 'inheritPermissions' AND i.from_coll = 'records' AND i.from_id = $2
-                    AND i.to_coll = CASE WHEN $3 THEN 'apps' ELSE 'recordGroups' END) p ORDER BY pri, pid LIMIT 1""", org, node_id, is_kb)
+                  UNION ALL SELECT 3, 0, i.to_id FROM graph.edges i WHERE i.org_id = $1 AND i.coll = 'inheritPermissions' AND i.from_coll = 'records' AND i.from_id = $2
+                    AND i.to_coll = CASE WHEN $3 THEN 'apps' ELSE 'recordGroups' END) p ORDER BY pri, sub, pid LIMIT 1""",
+                                    org, node_id, is_kb, rec.get("recordGroupId"))
             if not pid:
                 return None
             if p := await node("records", pid):

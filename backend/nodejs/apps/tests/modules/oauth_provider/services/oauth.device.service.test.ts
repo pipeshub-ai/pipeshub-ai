@@ -5,6 +5,7 @@ import crypto from 'crypto'
 import { Types } from 'mongoose'
 import { OAuthDeviceService } from '../../../../src/modules/oauth_provider/services/oauth.device.service'
 import { ScopeValidatorService } from '../../../../src/modules/oauth_provider/services/scope.validator.service'
+import { FirstPartyDeviceAppService } from '../../../../src/modules/oauth_provider/services/oauth.first_party_device.service'
 import {
   OAuthDeviceCode,
   OAuthDeviceCodeStatus,
@@ -80,6 +81,11 @@ describe('OAuthDeviceService', () => {
     }
     mockFirstPartyDeviceAppService = {
       getOrCreate: sinon.stub().resolves('pipeshub-agent'),
+      resolveScopes: sinon.stub().returns(['user:read']),
+      // The real cap, over the stubbed preset.
+      capScopes(a: any) {
+        return FirstPartyDeviceAppService.prototype.capScopes.call(this as any, a)
+      },
     }
     mockLogger = createMockLogger()
     service = new OAuthDeviceService(
@@ -399,6 +405,66 @@ describe('OAuthDeviceService', () => {
     expect(mockFirstPartyDeviceAppService.getOrCreate.calledOnce).to.be.true
     expect(mockOAuthAppService.getAppByClientId.calledWith('pipeshub-agent')).to.be
       .true
+  })
+
+  it('should cap first-party device logins to the current scopes, not the list the app stored', async () => {
+    // Created while MCP_SCOPES allowed code:write; the cap has narrowed since, and the stored list only grows.
+    mockOAuthAppService.getAppByClientId.resolves({
+      ...app, clientId: 'pipeshub-agent', allowedScopes: ['user:read', 'code:write'],
+    })
+    const create = sinon.stub(OAuthDeviceCode, 'create').resolves({} as any)
+    const realService = new OAuthDeviceService(
+      mockLogger as any,
+      mockOAuthAppService,
+      mockOAuthTokenService,
+      new ScopeValidatorService(),
+      mockFirstPartyDeviceAppService,
+    )
+    await realService.createAuthorization('pipeshub-agent', 'user:read code:write', 'http://localhost:3000')
+    await realService.createAuthorization('pipeshub-agent', undefined, 'http://localhost:3000')
+    expect(create.firstCall.args[0].scopes).to.deep.equal(['user:read'])
+    expect(create.secondCall.args[0].scopes).to.deep.equal(['user:read'])
+    // Another app keeps its own list.
+    mockOAuthAppService.getAppByClientId.resolves({ ...app, allowedScopes: ['user:read', 'code:write'] })
+    await realService.createAuthorization('cid', 'user:read code:write', 'http://localhost:3000')
+    expect(create.thirdCall.args[0].scopes).to.deep.equal(['user:read', 'code:write'])
+  })
+
+  it('should not mint a scope MCP_SCOPES dropped between creating a first-party code and its poll', async () => {
+    const agent = { ...app, clientId: 'pipeshub-agent', allowedScopes: ['user:read', 'code:write'] }
+    mockOAuthAppService.getAppByClientId.resolves(agent)
+    const realService = new OAuthDeviceService(
+      mockLogger as any,
+      mockOAuthAppService,
+      mockOAuthTokenService,
+      new ScopeValidatorService(),
+      mockFirstPartyDeviceAppService,
+    )
+    mockFirstPartyDeviceAppService.resolveScopes.returns(['user:read', 'code:write'])
+    const create = sinon.stub(OAuthDeviceCode, 'create').resolves({} as any)
+    await realService.createAuthorization('pipeshub-agent', 'user:read code:write', 'http://localhost:3000')
+    const stored = create.firstCall.args[0].scopes
+    expect(stored).to.deep.equal(['user:read', 'code:write'])
+
+    // The operator narrows MCP_SCOPES (and restarts) before the person approves and the agent polls.
+    mockFirstPartyDeviceAppService.resolveScopes.returns(['user:read'])
+    const approved = {
+      _id: new Types.ObjectId(),
+      status: OAuthDeviceCodeStatus.APPROVED,
+      expiresAt: new Date(Date.now() + 60_000),
+      userId: new Types.ObjectId(),
+      orgId: new Types.ObjectId(),
+      scopes: stored,
+      clientId: 'pipeshub-agent',
+    }
+    sinon.stub(OAuthDeviceCode, 'findOne').resolves(approved as any)
+    sinon.stub(OAuthDeviceCode, 'findOneAndDelete').resolves(approved as any)
+    stubLookup(Users, { fullName: 'Ada' })
+    stubLookup(Org, { accountType: 'business' })
+
+    await realService.poll('pipeshub-agent', undefined, 'device-code')
+
+    expect(mockOAuthTokenService.generateTokens.firstCall.args[3]).to.deep.equal(['user:read'])
   })
 
   it('should not ensure the first-party app for other client_ids', async () => {
