@@ -111,8 +111,8 @@ Nothing here runs unless it is invoked, and these jobs only matter where the pgv
 
 | Command | What it does | Credential |
 | --- | --- | --- |
-| `fold [--watch [SECONDS]]` | folds the point-count deltas of every org into `retrieval.collection_stats`, and the term-frequency deltas that triggers on `retrieval.postings` write into `retrieval.lexical_df` | jobs |
-| `recount [<org>]` | recomputes the point counts from the live points and the term frequencies from the postings; exit 6 if an org was busy. Run it once after upgrading to `retrieval_0005`: until then the lexical search of a collection written before it counts the postings of each query term (`retrieval.lexical_df_pending`) | jobs |
+| `fold [--watch [SECONDS]]` | folds the point-count deltas of every org into `retrieval.collection_stats`, and the term-frequency deltas that triggers on `retrieval.postings` write into `retrieval.lexical_df`; then fills the term bounds that are missing (after the upgrade to `retrieval_0008`, or a delta written by an older writer) | jobs |
+| `recount [<org>]` | recomputes the point counts from the live points and the term frequencies from the postings; exit 6 if an org was busy. Run it once after upgrading to `retrieval_0005`: until then the lexical search of a collection written before it counts the postings of each query term (`retrieval.lexical_df_pending`). After upgrading to `retrieval_0008`, which keeps a bound on each term's weights (`wmax`), the bounds fill themselves in the background: each `fold` pass computes missing ones from the postings, up to 200 per transaction and 100 transactions (20,000 bounds) per org per pass, each batch finding its rows by the partial index `retrieval.lexical_df_unbounded` (the rows without a bound: every row at the upgrade, none once filled), so it reads its own rows and never the ones filled before them (`retrieval.lexical_bound_pending` lists the collections still to do, and the log reports the progress), and until a term has its bound the search sums every posting of it, as before. `recount` computes them all at once, except for a term that still has a delta written before the upgrade: that one is summed in full until the fold folds the delta and the fill computes its bound | jobs |
 | `group-gc` | deletes the membership of groups that have no point and are older than one hour | jobs |
 | `build-indexes` | the vector indexes of every points leaf for every embedding space that lacks them, built concurrently and sized to the leaf, one leaf at a time under the migrate lock | migrate |
 | `nightly [--all]` | pgvector before 0.8.4 only (HNSW safe mode, where deletes are tombstoned): deletes the points of tombstoned rows, rebuilds the vector indexes of the leaves that had tombstones (`--all`: every leaf), vacuums them and drops the tombstones; gives a leaf without a `vacuum_index_cleanup` setting `off` (an existing setting is never changed: after upgrading pgvector, remove it with `ALTER TABLE ... RESET (vacuum_index_cleanup)`), and runs `build-indexes`; only one nightly runs at a time, a second exits 6 (busy) | jobs and migrate |
@@ -330,6 +330,8 @@ answers the same for a taken and a malformed value and has no `ON CONFLICT` (57)
 ## Tests
 `cd backend/db && pytest`. Integration tests start throwaway clusters from `MIGRATE_TEST_PG_BINS` (comma-separated
 PostgreSQL `bin` dirs; skipped when unset and no `initdb` on PATH). Needs `pip install --require-hashes --no-deps -r requirements-test.lock`.
+The servers need pgvector and PostgreSQL's contrib modules, `auto_explain` among them (some tests read the plans of the statements
+inside a vetted function): the `postgresql-contrib` package of a distribution, or `make -C contrib install` in a source build.
 
 ## If a runner dies
 The lock belongs to the runner's session and is released when PostgreSQL notices the client is gone (TCP

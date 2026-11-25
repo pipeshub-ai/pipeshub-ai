@@ -23,7 +23,7 @@ if TYPE_CHECKING:
 pytestmark = pytest.mark.integration
 
 
-def _worker(state: str, waits: int, done, hang) -> None:
+def _worker(state: str, waits: int, done: Connection, hang: bool) -> None:
     from app.agent_loop_lib.sandbox.capacity import HoldReason
     from app.agent_loop_lib.sandbox.load_ledger import LoadLedger
 
@@ -47,15 +47,20 @@ def _start(ctx: SpawnContext, state: Path, waits: int, hang: bool) -> tuple[Spaw
     return worker, receive
 
 
-def _report(receive: Connection) -> int:
+def _report(worker: SpawnProcess, receive: Connection) -> int:
     assert receive.poll(60), "the worker did not report within 60 s"
-    return receive.recv()
+    try:
+        return receive.recv()
+    except EOFError:
+        # The worker holds the only write end, so a worker that died before flushing reads as EOF.
+        worker.join(5)
+        pytest.fail(f"the worker exited with {worker.exitcode} before flushing its ledger")
 
 
 def test_four_workers_are_summed_and_a_killed_one_keeps_its_counts(tmp_path: Path) -> None:
     ctx = multiprocessing.get_context("spawn")
     started = [_start(ctx, tmp_path, 50, i == 0) for i in range(4)]
-    pids = {_report(receive) for _, receive in started}
+    pids = {_report(worker, receive) for worker, receive in started}
     assert len(pids) == 4
     os.kill(started[0][0].pid, signal.SIGKILL)
     for worker, _ in started:
@@ -67,7 +72,7 @@ def test_four_workers_are_summed_and_a_killed_one_keeps_its_counts(tmp_path: Pat
     assert totals.refused == 100
 
     restarted, receive = _start(ctx, tmp_path, 10, False)
-    _report(receive)
+    _report(restarted, receive)
     restarted.join(30)
     totals = read_window(tmp_path / "load", time.time(), 1800)
     assert totals.files == 5

@@ -106,6 +106,7 @@ from app.services.vector_db.sparse_embeddings import (
 )
 from app.telemetry.modules import entity_index_metrics
 from app.utils.aimodels import INDEXING_SDK_RETRIES, embedding_config_hash
+from app.utils.embedding_model_name import same_embedding_model
 from app.utils.embedding_server_client import EmbeddingServerEmbeddings
 from app.utils.error_class import log_failure
 from app.utils.llm import build_embeddings, require_embeddings_placement
@@ -951,7 +952,7 @@ class EntityVectorStore:
         if info.dense_dimension and info.dense_dimension != self._embedding_size:
             return f"dimension {info.dense_dimension}, model now produces {self._embedding_size}"
         stored = await self._model_of_a_stored_point(name)
-        if stored is not None and stored != self._fingerprint():
+        if stored is not None and not same_embedding_model(stored, self._fingerprint()):
             return f"its points were embedded by {stored}, the model is now {self._fingerprint()}"
         return None
 
@@ -1019,9 +1020,9 @@ class EntityVectorStore:
     async def embedding_fingerprint(self, *, recreate: bool = False) -> str:
         """``provider:model:dimension`` of the model writing this collection.
 
-        Initialises the store (``recreate``: see ``_ensure_initialized``). A
-        different fingerprint means stored vectors were embedded by another
-        model and must be rewritten."""
+        Initialises the store (``recreate``: see ``_ensure_initialized``).
+        Stored vectors must be rewritten when it names another model, not when
+        only the provider serving it changed (``same_embedding_model``)."""
         await self._ensure_initialized(recreate=recreate)
         return self._fingerprint()
 
@@ -1593,7 +1594,7 @@ class EntityVectorStore:
             return False
         metadata.pop(POINT_EPOCH, None)
         return (
-            metadata.pop(EMBEDDING_MODEL_FIELD, None) == fingerprint
+            same_embedding_model(metadata.pop(EMBEDDING_MODEL_FIELD, None), fingerprint)
             and metadata == entity.to_vector_payload()
         )
 

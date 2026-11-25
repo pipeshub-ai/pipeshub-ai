@@ -25,6 +25,7 @@ from neo4j import (
 )
 from neo4j.exceptions import (
     ClientError,
+    ConnectionAcquisitionTimeoutError,
     Neo4jError,
     ServiceUnavailable,
     SessionExpired,
@@ -67,8 +68,8 @@ DEFAULT_TRANSACTION_TIMEOUT = 120.0
 DATABASE_ONLINE_TIMEOUT = 60.0
 DATABASE_ONLINE_POLL_INTERVAL = 0.5
 # The driver's message when connection_acquisition_timeout elapses with every
-# pooled connection checked out. A ClientError, not ServiceUnavailable: the
-# server is fine, this process has too many queries in flight for its pool.
+# pooled connection checked out. Not ServiceUnavailable: the server is fine,
+# this process has too many queries in flight for its pool.
 _POOL_EXHAUSTED_MARKER = "failed to obtain a connection from the pool"
 # A statement that lost one of these to a concurrent writer was rolled back whole.
 WRITE_CONFLICT_CODES = frozenset({
@@ -131,6 +132,13 @@ _SKIP = (__name__,)
 _CONSTRAINT_FAILED = "Neo.ClientError.Schema.ConstraintValidationFailed"
 
 
+def _is_pool_exhausted(error: BaseException) -> bool:
+    """Driver 6 has a class for it, outside ``ClientError``; before it was a ``ClientError`` known by its text."""
+    return isinstance(error, ConnectionAcquisitionTimeoutError) or (
+        isinstance(error, ClientError) and _POOL_EXHAUSTED_MARKER in str(error)
+    )
+
+
 def describe_neo4j_error(error: Exception) -> tuple[str | None, str, dict[str, object], bool]:
     """(code, error_class, extra fields, hide_text) of a failed call, for its log record. Driver texts can quote parameter
     values (a constraint names the clashing property's value), so they are hidden; our own texts are not."""
@@ -150,7 +158,7 @@ def describe_neo4j_error(error: Exception) -> tuple[str | None, str, dict[str, o
         cls = "timeout"
     elif isinstance(gql_status, str) and gql_status.startswith("22"):
         cls = "bad_request"  # a data exception: a value the caller passed (the code may still say Statement.SyntaxError)
-    elif (isinstance(error, ClientError) and _POOL_EXHAUSTED_MARKER in str(error)) or (
+    elif _is_pool_exhausted(error) or (
             isinstance(code, str) and code.startswith("Neo.TransientError.")):
         cls = "unavailable"
     else:
@@ -164,7 +172,7 @@ def _logged(op: str):  # noqa: ANN202
 
 def _report_neo4j_failure(error: BaseException) -> None:
     feedback = get_default_downstream_feedback()
-    if isinstance(error, ClientError) and _POOL_EXHAUSTED_MARKER in str(error):
+    if _is_pool_exhausted(error):
         feedback.report_pool_exhausted("neo4j")
     elif isinstance(error, (ServiceUnavailable, SessionExpired)):
         feedback.report_unavailable("neo4j")
@@ -589,7 +597,8 @@ class Neo4jClient:
         if self.opens_explicit_transaction(explicit):
             try:
                 tx = await session.begin_transaction(timeout=self._transaction_timeout)
-            except BaseException:
+            except BaseException as e:
+                _report_neo4j_failure(e)
                 await session.close()
                 raise
             self._active_txs[txn_id] = tx
@@ -833,7 +842,7 @@ class Neo4jClient:
                 # In an open transaction a conflict ended it: its owner runs it again.
                 once = tx is not None or COMMITS_IN_BATCHES.search(query)
                 return await self._refusing_memory(run if once else (lambda: _until_no_conflict(run)), marked)
-            except (ClientError, ServiceUnavailable, SessionExpired) as e:
+            except (ClientError, ConnectionAcquisitionTimeoutError, ServiceUnavailable, SessionExpired) as e:
                 _report_neo4j_failure(e)
                 raise
         else:
@@ -880,7 +889,7 @@ class Neo4jClient:
         try:
             once = COMMITS_IN_BATCHES.search(query)
             return await self._refusing_memory(run if once else (lambda: _until_no_conflict(run)), bulk)
-        except (ClientError, ServiceUnavailable, SessionExpired) as e:
+        except (ClientError, ConnectionAcquisitionTimeoutError, ServiceUnavailable, SessionExpired) as e:
             _report_neo4j_failure(e)
             raise
 

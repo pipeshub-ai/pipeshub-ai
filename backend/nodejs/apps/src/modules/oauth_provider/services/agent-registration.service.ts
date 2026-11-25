@@ -270,6 +270,7 @@ export class AgentRegistrationService {
     userCode: string | undefined,
     action: 'approve' | 'deny',
     user: SessionUser,
+    shownScopes?: string[],
   ): Promise<'claimed' | 'revoked'> {
     const reg = await this.pendingAttempt(attemptToken, user);
     const repo = getOAuthTokenRepository();
@@ -301,12 +302,26 @@ export class AgentRegistrationService {
         'service_auth registration is not enabled',
       );
     }
-    // The person and org come from the session, never from the request. The scopes are the list the claim page showed.
+    // The scopes are the list the claim page showed. What the app grants now may differ (MCP_SCOPES changed and the server
+    // restarted while the page was open): the person must see the new list before approving it, so the approval is refused.
+    const scopes = this.scopesOf(app);
+    const shown = new Set(shownScopes ?? []);
+    if (
+      !shownScopes ||
+      shown.size !== scopes.length ||
+      !scopes.every((s) => shown.has(s))
+    ) {
+      throw fail(
+        'invalid_request',
+        'the access this agent would get has changed since the page was shown; reload the page',
+      );
+    }
+    // The person and org come from the session, never from the request.
     const decided = await repo.decideAgentRegistration(reg._id, {
       status: AgentRegistrationStatus.CLAIMED,
       userId: user.userId,
       orgId: user.orgId,
-      scopes: this.scopesOf(app),
+      scopes,
     });
     if (!decided) {
       throw fail('invalid_request', 'this claim link is no longer valid');
@@ -444,10 +459,14 @@ export class AgentRegistrationService {
     return this.oauthAppService.getAppByClientId(FIRST_PARTY_DEVICE_CLIENT_ID);
   }
 
-  /** What a device sign-in by the agent app grants, less offline_access: these grants never issue a refresh token. */
+  /**
+   * What a device sign-in by the agent app grants under the current MCP_SCOPES (`capScopes`), less offline_access: these
+   * grants never issue a refresh token.
+   */
   private scopesOf(app: OAuthAppDto): string[] {
+    const allowed = this.firstPartyDeviceAppService.capScopes(app);
     return this.scopeValidatorService
-      .resolveGrantedScopes(app.allowedScopes, app.allowedScopes)
+      .resolveGrantedScopes(allowed, allowed)
       .granted.filter((scope) => scope !== 'offline_access');
   }
 
