@@ -130,6 +130,9 @@ from app.connectors.sources.microsoft.sharepoint_online.sync_health import (
     SharePointSyncIncomplete,
     SyncHealth,
 )
+from app.connectors.sources.microsoft.common.outlook_constants import (
+    is_expired_delta_link_error,
+)
 from app.connectors.sources.microsoft.common.sharepoint_permission_scope import (
     GUID_PATTERN,
     SHAREPOINT_ITEMS_PAGE_SIZE,
@@ -3550,16 +3553,24 @@ class SharePointConnector(BaseConnector):
         # past the group deletions on the remaining pages.
         delta_link = (sync_point.get('deltaLink') or sync_point.get('nextLink')) if sync_point else None
 
-        if delta_link is None or self._refresh_all_groups:
-            caught_up = True
-            if delta_link is not None:
-                # Only the stored link reports the groups deleted since it was taken: the full read below lists
-                # the groups that exist, and the new link starts after the deletions.
-                try:
-                    caught_up = await self._perform_delta_sync(delta_link, sync_point_key)
-                except Exception as e:
+        read_every_group = delta_link is None or self._refresh_all_groups
+        caught_up = True
+        if delta_link is not None:
+            # Only the stored link reports the groups deleted since it was taken: the full read below lists
+            # the groups that exist, and the new link starts after the deletions.
+            try:
+                caught_up = await self._perform_delta_sync(delta_link, sync_point_key)
+            except Exception as e:
+                if is_expired_delta_link_error(e):
+                    # Kept, the link would fail every later run: no run can catch up on it any more.
+                    self.logger.error("The saved Entra group delta link has expired; reading every group again")
+                    read_every_group = True
+                elif read_every_group:
                     caught_up = False
                     self._health.skipped("Entra group changes", e)
+                else:
+                    raise
+        if read_every_group:
             self.logger.info("Reading every Entra group's members...")
             # The delta link is taken before the groups are read, so no change made meanwhile is missed.
             new_delta_link = await self._get_initial_delta_link()
@@ -3573,8 +3584,6 @@ class SharePointConnector(BaseConnector):
                     await self.user_sync_point.update_sync_point(
                         INACTIVE_USERS_SYNC_POINT_KEY, sync_point_data={"emails": sorted(self._inactive_emails)}
                     )
-        else:
-            await self._perform_delta_sync(delta_link, sync_point_key)
 
     async def _get_initial_delta_link(self) -> Optional[str]:
         """

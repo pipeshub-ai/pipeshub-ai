@@ -85,6 +85,9 @@ from app.connectors.sources.microsoft.common.msgraph_client import (
     RecordUpdate,
     map_msgraph_roles_to_permission_type,
 )
+from app.connectors.sources.microsoft.common.outlook_constants import (
+    is_expired_delta_link_error,
+)
 from app.connectors.sources.microsoft.common.sharepoint_permission_scope import (
     ListUniquePermissions,
     SharePointAccessError,
@@ -1587,30 +1590,7 @@ class OneDriveConnector(BaseConnector):
             if delta_link is None:
                 self.logger.info("No sync point found, performing initial full sync...")
 
-                # IMPORTANT: Get delta link BEFORE full sync to avoid missing changes
-                # that occur during the sync
-                delta_link = await self._get_initial_delta_link()
-
-                all_groups_read = await self._perform_initial_full_sync()
-
-                # The link is saved even when some groups could not be read: only a delta
-                # from before the full sync reports groups deleted since. The marker makes
-                # the next run read every group again before applying it.
-                if delta_link:
-                    await self.user_group_sync_point.update_sync_point(
-                        sync_point_key,
-                        {
-                            "nextLink": None,
-                            "deltaLink": delta_link,
-                            "fullSyncIncomplete": not all_groups_read,
-                            "fullSyncAttempts": 0 if all_groups_read else 1,
-                        }
-                    )
-                    self.logger.info("Initial sync completed and delta link saved for future syncs")
-                else:
-                    self.logger.warning("Initial sync completed but no delta link was obtained")
-                if not all_groups_read:
-                    self.logger.warning("Some groups could not be read; the next run will read every group again")
+                await self._start_group_sync_over(sync_point_key)
             elif sync_point.get('fullSyncIncomplete'):
                 self.logger.info("Previous full group sync was incomplete, reading every group again...")
                 all_groups_read = await self._perform_initial_full_sync()
@@ -1631,10 +1611,10 @@ class OneDriveConnector(BaseConnector):
                     await self.user_group_sync_point.update_sync_point(sync_point_key, {"fullSyncAttempts": attempts})
                 # Run after the marker is settled: a group the delta gives up on sets it
                 # again, and that must not be cleared by this full sync's outcome.
-                await self._perform_delta_sync(delta_link, sync_point_key)
+                await self._apply_group_changes(delta_link, sync_point_key)
             else:
                 self.logger.info("Sync point found, performing incremental delta sync...")
-                await self._perform_delta_sync(delta_link, sync_point_key)
+                await self._apply_group_changes(delta_link, sync_point_key)
 
         except ODataError as e:
             self.logger.error(f"❌ Error in user group sync: {e}", exc_info=True)
@@ -1657,6 +1637,44 @@ class OneDriveConnector(BaseConnector):
             self.logger.error(f"❌ Error in user group sync: {e}", exc_info=True)
             raise
 
+
+    async def _apply_group_changes(self, delta_link: str, sync_point_key: str) -> None:
+        try:
+            await self._perform_delta_sync(delta_link, sync_point_key)
+        except ODataError as e:
+            if not is_expired_delta_link_error(e):
+                raise
+            # Kept, the link would fail every later run. What changed since is read with every group; the groups
+            # deleted since are reported by no link any more.
+            self.logger.error("The saved group delta link has expired; reading every group again")
+            await self._start_group_sync_over(sync_point_key)
+
+    async def _start_group_sync_over(self, sync_point_key: str) -> None:
+        """Read every group and save a new delta link."""
+        # IMPORTANT: Get delta link BEFORE full sync to avoid missing changes
+        # that occur during the sync
+        delta_link = await self._get_initial_delta_link()
+
+        all_groups_read = await self._perform_initial_full_sync()
+
+        # The link is saved even when some groups could not be read: only a delta
+        # from before the full sync reports groups deleted since. The marker makes
+        # the next run read every group again before applying it.
+        if delta_link:
+            await self.user_group_sync_point.update_sync_point(
+                sync_point_key,
+                {
+                    "nextLink": None,
+                    "deltaLink": delta_link,
+                    "fullSyncIncomplete": not all_groups_read,
+                    "fullSyncAttempts": 0 if all_groups_read else 1,
+                }
+            )
+            self.logger.info("Initial sync completed and delta link saved for future syncs")
+        else:
+            self.logger.warning("Initial sync completed but no delta link was obtained")
+        if not all_groups_read:
+            self.logger.warning("Some groups could not be read; the next run will read every group again")
 
     async def _get_initial_delta_link(self) -> Optional[str]:
         """
