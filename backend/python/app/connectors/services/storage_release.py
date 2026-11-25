@@ -236,8 +236,9 @@ class StorageReleaseReconciler:
                 if requested > now - STALE_MS:
                     continue
                 # It can never be settled, and would keep the connector's own org from recording its delete.
-                await clear_pending_storage_release(self.config_service, connector_id, org_id=org_id)
-                return "dropped"
+                if await clear_pending_storage_release(self.config_service, connector_id, org_id=org_id):
+                    return "dropped"
+                continue
             if app is not None:
                 if app.get("status") == APP_STATUS_DELETING:
                     finisher = self.finish_kb_delete if app.get("type") == Connectors.KNOWLEDGE_BASE.value else self.finish_connector_delete
@@ -249,7 +250,12 @@ class StorageReleaseReconciler:
                     return outcome
                 if requested > now - STALE_MS:
                     continue
-                await clear_pending_storage_release(self.config_service, connector_id, org_id=org_id)
+                if not await clear_pending_storage_release(self.config_service, connector_id, org_id=org_id):
+                    # "dropped" would look again at once, and find the same intent before the later ones.
+                    self.logger.warning(
+                        "Storage release intent not cleared | org=%s connector=%s", org_id, connector_id,
+                    )
+                    continue
                 self.logger.info(
                     "Storage release intent dropped; the connector still exists | org=%s connector=%s",
                     org_id, connector_id,

@@ -144,3 +144,20 @@ async def test_a_stale_intent_on_another_orgs_connector_is_dropped_so_its_own_or
     assert outcome == "dropped" and config.kv == {}
     finish.assert_not_awaited()
     await record_pending_storage_release(config, org_id=ORG_B, connector_id="x", now_ms=NOW)
+
+
+@pytest.mark.parametrize("org_of_app", [ORG_A, ORG_B])
+async def test_an_intent_that_cannot_be_cleared_does_not_hold_up_the_later_ones(released: list, org_of_app: str) -> None:
+    class KeepsX(Config):
+        async def delete_config(self, key: str) -> bool:
+            return False if key.endswith("/x") else await super().delete_config(key)
+
+    config, old = KeepsX(), NOW - storage_release.STALE_MS - 2
+    await record_pending_storage_release(config, org_id=ORG_A, connector_id="x", now_ms=old)
+    await record_pending_storage_release(config, org_id=ORG_A, connector_id="gone", now_ms=old + 1)
+    lock = SimpleNamespace(try_acquire=AsyncMock(return_value=True))
+    apps = AnyOrgApps({"x": {"_key": "x", "type": "DRIVE", "status": "ACTIVE", "orgId": org_of_app}})
+    outcome = await StorageReleaseReconciler(
+        logger=MagicMock(), graph_provider=apps, config_service=config, lock=lock, now_ms=lambda: NOW,
+    ).tick()
+    assert outcome == "released" and [c for c, _ in released] == ["gone"]
