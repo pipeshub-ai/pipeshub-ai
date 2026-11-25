@@ -81,6 +81,9 @@ class _Manager:
     async def destroy(self, sandbox_type: object, sandbox_id: str) -> None:
         self.destroyed.append(sandbox_id)
 
+    def release(self, sandbox_type: object, sandbox_id: str) -> None:
+        """The hold the call took on its sandbox (``SandboxManager.acquire``), given back."""
+
 
 @pytest.fixture(autouse=True)
 def _no_staged_files(monkeypatch: pytest.MonkeyPatch) -> None:

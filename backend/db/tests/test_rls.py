@@ -41,19 +41,30 @@ def test_catalog_is_clean_and_covers_every_kind(org_db):
         conversation = {f"conversation.{t}": "org" for t in ("chat_sessions", "chat_session_members", "chat_messages", "citations", "semantic_searches", "semantic_search_members")}
         retrieval = {f"retrieval.{t}": "org" for t in ("org_spaces", "points", "point_text", "point_groups", "group_members", "point_tombstones", "placement_requests",
                                                        "postings", "lexical_df_delta", "collection_stats", "member_stats", "space_checks",
-                                                       "lexical_df", "lexical_term_delta", "lexical_df_pending")}
+                                                       "lexical_df", "lexical_term_delta", "lexical_df_pending", "lexical_bound_pending")}
         retrieval |= {"retrieval.embedding_spaces": "global", "retrieval.collections": "global"}
         stored = {f"graph.{t}": "org" for t in ("nodes", "edges")}      # partitioned: the leaves are not registry rows
         stored |= {f"graph.{t}": "org" for t in ("stats_changes", "stats_records", "stats_counts", "stats_apps")}      # graph_0021, plain tables
         stored |= {f"content.{t}": "org" for t in ("documents", "projects", "project_members")}
-        stored |= {f"identity.{t}": "org" for t in ("orgs", "users", "user_groups", "user_group_members", "org_auth_config", "user_activities", "used_reset_links", "org_logos", "user_pictures", "slug_counters", "user_credentials")}
+        stored |= {f"identity.{t}": "org" for t in ("orgs", "users", "user_groups", "user_group_members", "org_auth_config", "user_activities", "used_reset_links", "org_logos", "user_pictures", "slug_counters", "user_credentials", "session_families")}
         stored |= {f"oauth.{t}": "org" for t in ("apps", "access_tokens", "refresh_tokens", "authorization_codes", "device_authorizations", "service_account_delegations", "delegation_events", "agent_registrations", "agent_call_events")}
-        stored |= {"integrations.slack_threads": "org"}
+        stored |= {"integrations.slack_threads": "org", "integrations.slack_user_links": "org"}
         stored |= {f"kg.{t}": "org" for t in ("node_keys", "records", "links", "scope_members", "principal_closure", "scope_classes", "class_literals", "graph_changes", "projection_state", "restamp_queue", "scopes", "counts", "analyze_requests")}
-        stored |= {f"platform.{t}": "org" for t in ("notifications", "mail_log", "connectors_config", "outbox", "docstore_changes")}
+        stored |= {f"platform.{t}": "org" for t in ("notifications", "mail_log", "connectors_config", "outbox", "docstore_changes", "docstore_keymap")}
+        stored |= {"platform.docstore_keymap_deployment": "internal", "platform.docstore_refused": "internal"}
+        harness = {f"harness.{t}": "org" for t in (
+            "admission_quotas", "admission_receipts", "agent_erasures", "audit_anchors", "audit_chain_checks", "audit_heads", "audit_pending",
+            "audit_records", "budget_accounts", "budget_reservations", "command_receipts", "cp_bindings",
+            "cp_capability_ledger", "cp_catalog_items", "cp_grants", "cp_installation_history", "cp_installations", "cp_migration_ledger",
+            "cp_org_heads", "cp_policy_history", "cp_policy_layers", "data_keys", "engine_signins", "erasure_backfill_items",
+            "erasure_backfill_markers", "inbox_preferences", "journal_payloads", "memories", "next_runs", "personal_choices", "principal_erasures",
+            "run_end_notices", "run_events", "run_watchers", "runs", "sandbox_snapshots", "schedule_counters", "schedule_firings", "schedules",
+            "session_counters", "session_erasures", "session_events", "session_forks", "stream_counters", "workspace_heads", "workspace_keys",
+            "workspace_manifests", "workspace_writers")}
+        harness |= {f"harness.{t}": "internal" for t in ("cp_deployment_head", "erasure_backfill_plans", "leases", "liveness", "sandbox_reaps")}
         assert rows == {"kt.docs": "org", "kt.events": "org", "kt.cfg": "lineage", "kt.apps": "org", "kt.tokens": "global",
                 "platform.consumer_inbox": "org", "platform.deployment_profile": "internal", "platform.jobs": "internal",
-                "platform.store_epoch": "internal", **conversation, **retrieval, **stored,
+                "platform.store_epoch": "internal", **conversation, **retrieval, **stored, **harness,
                 **{f"platform.{t}": "internal" for t in ("kv_entries", "queue_messages", "queue_groups", "queue_deliveries", "sched_jobs", "sched_repeats",
                                                        "cache_entries", "kv_access")}}
         # every relation of every tree has RLS enabled and forced (root + 5 docs leaves, root + 3 events leaves, ...)

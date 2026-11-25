@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock, MagicMock
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
+from tests.support.record_access import InMemoryRecordAccess
 
 
 def _processor(store: AsyncMock) -> DataSourceEntitiesProcessor:
@@ -131,7 +132,7 @@ async def test_the_delete_route_publishes_every_payload() -> None:
     from tests.unit.connectors.api.test_router_part1 import _mock_request
 
     graph = AsyncMock()
-    graph.check_record_access_with_details = AsyncMock(return_value={"record": {"origin": "UPLOAD"}})
+    InMemoryRecordAccess().readable("user-1", "org-1", "mail-1", origin="UPLOAD").serve(graph)
     graph.delete_record = AsyncMock(return_value={
         "success": True,
         "eventData": {
@@ -158,7 +159,7 @@ async def test_the_delete_route_reports_the_record_whose_cleanup_did_not_go_out(
     from tests.unit.connectors.api.test_router_part1 import _mock_request
 
     graph = AsyncMock()
-    graph.check_record_access_with_details = AsyncMock(return_value={"record": {"origin": "UPLOAD"}})
+    InMemoryRecordAccess().readable("user-1", "org-1", "mail-1", origin="UPLOAD").serve(graph)
     graph.delete_record = AsyncMock(return_value={
         "success": True,
         "eventData": {

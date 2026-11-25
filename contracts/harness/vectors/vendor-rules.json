@@ -1,0 +1,847 @@
+{
+  "description": "A1: every vendor row (ARCHITECTURE 4.6.3) is a case, decided against the shipped, signed backend/python/harness_engines/vendor_rules.json by Python harness_core.access.vendor_rules.decide and Node domain/model-access.ts decideAccess. `expect.allowed` is the deciding row; `expect.refused` the refusal code and the deciding row (null when no row matched). OWD-8 floor (WP-06): every `vendor_injected` row decides as prohibited, whatever its signed status, so VR-4, VR-5, VR-8 and VR-12-managed-injected are refused `vendor_prohibited`.",
+  "cases": [
+    {
+      "id": "VR-1-opencode",
+      "row": "OpenAI API key (org or user)",
+      "candidate": {
+        "provider": "openai",
+        "accountKind": "org_api_key",
+        "route": "gateway",
+        "engine": "opencode"
+      },
+      "offering": "managed",
+      "policy": {
+        "disabledRules": [],
+        "consumerPlans": false
+      },
+      "expect": {
+        "allowed": "openai-api-key-org"
+      }
+    },
+    {
+      "id": "VR-1-codex",
+      "row": "OpenAI API key (org or user)",
+      "candidate": {
+        "provider": "openai",
+        "accountKind": "org_api_key",
+        "route": "gateway",
+        "engine": "codex"
+      },
+      "offering": "managed",
+      "policy": {
+        "disabledRules": [],
+        "consumerPlans": false
+      },
+      "expect": {
+        "allowed": "openai-api-key-org"
+      }
+    },
+    {
+      "id": "VR-1-loop",
+      "row": "OpenAI API key (org or user)",
+      "candidate": {
+        "provider": "openai",
+        "accountKind": "org_api_key",
+        "route": "gateway",
+        "engine": "loop"
+      },
+      "offering": "managed",
+      "policy": {
+        "disabledRules": [],
+        "consumerPlans": false
+      },
+      "expect": {
+        "allowed": "openai-api-key-org"
+      }
+    },
+    {
+      "id": "VR-2",
+      "row": "OpenAI API key (org or user)",
+      "candidate": {
+        "provider": "openai",
+        "accountKind": "user_api_key",
+        "route": "gateway",
+        "engine": "opencode"
+      },
+      "offering": "managed",
+      "policy": {
+        "disabledRules": [],
+        "consumerPlans": false
+      },
+      "expect": {
+        "allowed": "openai-api-key-user"
+      }
+    },
+    {
+      "id": "VR-3-key",
+      "row": "Azure OpenAI with the org's key (PipesHub provider class)",
+      "candidate": {
+        "provider": "azureopenai",
+        "accountKind": "org_api_key",
+        "route": "gateway",
+        "engine": "codex"
+      },
+      "offering": "managed",
+      "policy": {
+        "disabledRules": [],
+        "consumerPlans": false
+      },
+      "expect": {
+        "allowed": "azureopenai-api-key-org"
+      }
+    },
+    {
+      "id": "VR-3-cloud",
+      "row": "Azure OpenAI org cloud account (PipesHub provider class)",
+      "candidate": {
+        "provider": "azureopenai",
+        "accountKind": "org_cloud",
+        "route": "gateway",
+        "engine": "opencode"
+      },
+      "offering": "managed",
+      "policy": {
+        "disabledRules": [],
+        "consumerPlans": false
+      },
+      "expect": {
+        "allowed": "azureopenai-cloud-org"
+      }
+    },
+    {
+      "id": "VR-3-compatible",
+      "row": "OpenAI-compatible endpoint (PipesHub provider class)",
+      "candidate": {
+        "provider": "openaicompatible",
+        "accountKind": "org_api_key",
+        "route": "gateway",
+        "engine": "opencode"
+      },
+      "offering": "managed",
+      "policy": {
+        "disabledRules": [],
+        "consumerPlans": false
+      },
+      "expect": {
+        "allowed": "openaicompatible-api-key-org"
+      }
+    },
+    {
+      "id": "VR-4",
+      "row": "ChatGPT Plus/Pro via Sign in with ChatGPT",
+      "candidate": {
+        "provider": "openai",
+        "accountKind": "user_plan_injected",
+        "route": "gateway",
+        "engine": "codex"
+      },
+      "offering": "managed",
+      "policy": {
+        "disabledRules": [],
+        "consumerPlans": true
+      },
+      "expect": {
+        "refused": "vendor_pending",
+        "rule": "openai-chatgpt-siwc-gateway"
+      }
+    },
+    {
+      "id": "VR-4-codex",
+      "row": "ChatGPT Plus/Pro via Sign in with ChatGPT",
+      "candidate": {
+        "provider": "openai",
+        "accountKind": "user_plan_injected",
+        "route": "vendor_injected",
+        "engine": "codex"
+      },
+      "offering": "oss",
+      "policy": {
+        "disabledRules": [],
+        "consumerPlans": true
+      },
+      "expect": {
+        "refused": "vendor_prohibited",
+        "rule": "openai-chatgpt-workspace-token"
+      }
+    },
+    {
+      "id": "VR-4-opencode",
+      "row": "ChatGPT Plus/Pro via Sign in with ChatGPT",
+      "candidate": {
+        "provider": "openai",
+        "accountKind": "user_plan_injected",
+        "route": "vendor_injected",
+        "engine": "opencode"
+      },
+      "offering": "oss",
+      "policy": {
+        "disabledRules": [],
+        "consumerPlans": true
+      },
+      "expect": {
+        "refused": "vendor_rule_missing",
+        "rule": null
+      }
+    },
+    {
+      "id": "VR-4-loop-injected",
+      "row": "ChatGPT Plus/Pro via Sign in with ChatGPT",
+      "candidate": {
+        "provider": "openai",
+        "accountKind": "user_plan_injected",
+        "route": "vendor_injected",
+        "engine": "loop"
+      },
+      "offering": "oss",
+      "policy": {
+        "disabledRules": [],
+        "consumerPlans": true
+      },
+      "expect": {
+        "refused": "vendor_rule_missing",
+        "rule": null
+      }
+    },
+    {
+      "id": "VR-5",
+      "row": "ChatGPT Business/Enterprise Codex access tokens",
+      "candidate": {
+        "provider": "openai",
+        "accountKind": "user_plan_injected",
+        "route": "vendor_injected",
+        "engine": "codex"
+      },
+      "offering": "managed",
+      "policy": {
+        "disabledRules": [],
+        "consumerPlans": true
+      },
+      "expect": {
+        "refused": "vendor_prohibited",
+        "rule": "openai-chatgpt-workspace-token"
+      }
+    },
+    {
+      "id": "VR-6",
+      "row": "Codex app-server chatgptAuthTokens mode",
+      "candidate": {
+        "provider": "openai",
+        "accountKind": "user_plan_injected",
+        "route": "vendor_sandbox_login",
+        "engine": "codex"
+      },
+      "offering": "oss",
+      "policy": {
+        "disabledRules": [],
+        "consumerPlans": true
+      },
+      "expect": {
+        "refused": "vendor_prohibited",
+        "rule": "openai-codex-chatgpt-auth-tokens"
+      }
+    },
+    {
+      "id": "VR-6-codex-login",
+      "row": "Codex's own ChatGPT login in the sandbox",
+      "candidate": {
+        "provider": "openai",
+        "accountKind": "user_plan_sandbox_login",
+        "route": "vendor_sandbox_login",
+        "engine": "codex"
+      },
+      "offering": "oss",
+      "policy": {
+        "disabledRules": [],
+        "consumerPlans": true
+      },
+      "expect": {
+        "refused": "vendor_prohibited",
+        "rule": "openai-codex-app-server-login"
+      }
+    },
+    {
+      "id": "VR-7-org",
+      "row": "Anthropic API key (org or user), gateway",
+      "candidate": {
+        "provider": "anthropic",
+        "accountKind": "org_api_key",
+        "route": "gateway",
+        "engine": "opencode"
+      },
+      "offering": "managed",
+      "policy": {
+        "disabledRules": [],
+        "consumerPlans": false
+      },
+      "expect": {
+        "allowed": "anthropic-api-key-org"
+      }
+    },
+    {
+      "id": "VR-7-user",
+      "row": "Anthropic API key (org or user), gateway",
+      "candidate": {
+        "provider": "anthropic",
+        "accountKind": "user_api_key",
+        "route": "gateway",
+        "engine": "loop"
+      },
+      "offering": "managed",
+      "policy": {
+        "disabledRules": [],
+        "consumerPlans": false
+      },
+      "expect": {
+        "allowed": "anthropic-api-key-user"
+      }
+    },
+    {
+      "id": "VR-7-claude-code-user",
+      "row": "Anthropic API key (org or user), gateway",
+      "candidate": {
+        "provider": "anthropic",
+        "accountKind": "user_api_key",
+        "route": "gateway",
+        "engine": "claude_code"
+      },
+      "offering": "managed",
+      "policy": {
+        "disabledRules": [],
+        "consumerPlans": false
+      },
+      "expect": {
+        "allowed": "anthropic-api-key-user"
+      }
+    },
+    {
+      "id": "VR-8-org",
+      "row": "Anthropic API key, vendor-direct injected",
+      "candidate": {
+        "provider": "anthropic",
+        "accountKind": "org_api_key",
+        "route": "vendor_injected",
+        "engine": "opencode"
+      },
+      "offering": "managed",
+      "policy": {
+        "disabledRules": [],
+        "consumerPlans": false
+      },
+      "expect": {
+        "refused": "vendor_prohibited",
+        "rule": "anthropic-api-key-org-injected"
+      }
+    },
+    {
+      "id": "VR-8-user",
+      "row": "Anthropic API key, vendor-direct injected",
+      "candidate": {
+        "provider": "anthropic",
+        "accountKind": "user_api_key",
+        "route": "vendor_injected",
+        "engine": "claude_code"
+      },
+      "offering": "managed",
+      "policy": {
+        "disabledRules": [],
+        "consumerPlans": false
+      },
+      "expect": {
+        "refused": "vendor_prohibited",
+        "rule": "anthropic-api-key-user-injected"
+      }
+    },
+    {
+      "id": "VR-9-bedrock",
+      "row": "Bedrock / Vertex / Foundry for Claude: gateway only",
+      "candidate": {
+        "provider": "bedrock",
+        "accountKind": "org_cloud",
+        "route": "gateway",
+        "engine": "claude_code"
+      },
+      "offering": "managed",
+      "policy": {
+        "disabledRules": [],
+        "consumerPlans": false
+      },
+      "expect": {
+        "allowed": "bedrock-cloud-org"
+      }
+    },
+    {
+      "id": "VR-9-vertex",
+      "row": "Bedrock / Vertex / Foundry for Claude: gateway only",
+      "candidate": {
+        "provider": "vertexai",
+        "accountKind": "org_cloud",
+        "route": "gateway",
+        "engine": "opencode"
+      },
+      "offering": "managed",
+      "policy": {
+        "disabledRules": [],
+        "consumerPlans": false
+      },
+      "expect": {
+        "allowed": "vertexai-cloud-org"
+      }
+    },
+    {
+      "id": "VR-9-foundry",
+      "row": "Bedrock / Vertex / Foundry for Claude: gateway only",
+      "candidate": {
+        "provider": "foundry",
+        "accountKind": "org_cloud",
+        "route": "gateway",
+        "engine": "opencode"
+      },
+      "offering": "managed",
+      "policy": {
+        "disabledRules": [],
+        "consumerPlans": false
+      },
+      "expect": {
+        "allowed": "foundry-cloud-org"
+      }
+    },
+    {
+      "id": "VR-9-bedrock-injected",
+      "row": "Bedrock / Vertex / Foundry for Claude: gateway only",
+      "candidate": {
+        "provider": "bedrock",
+        "accountKind": "org_cloud",
+        "route": "vendor_injected",
+        "engine": "claude_code"
+      },
+      "offering": "managed",
+      "policy": {
+        "disabledRules": [],
+        "consumerPlans": false
+      },
+      "expect": {
+        "refused": "vendor_rule_missing",
+        "rule": null
+      }
+    },
+    {
+      "id": "VR-10",
+      "row": "Claude plan in unmodified Claude Code, in-sandbox login",
+      "candidate": {
+        "provider": "anthropic",
+        "accountKind": "user_plan_sandbox_login",
+        "route": "vendor_sandbox_login",
+        "engine": "claude_code"
+      },
+      "offering": "managed",
+      "policy": {
+        "disabledRules": [],
+        "consumerPlans": true
+      },
+      "expect": {
+        "allowed": "anthropic-claude-plan-claude-code"
+      }
+    },
+    {
+      "id": "VR-10-consumer-off",
+      "row": "Claude plan in unmodified Claude Code, in-sandbox login",
+      "candidate": {
+        "provider": "anthropic",
+        "accountKind": "user_plan_sandbox_login",
+        "route": "vendor_sandbox_login",
+        "engine": "claude_code"
+      },
+      "offering": "managed",
+      "policy": {
+        "disabledRules": [],
+        "consumerPlans": false
+      },
+      "expect": {
+        "refused": "org_policy_refused",
+        "rule": "anthropic-claude-plan-claude-code"
+      }
+    },
+    {
+      "id": "VR-11-opencode",
+      "row": "Claude plan held, injected or used by any other harness or by our loop",
+      "candidate": {
+        "provider": "anthropic",
+        "accountKind": "user_plan_sandbox_login",
+        "route": "vendor_sandbox_login",
+        "engine": "opencode"
+      },
+      "offering": "managed",
+      "policy": {
+        "disabledRules": [],
+        "consumerPlans": true
+      },
+      "expect": {
+        "refused": "vendor_prohibited",
+        "rule": "anthropic-claude-plan-other-harness"
+      }
+    },
+    {
+      "id": "VR-11-loop",
+      "row": "Claude plan held, injected or used by any other harness or by our loop",
+      "candidate": {
+        "provider": "anthropic",
+        "accountKind": "user_plan_sandbox_login",
+        "route": "vendor_sandbox_login",
+        "engine": "loop"
+      },
+      "offering": "managed",
+      "policy": {
+        "disabledRules": [],
+        "consumerPlans": true
+      },
+      "expect": {
+        "refused": "vendor_prohibited",
+        "rule": "anthropic-claude-plan-other-harness"
+      }
+    },
+    {
+      "id": "VR-11-injected",
+      "row": "Claude plan held, injected or used by any other harness or by our loop",
+      "candidate": {
+        "provider": "anthropic",
+        "accountKind": "user_plan_injected",
+        "route": "vendor_injected",
+        "engine": "claude_code"
+      },
+      "offering": "oss",
+      "policy": {
+        "disabledRules": [],
+        "consumerPlans": true
+      },
+      "expect": {
+        "refused": "vendor_prohibited",
+        "rule": "anthropic-claude-plan-injected"
+      }
+    },
+    {
+      "id": "VR-12-managed",
+      "row": "PipesHub paying for or reselling Claude usage (managed offering)",
+      "candidate": {
+        "provider": "anthropic",
+        "accountKind": "org_api_key",
+        "route": "gateway",
+        "engine": "claude_code"
+      },
+      "offering": "managed",
+      "policy": {
+        "disabledRules": [],
+        "consumerPlans": false
+      },
+      "expect": {
+        "refused": "offering_not_permitted",
+        "rule": "anthropic-platform-paid-claude-code"
+      }
+    },
+    {
+      "id": "VR-12-managed-injected",
+      "row": "PipesHub paying for or reselling Claude usage (managed offering)",
+      "candidate": {
+        "provider": "anthropic",
+        "accountKind": "org_api_key",
+        "route": "vendor_injected",
+        "engine": "claude_code"
+      },
+      "offering": "managed",
+      "policy": {
+        "disabledRules": [],
+        "consumerPlans": false
+      },
+      "expect": {
+        "refused": "vendor_prohibited",
+        "rule": "anthropic-platform-paid-claude-code-injected"
+      }
+    },
+    {
+      "id": "VR-12-oss",
+      "row": "PipesHub paying for or reselling Claude usage (managed offering)",
+      "candidate": {
+        "provider": "anthropic",
+        "accountKind": "org_api_key",
+        "route": "gateway",
+        "engine": "claude_code"
+      },
+      "offering": "oss",
+      "policy": {
+        "disabledRules": [],
+        "consumerPlans": false
+      },
+      "expect": {
+        "allowed": "anthropic-platform-paid-claude-code"
+      }
+    },
+    {
+      "id": "VR-13-org",
+      "row": "Gemini API key, Vertex",
+      "candidate": {
+        "provider": "gemini",
+        "accountKind": "org_api_key",
+        "route": "gateway",
+        "engine": "opencode"
+      },
+      "offering": "managed",
+      "policy": {
+        "disabledRules": [],
+        "consumerPlans": false
+      },
+      "expect": {
+        "allowed": "gemini-api-key-org"
+      }
+    },
+    {
+      "id": "VR-13-user",
+      "row": "Gemini API key, Vertex",
+      "candidate": {
+        "provider": "gemini",
+        "accountKind": "user_api_key",
+        "route": "gateway",
+        "engine": "codex"
+      },
+      "offering": "managed",
+      "policy": {
+        "disabledRules": [],
+        "consumerPlans": false
+      },
+      "expect": {
+        "allowed": "gemini-api-key-user"
+      }
+    },
+    {
+      "id": "VR-13-vertex",
+      "row": "Gemini API key, Vertex",
+      "candidate": {
+        "provider": "vertexai",
+        "accountKind": "org_cloud",
+        "route": "gateway",
+        "engine": "codex"
+      },
+      "offering": "managed",
+      "policy": {
+        "disabledRules": [],
+        "consumerPlans": false
+      },
+      "expect": {
+        "allowed": "vertexai-cloud-org"
+      }
+    },
+    {
+      "id": "VR-14-login",
+      "row": "Gemini personal login outside Gemini CLI",
+      "candidate": {
+        "provider": "gemini",
+        "accountKind": "user_plan_sandbox_login",
+        "route": "vendor_sandbox_login",
+        "engine": "opencode"
+      },
+      "offering": "oss",
+      "policy": {
+        "disabledRules": [],
+        "consumerPlans": true
+      },
+      "expect": {
+        "refused": "vendor_prohibited",
+        "rule": "gemini-personal-login-outside-cli"
+      }
+    },
+    {
+      "id": "VR-14-injected",
+      "row": "Gemini personal login outside Gemini CLI",
+      "candidate": {
+        "provider": "gemini",
+        "accountKind": "user_plan_injected",
+        "route": "vendor_injected",
+        "engine": "loop"
+      },
+      "offering": "oss",
+      "policy": {
+        "disabledRules": [],
+        "consumerPlans": true
+      },
+      "expect": {
+        "refused": "vendor_prohibited",
+        "rule": "gemini-personal-login-injected"
+      }
+    },
+    {
+      "id": "VR-15",
+      "row": "Gemini personal or Code Assist login in hosted Gemini CLI",
+      "candidate": {
+        "provider": "gemini",
+        "accountKind": "user_plan_sandbox_login",
+        "route": "vendor_sandbox_login",
+        "engine": "gemini_cli"
+      },
+      "offering": "oss",
+      "policy": {
+        "disabledRules": [],
+        "consumerPlans": true
+      },
+      "expect": {
+        "refused": "vendor_pending",
+        "rule": "gemini-login-hosted-gemini-cli"
+      }
+    },
+    {
+      "id": "VR-16-default-off",
+      "row": "Consumer-plan routes off by default for enterprise tenants",
+      "candidate": {
+        "provider": "anthropic",
+        "accountKind": "user_plan_sandbox_login",
+        "route": "vendor_sandbox_login",
+        "engine": "claude_code"
+      },
+      "offering": "oss",
+      "policy": {
+        "disabledRules": [],
+        "consumerPlans": false
+      },
+      "expect": {
+        "refused": "org_policy_refused",
+        "rule": "anthropic-claude-plan-claude-code"
+      }
+    },
+    {
+      "id": "VR-16-opt-in-keeps-pending",
+      "row": "Consumer-plan routes off by default for enterprise tenants",
+      "candidate": {
+        "provider": "openai",
+        "accountKind": "user_plan_injected",
+        "route": "gateway",
+        "engine": "codex"
+      },
+      "offering": "oss",
+      "policy": {
+        "disabledRules": [],
+        "consumerPlans": true
+      },
+      "expect": {
+        "refused": "vendor_pending",
+        "rule": "openai-chatgpt-siwc-gateway"
+      }
+    },
+    {
+      "id": "VR-16-opt-in-keeps-prohibited",
+      "row": "Consumer-plan routes off by default for enterprise tenants",
+      "candidate": {
+        "provider": "anthropic",
+        "accountKind": "user_plan_injected",
+        "route": "vendor_injected",
+        "engine": "loop"
+      },
+      "offering": "oss",
+      "policy": {
+        "disabledRules": [],
+        "consumerPlans": true
+      },
+      "expect": {
+        "refused": "vendor_prohibited",
+        "rule": "anthropic-claude-plan-injected"
+      }
+    },
+    {
+      "id": "VR-17-provider",
+      "row": "Default deny: no row names the combination",
+      "candidate": {
+        "provider": "ollama",
+        "accountKind": "org_api_key",
+        "route": "gateway",
+        "engine": "opencode"
+      },
+      "offering": "managed",
+      "policy": {
+        "disabledRules": [],
+        "consumerPlans": false
+      },
+      "expect": {
+        "refused": "vendor_rule_missing",
+        "rule": null
+      }
+    },
+    {
+      "id": "VR-17-kind",
+      "row": "Default deny: no row names the combination",
+      "candidate": {
+        "provider": "openai",
+        "accountKind": "org_cloud",
+        "route": "gateway",
+        "engine": "opencode"
+      },
+      "offering": "managed",
+      "policy": {
+        "disabledRules": [],
+        "consumerPlans": false
+      },
+      "expect": {
+        "refused": "vendor_rule_missing",
+        "rule": null
+      }
+    },
+    {
+      "id": "VR-18-off",
+      "row": "An org switches a row off",
+      "candidate": {
+        "provider": "openai",
+        "accountKind": "user_api_key",
+        "route": "gateway",
+        "engine": "opencode"
+      },
+      "offering": "managed",
+      "policy": {
+        "disabledRules": [
+          "openai-api-key-user"
+        ],
+        "consumerPlans": false
+      },
+      "expect": {
+        "refused": "org_policy_refused",
+        "rule": "openai-api-key-user"
+      }
+    },
+    {
+      "id": "VR-18-other-row",
+      "row": "An org switches a row off",
+      "candidate": {
+        "provider": "openai",
+        "accountKind": "org_api_key",
+        "route": "gateway",
+        "engine": "opencode"
+      },
+      "offering": "managed",
+      "policy": {
+        "disabledRules": [
+          "openai-api-key-user"
+        ],
+        "consumerPlans": false
+      },
+      "expect": {
+        "allowed": "openai-api-key-org"
+      }
+    },
+    {
+      "id": "VR-18-specific-off",
+      "row": "An org switches a row off",
+      "candidate": {
+        "provider": "anthropic",
+        "accountKind": "org_api_key",
+        "route": "gateway",
+        "engine": "claude_code"
+      },
+      "offering": "oss",
+      "policy": {
+        "disabledRules": [
+          "anthropic-platform-paid-claude-code"
+        ],
+        "consumerPlans": false
+      },
+      "expect": {
+        "refused": "org_policy_refused",
+        "rule": "anthropic-platform-paid-claude-code"
+      }
+    }
+  ]
+}

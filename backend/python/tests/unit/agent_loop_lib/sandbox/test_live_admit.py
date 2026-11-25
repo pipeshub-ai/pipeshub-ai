@@ -126,6 +126,7 @@ class TestAdmit:
             assert txn is not None
             started = time.monotonic()
             assert await live.admit_and_charge(held=0) is None
+            # wall-clock-ok: the holder keeps the lock for the whole block; 0.5 s is ten times the 50 ms admission budget
             assert time.monotonic() - started < 0.5
         assert live._ledger.read() is None
 
@@ -156,28 +157,21 @@ class TestAdmit:
         await live.admit_and_charge(held=0)
         assert reader.memory_reads == 2
 
-    async def test_the_loop_keeps_running_while_the_lock_is_tried(self, tmp_path: Path) -> None:
+    async def test_the_loop_keeps_running_while_the_lock_is_tried(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from tests.unit.agent_loop_lib.sandbox.qa_live.test_live_edges import (
+            loop_blocking_calls,
+        )
+
         clock = FakeClock()
         live = _live(tmp_path, clock, FakeReader(sample(4.0)))
         holder = _live(tmp_path, clock, FakeReader())
-        gaps: list[float] = []
-        stop = asyncio.Event()
-
-        async def ticker() -> None:
-            last = time.monotonic()
-            while not stop.is_set():
-                await asyncio.sleep(0.001)
-                now = time.monotonic()
-                gaps.append(now - last)
-                last = now
-
-        task = asyncio.create_task(ticker())
         with holder._ledger.transaction() as txn:
             assert txn is not None
+            blocking = loop_blocking_calls(monkeypatch)
             await live.admit_and_charge(held=0)
-        stop.set()
-        await task
-        assert max(gaps) < 0.03
+        assert blocking == []  # the budgeted try ran off the loop's thread
 
 
 class TestGovernorWithFloor:

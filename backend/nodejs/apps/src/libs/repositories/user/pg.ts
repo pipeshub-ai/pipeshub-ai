@@ -961,6 +961,21 @@ export class PgUserRepository implements UserRepository, Importable {
     });
   }
 
+  async holdLiveAdmin(orgId: string, id: string, tx?: Tx): Promise<boolean> {
+    const oid = oidOf(id);
+    if (oid === undefined) return false;
+    return inUnit(tx, { write: true }, async (k) => {
+      assertOrg(k, orgId);
+      // FOR SHARE: a demotion or removal updates the row, so it waits for the caller's commit, or the caller, coming
+      // second, re-reads the row as it committed and finds no admin.
+      const { rows } = await k.query(
+        "/* pipeshub:identity.user_hold_live_admin */ SELECT 1 FROM identity.users u WHERE u.org_id = $1 AND u.id = $2::text AND u.role = 'admin' AND u.kind <> 'service' AND NOT u.is_deleted FOR SHARE",
+        [k.orgId, oid],
+      );
+      return rows.length > 0;
+    });
+  }
+
   async lockOrgAdminChanges(orgId: string, tx: Tx): Promise<void> {
     await inUnit(tx, { write: true }, async (k) => {
       assertOrg(k, orgId);
@@ -1037,6 +1052,36 @@ export class PgUserRepository implements UserRepository, Importable {
           new Date(),
           except ?? null,
         ],
+      );
+      return rows.length;
+    });
+  }
+
+  async disableEnabledAccounts(orgId: string): Promise<string[]> {
+    return inUnit(undefined, { write: true }, async (k) => {
+      assertOrg(k, orgId);
+      const { rows } = await k.query<{ id: string }>(
+        `/* pipeshub:identity.user_disable_enabled */ UPDATE identity.users u SET is_disabled = true, updated_at = $2
+          WHERE u.org_id = $1 AND NOT u.is_deleted AND NOT u.is_disabled RETURNING u.id`,
+        [k.orgId, new Date()],
+      );
+      return rows.map((r) => r.id).sort();
+    });
+  }
+
+  async setAccountsDisabled(
+    orgId: string,
+    ids: string[],
+    disabled: boolean,
+  ): Promise<number> {
+    const list = oidsOf(ids);
+    if (list.length === 0) return 0;
+    return inUnit(undefined, { write: true }, async (k) => {
+      assertOrg(k, orgId);
+      const { rows } = await k.query(
+        `/* pipeshub:identity.user_set_disabled */ UPDATE identity.users u SET is_disabled = $3, updated_at = $4
+          WHERE u.org_id = $1 AND u.id = ANY($2::text[]) AND NOT u.is_deleted AND u.is_disabled <> $3 RETURNING u.id`,
+        [k.orgId, list, disabled, new Date()],
       );
       return rows.length;
     });

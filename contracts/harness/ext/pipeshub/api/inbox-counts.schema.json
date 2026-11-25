@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/ext/pipeshub/api/inbox-counts.schema.json",
+  "title": "InboxCounts",
+  "description": "`GET /api/v1/agent-harness/inbox/count` and the `inboxCount` socket event (G2): unread notices, asks waiting on the person, and the badge (asks always, notices unless paused). A push may carry `recount`.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "unread",
+    "waiting",
+    "badge",
+    "paused",
+    "pausedUntil"
+  ],
+  "properties": {
+    "unread": {
+      "$ref": "../../../core/common.schema.json#/$defs/UInt"
+    },
+    "waiting": {
+      "$ref": "../../../core/common.schema.json#/$defs/UInt"
+    },
+    "badge": {
+      "$ref": "../../../core/common.schema.json#/$defs/UInt"
+    },
+    "paused": {
+      "type": "boolean"
+    },
+    "pausedUntil": {
+      "description": "Epoch ms the pause ends; null when not paused or paused until resumed.",
+      "anyOf": [
+        {
+          "$ref": "../../../core/common.schema.json#/$defs/UInt"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "working": {
+      "description": "The person's jobs at work (CJ14-FU-1): child runs in the `working` state that have started, the Jobs page's Working section (`vectors/working-jobs.json`). For the sidebar's Jobs entry. Absent: this server does not count them, and a client shows no count.",
+      "$ref": "../../../core/common.schema.json#/$defs/UInt"
+    },
+    "recount": {
+      "description": "A push only (FIXMS1-FU-1): a source that answers only with the person's own credential (their skill proposals) was not counted; the client fetches `GET /inbox/count` with its own session. Absent or false: the counts are whole.",
+      "type": "boolean"
+    }
+  },
+  "examples": [
+    {
+      "unread": 3,
+      "waiting": 1,
+      "badge": 4,
+      "paused": false,
+      "pausedUntil": null,
+      "working": 2
+    }
+  ]
+}

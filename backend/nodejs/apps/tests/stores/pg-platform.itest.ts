@@ -72,7 +72,10 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
             markPublished: (id) => repo.markPublished(id),
             markFailed: (id, f) => repo.markFailed(id, f),
             statusCounts: () => repo.statusCounts(),
+            eraseDeliveredForOrg: (orgId, limit) =>
+              repo.eraseDeliveredForOrg(orgId, limit),
           },
+          appendIn: (orgId, e) => inOrg(orgId, () => repo.append(e)),
           uow: {
             run: <R>(
               fn: (tx: Tx) => Promise<R>,

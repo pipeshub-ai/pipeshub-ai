@@ -82,6 +82,7 @@ def test_a_busy_service_is_waited_for_past_the_stall_window(tmp_path: pathlib.Pa
 def test_a_service_that_uses_no_cpu_is_given_up_on(tmp_path: pathlib.Path) -> None:
     rc, took, out = _run(tmp_path, "sleep 100", 1000, STARTUP_STALL_SECONDS=3, STARTUP_MAX_SECONDS=60, STARTUP_POLL_SECONDS=1)
     assert rc == 1
+    # wall-clock-ok: given up at the 3 s stall window; a missed stall waits out the 60 s maximum
     assert took < 15
     assert "used no CPU" in out
 
@@ -89,6 +90,7 @@ def test_a_service_that_uses_no_cpu_is_given_up_on(tmp_path: pathlib.Path) -> No
 def test_a_dead_service_fails_at_once(tmp_path: pathlib.Path) -> None:
     rc, took, out = _run(tmp_path, "true", 1000, STARTUP_STALL_SECONDS=60, STARTUP_MAX_SECONDS=60, STARTUP_POLL_SECONDS=1)
     assert rc == 1
+    # wall-clock-ok: a dead service is seen at the first 1 s poll; a missed exit waits out the 60 s window
     assert took < 8
     assert "exited before it became healthy" in out
 
@@ -96,6 +98,7 @@ def test_a_dead_service_fails_at_once(tmp_path: pathlib.Path) -> None:
 def test_a_busy_service_is_still_bounded(tmp_path: pathlib.Path) -> None:
     rc, took, out = _run(tmp_path, BUSY, 1000, STARTUP_STALL_SECONDS=60, STARTUP_MAX_SECONDS=4, STARTUP_POLL_SECONDS=1)
     assert rc == 1
+    # wall-clock-ok: ended at the 4 s maximum; an unbounded busy service waits out the 60 s stall window
     assert 3 <= took < 15
     assert "not healthy after 4s" in out
 
@@ -103,6 +106,7 @@ def test_a_busy_service_is_still_bounded(tmp_path: pathlib.Path) -> None:
 def test_a_healthy_service_returns_immediately(tmp_path: pathlib.Path) -> None:
     rc, took, _ = _run(tmp_path, "sleep 100", 0, STARTUP_STALL_SECONDS=60, STARTUP_MAX_SECONDS=60, STARTUP_POLL_SECONDS=1)
     assert rc == 0
+    # wall-clock-ok: healthy at the first poll; a wait that did not return at once runs to the 60 s window
     assert took < 6
 
 
@@ -165,6 +169,7 @@ exit 0
     began = time.monotonic()
     out = _bash(script, {"PATH": f"{bin_dir}:/usr/bin:/bin"}, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=15)
     assert out.returncode == 1
+    # wall-clock-ok: a lost status waits on the busy service until the 15 s kill; the crash is seen within 2 s
     assert time.monotonic() - began < 8, "the failed waiter's status was lost"
 
 
@@ -189,6 +194,7 @@ exit $rc
     began = time.monotonic()
     out = _bash(script, {"PATH": f"{bin_dir}:/usr/bin:/bin"}, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
     assert out.returncode == 1
+    # wall-clock-ok: waiting for the slow service takes its 15 s helper; the crash ends the wait within 3 s
     assert time.monotonic() - began < 8, "waited for the slow service after another one had failed"
 
 
@@ -273,9 +279,11 @@ esac
 """)
     script = tmp_path / "process_monitor.sh"
     script.write_text(SCRIPT.read_text().replace("/app", str(app)))
+    # The monitor logs to stdout only (the container's log), not to a file under /app.
     log = app / "process_monitor.log"
+    log_out = log.open("w")
     proc = subprocess.Popen(
-        ["bash", str(script)], start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        ["bash", str(script)], start_new_session=True, stdout=log_out, stderr=subprocess.STDOUT,
         env={"PATH": f"{shims}:/usr/bin:/bin", "PIPESHUB_SKIP_SLACKBOT": "true", "CHECK_INTERVAL": "20",
              "STARTUP_POLL_SECONDS": "1", "STARTUP_STALL_SECONDS": "120", "STARTUP_MAX_SECONDS": "900"},
     )
@@ -291,6 +299,7 @@ esac
         with contextlib.suppress(ProcessLookupError):
             os.killpg(proc.pid, signal.SIGKILL)
         proc.wait()
+        log_out.close()
 
 
 def test_the_limits_are_repaired_before_the_first_wait() -> None:

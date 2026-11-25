@@ -123,6 +123,7 @@ async def test_heal_failure_never_changes_the_answer(h, failure, monkeypatch) ->
         200,
         True,
     )
+    # wall-clock-ok: a heal that is not bounded waits out the 30 s hang; the bounded one gives up after 0.1 s
     assert time.monotonic() - started < 5
     assert SV.HEAL["failed" if failure != "none" else "skipped"] >= 1
     assert h.cleanups[-1][2] == [h.cleanups[-1][2][0]]  # only the superseded document

@@ -36,6 +36,23 @@ describe('telemetry metrics-backend (PrometheusBackend)', () => {
       const text = await backend.serialize();
       expect(text).to.include('test_plain_total 5');
     });
+
+    // SEC-D-13: an alert on increase misses a counter's first event unless the series already exists at 0.
+    it('keeps its zero series whenever the registry is read, also after a reset', async () => {
+      const counter = backend.createCounter({
+        name: 'test_zero_total',
+        help: 'test',
+        labelNames: ['kind'],
+        zeroSeries: [{ kind: 'forged' }],
+      });
+      expect(await backend.serialize()).to.include('test_zero_total{kind="forged"} 0');
+
+      counter.inc({ kind: 'forged' }, 2);
+      expect(await backend.serialize()).to.include('test_zero_total{kind="forged"} 2');
+
+      backend.reset();
+      expect(await backend.serialize()).to.include('test_zero_total{kind="forged"} 0');
+    });
   });
 
   describe('createGauge', () => {

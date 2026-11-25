@@ -3,16 +3,15 @@
 import pytest
 
 from app.sandbox.models import (
+    DEFAULT_CPU_LIMIT,
+    DEFAULT_MEMORY_LIMIT_MB,
+    DEFAULT_TIMEOUT_SECONDS,
+    SANDBOX_IMAGE,
     ArtifactOutput,
     ExecutionResult,
     SandboxLanguage,
     SandboxMode,
     detect_mime_type,
-    EXTENSION_TO_MIME,
-    DEFAULT_TIMEOUT_SECONDS,
-    DEFAULT_MEMORY_LIMIT_MB,
-    DEFAULT_CPU_LIMIT,
-    SANDBOX_IMAGE,
 )
 
 

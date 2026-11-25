@@ -26,15 +26,21 @@ export class StorageService {
     private readonly config:
       S3StorageConfig | AzureBlobStorageConfig | LocalStorageConfig,
     private readonly defaultConfig: DefaultStorageConfig,
+    // A caller that has already resolved the storage type passes it, so the
+    // adapter matches what that caller resolved instead of a second read.
+    private readonly storageType?: string,
   ) {}
 
   public async initialize(): Promise<void> {
     if (!this.isInitialized) {
-      const storageConfig =
-        (await this.keyValueStoreService.get<string>(storageEtcdPaths)) || '{}';
-      const { storageType } =
-        parseKvObject(storageConfig) || storageTypes.LOCAL;
-      this.adapter = await this.initializeStorageAdapter(storageType);
+      let storageType = this.storageType;
+      if (storageType === undefined) {
+        const storageConfig =
+          (await this.keyValueStoreService.get<string>(storageEtcdPaths)) ||
+          '{}';
+        ({ storageType } = parseKvObject(storageConfig) || storageTypes.LOCAL);
+      }
+      this.adapter = await this.initializeStorageAdapter(storageType as string);
       this.isInitialized = true;
     }
   }

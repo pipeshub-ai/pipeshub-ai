@@ -82,6 +82,8 @@ export class OutboxDispatcher {
     private readonly producer: IMessageProducer,
     private readonly logger: Logger,
     private readonly pollIntervalMs: number = DEFAULT_POLL_INTERVAL_MS,
+    /** Told of each publish the broker failed, for a health view; never given the error. */
+    private readonly onPublishFailed: () => void = () => undefined,
   ) {}
 
   start(): void {
@@ -210,6 +212,7 @@ export class OutboxDispatcher {
   ): Promise<void> {
     const attempts = event.attempts + 1;
     const message = error instanceof Error ? error.message : String(error);
+    this.onPublishFailed();
 
     await getOutboxRepository().markFailed(event._id, {
       attempts,

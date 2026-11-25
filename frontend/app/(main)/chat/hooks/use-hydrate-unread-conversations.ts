@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect } from 'react';
-import { useAuthStore } from '@/lib/store/auth-store';
+import { useAuthStore } from '@/config';
 import { useChatStore } from '../store';
 import { getCurrentUserId } from '../utils/current-user-id';
 

@@ -1982,6 +1982,7 @@ class TestUserAddedConnectorLink:
         began = loop.time()
         with patch("app.services.messaging.kafka.handlers.entity.USER_LINK_MARK_TTL_MS", 40):
             assert await svc._link_connector("c1") is True
+        # wall-clock-ok: stopped 10 ms in; without the stop the pass waits out the 5 s rewrite
         assert loop.time() - began < 1      # stopped at the refused rewrite, 10 ms in
         assert stopped.is_set() and svc.graph_provider.batch_upsert_nodes.await_count == 2
 
@@ -2013,6 +2014,7 @@ class TestUserAddedConnectorLink:
         with patch("app.services.messaging.kafka.handlers.entity.USER_LINK_MARK_TTL_MS", 40):
             assert await svc._link_connector("c1") is True
         assert stopped.is_set() and len(written) == 1       # cancelled at the rewrite's deadline; the stalled rewrite never landed
+        # wall-clock-ok: a watchdog: without the deadline the pass waits out the 5 s rewrite
         assert loop.time() - began < 1      # a watchdog only: without the deadline the pass waits out the 5 s rewrite
 
     @pytest.mark.asyncio

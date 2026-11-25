@@ -21,6 +21,9 @@ import * as orgUtils from '../../../src/modules/user_management/utils/org.utils'
 import { createGoogleWorkspaceCredentials } from '../../../src/modules/configuration_manager/controller/cm_controller'
 import { captureLogRecords, inRequestContext, newRequestId, recordsOf, type LogRecord } from '../../helpers/log-capture'
 import { FakeBackend, buildConfig } from '../tokens_manager/routes/connectors-http-harness'
+import { CONTROL_PLANE_DEPLOYMENT_REVISION, CONTROL_PLANE_TRANSACTION } from '../../../src/modules/agent-harness/composition'
+import { testControlPlane } from '../control-plane/support/in-memory'
+import { InMemoryHeadRevisions } from '../control-plane/support/head-revisions-contract'
 
 // The real configuration manager router, request context, access line and error middleware over HTTP; the
 // key-value store is in memory (or always failing), and the AI service and the embedding server are one FakeBackend.
@@ -92,6 +95,10 @@ async function serve(kv: unknown, backendUrl: string, aiEvents: Events = events(
   container.bind('SyncEventProducer').toConstantValue(events())
   container.bind('ConfigService').toConstantValue({})
   container.bind('AuthMiddleware').toConstantValue({ authenticate: signedIn, scopedTokenValidator: () => signedIn })
+  // An AI-model or platform-settings save is a control-plane write (an AI-model save also moves the deployment
+  // revision); the app uses the real stores, here in-memory ones.
+  container.bind(CONTROL_PLANE_TRANSACTION).toConstantValue(testControlPlane())
+  container.bind(CONTROL_PLANE_DEPLOYMENT_REVISION).toConstantValue(new InMemoryHeadRevisions())
   const router = createConfigurationManagerRouter(container)
   const app = express()
   app.use(requestContextMiddleware)
@@ -132,7 +139,7 @@ describe('Configuration manager routes log each failure once', function () {
 
   before(async () => {
     savedSecretKey = process.env.SECRET_KEY
-    process.env.SECRET_KEY = process.env.SECRET_KEY || 'cm-logging-once-secret'
+    process.env.SECRET_KEY = process.env.SECRET_KEY || 'b38198beda1f029bb69bcae4b605266eaff37f11f4192377c2e4b1bda4627edb'
     await backend.start()
     savedEmbeddingUrl = process.env.EMBEDDING_SERVER_URL
     process.env.EMBEDDING_SERVER_URL = backend.url

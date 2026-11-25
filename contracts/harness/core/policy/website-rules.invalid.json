@@ -1,0 +1,109 @@
+[
+  {
+    "description": "a bare wildcard is not a host",
+    "instance": {
+      "schemaVersion": 1,
+      "presets": [],
+      "readOnlyHosts": [
+        "*"
+      ],
+      "gitHosts": [],
+      "registryHosts": [],
+      "relayHosts": []
+    }
+  },
+  {
+    "description": "a preset names hosts, not URLs",
+    "instance": {
+      "schemaVersion": 1,
+      "presets": [
+        {
+          "id": "x",
+          "name": "X",
+          "description": "x",
+          "sites": [
+            "https://github.com"
+          ]
+        }
+      ],
+      "readOnlyHosts": [],
+      "gitHosts": [],
+      "registryHosts": [],
+      "relayHosts": []
+    }
+  },
+  {
+    "description": "git hosts are listed",
+    "instance": {
+      "schemaVersion": 1,
+      "presets": [],
+      "readOnlyHosts": [],
+      "registryHosts": [],
+      "relayHosts": []
+    }
+  },
+  {
+    "description": "a repository preset names one host, not a wildcard",
+    "instance": {
+      "schemaVersion": 1,
+      "presets": [],
+      "readOnlyHosts": [],
+      "gitHosts": [],
+      "repositoryPresets": [
+        {
+          "id": "x",
+          "name": "X",
+          "description": "x",
+          "host": "*.github.com"
+        }
+      ],
+      "registryHosts": [],
+      "relayHosts": []
+    }
+  },
+  {
+    "description": "a repository preset's default is on or off",
+    "instance": {
+      "schemaVersion": 1,
+      "presets": [],
+      "readOnlyHosts": [],
+      "gitHosts": [],
+      "repositoryPresets": [
+        {
+          "id": "x",
+          "name": "X",
+          "description": "x",
+          "host": "github.com",
+          "default": "yes"
+        }
+      ],
+      "registryHosts": [],
+      "relayHosts": []
+    }
+  },
+  {
+    "description": "a registry host says why it is safe to keep open",
+    "instance": {
+      "schemaVersion": 1,
+      "presets": [],
+      "readOnlyHosts": [],
+      "gitHosts": [],
+      "registryHosts": [
+        {
+          "host": "pypi.org"
+        }
+      ],
+      "relayHosts": []
+    }
+  },
+  {
+    "description": "relay hosts are listed",
+    "instance": {
+      "schemaVersion": 1,
+      "presets": [],
+      "readOnlyHosts": [],
+      "gitHosts": [],
+      "registryHosts": []
+    }
+  }
+]

@@ -1,0 +1,14 @@
+# Standalone tools CI and the images install without the application (install.sh tools). A package the
+# application also uses is held to dev.lock's version.
+# uv resolves these locks (scripts/supply_chain.py lock); integration-tests/ syncs from its uv.lock with it.
+uv==0.13.1
+ruff==0.17.2
+pyyaml
+# scripts/test_assert_no_skips.py runs pytest on a throwaway project.
+pytest
+coverage
+requests
+# backend/python/Dockerfile freezes the services into binaries.
+pyinstaller
+# The hot-reload image's watchmedo.
+watchdog

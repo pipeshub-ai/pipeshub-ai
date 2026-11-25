@@ -3,14 +3,15 @@
 These tests need Docker services:
 
   docker compose -f deployment/docker-compose/docker-compose.integration.messaging.yml up -d
-  cd backend/python && pytest tests/integration/messaging -m integration
+  cd backend/python && REDIS_IT_HOST=localhost KAFKA_IT_BOOTSTRAP=localhost:29192 \
+    pytest tests/integration/messaging -m integration
 
-They skip cleanly when the brokers are not reachable, so a normal unit run is
+A broker whose variable is unset is skipped, so a normal unit run is
 unaffected.
 
 Environment:
-  KAFKA_IT_BOOTSTRAP  (default: localhost:29192)
-  REDIS_IT_HOST       (default: localhost)
+  KAFKA_IT_BOOTSTRAP  (required for Kafka; the compose file's is localhost:29192)
+  REDIS_IT_HOST       (required for Redis; the compose file's is localhost)
   REDIS_IT_PORT       (default: 6389)
 """
 from __future__ import annotations
@@ -24,12 +25,12 @@ from unittest.mock import patch
 
 import pytest
 
+from tests.support import it_backends
+
 if TYPE_CHECKING:
     import threading
     from collections.abc import AsyncIterator, Callable, Iterator
 
-KAFKA_BOOTSTRAP = os.environ.get("KAFKA_IT_BOOTSTRAP", "localhost:29192")
-REDIS_HOST = os.environ.get("REDIS_IT_HOST", "localhost")
 REDIS_PORT = int(os.environ.get("REDIS_IT_PORT", "6389"))
 
 # Real brokers are slower than the fakes; give the drain loops room without
@@ -52,34 +53,36 @@ def unique_suffix() -> str:
 @pytest.fixture(scope="session")
 async def kafka_available() -> str:
     """Bootstrap address, or skip the module if no broker answers."""
+    kafka_bootstrap = it_backends.endpoint("KAFKA_IT_BOOTSTRAP")
     aiokafka = pytest.importorskip("aiokafka", reason="aiokafka not installed")
-    client = aiokafka.AIOKafkaProducer(bootstrap_servers=KAFKA_BOOTSTRAP)
+    client = aiokafka.AIOKafkaProducer(bootstrap_servers=kafka_bootstrap)
     try:
         await asyncio.wait_for(client.start(), timeout=15.0)
     except Exception as exc:
-        pytest.skip(f"Kafka not available at {KAFKA_BOOTSTRAP} — {exc}")
+        pytest.skip(f"Kafka not available at {kafka_bootstrap} — {exc}")
     finally:
         try:
             await client.stop()
         except Exception:
             pass
-    return KAFKA_BOOTSTRAP
+    return kafka_bootstrap
 
 
 @pytest.fixture(scope="session")
 async def redis_available() -> tuple[str, int]:
     """Host/port, or skip the module if no Redis answers."""
+    redis_host = it_backends.endpoint("REDIS_IT_HOST")
     pytest.importorskip("redis", reason="redis package not installed")
     from redis.asyncio import Redis
 
-    client = Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
+    client = Redis(host=redis_host, port=REDIS_PORT, decode_responses=True)
     try:
         await asyncio.wait_for(client.ping(), timeout=10.0)
     except Exception as exc:
-        pytest.skip(f"Redis not available at {REDIS_HOST}:{REDIS_PORT} — {exc}")
+        pytest.skip(f"Redis not available at {redis_host}:{REDIS_PORT} — {exc}")
     finally:
         await client.aclose()
-    return REDIS_HOST, REDIS_PORT
+    return redis_host, REDIS_PORT
 
 
 async def create_kafka_topic(bootstrap: str, topic: str, partitions: int) -> None:

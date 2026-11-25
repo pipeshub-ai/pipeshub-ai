@@ -45,13 +45,17 @@ describe('notification.controller on the repository seam', () => {
 
   beforeEach(() => {
     repo = {
+      insert: sinon.stub(),
       insertMany: sinon.stub(),
+      exists: sinon.stub().resolves(false),
       list: sinon.stub().resolves([]),
       counts: sinon.stub().resolves({ unread: 2, read: 3, archived: 1 }),
       markAllRead: sinon.stub().resolves(4),
       setStatus: sinon.stub().resolves(row()),
       unarchive: sinon.stub().resolves(row()),
       softDelete: sinon.stub().resolves(row()),
+      eraseForConversation: sinon.stub().resolves(0),
+      eraseForOrg: sinon.stub().resolves(0),
     };
     setNotificationRepository(repo as unknown as NotificationRepository);
     res = { status: sinon.stub().returnsThis(), json: sinon.stub() };
@@ -77,11 +81,11 @@ describe('notification.controller on the repository seam', () => {
     const body = res.json.firstCall.args[0];
     expect(body.notifications).to.have.length(2);
     expect(body.hasMore).to.equal(true);
-    expect(body.cursor).to.equal(encodeCursor({ createdAt: rows[1].createdAt, _id: rows[1]._id }));
+    expect(body.cursor).to.equal(encodeCursor({ createdAt: rows[1]!.createdAt, _id: rows[1]!._id }));
 
     repo.list.resetHistory();
     await listNotifications(req({ query: { limit: '2', cursor: body.cursor } }), res, next);
-    expect(repo.list.firstCall.args[1].cursor).to.deep.equal({ createdAt: rows[1].createdAt, id: rows[1]._id });
+    expect(repo.list.firstCall.args[1].cursor).to.deep.equal({ createdAt: rows[1]!.createdAt, id: rows[1]!._id });
   });
 
   it('rejects a malformed cursor with 400 and does not query', async () => {

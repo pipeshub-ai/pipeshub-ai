@@ -6,6 +6,7 @@ replaced the record. The real ConfigurationService runs on FlakyKV; the routes a
 """
 from __future__ import annotations
 
+import secrets
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -43,7 +44,7 @@ APPS = [APP_X, APP_OTHER_ORG]
 
 @pytest.fixture
 async def kv(monkeypatch: pytest.MonkeyPatch) -> FlakyKV:
-    monkeypatch.setenv("SECRET_KEY", "router-config-read-outage-test")
+    monkeypatch.setenv("SECRET_KEY", secrets.token_urlsafe(32))
     return FlakyKV()
 
 

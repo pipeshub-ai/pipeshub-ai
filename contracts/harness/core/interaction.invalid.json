@@ -1,0 +1,115 @@
+[
+  {
+    "description": "unknown kind",
+    "instance": {
+      "interactionId": "int_1",
+      "runId": "run_1",
+      "createdAt": "2026-10-01T12:00:00.123Z",
+      "bindingDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "kind": "poll",
+      "questions": [
+        {
+          "questionId": "q1",
+          "text": "Which project?",
+          "options": [
+            {
+              "value": "ENG",
+              "label": "Engineering"
+            }
+          ],
+          "allowFreeText": true
+        }
+      ]
+    }
+  },
+  {
+    "description": "question without questions",
+    "instance": {
+      "interactionId": "int_1",
+      "runId": "run_1",
+      "createdAt": "2026-10-01T12:00:00.123Z",
+      "bindingDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "kind": "question",
+      "questions": []
+    }
+  },
+  {
+    "description": "approval without binding",
+    "instance": {
+      "interactionId": "int_1",
+      "runId": "run_1",
+      "createdAt": "2026-10-01T12:00:00.123Z",
+      "bindingDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "kind": "approval",
+      "expiresAt": "2026-10-02T12:00:00Z",
+      "toolId": "slack@inst_1/post_message",
+      "approvers": {
+        "scope": "run_actor"
+      }
+    }
+  },
+  {
+    "description": "approval fields on a question",
+    "instance": {
+      "interactionId": "int_1",
+      "runId": "run_1",
+      "createdAt": "2026-10-01T12:00:00.123Z",
+      "bindingDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "kind": "question",
+      "questions": [
+        {
+          "questionId": "q1",
+          "text": "Which project?",
+          "options": [
+            {
+              "value": "ENG",
+              "label": "Engineering"
+            }
+          ],
+          "allowFreeText": true
+        }
+      ],
+      "binding": {
+        "invocationId": "inv_9",
+        "argsDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "specDigest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "expiresAt": "2026-10-02T12:00:00Z"
+      }
+    }
+  },
+  {
+    "description": "unknown approver scope",
+    "instance": {
+      "interactionId": "int_1",
+      "runId": "run_1",
+      "createdAt": "2026-10-01T12:00:00.123Z",
+      "bindingDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "kind": "approval",
+      "expiresAt": "2026-10-02T12:00:00Z",
+      "toolId": "slack@inst_1/post_message",
+      "binding": {
+        "invocationId": "inv_9",
+        "argsDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "specDigest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "expiresAt": "2026-10-02T12:00:00Z"
+      },
+      "approvers": {
+        "scope": "admin"
+      }
+    }
+  },
+  {
+    "description": "client tool args must be an object",
+    "instance": {
+      "interactionId": "int_1",
+      "runId": "run_1",
+      "createdAt": "2026-10-01T12:00:00.123Z",
+      "bindingDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "kind": "client_tool",
+      "invocationId": "inv_3",
+      "toolName": "open_file_picker",
+      "argsDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "args": "x"
+    }
+  }
+]

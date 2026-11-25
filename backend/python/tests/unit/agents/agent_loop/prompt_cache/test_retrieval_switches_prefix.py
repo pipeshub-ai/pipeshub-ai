@@ -11,6 +11,7 @@ questions, with each switch off and on.
 from __future__ import annotations
 
 import inspect
+from typing import TYPE_CHECKING
 
 import pytest
 
@@ -21,8 +22,13 @@ from app.agent_loop_lib.tools.registry import ToolRegistry
 from app.agents.actions.knowledge_graph.knowledge_graph import KnowledgeGraph
 from app.agents.actions.retrieval.retrieval import Retrieval
 from app.agents.agent_loop.factory import PipesHubAgentFactory
+from app.agents.registry.toolset_registry import ToolsetRegistry
 from app.modules.retrieval.record_cut import FUSION_RECORD_CUT_ENV_VAR
+from tests.support.toolset_registry import toolset_registry_restored
 from tests.unit.agents.adapter.conftest import FakeChatModel, make_context
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 _RETRIEVAL_SWITCHES = (FUSION_RECORD_CUT_ENV_VAR,)
 _MODES = ("quick", "react", "planExecute", "deep")
@@ -40,6 +46,17 @@ _QUESTIONS = (
 def _quiet_subsystems(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("PIPESHUB_ENABLE_SKILLS", "false")
     monkeypatch.delenv("HIGH_ACCURACY_MODE", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _every_toolset() -> Iterator[None]:
+    """The toolsets the query service discovers at start. The factory reads the process registry, which otherwise
+    holds whatever earlier tests in this worker imported: none alone, two dozen tools in a full run, and only the
+    second crossed the lazy-disclosure threshold."""
+    with toolset_registry_restored():
+        ToolsetRegistry._instance = None  # pyright: ignore[reportPrivateUsage]
+        ToolsetRegistry().auto_discover_toolsets()
+        yield
 
 
 def _knowledge_tool_schemas() -> list[dict]:

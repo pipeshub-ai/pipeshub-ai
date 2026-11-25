@@ -7,7 +7,8 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 export interface WorkspaceHeaderIconButtonProps {
   icon: string;
   onClick: () => void;
-  'aria-label'?: string;
+  /** The control holds only an icon, so it needs its own name (the icon is decorative). */
+  'aria-label': string;
   style?: CSSProperties;
 }
 

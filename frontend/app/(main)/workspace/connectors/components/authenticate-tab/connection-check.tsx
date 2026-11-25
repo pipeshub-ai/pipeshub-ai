@@ -95,7 +95,7 @@ export function EgressIpNotice({ connectorName }: { connectorName: string }) {
             {t('workspace.connectors.authTab.connectionCheck.egressTitle')}
           </Text>
         </Flex>
-        <Text size="1" style={{ color: 'var(--gray-10)', lineHeight: 1.55 }}>
+        <Text size="1" style={{ color: 'var(--gray-11)', lineHeight: 1.55 }}>
           {t('workspace.connectors.authTab.connectionCheck.egressDescription', { name: connectorName })}
         </Text>
         <Flex gap="2" wrap="wrap">

@@ -1,0 +1,59 @@
+name: Harness P0 journeys offline (GA-26)
+
+# G-49 / GA-26: every P0 journey replays on the mock harness through the VCR gateway over the seeded tenant, with
+# every network dial refused (tests/support/no_network.py) and no model key. The unit job runs them too (since
+# R23-FU-GA26, with a whole-cassette re-record check); this job runs them alone with a strict guard and checks the
+# committed cassettes still match their journeys' scripted models (re-record with `python -m tests.harness_replay.ga26 --record`).
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'backend/python/harness_core/**'
+      - 'backend/python/app/harness/**'
+      - 'backend/python/app/agents/**'
+      - 'backend/python/tests/harness_replay/**'
+      - 'backend/python/tests/support/seeded_tenant.py'
+      - 'backend/python/tests/fixtures/tenant/**'
+      - 'backend/python/tests/fixtures/cassettes/**'
+      - '.github/workflows/harness-ga26.yml'
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: harness-ga26-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  journeys:
+    name: P0 journeys offline
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Python dependencies
+        working-directory: backend/python
+        run: |
+          requirements/install.sh dev --project . --editable
+
+      - name: Cassettes match their journeys
+        working-directory: backend/python
+        run: python -m tests.harness_replay.ga26 --check
+
+      - name: Replay the P0 journeys with no network
+        working-directory: backend/python
+        env:
+          TEST_NETWORK_GUARD: fail
+        run: python -m pytest -m ga26 tests/harness_replay -v

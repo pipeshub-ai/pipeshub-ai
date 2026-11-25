@@ -3,6 +3,7 @@
 import React, { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Box, Flex, Text } from '@radix-ui/themes';
+import { CapabilityBadge, skillInstallationId, type Grantable } from './capability-badge';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import type { SkillForBuilder } from '../../types';
 import type { NodeTemplate } from '../types';
@@ -103,8 +104,17 @@ export function AgentBuilderSkillsSection(props: {
   loading: boolean;
   structureLocked?: boolean;
   onPaletteStructureDragBlocked?: () => void;
+  /** What a run of this (saved) agent could use, by installation id; null: no badges. */
+  grantable?: Grantable | null;
 }) {
-  const { availableSkills, skillTemplates, loading, structureLocked = false, onPaletteStructureDragBlocked } = props;
+  const {
+    availableSkills,
+    skillTemplates,
+    loading,
+    structureLocked = false,
+    onPaletteStructureDragBlocked,
+    grantable = null,
+  } = props;
   const { t } = useTranslation();
 
   if (loading) {
@@ -126,13 +136,17 @@ export function AgentBuilderSkillsSection(props: {
       {skillTemplates.map((template) => {
         const skillName = String(template.defaultConfig?.skillName ?? '');
         return (
-          <SkillPaletteRow
-            key={template.type}
-            template={template}
-            isBuiltin={isBuiltinByName.get(skillName) ?? false}
-            structureLocked={structureLocked}
-            onPaletteStructureDragBlocked={onPaletteStructureDragBlocked}
-          />
+          <React.Fragment key={template.type}>
+            <SkillPaletteRow
+              template={template}
+              isBuiltin={isBuiltinByName.get(skillName) ?? false}
+              structureLocked={structureLocked}
+              onPaletteStructureDragBlocked={onPaletteStructureDragBlocked}
+            />
+            {grantable !== null && skillName !== '' ? (
+              <CapabilityBadge item={grantable.get(skillInstallationId(skillName))} />
+            ) : null}
+          </React.Fragment>
         );
       })}
     </Flex>

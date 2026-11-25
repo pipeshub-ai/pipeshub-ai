@@ -24,12 +24,18 @@ vi.mock('@/lib/store/user-store', () => ({
 }));
 
 let flagsState: { flags: Record<string, boolean> | null } = { flags: null };
-vi.mock('@/lib/store/feature-flags-store', () => ({
+// The merged sidebar reads the harness's selectors too; they are pure, so the real ones run on flagsState.
+vi.mock('@/lib/store/feature-flags-store', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/store/feature-flags-store')>()),
   useFeatureFlagsStore: (selector: (s: typeof flagsState) => unknown) => selector(flagsState),
   selectFeatureFlagsLoaded: (s: typeof flagsState) => s.flags !== null,
   selectMcpEnabled: (s: typeof flagsState) => s.flags?.ENABLE_MCP !== false,
   selectActionsEnabled: (s: typeof flagsState) => s.flags?.ENABLE_ACTIONS !== false,
   selectSkillsEnabled: (s: typeof flagsState) => s.flags?.ENABLE_SKILLS !== false,
+  selectScheduledRunsEnabled: () => false,
+  selectAgentHarnessOn: () => false,
+  selectAgentHarnessResumeEnabled: () => false,
+  selectEngineRunsEnabled: () => false,
 }));
 
 vi.mock('react-i18next', () => ({

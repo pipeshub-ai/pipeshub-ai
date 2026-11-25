@@ -21,7 +21,6 @@ from app.modules.indexing.entity_index_rebuild import (
     EntityIndexState,
     entity_index_marker,
 )
-from app.modules.transformers import entity_vectorstore
 from app.modules.transformers.entity_vectorstore import (
     EMBEDDING_MODEL_FIELD,
     EntityVectorStore,
@@ -177,8 +176,7 @@ class _Deployment:
 
 
 def _default_model() -> Any:  # noqa: ANN401
-    return patch.object(
-        entity_vectorstore, "get_default_embedding_model", return_value=FakeEmbeddingModel(1.0, 4),
+    return patch("app.utils.llm.get_default_embedding_model", return_value=FakeEmbeddingModel(1.0, 4),
     )
 
 

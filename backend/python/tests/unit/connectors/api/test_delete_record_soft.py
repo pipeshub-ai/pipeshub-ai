@@ -8,17 +8,16 @@ import pytest
 from fastapi import HTTPException
 
 from app.config.constants.arangodb import EventTypes, OriginTypes
+from tests.support.record_access import InMemoryRecordAccess
 from tests.unit.connectors.api.test_router_part1 import _mock_request
 
 ROUTER = "app.connectors.api.router"
 
 
-def _graph(result: dict) -> AsyncMock:
+def _graph(result: dict, origin: str = OriginTypes.UPLOAD.value, **record: str) -> AsyncMock:
     graph = AsyncMock()
     # The route deletes KB uploads only; a synced record is refused before this point.
-    graph.check_record_access_with_details = AsyncMock(
-        return_value={"record": {"origin": OriginTypes.UPLOAD.value}}
-    )
+    InMemoryRecordAccess().readable("user-1", "org-1", "rec-1", origin=origin, **record).serve(graph)
     graph.delete_record = AsyncMock(return_value=result)
     return graph
 
@@ -95,9 +94,8 @@ async def test_flag_on_a_user_cannot_put_a_synced_record_in_the_trash(connector_
     """Only connectors trash synced records, so a synced parent in the trash was deleted at the source."""
     from app.connectors.api.router import delete_record
 
-    graph = _graph({"success": True, "softDeleted": True})
-    graph.check_record_access_with_details = AsyncMock(
-        return_value={"record": {"origin": OriginTypes.CONNECTOR.value, "connectorName": connector_name}}
+    graph = _graph(
+        {"success": True, "softDeleted": True}, origin=OriginTypes.CONNECTOR.value, connectorName=connector_name
     )
     kafka = AsyncMock()
     with patch(f"{ROUTER}.is_soft_delete_enabled", AsyncMock(return_value=True)), \

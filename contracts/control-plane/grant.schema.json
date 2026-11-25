@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/control-plane/v1/grant.schema.json",
+  "title": "Grant",
+  "description": "One subject's grant of installations to its runs (02-lld §2.3), one document per subject so editing an agent's capabilities is one compare-and-set. At most 500 entries (NFR-11). Rows in `cpGrants` (GrantStore, 03-interfaces §2.4).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "orgId", "subject", "entries", "revision"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "orgId": { "$ref": "common.schema.json#/$defs/OrgId" },
+    "subject": { "$ref": "common.schema.json#/$defs/SubjectRef" },
+    "entries": {
+      "type": "array",
+      "maxItems": 500,
+      "items": { "$ref": "#/$defs/GrantEntry" }
+    },
+    "revision": { "$ref": "common.schema.json#/$defs/Revision" }
+  },
+  "$defs": {
+    "GrantEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["installation", "tools", "required"],
+      "properties": {
+        "installation": { "$ref": "common.schema.json#/$defs/InstallationRef" },
+        "tools": {
+          "description": "Tool names granted; null grants every approved tool of the installation.",
+          "anyOf": [
+            { "type": "null" },
+            {
+              "type": "array",
+              "maxItems": 2000,
+              "uniqueItems": true,
+              "items": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$" }
+            }
+          ]
+        },
+        "required": {
+          "description": "A run is refused, not degraded, when this item is unavailable.",
+          "type": "boolean"
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "schemaVersion": 1,
+      "orgId": "o1",
+      "subject": "agent:a7",
+      "entries": [
+        { "installation": "inst_01J9ZQ5Y8K3M4N5P6Q7R8S9T0V", "tools": ["list_issues"], "required": false },
+        { "installation": "skill-quarterly-report", "tools": null, "required": false }
+      ],
+      "revision": 12
+    },
+    { "schemaVersion": 1, "orgId": "o1", "subject": "org", "entries": [], "revision": 1 }
+  ]
+}

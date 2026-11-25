@@ -1,0 +1,144 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/core/events/tool.intent.schema.json",
+  "title": "ToolIntentEvent",
+  "description": "Fenced intent; for write/execute it is committed before executing (invariant I1).",
+  "x-writer": [
+    "worker"
+  ],
+  "allOf": [
+    {
+      "$ref": "../envelope.schema.json#/$defs/InlineEnvelope"
+    }
+  ],
+  "properties": {
+    "type": {
+      "const": "tool.intent"
+    },
+    "writer": {
+      "const": "worker"
+    },
+    "data": {
+      "$ref": "#/$defs/ToolIntentData"
+    }
+  },
+  "$defs": {
+    "ToolIntentData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "invocationId",
+        "toolId",
+        "argsDigest",
+        "effect",
+        "sink"
+      ],
+      "properties": {
+        "invocationId": {
+          "$ref": "../common.schema.json#/$defs/Id"
+        },
+        "toolId": {
+          "$ref": "../common.schema.json#/$defs/ToolId"
+        },
+        "argsDigest": {
+          "$ref": "../common.schema.json#/$defs/Digest"
+        },
+        "effect": {
+          "$ref": "../common.schema.json#/$defs/Effect"
+        },
+        "sink": {
+          "$ref": "../sink.schema.json"
+        },
+        "baseRevision": {
+          "$ref": "../common.schema.json#/$defs/UInt"
+        },
+        "allowedBy": {
+          "type": "string",
+          "enum": [
+            "own_sandbox"
+          ],
+          "description": "The rule that let the call run without asking a person (CODEAUTO); own_sandbox: code in the run's own sandbox with no network (an execute whose sink is none). Absent: the call ran as before this field, or a person approved it. Written only when the claim's control plane names node feature intent_allowed_by."
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "type": "tool.intent",
+      "schemaVersion": 1,
+      "critical": true,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "data": {
+        "invocationId": "inv_1",
+        "toolId": "jira@inst_42/create_issue",
+        "argsDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "effect": "write",
+        "sink": {
+          "egress": "internal_audience",
+          "argsLeaveBoundary": false
+        }
+      },
+      "attemptId": "att_1",
+      "fence": 3
+    },
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "type": "tool.intent",
+      "schemaVersion": 1,
+      "critical": true,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "data": {
+        "invocationId": "inv_2",
+        "toolId": "vfs@core/write_file",
+        "argsDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "effect": "workspace",
+        "sink": {
+          "egress": "none",
+          "argsLeaveBoundary": false
+        },
+        "baseRevision": 4
+      },
+      "attemptId": "att_1",
+      "fence": 3
+    },
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "type": "tool.intent",
+      "schemaVersion": 1,
+      "critical": true,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "data": {
+        "invocationId": "inv_3",
+        "toolId": "pipeshub@sandbox/run_code",
+        "argsDigest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "effect": "execute",
+        "sink": {
+          "egress": "none",
+          "argsLeaveBoundary": false
+        },
+        "allowedBy": "own_sandbox"
+      },
+      "attemptId": "att_1",
+      "fence": 3
+    }
+  ]
+}

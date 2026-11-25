@@ -9,6 +9,7 @@ from safetensors.torch import save_file
 from torch import nn
 
 import app.utils.int8_file as int8_file
+from app.config.configuration_service import ConfigurationService
 from app.embedding_main import ModelManager, app
 from app.utils import embedding_precision as ep
 from app.utils.embedding_precision import FP32, INT8, PrecisionSelector, ProbeResult
@@ -129,7 +130,11 @@ class TestLoading:
 
 @pytest.fixture(autouse=True)
 def _no_settings_lookup_at_startup():  # noqa: ANN202
-    with patch("app.embedding_main._local_model_in_use", new_callable=AsyncMock, return_value=False):
+    # A real ConfigurationService starts a watch thread that dials the KV store and outlives the test.
+    with (
+        patch("app.embedding_main._local_model_in_use", new_callable=AsyncMock, return_value=False),
+        patch("app.embedding_main.ConfigurationService", return_value=MagicMock(spec=ConfigurationService)),
+    ):
         yield
 
 

@@ -1,5 +1,6 @@
 'use client'
 
+import { IconFontScript } from '@/app/components/ui/icon-font-script';
 import React, { Suspense, useEffect, useState } from "react"
 import { Flex, Box, Text } from "@radix-ui/themes"
 import { MaterialIcon } from "../components/ui/MaterialIcon"
@@ -33,6 +34,7 @@ import { SidebarExpandButton } from '@/app/components/sidebar/sidebar-expand-but
 import { useNavHidden } from '@/app/components/sidebar/use-nav-hidden'
 import { SIDEBAR_WIDTH } from "@/app/components/sidebar/constants"
 import { MobileMenuButton } from './components/mobile-menu-button'
+import { useInboxLive } from '@/lib/harness-jobs/use-inbox-live'
 
 // Extra pixels beyond sidebarWidth needed to accommodate the "More Chats"
 // secondary panel that SidebarBase adds when open (it widens the cluster).
@@ -76,14 +78,7 @@ export default function RootLayout({
     <html lang={currentLang} suppressHydrationWarning>
       <head>
         <ThemeScript />
-        <link
-          href="https://fonts.googleapis.com/icon?family=Material+Icons+Outlined|Material+Icons"
-          rel="stylesheet"
-        />
-        <link
-          href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200&display=block"
-          rel="stylesheet"
-        />
+        <IconFontScript />
       </head>
       <body style={{ backgroundColor: 'var(--olive-1, #f8f8f5)' }}>
         <I18nextProvider i18n={i18n}>
@@ -146,6 +141,8 @@ function AppLayout({
   // ──────────────────────────────────────────────────────────────────────────
 
   useOnboardingRedirect()
+  // The Needs you count for the badge, the menu dot and the Jobs page; after NotificationProvider opens its socket.
+  useInboxLive()
 
   return (
     <SWRConfig

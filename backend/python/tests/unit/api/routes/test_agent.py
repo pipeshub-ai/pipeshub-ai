@@ -2,6 +2,7 @@
 import asyncio
 import json
 import logging
+from collections.abc import Iterator
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -10,6 +11,22 @@ from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
 from app.utils.user_messages import DATABASE_UNREACHABLE
+from tests.support.agent_versions import versions_beside
+from tests.support.bound_org import bind_test_org
+from tests.support.record_access import InMemoryRecordAccess
+
+
+@pytest.fixture
+def _caller_org_bound() -> Iterator[str]:
+    """``authMiddleware`` binds the caller's org (``o1`` here); these tests call the route functions directly."""
+    yield from bind_test_org("o1")
+
+
+
+@pytest.fixture(autouse=True)
+def _agent_versions(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The routes' agent versions (OWD-14) beside this file's mocked graph."""
+    versions_beside(monkeypatch, "app.api.routes.agent")
 
 
 async def _drain(response) -> str:
@@ -223,10 +240,10 @@ class TestGetUserContext:
             _get_user_context(request)
 
 
-def _readable_graph() -> MagicMock:
+def _readable_graph(org_id: str = "org-x") -> MagicMock:
     graph = MagicMock()
     graph.get_records_by_virtual_record_id = AsyncMock(return_value=["rec-1"])
-    graph.check_record_access_with_details = AsyncMock(return_value={"record": {}})
+    InMemoryRecordAccess().readable("u1", org_id, "rec-1").serve(graph)
     return graph
 
 
@@ -398,7 +415,7 @@ class TestBuildPriorRoutingMessages:
         blob = MagicMock()
         blob.get_record_from_storage = AsyncMock()
         graph = _readable_graph()
-        graph.check_record_access_with_details = AsyncMock(return_value=None)
+        InMemoryRecordAccess().user("u1", "org-x").record("rec-1", "org-x").serve(graph)
         history = {
             "previous_conversations": [{
                 "role": "user_query",
@@ -464,7 +481,7 @@ class TestBuildPriorRoutingMessages:
             blob_store=blob,
             org_id="org-i",
             user_id="u1",
-            graph_provider=_readable_graph(),
+            graph_provider=_readable_graph("org-i"),
             is_multimodal_llm=True,
         )
         assert isinstance(msgs[0], HumanMessage)
@@ -2947,6 +2964,7 @@ class TestCreateAgent:
 # ===========================================================================
 
 
+@pytest.mark.usefixtures("_caller_org_bound")
 class TestUpdateAgent:
     @pytest.mark.asyncio
     async def test_success_basic(self) -> None:
@@ -3785,6 +3803,7 @@ class TestChatStream:
 # ===========================================================================
 
 
+@pytest.mark.usefixtures("_caller_org_bound")
 class TestUpdateAgentToolsetDeletion:
     @pytest.mark.asyncio
     async def test_deletes_existing_toolsets_before_creating_new(self) -> None:
@@ -4324,6 +4343,7 @@ class TestServiceAccountAgentRoutes:
                 await get_agent_internal(MagicMock(), "a1")
         assert exc.value.status_code == 403
 
+    @pytest.mark.usefixtures("_caller_org_bound")
     @pytest.mark.asyncio
     async def test_update_agent_rejects_disabling_org_sharing_for_service_account(self) -> None:
         from app.api.routes.agent import InvalidRequestError, update_agent
@@ -4585,6 +4605,7 @@ class TestServiceAccountAgentRoutes:
         assert body["agent"]["name"] == "MyAgent"
         assert body["agent"]["can_edit"] is True
 
+    @pytest.mark.usefixtures("_caller_org_bound")
     @pytest.mark.asyncio
     async def test_update_agent_no_permission_raises(self) -> None:
         """update_agent raises when check_agent_permission returns None."""
@@ -4603,6 +4624,7 @@ class TestServiceAccountAgentRoutes:
                 await update_agent(request, "a1")
         assert exc.value.status_code == 404
 
+    @pytest.mark.usefixtures("_caller_org_bound")
     @pytest.mark.asyncio
     async def test_update_agent_no_edit_permission_raises_403(self) -> None:
         """update_agent raises 403 when user has view-only access."""
@@ -4623,6 +4645,7 @@ class TestServiceAccountAgentRoutes:
                 await update_agent(request, "a1")
         assert exc.value.status_code == 403
 
+    @pytest.mark.usefixtures("_caller_org_bound")
     @pytest.mark.asyncio
     async def test_update_agent_converting_to_sa_forces_org_share(self) -> None:
         """update_agent sets shareWithOrg=True when upgrading a regular agent to SA."""

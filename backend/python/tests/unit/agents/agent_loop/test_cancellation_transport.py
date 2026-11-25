@@ -76,6 +76,8 @@ class _FakeTransport:
         thinking_budget: int | None = None,
         effort: str | None = None,
         system_blocks: "list[str] | None" = None,
+        *,
+        tool_choice: object = None,
     ) -> ModelResponse:
         self.complete_called_with = (messages, tools, system, model)
         return ModelResponse(message=AssistantMessage(content=[TextPart(text="done")]))
@@ -99,6 +101,8 @@ class _FakeTransport:
         thinking_budget: int | None = None,
         effort: str | None = None,
         system_blocks: "list[str] | None" = None,
+        *,
+        tool_choice: object = None,
     ) -> "AsyncIterator[StreamEvent]":
         try:
             for event in self._events:

@@ -4,13 +4,18 @@ import sinon from 'sinon';
 import { Users } from '../../../../src/modules/user_management/schema/users.schema';
 import { UserCredentials } from '../../../../src/modules/auth/schema/userCredentials.schema';
 import {
+  DEMO_ACCOUNT_DOMAIN,
   clearRemovedSampleAccount,
   isDemoAccountEmail,
   setSampleAccountsSignIn,
 } from '../../../../src/modules/user_management/services/demo-accounts.service';
+import { setUserRepository } from '../../../../src/libs/repositories/user';
 
 describe('sample accounts', () => {
-  afterEach(() => sinon.restore());
+  afterEach(() => {
+    sinon.restore();
+    setUserRepository();
+  });
 
   it('recognises only the reserved demo domain', () => {
     expect(isDemoAccountEmail('Bob@Acme-Demo.example')).to.equal(true);
@@ -19,24 +24,44 @@ describe('sample accounts', () => {
   });
 
   it('switches sign-in for the org sample accounts, never the caller', async () => {
-    const update = sinon
-      .stub(Users, 'updateMany')
-      .resolves({ modifiedCount: 2 } as any);
+    const setDisabled = sinon.stub().resolves(2);
+    setUserRepository({ listAllLive: async () => [], setDisabledByEmailDomain: setDisabled } as never);
     const caller = '64b7f0c2a1b2c3d4e5f60718';
 
     expect(await setSampleAccountsSignIn('org-1', caller, false)).to.equal(2);
 
-    const [filter, change] = update.firstCall.args as any[];
-    expect(filter.orgId).to.equal('org-1');
-    expect(filter.isDeleted).to.equal(false);
-    expect((filter.email as RegExp).test('alice@acme-demo.example')).to.equal(
-      true,
-    );
-    expect((filter.email as RegExp).test('alice@acme-demo.examplex')).to.equal(
-      false,
-    );
-    expect(String(filter._id.$ne)).to.equal(caller);
-    expect(change).to.deep.equal({ $set: { isDisabled: true } });
+    // The org, the reserved demo domain only, never the caller, switched off.
+    expect(setDisabled.firstCall.args).to.deep.equal(['org-1', DEMO_ACCOUNT_DOMAIN, caller, true]);
+  });
+
+  it('DEACT-6 (SEC-AZ-08): switching them off revokes their tokens and stops their harness work; switching on resumes nothing', async () => {
+    const caller = '64b7f0c2a1b2c3d4e5f60718';
+    const listAllLive = sinon.stub().resolves([
+      { _id: 'alice', email: 'alice@acme-demo.example' },
+      { _id: 'bob', email: 'bob@acme-demo.example' },
+      // Only accounts still on are stopped, so a repeat stops nobody twice; never the caller; never a person.
+      { _id: 'carol', email: 'carol@acme-demo.example', isDisabled: true },
+      { _id: caller, email: 'me@acme-demo.example' },
+      { _id: 'dave', email: 'dave@acme.example' },
+    ]);
+    setUserRepository({ listAllLive, setDisabledByEmailDomain: sinon.stub().resolves(2) } as never);
+    const tokens = { revokeEveryTokenForUser: sinon.stub().resolves() };
+    const deactivation = { deactivate: sinon.stub().resolves({ cancelledRuns: 1, pausedSchedules: 1 }) };
+
+    await setSampleAccountsSignIn('org-1', caller, false, { tokens, deactivation });
+
+    expect(listAllLive.firstCall.args).to.deep.equal(['org-1']);
+    expect(tokens.revokeEveryTokenForUser.args.map((a) => a[0])).to.deep.equal(['alice', 'bob']);
+    expect(deactivation.deactivate.args).to.deep.equal([
+      ['org-1', 'alice', caller],
+      ['org-1', 'bob', caller],
+    ]);
+
+    tokens.revokeEveryTokenForUser.resetHistory();
+    deactivation.deactivate.resetHistory();
+    await setSampleAccountsSignIn('org-1', caller, true, { tokens, deactivation });
+    expect(tokens.revokeEveryTokenForUser.called).to.equal(false);
+    expect(deactivation.deactivate.called).to.equal(false);
   });
 
   it("clears this org's removed sample account so its address can be used again", async () => {

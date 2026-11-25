@@ -499,8 +499,9 @@ class OAuthProvider:
         token = OAuthToken.from_dict(normalized_data)
         return token
 
-    async def refresh_access_token(self, refresh_token: str) -> OAuthToken:
-        """Refresh access token using refresh token"""
+    async def refresh_access_token(self, refresh_token: str, *, persist: bool = True) -> OAuthToken:
+        """Refresh access token using refresh token. ``persist=False``: the caller stores the token itself
+        (a control-plane binding, CPD-8), so ``credentials_path`` is not written."""
         data = {
             "grant_type": GrantType.REFRESH_TOKEN.value,
             "refresh_token": refresh_token,
@@ -533,6 +534,9 @@ class OAuthProvider:
         # This handles Google and other providers that don't return refresh_token on refresh
         if not token.refresh_token:
             token.refresh_token = refresh_token
+
+        if not persist:
+            return token
 
         # Update the stored credentials with the new token
         try:

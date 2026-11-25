@@ -1,0 +1,321 @@
+{
+ "scenario": "agent_pre_run_clarification",
+ "query": "report",
+ "runId": "run-golden",
+ "sessionId": "ses-1",
+ "events": [
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 1,
+   "type": "run.admitted",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "node",
+   "visibility": "owner",
+   "data": {
+    "runKind": "interactive",
+    "principalRef": "p_user"
+   },
+   "runId": "run-golden"
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 2,
+   "type": "run.claimed",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "node",
+   "visibility": "owner",
+   "data": {
+    "attempt": 1,
+    "fence": 1,
+    "leaseMs": 30000
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 3,
+   "type": "run.spec_pinned",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "node",
+   "visibility": "owner",
+   "data": {
+    "specDigest": "sha256:2f57d0816eae42c1ed12263b802d8b8ce009d669271e6d707a781f11cdbdee46",
+    "spec": {
+     "schemaVersion": 2,
+     "harnessMajor": 2,
+     "foldVersion": 1,
+     "runKind": "interactive",
+     "principalRef": "p_user-1",
+     "model": {
+      "policy": [
+       {
+        "provider": "openai",
+        "model": "gpt-x"
+       }
+      ],
+      "promptVersion": "pipeshub-agent-2026-09"
+     },
+     "grants": {
+      "tools": [],
+      "sandboxProfile": "none",
+      "egress": "none"
+     },
+     "budgets": {
+      "maxTurns": 15,
+      "maxTokens": 1000000,
+      "maxCostUsd": 5.0,
+      "activeTimeS": 3600,
+      "calendarDeadline": "2027-01-01T00:00:00Z",
+      "maxChildren": 0
+     },
+     "capabilitiesDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+     "extensions": {
+      "x.pipeshub": {
+       "model": {
+        "modelKey": "model-1",
+        "modelName": "gpt-x"
+       },
+       "knowledge": {
+        "apps": [],
+        "kb": [],
+        "strictScope": true
+       },
+       "mcp": [],
+       "skills": [],
+       "mounts": [],
+       "via": "session",
+       "agent": {
+        "agentKey": "agent-1",
+        "definitionVersion": 7,
+        "mode": "quick"
+       }
+      }
+     }
+    }
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 4,
+   "type": "loop.state_saved",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "slots": {
+     "capabilities.observed": {}
+    }
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 5,
+   "type": "loop.state_saved",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "slots": {
+     "pre_run.composition": {
+      "delegates": [],
+      "topLevel": [
+       "internaltools__ask_user_question",
+       "artifacts__get_artifact_content",
+       "artifacts__get_artifact_download_url",
+       "artifacts__get_record_download_url",
+       "artifacts__list_artifacts",
+       "artifacts__promote_artifact",
+       "artifacts__save_artifact",
+       "artifacts__update_artifact",
+       "goldendocs__export_report",
+       "goldendocs__lookup_ticket",
+       "goldendocs__search_docs",
+       "list_toolsets",
+       "fetch_tools",
+       "search_tools",
+       "retrieve_artifact_content"
+      ],
+      "claims": {}
+     },
+     "pre_run.goal": {
+      "description": "The user wants a report but gave no topic.",
+      "requirements": [],
+      "successCriteria": [],
+      "constraints": [
+       "<original_query>report</original_query>"
+      ],
+      "gaps": [],
+      "mode": "react",
+      "loopKind": "react",
+      "composeDomainAgents": true,
+      "wholeDocument": false,
+      "clarifyingQuestions": [
+       {
+        "question": "Which report do you need?",
+        "options": [
+         {
+          "label": "Sales",
+          "isUserInput": false
+         },
+         {
+          "label": "Support",
+          "isUserInput": false
+         },
+         {
+          "label": "Finance",
+          "isUserInput": false
+         }
+        ],
+        "multiSelect": false
+       }
+      ]
+     }
+    }
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 6,
+   "type": "message.completed",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "role": "user",
+    "textRef": {
+     "ref": "inline:cmVwb3J0",
+     "hash": "sha256:845e91831319e89c4d656bdb80c278ac09a7230d61e5dfd2e1b1fbb436ac8917",
+     "size": 6
+    },
+    "isFinal": false
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 7,
+   "type": "x.pipeshub.question.asked",
+   "schemaVersion": 1,
+   "critical": false,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "callId": "pre-run",
+    "status": "success",
+    "toolData": {
+     "name": "ask_user_question",
+     "userIntent": "The user wants a report but gave no topic.",
+     "questions": [
+      {
+       "uuid": "00000000-0000-0000-0000-000000000001",
+       "question": "Which report do you need?",
+       "options": [
+        {
+         "id": "opt_sales",
+         "label": "Sales",
+         "isUserInput": false
+        },
+        {
+         "id": "opt_support",
+         "label": "Support",
+         "isUserInput": false
+        },
+        {
+         "id": "opt_finance",
+         "label": "Finance",
+         "isUserInput": false
+        }
+       ],
+       "multiSelect": false
+      }
+     ]
+    }
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 8,
+   "type": "x.pipeshub.answer.finalized",
+   "schemaVersion": 1,
+   "critical": false,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "outcome": "needs_input",
+    "answer": "Which report do you need?",
+    "partTexts": [],
+    "citations": [],
+    "confidence": "Medium",
+    "answerMatchType": "Clarification Needed"
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 9,
+   "type": "run.completed",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "node",
+   "visibility": "owner",
+   "data": {
+    "outcome": "needs_input"
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  }
+ ],
+ "live": []
+}

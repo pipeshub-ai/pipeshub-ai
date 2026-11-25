@@ -7,6 +7,7 @@ import Placeholder from '@tiptap/extension-placeholder';
 import { Markdown, type MarkdownStorage } from 'tiptap-markdown';
 import { Flex, IconButton, Separator, Tooltip } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { useTranslation } from 'react-i18next';
 
 // tiptap-markdown does not register its storage on tiptap 3's typed `Storage`.
 declare module '@tiptap/core' {
@@ -120,6 +121,7 @@ export function MarkdownEditor({
 // ========================================
 
 function MarkdownEditorToolbar({ editor }: { editor: ReturnType<typeof useEditor> }) {
+  const { t } = useTranslation();
   if (!editor) return null;
 
   const items: { icon: string; label: string; action: () => void; isActive: () => boolean }[] = [
@@ -148,7 +150,9 @@ function MarkdownEditorToolbar({ editor }: { editor: ReturnType<typeof useEditor
     >
       {items.map((item) => (
         <Tooltip key={item.icon} content={item.label}>
-          <IconButton className="touch-hit"
+          <IconButton
+            className="touch-hit"
+            aria-label={item.label}
             type="button"
             variant={item.isActive() ? 'solid' : 'ghost'}
             color={item.isActive() ? undefined : 'gray'}
@@ -161,13 +165,13 @@ function MarkdownEditorToolbar({ editor }: { editor: ReturnType<typeof useEditor
         </Tooltip>
       ))}
       <Separator orientation="vertical" size="1" style={{ margin: '0 4px' }} />
-      <Tooltip content="Undo">
-        <IconButton className="touch-hit" type="button" variant="ghost" color="gray" size="1" onClick={() => editor.chain().focus().undo().run()} style={{ cursor: 'pointer' }}>
+      <Tooltip content={t('common.undo')}>
+        <IconButton className="touch-hit" aria-label={t('common.undo')} type="button" variant="ghost" color="gray" size="1" onClick={() => editor.chain().focus().undo().run()} style={{ cursor: 'pointer' }}>
           <MaterialIcon name="undo" size={15} color="var(--slate-11)" />
         </IconButton>
       </Tooltip>
-      <Tooltip content="Redo">
-        <IconButton className="touch-hit" type="button" variant="ghost" color="gray" size="1" onClick={() => editor.chain().focus().redo().run()} style={{ cursor: 'pointer' }}>
+      <Tooltip content={t('common.redo')}>
+        <IconButton className="touch-hit" aria-label={t('common.redo')} type="button" variant="ghost" color="gray" size="1" onClick={() => editor.chain().focus().redo().run()} style={{ cursor: 'pointer' }}>
           <MaterialIcon name="redo" size={15} color="var(--slate-11)" />
         </IconButton>
       </Tooltip>

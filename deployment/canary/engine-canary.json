@@ -1,0 +1,11 @@
+{
+  "description": "P9 canary: one synthetic engine run through the public agent routes. The operator creates an agent whose engine profile runs on the deployment's cheapest model (or the scripted model on a test install) and passes its key as --agent-key; the run writes no file outside its sandbox and calls no tool.",
+  "request": {
+    "query": "Canary check. Reply with exactly this line and nothing else: PXH-CANARY-OK",
+    "chatMode": "auto",
+    "deadlineMs": 600000
+  },
+  "expect": "PXH-CANARY-OK",
+  "timeoutS": 600,
+  "pollIntervalS": 2
+}

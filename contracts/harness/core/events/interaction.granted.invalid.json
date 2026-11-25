@@ -1,0 +1,86 @@
+[
+  {
+    "description": "writer allowlist: only node writes interaction.granted",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 9,
+      "runId": "run_1",
+      "type": "interaction.granted",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-09T12:00:01.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "data": {
+        "interactionId": "ix.approve.t2.0",
+        "scope": "conversation"
+      }
+    }
+  },
+  {
+    "description": "unknown scope",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 9,
+      "runId": "run_1",
+      "type": "interaction.granted",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-09T12:00:01.123Z",
+      "writer": "node",
+      "visibility": "owner",
+      "data": {
+        "interactionId": "ix.approve.t2.0",
+        "scope": "forever"
+      }
+    }
+  },
+  {
+    "description": "a grant for a sensitivity the flow rule does not know",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 9,
+      "runId": "run_1",
+      "type": "interaction.granted",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-09T12:00:01.123Z",
+      "writer": "node",
+      "visibility": "owner",
+      "data": {
+        "interactionId": "ix.approve.t2.0",
+        "scope": "conversation",
+        "toolId": "web@searxng/fetch_url",
+        "key": "sha256:4c5c0f51fdaf2b50038b8c674f654f5407e153408d5688d5b5fbcf38395aa0c3",
+        "sensitivity": "secret"
+      }
+    }
+  },
+  {
+    "description": "who allowed it is a principal reference, never a name or an email (WP-115)",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 9,
+      "runId": "run_1",
+      "type": "interaction.granted",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-09T12:00:01.123Z",
+      "writer": "node",
+      "visibility": "owner",
+      "data": {
+        "interactionId": "ix.approve.t2.0",
+        "scope": "conversation",
+        "by": "alice"
+      }
+    }
+  }
+]

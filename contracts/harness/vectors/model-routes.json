@@ -1,0 +1,56 @@
+{
+  "description": "E3 NG-1 cross-language vector: a gateway token's routesDigest is the canonical digest of the sorted, de-duplicated route ids '<provider>:<model>' of the run's pinned model policy (Node gatewayGrantDigests, Python harness_core.access.types.route_digest). A1 AD-10: a route that pins a model account (`access.accountId`) has the id '<provider>:<model>@<accountKind>:<accountId>'; one that pins only the org's key keeps '<provider>:<model>'.",
+  "routes": [
+    {
+      "provider": "azureopenai",
+      "model": "gpt-5.4-mini"
+    },
+    {
+      "provider": "anthropic",
+      "model": "claude-x"
+    },
+    {
+      "provider": "azureopenai",
+      "model": "gpt-5.4-mini"
+    }
+  ],
+  "routesDigest": "sha256:ae458220a5580f6fb9157a6e8420cad0913eebbee79d5bd382aecf689524fce0",
+  "emptyDigest": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+  "accountRoutes": [
+    {
+      "provider": "openai",
+      "model": "gpt-5",
+      "access": {
+        "route": "gateway",
+        "accountKind": "user_api_key",
+        "accountId": "users/u1/openAI",
+        "pays": "user"
+      }
+    },
+    {
+      "provider": "azureopenai",
+      "model": "gpt-5.4-mini",
+      "access": {
+        "route": "gateway",
+        "accountKind": "org_cloud",
+        "accountId": "cloud/acc-1",
+        "pays": "org"
+      }
+    },
+    {
+      "provider": "anthropic",
+      "model": "claude-x",
+      "access": {
+        "route": "gateway",
+        "accountKind": "org_api_key",
+        "pays": "org"
+      }
+    }
+  ],
+  "accountRouteIds": [
+    "openai:gpt-5@user_api_key:users/u1/openAI",
+    "azureopenai:gpt-5.4-mini@org_cloud:cloud/acc-1",
+    "anthropic:claude-x"
+  ],
+  "accountRoutesDigest": "sha256:586fc867cc4126006cdc6cfe8c71ae91abb8ee5fdbddd6500789592e69bf9aaf"
+}

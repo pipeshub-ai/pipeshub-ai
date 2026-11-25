@@ -4,6 +4,7 @@ import random
 import re
 import threading
 import uuid
+from collections.abc import Collection
 from typing import TYPE_CHECKING, Callable, Generic, List, Optional, TypeVar
 
 from app.config.key_value_store import KeyValueStore
@@ -625,7 +626,10 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
 
     # -- KeyValueStore cross-process notification interface (R15) -----------
 
-    async def subscribe_changes(self, callback: Callable[[str], None]) -> asyncio.Task:
+    async def subscribe_changes(
+        self, callback: Callable[[str], None], *, keys: Collection[str] | None = None
+    ) -> asyncio.Task:
+        # One channel carries every key; a component's ACL user may subscribe to it (ADR-KEY-02 D3).
         return await self.subscribe_cache_invalidation(callback)
 
     async def publish_change(self, key: str) -> None:

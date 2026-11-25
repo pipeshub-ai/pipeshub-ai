@@ -28,10 +28,10 @@ import pytest
 from app.schema.arango.documents import record_schema
 from tests.integration.real_graph import (
     ARANGO_PASSWORD,
-    ARANGO_URL,
     backend_unavailable,
     connect_arango,
 )
+from tests.support import it_backends
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -96,7 +96,7 @@ EXPECTED = {
 def _call(method: str, path: str, body: object = None, *, db: str | None = None) -> tuple[int, dict]:
     token = base64.b64encode(f"root:{ARANGO_PASSWORD}".encode()).decode()
     request = urllib.request.Request(
-        ARANGO_URL + (f"/_db/{db}" if db else "") + path,
+        it_backends.endpoint("ARANGO_IT_URL") + (f"/_db/{db}" if db else "") + path,
         method=method,
         data=None if body is None else json.dumps(body).encode(),
         headers={"Authorization": f"Basic {token}", "Content-Type": "application/json"},

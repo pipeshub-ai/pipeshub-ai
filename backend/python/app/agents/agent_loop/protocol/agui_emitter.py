@@ -15,7 +15,7 @@ Mirrors `SSEEventEmitter`'s "translate only the AG-UI-aliased vocabulary"
 convention (see that module's docstring): `Agent.emit()` fires BOTH a
 legacy event type (`TOOL_CALL`, `AGENT_START`, ...) and its AG-UI alias
 (`TOOL_CALL_START`, `RUN_STARTED`, ...) for the same occurrence with the
-same payload (`_AG_UI_ALIASES` in `agent/__init__.py`). Translating on the
+same payload (`AG_UI_ALIASES` in `app/agent_loop_lib/ag_ui.py`). Translating on the
 legacy AND the alias would double-emit every occurrence, so this class
 only matches on the alias side, exactly like `SSEEventEmitter` does.
 
@@ -162,6 +162,7 @@ class AGUIEventEmitter(EventEmitter):
             # `agui-event-handler.ts`) show the same running/completed/
             # failed/blocked state `TranscriptCollector` persists, instead
             # of only ever knowing "the call ended".
+            failure: dict[str, Any] = {}
             approval = None
             result_view = None
             if payload.get("status") in (ToolCallStatus.BLOCKED, ToolCallStatus.AWAITING_APPROVAL):
@@ -174,8 +175,12 @@ class AGUIEventEmitter(EventEmitter):
                 content = payload.get("content")
                 status = "failed" if payload.get("is_error") else "completed"
                 result_summary = payload.get("result_summary")
+                if payload.get("error_code"):
+                    failure["errorCode"] = payload["error_code"]
+                if payload.get("nothing_sent"):
+                    failure["nothingSent"] = True
                 result_view = self._view_budget.admit(payload.get("result_view"))
-            result_fields: dict[str, Any] = {"resultSummary": result_summary}
+            result_fields: dict[str, Any] = {"resultSummary": result_summary, **failure}
             if approval:
                 result_fields["approval"] = approval
             if result_view:

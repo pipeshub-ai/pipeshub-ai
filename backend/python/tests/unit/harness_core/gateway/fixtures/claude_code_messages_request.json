@@ -1,0 +1,1573 @@
+{
+ "_provenance": {
+  "source": "Recorded from the Claude Code binary 2.1.289 (native linux-x64 build, `claude --version`) on a Linux machine, 2026-10-04: `claude -p 'run echo hi' --permission-mode default --allowedTools 'Bash(echo hi)' --output-format json` with ANTHROPIC_BASE_URL pointing at a local recorder that answered the first call with a Bash tool_use and the second with text, ANTHROPIC_AUTH_TOKEN a placeholder, ANTHROPIC_MODEL=engine-model, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1, an empty CLAUDE_CONFIG_DIR.",
+  "redaction": "Claude Code is not open source: every string longer than 80 characters (its system prompt, tool descriptions, system reminders) and every schema `description` is replaced by a placeholder; paths, the device id and the session id are replaced. Keys, block types, roles, cache_control placement, tool names, schema structure, header names and every header value except the token are as sent.",
+  "also_recorded": "beta_sets.auto_mode and auto_mode_body_keys: the same binary without --permission-mode (its -p default here is auto mode) adds the dangerous-tool-use and afk-mode betas and a top-level `safeguards` list (a classifier context with the user's paths and permission rules) to its first request. beta_sets.no_experimental: with CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1. Before its first call it sends an unauthenticated `HEAD /api/hello`.",
+  "also_recorded_e9": "beta_sets.stream_json (E9, 2026-10-04): the same binary as the E9 adapter runs it, `claude -p --input-format stream-json --output-format stream-json --verbose --permission-mode dontAsk`, adds thinking-display-updates-2026-08-18 (with `thinking: {type: adaptive, display: updates}`) to every request."
+ },
+ "requests": [
+  {
+   "name": "first_turn",
+   "method": "POST",
+   "path": "/v1/messages?beta=true",
+   "headers": {
+    "Accept": "application/json",
+    "Authorization": "Bearer <placeholder: the egress proxy replaces it with the gateway token>",
+    "Content-Type": "application/json",
+    "User-Agent": "claude-cli/2.1.289 (external, sdk-cli)",
+    "X-Claude-Code-Session-Id": "00000000-0000-4000-8000-000000000000",
+    "X-Stainless-Arch": "x64",
+    "X-Stainless-Lang": "js",
+    "X-Stainless-OS": "Linux",
+    "X-Stainless-Package-Version": "0.128.0",
+    "X-Stainless-Retry-Count": "0",
+    "X-Stainless-Runtime": "node",
+    "X-Stainless-Runtime-Version": "v26.3.0",
+    "X-Stainless-Timeout": "600",
+    "anthropic-beta": "claude-code-20250219,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,mid-conversation-tool-changes-2026-07-01,effort-2025-11-24",
+    "anthropic-dangerous-direct-browser-access": "true",
+    "anthropic-version": "2023-06-01",
+    "x-app": "cli",
+    "Connection": "keep-alive",
+    "Host": "model-gateway:8097",
+    "Accept-Encoding": "gzip, deflate, br, zstd"
+   },
+   "body": {
+    "model": "engine-model",
+    "messages": [
+     {
+      "role": "user",
+      "content": [
+       {
+        "type": "text",
+        "text": "<redacted: 576 characters of Claude Code's text>"
+       },
+       {
+        "type": "text",
+        "text": "run echo hi"
+       }
+      ]
+     },
+     {
+      "role": "system",
+      "content": [
+       {
+        "type": "text",
+        "text": "<redacted: 7934 characters of Claude Code's text>",
+        "cache_control": {
+         "type": "ephemeral"
+        }
+       }
+      ]
+     }
+    ],
+    "system": [
+     {
+      "type": "text",
+      "text": "x-anthropic-billing-header: cc_version=2.1.289.76c; cc_entrypoint=sdk-cli;"
+     },
+     {
+      "type": "text",
+      "text": "You are a Claude agent, built on Anthropic's Claude Agent SDK.",
+      "cache_control": {
+       "type": "ephemeral"
+      }
+     },
+     {
+      "type": "text",
+      "text": "<redacted: 5737 characters of Claude Code's text>",
+      "cache_control": {
+       "type": "ephemeral"
+      }
+     }
+    ],
+    "tools": [
+     {
+      "name": "Agent",
+      "description": "<redacted>",
+      "input_schema": {
+       "$schema": "https://json-schema.org/draft/2020-12/schema",
+       "type": "object",
+       "properties": {
+        "description": {
+         "description": "<redacted>",
+         "type": "string"
+        },
+        "prompt": {
+         "description": "<redacted>",
+         "type": "string"
+        },
+        "subagent_type": {
+         "description": "<redacted>",
+         "type": "string"
+        },
+        "model": {
+         "description": "<redacted>",
+         "type": "string",
+         "enum": [
+          "sonnet",
+          "opus",
+          "haiku",
+          "fable"
+         ]
+        },
+        "run_in_background": {
+         "description": "<redacted>",
+         "type": "boolean"
+        },
+        "isolation": {
+         "description": "<redacted>",
+         "type": "string",
+         "enum": [
+          "worktree",
+          "remote"
+         ]
+        }
+       },
+       "required": [
+        "description",
+        "prompt"
+       ],
+       "additionalProperties": false
+      }
+     },
+     {
+      "name": "Bash",
+      "description": "<redacted>",
+      "input_schema": {
+       "$schema": "https://json-schema.org/draft/2020-12/schema",
+       "type": "object",
+       "properties": {
+        "command": {
+         "description": "<redacted>",
+         "type": "string"
+        },
+        "timeout": {
+         "description": "<redacted>",
+         "type": "number"
+        },
+        "description": {
+         "description": "<redacted>",
+         "type": "string"
+        },
+        "run_in_background": {
+         "description": "<redacted>",
+         "type": "boolean"
+        },
+        "dangerouslyDisableSandbox": {
+         "description": "<redacted>",
+         "type": "boolean"
+        }
+       },
+       "required": [
+        "command"
+       ],
+       "additionalProperties": false
+      }
+     },
+     {
+      "name": "CronCreate",
+      "description": "<redacted>",
+      "input_schema": {
+       "$schema": "https://json-schema.org/draft/2020-12/schema",
+       "type": "object",
+       "properties": {
+        "cron": {
+         "description": "<redacted>",
+         "type": "string"
+        },
+        "prompt": {
+         "description": "<redacted>",
+         "type": "string"
+        },
+        "recurring": {
+         "description": "<redacted>",
+         "type": "boolean"
+        },
+        "durable": {
+         "description": "<redacted>",
+         "type": "boolean"
+        }
+       },
+       "required": [
+        "cron",
+        "prompt"
+       ],
+       "additionalProperties": false
+      }
+     },
+     {
+      "name": "CronDelete",
+      "description": "<redacted>",
+      "input_schema": {
+       "$schema": "https://json-schema.org/draft/2020-12/schema",
+       "type": "object",
+       "properties": {
+        "id": {
+         "description": "<redacted>",
+         "type": "string"
+        }
+       },
+       "required": [
+        "id"
+       ],
+       "additionalProperties": false
+      }
+     },
+     {
+      "name": "CronList",
+      "description": "<redacted>",
+      "input_schema": {
+       "$schema": "https://json-schema.org/draft/2020-12/schema",
+       "type": "object",
+       "properties": {},
+       "additionalProperties": false
+      }
+     },
+     {
+      "name": "Edit",
+      "description": "<redacted>",
+      "input_schema": {
+       "$schema": "https://json-schema.org/draft/2020-12/schema",
+       "type": "object",
+       "properties": {
+        "file_path": {
+         "description": "<redacted>",
+         "type": "string"
+        },
+        "old_string": {
+         "description": "<redacted>",
+         "type": "string"
+        },
+        "new_string": {
+         "description": "<redacted>",
+         "type": "string"
+        },
+        "replace_all": {
+         "description": "<redacted>",
+         "default": false,
+         "type": "boolean"
+        }
+       },
+       "required": [
+        "file_path",
+        "old_string",
+        "new_string"
+       ],
+       "additionalProperties": false
+      }
+     },
+     {
+      "name": "EnterWorktree",
+      "description": "<redacted>",
+      "input_schema": {
+       "$schema": "https://json-schema.org/draft/2020-12/schema",
+       "type": "object",
+       "properties": {
+        "name": {
+         "description": "<redacted>",
+         "type": "string"
+        },
+        "path": {
+         "description": "<redacted>",
+         "type": "string"
+        }
+       },
+       "additionalProperties": false
+      }
+     },
+     {
+      "name": "ExitWorktree",
+      "description": "<redacted>",
+      "input_schema": {
+       "$schema": "https://json-schema.org/draft/2020-12/schema",
+       "type": "object",
+       "properties": {
+        "action": {
+         "description": "<redacted>",
+         "type": "string",
+         "enum": [
+          "keep",
+          "remove"
+         ]
+        },
+        "discard_changes": {
+         "description": "<redacted>",
+         "type": "boolean"
+        }
+       },
+       "required": [
+        "action"
+       ],
+       "additionalProperties": false
+      }
+     },
+     {
+      "name": "ListAgents",
+      "description": "<redacted>",
+      "input_schema": {
+       "$schema": "https://json-schema.org/draft/2020-12/schema",
+       "type": "object",
+       "properties": {
+        "channel": {
+         "description": "<redacted>",
+         "type": "string",
+         "maxLength": 256
+        },
+        "q": {
+         "description": "<redacted>",
+         "type": "string",
+         "maxLength": 256
+        }
+       },
+       "additionalProperties": false
+      }
+     },
+     {
+      "name": "NotebookEdit",
+      "description": "<redacted>",
+      "input_schema": {
+       "$schema": "https://json-schema.org/draft/2020-12/schema",
+       "type": "object",
+       "properties": {
+        "notebook_path": {
+         "description": "<redacted>",
+         "type": "string"
+        },
+        "cell_id": {
+         "description": "<redacted>",
+         "type": "string"
+        },
+        "new_source": {
+         "description": "<redacted>",
+         "type": "string"
+        },
+        "cell_type": {
+         "description": "<redacted>",
+         "type": "string",
+         "enum": [
+          "code",
+          "markdown"
+         ]
+        },
+        "edit_mode": {
+         "description": "<redacted>",
+         "type": "string",
+         "enum": [
+          "replace",
+          "insert",
+          "delete"
+         ]
+        }
+       },
+       "required": [
+        "notebook_path",
+        "new_source"
+       ],
+       "additionalProperties": false
+      }
+     },
+     {
+      "name": "Read",
+      "description": "<redacted>",
+      "input_schema": {
+       "$schema": "https://json-schema.org/draft/2020-12/schema",
+       "type": "object",
+       "properties": {
+        "file_path": {
+         "description": "<redacted>",
+         "type": "string"
+        },
+        "offset": {
+         "description": "<redacted>",
+         "type": "integer",
+         "minimum": 0,
+         "maximum": 9007199254740991
+        },
+        "limit": {
+         "description": "<redacted>",
+         "type": "integer",
+         "exclusiveMinimum": 0,
+         "maximum": 9007199254740991
+        },
+        "pages": {
+         "description": "<redacted>",
+         "type": "string"
+        }
+       },
+       "required": [
+        "file_path"
+       ],
+       "additionalProperties": false
+      }
+     },
+     {
+      "name": "ReportFindings",
+      "description": "<redacted>",
+      "input_schema": {
+       "$schema": "https://json-schema.org/draft/2020-12/schema",
+       "type": "object",
+       "properties": {
+        "level": {
+         "description": "<redacted>",
+         "type": "string",
+         "enum": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+         ]
+        },
+        "findings": {
+         "description": "<redacted>",
+         "maxItems": 32,
+         "type": "array",
+         "items": {
+          "type": "object",
+          "properties": {
+           "file": {
+            "description": "<redacted>",
+            "type": "string"
+           },
+           "line": {
+            "description": "<redacted>",
+            "type": "integer",
+            "minimum": -9007199254740991,
+            "maximum": 9007199254740991
+           },
+           "summary": {
+            "description": "<redacted>",
+            "type": "string"
+           },
+           "short_summary": {
+            "description": "<redacted>",
+            "type": "string",
+            "maxLength": 60
+           },
+           "failure_scenario": {
+            "description": "<redacted>",
+            "type": "string"
+           },
+           "category": {
+            "description": "<redacted>",
+            "type": "string",
+            "maxLength": 40
+           },
+           "verdict": {
+            "description": "<redacted>",
+            "type": "string",
+            "enum": [
+             "CONFIRMED",
+             "PLAUSIBLE"
+            ]
+           },
+           "outcome": {
+            "description": "<redacted>",
+            "type": "string",
+            "enum": [
+             "fixed",
+             "skipped",
+             "no_change_needed"
+            ]
+           }
+          },
+          "required": [
+           "file",
+           "summary",
+           "failure_scenario"
+          ],
+          "additionalProperties": false
+         }
+        }
+       },
+       "required": [
+        "findings"
+       ],
+       "additionalProperties": false
+      }
+     },
+     {
+      "name": "ScheduleWakeup",
+      "description": "<redacted>",
+      "input_schema": {
+       "$schema": "https://json-schema.org/draft/2020-12/schema",
+       "type": "object",
+       "properties": {
+        "delaySeconds": {
+         "description": "<redacted>",
+         "type": "number"
+        },
+        "reason": {
+         "description": "<redacted>",
+         "type": "string"
+        },
+        "prompt": {
+         "description": "<redacted>",
+         "type": "string"
+        },
+        "stop": {
+         "description": "<redacted>",
+         "type": "boolean"
+        },
+        "noop": {
+         "description": "<redacted>",
+         "type": "boolean"
+        }
+       },
+       "additionalProperties": false
+      }
+     },
+     {
+      "name": "SendMessage",
+      "description": "<redacted>",
+      "input_schema": {
+       "$schema": "https://json-schema.org/draft/2020-12/schema",
+       "type": "object",
+       "properties": {
+        "to": {
+         "description": "<redacted>",
+         "type": "string",
+         "allOf": [
+          {
+           "pattern": "^[^\\n\\r]*$"
+          },
+          {
+           "pattern": "^[\\s\\S]{0,300}$"
+          }
+         ]
+        },
+        "summary": {
+         "description": "<redacted>",
+         "type": "string",
+         "maxLength": 200
+        },
+        "message": {
+         "default": "",
+         "description": "<redacted>",
+         "type": "string"
+        },
+        "notify_when_idle": {
+         "description": "<redacted>",
+         "type": "boolean"
+        }
+       },
+       "required": [
+        "to",
+        "message"
+       ],
+       "additionalProperties": false
+      }
+     },
+     {
+      "name": "Skill",
+      "description": "<redacted>",
+      "input_schema": {
+       "$schema": "https://json-schema.org/draft/2020-12/schema",
+       "type": "object",
+       "properties": {
+        "skill": {
+         "description": "<redacted>",
+         "type": "string"
+        },
+        "args": {
+         "description": "<redacted>",
+         "type": "string"
+        }
+       },
+       "required": [
+        "skill"
+       ],
+       "additionalProperties": false
+      }
+     },
+     {
+      "name": "TaskStop",
+      "description": "<redacted>",
+      "input_schema": {
+       "$schema": "https://json-schema.org/draft/2020-12/schema",
+       "type": "object",
+       "properties": {
+        "task_id": {
+         "description": "<redacted>",
+         "type": "string"
+        },
+        "shell_id": {
+         "description": "<redacted>",
+         "type": "string"
+        }
+       },
+       "additionalProperties": false
+      }
+     },
+     {
+      "name": "WebFetch",
+      "description": "<redacted>",
+      "input_schema": {
+       "$schema": "https://json-schema.org/draft/2020-12/schema",
+       "type": "object",
+       "properties": {
+        "url": {
+         "description": "<redacted>",
+         "type": "string",
+         "format": "uri"
+        },
+        "prompt": {
+         "description": "<redacted>",
+         "type": "string"
+        }
+       },
+       "required": [
+        "url",
+        "prompt"
+       ],
+       "additionalProperties": false
+      }
+     },
+     {
+      "name": "WebSearch",
+      "description": "<redacted>",
+      "input_schema": {
+       "$schema": "https://json-schema.org/draft/2020-12/schema",
+       "type": "object",
+       "properties": {
+        "query": {
+         "description": "<redacted>",
+         "type": "string",
+         "minLength": 2
+        },
+        "allowed_domains": {
+         "description": "<redacted>",
+         "type": "array",
+         "items": {
+          "type": "string"
+         }
+        },
+        "blocked_domains": {
+         "description": "<redacted>",
+         "type": "array",
+         "items": {
+          "type": "string"
+         }
+        }
+       },
+       "required": [
+        "query"
+       ],
+       "additionalProperties": false
+      }
+     },
+     {
+      "name": "Workflow",
+      "description": "<redacted>",
+      "input_schema": {
+       "$schema": "https://json-schema.org/draft/2020-12/schema",
+       "type": "object",
+       "properties": {
+        "script": {
+         "description": "<redacted>",
+         "type": "string",
+         "maxLength": 524288
+        },
+        "name": {
+         "description": "<redacted>",
+         "type": "string"
+        },
+        "description": {
+         "description": "<redacted>",
+         "type": "string"
+        },
+        "title": {
+         "description": "<redacted>",
+         "type": "string"
+        },
+        "args": {
+         "description": "<redacted>"
+        },
+        "scriptPath": {
+         "description": "<redacted>",
+         "type": "string"
+        },
+        "resumeFromRunId": {
+         "description": "<redacted>",
+         "type": "string",
+         "pattern": "^wf_[a-z0-9-]{6,}$"
+        }
+       },
+       "additionalProperties": false
+      }
+     },
+     {
+      "name": "Write",
+      "description": "<redacted>",
+      "input_schema": {
+       "$schema": "https://json-schema.org/draft/2020-12/schema",
+       "type": "object",
+       "properties": {
+        "file_path": {
+         "description": "<redacted>",
+         "type": "string"
+        },
+        "content": {
+         "description": "<redacted>",
+         "type": "string"
+        }
+       },
+       "required": [
+        "file_path",
+        "content"
+       ],
+       "additionalProperties": false
+      }
+     }
+    ],
+    "metadata": {
+     "user_id": "{\"device_id\": \"0000000000000000000000000000000000000000000000000000000000000000\", \"account_uuid\": \"\", \"session_id\": \"00000000-0000-4000-8000-000000000000\"}"
+    },
+    "max_tokens": 32000,
+    "thinking": {
+     "type": "adaptive",
+     "display": "omitted"
+    },
+    "context_management": {
+     "edits": [
+      {
+       "type": "clear_thinking_20251015",
+       "keep": "all"
+      }
+     ]
+    },
+    "output_config": {
+     "effort": "high"
+    },
+    "stream": true
+   }
+  },
+  {
+   "name": "tool_round_trip",
+   "method": "POST",
+   "path": "/v1/messages?beta=true",
+   "headers": {
+    "Accept": "application/json",
+    "Authorization": "Bearer <placeholder: the egress proxy replaces it with the gateway token>",
+    "Content-Type": "application/json",
+    "User-Agent": "claude-cli/2.1.289 (external, sdk-cli)",
+    "X-Claude-Code-Session-Id": "00000000-0000-4000-8000-000000000000",
+    "X-Stainless-Arch": "x64",
+    "X-Stainless-Lang": "js",
+    "X-Stainless-OS": "Linux",
+    "X-Stainless-Package-Version": "0.128.0",
+    "X-Stainless-Retry-Count": "0",
+    "X-Stainless-Runtime": "node",
+    "X-Stainless-Runtime-Version": "v26.3.0",
+    "X-Stainless-Timeout": "600",
+    "anthropic-beta": "claude-code-20250219,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,mid-conversation-tool-changes-2026-07-01,effort-2025-11-24",
+    "anthropic-dangerous-direct-browser-access": "true",
+    "anthropic-version": "2023-06-01",
+    "x-app": "cli",
+    "Connection": "keep-alive",
+    "Host": "model-gateway:8097",
+    "Accept-Encoding": "gzip, deflate, br, zstd"
+   },
+   "body": {
+    "model": "engine-model",
+    "messages": [
+     {
+      "role": "user",
+      "content": [
+       {
+        "type": "text",
+        "text": "<redacted: 576 characters of Claude Code's text>"
+       },
+       {
+        "type": "text",
+        "text": "run echo hi"
+       }
+      ]
+     },
+     {
+      "role": "system",
+      "content": "<redacted: 7934 characters of Claude Code's text>"
+     },
+     {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "toolu_1",
+        "name": "Bash",
+        "input": {
+         "command": "echo hi",
+         "description": "<redacted>"
+        }
+       }
+      ]
+     },
+     {
+      "role": "user",
+      "content": [
+       {
+        "tool_use_id": "toolu_1",
+        "type": "tool_result",
+        "content": "hi",
+        "is_error": false
+       }
+      ]
+     },
+     {
+      "role": "system",
+      "content": [
+       {
+        "type": "text",
+        "text": "<total_tokens>14999993 tokens left</total_tokens>",
+        "cache_control": {
+         "type": "ephemeral"
+        }
+       }
+      ]
+     }
+    ],
+    "system": [
+     {
+      "type": "text",
+      "text": "x-anthropic-billing-header: cc_version=2.1.289.76c; cc_entrypoint=sdk-cli;"
+     },
+     {
+      "type": "text",
+      "text": "You are a Claude agent, built on Anthropic's Claude Agent SDK.",
+      "cache_control": {
+       "type": "ephemeral"
+      }
+     },
+     {
+      "type": "text",
+      "text": "<redacted: 5737 characters of Claude Code's text>",
+      "cache_control": {
+       "type": "ephemeral"
+      }
+     }
+    ],
+    "tools": [
+     {
+      "name": "Agent",
+      "description": "<redacted>",
+      "input_schema": {
+       "$schema": "https://json-schema.org/draft/2020-12/schema",
+       "type": "object",
+       "properties": {
+        "description": {
+         "description": "<redacted>",
+         "type": "string"
+        },
+        "prompt": {
+         "description": "<redacted>",
+         "type": "string"
+        },
+        "subagent_type": {
+         "description": "<redacted>",
+         "type": "string"
+        },
+        "model": {
+         "description": "<redacted>",
+         "type": "string",
+         "enum": [
+          "sonnet",
+          "opus",
+          "haiku",
+          "fable"
+         ]
+        },
+        "run_in_background": {
+         "description": "<redacted>",
+         "type": "boolean"
+        },
+        "isolation": {
+         "description": "<redacted>",
+         "type": "string",
+         "enum": [
+          "worktree",
+          "remote"
+         ]
+        }
+       },
+       "required": [
+        "description",
+        "prompt"
+       ],
+       "additionalProperties": false
+      }
+     },
+     {
+      "name": "Bash",
+      "description": "<redacted>",
+      "input_schema": {
+       "$schema": "https://json-schema.org/draft/2020-12/schema",
+       "type": "object",
+       "properties": {
+        "command": {
+         "description": "<redacted>",
+         "type": "string"
+        },
+        "timeout": {
+         "description": "<redacted>",
+         "type": "number"
+        },
+        "description": {
+         "description": "<redacted>",
+         "type": "string"
+        },
+        "run_in_background": {
+         "description": "<redacted>",
+         "type": "boolean"
+        },
+        "dangerouslyDisableSandbox": {
+         "description": "<redacted>",
+         "type": "boolean"
+        }
+       },
+       "required": [
+        "command"
+       ],
+       "additionalProperties": false
+      }
+     },
+     {
+      "name": "CronCreate",
+      "description": "<redacted>",
+      "input_schema": {
+       "$schema": "https://json-schema.org/draft/2020-12/schema",
+       "type": "object",
+       "properties": {
+        "cron": {
+         "description": "<redacted>",
+         "type": "string"
+        },
+        "prompt": {
+         "description": "<redacted>",
+         "type": "string"
+        },
+        "recurring": {
+         "description": "<redacted>",
+         "type": "boolean"
+        },
+        "durable": {
+         "description": "<redacted>",
+         "type": "boolean"
+        }
+       },
+       "required": [
+        "cron",
+        "prompt"
+       ],
+       "additionalProperties": false
+      }
+     },
+     {
+      "name": "CronDelete",
+      "description": "<redacted>",
+      "input_schema": {
+       "$schema": "https://json-schema.org/draft/2020-12/schema",
+       "type": "object",
+       "properties": {
+        "id": {
+         "description": "<redacted>",
+         "type": "string"
+        }
+       },
+       "required": [
+        "id"
+       ],
+       "additionalProperties": false
+      }
+     },
+     {
+      "name": "CronList",
+      "description": "<redacted>",
+      "input_schema": {
+       "$schema": "https://json-schema.org/draft/2020-12/schema",
+       "type": "object",
+       "properties": {},
+       "additionalProperties": false
+      }
+     },
+     {
+      "name": "Edit",
+      "description": "<redacted>",
+      "input_schema": {
+       "$schema": "https://json-schema.org/draft/2020-12/schema",
+       "type": "object",
+       "properties": {
+        "file_path": {
+         "description": "<redacted>",
+         "type": "string"
+        },
+        "old_string": {
+         "description": "<redacted>",
+         "type": "string"
+        },
+        "new_string": {
+         "description": "<redacted>",
+         "type": "string"
+        },
+        "replace_all": {
+         "description": "<redacted>",
+         "default": false,
+         "type": "boolean"
+        }
+       },
+       "required": [
+        "file_path",
+        "old_string",
+        "new_string"
+       ],
+       "additionalProperties": false
+      }
+     },
+     {
+      "name": "EnterWorktree",
+      "description": "<redacted>",
+      "input_schema": {
+       "$schema": "https://json-schema.org/draft/2020-12/schema",
+       "type": "object",
+       "properties": {
+        "name": {
+         "description": "<redacted>",
+         "type": "string"
+        },
+        "path": {
+         "description": "<redacted>",
+         "type": "string"
+        }
+       },
+       "additionalProperties": false
+      }
+     },
+     {
+      "name": "ExitWorktree",
+      "description": "<redacted>",
+      "input_schema": {
+       "$schema": "https://json-schema.org/draft/2020-12/schema",
+       "type": "object",
+       "properties": {
+        "action": {
+         "description": "<redacted>",
+         "type": "string",
+         "enum": [
+          "keep",
+          "remove"
+         ]
+        },
+        "discard_changes": {
+         "description": "<redacted>",
+         "type": "boolean"
+        }
+       },
+       "required": [
+        "action"
+       ],
+       "additionalProperties": false
+      }
+     },
+     {
+      "name": "ListAgents",
+      "description": "<redacted>",
+      "input_schema": {
+       "$schema": "https://json-schema.org/draft/2020-12/schema",
+       "type": "object",
+       "properties": {
+        "channel": {
+         "description": "<redacted>",
+         "type": "string",
+         "maxLength": 256
+        },
+        "q": {
+         "description": "<redacted>",
+         "type": "string",
+         "maxLength": 256
+        }
+       },
+       "additionalProperties": false
+      }
+     },
+     {
+      "name": "NotebookEdit",
+      "description": "<redacted>",
+      "input_schema": {
+       "$schema": "https://json-schema.org/draft/2020-12/schema",
+       "type": "object",
+       "properties": {
+        "notebook_path": {
+         "description": "<redacted>",
+         "type": "string"
+        },
+        "cell_id": {
+         "description": "<redacted>",
+         "type": "string"
+        },
+        "new_source": {
+         "description": "<redacted>",
+         "type": "string"
+        },
+        "cell_type": {
+         "description": "<redacted>",
+         "type": "string",
+         "enum": [
+          "code",
+          "markdown"
+         ]
+        },
+        "edit_mode": {
+         "description": "<redacted>",
+         "type": "string",
+         "enum": [
+          "replace",
+          "insert",
+          "delete"
+         ]
+        }
+       },
+       "required": [
+        "notebook_path",
+        "new_source"
+       ],
+       "additionalProperties": false
+      }
+     },
+     {
+      "name": "Read",
+      "description": "<redacted>",
+      "input_schema": {
+       "$schema": "https://json-schema.org/draft/2020-12/schema",
+       "type": "object",
+       "properties": {
+        "file_path": {
+         "description": "<redacted>",
+         "type": "string"
+        },
+        "offset": {
+         "description": "<redacted>",
+         "type": "integer",
+         "minimum": 0,
+         "maximum": 9007199254740991
+        },
+        "limit": {
+         "description": "<redacted>",
+         "type": "integer",
+         "exclusiveMinimum": 0,
+         "maximum": 9007199254740991
+        },
+        "pages": {
+         "description": "<redacted>",
+         "type": "string"
+        }
+       },
+       "required": [
+        "file_path"
+       ],
+       "additionalProperties": false
+      }
+     },
+     {
+      "name": "ReportFindings",
+      "description": "<redacted>",
+      "input_schema": {
+       "$schema": "https://json-schema.org/draft/2020-12/schema",
+       "type": "object",
+       "properties": {
+        "level": {
+         "description": "<redacted>",
+         "type": "string",
+         "enum": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+         ]
+        },
+        "findings": {
+         "description": "<redacted>",
+         "maxItems": 32,
+         "type": "array",
+         "items": {
+          "type": "object",
+          "properties": {
+           "file": {
+            "description": "<redacted>",
+            "type": "string"
+           },
+           "line": {
+            "description": "<redacted>",
+            "type": "integer",
+            "minimum": -9007199254740991,
+            "maximum": 9007199254740991
+           },
+           "summary": {
+            "description": "<redacted>",
+            "type": "string"
+           },
+           "short_summary": {
+            "description": "<redacted>",
+            "type": "string",
+            "maxLength": 60
+           },
+           "failure_scenario": {
+            "description": "<redacted>",
+            "type": "string"
+           },
+           "category": {
+            "description": "<redacted>",
+            "type": "string",
+            "maxLength": 40
+           },
+           "verdict": {
+            "description": "<redacted>",
+            "type": "string",
+            "enum": [
+             "CONFIRMED",
+             "PLAUSIBLE"
+            ]
+           },
+           "outcome": {
+            "description": "<redacted>",
+            "type": "string",
+            "enum": [
+             "fixed",
+             "skipped",
+             "no_change_needed"
+            ]
+           }
+          },
+          "required": [
+           "file",
+           "summary",
+           "failure_scenario"
+          ],
+          "additionalProperties": false
+         }
+        }
+       },
+       "required": [
+        "findings"
+       ],
+       "additionalProperties": false
+      }
+     },
+     {
+      "name": "ScheduleWakeup",
+      "description": "<redacted>",
+      "input_schema": {
+       "$schema": "https://json-schema.org/draft/2020-12/schema",
+       "type": "object",
+       "properties": {
+        "delaySeconds": {
+         "description": "<redacted>",
+         "type": "number"
+        },
+        "reason": {
+         "description": "<redacted>",
+         "type": "string"
+        },
+        "prompt": {
+         "description": "<redacted>",
+         "type": "string"
+        },
+        "stop": {
+         "description": "<redacted>",
+         "type": "boolean"
+        },
+        "noop": {
+         "description": "<redacted>",
+         "type": "boolean"
+        }
+       },
+       "additionalProperties": false
+      }
+     },
+     {
+      "name": "SendMessage",
+      "description": "<redacted>",
+      "input_schema": {
+       "$schema": "https://json-schema.org/draft/2020-12/schema",
+       "type": "object",
+       "properties": {
+        "to": {
+         "description": "<redacted>",
+         "type": "string",
+         "allOf": [
+          {
+           "pattern": "^[^\\n\\r]*$"
+          },
+          {
+           "pattern": "^[\\s\\S]{0,300}$"
+          }
+         ]
+        },
+        "summary": {
+         "description": "<redacted>",
+         "type": "string",
+         "maxLength": 200
+        },
+        "message": {
+         "default": "",
+         "description": "<redacted>",
+         "type": "string"
+        },
+        "notify_when_idle": {
+         "description": "<redacted>",
+         "type": "boolean"
+        }
+       },
+       "required": [
+        "to",
+        "message"
+       ],
+       "additionalProperties": false
+      }
+     },
+     {
+      "name": "Skill",
+      "description": "<redacted>",
+      "input_schema": {
+       "$schema": "https://json-schema.org/draft/2020-12/schema",
+       "type": "object",
+       "properties": {
+        "skill": {
+         "description": "<redacted>",
+         "type": "string"
+        },
+        "args": {
+         "description": "<redacted>",
+         "type": "string"
+        }
+       },
+       "required": [
+        "skill"
+       ],
+       "additionalProperties": false
+      }
+     },
+     {
+      "name": "TaskStop",
+      "description": "<redacted>",
+      "input_schema": {
+       "$schema": "https://json-schema.org/draft/2020-12/schema",
+       "type": "object",
+       "properties": {
+        "task_id": {
+         "description": "<redacted>",
+         "type": "string"
+        },
+        "shell_id": {
+         "description": "<redacted>",
+         "type": "string"
+        }
+       },
+       "additionalProperties": false
+      }
+     },
+     {
+      "name": "WebFetch",
+      "description": "<redacted>",
+      "input_schema": {
+       "$schema": "https://json-schema.org/draft/2020-12/schema",
+       "type": "object",
+       "properties": {
+        "url": {
+         "description": "<redacted>",
+         "type": "string",
+         "format": "uri"
+        },
+        "prompt": {
+         "description": "<redacted>",
+         "type": "string"
+        }
+       },
+       "required": [
+        "url",
+        "prompt"
+       ],
+       "additionalProperties": false
+      }
+     },
+     {
+      "name": "WebSearch",
+      "description": "<redacted>",
+      "input_schema": {
+       "$schema": "https://json-schema.org/draft/2020-12/schema",
+       "type": "object",
+       "properties": {
+        "query": {
+         "description": "<redacted>",
+         "type": "string",
+         "minLength": 2
+        },
+        "allowed_domains": {
+         "description": "<redacted>",
+         "type": "array",
+         "items": {
+          "type": "string"
+         }
+        },
+        "blocked_domains": {
+         "description": "<redacted>",
+         "type": "array",
+         "items": {
+          "type": "string"
+         }
+        }
+       },
+       "required": [
+        "query"
+       ],
+       "additionalProperties": false
+      }
+     },
+     {
+      "name": "Workflow",
+      "description": "<redacted>",
+      "input_schema": {
+       "$schema": "https://json-schema.org/draft/2020-12/schema",
+       "type": "object",
+       "properties": {
+        "script": {
+         "description": "<redacted>",
+         "type": "string",
+         "maxLength": 524288
+        },
+        "name": {
+         "description": "<redacted>",
+         "type": "string"
+        },
+        "description": {
+         "description": "<redacted>",
+         "type": "string"
+        },
+        "title": {
+         "description": "<redacted>",
+         "type": "string"
+        },
+        "args": {
+         "description": "<redacted>"
+        },
+        "scriptPath": {
+         "description": "<redacted>",
+         "type": "string"
+        },
+        "resumeFromRunId": {
+         "description": "<redacted>",
+         "type": "string",
+         "pattern": "^wf_[a-z0-9-]{6,}$"
+        }
+       },
+       "additionalProperties": false
+      }
+     },
+     {
+      "name": "Write",
+      "description": "<redacted>",
+      "input_schema": {
+       "$schema": "https://json-schema.org/draft/2020-12/schema",
+       "type": "object",
+       "properties": {
+        "file_path": {
+         "description": "<redacted>",
+         "type": "string"
+        },
+        "content": {
+         "description": "<redacted>",
+         "type": "string"
+        }
+       },
+       "required": [
+        "file_path",
+        "content"
+       ],
+       "additionalProperties": false
+      }
+     }
+    ],
+    "metadata": {
+     "user_id": "{\"device_id\": \"0000000000000000000000000000000000000000000000000000000000000000\", \"account_uuid\": \"\", \"session_id\": \"00000000-0000-4000-8000-000000000000\"}"
+    },
+    "max_tokens": 32000,
+    "thinking": {
+     "type": "adaptive",
+     "display": "omitted"
+    },
+    "context_management": {
+     "edits": [
+      {
+       "type": "clear_thinking_20251015",
+       "keep": "all"
+      }
+     ]
+    },
+    "output_config": {
+     "effort": "high"
+    },
+    "stream": true
+   }
+  }
+ ],
+ "beta_sets": {
+  "default": [
+   "claude-code-20250219",
+   "interleaved-thinking-2025-05-14",
+   "thinking-token-count-2026-05-13",
+   "context-management-2025-06-27",
+   "prompt-caching-scope-2026-01-05",
+   "mid-conversation-system-2026-04-07",
+   "mid-conversation-tool-changes-2026-07-01",
+   "effort-2025-11-24"
+  ],
+  "auto_mode": [
+   "claude-code-20250219",
+   "interleaved-thinking-2025-05-14",
+   "thinking-token-count-2026-05-13",
+   "context-management-2025-06-27",
+   "prompt-caching-scope-2026-01-05",
+   "mid-conversation-system-2026-04-07",
+   "mid-conversation-tool-changes-2026-07-01",
+   "effort-2025-11-24",
+   "dangerous-tool-use-2026-09-03",
+   "afk-mode-2026-01-31"
+  ],
+  "no_experimental": [
+   "claude-code-20250219",
+   "interleaved-thinking-2025-05-14",
+   "mid-conversation-system-2026-04-07",
+   "effort-2025-11-24"
+  ],
+  "stream_json": [
+   "claude-code-20250219",
+   "interleaved-thinking-2025-05-14",
+   "thinking-token-count-2026-05-13",
+   "context-management-2025-06-27",
+   "prompt-caching-scope-2026-01-05",
+   "mid-conversation-system-2026-04-07",
+   "mid-conversation-tool-changes-2026-07-01",
+   "effort-2025-11-24",
+   "thinking-display-updates-2026-08-18"
+  ]
+ },
+ "auto_mode_body_keys": [
+  "context_management",
+  "max_tokens",
+  "messages",
+  "metadata",
+  "model",
+  "output_config",
+  "safeguards",
+  "stream",
+  "system",
+  "thinking",
+  "tools"
+ ],
+ "auto_mode_safeguards": [
+  {
+   "type": "dangerous_tool_use",
+   "classifier_context": "<redacted>"
+  }
+ ]
+}

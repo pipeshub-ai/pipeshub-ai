@@ -1,0 +1,334 @@
+{
+  "generatedBy": "python -m app.control_plane.catalog.dump --write",
+  "kind": "engine",
+  "items": [
+    {
+      "schemaVersion": 1,
+      "ref": "engine:pipeshub/acp-dsh@0.2.2-rc.1",
+      "kind": "engine",
+      "publisher": "pipeshub",
+      "name": "acp-dsh",
+      "version": "0.2.2-rc.1",
+      "orgId": null,
+      "provenance": "release",
+      "source": {
+        "type": "release"
+      },
+      "display": {
+        "name": "acp-dsh",
+        "description": "acp-dsh 0.2.2-rc.1",
+        "icon": null,
+        "categories": [
+          "engine"
+        ],
+        "hidden": false
+      },
+      "riskClass": "execute",
+      "configSchema": null,
+      "credentialRequirements": [],
+      "descriptors": {
+        "kind": "engine",
+        "items": [
+          {
+            "name": "acp-dsh",
+            "kind": "acp-dsh",
+            "version": "0.2.2-rc.1",
+            "binaryDigest": "sha256:b6640801a5a65aae9f53ca21bcce3b2ea28bd9e9554c939c1ff7c4448d91fa18",
+            "optionsDigest": null,
+            "digest": "sha256:493b1cd6b3d854ed156cb728017b6a8cb8c7768f076d965b8ffb14334b15a2aa"
+          }
+        ]
+      },
+      "descriptorSetDigest": "sha256:c20ca724ab61776c5aebbadcf948fddf701e226c4096c3090901faffa82ecdb1",
+      "deprecated": false,
+      "createdAt": 0
+    },
+    {
+      "schemaVersion": 1,
+      "ref": "engine:pipeshub/acp-gemini@0.63.0",
+      "kind": "engine",
+      "publisher": "pipeshub",
+      "name": "acp-gemini",
+      "version": "0.63.0",
+      "orgId": null,
+      "provenance": "release",
+      "source": {
+        "type": "release"
+      },
+      "display": {
+        "name": "acp-gemini",
+        "description": "acp-gemini 0.63.0",
+        "icon": null,
+        "categories": [
+          "engine"
+        ],
+        "hidden": false
+      },
+      "riskClass": "execute",
+      "configSchema": null,
+      "credentialRequirements": [],
+      "descriptors": {
+        "kind": "engine",
+        "items": [
+          {
+            "name": "acp-gemini",
+            "kind": "acp-gemini",
+            "version": "0.63.0",
+            "binaryDigest": "sha256:5aee9ecb65b0b821e36a12f6e9e837301636de1a849a5a8bcc9c2b2620bbd72e",
+            "optionsDigest": null,
+            "digest": "sha256:05b88856e073961a3376e0a0aace8477ad108243529e065c1a5e5f5868c71236"
+          }
+        ]
+      },
+      "descriptorSetDigest": "sha256:839778610c0d0963abba1b110c9617b92da2cad7730053d97d7c9240925abc25",
+      "deprecated": false,
+      "createdAt": 0
+    },
+    {
+      "schemaVersion": 1,
+      "ref": "engine:pipeshub/acp-goose@1.57.0",
+      "kind": "engine",
+      "publisher": "pipeshub",
+      "name": "acp-goose",
+      "version": "1.57.0",
+      "orgId": null,
+      "provenance": "release",
+      "source": {
+        "type": "release"
+      },
+      "display": {
+        "name": "acp-goose",
+        "description": "acp-goose 1.57.0",
+        "icon": null,
+        "categories": [
+          "engine"
+        ],
+        "hidden": false
+      },
+      "riskClass": "execute",
+      "configSchema": null,
+      "credentialRequirements": [],
+      "descriptors": {
+        "kind": "engine",
+        "items": [
+          {
+            "name": "acp-goose",
+            "kind": "acp-goose",
+            "version": "1.57.0",
+            "binaryDigest": "sha256:bb259a6f0dd02ce9c5e3793edb91e68a84d40eb24478e8b28dd556ebf3681dc1",
+            "optionsDigest": null,
+            "digest": "sha256:d9a36c9dfef44e0149ec7fd727aa90169e54191717099fa4af33dec03c5c70ae"
+          }
+        ]
+      },
+      "descriptorSetDigest": "sha256:91107dce718f3f141b3b1b4c5be4fb553b3c032ae1bf599d28997989809f8696",
+      "deprecated": false,
+      "createdAt": 0
+    },
+    {
+      "schemaVersion": 1,
+      "ref": "engine:pipeshub/acp-opencode@1.18.34",
+      "kind": "engine",
+      "publisher": "pipeshub",
+      "name": "acp-opencode",
+      "version": "1.18.34",
+      "orgId": null,
+      "provenance": "release",
+      "source": {
+        "type": "release"
+      },
+      "display": {
+        "name": "acp-opencode",
+        "description": "acp-opencode 1.18.34",
+        "icon": null,
+        "categories": [
+          "engine"
+        ],
+        "hidden": false
+      },
+      "riskClass": "execute",
+      "configSchema": null,
+      "credentialRequirements": [],
+      "descriptors": {
+        "kind": "engine",
+        "items": [
+          {
+            "name": "acp-opencode",
+            "kind": "acp-opencode",
+            "version": "1.18.34",
+            "binaryDigest": "sha256:4fa437184846977f1849ffb65fc19d32686dec85a455df3d37f69a2993f22182",
+            "optionsDigest": null,
+            "digest": "sha256:3e3e1428fa0573aadddbd1d6a768906700ab562b541f37795a2640818f99cd59"
+          }
+        ]
+      },
+      "descriptorSetDigest": "sha256:93042b3bb7e0e1a80815366fef055ef71326393017f3c640c2aff274462361d8",
+      "deprecated": false,
+      "createdAt": 0
+    },
+    {
+      "schemaVersion": 1,
+      "ref": "engine:pipeshub/acp-qwen@0.26.5",
+      "kind": "engine",
+      "publisher": "pipeshub",
+      "name": "acp-qwen",
+      "version": "0.26.5",
+      "orgId": null,
+      "provenance": "release",
+      "source": {
+        "type": "release"
+      },
+      "display": {
+        "name": "acp-qwen",
+        "description": "acp-qwen 0.26.5",
+        "icon": null,
+        "categories": [
+          "engine"
+        ],
+        "hidden": false
+      },
+      "riskClass": "execute",
+      "configSchema": null,
+      "credentialRequirements": [],
+      "descriptors": {
+        "kind": "engine",
+        "items": [
+          {
+            "name": "acp-qwen",
+            "kind": "acp-qwen",
+            "version": "0.26.5",
+            "binaryDigest": "sha256:246f1cb65502335863d28a17ea43a10c6d9537bfb209b6f0beafccbf443c4435",
+            "optionsDigest": null,
+            "digest": "sha256:a45d9b7cc36f3d5b339d2483655138b03b5bac406506cdcb58248b06de337c43"
+          }
+        ]
+      },
+      "descriptorSetDigest": "sha256:3aa5af75aa3b949d2635d7a3772d56e469014695f3ea3bdcb4f377d9ebbd443b",
+      "deprecated": false,
+      "createdAt": 0
+    },
+    {
+      "schemaVersion": 1,
+      "ref": "engine:pipeshub/claude_code@2.1.319",
+      "kind": "engine",
+      "publisher": "pipeshub",
+      "name": "claude_code",
+      "version": "2.1.319",
+      "orgId": null,
+      "provenance": "release",
+      "source": {
+        "type": "release"
+      },
+      "display": {
+        "name": "claude_code",
+        "description": "claude_code 2.1.319",
+        "icon": null,
+        "categories": [
+          "engine"
+        ],
+        "hidden": false
+      },
+      "riskClass": "execute",
+      "configSchema": null,
+      "credentialRequirements": [],
+      "descriptors": {
+        "kind": "engine",
+        "items": [
+          {
+            "name": "claude_code",
+            "kind": "claude_code",
+            "version": "2.1.319",
+            "binaryDigest": "sha256:dabafec82ca1319fa43d8be36a10fc61b1d11821cb98ad5df04ad95e199b8eed",
+            "optionsDigest": null,
+            "digest": "sha256:df2a4b7874abc3aea2e6ef2c0fb3eba386a52d06e2bcf57ece14f5d4c144a9a1"
+          }
+        ]
+      },
+      "descriptorSetDigest": "sha256:b649ce476937fef570d63a3bfdad49a3480c25c2ffaa7be2bbbf90f54b1aa21c",
+      "deprecated": false,
+      "createdAt": 0
+    },
+    {
+      "schemaVersion": 1,
+      "ref": "engine:pipeshub/codex@0.160.0",
+      "kind": "engine",
+      "publisher": "pipeshub",
+      "name": "codex",
+      "version": "0.160.0",
+      "orgId": null,
+      "provenance": "release",
+      "source": {
+        "type": "release"
+      },
+      "display": {
+        "name": "codex",
+        "description": "codex 0.160.0",
+        "icon": null,
+        "categories": [
+          "engine"
+        ],
+        "hidden": false
+      },
+      "riskClass": "execute",
+      "configSchema": null,
+      "credentialRequirements": [],
+      "descriptors": {
+        "kind": "engine",
+        "items": [
+          {
+            "name": "codex",
+            "kind": "codex",
+            "version": "0.160.0",
+            "binaryDigest": "sha256:d9244ef26a5193aec701e61c2f9280d44040efbedb9c16b4c0c6f41e354bcdd3",
+            "optionsDigest": null,
+            "digest": "sha256:6ad5fa808ea560661df248c5ee5aa536c4b300ecdfe87c9d31141d9c7143f14c"
+          }
+        ]
+      },
+      "descriptorSetDigest": "sha256:4772cc2a87d1d51180269bf6e5b013a49f1fbce35653d5ea2b539e8ea3e856f8",
+      "deprecated": false,
+      "createdAt": 0
+    },
+    {
+      "schemaVersion": 1,
+      "ref": "engine:pipeshub/opencode@1.18.34",
+      "kind": "engine",
+      "publisher": "pipeshub",
+      "name": "opencode",
+      "version": "1.18.34",
+      "orgId": null,
+      "provenance": "release",
+      "source": {
+        "type": "release"
+      },
+      "display": {
+        "name": "opencode",
+        "description": "opencode 1.18.34",
+        "icon": null,
+        "categories": [
+          "engine"
+        ],
+        "hidden": false
+      },
+      "riskClass": "execute",
+      "configSchema": null,
+      "credentialRequirements": [],
+      "descriptors": {
+        "kind": "engine",
+        "items": [
+          {
+            "name": "opencode",
+            "kind": "opencode",
+            "version": "1.18.34",
+            "binaryDigest": "sha256:4fa437184846977f1849ffb65fc19d32686dec85a455df3d37f69a2993f22182",
+            "optionsDigest": null,
+            "digest": "sha256:fc306f69d9e7a331f4d943c1ef606fdd9e2dfa71863d5f858f7e02bf7b42a998"
+          }
+        ]
+      },
+      "descriptorSetDigest": "sha256:ce8b2f0710efa4323ad17d8f3ec2c9f1cfa866195d08e362c50699994d6746aa",
+      "deprecated": false,
+      "createdAt": 0
+    }
+  ]
+}

@@ -1,0 +1,69 @@
+[
+  {
+    "description": "written by the worker",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 12,
+      "runId": "run_1",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-11-06T12:00:00.123Z",
+      "visibility": "audit",
+      "writer": "worker",
+      "type": "x.pipeshub.approval.counted",
+      "data": {
+        "interactionId": "ix.approve.t1.0",
+        "by": "p_u_admin_1",
+        "counted": 1,
+        "required": 2
+      }
+    }
+  },
+  {
+    "description": "an ask that needs one approval is not counted",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 12,
+      "runId": "run_1",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-11-06T12:00:00.123Z",
+      "visibility": "audit",
+      "writer": "node",
+      "type": "x.pipeshub.approval.counted",
+      "data": {
+        "interactionId": "ix.approve.t1.0",
+        "by": "p_u_admin_1",
+        "counted": 1,
+        "required": 1
+      }
+    }
+  },
+  {
+    "description": "carries the person's name",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 12,
+      "runId": "run_1",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-11-06T12:00:00.123Z",
+      "visibility": "audit",
+      "writer": "node",
+      "type": "x.pipeshub.approval.counted",
+      "data": {
+        "interactionId": "ix.approve.t1.0",
+        "by": "p_u_admin_1",
+        "counted": 1,
+        "required": 2,
+        "name": "Ada"
+      }
+    }
+  }
+]

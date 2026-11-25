@@ -1516,7 +1516,7 @@ describe('CrawlingSchedulerService - additional coverage', () => {
 
       const result = await service.getAllJobs('org-1')
       expect(result.length).to.equal(1)
-      expect(result[0].state).to.equal('paused')
+      expect(result[0]!.state).to.equal('paused')
 
       ;(service as any).pausedJobs.delete('crawl-google-conn-1-org-1')
     })
