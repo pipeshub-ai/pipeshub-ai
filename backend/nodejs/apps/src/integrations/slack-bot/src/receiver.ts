@@ -6,7 +6,11 @@ import {
   type SlackBotConfig,
   refreshSlackBotRegistry,
   runWithSlackRequestContext,
-} from "./botRegistry";
+} from './botRegistry';
+import {
+  refuseForeignSlackEvents,
+  resetSlackRefusalNotifierForTests,
+} from './identity/edge';
 
 const SLACK_EVENTS_ENDPOINT = process.env.SLACK_EVENTS_ENDPOINT || "/slack/events";
 const MAX_SIGNATURE_AGE_SECONDS = 60 * 5;
@@ -145,7 +149,13 @@ function isDuplicateSlackEvent(eventId: string): boolean {
 export function resetSlackEventGuardsForTests(): void {
   lastForcedRefreshAt = 0;
   seenEventIds.clear();
+  resetSlackRefusalNotifierForTests();
 }
+
+export {
+  type RefusedSlackEvent,
+  setSlackRefusalNotifier,
+} from './identity/edge';
 
 /**
  * Runs after verification so only authentic deliveries occupy a dedupe slot.
@@ -246,10 +256,12 @@ async function verifySlackRequest(
 }
 
 export function registerSlackEventGuards(target: Router): void {
+  // The replay guard runs before the refusal: a retried delivery of a refused event would tell the person twice.
   target.use(
     SLACK_EVENTS_ENDPOINT,
     verifySlackRequest,
     dropDuplicateSlackEvents,
+    refuseForeignSlackEvents,
   );
 }
 

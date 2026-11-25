@@ -10,10 +10,15 @@ import os
 import signal
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 
 from app.services.sandbox_alerts.window import read_window
+
+if TYPE_CHECKING:
+    from multiprocessing.connection import Connection
+    from multiprocessing.context import SpawnContext, SpawnProcess
 
 pytestmark = pytest.mark.integration
 
@@ -26,21 +31,34 @@ def _worker(state: str, waits: int, done, hang) -> None:
     for i in range(waits):
         ledger.outcome("refused" if i % 2 else "granted", 1.0, HoldReason.SLOTS_FULL)
     ledger.flush()
-    done.put(os.getpid())
+    done.send(os.getpid())
     if hang:
         time.sleep(60)
 
 
+def _start(ctx: SpawnContext, state: Path, waits: int, hang: bool) -> tuple[SpawnProcess, Connection]:
+    """A worker with a pipe of its own. A shared Queue's feeder thread holds the queue's write lock until after the
+    reader has the message, so SIGKILLing a worker that just reported could leave that lock held and block every
+    later put: the restarted worker's report never arrived (_queue.Empty)."""
+    receive, send = ctx.Pipe(duplex=False)
+    worker = ctx.Process(target=_worker, args=(str(state), waits, send, hang))
+    worker.start()
+    send.close()
+    return worker, receive
+
+
+def _report(receive: Connection) -> int:
+    assert receive.poll(60), "the worker did not report within 60 s"
+    return receive.recv()
+
+
 def test_four_workers_are_summed_and_a_killed_one_keeps_its_counts(tmp_path: Path) -> None:
     ctx = multiprocessing.get_context("spawn")
-    done = ctx.Queue()
-    workers = [ctx.Process(target=_worker, args=(str(tmp_path), 50, done, i == 0)) for i in range(4)]
-    for worker in workers:
-        worker.start()
-    pids = {done.get(timeout=60) for _ in workers}
+    started = [_start(ctx, tmp_path, 50, i == 0) for i in range(4)]
+    pids = {_report(receive) for _, receive in started}
     assert len(pids) == 4
-    os.kill(workers[0].pid, signal.SIGKILL)
-    for worker in workers:
+    os.kill(started[0][0].pid, signal.SIGKILL)
+    for worker, _ in started:
         worker.join(30)
 
     totals = read_window(tmp_path / "load", time.time(), 1800)
@@ -48,9 +66,8 @@ def test_four_workers_are_summed_and_a_killed_one_keeps_its_counts(tmp_path: Pat
     assert totals.waited == 200
     assert totals.refused == 100
 
-    restarted = ctx.Process(target=_worker, args=(str(tmp_path), 10, done, False))
-    restarted.start()
-    done.get(timeout=60)
+    restarted, receive = _start(ctx, tmp_path, 10, False)
+    _report(receive)
     restarted.join(30)
     totals = read_window(tmp_path / "load", time.time(), 1800)
     assert totals.files == 5

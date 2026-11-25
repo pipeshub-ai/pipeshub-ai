@@ -1,0 +1,171 @@
+{
+  "conversation": {
+    "sessionType": "agent",
+    "nextSeq": 3,
+    "userId": "oid-1",
+    "orgId": "oid-2",
+    "title": "Build me the sales report",
+    "initiator": "oid-1",
+    "isShared": false,
+    "isDeleted": false,
+    "isArchived": false,
+    "lastActivityAt": "<clock>",
+    "status": "Complete",
+    "modelInfo": {
+      "chatMode": "quick"
+    },
+    "agentKey": "agent-1",
+    "conversationSource": "agent_chat",
+    "_id": "oid-3",
+    "sharedWith": [],
+    "conversationErrors": [],
+    "createdAt": "<timestamp>",
+    "updatedAt": "<timestamp>",
+    "__v": 0
+  },
+  "messages": [
+    {
+      "sessionId": "oid-3",
+      "orgId": "oid-2",
+      "seq": 1,
+      "messageType": "user_query",
+      "content": "Build me the sales report",
+      "contentFormat": "MARKDOWN",
+      "modelInfo": {
+        "chatMode": "quick"
+      },
+      "appliedFilters": {
+        "apps": [],
+        "kb": [],
+        "recordGroups": [],
+        "records": [],
+        "recordsExact": []
+      },
+      "parts": [],
+      "_id": "oid-4",
+      "createdAt": "<timestamp>",
+      "updatedAt": "<timestamp>",
+      "citations": [],
+      "followUpQuestions": [],
+      "feedback": [],
+      "attachments": [],
+      "referenceData": [],
+      "tools": [],
+      "reasoning": []
+    },
+    {
+      "sessionId": "oid-3",
+      "orgId": "oid-2",
+      "seq": 2,
+      "messageType": "tool_call",
+      "content": "",
+      "contentFormat": "MARKDOWN",
+      "modelInfo": {
+        "chatMode": "quick"
+      },
+      "appliedFilters": {
+        "apps": [],
+        "kb": [],
+        "recordGroups": [],
+        "records": [],
+        "recordsExact": []
+      },
+      "tools": [
+        {
+          "toolName": "ask_user_question",
+          "toolResult": {
+            "name": "ask_user_question",
+            "userIntent": "The user wants a report but did not say which region.",
+            "questions": [
+              {
+                "uuid": "uuid-4",
+                "question": "Which region should the report cover?",
+                "options": [
+                  {
+                    "id": "opt_north_america",
+                    "label": "North America",
+                    "isUserInput": false
+                  },
+                  {
+                    "id": "opt_europe",
+                    "label": "Europe",
+                    "isUserInput": false
+                  },
+                  {
+                    "id": "opt_asia_pacific",
+                    "label": "Asia Pacific",
+                    "isUserInput": false
+                  },
+                  {
+                    "id": "opt_enter_a_region",
+                    "label": "Enter a region",
+                    "isUserInput": true
+                  }
+                ],
+                "multiSelect": false
+              }
+            ],
+            "expiresAt": "<timestamp>"
+          }
+        }
+      ],
+      "parts": [],
+      "_id": "oid-5",
+      "createdAt": "<timestamp>",
+      "updatedAt": "<timestamp>",
+      "citations": [],
+      "followUpQuestions": [],
+      "feedback": [],
+      "attachments": [],
+      "referenceData": [],
+      "reasoning": []
+    },
+    {
+      "sessionId": "oid-3",
+      "orgId": "oid-2",
+      "seq": 3,
+      "messageType": "bot_response",
+      "content": "",
+      "contentFormat": "MARKDOWN",
+      "citations": [],
+      "followUpQuestions": [],
+      "modelInfo": {
+        "chatMode": "quick"
+      },
+      "appliedFilters": {
+        "apps": [],
+        "kb": [],
+        "recordGroups": [],
+        "records": [],
+        "recordsExact": []
+      },
+      "parts": [
+        {
+          "type": "text",
+          "content": "",
+          "runId": "uuid-1",
+          "isFinal": true
+        },
+        {
+          "type": "tool_call",
+          "toolCallId": "call-ask",
+          "toolName": "internaltools__ask_user_question",
+          "args": "{\"user_intent\": \"The user wants a report but did not say which region.\", \"questions\": [{\"question\": \"Which region should the report cover?\", \"options\": [{\"label\": \"North America\"}, {\"label\": \"Europe\"}, {\"label\": \"Asia Pacific\"}, {\"label\": \"Enter a region\", \"isUserInput\": true}], \"multiSelect\": false}]}",
+          "status": "completed",
+          "runId": "uuid-1",
+          "argsSummary": "Ask User Question — user_intent: \"The user wants a report but did not say which region.\", questions: [1 item]",
+          "resultPreview": "{\"name\": \"ask_user_question\", \"userIntent\": \"The user wants a report but did not say which region.\", \"questions\": [{\"uuid\": \"uuid-4\", \"question\": \"Which region should the report cover?\", \"options\": [{\"id\": \"opt_north_america\", \"label\": \"North America\", \"isUserInput\": false}, {\"id\": \"opt_europe\", \"label\": \"Europe\", \"isUserInput\": false}, {\"id\": \"opt_asia_pacific\", \"label\": \"Asia Pacific\", \"isUserInput\": false}, {\"id\": \"opt_enter_a_region\", \"label\": \"Enter a region\", \"isUserInput\": true}], \"multiSelect\": false}]}",
+          "resultSummary": "Completed successfully"
+        }
+      ],
+      "_id": "oid-6",
+      "createdAt": "<timestamp>",
+      "updatedAt": "<timestamp>",
+      "feedback": [],
+      "attachments": [],
+      "referenceData": [],
+      "tools": [],
+      "reasoning": []
+    }
+  ]
+}

@@ -16,6 +16,13 @@ describe('WebSearchApi — a failed read or save', () => {
     expect((await WebSearchApi.getConfig()).settings).toBeUndefined();
   });
 
+  it('toasts a failed read unless the caller asks for a quiet one', async () => {
+    client.get.mockResolvedValue({ data: { status: 'success', providers: [] } });
+    await WebSearchApi.getConfig();
+    await WebSearchApi.getConfig({ suppressErrorToast: true });
+    expect(client.get.mock.calls.map((call) => call[1]?.suppressErrorToast)).toEqual([undefined, true]);
+  });
+
   it('an unsuccessful read gives no settings either', async () => {
     client.get.mockResolvedValue({ data: { status: 'error', message: 'nope' } });
     expect((await WebSearchApi.getConfig()).settings).toBeUndefined();

@@ -97,6 +97,8 @@ export type ConnectorType =
   | 'discord'
   | 'posthog'
   | 'brave'
+  // A repository the run fetched (ADR-RUN-01 D3): its files are cited as sources
+  | 'repository'
   | 'stripe'
   | 'paypal'
   | 'vercel'
@@ -113,6 +115,7 @@ export type ConnectorType =
   | 'fathom'
   | 'lucid'
   | 'miro'
+  | 'canva'
   | 'instantly'
   | 'apollo'
   | 'zapmail'
@@ -217,6 +220,7 @@ export const CONNECTOR_ICONS: Record<ConnectorType, { svg: string | null; fallba
   'discord': { svg: null, fallback: 'forum' },
   'posthog': { svg: svg('posthog'), fallback: 'insights' },
   'brave': { svg: svg('brave'), fallback: 'travel_explore' },
+  'repository': { svg: null, fallback: 'code' },
   'stripe': { svg: svg('stripe'), fallback: 'payments' },
   'paypal': { svg: svg('paypal'), fallback: 'payments' },
   'vercel': { svg: svg('vercel'), fallback: 'code' },
@@ -234,6 +238,7 @@ export const CONNECTOR_ICONS: Record<ConnectorType, { svg: string | null; fallba
   'fathom': { svg: svg('fathom'), fallback: 'videocam' },
   'lucid': { svg: svg('lucid'), fallback: 'schema', needDarkModeInvert: true },
   'miro': { svg: svg('miro'), fallback: 'dashboard', needDarkModeInvert: true },
+  'canva': { svg: svg('canva'), fallback: 'palette' },
   'instantly': { svg: svg('instantly'), fallback: 'mail' },
   'apollo': { svg: svg('apollo'), fallback: 'search' },
   'zapmail': { svg: svg('zapmail'), fallback: 'mail', needDarkModeInvert: true },
@@ -318,6 +323,7 @@ const FUZZY_MATCH_RULES: Array<[string, ConnectorType, boolean?]> = [
   ['fathom', 'fathom', true],
   ['lucid', 'lucid'],
   ['miro', 'miro'],
+  ['canva', 'canva'],
   ['instantly', 'instantly', true],
   ['apollo', 'apollo', true],
   ['zapmail', 'zapmail', true],

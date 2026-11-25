@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React from 'react';
 import { useTranslation } from 'react-i18next';
 import { Flex, Box, Text, Button } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
@@ -33,7 +33,6 @@ export function PasswordSecuritySection({
   onSetPasswordClick,
 }: PasswordSecuritySectionProps) {
   const { t } = useTranslation();
-  const [btnHovered, setBtnHovered] = useState(false);
 
   return (
     <SettingsSection title={t('workspace.profile.passwordSecurity.title')}>
@@ -88,13 +87,9 @@ export function PasswordSecuritySection({
         <Button
           type="button"
           onClick={hasPassword ? onChangePasswordClick : onSetPasswordClick}
-          onMouseEnter={() => setBtnHovered(true)}
-          onMouseLeave={() => setBtnHovered(false)}
-          variant='solid'
-          size='2'
-          style={{
-            backgroundColor: btnHovered ? 'var(--slate-a4)' : 'var(--slate-a3)',
-          }}
+          variant="soft"
+          color="gray"
+          size="2"
         >
           {t(
             hasPassword

@@ -32,6 +32,7 @@ import {
   CHAT_STREAM_ERROR_MESSAGES,
   STREAM_ERROR_MESSAGES,
   StreamError,
+  StreamIdleError,
   streamFailure,
   streamHttpError,
 } from './stream-errors';
@@ -43,7 +44,23 @@ import {
 import { getApiBaseUrl } from '@/lib/utils/api-base-url';
 import { streamingFetch, isElectron } from '@/lib/electron';
 import { generateRequestId } from '@/lib/utils/request-id';
+import { uiLanguageHeader } from './ui-language';
 import { busyMessage, parseRetryAfter } from './api-error';
+
+/**
+ * WP-100: the revision of the durable stream's frames this app reads (`projection/frame-version.ts`): version 2 adds
+ * the typed outcome to a run's failure and pushes its spend. A server that does not know the header ignores it.
+ */
+export const FRAMES_HEADER = 'X-PipesHub-Frames';
+export const FRAMES_VERSION = '2';
+
+/**
+ * What every stream request says of this app: the person's PipesHub language (G-52, C20.53), which a run answers in
+ * unless they write in another, and the frames it reads (WP-100).
+ */
+export function streamClientHeaders(): Record<string, string> {
+  return { ...uiLanguageHeader(), [FRAMES_HEADER]: FRAMES_VERSION };
+}
 
 // Default to '' (same origin) rather than `undefined`, because template-string
 // concatenation like `${API_BASE_URL}${url}` would otherwise stringify
@@ -182,6 +199,7 @@ export async function streamRequest(
       headers: {
         'Content-Type': 'application/json',
         'x-request-id': generateRequestId(),
+        ...streamClientHeaders(),
         ...(token && { Authorization: `Bearer ${token}` }),
       },
       body: JSON.stringify(body),
@@ -244,6 +262,8 @@ export function createStreamController(): {
 export interface SSEEvent<T = unknown> {
   event: string;
   data: T;
+  /** The frame's `id:` line, when the server sent one (resume with `Last-Event-ID`). */
+  id?: string;
 }
 
 /**
@@ -271,7 +291,7 @@ function parseSSEBuffer(buffer: string): {
   const complete: SSEEvent[] = [];
   const lines = buffer.split('\n');
 
-  let currentEvent: { event?: string; data?: string } = {};
+  let currentEvent: { event?: string; data?: string; id?: string } = {};
   let i = 0;
   let lastCompleteLineIndex = -1;
 
@@ -287,6 +307,7 @@ function parseSSEBuffer(buffer: string): {
           complete.push({
             event: currentEvent.event || 'message',
             data: JSON.parse(currentEvent.data),
+            ...(currentEvent.id !== undefined ? { id: currentEvent.id } : {}),
           });
         } catch (e) {
           console.error('Failed to parse SSE data:', currentEvent.data, e);
@@ -312,6 +333,12 @@ function parseSSEBuffer(buffer: string): {
     if (field === 'data') {
       // A frame may carry several data lines; the SSE format joins them with a newline.
       currentEvent.data = currentEvent.data === undefined ? value : `${currentEvent.data}\n${value}`;
+      i++;
+      continue;
+    }
+
+    if (line.startsWith('id:')) {
+      currentEvent.id = line.substring(line.startsWith('id: ') ? 4 : 3).trim();
       i++;
       continue;
     }
@@ -362,6 +389,7 @@ export async function streamSSERequest<T = unknown>(
       method: 'POST',
       headers: {
         'x-request-id': generateRequestId(),
+        ...streamClientHeaders(),
         'Content-Type': 'application/json',
         'Accept': 'text/event-stream',
         'client-name': 'pipeshub-ai',
@@ -428,6 +456,8 @@ export interface SSEGetOptions<T = unknown> {
   /** Extra request headers, e.g. `Last-Event-ID` for resume on reconnect. */
   headers?: Record<string, string>;
   signal?: AbortSignal;
+  /** The server accepted the stream (2xx), before any frame arrives. `streamSSEGet` only. */
+  onOpen?: () => void;
   /**
    * Abort the stream if no bytes arrive for this long ONCE STREAMING HAS BEGUN
    * (i.e. between SSE events, after the response headers arrive). The server
@@ -440,6 +470,42 @@ export interface SSEGetOptions<T = unknown> {
 }
 
 const DEFAULT_UPLOAD_IDLE_TIMEOUT_MS = 60_000;
+
+/**
+ * An abort signal chained to the caller's, plus a timer that aborts it when no
+ * bytes arrive for `idleTimeoutMs`. Callers arm it only once streaming has begun.
+ */
+function idleWatchdog(signal: AbortSignal | undefined, idleTimeoutMs: number | undefined) {
+  const controller = new AbortController();
+  let timedOut = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const onExternalAbort = () => controller.abort();
+  if (signal) {
+    if (signal.aborted) controller.abort();
+    else signal.addEventListener('abort', onExternalAbort, { once: true });
+  }
+  const clear = () => {
+    if (timer) clearTimeout(timer);
+    timer = undefined;
+  };
+  return {
+    signal: controller.signal,
+    abort: () => controller.abort(),
+    timedOut: () => timedOut,
+    reset: () => {
+      if (idleTimeoutMs === undefined) return;
+      clear();
+      timer = setTimeout(() => {
+        timedOut = true;
+        controller.abort();
+      }, idleTimeoutMs);
+    },
+    dispose: () => {
+      clear();
+      if (signal) signal.removeEventListener('abort', onExternalAbort);
+    },
+  };
+}
 
 /** Shown per file in the upload tracker when the server goes quiet mid-stream. */
 export const UPLOAD_STALLED_MESSAGE =
@@ -465,14 +531,7 @@ export async function streamSSEUpload<T = unknown>(
     idleTimeoutMs = DEFAULT_UPLOAD_IDLE_TIMEOUT_MS,
   } = options;
 
-  // Own controller so we can abort on idle timeout; chained to any caller signal.
-  const controller = new AbortController();
-  let idleTimedOut = false;
-  const onExternalAbort = () => controller.abort();
-  if (signal) {
-    if (signal.aborted) controller.abort();
-    else signal.addEventListener('abort', onExternalAbort, { once: true });
-  }
+  const watchdog = idleWatchdog(signal, idleTimeoutMs);
 
   let responseStarted = false;
   let callbackFailed = false;
@@ -483,18 +542,6 @@ export async function streamSSEUpload<T = unknown>(
       callbackFailed = true;
       throw callbackError;
     }
-  };
-  let idleTimer: ReturnType<typeof setTimeout> | undefined;
-  const resetIdle = () => {
-    if (idleTimer) clearTimeout(idleTimer);
-    idleTimer = setTimeout(() => {
-      idleTimedOut = true;
-      controller.abort();
-    }, idleTimeoutMs);
-  };
-  const clearIdle = () => {
-    if (idleTimer) clearTimeout(idleTimer);
-    idleTimer = undefined;
   };
 
   try {
@@ -508,12 +555,13 @@ export async function streamSSEUpload<T = unknown>(
       method: 'POST',
       headers: {
         'x-request-id': generateRequestId(),
+        ...streamClientHeaders(),
         Accept: 'text/event-stream',
         ...(extraHeaders || {}),
         ...(token && { Authorization: `Bearer ${token}` }),
       },
       body: formData,
-      signal: controller.signal,
+      signal: watchdog.signal,
     };
 
     // Do NOT arm the idle watchdog here. Until the server emits its first SSE
@@ -545,7 +593,7 @@ export async function streamSSEUpload<T = unknown>(
     // from here the server heartbeats every ~15s, so silence beyond
     // `idleTimeoutMs` means the stream died. This bounds the headers->first-byte
     // gap and every inter-event gap, but never the upload itself.
-    resetIdle();
+    watchdog.reset();
 
     const decoder = new TextDecoder();
     let buffer = '';
@@ -553,7 +601,7 @@ export async function streamSSEUpload<T = unknown>(
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
-      resetIdle();
+      watchdog.reset();
       buffer += decoder.decode(value, { stream: true });
       const { complete, remaining } = parseSSEBuffer(buffer);
       for (const event of complete) {
@@ -571,7 +619,7 @@ export async function streamSSEUpload<T = unknown>(
     // The caller's own handler failed, not the connection: close the stream
     // and hand that error back as it is.
     if (callbackFailed) {
-      controller.abort();
+      watchdog.abort();
       onError(error instanceof Error ? error : new Error(String(error)));
       return;
     }
@@ -581,7 +629,7 @@ export async function streamSSEUpload<T = unknown>(
       onError(error);
       return;
     }
-    if (idleTimedOut) {
+    if (watchdog.timedOut()) {
       onError(new StreamError(UPLOAD_STALLED_MESSAGE));
       return;
     }
@@ -593,8 +641,7 @@ export async function streamSSEUpload<T = unknown>(
     // "Failed to fetch" / "network error" text.
     onError(streamFailure(error, responseStarted));
   } finally {
-    clearIdle();
-    if (signal) signal.removeEventListener('abort', onExternalAbort);
+    watchdog.dispose();
   }
 }
 
@@ -610,7 +657,8 @@ export async function streamSSEGet<T = unknown>(
   url: string,
   options: SSEGetOptions<T>,
 ): Promise<void> {
-  const { onEvent, onError, headers: extraHeaders, signal } = options;
+  const { onEvent, onError, onOpen, headers: extraHeaders, signal, idleTimeoutMs } = options;
+  const watchdog = idleWatchdog(signal, idleTimeoutMs);
 
   let responseStarted = false;
   try {
@@ -624,11 +672,12 @@ export async function streamSSEGet<T = unknown>(
       method: 'GET',
       headers: {
         'x-request-id': generateRequestId(),
+        ...streamClientHeaders(),
         Accept: 'text/event-stream',
         ...(extraHeaders || {}),
         ...(token && { Authorization: `Bearer ${token}` }),
       },
-      signal,
+      signal: watchdog.signal,
     };
 
     const response = isElectron()
@@ -644,6 +693,8 @@ export async function streamSSEGet<T = unknown>(
     if (!reader) {
       throw new Error('No response body available for streaming');
     }
+    onOpen?.();
+    watchdog.reset();
 
     const decoder = new TextDecoder();
     let buffer = '';
@@ -651,6 +702,7 @@ export async function streamSSEGet<T = unknown>(
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
+      watchdog.reset();
       buffer += decoder.decode(value, { stream: true });
       const { complete, remaining } = parseSSEBuffer(buffer);
       for (const event of complete) {
@@ -665,9 +717,15 @@ export async function streamSSEGet<T = unknown>(
       onEvent(event as SSEEvent<T>);
     }
   } catch (error) {
+    if (watchdog.timedOut()) {
+      onError(new StreamIdleError(STREAM_ERROR_MESSAGES.interrupted));
+      return;
+    }
     if (error instanceof Error && error.name === 'AbortError') {
       return;
     }
     onError(streamFailure(error, responseStarted));
+  } finally {
+    watchdog.dispose();
   }
 }

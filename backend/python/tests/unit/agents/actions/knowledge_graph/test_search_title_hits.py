@@ -106,7 +106,8 @@ class _Rendering:
             self.lookup.return_value = self.titles or []
         enter(patch(f"{mod}.find_unindexed_matches", self.lookup))
         if self.max_chars is not None:
-            enter(patch(f"{mod}.search_max_chars", return_value=self.max_chars))
+            # The search's size comes from its response-format budget (search_budget.py) on this line.
+            enter(patch("app.agents.actions.knowledge_graph.ops.search_budget.search_max_chars", return_value=self.max_chars))
         return self
 
     def __exit__(self, *exc: object) -> None:

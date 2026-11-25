@@ -13,8 +13,12 @@ on:
       - 'backend/nodejs/apps/.mocharc.yaml'
       - 'backend/nodejs/apps/.c8rc.json'
       - 'backend/python/app/**'
+      - 'backend/python/harness_core/**'
+      - 'backend/python/harness_engines/**'
+      - 'scripts/engines/**'
       - 'backend/python/tests/**'
       - 'backend/python/pyproject.toml'
+      - 'backend/python/requirements/**'
       - 'backend/python/pytest.ini'
       - 'backend/python/.coveragerc'
       # The sandbox-live job builds the sandbox image from it.
@@ -87,6 +91,13 @@ jobs:
     needs: changes
     if: needs.changes.outputs.node_unit == 'true'
     runs-on: ${{ matrix.os }}
+    # The coverage gate counts the Mongo and Redis adapters through their
+    # itests, so this job needs the stores the itest jobs use.
+    services:
+      redis:
+        image: redis:7.4.12-bookworm@sha256:2e3eb11462c4e3759e6972678dd051d150ff54b1e60714b3c33b701260172a90
+        ports:
+          - 6379:6379
 
     strategy:
       fail-fast: false
@@ -97,6 +108,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up Node.js ${{ matrix.node-version }}
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -108,12 +121,39 @@ jobs:
       - name: Install dependencies
         run: |
           cd backend/nodejs/apps
-          npm ci
+          npm ci --ignore-scripts
 
-      - name: Run unit tests with coverage
+      - name: Start a MongoDB replica set
         run: |
-          cd backend/nodejs/apps
-          npx cross-env TS_NODE_PROJECT=tsconfig.test.json c8 --check-coverage --lines 89 --functions 90 --branches 80 --statements 89 --reporter=text --reporter=lcov mocha --parallel --jobs 4
+          # mongod keeps a file open per collection and index; at Docker's default of 1024 it crashed mid-itest.
+          docker run -d --name mongo --ulimit nofile=64000:64000 -p 27017:27017 mongo:8.0.17 mongod --replSet rs0 --bind_ip_all
+          for _ in $(seq 1 30); do
+            docker exec mongo mongosh --quiet --eval 'db.runCommand({ ping: 1 }).ok' >/dev/null 2>&1 && break
+            sleep 2
+          done
+          docker exec mongo mongosh --quiet --eval 'rs.initiate({ _id: "rs0", members: [{ _id: 0, host: "localhost:27017" }] })'
+          for _ in $(seq 1 30); do
+            [ "$(docker exec mongo mongosh --quiet --eval 'db.hello().isWritablePrimary')" = "true" ] && exit 0
+            sleep 2
+          done
+          docker logs mongo
+          exit 1
+
+      # Mocha runs the tests through ts-node without type-checking them; the
+      # count of type errors in the test tree may only go down.
+      - name: Type-check the test tree against its baseline
+        working-directory: backend/nodejs/apps
+        run: npm run typecheck:tests
+
+      # Unit tests, then the replica-set and Redis itests, then one threshold
+      # check (.c8rc.json) on the coverage of both. Unit tests alone must hold
+      # the floor for domain/ and application/ (`coverage:logic`).
+      - name: Run unit tests and store itests with the coverage gate
+        working-directory: backend/nodejs/apps
+        env:
+          MONGO_IT_URI: mongodb://localhost:27017/coverage_gate?replicaSet=rs0&directConnection=true
+          REDIS_IT_URL: redis://127.0.0.1:6379
+        run: npm run test:coverage-gate
 
       - name: Generate Node.js coverage reports
         if: ${{ always() && inputs.generate-coverage-reports == true }}
@@ -168,7 +208,7 @@ jobs:
       matrix:
         # Must list exactly the shards in scripts/unit_shards.py, in its order;
         # scripts/test_unit_shards.py checks this.
-        shard: [connectors-a, connectors-b, connectors-c, agents, services, modules, core]
+        shard: [connectors-a, connectors-b, connectors-c, agents, services, modules, harness, harness-contracts, core]
 
     steps:
       - name: Checkout code
@@ -215,19 +255,15 @@ jobs:
           fi
           sudo apt-get install -y --no-install-recommends "${packages[@]}"
 
-      - name: Install uv
-        run: pip install uv
-
       - name: Install dependencies
         run: |
           cd backend/python
-          uv pip install --system pytest pytest-asyncio pytest-timeout coverage
           # `.[dev]`, not a bare `.`: the dev extra already declares
           # fakeredis[lua], which the FakeClusterRedis contract suites (the
           # CROSSSLOT/multi-key guards for MemoryDB readiness) need. Without
           # it those suites skip and the cluster-safety checks never actually
           # run here. It also brings pytest-xdist and pytest-cov.
-          uv pip install --system -e ".[dev]"
+          requirements/install.sh dev --project . --editable
 
       - name: Check whether this shard runs the BM25 golden test
         id: bm25
@@ -320,7 +356,7 @@ jobs:
         env:
           PYTHONPATH: ${{ github.workspace }}/backend:${{ github.workspace }}/backend/db
         run: |
-          uv pip install --system -r requirements.txt
+          pip install --require-hashes --no-deps -r requirements-test.lock
           pytest -p no:cacheprovider tests/test_kv_access_map.py -m "not postgres" --timeout=300 -q
 
       # The real odt and rtf conversions run again with a report of their own, so a LibreOffice the
@@ -378,7 +414,7 @@ jobs:
           python-version: '3.12'
 
       - name: Install coverage
-        run: pip install coverage
+        run: backend/python/requirements/install.sh tools
 
       - name: Download coverage data
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -389,9 +425,29 @@ jobs:
 
       - name: Check coverage
         working-directory: backend/python
+        env:
+          COVERAGE_THRESHOLD: ${{ inputs.python-coverage-threshold || 89.8 }}
         run: |
           coverage combine
-          coverage report --fail-under=${{ inputs.python-coverage-threshold || 89.8 }}
+          coverage report --fail-under="$COVERAGE_THRESHOLD"
+
+      - name: Download test timings
+        if: ${{ !cancelled() }}
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: py-junit-*
+          path: junit
+
+      # The shard balance on this run's own timings, not only on the committed snapshot: a shard whose report is
+      # missing (it ran out of time) reads as unmeasured and fails here too. Each shard's minutes are read at the
+      # committed runner speed (unit_shards.py runner_speeds), so a slow runner does not read as a lopsided shard.
+      - name: Shards stay balanced on this run's timings
+        if: ${{ !cancelled() }}
+        run: |
+          shopt -s nullglob
+          reports=(junit/*/*.xml)
+          python3 scripts/unit_shards.py durations --source "unit-test run ${{ github.run_id }}" "${reports[@]}" > "$RUNNER_TEMP/durations.json"
+          python3 scripts/unit_shards.py balance --durations "$RUNNER_TEMP/durations.json"
 
       - name: Generate coverage reports
         if: ${{ always() && inputs.generate-coverage-reports == true }}
@@ -442,18 +498,24 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Install uv
-        run: pip install uv
-
       - name: Install dependencies
         run: |
           cd backend/python
-          uv pip install --system pytest pytest-asyncio pytest-timeout
-          uv pip install --system -e ".[dev]"
+          requirements/install.sh dev --project . --editable
 
       - name: Run golden agent evals
         working-directory: backend/python
-        run: pytest tests/evals -v
+        run: pytest tests/evals tests/harness_replay -v
+
+      # The harness's guard suites: one port registry with a contract suite per
+      # port (C-2), the flag matrix (C-16), the slow-lane policy (C-25), the
+      # codegen and import-boundary checks, and the durable goldens. They sit
+      # outside tests/unit, so no shard runs them. The Docker cases run in
+      # agent-harness-infrastructure.yml; slow ones are gate runs.
+      - name: Run the cohesion and contract suites
+        if: ${{ !cancelled() }}
+        working-directory: backend/python
+        run: pytest tests/cohesion tests/contracts -m "not docker and not slow" -v
 
   # backend/python/tests/integration holds 24 files and only the three under
   # redis_cluster were run by any workflow. Despite the name most need no
@@ -488,14 +550,10 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Install uv
-        run: pip install uv
-
       - name: Install dependencies
         run: |
           cd backend/python
-          uv pip install --system pytest pytest-asyncio pytest-timeout
-          uv pip install --system -e ".[dev]"
+          requirements/install.sh dev --project . --editable
 
       - name: Run Python integration tests
         working-directory: backend/python
@@ -555,14 +613,10 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libmariadb-dev
 
-      - name: Install uv
-        run: pip install uv
-
       - name: Install dependencies
         run: |
           cd backend/python
-          uv pip install --system pytest pytest-asyncio pytest-timeout
-          uv pip install --system -e ".[dev]"
+          requirements/install.sh dev --project . --editable
 
       - name: Run the live Docker tests
         working-directory: backend/python
@@ -596,7 +650,7 @@ jobs:
         shard: [1, 2, 3]
     services:
       redis:
-        image: redis:7.4-bookworm
+        image: redis:7.4.12-bookworm@sha256:2e3eb11462c4e3759e6972678dd051d150ff54b1e60714b3c33b701260172a90
         ports:
           - 6379:6379
         options: >-
@@ -616,14 +670,10 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Install uv
-        run: pip install uv
-
       - name: Install dependencies
         run: |
           cd backend/python
-          uv pip install --system pytest pytest-asyncio pytest-timeout pytest-xdist
-          uv pip install --system -e ".[dev]"
+          requirements/install.sh dev --project . --editable
 
       - name: Run the spend-safety suites on a real Redis
         working-directory: backend/python
@@ -683,14 +733,10 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Install uv
-        run: pip install uv
-
       - name: Install dependencies
         run: |
           cd backend/python
-          uv pip install --system pytest pytest-asyncio pytest-timeout
-          uv pip install --system -e ".[dev]"
+          requirements/install.sh dev --project . --editable
 
       - name: Start Redis Cluster
         working-directory: deployment/docker-compose
@@ -715,7 +761,7 @@ jobs:
 
       - name: Install Node dependencies
         working-directory: backend/nodejs/apps
-        run: npm ci
+        run: npm ci --ignore-scripts
 
       # The Node provider has cluster-specific code the Python suite cannot
       # cover: ioredis' `Cluster.scan()` reaches one node only, so

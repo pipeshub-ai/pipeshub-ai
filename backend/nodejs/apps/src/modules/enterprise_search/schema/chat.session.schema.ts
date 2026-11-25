@@ -26,6 +26,38 @@ const chatSessionSchema = new Schema<IChatSessionDocument>(
     // Monotonic counter used solely to allocate message `seq` values; never
     // read as a message count (messages can be soft/hard-removed leaving gaps).
     nextSeq: { type: Number, default: 0, select: false },
+    // A session cannot switch execution semantics between turns. Legacy
+    // rows remain unpinned until first admission through either path.
+    harnessVersion: {
+      type: String,
+      enum: ['legacy', 'durable-v1'],
+      select: false,
+    },
+    // SLASH3 `/engine`: this chat's coding engine (a kind or `none`); absent: the person's or the org's.
+    codingEngine: { type: String, select: false },
+    // C14.01: the engine version (`kind@version`) the chat's engine turns run on, until `/engine` moves it.
+    codingEnginePin: { type: String, select: false },
+    // GIT-FLOW (WP-26): the GitHub repository the chat's engine works on, as its owner chose it.
+    repository: {
+      type: {
+        _id: false,
+        url: { type: String, required: true, maxlength: 2048 },
+        baseRef: { type: String, maxlength: 200 },
+        toolsetInstanceId: { type: String, required: true, maxlength: 128 },
+      },
+      select: false,
+    },
+    // The messages the durable harness has accounted for (imported or written
+    // by its runs); a later durable run imports what legacy wrote after it.
+    harnessLedger: {
+      type: {
+        _id: false,
+        seq: { type: Number, required: true },
+        digest: { type: String, required: true },
+        diverged: { type: Boolean },
+      },
+      select: false,
+    },
 
     userId: { type: Schema.Types.ObjectId, required: true, index: true },
     orgId: { type: Schema.Types.ObjectId, required: true, index: true },
@@ -46,6 +78,13 @@ const chatSessionSchema = new Schema<IChatSessionDocument>(
     ],
     isDeleted: { type: Boolean, default: false },
     deletedBy: { type: Schema.Types.ObjectId },
+    // Written with `isDeleted` by every delete that enqueues erasure (E7B). A
+    // deleted session without it was deleted before erasure existed: only the
+    // operator's backfill (enterprise_search/ops/erasure-backfill-cli) erases those, never a sweep.
+    erasureRequestedAt: { type: Number, select: false },
+    // ADR-UI-01 D2: when each person last opened the session (`{userId: ms}`), for "finished, not seen yet" on their
+    // chat list. Never selected with the session: one person's marks are not another's to read.
+    harnessSeen: { type: Schema.Types.Mixed, select: false },
     isArchived: { type: Boolean, default: false },
     archivedBy: { type: Schema.Types.ObjectId },
     lastActivityAt: { type: Number, default: Date.now },
@@ -134,6 +173,15 @@ chatSessionSchema.index({ userId: 1, agentKey: 1 });
 chatSessionSchema.index({ isShared: 1 });
 chatSessionSchema.index({ projectId: 1, orgId: 1, isDeleted: 1, lastActivityAt: -1 });
 chatSessionSchema.index({ lastActivityAt: -1 });
+// Only sessions whose erasure is still under way carry the marker (erasure
+// deletes the document), so the sweeper's lost-enqueue pass reads a small index.
+chatSessionSchema.index(
+  { erasureRequestedAt: 1, _id: 1 },
+  {
+    name: 'erasure_requested',
+    partialFilterExpression: { erasureRequestedAt: { $exists: true } },
+  },
+);
 
 export const ChatSession: Model<IChatSessionDocument> =
   mongoose.model<IChatSessionDocument>('ChatSession', chatSessionSchema);

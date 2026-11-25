@@ -66,6 +66,7 @@ async def test_a_waiter_is_answered_at_the_request_deadline_when_it_comes_before
     with deadline_after(0.05), pytest.raises(KnowledgeHubListingBusy) as busy:
         await p._kh_query(TEXT)
     assert busy.value.timed_out and "took too long" in str(busy.value)
+    # wall-clock-ok: the 0.05 s deadline against the 30 s plan wait it must not wait out
     assert asyncio.get_running_loop().time() - started < 5  # the deadline, not the 30 s plan wait
     assert len(client.calls) == 1 and client.running == 1  # the waiter planned nothing; the planning goes on
     client.release.set()

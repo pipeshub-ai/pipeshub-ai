@@ -16,6 +16,7 @@ import pytest
 from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
 from app.services.graph_db.common.utils import PermittedEntityRows
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
+from tests.support.settle import SETTLE_S
 
 TOPIC_REF = {"id": "t1", "type": "topic", "connectorIds": ["c1"]}
 RECORD_REF = {"id": "r1", "type": "record", "connectorIds": ["c1"]}
@@ -281,7 +282,7 @@ class TestNeo4jEntityTypesRunConcurrently:
             if len(started) == len(refs):
                 all_started.set()
             # Sequential execution never gets here for the second statement.
-            await asyncio.wait_for(all_started.wait(), timeout=1)
+            await asyncio.wait_for(all_started.wait(), timeout=SETTLE_S)
             return []
 
         p = _neo4j([])

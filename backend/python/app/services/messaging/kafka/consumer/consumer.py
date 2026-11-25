@@ -1,6 +1,5 @@
 import asyncio
 import json
-import ssl
 import time
 from collections import deque
 from logging import Logger
@@ -15,7 +14,7 @@ from app.services.messaging import message_log
 from app.services.messaging.config import MessageHandler, StreamMessage, messaging_env
 from app.services.messaging.error_classifier import MessageErrorClassifier, MessageErrorType
 from app.services.messaging.interface.consumer import IMessagingConsumer
-from app.services.messaging.kafka.config.kafka_config import KafkaConsumerConfig
+from app.services.messaging.kafka.config.kafka_config import KafkaConsumerConfig, kafka_security_kwargs
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -114,18 +113,7 @@ class KafkaMessagingConsumer(IMessagingConsumer):
             'topics': kafka_config.topics  # Include topics in the dictionary
         }
 
-        # Add SSL/SASL configuration
-        if kafka_config.ssl:
-            config["ssl_context"] = ssl.create_default_context()
-            sasl_config = kafka_config.sasl or {}
-            if sasl_config.get("username"):
-                config["security_protocol"] = "SASL_SSL"
-                config["sasl_mechanism"] = sasl_config.get("mechanism", "SCRAM-SHA-512").upper()
-                config["sasl_plain_username"] = sasl_config["username"]
-                config["sasl_plain_password"] = sasl_config["password"]
-            else:
-                config["security_protocol"] = "SSL"
-
+        config.update(kafka_security_kwargs(ssl_enabled=kafka_config.ssl, sasl=kafka_config.sasl))
         return config
 
     # implementing abstract methods from IMessagingConsumer

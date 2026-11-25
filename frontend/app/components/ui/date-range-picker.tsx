@@ -3,6 +3,7 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { Flex, Box, Text, Button, Popover, IconButton, Tabs } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { useTranslation } from 'react-i18next';
 
 /**
  * Date filter type for the DateRangePicker component
@@ -186,6 +187,7 @@ export function DateRangePicker({
   triggerVariant = 'toolbar',
   summaryBelowTrigger = false,
 }: DateRangePickerProps) {
+  const { t } = useTranslation();
   const effectiveDateType = fixedDateType ?? dateType ?? defaultDateType;
 
   const [isOpen, setIsOpen] = useState(false);
@@ -668,7 +670,7 @@ export function DateRangePicker({
               return formatBoundaryForDisplay(primary, withTime);
             })()}
           </Text>
-          <MaterialIcon name="calendar_today" size={20} color="var(--slate-9)" />
+          <MaterialIcon name="calendar_today" size={20} color="var(--slate-11)" />
         </Flex>
 
         {withTime ? (
@@ -778,6 +780,7 @@ export function DateRangePicker({
           {/* Month navigation */}
           <Flex align="center" justify="between" style={{ marginBottom: '16px', padding: '4px 8px' }}>
             <IconButton
+              aria-label={t('common.previousMonth')}
               variant="outline"
               size="1"
               color="gray"
@@ -790,6 +793,7 @@ export function DateRangePicker({
               {MONTHS[currentMonth]} {currentYear}
             </Text>
             <IconButton
+              aria-label={t('common.nextMonth')}
               variant="outline"
               size="1"
               color="gray"

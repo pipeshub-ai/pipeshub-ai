@@ -26,7 +26,6 @@ on:
 
 permissions:
   contents: read
-  issues: write
 
 concurrency:
   group: post-release-probe
@@ -39,9 +38,15 @@ jobs:
   probe:
     name: Probe deployment
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Opens or updates the failure issue.
+      issues: write
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
       - name: Check the probe is configured
         id: cfg

@@ -48,6 +48,7 @@ import * as seam from '../../../src/libs/services/structured-logging';
 import { FakeBackend, Reply } from '../tokens_manager/routes/connectors-http-harness';
 import { registerUpstreams } from '../../../src/libs/http/upstream-call';
 import { registerAppUpstreams } from '../../../src/modules/tokens_manager/config/config';
+import { recordOrgHarnessReader } from '../../../src/modules/agent-harness/config';
 
 const JWT_SECRET = 'n4c-audit-jwt-secret';
 const SCOPED_SECRET = 'n4c-audit-scoped-secret';
@@ -70,6 +71,18 @@ const TEAM_NAME = 'Platform Guild';
 type Row = Record<string, any>;
 
 describe('org, team and service-account audit lines (HTTP)', function () {
+  // An upstream suite: it runs as a release without the agent harness does (compatibility profile, Labs off).
+  let savedHardened: string | undefined;
+  beforeEach(() => {
+    savedHardened = process.env.PIPESHUB_HARDENED;
+    delete process.env.PIPESHUB_HARDENED;
+    recordOrgHarnessReader(() => Promise.resolve(false));
+  });
+  afterEach(() => {
+    if (savedHardened === undefined) delete process.env.PIPESHUB_HARDENED;
+    else process.env.PIPESHUB_HARDENED = savedHardened;
+  });
+
   this.timeout(20000);
   const backend = new FakeBackend();
   let server: Server;

@@ -468,7 +468,7 @@ describe('ProjectService', () => {
         includeArchived: false,
       });
 
-      const match = countStub.firstCall.args[0][0].$match;
+      const match = countStub.firstCall.args[0][0]!.$match;
       expect(match.$or).to.deep.equal([
         { userId: new mongoose.Types.ObjectId(OWNER_ID) },
         { projectVisibility: 'project' },
@@ -716,7 +716,8 @@ describe('ProjectService', () => {
     const originalRs = process.env.REPLICA_SET_AVAILABLE;
 
     afterEach(() => {
-      process.env.REPLICA_SET_AVAILABLE = originalRs;
+      if (originalRs === undefined) delete process.env.REPLICA_SET_AVAILABLE;
+      else process.env.REPLICA_SET_AVAILABLE = originalRs;
     });
 
     it('throws ForbiddenError for a non-owner (editor) caller', async () => {

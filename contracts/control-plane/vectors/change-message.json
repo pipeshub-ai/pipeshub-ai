@@ -1,0 +1,49 @@
+{
+  "description": "A control-plane change event as it travels on the broker (CPD-6): topic control-plane-events, key the org, and the value bytes. Node's outbox dispatcher writes `envelope` as a JSON string, which the broker clients encode once more (`brokerValue`, the Redis Streams `value` field and the Kafka message value). Node's publisher must produce these bytes for `event`; the Python subscriber must read `event` from them.",
+  "cases": [
+    {
+      "id": "CM-1",
+      "event": {
+        "type": "cp.changed",
+        "orgId": "o1",
+        "revision": 1042,
+        "previous": 1041,
+        "touched": [
+          {
+            "kind": "policy-section",
+            "id": "approvals"
+          }
+        ],
+        "narrowing": false
+      },
+      "topic": "control-plane-events",
+      "key": "o1",
+      "envelope": "{\"eventType\":\"cp.changed\",\"payload\":{\"type\":\"cp.changed\",\"orgId\":\"o1\",\"revision\":1042,\"previous\":1041,\"touched\":[{\"kind\":\"policy-section\",\"id\":\"approvals\"}],\"narrowing\":false}}",
+      "brokerValue": "\"{\\\"eventType\\\":\\\"cp.changed\\\",\\\"payload\\\":{\\\"type\\\":\\\"cp.changed\\\",\\\"orgId\\\":\\\"o1\\\",\\\"revision\\\":1042,\\\"previous\\\":1041,\\\"touched\\\":[{\\\"kind\\\":\\\"policy-section\\\",\\\"id\\\":\\\"approvals\\\"}],\\\"narrowing\\\":false}}\""
+    },
+    {
+      "id": "CM-2",
+      "event": {
+        "type": "cp.changed",
+        "orgId": "org-7",
+        "revision": 3,
+        "previous": 2,
+        "touched": [
+          {
+            "kind": "ai-models",
+            "id": "llm"
+          },
+          {
+            "kind": "policy-section",
+            "id": "models"
+          }
+        ],
+        "narrowing": true
+      },
+      "topic": "control-plane-events",
+      "key": "org-7",
+      "envelope": "{\"eventType\":\"cp.changed\",\"payload\":{\"type\":\"cp.changed\",\"orgId\":\"org-7\",\"revision\":3,\"previous\":2,\"touched\":[{\"kind\":\"ai-models\",\"id\":\"llm\"},{\"kind\":\"policy-section\",\"id\":\"models\"}],\"narrowing\":true}}",
+      "brokerValue": "\"{\\\"eventType\\\":\\\"cp.changed\\\",\\\"payload\\\":{\\\"type\\\":\\\"cp.changed\\\",\\\"orgId\\\":\\\"org-7\\\",\\\"revision\\\":3,\\\"previous\\\":2,\\\"touched\\\":[{\\\"kind\\\":\\\"ai-models\\\",\\\"id\\\":\\\"llm\\\"},{\\\"kind\\\":\\\"policy-section\\\",\\\"id\\\":\\\"models\\\"}],\\\"narrowing\\\":true}}\""
+    }
+  ]
+}

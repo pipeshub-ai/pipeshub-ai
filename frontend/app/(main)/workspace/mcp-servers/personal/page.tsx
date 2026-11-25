@@ -9,6 +9,7 @@ import { ServiceGate } from '@/app/components/ui/service-gate';
 import {
   useFeatureFlagsStore,
   selectMcpEnabled,
+  selectFeatureFlagsKnown,
   selectFeatureFlagsLoaded,
 } from '@/lib/store/feature-flags-store';
 import { ConfirmationDialog, WorkspaceHeaderIconButton } from '../../components';
@@ -30,6 +31,8 @@ function PersonalMcpServersPageContent() {
   const searchParams = useSearchParams();
   const mcpEnabled = useFeatureFlagsStore(selectMcpEnabled);
   const flagsLoaded = useFeatureFlagsStore(selectFeatureFlagsLoaded);
+  // A failed read's stand-in never redirects: only an answer that says it is off (UIADOPT1-FU-1).
+  const flagsKnown = useFeatureFlagsStore(selectFeatureFlagsKnown);
   const store = useMcpPersonalStore();
   const [busyInstanceId, setBusyInstanceId] = useState<string | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
@@ -64,10 +67,10 @@ function PersonalMcpServersPageContent() {
   }, [t]);
 
   useEffect(() => {
-    if (flagsLoaded && !mcpEnabled) {
+    if (flagsKnown && !mcpEnabled) {
       router.replace('/workspace/general');
     }
-  }, [flagsLoaded, mcpEnabled, router]);
+  }, [flagsKnown, mcpEnabled, router]);
 
   useEffect(() => {
     if (!flagsLoaded || !mcpEnabled) return;

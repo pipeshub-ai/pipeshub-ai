@@ -14,7 +14,11 @@ from app.agents.mcp.client import (
     ToolListing,
     discovery_timeout,
 )
-from app.agents.mcp.errors import MCPInsufficientScopeError, is_http_unauthorized
+from app.agents.mcp.errors import (
+    MCPConnectTimeoutError,
+    MCPInsufficientScopeError,
+    is_http_unauthorized,
+)
 from app.agents.mcp.models import (
     MCPAuthMode,
     MCPServerConfig,
@@ -31,6 +35,7 @@ from app.agents.mcp.token_refresh import refresh_credential_record
 
 if TYPE_CHECKING:
     from app.config.configuration_service import ConfigurationService
+    from app.harness.mcp_runner.transport import RunnerTarget
 
 logger = logging.getLogger(__name__)
 
@@ -101,6 +106,7 @@ async def discover_tools(
     timeout_seconds: float | None = None,
     *,
     namespace: str | None = None,
+    runner: "RunnerTarget | None" = None,
 ) -> list[MCPToolInfo]:
     """Connect to `config`, list its tools, and return them namespaced for the agent loop.
 
@@ -111,20 +117,25 @@ async def discover_tools(
     Raises MCPConnectionError (including on timeout) — callers decide whether discovery
     failures are fatal (e.g. `includeTools=false` lets `/my-mcp-servers` skip this entirely).
     """
-    listing = await discover_tool_listing(config, credentials, timeout_seconds)
+    listing = await discover_tool_listing(config, credentials, timeout_seconds, runner=runner)
     return tool_infos_from_listing(listing.tools, config, namespace)
 
 
 async def discover_tool_listing(
     config: MCPServerConfig, credentials: dict[str, Any], timeout_seconds: float | None = None,
+    *, runner: "RunnerTarget | None" = None,
 ) -> ToolListing:
     """`discover_tools` before namespacing, with the server's instructions and cache hints."""
     env, headers = build_auth_env_and_headers(config, credentials)
-    manager = MCPClientManager(config, env=env, headers=headers)
+    # `runner` (P5.10): a STDIO server that runs in an MCP runner.
+    manager = MCPClientManager(config, env=env, headers=headers, runner=runner)
     timeout_seconds = timeout_seconds or discovery_timeout(config)
 
     try:
         return await asyncio.wait_for(manager.fetch_tool_listing(), timeout=timeout_seconds)
+    except MCPConnectTimeoutError:
+        # Also a TimeoutError: the server's own connect timeout, which already says how long it waited.
+        raise
     except asyncio.TimeoutError as e:
         raise MCPConnectionError(
             f"Timed out discovering tools for MCP instance {config.id} after {timeout_seconds:g}s"
@@ -230,21 +241,27 @@ async def _discover_listing_for_owner(
     *,
     timeout_seconds: float | None = None,
 ) -> tuple[ToolListing, dict[str, Any]]:
+    # Lazy: the runner routing imports this module.
+    from app.harness.mcp_runner.routing import stdio_target
+
     config = instance_config_from_dict(instance)
     auth_mode = instance.get("authMode", "")
     credentials = credentials_to_discovery_dict(auth_mode, auth)
     try:
-        return await discover_tool_listing(config, credentials, timeout_seconds), auth
+        runner = await stdio_target(config, credentials, tenant=config.org_id, owner=owner_id)
+        return await discover_tool_listing(config, credentials, timeout_seconds, runner=runner), auth
     except MCPConnectionError as exc:
         if auth_mode != MCPAuthMode.OAUTH.value or not is_http_unauthorized(exc):
             raise
     # DEBUG: the refresh's own `credential_refresh.end` says it happened, and how it went.
     logger.debug("The MCP server rejected discovery with HTTP 401; refreshing the token once", extra={"mcp_server_id": config.id})
     tokens = await refresh_credential_record(
-        config.id, owner_id, config_service, stale_access_token=credentials.get("accessToken"),
+        config.id, owner_id, config_service, stale_access_token=credentials.get("accessToken"), org_id=config.org_id,
     )
     refreshed = {**auth, "isAuthenticated": True, "oauthTokens": tokens.model_dump(by_alias=True, mode="json")}
-    listing = await discover_tool_listing(config, credentials_to_discovery_dict(auth_mode, refreshed), timeout_seconds)
+    credentials = credentials_to_discovery_dict(auth_mode, refreshed)
+    runner = await stdio_target(config, credentials, tenant=config.org_id, owner=owner_id)
+    listing = await discover_tool_listing(config, credentials, timeout_seconds, runner=runner)
     return listing, refreshed
 
 

@@ -113,7 +113,7 @@ export function CollectionRow({
         <Text
           size="1"
           style={{
-            color: 'var(--olive-9)',
+            color: 'var(--olive-11)',
             whiteSpace: 'nowrap',
             flexShrink: 0,
           }}

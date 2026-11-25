@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import contextvars
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Literal
 
 from app.agent_loop_lib.context.protection import current_request_text
 from app.agent_loop_lib.core.exceptions import (
@@ -24,6 +24,8 @@ from app.agent_loop_lib.tools.builtin.sandbox.input_staging import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from app.agent_loop_lib.agent.spec import AgentSpec
     from app.agent_loop_lib.core.types import AgentResult
     from app.agent_loop_lib.runtime.runtime import AgentRuntime
@@ -130,6 +132,10 @@ class AgentTool(Tool):
                 required=False, default=None,
             ),
         ]
+
+    def time_bound_s(self, arguments: Mapping[str, Any]) -> float | None | Literal["default"]:
+        # Waits on a domain agent's own loop, every step of which is bounded on its own.
+        return None
 
     @property
     def log_kind(self) -> str:

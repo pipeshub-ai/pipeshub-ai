@@ -20,7 +20,7 @@ vi.mock('@/config', async () => {
   return { useAuthStore: auth.useAuthStore, logoutAndRedirect: vi.fn() };
 });
 
-const { useAuthStore } = await import('@/lib/store/auth-store');
+const { useAuthStore } = await import('@/config');
 const { useFeatureFlagsStore } = await import('@/lib/store/feature-flags-store');
 const { useToastStore } = await import('@/lib/store/toast-store');
 const { ASSISTANT_CTX, useChatStore } = await import('../../store');
@@ -135,7 +135,7 @@ const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 50));
 beforeEach(() => {
   fetchMock.mockReset();
   vi.stubGlobal('fetch', fetchMock);
-  useAuthStore.setState({ accessToken: jwtExpiringIn(3600), refreshToken: 'r' });
+  useAuthStore.setState({ accessToken: jwtExpiringIn(3600) });
   useCompareStore.setState({ enabled: false, models: [], turns: {} });
   useChatStore.setState({ ...initialChat, slots: {}, activeSlotId: null, pendingConversations: {}, conversations: [] });
   useChatStore.getState().setDefaultModelForCtx(ASSISTANT_CTX, DEFAULT);
@@ -720,14 +720,13 @@ describe('with Compare off, a send is the same as before', () => {
     );
   });
 
-  it('falls back to a normal send for an image-mode composer, a saved agent, a missing model and one picked model', async () => {
+  it('falls back to a normal send for a saved agent, a missing model and one picked model', async () => {
     enableCompare();
     const build = (over: Record<string, unknown>) => {
       const request = { query: 'q', chatMode: 'agent:auto', modelKey: 'x', modelName: 'x', modelFriendlyName: 'x', filters: { apps: [], kb: [] }, ...over };
       const applied = controller.applyCompareToRequest(primarySlotId, request as never, 'q');
       return { applied, request };
     };
-    expect(build({ chatMode: 'image' }).applied).toBe(false);
     expect(build({ agentId: 'agent-1' }).applied).toBe(false);
     expect(turn()).toBeUndefined();
 

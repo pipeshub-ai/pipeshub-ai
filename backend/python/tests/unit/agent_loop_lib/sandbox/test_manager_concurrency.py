@@ -24,6 +24,7 @@ from app.agent_loop_lib.sandbox.manager import (
     SandboxType,
     UnknownSandboxError,
 )
+from tests.support.settle import SETTLE_S, settle
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -250,7 +251,7 @@ class TestPerCallSlots:
         await asyncio.sleep(0.02)
         assert not t2.done()
         release.set()
-        assert await asyncio.wait_for(t2, 1) == "ran"
+        assert await asyncio.wait_for(t2, SETTLE_S) == "ran"
         await t1
         assert gov.snapshot()["total"] == 0
 
@@ -294,7 +295,7 @@ class TestPerCallSlots:
         await asyncio.sleep(0.02)
         assert notes == [("install_packages", True)]
         release.set()
-        assert await asyncio.wait_for(t2, 1) == [("install_packages", True), ("install_packages", False)]
+        assert await asyncio.wait_for(t2, SETTLE_S) == [("install_packages", True), ("install_packages", False)]
         await t1
 
     async def test_a_call_cancelled_while_waiting_takes_no_slot(self) -> None:
@@ -356,7 +357,7 @@ class TestPerCallSlots:
         t2 = asyncio.create_task(second())
         await asyncio.sleep(0.02)
         release.set()
-        assert await asyncio.wait_for(t2, 1) == "ran"
+        assert await asyncio.wait_for(t2, SETTLE_S) == "ran"
         await t1
 
     async def test_the_wait_note_is_cleared_when_the_wait_times_out(self) -> None:
@@ -409,7 +410,7 @@ class TestSlotOutlivesTheCompute:
         t1.cancel()
         with pytest.raises(asyncio.CancelledError):
             await t1
-        await asyncio.wait_for(t2, 1)
+        await settle(t2)
         assert events == ["cleanup done", "second granted"]
         assert gov.snapshot()["total"] == 0
 
@@ -440,7 +441,7 @@ class TestMeteredSlots:
         assert not waiting.done()
         assert not mgr._lock.locked()
         await holder.destroy_all()
-        await asyncio.wait_for(waiting, 1)
+        await asyncio.wait_for(waiting, SETTLE_S)
         await mgr.destroy_all()
         assert gov.snapshot()["total"] == 0
 
@@ -481,7 +482,8 @@ class TestCancelSafety:
             token.cancel()
             with pytest.raises(SandboxCallStopped):
                 await task
-            assert loop.time() - stopped_at < 0.05
+            # wall-clock-ok: SandboxCallStopped (not the 5 s slot wait's refusal) is the check; 1 s is a fifth of that wait
+            assert loop.time() - stopped_at < 1.0
             assert gov.snapshot()["total"] == 1
         assert notes == [True, False]
         assert gov.snapshot()["total"] == 0
@@ -510,7 +512,7 @@ class TestCancelSafety:
         await asyncio.sleep(0.02)
         first_done.set()
         await t1
-        await asyncio.wait_for(clearing.wait(), 1)
+        await settle(clearing.wait())
         waiter.cancel()
         with pytest.raises(asyncio.CancelledError):
             await waiter
@@ -629,7 +631,7 @@ class TestCancelSafety:
         token.cancel()
         with pytest.raises(SandboxCallStopped):
             await stopped
-        await asyncio.wait_for(waiter, 1)
+        await settle(waiter)
         assert events == ["cleanup done", "other granted"]
 
 

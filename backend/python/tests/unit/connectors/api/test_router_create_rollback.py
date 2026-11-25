@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import copy
 import logging
+import secrets
 from collections.abc import Awaitable, Callable
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -182,7 +183,7 @@ def _metadata() -> dict[str, Any]:
 
 @pytest.fixture
 async def kv(monkeypatch: pytest.MonkeyPatch) -> KV:
-    monkeypatch.setenv("SECRET_KEY", "router-create-rollback-test")
+    monkeypatch.setenv("SECRET_KEY", secrets.token_hex(32))  # a hardened install refuses a key under 32 characters
     store = KV()
     await store.create_key("/services/endpoints", {"frontend": {"publicEndpoint": "https://pipeshub.example"}})
     return store

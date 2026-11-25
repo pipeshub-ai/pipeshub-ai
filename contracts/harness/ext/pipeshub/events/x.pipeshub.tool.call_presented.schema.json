@@ -1,0 +1,97 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/ext/pipeshub/events/x.pipeshub.tool.call_presented.schema.json",
+  "title": "PipeshubToolCallPresentedEvent",
+  "description": "How a tool call is shown: the arguments as the legacy stream rendered them, a summary and a display name. Presentation only (non-critical); the fold ignores it.",
+  "x-writer": [
+    "worker"
+  ],
+  "allOf": [
+    {
+      "$ref": "../../../core/envelope.schema.json#/$defs/InlineEnvelope"
+    }
+  ],
+  "properties": {
+    "type": {
+      "const": "x.pipeshub.tool.call_presented"
+    },
+    "writer": {
+      "const": "worker"
+    },
+    "data": {
+      "$ref": "#/$defs/PipeshubToolCallPresentedData"
+    }
+  },
+  "$defs": {
+    "PipeshubToolCallPresentedData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "callId",
+        "toolName",
+        "argsJson"
+      ],
+      "properties": {
+        "callId": {
+          "$ref": "../../../core/common.schema.json#/$defs/Text"
+        },
+        "toolName": {
+          "$ref": "../../../core/common.schema.json#/$defs/ModelToolName"
+        },
+        "argsJson": {
+          "description": "The call's arguments serialized for the live TOOL_CALL_ARGS frame.",
+          "type": "string"
+        },
+        "args": {
+          "description": "The size-bounded serialization (serialize_tool_args) when it differs from argsJson: the live TOOL_CALL_ARGS frame's argsPreview, and parts[] args unless savedArgs is given.",
+          "type": "string"
+        },
+        "savedArgs": {
+          "description": "The arguments as parts[] keep them, when that differs from args (or argsJson): this request's citation refs stored as the URLs they stand for, before the size bound (legacy's saved tool part).",
+          "type": "string"
+        },
+        "argsSummary": {
+          "$ref": "../../../core/common.schema.json#/$defs/Text"
+        },
+        "displayName": {
+          "$ref": "../../../core/common.schema.json#/$defs/Text"
+        },
+        "hidden": {
+          "description": "An internal tool the stream never shows (no frames, no part).",
+          "type": "boolean"
+        },
+        "streamsAnswer": {
+          "description": "The call's arguments stream as the answer (final_answer), not as a tool call.",
+          "type": "boolean"
+        },
+        "step": {
+          "$ref": "../tool-step.schema.json",
+          "description": "Which page, query, pattern or file the step used (WP-115): the loop's steps carry the facts an engine's do."
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "type": "x.pipeshub.tool.call_presented",
+      "data": {
+        "callId": "call_1",
+        "toolName": "jira__search_issues",
+        "argsJson": "{\"query\": \"open bugs\"}",
+        "argsSummary": "Search Issues: \"open bugs\""
+      },
+      "attemptId": "att_1",
+      "fence": 3
+    }
+  ]
+}

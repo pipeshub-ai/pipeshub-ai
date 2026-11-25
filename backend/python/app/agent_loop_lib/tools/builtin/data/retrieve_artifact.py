@@ -15,10 +15,12 @@ from app.agent_loop_lib.hooks.middleware.builtin.budget_reduction import (
 )
 from app.agent_loop_lib.tools.base import (
     ParameterType,
+    Tag,
     Tool,
     ToolOutput,
     ToolParameter,
 )
+from app.agent_loop_lib.tools.tags import TAG_EFFECT_READ
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -128,6 +130,11 @@ class RetrieveArtifactContentTool(Tool):
     @property
     def path(self) -> str:
         return "/tools/data/retrieve_artifact_content"
+
+    @property
+    def tags(self) -> list[Tag]:
+        # Reads the conversation's artifact store; writes nothing.
+        return [TAG_EFFECT_READ]
 
     @property
     def parameters(self) -> list[ToolParameter]:

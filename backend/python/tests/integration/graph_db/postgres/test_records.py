@@ -55,6 +55,7 @@ CALLS = {
     "compare_and_set_indexing_status": (["r"], "QUEUED", "COMPLETED"), "update_indexing_status_for_record_ids": (["r"], "QUEUED"),
     "update_record_fields_for_ids": (["r"], {"refreshIntentId": "i"}), "get_records_with_refresh_intent": ("org",),
     "has_records_indexed_since": ("c1", 0), "get_sync_point": ("k", "syncPoints"), "upsert_sync_point": ("k", {}, "syncPoints"),
+    "list_sync_points": ("o", "syncPoints"),
     "remove_sync_point": ("k", "syncPoints"), "_delete_records_with_their_types": (["r"],),
     "page_record_ids_by_type": ("o", ["FILE"]),
     "list_unsupported_page": ("o", "c1", None, 10), "transition_unsupported": (["r"], "QUEUED"),
@@ -249,6 +250,20 @@ async def test_a_sync_point_is_created_once_merged_cleared_and_removed(pg_db) ->
     await p.remove_sync_point("k", "syncPoints")
     assert await p.get_sync_point("k", "syncPoints") is None
     await p.remove_sync_point("k", "syncPoints")
+
+
+async def test_wp87_fu_4b_one_orgs_sync_points_page_in_key_order_and_another_org_reads_nothing(pg_db) -> None:
+    p, other = bound(pg_db), bound(pg_db)
+    for key in ("c", "a", "e", "b", "d"):
+        await p.upsert_sync_point(f"{p.org}/{key}", {"orgId": p.org, "cursor": key}, "syncPoints")
+    await other.upsert_sync_point(f"{other.org}/a", {"orgId": other.org}, "syncPoints")
+    first = await p.list_sync_points(p.org, "syncPoints", limit=2)
+    rest = await p.list_sync_points(p.org, "syncPoints", after_key=first[-1]["syncPointKey"], limit=10)
+    assert [d["cursor"] for d in first + rest] == ["a", "b", "c", "d", "e"]
+    assert await p.list_sync_points(other.org, "syncPoints") == []          # an org argument is only ever the ambient org
+    assert [d["syncPointKey"] for d in await other.list_sync_points(other.org, "syncPoints")] == [f"{other.org}/a"]
+    assert await p.update_sync_point_if(f"{p.org}/a", {"cursor": "a"}, {"cursor": "a2"}, "syncPoints")
+    assert not await p.update_sync_point_if(f"{p.org}/a", {"cursor": "a"}, {"cursor": "a3"}, "syncPoints")
 
 
 def filerec(org: str, rid: str, **kw: object) -> FileRecord:

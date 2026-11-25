@@ -16,6 +16,7 @@ from fastapi import HTTPException
 import app.edition_config  # noqa: F401  (binds the edition seams before the router loads)
 from app.config.constants.arangodb import CollectionNames
 from app.connectors.api import router as router_mod
+from tests.support.record_access import InMemoryRecordAccess
 
 RECORD_ID = "rec-1"
 ACTIVE = {"_key": "conn-1", "type": "SLACK", "isActive": True, "name": "Slack"}
@@ -31,8 +32,7 @@ def _graph(doc: dict[str, Any], app_doc: dict[str, Any] | None) -> MagicMock:
 
     graph = MagicMock()
     graph.get_document = AsyncMock(side_effect=get_document)
-    graph.check_record_access_with_details = AsyncMock(return_value={"record": {"id": RECORD_ID}})
-    return graph
+    return InMemoryRecordAccess().readable("u1", "org-1", RECORD_ID).serve(graph)
 
 
 async def _details(graph: MagicMock, header: str | None) -> dict[str, Any] | None:
@@ -98,7 +98,7 @@ async def test_a_header_with_another_value_is_not_the_intent() -> None:
 
 async def test_access_refusal_is_unchanged() -> None:
     graph = _graph(_doc(), ACTIVE)
-    graph.check_record_access_with_details = AsyncMock(return_value=None)
+    InMemoryRecordAccess().user("u1", "org-1").record(RECORD_ID, "org-1").serve(graph)
     with pytest.raises(HTTPException) as exc:
         await _details(graph, "1")
     assert exc.value.status_code == 404

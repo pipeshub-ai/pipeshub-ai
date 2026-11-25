@@ -13,6 +13,7 @@ from fastapi.responses import Response
 
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.api.router import _caller_org_and_user, get_record_content_internal
+from tests.support.record_access import InMemoryRecordAccess
 
 _ROUTER = "app.connectors.api.router"
 
@@ -28,10 +29,15 @@ def _record(org_id="org-1"):
     return SimpleNamespace(id="rec-1", org_id=org_id)
 
 
-def _graph_provider(record=None, access=True):
+def _access(*, readable: bool = True) -> InMemoryRecordAccess:
+    access = InMemoryRecordAccess().user("user-1", "org-1").record("rec-1", "org-1")
+    return access.grant("rec-1", user="user-1") if readable else access
+
+
+def _graph_provider(record=None, access=None):
     graph_provider = AsyncMock()
     graph_provider.get_record_by_id = AsyncMock(return_value=record)
-    graph_provider.check_record_access_with_details = AsyncMock(return_value=access)
+    (access or _access()).serve(graph_provider)
     return graph_provider
 
 
@@ -71,20 +77,20 @@ class TestGetRecordContentInternal:
         assert exc.value.status_code == HttpStatusCode.FORBIDDEN.value
 
     async def test_record_without_org_raises_403(self):
-        graph_provider = _graph_provider(_record(org_id=""))
+        access = _access()
+        graph_provider = _graph_provider(_record(org_id=""), access)
         with pytest.raises(HTTPException) as exc:
             await _get_content(_RECORD_CONTENT_CLAIMS, graph_provider)
         assert exc.value.status_code == HttpStatusCode.FORBIDDEN.value
-        graph_provider.check_record_access_with_details.assert_not_awaited()
+        assert access.asked_about == []
 
     async def test_acl_denied_raises_403(self):
-        graph_provider = _graph_provider(_record(), access=False)
+        access = _access(readable=False)
+        graph_provider = _graph_provider(_record(), access)
         with pytest.raises(HTTPException) as exc:
             await _get_content(_RECORD_CONTENT_CLAIMS, graph_provider)
         assert exc.value.status_code == HttpStatusCode.FORBIDDEN.value
-        graph_provider.check_record_access_with_details.assert_awaited_once_with(
-            "user-1", "org-1", "rec-1"
-        )
+        assert access.asked_about == [("user-1", "org-1", "rec-1")]
 
     async def test_allowed_read_runs_as_the_requesting_user(self):
         with patch(

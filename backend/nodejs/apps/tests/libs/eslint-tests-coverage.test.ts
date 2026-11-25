@@ -18,9 +18,9 @@ describe('ESLint covers tests/', function () {
     );
     try {
       const [result] = await new ESLint({ cwd: appRoot }).lintFiles([probe]);
-      expect(result.messages.filter((m) => m.fatal), 'parse errors').to.deep.equal([]);
+      expect(result!.messages.filter((m) => m.fatal), 'parse errors').to.deep.equal([]);
       // The type-aware rules run on it, so a real mistake in a new test is reported.
-      const rules = result.messages.map((m) => m.ruleId);
+      const rules = result!.messages.map((m) => m.ruleId);
       expect(rules).to.include('@typescript-eslint/no-unused-vars');
       expect(rules).to.not.include('@typescript-eslint/use-unknown-in-catch-callback-variable');
       expect(rules).to.not.include('@typescript-eslint/restrict-template-expressions');

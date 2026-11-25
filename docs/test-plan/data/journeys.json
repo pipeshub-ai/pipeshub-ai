@@ -1,0 +1,4355 @@
+{
+ "schemaVersion": 1,
+ "description": "R31-JOURNEY feature registry (ADR-TEST-01): every user-facing harness capability x every path a run can take x the account shapes people have. A cell is feature x path x shape for a shape the path admits. Each feasible cell is covered by a real-stack test on the scripted model (the journey runner's plan, or a test listed in `tests`), or tracked as a gap naming its follow-up; a rule marks a cell impossible or out of scope with its reason. scripts/journey_matrix.py --check holds it to the tree; backend/python/tests/cohesion/test_c38_journey_registry.py fails when the code grows a tool source, executor kind, run kind, surface, via or engine the registry does not name.",
+ "features": [
+  {
+   "id": "mcp.named",
+   "label": "MCP server whose tools the agent names",
+   "area": "tools"
+  },
+  {
+   "id": "mcp.first_use",
+   "label": "MCP server held whole, listed at the run's first use (D-LAZY-2)",
+   "area": "tools"
+  },
+  {
+   "id": "mcp.find_read",
+   "label": "A read from a server held whole that nothing describes and nothing is stored of, found by a capability search or by loading its toolset, never by knowledge alone (R36LIVE-FU-2, R43MCP-FU-4)",
+   "area": "tools"
+  },
+  {
+   "id": "mcp.carried_pins",
+   "label": "A job inherits its parent's first-use MCP pins: no second listing, the pinned tools and nothing outside them, the approval rules kept (R31-HOT2)",
+   "area": "tools"
+  },
+  {
+   "id": "mcp.oauth",
+   "label": "MCP server signed in with OAuth, the person's own credential and its refresh",
+   "area": "tools"
+  },
+  {
+   "id": "mcp.hub",
+   "label": "MCP hub: admin-approved manifests, STDIO runners, server kinds",
+   "area": "tools"
+  },
+  {
+   "id": "toolset",
+   "label": "Connector toolset (Jira-shaped)",
+   "area": "tools"
+  },
+  {
+   "id": "skills.preload",
+   "label": "Skills the run is offered and mounted (pinned skills)",
+   "area": "tools"
+  },
+  {
+   "id": "skills.load",
+   "label": "A skill loaded on demand by its tool",
+   "area": "tools"
+  },
+  {
+   "id": "knowledge",
+   "label": "Knowledge base search and fetch",
+   "area": "knowledge"
+  },
+  {
+   "id": "web",
+   "label": "Web search and fetch",
+   "area": "knowledge"
+  },
+  {
+   "id": "repository.fetch",
+   "label": "A public code repository the job clones after the person allows it (ph git clone; on by default where web access is on, ADR-REPO-01)",
+   "area": "tools"
+  },
+  {
+   "id": "repository.denied",
+   "label": "A clone the person declines: nothing is fetched and the answer says plainly it could not read the code (ADR-RUN-03 D5)",
+   "area": "tools"
+  },
+  {
+   "id": "attachments",
+   "label": "Files attached to a chat turn",
+   "area": "files"
+  },
+  {
+   "id": "artifacts",
+   "label": "Files, workspace and artifacts a run makes",
+   "area": "files"
+  },
+  {
+   "id": "approval.ask",
+   "label": "A call is held and a card asks",
+   "area": "approvals"
+  },
+  {
+   "id": "approval.allow",
+   "label": "Allow runs the held call exactly once",
+   "area": "approvals"
+  },
+  {
+   "id": "approval.block",
+   "label": "Deny or Block refuses it and nothing is sent",
+   "area": "approvals"
+  },
+  {
+   "id": "approval.org_rule",
+   "label": "An org admin's rule decides (tool rule, class rule)",
+   "area": "approvals"
+  },
+  {
+   "id": "approval.flow_guard",
+   "label": "The flow guard holds an external write after a private read",
+   "area": "approvals"
+  },
+  {
+   "id": "question",
+   "label": "The run asks the person back and goes on with the answer",
+   "area": "conversation"
+  },
+  {
+   "id": "answer_contract",
+   "label": "Not-found and grounded-confidence answer contract (ADR-RUN-03)",
+   "area": "conversation"
+  },
+  {
+   "id": "budget_partial",
+   "label": "A budget cut ends the run with its partial work kept",
+   "area": "limits"
+  },
+  {
+   "id": "cancel",
+   "label": "The person cancels a running turn",
+   "area": "lifecycle"
+  },
+  {
+   "id": "delete",
+   "label": "The person deletes the conversation; its run stops (ADR-RUN-05)",
+   "area": "lifecycle"
+  },
+  {
+   "id": "memory",
+   "label": "Governed memories proposed, kept and recalled",
+   "area": "memory"
+  },
+  {
+   "id": "erasure",
+   "label": "A person's or org's data erased, never coming back",
+   "area": "data protection"
+  },
+  {
+   "id": "sandbox.code",
+   "label": "An agent loop run's own code sandbox and run_code, decided at admission and pinned at its claim (P5.11, ADR-CAP-01)",
+   "area": "tools"
+  },
+  {
+   "id": "sandbox.memory",
+   "label": "A sandbox's memory limit ends the code's work and the person is told: on an engine job, on gVisor the whole sandbox, the run fails out_of_memory once with the limit named; on runc the command is killed and the engine goes on (R31GVISO-FU-3); on a loop run or a /run, run_code's result names the limit and the run goes on (R33-JGAPS)",
+   "area": "tools"
+  },
+  {
+   "id": "steering",
+   "label": "A message sent while the run works joins it: read when the run goes on, a file it may not read named in the answer; where the surface cannot show the run's card, the reply says it still waits (R35SLACK-FU-1/3, D-SLACK-ASK 5)",
+   "area": "conversation"
+  },
+  {
+   "id": "approval.decline_carried",
+   "label": "A person's decline, with its reason, holds for the same call in the conversation: asked again by their job's parent or their next turn, it is declined and nobody is asked twice (ADR-GRANT-01 D9, R36LIVE-FU-1)",
+   "area": "approvals"
+  },
+  {
+   "id": "approval.person_scoped",
+   "label": "A conversation decision is one person's: in a shared conversation a collaborator's \"Allow for this conversation\" never answers the owner's ask, and only the run's own person may give one (ADR-GRANT-01 D9, SEC-B-01, SEC-C-04)",
+   "area": "approvals"
+  },
+  {
+   "id": "sites.flow_hold",
+   "label": "An allowed website after a private read: a sandbox request that could carry the data waits on the site card, a registry install still works (SEC-A-01/02, ADR-SEC-03)",
+   "area": "tools"
+  },
+  {
+   "id": "approval.after_hold",
+   "label": "A job's ask answered after the gateway's hold never stops its work: it keeps working, the decision reaches the running turn, and the approved call runs and is used there (ADR-RUN-06, R39-RESEARCH)",
+   "area": "approvals"
+  },
+  {
+   "id": "repository.named",
+   "label": "A request that names a public repository hands the job its clone command: the job clones it after the person allows it and reads its code (R41-CLONE)",
+   "area": "repositories"
+  },
+  {
+   "id": "repository.not_cloned",
+   "label": "A repository the request names that the job never cloned is said in the answer's could-not-do line, from the journal (R41-CLONE, ADR-RUN-03 D5)",
+   "area": "repositories"
+  },
+  {
+   "id": "plan",
+   "label": "A multi-step turn shows its plan: journaled as task.*, drawn as the chat's checklist, its tool call never a step (R49-PLAN, ADR-OWD-07 D-PLAN-1)",
+   "area": "answers"
+  },
+  {
+   "id": "memory.session",
+   "label": "A memory kept for one conversation: kept when the run ends, given to that conversation's next turn and to no other (R49-PLAN, ADR-MEM-01 D7)",
+   "area": "memory"
+  }
+ ],
+ "paths": [
+  {
+   "id": "classic",
+   "label": "Today's loop (classic chat, harness=legacy)",
+   "shapes": [
+    "seeded",
+    "owner"
+   ],
+   "primaryShape": "seeded",
+   "code": {
+    "executor": "legacy"
+   }
+  },
+  {
+   "id": "assistant.agent",
+   "label": "Default chat, Agent mode, on the harness loop",
+   "shapes": [
+    "owner",
+    "owner_pinned"
+   ],
+   "primaryShape": "owner",
+   "code": {
+    "executor": "loop",
+    "runKind": "interactive",
+    "surface": "web",
+    "via": "session"
+   }
+  },
+  {
+   "id": "assistant.mode",
+   "label": "The built-in assistant's chat modes on the harness: Internal search and Web search from the mode menu (R35SLACK-FU-1)",
+   "shapes": [
+    "owner"
+   ],
+   "primaryShape": "owner",
+   "code": {
+    "executor": "loop",
+    "runKind": "interactive",
+    "surface": "web",
+    "via": "session"
+   }
+  },
+  {
+   "id": "agent.quick",
+   "label": "Saved agent, quick",
+   "shapes": [
+    "seeded",
+    "service"
+   ],
+   "primaryShape": "seeded",
+   "code": {
+    "executor": "loop",
+    "runKind": "interactive",
+    "surface": "web",
+    "via": "session"
+   }
+  },
+  {
+   "id": "agent.deep",
+   "label": "Saved agent, deep (coordinator)",
+   "shapes": [
+    "seeded"
+   ],
+   "primaryShape": "seeded",
+   "code": {
+    "executor": "loop",
+    "runKind": "interactive"
+   }
+  },
+  {
+   "id": "loop.subagent",
+   "label": "A deep coordinator's sub-agent (loop child run)",
+   "shapes": [
+    "seeded"
+   ],
+   "primaryShape": "seeded",
+   "code": {
+    "executor": "loop",
+    "runKind": "child"
+   }
+  },
+  {
+   "id": "job.opencode",
+   "label": "Engine job on opencode (code_task child)",
+   "shapes": [
+    "owner",
+    "owner_pinned",
+    "seeded"
+   ],
+   "primaryShape": "owner",
+   "code": {
+    "executor": "engine",
+    "engine": "opencode",
+    "runKind": "child"
+   }
+  },
+  {
+   "id": "job.codex",
+   "label": "Engine job on Codex (code_task child)",
+   "shapes": [
+    "owner",
+    "owner_pinned",
+    "seeded"
+   ],
+   "primaryShape": "owner",
+   "code": {
+    "executor": "engine",
+    "engine": "codex",
+    "runKind": "child"
+   }
+  },
+  {
+   "id": "job.claude_code",
+   "label": "Engine job on Claude Code (code_task child)",
+   "shapes": [
+    "owner",
+    "owner_pinned",
+    "seeded"
+   ],
+   "primaryShape": "owner",
+   "code": {
+    "executor": "engine",
+    "engine": "claude_code",
+    "runKind": "child"
+   }
+  },
+  {
+   "id": "job.acp-opencode",
+   "label": "Engine job on opencode over ACP",
+   "shapes": [
+    "owner",
+    "owner_pinned"
+   ],
+   "primaryShape": "owner_pinned",
+   "code": {
+    "executor": "engine",
+    "engine": "acp-opencode",
+    "runKind": "child"
+   }
+  },
+  {
+   "id": "job.acp-gemini",
+   "label": "Engine job on Gemini CLI over ACP",
+   "shapes": [
+    "owner",
+    "owner_pinned"
+   ],
+   "primaryShape": "owner_pinned",
+   "code": {
+    "executor": "engine",
+    "engine": "acp-gemini",
+    "runKind": "child"
+   }
+  },
+  {
+   "id": "job.acp-goose",
+   "label": "Engine job on Goose over ACP",
+   "shapes": [
+    "owner",
+    "owner_pinned"
+   ],
+   "primaryShape": "owner_pinned",
+   "code": {
+    "executor": "engine",
+    "engine": "acp-goose",
+    "runKind": "child"
+   }
+  },
+  {
+   "id": "job.acp-qwen",
+   "label": "Engine job on Qwen Code over ACP",
+   "shapes": [
+    "owner",
+    "owner_pinned"
+   ],
+   "primaryShape": "owner_pinned",
+   "code": {
+    "executor": "engine",
+    "engine": "acp-qwen",
+    "runKind": "child"
+   }
+  },
+  {
+   "id": "job.acp-dsh",
+   "label": "Engine job on DeepSeek harness over ACP",
+   "shapes": [
+    "owner",
+    "owner_pinned"
+   ],
+   "primaryShape": "owner_pinned",
+   "code": {
+    "executor": "engine",
+    "engine": "acp-dsh",
+    "runKind": "child"
+   }
+  },
+  {
+   "id": "scheduled.cron",
+   "label": "A schedule fires the agent's run",
+   "shapes": [
+    "seeded",
+    "service"
+   ],
+   "primaryShape": "seeded",
+   "code": {
+    "executor": "loop",
+    "runKind": "scheduled",
+    "via": "trigger"
+   }
+  },
+  {
+   "id": "scheduled.webhook",
+   "label": "A signed webhook fires the agent's run",
+   "shapes": [
+    "seeded",
+    "service"
+   ],
+   "primaryShape": "seeded",
+   "code": {
+    "executor": "loop",
+    "runKind": "scheduled",
+    "via": "trigger"
+   }
+  },
+  {
+   "id": "resume.approval",
+   "label": "The run resumes after the person's approval decision",
+   "shapes": [
+    "seeded",
+    "owner"
+   ],
+   "primaryShape": "owner",
+   "code": {
+    "executor": "loop"
+   }
+  },
+  {
+   "id": "resume.question",
+   "label": "The run resumes after the person answers its question",
+   "shapes": [
+    "seeded",
+    "owner",
+    "owner_pinned"
+   ],
+   "primaryShape": "owner",
+   "code": {
+    "executor": "loop"
+   }
+  },
+  {
+   "id": "recovery",
+   "label": "A lost attempt is retried and recovered on another worker",
+   "shapes": [
+    "seeded",
+    "owner"
+   ],
+   "primaryShape": "seeded",
+   "code": {
+    "executor": "loop"
+   }
+  },
+  {
+   "id": "surface.mcp",
+   "label": "PipesHub's own /mcp endpoint drives a run (external MCP client)",
+   "shapes": [
+    "seeded"
+   ],
+   "primaryShape": "seeded",
+   "code": {
+    "surface": "mcp",
+    "via": "pat"
+   }
+  },
+  {
+   "id": "surface.slack",
+   "label": "The Slack bot drives a run (an @mention to the default assistant's bot or to a saved agent's)",
+   "shapes": [
+    "seeded",
+    "owner"
+   ],
+   "primaryShape": "seeded",
+   "code": {
+    "surface": "slack"
+   }
+  },
+  {
+   "id": "command",
+   "label": "A person's /run command (one run_code call, no model)",
+   "shapes": [
+    "owner"
+   ],
+   "primaryShape": "owner",
+   "code": {
+    "runKind": "command"
+   }
+  }
+ ],
+ "shapes": [
+  {
+   "id": "seeded",
+   "label": "A saved agent sharing an org MCP server whose tools it names; a coder agent pins its engine in its engine profile",
+   "fixture": "deployment/e2e/owner_shape.json#/shapes/seeded"
+  },
+  {
+   "id": "owner",
+   "label": "The default assistant: the person's own MCP servers held whole at first use, the org's default coding engine, skills (the derived owner shape)",
+   "fixture": "deployment/e2e/owner_shape.json#/shapes/owner"
+  },
+  {
+   "id": "owner_pinned",
+   "label": "As owner, with the person's own coding-engine choice pinning the engine",
+   "fixture": "deployment/e2e/owner_shape.json#/shapes/owner_pinned"
+  },
+  {
+   "id": "service",
+   "label": "An agent that runs as a service account (principal agent_service)",
+   "fixture": "deployment/e2e/owner_shape.json#/shapes/service"
+  }
+ ],
+ "codeKeys": {
+  "description": "The code's own enumerations, each mapped to what of the registry stands for it: a feature, a path, or an explicit reason it is none. The cohesion test reads the code and fails on a key missing here.",
+  "toolSources": {
+   "ToolsetSource": [
+    "toolset"
+   ],
+   "McpSource": [
+    "mcp.named",
+    "mcp.first_use",
+    "mcp.oauth",
+    "mcp.hub",
+    "mcp.carried_pins"
+   ],
+   "MetaToolSource": [
+    "question",
+    "mcp.first_use"
+   ],
+   "SandboxSource": [
+    "artifacts",
+    "attachments"
+   ],
+   "SkillsSource": [
+    "skills.preload",
+    "skills.load"
+   ],
+   "ArtifactSource": [
+    "artifacts"
+   ],
+   "FinalAnswerSource": [
+    "answer_contract"
+   ]
+  },
+  "executorKinds": {
+   "loop": [
+    "assistant.agent",
+    "agent.quick",
+    "agent.deep",
+    "loop.subagent"
+   ],
+   "engine": [
+    "job.opencode",
+    "job.codex",
+    "job.claude_code",
+    "job.acp-opencode",
+    "job.acp-gemini",
+    "job.acp-goose",
+    "job.acp-qwen",
+    "job.acp-dsh"
+   ]
+  },
+  "runKinds": {
+   "interactive": [
+    "assistant.agent",
+    "agent.quick",
+    "agent.deep"
+   ],
+   "child": [
+    "loop.subagent",
+    "job.opencode",
+    "job.codex",
+    "job.claude_code"
+   ],
+   "scheduled": [
+    "scheduled.cron",
+    "scheduled.webhook"
+   ],
+   "command": [
+    "command"
+   ],
+   "workflow_code": {
+    "none": "A workflow's code step (ADR-WF-01) runs no model and offers the person no tool; its runs are a schedule's, scheduled.cron stands for them"
+   },
+   "authoring": {
+    "none": "The agent builder's authoring run writes a draft agent, not a conversation; it is the builder's (journey-agent-build-try.spec.ts), not a run path a feature rides"
+   }
+  },
+  "surfaces": {
+   "web": [
+    "assistant.agent",
+    "agent.quick"
+   ],
+   "slack": [
+    "surface.slack"
+   ],
+   "mcp": [
+    "surface.mcp"
+   ]
+  },
+  "via": {
+   "session": [
+    "assistant.agent",
+    "agent.quick"
+   ],
+   "pat": [
+    "surface.mcp"
+   ],
+   "oauth_app": [
+    "surface.mcp"
+   ],
+   "trigger": [
+    "scheduled.cron",
+    "scheduled.webhook"
+   ],
+   "service": {
+    "none": "A service principal is an account shape (service), not a path: it rides agent.quick and the scheduled paths"
+   }
+  },
+  "engines": {
+   "opencode": "job.opencode",
+   "codex": "job.codex",
+   "claude_code": "job.claude_code",
+   "acp-opencode": "job.acp-opencode",
+   "acp-gemini": "job.acp-gemini",
+   "acp-goose": "job.acp-goose",
+   "acp-qwen": "job.acp-qwen",
+   "acp-dsh": "job.acp-dsh"
+  },
+  "gatewayTools": {
+   "repository_fetch": [
+    "repository.fetch",
+    "repository.denied"
+   ],
+   "repository_push": {
+    "none": "GIT-FLOW's push of the run's session branch to the person's connected repository: a write the person confirms, covered by the GITF lane tests (test_gitf_repository_fetch_docker.py), not a journey feature"
+   },
+   "knowledgegraph__export_records": [
+    "knowledge"
+   ],
+   "knowledgegraph__export_status": [
+    "knowledge"
+   ],
+   "pipeshub.input_fetch": [
+    "attachments"
+   ],
+   "pipeshub.artifact_publish": [
+    "artifacts"
+   ],
+   "pipeshub.policy_check": {
+    "none": "The managed hook's question to the run's policy about the engine's own edits and commands (G-25): it adds no capability; approval.block and sandbox.code cover the rules it applies"
+   },
+   "ask_user": [
+    "question"
+   ],
+   "pipeshub_ask_user": [
+    "question"
+   ],
+   "search_tools": [
+    "mcp.first_use"
+   ],
+   "call_tool": [
+    "mcp.first_use"
+   ]
+  }
+ },
+ "rules": [
+  {
+   "id": "X-CARRIED-PINS",
+   "kind": "impossible",
+   "features": [
+    "mcp.carried_pins"
+   ],
+   "paths": [
+    "classic",
+    "assistant.agent",
+    "agent.quick",
+    "agent.deep",
+    "loop.subagent",
+    "scheduled.cron",
+    "scheduled.webhook",
+    "resume.approval",
+    "resume.question",
+    "recovery",
+    "surface.mcp",
+    "surface.slack",
+    "command",
+    "assistant.mode"
+   ],
+   "shapes": [],
+   "reason": "Only a code_task job inherits a parent's first-use pins (R31-HOT2): a top-level run pins at its own first use, and a deep sub-agent's parent (a saved agent) names its tools (X-WHOLE-SEEDED)"
+  },
+  {
+   "id": "X-CARRIED-SEEDED",
+   "kind": "impossible",
+   "features": [
+    "mcp.carried_pins"
+   ],
+   "paths": [],
+   "shapes": [
+    "seeded",
+    "service"
+   ],
+   "reason": "A saved agent's job is granted named tools, which Node pins at admission; there is no first-use pin to carry (X-WHOLE-SEEDED)"
+  },
+  {
+   "id": "X-CLASSIC",
+   "kind": "impossible",
+   "features": [
+    "mcp.first_use",
+    "skills.preload",
+    "budget_partial",
+    "memory",
+    "approval.ask",
+    "approval.allow",
+    "question",
+    "memory.session"
+   ],
+   "paths": [
+    "classic"
+   ],
+   "shapes": [],
+   "reason": "Today's loop pins nothing: no at-first-use listing, no mounted skills, no harness budget, no governed memory; it cannot hold a call for a person (a write that needs approval is refused approval_unavailable, oracle of e2e_covering_array.py) and has no ask-back"
+  },
+  {
+   "id": "X-NAMED-OWNER",
+   "kind": "impossible",
+   "features": [
+    "mcp.named"
+   ],
+   "paths": [],
+   "shapes": [
+    "owner",
+    "owner_pinned"
+   ],
+   "reason": "The default chat holds each of the person's servers whole (the assistant definition, backend/python/app/api/routes/agent.py, atFirstUse); a server named tool by tool is a saved agent's"
+  },
+  {
+   "id": "X-WHOLE-SEEDED",
+   "kind": "impossible",
+   "features": [
+    "mcp.first_use"
+   ],
+   "paths": [],
+   "shapes": [
+    "seeded",
+    "service"
+   ],
+   "reason": "A saved agent's server grant names its tools (run-spec.ts grantedTools: only a definition with atFirstUse holds a server whole, and only the assistant's has it); its named servers are still listed at first use, which mcp.named on the same paths runs"
+  },
+  {
+   "id": "X-CLASSIC-OWNER",
+   "kind": "out_of_scope",
+   "features": [],
+   "paths": [
+    "classic"
+   ],
+   "shapes": [
+    "owner"
+   ],
+   "reason": "The owner's default chat runs Agent mode on the harness (ASSIST1); a classic default chat is the seeded shape's legacy switch (CTL-7), which classic/seeded covers"
+  },
+  {
+   "id": "X-SCHEDULED",
+   "kind": "impossible",
+   "features": [
+    "memory",
+    "attachments",
+    "cancel",
+    "delete",
+    "memory.session"
+   ],
+   "paths": [
+    "scheduled.cron",
+    "scheduled.webhook"
+   ],
+   "shapes": [],
+   "reason": "A scheduled run is unattended: it is granted no memory write scope (P7.3), its turn carries no chat files, and nobody is in the chat to stop it or delete it (an operator's cancel is surface ops, OPS-01)"
+  },
+  {
+   "id": "X-RESUME",
+   "kind": "out_of_scope",
+   "features": [
+    "mcp.oauth",
+    "mcp.hub",
+    "toolset",
+    "skills.load",
+    "knowledge",
+    "web",
+    "attachments",
+    "answer_contract",
+    "memory",
+    "erasure",
+    "delete",
+    "approval.org_rule",
+    "approval.flow_guard",
+    "steering",
+    "memory.session"
+   ],
+   "paths": [
+    "resume.approval",
+    "resume.question",
+    "recovery"
+   ],
+   "shapes": [],
+   "reason": "A resume continues the pinned run: these act at admission or apart from the run, and their cell on the path the run started on holds them; what a resume must keep (the MCP pins, the decision, the answer, its files, its budget, its cancel) stays in"
+  },
+  {
+   "id": "X-SUBAGENT",
+   "kind": "out_of_scope",
+   "features": [
+    "attachments",
+    "delete",
+    "erasure",
+    "memory",
+    "cancel",
+    "steering",
+    "memory.session"
+   ],
+   "paths": [
+    "loop.subagent"
+   ],
+   "shapes": [],
+   "reason": "They act on the parent's conversation: the parent's cell (agent.deep) holds them; a child is stopped and erased with its parent"
+  },
+  {
+   "id": "X-COMMAND",
+   "kind": "impossible",
+   "features": [
+    "mcp.named",
+    "mcp.first_use",
+    "mcp.oauth",
+    "mcp.hub",
+    "toolset",
+    "skills.preload",
+    "skills.load",
+    "knowledge",
+    "web",
+    "attachments",
+    "approval.ask",
+    "approval.allow",
+    "approval.block",
+    "approval.org_rule",
+    "approval.flow_guard",
+    "question",
+    "answer_contract",
+    "budget_partial",
+    "memory",
+    "memory.session"
+   ],
+   "paths": [
+    "command"
+   ],
+   "shapes": [],
+   "reason": "A /run command is one run_code call with no model (SLASH3, runKind command): it offers no tool, asks nothing and answers nothing"
+  },
+  {
+   "id": "X-ERASURE-CLASS",
+   "kind": "out_of_scope",
+   "features": [
+    "erasure"
+   ],
+   "paths": [
+    "agent.deep",
+    "job.codex",
+    "job.claude_code",
+    "job.acp-opencode",
+    "job.acp-gemini",
+    "job.acp-goose",
+    "job.acp-qwen",
+    "job.acp-dsh",
+    "scheduled.webhook",
+    "surface.mcp",
+    "surface.slack",
+    "assistant.mode"
+   ],
+   "shapes": [],
+   "reason": "Erasure acts on what a person or org stored, not on a run: the data a path leaves is the same kind per executor (conversations, journal, workspaces, sandboxes, memories), so classic, assistant.agent, agent.quick, job.opencode and scheduled.cron stand for the rest (equivalence classes, ADR-TEST-01 D4)"
+  },
+  {
+   "id": "X-SERVICE-PERSON",
+   "kind": "impossible",
+   "features": [
+    "mcp.first_use",
+    "mcp.oauth",
+    "question",
+    "memory",
+    "memory.session"
+   ],
+   "paths": [],
+   "shapes": [
+    "service"
+   ],
+   "reason": "A service account holds no person's own servers or sign-ins, has nobody to ask back and keeps no personal memory"
+  },
+  {
+   "id": "X-SURFACE-MCP-CARDS",
+   "kind": "impossible",
+   "features": [
+    "attachments",
+    "approval.allow"
+   ],
+   "paths": [
+    "surface.mcp"
+   ],
+   "shapes": [],
+   "reason": "An external MCP client sends no files, and a call held for approval waits in the inbox (Needs you), where approval.allow on the start path holds it"
+  },
+  {
+   "id": "X-SANDBOX-CODE-LOOP",
+   "kind": "impossible",
+   "features": [
+    "sandbox.code"
+   ],
+   "paths": [
+    "classic",
+    "job.opencode",
+    "job.codex",
+    "job.claude_code",
+    "job.acp-opencode",
+    "job.acp-gemini",
+    "job.acp-goose",
+    "job.acp-qwen",
+    "job.acp-dsh"
+   ],
+   "shapes": [],
+   "reason": "The agent-code profile is a durable loop run's (sandboxProfileFor: executor loop only); an engine job runs in its own engine sandbox and today's loop pins nothing at admission"
+  },
+  {
+   "id": "X-REPO-LOOP",
+   "kind": "impossible",
+   "features": [
+    "repository.fetch",
+    "repository.denied",
+    "repository.named",
+    "repository.not_cloned"
+   ],
+   "paths": [
+    "classic",
+    "assistant.agent",
+    "agent.quick",
+    "agent.deep",
+    "loop.subagent",
+    "scheduled.cron",
+    "scheduled.webhook",
+    "resume.approval",
+    "resume.question",
+    "recovery",
+    "surface.mcp",
+    "surface.slack",
+    "command",
+    "assistant.mode"
+   ],
+   "shapes": [],
+   "reason": "repository_fetch is served only by an engine job's Tool Gateway (ph git clone, WP-63 part A): a loop run reads code through a connected repository or a web fetch. The default chat and a saved agent reach it through the job they hand the work to, the job.* cells on the owner, owner_pinned and seeded shapes"
+  },
+  {
+   "id": "X-CHAT-MODE-CODE",
+   "kind": "impossible",
+   "features": [
+    "sandbox.code",
+    "sandbox.memory"
+   ],
+   "paths": [
+    "assistant.mode"
+   ],
+   "shapes": [],
+   "reason": "The assistant's search modes offer no run_code (their tool set is the mode's: knowledge or web search, artifacts, skills, the person's question); code runs in Agent mode, whose assistant.agent cells hold it"
+  },
+  {
+   "id": "X-CHAT-MODE-TOOLS",
+   "kind": "impossible",
+   "features": [
+    "mcp.first_use",
+    "mcp.find_read",
+    "mcp.hub",
+    "mcp.oauth",
+    "skills.preload",
+    "toolset",
+    "approval.ask",
+    "approval.allow",
+    "approval.block",
+    "approval.org_rule",
+    "approval.flow_guard",
+    "approval.decline_carried",
+    "approval.person_scoped"
+   ],
+   "paths": [
+    "assistant.mode"
+   ],
+   "shapes": [],
+   "reason": "The assistant's search modes are knowledge-only or web-only by design (R50JFIX-5): Node grants internal_search the organization's knowledge and no tool, web_search the web search tool and no knowledge, never an MCP server or a toolset (run-spec.ts assistantGrant; a run with no agent definition pins no skill), and the worker's mode policy loads only those (app/agents/chat_modes/policy.py, app/harness/assembly/chat.py build_chat_environment). So no server is held for a first use, a capability search, a hub runner or an OAuth sign-in, nothing is pinned to preload, and nothing the mode calls writes outside or sends, which is what a card, an org rule, the flow guard and a decline ask about. Agent mode's assistant.agent cells hold every one of them; skills load on demand and memory are run on the mode"
+  },
+  {
+   "id": "X-CONTRACT-LOOP",
+   "kind": "impossible",
+   "features": [
+    "answer_contract"
+   ],
+   "paths": [
+    "classic",
+    "agent.quick",
+    "agent.deep",
+    "loop.subagent",
+    "scheduled.cron",
+    "scheduled.webhook",
+    "surface.mcp",
+    "assistant.mode"
+   ],
+   "shapes": [],
+   "reason": "ADR-RUN-03: the grounding check (the not-found note, the question before a job, the evidence-capped confidence) runs where a turn hands work to a coding engine or may; a loop run with no engine authority answers under the contract's prompt alone, as classic chat does, so there is no not-found note or capped confidence to observe. The default chat's cells (assistant.agent, smoke and AC-E) and every job.* cell hold the check"
+  },
+  {
+   "id": "X-CONTRACT-SLACK-SEEDED",
+   "kind": "impossible",
+   "features": [
+    "answer_contract"
+   ],
+   "paths": [
+    "surface.slack"
+   ],
+   "shapes": [
+    "seeded"
+   ],
+   "reason": "The seeded agent's Slack bot runs the loop agent, which has no engine authority (X-CONTRACT-LOOP)"
+  },
+  {
+   "id": "X-CONTRACT-SLACK-OWNER",
+   "kind": "impossible",
+   "features": [
+    "answer_contract"
+   ],
+   "paths": [
+    "surface.slack"
+   ],
+   "shapes": [
+    "owner"
+   ],
+   "reason": "The default assistant's Slack bot answers a lookup on its loop (R50JFIX-11): on the lane its run handed nothing to a job (no child; the thread got the loop's own reply), and ADR-RUN-03's grounding check runs only before a hand-off (app/harness/assembly/grounding_gate.py, loop.py _ground), so a loop answer has no not-found note or capped confidence to observe (X-CONTRACT-LOOP). Whether that Slack run should be offered code_task is R50JFIX-FU-1"
+  },
+  {
+   "id": "X-SUBAGENT-ASK",
+   "kind": "impossible",
+   "features": [
+    "question"
+   ],
+   "paths": [
+    "loop.subagent"
+   ],
+   "shapes": [],
+   "reason": "A sub-agent cannot ask the person (TAG_UI_ONLY, harness_core/tools/tags.py; ADR-RUN-03 may_ask): its need goes up as an [ESCALATION] that the deep coordinator asks (ADR-RUN-04 D1 amended by R36-COVER), the agent.deep cell"
+  },
+  {
+   "id": "X-STEER-NOBODY",
+   "kind": "impossible",
+   "features": [
+    "steering"
+   ],
+   "paths": [
+    "scheduled.cron",
+    "scheduled.webhook",
+    "command",
+    "classic"
+   ],
+   "shapes": [],
+   "reason": "Nobody is in a scheduled run's chat to write to it, a /run runs no model to read a message, and today's loop takes no message while it runs (steeringRefusal not_durable): the web app waits for its answer"
+  },
+  {
+   "id": "X-PERSON-SCOPED",
+   "kind": "impossible",
+   "features": [
+    "approval.person_scoped"
+   ],
+   "paths": [
+    "classic",
+    "agent.quick",
+    "agent.deep",
+    "loop.subagent",
+    "scheduled.cron",
+    "scheduled.webhook",
+    "command"
+   ],
+   "shapes": [],
+   "reason": "No second person can act in the conversation: a saved agent's conversation is shared read-only (es_validators agentConversationShareParamsSchema) and a deep sub-agent is its child; a scheduled run and /run have one person; today's loop holds no call for anyone (X-CLASSIC)"
+  },
+  {
+   "id": "X-DECLINE-CARRIED",
+   "kind": "impossible",
+   "features": [
+    "approval.decline_carried"
+   ],
+   "paths": [
+    "classic",
+    "command"
+   ],
+   "shapes": [],
+   "reason": "Nothing is declined to carry: today's loop holds no call for a person (X-CLASSIC) and /run makes no tool call (X-COMMAND)"
+  },
+  {
+   "id": "X-SITES-LOOP",
+   "kind": "impossible",
+   "features": [
+    "sites.flow_hold"
+   ],
+   "paths": [
+    "classic",
+    "assistant.agent",
+    "agent.quick",
+    "agent.deep",
+    "loop.subagent",
+    "scheduled.cron",
+    "scheduled.webhook",
+    "resume.approval",
+    "resume.question",
+    "recovery",
+    "surface.mcp",
+    "surface.slack",
+    "command",
+    "assistant.mode"
+   ],
+   "shapes": [],
+   "reason": "Allowed websites reach only an engine job's sandbox (RunSites is built for engine runs; a loop run's code sandbox has no website egress), so the flow hold has nothing to hold there; the assistant's search modes run no code at all (X-CHAT-MODE-CODE)"
+  },
+  {
+   "id": "X-AFTER-HOLD-LOOP",
+   "kind": "impossible",
+   "features": [
+    "approval.after_hold"
+   ],
+   "paths": [
+    "classic",
+    "assistant.agent",
+    "agent.quick",
+    "agent.deep",
+    "loop.subagent",
+    "scheduled.cron",
+    "scheduled.webhook",
+    "resume.approval",
+    "resume.question",
+    "recovery",
+    "surface.mcp",
+    "surface.slack",
+    "command",
+    "assistant.mode"
+   ],
+   "shapes": [],
+   "reason": "Only an engine job's Tool Gateway holds a call and answers it deferred past the hold (ADR-RUN-06): a loop run suspends on its ask, and the default chat and a saved agent reach the rule through the job they hand the work to, the job.* cells"
+  },
+  {
+   "id": "X-FIND-READ",
+   "kind": "impossible",
+   "features": [
+    "mcp.find_read"
+   ],
+   "paths": [
+    "classic",
+    "agent.quick",
+    "agent.deep",
+    "loop.subagent",
+    "scheduled.cron",
+    "scheduled.webhook",
+    "surface.mcp",
+    "command"
+   ],
+   "shapes": [],
+   "reason": "A saved agent, its deep sub-agent, a schedule, the MCP surface and /run name each server's tools from the attachment (X-WHOLE-SEEDED); only the default chat holds a server whole, the case where nothing names its tools before its first use"
+  },
+  {
+   "id": "X-FIND-READ-SAVED",
+   "kind": "impossible",
+   "features": [
+    "mcp.find_read"
+   ],
+   "paths": [],
+   "shapes": [
+    "seeded",
+    "service"
+   ],
+   "reason": "A saved agent names each server's tools from its attachment (X-WHOLE-SEEDED), so nothing is found by capability on its runs: its coder agent's jobs, its resumed and recovered runs (they start on agent.quick) and its Slack bot; the person's own undescribed server is not the agent's to use"
+  },
+  {
+   "id": "X-PLAN-NOT-OFFERED",
+   "kind": "impossible",
+   "features": [
+    "plan"
+   ],
+   "paths": [
+    "classic",
+    "assistant.mode",
+    "loop.subagent",
+    "command"
+   ],
+   "shapes": [],
+   "reason": "The plan tool is offered to root loop turns only (ADR-OWD-07 D-PLAN-1): today's loop journals no task.*, the assistant's search modes answer from one source and are never offered it, a deep child is planned by its parent's create_plan, and a /run runs no model"
+  }
+ ],
+ "tests": [
+  {
+   "ref": "pytest:integration-tests/harness/e2e/test_pairwise.py::test_row[ST-1-PW-002]",
+   "cells": [
+    [
+     "toolset",
+     "agent.quick",
+     "seeded"
+    ],
+    [
+     "approval.ask",
+     "agent.quick",
+     "seeded"
+    ],
+    [
+     "approval.org_rule",
+     "agent.quick",
+     "seeded"
+    ]
+   ],
+   "note": "QA-6 matrix row, ST-1 (the only rows QA-FINAL runs); auto mode, toolset write card (org writes:ask) left to expire; no effect"
+  },
+  {
+   "ref": "pytest:integration-tests/harness/e2e/test_pairwise.py::test_row[ST-1-PW-012]",
+   "cells": [
+    [
+     "mcp.named",
+     "agent.quick",
+     "seeded"
+    ],
+    [
+     "approval.ask",
+     "agent.quick",
+     "seeded"
+    ],
+    [
+     "approval.allow",
+     "agent.quick",
+     "seeded"
+    ],
+    [
+     "approval.org_rule",
+     "agent.quick",
+     "seeded"
+    ],
+    [
+     "mcp.named",
+     "resume.approval",
+     "seeded"
+    ],
+    [
+     "approval.allow",
+     "resume.approval",
+     "seeded"
+    ]
+   ],
+   "note": "QA-6 matrix row, ST-1 (the only rows QA-FINAL runs); react mode, MCP read then write, org writes:ask card, Allow once, 1 effect at fake SaaS"
+  },
+  {
+   "ref": "pytest:integration-tests/harness/e2e/test_pairwise.py::test_row[ST-1-PW-017]",
+   "cells": [
+    [
+     "memory",
+     "assistant.agent",
+     "owner"
+    ]
+   ],
+   "note": "QA-6 matrix row, ST-1 (the only rows QA-FINAL runs); default chat internal_search mode routed durable (not Agent mode); remember proposal in My memories"
+  },
+  {
+   "ref": "pytest:integration-tests/harness/e2e/test_pairwise.py::test_row[ST-1-PW-035]",
+   "cells": [
+    [
+     "mcp.named",
+     "agent.quick",
+     "seeded"
+    ],
+    [
+     "approval.flow_guard",
+     "agent.quick",
+     "seeded"
+    ],
+    [
+     "approval.allow",
+     "agent.quick",
+     "seeded"
+    ],
+    [
+     "mcp.named",
+     "scheduled.webhook",
+     "seeded"
+    ],
+    [
+     "approval.flow_guard",
+     "scheduled.webhook",
+     "seeded"
+    ],
+    [
+     "approval.allow",
+     "resume.approval",
+     "seeded"
+    ]
+   ],
+   "note": "QA-6 matrix row, ST-1 (the only rows QA-FINAL runs); webhook-triggered quick run; flow_external_write card after the private read, Allow once, 1 effect; one run per delivery"
+  },
+  {
+   "ref": "pytest:integration-tests/harness/e2e/test_pairwise.py::test_row[ST-1-PW-039]",
+   "cells": [
+    [
+     "toolset",
+     "agent.quick",
+     "seeded"
+    ],
+    [
+     "toolset",
+     "scheduled.webhook",
+     "seeded"
+    ],
+    [
+     "approval.ask",
+     "scheduled.webhook",
+     "seeded"
+    ],
+    [
+     "approval.org_rule",
+     "scheduled.webhook",
+     "seeded"
+    ]
+   ],
+   "note": "QA-6 matrix row, ST-1 (the only rows QA-FINAL runs); webhook react run; toolset write card (org rule) expires"
+  },
+  {
+   "ref": "pytest:integration-tests/harness/e2e/test_pairwise.py::test_row[ST-1-PW-050]",
+   "cells": [
+    [
+     "artifacts",
+     "job.codex",
+     "seeded"
+    ],
+    [
+     "artifacts",
+     "scheduled.cron",
+     "seeded"
+    ]
+   ],
+   "note": "QA-6 matrix row, ST-1 (the only rows QA-FINAL runs); cron fire of a react agent handing to a Codex code_task child; only asserts workspace committed+checkpointed (no tool family)"
+  },
+  {
+   "ref": "pytest:integration-tests/harness/e2e/test_pairwise.py::test_row[ST-1-PW-054]",
+   "cells": [
+    [
+     "knowledge",
+     "job.opencode",
+     "seeded"
+    ],
+    [
+     "knowledge",
+     "scheduled.webhook",
+     "seeded"
+    ],
+    [
+     "artifacts",
+     "job.opencode",
+     "seeded"
+    ]
+   ],
+   "note": "QA-6 matrix row, ST-1 (the only rows QA-FINAL runs); webhook auto-mode, opencode child; knowledge tool called by script (no citation assertion); workspace committed"
+  },
+  {
+   "ref": "pytest:integration-tests/harness/e2e/test_pairwise.py::test_row[ST-1-PW-069]",
+   "cells": [
+    [
+     "memory",
+     "assistant.agent",
+     "owner"
+    ]
+   ],
+   "note": "QA-6 matrix row, ST-1 (the only rows QA-FINAL runs); default chat internal_search durable, flow org_deny; memory proposal listed"
+  },
+  {
+   "ref": "pytest:integration-tests/harness/e2e/test_pairwise.py::test_row[ST-1-PW-083]",
+   "cells": [
+    [
+     "knowledge",
+     "job.codex",
+     "seeded"
+    ],
+    [
+     "knowledge",
+     "scheduled.webhook",
+     "seeded"
+    ],
+    [
+     "artifacts",
+     "job.codex",
+     "seeded"
+    ]
+   ],
+   "note": "QA-6 matrix row, ST-1 (the only rows QA-FINAL runs); webhook quick, Codex child, knowledge read (no citation check); workspace committed"
+  },
+  {
+   "ref": "pytest:integration-tests/harness/e2e/test_pairwise.py::test_row[ST-1-PW-097]",
+   "cells": [
+    [
+     "toolset",
+     "agent.quick",
+     "seeded"
+    ],
+    [
+     "approval.flow_guard",
+     "agent.quick",
+     "seeded"
+    ],
+    [
+     "approval.allow",
+     "agent.quick",
+     "seeded"
+    ],
+    [
+     "approval.allow",
+     "resume.approval",
+     "seeded"
+    ]
+   ],
+   "note": "QA-6 matrix row, ST-1 (the only rows QA-FINAL runs); react, toolset write, flow-guard card, Allow for conversation (grant), 1 effect"
+  },
+  {
+   "ref": "pytest:integration-tests/harness/e2e/test_pairwise.py::test_row[ST-1-PW-099]",
+   "cells": [
+    [
+     "memory",
+     "agent.deep",
+     "seeded"
+    ],
+    [
+     "memory",
+     "job.claude_code",
+     "seeded"
+    ],
+    [
+     "artifacts",
+     "job.claude_code",
+     "seeded"
+    ]
+   ],
+   "note": "QA-6 matrix row, ST-1 (the only rows QA-FINAL runs); deep mode with Claude Code code_task; remember via gateway; workspace committed"
+  },
+  {
+   "ref": "pytest:integration-tests/harness/e2e/test_pairwise.py::test_row[ST-1-PW-107]",
+   "cells": [
+    [
+     "mcp.named",
+     "agent.deep",
+     "seeded"
+    ],
+    [
+     "mcp.named",
+     "loop.subagent",
+     "seeded"
+    ],
+    [
+     "approval.ask",
+     "loop.subagent",
+     "seeded"
+    ],
+    [
+     "approval.allow",
+     "loop.subagent",
+     "seeded"
+    ],
+    [
+     "approval.org_rule",
+     "loop.subagent",
+     "seeded"
+    ],
+    [
+     "approval.allow",
+     "resume.approval",
+     "seeded"
+    ]
+   ],
+   "note": "QA-6 matrix row, ST-1 (the only rows QA-FINAL runs); deep coordinator spawns a child on the role model; child's MCP write card (org rule), Allow once, 1 effect"
+  },
+  {
+   "ref": "pytest:integration-tests/harness/e2e/test_pairwise.py::test_row[ST-1-PW-113]",
+   "cells": [
+    [
+     "toolset",
+     "loop.subagent",
+     "seeded"
+    ],
+    [
+     "approval.block",
+     "loop.subagent",
+     "seeded"
+    ],
+    [
+     "approval.org_rule",
+     "loop.subagent",
+     "seeded"
+    ],
+    [
+     "approval.block",
+     "agent.deep",
+     "seeded"
+    ]
+   ],
+   "note": "QA-6 matrix row, ST-1 (the only rows QA-FINAL runs); deep, child on a different-wire role model, toolset write denied, 0 effects; sub-agent offered no coordination tools"
+  },
+  {
+   "ref": "pytest:integration-tests/harness/e2e/test_pairwise.py::test_row[ST-1-PW-122]",
+   "cells": [
+    [
+     "mcp.named",
+     "loop.subagent",
+     "seeded"
+    ],
+    [
+     "approval.block",
+     "loop.subagent",
+     "seeded"
+    ],
+    [
+     "approval.block",
+     "scheduled.webhook",
+     "seeded"
+    ]
+   ],
+   "note": "QA-6 matrix row, ST-1 (the only rows QA-FINAL runs); webhook deep run, child's MCP write denied, 0 effects"
+  },
+  {
+   "ref": "pytest:integration-tests/harness/e2e/test_threeway_core.py::test_row[ST-1-T3-004]",
+   "cells": [
+    [
+     "toolset",
+     "agent.deep",
+     "seeded"
+    ],
+    [
+     "toolset",
+     "job.codex",
+     "seeded"
+    ],
+    [
+     "approval.flow_guard",
+     "job.codex",
+     "seeded"
+    ],
+    [
+     "approval.allow",
+     "job.codex",
+     "seeded"
+    ],
+    [
+     "toolset",
+     "scheduled.webhook",
+     "seeded"
+    ],
+    [
+     "approval.allow",
+     "resume.approval",
+     "seeded"
+    ],
+    [
+     "artifacts",
+     "job.codex",
+     "seeded"
+    ]
+   ],
+   "note": "QA-6 matrix row, ST-1 (the only rows QA-FINAL runs); webhook deep run with Codex code_task; toolset write held by flow guard, Allow once, 1 effect"
+  },
+  {
+   "ref": "pytest:integration-tests/harness/e2e/test_threeway_core.py::test_row[ST-1-T3-018]",
+   "cells": [
+    [
+     "knowledge",
+     "classic",
+     "seeded"
+    ]
+   ],
+   "note": "QA-6 matrix row, ST-1 (the only rows QA-FINAL runs); planExecute routes legacy (chat_mode_not_supported); answered only, no citation assert"
+  },
+  {
+   "ref": "pytest:integration-tests/harness/e2e/test_threeway_core.py::test_row[ST-1-T3-047]",
+   "cells": [
+    [
+     "toolset",
+     "classic",
+     "seeded"
+    ]
+   ],
+   "note": "QA-6 matrix row, ST-1 (the only rows QA-FINAL runs); kill switch -> legacy; toolset write refused approval_unavailable, no card"
+  },
+  {
+   "ref": "pytest:integration-tests/harness/e2e/test_threeway_core.py::test_row[ST-1-T3-049]",
+   "cells": [
+    [
+     "memory",
+     "assistant.agent",
+     "owner"
+    ]
+   ],
+   "note": "QA-6 matrix row, ST-1 (the only rows QA-FINAL runs); default chat internal_search durable; memory proposal listed"
+  },
+  {
+   "ref": "pytest:integration-tests/harness/e2e/test_mcplazy_first_use.py::test_lz1_a_default_chat_turn_lists_only_the_server_it_uses_and_only_at_first_use",
+   "cells": [
+    [
+     "mcp.first_use",
+     "assistant.agent",
+     "owner"
+    ]
+   ],
+   "note": "default chat Agent mode durable; idle server never listed, used one listed once; org-scoped servers (not personal); mcphub lane ST-1"
+  },
+  {
+   "ref": "pytest:integration-tests/harness/e2e/test_mcplazy_first_use.py::test_lz2_a_resumed_attempt_is_held_to_the_first_uses_pin",
+   "cells": [
+    [
+     "mcp.first_use",
+     "assistant.agent",
+     "owner"
+    ],
+    [
+     "mcp.first_use",
+     "recovery",
+     "owner"
+    ]
+   ],
+   "note": "worker+query SIGKILLed after first use; resumed attempt held to the first-use pin"
+  },
+  {
+   "ref": "pytest:integration-tests/harness/e2e/test_mcplazy_first_use.py::test_lz3_an_engine_job_lists_only_the_server_it_uses_through_the_gateway",
+   "cells": [
+    [
+     "mcp.named",
+     "job.opencode",
+     "seeded"
+    ],
+    [
+     "mcp.named",
+     "job.codex",
+     "seeded"
+    ]
+   ],
+   "note": "saved engine agent with named grant, lazily listed via Tool Gateway; opencode+codex only"
+  },
+  {
+   "ref": "pytest:integration-tests/harness/e2e/test_mcplazy_first_use.py::test_lz4_an_engine_job_calls_a_granted_tool_by_its_name_with_no_search",
+   "cells": [
+    [
+     "mcp.named",
+     "job.opencode",
+     "seeded"
+    ],
+    [
+     "mcp.named",
+     "job.codex",
+     "seeded"
+    ]
+   ],
+   "note": "direct call by name is first use; opencode+codex only"
+  },
+  {
+   "ref": "pytest:integration-tests/harness/e2e/test_mcpuse_sources.py::test_l1_the_default_chat_finds_a_servers_tool_by_what_the_server_covers_and_calls_it",
+   "cells": [
+    [
+     "mcp.first_use",
+     "assistant.agent",
+     "owner"
+    ]
+   ],
+   "note": "default chat search_tools by server description then call_tool; server sees 1 call"
+  },
+  {
+   "ref": "pytest:integration-tests/harness/e2e/test_mcpuse_sources.py::test_l2_an_engine_job_finds_a_servers_tool_by_what_the_server_covers_and_its_task_names_the_servers",
+   "cells": [
+    [
+     "mcp.named",
+     "job.opencode",
+     "seeded"
+    ],
+    [
+     "mcp.named",
+     "job.codex",
+     "seeded"
+    ]
+   ],
+   "note": "coder agent code_task; brief names both servers; opencode+codex only (agent grant, not default chat)"
+  },
+  {
+   "ref": "pytest:integration-tests/harness/e2e/test_mcpnote_unlisted_servers.py::test_a_signed_in_oauth_server_with_nothing_approved_is_used_on_the_default_chat",
+   "cells": [
+    [
+     "mcp.oauth",
+     "assistant.agent",
+     "owner"
+    ],
+    [
+     "mcp.first_use",
+     "assistant.agent",
+     "owner"
+    ],
+    [
+     "mcp.hub",
+     "assistant.agent",
+     "owner"
+    ]
+   ],
+   "note": "OAuth-signed-in server, nothing approved, used on default chat; org-scoped server"
+  },
+  {
+   "ref": "pytest:integration-tests/harness/e2e/test_mcpnote_unlisted_servers.py::test_a_flagged_tool_is_held_back_and_named_while_the_rest_of_its_server_is_used",
+   "cells": [
+    [
+     "mcp.hub",
+     "assistant.agent",
+     "owner"
+    ]
+   ],
+   "note": "scanner-flagged tool held back, notice mcp_tool_held"
+  },
+  {
+   "ref": "pytest:integration-tests/harness/e2e/test_mcpnote_unlisted_servers.py::test_a_revoked_sign_in_is_named_with_its_sign_in_and_the_turn_still_answers",
+   "cells": [
+    [
+     "mcp.oauth",
+     "assistant.agent",
+     "owner"
+    ]
+   ],
+   "note": "revoked OAuth: notice mcp_unavailable sign_in, turn answers"
+  },
+  {
+   "ref": "pytest:integration-tests/harness/e2e/test_mcpnote_unlisted_servers.py::test_a_saved_agent_and_an_engine_job_use_it_at_once",
+   "cells": [
+    [
+     "mcp.oauth",
+     "agent.quick",
+     "seeded"
+    ],
+    [
+     "mcp.oauth",
+     "job.opencode",
+     "seeded"
+    ],
+    [
+     "mcp.oauth",
+     "job.codex",
+     "seeded"
+    ],
+    [
+     "mcp.oauth",
+     "job.claude_code",
+     "seeded"
+    ],
+    [
+     "mcp.named",
+     "agent.quick",
+     "seeded"
+    ],
+    [
+     "mcp.named",
+     "job.opencode",
+     "seeded"
+    ],
+    [
+     "mcp.named",
+     "job.codex",
+     "seeded"
+    ],
+    [
+     "mcp.named",
+     "job.claude_code",
+     "seeded"
+    ]
+   ],
+   "note": "executor-parametrized (loop=saved agent quick; engines = code_task child of an engineProfile agent, skipped without the engine image); lane mcphub (QA-FINAL), ST-1; OAuth server tool called"
+  },
+  {
+   "ref": "pytest:integration-tests/harness/e2e/test_mcpnote_unlisted_servers.py::test_a_calls_own_rule_decides_it_on_every_surface",
+   "cells": [
+    [
+     "approval.ask",
+     "assistant.agent",
+     "owner"
+    ],
+    [
+     "approval.ask",
+     "agent.quick",
+     "seeded"
+    ],
+    [
+     "approval.ask",
+     "job.opencode",
+     "seeded"
+    ],
+    [
+     "approval.ask",
+     "job.codex",
+     "seeded"
+    ],
+    [
+     "approval.ask",
+     "job.claude_code",
+     "seeded"
+    ],
+    [
+     "approval.allow",
+     "assistant.agent",
+     "owner"
+    ],
+    [
+     "approval.allow",
+     "agent.quick",
+     "seeded"
+    ],
+    [
+     "approval.allow",
+     "job.opencode",
+     "seeded"
+    ],
+    [
+     "approval.allow",
+     "job.codex",
+     "seeded"
+    ],
+    [
+     "approval.allow",
+     "job.claude_code",
+     "seeded"
+    ],
+    [
+     "approval.block",
+     "assistant.agent",
+     "owner"
+    ],
+    [
+     "approval.block",
+     "agent.quick",
+     "seeded"
+    ],
+    [
+     "approval.block",
+     "job.opencode",
+     "seeded"
+    ],
+    [
+     "approval.block",
+     "job.codex",
+     "seeded"
+    ],
+    [
+     "approval.block",
+     "job.claude_code",
+     "seeded"
+    ],
+    [
+     "approval.org_rule",
+     "assistant.agent",
+     "owner"
+    ],
+    [
+     "approval.org_rule",
+     "agent.quick",
+     "seeded"
+    ],
+    [
+     "approval.org_rule",
+     "job.opencode",
+     "seeded"
+    ],
+    [
+     "approval.org_rule",
+     "job.codex",
+     "seeded"
+    ],
+    [
+     "approval.org_rule",
+     "job.claude_code",
+     "seeded"
+    ],
+    [
+     "approval.allow",
+     "resume.approval",
+     "seeded"
+    ]
+   ],
+   "note": "per-tool rule ask/allow/block x org writes, on default chat + loop + each engine; card shown/asserted and write reached server or not"
+  },
+  {
+   "ref": "pytest:integration-tests/harness/e2e/test_mcp_kinds.py::test_cp7_a_granted_run_is_offered_every_approved_tool_and_completes",
+   "cells": [
+    [
+     "mcp.hub",
+     "agent.quick",
+     "seeded"
+    ],
+    [
+     "mcp.hub",
+     "job.opencode",
+     "seeded"
+    ],
+    [
+     "mcp.hub",
+     "job.codex",
+     "seeded"
+    ],
+    [
+     "mcp.hub",
+     "job.claude_code",
+     "seeded"
+    ],
+    [
+     "mcp.named",
+     "agent.quick",
+     "seeded"
+    ],
+    [
+     "mcp.named",
+     "job.opencode",
+     "seeded"
+    ],
+    [
+     "mcp.named",
+     "job.codex",
+     "seeded"
+    ],
+    [
+     "mcp.named",
+     "job.claude_code",
+     "seeded"
+    ]
+   ],
+   "note": "executor-parametrized (loop=saved agent quick; engines = code_task child of an engineProfile agent, skipped without the engine image); lane mcphub (QA-FINAL), ST-1"
+  },
+  {
+   "ref": "pytest:integration-tests/harness/e2e/test_mcp_kinds.py::test_k_each_http_kind_is_called_with_its_credential",
+   "cells": [
+    [
+     "mcp.hub",
+     "agent.quick",
+     "seeded"
+    ],
+    [
+     "mcp.hub",
+     "job.opencode",
+     "seeded"
+    ],
+    [
+     "mcp.hub",
+     "job.codex",
+     "seeded"
+    ],
+    [
+     "mcp.hub",
+     "job.claude_code",
+     "seeded"
+    ],
+    [
+     "mcp.oauth",
+     "agent.quick",
+     "seeded"
+    ],
+    [
+     "mcp.oauth",
+     "job.opencode",
+     "seeded"
+    ],
+    [
+     "mcp.oauth",
+     "job.codex",
+     "seeded"
+    ],
+    [
+     "mcp.oauth",
+     "job.claude_code",
+     "seeded"
+    ]
+   ],
+   "note": "executor-parametrized (loop=saved agent quick; engines = code_task child of an engineProfile agent, skipped without the engine image); lane mcphub (QA-FINAL), ST-1; none/token/header/oauth/sse servers"
+  },
+  {
+   "ref": "pytest:integration-tests/harness/e2e/test_mcp_kinds.py::test_k6_a_stdio_server_runs_in_a_runner_holding_a_stand_in_never_its_secret",
+   "cells": [
+    [
+     "mcp.hub",
+     "agent.quick",
+     "seeded"
+    ],
+    [
+     "mcp.hub",
+     "job.opencode",
+     "seeded"
+    ],
+    [
+     "mcp.hub",
+     "job.codex",
+     "seeded"
+    ],
+    [
+     "mcp.hub",
+     "job.claude_code",
+     "seeded"
+    ]
+   ],
+   "note": "executor-parametrized (loop=saved agent quick; engines = code_task child of an engineProfile agent, skipped without the engine image); lane mcphub (QA-FINAL), ST-1; stdio runner container"
+  },
+  {
+   "ref": "pytest:integration-tests/harness/e2e/test_mcp_kinds.py::test_k7_oauth_by_dynamic_client_registration",
+   "cells": [
+    [
+     "mcp.oauth",
+     "agent.quick",
+     "seeded"
+    ]
+   ],
+   "note": "DCR then a loop turn calls it; loop only"
+  },
+  {
+   "ref": "pytest:integration-tests/harness/e2e/test_mcp_kinds.py::test_k8_a_token_that_expired_between_turns_is_refreshed_when_the_next_turn_starts",
+   "cells": [
+    [
+     "mcp.oauth",
+     "agent.quick",
+     "seeded"
+    ]
+   ],
+   "note": "refresh between turns; loop only"
+  },
+  {
+   "ref": "pytest:integration-tests/harness/e2e/test_mcp_kinds.py::test_k8_a_token_that_expires_while_a_run_is_going_is_refreshed_at_the_call",
+   "cells": [
+    [
+     "mcp.oauth",
+     "agent.quick",
+     "seeded"
+    ]
+   ],
+   "note": "refresh mid-run; loop only"
+  },
+  {
+   "ref": "pytest:integration-tests/harness/e2e/test_mcp_kinds.py::test_nm2_an_approved_tool_is_offered_and_called_on_every_executor",
+   "cells": [
+    [
+     "mcp.named",
+     "agent.quick",
+     "seeded"
+    ],
+    [
+     "mcp.named",
+     "job.opencode",
+     "seeded"
+    ],
+    [
+     "mcp.named",
+     "job.codex",
+     "seeded"
+    ],
+    [
+     "mcp.named",
+     "job.claude_code",
+     "seeded"
+    ],
+    [
+     "mcp.hub",
+     "agent.quick",
+     "seeded"
+    ],
+    [
+     "mcp.hub",
+     "job.opencode",
+     "seeded"
+    ],
+    [
+     "mcp.hub",
+     "job.codex",
+     "seeded"
+    ],
+    [
+     "mcp.hub",
+     "job.claude_code",
+     "seeded"
+    ]
+   ],
+   "note": "executor-parametrized (loop=saved agent quick; engines = code_task child of an engineProfile agent, skipped without the engine image); lane mcphub (QA-FINAL), ST-1; dotted/long tool names"
+  },
+  {
+   "ref": "pytest:integration-tests/harness/e2e/test_mcp_changes.py::test_cp3_a_tool_nobody_approved_is_shown_as_one_and_cannot_be_attached",
+   "cells": [
+    [
+     "mcp.hub",
+     "agent.quick",
+     "seeded"
+    ],
+    [
+     "mcp.hub",
+     "job.opencode",
+     "seeded"
+    ],
+    [
+     "mcp.hub",
+     "job.codex",
+     "seeded"
+    ],
+    [
+     "mcp.hub",
+     "job.claude_code",
+     "seeded"
+    ]
+   ],
+   "note": "executor-parametrized (loop=saved agent quick; engines = code_task child of an engineProfile agent, skipped without the engine image); lane mcphub (QA-FINAL), ST-1; needs require-tool-approval"
+  },
+  {
+   "ref": "pytest:integration-tests/harness/e2e/test_mcp_changes.py::test_dy1_a_server_added_approved_and_granted_is_offered_on_the_next_turn",
+   "cells": [
+    [
+     "mcp.hub",
+     "agent.quick",
+     "seeded"
+    ],
+    [
+     "mcp.hub",
+     "job.opencode",
+     "seeded"
+    ],
+    [
+     "mcp.hub",
+     "job.codex",
+     "seeded"
+    ],
+    [
+     "mcp.hub",
+     "job.claude_code",
+     "seeded"
+    ],
+    [
+     "mcp.named",
+     "agent.quick",
+     "seeded"
+    ],
+    [
+     "mcp.named",
+     "job.opencode",
+     "seeded"
+    ],
+    [
+     "mcp.named",
+     "job.codex",
+     "seeded"
+    ],
+    [
+     "mcp.named",
+     "job.claude_code",
+     "seeded"
+    ]
+   ],
+   "note": "executor-parametrized (loop=saved agent quick; engines = code_task child of an engineProfile agent, skipped without the engine image); lane mcphub (QA-FINAL), ST-1; org-shared agent"
+  },
+  {
+   "ref": "pytest:integration-tests/harness/e2e/test_mcp_changes.py::test_dy2_a_tool_the_server_adds_is_not_offered_until_approved_and_granted",
+   "cells": [
+    [
+     "mcp.hub",
+     "agent.quick",
+     "seeded"
+    ],
+    [
+     "mcp.hub",
+     "job.opencode",
+     "seeded"
+    ],
+    [
+     "mcp.hub",
+     "job.codex",
+     "seeded"
+    ],
+    [
+     "mcp.hub",
+     "job.claude_code",
+     "seeded"
+    ],
+    [
+     "mcp.named",
+     "agent.quick",
+     "seeded"
+    ],
+    [
+     "mcp.named",
+     "job.opencode",
+     "seeded"
+    ],
+    [
+     "mcp.named",
+     "job.codex",
+     "seeded"
+    ],
+    [
+     "mcp.named",
+     "job.claude_code",
+     "seeded"
+    ]
+   ],
+   "note": "executor-parametrized (loop=saved agent quick; engines = code_task child of an engineProfile agent, skipped without the engine image); lane mcphub (QA-FINAL), ST-1; org-shared agent"
+  },
+  {
+   "ref": "pytest:integration-tests/harness/e2e/test_mcp_changes.py::test_dy3_a_changed_tool_is_not_run_until_an_admin_approves_it_again",
+   "cells": [
+    [
+     "mcp.hub",
+     "agent.quick",
+     "seeded"
+    ],
+    [
+     "mcp.hub",
+     "job.opencode",
+     "seeded"
+    ],
+    [
+     "mcp.hub",
+     "job.codex",
+     "seeded"
+    ],
+    [
+     "mcp.hub",
+     "job.claude_code",
+     "seeded"
+    ],
+    [
+     "mcp.named",
+     "agent.quick",
+     "seeded"
+    ],
+    [
+     "mcp.named",
+     "job.opencode",
+     "seeded"
+    ],
+    [
+     "mcp.named",
+     "job.codex",
+     "seeded"
+    ],
+    [
+     "mcp.named",
+     "job.claude_code",
+     "seeded"
+    ]
+   ],
+   "note": "executor-parametrized (loop=saved agent quick; engines = code_task child of an engineProfile agent, skipped without the engine image); lane mcphub (QA-FINAL), ST-1; org-shared agent"
+  },
+  {
+   "ref": "pytest:integration-tests/harness/e2e/test_mcp_changes.py::test_dy4_a_removed_tool_stops_the_next_run_before_any_model_call",
+   "cells": [
+    [
+     "mcp.hub",
+     "agent.quick",
+     "seeded"
+    ],
+    [
+     "mcp.hub",
+     "job.opencode",
+     "seeded"
+    ],
+    [
+     "mcp.hub",
+     "job.codex",
+     "seeded"
+    ],
+    [
+     "mcp.hub",
+     "job.claude_code",
+     "seeded"
+    ],
+    [
+     "mcp.named",
+     "agent.quick",
+     "seeded"
+    ],
+    [
+     "mcp.named",
+     "job.opencode",
+     "seeded"
+    ],
+    [
+     "mcp.named",
+     "job.codex",
+     "seeded"
+    ],
+    [
+     "mcp.named",
+     "job.claude_code",
+     "seeded"
+    ]
+   ],
+   "note": "executor-parametrized (loop=saved agent quick; engines = code_task child of an engineProfile agent, skipped without the engine image); lane mcphub (QA-FINAL), ST-1; org-shared agent"
+  },
+  {
+   "ref": "pytest:integration-tests/harness/e2e/test_mcp_changes.py::test_dy5_an_uninstalled_server_refuses_the_next_turn_with_its_reason",
+   "cells": [
+    [
+     "mcp.hub",
+     "agent.quick",
+     "seeded"
+    ],
+    [
+     "mcp.hub",
+     "job.opencode",
+     "seeded"
+    ],
+    [
+     "mcp.hub",
+     "job.codex",
+     "seeded"
+    ],
+    [
+     "mcp.hub",
+     "job.claude_code",
+     "seeded"
+    ],
+    [
+     "mcp.named",
+     "agent.quick",
+     "seeded"
+    ],
+    [
+     "mcp.named",
+     "job.opencode",
+     "seeded"
+    ],
+    [
+     "mcp.named",
+     "job.codex",
+     "seeded"
+    ],
+    [
+     "mcp.named",
+     "job.claude_code",
+     "seeded"
+    ]
+   ],
+   "note": "executor-parametrized (loop=saved agent quick; engines = code_task child of an engineProfile agent, skipped without the engine image); lane mcphub (QA-FINAL), ST-1; org-shared agent"
+  },
+  {
+   "ref": "pytest:integration-tests/harness/e2e/test_mcp_changes.py::test_dy6_mcp_turned_off_for_the_org_runs_the_next_turn_without_mcp_tools",
+   "cells": [
+    [
+     "mcp.hub",
+     "agent.quick",
+     "seeded"
+    ],
+    [
+     "mcp.hub",
+     "job.opencode",
+     "seeded"
+    ],
+    [
+     "mcp.hub",
+     "job.codex",
+     "seeded"
+    ],
+    [
+     "mcp.hub",
+     "job.claude_code",
+     "seeded"
+    ],
+    [
+     "mcp.named",
+     "agent.quick",
+     "seeded"
+    ],
+    [
+     "mcp.named",
+     "job.opencode",
+     "seeded"
+    ],
+    [
+     "mcp.named",
+     "job.codex",
+     "seeded"
+    ],
+    [
+     "mcp.named",
+     "job.claude_code",
+     "seeded"
+    ]
+   ],
+   "note": "executor-parametrized (loop=saved agent quick; engines = code_task child of an engineProfile agent, skipped without the engine image); lane mcphub (QA-FINAL), ST-1; org-shared agent"
+  },
+  {
+   "ref": "pytest:integration-tests/harness/e2e/test_mcp_changes.py::test_dr1_a_tool_approved_and_granted_mid_run_is_not_offered_until_the_next_run",
+   "cells": [
+    [
+     "mcp.hub",
+     "agent.quick",
+     "seeded"
+    ],
+    [
+     "mcp.hub",
+     "job.opencode",
+     "seeded"
+    ],
+    [
+     "mcp.hub",
+     "job.codex",
+     "seeded"
+    ],
+    [
+     "mcp.hub",
+     "job.claude_code",
+     "seeded"
+    ],
+    [
+     "mcp.named",
+     "agent.quick",
+     "seeded"
+    ],
+    [
+     "mcp.named",
+     "job.opencode",
+     "seeded"
+    ],
+    [
+     "mcp.named",
+     "job.codex",
+     "seeded"
+    ],
+    [
+     "mcp.named",
+     "job.claude_code",
+     "seeded"
+    ]
+   ],
+   "note": "executor-parametrized (loop=saved agent quick; engines = code_task child of an engineProfile agent, skipped without the engine image); lane mcphub (QA-FINAL), ST-1; org-shared agent"
+  },
+  {
+   "ref": "pytest:integration-tests/harness/e2e/test_mcp_changes.py::test_dr2_an_approval_withdrawn_mid_run_stops_the_next_run_not_this_attempts_list",
+   "cells": [
+    [
+     "mcp.hub",
+     "agent.quick",
+     "seeded"
+    ],
+    [
+     "mcp.hub",
+     "job.opencode",
+     "seeded"
+    ],
+    [
+     "mcp.hub",
+     "job.codex",
+     "seeded"
+    ],
+    [
+     "mcp.hub",
+     "job.claude_code",
+     "seeded"
+    ],
+    [
+     "mcp.named",
+     "agent.quick",
+     "seeded"
+    ],
+    [
+     "mcp.named",
+     "job.opencode",
+     "seeded"
+    ],
+    [
+     "mcp.named",
+     "job.codex",
+     "seeded"
+    ],
+    [
+     "mcp.named",
+     "job.claude_code",
+     "seeded"
+    ]
+   ],
+   "note": "executor-parametrized (loop=saved agent quick; engines = code_task child of an engineProfile agent, skipped without the engine image); lane mcphub (QA-FINAL), ST-1; org-shared agent"
+  },
+  {
+   "ref": "pytest:integration-tests/harness/e2e/test_mcp_changes.py::test_dr3_a_tool_changed_and_approved_again_mid_run_keeps_this_runs_list",
+   "cells": [
+    [
+     "mcp.hub",
+     "agent.quick",
+     "seeded"
+    ],
+    [
+     "mcp.hub",
+     "job.opencode",
+     "seeded"
+    ],
+    [
+     "mcp.hub",
+     "job.codex",
+     "seeded"
+    ],
+    [
+     "mcp.hub",
+     "job.claude_code",
+     "seeded"
+    ],
+    [
+     "mcp.named",
+     "agent.quick",
+     "seeded"
+    ],
+    [
+     "mcp.named",
+     "job.opencode",
+     "seeded"
+    ],
+    [
+     "mcp.named",
+     "job.codex",
+     "seeded"
+    ],
+    [
+     "mcp.named",
+     "job.claude_code",
+     "seeded"
+    ]
+   ],
+   "note": "executor-parametrized (loop=saved agent quick; engines = code_task child of an engineProfile agent, skipped without the engine image); lane mcphub (QA-FINAL), ST-1; org-shared agent"
+  },
+  {
+   "ref": "pytest:integration-tests/harness/e2e/test_mcp_changes.py::test_dr4_a_server_uninstalled_mid_run_is_not_called_by_the_running_attempt",
+   "cells": [
+    [
+     "mcp.hub",
+     "agent.quick",
+     "seeded"
+    ],
+    [
+     "mcp.hub",
+     "job.opencode",
+     "seeded"
+    ],
+    [
+     "mcp.hub",
+     "job.codex",
+     "seeded"
+    ],
+    [
+     "mcp.hub",
+     "job.claude_code",
+     "seeded"
+    ],
+    [
+     "mcp.named",
+     "agent.quick",
+     "seeded"
+    ],
+    [
+     "mcp.named",
+     "job.opencode",
+     "seeded"
+    ],
+    [
+     "mcp.named",
+     "job.codex",
+     "seeded"
+    ],
+    [
+     "mcp.named",
+     "job.claude_code",
+     "seeded"
+    ]
+   ],
+   "note": "executor-parametrized (loop=saved agent quick; engines = code_task child of an engineProfile agent, skipped without the engine image); lane mcphub (QA-FINAL), ST-1; org-shared agent"
+  },
+  {
+   "ref": "pytest:integration-tests/harness/e2e/test_mcp_changes.py::test_dy7_a_removed_credential_refuses_the_next_turn_until_the_user_connects_again",
+   "cells": [
+    [
+     "mcp.oauth",
+     "agent.quick",
+     "seeded"
+    ],
+    [
+     "mcp.oauth",
+     "job.opencode",
+     "seeded"
+    ],
+    [
+     "mcp.oauth",
+     "job.codex",
+     "seeded"
+    ],
+    [
+     "mcp.oauth",
+     "job.claude_code",
+     "seeded"
+    ],
+    [
+     "mcp.named",
+     "agent.quick",
+     "seeded"
+    ],
+    [
+     "mcp.named",
+     "job.opencode",
+     "seeded"
+    ],
+    [
+     "mcp.named",
+     "job.codex",
+     "seeded"
+    ],
+    [
+     "mcp.named",
+     "job.claude_code",
+     "seeded"
+    ]
+   ],
+   "note": "executor-parametrized (loop=saved agent quick; engines = code_task child of an engineProfile agent, skipped without the engine image); lane mcphub (QA-FINAL), ST-1; per-user API-token credential (not "
+  },
+  {
+   "ref": "pytest:integration-tests/harness/e2e/test_mcp_changes.py::test_dy8_a_user_who_never_connected_is_refused_and_the_connected_user_is_not",
+   "cells": [
+    [
+     "mcp.oauth",
+     "agent.quick",
+     "seeded"
+    ],
+    [
+     "mcp.oauth",
+     "job.opencode",
+     "seeded"
+    ],
+    [
+     "mcp.oauth",
+     "job.codex",
+     "seeded"
+    ],
+    [
+     "mcp.oauth",
+     "job.claude_code",
+     "seeded"
+    ],
+    [
+     "mcp.named",
+     "agent.quick",
+     "seeded"
+    ],
+    [
+     "mcp.named",
+     "job.opencode",
+     "seeded"
+    ],
+    [
+     "mcp.named",
+     "job.codex",
+     "seeded"
+    ],
+    [
+     "mcp.named",
+     "job.claude_code",
+     "seeded"
+    ]
+   ],
+   "note": "executor-parametrized (loop=saved agent quick; engines = code_task child of an engineProfile agent, skipped without the engine image); lane mcphub (QA-FINAL), ST-1; per-user API-token credential (not "
+  },
+  {
+   "ref": "pytest:integration-tests/harness/e2e/test_mcp_changes.py::test_dr5_a_credential_removed_mid_run_is_not_used_by_a_later_call",
+   "cells": [
+    [
+     "mcp.oauth",
+     "agent.quick",
+     "seeded"
+    ],
+    [
+     "mcp.oauth",
+     "job.opencode",
+     "seeded"
+    ],
+    [
+     "mcp.oauth",
+     "job.codex",
+     "seeded"
+    ],
+    [
+     "mcp.oauth",
+     "job.claude_code",
+     "seeded"
+    ],
+    [
+     "mcp.named",
+     "agent.quick",
+     "seeded"
+    ],
+    [
+     "mcp.named",
+     "job.opencode",
+     "seeded"
+    ],
+    [
+     "mcp.named",
+     "job.codex",
+     "seeded"
+    ],
+    [
+     "mcp.named",
+     "job.claude_code",
+     "seeded"
+    ]
+   ],
+   "note": "executor-parametrized (loop=saved agent quick; engines = code_task child of an engineProfile agent, skipped without the engine image); lane mcphub (QA-FINAL), ST-1; per-user API-token credential (not "
+  },
+  {
+   "ref": "pytest:integration-tests/harness/e2e/test_knowledge_e2e.py::test_kn_fs1_the_owner_reads_both_records_and_the_answer_cites_one",
+   "cells": [
+    [
+     "knowledge",
+     "agent.quick",
+     "seeded"
+    ],
+    [
+     "knowledge",
+     "job.opencode",
+     "seeded"
+    ],
+    [
+     "knowledge",
+     "job.codex",
+     "seeded"
+    ],
+    [
+     "knowledge",
+     "job.claude_code",
+     "seeded"
+    ]
+   ],
+   "note": "executor-parametrized (loop=saved agent quick; engines = code_task child of an engineProfile agent, skipped without the engine image); lane mcphub (QA-FINAL), ST-1; real indexing, citations kept/inven"
+  },
+  {
+   "ref": "pytest:integration-tests/harness/e2e/test_knowledge_e2e.py::test_kn_fs3_the_reader_of_one_base_never_reads_the_other",
+   "cells": [
+    [
+     "knowledge",
+     "agent.quick",
+     "seeded"
+    ],
+    [
+     "knowledge",
+     "job.opencode",
+     "seeded"
+    ],
+    [
+     "knowledge",
+     "job.codex",
+     "seeded"
+    ],
+    [
+     "knowledge",
+     "job.claude_code",
+     "seeded"
+    ]
+   ],
+   "note": "executor-parametrized (loop=saved agent quick; engines = code_task child of an engineProfile agent, skipped without the engine image); lane mcphub (QA-FINAL), ST-1; reader permissions; ST-1 and ST-5"
+  },
+  {
+   "ref": "smoke:MCP tool lookup_note called from a chat-loop turn",
+   "cells": [
+    [
+     "mcp.named",
+     "agent.quick",
+     "seeded"
+    ]
+   ],
+   "note": "Human-test stack smoke (ST-1-shaped stack); agentLoop seeded, read reaches fake SaaS"
+  },
+  {
+   "ref": "smoke:default-chat Agent-mode turn admitted on the harness with the user's MCP server",
+   "cells": [
+    [
+     "mcp.first_use",
+     "assistant.agent",
+     "owner"
+    ]
+   ],
+   "note": "Human-test stack smoke (ST-1-shaped stack); spec pins e2esaas at_first_use, no notice; personal choice forced to no engine"
+  },
+  {
+   "ref": "smoke:MCP tool lookup_note called from a default-chat Agent-mode turn",
+   "cells": [
+    [
+     "mcp.first_use",
+     "assistant.agent",
+     "owner"
+    ]
+   ],
+   "note": "Human-test stack smoke (ST-1-shaped stack); read reaches SaaS"
+  },
+  {
+   "ref": "smoke:default-chat Agent-mode turn with one selected record admitted on the harness",
+   "cells": [
+    [
+     "knowledge",
+     "assistant.agent",
+     "owner"
+    ]
+   ],
+   "note": "Human-test stack smoke (ST-1-shaped stack); record selection"
+  },
+  {
+   "ref": "smoke:the selected turn's search and fetches return nothing outside the selection",
+   "cells": [
+    [
+     "knowledge",
+     "assistant.agent",
+     "owner"
+    ]
+   ],
+   "note": "Human-test stack smoke (ST-1-shaped stack); scoped search/fetch"
+  },
+  {
+   "ref": "smoke:a fetch by id of a readable record outside the selection is refused",
+   "cells": [
+    [
+     "knowledge",
+     "assistant.agent",
+     "owner"
+    ]
+   ],
+   "note": "Human-test stack smoke (ST-1-shaped stack)"
+  },
+  {
+   "ref": "smoke:a fetch by id of the selected record returns it",
+   "cells": [
+    [
+     "knowledge",
+     "assistant.agent",
+     "owner"
+    ]
+   ],
+   "note": "Human-test stack smoke (ST-1-shaped stack)"
+  },
+  {
+   "ref": "smoke:a selection the user cannot read is refused with main's reason (selection_empty)",
+   "cells": [
+    [
+     "knowledge",
+     "assistant.agent",
+     "owner"
+    ],
+    [
+     "answer_contract",
+     "assistant.agent",
+     "owner"
+    ]
+   ],
+   "note": "Human-test stack smoke (ST-1-shaped stack); member; typed refusal"
+  },
+  {
+   "ref": "smoke:create_ticket asks; a deny ends the run and sends nothing",
+   "cells": [
+    [
+     "approval.ask",
+     "agent.quick",
+     "seeded"
+    ],
+    [
+     "approval.block",
+     "agent.quick",
+     "seeded"
+    ],
+    [
+     "approval.block",
+     "resume.approval",
+     "seeded"
+    ]
+   ],
+   "note": "Human-test stack smoke (ST-1-shaped stack); agentLoop MCP write denied, no effect"
+  },
+  {
+   "ref": "smoke:MCP tool lookup_note called from ",
+   "cells": [
+    [
+     "mcp.named",
+     "job.opencode",
+     "seeded"
+    ],
+    [
+     "mcp.named",
+     "job.codex",
+     "seeded"
+    ],
+    [
+     "mcp.named",
+     "job.claude_code",
+     "seeded"
+    ]
+   ],
+   "note": "Human-test stack smoke (ST-1-shaped stack); prefix; agentOpencode/Codex/ClaudeCode code_task child (Claude Code skipped if admin has own Claude)"
+  },
+  {
+   "ref": "smoke:MCP tool lookup_note called by name, with no search, from ",
+   "cells": [
+    [
+     "mcp.named",
+     "job.opencode",
+     "seeded"
+    ],
+    [
+     "mcp.named",
+     "job.codex",
+     "seeded"
+    ],
+    [
+     "mcp.named",
+     "job.claude_code",
+     "seeded"
+    ]
+   ],
+   "note": "Human-test stack smoke (ST-1-shaped stack); prefix; per seeded engine agent"
+  },
+  {
+   "ref": "smoke:a code task's command result and file change reach the stream and the transcript (",
+   "cells": [
+    [
+     "artifacts",
+     "job.opencode",
+     "seeded"
+    ]
+   ],
+   "note": "Human-test stack smoke (ST-1-shaped stack); prefix; agentOpencode file change in stream+timeline"
+  },
+  {
+   "ref": "smoke:a default-chat Codex job keeps the MCP server held at first use and calls its tool lookup_note",
+   "cells": [
+    [
+     "mcp.first_use",
+     "job.codex",
+     "owner"
+    ]
+   ],
+   "note": "Human-test stack smoke (ST-1-shaped stack); R31-HOT: org default engine Codex, personal choice org_default; ONLY owner x engine-child MCP cell, Codex only"
+  },
+  {
+   "ref": "smoke:a default-chat Codex job reads the ",
+   "cells": [
+    [
+     "skills.preload",
+     "job.codex",
+     "owner"
+    ]
+   ],
+   "note": "Human-test stack smoke (ST-1-shaped stack); prefix; pdf skill mounted for the Codex child"
+  },
+  {
+   "ref": "smoke:a budget-cut code_task child's partial reaches the person and its file is saved (agentOpencode, scripted)",
+   "cells": [
+    [
+     "budget_partial",
+     "job.opencode",
+     "seeded"
+    ],
+    [
+     "artifacts",
+     "job.opencode",
+     "seeded"
+    ]
+   ],
+   "note": "Human-test stack smoke (ST-1-shaped stack); USD cap cuts child; partial labelled, handoff file saved"
+  },
+  {
+   "ref": "script:deployment/e2e/erase_world.py::_world",
+   "cells": [
+    [
+     "attachments",
+     "job.opencode",
+     "seeded"
+    ],
+    [
+     "memory",
+     "job.opencode",
+     "seeded"
+    ],
+    [
+     "artifacts",
+     "job.opencode",
+     "seeded"
+    ],
+    [
+     "delete",
+     "job.opencode",
+     "seeded"
+    ],
+    [
+     "erasure",
+     "job.opencode",
+     "seeded"
+    ],
+    [
+     "attachments",
+     "assistant.agent",
+     "owner"
+    ],
+    [
+     "memory",
+     "assistant.agent",
+     "owner"
+    ],
+    [
+     "delete",
+     "assistant.agent",
+     "owner"
+    ],
+    [
+     "erasure",
+     "assistant.agent",
+     "owner"
+    ]
+   ],
+   "note": "EW-1..6, run.sh durable (docker lane); engine agent = E2E_ENGINE (opencode default); probe turn on default chat with file+memories; nothing comes back after delete"
+  },
+  {
+   "ref": "script:deployment/e2e/pg_world.py::main",
+   "cells": [
+    [
+     "delete",
+     "agent.quick",
+     "seeded"
+    ],
+    [
+     "erasure",
+     "agent.quick",
+     "seeded"
+    ]
+   ],
+   "note": "PGW-1..3 on PostgreSQL doc store only (ops lane, run.sh pg); conversation delete + org delete erasure"
+  },
+  {
+   "ref": "pytest:integration-tests/harness/fault/test_degraded.py::test_ix_dd_3c_stop_lands_within_the_slo_while_redis_is_down",
+   "cells": [
+    [
+     "cancel",
+     "agent.quick",
+     "seeded"
+    ]
+   ],
+   "note": "fault rig (fault lane): real Node + production worker composition on host processes, but scripted assembler/tools/FakeSaaS injected; any shape; cancel with Redis down"
+  },
+  {
+   "ref": "playwright:frontend/tests/e2e/qa/engine-journey-code-job.spec.ts::QA-J2: a code job waits on the person in Jobs and Needs you, runs its write on Allow, and hands back its file",
+   "cells": [
+    [
+     "mcp.named",
+     "job.opencode",
+     "seeded"
+    ],
+    [
+     "approval.ask",
+     "job.opencode",
+     "seeded"
+    ],
+    [
+     "approval.allow",
+     "job.opencode",
+     "seeded"
+    ],
+    [
+     "approval.allow",
+     "resume.approval",
+     "seeded"
+    ],
+    [
+     "artifacts",
+     "job.opencode",
+     "seeded"
+    ]
+   ],
+   "note": "browser, nothing mocked; harness-engine project on run.sh durable; engine = E2E_ENGINE (opencode by default); create_ticket write, Allow, file downloaded"
+  },
+  {
+   "ref": "playwright:frontend/tests/e2e/qa/journey-agent-build-try.spec.ts::QA-J5: built in the builder, opened in chat, and its first write asks before it runs",
+   "cells": [
+    [
+     "mcp.named",
+     "agent.quick",
+     "seeded"
+    ],
+    [
+     "approval.ask",
+     "agent.quick",
+     "seeded"
+    ],
+    [
+     "approval.allow",
+     "agent.quick",
+     "seeded"
+    ],
+    [
+     "approval.allow",
+     "resume.approval",
+     "owner"
+    ]
+   ],
+   "note": "browser; agent built in builder (not org-shared), MCP create_ticket asks, Allow once"
+  },
+  {
+   "ref": "playwright:frontend/tests/e2e/qa/journey-needs-you-decide.spec.ts::QA-J4: an approval waits in Needs you; Review in chat opens its card; Allow finishes the run and clears it",
+   "cells": [
+    [
+     "mcp.named",
+     "agent.quick",
+     "seeded"
+    ],
+    [
+     "approval.ask",
+     "agent.quick",
+     "seeded"
+    ],
+    [
+     "approval.allow",
+     "agent.quick",
+     "seeded"
+    ],
+    [
+     "approval.allow",
+     "resume.approval",
+     "seeded"
+    ],
+    [
+     "approval.ask",
+     "resume.approval",
+     "seeded"
+    ]
+   ],
+   "note": "browser; lane agent E2E_AGENT_KEY, create_ticket via Needs you"
+  },
+  {
+   "ref": "playwright:frontend/tests/e2e/qa/indexed-journey-ask-cite-followup.spec.ts::QA-J1: an answer cites an indexed record, its Citation tab names it, and a follow-up keeps the thread",
+   "cells": [
+    [
+     "knowledge",
+     "agent.quick",
+     "seeded"
+    ]
+   ],
+   "note": "browser, qa-indexed project; real indexing, citation tab names record"
+  },
+  {
+   "ref": "playwright:frontend/tests/e2e/harness/actresults-activity-steps.spec.ts::ACTRESULTS: the panel shows each step's outcome, its result one click away, live and after a reload",
+   "cells": [
+    [
+     "mcp.named",
+     "agent.quick",
+     "seeded"
+    ],
+    [
+     "approval.ask",
+     "agent.quick",
+     "seeded"
+    ],
+    [
+     "approval.ask",
+     "resume.approval",
+     "seeded"
+    ]
+   ],
+   "note": "3 MCP reads (lookup_note, granted by spec) + held create_ticket, Allow once in UI, answer + step results + SaaS effect asserted, replay after reload. Agent = seed toolAgentKey 'E2E Ticket Agent' (save"
+  },
+  {
+   "ref": "playwright:frontend/tests/e2e/harness/em-approvals.spec.ts::EM-02: Allow once runs the write exactly once, also after a reload while the card waits; the card reads approved after a reload",
+   "cells": [
+    [
+     "approval.ask",
+     "agent.quick",
+     "seeded"
+    ],
+    [
+     "approval.ask",
+     "resume.approval",
+     "seeded"
+    ],
+    [
+     "mcp.named",
+     "agent.quick",
+     "seeded"
+    ]
+   ],
+   "note": "card held across reload, Allow once, SaaS effect exactly once, timeline approved/completed. Agent = seed toolAgentKey 'E2E Ticket Agent' (saved agent, admin-created MCP instance e2esaas, names create_"
+  },
+  {
+   "ref": "playwright:frontend/tests/e2e/harness/em-approvals.spec.ts::EM-03: Deny sends nothing; the card reads denied, the run ends and no card is offered again",
+   "cells": [
+    [
+     "approval.ask",
+     "agent.quick",
+     "seeded"
+    ],
+    [
+     "approval.ask",
+     "resume.approval",
+     "seeded"
+    ]
+   ],
+   "note": "deny path: no SaaS effect, timeline denied. Agent = seed toolAgentKey 'E2E Ticket Agent' (saved agent, admin-created MCP instance e2esaas, names create_ticket; default strategy quick). The ask comes f"
+  },
+  {
+   "ref": "playwright:frontend/tests/e2e/harness/em-durable-turn.spec.ts::EM-13: Stop during the model call; the stopped turn reads the same after a reload and the run is cancelled",
+   "cells": [
+    [
+     "cancel",
+     "agent.quick",
+     "seeded"
+    ]
+   ],
+   "note": "Stop posts run's own cancel route, timeline cancelled, no further model call. Agent=agentKey (no tools). project=harness"
+  },
+  {
+   "ref": "playwright:frontend/tests/e2e/harness/j04-edit-then-approve.spec.ts::J-04: the person edits the held write in its card and only the edited call is sent, once",
+   "cells": [
+    [
+     "approval.ask",
+     "agent.quick",
+     "seeded"
+    ],
+    [
+     "approval.ask",
+     "resume.approval",
+     "seeded"
+    ],
+    [
+     "mcp.named",
+     "agent.quick",
+     "seeded"
+    ]
+   ],
+   "note": "edit-then-approve; SaaS args digest = edited args. Agent = seed toolAgentKey 'E2E Ticket Agent' (saved agent, admin-created MCP instance e2esaas, names create_ticket; default strategy quick). The ask "
+  },
+  {
+   "ref": "playwright:frontend/tests/e2e/harness/ux-int-0-same-shape-turns.spec.ts::UXINT-0 s11: a second same-shaped turn shows its own card, with buttons, and no card of turn 1",
+   "cells": [
+    [
+     "approval.ask",
+     "agent.quick",
+     "seeded"
+    ]
+   ],
+   "note": "two turns, each its own card; Allow once. Agent = seed toolAgentKey 'E2E Ticket Agent' (saved agent, admin-created MCP instance e2esaas, names create_ticket; default strategy quick). project=harness"
+  },
+  {
+   "ref": "playwright:frontend/tests/e2e/harness/ux-int-1-question-then-approvals.spec.ts::UXINT-1 §1: the question asked first stays above the approvals of its answer’s run, live and after a reload",
+   "cells": [
+    [
+     "question",
+     "agent.quick",
+     "seeded"
+    ],
+    [
+     "question",
+     "resume.question",
+     "seeded"
+    ],
+    [
+     "approval.ask",
+     "agent.quick",
+     "seeded"
+    ],
+    [
+     "approval.ask",
+     "resume.approval",
+     "seeded"
+    ]
+   ],
+   "note": "ask_user radio answered, then two held writes allowed; 2 SaaS effects. Agent = seed toolAgentKey 'E2E Ticket Agent' (saved agent, admin-created MCP instance e2esaas, names create_ticket; default strat"
+  },
+  {
+   "ref": "playwright:frontend/tests/e2e/harness/ux-int-2-receipts.spec.ts::UXINT-2: approve, then deny; each is one receipt at its step, and both survive a reload",
+   "cells": [
+    [
+     "approval.ask",
+     "agent.quick",
+     "seeded"
+    ],
+    [
+     "approval.ask",
+     "resume.approval",
+     "seeded"
+    ]
+   ],
+   "note": "allow then deny in one run; 1 SaaS effect. Agent = seed toolAgentKey 'E2E Ticket Agent' (saved agent, admin-created MCP instance e2esaas, names create_ticket; default strategy quick). project=harness"
+  },
+  {
+   "ref": "playwright:frontend/tests/e2e/harness/ux-int-2-receipts.spec.ts::UXINT-5: a message sent while a card waits shows queued; the card stays; the box says what waits",
+   "cells": [
+    [
+     "approval.ask",
+     "agent.quick",
+     "seeded"
+    ]
+   ],
+   "note": "steering message queued while card waits; card asserted held (no decision, no effect check). Agent = seed toolAgentKey 'E2E Ticket Agent' (saved agent, admin-created MCP instance e2esaas, names create"
+  },
+  {
+   "ref": "playwright:frontend/tests/e2e/harness/ux-int-3-live-batch.spec.ts::UXINT-2 D2: a live batch of three is one card; Allow all 3 runs all three and leaves one receipt",
+   "cells": [
+    [
+     "approval.ask",
+     "agent.quick",
+     "seeded"
+    ],
+    [
+     "approval.ask",
+     "resume.approval",
+     "seeded"
+    ]
+   ],
+   "note": "batch of 3, Allow all 3; 3 SaaS effects. Agent = seed toolAgentKey 'E2E Ticket Agent' (saved agent, admin-created MCP instance e2esaas, names create_ticket; default strategy quick). project=harness"
+  },
+  {
+   "ref": "playwright:frontend/tests/e2e/harness/wp10-wp18-chat.spec.ts::WP10-03: Deny opens the reason field; the reason is sent with the denial and the receipt quotes it",
+   "cells": [
+    [
+     "approval.ask",
+     "agent.quick",
+     "seeded"
+    ]
+   ],
+   "note": "deny with reason; no SaaS effect; receipt after reload. (only fonts are routed) Agent = seed toolAgentKey 'E2E Ticket Agent' (saved agent, admin-created MCP instance e2esaas, names create_ticket; defa"
+  },
+  {
+   "ref": "playwright:frontend/tests/e2e/harness/wp10-wp18-chat.spec.ts::WP10-04: a batch of three is one card; Allow all 3 runs all three",
+   "cells": [
+    [
+     "approval.ask",
+     "agent.quick",
+     "seeded"
+    ],
+    [
+     "approval.ask",
+     "resume.approval",
+     "seeded"
+    ]
+   ],
+   "note": "3 SaaS effects. Agent = seed toolAgentKey 'E2E Ticket Agent' (saved agent, admin-created MCP instance e2esaas, names create_ticket; default strategy quick). project=harness"
+  },
+  {
+   "ref": "playwright:frontend/tests/e2e/harness/classic-jobs-loop.spec.ts::CJ-5 scenarios (loop): a deep turn hands its work to a sub-agent job that asks and is allowed; another is held until released",
+   "cells": [
+    [
+     "approval.ask",
+     "loop.subagent",
+     "seeded"
+    ],
+    [
+     "approval.ask",
+     "agent.deep",
+     "seeded"
+    ],
+    [
+     "mcp.named",
+     "loop.subagent",
+     "seeded"
+    ]
+   ],
+   "note": "deep mode (spec rewrites chatMode=deep on the wire via route.fallback, not a mock) -> spawn_agent child; ask allowed via the decision API (not the card); SaaS effect asserted. Agent = seed toolAgentKe"
+  },
+  {
+   "ref": "playwright:frontend/tests/e2e/harness/classic-jobs-loop.spec.ts::CJ-E2: a job that asks reads Needs you; the dot, the badge and the Needs you list follow it; Review in chat; Allow clears them",
+   "cells": [
+    [
+     "approval.ask",
+     "loop.subagent",
+     "seeded"
+    ],
+    [
+     "approval.ask",
+     "resume.approval",
+     "seeded"
+    ]
+   ],
+   "note": "child's ask on floating card, Needs you page, Allow once in UI, SaaS effect, card Done. Agent = seed toolAgentKey 'E2E Ticket Agent' (saved agent, admin-created MCP instance e2esaas, names create_tick"
+  },
+  {
+   "ref": "playwright:frontend/tests/e2e/harness/classic-jobs-loop.spec.ts::D10: the chat this tab is streaming shows Needs you on its row, over its spinner",
+   "cells": [
+    [
+     "approval.ask",
+     "loop.subagent",
+     "seeded"
+    ]
+   ],
+   "note": "child ask held; sidebar dot; allowed via API, effect not asserted. Agent = seed toolAgentKey 'E2E Ticket Agent' (saved agent, admin-created MCP instance e2esaas, names create_ticket; default strategy "
+  },
+  {
+   "ref": "playwright:frontend/tests/e2e/harness/classic-jobs-loop.spec.ts::Needs you is live (§4.4): the badge counts a job's new ask without a reload, and drops it once allowed",
+   "cells": [
+    [
+     "approval.ask",
+     "loop.subagent",
+     "seeded"
+    ]
+   ],
+   "note": "badge live count; allowed via API. Agent = seed toolAgentKey 'E2E Ticket Agent' (saved agent, admin-created MCP instance e2esaas, names create_ticket; default strategy quick). project=harness"
+  },
+  {
+   "ref": "playwright:frontend/tests/e2e/harness/classic-jobs-navigation.spec.ts::CJ-E5: at 390 px, an icon Stop named for the job, the bottom sheet, the menu button dot, 44 px Jobs rows",
+   "cells": [
+    [
+     "approval.ask",
+     "loop.subagent",
+     "seeded"
+    ]
+   ],
+   "note": "phone layout; a child ask held then allowed via API; Stop only inspected (not clicked). project=harness"
+  },
+  {
+   "ref": "playwright:frontend/tests/e2e/harness/classic-jobs-a11y-perf.spec.ts::CJ-E7 axe: the card with its ask, the panel, Jobs and Needs you, light and dark, 390 and 1440 px",
+   "cells": [
+    [
+     "approval.ask",
+     "loop.subagent",
+     "seeded"
+    ]
+   ],
+   "note": "axe; child ask held, allowed via API, SaaS effect asserted. project=harness"
+  },
+  {
+   "ref": "playwright:frontend/tests/e2e/harness/bgui8-whole-flow.spec.ts::BGUI-8 whole flow: three jobs handed out, one asks in the floating card, two stopped out of order, reports in finish order, the list, the panel, a grant removed",
+   "cells": [
+    [
+     "approval.ask",
+     "loop.subagent",
+     "seeded"
+    ],
+    [
+     "approval.ask",
+     "resume.approval",
+     "seeded"
+    ],
+    [
+     "mcp.named",
+     "loop.subagent",
+     "seeded"
+    ]
+   ],
+   "note": "deep turn, 3 spawn_agent children; floating card Allow once (effect asserted); 2 children stopped from list and card. NOTE: the chat-grants panel part is served by page.route (…/grants fulfilled) - gr"
+  },
+  {
+   "ref": "playwright:frontend/tests/e2e/harness/classic-jobs-engine.spec.ts::CJ-5 scenarios (engine): a code_task job asks, is allowed, and makes its file; another is held until released",
+   "cells": [
+    [
+     "approval.ask",
+     "job.opencode",
+     "seeded"
+    ],
+    [
+     "mcp.named",
+     "job.opencode",
+     "seeded"
+    ]
+   ],
+   "note": "code_task child's create_ticket ask allowed via decision API; SaaS effect asserted. Engine = E2E_ENGINE (default opencode, allowlist[0]); engine agent = seed engineAgentKey (engineProfile {} or {engin"
+  },
+  {
+   "ref": "playwright:frontend/tests/e2e/harness/classic-jobs-engine.spec.ts::CJ-E1: a code_task card goes Starting, Working, Done with its file; Details opens Brief, Activity, Machine",
+   "cells": [
+    [
+     "artifacts",
+     "job.opencode",
+     "seeded"
+    ]
+   ],
+   "note": "job's file shown on Outputs as artifact card + working files (no download asserted). Engine = E2E_ENGINE (default opencode, allowlist[0]); engine agent = seed engineAgentKey (engineProfile {} or {engi"
+  },
+  {
+   "ref": "playwright:frontend/tests/e2e/harness/classic-jobs-engine.spec.ts::BGUI-10: a hand-off that loaded the PDF skill first: the job's Brief is its task, what it started with by name, never the engine's prompt",
+   "cells": [
+    [
+     "skills.load",
+     "agent.quick",
+     "seeded"
+    ]
+   ],
+   "note": "parent loop load_skill pdf before code_task hand-off; brief.carried asserted (load is in the parent, not in the engine). Engine = E2E_ENGINE (default opencode, allowlist[0]); engine agent = seed engin"
+  },
+  {
+   "ref": "playwright:frontend/tests/e2e/harness/classic-jobs-engine.spec.ts::CJ-E2 (engine): a job that asks reads Needs you, holds the ask on its card, and runs only once allowed",
+   "cells": [
+    [
+     "approval.ask",
+     "job.opencode",
+     "seeded"
+    ],
+    [
+     "approval.ask",
+     "resume.approval",
+     "seeded"
+    ],
+    [
+     "mcp.named",
+     "job.opencode",
+     "seeded"
+    ]
+   ],
+   "note": "floating card Allow once in UI; SaaS effect; card Done. Engine = E2E_ENGINE (default opencode, allowlist[0]); engine agent = seed engineAgentKey (engineProfile {} or {engines:[E2E_ENGINE]}). scripts/q"
+  },
+  {
+   "ref": "playwright:frontend/tests/e2e/harness/classic-jobs-engine.spec.ts::CJ-E3: Stop on a working job reads \"Stopped by you\" on the card, the panel and the Jobs row; on an ended one, \"It had already finished\"",
+   "cells": [
+    [
+     "cancel",
+     "job.opencode",
+     "seeded"
+    ]
+   ],
+   "note": "Stop -> child cancelled; late Stop gets a real 409 (route only delays then continues). Engine = E2E_ENGINE (default opencode, allowlist[0]); engine agent = seed engineAgentKey (engineProfile {} or {en"
+  },
+  {
+   "ref": "playwright:frontend/tests/e2e/harness/classic-jobs-engine.spec.ts::CJ-E6: a chained command that reads the PDF skill shows as \"Read the PDF skill\" on the card and in the panel",
+   "cells": [
+    [
+     "skills.preload",
+     "job.opencode",
+     "seeded"
+    ]
+   ],
+   "note": "engine shell cats /skills/pdf/SKILL.md (preloaded in sandbox); asserts the step label only. Engine = E2E_ENGINE (default opencode, allowlist[0]); engine agent = seed engineAgentKey (engineProfile {} o"
+  },
+  {
+   "ref": "playwright:frontend/tests/e2e/harness/answer-contract-engine.spec.ts::AC-E1: a subject that is not found is asked about before any job starts; going on leads with not-found and Low",
+   "cells": [
+    [
+     "answer_contract",
+     "assistant.agent",
+     "owner_pinned"
+    ],
+    [
+     "question",
+     "assistant.agent",
+     "owner_pinned"
+    ],
+    [
+     "question",
+     "resume.question",
+     "owner_pinned"
+    ]
+   ],
+   "note": "grounding question card before hand-off; 'Use what you can find' -> job; not-found notice + Low confidence. New default chat (/chat/); the harness fixture pins codingEngine=E2E_CODING_ENGINE on the cr"
+  },
+  {
+   "ref": "playwright:frontend/tests/e2e/harness/answer-contract-engine.spec.ts::AC-E3: a job that asks mid-run asks with the chat's card, and the answer reaches the next job",
+   "cells": [
+    [
+     "question",
+     "job.opencode",
+     "owner_pinned"
+    ],
+    [
+     "question",
+     "resume.question",
+     "owner_pinned"
+    ]
+   ],
+   "note": "engine ask_user surfaces as chat question card; answer reaches next job. New default chat (/chat/); the harness fixture pins codingEngine=E2E_CODING_ENGINE on the create request (pinnedTurnBody), so s"
+  },
+  {
+   "ref": "playwright:frontend/tests/e2e/harness/answer-contract-engine.spec.ts::AC-E4 (FU-1): a subject that exists runs with no question; its job is grounded and its confidence is earned",
+   "cells": [
+    [
+     "knowledge",
+     "job.opencode",
+     "owner_pinned"
+    ],
+    [
+     "answer_contract",
+     "assistant.agent",
+     "owner_pinned"
+    ]
+   ],
+   "note": "records uploaded+indexed via KB API; job searches KB; High confidence asserted (citation links not asserted). New default chat (/chat/); the harness fixture pins codingEngine=E2E_CODING_ENGINE on the "
+  },
+  {
+   "ref": "playwright:frontend/tests/e2e/harness/answer-contract-engine.spec.ts::AC-E5 (FU-1): a subject only partly present offers the records that hold part of it",
+   "cells": [
+    [
+     "answer_contract",
+     "assistant.agent",
+     "owner_pinned"
+    ],
+    [
+     "knowledge",
+     "assistant.agent",
+     "owner_pinned"
+    ]
+   ],
+   "note": "grounding card lists indexed record as option; Skip. New default chat (/chat/); the harness fixture pins codingEngine=E2E_CODING_ENGINE on the create request (pinnedTurnBody), so shape is owner_pinned"
+  },
+  {
+   "ref": "playwright:frontend/tests/e2e/harness/answer-contract-engine.spec.ts::AC-E6 (SKIP): Skip goes on with what can be found; no second card; the answer leads with the not-found note",
+   "cells": [
+    [
+     "answer_contract",
+     "assistant.agent",
+     "owner_pinned"
+    ],
+    [
+     "question",
+     "resume.question",
+     "owner_pinned"
+    ]
+   ],
+   "note": "Skip path. New default chat (/chat/); the harness fixture pins codingEngine=E2E_CODING_ENGINE on the create request (pinnedTurnBody), so shape is owner_pinned. Engine = E2E_ENGINE (default opencode, a"
+  },
+  {
+   "ref": "playwright:frontend/tests/e2e/harness/answer-contract-engine.spec.ts::AC-E7 (SKIP): a new message instead of an answer is not asked the same thing again; a new subject is asked once",
+   "cells": [
+    [
+     "answer_contract",
+     "assistant.agent",
+     "owner_pinned"
+    ]
+   ],
+   "note": "follow-up instead of answer. New default chat (/chat/); the harness fixture pins codingEngine=E2E_CODING_ENGINE on the create request (pinnedTurnBody), so shape is owner_pinned. Engine = E2E_ENGINE (d"
+  },
+  {
+   "ref": "playwright:frontend/tests/e2e/harness/answer-contract-engine.spec.ts::AC-E8 (SOURCES): a subject a connected MCP server's search finds runs with no question, and the job is told where",
+   "cells": [
+    [
+     "answer_contract",
+     "assistant.agent",
+     "owner_pinned"
+    ],
+    [
+     "mcp.first_use",
+     "assistant.agent",
+     "owner_pinned"
+    ]
+   ],
+   "note": "grounding check searched e2esaas search_documents (server held whole by default chat); canary shows job told where. The model never calls the MCP tool itself. New default chat (/chat/); the harness fi"
+  },
+  {
+   "ref": "playwright:frontend/tests/e2e/harness/answer-contract-engine.spec.ts::AC-E9 (CARDFAIL): an answer refused while PipesHub restarts says so, retries by itself, and lands once",
+   "cells": [
+    [
+     "question",
+     "resume.question",
+     "owner_pinned"
+    ]
+   ],
+   "note": "FAULT INJECTION: page.route fulfils the first two answer POSTs (…/messages/stream) with 503, the third goes through to the real backend; landing once is real. New default chat (/chat/); the harness fi"
+  },
+  {
+   "ref": "playwright:frontend/tests/e2e/harness/dp7-cf-engine.spec.ts::CF-07-PH: a tool call through ph from the engine’s shell asks, runs once allowed, and its result is the file it named",
+   "cells": [
+    [
+     "mcp.named",
+     "job.opencode",
+     "seeded"
+    ],
+    [
+     "approval.ask",
+     "job.opencode",
+     "seeded"
+    ],
+    [
+     "approval.ask",
+     "resume.approval",
+     "seeded"
+    ],
+    [
+     "artifacts",
+     "job.opencode",
+     "seeded"
+    ]
+   ],
+   "note": "engine shell `ph tools search/call`; floating card Allow once; SaaS effect once; Download artifact bytes = receipt. Engine = E2E_ENGINE (default opencode, allowlist[0]); engine agent = seed engineAgen"
+  },
+  {
+   "ref": "playwright:frontend/tests/e2e/harness/dp7-cf-engine.spec.ts::CF-08-DENY: a denied write is never sent; the engine reads the reason and carries on to its answer",
+   "cells": [
+    [
+     "approval.ask",
+     "job.opencode",
+     "seeded"
+    ],
+    [
+     "approval.ask",
+     "resume.approval",
+     "seeded"
+    ]
+   ],
+   "note": "deny with reason in job details; no effect; reason reaches engine model call. Engine = E2E_ENGINE (default opencode, allowlist[0]); engine agent = seed engineAgentKey (engineProfile {} or {engines:[E2"
+  },
+  {
+   "ref": "playwright:frontend/tests/e2e/harness/dp7-cf-engine.spec.ts::J-03-XLSX: the engine loads the xlsx skill and the person downloads the workbook it wrote",
+   "cells": [
+    [
+     "skills.load",
+     "job.opencode",
+     "seeded"
+    ],
+    [
+     "artifacts",
+     "job.opencode",
+     "seeded"
+    ]
+   ],
+   "note": "engine skill tool loads xlsx (canary in model call); downloaded .xlsx parsed. Engine = E2E_ENGINE (default opencode, allowlist[0]); engine agent = seed engineAgentKey (engineProfile {} or {engines:[E2"
+  },
+  {
+   "ref": "playwright:frontend/tests/e2e/harness/wp89-in-flight-engine.spec.ts::WP89-7: the drawer’s workspace files are folded, then a read-only tree with sizes of what the job wrote",
+   "cells": [
+    [
+     "artifacts",
+     "job.opencode",
+     "seeded"
+    ]
+   ],
+   "note": "workspace file tree of job output (no download). Engine = E2E_ENGINE (default opencode, allowlist[0]); engine agent = seed engineAgentKey (engineProfile {} or {engines:[E2E_ENGINE]}). project=harness-"
+  },
+  {
+   "ref": "playwright:frontend/tests/e2e/chat/chat-durable-engine-e2e.spec.ts::DE-1..DE-4, DE-6: the engine writes a file and files a ticket after an approval; the timeline, cost and versions are real",
+   "cells": [
+    [
+     "mcp.named",
+     "job.opencode",
+     "seeded"
+    ],
+    [
+     "approval.ask",
+     "job.opencode",
+     "seeded"
+    ],
+    [
+     "approval.ask",
+     "resume.approval",
+     "seeded"
+    ],
+    [
+     "artifacts",
+     "job.opencode",
+     "seeded"
+    ]
+   ],
+   "note": "card approve, SaaS effect once, Download artifact bytes, workspace versions restore, cost = ledger; asserts MCP schema NOT listed up front (call_tool). Engine = E2E_ENGINE (default opencode, allowlist"
+  },
+  {
+   "ref": "playwright:frontend/tests/e2e/chat/chat-durable-engine-e2e.spec.ts::DE-5: the worker is killed mid-run; a fresh worker resumes it; the effect ran once and the UI ends right",
+   "cells": [
+    [
+     "approval.ask",
+     "job.opencode",
+     "seeded"
+    ],
+    [
+     "artifacts",
+     "job.opencode",
+     "seeded"
+    ]
+   ],
+   "note": "SIGKILL worker via lane control dir; resumed; effect once; download button present. Engine = E2E_ENGINE (default opencode, allowlist[0]); engine agent = seed engineAgentKey (engineProfile {} or {engin"
+  },
+  {
+   "ref": "playwright:frontend/tests/e2e/chat/chat-engine-tool-words.spec.ts::FIX-TOOLWORDS: a job call that asks first is one step in the Activity panel and the card, in plain words",
+   "cells": [
+    [
+     "approval.ask",
+     "job.opencode",
+     "seeded"
+    ],
+    [
+     "mcp.named",
+     "job.opencode",
+     "seeded"
+    ]
+   ],
+   "note": "held create_ticket in job; labels; then allowed and effect asserted. Engine = E2E_ENGINE (default opencode, allowlist[0]); engine agent = seed engineAgentKey (engineProfile {} or {engines:[E2E_ENGINE]"
+  },
+  {
+   "ref": "script:deployment/e2e/oom_lane.py::check_oom_job",
+   "cells": [
+    [
+     "sandbox.memory",
+     "job.opencode",
+     "seeded"
+    ]
+   ],
+   "note": "R32-SECCOMP: the seeded opencode coder agent's child runs an unbounded allocation; on runsc the child fails out_of_memory with memoryLimitMb and is never re-driven, on runc the engine survives the killed command; R33-WORDS: child.completed carries memoryLimitMb, so the job card reads \"ran out of memory (limit N)\" (R32SECCOMP-FU-4)"
+  },
+  {
+   "ref": "script:deployment/e2e/oom_lane.py::check_oom_run_code",
+   "cells": [
+    [
+     "sandbox.memory",
+     "agent.deep",
+     "seeded"
+    ]
+   ],
+   "note": "R33-WORDS (R32SECCOMP-FU-1): the seeded loop agent's own run_code meets its memory limit; the result names the limit as a failed run and the run goes on and answers, on runc and runsc"
+  }
+ ],
+ "gaps": [
+  {
+   "id": "R31JOURNEY-FU-2",
+   "features": [],
+   "paths": [
+    "scheduled.cron",
+    "scheduled.webhook",
+    "recovery",
+    "surface.mcp",
+    "surface.slack",
+    "command"
+   ],
+   "shapes": [],
+   "why": "R33-JGAPS drives the schedule, the signed webhook, recovery, /mcp and /run; R35-SLACK the Slack surface; R36-COVER the remaining probes there; R47-JOURNEY cancel and delete of a run started through /mcp or Slack (stopped in PipesHub), cancel of a recovered run, the capability search on a recovered and a Slack run and the answer contract on the default assistant's Slack bot. Left: a file attached in a Slack thread (the scripted workspace has no files yet), and the per-person decision rule (a carried decline, two people) on the paths that start a run elsewhere, which goes with the shared-conversation work.",
+   "waitsOn": "R31JOURNEY-FU-2 (files in fake_slack.py and a Slack attach probe; the decision-rule cells with R38AUTHZ-FU-3)"
+  },
+  {
+   "id": "R38AUTHZ-FU-3",
+   "features": [
+    "approval.decline_carried",
+    "approval.person_scoped"
+   ],
+   "paths": [
+    "loop.subagent",
+    "job.opencode",
+    "job.codex",
+    "job.claude_code",
+    "job.acp-opencode",
+    "job.acp-gemini",
+    "job.acp-goose",
+    "job.acp-qwen",
+    "job.acp-dsh",
+    "resume.approval",
+    "resume.question"
+   ],
+   "shapes": [],
+   "why": "R38-AUTHZ drives the per-person decision rule on the default chat (two users) and a declined call carried from a Codex, opencode or Claude Code job to its parent (MR-9); the close-out lane carries it on every ACP engine job, a saved agent's quick turn and its deep turn's sub-agent. Left: the carry on a sub-agent path and the resumed paths, and the per-person rule anywhere but the default chat (a two-user probe per path); they are held by Node and worker unit tests only (r38authz-conversation-decisions, test_r38authz_grants).",
+   "waitsOn": "R38AUTHZ-FU-3 (a carry and a two-user probe on every path the runner supports)"
+  },
+  {
+   "id": "R38EGRESS-FU-4",
+   "features": [
+    "sites.flow_hold"
+   ],
+   "paths": [],
+   "shapes": [],
+   "why": "The journey runner has no scripted engine step that runs a shell request through the egress proxy to an allowed fake_saas site after a knowledge read. The proxy half runs on the real lane (tests/unit/harness/engines/test_siteup_upload_docker.py, runc and gVisor: a live hold mid-turn holds a GET and a POST, a registry path still answers, a grant releases) and at unit level with the real EgressProxy (test_sec_a_sandbox_egress.py).",
+   "waitsOn": "R38EGRESS-FU-4 (the human lane has no TLS site behind the egress proxy yet: an opt-in overlay serving one site and one registry under the lane's test authority, the proxy's EGRESS_TEST_* intercept, the org's websites section saved for the journey, then a sites probe per engine path; design in STATUS R47JOURNEY-FU-1)"
+  },
+  {
+   "id": "R39RES-FU-4",
+   "features": [
+    "approval.after_hold"
+   ],
+   "paths": [
+    "job.opencode",
+    "job.codex",
+    "job.claude_code",
+    "job.acp-opencode",
+    "job.acp-gemini",
+    "job.acp-goose",
+    "job.acp-qwen",
+    "job.acp-dsh"
+   ],
+   "shapes": [],
+   "why": "R39-RESEARCH drives it in process (RUN06-2, R39-DEPTH-1/2: steered and on the next result); R47-JOURNEY adds the Docker lane's late-approval case (test_run01_research_scenario_docker.py::test_r39res_fu4_a_clone_allowed_after_the_hold_on_the_real_engine, real opencode or Codex, real ph), which is not a stack journey. No journey answers a card after the 120 s hold yet. The manual-test report (Codex job 49a69fc6) becomes a must-run once one does.",
+   "waitsOn": "R39RES-FU-4 (a journey probe that answers the card after the gateway's hold, then the SUPPORT entry and a must-run)"
+  },
+  {
+   "id": "R49PLAN-FU-2",
+   "features": [
+    "plan"
+   ],
+   "paths": [
+    "agent.deep",
+    "job.opencode",
+    "job.codex",
+    "job.claude_code",
+    "job.acp-opencode",
+    "job.acp-gemini",
+    "job.acp-goose",
+    "job.acp-qwen",
+    "job.acp-dsh",
+    "scheduled.cron",
+    "scheduled.webhook",
+    "resume.approval",
+    "resume.question",
+    "recovery",
+    "surface.mcp",
+    "surface.slack"
+   ],
+   "shapes": [],
+   "why": "R49-PLAN's plan probe runs on the two root loop paths the chat starts (assistant.agent, agent.quick). Deep journals create_plan's steps and each engine its own todo list as task.* (UXR-B1, B1-11/B1-22), and the scheduled, resumed, recovered and surface runs are quick loop turns offered the same tool; the probe does not drive them yet.",
+   "waitsOn": "buildable now (the probe's script per path: create_plan on deep, an engine's todo tool on each job), then Docker lane"
+  },
+  {
+   "id": "R49PLAN-FU-3",
+   "features": [
+    "memory.session"
+   ],
+   "paths": [
+    "agent.deep",
+    "job.opencode",
+    "job.codex",
+    "job.claude_code",
+    "job.acp-opencode",
+    "job.acp-gemini",
+    "job.acp-goose",
+    "job.acp-qwen",
+    "job.acp-dsh",
+    "surface.mcp",
+    "surface.slack"
+   ],
+   "shapes": [],
+   "why": "R49-PLAN's conversation-memory probe runs where the person starts a loop turn in the web app (assistant.agent, agent.quick, assistant.mode). A job proposes through code_task's remember and a surface's run through the same pin, so session scope reaches them too; the probe does not drive them yet.",
+   "waitsOn": "buildable now (the probe on the job and surface paths), then Docker lane"
+  }
+ ],
+ "mustRun": [
+  {
+   "id": "MR-1",
+   "title": "2026-11-12: a default-chat Codex job keeps the person's MCP server held at first use and calls it (R31-HOT, ADR-OWD-07 D-LAZY-8)",
+   "cells": [
+    [
+     "mcp.first_use",
+     "job.codex",
+     "owner"
+    ]
+   ],
+   "evidence": "Human-test stack worker log mcpServers=0 on every owner-shape job since R26-LAZY; its Mongo shape `assistant | child | engine | codex | mcpWhole=0 | mcpNamed=0` (21 runs)"
+  },
+  {
+   "id": "MR-2",
+   "title": "2026-11-12: the same job reads the default chat's skills",
+   "cells": [
+    [
+     "skills.preload",
+     "job.codex",
+     "owner"
+    ]
+   ],
+   "evidence": "R31-HOT (2): the owner's Codex job, PDF skill"
+  },
+  {
+   "id": "MR-3",
+   "title": "2026-11-11: an engine job's MCP call and its approval after R26-LAZY (5 of 62 smoke checks failed on the human-test stack)",
+   "cells": [
+    [
+     "mcp.named",
+     "job.opencode",
+     "seeded"
+    ],
+    [
+     "approval.ask",
+     "job.codex",
+     "owner"
+    ]
+   ],
+   "evidence": "R26-LAZY passed its lane, broke the human-test stack's engine-job MCP"
+  },
+  {
+   "id": "MR-4",
+   "title": "2026-11-11: a budget-cut engine child's partial reaches the person",
+   "cells": [
+    [
+     "budget_partial",
+     "job.opencode",
+     "owner"
+    ]
+   ],
+   "evidence": "R26-LAZY broke the budget-cut partial on the human-test stack"
+  },
+  {
+   "id": "MR-5",
+   "title": "The owner's two servers held whole on the default chat and its job",
+   "cells": [
+    [
+     "mcp.first_use",
+     "assistant.agent",
+     "owner"
+    ],
+    [
+     "mcp.first_use",
+     "job.codex",
+     "owner_pinned"
+    ]
+   ],
+   "evidence": "Human-test stack Mongo: mcpWhole=2 on 61 default-chat runs"
+  },
+  {
+   "id": "MR-6",
+   "title": "R31HOT2-FU-1: a default-chat job inherits the parent's first-use pin after the parent used the server",
+   "cells": [
+    [
+     "mcp.carried_pins",
+     "job.codex",
+     "owner"
+    ],
+    [
+     "mcp.carried_pins",
+     "job.opencode",
+     "owner"
+    ]
+   ],
+   "evidence": "R31-HOT2: nothing drove the carried pins end to end; the smoke's job is handed off before the parent uses the server"
+  },
+  {
+   "id": "MR-7",
+   "title": "R31UIFU-FU-1: a deep-mode job admitted right after Node starts, while the broker's health cannot answer, still gets its own sandbox (ADR-CAP-01)",
+   "cells": [
+    [
+     "sandbox.code",
+     "agent.deep",
+     "seeded"
+    ]
+   ],
+   "evidence": "R31-AXET-FU-3's two captures: the same job with and without \"Its own sandbox\" (10,523 vs 6,754 tokens); the boot probe read none and the next round came 60 s later"
+  },
+  {
+   "id": "MR-8",
+   "title": "2026-11-12: default chat, Codex pinned, asked to check out a public GitHub repository (manual test; R32-REPO, ADR-REPO-01)",
+   "cells": [
+    [
+     "repository.fetch",
+     "job.codex",
+     "owner_pinned"
+    ],
+    [
+     "repository.denied",
+     "job.codex",
+     "owner_pinned"
+    ]
+   ],
+   "evidence": "Manual test: the Codex job (719b467b) used only web_search, fetch_url and a calculator and never tried git; repository_fetch was off (no repositories section) and the answer never said it could not read either code base"
+  },
+  {
+   "id": "MR-9",
+   "title": "2026-11-12: default chat, Codex: the job's create_ticket declined with a reason, then the parent loop made the same call and the person was asked again (R36LIVE-FU-1, ADR-GRANT-01 D9)",
+   "cells": [
+    [
+     "approval.decline_carried",
+     "job.codex",
+     "owner"
+    ]
+   ],
+   "evidence": "Manual test: a second card for the call the person had just declined in the job"
+  },
+  {
+   "id": "MR-10",
+   "title": "R38-INPUT (ADR-SEC-04): a chat with an uploaded workspace file and a pasted secret, sent signed in: the upload streams metered to disk and the secret is masked after authentication; an anonymous or over-long message is refused before any scan",
+   "cells": [
+    [
+     "attachments",
+     "assistant.agent",
+     "owner"
+    ]
+   ],
+   "evidence": "SEC-C-01 and SEC-C-08 (C-platform-appsec.md): the guard ran before authentication and a chunked upload skipped the request bound; sec-c-01-input-budget.test.ts and metered-upload.test.ts hold the fixed order and meter"
+  },
+  {
+   "id": "MR-11",
+   "title": "R40-TEXT (ADR-TEXT-01): the default assistant reads a private note and then sends; the flow card's title, destination and preview are display-safe on the worker, in Node and in the client, and the run is denied with nothing written",
+   "cells": [
+    [
+     "approval.flow_guard",
+     "assistant.agent",
+     "owner"
+    ]
+   ],
+   "evidence": "SEC-B-04 (B-ai-attacks.md): a bidi override, a zero-width space, a homoglyph host or a ninth recipient could make the card read as a safe send; test_r37secb_ai_attacks.py, test_r40text_card_text.py, r40text-card-text.test.tsx and the display-safe vector hold the card to what will happen"
+  },
+  {
+   "id": "MR-12",
+   "title": "2026-11-13: default chat, Codex job, a research task naming another product's GitHub repository and github.com/pipeshub-ai/pipeshub-ai: the job never cloned either and its answer did not say so (R39-RESEARCH live run, R41-CLONE)",
+   "cells": [
+    [
+     "repository.named",
+     "job.codex",
+     "owner"
+    ],
+    [
+     "repository.not_cloned",
+     "job.codex",
+     "owner"
+    ]
+   ],
+   "evidence": "Manual test (Codex job c6f0c19a, gpt-6-luna): 62 page reads, 51 searches, no ph git clone, no card; the report's caveats say 'not a full local clone'"
+  },
+  {
+   "id": "MR-13",
+   "title": "R41-OPS (SEC-D-07, SEC-C-14, ADR-WEB-01): a signed-in owner opens the chat and the main pages: they load under the enforced CSP with no violation, and the chat cannot be framed",
+   "cells": [
+    [
+     "knowledge",
+     "assistant.agent",
+     "owner"
+    ]
+   ],
+   "evidence": "SEC-D-07 and SEC-C-14: headers ran only with STRICT_MODE=true and /agent/claim and the app could be framed; frontend/tests/e2e/security/browser-security-headers.spec.ts (EM-62) and security-headers.test.ts hold the headers on every response"
+  },
+  {
+   "id": "MR-14",
+   "title": "R41-OPS (SEC-D-06, ADR-OPS-03): an agent chat turn on a stack whose Redis requires its password, with the app's store-auth check enforcing: the turn answers as before",
+   "cells": [
+    [
+     "knowledge",
+     "assistant.agent",
+     "owner"
+    ]
+   ],
+   "evidence": "SEC-D-06: Redis ran without requirepass when REDIS_PASSWORD was empty; smoke_human.py on a human-up stack with its own Redis, store_auth_test.sh (EM-63) and store-auth.test.ts"
+  },
+  {
+   "id": "MR-15",
+   "title": "R36LIVE-FU-2 (R36-LIVE): asked for the team's private tracker note, the default chat searched knowledge only and never found the attached server's lookup_note; the server, attached without a description and never listed, was in no line of the prompt and no search listed it",
+   "cells": [
+    [
+     "mcp.find_read",
+     "assistant.agent",
+     "owner"
+    ]
+   ],
+   "evidence": "R36-LIVE C3.29: tools_search for an MCP read 0/2 on gpt-6-luna; R43-MCP names attached servers in Finding Information, describes an undescribed server by its tools and lists it at the first search (test_r43mcp_attached_servers_named AS-1..AS-4, the golden test_r43mcp_attached_server_prompt_golden)"
+  },
+  {
+   "id": "MR-16",
+   "title": "R36COVER-FU-3 (R36-COVER): an input file a job refused on its own (over the 100 MB per-input cap, or gone since its parent handed it over) failed the whole job with \"The coding engine stopped with an error before it finished\", naming no file; the job now goes on without it and the answer names the file and why",
+   "cells": [
+    [
+     "attachments",
+     "job.opencode",
+     "seeded"
+    ]
+   ],
+   "evidence": "turn.started skippedInputs (skipped_inputs), the engine's first task names the file, the job step and the answer's could-not-do line name it: test_r36cover_fu3_skipped_inputs (kernel R36FU3-1..5, app SKIP-1..4); R46FIX-2: a job on its own stream resolves the conversation's files under the conversation (only the over-cap one skipped, as attachment.too_large, both named), the step says its verb once (kernel test_r46fix_2, app test_r46fix_2a..2c, sync test_r46fix_2 in test_r14_write_back_limit); R46FIX-FU-2: several files it may not name are one item with their count (attachment_count), so the chat and the answer say how many as the step does (app test_r46fix_fu2a..2c, node r46fix-fu2-attachment-count, chat r46fix-fu2-attachment-count)"
+  },
+  {
+   "id": "MR-17",
+   "title": "R36COVER-FU-5 (J-agent.quick-seeded-budget): a loop run its budget cut before any answer listed tool ids (artifacts__save_artifact) under \"What it had gathered so far\"; it now names the file it saved and the pages it read, each tool by a plain label",
+   "cells": [
+    [
+     "budget_partial",
+     "agent.quick",
+     "seeded"
+    ]
+   ],
+   "evidence": "test_r36cover_fu5_cut_short_names FU5-1..3, test_wp100_loop_outcome, test_run01_d1_presenter"
+  },
+  {
+   "id": "MR-18",
+   "title": "R36LIVE-FU-3 (manual test): a Codex job's answer ended with [Download fibonacci.py](sandbox:/mnt/data/out/fibonacci.py), a link the chat cannot open; such a link now opens the saved artifact, or is dropped for the artifact card",
+   "cells": [
+    [
+     "artifacts",
+     "job.codex",
+     "seeded"
+    ]
+   ],
+   "evidence": "link_workspace_files: test_r36live_fu3_sandbox_links (sandbox:, file://, absolute and relative paths; real links kept)"
+  },
+  {
+   "id": "MR-19",
+   "title": "R43MCP-FU-1 (R36LIVE-FU-2 on the owner's job path): a default-chat Codex job asked for a note held by a server the person attached without a description and never used finds it with the engine's search_tools and reads it, instead of searching knowledge only",
+   "cells": [
+    [
+     "mcp.find_read",
+     "job.codex",
+     "owner"
+    ]
+   ],
+   "evidence": "MR-15's symptom (R36-LIVE C3.29) on the path the owner shape's jobs take (MR-1: its default chat hands work to Codex); the job's search runs the same LazyMcpServers.warm and source list (test_r43mcp_attached_servers_named, test_mcpuse_connected_sources CS-5)"
+  },
+  {
+   "id": "MR-20",
+   "title": "R49-PLAN (R49PLAN-1): a long multi-step request on the default chat's Agent mode keeps a visible plan: task.* journaled, the plan frame streamed, write_todos never a step",
+   "cells": [
+    [
+     "plan",
+     "assistant.agent",
+     "owner"
+    ]
+   ],
+   "evidence": "A scripted dry run: the default chat (Agent mode, quick loop) offered no write_todos and journaled no task.created/task.updated, so plan_kept and plan_completed failed; test_r49plan_default_chat_plan.py R49PLAN-1/3"
+  },
+  {
+   "id": "MR-21",
+   "title": "R49-PLAN (R49PLAN-2): in the person's own chat a memory kept for this conversation alone is accepted at the run's end, pinned for the same conversation's next turn and never for a new one",
+   "cells": [
+    [
+     "memory.session",
+     "assistant.agent",
+     "owner"
+    ]
+   ],
+   "evidence": "A scripted dry run: writeScopes was [\"user\"] in a member's own chat, so remember with scope session was refused and taught_facts_recalled_next_time failed; memory-admission contract R49PLAN-2"
+  }
+ ],
+ "tiers": {
+  "gate": {
+   "budgetMinutes": 20,
+   "rule": "every feasible feature x path the runner implements once, on the path's primary shape, plus every must-run cell",
+   "parallel": 4,
+   "fullOnly": [
+    {
+     "id": "FO-ACP-GATEWAY",
+     "turns": [
+      "attach",
+      "contract",
+      "delete",
+      "find_read",
+      "flow",
+      "memory",
+      "oom",
+      "pins",
+      "question",
+      "repo_deny",
+      "repo_off",
+      "steer",
+      "toolset",
+      "web"
+     ],
+     "paths": [
+      "job.acp-opencode",
+      "job.acp-gemini",
+      "job.acp-goose",
+      "job.acp-qwen",
+      "job.acp-dsh"
+     ],
+     "why": "These reach an ACP job through the Tool Gateway or the job's sandbox controller, the same code for every engine; the gate runs each on the native engines, and on every ACP engine the turns its ACP mapper words differently (files and commands, cards, the budget cut, cancel, a clone); the capability search and a message joining a running job (R47-JOURNEY) are the gateway's and the parent's, the same for every engine"
+    },
+    {
+     "id": "FO-CLAUDE-GATEWAY",
+     "turns": [
+      "attach",
+      "contract",
+      "find_read",
+      "flow",
+      "memory",
+      "oom",
+      "question",
+      "steer",
+      "toolset",
+      "web"
+     ],
+     "paths": [
+      "job.claude_code"
+     ],
+     "why": "The same gateway and sandbox paths the gate runs on the owner's Codex job and on opencode; Claude Code's own mapper runs in its use, deny, allow, budget, cancel and repository journeys"
+    },
+    {
+     "id": "FO-WEBHOOK",
+     "turns": [
+      "allow",
+      "budget",
+      "deny",
+      "flow",
+      "oom",
+      "question",
+      "sandbox",
+      "toolset",
+      "use",
+      "web"
+     ],
+     "paths": [
+      "scheduled.webhook"
+     ],
+     "why": "A signed webhook changes only how the firing starts, which the gate's webhook use journey proves; the scheduled run's features run on scheduled.cron in the gate"
+    },
+    {
+     "id": "FO-RECOVERY",
+     "turns": [
+      "budget",
+      "cancel",
+      "deny",
+      "find_read",
+      "oom",
+      "question",
+      "sandbox",
+      "use"
+     ],
+     "paths": [
+      "recovery"
+     ],
+     "why": "Each kills the worker and the query service and runs alone (about 75 s); the gate's recovery allow journey proves the property that matters most, an approved write done exactly once by the new attempt; the run's own budget, code and memory turns on a recovered run run in the full tier too"
+    },
+    {
+     "id": "FO-MEMORY",
+     "turns": [
+      "memory"
+     ],
+     "paths": [
+      "agent.quick",
+      "agent.deep",
+      "job.opencode",
+      "job.claude_code"
+     ],
+     "why": "A memory journey runs alone; the gate keeps it on the default chat and the owner's Codex job, where the owner keeps memories"
+    },
+    {
+     "id": "FO-HUB",
+     "turns": [
+      "hub"
+     ],
+     "paths": [
+      "classic",
+      "loop.subagent",
+      "job.codex",
+      "job.claude_code",
+      "job.acp-opencode",
+      "job.acp-gemini",
+      "job.acp-goose",
+      "job.acp-qwen",
+      "job.acp-dsh",
+      "scheduled.cron",
+      "scheduled.webhook",
+      "surface.mcp"
+     ],
+     "why": "A hub journey runs alone (it makes the servers and ends every owner's token); the credential and runner path is the query service's and the worker's Tool Gateway's, the same for every executor (MCP-E2E's finding), so the gate runs it on the default chat, a saved agent, deep mode, the opencode job and Slack"
+    },
+    {
+     "id": "FO-CARRY",
+     "turns": [
+      "carry"
+     ],
+     "paths": [
+      "agent.quick",
+      "agent.deep",
+      "job.opencode",
+      "job.claude_code",
+      "job.acp-opencode",
+      "job.acp-gemini",
+      "job.acp-goose",
+      "job.acp-qwen",
+      "job.acp-dsh"
+     ],
+     "why": "Node declines the repeated call the same way for every engine's parent and every loop's next turn (ConversationGrantReach); the gate runs it on the owner's Codex job, the break MR-9 records, and on the default chat's next turn"
+    }
+   ]
+  },
+  "full": {
+   "budgetMinutes": 240,
+   "rule": "every feasible cell the runner implements, every shape of every path (exhaustive: paths x shapes is small)",
+   "parallel": 4
+  }
+ },
+ "knownRed": [
+  {
+   "id": "R32ENGFU-FU-2",
+   "journeys": [
+    "J-job.acp-gemini-owner-use",
+    "J-job.acp-gemini-owner_pinned-use"
+   ],
+   "features": [
+    "artifacts"
+   ],
+   "why": "Gemini CLI 0.63.0 sends no exit code over ACP, so the job's failed cat reads completed (upstream)"
+  }
+ ]
+}

@@ -128,7 +128,7 @@ def _image_chunk(description: str, uri: str) -> dict:
 
 async def _index_and_upsert_images(vs, vector_db_service, collection: str, chunks, uris):
     with patch(
-        "app.modules.transformers.vectorstore.MultimodalEmbeddingFactory.create",
+        "app.services.embeddings.multimodal.factory.MultimodalEmbeddingFactory.create",
         return_value=FakeMultimodalProvider(dim=DIM),
     ):
         points = await vs._process_image_embeddings(chunks, uris, record_id="rec-1")
@@ -194,7 +194,7 @@ class TestQdrantMultimodalIndexing:
         try:
             await qdrant_service.create_collection(col, cfg)
             with patch(
-                "app.modules.transformers.vectorstore.MultimodalEmbeddingFactory.create",
+                "app.services.embeddings.multimodal.factory.MultimodalEmbeddingFactory.create",
                 return_value=FakeMultimodalProvider(dim=DIM, bad_dim_indices=frozenset({1})),
             ):
                 points = await vs._process_image_embeddings(chunks, uris, record_id="rec-1")

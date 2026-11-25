@@ -6,11 +6,18 @@ and retries across its whole generated datasource without touching call sites.
 
 import asyncio
 import contextlib
-from typing import Any
+from typing import Any, override
 
 import httpx  # type: ignore
 
+from app.services.rate_budget import is_throttle
 from app.sources.client.http.http_retry import is_retryable_status
+from app.sources.client.http.send_ambiguity import (
+    classify_httpx_failure,
+    classify_status,
+    is_unsafe,
+    settle_failed_send,
+)
 from app.sources.client.resilience import (
     RETRYABLE_NETWORK_ERRORS,
     ResiliencePolicy,
@@ -31,6 +38,7 @@ class ResilientHTTPTransport(httpx.AsyncHTTPTransport):
         super().__init__(**kwargs)
         self._policy = policy
 
+    @override
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         policy = self._policy
         # One limiter token per HTTP attempt, retries included: the upstream
@@ -39,13 +47,16 @@ class ResilientHTTPTransport(httpx.AsyncHTTPTransport):
         await policy.acquire()
 
         last_exc: BaseException | None = None
+        unsafe = is_unsafe(request.method)
+        attempt = 0
 
         for attempt in range(policy.max_retries + 1):
             try:
                 response = await super().handle_async_request(request)
             except RETRYABLE_NETWORK_ERRORS as exc:
                 last_exc = exc
-                if attempt >= policy.max_retries:
+                sent = classify_httpx_failure(request.method, exc)
+                if not settle_failed_send(sent, type(exc).__name__, unsafe=unsafe) or attempt >= policy.max_retries:
                     break
                 delay = policy.note_retry(attempt)
                 policy.logger.warning(
@@ -57,7 +68,16 @@ class ResilientHTTPTransport(httpx.AsyncHTTPTransport):
                 await policy.acquire()
                 continue
 
-            if attempt >= policy.max_retries or not is_retryable_status(response.status_code):
+            if not is_retryable_status(response.status_code):
+                return response
+            sent = classify_status(request.method, response.status_code)
+            permitted = settle_failed_send(sent, f"http_{response.status_code}", unsafe=unsafe)
+            if attempt >= policy.max_retries or not permitted:
+                retry_after = parse_retry_after(response.headers)
+                if is_throttle(response.status_code, retry_after):
+                    # Not retried here (a connector with its own retry sets max_retries 0), but the throttle
+                    # still holds back every other caller of the connector and of its shared budget.
+                    policy.pause(policy.base_delay if retry_after is None else retry_after)
                 return response
 
             note_status = getattr(policy, "note_response_status", None)
@@ -84,12 +104,12 @@ class ResilientHTTPTransport(httpx.AsyncHTTPTransport):
             await asyncio.sleep(delay)
             await policy.acquire()
 
-        # Only the network-error branch breaks out of the loop; every other path
-        # returns a response from inside it.
+        # Only the network-error branch breaks out of the loop (out of attempts, or
+        # a write that may have landed); every other path returns a response from inside it.
         if last_exc is None:
             raise RuntimeError("Retry loop exited without a response or an exception")
         policy.logger.error(
             "%s %s failed after %s attempts: %s",
-            request.method, redact_sensitive_query_params(str(request.url)), policy.max_retries + 1, type(last_exc).__name__,
+            request.method, redact_sensitive_query_params(str(request.url)), attempt + 1, type(last_exc).__name__,
         )
         raise last_exc

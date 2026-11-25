@@ -32,7 +32,7 @@ from app.agent_loop_lib.modules.providers.skills.validator import (
     SkillValidator,
 )
 from app.agents.agent_loop.skills.audit_governor import AuditGovernor
-from app.agents.agent_loop.skills.graph_store import GraphSkillStore
+from app.agents.agent_loop.skills.graph_store import GraphSkillStore, SkillVisibility
 from app.agents.agent_loop.skills.graph_tracker import GraphUsageTracker
 
 _NEO4J_PRIMITIVES = (str, int, float, bool)
@@ -61,11 +61,18 @@ class FakeGraphProvider:
     def __init__(self) -> None:
         self._collections: dict[str, dict[str, dict[str, Any]]] = {}
         self._edges: dict[str, list[dict[str, Any]]] = {}
+        # (user key, org) -> [{"teamId", "role"}], as `get_user_team_roles` answers.
+        self.team_roles: dict[tuple[str, str], list[dict[str, str]]] = {}
 
     def _col(self, name: str) -> dict[str, dict[str, Any]]:
         return self._collections.setdefault(name, {})
 
-    async def get_document(self, document_key: str, collection: str, transaction: str | None = None) -> dict | None:
+    async def get_user_team_roles(self, user_key: str, org_id: str) -> list[dict[str, str]]:
+        return list(self.team_roles.get((user_key, org_id), []))
+
+    async def get_document(
+        self, document_key: str, collection: str, transaction: str | None = None, *, raise_on_error: bool = False
+    ) -> dict | None:
         doc = self._col(collection).get(document_key)
         return dict(doc) if doc is not None else None
 
@@ -167,6 +174,26 @@ class FakeGraphProvider:
             if node_id in candidates or target_key in candidates:
                 matches.append(dict(edge))
         return matches
+
+    async def get_edges_from_node(
+        self, node_id: str, edge_collection: str, transaction: str | None = None,
+    ) -> list[dict[str, Any]]:
+        source_key = str(node_id).split("/", 1)[-1]
+        return [
+            dict(edge) for edge in self._edges.get(edge_collection, [])
+            if str(edge.get("from_id") or edge.get("_from") or "").split("/", 1)[-1] == source_key
+        ]
+
+    async def get_edge(
+        self, from_id: str, from_collection: str, to_id: str, to_collection: str, collection: str,
+        transaction: str | None = None,
+    ) -> dict[str, Any] | None:
+        for edge in self._edges.get(collection, []):
+            source = str(edge.get("from_id") or edge.get("_from") or "").split("/", 1)[-1]
+            target = str(edge.get("to_id") or edge.get("_to") or "").split("/", 1)[-1]
+            if (source, target) == (from_id, to_id):
+                return dict(edge)
+        return None
 
     async def batch_delete_edges(
         self, edges: list[dict[str, Any]], collection: str, transaction: str | None = None,
@@ -486,32 +513,42 @@ class TestOrgIsolation:
 
 
 class TestCreatorScoping:
-    """`visibility_scope` (the REST management API's creator-only read
-    filter — see `GraphSkillStore.__init__`'s docstring) must hide another
-    user's skills from `list_skills`/`get_skill`/history reads while
-    leaving builtin-sourced skills visible to everyone, and must never
-    affect the unscoped (`visibility_scope=None`) runtime path."""
+    """`SkillVisibility` must hide another user's skills from
+    `list_skills`/`get_skill`/history reads while leaving builtin-sourced
+    skills visible to everyone; only an explicit org-wide reader
+    (`SkillVisibility.everyone()`, the builtin seeder) sees every creator."""
 
-    async def test_unscoped_store_sees_every_creator(self) -> None:
+    async def test_an_org_wide_reader_sees_every_creator(self) -> None:
         graph = FakeGraphProvider()
         creator_store = GraphSkillStore(graph, "org-1", "user-1")
         await creator_store.create_skill("deploy-service", _SKILL_MD)
 
-        unscoped = GraphSkillStore(graph, "org-1", "user-2")
+        unscoped = GraphSkillStore(graph, "org-1", "user-2", visibility=SkillVisibility.everyone())
         assert await unscoped.get_skill("deploy-service") is not None
         assert {m.name for m in await unscoped.list_skills()} == {"deploy-service"}
+
+    async def test_unscoped_reader_cannot_write_another_creators_skill(self) -> None:
+        graph = FakeGraphProvider()
+        await GraphSkillStore(graph, "org-1", "author").create_skill("deploy-service", _SKILL_MD)
+
+        colleague = GraphSkillStore(graph, "org-1", "colleague", visibility=SkillVisibility.everyone())
+        assert await colleague.get_skill("deploy-service") is not None
+        with pytest.raises(RegistryError):
+            await colleague.update_skill("deploy-service", _SKILL_MD.replace("Push it.", "Push it now."))
+        with pytest.raises(RegistryError):
+            await colleague.delete_skill("deploy-service")
 
     async def test_scoped_store_hides_another_users_skill(self) -> None:
         graph = FakeGraphProvider()
         creator_store = GraphSkillStore(graph, "org-1", "user-1")
         await creator_store.create_skill("deploy-service", _SKILL_MD)
 
-        other_users_view = GraphSkillStore(graph, "org-1", "user-2", visibility_scope="user-2")
+        other_users_view = GraphSkillStore(graph, "org-1", "user-2", visibility=SkillVisibility.of(["user-2"]))
         assert await other_users_view.get_skill("deploy-service") is None
         assert await other_users_view.exists("deploy-service") is False
         assert await other_users_view.list_skills() == []
 
-        owners_view = GraphSkillStore(graph, "org-1", "user-1", visibility_scope="user-1")
+        owners_view = GraphSkillStore(graph, "org-1", "user-1", visibility=SkillVisibility.of(["user-1"]))
         assert await owners_view.get_skill("deploy-service") is not None
         assert {m.name for m in await owners_view.list_skills()} == {"deploy-service"}
 
@@ -522,7 +559,7 @@ class TestCreatorScoping:
         doc = graph._col("agentSkills")["org-1_deploy-service"]
         doc["source"] = "builtin"
 
-        someone_elses_view = GraphSkillStore(graph, "org-1", "user-2", visibility_scope="user-2")
+        someone_elses_view = GraphSkillStore(graph, "org-1", "user-2", visibility=SkillVisibility.of(["user-2"]))
         assert await someone_elses_view.get_skill("deploy-service") is not None
         assert {m.name for m in await someone_elses_view.list_skills()} == {"deploy-service"}
 
@@ -532,11 +569,11 @@ class TestCreatorScoping:
         await creator_store.create_skill("deploy-service", _SKILL_MD)
         await creator_store.update_skill("deploy-service", _SKILL_MD.replace("Push it.", "Push it now."))
 
-        other_users_view = GraphSkillStore(graph, "org-1", "user-2", visibility_scope="user-2")
+        other_users_view = GraphSkillStore(graph, "org-1", "user-2", visibility=SkillVisibility.of(["user-2"]))
         assert await other_users_view.list_versions("deploy-service") == []
         assert await other_users_view.get_version("deploy-service", "1.0.0") is None
 
-        owners_view = GraphSkillStore(graph, "org-1", "user-1", visibility_scope="user-1")
+        owners_view = GraphSkillStore(graph, "org-1", "user-1", visibility=SkillVisibility.of(["user-1"]))
         assert len(await owners_view.list_versions("deploy-service")) == 1
 
 
@@ -878,6 +915,43 @@ Call deploy-service first.
         usage = await store.get_referential_usage("deploy-service")
         assert usage.required_by_skills == ["wrapper"]
 
+    async def test_an_unchanged_save_links_a_required_skill_created_since(self) -> None:
+        """Neo4j writes an edge only between existing nodes, so a skill saved before the skill it requires existed
+        has no `requires` edge. Saving it again unchanged must write the edge (without a new revision), or the
+        delete guard lets the required skill go while a skill still depends on it."""
+
+        class _ExistingEndpointsOnly(FakeGraphProvider):
+            async def batch_create_edges(self, edges, collection, transaction=None) -> bool:
+                present = [
+                    e for e in edges
+                    if e["from_id"] in self._col(e["from_collection"]) and e["to_id"] in self._col(e["to_collection"])
+                ]
+                return await super().batch_create_edges(present, collection, transaction)
+
+        graph = _ExistingEndpointsOnly()
+        store = _store(graph)
+        wrapper = """---
+name: wrapper
+description: Use when wrapping deploy
+metadata:
+  agent-loop:
+    requires:
+      - deploy-service
+---
+
+Call deploy-service first.
+"""
+        await store.create_skill("wrapper", wrapper)
+        await store.create_skill("deploy-service", _SKILL_MD)
+        assert (await store.get_referential_usage("deploy-service")).required_by_skills == []
+        before = dict(graph._col("agentSkills")["org-1_wrapper"])
+
+        await store.update_skill("wrapper", wrapper)
+
+        after = graph._col("agentSkills")["org-1_wrapper"]
+        assert after.get("version") == before.get("version"), "an unchanged save writes no new revision"
+        assert (await store.get_referential_usage("deploy-service")).required_by_skills == ["wrapper"]
+
 
 class _NullIndex:
     """Minimal `SkillIndex` stub — these tests exercise the store/tracker/
@@ -903,3 +977,126 @@ class _NullIndex:
 
     async def update_entry(self, metadata) -> None:
         return None
+
+class TestSkillWriteAuthorization:
+    @pytest.mark.asyncio
+    async def test_hidden_name_cannot_overwrite_another_users_skill(self) -> None:
+        graph = FakeGraphProvider()
+        owner = GraphSkillStore(graph, "org-1", "owner")
+        await owner.create_skill("deploy-service", _SKILL_MD)
+        other = GraphSkillStore(graph, "org-1", "other", visibility=SkillVisibility.of(["other"]))
+        assert not await other.exists("deploy-service")
+        with pytest.raises(RegistryError, match="unavailable"):
+            await other.create_skill("deploy-service", _SKILL_MD.replace("Build", "Destroy"))
+        assert (await owner.get_provenance("deploy-service"))["created_by"] == "owner"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("operation", ["update", "delete", "write_resource", "remove_resource", "rollback"])
+    async def test_unscoped_read_does_not_grant_write(self, operation) -> None:
+        graph = FakeGraphProvider()
+        owner = GraphSkillStore(graph, "org-1", "owner")
+        await owner.create_skill("deploy-service", _SKILL_MD)
+        other = GraphSkillStore(graph, "org-1", "other", visibility=SkillVisibility.everyone())
+        calls = {
+            "update": lambda: other.update_skill("deploy-service", _SKILL_MD),
+            "delete": lambda: other.delete_skill("deploy-service"),
+            "write_resource": lambda: other.write_resource("deploy-service", "scripts/a.py", "pass"),
+            "remove_resource": lambda: other.remove_resource("deploy-service", "scripts/a.py"),
+            "rollback": lambda: other.rollback("deploy-service", "1.0.0"),
+        }
+        with pytest.raises(RegistryError, match="not writable"):
+            await calls[operation]()
+
+    @pytest.mark.asyncio
+    async def test_builtin_write_requires_explicit_seeder_capability(self) -> None:
+        graph = FakeGraphProvider()
+        content = _SKILL_MD.replace("description:", "metadata:\n  agent-loop:\n    source: builtin\ndescription:")
+        ordinary = GraphSkillStore(graph, "org-1", "user")
+        with pytest.raises(RegistryError, match="seeder"):
+            await ordinary.create_skill("deploy-service", content)
+        seeder = GraphSkillStore(graph, "org-1", "system:builtin-seeder", allow_builtin_writes=True)
+        await seeder.create_skill("deploy-service", content)
+        assert await ordinary.get_skill("deploy-service") is not None
+        with pytest.raises(RegistryError, match="read-only"):
+            await ordinary.write_resource("deploy-service", "scripts/a.py", "pass")
+
+
+class TestContentAddressedVersions:
+    """SV-1..SV-6 (H1, EV3 FW-7): a write whose content and resources are the stored ones is no new version."""
+
+    @staticmethod
+    def _doc(graph: FakeGraphProvider) -> dict[str, Any]:
+        return graph._col("agentSkills")["org-1_deploy-service"]
+
+    async def test_sv1_identical_content_is_no_new_version(self) -> None:
+        graph = FakeGraphProvider()
+        store = _store(graph)
+        await store.create_skill("deploy-service", _SKILL_MD, resources={"notes.md": "n"})
+        before = dict(self._doc(graph))
+        kept = await store.update_skill("deploy-service", _SKILL_MD, resources={"notes.md": "n"})
+        assert kept.version == "1.0.0"
+        assert await store.list_versions("deploy-service") == []
+        assert self._doc(graph)["updatedAtTimestamp"] == before["updatedAtTimestamp"]
+        # Omitted resources mean "keep the stored ones": still the same content.
+        assert (await store.update_skill("deploy-service", _SKILL_MD)).version == "1.0.0"
+
+    async def test_sv1_the_version_written_in_the_text_does_not_make_it_new(self) -> None:
+        graph = FakeGraphProvider()
+        store = _store(graph)
+        await store.create_skill("deploy-service", _SKILL_MD)
+        await store.update_skill("deploy-service", _SKILL_MD.replace("Push it.", "Push it now."))
+        stored = self._doc(graph)["content"]
+        assert (await store.update_skill("deploy-service", stored)).version == "1.0.1"
+        assert (await store.update_skill("deploy-service", _SKILL_MD.replace("Push it.", "Push it now."))).version == "1.0.1"
+        assert {v.version for v in await store.list_versions("deploy-service")} == {"1.0.0"}
+
+    async def test_sv2_a_changed_body_is_a_new_version(self) -> None:
+        graph = FakeGraphProvider()
+        store = _store(graph)
+        await store.create_skill("deploy-service", _SKILL_MD)
+        changed = await store.update_skill("deploy-service", _SKILL_MD.replace("Push it.", "Push it now."))
+        assert changed.version == "1.0.1"
+
+    async def test_sv3_changed_resources_are_a_new_version(self) -> None:
+        graph = FakeGraphProvider()
+        store = _store(graph)
+        await store.create_skill("deploy-service", _SKILL_MD, resources={"notes.md": "n"})
+        changed = await store.update_skill("deploy-service", _SKILL_MD, resources={"notes.md": "m"})
+        assert changed.version == "1.0.1"
+
+    async def test_sv4_another_status_on_the_same_content_writes_only_the_status(self) -> None:
+        graph = FakeGraphProvider()
+        store = _store(graph)
+        await store.create_skill("deploy-service", _SKILL_MD)
+        token = self._doc(graph)["updatedAtTimestamp"]
+        kept = await store.update_skill(
+            "deploy-service", _SKILL_MD, status=SkillStatus.DISABLED, expected_updated_at=token,
+        )
+        assert kept.version == "1.0.0" and kept.status == SkillStatus.DISABLED
+        assert self._doc(graph)["status"] == "disabled"
+        assert self._doc(graph)["updatedAtTimestamp"] > token
+        assert await store.list_versions("deploy-service") == []
+
+    async def test_sv5_a_stale_token_still_conflicts_on_identical_content(self) -> None:
+        from app.agent_loop_lib.modules.providers.skills.base import SkillConflictError
+
+        graph = FakeGraphProvider()
+        store = _store(graph)
+        await store.create_skill("deploy-service", _SKILL_MD)
+        stale = self._doc(graph)["updatedAtTimestamp"]
+        await store.update_skill("deploy-service", _SKILL_MD.replace("Push it.", "Push it now."))
+        with pytest.raises(SkillConflictError):
+            await store.update_skill(
+                "deploy-service", _SKILL_MD.replace("Push it.", "Push it now."), expected_updated_at=stale,
+            )
+
+    async def test_sv6_a_rollback_to_the_current_content_is_no_new_version(self) -> None:
+        graph = FakeGraphProvider()
+        store = _store(graph)
+        await store.create_skill("deploy-service", _SKILL_MD)
+        await store.update_skill("deploy-service", _SKILL_MD.replace("Push it.", "Push it now."))
+        await store.rollback("deploy-service", "1.0.0")
+        assert (await store.get_skill("deploy-service")).metadata.version == "1.0.2"
+        again = await store.rollback("deploy-service", "1.0.0")
+        assert again.version == "1.0.2"
+        assert {v.version for v in await store.list_versions("deploy-service")} == {"1.0.0", "1.0.1"}
