@@ -13,6 +13,7 @@ from app.modules.parse_engine import pools, wiring
 from app.services.messaging import consumer_concurrency as cc
 from app.services.resource_governor.models import ParseTier, Pool
 from tests.support.fake_member_budget import FakeMemberBudget
+from tests.support.settle import SETTLE_S
 from tests.unit.services.messaging.governor_test_helpers import make_test_governor
 
 MIB = 1 << 20
@@ -99,7 +100,7 @@ def test_a_small_record_gets_an_index_permit_while_the_heavy_pool_is_full_of_lar
         held = [t.result() for t in large if t.done()]
         assert 0 < len(held) < limit  # the large class stops short of the whole pool
         t0 = time.monotonic()
-        small = await asyncio.wait_for(_index(h, S, ctx), 1.0)
+        small = await asyncio.wait_for(_index(h, S, ctx), SETTLE_S)
         waited = time.monotonic() - t0
         cc.release_admission(small)
         for a in held:
@@ -109,6 +110,7 @@ def test_a_small_record_gets_an_index_permit_while_the_heavy_pool_is_full_of_lar
         await asyncio.gather(*large, return_exceptions=True)
         return waited
 
+    # wall-clock-ok: upstream's bound (#6125): a small file waits no start token; the regression waits a large hold
     assert asyncio.run(run()) < 0.2
 
 
@@ -125,7 +127,7 @@ def test_a_large_record_still_gets_its_guaranteed_share() -> None:
         await asyncio.sleep(0.05)
         assert not big.done()  # the pool is full
         cc.release_admission(running[0])
-        await asyncio.wait_for(big, 1.0)  # large's guarantee: it is the next grant
+        await asyncio.wait_for(big, SETTLE_S)  # large's guarantee: it is the next grant
         cc.release_admission(big.result())
         for t in small:
             t.cancel()
@@ -176,7 +178,7 @@ def test_a_small_pdf_takes_a_docling_ticket_and_no_cpu_slot(monkeypatch: pytest.
         large = [await asyncio.wait_for(
             cc.acquire_parsing_slot(h, ParseTier.HEAVY, 150 * MIB, timeout=1, ctx=wiring.class_context(msg("pdf", 150 * MIB).payload)), 2)]
         in_use = gov.gate(Pool.HEAVY_PARSE).in_use
-        small = await asyncio.wait_for(cc.acquire_parsing_slot(h, ParseTier.HEAVY, 1 * MIB, timeout=1, ctx=ctx), 1)
+        small = await asyncio.wait_for(cc.acquire_parsing_slot(h, ParseTier.HEAVY, 1 * MIB, timeout=1, ctx=ctx), SETTLE_S)
         res = (in_use, gov.gate(Pool.HEAVY_PARSE).in_use, budget.snapshot()["used"], wiring.docling_gate(gov).running(S))
         cc.release_admission(small)
         for a in large:
@@ -269,6 +271,7 @@ def test_a_big_wait_that_times_out_is_uncounted_and_carries_its_first_wait(monke
     err = asyncio.run(run())
     assert err.counts_toward_backstop is False and err.pauses_consumer is False
     assert isinstance(err, cc.ParseAdmissionTimeout)
+    # wall-clock-ok: a timestamp no later than now: load only moves now later
     assert err.parse_enqueued_at_ms is not None and err.parse_enqueued_at_ms <= time.time() * 1000
 
 
@@ -293,6 +296,7 @@ def test_a_big_wait_at_the_governors_gate_is_also_handed_back_uncounted(monkeypa
     err = asyncio.run(run())
     assert isinstance(err, cc.BigAdmissionTimeout)
     assert err.counts_toward_backstop is False and err.pauses_consumer is False
+    # wall-clock-ok: a timestamp no later than now: load only moves now later
     assert err.parse_enqueued_at_ms is not None and err.parse_enqueued_at_ms <= time.time() * 1000
 
 
@@ -310,6 +314,7 @@ def test_a_big_wait_is_bounded_by_parse_big_wait_seconds(monkeypatch: pytest.Mon
             await cc.acquire_parsing_slot(h, ParseTier.HEAVY, 150 * MIB, timeout=30, ctx=ctx)  # the caller's own bound is far longer
         return time.monotonic() - started
 
+    # wall-clock-ok: the gate's own 0.3 s bound against the caller's 30 s it must not wait out
     assert asyncio.run(run()) < 5.0
 
 
@@ -420,6 +425,7 @@ def test_a_small_cpu_parse_never_waits_behind_a_large_one_waiting_for_a_start_to
         return sorted(w for kind, w in out if kind == "small")
 
     waits = asyncio.run(run())
+    # wall-clock-ok: 0.5 s against the 1.5-2 s the slowest small file waited for a start token before the fix
     assert waits[-1] < 0.5, waits  # without the fix the slowest small waits 1.5-2 s for a start token
 
 
@@ -526,6 +532,7 @@ def test_with_a_remote_parsing_service_a_light_format_record_takes_its_place_in_
         return peak, rc.remote_parse_slots(2)._free
 
     peak, fifo_free = asyncio.run(run())
+    # wall-clock-ok: a count of concurrent holders, not a duration
     assert peak <= 2  # the configured concurrency, held once
     assert fifo_free == 2  # the FIFO pool was never entered with classes on
 
@@ -549,6 +556,7 @@ def test_a_large_record_that_inspection_makes_huge_keeps_its_place_in_a_full_big
         return same, waited
 
     same, waited = asyncio.run(run())
+    # wall-clock-ok: upstream's bound: a kept place takes no wait; the regression waits a timeout
     assert same and waited < 0.1  # kept, no timeout, no wait for a third place
 
 
@@ -583,6 +591,7 @@ def test_two_records_crossing_between_full_download_pools_never_wait_on_each_oth
 
     took, results, before, after = asyncio.run(run())
     assert not any(isinstance(r, BaseException) for r in results), results  # no timeout
+    # wall-clock-ok: one service time against the admission wait it must not add
     assert took < 0.5  # one service time, not the admission wait
     assert before == after  # one place in each pool, none leaked or doubled
 
@@ -604,3 +613,62 @@ def test_a_free_place_in_the_new_pool_is_taken_without_waiting(monkeypatch: pyte
     before, after = asyncio.run(run())
     assert before == {"small": 1, "big": 0} or sum(before.values()) == 1
     assert sum(after.values()) == 1 and after.get("big") == 1 and after.get("small", 0) == 0
+
+
+# F23i: a PDF labelled `txt` is read by the PDF reader, and its labels now say so (the tier and kind of the reader they
+# select), so its class context has the PDF estimate and it takes the class path like any small PDF.
+_RAISED = {"extension": "txt", "mimeType": "application/pdf", "orgId": "o"}
+
+
+def test_a_pdf_labelled_txt_takes_the_class_path_of_a_pdf(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Was test_a_raised_record_takes_the_legacy_heavy_gate_and_no_class_gate (F23g LOW-2, the labels' class was none)."""
+    budget = FakeMemberBudget(4)
+    monkeypatch.setattr("app.capacity.runtime.member_budget", lambda *_a, **_k: budget)
+
+    async def run() -> tuple[int, int, int, int]:
+        h = host()
+        gov = h.governor
+        ctx = cc.class_context(h, _RAISED)
+        assert ctx is not None and wiring.estimate_for(ctx.extension, ctx.mime_type, 1 * MIB, **ctx.facts()) is not None
+        before = gov.gate(Pool.HEAVY_PARSE).in_use
+        admission = await asyncio.wait_for(cc.acquire_parsing_slot(h, ParseTier.HEAVY, 1 * MIB, timeout=1, ctx=ctx), 2)
+        held = (gov.gate(Pool.HEAVY_PARSE).in_use - before, gov.gate(Pool.LIGHT_PARSE).in_use,
+                wiring.docling_gate(gov).running(S), budget.snapshot()["used"])
+        cc.release_admission(admission)
+        return held
+
+    heavy_permits, light_permits, docling_tickets, member_tokens = asyncio.run(run())
+    assert (heavy_permits, light_permits) == (0, 0)  # as a small PDF: no CPU parse slot
+    assert (docling_tickets, member_tokens) == (1, 0)  # the class gate's Docling ticket, no CPU token
+
+
+def test_a_raised_record_takes_a_small_remote_place(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.services.parsing import remote_concurrency as rc
+
+    monkeypatch.setenv("USE_PARSING_SERVICE", "true")
+    monkeypatch.setenv("PARSING_SERVICE_CONCURRENCY", "2")
+    classes: list[CostClass] = []
+    real_remote_gate = wiring.remote_gate
+
+    def spying_gate(size: int) -> object:
+        gate = real_remote_gate(size)
+        real_acquire = gate.acquire
+
+        async def acquire(request: object, **kw: object) -> object:
+            classes.append(request.cls)  # type: ignore[attr-defined]
+            return await real_acquire(request, **kw)
+
+        return SimpleNamespace(acquire=acquire)
+
+    monkeypatch.setattr(wiring, "remote_gate", spying_gate)
+
+    async def run() -> None:
+        rc.reset_remote_parse_slots()
+        h = host()
+        admission = await asyncio.wait_for(
+            cc.acquire_parsing_slot(h, ParseTier.HEAVY, 1 * MIB, timeout=1, ctx=cc.class_context(h, _RAISED)), 2
+        )
+        cc.release_admission(admission)
+
+    asyncio.run(run())
+    assert classes == [S]

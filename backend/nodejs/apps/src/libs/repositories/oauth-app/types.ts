@@ -236,6 +236,17 @@ export interface OAuthAppRepository {
     userId: string,
     deletedBy: string,
   ): Promise<void>;
+  /** Every app of the org with its stored secret, deleted ones too (the `SECRET_KEY` rotation's walk, ADR-KEY-01). */
+  listClientSecrets(
+    orgId: string,
+  ): Promise<Array<{ id: string; clientSecretEncrypted: string }>>;
+  /** Replaces the stored secret only while it is still `expected`; false when it changed since or the app is gone. */
+  replaceClientSecret(
+    orgId: string,
+    id: string,
+    expected: string,
+    next: string,
+  ): Promise<boolean>;
   /** Makes `toUserId` the creator of every live app `fromUserId` created, internal ones included. */
   transferCreatedBy(
     orgId: string,

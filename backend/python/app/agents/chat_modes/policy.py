@@ -19,7 +19,7 @@ exists on `ChatState`/`AgentContext`:
 
 So `ChatModePolicy` only needs to say WHAT state to force, not carry a
 parallel `ToolPolicy` object the loader would have to learn a second
-gating language for. `chat_modes/bridge.py` applies these flags directly
+gating language for. `chat_modes/setup.py` applies these flags directly
 to the `ChatState` dict before wrapping it in an `AgentContext` — no
 changes to `factory.py`/`tool_loader.py` were needed at all.
 """
@@ -46,18 +46,18 @@ class ChatModePolicy:
         name: canonical wire value (`"internal_search"` | `"web_search"` |
             `"agent"`).
         has_knowledge: forced onto `ChatState["has_knowledge"]`. Also drives
-            `has_sql_knowledge`/`has_slack_knowledge` in the bridge (chat
+            `has_sql_knowledge`/`has_slack_knowledge` in `setup.py` (chat
             modes have no per-KB "agent knowledge" scoping the way agents
             do -- SQL/Slack tools are available whenever the connector
             exists org-wide, exactly like today's chatbot).
-        include_web_search: whether the bridge resolves and attaches the
+        include_web_search: whether `setup.py` resolves and attaches the
             org's default web-search provider config.
         prefetch_retrieval: whether `prefetch.prefetch_retrieval()` runs
             before the agent's first turn (internal_search only -- web
             search has no internal context to prefetch; agent mode lets the
             model decide whether/when to search rather than paying upfront
             retrieval latency on every turn regardless of query shape).
-        system_prompt_key: looked up by the bridge to append a short,
+        system_prompt_key: looked up by `setup.py` to append a short,
             mode-specific addendum to the agent's system prompt (mirrors
             today's `get_model_config_for_mode()["system_prompt"]` framing,
             e.g. "answer ONLY from internal knowledge" for internal_search).

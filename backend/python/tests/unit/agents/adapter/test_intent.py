@@ -219,6 +219,18 @@ class TestParseIntent:
         system_prompt = transport.calls[0]["system"]
         assert "## Open Questions" not in system_prompt
 
+    async def test_in2_the_briefing_never_judges_what_the_agent_can_look_up(self) -> None:
+        """P4.9 IN-1/IN-2: seeing only the conversation, the briefing told the agent no policy "is
+        provided" and to ask (12 of 12 live briefings of `react-01`); the agent searches for itself."""
+        transport = _script_task_complete("something")
+
+        await _run_with_transport(transport, query="How many days of paid leave do I get?")
+
+        system_prompt = transport.calls[0]["system"]
+        assert "the agent can search the organization's knowledge and connected tools" in system_prompt
+        assert "Do NOT say that information is missing, unknown or not provided" in system_prompt
+        assert "tell the agent to ask the user for details" in system_prompt
+
 
 class TestParseIntentAndRouteTransportRegistryReuse:
     """`select_loop_and_goal()`/`PipesHubAgentFactory.create()` already

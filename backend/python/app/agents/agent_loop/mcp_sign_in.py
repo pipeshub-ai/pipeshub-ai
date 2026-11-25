@@ -26,9 +26,19 @@ def shows_sign_in_card(context: Optional[AgentContext]) -> bool:
     """The web chat, streaming the AG-UI protocol, in a conversation: the only place the card
     is drawn. The legacy protocol keeps no transcript, so the part would never arrive."""
     return bool(
-        context is not None and context.client_name == WEB_CLIENT_NAME and context.chat_streaming
+        context is not None
+        and (context.client_name == WEB_CLIENT_NAME or context.durable_web_app) and context.chat_streaming
         and context.conversation_id and context.protocol == "agui"
     )
+
+
+def merge_sign_in(context: AgentContext, entry: dict[str, Any]) -> None:
+    """One entry per server (and agent sign-in), its scopes merged."""
+    for kept in context.mcp_sign_in_needed:
+        if kept["instanceId"] == entry["instanceId"] and kept.get("agentKey") == entry.get("agentKey"):
+            kept["scopes"] = list(dict.fromkeys([*kept["scopes"], *entry["scopes"]]))[:MAX_SCOPES]
+            return
+    context.mcp_sign_in_needed.append({**entry, "scopes": list(entry["scopes"])[:MAX_SCOPES]})
 
 
 def note_sign_in_needed(context: Optional[AgentContext], server: ResolvedMCPServer, exc: BaseException) -> bool:
@@ -39,14 +49,10 @@ def note_sign_in_needed(context: Optional[AgentContext], server: ResolvedMCPServ
     if context is None or not isinstance(exc, MCPInsufficientScopeError) or not exc.scopes or not shows_sign_in_card(context):
         return False
     agent_key = server.owner_id if server.owner_id != context.user_id else None
-    for entry in context.mcp_sign_in_needed:
-        if entry["instanceId"] == server.instance_id and entry.get("agentKey") == agent_key:
-            entry["scopes"] = list(dict.fromkeys([*entry["scopes"], *exc.scopes]))[:MAX_SCOPES]
-            return True
     entry: dict[str, Any] = {"instanceId": server.instance_id, "serverName": server.display_name, "scopes": list(exc.scopes)}
     if agent_key:
         entry["agentKey"] = agent_key
-    context.mcp_sign_in_needed.append(entry)
+    merge_sign_in(context, entry)
     return True
 
 

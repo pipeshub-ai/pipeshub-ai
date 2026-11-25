@@ -14,6 +14,9 @@ import { usesSharedCredential, type McpConnectionState } from '../../connection-
 import type { McpMyServerEntry, McpToolInfo } from '../../types';
 import { MCP_TRANSPORT_LABELS } from '../../types';
 
+// The sign-in card above already says what a refused sign-in needs.
+const SIGN_IN_STATES = new Set<McpConnectionState>(['needs_auth_mode', 'needs_reconnect', 'shared_credential_missing']);
+
 /** The tool list the tab shows: read from the cache when the tab opens, live on Refresh. */
 export type McpToolsLoad =
   | { status: 'idle' }
@@ -52,12 +55,12 @@ export function McpToolsApprovalsTab({
   const canListTools = state !== 'needs_connect' && state !== 'waiting_for_admin' && state !== 'shared_credential_missing';
   const listing = canListTools && (load.status === 'idle' || load.status === 'loading');
   // Without the list (no sign-in, or it failed) rules are still set by name.
-  const showRules = editor !== null && !listing && !editor.loading && !editor.loadError;
-  const showFooter = showRules;
+  const showRules = editor !== null && !listing && !editor.loading;
+  const showFooter = showRules && !editor.loadError;
 
   return (
-    <Flex direction="column" style={{ height: '100%', minHeight: 0 }}>
-      <Flex direction="column" gap="4" style={{ flex: 1, minHeight: 0, overflowY: 'auto', paddingBottom: 'var(--space-4)' }}>
+    <Flex direction="column">
+      <Flex direction="column" gap="4" style={{ paddingBottom: 'var(--space-4)' }}>
         <McpDisabledCallout instance={instance} />
         <SignInCard
           instance={instance}
@@ -75,7 +78,7 @@ export function McpToolsApprovalsTab({
                 {t('workspace.mcpServers.details.tools')}
               </Text>
               {load.status === 'ready' && load.syncedAt && (
-                <Text size="1" style={{ color: 'var(--gray-10)' }}>
+                <Text size="1" style={{ color: 'var(--gray-11)' }}>
                   {t('workspace.mcpServers.configPanel.synced', { time: formatRelativeTime(load.syncedAt) })}
                 </Text>
               )}
@@ -99,12 +102,12 @@ export function McpToolsApprovalsTab({
           </Flex>
 
           {!canListTools ? (
-            <Text size="2" style={{ color: 'var(--gray-10)' }}>
+            <Text size="2" style={{ color: 'var(--gray-11)' }}>
               {t('workspace.mcpServers.configPanel.signInForTools')}
             </Text>
           ) : listing ? (
             <FindingTools />
-          ) : load.status === 'error' && !(state === 'needs_auth_mode' && load.code === 'reauth') ? (
+          ) : load.status === 'error' && !(load.code === 'reauth' && SIGN_IN_STATES.has(state)) ? (
             <Flex
               direction="column"
               gap="2"
@@ -147,6 +150,8 @@ export function McpToolsApprovalsTab({
                   {t('workspace.mcpServers.toolRules.description.personal')}
                 </Text>
                 <McpToolRulesList editor={editor} toolsUnknown={load.status !== 'ready'} />
+                {/* Without their rules the tools are still worth seeing. */}
+                {editor.loadError && load.status === 'ready' && <McpToolList tools={ruleToolsFromInfo(load.tools)} />}
               </Flex>
             )
           )}
@@ -161,11 +166,14 @@ export function McpToolsApprovalsTab({
           data-testid="mcp-rules-footer"
           style={{
             borderTop: '1px solid var(--olive-3)',
-            paddingTop: 'var(--space-3)',
-            flexShrink: 0,
+            paddingBlock: 'var(--space-3)',
+            // Stays in view while the page scrolls, so unsaved rules are never out of sight.
+            position: 'sticky',
+            bottom: 0,
+            backgroundColor: 'var(--olive-1)',
           }}
         >
-          <Text size="1" style={{ color: editor.changes > 0 ? 'var(--amber-11)' : 'var(--gray-10)' }}>
+          <Text size="1" style={{ color: editor.changes > 0 ? 'var(--amber-11)' : 'var(--gray-11)' }}>
             {editor.changes > 0
               ? t('workspace.mcpServers.configPanel.unsaved', { count: editor.changes })
               : t('workspace.mcpServers.configPanel.allSaved')}
@@ -201,7 +209,7 @@ function FindingTools() {
           {t('workspace.mcpServers.configPanel.findingTools')}
         </Text>
       </Flex>
-      <Text size="1" style={{ color: 'var(--gray-10)' }}>
+      <Text size="1" style={{ color: 'var(--gray-11)' }}>
         {t('workspace.mcpServers.configPanel.rulesUnlock')}
       </Text>
       {[0, 1, 2].map((row) => (
@@ -315,7 +323,7 @@ function SignInCard({
                 : 'workspace.mcpServers.configPanel.signedIn'
           )}
         </Text>
-        <Text size="1" style={{ color: 'var(--gray-10)' }}>
+        <Text size="1" style={{ color: 'var(--gray-11)' }}>
           {signedIn && when
             ? t('workspace.mcpServers.configPanel.signedInDetail', { transport, time: when })
             : signedIn

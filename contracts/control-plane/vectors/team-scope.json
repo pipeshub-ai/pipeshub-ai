@@ -1,0 +1,169 @@
+{
+  "description": "Team scope (02-lld \u00a73.1, \u00a75.2): the team layer of a run is the agent's owner team, never the actor's teams; the actor's teams only widen what is visible and which team grants an assistant run reads. Read by the Node team layer source and the effective-set resolver tests (CPD-9).",
+  "precedence": [
+    {
+      "id": "TM-1",
+      "behaviour": "the agent's owner team's layer, although the actor is in other teams with layers",
+      "agentKey": "a7",
+      "agentOwnerTeam": "t3",
+      "actorTeams": [
+        "t1",
+        "t2"
+      ],
+      "teamLayers": [
+        "t1",
+        "t2",
+        "t3"
+      ],
+      "expect": "t3"
+    },
+    {
+      "id": "TM-2",
+      "behaviour": "an actor in the owner team changes nothing: still the owner team's layer",
+      "agentKey": "a7",
+      "agentOwnerTeam": "t3",
+      "actorTeams": [
+        "t3",
+        "t1"
+      ],
+      "teamLayers": [
+        "t1",
+        "t3"
+      ],
+      "expect": "t3"
+    },
+    {
+      "id": "TM-3",
+      "behaviour": "no agent: no team layer, whatever the actor's teams",
+      "agentKey": null,
+      "agentOwnerTeam": null,
+      "actorTeams": [
+        "t1"
+      ],
+      "teamLayers": [
+        "t1"
+      ],
+      "expect": null
+    },
+    {
+      "id": "TM-4",
+      "behaviour": "an agent no team owns: no team layer",
+      "agentKey": "a7",
+      "agentOwnerTeam": null,
+      "actorTeams": [
+        "t1"
+      ],
+      "teamLayers": [
+        "t1"
+      ],
+      "expect": null
+    },
+    {
+      "id": "TM-5",
+      "behaviour": "an owner team that set no layer: no team layer",
+      "agentKey": "a7",
+      "agentOwnerTeam": "t3",
+      "actorTeams": [],
+      "teamLayers": [
+        "t1"
+      ],
+      "expect": null
+    }
+  ],
+  "visibility": [
+    {
+      "id": "TV-1",
+      "behaviour": "an assistant run reads the grants of the actor's teams only; a team-visible installation is ready for its team's members",
+      "actorTeams": [
+        "t1"
+      ],
+      "installations": [
+        {
+          "n": 1,
+          "owner": "team:t1",
+          "visibility": "team"
+        },
+        {
+          "n": 2,
+          "owner": "team:t2",
+          "visibility": "team"
+        },
+        {
+          "n": 3,
+          "owner": "org",
+          "visibility": "org"
+        }
+      ],
+      "grants": {
+        "team:t1": [
+          1
+        ],
+        "team:t2": [
+          2
+        ],
+        "org": [
+          3
+        ]
+      },
+      "ready": [
+        1,
+        3
+      ],
+      "unavailable": {}
+    },
+    {
+      "id": "TV-2",
+      "behaviour": "a team-visible installation granted to everyone is not visible outside its team",
+      "actorTeams": [
+        "t1"
+      ],
+      "installations": [
+        {
+          "n": 4,
+          "owner": "team:t2",
+          "visibility": "team"
+        }
+      ],
+      "grants": {
+        "org": [
+          4
+        ]
+      },
+      "ready": [],
+      "unavailable": {
+        "4": "not_visible"
+      }
+    },
+    {
+      "id": "TV-3",
+      "behaviour": "visibility is the union over the actor's teams",
+      "actorTeams": [
+        "t1",
+        "t2"
+      ],
+      "installations": [
+        {
+          "n": 1,
+          "owner": "team:t1",
+          "visibility": "team"
+        },
+        {
+          "n": 2,
+          "owner": "team:t2",
+          "visibility": "team"
+        }
+      ],
+      "grants": {
+        "org": [
+          1,
+          2
+        ]
+      },
+      "ready": [
+        1,
+        2
+      ],
+      "unavailable": {}
+    }
+  ]
+}

@@ -1,0 +1,35 @@
+{
+ "scenario": "u3_parent_with_engine_child",
+ "answer": "Done: the engine wrote the analysis.",
+ "parts": [
+  {
+   "type": "text",
+   "content": "Handing this to a code task.",
+   "runId": "run-u3-parent"
+  },
+  {
+   "type": "tool_call",
+   "toolCallId": "call-ct",
+   "toolName": "code_task",
+   "args": "{\"goal\":\"Analyse in/q3.csv\"}",
+   "status": "completed",
+   "runId": "run-u3-parent",
+   "resultPreview": "analysis.csv written"
+  },
+  {
+   "type": "sub_agent",
+   "runId": "run-u3-child",
+   "parentRunId": "run-u3-parent",
+   "roleName": "pipeshub-subagent-analysis",
+   "codeTaskGoal": "Analyse in/q3.csv",
+   "status": "completed",
+   "parts": []
+  },
+  {
+   "type": "text",
+   "content": "Done: the engine wrote the analysis.",
+   "runId": "run-u3-parent",
+   "isFinal": true
+  }
+ ]
+}

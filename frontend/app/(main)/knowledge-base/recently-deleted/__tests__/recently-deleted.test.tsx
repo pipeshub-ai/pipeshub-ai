@@ -20,7 +20,7 @@ vi.mock('@/config', async () => {
 const router = vi.hoisted(() => ({ push: vi.fn(), replace: vi.fn(), back: vi.fn(), prefetch: vi.fn() }));
 vi.mock('next/navigation', () => ({ useRouter: () => router }));
 
-const { useAuthStore } = await import('@/lib/store/auth-store');
+const { useAuthStore } = await import('@/config');
 const { fakeApi } = await import('@/lib/api/__tests__/fake-api');
 const { useToastStore } = await import('@/lib/store/toast-store');
 const { installBrowserShims, renderInTheme } = await import('../../__tests__/kb-page-harness');
@@ -194,7 +194,7 @@ describe('what a restore says', () => {
 describe('the page', () => {
   beforeEach(() => {
     installBrowserShims();
-    useAuthStore.setState({ accessToken: jwtExpiringIn(3600), refreshToken: 'r' });
+    useAuthStore.setState({ accessToken: jwtExpiringIn(3600) });
     useToastStore.setState({ toasts: [] });
     router.push.mockReset();
     vi.spyOn(console, 'error').mockImplementation(() => {});

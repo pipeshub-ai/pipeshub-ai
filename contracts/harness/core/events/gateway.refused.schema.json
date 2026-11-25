@@ -1,0 +1,114 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/core/events/gateway.refused.schema.json",
+  "title": "GatewayRefusedEvent",
+  "description": "One of the run's sandbox gateways refused a request (SEC2 O-2): the egress proxy (a destination, a path, a credential or a body it will not forward) or the model gateway (a parameter, a model, a budget or a body it will not serve). The gateway reports it with the run's own gateway token; Node writes it on the run's stream, once per run, gateway and reason, and at most a fixed number per run. Ids and reason codes only: never the request's content, URL path or query. Tool-gateway refusals are `tool.denied`. Folds ignore it; it is an audit record.",
+  "x-writer": [
+    "node"
+  ],
+  "allOf": [
+    {
+      "$ref": "../envelope.schema.json#/$defs/InlineEnvelope"
+    }
+  ],
+  "properties": {
+    "type": {
+      "const": "gateway.refused"
+    },
+    "writer": {
+      "const": "node"
+    },
+    "data": {
+      "$ref": "#/$defs/GatewayRefusedData"
+    }
+  },
+  "$defs": {
+    "GatewayRefusedData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "gateway",
+        "reason",
+        "status"
+      ],
+      "properties": {
+        "gateway": {
+          "description": "egress: the sandbox's egress proxy; model: the model gateway.",
+          "enum": [
+            "egress",
+            "model"
+          ]
+        },
+        "reason": {
+          "$ref": "../common.schema.json#/$defs/Name",
+          "description": "The gateway's reason code (its refusal registry, C-6)."
+        },
+        "status": {
+          "description": "The HTTP status the gateway answered.",
+          "type": "integer",
+          "minimum": 400,
+          "maximum": 599
+        },
+        "host": {
+          "description": "The destination host the egress proxy refused, where it logs one; never a path or query.",
+          "type": "string",
+          "pattern": "^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$"
+        },
+        "param": {
+          "description": "The request field the model gateway named in its refusal, as a dotted path; never its value.",
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$"
+        },
+        "attemptId": {
+          "$ref": "../common.schema.json#/$defs/Id",
+          "description": "The attempt the reporting token was issued for, from the verified token."
+        },
+        "site": {
+          "$ref": "egress.allowed.schema.json#/$defs/SiteReport"
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 9,
+      "runId": "run_1",
+      "type": "gateway.refused",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-08T12:00:00.123Z",
+      "writer": "node",
+      "visibility": "audit",
+      "data": {
+        "gateway": "egress",
+        "reason": "destination_not_allowed",
+        "status": 403,
+        "host": "attacker.example",
+        "attemptId": "att_1"
+      }
+    },
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 10,
+      "runId": "run_1",
+      "type": "gateway.refused",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-08T12:00:01.000Z",
+      "writer": "node",
+      "visibility": "audit",
+      "data": {
+        "gateway": "model",
+        "reason": "unsupported_parameter",
+        "status": 400,
+        "param": "image_url",
+        "attemptId": "att_1"
+      }
+    }
+  ]
+}

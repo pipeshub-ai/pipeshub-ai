@@ -1,0 +1,12 @@
+# Signs the Node API in to MongoDB as a user of its own (readWrite on the application database only) instead of MongoDB's
+# administrator, and gives the document-store migration tool the administrator login (MIGRATE_MONGO_URI). After a move to
+# PostgreSQL the tool then takes that user's write role away, so MongoDB itself refuses any later write from the API; a rollback
+# gives it back. Without this file the API and the tool share the administrator login, and only the store fence refuses those writes.
+#
+# Create the user once before you list this file in PIPESHUB_COMPOSE_OVERRIDES (the migration guide has the command), with
+# MONGO_APP_PASSWORD in .env.
+services:
+  pipeshub-ai:
+    environment:
+      - MONGO_URI=mongodb://${MONGO_APP_USERNAME:-pipeshub_app}:${MONGO_APP_PASSWORD:?MONGO_APP_PASSWORD is empty or unset in .env}@mongodb:27017/?authSource=admin
+      - MIGRATE_MONGO_URI=mongodb://${MONGO_USERNAME:-admin}:${MONGO_PASSWORD:-}@mongodb:27017/?authSource=admin

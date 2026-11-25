@@ -1,0 +1,150 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/ext/pipeshub/api/model-access-view.schema.json",
+  "title": "ModelAccessView",
+  "description": "`GET /api/v1/agent-harness/model-accounts/access` (A1): the release's vendor rules with their outcome for the caller's org, and the org's narrowing.",
+  "type": "object",
+  "additionalProperties": false,
+  "x-extensible": true,
+  "required": ["version", "offering", "policy", "rules"],
+  "properties": {
+    "version": {
+      "description": "The vendor rules' release version.",
+      "type": "string",
+      "minLength": 1
+    },
+    "offering": {"$ref": "../../../core/common.schema.json#/$defs/Offering"},
+    "policy": {"$ref": "#/$defs/OrgAccessPolicy"},
+    "rules": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/AccessRule"}
+    },
+    "modelChoices": {
+      "description": "MA1, `GET .../model-accounts/access` only: every LLM the deployment configures, one entry per model name, as an agent may name it for itself or a sub-agent role. Absent where the configured models cannot be listed.",
+      "type": "array",
+      "items": {"$ref": "#/$defs/ModelChoice"}
+    },
+    "roleCostCeilings": {
+      "description": "MA1, with `modelChoices`: the org's cost ceilings per sub-agent role (USD per 1M tokens, input plus output); `default` bounds every role. Empty: none.",
+      "type": "object",
+      "maxProperties": 65,
+      "propertyNames": {"pattern": "^[a-z0-9][a-z0-9_.-]{0,63}$"},
+      "additionalProperties": {"$ref": "../../../core/common.schema.json#/$defs/Usd"}
+    }
+  },
+  "$defs": {
+    "ModelChoice": {
+      "description": "A configured model as an agent's `models[]` and `roleModels` entries name it: the provider and the model name as configured, never the machine name a route uses.",
+      "type": "object",
+      "additionalProperties": false,
+      "x-extensible": true,
+      "required": ["modelKey", "modelName", "provider", "usdPerMTok", "allowed"],
+      "properties": {
+        "modelKey": {"type": "string", "minLength": 1},
+        "modelName": {"type": "string", "minLength": 1},
+        "provider": {"type": "string", "minLength": 1},
+        "usdPerMTok": {
+          "description": "The release's list price, input plus output per 1M tokens; null: no price (such a model cannot be shown to be within a cost ceiling).",
+          "anyOf": [{"$ref": "../../../core/common.schema.json#/$defs/Usd"}, {"type": "null"}]
+        },
+        "allowed": {
+          "description": "False when the org's stored `models.routes` leaves the model out.",
+          "type": "boolean"
+        },
+        "groupAllowed": {
+          "description": "G-41, `GET .../model-accounts/access` only: false when the org lets only some of its user groups use this model and the caller is in none of them; absent otherwise. A chat or harness turn on it is refused.",
+          "type": "boolean"
+        }
+      }
+    },
+    "OrgAccessPolicy": {
+      "description": "The org's narrowing: vendor rows switched off, and whether consumer-plan rows are allowed. Nothing is switched off and consumer plans are off unless an extension sets a narrowing.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["disabledRules", "consumerPlans"],
+      "properties": {
+        "disabledRules": {
+          "type": "array",
+          "maxItems": 256,
+          "items": {"type": "string", "minLength": 1, "maxLength": 128}
+        },
+        "consumerPlans": {"type": "boolean"}
+      }
+    },
+    "AccessRule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "provider", "accountKind", "route", "engines", "status", "consumer", "source", "built", "outcome"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "provider": {"type": "string", "minLength": 1},
+        "accountKind": {"$ref": "../../../core/common.schema.json#/$defs/AccessAccountKind"},
+        "route": {"$ref": "../../../core/common.schema.json#/$defs/AccessRouteKind"},
+        "engines": {
+          "description": "Null: every engine and the in-product loop.",
+          "anyOf": [
+            {"type": "array", "items": {"type": "string", "minLength": 1}},
+            {"type": "null"}
+          ]
+        },
+        "status": {"$ref": "../../../core/common.schema.json#/$defs/VendorRuleStatus"},
+        "consumer": {"type": "boolean"},
+        "source": {"type": "string"},
+        "built": {
+          "description": "Whether this release builds the route (only the gateway today).",
+          "type": "boolean"
+        },
+        "outcome": {"$ref": "#/$defs/RowOutcome"}
+      }
+    },
+    "RowOutcome": {
+      "description": "A row's outcome for the org, engine aside: what the settings page shows.",
+      "x-constant": "ROW_OUTCOMES",
+      "enum": ["allowed", "vendor_prohibited", "vendor_pending", "offering_not_permitted", "org_policy_refused"]
+    }
+  },
+  "examples": [
+    {
+      "version": "2026.10.1",
+      "offering": "oss",
+      "policy": {"disabledRules": ["anthropic-user-plan"], "consumerPlans": false},
+      "rules": [
+        {
+          "id": "openai-org-key",
+          "provider": "openai",
+          "accountKind": "org_api_key",
+          "route": "gateway",
+          "engines": null,
+          "status": "allowed",
+          "consumer": false,
+          "source": "https://openai.com/policies",
+          "built": true,
+          "outcome": "allowed"
+        },
+        {
+          "id": "anthropic-user-plan",
+          "provider": "anthropic",
+          "accountKind": "user_plan_sandbox_login",
+          "route": "vendor_sandbox_login",
+          "engines": ["claude-code"],
+          "status": "pending_vendor",
+          "consumer": true,
+          "source": "",
+          "built": false,
+          "outcome": "vendor_pending"
+        }
+      ]
+    },
+    {
+      "version": "2026.10.1",
+      "offering": "oss",
+      "policy": {"disabledRules": [], "consumerPlans": false},
+      "rules": [],
+      "modelChoices": [
+        {"modelKey": "mk-a", "modelName": "gpt-5.4", "provider": "openAI", "usdPerMTok": 17.5, "allowed": true},
+        {"modelKey": "mk-d", "modelName": "house-model", "provider": "ollama", "usdPerMTok": null, "allowed": false}
+      ],
+      "roleCostCeilings": {"default": 20, "researcher": 6}
+    }
+  ]
+}

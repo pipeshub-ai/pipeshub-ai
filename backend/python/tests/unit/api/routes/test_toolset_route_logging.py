@@ -21,7 +21,7 @@ from app.agents.tools.factories.base import ToolsetAuthError
 from app.api.middlewares.request_log import install_request_logging
 from app.api.routes import toolsets as routes
 from app.connectors.core.base.token_service import oauth_service
-from app.containers.connector import ConnectorAppContainer
+from app.edition_containers import ConnectorAppContainer
 from app.utils.logger import log_record_fields
 from tests.support.in_memory_config import InMemoryConfigService
 from tests.support.refusing_token_endpoint import RefusingTokenEndpoint
@@ -232,6 +232,11 @@ def _nothing(_monkeypatch: pytest.MonkeyPatch, _store: _Store) -> None:
     return None
 
 
+def _sign_in_restarted(_monkeypatch: pytest.MonkeyPatch, store: _Store) -> None:
+    # A newer sign-in replaced the state this callback carries: the real handle_callback raises OAuthStateError.
+    store.values[USER_AUTH_PATH] = {"oauth": {"state": "newer-state"}}
+
+
 def _connect_error() -> aiohttp.ClientConnectorError:
     """A fresh one per case: a logged exception carries the level it was logged at."""
     return aiohttp.ClientConnectorError(
@@ -249,10 +254,6 @@ CALLBACK_CASES = {
                   logging.WARNING, "upstream_5xx", "server_error", None, "i1", None),
     "token-endpoint-down": (_token_endpoint(0, raises=_connect_error), {**_CODE, "state": _state()},
                             logging.WARNING, "unavailable", "server_error", None, "i1", None),
-    # F26c: the field is named in the exception, never its value (the route drops the text anyway).
-    "token-malformed-created-at": (_token_endpoint(200, '{"access_token": "at", "created_at": "' + SENTINEL + '"}'),
-                                   {**_CODE, "state": _state()},
-                                   logging.ERROR, "internal", "server_error", None, "i1", None),
     "instances-unreadable": (_instances_unreadable, {**_CODE, "state": _state()},
                              logging.WARNING, "unavailable", "auth_failed", None, "i1", None),
     "other-users-state": (_nothing, {**_CODE, "state": _state(user_id="65f0a1b2c3d4e5f6a7b8c9ff")},
@@ -275,6 +276,8 @@ CALLBACK_CASES = {
                               logging.WARNING, "forbidden", "provider_error", "other", None, None),
     "missing-code": (_nothing, {"state": _state()},
                      logging.WARNING, "bad_request", "missing_parameters", None, None, None),
+    "stale-state": (_sign_in_restarted, {**_CODE, "state": _state()},
+                    logging.WARNING, "bad_request", "server_error", None, "i1", None),
     "agent-no-edit-access": (_agent_check(404), {**_CODE, "state": _state(user_id="agent-1", is_agent=True)},
                              logging.WARNING, "forbidden", "agent_permission_denied", None, "i1", "agent-1"),
     "agent-sign-in-expired": (_agent_check(401), {**_CODE, "state": _state(user_id="agent-1", is_agent=True)},
@@ -307,6 +310,37 @@ def test_each_toolset_callback_failure_is_one_line_with_its_class_and_no_provide
     assert "error_message" not in fields
     for logged in (r for r in caplog.records if r.name.startswith("app.")):
         assert "SENTINEL" not in _text(logged) and "alice@" not in _text(logged) and "://" not in _text(logged)
+
+
+# (token answer, level, error_class, error_type): the class a refresh gives the same answer, except a refused code.
+TOKEN_ANSWERS = {
+    # F26c: the field is named in the exception, never its value (the route drops the text anyway).
+    "malformed-created-at": ('{"access_token": "at", "created_at": "' + SENTINEL + '"}',
+                             logging.ERROR, "misconfigured", "MalformedTokenError"),
+    "no-access-token": ('{"token_type": "bearer", "error_description": "' + SENTINEL + '"}',
+                        logging.ERROR, "misconfigured", "TokenResponseError"),
+    "slack-other-code": ('{"ok": false, "error": "bad_redirect_uri"}', logging.ERROR, "misconfigured", "OAuthTokenRequestError"),
+    "slack-invalid-code": ('{"ok": false, "error": "invalid_code"}', logging.WARNING, "bad_request", "OAuthTokenRequestError"),
+}
+
+
+@pytest.mark.parametrize("case", list(TOKEN_ANSWERS))
+def test_a_token_answer_on_the_callback_is_classed_as_its_refresh_classes_it(
+    client: TestClient, store: _Store, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, case: str,
+) -> None:
+    body, level, cls, error_type = TOKEN_ANSWERS[case]
+    _token_endpoint(200, body)(monkeypatch, store)
+
+    response = client.get(f"{PREFIX}/oauth/callback", params={**_CODE, "state": _state()})
+
+    assert response.json()["error"] == "server_error"  # the body is unchanged
+    record, fields = _end(caplog)
+    assert _loud(caplog) == [record]
+    assert (record.levelno, fields["error_class"], fields["error_type"], fields["reason"]) == (
+        level, cls, error_type, "server_error")
+    assert "error_message" not in fields
+    for logged in (r for r in caplog.records if r.name.startswith("app.")):
+        assert "SENTINEL" not in _text(logged) and "://" not in _text(logged)
 
 
 # --- pattern D: a step the route swallows ----------------------------------------------------------------------------
@@ -376,3 +410,28 @@ def test_the_setup_check_after_a_sign_in_logs_once_without_the_providers_text(
     assert end["outcome"] == ("success" if body_error is None else "failure")
     for logged in (r for r in caplog.records if r.name.startswith("app.")):
         assert "SENTINEL" not in _text(logged) and "alice@" not in _text(logged)
+
+
+def test_a_sign_in_whose_tokens_were_not_saved_is_not_marked_authenticated(
+    client: TestClient, store: _Store, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+) -> None:
+    # The real OAuthProvider.handle_callback: only the write that carries the new tokens fails, the route's own would not.
+    monkeypatch.setattr(oauth_service.OAuthProvider, "exchange_code_for_token", AsyncMock(
+        return_value=oauth_service.OAuthToken(access_token="at-new", refresh_token="rt-new")))
+    monkeypatch.setattr("app.connectors.core.base.token_service.startup_service.startup_service",
+                        MagicMock(get_toolset_token_refresh_service=MagicMock(return_value=None)))
+    save = store.set_config
+
+    async def tokens_not_saved(key: str, value: Any, **kw: Any) -> bool:  # noqa: ANN401
+        return False if isinstance(value, dict) and value.get("credentials") else await save(key, value, **kw)
+
+    monkeypatch.setattr(store, "set_config", tokens_not_saved)
+
+    response = client.get(f"{PREFIX}/oauth/callback", params={**_CODE, "state": _state()})
+
+    assert (response.json()["success"], response.json()["error"]) == (False, "server_error")
+    assert "try again" in response.json()["error_message"]
+    assert store.values[USER_AUTH_PATH] == {"oauth": {"state": "orig-state"}}  # neither tokens nor isAuthenticated
+    record, fields = _end(caplog)
+    assert (record.levelno, fields["error_class"], fields["error_type"]) == (
+        logging.WARNING, "unavailable", "OAuthStoreUnavailableError")

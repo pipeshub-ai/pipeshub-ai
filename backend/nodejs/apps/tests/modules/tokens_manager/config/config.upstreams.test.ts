@@ -3,7 +3,8 @@ import { expect } from 'chai'
 import sinon from 'sinon'
 import { loadAppConfig } from '../../../../src/modules/tokens_manager/config/config'
 import { ConfigService } from '../../../../src/modules/tokens_manager/services/cm.service'
-import { registerUpstreams, upstreamTarget } from '../../../../src/libs/http/upstream-call'
+import { registerUpstreams, upstreamFetch, upstreamTarget } from '../../../../src/libs/http/upstream-call'
+import { InternalServerError } from '../../../../src/libs/errors/http.errors'
 
 const URLS: Record<string, string> = {
   getAiBackendUrl: 'http://query:8000',
@@ -34,5 +35,30 @@ describe('loadAppConfig registers the PipesHub services for upstream.call.end', 
       expect(upstreamTarget(`${url}/x`).upstream, url).to.equal('nodejs')
     }
     expect(upstreamTarget('https://oauth2.googleapis.com/token').upstream).to.equal('external')
+  })
+
+  it('keeps the bases of an earlier load: after a reload moves a service, the old URL is still sent to, an unregistered one is not', async () => {
+    const urls = { ...URLS }
+    const service = new Proxy({}, { get: (_target, name) => async () => urls[String(name)] ?? 'http://unused:1' })
+    sinon.stub(ConfigService, 'getInstance').returns(service as unknown as ConfigService)
+    const fetchStub = sinon.stub(globalThis, 'fetch').resolves(new Response(null, { status: 204 }))
+
+    await loadAppConfig()
+    urls.getAiBackendUrl = 'http://query-2:8000'
+    await loadAppConfig()
+
+    await upstreamFetch('http://query:8000/api/v1/chat', { method: 'GET' })
+    await upstreamFetch('http://query-2:8000/api/v1/chat', { method: 'GET' })
+    const refused = await upstreamFetch('http://169.254.169.254/latest/meta-data/', { method: 'GET' }).then(
+      () => 'sent',
+      (error: unknown) => error,
+    )
+
+    expect(fetchStub.getCalls().map((c) => c.args[0])).to.deep.equal([
+      'http://query:8000/api/v1/chat',
+      'http://query-2:8000/api/v1/chat',
+    ])
+    expect(refused).to.be.instanceOf(InternalServerError)
+    expect(upstreamTarget('http://query:8000/api/v1/chat').upstream).to.equal('query')
   })
 })

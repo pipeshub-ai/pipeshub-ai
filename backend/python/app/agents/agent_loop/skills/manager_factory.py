@@ -7,9 +7,10 @@ itself).
 
 Two profiles, one assembly path (`_build_manager`):
 
-- `build_runtime_skill_manager` — the agent-loop profile: full visibility
-  (no creator scope; an agent's own `ScopedSkillManager` layer, not this
-  factory, narrows the catalog to an assignment — see `scoped_manager.py`),
+- `build_runtime_skill_manager` — the agent-loop profile: the running
+  user's own skills, the builtins, and the skills the agent being run
+  assigns (`SkillVisibility`; an agent's `ScopedSkillManager` layer then
+  narrows the catalog to that assignment — see `scoped_manager.py`),
   plus the learning-loop `LLMSkillExtractor`. Builtin packs are seeded at
   service startup (`reconcile_builtin_skills_for_orgs`); a request only
   schedules a background reconcile for an org that startup missed.
@@ -26,7 +27,7 @@ Two profiles, one assembly path (`_build_manager`):
 Both profiles share the exact same store/index/tracker/governor stack, so
 governance, versioning, and audit behavior can never drift between "what
 an agent sees this turn" and "what the management UI shows" beyond the
-one deliberate difference (visibility scope) above.
+one deliberate difference (what is shared through an agent) above.
 """
 
 from __future__ import annotations
@@ -44,17 +45,37 @@ from app.agent_loop_lib.modules.providers.skills.governor import (
     ManualReviewGovernor,
     SkillGovernor,
 )
-from app.agent_loop_lib.modules.providers.skills.manager import SkillManager, SkillManagerConfig
+from app.agent_loop_lib.modules.providers.skills.manager import (
+    SkillManager,
+    SkillManagerConfig,
+)
 from app.agent_loop_lib.modules.providers.skills.validator import SkillValidator
 from app.agents.agent_loop.skills.audit_governor import AuditGovernor
-from app.agents.agent_loop.skills.builtin_seeder import SEED_IDENTITY, BuiltinSkillSeeder
-from app.agents.agent_loop.skills.graph_store import GraphSkillStore
+from app.agents.agent_loop.skills.builtin_seeder import (
+    SEED_IDENTITY,
+    BuiltinSkillSeeder,
+)
+from app.agents.agent_loop.skills.graph_store import (
+    GraphSkillStore,
+    SharedSkillRights,
+    SkillVisibility,
+)
 from app.agents.agent_loop.skills.graph_tracker import GraphUsageTracker
+from app.agents.agent_loop.skills.offer import skill_viewers
 from app.agents.agent_loop.skills.semantic_index import SemanticSkillIndex
 from app.core.org_jobs import for_each_org
+from app.utils.env_flags import (
+    PIPESHUB_SKILLS_AUTO_APPROVE,
+    PIPESHUB_SKILLS_LEARNING_ENABLED,
+    PIPESHUB_SKILLS_WRITE_APPROVAL,
+    env_flag,
+)
 from app.utils.logging_fields import log_event, log_once
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from app.agent_loop_lib.modules.providers.skills.base import SkillProvenance
     from app.agent_loop_lib.transport.registry import TransportRegistry
     from app.agents.agent_loop.context import AgentContext
     from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
@@ -70,6 +91,7 @@ __all__ = [
     "reset_builtin_reconcile_state",
     "build_runtime_skill_manager",
     "build_management_skill_manager",
+    "runtime_visibility",
 ]
 
 logger = logging.getLogger(__name__)
@@ -86,18 +108,14 @@ _reconciled_orgs: dict[str, tuple[tuple[str, str], ...]] = {}
 _reconcile_tasks: dict[str, asyncio.Task] = {}
 
 
-def _env_bool(name: str, default: bool) -> bool:
-    return os.getenv(name, str(default)).strip().lower() == "true"
-
-
 def skills_manager_config() -> SkillManagerConfig:
     """Env-driven config, identical for both profiles — governance/limits
     are an org/deployment policy, not something that should vary between
     "the agent this turn" and "the management UI"."""
     return SkillManagerConfig(
-        auto_approve=_env_bool("PIPESHUB_SKILLS_AUTO_APPROVE", False),
-        write_approval=_env_bool("PIPESHUB_SKILLS_WRITE_APPROVAL", True),
-        learning_enabled=_env_bool("PIPESHUB_SKILLS_LEARNING_ENABLED", False),
+        auto_approve=env_flag(PIPESHUB_SKILLS_AUTO_APPROVE),
+        write_approval=env_flag(PIPESHUB_SKILLS_WRITE_APPROVAL),
+        learning_enabled=env_flag(PIPESHUB_SKILLS_LEARNING_ENABLED),
         catalog_render_limit=int(os.getenv("PIPESHUB_SKILLS_CATALOG_RENDER_LIMIT", "40")),
     )
 
@@ -155,7 +173,9 @@ async def _reconcile(graph_provider: "IGraphDBProvider", org_id: str) -> None:
     seeder = get_builtin_seeder()
     if seeder is None or _is_reconciled(org_id, seeder):
         return
-    seed_store = GraphSkillStore(graph_provider, org_id, SEED_IDENTITY)
+    seed_store = GraphSkillStore(
+        graph_provider, org_id, SEED_IDENTITY, visibility=SkillVisibility.everyone(), allow_builtin_writes=True,
+    )
     try:
         settled = await seeder.sync(seed_store)
     except Exception:
@@ -247,9 +267,13 @@ async def _build_manager(
     *,
     retrieval_service: Any,
     extractor_transport: "TransportRegistry | None",
-    visibility_scope: str | None = None,
+    visibility: SkillVisibility,
+    rights: SharedSkillRights | None = None,
+    provenance: Callable[[], SkillProvenance] | None = None,
 ) -> SkillManager:
-    store = GraphSkillStore(graph_provider, org_id, user_id, visibility_scope=visibility_scope)
+    store = GraphSkillStore(
+        graph_provider, org_id, user_id, visibility=visibility, rights=rights, provenance=provenance,
+    )
     index = SemanticSkillIndex(retrieval_service)
     tracker = GraphUsageTracker(graph_provider, org_id, user_id)
     extractor = None
@@ -268,14 +292,21 @@ async def _build_manager(
     return manager
 
 
+def runtime_visibility(context: "AgentContext") -> SkillVisibility:
+    """The same on both loops: the durable worker fills `AgentContext` as the query service does."""
+    return SkillVisibility.of(skill_viewers(context), shared=context.agent_skills or ())
+
+
 async def build_runtime_skill_manager(
     context: "AgentContext", transport_registry: "TransportRegistry",
+    *, provenance: "Callable[[], SkillProvenance] | None" = None,
 ) -> SkillManager | None:
     """Full profile for the agent loop. `None` when this request has no
     graph provider wired — the store hard-depends on `IGraphDBProvider`,
     so skills are unavailable rather than silently degraded to some other
     backend. Callers must check for `None` and skip the rest of the
-    skills wiring."""
+    skills wiring. `provenance`: the run every write is stamped with (a
+    durable run's label and conversation, FOLLOWUPS1-1)."""
     if context.graph_provider is None:
         if log_once("agent_wiring.skills_no_graph_provider"):
             log_event(logger, "skills.unavailable", level=logging.WARNING, reason="no_graph_provider")
@@ -286,7 +317,8 @@ async def build_runtime_skill_manager(
         context.graph_provider, context.org_id, context.user_id, config,
         retrieval_service=context.retrieval_service,
         extractor_transport=transport_registry,
-        visibility_scope=None,
+        visibility=runtime_visibility(context),
+        provenance=provenance,
     )
     schedule_builtin_skill_reconcile(context.graph_provider, context.org_id)
     return manager
@@ -297,9 +329,13 @@ async def build_management_skill_manager(
     org_id: str,
     user_id: str,
     retrieval_service: Any,
+    *,
+    visibility: SkillVisibility | None = None,
+    rights: SharedSkillRights | None = None,
 ) -> SkillManager:
     """Management profile for the REST API: creator-scoped reads (see
-    `GraphSkillStore.visibility_scope`), no learning-loop extractor, no
+    `SkillVisibility`; the routes widen them to the caller's team and org
+    commands), no learning-loop extractor, no
     builtin-pack seeding side effect. Never returns `None` — routes call
     this only once `graph_provider` is already known to exist (same
     `get_services()` guard every other agent route uses)."""
@@ -308,5 +344,6 @@ async def build_management_skill_manager(
         graph_provider, org_id, user_id, config,
         retrieval_service=retrieval_service,
         extractor_transport=None,
-        visibility_scope=user_id,
+        visibility=visibility or SkillVisibility.of([user_id]),
+        rights=rights,
     )

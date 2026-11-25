@@ -43,12 +43,13 @@ class TestCreateLLMFromConfig:
         }
 
         with patch(
-            "app.modules.parsers.pdf.vlm_ocr_strategy.get_generator_model",
+            "app.modules.parsers.pdf.vlm_ocr_strategy.build_chat_model",
+            new_callable=AsyncMock,
             return_value=MagicMock(),
         ) as mock_get:
-            result = strategy._create_llm_from_config(llm_config)
+            result = asyncio.run(strategy._create_llm_from_config(llm_config))
             # Should use first model name from the comma-separated list
-            mock_get.assert_called_once_with("openai", llm_config, "gpt-4o", sdk_retries=0)
+            mock_get.assert_awaited_once_with(strategy.config, "openai", llm_config, "gpt-4o", sdk_retries=0)
 
         assert strategy.llm_config is llm_config
 
@@ -64,11 +65,12 @@ class TestCreateLLMFromConfig:
         }
 
         with patch(
-            "app.modules.parsers.pdf.vlm_ocr_strategy.get_generator_model",
+            "app.modules.parsers.pdf.vlm_ocr_strategy.build_chat_model",
+            new_callable=AsyncMock,
             return_value=MagicMock(),
         ) as mock_get:
-            strategy._create_llm_from_config(llm_config)
-            mock_get.assert_called_once_with("anthropic", llm_config, "claude-3-opus", sdk_retries=0)
+            asyncio.run(strategy._create_llm_from_config(llm_config))
+            mock_get.assert_awaited_once_with(strategy.config, "anthropic", llm_config, "claude-3-opus", sdk_retries=0)
 
     def test_create_llm_with_no_model_string(self):
         """Creates LLM from config when model string is absent."""
@@ -82,11 +84,12 @@ class TestCreateLLMFromConfig:
         }
 
         with patch(
-            "app.modules.parsers.pdf.vlm_ocr_strategy.get_generator_model",
+            "app.modules.parsers.pdf.vlm_ocr_strategy.build_chat_model",
+            new_callable=AsyncMock,
             return_value=MagicMock(),
         ) as mock_get:
-            strategy._create_llm_from_config(llm_config)
-            mock_get.assert_called_once_with("openai", llm_config, None, sdk_retries=0)
+            asyncio.run(strategy._create_llm_from_config(llm_config))
+            mock_get.assert_awaited_once_with(strategy.config, "openai", llm_config, None, sdk_retries=0)
 
     def test_create_llm_with_empty_model_string(self):
         """Creates LLM from config when model string is empty."""
@@ -100,12 +103,13 @@ class TestCreateLLMFromConfig:
         }
 
         with patch(
-            "app.modules.parsers.pdf.vlm_ocr_strategy.get_generator_model",
+            "app.modules.parsers.pdf.vlm_ocr_strategy.build_chat_model",
+            new_callable=AsyncMock,
             return_value=MagicMock(),
         ) as mock_get:
-            strategy._create_llm_from_config(llm_config)
+            asyncio.run(strategy._create_llm_from_config(llm_config))
             # Empty string is falsy, so model_name should be None
-            mock_get.assert_called_once_with("openai", llm_config, None, sdk_retries=0)
+            mock_get.assert_awaited_once_with(strategy.config, "openai", llm_config, None, sdk_retries=0)
 
     def test_create_llm_with_no_configuration_key(self):
         """Creates LLM from config when configuration key is missing entirely."""
@@ -118,11 +122,12 @@ class TestCreateLLMFromConfig:
         }
 
         with patch(
-            "app.modules.parsers.pdf.vlm_ocr_strategy.get_generator_model",
+            "app.modules.parsers.pdf.vlm_ocr_strategy.build_chat_model",
+            new_callable=AsyncMock,
             return_value=MagicMock(),
         ) as mock_get:
-            strategy._create_llm_from_config(llm_config)
-            mock_get.assert_called_once_with("openai", llm_config, None, sdk_retries=0)
+            asyncio.run(strategy._create_llm_from_config(llm_config))
+            mock_get.assert_awaited_once_with(strategy.config, "openai", llm_config, None, sdk_retries=0)
 
     def test_create_llm_model_string_with_whitespace_entries(self):
         """Model string with empty entries after splitting filters them out."""
@@ -136,11 +141,12 @@ class TestCreateLLMFromConfig:
         }
 
         with patch(
-            "app.modules.parsers.pdf.vlm_ocr_strategy.get_generator_model",
+            "app.modules.parsers.pdf.vlm_ocr_strategy.build_chat_model",
+            new_callable=AsyncMock,
             return_value=MagicMock(),
         ) as mock_get:
-            strategy._create_llm_from_config(llm_config)
-            mock_get.assert_called_once_with("openai", llm_config, "gpt-4o", sdk_retries=0)
+            asyncio.run(strategy._create_llm_from_config(llm_config))
+            mock_get.assert_awaited_once_with(strategy.config, "openai", llm_config, "gpt-4o", sdk_retries=0)
 
 
 # ============================================================================

@@ -46,6 +46,9 @@ import * as pictureRepo from '../../../src/libs/repositories/picture';
 import * as oauthAppRepo from '../../../src/libs/repositories/oauth-app';
 import * as seam from '../../../src/libs/services/structured-logging';
 import { FakeBackend, Reply } from '../tokens_manager/routes/connectors-http-harness';
+import { registerUpstreams } from '../../../src/libs/http/upstream-call';
+import { registerAppUpstreams } from '../../../src/modules/tokens_manager/config/config';
+import { recordOrgHarnessReader } from '../../../src/modules/agent-harness/config';
 
 const JWT_SECRET = 'n4c-audit-jwt-secret';
 const SCOPED_SECRET = 'n4c-audit-scoped-secret';
@@ -68,6 +71,18 @@ const TEAM_NAME = 'Platform Guild';
 type Row = Record<string, any>;
 
 describe('org, team and service-account audit lines (HTTP)', function () {
+  // An upstream suite: it runs as a release without the agent harness does (compatibility profile, Labs off).
+  let savedHardened: string | undefined;
+  beforeEach(() => {
+    savedHardened = process.env.PIPESHUB_HARDENED;
+    delete process.env.PIPESHUB_HARDENED;
+    recordOrgHarnessReader(() => Promise.resolve(false));
+  });
+  afterEach(() => {
+    if (savedHardened === undefined) delete process.env.PIPESHUB_HARDENED;
+    else process.env.PIPESHUB_HARDENED = savedHardened;
+  });
+
   this.timeout(20000);
   const backend = new FakeBackend();
   let server: Server;
@@ -183,7 +198,7 @@ describe('org, team and service-account audit lines (HTTP)', function () {
       getLiveFields: async (o: string, id: string) => liveSa(o, id),
       enableServiceAccount: async (o: string, id: string) => { const u = liveSa(o, id); if (!u || restoreInFlight) return false; u.isDisabled = false; return true; },
       updateServiceAccount: async (o: string, id: string, c: Row) => { const u = liveSa(o, id); if (!u) return false; Object.assign(u, c); return true; },
-      markDeleted: async (o: string, id: string) => { const u = live(o, id); if (u) u.isDeleted = true; },
+      markDeleted: async (o: string, id: string, extra?: Row) => { const u = users.find((x) => x._id === id && x.orgId === o); if (!u || (extra?.onlyMember && u.role !== 'member')) return null; u.isDeleted = true; return { ...u }; },
     }));
     sinon.stub(groupRepo, 'getGroupRepository').returns(fake('group', {
       addToEveryone: async () => undefined,
@@ -206,6 +221,7 @@ describe('org, team and service-account audit lines (HTTP)', function () {
     }));
 
     const config: Row = { jwtSecret: JWT_SECRET, scopedJwtSecret: SCOPED_SECRET, connectorBackend: backend.url, cmBackend: backend.url, frontendUrl: 'http://app.n4c.test', maxOAuthClientRequestsPerMinute: 10000 };
+    registerAppUpstreams(config);
     const logger = Logger.getInstance({ service: 'UserManagement' });
     const events = { start: async () => undefined, stop: async () => undefined, publishEvent: async () => { if (publishFails) throw new Error('outbox down'); } };
     const oauthTokens = {
@@ -246,6 +262,7 @@ describe('org, team and service-account audit lines (HTTP)', function () {
 
   afterEach(async () => {
     sinon.restore();
+    registerUpstreams({});
     await new Promise((resolve) => server.close(resolve));
   });
 

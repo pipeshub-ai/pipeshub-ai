@@ -1,0 +1,20 @@
+{
+  "$comment": "Releases no PipesHub lock may resolve to (scripts/supply_chain.py check, rule DENYLIST; SEC-SC-09). A direct requirement in backend/python/pyproject.toml must also bound these out. Add an entry the day a release is known bad; never remove one. status: confirmed (PipesHub saw it, or its publisher confirmed it) or verify (a public report not yet checked); both are denied, and a verify entry becomes confirmed once checked.",
+  "python": [
+    {
+      "name": "litellm",
+      "versions": ["1.107.0"],
+      "status": "confirmed",
+      "reason": "Shipped a credential stealer (cook.pth / cook.py posting to www.litellm.dev); reached a venv on the PipesHub dev host through opik's litellm>=1.79.2.",
+      "source": "PipesHub incident 2026-10-23; the release is no longer on PyPI"
+    },
+    {
+      "name": "litellm",
+      "versions": ["1.82.7", "1.82.8"],
+      "status": "verify",
+      "reason": "Publicly reported as compromised releases carrying a credential-stealing .pth file (March 2026); not named in the PipesHub incident memo.",
+      "source": "public reports; both are absent from PyPI's litellm release list (checked 2026-11-02)"
+    }
+  ],
+  "npm": []
+}

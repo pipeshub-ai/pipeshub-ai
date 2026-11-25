@@ -1,0 +1,30 @@
+{
+  "description": "The RUN_ERROR codes Node ends a run with when a dependency is degraded (QA-17, C-1): the web app words each in the reader's language (frontend harness-errors.ts runErrorText, every locale) instead of showing Node's English message. A failure the worker answers (a model call the port classified) ends RUN_FINISHED with its error answer, not here. The degraded-dependency fault suite fails on a RUN_ERROR whose code is not listed.",
+  "codes": [
+    "not_started",
+    "no_compatible_worker",
+    "deadline_exceeded",
+    "quarantined",
+    "capability_lost",
+    "model_no_longer_configured",
+    "binary_mismatch",
+    "candidate_image",
+    "engine_unavailable",
+    "engine_image_missing",
+    "engine_contract_unsupported",
+    "gvisor_unavailable",
+    "image_untrusted",
+    "sandbox_unavailable",
+    "store_unavailable",
+    "engine_tools_unreachable",
+    "event_flood",
+    "egress_volume_exceeded",
+    "secret_blocked",
+    "worker_lost",
+    "mcp_tool_withdrawn",
+    "provider_unavailable",
+    "rate_limited",
+    "operator_stopped",
+    "out_of_memory"
+  ]
+}

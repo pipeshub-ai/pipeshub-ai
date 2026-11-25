@@ -63,15 +63,19 @@ NODE_APP = (
 
 PYTHON_APP = (
     f"{PYTHON}/app/**",
+    # The agent harness's packages beside app/ (the kernel, the engine adapters).
+    f"{PYTHON}/harness_core/**",
+    f"{PYTHON}/harness_engines/**",
     f"{PYTHON}/tests/**",
     f"{PYTHON}/pyproject.toml",
+    f"{PYTHON}/requirements/**",
     f"{PYTHON}/pytest.ini",
     f"{PYTHON}/.coveragerc",
     # Generated from app/config/file_types.py: the Python parity test is what catches a hand edit.
     "backend/nodejs/apps/src/modules/storage/mimetypes/file-types.generated.ts",
 )
 
-PYTHON_PACKAGING = (f"{PYTHON}/pyproject.toml", f"{PYTHON}/pytest.ini")
+PYTHON_PACKAGING = (f"{PYTHON}/pyproject.toml", f"{PYTHON}/pytest.ini", f"{PYTHON}/requirements/**")
 COMPOSE = "deployment/docker-compose"
 
 # Checks decided by path alone.
@@ -85,6 +89,8 @@ CHECKS: dict[str, tuple[str, ...]] = {
         "frontend/app/(main)/knowledge-base/sort-fields.json",
         "scripts/unit_shards.py",
         "scripts/unit_shard_durations.json",
+        # The engine image and licence tooling whose tests the Python unit job runs.
+        "scripts/engines/**",
         # test_knob_passthrough.py reads these; capacity_blank_env_test.sh runs in the services shard.
         f"{COMPOSE}/docker-compose.yml",
         f"{COMPOSE}/env.template",
@@ -156,6 +162,7 @@ INTEGRATION_HELPERS = (
     f"{PYTHON}/tests/unit/connectors/sources/test_connector_workflow_integration.py",
     f"{PYTHON}/tests/unit/modules/entity_resolution/conftest.py",
     f"{PYTHON}/tests/unit/modules/indexing/test_entity_index_rebuild.py",
+    f"{PYTHON}/tests/unit/agent_loop_lib/sandbox/live_fakes.py",
     f"{PYTHON}/tests/unit/modules/pipeline/fakes.py",
     f"{PYTHON}/tests/unit/modules/transformers/test_entity_vectorstore_delete.py",
     f"{PYTHON}/tests/unit/services/artifact_registry/fakes.py",
@@ -178,6 +185,27 @@ INTEGRATION_HELPERS = (
     f"{PYTHON}/tests/permissions/kh_layer.py",
     f"{PYTHON}/tests/permissions/kh_worlds.py",
     f"{PYTHON}/tests/permissions/scenarios/**",
+    # The harness lanes the integration suites drive (the durable stack, the tool matrix, the egress stack).
+    f"{PYTHON}/tests/harness_replay/search.py",
+    f"{PYTHON}/tests/harness_replay/world.py",
+    f"{PYTHON}/tests/unit/agent_loop_lib/sandbox/contract/conftest.py",
+    f"{PYTHON}/tests/unit/harness/access/budget_node.py",
+    f"{PYTHON}/tests/unit/harness/access/support.py",
+    f"{PYTHON}/tests/unit/harness/credentials/binding_support.py",
+    f"{PYTHON}/tests/unit/harness/credentials/support.py",
+    f"{PYTHON}/tests/unit/harness/credentials/test_binding_migration.py",
+    f"{PYTHON}/tests/unit/harness/engines/durable_stack.py",
+    f"{PYTHON}/tests/unit/harness/engines/lane_releases.py",
+    f"{PYTHON}/tests/unit/harness/engines/matrix/assembly.py",
+    f"{PYTHON}/tests/unit/harness/engines/matrix/org.py",
+    f"{PYTHON}/tests/unit/harness/engines/matrix/services.py",
+    f"{PYTHON}/tests/unit/harness/engines/matrix/vendors.py",
+    f"{PYTHON}/tests/unit/harness/engines/real_stack.py",
+    f"{PYTHON}/tests/unit/harness/gateway/binding_keys.py",
+    f"{PYTHON}/tests/unit/harness/sandbox_broker/conftest.py",
+    f"{PYTHON}/tests/unit/harness/sandbox_broker/egress_stack.py",
+    f"{PYTHON}/tests/unit/harness/test_node_journal_contract.py",
+    f"{PYTHON}/tests/unit/harness/tool_identity/support.py",
 )
 
 # backend-matrix.yml's Python suites. Their tests import more than their own
@@ -216,6 +244,17 @@ CHECKS["redis_cluster"] = (
         f"{COMPOSE}/docker-compose.integration.redis-cluster.yml",
         ".github/workflows/unit-test.yml",
     )
+)
+
+# unit-test.yml's sandbox-live job: builds the sandbox image and runs the
+# Docker-marked tests against a real daemon, which the unit shards skip.
+CHECKS["sandbox_live"] = (
+    f"{PYTHON}/app/agent_loop_lib/sandbox/**",
+    f"{PYTHON}/app/sandbox/**",
+    f"{PYTHON}/tests/unit/agent_loop_lib/sandbox/test_docker_live.py",
+    f"{PYTHON}/tests/unit/sandbox/test_docker_proxy_live.py",
+    "deployment/sandbox/**",
+    ".github/workflows/unit-test.yml",
 )
 
 # integration-tests.yml's helper unit tests (mocks only). The shards run them
@@ -322,7 +361,7 @@ CONNECTOR_CODE_MARKERS: dict[str, tuple[str, ...]] = {
     **{
         name: ()
         for name in (
-            "airtable", "asana", "bitbucket", "box", "clickhouse", "clickup", "databricks", "discord",
+            "airtable", "asana", "bitbucket", "box", "clickhouse", "clickup", "cloudflare_r2", "databricks", "discord",
             "dropbox_individual", "drupal_wiki", "evernote", "freshdesk", "hackernews", "lattice", "linkedin",
             "lumos", "monday", "pagerduty", "posthog", "redshift", "trello", "workday",
             "zoom",

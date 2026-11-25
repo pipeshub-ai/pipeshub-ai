@@ -23,7 +23,7 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
       const r = await copyAndCompare({ org: docs.org, 'org-logos': docs['org-logos'] });
       expect(r.diffs.org).to.deep.equal([]);
       expect(r.diffs['org-logos']).to.deep.equal([]);
-      expect(r.inserted.org['identity.orgs']).to.equal(2);
+      expect(r.inserted.org!['identity.orgs']).to.equal(2);
       expect(await copyAgainInserts({ org: docs.org, 'org-logos': docs['org-logos'] })).to.equal(0);
     });
   });

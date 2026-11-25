@@ -3978,3 +3978,11 @@ Tushar's Google Drive server failed every sign-in.
   - `invalid_client` on an administrator's app: "its client ID or client secret is wrong".
   - On PipesHub's own registration: "connect again, and PipesHub registers a new one".
 - **Prefix hint:** templates can set `client_secret_prefix`; the Google ones set `GOCSPX-`. The Edit panel shows "Starts with GOCSPX-…" under Client Secret, and an amber warning when the entered or revealed secret lacks the prefix. Checked in the browser.
+
+## A token field we can't parse (2026-11-20)
+
+- **Before:** a token answer or a saved record whose field had the wrong type (an `expires_in` that is text, a `scope` list, an `access_token` number) raised pydantic's `ValidationError`. Nothing caught it as an OAuth failure. Each refresh logged it as `internal` ERROR with a stack, `/oauth/refresh` answered 500, and the sign-in callback answered 500 instead of its `success: false` body. An `expires_in` past `datetime`'s range was saved, and then every scan failed with `OverflowError`.
+- **Now:** `oauth_client.parse_tokens` is the one way MCP builds `OAuthTokens` from a dict. It raises `MCPMalformedTokenError`, an `MCPOAuthError` tagged `malformed_token`, which names the field and never its value. The refresh line is `misconfigured`: ERROR once an hour per sign-in, then DEBUG. There is no strike toward signing out. `/oauth/refresh` answers 502, and the sign-in window says the provider sent an invalid token.
+  - `expires_in` is bounded at `oauth_errors.MAX_TOKEN_LIFETIME_S`, the bound connectors use. The bound is in `parse_tokens`, not on the model, because OpenAPI toolsets load their saved credentials with the same model.
+  - A fractional `expires_in` is accepted and its fraction dropped.
+  - The background refresh no longer skips a saved record it can't parse at DEBUG: it logs `credential_refresh.check_failed`, once an hour.

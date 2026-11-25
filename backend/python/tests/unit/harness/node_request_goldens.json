@@ -1,0 +1,7392 @@
+{
+ "audit.absent": {
+  "clients": [
+   {
+    "baseUrl": "http://node.internal:3000",
+    "followRedirects": false,
+    "limits": false,
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    }
+   }
+  ],
+  "logs": [],
+  "outcome": {
+   "returned": null
+  },
+  "requests": [
+   {
+    "body": null,
+    "headers": {
+     "accept": "*/*",
+     "authorization": "Bearer <worker>",
+     "connection": "keep-alive",
+     "host": "node.internal:3000"
+    },
+    "method": "GET",
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    },
+    "url": "http://node.internal:3000/api/v1/agent-harness/internal/runs/run%2F1/audit?orgId=org-1"
+   }
+  ]
+ },
+ "audit.ok": {
+  "clients": [
+   {
+    "baseUrl": "http://node.internal:3000",
+    "followRedirects": false,
+    "limits": false,
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    }
+   }
+  ],
+  "logs": [],
+  "outcome": {
+   "returned": {
+    "ended": false,
+    "grant": {
+     "route_ids": [
+      "r1"
+     ],
+     "tool_ids": [
+      "t1",
+      "t2"
+     ]
+    },
+    "intents": [
+     {
+      "attempt_id": "att-1",
+      "invocation_id": "inv-1",
+      "org_id": "org-1",
+      "run_id": "run/1",
+      "source": "effect_log",
+      "subject": "t1"
+     }
+    ],
+    "ledger": null,
+    "usage": []
+   }
+  },
+  "requests": [
+   {
+    "body": null,
+    "headers": {
+     "accept": "*/*",
+     "authorization": "Bearer <worker>",
+     "connection": "keep-alive",
+     "host": "node.internal:3000"
+    },
+    "method": "GET",
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    },
+    "url": "http://node.internal:3000/api/v1/agent-harness/internal/runs/run%2F1/audit?orgId=org-1"
+   }
+  ]
+ },
+ "audit.server_error": {
+  "clients": [
+   {
+    "baseUrl": "http://node.internal:3000",
+    "followRedirects": false,
+    "limits": false,
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    }
+   }
+  ],
+  "logs": [],
+  "outcome": {
+   "raised": {
+    "attrs": {
+     "reason_code": "audit_source_unavailable"
+    },
+    "cause": null,
+    "str": "Node answered 502",
+    "type": "app.harness.audit.node_source.AuditSourceUnavailable"
+   }
+  },
+  "requests": [
+   {
+    "body": null,
+    "headers": {
+     "accept": "*/*",
+     "authorization": "Bearer <worker>",
+     "connection": "keep-alive",
+     "host": "node.internal:3000"
+    },
+    "method": "GET",
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    },
+    "url": "http://node.internal:3000/api/v1/agent-harness/internal/runs/run%2F1/audit?orgId=org-1"
+   }
+  ]
+ },
+ "audit.unreachable": {
+  "clients": [
+   {
+    "baseUrl": "http://node.internal:3000",
+    "followRedirects": false,
+    "limits": false,
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    }
+   }
+  ],
+  "logs": [],
+  "outcome": {
+   "raised": {
+    "attrs": {
+     "reason_code": "audit_source_unavailable"
+    },
+    "cause": "ConnectError",
+    "str": "Node unreachable: ConnectError",
+    "type": "app.harness.audit.node_source.AuditSourceUnavailable"
+   }
+  },
+  "requests": [
+   {
+    "body": null,
+    "headers": {
+     "accept": "*/*",
+     "authorization": "Bearer <worker>",
+     "connection": "keep-alive",
+     "host": "node.internal:3000"
+    },
+    "method": "GET",
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    },
+    "url": "http://node.internal:3000/api/v1/agent-harness/internal/runs/run%2F1/audit?orgId=org-1"
+   }
+  ]
+ },
+ "budget.attempt.ok": {
+  "clients": [
+   {
+    "baseUrl": "http://node.internal:3000",
+    "followRedirects": false,
+    "limits": false,
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    }
+   }
+  ],
+  "logs": [
+   {
+    "event": "journal.node_capabilities_unreadable",
+    "fields": {
+     "attemptId": "att-1",
+     "fence": 2,
+     "orgId": "org-1",
+     "reasonCode": "node_capabilities_invalid",
+     "runId": "run/1"
+    },
+    "level": "WARNING",
+    "logger": "app.harness.journal_node"
+   },
+   {
+    "event": "journal.claim",
+    "fields": {
+     "attempt": 2,
+     "attemptId": "att-1",
+     "fence": 2,
+     "lastSeq": 3,
+     "leaseMs": 60000,
+     "orgId": "org-1",
+     "resumed": false,
+     "role": "dispatched",
+     "runId": "run/1",
+     "sessionId": "ses-1"
+    },
+    "level": "DEBUG",
+    "logger": "app.harness.journal_node"
+   }
+  ],
+  "outcome": {
+   "returned": [
+    {
+     "account": {
+      "run_id": "run/1",
+      "tenant": "org-1"
+     },
+     "expires_at": "2026-09-21T14:13:20+00:00",
+     "granted": {
+      "tokens": 100,
+      "usd_micros": 500
+     },
+     "key": "res/1",
+     "requested": {
+      "tokens": 100,
+      "usd_micros": 500
+     },
+     "state": "open"
+    },
+    {
+     "available": {
+      "tokens": 900,
+      "usd_micros": null
+     },
+     "budget_scope": null,
+     "committed": {
+      "tokens": 100,
+      "usd_micros": 500
+     },
+     "estimated": 0,
+     "exhausted": false,
+     "reserved": {
+      "tokens": 100,
+      "usd_micros": 500
+     },
+     "used": {
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "input_tokens": 0,
+      "output_tokens": 0
+     }
+    }
+   ]
+  },
+  "requests": [
+   {
+    "body": {
+     "leaseDurationMs": 60000,
+     "role": "dispatched",
+     "workerCapabilities": {
+      "features": [
+       "agent_code",
+       "approval_edits",
+       "assistant_agent",
+       "caller",
+       "chat",
+       "child_asks",
+       "child_models",
+       "child_runs",
+       "code_task_tool",
+       "command_input",
+       "compact_request",
+       "deep_mode",
+       "deliverable_pin",
+       "descriptor_pins",
+       "engine_inputs",
+       "environment_pin",
+       "executor_engine",
+       "governed_memory",
+       "inherited_grants",
+       "inherited_labels",
+       "keyword_search_budget",
+       "knowledge_selection",
+       "mcp_carried_pins",
+       "mcp_first_use",
+       "model_fallback",
+       "output_locale",
+       "region_aware",
+       "release_pin",
+       "resolved_config",
+       "run_gates",
+       "run_surface",
+       "sandbox_command",
+       "session_roles",
+       "steering",
+       "steering_by",
+       "steering_references",
+       "trace_content",
+       "trigger_context",
+       "turn_labels",
+       "vendor_signin",
+       "workspace_forks"
+      ],
+      "foldVersion": 8,
+      "harnessMajor": 2,
+      "supportedSchemaVersions": [
+       2,
+       3
+      ]
+     },
+     "workerId": "w1"
+    },
+    "headers": {
+     "accept": "*/*",
+     "authorization": "Bearer <worker>",
+     "connection": "keep-alive",
+     "content-length": "824",
+     "content-type": "application/json",
+     "host": "node.internal:3000"
+    },
+    "method": "POST",
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    },
+    "url": "http://node.internal:3000/api/v1/agent-harness/internal/runs/claim"
+   },
+   {
+    "body": {
+     "attemptId": "att-1",
+     "fence": 2,
+     "key": "res/1",
+     "minimum": {
+      "tokens": 1,
+      "usdMicros": 1
+     },
+     "requested": {
+      "tokens": 100,
+      "usdMicros": 500
+     },
+     "ttlS": 30
+    },
+    "headers": {
+     "accept": "*/*",
+     "authorization": "Bearer <attempt>",
+     "connection": "keep-alive",
+     "content-length": "135",
+     "content-type": "application/json",
+     "host": "node.internal:3000"
+    },
+    "method": "POST",
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    },
+    "url": "http://node.internal:3000/api/v1/agent-harness/internal/runs/run%2F1/budget/reservations"
+   },
+   {
+    "body": null,
+    "headers": {
+     "accept": "*/*",
+     "authorization": "Bearer <attempt>",
+     "connection": "keep-alive",
+     "host": "node.internal:3000"
+    },
+    "method": "GET",
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    },
+    "url": "http://node.internal:3000/api/v1/agent-harness/internal/runs/run%2F1/budget?attemptId=att-1&fence=2"
+   }
+  ]
+ },
+ "budget.attempt.unreachable": {
+  "clients": [
+   {
+    "baseUrl": "http://node.internal:3000",
+    "followRedirects": false,
+    "limits": false,
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    }
+   }
+  ],
+  "logs": [
+   {
+    "event": "journal.node_capabilities_unreadable",
+    "fields": {
+     "attemptId": "att-1",
+     "fence": 2,
+     "orgId": "org-1",
+     "reasonCode": "node_capabilities_invalid",
+     "runId": "run/1"
+    },
+    "level": "WARNING",
+    "logger": "app.harness.journal_node"
+   },
+   {
+    "event": "journal.claim",
+    "fields": {
+     "attempt": 2,
+     "attemptId": "att-1",
+     "fence": 2,
+     "lastSeq": 3,
+     "leaseMs": 60000,
+     "orgId": "org-1",
+     "resumed": false,
+     "role": "dispatched",
+     "runId": "run/1",
+     "sessionId": "ses-1"
+    },
+    "level": "DEBUG",
+    "logger": "app.harness.journal_node"
+   },
+   {
+    "event": "journal.unreachable",
+    "fields": {
+     "attemptId": "att-1",
+     "errorType": "ConnectError",
+     "fence": 2,
+     "operation": "budget",
+     "orgId": "org-1",
+     "runId": "run/1"
+    },
+    "level": "WARNING",
+    "logger": "app.harness.journal_node"
+   }
+  ],
+  "outcome": {
+   "raised": {
+    "attrs": {
+     "detail": "node_unreachable",
+     "http_status": 503,
+     "reason_code": "budget_unavailable"
+    },
+    "cause": "JournalUnavailable",
+    "str": "Node is unreachable",
+    "type": "harness_core.budget.errors.BudgetUnavailable"
+   }
+  },
+  "requests": [
+   {
+    "body": {
+     "leaseDurationMs": 60000,
+     "role": "dispatched",
+     "workerCapabilities": {
+      "features": [
+       "agent_code",
+       "approval_edits",
+       "assistant_agent",
+       "caller",
+       "chat",
+       "child_asks",
+       "child_models",
+       "child_runs",
+       "code_task_tool",
+       "command_input",
+       "compact_request",
+       "deep_mode",
+       "deliverable_pin",
+       "descriptor_pins",
+       "engine_inputs",
+       "environment_pin",
+       "executor_engine",
+       "governed_memory",
+       "inherited_grants",
+       "inherited_labels",
+       "keyword_search_budget",
+       "knowledge_selection",
+       "mcp_carried_pins",
+       "mcp_first_use",
+       "model_fallback",
+       "output_locale",
+       "region_aware",
+       "release_pin",
+       "resolved_config",
+       "run_gates",
+       "run_surface",
+       "sandbox_command",
+       "session_roles",
+       "steering",
+       "steering_by",
+       "steering_references",
+       "trace_content",
+       "trigger_context",
+       "turn_labels",
+       "vendor_signin",
+       "workspace_forks"
+      ],
+      "foldVersion": 8,
+      "harnessMajor": 2,
+      "supportedSchemaVersions": [
+       2,
+       3
+      ]
+     },
+     "workerId": "w1"
+    },
+    "headers": {
+     "accept": "*/*",
+     "authorization": "Bearer <worker>",
+     "connection": "keep-alive",
+     "content-length": "824",
+     "content-type": "application/json",
+     "host": "node.internal:3000"
+    },
+    "method": "POST",
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    },
+    "url": "http://node.internal:3000/api/v1/agent-harness/internal/runs/claim"
+   },
+   {
+    "body": {
+     "attemptId": "att-1",
+     "fence": 2,
+     "key": "res/1",
+     "minimum": {
+      "tokens": 1,
+      "usdMicros": 1
+     },
+     "requested": {
+      "tokens": 100,
+      "usdMicros": 500
+     },
+     "ttlS": 30
+    },
+    "headers": {
+     "accept": "*/*",
+     "authorization": "Bearer <attempt>",
+     "connection": "keep-alive",
+     "content-length": "135",
+     "content-type": "application/json",
+     "host": "node.internal:3000"
+    },
+    "method": "POST",
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    },
+    "url": "http://node.internal:3000/api/v1/agent-harness/internal/runs/run%2F1/budget/reservations"
+   }
+  ]
+ },
+ "budget.ledger.commit.ok": {
+  "clients": [
+   {
+    "baseUrl": "http://node.internal:3000",
+    "followRedirects": false,
+    "limits": false,
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    }
+   }
+  ],
+  "logs": [],
+  "outcome": {
+   "returned": {
+    "charged": {
+     "tokens": 100,
+     "usd_micros": 500
+    },
+    "crossed": false,
+    "remaining": {
+     "available": {
+      "tokens": 900,
+      "usd_micros": null
+     },
+     "budget_scope": null,
+     "committed": {
+      "tokens": 100,
+      "usd_micros": 500
+     },
+     "estimated": 0,
+     "exhausted": false,
+     "reserved": {
+      "tokens": 100,
+      "usd_micros": 500
+     },
+     "used": {
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "input_tokens": 0,
+      "output_tokens": 0
+     }
+    },
+    "reservation": {
+     "account": {
+      "run_id": "run/1",
+      "tenant": "org-1"
+     },
+     "expires_at": "2026-09-21T14:13:20+00:00",
+     "granted": {
+      "tokens": 100,
+      "usd_micros": 500
+     },
+     "key": "res/1",
+     "requested": {
+      "tokens": 100,
+      "usd_micros": 500
+     },
+     "state": "open"
+    }
+   }
+  },
+  "requests": [
+   {
+    "body": {
+     "actual": {
+      "tokens": 80,
+      "usdMicros": 400
+     }
+    },
+    "headers": {
+     "accept": "*/*",
+     "authorization": "Bearer <run-token>",
+     "connection": "keep-alive",
+     "content-length": "40",
+     "content-type": "application/json",
+     "host": "node.internal:3000"
+    },
+    "method": "POST",
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    },
+    "url": "http://node.internal:3000/api/v1/agent-harness/internal/runs/run%2F1/budget/reservations/res%2F1/commit"
+   }
+  ]
+ },
+ "budget.ledger.commit.usage": {
+  "clients": [
+   {
+    "baseUrl": "http://node.internal:3000",
+    "followRedirects": false,
+    "limits": false,
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    }
+   }
+  ],
+  "logs": [],
+  "outcome": {
+   "returned": {
+    "charged": {
+     "tokens": 100,
+     "usd_micros": 500
+    },
+    "crossed": false,
+    "remaining": {
+     "available": {
+      "tokens": 900,
+      "usd_micros": null
+     },
+     "budget_scope": null,
+     "committed": {
+      "tokens": 100,
+      "usd_micros": 500
+     },
+     "estimated": 0,
+     "exhausted": false,
+     "reserved": {
+      "tokens": 100,
+      "usd_micros": 500
+     },
+     "used": {
+      "cache_read_tokens": 40,
+      "cache_write_tokens": 2,
+      "input_tokens": 70,
+      "output_tokens": 10
+     }
+    },
+    "reservation": {
+     "account": {
+      "run_id": "run/1",
+      "tenant": "org-1"
+     },
+     "expires_at": "2026-09-21T14:13:20+00:00",
+     "granted": {
+      "tokens": 100,
+      "usd_micros": 500
+     },
+     "key": "res/1",
+     "requested": {
+      "tokens": 100,
+      "usd_micros": 500
+     },
+     "state": "open"
+    }
+   }
+  },
+  "requests": [
+   {
+    "body": {
+     "actual": {
+      "tokens": 80,
+      "usdMicros": 400
+     },
+     "usage": {
+      "cacheReadTokens": 40,
+      "cacheWriteTokens": 2,
+      "inputTokens": 70,
+      "outputTokens": 10
+     }
+    },
+    "headers": {
+     "accept": "*/*",
+     "authorization": "Bearer <run-token>",
+     "connection": "keep-alive",
+     "content-length": "127",
+     "content-type": "application/json",
+     "host": "node.internal:3000"
+    },
+    "method": "POST",
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    },
+    "url": "http://node.internal:3000/api/v1/agent-harness/internal/runs/run%2F1/budget/reservations/res%2F1/commit"
+   }
+  ]
+ },
+ "budget.ledger.release.unavailable": {
+  "clients": [
+   {
+    "baseUrl": "http://node.internal:3000",
+    "followRedirects": false,
+    "limits": false,
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    }
+   }
+  ],
+  "logs": [],
+  "outcome": {
+   "raised": {
+    "attrs": {
+     "detail": "unavailable",
+     "http_status": 503,
+     "reason_code": "budget_unavailable"
+    },
+    "cause": null,
+    "str": "Node refused the budget operation",
+    "type": "harness_core.budget.errors.BudgetUnavailable"
+   }
+  },
+  "requests": [
+   {
+    "body": {},
+    "headers": {
+     "accept": "*/*",
+     "authorization": "Bearer <run-token>",
+     "connection": "keep-alive",
+     "content-length": "2",
+     "content-type": "application/json",
+     "host": "node.internal:3000"
+    },
+    "method": "POST",
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    },
+    "url": "http://node.internal:3000/api/v1/agent-harness/internal/runs/run%2F1/budget/reservations/res%2F1/release"
+   }
+  ]
+ },
+ "budget.ledger.remaining.malformed": {
+  "clients": [
+   {
+    "baseUrl": "http://node.internal:3000",
+    "followRedirects": false,
+    "limits": false,
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    }
+   }
+  ],
+  "logs": [],
+  "outcome": {
+   "raised": {
+    "attrs": {
+     "detail": "malformed_budget",
+     "http_status": 503,
+     "reason_code": "budget_unavailable"
+    },
+    "cause": "JSONDecodeError",
+    "str": "the budget answer is malformed",
+    "type": "harness_core.budget.errors.BudgetUnavailable"
+   }
+  },
+  "requests": [
+   {
+    "body": null,
+    "headers": {
+     "accept": "*/*",
+     "authorization": "Bearer <run-token>",
+     "connection": "keep-alive",
+     "host": "node.internal:3000"
+    },
+    "method": "GET",
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    },
+    "url": "http://node.internal:3000/api/v1/agent-harness/internal/runs/run%2F1/budget"
+   }
+  ]
+ },
+ "budget.ledger.remaining.ok": {
+  "clients": [
+   {
+    "baseUrl": "http://node.internal:3000",
+    "followRedirects": false,
+    "limits": false,
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    }
+   }
+  ],
+  "logs": [],
+  "outcome": {
+   "returned": {
+    "available": {
+     "tokens": 900,
+     "usd_micros": null
+    },
+    "budget_scope": null,
+    "committed": {
+     "tokens": 100,
+     "usd_micros": 500
+    },
+    "estimated": 0,
+    "exhausted": false,
+    "reserved": {
+     "tokens": 100,
+     "usd_micros": 500
+    },
+    "used": {
+     "cache_read_tokens": 0,
+     "cache_write_tokens": 0,
+     "input_tokens": 0,
+     "output_tokens": 0
+    }
+   }
+  },
+  "requests": [
+   {
+    "body": null,
+    "headers": {
+     "accept": "*/*",
+     "authorization": "Bearer <run-token>",
+     "connection": "keep-alive",
+     "host": "node.internal:3000"
+    },
+    "method": "GET",
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    },
+    "url": "http://node.internal:3000/api/v1/agent-harness/internal/runs/run%2F1/budget"
+   }
+  ]
+ },
+ "budget.ledger.remaining.unreachable": {
+  "clients": [
+   {
+    "baseUrl": "http://node.internal:3000",
+    "followRedirects": false,
+    "limits": false,
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    }
+   }
+  ],
+  "logs": [],
+  "outcome": {
+   "raised": {
+    "attrs": {
+     "detail": "node_unreachable",
+     "http_status": 503,
+     "reason_code": "budget_unavailable"
+    },
+    "cause": "ConnectError",
+    "str": "Node is unreachable",
+    "type": "harness_core.budget.errors.BudgetUnavailable"
+   }
+  },
+  "requests": [
+   {
+    "body": null,
+    "headers": {
+     "accept": "*/*",
+     "authorization": "Bearer <run-token>",
+     "connection": "keep-alive",
+     "host": "node.internal:3000"
+    },
+    "method": "GET",
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    },
+    "url": "http://node.internal:3000/api/v1/agent-harness/internal/runs/run%2F1/budget"
+   }
+  ]
+ },
+ "budget.ledger.reserve.empty_credential": {
+  "clients": [
+   {
+    "baseUrl": "http://node.internal:3000",
+    "followRedirects": false,
+    "limits": false,
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    }
+   }
+  ],
+  "logs": [],
+  "outcome": {
+   "returned": {
+    "account": {
+     "run_id": "run/1",
+     "tenant": "org-1"
+    },
+    "expires_at": "2026-09-21T14:13:20+00:00",
+    "granted": {
+     "tokens": 100,
+     "usd_micros": 500
+    },
+    "key": "res/1",
+    "requested": {
+     "tokens": 100,
+     "usd_micros": 500
+    },
+    "state": "open"
+   }
+  },
+  "requests": [
+   {
+    "body": {
+     "key": "res/1",
+     "minimum": {
+      "tokens": 1,
+      "usdMicros": 1
+     },
+     "requested": {
+      "tokens": 100,
+      "usdMicros": 500
+     },
+     "ttlS": 30
+    },
+    "headers": {
+     "accept": "*/*",
+     "connection": "keep-alive",
+     "content-length": "105",
+     "content-type": "application/json",
+     "host": "node.internal:3000"
+    },
+    "method": "POST",
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    },
+    "url": "http://node.internal:3000/api/v1/agent-harness/internal/runs/run%2F1/budget/reservations"
+   }
+  ]
+ },
+ "budget.ledger.reserve.exhausted": {
+  "clients": [
+   {
+    "baseUrl": "http://node.internal:3000",
+    "followRedirects": false,
+    "limits": false,
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    }
+   }
+  ],
+  "logs": [],
+  "outcome": {
+   "raised": {
+    "attrs": {
+     "http_status": 402,
+     "reason_code": "budget_exhausted"
+    },
+    "cause": null,
+    "str": "Node refused the budget operation",
+    "type": "harness_core.budget.errors.BudgetExhausted"
+   }
+  },
+  "requests": [
+   {
+    "body": {
+     "key": "k",
+     "minimum": {
+      "tokens": 1,
+      "usdMicros": 1
+     },
+     "requested": {
+      "tokens": 1,
+      "usdMicros": 1
+     },
+     "ttlS": 30
+    },
+    "headers": {
+     "accept": "*/*",
+     "authorization": "Bearer <run-token>",
+     "connection": "keep-alive",
+     "content-length": "97",
+     "content-type": "application/json",
+     "host": "node.internal:3000"
+    },
+    "method": "POST",
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    },
+    "url": "http://node.internal:3000/api/v1/agent-harness/internal/runs/run%2F1/budget/reservations"
+   }
+  ]
+ },
+ "budget.ledger.reserve.no_credential": {
+  "clients": [
+   {
+    "baseUrl": "http://node.internal:3000",
+    "followRedirects": false,
+    "limits": false,
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    }
+   }
+  ],
+  "logs": [],
+  "outcome": {
+   "raised": {
+    "attrs": {
+     "detail": "attempt_claims",
+     "http_status": 403,
+     "reason_code": "budget_unavailable"
+    },
+    "cause": null,
+    "str": "Node refused the budget operation",
+    "type": "harness_core.budget.errors.BudgetUnavailable"
+   }
+  },
+  "requests": [
+   {
+    "body": {
+     "key": "res/1",
+     "minimum": {
+      "tokens": 1,
+      "usdMicros": 1
+     },
+     "requested": {
+      "tokens": 100,
+      "usdMicros": 500
+     },
+     "ttlS": 30
+    },
+    "headers": {
+     "accept": "*/*",
+     "connection": "keep-alive",
+     "content-length": "105",
+     "content-type": "application/json",
+     "host": "node.internal:3000"
+    },
+    "method": "POST",
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    },
+    "url": "http://node.internal:3000/api/v1/agent-harness/internal/runs/run%2F1/budget/reservations"
+   }
+  ]
+ },
+ "budget.ledger.reserve.ok": {
+  "clients": [
+   {
+    "baseUrl": "http://node.internal:3000",
+    "followRedirects": false,
+    "limits": false,
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    }
+   }
+  ],
+  "logs": [],
+  "outcome": {
+   "returned": {
+    "account": {
+     "run_id": "run/1",
+     "tenant": "org-1"
+    },
+    "expires_at": "2026-09-21T14:13:20+00:00",
+    "granted": {
+     "tokens": 100,
+     "usd_micros": 500
+    },
+    "key": "res/1",
+    "requested": {
+     "tokens": 100,
+     "usd_micros": 500
+    },
+    "state": "open"
+   }
+  },
+  "requests": [
+   {
+    "body": {
+     "key": "res/1",
+     "minimum": {
+      "tokens": 1,
+      "usdMicros": 1
+     },
+     "opening": {
+      "tokens": 9,
+      "usdMicros": 9
+     },
+     "requested": {
+      "tokens": 100,
+      "usdMicros": 500
+     },
+     "ttlS": 30
+    },
+    "headers": {
+     "accept": "*/*",
+     "authorization": "Bearer <run-token>",
+     "connection": "keep-alive",
+     "content-length": "142",
+     "content-type": "application/json",
+     "host": "node.internal:3000"
+    },
+    "method": "POST",
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    },
+    "url": "http://node.internal:3000/api/v1/agent-harness/internal/runs/run%2F1/budget/reservations"
+   }
+  ]
+ },
+ "egress.allowed.recorded": {
+  "clients": [
+   {
+    "baseUrl": "http://node.internal:3000",
+    "followRedirects": false,
+    "limits": false,
+    "timeout": {
+     "connect": 5.0,
+     "pool": 5.0,
+     "read": 5.0,
+     "write": 5.0
+    }
+   }
+  ],
+  "logs": [],
+  "outcome": {
+   "returned": "recorded"
+  },
+  "requests": [
+   {
+    "body": {
+     "host": "api.github.com",
+     "via": "intercepted"
+    },
+    "headers": {
+     "accept": "*/*",
+     "authorization": "Bearer <run-token>",
+     "connection": "keep-alive",
+     "content-length": "45",
+     "content-type": "application/json",
+     "host": "node.internal:3000"
+    },
+    "method": "POST",
+    "timeout": {
+     "connect": 5.0,
+     "pool": 5.0,
+     "read": 5.0,
+     "write": 5.0
+    },
+    "url": "http://node.internal:3000/api/v1/agent-harness/internal/runs/run%2F1/egress"
+   }
+  ]
+ },
+ "egress.allowed.refused": {
+  "clients": [
+   {
+    "baseUrl": "http://node.internal:3000",
+    "followRedirects": false,
+    "limits": false,
+    "timeout": {
+     "connect": 5.0,
+     "pool": 5.0,
+     "read": 5.0,
+     "write": 5.0
+    }
+   }
+  ],
+  "logs": [],
+  "outcome": {
+   "raised": {
+    "attrs": {},
+    "cause": null,
+    "str": "Node refused the report (401)",
+    "type": "harness_core.gateway.refusal_reports.RefusalNotAccepted"
+   }
+  },
+  "requests": [
+   {
+    "body": {
+     "host": "api.github.com",
+     "via": "intercepted"
+    },
+    "headers": {
+     "accept": "*/*",
+     "authorization": "Bearer <run-token>",
+     "connection": "keep-alive",
+     "content-length": "45",
+     "content-type": "application/json",
+     "host": "node.internal:3000"
+    },
+    "method": "POST",
+    "timeout": {
+     "connect": 5.0,
+     "pool": 5.0,
+     "read": 5.0,
+     "write": 5.0
+    },
+    "url": "http://node.internal:3000/api/v1/agent-harness/internal/runs/run%2F1/egress"
+   }
+  ]
+ },
+ "egress.volume.recorded": {
+  "clients": [
+   {
+    "baseUrl": "http://node.internal:3000",
+    "followRedirects": false,
+    "limits": false,
+    "timeout": {
+     "connect": 5.0,
+     "pool": 5.0,
+     "read": 5.0,
+     "write": 5.0
+    }
+   }
+  ],
+  "logs": [],
+  "outcome": {
+   "returned": "recorded"
+  },
+  "requests": [
+   {
+    "body": {
+     "alias": "tunnel",
+     "baselineBytes": 10485760,
+     "bytes": 734003200,
+     "direction": "up",
+     "kind": "org_baseline",
+     "thresholdBytes": 104857600
+    },
+    "headers": {
+     "accept": "*/*",
+     "authorization": "Bearer <run-token>",
+     "connection": "keep-alive",
+     "content-length": "127",
+     "content-type": "application/json",
+     "host": "node.internal:3000"
+    },
+    "method": "POST",
+    "timeout": {
+     "connect": 5.0,
+     "pool": 5.0,
+     "read": 5.0,
+     "write": 5.0
+    },
+    "url": "http://node.internal:3000/api/v1/agent-harness/internal/runs/run%2F1/egress-volume"
+   }
+  ]
+ },
+ "egress.volume.refused": {
+  "clients": [
+   {
+    "baseUrl": "http://node.internal:3000",
+    "followRedirects": false,
+    "limits": false,
+    "timeout": {
+     "connect": 5.0,
+     "pool": 5.0,
+     "read": 5.0,
+     "write": 5.0
+    }
+   }
+  ],
+  "logs": [],
+  "outcome": {
+   "raised": {
+    "attrs": {},
+    "cause": null,
+    "str": "Node refused the report (401)",
+    "type": "harness_core.gateway.refusal_reports.RefusalNotAccepted"
+   }
+  },
+  "requests": [
+   {
+    "body": {
+     "alias": "tunnel",
+     "baselineBytes": 10485760,
+     "bytes": 734003200,
+     "direction": "up",
+     "kind": "org_baseline",
+     "thresholdBytes": 104857600
+    },
+    "headers": {
+     "accept": "*/*",
+     "authorization": "Bearer <run-token>",
+     "connection": "keep-alive",
+     "content-length": "127",
+     "content-type": "application/json",
+     "host": "node.internal:3000"
+    },
+    "method": "POST",
+    "timeout": {
+     "connect": 5.0,
+     "pool": 5.0,
+     "read": 5.0,
+     "write": 5.0
+    },
+    "url": "http://node.internal:3000/api/v1/agent-harness/internal/runs/run%2F1/egress-volume"
+   }
+  ]
+ },
+ "grants.malformed": {
+  "clients": [
+   {
+    "baseUrl": "http://node.internal:3000",
+    "followRedirects": false,
+    "limits": false,
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    }
+   }
+  ],
+  "logs": [],
+  "outcome": {
+   "raised": {
+    "attrs": {
+     "detail": "malformed_grant",
+     "http_status": 503,
+     "reason_code": "grant_unavailable"
+    },
+    "cause": "JSONDecodeError",
+    "str": "the model grant is malformed",
+    "type": "harness_core.access.errors.GrantUnavailable"
+   }
+  },
+  "requests": [
+   {
+    "body": null,
+    "headers": {
+     "accept": "*/*",
+     "authorization": "Bearer <run-token>",
+     "connection": "keep-alive",
+     "host": "node.internal:3000"
+    },
+    "method": "GET",
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    },
+    "url": "http://node.internal:3000/api/v1/agent-harness/internal/runs/run%2F1/model-grant"
+   }
+  ]
+ },
+ "grants.not_leased": {
+  "clients": [
+   {
+    "baseUrl": "http://node.internal:3000",
+    "followRedirects": false,
+    "limits": false,
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    }
+   }
+  ],
+  "logs": [],
+  "outcome": {
+   "raised": {
+    "attrs": {
+     "detail": "run_not_leased",
+     "http_status": 403,
+     "reason_code": "grant_unavailable"
+    },
+    "cause": null,
+    "str": "Node refused the model grant",
+    "type": "harness_core.access.errors.GrantUnavailable"
+   }
+  },
+  "requests": [
+   {
+    "body": null,
+    "headers": {
+     "accept": "*/*",
+     "authorization": "Bearer <run-token>",
+     "connection": "keep-alive",
+     "host": "node.internal:3000"
+    },
+    "method": "GET",
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    },
+    "url": "http://node.internal:3000/api/v1/agent-harness/internal/runs/run%2F1/model-grant"
+   }
+  ]
+ },
+ "grants.ok": {
+  "clients": [
+   {
+    "baseUrl": "http://node.internal:3000",
+    "followRedirects": false,
+    "limits": false,
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    }
+   }
+  ],
+  "logs": [],
+  "outcome": {
+   "returned": {
+    "actor": "actor-1",
+    "budget": {
+     "deadline_at_s": null,
+     "depth": 0,
+     "max_cost_usd": 1.5,
+     "max_tokens": 1000
+    },
+    "carried": [],
+    "engine": "loop",
+    "models": [
+     {
+      "model_id": "engine-model",
+      "role": "primary",
+      "route": {
+       "account": null,
+       "by_name": false,
+       "config_key": "key-1",
+       "config_model": "gpt-x",
+       "model": "gpt-x",
+       "on": [],
+       "provider": "openai"
+      }
+     },
+     {
+      "model_id": "engine-model-fast",
+      "role": "fast",
+      "route": {
+       "account": null,
+       "by_name": false,
+       "config_key": "key-1",
+       "config_model": "gpt-x",
+       "model": "gpt-x",
+       "on": [],
+       "provider": "openai"
+      }
+     },
+     {
+      "model_id": "engine-model-subagent",
+      "role": "subagent",
+      "route": {
+       "account": null,
+       "by_name": false,
+       "config_key": "key-1",
+       "config_model": "gpt-x",
+       "model": "gpt-x",
+       "on": [],
+       "provider": "openai"
+      }
+     },
+     {
+      "model_id": "engine-model-compaction",
+      "role": "compaction",
+      "route": {
+       "account": null,
+       "by_name": false,
+       "config_key": "key-1",
+       "config_model": "gpt-x",
+       "model": "gpt-x",
+       "on": [],
+       "provider": "openai"
+      }
+     }
+    ],
+    "priority_class": null,
+    "reasoning_effort": "low",
+    "routes": [
+     {
+      "account": null,
+      "by_name": false,
+      "config_key": "key-1",
+      "config_model": "gpt-x",
+      "model": "gpt-x",
+      "on": [],
+      "provider": "openai"
+     }
+    ],
+    "run_id": "run-1",
+    "tenant": "org-1"
+   }
+  },
+  "requests": [
+   {
+    "body": null,
+    "headers": {
+     "accept": "*/*",
+     "authorization": "Bearer <run-token>",
+     "connection": "keep-alive",
+     "host": "node.internal:3000"
+    },
+    "method": "GET",
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    },
+    "url": "http://node.internal:3000/api/v1/agent-harness/internal/runs/run%2F1/model-grant"
+   }
+  ]
+ },
+ "grants.server_error": {
+  "clients": [
+   {
+    "baseUrl": "http://node.internal:3000",
+    "followRedirects": false,
+    "limits": false,
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    }
+   }
+  ],
+  "logs": [],
+  "outcome": {
+   "raised": {
+    "attrs": {
+     "detail": "status_500",
+     "http_status": 503,
+     "reason_code": "grant_unavailable"
+    },
+    "cause": null,
+    "str": "Node refused the model grant",
+    "type": "harness_core.access.errors.GrantUnavailable"
+   }
+  },
+  "requests": [
+   {
+    "body": null,
+    "headers": {
+     "accept": "*/*",
+     "authorization": "Bearer <run-token>",
+     "connection": "keep-alive",
+     "host": "node.internal:3000"
+    },
+    "method": "GET",
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    },
+    "url": "http://node.internal:3000/api/v1/agent-harness/internal/runs/run%2F1/model-grant"
+   }
+  ]
+ },
+ "grants.unauthorized": {
+  "clients": [
+   {
+    "baseUrl": "http://node.internal:3000",
+    "followRedirects": false,
+    "limits": false,
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    }
+   }
+  ],
+  "logs": [],
+  "outcome": {
+   "raised": {
+    "attrs": {
+     "detail": "attempt_claims",
+     "http_status": 401,
+     "reason_code": "grant_unavailable"
+    },
+    "cause": null,
+    "str": "Node refused the model grant",
+    "type": "harness_core.access.errors.GrantUnavailable"
+   }
+  },
+  "requests": [
+   {
+    "body": null,
+    "headers": {
+     "accept": "*/*",
+     "authorization": "Bearer <run-token>",
+     "connection": "keep-alive",
+     "host": "node.internal:3000"
+    },
+    "method": "GET",
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    },
+    "url": "http://node.internal:3000/api/v1/agent-harness/internal/runs/run%2F1/model-grant"
+   }
+  ]
+ },
+ "grants.unreachable": {
+  "clients": [
+   {
+    "baseUrl": "http://node.internal:3000",
+    "followRedirects": false,
+    "limits": false,
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    }
+   }
+  ],
+  "logs": [],
+  "outcome": {
+   "raised": {
+    "attrs": {
+     "detail": "node_unreachable",
+     "http_status": 503,
+     "reason_code": "grant_unavailable"
+    },
+    "cause": "ConnectError",
+    "str": "Node is unreachable",
+    "type": "harness_core.access.errors.GrantUnavailable"
+   }
+  },
+  "requests": [
+   {
+    "body": null,
+    "headers": {
+     "accept": "*/*",
+     "authorization": "Bearer <run-token>",
+     "connection": "keep-alive",
+     "host": "node.internal:3000"
+    },
+    "method": "GET",
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    },
+    "url": "http://node.internal:3000/api/v1/agent-harness/internal/runs/run%2F1/model-grant"
+   }
+  ]
+ },
+ "journal.claim.busy": {
+  "clients": [
+   {
+    "baseUrl": "http://node.internal:3000",
+    "followRedirects": false,
+    "limits": false,
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    }
+   }
+  ],
+  "logs": [
+   {
+    "event": "journal.claim_refused",
+    "fields": {
+     "reason": "UNAVAILABLE",
+     "role": "dispatched",
+     "status": 503
+    },
+    "level": "WARNING",
+    "logger": "app.harness.journal_node"
+   }
+  ],
+  "outcome": {
+   "raised": {
+    "attrs": {},
+    "cause": null,
+    "str": "journal answered 503",
+    "type": "harness_core.journal.types.JournalUnavailable"
+   }
+  },
+  "requests": [
+   {
+    "body": {
+     "leaseDurationMs": 60000,
+     "role": "dispatched",
+     "workerCapabilities": {
+      "features": [
+       "agent_code",
+       "approval_edits",
+       "assistant_agent",
+       "caller",
+       "chat",
+       "child_asks",
+       "child_models",
+       "child_runs",
+       "code_task_tool",
+       "command_input",
+       "compact_request",
+       "deep_mode",
+       "deliverable_pin",
+       "descriptor_pins",
+       "engine_inputs",
+       "environment_pin",
+       "executor_engine",
+       "governed_memory",
+       "inherited_grants",
+       "inherited_labels",
+       "keyword_search_budget",
+       "knowledge_selection",
+       "mcp_carried_pins",
+       "mcp_first_use",
+       "model_fallback",
+       "output_locale",
+       "region_aware",
+       "release_pin",
+       "resolved_config",
+       "run_gates",
+       "run_surface",
+       "sandbox_command",
+       "session_roles",
+       "steering",
+       "steering_by",
+       "steering_references",
+       "trace_content",
+       "trigger_context",
+       "turn_labels",
+       "vendor_signin",
+       "workspace_forks"
+      ],
+      "foldVersion": 8,
+      "harnessMajor": 2,
+      "supportedSchemaVersions": [
+       2,
+       3
+      ]
+     },
+     "workerId": "w1"
+    },
+    "headers": {
+     "accept": "*/*",
+     "authorization": "Bearer <worker>",
+     "connection": "keep-alive",
+     "content-length": "824",
+     "content-type": "application/json",
+     "host": "node.internal:3000"
+    },
+    "method": "POST",
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    },
+    "url": "http://node.internal:3000/api/v1/agent-harness/internal/runs/claim"
+   }
+  ]
+ },
+ "journal.claim.empty": {
+  "clients": [
+   {
+    "baseUrl": "http://node.internal:3000",
+    "followRedirects": false,
+    "limits": false,
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    }
+   }
+  ],
+  "logs": [
+   {
+    "event": "journal.claim_empty",
+    "fields": {
+     "role": "dispatched"
+    },
+    "level": "DEBUG",
+    "logger": "app.harness.journal_node"
+   }
+  ],
+  "outcome": {
+   "returned": null
+  },
+  "requests": [
+   {
+    "body": {
+     "leaseDurationMs": 60000,
+     "role": "dispatched",
+     "workerCapabilities": {
+      "features": [
+       "agent_code",
+       "approval_edits",
+       "assistant_agent",
+       "caller",
+       "chat",
+       "child_asks",
+       "child_models",
+       "child_runs",
+       "code_task_tool",
+       "command_input",
+       "compact_request",
+       "deep_mode",
+       "deliverable_pin",
+       "descriptor_pins",
+       "engine_inputs",
+       "environment_pin",
+       "executor_engine",
+       "governed_memory",
+       "inherited_grants",
+       "inherited_labels",
+       "keyword_search_budget",
+       "knowledge_selection",
+       "mcp_carried_pins",
+       "mcp_first_use",
+       "model_fallback",
+       "output_locale",
+       "region_aware",
+       "release_pin",
+       "resolved_config",
+       "run_gates",
+       "run_surface",
+       "sandbox_command",
+       "session_roles",
+       "steering",
+       "steering_by",
+       "steering_references",
+       "trace_content",
+       "trigger_context",
+       "turn_labels",
+       "vendor_signin",
+       "workspace_forks"
+      ],
+      "foldVersion": 8,
+      "harnessMajor": 2,
+      "supportedSchemaVersions": [
+       2,
+       3
+      ]
+     },
+     "workerId": "w1"
+    },
+    "headers": {
+     "accept": "*/*",
+     "authorization": "Bearer <worker>",
+     "connection": "keep-alive",
+     "content-length": "824",
+     "content-type": "application/json",
+     "host": "node.internal:3000"
+    },
+    "method": "POST",
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    },
+    "url": "http://node.internal:3000/api/v1/agent-harness/internal/runs/claim"
+   }
+  ]
+ },
+ "journal.claim.not_claimable": {
+  "clients": [
+   {
+    "baseUrl": "http://node.internal:3000",
+    "followRedirects": false,
+    "limits": false,
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    }
+   }
+  ],
+  "logs": [
+   {
+    "event": "journal.claim_not_claimable",
+    "fields": {
+     "reason": "RUN_NOT_CLAIMABLE",
+     "role": "dispatched",
+     "status": 409
+    },
+    "level": "INFO",
+    "logger": "app.harness.journal_node"
+   }
+  ],
+  "outcome": {
+   "raised": {
+    "attrs": {},
+    "cause": null,
+    "str": "next: RUN_NOT_CLAIMABLE",
+    "type": "harness_core.journal.types.RunNotClaimable"
+   }
+  },
+  "requests": [
+   {
+    "body": {
+     "leaseDurationMs": 60000,
+     "role": "dispatched",
+     "workerCapabilities": {
+      "features": [
+       "agent_code",
+       "approval_edits",
+       "assistant_agent",
+       "caller",
+       "chat",
+       "child_asks",
+       "child_models",
+       "child_runs",
+       "code_task_tool",
+       "command_input",
+       "compact_request",
+       "deep_mode",
+       "deliverable_pin",
+       "descriptor_pins",
+       "engine_inputs",
+       "environment_pin",
+       "executor_engine",
+       "governed_memory",
+       "inherited_grants",
+       "inherited_labels",
+       "keyword_search_budget",
+       "knowledge_selection",
+       "mcp_carried_pins",
+       "mcp_first_use",
+       "model_fallback",
+       "output_locale",
+       "region_aware",
+       "release_pin",
+       "resolved_config",
+       "run_gates",
+       "run_surface",
+       "sandbox_command",
+       "session_roles",
+       "steering",
+       "steering_by",
+       "steering_references",
+       "trace_content",
+       "trigger_context",
+       "turn_labels",
+       "vendor_signin",
+       "workspace_forks"
+      ],
+      "foldVersion": 8,
+      "harnessMajor": 2,
+      "supportedSchemaVersions": [
+       2,
+       3
+      ]
+     },
+     "workerId": "w1"
+    },
+    "headers": {
+     "accept": "*/*",
+     "authorization": "Bearer <worker>",
+     "connection": "keep-alive",
+     "content-length": "824",
+     "content-type": "application/json",
+     "host": "node.internal:3000"
+    },
+    "method": "POST",
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    },
+    "url": "http://node.internal:3000/api/v1/agent-harness/internal/runs/claim"
+   }
+  ]
+ },
+ "journal.claim.ok": {
+  "clients": [
+   {
+    "baseUrl": "http://node.internal:3000",
+    "followRedirects": false,
+    "limits": false,
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    }
+   }
+  ],
+  "logs": [
+   {
+    "event": "journal.node_capabilities_unreadable",
+    "fields": {
+     "attemptId": "att-1",
+     "fence": 2,
+     "orgId": "org-1",
+     "reasonCode": "node_capabilities_invalid",
+     "runId": "run/1"
+    },
+    "level": "WARNING",
+    "logger": "app.harness.journal_node"
+   },
+   {
+    "event": "journal.claim",
+    "fields": {
+     "attempt": 2,
+     "attemptId": "att-1",
+     "fence": 2,
+     "lastSeq": 3,
+     "leaseMs": 60000,
+     "orgId": "org-1",
+     "resumed": false,
+     "role": "dispatched",
+     "runId": "run/1",
+     "sessionId": "ses-1"
+    },
+    "level": "DEBUG",
+    "logger": "app.harness.journal_node"
+   }
+  ],
+  "outcome": {
+   "returned": {
+    "accepts": [],
+    "attemptId": "att-1",
+    "fence": 2,
+    "lastSeq": 3,
+    "orgId": "org-1",
+    "runId": "run/1",
+    "streamId": "ses-1"
+   }
+  },
+  "requests": [
+   {
+    "body": {
+     "leaseDurationMs": 60000,
+     "role": "dispatched",
+     "workerCapabilities": {
+      "features": [
+       "agent_code",
+       "approval_edits",
+       "assistant_agent",
+       "caller",
+       "chat",
+       "child_asks",
+       "child_models",
+       "child_runs",
+       "code_task_tool",
+       "command_input",
+       "compact_request",
+       "deep_mode",
+       "deliverable_pin",
+       "descriptor_pins",
+       "engine_inputs",
+       "environment_pin",
+       "executor_engine",
+       "governed_memory",
+       "inherited_grants",
+       "inherited_labels",
+       "keyword_search_budget",
+       "knowledge_selection",
+       "mcp_carried_pins",
+       "mcp_first_use",
+       "model_fallback",
+       "output_locale",
+       "region_aware",
+       "release_pin",
+       "resolved_config",
+       "run_gates",
+       "run_surface",
+       "sandbox_command",
+       "session_roles",
+       "steering",
+       "steering_by",
+       "steering_references",
+       "trace_content",
+       "trigger_context",
+       "turn_labels",
+       "vendor_signin",
+       "workspace_forks"
+      ],
+      "foldVersion": 8,
+      "harnessMajor": 2,
+      "supportedSchemaVersions": [
+       2,
+       3
+      ]
+     },
+     "workerId": "w1"
+    },
+    "headers": {
+     "accept": "*/*",
+     "authorization": "Bearer <worker>",
+     "connection": "keep-alive",
+     "content-length": "824",
+     "content-type": "application/json",
+     "host": "node.internal:3000"
+    },
+    "method": "POST",
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    },
+    "url": "http://node.internal:3000/api/v1/agent-harness/internal/runs/claim"
+   }
+  ]
+ },
+ "journal.claim.refused": {
+  "clients": [
+   {
+    "baseUrl": "http://node.internal:3000",
+    "followRedirects": false,
+    "limits": false,
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    }
+   }
+  ],
+  "logs": [
+   {
+    "event": "journal.claim_refused",
+    "fields": {
+     "reason": "WORKER_CREDENTIAL",
+     "role": "dispatched",
+     "status": 401
+    },
+    "level": "WARNING",
+    "logger": "app.harness.journal_node"
+   }
+  ],
+  "outcome": {
+   "raised": {
+    "attrs": {},
+    "cause": null,
+    "str": "journal refused: 401 WORKER_CREDENTIAL",
+    "type": "harness_core.journal.types.JournalError"
+   }
+  },
+  "requests": [
+   {
+    "body": {
+     "leaseDurationMs": 60000,
+     "role": "dispatched",
+     "workerCapabilities": {
+      "features": [
+       "agent_code",
+       "approval_edits",
+       "assistant_agent",
+       "caller",
+       "chat",
+       "child_asks",
+       "child_models",
+       "child_runs",
+       "code_task_tool",
+       "command_input",
+       "compact_request",
+       "deep_mode",
+       "deliverable_pin",
+       "descriptor_pins",
+       "engine_inputs",
+       "environment_pin",
+       "executor_engine",
+       "governed_memory",
+       "inherited_grants",
+       "inherited_labels",
+       "keyword_search_budget",
+       "knowledge_selection",
+       "mcp_carried_pins",
+       "mcp_first_use",
+       "model_fallback",
+       "output_locale",
+       "region_aware",
+       "release_pin",
+       "resolved_config",
+       "run_gates",
+       "run_surface",
+       "sandbox_command",
+       "session_roles",
+       "steering",
+       "steering_by",
+       "steering_references",
+       "trace_content",
+       "trigger_context",
+       "turn_labels",
+       "vendor_signin",
+       "workspace_forks"
+      ],
+      "foldVersion": 8,
+      "harnessMajor": 2,
+      "supportedSchemaVersions": [
+       2,
+       3
+      ]
+     },
+     "workerId": "w1"
+    },
+    "headers": {
+     "accept": "*/*",
+     "authorization": "Bearer <worker>",
+     "connection": "keep-alive",
+     "content-length": "824",
+     "content-type": "application/json",
+     "host": "node.internal:3000"
+    },
+    "method": "POST",
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    },
+    "url": "http://node.internal:3000/api/v1/agent-harness/internal/runs/claim"
+   }
+  ]
+ },
+ "journal.claim.unreachable": {
+  "clients": [
+   {
+    "baseUrl": "http://node.internal:3000",
+    "followRedirects": false,
+    "limits": false,
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    }
+   }
+  ],
+  "logs": [
+   {
+    "event": "journal.unreachable",
+    "fields": {
+     "errorType": "ConnectError",
+     "operation": "journal.claim",
+     "role": "dispatched"
+    },
+    "level": "WARNING",
+    "logger": "app.harness.journal_node"
+   }
+  ],
+  "outcome": {
+   "raised": {
+    "attrs": {},
+    "cause": "ConnectError",
+    "str": "journal unreachable: ConnectError",
+    "type": "harness_core.journal.types.JournalUnavailable"
+   }
+  },
+  "requests": [
+   {
+    "body": {
+     "leaseDurationMs": 60000,
+     "role": "dispatched",
+     "workerCapabilities": {
+      "features": [
+       "agent_code",
+       "approval_edits",
+       "assistant_agent",
+       "caller",
+       "chat",
+       "child_asks",
+       "child_models",
+       "child_runs",
+       "code_task_tool",
+       "command_input",
+       "compact_request",
+       "deep_mode",
+       "deliverable_pin",
+       "descriptor_pins",
+       "engine_inputs",
+       "environment_pin",
+       "executor_engine",
+       "governed_memory",
+       "inherited_grants",
+       "inherited_labels",
+       "keyword_search_budget",
+       "knowledge_selection",
+       "mcp_carried_pins",
+       "mcp_first_use",
+       "model_fallback",
+       "output_locale",
+       "region_aware",
+       "release_pin",
+       "resolved_config",
+       "run_gates",
+       "run_surface",
+       "sandbox_command",
+       "session_roles",
+       "steering",
+       "steering_by",
+       "steering_references",
+       "trace_content",
+       "trigger_context",
+       "turn_labels",
+       "vendor_signin",
+       "workspace_forks"
+      ],
+      "foldVersion": 8,
+      "harnessMajor": 2,
+      "supportedSchemaVersions": [
+       2,
+       3
+      ]
+     },
+     "workerId": "w1"
+    },
+    "headers": {
+     "accept": "*/*",
+     "authorization": "Bearer <worker>",
+     "connection": "keep-alive",
+     "content-length": "824",
+     "content-type": "application/json",
+     "host": "node.internal:3000"
+    },
+    "method": "POST",
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    },
+    "url": "http://node.internal:3000/api/v1/agent-harness/internal/runs/claim"
+   }
+  ]
+ },
+ "journal.claim.unreadable": {
+  "clients": [
+   {
+    "baseUrl": "http://node.internal:3000",
+    "followRedirects": false,
+    "limits": false,
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    }
+   }
+  ],
+  "logs": [
+   {
+    "event": "journal.claim_unreadable",
+    "fields": {
+     "errorType": "JSONDecodeError",
+     "role": "dispatched",
+     "status": 200
+    },
+    "level": "WARNING",
+    "logger": "app.harness.journal_node"
+   }
+  ],
+  "outcome": {
+   "raised": {
+    "attrs": {},
+    "cause": "JSONDecodeError",
+    "str": "claim response is not JSON",
+    "type": "harness_core.journal.types.JournalError"
+   }
+  },
+  "requests": [
+   {
+    "body": {
+     "leaseDurationMs": 60000,
+     "role": "dispatched",
+     "workerCapabilities": {
+      "features": [
+       "agent_code",
+       "approval_edits",
+       "assistant_agent",
+       "caller",
+       "chat",
+       "child_asks",
+       "child_models",
+       "child_runs",
+       "code_task_tool",
+       "command_input",
+       "compact_request",
+       "deep_mode",
+       "deliverable_pin",
+       "descriptor_pins",
+       "engine_inputs",
+       "environment_pin",
+       "executor_engine",
+       "governed_memory",
+       "inherited_grants",
+       "inherited_labels",
+       "keyword_search_budget",
+       "knowledge_selection",
+       "mcp_carried_pins",
+       "mcp_first_use",
+       "model_fallback",
+       "output_locale",
+       "region_aware",
+       "release_pin",
+       "resolved_config",
+       "run_gates",
+       "run_surface",
+       "sandbox_command",
+       "session_roles",
+       "steering",
+       "steering_by",
+       "steering_references",
+       "trace_content",
+       "trigger_context",
+       "turn_labels",
+       "vendor_signin",
+       "workspace_forks"
+      ],
+      "foldVersion": 8,
+      "harnessMajor": 2,
+      "supportedSchemaVersions": [
+       2,
+       3
+      ]
+     },
+     "workerId": "w1"
+    },
+    "headers": {
+     "accept": "*/*",
+     "authorization": "Bearer <worker>",
+     "connection": "keep-alive",
+     "content-length": "824",
+     "content-type": "application/json",
+     "host": "node.internal:3000"
+    },
+    "method": "POST",
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    },
+    "url": "http://node.internal:3000/api/v1/agent-harness/internal/runs/claim"
+   }
+  ]
+ },
+ "journal.claim_by_id.ok": {
+  "clients": [
+   {
+    "baseUrl": "http://node.internal:3000",
+    "followRedirects": false,
+    "limits": false,
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    }
+   }
+  ],
+  "logs": [
+   {
+    "event": "journal.node_capabilities_unreadable",
+    "fields": {
+     "attemptId": "att-1",
+     "fence": 2,
+     "orgId": "org-1",
+     "reasonCode": "node_capabilities_invalid",
+     "runId": "run/1"
+    },
+    "level": "WARNING",
+    "logger": "app.harness.journal_node"
+   },
+   {
+    "event": "journal.claim",
+    "fields": {
+     "attempt": 2,
+     "attemptId": "att-1",
+     "fence": 2,
+     "lastSeq": 3,
+     "leaseMs": 30000,
+     "orgId": "org-1",
+     "resumed": false,
+     "role": "inline",
+     "runId": "run/1",
+     "sessionId": "ses-1"
+    },
+    "level": "DEBUG",
+    "logger": "app.harness.journal_node"
+   }
+  ],
+  "outcome": {
+   "returned": {
+    "accepts": [],
+    "attemptId": "att-1",
+    "fence": 2,
+    "lastSeq": 3,
+    "orgId": "org-1",
+    "runId": "run/1",
+    "streamId": "ses-1"
+   }
+  },
+  "requests": [
+   {
+    "body": {
+     "leaseDurationMs": 30000,
+     "orgId": "org-1",
+     "workerCapabilities": {
+      "features": [
+       "agent_code",
+       "approval_edits",
+       "assistant_agent",
+       "caller",
+       "chat",
+       "child_asks",
+       "child_models",
+       "child_runs",
+       "code_task_tool",
+       "command_input",
+       "compact_request",
+       "deep_mode",
+       "deliverable_pin",
+       "descriptor_pins",
+       "engine_inputs",
+       "environment_pin",
+       "executor_engine",
+       "governed_memory",
+       "inherited_grants",
+       "inherited_labels",
+       "keyword_search_budget",
+       "knowledge_selection",
+       "mcp_carried_pins",
+       "mcp_first_use",
+       "model_fallback",
+       "output_locale",
+       "region_aware",
+       "release_pin",
+       "resolved_config",
+       "run_gates",
+       "run_surface",
+       "sandbox_command",
+       "session_roles",
+       "steering",
+       "steering_by",
+       "steering_references",
+       "trace_content",
+       "trigger_context",
+       "turn_labels",
+       "vendor_signin",
+       "workspace_forks"
+      ],
+      "foldVersion": 8,
+      "harnessMajor": 2,
+      "supportedSchemaVersions": [
+       2,
+       3
+      ]
+     },
+     "workerId": "w1"
+    },
+    "headers": {
+     "accept": "*/*",
+     "authorization": "Bearer <worker>",
+     "connection": "keep-alive",
+     "content-length": "820",
+     "content-type": "application/json",
+     "host": "node.internal:3000"
+    },
+    "method": "POST",
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    },
+    "url": "http://node.internal:3000/api/v1/agent-harness/internal/runs/run%2F1/claim"
+   }
+  ]
+ },
+ "journal.claim_by_id.v1_retired": {
+  "clients": [
+   {
+    "baseUrl": "http://node.internal:3000",
+    "followRedirects": false,
+    "limits": false,
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    }
+   }
+  ],
+  "logs": [
+   {
+    "event": "journal.v1_retired",
+    "fields": {
+     "attemptId": "att-1",
+     "fence": 2,
+     "orgId": "org-1",
+     "reason": "harness_v1_retired",
+     "runId": "run/1"
+    },
+    "level": "WARNING",
+    "logger": "app.harness.journal_node"
+   }
+  ],
+  "outcome": {
+   "raised": {
+    "attrs": {},
+    "cause": null,
+    "str": "run/1: harness_v1_retired",
+    "type": "harness_core.journal.types.RunNotClaimable"
+   }
+  },
+  "requests": [
+   {
+    "body": {
+     "leaseDurationMs": 30000,
+     "orgId": "org-1",
+     "workerCapabilities": {
+      "features": [
+       "agent_code",
+       "approval_edits",
+       "assistant_agent",
+       "caller",
+       "chat",
+       "child_asks",
+       "child_models",
+       "child_runs",
+       "code_task_tool",
+       "command_input",
+       "compact_request",
+       "deep_mode",
+       "deliverable_pin",
+       "descriptor_pins",
+       "engine_inputs",
+       "environment_pin",
+       "executor_engine",
+       "governed_memory",
+       "inherited_grants",
+       "inherited_labels",
+       "keyword_search_budget",
+       "knowledge_selection",
+       "mcp_carried_pins",
+       "mcp_first_use",
+       "model_fallback",
+       "output_locale",
+       "region_aware",
+       "release_pin",
+       "resolved_config",
+       "run_gates",
+       "run_surface",
+       "sandbox_command",
+       "session_roles",
+       "steering",
+       "steering_by",
+       "steering_references",
+       "trace_content",
+       "trigger_context",
+       "turn_labels",
+       "vendor_signin",
+       "workspace_forks"
+      ],
+      "foldVersion": 8,
+      "harnessMajor": 2,
+      "supportedSchemaVersions": [
+       2,
+       3
+      ]
+     },
+     "workerId": "w1"
+    },
+    "headers": {
+     "accept": "*/*",
+     "authorization": "Bearer <worker>",
+     "connection": "keep-alive",
+     "content-length": "820",
+     "content-type": "application/json",
+     "host": "node.internal:3000"
+    },
+    "method": "POST",
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    },
+    "url": "http://node.internal:3000/api/v1/agent-harness/internal/runs/run%2F1/claim"
+   },
+   {
+    "body": {
+     "attemptId": "att-1",
+     "commandId": "att-1:harness_v1_retired",
+     "events": [
+      {
+       "data": {
+        "errorType": "harness_v1_retired"
+       },
+       "type": "run_failed"
+      }
+     ],
+     "expectedRevision": 4,
+     "fence": 2,
+     "outbox": [],
+     "status": "failed"
+    },
+    "headers": {
+     "accept": "*/*",
+     "authorization": "Bearer <attempt>",
+     "connection": "keep-alive",
+     "content-length": "196",
+     "content-type": "application/json",
+     "host": "node.internal:3000"
+    },
+    "method": "POST",
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    },
+    "url": "http://node.internal:3000/api/v1/agent-harness/internal/runs/run%2F1/commit"
+   }
+  ]
+ },
+ "journal.commit.conflict": {
+  "clients": [
+   {
+    "baseUrl": "http://node.internal:3000",
+    "followRedirects": false,
+    "limits": false,
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    }
+   }
+  ],
+  "logs": [
+   {
+    "event": "journal.node_capabilities_unreadable",
+    "fields": {
+     "attemptId": "att-1",
+     "fence": 2,
+     "orgId": "org-1",
+     "reasonCode": "node_capabilities_invalid",
+     "runId": "run/1"
+    },
+    "level": "WARNING",
+    "logger": "app.harness.journal_node"
+   },
+   {
+    "event": "journal.claim",
+    "fields": {
+     "attempt": 2,
+     "attemptId": "att-1",
+     "fence": 2,
+     "lastSeq": 3,
+     "leaseMs": 60000,
+     "orgId": "org-1",
+     "resumed": false,
+     "role": "dispatched",
+     "runId": "run/1",
+     "sessionId": "ses-1"
+    },
+    "level": "DEBUG",
+    "logger": "app.harness.journal_node"
+   },
+   {
+    "event": "journal.rejected",
+    "fields": {
+     "attemptId": "att-1",
+     "commandId": "cmd-1",
+     "fence": 2,
+     "operation": "journal.commit",
+     "orgId": "org-1",
+     "reason": "IDEMPOTENCY_CONFLICT",
+     "runId": "run/1",
+     "status": 409
+    },
+    "level": "ERROR",
+    "logger": "app.harness.journal_node"
+   }
+  ],
+  "outcome": {
+   "raised": {
+    "attrs": {},
+    "cause": null,
+    "str": "IDEMPOTENCY_CONFLICT",
+    "type": "harness_core.journal.types.CommandConflict"
+   }
+  },
+  "requests": [
+   {
+    "body": {
+     "leaseDurationMs": 60000,
+     "role": "dispatched",
+     "workerCapabilities": {
+      "features": [
+       "agent_code",
+       "approval_edits",
+       "assistant_agent",
+       "caller",
+       "chat",
+       "child_asks",
+       "child_models",
+       "child_runs",
+       "code_task_tool",
+       "command_input",
+       "compact_request",
+       "deep_mode",
+       "deliverable_pin",
+       "descriptor_pins",
+       "engine_inputs",
+       "environment_pin",
+       "executor_engine",
+       "governed_memory",
+       "inherited_grants",
+       "inherited_labels",
+       "keyword_search_budget",
+       "knowledge_selection",
+       "mcp_carried_pins",
+       "mcp_first_use",
+       "model_fallback",
+       "output_locale",
+       "region_aware",
+       "release_pin",
+       "resolved_config",
+       "run_gates",
+       "run_surface",
+       "sandbox_command",
+       "session_roles",
+       "steering",
+       "steering_by",
+       "steering_references",
+       "trace_content",
+       "trigger_context",
+       "turn_labels",
+       "vendor_signin",
+       "workspace_forks"
+      ],
+      "foldVersion": 8,
+      "harnessMajor": 2,
+      "supportedSchemaVersions": [
+       2,
+       3
+      ]
+     },
+     "workerId": "w1"
+    },
+    "headers": {
+     "accept": "*/*",
+     "authorization": "Bearer <worker>",
+     "connection": "keep-alive",
+     "content-length": "824",
+     "content-type": "application/json",
+     "host": "node.internal:3000"
+    },
+    "method": "POST",
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    },
+    "url": "http://node.internal:3000/api/v1/agent-harness/internal/runs/claim"
+   },
+   {
+    "body": {
+     "attemptId": "att-1",
+     "commandId": "cmd-1",
+     "events": [
+      {
+       "critical": true,
+       "data": {
+        "turn": 1
+       },
+       "schemaVersion": 1,
+       "type": "turn.started",
+       "visibility": "owner"
+      }
+     ],
+     "fence": 2,
+     "legacyEvents": [],
+     "outbox": [],
+     "transition": {
+      "detail": {
+       "interactionId": "ix-1",
+       "kind": "suspend",
+       "reason": "approval"
+      },
+      "status": "waiting_approval"
+     }
+    },
+    "headers": {
+     "accept": "*/*",
+     "authorization": "Bearer <attempt>",
+     "connection": "keep-alive",
+     "content-length": "303",
+     "content-type": "application/json",
+     "host": "node.internal:3000"
+    },
+    "method": "POST",
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    },
+    "url": "http://node.internal:3000/api/v1/agent-harness/internal/runs/run%2F1/commit"
+   }
+  ]
+ },
+ "journal.commit.ok": {
+  "clients": [
+   {
+    "baseUrl": "http://node.internal:3000",
+    "followRedirects": false,
+    "limits": false,
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    }
+   }
+  ],
+  "logs": [
+   {
+    "event": "journal.node_capabilities_unreadable",
+    "fields": {
+     "attemptId": "att-1",
+     "fence": 2,
+     "orgId": "org-1",
+     "reasonCode": "node_capabilities_invalid",
+     "runId": "run/1"
+    },
+    "level": "WARNING",
+    "logger": "app.harness.journal_node"
+   },
+   {
+    "event": "journal.claim",
+    "fields": {
+     "attempt": 2,
+     "attemptId": "att-1",
+     "fence": 2,
+     "lastSeq": 3,
+     "leaseMs": 60000,
+     "orgId": "org-1",
+     "resumed": false,
+     "role": "dispatched",
+     "runId": "run/1",
+     "sessionId": "ses-1"
+    },
+    "level": "DEBUG",
+    "logger": "app.harness.journal_node"
+   },
+   {
+    "event": "journal.commit",
+    "fields": {
+     "attemptId": "att-1",
+     "commandId": "cmd-1",
+     "events": 1,
+     "fence": 2,
+     "firstSeq": 4,
+     "orgId": "org-1",
+     "replayed": false,
+     "runId": "run/1",
+     "seq": 4,
+     "transition": "suspend"
+    },
+    "level": "INFO",
+    "logger": "app.harness.journal_node"
+   }
+  ],
+  "outcome": {
+   "returned": {
+    "command_id": "cmd-1",
+    "events": [
+     {
+      "attempt_id": "att-1",
+      "critical": true,
+      "data": {
+       "turn": 1
+      },
+      "fence": 2,
+      "labels": null,
+      "org_id": "org-1",
+      "run_id": "run/1",
+      "schema_version": 1,
+      "seq": 4,
+      "session_id": "ses-1",
+      "stream_id": "ses-1",
+      "ts": "2026-09-21T00:00:00.000Z",
+      "type": "turn.started",
+      "visibility": "owner",
+      "writer": "worker"
+     }
+    ],
+    "replayed": false,
+    "stream_id": "ses-1"
+   }
+  },
+  "requests": [
+   {
+    "body": {
+     "leaseDurationMs": 60000,
+     "role": "dispatched",
+     "workerCapabilities": {
+      "features": [
+       "agent_code",
+       "approval_edits",
+       "assistant_agent",
+       "caller",
+       "chat",
+       "child_asks",
+       "child_models",
+       "child_runs",
+       "code_task_tool",
+       "command_input",
+       "compact_request",
+       "deep_mode",
+       "deliverable_pin",
+       "descriptor_pins",
+       "engine_inputs",
+       "environment_pin",
+       "executor_engine",
+       "governed_memory",
+       "inherited_grants",
+       "inherited_labels",
+       "keyword_search_budget",
+       "knowledge_selection",
+       "mcp_carried_pins",
+       "mcp_first_use",
+       "model_fallback",
+       "output_locale",
+       "region_aware",
+       "release_pin",
+       "resolved_config",
+       "run_gates",
+       "run_surface",
+       "sandbox_command",
+       "session_roles",
+       "steering",
+       "steering_by",
+       "steering_references",
+       "trace_content",
+       "trigger_context",
+       "turn_labels",
+       "vendor_signin",
+       "workspace_forks"
+      ],
+      "foldVersion": 8,
+      "harnessMajor": 2,
+      "supportedSchemaVersions": [
+       2,
+       3
+      ]
+     },
+     "workerId": "w1"
+    },
+    "headers": {
+     "accept": "*/*",
+     "authorization": "Bearer <worker>",
+     "connection": "keep-alive",
+     "content-length": "824",
+     "content-type": "application/json",
+     "host": "node.internal:3000"
+    },
+    "method": "POST",
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    },
+    "url": "http://node.internal:3000/api/v1/agent-harness/internal/runs/claim"
+   },
+   {
+    "body": {
+     "attemptId": "att-1",
+     "commandId": "cmd-1",
+     "events": [
+      {
+       "critical": true,
+       "data": {
+        "turn": 1
+       },
+       "schemaVersion": 1,
+       "type": "turn.started",
+       "visibility": "owner"
+      }
+     ],
+     "fence": 2,
+     "legacyEvents": [],
+     "outbox": [],
+     "transition": {
+      "detail": {
+       "interactionId": "ix-1",
+       "kind": "suspend",
+       "reason": "approval"
+      },
+      "status": "waiting_approval"
+     }
+    },
+    "headers": {
+     "accept": "*/*",
+     "authorization": "Bearer <attempt>",
+     "connection": "keep-alive",
+     "content-length": "303",
+     "content-type": "application/json",
+     "host": "node.internal:3000"
+    },
+    "method": "POST",
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    },
+    "url": "http://node.internal:3000/api/v1/agent-harness/internal/runs/run%2F1/commit"
+   }
+  ]
+ },
+ "journal.commit.stale": {
+  "clients": [
+   {
+    "baseUrl": "http://node.internal:3000",
+    "followRedirects": false,
+    "limits": false,
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    }
+   }
+  ],
+  "logs": [
+   {
+    "event": "journal.node_capabilities_unreadable",
+    "fields": {
+     "attemptId": "att-1",
+     "fence": 2,
+     "orgId": "org-1",
+     "reasonCode": "node_capabilities_invalid",
+     "runId": "run/1"
+    },
+    "level": "WARNING",
+    "logger": "app.harness.journal_node"
+   },
+   {
+    "event": "journal.claim",
+    "fields": {
+     "attempt": 2,
+     "attemptId": "att-1",
+     "fence": 2,
+     "lastSeq": 3,
+     "leaseMs": 60000,
+     "orgId": "org-1",
+     "resumed": false,
+     "role": "dispatched",
+     "runId": "run/1",
+     "sessionId": "ses-1"
+    },
+    "level": "DEBUG",
+    "logger": "app.harness.journal_node"
+   },
+   {
+    "event": "journal.ownership_lost",
+    "fields": {
+     "attemptId": "att-1",
+     "commandId": "cmd-1",
+     "fence": 2,
+     "operation": "journal.commit",
+     "orgId": "org-1",
+     "reason": "STALE_ATTEMPT",
+     "runId": "run/1",
+     "status": 409
+    },
+    "level": "WARNING",
+    "logger": "app.harness.journal_node"
+   }
+  ],
+  "outcome": {
+   "raised": {
+    "attrs": {},
+    "cause": null,
+    "str": "STALE_ATTEMPT",
+    "type": "harness_core.journal.types.OwnershipLost"
+   }
+  },
+  "requests": [
+   {
+    "body": {
+     "leaseDurationMs": 60000,
+     "role": "dispatched",
+     "workerCapabilities": {
+      "features": [
+       "agent_code",
+       "approval_edits",
+       "assistant_agent",
+       "caller",
+       "chat",
+       "child_asks",
+       "child_models",
+       "child_runs",
+       "code_task_tool",
+       "command_input",
+       "compact_request",
+       "deep_mode",
+       "deliverable_pin",
+       "descriptor_pins",
+       "engine_inputs",
+       "environment_pin",
+       "executor_engine",
+       "governed_memory",
+       "inherited_grants",
+       "inherited_labels",
+       "keyword_search_budget",
+       "knowledge_selection",
+       "mcp_carried_pins",
+       "mcp_first_use",
+       "model_fallback",
+       "output_locale",
+       "region_aware",
+       "release_pin",
+       "resolved_config",
+       "run_gates",
+       "run_surface",
+       "sandbox_command",
+       "session_roles",
+       "steering",
+       "steering_by",
+       "steering_references",
+       "trace_content",
+       "trigger_context",
+       "turn_labels",
+       "vendor_signin",
+       "workspace_forks"
+      ],
+      "foldVersion": 8,
+      "harnessMajor": 2,
+      "supportedSchemaVersions": [
+       2,
+       3
+      ]
+     },
+     "workerId": "w1"
+    },
+    "headers": {
+     "accept": "*/*",
+     "authorization": "Bearer <worker>",
+     "connection": "keep-alive",
+     "content-length": "824",
+     "content-type": "application/json",
+     "host": "node.internal:3000"
+    },
+    "method": "POST",
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    },
+    "url": "http://node.internal:3000/api/v1/agent-harness/internal/runs/claim"
+   },
+   {
+    "body": {
+     "attemptId": "att-1",
+     "commandId": "cmd-1",
+     "events": [
+      {
+       "critical": true,
+       "data": {
+        "turn": 1
+       },
+       "schemaVersion": 1,
+       "type": "turn.started",
+       "visibility": "owner"
+      }
+     ],
+     "fence": 2,
+     "legacyEvents": [],
+     "outbox": [],
+     "transition": {
+      "detail": {
+       "interactionId": "ix-1",
+       "kind": "suspend",
+       "reason": "approval"
+      },
+      "status": "waiting_approval"
+     }
+    },
+    "headers": {
+     "accept": "*/*",
+     "authorization": "Bearer <attempt>",
+     "connection": "keep-alive",
+     "content-length": "303",
+     "content-type": "application/json",
+     "host": "node.internal:3000"
+    },
+    "method": "POST",
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    },
+    "url": "http://node.internal:3000/api/v1/agent-harness/internal/runs/run%2F1/commit"
+   }
+  ]
+ },
+ "journal.commit.unavailable": {
+  "clients": [
+   {
+    "baseUrl": "http://node.internal:3000",
+    "followRedirects": false,
+    "limits": false,
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    }
+   }
+  ],
+  "logs": [
+   {
+    "event": "journal.node_capabilities_unreadable",
+    "fields": {
+     "attemptId": "att-1",
+     "fence": 2,
+     "orgId": "org-1",
+     "reasonCode": "node_capabilities_invalid",
+     "runId": "run/1"
+    },
+    "level": "WARNING",
+    "logger": "app.harness.journal_node"
+   },
+   {
+    "event": "journal.claim",
+    "fields": {
+     "attempt": 2,
+     "attemptId": "att-1",
+     "fence": 2,
+     "lastSeq": 3,
+     "leaseMs": 60000,
+     "orgId": "org-1",
+     "resumed": false,
+     "role": "dispatched",
+     "runId": "run/1",
+     "sessionId": "ses-1"
+    },
+    "level": "DEBUG",
+    "logger": "app.harness.journal_node"
+   },
+   {
+    "event": "journal.unavailable",
+    "fields": {
+     "attemptId": "att-1",
+     "commandId": "cmd-1",
+     "fence": 2,
+     "operation": "journal.commit",
+     "orgId": "org-1",
+     "reason": "BUSY",
+     "runId": "run/1",
+     "status": 429
+    },
+    "level": "WARNING",
+    "logger": "app.harness.journal_node"
+   }
+  ],
+  "outcome": {
+   "raised": {
+    "attrs": {},
+    "cause": null,
+    "str": "journal answered 429",
+    "type": "harness_core.journal.types.JournalUnavailable"
+   }
+  },
+  "requests": [
+   {
+    "body": {
+     "leaseDurationMs": 60000,
+     "role": "dispatched",
+     "workerCapabilities": {
+      "features": [
+       "agent_code",
+       "approval_edits",
+       "assistant_agent",
+       "caller",
+       "chat",
+       "child_asks",
+       "child_models",
+       "child_runs",
+       "code_task_tool",
+       "command_input",
+       "compact_request",
+       "deep_mode",
+       "deliverable_pin",
+       "descriptor_pins",
+       "engine_inputs",
+       "environment_pin",
+       "executor_engine",
+       "governed_memory",
+       "inherited_grants",
+       "inherited_labels",
+       "keyword_search_budget",
+       "knowledge_selection",
+       "mcp_carried_pins",
+       "mcp_first_use",
+       "model_fallback",
+       "output_locale",
+       "region_aware",
+       "release_pin",
+       "resolved_config",
+       "run_gates",
+       "run_surface",
+       "sandbox_command",
+       "session_roles",
+       "steering",
+       "steering_by",
+       "steering_references",
+       "trace_content",
+       "trigger_context",
+       "turn_labels",
+       "vendor_signin",
+       "workspace_forks"
+      ],
+      "foldVersion": 8,
+      "harnessMajor": 2,
+      "supportedSchemaVersions": [
+       2,
+       3
+      ]
+     },
+     "workerId": "w1"
+    },
+    "headers": {
+     "accept": "*/*",
+     "authorization": "Bearer <worker>",
+     "connection": "keep-alive",
+     "content-length": "824",
+     "content-type": "application/json",
+     "host": "node.internal:3000"
+    },
+    "method": "POST",
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    },
+    "url": "http://node.internal:3000/api/v1/agent-harness/internal/runs/claim"
+   },
+   {
+    "body": {
+     "attemptId": "att-1",
+     "commandId": "cmd-1",
+     "events": [
+      {
+       "critical": true,
+       "data": {
+        "turn": 1
+       },
+       "schemaVersion": 1,
+       "type": "turn.started",
+       "visibility": "owner"
+      }
+     ],
+     "fence": 2,
+     "legacyEvents": [],
+     "outbox": [],
+     "transition": {
+      "detail": {
+       "interactionId": "ix-1",
+       "kind": "suspend",
+       "reason": "approval"
+      },
+      "status": "waiting_approval"
+     }
+    },
+    "headers": {
+     "accept": "*/*",
+     "authorization": "Bearer <attempt>",
+     "connection": "keep-alive",
+     "content-length": "303",
+     "content-type": "application/json",
+     "host": "node.internal:3000"
+    },
+    "method": "POST",
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    },
+    "url": "http://node.internal:3000/api/v1/agent-harness/internal/runs/run%2F1/commit"
+   }
+  ]
+ },
+ "journal.commit.unreachable": {
+  "clients": [
+   {
+    "baseUrl": "http://node.internal:3000",
+    "followRedirects": false,
+    "limits": false,
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    }
+   }
+  ],
+  "logs": [
+   {
+    "event": "journal.node_capabilities_unreadable",
+    "fields": {
+     "attemptId": "att-1",
+     "fence": 2,
+     "orgId": "org-1",
+     "reasonCode": "node_capabilities_invalid",
+     "runId": "run/1"
+    },
+    "level": "WARNING",
+    "logger": "app.harness.journal_node"
+   },
+   {
+    "event": "journal.claim",
+    "fields": {
+     "attempt": 2,
+     "attemptId": "att-1",
+     "fence": 2,
+     "lastSeq": 3,
+     "leaseMs": 60000,
+     "orgId": "org-1",
+     "resumed": false,
+     "role": "dispatched",
+     "runId": "run/1",
+     "sessionId": "ses-1"
+    },
+    "level": "DEBUG",
+    "logger": "app.harness.journal_node"
+   },
+   {
+    "event": "journal.unreachable",
+    "fields": {
+     "attemptId": "att-1",
+     "commandId": "cmd-1",
+     "errorType": "ConnectError",
+     "fence": 2,
+     "operation": "journal.commit",
+     "orgId": "org-1",
+     "runId": "run/1"
+    },
+    "level": "WARNING",
+    "logger": "app.harness.journal_node"
+   }
+  ],
+  "outcome": {
+   "raised": {
+    "attrs": {},
+    "cause": "ConnectError",
+    "str": "journal unreachable: ConnectError",
+    "type": "harness_core.journal.types.JournalUnavailable"
+   }
+  },
+  "requests": [
+   {
+    "body": {
+     "leaseDurationMs": 60000,
+     "role": "dispatched",
+     "workerCapabilities": {
+      "features": [
+       "agent_code",
+       "approval_edits",
+       "assistant_agent",
+       "caller",
+       "chat",
+       "child_asks",
+       "child_models",
+       "child_runs",
+       "code_task_tool",
+       "command_input",
+       "compact_request",
+       "deep_mode",
+       "deliverable_pin",
+       "descriptor_pins",
+       "engine_inputs",
+       "environment_pin",
+       "executor_engine",
+       "governed_memory",
+       "inherited_grants",
+       "inherited_labels",
+       "keyword_search_budget",
+       "knowledge_selection",
+       "mcp_carried_pins",
+       "mcp_first_use",
+       "model_fallback",
+       "output_locale",
+       "region_aware",
+       "release_pin",
+       "resolved_config",
+       "run_gates",
+       "run_surface",
+       "sandbox_command",
+       "session_roles",
+       "steering",
+       "steering_by",
+       "steering_references",
+       "trace_content",
+       "trigger_context",
+       "turn_labels",
+       "vendor_signin",
+       "workspace_forks"
+      ],
+      "foldVersion": 8,
+      "harnessMajor": 2,
+      "supportedSchemaVersions": [
+       2,
+       3
+      ]
+     },
+     "workerId": "w1"
+    },
+    "headers": {
+     "accept": "*/*",
+     "authorization": "Bearer <worker>",
+     "connection": "keep-alive",
+     "content-length": "824",
+     "content-type": "application/json",
+     "host": "node.internal:3000"
+    },
+    "method": "POST",
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    },
+    "url": "http://node.internal:3000/api/v1/agent-harness/internal/runs/claim"
+   },
+   {
+    "body": {
+     "attemptId": "att-1",
+     "commandId": "cmd-1",
+     "events": [
+      {
+       "critical": true,
+       "data": {
+        "turn": 1
+       },
+       "schemaVersion": 1,
+       "type": "turn.started",
+       "visibility": "owner"
+      }
+     ],
+     "fence": 2,
+     "legacyEvents": [],
+     "outbox": [],
+     "transition": {
+      "detail": {
+       "interactionId": "ix-1",
+       "kind": "suspend",
+       "reason": "approval"
+      },
+      "status": "waiting_approval"
+     }
+    },
+    "headers": {
+     "accept": "*/*",
+     "authorization": "Bearer <attempt>",
+     "connection": "keep-alive",
+     "content-length": "303",
+     "content-type": "application/json",
+     "host": "node.internal:3000"
+    },
+    "method": "POST",
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    },
+    "url": "http://node.internal:3000/api/v1/agent-harness/internal/runs/run%2F1/commit"
+   }
+  ]
+ },
+ "journal.content_get.missing": {
+  "clients": [
+   {
+    "baseUrl": "http://node.internal:3000",
+    "followRedirects": false,
+    "limits": false,
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    }
+   }
+  ],
+  "logs": [
+   {
+    "event": "journal.node_capabilities_unreadable",
+    "fields": {
+     "attemptId": "att-1",
+     "fence": 2,
+     "orgId": "org-1",
+     "reasonCode": "node_capabilities_invalid",
+     "runId": "run/1"
+    },
+    "level": "WARNING",
+    "logger": "app.harness.journal_node"
+   },
+   {
+    "event": "journal.claim",
+    "fields": {
+     "attempt": 2,
+     "attemptId": "att-1",
+     "fence": 2,
+     "lastSeq": 3,
+     "leaseMs": 60000,
+     "orgId": "org-1",
+     "resumed": false,
+     "role": "dispatched",
+     "runId": "run/1",
+     "sessionId": "ses-1"
+    },
+    "level": "DEBUG",
+    "logger": "app.harness.journal_node"
+   },
+   {
+    "event": "journal.rejected",
+    "fields": {
+     "attemptId": "att-1",
+     "fence": 2,
+     "operation": "content.get",
+     "orgId": "org-1",
+     "reason": "JOURNAL_PAYLOAD_MISSING",
+     "runId": "run/1",
+     "status": 404
+    },
+    "level": "ERROR",
+    "logger": "app.harness.journal_node"
+   }
+  ],
+  "outcome": {
+   "raised": {
+    "attrs": {},
+    "cause": null,
+    "str": "JOURNAL_PAYLOAD_MISSING",
+    "type": "harness_core.journal.types.ContentMissing"
+   }
+  },
+  "requests": [
+   {
+    "body": {
+     "leaseDurationMs": 60000,
+     "role": "dispatched",
+     "workerCapabilities": {
+      "features": [
+       "agent_code",
+       "approval_edits",
+       "assistant_agent",
+       "caller",
+       "chat",
+       "child_asks",
+       "child_models",
+       "child_runs",
+       "code_task_tool",
+       "command_input",
+       "compact_request",
+       "deep_mode",
+       "deliverable_pin",
+       "descriptor_pins",
+       "engine_inputs",
+       "environment_pin",
+       "executor_engine",
+       "governed_memory",
+       "inherited_grants",
+       "inherited_labels",
+       "keyword_search_budget",
+       "knowledge_selection",
+       "mcp_carried_pins",
+       "mcp_first_use",
+       "model_fallback",
+       "output_locale",
+       "region_aware",
+       "release_pin",
+       "resolved_config",
+       "run_gates",
+       "run_surface",
+       "sandbox_command",
+       "session_roles",
+       "steering",
+       "steering_by",
+       "steering_references",
+       "trace_content",
+       "trigger_context",
+       "turn_labels",
+       "vendor_signin",
+       "workspace_forks"
+      ],
+      "foldVersion": 8,
+      "harnessMajor": 2,
+      "supportedSchemaVersions": [
+       2,
+       3
+      ]
+     },
+     "workerId": "w1"
+    },
+    "headers": {
+     "accept": "*/*",
+     "authorization": "Bearer <worker>",
+     "connection": "keep-alive",
+     "content-length": "824",
+     "content-type": "application/json",
+     "host": "node.internal:3000"
+    },
+    "method": "POST",
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    },
+    "url": "http://node.internal:3000/api/v1/agent-harness/internal/runs/claim"
+   },
+   {
+    "body": null,
+    "headers": {
+     "accept": "*/*",
+     "authorization": "Bearer <attempt>",
+     "connection": "keep-alive",
+     "host": "node.internal:3000"
+    },
+    "method": "GET",
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    },
+    "url": "http://node.internal:3000/api/v1/agent-harness/internal/runs/run%2F1/content?attemptId=att-1&fence=2&ref=sealed%3Aabc"
+   }
+  ]
+ },
+ "journal.content_get.ok": {
+  "clients": [
+   {
+    "baseUrl": "http://node.internal:3000",
+    "followRedirects": false,
+    "limits": false,
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    }
+   }
+  ],
+  "logs": [
+   {
+    "event": "journal.node_capabilities_unreadable",
+    "fields": {
+     "attemptId": "att-1",
+     "fence": 2,
+     "orgId": "org-1",
+     "reasonCode": "node_capabilities_invalid",
+     "runId": "run/1"
+    },
+    "level": "WARNING",
+    "logger": "app.harness.journal_node"
+   },
+   {
+    "event": "journal.claim",
+    "fields": {
+     "attempt": 2,
+     "attemptId": "att-1",
+     "fence": 2,
+     "lastSeq": 3,
+     "leaseMs": 60000,
+     "orgId": "org-1",
+     "resumed": false,
+     "role": "dispatched",
+     "runId": "run/1",
+     "sessionId": "ses-1"
+    },
+    "level": "DEBUG",
+    "logger": "app.harness.journal_node"
+   },
+   {
+    "event": "content.opened",
+    "fields": {
+     "attemptId": "att-1",
+     "fence": 2,
+     "orgId": "org-1",
+     "ref": "sealed:abc",
+     "runId": "run/1",
+     "size": 6
+    },
+    "level": "DEBUG",
+    "logger": "app.harness.journal_node"
+   }
+  ],
+  "outcome": {
+   "returned": {
+    "bytes": "opened"
+   }
+  },
+  "requests": [
+   {
+    "body": {
+     "leaseDurationMs": 60000,
+     "role": "dispatched",
+     "workerCapabilities": {
+      "features": [
+       "agent_code",
+       "approval_edits",
+       "assistant_agent",
+       "caller",
+       "chat",
+       "child_asks",
+       "child_models",
+       "child_runs",
+       "code_task_tool",
+       "command_input",
+       "compact_request",
+       "deep_mode",
+       "deliverable_pin",
+       "descriptor_pins",
+       "engine_inputs",
+       "environment_pin",
+       "executor_engine",
+       "governed_memory",
+       "inherited_grants",
+       "inherited_labels",
+       "keyword_search_budget",
+       "knowledge_selection",
+       "mcp_carried_pins",
+       "mcp_first_use",
+       "model_fallback",
+       "output_locale",
+       "region_aware",
+       "release_pin",
+       "resolved_config",
+       "run_gates",
+       "run_surface",
+       "sandbox_command",
+       "session_roles",
+       "steering",
+       "steering_by",
+       "steering_references",
+       "trace_content",
+       "trigger_context",
+       "turn_labels",
+       "vendor_signin",
+       "workspace_forks"
+      ],
+      "foldVersion": 8,
+      "harnessMajor": 2,
+      "supportedSchemaVersions": [
+       2,
+       3
+      ]
+     },
+     "workerId": "w1"
+    },
+    "headers": {
+     "accept": "*/*",
+     "authorization": "Bearer <worker>",
+     "connection": "keep-alive",
+     "content-length": "824",
+     "content-type": "application/json",
+     "host": "node.internal:3000"
+    },
+    "method": "POST",
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    },
+    "url": "http://node.internal:3000/api/v1/agent-harness/internal/runs/claim"
+   },
+   {
+    "body": null,
+    "headers": {
+     "accept": "*/*",
+     "authorization": "Bearer <attempt>",
+     "connection": "keep-alive",
+     "host": "node.internal:3000"
+    },
+    "method": "GET",
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    },
+    "url": "http://node.internal:3000/api/v1/agent-harness/internal/runs/run%2F1/content?attemptId=att-1&fence=2&ref=sealed%3Aabc"
+   }
+  ]
+ },
+ "journal.content_get.unreachable": {
+  "clients": [
+   {
+    "baseUrl": "http://node.internal:3000",
+    "followRedirects": false,
+    "limits": false,
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    }
+   }
+  ],
+  "logs": [
+   {
+    "event": "journal.node_capabilities_unreadable",
+    "fields": {
+     "attemptId": "att-1",
+     "fence": 2,
+     "orgId": "org-1",
+     "reasonCode": "node_capabilities_invalid",
+     "runId": "run/1"
+    },
+    "level": "WARNING",
+    "logger": "app.harness.journal_node"
+   },
+   {
+    "event": "journal.claim",
+    "fields": {
+     "attempt": 2,
+     "attemptId": "att-1",
+     "fence": 2,
+     "lastSeq": 3,
+     "leaseMs": 60000,
+     "orgId": "org-1",
+     "resumed": false,
+     "role": "dispatched",
+     "runId": "run/1",
+     "sessionId": "ses-1"
+    },
+    "level": "DEBUG",
+    "logger": "app.harness.journal_node"
+   },
+   {
+    "event": "journal.unreachable",
+    "fields": {
+     "attemptId": "att-1",
+     "errorType": "ConnectError",
+     "fence": 2,
+     "operation": "content.get",
+     "orgId": "org-1",
+     "runId": "run/1"
+    },
+    "level": "WARNING",
+    "logger": "app.harness.journal_node"
+   }
+  ],
+  "outcome": {
+   "raised": {
+    "attrs": {},
+    "cause": "ConnectError",
+    "str": "journal unreachable: ConnectError",
+    "type": "harness_core.journal.types.JournalUnavailable"
+   }
+  },
+  "requests": [
+   {
+    "body": {
+     "leaseDurationMs": 60000,
+     "role": "dispatched",
+     "workerCapabilities": {
+      "features": [
+       "agent_code",
+       "approval_edits",
+       "assistant_agent",
+       "caller",
+       "chat",
+       "child_asks",
+       "child_models",
+       "child_runs",
+       "code_task_tool",
+       "command_input",
+       "compact_request",
+       "deep_mode",
+       "deliverable_pin",
+       "descriptor_pins",
+       "engine_inputs",
+       "environment_pin",
+       "executor_engine",
+       "governed_memory",
+       "inherited_grants",
+       "inherited_labels",
+       "keyword_search_budget",
+       "knowledge_selection",
+       "mcp_carried_pins",
+       "mcp_first_use",
+       "model_fallback",
+       "output_locale",
+       "region_aware",
+       "release_pin",
+       "resolved_config",
+       "run_gates",
+       "run_surface",
+       "sandbox_command",
+       "session_roles",
+       "steering",
+       "steering_by",
+       "steering_references",
+       "trace_content",
+       "trigger_context",
+       "turn_labels",
+       "vendor_signin",
+       "workspace_forks"
+      ],
+      "foldVersion": 8,
+      "harnessMajor": 2,
+      "supportedSchemaVersions": [
+       2,
+       3
+      ]
+     },
+     "workerId": "w1"
+    },
+    "headers": {
+     "accept": "*/*",
+     "authorization": "Bearer <worker>",
+     "connection": "keep-alive",
+     "content-length": "824",
+     "content-type": "application/json",
+     "host": "node.internal:3000"
+    },
+    "method": "POST",
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    },
+    "url": "http://node.internal:3000/api/v1/agent-harness/internal/runs/claim"
+   },
+   {
+    "body": null,
+    "headers": {
+     "accept": "*/*",
+     "authorization": "Bearer <attempt>",
+     "connection": "keep-alive",
+     "host": "node.internal:3000"
+    },
+    "method": "GET",
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    },
+    "url": "http://node.internal:3000/api/v1/agent-harness/internal/runs/run%2F1/content?attemptId=att-1&fence=2&ref=sealed%3Aabc"
+   }
+  ]
+ },
+ "journal.content_put.no_ref": {
+  "clients": [
+   {
+    "baseUrl": "http://node.internal:3000",
+    "followRedirects": false,
+    "limits": false,
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    }
+   }
+  ],
+  "logs": [
+   {
+    "event": "journal.node_capabilities_unreadable",
+    "fields": {
+     "attemptId": "att-1",
+     "fence": 2,
+     "orgId": "org-1",
+     "reasonCode": "node_capabilities_invalid",
+     "runId": "run/1"
+    },
+    "level": "WARNING",
+    "logger": "app.harness.journal_node"
+   },
+   {
+    "event": "journal.claim",
+    "fields": {
+     "attempt": 2,
+     "attemptId": "att-1",
+     "fence": 2,
+     "lastSeq": 3,
+     "leaseMs": 60000,
+     "orgId": "org-1",
+     "resumed": false,
+     "role": "dispatched",
+     "runId": "run/1",
+     "sessionId": "ses-1"
+    },
+    "level": "DEBUG",
+    "logger": "app.harness.journal_node"
+   }
+  ],
+  "outcome": {
+   "raised": {
+    "attrs": {},
+    "cause": null,
+    "str": "content response names no ref",
+    "type": "harness_core.journal.types.JournalError"
+   }
+  },
+  "requests": [
+   {
+    "body": {
+     "leaseDurationMs": 60000,
+     "role": "dispatched",
+     "workerCapabilities": {
+      "features": [
+       "agent_code",
+       "approval_edits",
+       "assistant_agent",
+       "caller",
+       "chat",
+       "child_asks",
+       "child_models",
+       "child_runs",
+       "code_task_tool",
+       "command_input",
+       "compact_request",
+       "deep_mode",
+       "deliverable_pin",
+       "descriptor_pins",
+       "engine_inputs",
+       "environment_pin",
+       "executor_engine",
+       "governed_memory",
+       "inherited_grants",
+       "inherited_labels",
+       "keyword_search_budget",
+       "knowledge_selection",
+       "mcp_carried_pins",
+       "mcp_first_use",
+       "model_fallback",
+       "output_locale",
+       "region_aware",
+       "release_pin",
+       "resolved_config",
+       "run_gates",
+       "run_surface",
+       "sandbox_command",
+       "session_roles",
+       "steering",
+       "steering_by",
+       "steering_references",
+       "trace_content",
+       "trigger_context",
+       "turn_labels",
+       "vendor_signin",
+       "workspace_forks"
+      ],
+      "foldVersion": 8,
+      "harnessMajor": 2,
+      "supportedSchemaVersions": [
+       2,
+       3
+      ]
+     },
+     "workerId": "w1"
+    },
+    "headers": {
+     "accept": "*/*",
+     "authorization": "Bearer <worker>",
+     "connection": "keep-alive",
+     "content-length": "824",
+     "content-type": "application/json",
+     "host": "node.internal:3000"
+    },
+    "method": "POST",
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    },
+    "url": "http://node.internal:3000/api/v1/agent-harness/internal/runs/claim"
+   },
+   {
+    "body": {
+     "bytes": "sealed bytes"
+    },
+    "headers": {
+     "accept": "*/*",
+     "authorization": "Bearer <attempt>",
+     "connection": "keep-alive",
+     "content-length": "12",
+     "content-type": "application/octet-stream",
+     "host": "node.internal:3000"
+    },
+    "method": "POST",
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    },
+    "url": "http://node.internal:3000/api/v1/agent-harness/internal/runs/run%2F1/content?attemptId=att-1&fence=2"
+   }
+  ]
+ },
+ "journal.content_put.ok": {
+  "clients": [
+   {
+    "baseUrl": "http://node.internal:3000",
+    "followRedirects": false,
+    "limits": false,
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    }
+   }
+  ],
+  "logs": [
+   {
+    "event": "journal.node_capabilities_unreadable",
+    "fields": {
+     "attemptId": "att-1",
+     "fence": 2,
+     "orgId": "org-1",
+     "reasonCode": "node_capabilities_invalid",
+     "runId": "run/1"
+    },
+    "level": "WARNING",
+    "logger": "app.harness.journal_node"
+   },
+   {
+    "event": "journal.claim",
+    "fields": {
+     "attempt": 2,
+     "attemptId": "att-1",
+     "fence": 2,
+     "lastSeq": 3,
+     "leaseMs": 60000,
+     "orgId": "org-1",
+     "resumed": false,
+     "role": "dispatched",
+     "runId": "run/1",
+     "sessionId": "ses-1"
+    },
+    "level": "DEBUG",
+    "logger": "app.harness.journal_node"
+   },
+   {
+    "event": "content.sealed",
+    "fields": {
+     "attemptId": "att-1",
+     "fence": 2,
+     "orgId": "org-1",
+     "ref": "sealed:abc",
+     "runId": "run/1",
+     "size": 12
+    },
+    "level": "DEBUG",
+    "logger": "app.harness.journal_node"
+   }
+  ],
+  "outcome": {
+   "returned": "sealed:abc"
+  },
+  "requests": [
+   {
+    "body": {
+     "leaseDurationMs": 60000,
+     "role": "dispatched",
+     "workerCapabilities": {
+      "features": [
+       "agent_code",
+       "approval_edits",
+       "assistant_agent",
+       "caller",
+       "chat",
+       "child_asks",
+       "child_models",
+       "child_runs",
+       "code_task_tool",
+       "command_input",
+       "compact_request",
+       "deep_mode",
+       "deliverable_pin",
+       "descriptor_pins",
+       "engine_inputs",
+       "environment_pin",
+       "executor_engine",
+       "governed_memory",
+       "inherited_grants",
+       "inherited_labels",
+       "keyword_search_budget",
+       "knowledge_selection",
+       "mcp_carried_pins",
+       "mcp_first_use",
+       "model_fallback",
+       "output_locale",
+       "region_aware",
+       "release_pin",
+       "resolved_config",
+       "run_gates",
+       "run_surface",
+       "sandbox_command",
+       "session_roles",
+       "steering",
+       "steering_by",
+       "steering_references",
+       "trace_content",
+       "trigger_context",
+       "turn_labels",
+       "vendor_signin",
+       "workspace_forks"
+      ],
+      "foldVersion": 8,
+      "harnessMajor": 2,
+      "supportedSchemaVersions": [
+       2,
+       3
+      ]
+     },
+     "workerId": "w1"
+    },
+    "headers": {
+     "accept": "*/*",
+     "authorization": "Bearer <worker>",
+     "connection": "keep-alive",
+     "content-length": "824",
+     "content-type": "application/json",
+     "host": "node.internal:3000"
+    },
+    "method": "POST",
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    },
+    "url": "http://node.internal:3000/api/v1/agent-harness/internal/runs/claim"
+   },
+   {
+    "body": {
+     "bytes": "sealed bytes"
+    },
+    "headers": {
+     "accept": "*/*",
+     "authorization": "Bearer <attempt>",
+     "connection": "keep-alive",
+     "content-length": "12",
+     "content-type": "application/octet-stream",
+     "host": "node.internal:3000"
+    },
+    "method": "POST",
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    },
+    "url": "http://node.internal:3000/api/v1/agent-harness/internal/runs/run%2F1/content?attemptId=att-1&fence=2"
+   }
+  ]
+ },
+ "journal.content_put.unreachable": {
+  "clients": [
+   {
+    "baseUrl": "http://node.internal:3000",
+    "followRedirects": false,
+    "limits": false,
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    }
+   }
+  ],
+  "logs": [
+   {
+    "event": "journal.node_capabilities_unreadable",
+    "fields": {
+     "attemptId": "att-1",
+     "fence": 2,
+     "orgId": "org-1",
+     "reasonCode": "node_capabilities_invalid",
+     "runId": "run/1"
+    },
+    "level": "WARNING",
+    "logger": "app.harness.journal_node"
+   },
+   {
+    "event": "journal.claim",
+    "fields": {
+     "attempt": 2,
+     "attemptId": "att-1",
+     "fence": 2,
+     "lastSeq": 3,
+     "leaseMs": 60000,
+     "orgId": "org-1",
+     "resumed": false,
+     "role": "dispatched",
+     "runId": "run/1",
+     "sessionId": "ses-1"
+    },
+    "level": "DEBUG",
+    "logger": "app.harness.journal_node"
+   },
+   {
+    "event": "journal.unreachable",
+    "fields": {
+     "attemptId": "att-1",
+     "errorType": "ConnectError",
+     "fence": 2,
+     "operation": "content.put",
+     "orgId": "org-1",
+     "runId": "run/1"
+    },
+    "level": "WARNING",
+    "logger": "app.harness.journal_node"
+   }
+  ],
+  "outcome": {
+   "raised": {
+    "attrs": {},
+    "cause": "ConnectError",
+    "str": "journal unreachable: ConnectError",
+    "type": "harness_core.journal.types.JournalUnavailable"
+   }
+  },
+  "requests": [
+   {
+    "body": {
+     "leaseDurationMs": 60000,
+     "role": "dispatched",
+     "workerCapabilities": {
+      "features": [
+       "agent_code",
+       "approval_edits",
+       "assistant_agent",
+       "caller",
+       "chat",
+       "child_asks",
+       "child_models",
+       "child_runs",
+       "code_task_tool",
+       "command_input",
+       "compact_request",
+       "deep_mode",
+       "deliverable_pin",
+       "descriptor_pins",
+       "engine_inputs",
+       "environment_pin",
+       "executor_engine",
+       "governed_memory",
+       "inherited_grants",
+       "inherited_labels",
+       "keyword_search_budget",
+       "knowledge_selection",
+       "mcp_carried_pins",
+       "mcp_first_use",
+       "model_fallback",
+       "output_locale",
+       "region_aware",
+       "release_pin",
+       "resolved_config",
+       "run_gates",
+       "run_surface",
+       "sandbox_command",
+       "session_roles",
+       "steering",
+       "steering_by",
+       "steering_references",
+       "trace_content",
+       "trigger_context",
+       "turn_labels",
+       "vendor_signin",
+       "workspace_forks"
+      ],
+      "foldVersion": 8,
+      "harnessMajor": 2,
+      "supportedSchemaVersions": [
+       2,
+       3
+      ]
+     },
+     "workerId": "w1"
+    },
+    "headers": {
+     "accept": "*/*",
+     "authorization": "Bearer <worker>",
+     "connection": "keep-alive",
+     "content-length": "824",
+     "content-type": "application/json",
+     "host": "node.internal:3000"
+    },
+    "method": "POST",
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    },
+    "url": "http://node.internal:3000/api/v1/agent-harness/internal/runs/claim"
+   },
+   {
+    "body": {
+     "bytes": "sealed bytes"
+    },
+    "headers": {
+     "accept": "*/*",
+     "authorization": "Bearer <attempt>",
+     "connection": "keep-alive",
+     "content-length": "12",
+     "content-type": "application/octet-stream",
+     "host": "node.internal:3000"
+    },
+    "method": "POST",
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    },
+    "url": "http://node.internal:3000/api/v1/agent-harness/internal/runs/run%2F1/content?attemptId=att-1&fence=2"
+   }
+  ]
+ },
+ "journal.followups.ok": {
+  "clients": [
+   {
+    "baseUrl": "http://node.internal:3000",
+    "followRedirects": false,
+    "limits": false,
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    }
+   }
+  ],
+  "logs": [
+   {
+    "event": "journal.node_capabilities_unreadable",
+    "fields": {
+     "attemptId": "att-1",
+     "fence": 2,
+     "orgId": "org-1",
+     "reasonCode": "node_capabilities_invalid",
+     "runId": "run/1"
+    },
+    "level": "WARNING",
+    "logger": "app.harness.journal_node"
+   },
+   {
+    "event": "journal.claim",
+    "fields": {
+     "attempt": 2,
+     "attemptId": "att-1",
+     "fence": 2,
+     "lastSeq": 3,
+     "leaseMs": 60000,
+     "orgId": "org-1",
+     "resumed": false,
+     "role": "dispatched",
+     "runId": "run/1",
+     "sessionId": "ses-1"
+    },
+    "level": "DEBUG",
+    "logger": "app.harness.journal_node"
+   }
+  ],
+  "outcome": {
+   "returned": true
+  },
+  "requests": [
+   {
+    "body": {
+     "leaseDurationMs": 60000,
+     "role": "dispatched",
+     "workerCapabilities": {
+      "features": [
+       "agent_code",
+       "approval_edits",
+       "assistant_agent",
+       "caller",
+       "chat",
+       "child_asks",
+       "child_models",
+       "child_runs",
+       "code_task_tool",
+       "command_input",
+       "compact_request",
+       "deep_mode",
+       "deliverable_pin",
+       "descriptor_pins",
+       "engine_inputs",
+       "environment_pin",
+       "executor_engine",
+       "governed_memory",
+       "inherited_grants",
+       "inherited_labels",
+       "keyword_search_budget",
+       "knowledge_selection",
+       "mcp_carried_pins",
+       "mcp_first_use",
+       "model_fallback",
+       "output_locale",
+       "region_aware",
+       "release_pin",
+       "resolved_config",
+       "run_gates",
+       "run_surface",
+       "sandbox_command",
+       "session_roles",
+       "steering",
+       "steering_by",
+       "steering_references",
+       "trace_content",
+       "trigger_context",
+       "turn_labels",
+       "vendor_signin",
+       "workspace_forks"
+      ],
+      "foldVersion": 8,
+      "harnessMajor": 2,
+      "supportedSchemaVersions": [
+       2,
+       3
+      ]
+     },
+     "workerId": "w1"
+    },
+    "headers": {
+     "accept": "*/*",
+     "authorization": "Bearer <worker>",
+     "connection": "keep-alive",
+     "content-length": "824",
+     "content-type": "application/json",
+     "host": "node.internal:3000"
+    },
+    "method": "POST",
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    },
+    "url": "http://node.internal:3000/api/v1/agent-harness/internal/runs/claim"
+   },
+   {
+    "body": {
+     "attemptId": "att-1",
+     "fence": 2,
+     "items": [
+      {
+       "text": "next?"
+      }
+     ]
+    },
+    "headers": {
+     "accept": "*/*",
+     "authorization": "Bearer <attempt>",
+     "connection": "keep-alive",
+     "content-length": "58",
+     "content-type": "application/json",
+     "host": "node.internal:3000"
+    },
+    "method": "POST",
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    },
+    "url": "http://node.internal:3000/api/v1/agent-harness/internal/runs/run%2F1/followups"
+   }
+  ]
+ },
+ "journal.followups.refused": {
+  "clients": [
+   {
+    "baseUrl": "http://node.internal:3000",
+    "followRedirects": false,
+    "limits": false,
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    }
+   }
+  ],
+  "logs": [
+   {
+    "event": "journal.node_capabilities_unreadable",
+    "fields": {
+     "attemptId": "att-1",
+     "fence": 2,
+     "orgId": "org-1",
+     "reasonCode": "node_capabilities_invalid",
+     "runId": "run/1"
+    },
+    "level": "WARNING",
+    "logger": "app.harness.journal_node"
+   },
+   {
+    "event": "journal.claim",
+    "fields": {
+     "attempt": 2,
+     "attemptId": "att-1",
+     "fence": 2,
+     "lastSeq": 3,
+     "leaseMs": 60000,
+     "orgId": "org-1",
+     "resumed": false,
+     "role": "dispatched",
+     "runId": "run/1",
+     "sessionId": "ses-1"
+    },
+    "level": "DEBUG",
+    "logger": "app.harness.journal_node"
+   }
+  ],
+  "outcome": {
+   "returned": false
+  },
+  "requests": [
+   {
+    "body": {
+     "leaseDurationMs": 60000,
+     "role": "dispatched",
+     "workerCapabilities": {
+      "features": [
+       "agent_code",
+       "approval_edits",
+       "assistant_agent",
+       "caller",
+       "chat",
+       "child_asks",
+       "child_models",
+       "child_runs",
+       "code_task_tool",
+       "command_input",
+       "compact_request",
+       "deep_mode",
+       "deliverable_pin",
+       "descriptor_pins",
+       "engine_inputs",
+       "environment_pin",
+       "executor_engine",
+       "governed_memory",
+       "inherited_grants",
+       "inherited_labels",
+       "keyword_search_budget",
+       "knowledge_selection",
+       "mcp_carried_pins",
+       "mcp_first_use",
+       "model_fallback",
+       "output_locale",
+       "region_aware",
+       "release_pin",
+       "resolved_config",
+       "run_gates",
+       "run_surface",
+       "sandbox_command",
+       "session_roles",
+       "steering",
+       "steering_by",
+       "steering_references",
+       "trace_content",
+       "trigger_context",
+       "turn_labels",
+       "vendor_signin",
+       "workspace_forks"
+      ],
+      "foldVersion": 8,
+      "harnessMajor": 2,
+      "supportedSchemaVersions": [
+       2,
+       3
+      ]
+     },
+     "workerId": "w1"
+    },
+    "headers": {
+     "accept": "*/*",
+     "authorization": "Bearer <worker>",
+     "connection": "keep-alive",
+     "content-length": "824",
+     "content-type": "application/json",
+     "host": "node.internal:3000"
+    },
+    "method": "POST",
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    },
+    "url": "http://node.internal:3000/api/v1/agent-harness/internal/runs/claim"
+   },
+   {
+    "body": {
+     "attemptId": "att-1",
+     "fence": 2,
+     "items": [
+      {
+       "text": "next?"
+      }
+     ]
+    },
+    "headers": {
+     "accept": "*/*",
+     "authorization": "Bearer <attempt>",
+     "connection": "keep-alive",
+     "content-length": "58",
+     "content-type": "application/json",
+     "host": "node.internal:3000"
+    },
+    "method": "POST",
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    },
+    "url": "http://node.internal:3000/api/v1/agent-harness/internal/runs/run%2F1/followups"
+   }
+  ]
+ },
+ "journal.read.ok": {
+  "clients": [
+   {
+    "baseUrl": "http://node.internal:3000",
+    "followRedirects": false,
+    "limits": false,
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    }
+   }
+  ],
+  "logs": [
+   {
+    "event": "journal.node_capabilities_unreadable",
+    "fields": {
+     "attemptId": "att-1",
+     "fence": 2,
+     "orgId": "org-1",
+     "reasonCode": "node_capabilities_invalid",
+     "runId": "run/1"
+    },
+    "level": "WARNING",
+    "logger": "app.harness.journal_node"
+   },
+   {
+    "event": "journal.claim",
+    "fields": {
+     "attempt": 2,
+     "attemptId": "att-1",
+     "fence": 2,
+     "lastSeq": 3,
+     "leaseMs": 60000,
+     "orgId": "org-1",
+     "resumed": false,
+     "role": "dispatched",
+     "runId": "run/1",
+     "sessionId": "ses-1"
+    },
+    "level": "DEBUG",
+    "logger": "app.harness.journal_node"
+   },
+   {
+    "event": "journal.read",
+    "fields": {
+     "after": 3,
+     "attemptId": "att-1",
+     "events": 2,
+     "fence": 2,
+     "orgId": "org-1",
+     "runId": "run/1",
+     "seq": 5
+    },
+    "level": "DEBUG",
+    "logger": "app.harness.journal_node"
+   }
+  ],
+  "outcome": {
+   "returned": [
+    {
+     "attempt_id": "att-1",
+     "critical": true,
+     "data": {
+      "turn": 1
+     },
+     "fence": 2,
+     "labels": null,
+     "org_id": "org-1",
+     "run_id": "run/1",
+     "schema_version": 1,
+     "seq": 4,
+     "session_id": "ses-1",
+     "stream_id": "ses-1",
+     "ts": "2026-09-21T00:00:00.000Z",
+     "type": "turn.started",
+     "visibility": "owner",
+     "writer": "worker"
+    },
+    {
+     "attempt_id": "att-1",
+     "critical": true,
+     "data": {
+      "turn": 1
+     },
+     "fence": 2,
+     "labels": null,
+     "org_id": "org-1",
+     "run_id": "run/1",
+     "schema_version": 1,
+     "seq": 5,
+     "session_id": "ses-1",
+     "stream_id": "ses-1",
+     "ts": "2026-09-21T00:00:00.000Z",
+     "type": "turn.started",
+     "visibility": "owner",
+     "writer": "worker"
+    }
+   ]
+  },
+  "requests": [
+   {
+    "body": {
+     "leaseDurationMs": 60000,
+     "role": "dispatched",
+     "workerCapabilities": {
+      "features": [
+       "agent_code",
+       "approval_edits",
+       "assistant_agent",
+       "caller",
+       "chat",
+       "child_asks",
+       "child_models",
+       "child_runs",
+       "code_task_tool",
+       "command_input",
+       "compact_request",
+       "deep_mode",
+       "deliverable_pin",
+       "descriptor_pins",
+       "engine_inputs",
+       "environment_pin",
+       "executor_engine",
+       "governed_memory",
+       "inherited_grants",
+       "inherited_labels",
+       "keyword_search_budget",
+       "knowledge_selection",
+       "mcp_carried_pins",
+       "mcp_first_use",
+       "model_fallback",
+       "output_locale",
+       "region_aware",
+       "release_pin",
+       "resolved_config",
+       "run_gates",
+       "run_surface",
+       "sandbox_command",
+       "session_roles",
+       "steering",
+       "steering_by",
+       "steering_references",
+       "trace_content",
+       "trigger_context",
+       "turn_labels",
+       "vendor_signin",
+       "workspace_forks"
+      ],
+      "foldVersion": 8,
+      "harnessMajor": 2,
+      "supportedSchemaVersions": [
+       2,
+       3
+      ]
+     },
+     "workerId": "w1"
+    },
+    "headers": {
+     "accept": "*/*",
+     "authorization": "Bearer <worker>",
+     "connection": "keep-alive",
+     "content-length": "824",
+     "content-type": "application/json",
+     "host": "node.internal:3000"
+    },
+    "method": "POST",
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    },
+    "url": "http://node.internal:3000/api/v1/agent-harness/internal/runs/claim"
+   },
+   {
+    "body": null,
+    "headers": {
+     "accept": "*/*",
+     "authorization": "Bearer <attempt>",
+     "connection": "keep-alive",
+     "host": "node.internal:3000"
+    },
+    "method": "GET",
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    },
+    "url": "http://node.internal:3000/api/v1/agent-harness/internal/runs/run%2F1/events?attemptId=att-1&fence=2&after=3&limit=500&scope=stream"
+   }
+  ]
+ },
+ "journal.read.unreachable": {
+  "clients": [
+   {
+    "baseUrl": "http://node.internal:3000",
+    "followRedirects": false,
+    "limits": false,
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    }
+   }
+  ],
+  "logs": [
+   {
+    "event": "journal.node_capabilities_unreadable",
+    "fields": {
+     "attemptId": "att-1",
+     "fence": 2,
+     "orgId": "org-1",
+     "reasonCode": "node_capabilities_invalid",
+     "runId": "run/1"
+    },
+    "level": "WARNING",
+    "logger": "app.harness.journal_node"
+   },
+   {
+    "event": "journal.claim",
+    "fields": {
+     "attempt": 2,
+     "attemptId": "att-1",
+     "fence": 2,
+     "lastSeq": 3,
+     "leaseMs": 60000,
+     "orgId": "org-1",
+     "resumed": false,
+     "role": "dispatched",
+     "runId": "run/1",
+     "sessionId": "ses-1"
+    },
+    "level": "DEBUG",
+    "logger": "app.harness.journal_node"
+   },
+   {
+    "event": "journal.unreachable",
+    "fields": {
+     "attemptId": "att-1",
+     "errorType": "ConnectError",
+     "fence": 2,
+     "operation": "journal.read",
+     "orgId": "org-1",
+     "runId": "run/1"
+    },
+    "level": "WARNING",
+    "logger": "app.harness.journal_node"
+   }
+  ],
+  "outcome": {
+   "raised": {
+    "attrs": {},
+    "cause": "ConnectError",
+    "str": "journal unreachable: ConnectError",
+    "type": "harness_core.journal.types.JournalUnavailable"
+   }
+  },
+  "requests": [
+   {
+    "body": {
+     "leaseDurationMs": 60000,
+     "role": "dispatched",
+     "workerCapabilities": {
+      "features": [
+       "agent_code",
+       "approval_edits",
+       "assistant_agent",
+       "caller",
+       "chat",
+       "child_asks",
+       "child_models",
+       "child_runs",
+       "code_task_tool",
+       "command_input",
+       "compact_request",
+       "deep_mode",
+       "deliverable_pin",
+       "descriptor_pins",
+       "engine_inputs",
+       "environment_pin",
+       "executor_engine",
+       "governed_memory",
+       "inherited_grants",
+       "inherited_labels",
+       "keyword_search_budget",
+       "knowledge_selection",
+       "mcp_carried_pins",
+       "mcp_first_use",
+       "model_fallback",
+       "output_locale",
+       "region_aware",
+       "release_pin",
+       "resolved_config",
+       "run_gates",
+       "run_surface",
+       "sandbox_command",
+       "session_roles",
+       "steering",
+       "steering_by",
+       "steering_references",
+       "trace_content",
+       "trigger_context",
+       "turn_labels",
+       "vendor_signin",
+       "workspace_forks"
+      ],
+      "foldVersion": 8,
+      "harnessMajor": 2,
+      "supportedSchemaVersions": [
+       2,
+       3
+      ]
+     },
+     "workerId": "w1"
+    },
+    "headers": {
+     "accept": "*/*",
+     "authorization": "Bearer <worker>",
+     "connection": "keep-alive",
+     "content-length": "824",
+     "content-type": "application/json",
+     "host": "node.internal:3000"
+    },
+    "method": "POST",
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    },
+    "url": "http://node.internal:3000/api/v1/agent-harness/internal/runs/claim"
+   },
+   {
+    "body": null,
+    "headers": {
+     "accept": "*/*",
+     "authorization": "Bearer <attempt>",
+     "connection": "keep-alive",
+     "host": "node.internal:3000"
+    },
+    "method": "GET",
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    },
+    "url": "http://node.internal:3000/api/v1/agent-harness/internal/runs/run%2F1/events?attemptId=att-1&fence=2&after=3&limit=500&scope=stream"
+   }
+  ]
+ },
+ "journal.renew.lost": {
+  "clients": [
+   {
+    "baseUrl": "http://node.internal:3000",
+    "followRedirects": false,
+    "limits": false,
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    }
+   }
+  ],
+  "logs": [
+   {
+    "event": "journal.node_capabilities_unreadable",
+    "fields": {
+     "attemptId": "att-1",
+     "fence": 2,
+     "orgId": "org-1",
+     "reasonCode": "node_capabilities_invalid",
+     "runId": "run/1"
+    },
+    "level": "WARNING",
+    "logger": "app.harness.journal_node"
+   },
+   {
+    "event": "journal.claim",
+    "fields": {
+     "attempt": 2,
+     "attemptId": "att-1",
+     "fence": 2,
+     "lastSeq": 3,
+     "leaseMs": 60000,
+     "orgId": "org-1",
+     "resumed": false,
+     "role": "dispatched",
+     "runId": "run/1",
+     "sessionId": "ses-1"
+    },
+    "level": "DEBUG",
+    "logger": "app.harness.journal_node"
+   },
+   {
+    "event": "journal.ownership_lost",
+    "fields": {
+     "attemptId": "att-1",
+     "fence": 2,
+     "operation": "journal.renew",
+     "orgId": "org-1",
+     "reason": "ATTEMPT_CLAIMS",
+     "runId": "run/1",
+     "status": 401
+    },
+    "level": "WARNING",
+    "logger": "app.harness.journal_node"
+   }
+  ],
+  "outcome": {
+   "raised": {
+    "attrs": {},
+    "cause": null,
+    "str": "ATTEMPT_CLAIMS",
+    "type": "harness_core.journal.types.OwnershipLost"
+   }
+  },
+  "requests": [
+   {
+    "body": {
+     "leaseDurationMs": 60000,
+     "role": "dispatched",
+     "workerCapabilities": {
+      "features": [
+       "agent_code",
+       "approval_edits",
+       "assistant_agent",
+       "caller",
+       "chat",
+       "child_asks",
+       "child_models",
+       "child_runs",
+       "code_task_tool",
+       "command_input",
+       "compact_request",
+       "deep_mode",
+       "deliverable_pin",
+       "descriptor_pins",
+       "engine_inputs",
+       "environment_pin",
+       "executor_engine",
+       "governed_memory",
+       "inherited_grants",
+       "inherited_labels",
+       "keyword_search_budget",
+       "knowledge_selection",
+       "mcp_carried_pins",
+       "mcp_first_use",
+       "model_fallback",
+       "output_locale",
+       "region_aware",
+       "release_pin",
+       "resolved_config",
+       "run_gates",
+       "run_surface",
+       "sandbox_command",
+       "session_roles",
+       "steering",
+       "steering_by",
+       "steering_references",
+       "trace_content",
+       "trigger_context",
+       "turn_labels",
+       "vendor_signin",
+       "workspace_forks"
+      ],
+      "foldVersion": 8,
+      "harnessMajor": 2,
+      "supportedSchemaVersions": [
+       2,
+       3
+      ]
+     },
+     "workerId": "w1"
+    },
+    "headers": {
+     "accept": "*/*",
+     "authorization": "Bearer <worker>",
+     "connection": "keep-alive",
+     "content-length": "824",
+     "content-type": "application/json",
+     "host": "node.internal:3000"
+    },
+    "method": "POST",
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    },
+    "url": "http://node.internal:3000/api/v1/agent-harness/internal/runs/claim"
+   },
+   {
+    "body": {
+     "attemptId": "att-1",
+     "fence": 2,
+     "leaseDurationMs": 60000
+    },
+    "headers": {
+     "accept": "*/*",
+     "authorization": "Bearer <attempt>",
+     "connection": "keep-alive",
+     "content-length": "55",
+     "content-type": "application/json",
+     "host": "node.internal:3000"
+    },
+    "method": "POST",
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    },
+    "url": "http://node.internal:3000/api/v1/agent-harness/internal/runs/run%2F1/renew"
+   }
+  ]
+ },
+ "journal.renew_release.ok": {
+  "clients": [
+   {
+    "baseUrl": "http://node.internal:3000",
+    "followRedirects": false,
+    "limits": false,
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    }
+   }
+  ],
+  "logs": [
+   {
+    "event": "journal.node_capabilities_unreadable",
+    "fields": {
+     "attemptId": "att-1",
+     "fence": 2,
+     "orgId": "org-1",
+     "reasonCode": "node_capabilities_invalid",
+     "runId": "run/1"
+    },
+    "level": "WARNING",
+    "logger": "app.harness.journal_node"
+   },
+   {
+    "event": "journal.claim",
+    "fields": {
+     "attempt": 2,
+     "attemptId": "att-1",
+     "fence": 2,
+     "lastSeq": 3,
+     "leaseMs": 60000,
+     "orgId": "org-1",
+     "resumed": false,
+     "role": "dispatched",
+     "runId": "run/1",
+     "sessionId": "ses-1"
+    },
+    "level": "DEBUG",
+    "logger": "app.harness.journal_node"
+   },
+   {
+    "event": "journal.renew",
+    "fields": {
+     "attemptId": "att-1",
+     "fence": 2,
+     "leaseMs": 60000,
+     "orgId": "org-1",
+     "runId": "run/1",
+     "tokenRefreshed": true
+    },
+    "level": "INFO",
+    "logger": "app.harness.journal_node"
+   },
+   {
+    "event": "journal.release",
+    "fields": {
+     "attemptId": "att-1",
+     "fence": 2,
+     "orgId": "org-1",
+     "reason": "yield",
+     "runId": "run/1"
+    },
+    "level": "INFO",
+    "logger": "app.harness.journal_node"
+   }
+  ],
+  "outcome": {
+   "returned": {
+    "lease_ms": 60000
+   }
+  },
+  "requests": [
+   {
+    "body": {
+     "leaseDurationMs": 60000,
+     "role": "dispatched",
+     "workerCapabilities": {
+      "features": [
+       "agent_code",
+       "approval_edits",
+       "assistant_agent",
+       "caller",
+       "chat",
+       "child_asks",
+       "child_models",
+       "child_runs",
+       "code_task_tool",
+       "command_input",
+       "compact_request",
+       "deep_mode",
+       "deliverable_pin",
+       "descriptor_pins",
+       "engine_inputs",
+       "environment_pin",
+       "executor_engine",
+       "governed_memory",
+       "inherited_grants",
+       "inherited_labels",
+       "keyword_search_budget",
+       "knowledge_selection",
+       "mcp_carried_pins",
+       "mcp_first_use",
+       "model_fallback",
+       "output_locale",
+       "region_aware",
+       "release_pin",
+       "resolved_config",
+       "run_gates",
+       "run_surface",
+       "sandbox_command",
+       "session_roles",
+       "steering",
+       "steering_by",
+       "steering_references",
+       "trace_content",
+       "trigger_context",
+       "turn_labels",
+       "vendor_signin",
+       "workspace_forks"
+      ],
+      "foldVersion": 8,
+      "harnessMajor": 2,
+      "supportedSchemaVersions": [
+       2,
+       3
+      ]
+     },
+     "workerId": "w1"
+    },
+    "headers": {
+     "accept": "*/*",
+     "authorization": "Bearer <worker>",
+     "connection": "keep-alive",
+     "content-length": "824",
+     "content-type": "application/json",
+     "host": "node.internal:3000"
+    },
+    "method": "POST",
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    },
+    "url": "http://node.internal:3000/api/v1/agent-harness/internal/runs/claim"
+   },
+   {
+    "body": {
+     "attemptId": "att-1",
+     "fence": 2,
+     "leaseDurationMs": 60000
+    },
+    "headers": {
+     "accept": "*/*",
+     "authorization": "Bearer <attempt>",
+     "connection": "keep-alive",
+     "content-length": "55",
+     "content-type": "application/json",
+     "host": "node.internal:3000"
+    },
+    "method": "POST",
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    },
+    "url": "http://node.internal:3000/api/v1/agent-harness/internal/runs/run%2F1/renew"
+   },
+   {
+    "body": {
+     "attemptId": "att-1",
+     "fence": 2,
+     "reason": "yield"
+    },
+    "headers": {
+     "accept": "*/*",
+     "authorization": "Bearer <renewed>",
+     "connection": "keep-alive",
+     "content-length": "48",
+     "content-type": "application/json",
+     "host": "node.internal:3000"
+    },
+    "method": "POST",
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    },
+    "url": "http://node.internal:3000/api/v1/agent-harness/internal/runs/run%2F1/release"
+   }
+  ]
+ },
+ "journal.route_get.ok": {
+  "clients": [
+   {
+    "baseUrl": "http://node.internal:3000",
+    "followRedirects": false,
+    "limits": false,
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    }
+   }
+  ],
+  "logs": [
+   {
+    "event": "journal.node_capabilities_unreadable",
+    "fields": {
+     "attemptId": "att-1",
+     "fence": 2,
+     "orgId": "org-1",
+     "reasonCode": "node_capabilities_invalid",
+     "runId": "run/1"
+    },
+    "level": "WARNING",
+    "logger": "app.harness.journal_node"
+   },
+   {
+    "event": "journal.claim",
+    "fields": {
+     "attempt": 2,
+     "attemptId": "att-1",
+     "fence": 2,
+     "lastSeq": 3,
+     "leaseMs": 60000,
+     "orgId": "org-1",
+     "resumed": false,
+     "role": "dispatched",
+     "runId": "run/1",
+     "sessionId": "ses-1"
+    },
+    "level": "DEBUG",
+    "logger": "app.harness.journal_node"
+   }
+  ],
+  "outcome": {
+   "returned": {
+    "status": 200
+   }
+  },
+  "requests": [
+   {
+    "body": {
+     "leaseDurationMs": 60000,
+     "role": "dispatched",
+     "workerCapabilities": {
+      "features": [
+       "agent_code",
+       "approval_edits",
+       "assistant_agent",
+       "caller",
+       "chat",
+       "child_asks",
+       "child_models",
+       "child_runs",
+       "code_task_tool",
+       "command_input",
+       "compact_request",
+       "deep_mode",
+       "deliverable_pin",
+       "descriptor_pins",
+       "engine_inputs",
+       "environment_pin",
+       "executor_engine",
+       "governed_memory",
+       "inherited_grants",
+       "inherited_labels",
+       "keyword_search_budget",
+       "knowledge_selection",
+       "mcp_carried_pins",
+       "mcp_first_use",
+       "model_fallback",
+       "output_locale",
+       "region_aware",
+       "release_pin",
+       "resolved_config",
+       "run_gates",
+       "run_surface",
+       "sandbox_command",
+       "session_roles",
+       "steering",
+       "steering_by",
+       "steering_references",
+       "trace_content",
+       "trigger_context",
+       "turn_labels",
+       "vendor_signin",
+       "workspace_forks"
+      ],
+      "foldVersion": 8,
+      "harnessMajor": 2,
+      "supportedSchemaVersions": [
+       2,
+       3
+      ]
+     },
+     "workerId": "w1"
+    },
+    "headers": {
+     "accept": "*/*",
+     "authorization": "Bearer <worker>",
+     "connection": "keep-alive",
+     "content-length": "824",
+     "content-type": "application/json",
+     "host": "node.internal:3000"
+    },
+    "method": "POST",
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    },
+    "url": "http://node.internal:3000/api/v1/agent-harness/internal/runs/claim"
+   },
+   {
+    "body": null,
+    "headers": {
+     "accept": "*/*",
+     "authorization": "Bearer <attempt>",
+     "connection": "keep-alive",
+     "host": "node.internal:3000"
+    },
+    "method": "GET",
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    },
+    "url": "http://node.internal:3000/api/v1/agent-harness/internal/runs/run%2F1/workspace?path=a+b&attemptId=att-1&fence=2"
+   }
+  ]
+ },
+ "journal.route_get.unreachable": {
+  "clients": [
+   {
+    "baseUrl": "http://node.internal:3000",
+    "followRedirects": false,
+    "limits": false,
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    }
+   }
+  ],
+  "logs": [
+   {
+    "event": "journal.node_capabilities_unreadable",
+    "fields": {
+     "attemptId": "att-1",
+     "fence": 2,
+     "orgId": "org-1",
+     "reasonCode": "node_capabilities_invalid",
+     "runId": "run/1"
+    },
+    "level": "WARNING",
+    "logger": "app.harness.journal_node"
+   },
+   {
+    "event": "journal.claim",
+    "fields": {
+     "attempt": 2,
+     "attemptId": "att-1",
+     "fence": 2,
+     "lastSeq": 3,
+     "leaseMs": 60000,
+     "orgId": "org-1",
+     "resumed": false,
+     "role": "dispatched",
+     "runId": "run/1",
+     "sessionId": "ses-1"
+    },
+    "level": "DEBUG",
+    "logger": "app.harness.journal_node"
+   },
+   {
+    "event": "journal.unreachable",
+    "fields": {
+     "attemptId": "att-1",
+     "errorType": "ConnectError",
+     "fence": 2,
+     "operation": "ws.read",
+     "orgId": "org-1",
+     "runId": "run/1"
+    },
+    "level": "WARNING",
+    "logger": "app.harness.journal_node"
+   }
+  ],
+  "outcome": {
+   "raised": {
+    "attrs": {},
+    "cause": "ConnectError",
+    "str": "journal unreachable: ConnectError",
+    "type": "harness_core.journal.types.JournalUnavailable"
+   }
+  },
+  "requests": [
+   {
+    "body": {
+     "leaseDurationMs": 60000,
+     "role": "dispatched",
+     "workerCapabilities": {
+      "features": [
+       "agent_code",
+       "approval_edits",
+       "assistant_agent",
+       "caller",
+       "chat",
+       "child_asks",
+       "child_models",
+       "child_runs",
+       "code_task_tool",
+       "command_input",
+       "compact_request",
+       "deep_mode",
+       "deliverable_pin",
+       "descriptor_pins",
+       "engine_inputs",
+       "environment_pin",
+       "executor_engine",
+       "governed_memory",
+       "inherited_grants",
+       "inherited_labels",
+       "keyword_search_budget",
+       "knowledge_selection",
+       "mcp_carried_pins",
+       "mcp_first_use",
+       "model_fallback",
+       "output_locale",
+       "region_aware",
+       "release_pin",
+       "resolved_config",
+       "run_gates",
+       "run_surface",
+       "sandbox_command",
+       "session_roles",
+       "steering",
+       "steering_by",
+       "steering_references",
+       "trace_content",
+       "trigger_context",
+       "turn_labels",
+       "vendor_signin",
+       "workspace_forks"
+      ],
+      "foldVersion": 8,
+      "harnessMajor": 2,
+      "supportedSchemaVersions": [
+       2,
+       3
+      ]
+     },
+     "workerId": "w1"
+    },
+    "headers": {
+     "accept": "*/*",
+     "authorization": "Bearer <worker>",
+     "connection": "keep-alive",
+     "content-length": "824",
+     "content-type": "application/json",
+     "host": "node.internal:3000"
+    },
+    "method": "POST",
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    },
+    "url": "http://node.internal:3000/api/v1/agent-harness/internal/runs/claim"
+   },
+   {
+    "body": null,
+    "headers": {
+     "accept": "*/*",
+     "authorization": "Bearer <attempt>",
+     "connection": "keep-alive",
+     "host": "node.internal:3000"
+    },
+    "method": "GET",
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    },
+    "url": "http://node.internal:3000/api/v1/agent-harness/internal/runs/run%2F1/workspace?path=a+b&attemptId=att-1&fence=2"
+   }
+  ]
+ },
+ "journal.route_post_settling.ok": {
+  "clients": [
+   {
+    "baseUrl": "http://node.internal:3000",
+    "followRedirects": false,
+    "limits": false,
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    }
+   }
+  ],
+  "logs": [
+   {
+    "event": "journal.node_capabilities_unreadable",
+    "fields": {
+     "attemptId": "att-1",
+     "fence": 2,
+     "orgId": "org-1",
+     "reasonCode": "node_capabilities_invalid",
+     "runId": "run/1"
+    },
+    "level": "WARNING",
+    "logger": "app.harness.journal_node"
+   },
+   {
+    "event": "journal.claim",
+    "fields": {
+     "attempt": 2,
+     "attemptId": "att-1",
+     "fence": 2,
+     "lastSeq": 3,
+     "leaseMs": 60000,
+     "orgId": "org-1",
+     "resumed": false,
+     "role": "dispatched",
+     "runId": "run/1",
+     "sessionId": "ses-1"
+    },
+    "level": "DEBUG",
+    "logger": "app.harness.journal_node"
+   }
+  ],
+  "outcome": {
+   "returned": {
+    "status": 200
+   }
+  },
+  "requests": [
+   {
+    "body": {
+     "leaseDurationMs": 60000,
+     "role": "dispatched",
+     "workerCapabilities": {
+      "features": [
+       "agent_code",
+       "approval_edits",
+       "assistant_agent",
+       "caller",
+       "chat",
+       "child_asks",
+       "child_models",
+       "child_runs",
+       "code_task_tool",
+       "command_input",
+       "compact_request",
+       "deep_mode",
+       "deliverable_pin",
+       "descriptor_pins",
+       "engine_inputs",
+       "environment_pin",
+       "executor_engine",
+       "governed_memory",
+       "inherited_grants",
+       "inherited_labels",
+       "keyword_search_budget",
+       "knowledge_selection",
+       "mcp_carried_pins",
+       "mcp_first_use",
+       "model_fallback",
+       "output_locale",
+       "region_aware",
+       "release_pin",
+       "resolved_config",
+       "run_gates",
+       "run_surface",
+       "sandbox_command",
+       "session_roles",
+       "steering",
+       "steering_by",
+       "steering_references",
+       "trace_content",
+       "trigger_context",
+       "turn_labels",
+       "vendor_signin",
+       "workspace_forks"
+      ],
+      "foldVersion": 8,
+      "harnessMajor": 2,
+      "supportedSchemaVersions": [
+       2,
+       3
+      ]
+     },
+     "workerId": "w1"
+    },
+    "headers": {
+     "accept": "*/*",
+     "authorization": "Bearer <worker>",
+     "connection": "keep-alive",
+     "content-length": "824",
+     "content-type": "application/json",
+     "host": "node.internal:3000"
+    },
+    "method": "POST",
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    },
+    "url": "http://node.internal:3000/api/v1/agent-harness/internal/runs/claim"
+   },
+   {
+    "body": {
+     "attemptId": "att-1",
+     "fence": 2,
+     "path": "a"
+    },
+    "headers": {
+     "accept": "*/*",
+     "authorization": "Bearer <attempt>",
+     "connection": "keep-alive",
+     "content-length": "42",
+     "content-type": "application/json",
+     "host": "node.internal:3000"
+    },
+    "method": "POST",
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    },
+    "url": "http://node.internal:3000/api/v1/agent-harness/internal/runs/run%2F1/workspace"
+   }
+  ]
+ },
+ "journal.spawn.ok": {
+  "clients": [
+   {
+    "baseUrl": "http://node.internal:3000",
+    "followRedirects": false,
+    "limits": false,
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    }
+   }
+  ],
+  "logs": [
+   {
+    "event": "journal.node_capabilities_unreadable",
+    "fields": {
+     "attemptId": "att-1",
+     "fence": 2,
+     "orgId": "org-1",
+     "reasonCode": "node_capabilities_invalid",
+     "runId": "run/1"
+    },
+    "level": "WARNING",
+    "logger": "app.harness.journal_node"
+   },
+   {
+    "event": "journal.claim",
+    "fields": {
+     "attempt": 2,
+     "attemptId": "att-1",
+     "fence": 2,
+     "lastSeq": 3,
+     "leaseMs": 60000,
+     "orgId": "org-1",
+     "resumed": false,
+     "role": "dispatched",
+     "runId": "run/1",
+     "sessionId": "ses-1"
+    },
+    "level": "DEBUG",
+    "logger": "app.harness.journal_node"
+   },
+   {
+    "event": "journal.child_admitted",
+    "fields": {
+     "attemptId": "att-1",
+     "childRunId": "child-1",
+     "created": true,
+     "fence": 2,
+     "invocationId": "inv-1",
+     "orgId": "org-1",
+     "runId": "run/1"
+    },
+    "level": "INFO",
+    "logger": "app.harness.journal_node"
+   }
+  ],
+  "outcome": {
+   "returned": {
+    "child_run_id": "child-1",
+    "created": true
+   }
+  },
+  "requests": [
+   {
+    "body": {
+     "leaseDurationMs": 60000,
+     "role": "dispatched",
+     "workerCapabilities": {
+      "features": [
+       "agent_code",
+       "approval_edits",
+       "assistant_agent",
+       "caller",
+       "chat",
+       "child_asks",
+       "child_models",
+       "child_runs",
+       "code_task_tool",
+       "command_input",
+       "compact_request",
+       "deep_mode",
+       "deliverable_pin",
+       "descriptor_pins",
+       "engine_inputs",
+       "environment_pin",
+       "executor_engine",
+       "governed_memory",
+       "inherited_grants",
+       "inherited_labels",
+       "keyword_search_budget",
+       "knowledge_selection",
+       "mcp_carried_pins",
+       "mcp_first_use",
+       "model_fallback",
+       "output_locale",
+       "region_aware",
+       "release_pin",
+       "resolved_config",
+       "run_gates",
+       "run_surface",
+       "sandbox_command",
+       "session_roles",
+       "steering",
+       "steering_by",
+       "steering_references",
+       "trace_content",
+       "trigger_context",
+       "turn_labels",
+       "vendor_signin",
+       "workspace_forks"
+      ],
+      "foldVersion": 8,
+      "harnessMajor": 2,
+      "supportedSchemaVersions": [
+       2,
+       3
+      ]
+     },
+     "workerId": "w1"
+    },
+    "headers": {
+     "accept": "*/*",
+     "authorization": "Bearer <worker>",
+     "connection": "keep-alive",
+     "content-length": "824",
+     "content-type": "application/json",
+     "host": "node.internal:3000"
+    },
+    "method": "POST",
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    },
+    "url": "http://node.internal:3000/api/v1/agent-harness/internal/runs/claim"
+   },
+   {
+    "body": {
+     "attemptId": "att-1",
+     "fence": 2,
+     "goal": "find it",
+     "grants": {},
+     "invocationId": "inv-1",
+     "taskId": "task-1"
+    },
+    "headers": {
+     "accept": "*/*",
+     "authorization": "Bearer <attempt>",
+     "connection": "keep-alive",
+     "content-length": "101",
+     "content-type": "application/json",
+     "host": "node.internal:3000"
+    },
+    "method": "POST",
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    },
+    "url": "http://node.internal:3000/api/v1/agent-harness/internal/runs/run%2F1/children"
+   }
+  ]
+ },
+ "journal.spawn.refused": {
+  "clients": [
+   {
+    "baseUrl": "http://node.internal:3000",
+    "followRedirects": false,
+    "limits": false,
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    }
+   }
+  ],
+  "logs": [
+   {
+    "event": "journal.node_capabilities_unreadable",
+    "fields": {
+     "attemptId": "att-1",
+     "fence": 2,
+     "orgId": "org-1",
+     "reasonCode": "node_capabilities_invalid",
+     "runId": "run/1"
+    },
+    "level": "WARNING",
+    "logger": "app.harness.journal_node"
+   },
+   {
+    "event": "journal.claim",
+    "fields": {
+     "attempt": 2,
+     "attemptId": "att-1",
+     "fence": 2,
+     "lastSeq": 3,
+     "leaseMs": 60000,
+     "orgId": "org-1",
+     "resumed": false,
+     "role": "dispatched",
+     "runId": "run/1",
+     "sessionId": "ses-1"
+    },
+    "level": "DEBUG",
+    "logger": "app.harness.journal_node"
+   },
+   {
+    "event": "journal.rejected",
+    "fields": {
+     "attemptId": "att-1",
+     "fence": 2,
+     "invocationId": "inv-1",
+     "operation": "child.spawn",
+     "orgId": "org-1",
+     "reason": "DEPTH_EXCEEDED",
+     "runId": "run/1",
+     "status": 409
+    },
+    "level": "ERROR",
+    "logger": "app.harness.journal_node"
+   }
+  ],
+  "outcome": {
+   "raised": {
+    "attrs": {},
+    "cause": null,
+    "str": "DEPTH_EXCEEDED",
+    "type": "harness_core.journal.types.CommitRejected"
+   }
+  },
+  "requests": [
+   {
+    "body": {
+     "leaseDurationMs": 60000,
+     "role": "dispatched",
+     "workerCapabilities": {
+      "features": [
+       "agent_code",
+       "approval_edits",
+       "assistant_agent",
+       "caller",
+       "chat",
+       "child_asks",
+       "child_models",
+       "child_runs",
+       "code_task_tool",
+       "command_input",
+       "compact_request",
+       "deep_mode",
+       "deliverable_pin",
+       "descriptor_pins",
+       "engine_inputs",
+       "environment_pin",
+       "executor_engine",
+       "governed_memory",
+       "inherited_grants",
+       "inherited_labels",
+       "keyword_search_budget",
+       "knowledge_selection",
+       "mcp_carried_pins",
+       "mcp_first_use",
+       "model_fallback",
+       "output_locale",
+       "region_aware",
+       "release_pin",
+       "resolved_config",
+       "run_gates",
+       "run_surface",
+       "sandbox_command",
+       "session_roles",
+       "steering",
+       "steering_by",
+       "steering_references",
+       "trace_content",
+       "trigger_context",
+       "turn_labels",
+       "vendor_signin",
+       "workspace_forks"
+      ],
+      "foldVersion": 8,
+      "harnessMajor": 2,
+      "supportedSchemaVersions": [
+       2,
+       3
+      ]
+     },
+     "workerId": "w1"
+    },
+    "headers": {
+     "accept": "*/*",
+     "authorization": "Bearer <worker>",
+     "connection": "keep-alive",
+     "content-length": "824",
+     "content-type": "application/json",
+     "host": "node.internal:3000"
+    },
+    "method": "POST",
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    },
+    "url": "http://node.internal:3000/api/v1/agent-harness/internal/runs/claim"
+   },
+   {
+    "body": {
+     "attemptId": "att-1",
+     "fence": 2,
+     "goal": "find it",
+     "grants": {},
+     "invocationId": "inv-1",
+     "taskId": "task-1"
+    },
+    "headers": {
+     "accept": "*/*",
+     "authorization": "Bearer <attempt>",
+     "connection": "keep-alive",
+     "content-length": "101",
+     "content-type": "application/json",
+     "host": "node.internal:3000"
+    },
+    "method": "POST",
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    },
+    "url": "http://node.internal:3000/api/v1/agent-harness/internal/runs/run%2F1/children"
+   }
+  ]
+ },
+ "journal.spawn.unreachable": {
+  "clients": [
+   {
+    "baseUrl": "http://node.internal:3000",
+    "followRedirects": false,
+    "limits": false,
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    }
+   }
+  ],
+  "logs": [
+   {
+    "event": "journal.node_capabilities_unreadable",
+    "fields": {
+     "attemptId": "att-1",
+     "fence": 2,
+     "orgId": "org-1",
+     "reasonCode": "node_capabilities_invalid",
+     "runId": "run/1"
+    },
+    "level": "WARNING",
+    "logger": "app.harness.journal_node"
+   },
+   {
+    "event": "journal.claim",
+    "fields": {
+     "attempt": 2,
+     "attemptId": "att-1",
+     "fence": 2,
+     "lastSeq": 3,
+     "leaseMs": 60000,
+     "orgId": "org-1",
+     "resumed": false,
+     "role": "dispatched",
+     "runId": "run/1",
+     "sessionId": "ses-1"
+    },
+    "level": "DEBUG",
+    "logger": "app.harness.journal_node"
+   },
+   {
+    "event": "journal.unreachable",
+    "fields": {
+     "attemptId": "att-1",
+     "errorType": "ConnectError",
+     "fence": 2,
+     "invocationId": "inv-1",
+     "operation": "child.spawn",
+     "orgId": "org-1",
+     "runId": "run/1"
+    },
+    "level": "WARNING",
+    "logger": "app.harness.journal_node"
+   }
+  ],
+  "outcome": {
+   "raised": {
+    "attrs": {},
+    "cause": "ConnectError",
+    "str": "journal unreachable: ConnectError",
+    "type": "harness_core.journal.types.JournalUnavailable"
+   }
+  },
+  "requests": [
+   {
+    "body": {
+     "leaseDurationMs": 60000,
+     "role": "dispatched",
+     "workerCapabilities": {
+      "features": [
+       "agent_code",
+       "approval_edits",
+       "assistant_agent",
+       "caller",
+       "chat",
+       "child_asks",
+       "child_models",
+       "child_runs",
+       "code_task_tool",
+       "command_input",
+       "compact_request",
+       "deep_mode",
+       "deliverable_pin",
+       "descriptor_pins",
+       "engine_inputs",
+       "environment_pin",
+       "executor_engine",
+       "governed_memory",
+       "inherited_grants",
+       "inherited_labels",
+       "keyword_search_budget",
+       "knowledge_selection",
+       "mcp_carried_pins",
+       "mcp_first_use",
+       "model_fallback",
+       "output_locale",
+       "region_aware",
+       "release_pin",
+       "resolved_config",
+       "run_gates",
+       "run_surface",
+       "sandbox_command",
+       "session_roles",
+       "steering",
+       "steering_by",
+       "steering_references",
+       "trace_content",
+       "trigger_context",
+       "turn_labels",
+       "vendor_signin",
+       "workspace_forks"
+      ],
+      "foldVersion": 8,
+      "harnessMajor": 2,
+      "supportedSchemaVersions": [
+       2,
+       3
+      ]
+     },
+     "workerId": "w1"
+    },
+    "headers": {
+     "accept": "*/*",
+     "authorization": "Bearer <worker>",
+     "connection": "keep-alive",
+     "content-length": "824",
+     "content-type": "application/json",
+     "host": "node.internal:3000"
+    },
+    "method": "POST",
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    },
+    "url": "http://node.internal:3000/api/v1/agent-harness/internal/runs/claim"
+   },
+   {
+    "body": {
+     "attemptId": "att-1",
+     "fence": 2,
+     "goal": "find it",
+     "grants": {},
+     "invocationId": "inv-1",
+     "taskId": "task-1"
+    },
+    "headers": {
+     "accept": "*/*",
+     "authorization": "Bearer <attempt>",
+     "connection": "keep-alive",
+     "content-length": "101",
+     "content-type": "application/json",
+     "host": "node.internal:3000"
+    },
+    "method": "POST",
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    },
+    "url": "http://node.internal:3000/api/v1/agent-harness/internal/runs/run%2F1/children"
+   }
+  ]
+ },
+ "lifecycle.audit": {
+  "clients": [
+   {
+    "baseUrl": "http://node.internal:3000",
+    "followRedirects": false,
+    "limits": false,
+    "timeout": {
+     "connect": 5.0,
+     "pool": 5.0,
+     "read": 5.0,
+     "write": 5.0
+    }
+   }
+  ],
+  "logs": [],
+  "outcome": {
+   "returned": {
+    "lentClientClosed": true
+   }
+  },
+  "requests": []
+ },
+ "lifecycle.budget": {
+  "clients": [
+   {
+    "baseUrl": "http://node.internal:3000",
+    "followRedirects": false,
+    "limits": false,
+    "timeout": {
+     "connect": 5.0,
+     "pool": 5.0,
+     "read": 5.0,
+     "write": 5.0
+    }
+   }
+  ],
+  "logs": [],
+  "outcome": {
+   "returned": {
+    "lentClientClosed": true
+   }
+  },
+  "requests": []
+ },
+ "lifecycle.grants": {
+  "clients": [
+   {
+    "baseUrl": "http://node.internal:3000",
+    "followRedirects": false,
+    "limits": false,
+    "timeout": {
+     "connect": 5.0,
+     "pool": 5.0,
+     "read": 5.0,
+     "write": 5.0
+    }
+   }
+  ],
+  "logs": [],
+  "outcome": {
+   "returned": {
+    "lentClientClosed": true
+   }
+  },
+  "requests": []
+ },
+ "lifecycle.journal": {
+  "clients": [
+   {
+    "baseUrl": "http://node.internal:3000",
+    "followRedirects": false,
+    "limits": false,
+    "timeout": {
+     "connect": 5.0,
+     "pool": 5.0,
+     "read": 5.0,
+     "write": 5.0
+    }
+   }
+  ],
+  "logs": [],
+  "outcome": {
+   "returned": {
+    "lentClientClosed": false
+   }
+  },
+  "requests": []
+ },
+ "lifecycle.refusals": {
+  "clients": [
+   {
+    "baseUrl": "http://node.internal:3000",
+    "followRedirects": false,
+    "limits": false,
+    "timeout": {
+     "connect": 5.0,
+     "pool": 5.0,
+     "read": 5.0,
+     "write": 5.0
+    }
+   }
+  ],
+  "logs": [],
+  "outcome": {
+   "returned": {
+    "lentClientClosed": true
+   }
+  },
+  "requests": []
+ },
+ "refusals.no_outcome": {
+  "clients": [
+   {
+    "baseUrl": "http://node.internal:3000",
+    "followRedirects": false,
+    "limits": false,
+    "timeout": {
+     "connect": 5.0,
+     "pool": 5.0,
+     "read": 5.0,
+     "write": 5.0
+    }
+   }
+  ],
+  "logs": [],
+  "outcome": {
+   "raised": {
+    "attrs": {},
+    "cause": null,
+    "str": "Node answered no outcome",
+    "type": "harness_core.gateway.refusal_reports.RefusalNotAccepted"
+   }
+  },
+  "requests": [
+   {
+    "body": {
+     "gateway": "model",
+     "host": "h",
+     "param": "p",
+     "reason": "budget_exhausted",
+     "status": 403
+    },
+    "headers": {
+     "accept": "*/*",
+     "authorization": "Bearer <run-token>",
+     "connection": "keep-alive",
+     "content-length": "83",
+     "content-type": "application/json",
+     "host": "node.internal:3000"
+    },
+    "method": "POST",
+    "timeout": {
+     "connect": 5.0,
+     "pool": 5.0,
+     "read": 5.0,
+     "write": 5.0
+    },
+    "url": "http://node.internal:3000/api/v1/agent-harness/internal/runs/run%2F1/refusals"
+   }
+  ]
+ },
+ "refusals.recorded": {
+  "clients": [
+   {
+    "baseUrl": "http://node.internal:3000",
+    "followRedirects": false,
+    "limits": false,
+    "timeout": {
+     "connect": 5.0,
+     "pool": 5.0,
+     "read": 5.0,
+     "write": 5.0
+    }
+   }
+  ],
+  "logs": [],
+  "outcome": {
+   "returned": "recorded"
+  },
+  "requests": [
+   {
+    "body": {
+     "gateway": "model",
+     "host": "h",
+     "param": "p",
+     "reason": "budget_exhausted",
+     "status": 403
+    },
+    "headers": {
+     "accept": "*/*",
+     "authorization": "Bearer <run-token>",
+     "connection": "keep-alive",
+     "content-length": "83",
+     "content-type": "application/json",
+     "host": "node.internal:3000"
+    },
+    "method": "POST",
+    "timeout": {
+     "connect": 5.0,
+     "pool": 5.0,
+     "read": 5.0,
+     "write": 5.0
+    },
+    "url": "http://node.internal:3000/api/v1/agent-harness/internal/runs/run%2F1/refusals"
+   }
+  ]
+ },
+ "refusals.refused": {
+  "clients": [
+   {
+    "baseUrl": "http://node.internal:3000",
+    "followRedirects": false,
+    "limits": false,
+    "timeout": {
+     "connect": 5.0,
+     "pool": 5.0,
+     "read": 5.0,
+     "write": 5.0
+    }
+   }
+  ],
+  "logs": [],
+  "outcome": {
+   "raised": {
+    "attrs": {},
+    "cause": null,
+    "str": "Node refused the report (403)",
+    "type": "harness_core.gateway.refusal_reports.RefusalNotAccepted"
+   }
+  },
+  "requests": [
+   {
+    "body": {
+     "gateway": "model",
+     "host": "h",
+     "param": "p",
+     "reason": "budget_exhausted",
+     "status": 403
+    },
+    "headers": {
+     "accept": "*/*",
+     "authorization": "Bearer <run-token>",
+     "connection": "keep-alive",
+     "content-length": "83",
+     "content-type": "application/json",
+     "host": "node.internal:3000"
+    },
+    "method": "POST",
+    "timeout": {
+     "connect": 5.0,
+     "pool": 5.0,
+     "read": 5.0,
+     "write": 5.0
+    },
+    "url": "http://node.internal:3000/api/v1/agent-harness/internal/runs/run%2F1/refusals"
+   }
+  ]
+ },
+ "refusals.server_error": {
+  "clients": [
+   {
+    "baseUrl": "http://node.internal:3000",
+    "followRedirects": false,
+    "limits": false,
+    "timeout": {
+     "connect": 5.0,
+     "pool": 5.0,
+     "read": 5.0,
+     "write": 5.0
+    }
+   }
+  ],
+  "logs": [],
+  "outcome": {
+   "raised": {
+    "attrs": {},
+    "cause": null,
+    "str": "Server error '500 Internal Server Error' for url 'http://node.internal:3000/api/v1/agent-harness/internal/runs/run%2F1/refusals'\nFor more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/500",
+    "type": "httpx.HTTPStatusError"
+   }
+  },
+  "requests": [
+   {
+    "body": {
+     "gateway": "model",
+     "host": "h",
+     "param": "p",
+     "reason": "budget_exhausted",
+     "status": 403
+    },
+    "headers": {
+     "accept": "*/*",
+     "authorization": "Bearer <run-token>",
+     "connection": "keep-alive",
+     "content-length": "83",
+     "content-type": "application/json",
+     "host": "node.internal:3000"
+    },
+    "method": "POST",
+    "timeout": {
+     "connect": 5.0,
+     "pool": 5.0,
+     "read": 5.0,
+     "write": 5.0
+    },
+    "url": "http://node.internal:3000/api/v1/agent-harness/internal/runs/run%2F1/refusals"
+   }
+  ]
+ },
+ "refusals.unreachable": {
+  "clients": [
+   {
+    "baseUrl": "http://node.internal:3000",
+    "followRedirects": false,
+    "limits": false,
+    "timeout": {
+     "connect": 5.0,
+     "pool": 5.0,
+     "read": 5.0,
+     "write": 5.0
+    }
+   }
+  ],
+  "logs": [],
+  "outcome": {
+   "raised": {
+    "attrs": {},
+    "cause": null,
+    "str": "connection refused",
+    "type": "httpx.ConnectError"
+   }
+  },
+  "requests": [
+   {
+    "body": {
+     "gateway": "model",
+     "host": "h",
+     "param": "p",
+     "reason": "budget_exhausted",
+     "status": 403
+    },
+    "headers": {
+     "accept": "*/*",
+     "authorization": "Bearer <run-token>",
+     "connection": "keep-alive",
+     "content-length": "83",
+     "content-type": "application/json",
+     "host": "node.internal:3000"
+    },
+    "method": "POST",
+    "timeout": {
+     "connect": 5.0,
+     "pool": 5.0,
+     "read": 5.0,
+     "write": 5.0
+    },
+    "url": "http://node.internal:3000/api/v1/agent-harness/internal/runs/run%2F1/refusals"
+   }
+  ]
+ },
+ "tokens.issued": {
+  "clients": [
+   {
+    "baseUrl": "http://node.internal:3000",
+    "followRedirects": false,
+    "limits": false,
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    }
+   }
+  ],
+  "logs": [
+   {
+    "event": "gateway_token.issued",
+    "fields": {
+     "attemptId": "att-1",
+     "expiresAt": "2026-09-21T14:23:20+00:00",
+     "orgId": "org-1",
+     "runId": "run/1"
+    },
+    "level": "INFO",
+    "logger": "app.harness.gateway.tokens"
+   }
+  ],
+  "outcome": {
+   "returned": {
+    "expires_at": "2026-09-21T14:23:20+00:00",
+    "value": "<run-token>"
+   }
+  },
+  "requests": [
+   {
+    "body": {
+     "attemptId": "att-1",
+     "bindingProof": "v1.broker-proof",
+     "orgId": "org-1"
+    },
+    "headers": {
+     "accept": "*/*",
+     "authorization": "Bearer <worker>",
+     "connection": "keep-alive",
+     "content-length": "70",
+     "content-type": "application/json",
+     "host": "node.internal:3000"
+    },
+    "method": "POST",
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    },
+    "url": "http://node.internal:3000/api/v1/agent-harness/internal/runs/run%2F1/gateway-token"
+   }
+  ]
+ },
+ "tokens.malformed": {
+  "clients": [
+   {
+    "baseUrl": "http://node.internal:3000",
+    "followRedirects": false,
+    "limits": false,
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    }
+   }
+  ],
+  "logs": [],
+  "outcome": {
+   "raised": {
+    "attrs": {},
+    "cause": "GatewayTokenUnavailable",
+    "str": "malformed_response",
+    "type": "harness_core.sandbox.egress.errors.TokenUnavailable"
+   }
+  },
+  "requests": [
+   {
+    "body": {
+     "attemptId": "att-1",
+     "bindingProof": "v1.broker-proof",
+     "orgId": "org-1"
+    },
+    "headers": {
+     "accept": "*/*",
+     "authorization": "Bearer <worker>",
+     "connection": "keep-alive",
+     "content-length": "70",
+     "content-type": "application/json",
+     "host": "node.internal:3000"
+    },
+    "method": "POST",
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    },
+    "url": "http://node.internal:3000/api/v1/agent-harness/internal/runs/run%2F1/gateway-token"
+   }
+  ]
+ },
+ "tokens.not_leased": {
+  "clients": [
+   {
+    "baseUrl": "http://node.internal:3000",
+    "followRedirects": false,
+    "limits": false,
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    }
+   }
+  ],
+  "logs": [
+   {
+    "event": "gateway_token.unavailable",
+    "fields": {
+     "attemptId": "att-1",
+     "orgId": "org-1",
+     "reason": "RUN_NOT_LEASED",
+     "runId": "run/1",
+     "status": 409
+    },
+    "level": "WARNING",
+    "logger": "app.harness.gateway.tokens"
+   }
+  ],
+  "outcome": {
+   "raised": {
+    "attrs": {},
+    "cause": "GatewayTokenUnavailable",
+    "str": "RUN_NOT_LEASED",
+    "type": "harness_core.sandbox.egress.errors.TokenUnavailable"
+   }
+  },
+  "requests": [
+   {
+    "body": {
+     "attemptId": "att-1",
+     "bindingProof": "v1.broker-proof",
+     "orgId": "org-1"
+    },
+    "headers": {
+     "accept": "*/*",
+     "authorization": "Bearer <worker>",
+     "connection": "keep-alive",
+     "content-length": "70",
+     "content-type": "application/json",
+     "host": "node.internal:3000"
+    },
+    "method": "POST",
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    },
+    "url": "http://node.internal:3000/api/v1/agent-harness/internal/runs/run%2F1/gateway-token"
+   }
+  ]
+ },
+ "tokens.unattested_sandbox": {
+  "clients": [
+   {
+    "baseUrl": "http://node.internal:3000",
+    "followRedirects": false,
+    "limits": false,
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    }
+   }
+  ],
+  "logs": [],
+  "outcome": {
+   "raised": {
+    "attrs": {},
+    "cause": null,
+    "str": "binding_unattested",
+    "type": "harness_core.sandbox.egress.errors.TokenUnavailable"
+   }
+  },
+  "requests": []
+ },
+ "tokens.unbound_sandbox": {
+  "clients": [
+   {
+    "baseUrl": "http://node.internal:3000",
+    "followRedirects": false,
+    "limits": false,
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    }
+   }
+  ],
+  "logs": [],
+  "outcome": {
+   "raised": {
+    "attrs": {},
+    "cause": null,
+    "str": "the sandbox's binding names no run attempt",
+    "type": "harness_core.sandbox.egress.errors.TokenUnavailable"
+   }
+  },
+  "requests": []
+ },
+ "tokens.unreachable": {
+  "clients": [
+   {
+    "baseUrl": "http://node.internal:3000",
+    "followRedirects": false,
+    "limits": false,
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    }
+   }
+  ],
+  "logs": [
+   {
+    "event": "gateway_token.unavailable",
+    "fields": {
+     "attemptId": "att-1",
+     "errorType": "ConnectError",
+     "orgId": "org-1",
+     "reason": "node_unreachable",
+     "runId": "run/1"
+    },
+    "level": "WARNING",
+    "logger": "app.harness.gateway.tokens"
+   }
+  ],
+  "outcome": {
+   "raised": {
+    "attrs": {},
+    "cause": "GatewayTokenUnavailable",
+    "str": "node_unreachable",
+    "type": "harness_core.sandbox.egress.errors.TokenUnavailable"
+   }
+  },
+  "requests": [
+   {
+    "body": {
+     "attemptId": "att-1",
+     "bindingProof": "v1.broker-proof",
+     "orgId": "org-1"
+    },
+    "headers": {
+     "accept": "*/*",
+     "authorization": "Bearer <worker>",
+     "connection": "keep-alive",
+     "content-length": "70",
+     "content-type": "application/json",
+     "host": "node.internal:3000"
+    },
+    "method": "POST",
+    "timeout": {
+     "connect": 10.0,
+     "pool": 10.0,
+     "read": 10.0,
+     "write": 10.0
+    },
+    "url": "http://node.internal:3000/api/v1/agent-harness/internal/runs/run%2F1/gateway-token"
+   }
+  ]
+ }
+}

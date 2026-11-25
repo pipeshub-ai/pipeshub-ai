@@ -1,0 +1,373 @@
+{
+  "description": "The one list of credential shapes (QA-11): gateways and the egress proxy refuse the forbidden ones, the snapshot scan reports every pattern, and every redactor (approval card, interaction.explained, replay scrubber and its canary scan) masks patterns and redactOnly alike. Generated for Python and the frontend by contracts/harness/codegen/generate.py; never copy a pattern elsewhere. Sources are ECMAScript- and Python-compatible. A value under a key named like a secret (`secretKeyNames`) is masked whole by every redactor that shapes arguments for a person, whatever its shape. Each example is split in parts, joined at test time, so this file holds no literal credential.",
+  "mask": "••••••",
+  "patterns": [
+    {
+      "kind": "private_key",
+      "source": "-----BEGIN [A-Z ]*PRIVATE KEY-----(?:(?!-----BEGIN )[\\s\\S])*?-----END [A-Z ]*PRIVATE KEY-----",
+      "forbidden": false,
+      "examples": [
+        [
+          "-----BEGIN ",
+          "PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\n-----END ",
+          "PRIVATE KEY-----"
+        ],
+        [
+          "-----BEGIN RSA ",
+          "PRIVATE KEY-----\nMIIEpAIBAAKCAQEA\n-----END RSA ",
+          "PRIVATE KEY-----"
+        ]
+      ]
+    },
+    {
+      "kind": "jwt",
+      "source": "(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{6,}\\.[A-Za-z0-9_-]{6,}\\.[A-Za-z0-9_-]{6,}",
+      "forbidden": false,
+      "examples": [
+        [
+          "ey",
+          "JhbGciOiJIUzI1NiJ9",
+          ".",
+          "eyJzdWIiOiIxMjM0NTYifQ",
+          ".",
+          "c2lnbmF0dXJlLXZhbHVl"
+        ]
+      ]
+    },
+    {
+      "kind": "anthropic_key",
+      "source": "(?<![A-Za-z0-9_])sk-ant-[A-Za-z0-9_-]{16,}",
+      "forbidden": true,
+      "examples": [
+        [
+          "sk-",
+          "ant-",
+          "api03-",
+          "Xq7Rm2Tz9Lp4Wv8Kd3Ns6Hb1"
+        ]
+      ]
+    },
+    {
+      "kind": "openai_key",
+      "source": "(?<![A-Za-z0-9_])sk-(?:proj-)?[A-Za-z0-9_-]{20,}",
+      "forbidden": true,
+      "examples": [
+        [
+          "sk-",
+          "proj-",
+          "Q7mZ2rT9xL4pW8vK3dN6sH1bY5"
+        ],
+        [
+          "sk-",
+          "Q7mZ2rT9xL4pW8vK3dN6sH1b"
+        ]
+      ]
+    },
+    {
+      "kind": "slack_token",
+      "source": "(?<![A-Za-z0-9_])xox[abposr]-[A-Za-z0-9-]{10,}",
+      "forbidden": true,
+      "examples": [
+        [
+          "xox",
+          "b-",
+          "1234567890-",
+          "AbCdEfGhIjKl"
+        ]
+      ]
+    },
+    {
+      "kind": "github_token",
+      "source": "(?<![A-Za-z0-9_])(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})",
+      "forbidden": true,
+      "examples": [
+        [
+          "gh",
+          "p_",
+          "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789"
+        ],
+        [
+          "github",
+          "_pat_",
+          "11ABCDEFG0123456789_abcdefghijklmnop"
+        ]
+      ]
+    },
+    {
+      "kind": "gitlab_token",
+      "source": "(?<![A-Za-z0-9_])glpat-[A-Za-z0-9_-]{20,}",
+      "forbidden": true,
+      "examples": [
+        [
+          "gl",
+          "pat-",
+          "AbCdEfGhIjKlMnOpQrSt"
+        ]
+      ]
+    },
+    {
+      "kind": "aws_access_key",
+      "source": "(?<![A-Za-z0-9_])(?:AKIA|ASIA)[0-9A-Z]{16}(?![A-Za-z0-9_])",
+      "forbidden": true,
+      "examples": [
+        [
+          "AK",
+          "IA",
+          "Z7Q2M4X8R1T6W3Y9"
+        ]
+      ]
+    },
+    {
+      "kind": "google_api_key",
+      "source": "(?<![A-Za-z0-9_])AIza[0-9A-Za-z_-]{35}",
+      "forbidden": true,
+      "examples": [
+        [
+          "AI",
+          "za",
+          "SyA1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q"
+        ]
+      ]
+    },
+    {
+      "kind": "pipeshub_pat",
+      "source": "(?<![A-Za-z0-9_])phpat_[A-Za-z0-9_-]{16,}",
+      "forbidden": true,
+      "examples": [
+        [
+          "ph",
+          "pat_",
+          "AbCdEfGhIjKlMnOp1234"
+        ]
+      ]
+    }
+  ],
+  "redactOnly": [
+    {
+      "kind": "bearer",
+      "source": "(?<![A-Za-z0-9_])[Bb][Ee][Aa][Rr][Ee][Rr]\\s+[A-Za-z0-9._~+/=-]{12,}",
+      "examples": [
+        [
+          "Bear",
+          "er ",
+          "abcDEF123456ghiJKL"
+        ],
+        [
+          "BEAR",
+          "ER ",
+          "abcDEF123456.ghiJKL~"
+        ]
+      ]
+    }
+  ],
+  "secretKeyNames": {
+    "description": "Object keys whose value is a secret whatever it looks like (a pasted password, a short API key). Matched anywhere in the key, ignoring case.",
+    "source": "pass(word|phrase)?|secret|token|api[_-]?key|auth(orization)?|credential|cookie|private[_-]?key",
+    "ignoreCase": true,
+    "matches": [
+      "password",
+      "passphrase",
+      "client_secret",
+      "access_token",
+      "apiKey",
+      "api-key",
+      "X-Api-Key",
+      "Authorization",
+      "credentials",
+      "Cookie",
+      "private_key"
+    ],
+    "ignores": [
+      "title",
+      "message",
+      "query",
+      "repo",
+      "recipient",
+      "description"
+    ]
+  },
+  "pastedInput": {
+    "description": "SEC-CR-07 (G-37): secrets a person pastes into a message. Every `patterns` and `redactOnly` shape counts, plus the extra vendor `detectors` below (input only: nothing refuses or scans a workspace for them). `assigned` is a value written after a secret-named word (`password: ...`, `api_key=...`); `contextual` is a long high-entropy word on a line that names a secret. Both, and any detector with `checkValue`, skip `placeholders` and dotted identifiers and need `minClasses` of lower, upper, digit and symbol. A `contextual` word is a run between `separators` with `trailing` punctuation cut; a word holding `://` (a link) or only hex digits and hyphens (a commit, a digest, a UUID) is never one, and it needs `minBits` of Shannon entropy per character. Character classes: lower, upper, digit, and symbol (anything else but `_`, `-` and `.`, which identifiers hold). `secretGroup` is the capture group that holds the secret (0: the whole match). Every example must be found, and nothing in `negatives`. Node enforces it on every message; the frontend runs the same rules to warn before send. Examples are split in parts, joined at test time, so this file holds no literal credential.",
+    "detectors": [
+      {
+        "kind": "stripe_key",
+        "source": "(?<![A-Za-z0-9_])[rs]k_(?:live|test)_[A-Za-z0-9]{20,}",
+        "examples": [
+          [
+            "sk_",
+            "live_",
+            "4eC39HqLyjWDarjtT1zdp7dc"
+          ]
+        ]
+      },
+      {
+        "kind": "sendgrid_key",
+        "source": "(?<![A-Za-z0-9_])SG\\.[A-Za-z0-9_-]{22}\\.[A-Za-z0-9_-]{43}",
+        "examples": [
+          [
+            "SG",
+            ".",
+            "ngeVfQFYQlKU0ufo8x5d1A",
+            ".",
+            "TwL2iGABf9DHoTf-09kqeF8tAmbihYzrnopKc-1s5cr"
+          ]
+        ]
+      },
+      {
+        "kind": "npm_token",
+        "source": "(?<![A-Za-z0-9_])npm_[A-Za-z0-9]{36}(?![A-Za-z0-9_])",
+        "examples": [
+          [
+            "np",
+            "m_",
+            "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8"
+          ]
+        ]
+      },
+      {
+        "kind": "huggingface_token",
+        "source": "(?<![A-Za-z0-9_])hf_[A-Za-z0-9]{34,}",
+        "examples": [
+          [
+            "h",
+            "f_",
+            "Qw3rTy7uIoP1aSdF5gHjK9lZxC2vBnM4qWeRt"
+          ]
+        ]
+      },
+      {
+        "kind": "atlassian_token",
+        "source": "(?<![A-Za-z0-9_])ATATT3[A-Za-z0-9_=-]{40,}",
+        "examples": [
+          [
+            "ATA",
+            "TT3",
+            "xFfGF0T8kQm2Zp7Lr4Wv9Kd3Ns6Hb1Yc5Xe8Ja2Ug7Io0"
+          ]
+        ]
+      },
+      {
+        "kind": "slack_webhook",
+        "source": "https://hooks\\.slack\\.com/services/T[A-Z0-9]{6,}/B[A-Z0-9]{6,}/[A-Za-z0-9]{20,}",
+        "examples": [
+          [
+            "https://hooks.slack.com/services/",
+            "T0A1B2C3D/B0E4F5G6H/",
+            "q7Rm2Tz9Lp4Wv8Kd3Ns6Hb1Y"
+          ]
+        ]
+      },
+      {
+        "kind": "azure_storage_key",
+        "source": "AccountKey=([A-Za-z0-9+/]{40,}={0,2})",
+        "secretGroup": 1,
+        "examples": [
+          [
+            "DefaultEndpointsProtocol=https;AccountName=demo;Account",
+            "Key=",
+            "Zm9vYmFyYmF6cXV4cXV1eHF1dXpxdXV6cXV1enF1dXpxdXV6eHh4eA=="
+          ]
+        ]
+      },
+      {
+        "kind": "digitalocean_token",
+        "source": "(?<![A-Za-z0-9_])do[opr]_v1_[a-f0-9]{64}",
+        "examples": [
+          [
+            "do",
+            "p_v1_",
+            "3f9a1c7e5b2d8f4a6c0e9b1d7f3a5c8e2b4d6f0a9c1e3b5d7f9a2c4e6b8d0f1a"
+          ]
+        ]
+      },
+      {
+        "kind": "databricks_token",
+        "source": "(?<![A-Za-z0-9_])dapi[a-f0-9]{32}(?![A-Za-z0-9_])",
+        "examples": [
+          [
+            "da",
+            "pi",
+            "3f9a1c7e5b2d8f4a6c0e9b1d7f3a5c8e"
+          ]
+        ]
+      },
+      {
+        "kind": "url_credentials",
+        "source": "(?<![A-Za-z0-9_])[A-Za-z][A-Za-z0-9+.-]{0,31}://[^\\s/@:\"'<>]+:([^\\s/@\"'<>]{3,})@",
+        "secretGroup": 1,
+        "checkValue": true,
+        "examples": [
+          [
+            "postgres://app:",
+            "Hx7#kq92Lw",
+            "@db.internal:5432/app"
+          ]
+        ]
+      }
+    ],
+    "assigned": {
+      "kind": "assigned_secret",
+      "source": "(?<![A-Za-z0-9_])(?:password|passwd|pwd|passphrase|secret|client[_-]?secret|api[_-]?key|apikey|access[_-]?key|secret[_-]?key|access[_-]?token|refresh[_-]?token|auth[_-]?token|token|private[_-]?key)[\"']?\\s*(?:[:=]|is)\\s*[\"'`]?([^\\s\"'`,;&{}()<>\\[\\]]{8,})",
+      "flags": "i",
+      "secretGroup": 1,
+      "examples": [
+        [
+          "password: ",
+          "Summer2024!x"
+        ],
+        [
+          "api_key=",
+          "a8F3kL0pQ2"
+        ],
+        [
+          "my staging secret is ",
+          "Tz9Lp4Wv8Kd3"
+        ]
+      ]
+    },
+    "contextual": {
+      "kind": "high_entropy_secret",
+      "keyword": "(?<![A-Za-z0-9_])(?:api[ _-]?key|access[ _-]?key|secret|token|password|passwd|credential|bearer|private[ _-]?key|signing[ _-]?key|license[ _-]?key|key\\s*(?:is|=|:))",
+      "keywordFlags": "i",
+      "word": "^[A-Za-z0-9_+/=-]{32,}$",
+      "separators": "[\\s\"'`,;()<>\\[\\]{}]+",
+      "trailing": "(?<![.:!?])[.:!?]+$",
+      "minBits": 4.0,
+      "examples": [
+        [
+          "here is the signing key for staging ",
+          "wJalrXUtnFEMI/K7MDENG/bPxRfiCY",
+          "Ex4mPLEKEY9q"
+        ],
+        [
+          "token ",
+          "q7Rm2Tz9Lp4Wv8Kd3Ns6Hb1Yc5Xe8Ja2Ug"
+        ]
+      ]
+    },
+    "minClasses": 2,
+    "placeholders": "^(?:\\$|\\{\\{|<|%|•)|^\\*+$|^x{4,}$|^(?:your|my|the|example|sample|dummy|fake|placeholder|changeme|redacted|none|null|undefined|password|passwd|secret|token|apikey|api_key)(?:[_-].*)?$",
+    "placeholderFlags": "i",
+    "identifierPath": "^[A-Za-z_$][A-Za-z0-9_$]*(?:\\.[A-Za-z_$][A-Za-z0-9_$]*)+$",
+    "negatives": [
+      "Please summarise the Q3 planning doc and list the key decisions.",
+      "commit 3f2a9c1e5b7d8f0a2c4e6b8d0f1a3c5e7b9d1f2a fixed the token refresh bug",
+      "Open https://drive.google.com/file/d/1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms/view and summarise it",
+      "The record id is 550e8400-e29b-41d4-a716-446655440000",
+      "password = os.environ['DB_PASSWORD']",
+      "const token: string = config.authToken;",
+      "api_key=<YOUR_API_KEY>",
+      "Set API_KEY=${OPENAI_API_KEY} in the env file",
+      "postgres://user:password@localhost:5432/db",
+      "the password field must be at least 12 characters",
+      "token = get_token(session)",
+      "secret: changeme",
+      "Use the sha256 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08 to verify the download",
+      "password: ••••••",
+      "The access key is stored in the vault, not here.",
+      "The token budget is 100000 per run.",
+      "Why does my token keep expiring after 3600 seconds?",
+      "Rotate the api key every 90 days per policy SEC-2024-11."
+    ]
+  }
+}

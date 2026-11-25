@@ -14,6 +14,7 @@ import { useNotificationStore } from '@/app/(main)/notifications/store';
 import { useFeatureFlagsStore, selectProjectsEnabled } from '@/lib/store/feature-flags-store';
 import { usePathname, useRouter } from 'next/navigation';
 import { SidebarItem } from './sidebar-item';
+import { JobsNavEntries } from './jobs-nav-entries';
 
 // ========================================
 // Navigation item config
@@ -138,6 +139,7 @@ export function StaticNavSection() {
           textColor={NAV_ICON_COLOR}
           rightSlot={canHover ? <KbdBadge>{modKey} + K</KbdBadge> : undefined}
         />
+      <JobsNavEntries />
 
       {projectsEnabled && (
         <SidebarItem

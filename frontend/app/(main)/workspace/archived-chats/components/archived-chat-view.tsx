@@ -70,7 +70,7 @@ function LoadingState() {
   const { t } = useTranslation();
   return (
     <Flex align="center" justify="center" style={{ height: '100%', width: '100%' }}>
-      <Text size="2" style={{ color: 'var(--slate-9)' }}>
+      <Text size="2" style={{ color: 'var(--slate-11)' }}>
         {t('action.loading')}
       </Text>
     </Flex>
@@ -111,7 +111,7 @@ export function ArchivedChatView({
         justify="center"
         style={{ height: '100%', width: '100%' }}
       >
-        <Text size="2" style={{ color: 'var(--red-9)' }}>
+        <Text size="2" style={{ color: 'var(--red-11)' }}>
           {error}
         </Text>
       </Flex>

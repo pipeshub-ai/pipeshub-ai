@@ -5,18 +5,26 @@ before or after an ISO anchor timestamp. Results include ISO timestamps so
 follow-up calls can paginate using a message from the prior batch.
 
 For full thread context use ``fetch_slack_thread`` instead.
+
+Every call is anchored on an indexed Slack message (``record_id``) the user may read themselves (H2): the channel
+and the connector instance are that record's, never the model's. A connector's token reads every channel its
+workspace grants it, and a connector id is a global key, so a model-chosen channel or connector would read what
+the user was never given.
 """
 from __future__ import annotations
 
 import re
 from collections.abc import Callable
 from datetime import datetime, timezone
-from typing import Any, Literal, Optional, TYPE_CHECKING, Union
+from typing import TYPE_CHECKING, Any, Literal, Optional, Union
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 
+from app.config.constants.arangodb import Connectors
+from app.core.org_context import org_of
+from app.harness.knowledge.read_gate import RecordReadGate
 from app.sources.client.slack.slack import SlackClient
 from app.sources.external.slack.slack import SlackDataSource
 from app.utils.logger import create_logger
@@ -108,6 +116,13 @@ def _iso_to_slack_ts(timestamp: str, timezone_name: str | None = None) -> str:
 class FetchSlackNearbyMessagesArgs(BaseModel):
     """Arguments for ``fetch_slack_nearby_messages``."""
 
+    record_id: str = Field(
+        ...,
+        description=(
+            "Record ID of the indexed Slack message to read around, exactly as shown in the context "
+            "(may be a short label such as 'R3'). Its channel and workspace are the ones read."
+        ),
+    )
     timestamp: str = Field(
         ...,
         description=(
@@ -132,19 +147,18 @@ class FetchSlackNearbyMessagesArgs(BaseModel):
             "'after': messages immediately after timestamp."
         ),
     )
-    channel_id: str = Field(
-        ...,
+    channel_id: str | None = Field(
+        default=None,
         description=(
-            "Slack channel id (e.g. 'C1234567890'). For indexed records this is "
-            "the record's external group id when recordGroupType is SLACK_CHANNEL."
+            "Optional: the record's Slack channel id (e.g. 'C1234567890'). The channel read is always "
+            "the record's; another channel is refused."
         ),
     )
-    connector_id: str = Field(
-        ...,
+    connector_id: str | None = Field(
+        default=None,
         description=(
-            "Slack connector instance id from the indexed record context "
-            "(Connector ID in Message Details). Required to authenticate with "
-            "the same Slack workspace that indexed the message."
+            "Optional: the record's Slack connector instance id (Connector ID in Message Details). "
+            "The workspace read is always the record's; another connector is refused."
         ),
     )
     limit: int = Field(
@@ -597,34 +611,94 @@ async def _fetch_nearby_messages_impl(
     )
 
 
+_SLACK_CONNECTORS = frozenset({Connectors.SLACK.value, Connectors.SLACK_WORKSPACE.value})
+_THREAD_GROUP_PREFIX = "thread_"
+
+
+def anchor_refusal(record_id: str) -> str:
+    """One answer for every refusal: a record the user may not read reads as one that does not exist."""
+    return (
+        f"Record '{record_id}' is not an indexed Slack message available to you. "
+        "Pass the Record ID of a Slack message shown in the context."
+    )
+
+
+def _channel_of(external_group_id: str) -> str:
+    """A thread reply's group is ``thread_<channel>_<ts>``; a channel message's group is the channel."""
+    if external_group_id.startswith(_THREAD_GROUP_PREFIX):
+        return external_group_id[len(_THREAD_GROUP_PREFIX):].rsplit("_", 1)[0]
+    return external_group_id
+
+
+async def _anchor_scope(
+    record_id: str,
+    *,
+    gate: RecordReadGate | None,
+    graph_provider: IGraphDBProvider | None,
+    org_id: str | None,
+    channel_id: str | None,
+    connector_id: str | None,
+) -> tuple[str, str] | None:
+    """The anchor record's ``(channel, connector instance)`` when the user may read it themselves, else None.
+
+    Only the reader's own access opens it: a ``full`` publication discloses that record, not its channel's live
+    history.
+    """
+    if gate is None or graph_provider is None or not org_id:
+        return None
+    try:
+        if await gate.decide(record_id) != "own":
+            return None
+        record = await graph_provider.get_record_by_id(record_id)
+    except Exception:
+        logger.warning("Access check failed for %s", record_id, exc_info=True)
+        return None
+    if record is None:
+        return None
+    meta = record if isinstance(record, dict) else record.model_dump()
+    name = meta.get("connector_name")
+    name = getattr(name, "value", name)
+    channel = _channel_of(str(meta.get("external_record_group_id") or ""))
+    connector = str(meta.get("connector_id") or "")
+    if name not in _SLACK_CONNECTORS or org_of(meta) != org_id or not channel or not connector:
+        return None
+    if (channel_id and channel_id.strip() != channel) or (connector_id and connector_id.strip() != connector):
+        return None
+    return channel, connector
+
+
 def create_fetch_slack_nearby_messages_tool(
     config_service: Optional["ConfigurationService"] = None,
-    graph_provider: "IGraphDBProvider | None" = None,
+    *,
+    graph_provider: IGraphDBProvider | None = None,
     org_id: str | None = None,
     user_id: str | None = None,
+    caller_user_id: str | None = None,
     tool_state: dict[str, Any] | None = None,
 ) -> Callable:
     """Return a LangChain tool with Slack client dependencies bound.
 
-    ``graph_provider``, ``org_id`` and ``user_id`` are required for the
-    per-user channel access check; without them every call fails.
-    ``tool_state`` carries the turn's filters, which bound the channels.
+    ``user_id`` is the retrieval principal and ``caller_user_id`` a service-account agent's caller (see
+    ``RecordReadGate``); without a user, graph and org nothing is read: the anchor record must be the user's own,
+    and the user must have access to its channel. ``tool_state`` is the request's shared state: its filters
+    bound the channels, and its record-id shortener reads a context label such as ``R3``.
     """
 
     @tool("fetch_slack_nearby_messages", args_schema=FetchSlackNearbyMessagesArgs)
     async def fetch_slack_nearby_messages_tool(
+        record_id: str,
         timestamp: str,
         direction: NearbyDirection,
-        channel_id: str,
-        connector_id: str,
+        channel_id: str | None = None,
+        connector_id: str | None = None,
         timezone: str | None = None,
         limit: int = _DEFAULT_NEARBY_MESSAGE_LIMIT,
         reason: str = "Fetching nearby Slack messages for surrounding channel context",
     ) -> FetchSlackNearbyMessagesResult:
         """Fetch Slack channel messages adjacent to an ISO anchor time.
 
-        Calls the **live** Slack API using the `connector_id` from the indexed
-        record. Results are raw API messages with no Citation IDs — do not cite
+        Calls the **live** Slack API with the connector instance that indexed
+        `record_id`. Results are raw API messages with no Citation IDs — do not cite
         them with ref tokens.
 
         ``before`` loads messages immediately before ``timestamp``; ``after`` loads
@@ -633,16 +707,31 @@ def create_fetch_slack_nearby_messages_tool(
         with ``timestamp`` set to ``new_anchor_iso_timestamp`` from the prior
         response. Scoped to ``channel_id`` only (channel-level history).
 
-        Pass ``connector_id`` from the indexed Slack record's Connector ID in context.
-        Call when retrieval lacks surrounding channel conversation. For full thread
-        context use ``fetch_slack_thread`` instead.
+        Pass ``record_id``, the Record ID of the indexed Slack message in context: the
+        channel and workspace read are that message's. Call when retrieval lacks
+        surrounding channel conversation. For full thread context use
+        ``fetch_slack_thread`` instead.
         """
         try:
+            shortener = (tool_state or {}).get("record_id_shortener")
+            anchor = shortener.resolve(record_id) if shortener is not None else record_id
+            gate = (
+                RecordReadGate(graph_provider, org_id, user_id, caller_user_id=caller_user_id)
+                if graph_provider is not None and org_id and user_id
+                else None
+            )
+            scope = await _anchor_scope(
+                anchor, gate=gate, graph_provider=graph_provider, org_id=org_id,
+                channel_id=channel_id, connector_id=connector_id,
+            )
+            if scope is None:
+                logger.info("slack.nearby_refused orgId=%s reason=anchor_not_readable", org_id)
+                return FetchSlackNearbyMessagesError(error=anchor_refusal(record_id))
             return await _fetch_nearby_messages_impl(
                 timestamp=timestamp,
                 direction=direction,
-                channel_id=channel_id,
-                connector_id=connector_id,
+                channel_id=scope[0],
+                connector_id=scope[1],
                 timezone_name=timezone,
                 limit=limit,
                 config_service=config_service,

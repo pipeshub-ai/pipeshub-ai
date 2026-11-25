@@ -638,7 +638,7 @@ def _real_config_service(store: AsyncMock) -> Any:
 
     with patch("app.config.configuration_service.EncryptionService.get_instance", return_value=MagicMock()), \
             patch.object(ConfigurationService, "_start_watch"), \
-            patch.dict("os.environ", {"SECRET_KEY": "test-secret-key"}):
+            patch.dict("os.environ", {"SECRET_KEY": "2ceac6f36363c6246a64cca805cd43ca7a01b14eb2fcc532ceec3f60f2f7df1c"}):
         return ConfigurationService(logger=logging.getLogger("test-jira-enrichment"), key_value_store=store)
 
 

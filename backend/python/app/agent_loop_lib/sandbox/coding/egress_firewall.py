@@ -23,6 +23,7 @@ command starts — so the command can't fake the signal.
 
 from __future__ import annotations
 
+import functools
 import ipaddress
 import logging
 import os
@@ -33,17 +34,36 @@ import threading
 from collections.abc import Iterable
 from typing import Any
 
+from app.sandbox.sandbox_floor import (
+    DNS_ACCEPT_LINES,
+    IPV6_LINES,
+    ROUTE_HELPER_LINES,
+    ROUTE_REJECT_LINES,
+)
+
 __all__ = [
     "BLOCKED_CIDRS",
+    "CLOUD_DNS_SERVERS",
     "CONTAINER_HARDENING",
+    "WRITABLE_DIRS",
+    "DEFAULT_OPEN_EGRESS_POOL",
+    "ENV_OPEN_EGRESS_SUBNETS",
     "FIREWALL_UNAVAILABLE_EXIT_CODE",
+    "build_firewall_rules_script",
     "build_firewall_script",
     "create_sandbox_container",
+    "deadline_command",
+    "dns_servers_from_env",
+    "EgressNetworkUnsafe",
     "ensure_egress_network_sync",
     "firewall_unavailable",
     "firewalled_container_kwargs",
+    "limited",
     "new_firewall_token",
+    "open_egress_pool",
+    "open_egress_subnets",
     "parse_cidrs",
+    "sandbox_labels",
 ]
 
 logger = logging.getLogger(__name__)
@@ -54,6 +74,10 @@ _DEFAULT_DISK_QUOTA = "10g"
 # (applied), False = it rejects it (runs go uncapped). Set once under the lock.
 _storage_opt_usable: bool | None = None
 _storage_opt_lock = threading.Lock()
+# Sandboxes are the first thing the kernel kills when memory runs out, ahead
+# of the databases and the app. False once an older Docker proxy refused it.
+_OOM_SCORE_ADJ = 1000
+_oom_score_adj_usable = True
 
 
 def _disk_quota() -> str | None:
@@ -68,21 +92,75 @@ def _disk_quota() -> str | None:
     return raw
 
 
-def create_sandbox_container(client: Any, **kwargs: Any) -> Any:
-    """``client.containers.create`` with a per-run writable-layer disk quota.
+# Labels on every sandbox container, so an operator (or a sweep) can find
+# the ones a stack left behind, with or without the Docker proxy.
+SANDBOX_LABEL = "ai.pipeshub.sandbox"
+SANDBOX_STATE_LABEL = "ai.pipeshub.sandbox.state-id"
+_STATE_ID_RE = re.compile(r"[A-Za-z0-9_.-]{1,63}")
+
+
+def sandbox_labels(purpose: str = "run") -> dict[str, str]:
+    """The app's labels for a sandbox container: what it is for (``run`` or
+    ``install``) and this stack's ``SANDBOX_STATE_ID`` when one is set."""
+    labels = {SANDBOX_LABEL: purpose}
+    state_id = (os.environ.get("SANDBOX_STATE_ID") or "").strip()
+    if _STATE_ID_RE.fullmatch(state_id):
+        labels[SANDBOX_STATE_LABEL] = state_id
+    return labels
+
+
+def create_sandbox_container(client: Any, *, purpose: str = "run", **kwargs: Any) -> Any:
+    """``client.containers.create`` with a per-run writable-layer disk quota,
+    marked first to kill when memory runs out (``oom_score_adj=1000``).
+
+    Swap is off (``memswap_limit`` equal to ``mem_limit``), as the Docker
+    proxy enforces, so the memory cap means the same with a socket mounted
+    straight from the daemon. The container carries ``sandbox_labels(purpose)``.
+
+    A Docker proxy older than the field refuses every create that sets it, so
+    on that refusal the container is created without it, and later creates
+    skip it, with one warning.
 
     Caps a run's writable layer (``/src``, ``/output``, …) via ``storage_opt``
     so one run cannot fill the host disk (CWE-400). The cap is applied wherever
     the daemon accepts the option; whether an accepted cap is ENFORCED depends
     on the storage driver (overlay2 on xfs with ``pquota``, or btrfs/zfs/
     devicemapper, enforce it; overlay2 on ext4 accepts but silently ignores
-    it). That ignore case cannot be detected reliably — the daemon returns no
-    error, and the docker-socket-proxy blocks the ``/info`` query that would
-    reveal the driver — so it is stated in a one-time log rather than probed
-    (a write probe is not reliable through the proxy's log streaming). A daemon
+    it). That ignore case is not detected — the daemon returns no error, and
+    ``/info`` (also through the docker-socket-proxy) names the storage driver
+    and its backing filesystem but not its mount options — so it is stated in
+    a one-time log rather than probed (a write probe is not reliable through
+    the proxy's log streaming). A daemon
     that REJECTS the option falls back to no cap with a warning, so a run is
     never broken. Exceeding an enforced cap fails a write with a clean ENOSPC.
     """
+    global _oom_score_adj_usable
+    kwargs["labels"] = {**sandbox_labels(purpose), **(kwargs.get("labels") or {})}
+    if kwargs.get("mem_limit") is not None:
+        kwargs.setdefault("memswap_limit", kwargs["mem_limit"])
+    if _oom_score_adj_usable:
+        try:
+            return _create_with_quota(client, oom_score_adj=_OOM_SCORE_ADJ, **kwargs)
+        except Exception as exc:
+            if not _is_oom_score_adj_refused(exc):
+                raise
+            if _oom_score_adj_usable:
+                _oom_score_adj_usable = False
+                logger.warning(
+                    "sandbox containers are not marked first-to-kill: the Docker proxy "
+                    "predates OomScoreAdj; upgrade it (%s)", exc,
+                )
+    return _create_with_quota(client, **kwargs)
+
+
+def _is_oom_score_adj_refused(exc: Exception) -> bool:
+    """The closed-field refusal of a proxy that does not know the field. Not
+    its range check, which is a real misconfiguration."""
+    msg = str(exc)
+    return "'OomScoreAdj'" in msg and "is not permitted" in msg
+
+
+def _create_with_quota(client: Any, **kwargs: Any) -> Any:
     quota = _disk_quota()
     if quota is None or _storage_opt_usable is False:
         return client.containers.create(**kwargs)
@@ -136,6 +214,19 @@ def _is_storage_opt_rejected(exc: Exception) -> bool:
 # Rejected before any operator allowance: link-local carries the AWS/GCP/
 # Azure/OpenStack metadata endpoint, and Azure's wireserver is a public IP.
 _NEVER_ALLOWED_CIDRS = ("169.254.0.0/16", "168.63.129.16/32")
+
+# Resolvers the embedded DNS server (127.0.0.11) may forward to from the
+# sandbox's own network namespace, where these rules apply: Docker does so for
+# servers set with the daemon's ``dns`` option or ``--dns``. Only port 53 is
+# opened on them, ahead of the rejects; their other ports stay closed. Azure
+# DNS shares the wireserver address, AWS's resolver and GCP's metadata server
+# are link-local. The container's default gateway, and the servers Docker
+# lists in its resolv.conf as forwarded from the container, are added when the
+# rules are installed; ``SANDBOX_EGRESS_DNS_SERVERS`` (comma-separated IPv4
+# addresses) adds more. Code that can query the embedded server can already
+# reach these resolvers through it, so this opens no new service.
+_ENV_DNS_SERVERS = "SANDBOX_EGRESS_DNS_SERVERS"
+CLOUD_DNS_SERVERS = ("168.63.129.16", "169.254.169.253", "169.254.169.254")
 BLOCKED_CIDRS = (
     "0.0.0.0/8",
     "10.0.0.0/8",
@@ -168,15 +259,48 @@ CONTAINER_HARDENING: dict[str, Any] = {
     "security_opt": ["no-new-privileges:true"],
     "pids_limit": 256,
     "user": "sandbox",
+    # SEC-A-04: the broker's floor (``app.sandbox.sandbox_floor``), which the socket proxy now requires: a read-only
+    # root, its writable directories anonymous volumes that go with the container.
+    "read_only": True,
 }
+# The directories a legacy sandbox writes: the image makes them the sandbox user's, and an anonymous volume there
+# starts as the image's directory. /home holds the user's own home (npm and pip caches).
+WRITABLE_DIRS: tuple[str, ...] = ("/src", "/output", "/install", "/deps", "/node_modules", "/home")
+
+
+def limited(mem_bytes: int) -> dict[str, Any]:
+    """The memory and disk part of the floor for a container of ``mem_bytes``: no swap beyond it, and the writable
+    directories as anonymous volumes."""
+    from docker.types import Mount
+
+    return {
+        "mem_limit": mem_bytes,
+        "memswap_limit": mem_bytes,
+        "mounts": [Mount(target, None, type="volume") for target in WRITABLE_DIRS],
+    }
 
 # NET_ADMIN installs the rules; SETUID/SETGID/SETPCAP let setpriv switch user
 # and empty the bounding set. All are gone before the command runs.
 _FIREWALL_SETUP_CAPS = ["NET_ADMIN", "SETUID", "SETGID", "SETPCAP"]
 _ICC_OPTION = "com.docker.network.bridge.enable_icc"
 
+# The shared open-egress bridge takes its subnet from this pool, never from the daemon's default address pools: a
+# daemon has about 30 of those, and on a host that runs other stacks they are all taken, so a bridge created without
+# an address would fail every open-egress sandbox. Next to the broker's per-sandbox pool (10.213/16).
+ENV_OPEN_EGRESS_SUBNETS = "SANDBOX_OPEN_EGRESS_SUBNETS"
+DEFAULT_OPEN_EGRESS_POOL = "10.212.0.0/16"
+# Every open-egress sandbox of the install joins the one bridge, so it holds 1021 of them.
+_OPEN_EGRESS_PREFIX = 22
+
 
 _TOKEN_RE = re.compile(r"[0-9a-f]{16,64}")
+
+# The fixed shell blocks of the rules (route helpers, DNS accepts, route rejects, IPv6) live in sandbox_floor, the
+# grammar the socket proxies check a firewall script against, so the script and its check cannot drift apart.
+_ROUTE_HELPER_LINES = list(ROUTE_HELPER_LINES)
+_DNS_ACCEPT_LINES = list(DNS_ACCEPT_LINES)
+_ROUTE_REJECT_LINES = list(ROUTE_REJECT_LINES)
+_IPV6_LINES = list(IPV6_LINES)
 
 
 def new_firewall_token() -> str:
@@ -195,40 +319,69 @@ def _ipv4_cidrs(cidrs: Iterable[str]) -> list[str]:
     return normalised
 
 
+def _ipv4_addresses(addresses: Iterable[str]) -> list[str]:
+    """IPv4 host addresses; anything else raises (spliced into a root script)."""
+    return list(dict.fromkeys(str(ipaddress.IPv4Address(str(a).strip())) for a in addresses))
+
+
+@functools.lru_cache(maxsize=8)
+def _parse_dns_servers(raw: str) -> tuple[str, ...]:
+    servers: list[str] = []
+    for item in raw.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        try:
+            servers.append(str(ipaddress.IPv4Address(item)))
+        except ValueError:
+            logger.warning("ignoring invalid %s entry %r (one IPv4 address each)", _ENV_DNS_SERVERS, item)
+    return tuple(dict.fromkeys(servers))
+
+
+def dns_servers_from_env() -> tuple[str, ...]:
+    """``CLOUD_DNS_SERVERS`` plus the valid addresses in ``SANDBOX_EGRESS_DNS_SERVERS``."""
+    extra = _parse_dns_servers(os.environ.get(_ENV_DNS_SERVERS) or "")
+    return tuple(dict.fromkeys((*CLOUD_DNS_SERVERS, *extra)))
+
+
 def build_firewall_script(
     network_cidrs: Iterable[str],
     allowed_cidrs: Iterable[str] = (),
     run_as: str = "sandbox",
     *,
     token: str,
+    dns_servers: Iterable[str] | None = None,
 ) -> str:
     """``sh -c`` script: install the rules, then exec ``"$@"`` as ``run_as``.
 
-    Blocking the bridge's own subnets covers the gateway and sibling
-    sandboxes even when the daemon's address pools sit outside the private
-    ranges. Loopback stays open because Docker's embedded DNS (127.0.0.11)
-    is reached through it.
+    Rule order (first match wins):
+
+    1. loopback is accepted: Docker's embedded DNS (127.0.0.11) is reached
+       through it;
+    1b. DNS (udp and tcp port 53, nothing else) is accepted to ``dns_servers``
+       (default ``dns_servers_from_env()``), the default gateway and the
+       resolvers Docker forwards to from the container, so name resolution
+       works when Docker forwards from the container's namespace;
+    2. link-local (cloud metadata), Azure's wireserver, the bridge's own
+       subnets (``network_cidrs``) and, read from the container's routing
+       table at start, every subnet it is attached to and its default
+       gateway (the host, or under Docker-in-Docker the application pod)
+       are rejected;
+    3. ``allowed_cidrs`` are accepted;
+    4. every other private, CGNAT and reserved range is rejected;
+    5. all IPv6 output but loopback is dropped (see ``_IPV6_LINES``).
+
+    An unreadable routing table fails the setup rather than skipping step 2's
+    route rejects.
+
+    So an operator allowance, however broad (``0.0.0.0/0``), opens private
+    hosts beyond the bridge but never the gateway, sibling sandboxes or the
+    metadata endpoints. Blocking the bridge's subnets also covers daemons
+    whose address pools sit outside the private ranges.
     """
-    if not _TOKEN_RE.fullmatch(token):
-        raise ValueError("firewall token must be 16-64 lowercase hex characters")
-    blocked = list(dict.fromkeys([*BLOCKED_CIDRS, *_ipv4_cidrs(network_cidrs)]))
-    allowed = _ipv4_cidrs(allowed_cidrs)
     user = shlex.quote(run_as)
-    lines = [
-        "set -u",
-        f"fail() {{ echo '{_UNAVAILABLE_MARKER} ({token}):' \"$1\" >&2; exit {FIREWALL_UNAVAILABLE_EXIT_CODE}; }}",
-        "command -v setpriv >/dev/null 2>&1 || fail 'setpriv not found'",
-        'IPT=""',
-        "for b in iptables iptables-legacy; do",
-        '  if command -v "$b" >/dev/null 2>&1 && "$b" -w -n -L OUTPUT >/dev/null 2>&1; then IPT="$b"; break; fi',
-        "done",
-        "[ -n \"$IPT\" ] || fail 'no working iptables in the sandbox image'",
-        "r() { \"$IPT\" -w \"$@\" || fail \"iptables $*\"; }",
-        "r -A OUTPUT -o lo -j ACCEPT",
-    ]
-    lines += [f"r -A OUTPUT -d {cidr} -j REJECT" for cidr in _NEVER_ALLOWED_CIDRS]
-    lines += [f"r -A OUTPUT -d {cidr} -j ACCEPT" for cidr in allowed]
-    lines += [f"r -A OUTPUT -d {cidr} -j REJECT" for cidr in blocked]
+    lines = _rule_lines(network_cidrs, allowed_cidrs, token, dns_servers)
+    lines.insert(2, "command -v setpriv >/dev/null 2>&1 || fail 'setpriv not found'")
     # The container starts as root, so HOME is /root; npm/npx would then
     # fail to write their cache once running as `run_as`.
     lines += [
@@ -242,6 +395,57 @@ def build_firewall_script(
     )
     return "\n".join(lines) + "\n"
 
+
+def build_firewall_rules_script(
+    network_cidrs: Iterable[str],
+    allowed_cidrs: Iterable[str] = (),
+    *,
+    token: str,
+    dns_servers: Iterable[str] | None = None,
+) -> str:
+    """``sh -c`` script that only installs the rules and exits.
+
+    For a one-shot helper that shares a sandbox's network namespace (the
+    sandbox broker's containers have no capabilities to do it themselves):
+    the rules live in the namespace, so they hold for the sandbox after the
+    helper is gone. The rules are ``build_firewall_script``'s.
+    """
+    return "\n".join([*_rule_lines(network_cidrs, allowed_cidrs, token, dns_servers), "exit 0"]) + "\n"
+
+
+def _rule_lines(
+    network_cidrs: Iterable[str], allowed_cidrs: Iterable[str], token: str, dns_servers: Iterable[str] | None = None,
+) -> list[str]:
+    if not _TOKEN_RE.fullmatch(token):
+        raise ValueError("firewall token must be 16-64 lowercase hex characters")
+    bridge = list(dict.fromkeys(_ipv4_cidrs(network_cidrs)))
+    blocked = [c for c in dict.fromkeys(BLOCKED_CIDRS) if c not in bridge]
+    allowed = _ipv4_cidrs(allowed_cidrs)
+    resolvers = _ipv4_addresses(dns_servers_from_env() if dns_servers is None else dns_servers)
+    lines = [
+        "set -u",
+        f"fail() {{ echo '{_UNAVAILABLE_MARKER} ({token}):' \"$1\" >&2; exit {FIREWALL_UNAVAILABLE_EXIT_CODE}; }}",
+        'IPT=""',
+        "for b in iptables iptables-legacy; do",
+        '  if command -v "$b" >/dev/null 2>&1 && "$b" -w -n -L OUTPUT >/dev/null 2>&1; then IPT="$b"; break; fi',
+        "done",
+        "[ -n \"$IPT\" ] || fail 'no working iptables in the sandbox image'",
+        "r() { \"$IPT\" -w \"$@\" || fail \"iptables $*\"; }",
+        "r -A OUTPUT -o lo -j ACCEPT",
+    ]
+    lines += _ROUTE_HELPER_LINES
+    lines += [
+        f"r -A OUTPUT -d {ip}/32 -p {proto} --dport 53 -j ACCEPT"
+        for ip in resolvers for proto in ("udp", "tcp")
+    ]
+    lines += _DNS_ACCEPT_LINES
+    lines += [f"r -A OUTPUT -d {cidr} -j REJECT" for cidr in _NEVER_ALLOWED_CIDRS]
+    lines += [f"r -A OUTPUT -d {cidr} -j REJECT" for cidr in bridge]
+    lines += _ROUTE_REJECT_LINES
+    lines += [f"r -A OUTPUT -d {cidr} -j ACCEPT" for cidr in allowed]
+    lines += [f"r -A OUTPUT -d {cidr} -j REJECT" for cidr in blocked]
+    lines += _IPV6_LINES
+    return lines
 
 def firewalled_container_kwargs(
     command: list[str],
@@ -261,6 +465,25 @@ def firewalled_container_kwargs(
         "user": "0",
         "cap_add": list(_FIREWALL_SETUP_CAPS),
     }
+
+
+# `timeout -s KILL` ends the program (and, through its process group, any
+# children it started) after N seconds even if nothing on the host is left to
+# do it, e.g. after the worker that started the run crashed. An image without
+# `timeout` still runs the command; the Docker proxy's reaper is then the
+# only backstop for an orphaned container.
+_DEADLINE_SCRIPT = (
+    "s=$1; shift\n"
+    'if command -v timeout >/dev/null 2>&1; then exec timeout -s KILL "$s" "$@"; fi\n'
+    'exec "$@"\n'
+)
+
+
+def deadline_command(command: list[str], seconds: int) -> list[str]:
+    """``command`` wrapped so it is SIGKILLed after ``seconds`` from inside
+    the container. Composes with ``firewalled_container_kwargs``: passed as
+    its ``command``, the deadline starts after the privilege drop."""
+    return ["sh", "-c", _DEADLINE_SCRIPT, "sandbox-deadline", str(int(seconds)), *command]
 
 
 def firewall_unavailable(exit_code: int, stderr: str, token: str) -> bool:
@@ -287,26 +510,34 @@ def _get_network(client: Any, network_name: str) -> Any | None:
     return None
 
 
-def ensure_egress_network_sync(client: Any, network_name: str, labels: dict[str, str]) -> list[str]:
-    """Create the egress bridge with inter-container traffic off and return
-    its IPv4 subnets (empty if they can't be read).
+def open_egress_pool(raw: str | None = None) -> ipaddress.IPv4Network:
+    """The pool the open-egress bridge's subnet comes from: ``raw``, else ``SANDBOX_OPEN_EGRESS_SUBNETS``, else the
+    default. A pool that is not one IPv4 network is refused rather than replaced: a typo must not move the bridge
+    onto addresses this host routes to."""
+    value = (raw if raw is not None else os.environ.get(ENV_OPEN_EGRESS_SUBNETS) or "").strip()
+    network = ipaddress.ip_network(value or DEFAULT_OPEN_EGRESS_POOL, strict=True)
+    if not isinstance(network, ipaddress.IPv4Network) or network.prefixlen > 29:
+        raise ValueError(f"{ENV_OPEN_EGRESS_SUBNETS}={value!r} must be an IPv4 network of 8+ addresses")
+    return network
 
-    A network created before ICC was turned off is replaced while idle; one
-    with containers attached is kept (removing it would fail) — the
-    per-container firewall blocks the bridge subnet either way.
-    """
-    network = _get_network(client, network_name)
-    if network is not None and (network.attrs.get("Options") or {}).get(_ICC_OPTION) != "false":
-        if network.attrs.get("Containers"):
-            logger.warning(
-                "sandbox egress network %s allows inter-container traffic and is in use; "
-                "it will be recreated once idle", network_name,
-            )
-        else:
-            logger.info("recreating sandbox egress network %s with inter-container traffic off", network_name)
-            network.remove()
-            network = None
-    if network is None:
+
+def open_egress_subnets(pool: ipaddress.IPv4Network) -> list[str]:
+    """The subnets the bridge may take, lowest first: the pool's /22s, or the pool itself when it is smaller."""
+    prefix = max(_OPEN_EGRESS_PREFIX, pool.prefixlen)
+    return [str(net) for net in pool.subnets(new_prefix=prefix)]
+
+
+def _create_egress_network(
+    client: Any, network_name: str, labels: dict[str, str], candidates: Iterable[str],
+) -> None:
+    from docker.types import IPAMConfig, IPAMPool
+
+    from app.harness.sandbox.docker_egress import is_pool_overlap
+
+    tried = 0
+    for subnet in dict.fromkeys(candidates):
+        tried += 1
+        gateway = str(next(ipaddress.ip_network(subnet).hosts()))
         try:
             client.networks.create(
                 name=network_name,
@@ -314,10 +545,79 @@ def ensure_egress_network_sync(client: Any, network_name: str, labels: dict[str,
                 internal=False,
                 enable_ipv6=False,
                 options={_ICC_OPTION: "false"},
+                ipam=IPAMConfig(pool_configs=[IPAMPool(subnet=subnet, gateway=gateway)]),
                 labels=labels,
                 check_duplicate=True,
             )
-            logger.info("created sandbox egress network %s", network_name)
+        except Exception as exc:
+            if is_pool_overlap(exc):
+                continue
+            raise
+        logger.info("created sandbox egress network %s on %s", network_name, subnet)
+        return
+    raise RuntimeError(
+        f"no free subnet for sandbox egress network {network_name} after {tried} tries; "
+        f"set {ENV_OPEN_EGRESS_SUBNETS} to a free IPv4 range"
+    )
+
+
+class EgressNetworkUnsafe(RuntimeError):
+    """The egress network allows inter-container traffic or IPv6 and could
+    not be replaced; a networked run must not join it."""
+
+
+def _network_problems(attrs: dict[str, Any]) -> list[str]:
+    problems = []
+    if (attrs.get("Options") or {}).get(_ICC_OPTION) != "false":
+        problems.append("allows inter-container traffic")
+    if attrs.get("EnableIPv6"):
+        problems.append("has IPv6 enabled")
+    return problems
+
+
+def ensure_egress_network_sync(
+    client: Any, network_name: str, labels: dict[str, str], *, pool: str | None = None,
+) -> list[str]:
+    """Create the egress bridge with inter-container traffic and IPv6 off and
+    return its IPv4 subnets (empty if they can't be read).
+
+    An existing network that allows inter-container traffic or has IPv6 on
+    is replaced while idle, on its old subnet when that is still free. When it
+    cannot be replaced (containers are attached, or the Docker proxy refuses
+    to remove a network another stack created) ``EgressNetworkUnsafe`` is
+    raised: sandboxes on it would be reachable from unfirewalled peers, or
+    have IPv6 the firewall's IPv4 rules do not cover. A new bridge takes a
+    subnet from ``pool`` (``open_egress_pool``).
+    """
+    network = _get_network(client, network_name)
+    previous: list[str] = []
+    problems = _network_problems(network.attrs) if network is not None else []
+    if network is not None and problems:
+        what = " and ".join(problems)
+        if network.attrs.get("Containers"):
+            raise EgressNetworkUnsafe(
+                f"sandbox egress network {network_name} {what} and has containers attached, so it "
+                "cannot be recreated; networked sandbox runs are refused until it is removed "
+                "(or set a different egress network name)"
+            )
+        logger.info("recreating sandbox egress network %s: it %s", network_name, what)
+        previous = _subnets(network.attrs)
+        try:
+            network.remove()
+        except Exception as exc:
+            # In use by containers this client is not shown, or not created
+            # by this stack's Docker proxy (which only removes its own).
+            raise EgressNetworkUnsafe(
+                f"sandbox egress network {network_name} {what} and could not be recreated ({exc}); "
+                "networked sandbox runs are refused until it is removed "
+                "(or set a different egress network name)"
+            ) from exc
+        network = None
+    if network is None:
+        try:
+            _create_egress_network(
+                client, network_name, labels, [*previous, *open_egress_subnets(open_egress_pool(pool))],
+            )
         except Exception as exc:
             # Another process may have created it between our look and our create.
             logger.debug("egress network creation raised %s; re-checking", exc)
@@ -328,6 +628,15 @@ def ensure_egress_network_sync(client: Any, network_name: str, labels: dict[str,
             if raced is None:
                 raise
         network = _get_network(client, network_name)
+        problems = _network_problems(network.attrs) if network is not None else []
+        if problems:
+            # A daemon default (default-network-opts) can turn IPv6 on, or a
+            # racing creator made it differently.
+            raise EgressNetworkUnsafe(
+                f"sandbox egress network {network_name} {' and '.join(problems)} as created on "
+                "this Docker daemon; networked sandbox runs are refused (check the daemon's "
+                "default-network-opts)"
+            )
     return _subnets(network.attrs) if network is not None else []
 
 

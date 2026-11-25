@@ -24,7 +24,7 @@ from app.agents.constants.mcp_server_constants import (
     get_mcp_refresh_lock_path,
     get_mcp_shared_dcr_client_path,
 )
-from app.agents.mcp import token_refresh, url_guard
+from app.agents.mcp import oauth_client, token_refresh, url_guard
 from app.agents.mcp.errors import MCPUrlBlockedError
 from app.agents.mcp.failure import (
     MCPFailureReason,
@@ -603,3 +603,92 @@ class TestTheTags:
             assert CR.refresh_error_class(wrapped) == "unavailable"
         rejected_client = MCPRefreshTokenInvalidError("x", error_code="invalid_client", status=401)
         assert CR.refresh_error_class(rejected_client) == "misconfigured"
+
+
+MALFORMED_MARK = "FIELD-MARKER-26E"
+MALFORMED_ANSWERS = {
+    "expires_in_text": {"access_token": "at-new", "refresh_token": "rt-new", "expires_in": f"soon-{MALFORMED_MARK}"},
+    "expires_in_past_the_bound": {"access_token": "at-new", "refresh_token": "rt-new", "expires_in": 10**20},
+    "scope_list": {"access_token": "at-new", "refresh_token": "rt-new", "scope": [MALFORMED_MARK]},
+    "access_token_number": {"access_token": 26, "refresh_token": "rt-new"},
+}
+
+
+def _no_marker(caplog: pytest.LogCaptureFixture) -> None:
+    for record in caplog.records:
+        rendered = json.dumps(fields(record), default=str) + record.getMessage() + (record.exc_text or "")
+        assert MALFORMED_MARK not in rendered, record.getMessage()
+
+
+def _failures(caplog: pytest.LogCaptureFixture) -> list[tuple[int, object, object]]:
+    return [(r.levelno, fields(r)["error_class"], fields(r)["reason"]) for r in events(caplog, END)
+            if fields(r)["outcome"] == "failure"]
+
+
+class TestMalformedTokens:
+    """A token field of the wrong shape: misconfigured, ERROR once an hour per sign-in, never quoted, nothing saved."""
+
+    ONCE = [(logging.ERROR, "misconfigured", "malformed_token"), (logging.DEBUG, "misconfigured", "malformed_token")]
+
+    @pytest.mark.parametrize("cell", list(MALFORMED_ANSWERS))
+    async def test_a_malformed_answer_is_misconfigured_once_and_saves_nothing(
+        self, endpoint: Endpoint, caplog: pytest.LogCaptureFixture, cell: str,
+    ) -> None:
+        endpoint.answers = [(200, MALFORMED_ANSWERS[cell])] * 2
+        store = _store()
+        saved = json.dumps(store.data[CRED])
+
+        exc = await _refresh_failing(store)
+        await _refresh_failing(store)
+
+        assert _failures(caplog) == self.ONCE
+        first = events(caplog, END)[0]
+        assert first.exc_text and fields(first)["error_message"].startswith("MCPMalformedTokenError: OAuth token field '")
+        assert json.dumps(store.data[CRED]) == saved  # no strike, no malformed value, nothing written
+        assert endpoint.calls == 2
+        assert (mcp_error_class(exc), classify_mcp_failure(exc)) == ("misconfigured", MCPFailureReason.AUTH_EXPIRED)
+        _no_marker(caplog)
+        assert_no_secrets(caplog)
+
+    async def test_after_an_hour_the_error_comes_back(self, endpoint: Endpoint, caplog: pytest.LogCaptureFixture) -> None:
+        endpoint.answers = [(200, MALFORMED_ANSWERS["expires_in_text"])] * 2
+        store = _store()
+
+        await _refresh_failing(store)
+        _age_the_gate()
+        await _refresh_failing(store)
+
+        assert [level for level, _, _ in _failures(caplog)] == [logging.ERROR, logging.ERROR]
+
+    @pytest.mark.parametrize("stored", [{"createdAt": f"bad-{MALFORMED_MARK}"}, {"expiresIn": 10**20}, {"scope": [MALFORMED_MARK]}],
+                             ids=["created_at", "expires_in_past_the_bound", "scope"])
+    async def test_a_malformed_saved_record_is_misconfigured_when_adopted(
+        self, endpoint: Endpoint, caplog: pytest.LogCaptureFixture, stored: dict[str, object],
+    ) -> None:
+        store = _store(_record(**stored))
+
+        for _ in range(2):
+            with pytest.raises(oauth_client.MCPMalformedTokenError):
+                await _refresh(store, stale_access_token="at-stale")
+
+        assert endpoint.calls == 0
+        assert _failures(caplog) == self.ONCE
+        _no_marker(caplog)
+
+    async def test_a_malformed_record_saved_during_the_request_is_misconfigured_when_superseded(
+        self, endpoint: Endpoint, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        store = _store()
+
+        async def sign_in_again() -> None:
+            store.data[CRED] = _record(refreshToken="rt-from-a-new-sign-in", createdAt=f"bad-{MALFORMED_MARK}")
+
+        endpoint.answers, endpoint.before = [OK], sign_in_again
+        with pytest.raises(oauth_client.MCPMalformedTokenError):
+            await _refresh(store)
+
+        assert _failures(caplog) == self.ONCE[:1]
+        _no_marker(caplog)
+
+    def test_the_tag_is_misconfigured(self) -> None:
+        assert CR.refresh_error_class(oauth_client.MCPMalformedTokenError("expires_in")) == "misconfigured"

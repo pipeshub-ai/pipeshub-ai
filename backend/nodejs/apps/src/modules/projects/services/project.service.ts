@@ -23,6 +23,7 @@ import {
   ProjectMemberView,
   ProjectRole,
 } from '../types/project.interfaces';
+import { envFlag } from '../../../libs/utils/env-flags';
 
 /** The subset of project fields `computeRole` needs — satisfied by both a hydrated document and a `.lean()` result. */
 type ProjectAccessFields = Pick<
@@ -44,9 +45,7 @@ export type ProjectListItem = Omit<IProject, 'pinnedBy'> & {
 };
 
 const logger = Logger.getInstance({ service: 'ProjectService' });
-const unitOfWork = createUnitOfWork(
-  process.env.REPLICA_SET_AVAILABLE === 'true',
-);
+const unitOfWork = createUnitOfWork(envFlag('REPLICA_SET_AVAILABLE'));
 
 export interface CreateProjectInput {
   name: string;
@@ -683,9 +682,10 @@ export class ProjectService {
     try {
       await getProjectRepository().touchActivity(projectId);
     } catch (error) {
-      logger.error('Failed to bump project lastActivityAt', {
-        projectId,
-        error: error instanceof Error ? error.message : String(error),
+      // Best effort: the request it belongs to goes on.
+      logger.warn('Failed to bump project lastActivityAt', {
+        project_id: projectId,
+        error,
       });
     }
   }

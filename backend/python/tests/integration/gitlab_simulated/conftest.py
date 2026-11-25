@@ -15,7 +15,7 @@ import pytest
 logging.getLogger("neo4j").setLevel(logging.ERROR)
 logging.getLogger("neo4j.notifications").setLevel(logging.ERROR)
 logging.getLogger("urllib3").setLevel(logging.ERROR)
-os.environ.setdefault("SECRET_KEY", "gitlab-sim-test-secret-key-0123456789abcdef")
+os.environ.setdefault("SECRET_KEY", "9c202e6eab4b7496ecebd9bf06e3bc12ccf5af7ec58935180a7e9aa1fa2c81f0")
 
 from tests.integration.gitlab_simulated.glsim.model import Behaviour  # noqa: E402
 from tests.integration.gitlab_simulated.helpers import allow_the_simulator  # noqa: E402

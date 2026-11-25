@@ -1,0 +1,111 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/core/events/interaction.granted.schema.json",
+  "title": "InteractionGrantedEvent",
+  "description": "A person approved a held call for the rest of the conversation (UX1): Node writes it in the same commit as the call's interaction.resolved, and only when the worker's interaction.explained offered it. FLOWGRANT: Node names the grant itself (toolId, key, sensitivity), copied from the worker's own offer and never from the client, and writes the same grant on every other open run of the conversation (fromRunId: the run where the person decided), so the conversation's runs, its child and engine runs included, allow the same tool and destination with the same or less sensitive data without asking again; folds ignore it.",
+  "x-writer": [
+    "node"
+  ],
+  "allOf": [
+    {
+      "$ref": "../envelope.schema.json#/$defs/InlineEnvelope"
+    }
+  ],
+  "properties": {
+    "type": {
+      "const": "interaction.granted"
+    },
+    "writer": {
+      "const": "node"
+    },
+    "data": {
+      "$ref": "#/$defs/InteractionGrantedData"
+    }
+  },
+  "$defs": {
+    "InteractionGrantedData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "interactionId",
+        "scope"
+      ],
+      "properties": {
+        "interactionId": {
+          "$ref": "../common.schema.json#/$defs/Id"
+        },
+        "scope": {
+          "enum": [
+            "conversation"
+          ]
+        },
+        "toolId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512,
+          "description": "The tool the grant allows (the offer's toolId)."
+        },
+        "key": {
+          "$ref": "../common.schema.json#/$defs/Digest",
+          "description": "The destination the grant allows (the offer's destination.key)."
+        },
+        "sensitivity": {
+          "enum": [
+            "public",
+            "private",
+            "unknown"
+          ],
+          "description": "The data the run had read when the person allowed it: the grant answers asks with the same or less sensitive data."
+        },
+        "fromRunId": {
+          "$ref": "../common.schema.json#/$defs/Id",
+          "description": "On a copy Node writes on another open run of the conversation: the run whose ask the person allowed."
+        },
+        "by": {
+          "$ref": "../common.schema.json#/$defs/PrincipalRef",
+          "description": "Who allowed it (the person's decision on the ask the grant answers; WP-115): an ask Node answers with a grant it already holds is recorded as theirs."
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 9,
+      "runId": "run_1",
+      "type": "interaction.granted",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-09T12:00:01.123Z",
+      "writer": "node",
+      "visibility": "owner",
+      "data": {
+        "interactionId": "ix.approve.t2.0",
+        "scope": "conversation"
+      }
+    },
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "run_2",
+      "seq": 14,
+      "runId": "run_2",
+      "type": "interaction.granted",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-11-07T12:32:30.000Z",
+      "writer": "node",
+      "visibility": "owner",
+      "data": {
+        "interactionId": "ix.approve.t2.0",
+        "scope": "conversation",
+        "toolId": "web@searxng/fetch_url",
+        "key": "sha256:4c5c0f51fdaf2b50038b8c674f654f5407e153408d5688d5b5fbcf38395aa0c3",
+        "sensitivity": "private",
+        "fromRunId": "run_1"
+      }
+    }
+  ]
+}

@@ -6,6 +6,7 @@ lookups against one store holding two orgs' instances, and check that a caller i
 """
 from __future__ import annotations
 
+from collections.abc import Iterator
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -39,6 +40,7 @@ from app.api.routes.mcp_servers import (
     update_instance,
 )
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from tests.support.bound_org import bind_test_org
 from tests.unit.api.routes.mcp_route_fakes import FakeConfigService, route_request
 
 if TYPE_CHECKING:
@@ -253,3 +255,9 @@ class TestOAuthCallback:
 
         assert result == {"success": True, "instanceId": "mine"}
         assert store.data["/services/mcp/credentials/mine/admin-1"]["orgId"] == "org-1"
+
+
+@pytest.fixture(autouse=True)
+def _bound_org() -> Iterator[str]:
+    """The auth middleware binds the verified token's org; these tests call the route functions directly."""
+    yield from bind_test_org("org-1")

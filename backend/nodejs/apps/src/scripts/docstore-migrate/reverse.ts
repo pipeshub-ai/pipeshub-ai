@@ -26,11 +26,16 @@ import {
   appClients,
   describeClients,
   readMongoFence,
+  APP_WRITES_ID,
+  restoreAppWrites,
   setMongoFence,
 } from './fence';
 import { storeEpochOnFreshConnection } from './online';
 import { JobState } from './state';
 import { VerifyReport, verifyAll } from './verify';
+import { carriersFor, restoreCarried } from './carry/run';
+import { carryMongo, carryPg } from './carry/steps';
+import { refusedIds } from './refusals';
 
 // eslint-disable-next-line @typescript-eslint/no-unused-expressions
 MONGO_COLLECTIONS; // loading it registers every model
@@ -188,9 +193,12 @@ export async function reverseCopy(
   // documents the copy left out and listed are still in MongoDB and must stay there
   const job = await JobState.latest(rt);
   for (const m of MAPPINGS) {
-    const kept = Object.keys(
-      job?.progress.collections[m.collection]?.skippedIds ?? {},
-    ).map((id) => idFilter(id));
+    const refused = await refusedIds(
+      rt,
+      m.collection,
+      job?.progress.collections[m.collection]?.skippedIds,
+    );
+    const kept = Object.keys(refused).map((id) => idFilter(id));
     // pending device sign-ins live minutes and MongoDB still holds the originals: nothing to bring back (a client starts again)
     if (m.collection === 'oauthDeviceCodes') continue;
     // Written back in full: MongoDB still holds the pre-move status, so skipping would turn a sign-in revoked after the move live again.
@@ -207,7 +215,7 @@ export async function reverseCopy(
       continue;
     }
     if (SPECIAL.has(m.collection)) {
-      reversed[m.collection] = await reverseSpecial(rt, m.collection);
+      reversed[m.collection] = await reverseSpecial(rt, m.collection, refused);
       log('reversed', { collection: m.collection, ...reversed[m.collection] });
       continue;
     }
@@ -223,6 +231,11 @@ export async function reverseCopy(
     reversed[m.collection] = await reverseCollection(rt, m, model, kept);
     log('reversed', { collection: m.collection, ...reversed[m.collection] });
   }
+  // after the documents: the generic path rewrites a user, an org or a chat whole, so the fields a carrier keeps come back last
+  Object.assign(
+    reversed,
+    await restoreCarried(carryPg(rt), carryMongo(rt), carriersFor(), log),
+  );
   return { reversed, notReversed };
 }
 const hookOn = (failAt: string | undefined, name: string): boolean =>
@@ -361,7 +374,8 @@ export const BUSY =
   'another rollback is running against this store: wait for it to finish';
 
 export type HandOver =
-  | { kind: 'done' }
+  /** `note`: what is left to do about the application's MongoDB write roles ('' when they are back). */
+  | { kind: 'done'; note: string }
   | { kind: 'not_live'; why: string }
   | { kind: 'stuck'; message: string };
 
@@ -391,9 +405,15 @@ export async function handOver(
     const seen = now
       ? `the fence reads '${now.mode}' at epoch ${String(now.epoch)}`
       : 'the fence could not be read back';
+    // MongoDB is confirmed live: the application's users get their write roles back now, as on the normal path. Unconfirmed, the
+    // operator is told how, once they have seen the fence active
+    const roles =
+      now?.mode === 'active' && now.epoch === epoch
+        ? await restoreAppWrites(rt)
+        : ` Once the fence reads active, also give the application's MongoDB users back the write roles the switch took (the ${APP_WRITES_ID} document of docstore_fence lists them; grantRolesToUser).`;
     return {
       kind: 'stuck',
-      message: `MongoDB's fence may be live (${why}; ${seen}). PostgreSQL stays read-only and was not unfrozen. If the fence is active at epoch ${String(epoch)}: set platform.store_epoch to backend mongo, readonly true and the epoch one higher by hand, then roll the application back to DOC_STORE=mongo. If it is retired: run \`UPDATE platform.store_epoch SET readonly = false WHERE backend = 'postgres'\` to keep PostgreSQL as the store`,
+      message: `MongoDB's fence may be live (${why}; ${seen}). PostgreSQL stays read-only and was not unfrozen. If the fence is active at epoch ${String(epoch)}: set platform.store_epoch to backend mongo, readonly true and the epoch one higher by hand, then roll the application back to DOC_STORE=mongo. If it is retired: run \`UPDATE platform.store_epoch SET readonly = false WHERE backend = 'postgres'\` to keep PostgreSQL as the store.${roles}`,
     };
   }
   try {
@@ -409,13 +429,16 @@ export async function handOver(
   } catch (e) {
     // it may have committed before the error reached us
     const row = await storeEpochOnFreshConnection(rt, false).catch(() => null);
-    if (row?.backend === 'mongo') return { kind: 'done' };
+    // MongoDB is live either way, so the application's users get their write roles back
+    const note = await restoreAppWrites(rt);
+    if (row?.backend === 'mongo') return { kind: 'done', note };
     return {
       kind: 'stuck',
-      message: `MongoDB is the live store again (its fence is active), but platform.store_epoch was not updated (${errText(e)}). PostgreSQL is still read-only and was not unfrozen. Set platform.store_epoch to backend mongo, readonly true and the epoch one higher by hand, then roll the application back to DOC_STORE=mongo`,
+      message: `MongoDB is the live store again (its fence is active), but platform.store_epoch was not updated (${errText(e)}). PostgreSQL is still read-only and was not unfrozen. Set platform.store_epoch to backend mongo, readonly true and the epoch one higher by hand, then roll the application back to DOC_STORE=mongo.${note}`,
     };
   }
-  return { kind: 'done' };
+  // MongoDB is the store again: the application's users get back the write roles the switch took
+  return { kind: 'done', note: await restoreAppWrites(rt) };
 }
 
 export async function rollback(
@@ -484,7 +507,7 @@ async function rollbackLocked(
         ok: true,
         mode: 'no_pg_writes',
         verify: v,
-        message: `PostgreSQL equals MongoDB (job ${String(cur?.id ?? '-')}): nothing was written there. MongoDB is the live store again: set DOC_STORE=mongo and start the application`,
+        message: `PostgreSQL equals MongoDB (job ${String(cur?.id ?? '-')}): nothing was written there. MongoDB is the live store again: set DOC_STORE=mongo and start the application.${h.note}`,
       };
     }
     if (!o.reverse) {
@@ -526,8 +549,7 @@ async function rollbackLocked(
       mode: 'reverse',
       verify: after,
       ...r,
-      message:
-        'PostgreSQL was copied back and verified: set DOC_STORE=mongo and start the application',
+      message: `PostgreSQL was copied back and verified: set DOC_STORE=mongo and start the application.${h.note}`,
     };
   } catch (e) {
     if (!state.released) {

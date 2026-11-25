@@ -12,6 +12,7 @@ from app.connectors.core.registry.auth_builder import (
 from app.connectors.core.registry.connector_builder import CommonFields
 from app.connectors.core.registry.tool_builder import (
     ToolDefinition,
+    ToolProvider,
     ToolsetBuilder,
     ToolsetCategory,
 )
@@ -95,7 +96,7 @@ tools: List[ToolDefinition] = [
 
 
 # Register Linear toolset
-@ToolsetBuilder("Linear")\
+@ToolsetBuilder("Linear", provider=ToolProvider.CONNECTOR)\
     .in_group("Project Management")\
     .with_description("Linear integration for issue tracking and project management")\
     .with_category(ToolsetCategory.APP)\
@@ -145,7 +146,7 @@ class Linear:
         short_description="Get current authenticated Linear user",
         description="Get current user information from Linear, including display name, email, and account details.",
         parameters=[],
-        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_viewer(self) -> Tuple[bool, str]:
         """Get current user information"""
@@ -172,7 +173,7 @@ class Linear:
                 required=True,
             )
         ],
-        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_user(self, user_id: str) -> Tuple[bool, str]:
         """Get user by ID"""
@@ -205,7 +206,7 @@ class Linear:
                 required=False,
             ),
         ],
-        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_teams(
         self,
@@ -262,7 +263,7 @@ class Linear:
                 required=True,
             ),
         ],
-        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_team(self, team_id: str) -> Tuple[bool, str]:
         """Get team by ID"""
@@ -301,7 +302,7 @@ class Linear:
                 required=False,
             ),
         ],
-        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_issues(
         self,
@@ -343,7 +344,7 @@ class Linear:
                 required=True,
             ),
         ],
-        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_issue(self, issue_id: str) -> Tuple[bool, str]:
         """Get issue by ID"""
@@ -400,7 +401,7 @@ class Linear:
                 required=False,
             ),
         ],
-        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
     )
     async def create_issue(
         self,
@@ -470,7 +471,7 @@ class Linear:
                 required=False,
             ),
         ],
-        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
     )
     async def update_issue(
         self,
@@ -515,7 +516,7 @@ class Linear:
                 required=True,
             ),
         ],
-        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
     )
     async def delete_issue(self, issue_id: str) -> Tuple[bool, str]:
         """Delete an issue"""

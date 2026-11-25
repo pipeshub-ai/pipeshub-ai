@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from app.web.budget import WebBudget
-from app.web.chain import Cooldowns
+from app.web.chain import Cooldowns, InFlight
 from app.web.deadline import Deadline
 from app.web.errors import NotConfigured, UnknownProvider
 from app.web.fetch import FETCHERS
@@ -18,6 +18,8 @@ from app.web.services import WebFetchService, WebSearchService
 
 # What each source failed with lately is shared by every run in the process.
 COOLDOWNS = Cooldowns()
+# So are the free engines' few concurrent calls: the address they block is the process's.
+IN_FLIGHT = InFlight()
 
 
 @dataclass(frozen=True)
@@ -93,6 +95,8 @@ def fetchers(selection: dict[str, Any]) -> list[ContentFetcher]:
 def build_web_services(selection: dict[str, Any], gate: WebAccessGate, budget: WebBudget | None = None) -> WebServices:
     """``budget`` is shared by both services: one answer's searches and page reads."""
     return WebServices(
-        search=WebSearchService(search_providers(selection), gate, cooldowns=COOLDOWNS, budget=budget),
+        search=WebSearchService(
+            search_providers(selection), gate, cooldowns=COOLDOWNS, budget=budget, in_flight=IN_FLIGHT
+        ),
         fetch=WebFetchService(fetchers(selection), gate, cooldowns=COOLDOWNS, budget=budget),
     )

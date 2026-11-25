@@ -25,10 +25,13 @@ describe('oauth_provider/config/scopes.config - coverage', () => {
     expect(result.invalid).to.include('not-a-real-scope')
   })
 
-  // pipeshub_directory lists groups through GET /userGroups, which requires
-  // usergroup:read; without it in MCP_SCOPES that call always returns 403.
-  it('DefaultMcpScopes covers group listing and grants nothing admin-only', () => {
+  // No /mcp tool lists user groups, so discovery does not ask for
+  // usergroup:read. The cap keeps it, so a client registered with it is not
+  // refused when it asks again, and its tokens keep working.
+  it('DefaultMcpScopes keeps usergroup:read and grants nothing admin-only, though discovery leaves it out', () => {
     expect(DefaultMcpScopes).to.include('usergroup:read')
+    expect(McpToolScopes).to.not.include('usergroup:read')
+    expect(mcpDiscoveryScopes(DefaultMcpScopes)).to.not.include('usergroup:read')
     expect(DefaultMcpScopes.filter((s) => AdminOnlyScopes.has(s))).to.deep.equal([])
     expect(DefaultMcpScopes.every((s) => isValidScope(s))).to.be.true
   })
@@ -112,12 +115,13 @@ describe('oauth_provider/config/scopes.config - coverage', () => {
     for (const list of [stock, DefaultMcpScopes]) {
       expect(mcpDiscoveryScopes(list)).to.have.members([...McpToolScopes])
     }
-    // Project scopes cap personal access tokens and OAuth apps; no MCP tool calls a project route.
+    // Project scopes cap personal access tokens and OAuth apps; no MCP tool calls a project route, or lists user groups.
     expect(stock.filter((s) => !mcpDiscoveryScopes(stock).includes(s))).to.have.members([
       'openid',
       'profile',
       'email',
       'conversation:write',
+      'usergroup:read',
       'project:read',
       'project:write',
       'project:delete',
@@ -135,7 +139,7 @@ describe('oauth_provider/config/scopes.config - coverage', () => {
   it('getAllScopesGroupedByCategory returns every category bucket', () => {
     const grouped = getAllScopesGroupedByCategory()
     expect(Object.keys(grouped).length).to.be.greaterThan(5)
-    expect(grouped.Identity.some((s) => s.name === 'openid')).to.be.true
+    expect(grouped.Identity!.some((s) => s.name === 'openid')).to.be.true
   })
 
   it('isValidScope and getScopeDefinition', () => {

@@ -5,7 +5,13 @@ instances serve the same MCP server on each customer's own domain (`https://<hos
 which admins can add as a custom server.
 """
 from app.agents.mcp.mcp_server_decorator import mcp_server
-from app.agents.mcp.models import AuthHint, MCPAuthMode, MCPServerTemplate, MCPTransport
+from app.agents.mcp.models import (
+    AuthHint,
+    MCPAuthMode,
+    MCPCategory,
+    MCPServerTemplate,
+    MCPTransport,
+)
 
 
 @mcp_server(
@@ -34,6 +40,12 @@ from app.agents.mcp.models import AuthHint, MCPAuthMode, MCPServerTemplate, MCPT
             help_text="Sign in with your GitLab.com account. PipesHub registers itself; no GitLab OAuth app is required.",
         ),
         tags=["dev", "vcs", "issues"],
+        category=MCPCategory.DEVELOPER,
+        capabilities=[
+            "Review merge requests",
+            "Track issues",
+            "Check pipeline status",
+        ],
     )
 )
 class GitLabMCPServer:

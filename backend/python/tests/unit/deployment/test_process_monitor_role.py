@@ -14,6 +14,9 @@ ALL_PYTHON = {
     "app.docling_main", "app.indexing_main",
 }
 PARSE_PYTHON = {"app.docling_main", "app.parsing_main"}
+# The agent harness worker and its model gateway start with the full application unless the operator turns the
+# harness off (AGENT_HARNESS_WORKER_ENABLED, ADR-OPS-06); a parsing replica never starts them.
+HARNESS_PYTHON = {"app.harness_main", "app.model_gateway_main"}
 
 
 def _run(tmp_path: pathlib.Path, env: dict[str, str], seconds: float = 5) -> tuple[int, set[str], bool, str]:
@@ -52,13 +55,19 @@ def _run(tmp_path: pathlib.Path, env: dict[str, str], seconds: float = 5) -> tup
 
 def test_default_role_runs_the_full_application(tmp_path: pathlib.Path) -> None:
     _, modules, node, _ = _run(tmp_path, {})
+    assert modules == ALL_PYTHON | HARNESS_PYTHON
+    assert node
+
+
+def test_default_role_with_the_harness_off_runs_what_it_always_did(tmp_path: pathlib.Path) -> None:
+    _, modules, node, _ = _run(tmp_path, {"AGENT_HARNESS_WORKER_ENABLED": "false"})
     assert modules == ALL_PYTHON
     assert node
 
 
 def test_all_with_parsing_service_flag_is_unchanged(tmp_path: pathlib.Path) -> None:
     _, modules, node, _ = _run(tmp_path, {"PIPESHUB_ROLE": "all", "USE_PARSING_SERVICE": "true"})
-    assert modules == ALL_PYTHON | {"app.parsing_main", "app.extraction_main"}
+    assert modules == ALL_PYTHON | HARNESS_PYTHON | {"app.parsing_main", "app.extraction_main"}
     assert node
 
 
@@ -78,7 +87,7 @@ def test_parsing_role_ignores_the_use_parsing_service_flag(tmp_path: pathlib.Pat
 def test_all_with_a_remote_parsing_url_runs_no_local_parsing_service(tmp_path: pathlib.Path) -> None:
     env = {"USE_PARSING_SERVICE": "true", "PARSING_SERVICE_URL": "http://rel-parsing:8092"}
     _, modules, node, _ = _run(tmp_path, env)
-    assert modules == ALL_PYTHON | {"app.extraction_main"}
+    assert modules == ALL_PYTHON | HARNESS_PYTHON | {"app.extraction_main"}
     assert node
 
 

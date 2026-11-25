@@ -407,11 +407,19 @@ class TestLifespan:
             mock_container.retrieval_service = AsyncMock(return_value=mock_retrieval)
             mock_container.config_service.return_value = mock_config_service
 
-            async with lifespan(mock_app):
-                # Inside lifespan — app should have container set
-                assert mock_app.container is mock_container
-                # Chat attachment PDFs parse in killable worker processes.
-                assert parse_pool.parse_pool_workers() > 0
+            with (
+                patch("app.sandbox.artifact_cleanup.start_cleanup_task") as start_cleanup,
+                patch("app.sandbox.artifact_cleanup.stop_cleanup_task") as stop_cleanup,
+            ):
+                async with lifespan(mock_app):
+                    # Inside lifespan — app should have container set
+                    assert mock_app.container is mock_container
+                    # Chat attachment PDFs parse in killable worker processes.
+                    assert parse_pool.parse_pool_workers() > 0
+                    # CLEANUP-2: the sandbox temp-folder sweeper runs while the service does.
+                    start_cleanup.assert_called_once_with()
+                    stop_cleanup.assert_not_called()
+                stop_cleanup.assert_called_once_with()
 
             # After shutdown, config_service.close should be called
             mock_config_service.close.assert_awaited_once()
@@ -521,6 +529,51 @@ class TestLifespan:
                 await app.state.skills_seed_task
 
         assert seen == [None]
+
+    async def test_sandbox_alert_loop_starts_and_is_cancelled_on_shutdown(self) -> None:
+        from types import SimpleNamespace
+
+        from app.query_main import lifespan
+
+        mock_container = _make_container()
+        mock_container._graph_provider = _make_graph_provider(orgs=[])
+        mock_container.retrieval_service = AsyncMock(return_value=AsyncMock())
+        mock_registry = MagicMock()
+        mock_registry.list_toolsets.return_value = []
+        mock_config_service = MagicMock()
+        mock_config_service.close = AsyncMock()
+        mock_container.config_service.return_value = mock_config_service
+        started = asyncio.Event()
+        cancelled: list[bool] = []
+
+        async def _loop(config_service: object, _logger: object) -> None:
+            assert config_service is mock_config_service
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cancelled.append(True)
+                raise
+
+        app = MagicMock()
+        app.state = SimpleNamespace()
+        with (
+            patch("app.query_main.get_initialized_container", new_callable=AsyncMock, return_value=mock_container),
+            patch("app.query_main.start_kafka_consumers", new_callable=AsyncMock, return_value=[]),
+            patch("app.query_main.stop_kafka_consumers", new_callable=AsyncMock),
+            patch("app.query_main.container", mock_container),
+            patch("app.services.sandbox_alerts.loop.run_sandbox_alert_loop", _loop),
+            patch.dict("sys.modules", {
+                "app.agents.registry.toolset_registry": MagicMock(get_toolset_registry=MagicMock(return_value=mock_registry)),
+                "app.agents.tools.registry": MagicMock(_global_tools_registry=MagicMock()),
+            }),
+        ):
+            async with lifespan(app):
+                await asyncio.wait_for(started.wait(), 5)
+                task = app.state.sandbox_alert_task
+
+        assert task.done()
+        assert cancelled == [True]
 
     async def test_startup_graph_provider_fallback(self):
         """When _graph_provider is not set, lifespan falls back to await graph_provider()."""

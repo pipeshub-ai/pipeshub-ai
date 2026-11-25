@@ -67,7 +67,7 @@ class _RecordingTransport(ScriptedTransport):
         self.options: list[dict[str, Any]] = []
 
     async def complete(self, messages, tools=None, system=None, model=None,
-                       thinking_budget=None, effort=None, system_blocks=None) -> ModelResponse:
+                       thinking_budget=None, effort=None, system_blocks=None, *, tool_choice: object = None) -> ModelResponse:
         self.options.append({
             "thinking_budget": thinking_budget, "effort": effort, "system_blocks": system_blocks,
         })
@@ -364,7 +364,8 @@ class TestModelFailures:
         result = await agent.run(_GOAL)
 
         assert result.success is False
-        assert result.error == "LLM call failed: provider returned 503"
+        assert result.error == "LLM call failed: internal (RuntimeError)"
+        assert result.error_detail == "LLM call failed: provider returned 503"
 
     async def test_model_error_while_input_guardrail_is_still_running(self) -> None:
         transport = ScriptedTransport().add_error(RuntimeError("bad request"))
@@ -383,7 +384,7 @@ class TestModelFailures:
 
         result = await asyncio.wait_for(agent.run(_GOAL), timeout=2.0)
 
-        assert result.error == "LLM call failed: bad request"
+        assert result.error_detail == "LLM call failed: bad request"
         assert guard_cancelled.is_set()
 
 
@@ -560,16 +561,17 @@ class TestEveryExitNamesItsEndEvent:
         assert (result.success, result.end_event) == (True, "agent_complete_partial")
 
     async def test_max_turns_with_nothing_to_return(self) -> None:
+        # BUDGETEND: a run the turn cap stopped with no usable text still answers with what it gathered.
         transport = _tool_turn("Checking.").add_error(TransportError("busy", status_code=503, retryable=True))
         agent, _ = _build(transport, max_turns=1)
         result = await agent.run(_GOAL)
-        assert (result.success, result.end_event) == (False, "agent_failed")
+        assert (result.success, result.end_event, result.truncated_by) == (True, "agent_complete_partial", "turns")
 
     async def test_a_model_failure(self) -> None:
         agent, _ = _build(ScriptedTransport().add_error(RuntimeError("transport bug")))
         result = await agent.run(_GOAL)
         assert (result.end_event, result.error_class) == ("llm_call_failed", "internal")
-        assert result.error == "LLM call failed: transport bug"
+        assert result.error == "LLM call failed: internal (RuntimeError)"
 
     @pytest.mark.parametrize(("event", "middleware", "end_event"), [
         (HookEvent.PRE_AGENT, _deny_async, "agent_blocked"),
