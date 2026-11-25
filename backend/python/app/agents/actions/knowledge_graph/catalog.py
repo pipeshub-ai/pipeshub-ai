@@ -1,7 +1,7 @@
 """ConnectorCatalog: id ↔ name/type mapping for the current request.
 
 Built once per request from three sources (in priority order):
-1. ``state["available_connectors"]`` — set by bridge.py for chat modes.
+1. ``state["available_connectors"]`` — set by chat_modes/setup.py for chat modes.
 2. ``state["agent_knowledge"]`` — per-agent knowledge config.
 3. Lazy fallback: ``get_knowledge_hub_filter_options`` (user-scoped graph query).
 

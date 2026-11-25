@@ -21,6 +21,7 @@ from app.connectors.core.registry.auth_builder import (
 )
 from app.connectors.core.registry.connector_builder import CommonFields
 from app.connectors.core.registry.tool_builder import (
+    ToolProvider,
     ToolsetBuilder,
     ToolsetCategory,
 )
@@ -91,7 +92,7 @@ def _capped(value_ranges: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return capped
 
 
-@ToolsetBuilder("Sheets")\
+@ToolsetBuilder("Sheets", provider=ToolProvider.CONNECTOR)\
     .in_group("Google Workspace")\
     .with_description("Google Sheets integration for reading and updating spreadsheets")\
     .with_category(ToolsetCategory.APP)\
@@ -154,7 +155,7 @@ class GoogleSheets:
             ToolParameter(name="title", type=ParameterType.STRING, description="The spreadsheet's title", required=True),
             ToolParameter(name="sheet_titles", type=ParameterType.ARRAY, items={"type": "string"}, description="Names of the sheets (tabs) to create; one 'Sheet1' if left out", required=False),
         ],
-        tags=[Tag(key="category", value="spreadsheets"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="spreadsheets"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
         args_summary=args_template("Creating Google Sheet \"{title}\"", "title"),
         result_summary=entity_summary(lambda d: f"Created \"{d.get('title') or '?'}\"", path=()),
     )
@@ -186,7 +187,7 @@ class GoogleSheets:
         parameters=[
             ToolParameter(name="spreadsheet_id", type=ParameterType.STRING, description="The spreadsheet id (the part of the link after /spreadsheets/d/)", required=True),
         ],
-        tags=[Tag(key="category", value="spreadsheets"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="spreadsheets"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
         args_summary=args_template("Opening Google Sheet {spreadsheet_id}", "spreadsheet_id"),
         result_summary=entity_summary(lambda d: f"\"{d.get('title') or '?'}\" has {len(d.get('sheets') or [])} sheet(s)", path=()),
     )
@@ -223,7 +224,7 @@ class GoogleSheets:
             ToolParameter(name="spreadsheet_id", type=ParameterType.STRING, description="The spreadsheet id", required=True),
             ToolParameter(name="range", type=ParameterType.STRING, description=_RANGE_HELP, required=True),
         ],
-        tags=[Tag(key="category", value="spreadsheets"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="spreadsheets"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
         args_summary=args_template("Reading {range} from Google Sheet {spreadsheet_id}", "range", "spreadsheet_id"),
         result_summary=entity_summary(lambda d: f"Read {len(d.get('values') or [])} row(s)", path=()),
     )
@@ -242,7 +243,7 @@ class GoogleSheets:
             ToolParameter(name="spreadsheet_id", type=ParameterType.STRING, description="The spreadsheet id", required=True),
             ToolParameter(name="ranges", type=ParameterType.ARRAY, items={"type": "string"}, description="Ranges in A1 notation, for example ['Sheet1!A1:B5', 'Totals']", required=True),
         ],
-        tags=[Tag(key="category", value="spreadsheets"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="spreadsheets"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
         args_summary=args_template("Reading ranges from Google Sheet {spreadsheet_id}", "spreadsheet_id"),
         result_summary=entity_summary(lambda d: f"Read {len(d.get('ranges') or [])} range(s)", path=()),
     )
@@ -269,7 +270,7 @@ class GoogleSheets:
             ToolParameter(name="values", type=ParameterType.ARRAY, items=_VALUES_ITEMS, description="Rows of cells, for example [[\"Name\", \"Total\"], [\"North\", 42]]", required=True),
             ToolParameter(name="value_input_option", type=ParameterType.STRING, enum=_VALUE_INPUT_OPTIONS, description="USER_ENTERED or RAW", required=False, default="USER_ENTERED"),
         ],
-        tags=[Tag(key="category", value="spreadsheets"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="spreadsheets"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
         args_summary=args_template("Writing {range} in Google Sheet {spreadsheet_id}", "range", "spreadsheet_id"),
         result_summary=entity_summary(lambda d: f"Updated {d.get('updated_cells', 0)} cell(s)", path=()),
     )
@@ -304,7 +305,7 @@ class GoogleSheets:
             ToolParameter(name="values", type=ParameterType.ARRAY, items=_VALUES_ITEMS, description="Rows to add, for example [[\"2026-10-15\", \"North\", 42]]", required=True),
             ToolParameter(name="value_input_option", type=ParameterType.STRING, enum=_VALUE_INPUT_OPTIONS, description="USER_ENTERED or RAW", required=False, default="USER_ENTERED"),
         ],
-        tags=[Tag(key="category", value="spreadsheets"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="spreadsheets"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
         args_summary=args_template("Adding rows to {range} in Google Sheet {spreadsheet_id}", "range", "spreadsheet_id"),
         result_summary=entity_summary(lambda d: f"Added {d.get('appended_rows', 0)} row(s)", path=()),
     )
@@ -336,7 +337,7 @@ class GoogleSheets:
             ToolParameter(name="range", type=ParameterType.STRING, description=_RANGE_HELP, required=True),
         ],
         # Destructive though it deletes nothing: the cells' values can't be got back, so it asks first.
-        tags=[Tag(key="category", value="spreadsheets"), Tag(key="type", value="destructive")],
+        tags=[Tag(key="category", value="spreadsheets"), Tag(key="type", value="destructive"), Tag(key="effect", value="write")],
         args_summary=args_template("Clearing {range} in Google Sheet {spreadsheet_id}", "range", "spreadsheet_id"),
         result_summary=confirmation("Cleared {range}", "range"),
     )

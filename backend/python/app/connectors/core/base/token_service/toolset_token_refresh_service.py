@@ -9,7 +9,7 @@ import logging
 import time
 from contextlib import AbstractContextManager
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING, Dict, Optional
+from typing import TYPE_CHECKING, Any, Dict, Optional
 
 if TYPE_CHECKING:
     from app.connectors.core.base.token_service.oauth_service import OAuthConfig
@@ -541,11 +541,17 @@ class ToolsetTokenRefreshService:
         except Exception as e:
             self.logger.debug(f"Could not enrich OAuth config from registry: {e}")
 
+    async def oauth_flow_config(self, record: dict[str, Any], toolset_type: str, label: str) -> dict[str, Any]:
+        """The OAuth flow config of a credential record held elsewhere (a control-plane binding, CPD-8); ``label``
+        names it in messages."""
+        return await self._build_complete_oauth_config(label, toolset_type, record.get("auth", {}) or {}, user_config=record)
+
     async def _build_complete_oauth_config(
         self,
         config_path: str,
         toolset_type: str,
-        auth_config: Dict[str, any]
+        auth_config: Dict[str, any],
+        user_config: dict[str, Any] | None = None,
     ) -> Dict[str, any]:
         """
         Build complete OAuth flow configuration for toolset.
@@ -569,7 +575,7 @@ class ToolsetTokenRefreshService:
         # only for a config known to have no central app.
         linked_to_central_app = True
         try:
-            full_user_config = await self.configuration_service.get_config(
+            full_user_config = user_config if user_config is not None else await self.configuration_service.get_config(
                 config_path,
                 default=None,
                 use_cache=False

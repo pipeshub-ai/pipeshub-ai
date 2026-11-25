@@ -85,7 +85,85 @@ COORDINATION_TOOL_NAMES: tuple[str, ...] = (
     "verify_result",
 )
 
+# The durable coordinator also holds the person's question where its run offers it (ADR-RUN-04 D1 amended, R36-COVER):
+# a sub-agent's [ESCALATION] is put to the person by the root, the one agent with a person to ask.
+COORDINATOR_QUESTION_TOOLS: tuple[str, ...] = ("internaltools__ask_user_question",)
+
 _SUB_AGENT_MAX_TURNS = 8
+
+# The loop's own messages: the durable deep mode (`app/harness/assembly/deep.py`)
+# injects these same texts, so both paths prompt the model alike.
+PHASE1_REPLAN = (
+    "Phase 1 -- REPLAN: critique_plan did not pass. Revise "
+    "the plan to address the issues raised, then call "
+    "create_plan again with corrected steps and critique_plan "
+    "again."
+)
+PHASE1_VALIDATE = (
+    "Phase 1 -- VALIDATE: you called create_plan but "
+    "did not call critique_plan. You MUST call "
+    "critique_plan on the plan before it can be dispatched."
+)
+PHASE1_FINALIZE = (
+    "Phase 1 -- FINALIZE: critique did not pass after maximum "
+    "revision rounds. Call create_plan ONE MORE TIME with your "
+    "best corrected plan incorporating all feedback. This plan "
+    "will be dispatched as-is — no further critique."
+)
+PHASE2_DISPATCH = (
+    "Phase 2 -- DISPATCH: the plan is approved. For EACH phase, "
+    "call spawn_agent with `role` set to that phase's domain, "
+    "`task_id` set to that phase's id from your plan, and `tools` "
+    "set to the exact tool names for that domain (see 'Available "
+    "Domains' above — you can use group names like 'jira' and "
+    "the runtime will expand them). Call EVERY phase's "
+    "spawn_agent IN THE SAME TURN, including phases that depend "
+    "on another phase's result — for those, set `depends_on` to "
+    "the prerequisite phase's `task_id`; the runtime enforces "
+    "the ordering and hands the prerequisite's result to the "
+    "dependent phase automatically. Do NOT try to sequence "
+    "dependent phases by calling spawn_agent in a later turn "
+    "instead — always use `depends_on`."
+)
+PHASE2_RETRY = (
+    "Phase 2 -- RETRY: all spawn_agent calls this turn "
+    "failed (check the error messages above — common "
+    "causes: typo in task_id or depends_on, wrong tool "
+    "names, duplicate task_id). Fix the issues and call "
+    "spawn_agent again for all phases in a single turn."
+)
+PHASE3_VERIFY = (
+    "Phase 3 -- VERIFY: synthesize the sub-agents' results into a "
+    "candidate final answer, then call verify_result with it before "
+    "replying. If verify_result fails, spawn additional sub-agents "
+    "or revise your synthesis and call verify_result again."
+)
+PHASE3_REVISE = (
+    "Phase 3 -- REVISE: verify_result did not pass. "
+    "Spawn more sub-agents or revise your synthesis, "
+    "then call verify_result again."
+)
+PHASE3_FINISH = (
+    "Phase 3 -- FINISH: verification still failing after "
+    "retries. Reply now with your best current answer "
+    "(no more tool calls)."
+)
+PROGRAMMATIC_DISPATCH = "Dispatching structured plan programmatically."
+PROGRAMMATIC_CALL_PREFIX = "programmatic_spawn_"
+SPAWN_BLOCKED = (
+    "spawn_agent is blocked until Phase 1 is complete (create_plan "
+    "then critique_plan must run first — see your instructions)."
+)
+
+
+def task_already_completed(task_id: str) -> str:
+    """The gate's refusal of a re-dispatch of a task that succeeded this run."""
+    return (
+        f"task_id '{task_id}' already completed successfully earlier "
+        "this run — do not re-dispatch it. Reference its recorded "
+        "result instead, or use a new, different task_id for genuinely "
+        "new work."
+    )
 
 
 class DomainSpawnAgentTool(SpawnAgentTool):
@@ -153,10 +231,7 @@ def _phase_gate():
 
         run_scope = ctx.scope.turn.run
         if not run_scope.get(PLAN_DISPATCH_APPROVED_SLOT):
-            ctx.deny(
-                "spawn_agent is blocked until Phase 1 is complete (create_plan "
-                "then critique_plan must run first — see your instructions)."
-            )
+            ctx.deny(SPAWN_BLOCKED)
             return
 
         task_id = ctx.tool_input.get("task_id")
@@ -164,12 +239,7 @@ def _phase_gate():
             from app.agent_loop_lib.agent.spawn_scheduler import SPAWN_RESULTS_SLOT
             completed = run_scope.get(SPAWN_RESULTS_SLOT).get(str(task_id).strip())
             if completed is not None and completed.result.success:
-                ctx.deny(
-                    f"task_id '{task_id}' already completed successfully earlier "
-                    "this run — do not re-dispatch it. Reference its recorded "
-                    "result instead, or use a new, different task_id for genuinely "
-                    "new work."
-                )
+                ctx.deny(task_already_completed(str(task_id)))
                 return
 
         await next_fn()
@@ -203,6 +273,7 @@ def domain_spec_factory(
     context: "AgentContext | None" = None,
     max_turns: int = _SUB_AGENT_MAX_TURNS,
     context_window: int | None = None,
+    grant: "Callable[[list[str]], list[str]] | None" = None,
 ) -> "Callable[..., AgentSpec]":
     """Builds the `AgentRuntime.spec_factory` callable `spawn_agent` needs
     to resolve a domain "role" string into a concrete `AgentSpec` (see
@@ -211,10 +282,14 @@ def domain_spec_factory(
     from `spawn_agent`'s `tools` argument (`overrides["tool_names"]`, see
     `tools/builtin/coordination/spawn_agent.py::build_spawn_child`), falling
     back to `default_tool_names` (every tool this request loaded, minus the
-    four coordination tools) if the LLM omitted it."""
+    four coordination tools) if the LLM omitted it. ``grant`` completes a
+    child's tools with what the loop would grant it mid-run (R4: its list is
+    fixed at its first request)."""
 
     def _factory(role_name: str, **overrides: Any) -> AgentSpec:  # noqa: ANN401
         tool_names = overrides["tool_names"] if "tool_names" in overrides else default_tool_names
+        if grant is not None and tool_names:
+            tool_names = grant(list(tool_names))
         model = overrides.get("model") or model_name
         return AgentSpec(
             name=f"pipeshub-subagent-{role_name}",
@@ -342,7 +417,7 @@ async def _programmatic_dispatch(
 
     synthetic_calls: list[ToolCall] = []
     for step in plan.steps:
-        call_id = f"programmatic_spawn_{step.id}_{uuid.uuid4().hex[:8]}"
+        call_id = f"{PROGRAMMATIC_CALL_PREFIX}{step.id}_{uuid.uuid4().hex[:8]}"
         synthetic_calls.append(ToolCall(
             id=call_id,
             name="spawn_agent",
@@ -381,7 +456,7 @@ async def _programmatic_dispatch(
     # spawn_agent itself and the turn loop had recorded the results.
     context = agent.context
     assistant_msg = AssistantMessage(
-        content=[TextPart(text="Dispatching structured plan programmatically.")],
+        content=[TextPart(text=PROGRAMMATIC_DISPATCH)],
         tool_calls=synthetic_calls,
     )
     await context.add(assistant_msg)
@@ -487,11 +562,7 @@ def _phase1_no_verdict_nudge(agent: "Agent") -> str | None:
     )
     if not called_create:
         return None
-    return (
-        "Phase 1 -- VALIDATE: you called create_plan but "
-        "did not call critique_plan. You MUST call "
-        "critique_plan on the plan before it can be dispatched."
-    )
+    return PHASE1_VALIDATE
 
 
 class OrchestratorLoop(LoopStrategy):
@@ -519,12 +590,7 @@ class OrchestratorLoop(LoopStrategy):
         planning = await self._phases.run_planning_phase(
             agent, goal, turn_index,
             planning_message=build_phase1_planning_instructions(domain_block),
-            replan_message=(
-                "Phase 1 -- REPLAN: critique_plan did not pass. Revise "
-                "the plan to address the issues raised, then call "
-                "create_plan again with corrected steps and critique_plan "
-                "again."
-            ),
+            replan_message=PHASE1_REPLAN,
             no_verdict_nudge=_phase1_no_verdict_nudge,
         )
         if planning.stopped:
@@ -533,12 +599,7 @@ class OrchestratorLoop(LoopStrategy):
         plan_validated = planning.passed
 
         if not plan_validated and turn_index < agent.max_turns:
-            await agent.inject_user_message(
-                "Phase 1 -- FINALIZE: critique did not pass after maximum "
-                "revision rounds. Call create_plan ONE MORE TIME with your "
-                "best corrected plan incorporating all feedback. This plan "
-                "will be dispatched as-is — no further critique."
-            )
+            await agent.inject_user_message(PHASE1_FINALIZE)
             outcome = await agent.step(goal, turn_index)
             turn_index += 1
             if outcome.status == "stop":
@@ -596,21 +657,7 @@ class OrchestratorLoop(LoopStrategy):
             # Fallback: LLM-mediated dispatch (original Phase 2) — only
             # reachable when programmatic dispatch never got to schedule a
             # single child, so there is nothing yet to double-execute.
-            await agent.inject_user_message(
-                "Phase 2 -- DISPATCH: the plan is approved. For EACH phase, "
-                "call spawn_agent with `role` set to that phase's domain, "
-                "`task_id` set to that phase's id from your plan, and `tools` "
-                "set to the exact tool names for that domain (see 'Available "
-                "Domains' above — you can use group names like 'jira' and "
-                "the runtime will expand them). Call EVERY phase's "
-                "spawn_agent IN THE SAME TURN, including phases that depend "
-                "on another phase's result — for those, set `depends_on` to "
-                "the prerequisite phase's `task_id`; the runtime enforces "
-                "the ordering and hands the prerequisite's result to the "
-                "dependent phase automatically. Do NOT try to sequence "
-                "dependent phases by calling spawn_agent in a later turn "
-                "instead — always use `depends_on`."
-            )
+            await agent.inject_user_message(PHASE2_DISPATCH)
             dispatch_retries = 0
             max_dispatch_retries = 2
             while turn_index < agent.max_turns:
@@ -633,13 +680,7 @@ class OrchestratorLoop(LoopStrategy):
                     if dispatch_retries >= max_dispatch_retries:
                         dispatched = True
                         break
-                    await agent.inject_user_message(
-                        "Phase 2 -- RETRY: all spawn_agent calls this turn "
-                        "failed (check the error messages above — common "
-                        "causes: typo in task_id or depends_on, wrong tool "
-                        "names, duplicate task_id). Fix the issues and call "
-                        "spawn_agent again for all phases in a single turn."
-                    )
+                    await agent.inject_user_message(PHASE2_RETRY)
 
             if not dispatched:
                 return await agent.fail(
@@ -651,22 +692,9 @@ class OrchestratorLoop(LoopStrategy):
         # --- Phase 3: VERIFY + retry (aggregator_node) ---
         verify = await self._phases.run_verify_phase(
             agent, goal, turn_index,
-            verify_message=(
-                "Phase 3 -- VERIFY: synthesize the sub-agents' results into a "
-                "candidate final answer, then call verify_result with it before "
-                "replying. If verify_result fails, spawn additional sub-agents "
-                "or revise your synthesis and call verify_result again."
-            ),
-            revise_message=(
-                "Phase 3 -- REVISE: verify_result did not pass. "
-                "Spawn more sub-agents or revise your synthesis, "
-                "then call verify_result again."
-            ),
-            finish_message=(
-                "Phase 3 -- FINISH: verification still failing after "
-                "retries. Reply now with your best current answer "
-                "(no more tool calls)."
-            ),
+            verify_message=PHASE3_VERIFY,
+            revise_message=PHASE3_REVISE,
+            finish_message=PHASE3_FINISH,
         )
         if verify.stopped:
             return verify.result

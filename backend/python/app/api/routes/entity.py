@@ -6,14 +6,16 @@ from typing import TYPE_CHECKING, Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from app.agents.capability_sync import sync_capabilities
 from app.api.middlewares.auth import (
     require_scopes,
     require_service_token,
     service_token_org,
 )
 from app.api.middlewares.caller_role import fetch_caller_role
+from app.api.routes.control_plane_directory import directory_events
 from app.config.constants.arangodb import CollectionNames
 from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import OAuthScopes, TokenScopes
@@ -28,6 +30,10 @@ from app.services.cache.invalidation_hooks import (
     notify_principals_changed,
 )
 from app.services.graph_db.user_email_identity import GraphUserEmailConflictError
+from app.services.personal_instance_erasure import (
+    PersonalDataRemainsError,
+    erase_personal_instances,
+)
 from app.utils.logger import create_logger
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_lookup import caller_node_ensurer, get_user_or_503
@@ -437,6 +443,9 @@ async def create_team(request: Request) -> JSONResponse:
             "canManageMembers": True,
         }
 
+    await directory_events(request).team_membership_changed(
+        current_org_id(), team_key, [creator_mongo_id, *member_mongo_ids]
+    )
     return JSONResponse(
         status_code=200,
         content={
@@ -662,6 +671,9 @@ async def update_team(request: Request, team_id: str) -> JSONResponse:
         for line in applied:
             logger.info(line)
 
+        if unique_mongo_ids:
+            await directory_events(request).team_membership_changed(current_org_id(), team_id, sorted(unique_mongo_ids))
+
         # Return updated team with users
         updated_team = await graph_provider.get_team_with_users(
             team_id=team_id, org_id=user_info.get("orgId"), user_key=user['_key'],
@@ -726,6 +738,8 @@ async def delete_team(request: Request, team_id: str) -> JSONResponse:
         result = await graph_provider.delete_nodes([team_id], CollectionNames.TEAMS.value)
         if not result:
             raise HTTPException(status_code=404, detail="Team not found")
+        # No member list: Node drops every cached membership that lists the team.
+        await directory_events(request).team_membership_changed(org_id, team_id, [])
 
         return JSONResponse(
             status_code=200,
@@ -1087,3 +1101,38 @@ async def update_user_email(
     except Exception as e:
         logger.error(f"Error updating graph user email: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to update user email")
+
+
+class PersonalInstancesEraseRequest(BaseModel):
+    """Whose personal instances to erase: one user of the token's org, or (no user) every member's."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    userId: str | None = Field(default=None, min_length=1, max_length=128, pattern=r"^[A-Za-z0-9][A-Za-z0-9_.:-]*$")
+
+
+@router.post(
+    "/internal/personal-instances/erase",
+    dependencies=[Depends(require_service_token(TokenScopes.PRINCIPAL_ERASE))],
+)
+async def erase_personal_instances_route(request: Request, body: PersonalInstancesEraseRequest) -> JSONResponse:
+    """Erase a deleted user's personal toolset and MCP instances, or every member's of a deleted org (C-14).
+
+    Node's user and org deletion call it before the principal is marked deleted, and again after a
+    failure; the org is the token's, never the body's. 503 while any key of the principal remains.
+    """
+    logger = (await get_services(request))["logger"]
+    org_id = service_token_org(request.state.user)
+    config_service = request.app.container.config_service()
+    try:
+        erased = await erase_personal_instances(config_service, org_id, body.userId)
+    except PersonalDataRemainsError as e:
+        logger.warning("personal_instances.erase_incomplete orgId=%s remaining=%d", org_id, len(e.remaining))
+        raise HTTPException(status_code=503, detail="Some of the data could not be erased yet; try again") from e
+    except Exception as e:
+        logger.error("personal_instances.erase_failed orgId=%s errorType=%s", org_id, type(e).__name__)
+        raise HTTPException(status_code=503, detail="The data could not be erased yet; try again") from e
+    if body.userId is not None:
+        # The control plane drops the user's installations now; a deleted org's go with its stores.
+        await sync_capabilities(config_service, org_id)
+    return JSONResponse(status_code=200, content=erased)

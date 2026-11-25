@@ -71,6 +71,7 @@ from app.web.errors import (
     WebError,
 )
 from app.web.health import check_provider, provider_name
+from harness_core.models.capabilities import model_capabilities
 
 
 async def _bind_health_check_identity(request: Request) -> AsyncIterator[None]:
@@ -1720,6 +1721,14 @@ async def _check_one_llm(
     is_multimodal = bool(
         llm_config.get("isMultimodal", False) or configuration.get("isMultimodal", False)
     )
+    # A documented "no image input" (C13.03) is answered from the rows, without a call to the provider.
+    if is_multimodal and model_capabilities(model_name, configuration.get("endpoint")).image_input is False:
+        return _config_error(
+            "This model's endpoint does not accept image input.",
+            llm_config,
+            model_name,
+            hint="Uncheck Multimodal for this model, or choose a vision model.",
+        )
 
     llm_model = await asyncio.to_thread(
         get_generator_model, provider=provider, config=llm_config, model_name=model_name,

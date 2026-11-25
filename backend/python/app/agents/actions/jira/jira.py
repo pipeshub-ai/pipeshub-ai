@@ -9,26 +9,28 @@ from typing import TYPE_CHECKING, Any, Optional
 import httpx
 from pydantic import BaseModel, Field, model_validator
 
-from app.agents.actions.jira.attachments import JiraIssueAttachments
-from app.agents.actions.response_transformer import ResponseTransformer
 from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
 from app.agent_loop_lib.tools.decorators import tool
+from app.agents.actions.jira.attachments import JiraIssueAttachments
+from app.agents.actions.response_transformer import ResponseTransformer
 from app.agents.actions.util.attachment_delivery import attachment_display_parameter, has_text
 from app.agents.actions.util.attachments import attachment_record_ids_parameter
+from app.agents.actions.util.sign_in_rejected import note_sign_in_rejected
 from app.agents.actions.util.tool_summaries import (
     args_template,
     confirmation,
     entity_summary,
     list_summary,
 )
+from app.connectors.core.constants import IconPaths
 from app.connectors.core.registry.auth_builder import (
     AuthBuilder,
     AuthType,
     OAuthScopeConfig,
 )
-from app.connectors.core.constants import IconPaths
 from app.connectors.core.registry.connector_builder import CommonFields
 from app.connectors.core.registry.tool_builder import (
+    ToolProvider,
     ToolsetBuilder,
     ToolsetCategory,
 )
@@ -38,6 +40,7 @@ from app.sources.client.http.exception.exception import HttpStatusCode
 from app.sources.client.http.http_response import HTTPResponse
 from app.sources.client.jira.jira import JiraClient
 from app.sources.external.jira.jira import JiraDataSource
+from harness_core.effects.reconcile import current_effect_tag
 
 if TYPE_CHECKING:
     from app.modules.agents.qna.chat_state import ChatState
@@ -390,6 +393,7 @@ def _jira_error_message(status: int, reason: object, headers: dict[str, str]) ->
         wait = f"Wait {retry_after} seconds" if retry_after.isdigit() else "Wait a minute"
         return f"Jira is receiving too many requests right now. {wait} and try again."
     if status == HTTPStatus.UNAUTHORIZED:
+        note_sign_in_rejected()
         return f"Jira did not accept the saved sign-in.{said} {_RECONNECT_STEP}"
     if status == HTTPStatus.FORBIDDEN:
         return f"The signed-in Jira account is not allowed to do that.{said} Ask a Jira admin for access."
@@ -474,7 +478,7 @@ def _jira_comment_label(comment: dict[str, Any]) -> str:
 
 
 # Register JIRA toolset
-@ToolsetBuilder("Jira")\
+@ToolsetBuilder("Jira", provider=ToolProvider.CONNECTOR)\
     .in_group("Atlassian")\
     .with_description("JIRA integration for issue tracking, project management, and team collaboration")\
     .with_category(ToolsetCategory.APP)\
@@ -1554,7 +1558,7 @@ class Jira:
         short_description="Validate JIRA connection and provide diagnostics",
         description="Validate the JIRA connection by checking authentication status and returning diagnostics.",
         parameters=[],
-        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="utility")],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="utility"), Tag(key="effect", value="read")],
     )
     async def validate_connection(self) -> tuple[bool, str]:
         """Validate JIRA connection and provide diagnostics"""
@@ -1600,7 +1604,7 @@ class Jira:
             "Returns the accountId, displayName, and emailAddress of the user making the request."
         ),
         parameters=[],
-        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_current_user(self) -> tuple[bool, str]:
         """Get the current authenticated JIRA user's details"""
@@ -1641,7 +1645,7 @@ class Jira:
         short_description="Convert plain text to Atlassian Document Format (ADF)",
         description="Convert plain text to Atlassian Document Format (ADF).",
         parameters=[ToolParameter(name="text", type=ParameterType.STRING, description="The text to convert to ADF", required=True)],
-        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="utility")],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="utility"), Tag(key="effect", value="read")],
     )
     async def convert_text_to_adf(self, text: str) -> tuple[bool, str]:
         """Convert plain text to Atlassian Document Format"""
@@ -1679,7 +1683,7 @@ class Jira:
             ToolParameter(name="project_key", type=ParameterType.STRING, description="The key of the Jira project", required=True),
             ToolParameter(name="issue_type_name", type=ParameterType.STRING, description="The name of the Jira issue type", required=True),
         ],
-        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_create_issue_fields(
         self, project_key: str, issue_type_name: str
@@ -1798,6 +1802,19 @@ class Jira:
         except Exception as e:
             return _jira_failure("getting create issue fields", e)
 
+    async def find_effect_issue(self, effect: str) -> dict[str, str] | None:
+        """The issue a create labelled with ``effect``; a read only (JQL search, eventually consistent)."""
+        response = await self.client.search_and_reconsile_issues_using_jql_post(
+            jql=f'labels = "{effect}"', fields=["key"], maxResults=2
+        )
+        if response.status != HttpStatusCode.SUCCESS.value:
+            raise RuntimeError(f"jira search failed: HTTP {response.status}")
+        issues = (response.json() or {}).get("issues") or []
+        if not issues:
+            return None
+        found = issues[0]
+        return {"key": str(found.get("key", "")), "id": str(found.get("id", ""))}
+
     @tool(
         path="/tools/jira/create_issue",
         short_description="Create a new issue in JIRA.",
@@ -1835,7 +1852,7 @@ class Jira:
             attachment_record_ids_parameter(required=False),
             attachment_display_parameter(inline_note=_CLOUD_INLINE_NOTE),
         ],
-        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
         args_summary=args_template('Creating Jira issue in {project_key}: "{summary}"', "project_key", "summary"),
         result_summary=entity_summary(lambda e: f"Created {e.get('key', '?')}"),
     )
@@ -1911,6 +1928,11 @@ class Jira:
 
             if labels:
                 fields["labels"] = labels
+
+            effect = current_effect_tag()
+            if effect is not None:
+                # A reconcile finds the issue by this label if the create's answer is lost (P2.9).
+                fields["labels"] = [*(labels or []), effect]
 
             if components:
                 fields["components"] = [{"name": comp} for comp in components]
@@ -2058,7 +2080,7 @@ class Jira:
             attachment_record_ids_parameter(required=False),
             attachment_display_parameter(inline_note=_CLOUD_INLINE_NOTE),
         ],
-        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
         args_summary=args_template("Updating Jira issue {issue_key}", "issue_key"),
         result_summary=entity_summary(lambda e: f"Updated {e.get('key', '?')}"),
     )
@@ -2418,7 +2440,7 @@ class Jira:
         short_description="Get all JIRA projects",
         description="Get all JIRA projects accessible by the current user.",
         parameters=[],
-        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
         args_summary=lambda args: "Fetching JIRA projects",
         result_summary=list_summary(("data",), _jira_project_label, "project"),
     )
@@ -2471,7 +2493,7 @@ class Jira:
         parameters=[
             ToolParameter(name="project_key", type=ParameterType.STRING, description="Project key (e.g., 'PA')", required=True),
         ],
-        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
         args_summary=args_template("Fetching Jira project {project_key}", "project_key"),
         result_summary=entity_summary(_jira_project_label),
     )
@@ -2521,7 +2543,7 @@ class Jira:
             ToolParameter(name="days", type=ParameterType.INTEGER, description="Days to look back (default 30)", required=False),
             ToolParameter(name="max_results", type=ParameterType.INTEGER, description="Max results to return (default 50)", required=False),
         ],
-        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
         args_summary=args_template("Fetching issues from {project_key}", "project_key"),
         result_summary=list_summary("issues", _jira_issue_label, "issue"),
     )
@@ -2613,7 +2635,7 @@ class Jira:
         parameters=[
             ToolParameter(name="issue_key", type=ParameterType.STRING, description="Issue key (e.g., 'PA-123')", required=True),
         ],
-        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
         args_summary=args_template("Fetching Jira issue {issue_key}", "issue_key"),
         result_summary=entity_summary(lambda e: f"Fetched {_jira_issue_label(e)}"),
     )
@@ -2706,7 +2728,7 @@ class Jira:
             ToolParameter(name="jql", type=ParameterType.STRING, description="JQL query string with time filter", required=True),
             ToolParameter(name="maxResults", type=ParameterType.INTEGER, description="Max results to return (default 50)", required=False),
         ],
-        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
         args_summary=args_template('Searching Jira issues: "{jql}"', "jql"),
         result_summary=list_summary("issues", _jira_issue_label, "issue"),
     )
@@ -2875,7 +2897,7 @@ class Jira:
             attachment_record_ids_parameter(required=False),
             attachment_display_parameter(inline_note=_CLOUD_INLINE_NOTE),
         ],
-        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
         args_summary=args_template("Adding comment to {issue_key}", "issue_key"),
         result_summary=confirmation("Comment added to {issue_key}", "issue_key"),
     )
@@ -2910,7 +2932,7 @@ class Jira:
             attachment_record_ids_parameter(required=True),
             attachment_display_parameter(inline_note=_CLOUD_INLINE_NOTE),
         ],
-        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
         args_summary=args_template("Attaching files to {issue_key}", "issue_key"),
         result_summary=confirmation("Files attached to {issue_key}", "issue_key"),
     )
@@ -2983,7 +3005,7 @@ class Jira:
         parameters=[
             ToolParameter(name="issue_key", type=ParameterType.STRING, description="Issue key (e.g., 'PA-123')", required=True),
         ],
-        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
         args_summary=args_template("Fetching comments for {issue_key}", "issue_key"),
         result_summary=list_summary("comments", _jira_comment_label, "comment"),
     )
@@ -3026,7 +3048,7 @@ class Jira:
             ToolParameter(name="query", type=ParameterType.STRING, description="Search query (name or email)", required=True),
             ToolParameter(name="max_results", type=ParameterType.INTEGER, description="Max results (default 20)", required=False),
         ],
-        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
         args_summary=args_template('Searching Jira users: "{query}"', "query"),
         result_summary=list_summary(("data", "results"), _jira_user_label, "user"),
     )
@@ -3113,7 +3135,7 @@ class Jira:
         parameters=[
             ToolParameter(name="project_key", type=ParameterType.STRING, description="Project key (e.g., 'PA')", required=True),
         ],
-        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_project_metadata(self, project_key: str) -> tuple[bool, str]:
         """Get project metadata"""

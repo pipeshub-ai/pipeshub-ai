@@ -13,6 +13,7 @@ from app.connectors.core.registry.auth_builder import (
 from app.connectors.core.registry.connector_builder import CommonFields
 from app.connectors.core.registry.tool_builder import (
     ToolDefinition,
+    ToolProvider,
     ToolsetBuilder,
     ToolsetCategory,
 )
@@ -77,7 +78,7 @@ tools: List[ToolDefinition] = [
 
 
 # Register PostHog toolset
-@ToolsetBuilder("PostHog")\
+@ToolsetBuilder("PostHog", provider=ToolProvider.CONNECTOR)\
     .in_group("Analytics")\
     .with_description("PostHog integration for product analytics and event tracking")\
     .with_category(ToolsetCategory.APP)\
@@ -181,7 +182,7 @@ class PostHog:
                 required=False
             )
         ],
-        tags=[Tag(key="category", value="analytics"), Tag(key="type", value="create")],
+        tags=[Tag(key="category", value="analytics"), Tag(key="type", value="create"), Tag(key="effect", value="write")],
     )
     def capture_event(
         self,
@@ -226,7 +227,7 @@ class PostHog:
                 description="Event ID"
             )
         ],
-        tags=[Tag(key="category", value="analytics"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="analytics"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_event(self, event_id: str) -> Tuple[bool, str]:
         """Get a single event by ID from PostHog."""
@@ -250,7 +251,7 @@ class PostHog:
                 description="Person ID"
             )
         ],
-        tags=[Tag(key="category", value="analytics"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="analytics"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_person(self, person_id: str) -> Tuple[bool, str]:
         """Get a person by ID from PostHog."""
@@ -279,7 +280,7 @@ class PostHog:
                 description="JSON object with person properties to update"
             )
         ],
-        tags=[Tag(key="category", value="analytics"), Tag(key="type", value="update")],
+        tags=[Tag(key="category", value="analytics"), Tag(key="type", value="update"), Tag(key="effect", value="write")],
     )
     def update_person(
         self,
@@ -318,7 +319,7 @@ class PostHog:
                 description="Person ID to delete"
             )
         ],
-        tags=[Tag(key="category", value="analytics"), Tag(key="type", value="delete")],
+        tags=[Tag(key="category", value="analytics"), Tag(key="type", value="delete"), Tag(key="effect", value="write")],
     )
     async def delete_person(self, person_id: str) -> Tuple[bool, str]:
         """Delete a person from PostHog."""
@@ -373,7 +374,7 @@ class PostHog:
                 required=False
             )
         ],
-        tags=[Tag(key="category", value="analytics"), Tag(key="type", value="search")],
+        tags=[Tag(key="category", value="analytics"), Tag(key="type", value="search"), Tag(key="effect", value="read")],
     )
     def search_events(
         self,

@@ -42,7 +42,11 @@ from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
 from app.agent_loop_lib.tools.decorators import tool
 from app.config.constants.arangodb import CollectionNames
 from app.connectors.core.registry.auth_builder import AuthBuilder
-from app.connectors.core.registry.tool_builder import ToolsetBuilder, ToolsetCategory
+from app.connectors.core.registry.tool_builder import (
+    ToolProvider,
+    ToolsetBuilder,
+    ToolsetCategory,
+)
 from app.telemetry.modules import code_graph_metrics
 
 from .diff_impact import impact_of_diff_impl
@@ -241,7 +245,7 @@ def _counted(method: Callable[..., Awaitable[tuple[bool, str]]]) -> Callable[...
 # ---------------------------------------------------------------------------
 
 
-@ToolsetBuilder("Code Graph")\
+@ToolsetBuilder("Code Graph", provider=ToolProvider.PLATFORM)\
     .in_group("Internal Tools")\
     .with_description(CODE_GRAPH_TOOLSET_DESCRIPTION)\
     .with_category(ToolsetCategory.APP)\
@@ -553,7 +557,7 @@ class CodeGraph:
                 description=_REPO_DESC,
             ),
         ],
-        tags=_QUERY_TAGS,
+        tags=[*_QUERY_TAGS, Tag(key="effect", value="read")],
     )
     @_counted
     async def query_code_graph(
@@ -693,7 +697,7 @@ class CodeGraph:
                 description=_REPO_DESC,
             ),
         ],
-        tags=_NEIGHBOUR_TAGS,
+        tags=[*_NEIGHBOUR_TAGS, Tag(key="effect", value="read")],
     )
     @_counted
     async def get_neighbour(
@@ -815,7 +819,7 @@ class CodeGraph:
                 description=_REPO_DESC,
             ),
         ],
-        tags=_READ_TAGS,
+        tags=[*_READ_TAGS, Tag(key="effect", value="read")],
     )
     @_counted
     async def read_code(
@@ -923,7 +927,7 @@ class CodeGraph:
                 ),
             ),
         ],
-        tags=_PATH_TAGS,
+        tags=[*_PATH_TAGS, Tag(key="effect", value="read")],
     )
     @_counted
     async def find_symbol_path(
@@ -1063,7 +1067,7 @@ class CodeGraph:
             ToolParameter(name="repo", type=ParameterType.STRING, required=False, default=None,
                           description=_REPO_DESC),
         ],
-        tags=_SEARCH_TAGS,
+        tags=[*_SEARCH_TAGS, Tag(key="effect", value="read")],
     )
     @_counted
     async def search_code(
@@ -1117,7 +1121,7 @@ class CodeGraph:
             ToolParameter(name="repo", type=ParameterType.STRING, required=False, default=None,
                           description=_REPO_DESC),
         ],
-        tags=_SEARCH_TAGS,
+        tags=[*_SEARCH_TAGS, Tag(key="effect", value="read")],
     )
     @_counted
     async def search_semantic(
@@ -1164,7 +1168,7 @@ class CodeGraph:
             ToolParameter(name="repo", type=ParameterType.STRING, required=False, default=None,
                           description=_REPO_DESC),
         ],
-        tags=_OUTLINE_TAGS,
+        tags=[*_OUTLINE_TAGS, Tag(key="effect", value="read")],
     )
     @_counted
     async def outline(
@@ -1239,7 +1243,7 @@ class CodeGraph:
                 items={"type": "string"},
             ),
         ],
-        tags=_IMPACT_TAGS,
+        tags=[*_IMPACT_TAGS, Tag(key="effect", value="read")],
     )
     @_counted
     async def impact(
@@ -1349,7 +1353,7 @@ class CodeGraph:
             ToolParameter(name="repo", type=ParameterType.STRING, required=False, default=None,
                           description=_REPO_DESC),
         ],
-        tags=_IMPACT_TAGS,
+        tags=[*_IMPACT_TAGS, Tag(key="effect", value="read")],
     )
     @_counted
     async def impact_of_diff(
@@ -1401,7 +1405,7 @@ class CodeGraph:
             ToolParameter(name="repo", type=ParameterType.STRING, required=False, default=None,
                           description=_REPO_DESC),
         ],
-        tags=_IMPACT_TAGS,
+        tags=[*_IMPACT_TAGS, Tag(key="effect", value="read")],
     )
     @_counted
     async def history(
@@ -1452,7 +1456,7 @@ class CodeGraph:
             ToolParameter(name="repo", type=ParameterType.STRING, required=False, default=None,
                           description=_REPO_DESC),
         ],
-        tags=_ENTRY_TAGS,
+        tags=[*_ENTRY_TAGS, Tag(key="effect", value="read")],
     )
     @_counted
     async def entry_points(
