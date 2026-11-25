@@ -162,7 +162,7 @@ BEGIN
                       UNION ALL SELECT u.sk, u.sc FROM unnest(v_sks, v_scs) AS u(sk, sc)) y
                     ORDER BY y.sc DESC, y.sk LIMIT p_leg) z;
             IF cardinality(v_sks) >= p_leg THEN v_theta := v_scs[p_leg]; END IF;
-            v_bsk := '{}'; v_bsc := '{}'; v_w := v_w * 2;
+            v_bsk := '{}'; v_bsc := '{}'; v_w := least(v_w * 2, 4096);     -- windows grow, up to a fixed size: memory stays bounded
           END IF;
           EXIT WHEN v_cut;
         END LOOP;

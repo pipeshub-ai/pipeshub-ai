@@ -742,25 +742,63 @@ def test_a_fold_or_recount_that_does_not_keep_the_bounds_leaves_them_not_known_a
     assert bounds(cluster, name, ORG_A) == {5: 1000.0, 6: 1.0}
 
 
-def test_a_full_answer_in_final_order_ends_the_search_and_a_narrowing_that_admits_nothing_answers_nothing(rdb):
-    """No term left out: the candidates come in the answer's order, ties by point, so the first p_leg that pass are the answer and the
-    search stops there instead of checking every tied candidate."""
-    cluster, name = rdb
-    adopt(cluster, name, ORG_A)
+def tied_corpus(cluster, name, org: str, points: int) -> list[int]:
+    """``points`` points with one term of weight 1.0: every score ties, so the answer's order is by point. Their point_sks, in order."""
     with cluster.admin(name) as c:
         c.execute("INSERT INTO retrieval.points (org_id, collection_id, space_id, point_id, group_key, embedding, embedding_dim, lex_terms) "
-                  "SELECT %s, 1, 1, md5('tie' || i)::uuid, 'g' || i, %s::ext.halfvec, 4, '{9}' FROM generate_series(1, 3000) i", (ORG_A, VEC))
+                  "SELECT %s, 1, 1, md5('tie' || i)::uuid, 'g' || i, %s::ext.halfvec, 4, '{9}' FROM generate_series(1, %s) i", (org, VEC, points))
         c.execute("INSERT INTO retrieval.postings (org_id, collection_id, space_id, term, point_sk, w) "
-                  "SELECT org_id, 1, 1, 9, point_sk, 1.0 FROM retrieval.points WHERE org_id = %s ORDER BY point_sk", (ORG_A,))
-        c.execute("INSERT INTO retrieval.lexical_df_delta (org_id, collection_id, space_id, term, d) VALUES (%s, 1, 1, -1, 3000)", (ORG_A,))
-        first = c.execute("SELECT min(point_sk) FROM retrieval.points WHERE org_id = %s", (ORG_A,)).fetchone()[0]
+                  "SELECT org_id, 1, 1, 9, point_sk, 1.0 FROM retrieval.points WHERE org_id = %s ORDER BY point_sk", (org,))
+        c.execute("INSERT INTO retrieval.lexical_df_delta (org_id, collection_id, space_id, term, d) VALUES (%s, 1, 1, -1, %s)", (org, points))
         c.execute("VACUUM (ANALYZE) retrieval.points, retrieval.postings")
-    with connect_as(cluster, name, "pipeshub_query_login") as c, uow(c, "pipeshub_query", ORG_A):
+        return [r[0] for r in c.execute("SELECT point_sk FROM retrieval.points WHERE org_id = %s ORDER BY point_sk", (org,))]
+
+
+def searched_and_probed(cluster, name, org) -> tuple[list, int]:
+    """The unfiltered one-term search for p_leg 1, and the rows its probes of the points returned (this transaction's own counters)."""
+    with connect_as(cluster, name, "pipeshub_query_login") as c, uow(c, "pipeshub_query", org):
         got = c.execute("SELECT point_sk FROM retrieval.search_sparse(1::smallint, '{9}', '{1}', NULL, NULL, NULL, NULL, NULL, 1)").fetchall()
         probed = c.execute("SELECT sum(pg_stat_get_xact_tuples_returned(i.indexrelid))::int FROM pg_index i JOIN pg_class t ON t.oid = i.indrelid "
                            "WHERE t.relnamespace = 'retrieval'::regnamespace AND t.relname LIKE 'points%%'").fetchone()[0]
-    assert got == [(first,)] and probed < 50                         # one window of candidates checked, not 3,000
+        return got, probed
+
+
+def test_a_full_answer_in_final_order_ends_the_search_and_a_narrowing_that_admits_nothing_answers_nothing(rdb):
+    """No term left out: the candidates come in the answer's order, ties by point, so the first p_leg that pass are the answer and the
+    search stops there instead of checking every tied candidate; a tombstoned first candidate (its posting still there) is skipped."""
+    cluster, name = rdb
+    adopt(cluster, name, ORG_A)
+    sks = tied_corpus(cluster, name, ORG_A, 3000)
+    got, probed = searched_and_probed(cluster, name, ORG_A)
+    assert got == [(sks[0],)] and probed < 50                       # one window of candidates checked, not 3,000
     assert search(cluster, name, ORG_A, (9,), must=["nobody"], leg=1) == []
+    with cluster.admin(name) as c:
+        c.execute("INSERT INTO retrieval.point_tombstones (org_id, point_sk) VALUES (%s, %s)", (ORG_A, sks[0]))
+    got, probed = searched_and_probed(cluster, name, ORG_A)
+    assert got == [(sks[1],)] and probed < 50                       # the next live point, still from the first window
+
+
+def test_a_search_that_admits_nothing_reads_its_candidates_in_windows_of_bounded_size(rdb):
+    """A narrowing that admits none of 20,000 candidates sets no answer to stop at, so every candidate is checked; the windows double up
+    to 4,096 candidates and stay there (they doubled without end: a window of half the candidates)."""
+    import re
+
+    cluster, name = rdb
+    adopt(cluster, name, ORG_A)
+    tied_corpus(cluster, name, ORG_A, 20_000)
+    notes: list[str] = []
+    with cluster.admin(name) as a:
+        a.add_notice_handler(lambda d: notes.append(d.message_primary or ""))
+        with a.transaction():
+            a.execute("LOAD 'auto_explain'")
+            for setting in ("log_min_duration = 0", "log_analyze = on", "log_timing = off", "log_nested_statements = on", "log_level = notice"):
+                a.execute(f"SET LOCAL auto_explain.{setting}")
+            a.execute("SET LOCAL ROLE pipeshub_query")
+            a.execute("SELECT set_config('app.org_id', %s, true)", (ORG_A,))
+            assert a.execute("SELECT * FROM retrieval.search_sparse(1::smallint, '{9}', '{1}', NULL, NULL, NULL, NULL, '{nobody}', 1)").fetchall() == []
+            a.execute("RESET ROLE")
+    windows = [int(n) for p in notes for n in re.findall(r"Function Scan on c .*?\(actual[^)]*?rows=(\d+)", p)]
+    assert sum(windows) >= 20_000 and max(windows) == 4096, windows    # every candidate checked, none in a window above the cap
 
 
 def test_the_upgrade_to_the_term_bounds_takes_its_locks_in_the_order_a_running_fold_does(rdb):
