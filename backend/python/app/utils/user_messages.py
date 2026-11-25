@@ -40,6 +40,12 @@ EPUB_PREVIEW_UNAVAILABLE = (
 )
 
 
+FILE_PREVIEW_UNAVAILABLE = (
+    "We couldn't make a preview of this file. It may be damaged. "
+    "Download it to open it in the app that made it."
+)
+
+
 def action_failed(action: str) -> str:
     """Why an action failed, in the user's words.
 

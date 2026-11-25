@@ -13,7 +13,7 @@ DELETE /api/v1/configurationManager/ai-models/providers/{modelType}/{modelKey}
 Validates Zod ``addProviderRequestSchema`` / ``updateProviderRequestSchema``,
 admin OAuth auth, OpenAPI response schemas in ``pipeshub-openapi.yaml``, and
 (when API keys are set) live Python health-check + persist paths for openAI,
-gemini, azureOpenAI, and groq.
+gemini, azureOpenAI, openAICompatible, and groq.
 
 Provider IDs and required configuration fields mirror the Python registry under
 ``backend/python/app/config/ai_models/providers/``.
@@ -24,7 +24,9 @@ Requires:
   - Per-provider API keys (optional — positive tests skip when unset):
       TEST_OPENAI_API_KEY, TEST_GEMINI_API_KEY, TEST_GROQ_API_KEY,
       TEST_AZURE_OPENAI_API_KEY + TEST_AZURE_OPENAI_ENDPOINT +
-      TEST_AZURE_OPENAI_DEPLOYMENT_NAME
+      TEST_AZURE_OPENAI_DEPLOYMENT_NAME,
+      TEST_OPENAI_COMPATIBLE_API_KEY + TEST_OPENAI_COMPATIBLE_ENDPOINT +
+      TEST_OPENAI_COMPATIBLE_LLM_MODEL
   - PIPESHUB_TEST_NON_ADMIN_EMAIL / PIPESHUB_TEST_NON_ADMIN_PASSWORD (optional)
   - PIPESHUB_TEST_DELETE_CONFLICT_MODEL_KEY (optional — 409 when agent uses model)
 """
@@ -81,6 +83,7 @@ _PROVIDER_OPENAI = "openAI"
 _PROVIDER_GEMINI = "gemini"
 _PROVIDER_AZURE_OPENAI = "azureOpenAI"
 _PROVIDER_GROQ = "groq"
+_PROVIDER_OPENAI_COMPATIBLE = "openAICompatible"
 
 
 @dataclass(frozen=True)
@@ -163,6 +166,13 @@ def _live_provider_specs() -> List[LiveProviderSpec]:
             "model": model,
         }
 
+    def _openai_compatible_config(api_key: str, model: str) -> dict[str, Any]:
+        return {
+            "model": model,
+            "apiKey": api_key,
+            "endpoint": _env("TEST_OPENAI_COMPATIBLE_ENDPOINT") or "",
+        }
+
     return [
         LiveProviderSpec(
             provider_id=_PROVIDER_OPENAI,
@@ -192,6 +202,20 @@ def _live_provider_specs() -> List[LiveProviderSpec]:
                 "TEST_AZURE_OPENAI_DEPLOYMENT_NAME",
             ),
             skip_reason_extra=" (endpoint + deployment required)",
+        ),
+        LiveProviderSpec(
+            provider_id=_PROVIDER_OPENAI_COMPATIBLE,
+            api_key_env="TEST_OPENAI_COMPATIBLE_API_KEY",
+            api_key_fallback=None,
+            model_env="TEST_OPENAI_COMPATIBLE_LLM_MODEL",
+            # No default: a gateway names its models its own way.
+            default_model="",
+            build_configuration=_openai_compatible_config,
+            required_env=(
+                "TEST_OPENAI_COMPATIBLE_ENDPOINT",
+                "TEST_OPENAI_COMPATIBLE_LLM_MODEL",
+            ),
+            skip_reason_extra=" (endpoint + model required)",
         ),
         LiveProviderSpec(
             provider_id=_PROVIDER_GROQ,
