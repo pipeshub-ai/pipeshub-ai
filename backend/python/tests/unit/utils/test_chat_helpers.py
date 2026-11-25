@@ -2745,6 +2745,36 @@ class TestGetFlattenedResults:
         assert results[0]["block_type"] == BlockType.TEXT.value
 
     @pytest.mark.asyncio
+    async def test_a_text_block_carries_its_sub_type(self) -> None:
+        heading = _make_text_block(index=0, data="Laptop models")
+        heading["sub_type"] = "heading"
+        plain = _make_text_block(index=1, data="Engineers get a 16-inch laptop.")
+        record = _make_record_blob()
+        record["block_containers"]["blocks"] = [heading, plain]
+        result_set = [
+            {"content": text, "score": 0.9, "metadata": {"virtualRecordId": "vr-1", "blockIndex": i, "isBlockGroup": False}}
+            for i, text in enumerate(["Laptop models", "Engineers get a 16-inch laptop."])
+        ]
+        results = await get_flattened_results(result_set, self._make_blob_store(record), "org-1", False, {"vr-1": record})
+        by_text = {r["content"]: r for r in results}
+        assert by_text["Laptop models"]["block_sub_type"] == "heading"
+        # No sub-type from the parser: no key, as before.
+        assert "block_sub_type" not in by_text["Engineers get a 16-inch laptop."]
+
+    @pytest.mark.asyncio
+    async def test_a_child_of_a_group_carries_its_sub_type(self) -> None:
+        heading = _make_text_block(index=0, data="Laptop models", parent_index=0)
+        heading["sub_type"] = "heading"
+        item = _make_text_block(index=1, data="Engineers get a 16-inch laptop.", parent_index=0)
+        children = build_group_blocks(
+            [_make_list_group(index=0, children_block_indices=[0, 1])], [heading, item], 0,
+            virtual_record_id="vr-1", record=_make_record_blob(), result={"score": 0.9, "metadata": {}},
+        )
+        by_text = {c["content"]: c for c in children}
+        assert by_text["Laptop models"]["block_sub_type"] == "heading"
+        assert "block_sub_type" not in by_text["Engineers get a 16-inch laptop."]
+
+    @pytest.mark.asyncio
     async def test_hits_on_two_items_of_one_list_yield_the_list_once(self) -> None:
         """Each list-item hit expands to its whole list; a second hit on the same
         list must not add a duplicate unit that takes another ranked slot."""
