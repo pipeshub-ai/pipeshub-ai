@@ -47,7 +47,8 @@ def safe_conversion_input(directory: str, extension: str) -> str:
 
 
 async def _run_soffice(file_path: str, temp_dir: str, *, timeout: float) -> tuple[str | None, str]:
-    """One LibreOffice run: the PDF's path (None when it exited 0 without one) and its stderr."""
+    """One LibreOffice run: the PDF's path and its stderr. The path is None when it
+    could not load the file, or exited 0 without writing one."""
     pdf_path = os.path.join(temp_dir, f"{Path(file_path).stem}.pdf")
     profile_uri = Path(os.path.join(temp_dir, ".libreoffice-profile")).as_uri()
     command = [
@@ -84,7 +85,9 @@ async def _run_soffice(file_path: str, temp_dir: str, *, timeout: float) -> tupl
             raise
 
     stderr = (conversion_error or b"").decode("utf-8", errors="replace")
-    if process.returncode != 0:
+    # LibreOffice 26 exits 1 for a file it cannot load, earlier releases 0.
+    not_loaded = libreoffice_convert.source_not_loaded(stderr) and process.returncode in (0, 1)
+    if process.returncode != 0 and not not_loaded:
         logger.error(
             "LibreOffice PDF conversion failed (exit code %s): %s",
             process.returncode,
@@ -104,10 +107,11 @@ async def _run_soffice(file_path: str, temp_dir: str, *, timeout: float) -> tupl
     )
     if pdf_files:
         return os.path.join(temp_dir, pdf_files[0]), stderr
-    # LibreOffice exits 0 here: its own output is the only account of what went wrong.
+    # LibreOffice's own output is the only account of what went wrong.
     # %r keeps it on one log line.
     logger.warning(
-        "LibreOffice exited 0 but wrote no PDF for a .%s file of %s bytes. stdout: %r stderr: %r",
+        "LibreOffice exited %s and wrote no PDF for a .%s file of %s bytes. stdout: %r stderr: %r",
+        process.returncode,
         Path(file_path).suffix.lstrip("."),
         os.path.getsize(file_path),
         (conversion_output or b"").decode("utf-8", errors="replace"),

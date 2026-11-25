@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 from fastapi import HTTPException
+from lxml import etree
 from pptx import Presentation
 
 import app.edition_config  # noqa: F401  (binds the edition seams before the router loads)
@@ -134,6 +135,36 @@ async def test_a_host_that_cannot_open_a_known_good_file_stays_a_500(
     assert len(ran) == 2, "the file, then its rebuilt copy, and no more"
 
 
+@pytest.mark.parametrize("returncode", [0, 1], ids=["LibreOffice 25", "LibreOffice 26"])
+async def test_a_file_that_is_not_loaded_is_rebuilt_then_a_422_whatever_the_exit_code(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, returncode: int
+) -> None:
+    ran = _fake_soffice(monkeypatch, NOT_LOADED, returncode)
+    source = tmp_path / "deck.pptx"
+    source.write_bytes(_deck())
+    with (
+        patch.object(pdf_stream_conversion.libreoffice_convert, "can_convert_known_good_file", AsyncMock(return_value=True)),
+        pytest.raises(HTTPException) as raised,
+    ):
+        await libreoffice_to_pdf(str(source), str(tmp_path))
+    assert (raised.value.status_code, raised.value.detail) == (422, FILE_PREVIEW_UNAVAILABLE)
+    assert len(ran) == 2
+
+
+@pytest.mark.parametrize("returncode", [-9, 77])
+async def test_a_crash_or_host_failure_is_a_500_and_not_retried(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, returncode: int
+) -> None:
+    stderr = NOT_LOADED if returncode < 0 else b"user installation could not be completed"
+    ran = _fake_soffice(monkeypatch, stderr, returncode)
+    source = tmp_path / "deck.pptx"
+    source.write_bytes(_deck())
+    with pytest.raises(HTTPException) as raised:
+        await libreoffice_to_pdf(str(source), str(tmp_path))
+    assert raised.value.status_code == 500
+    assert len(ran) == 1
+
+
 async def test_a_failed_export_is_logged_and_not_retried(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -172,21 +203,33 @@ def test_a_package_over_the_limits_is_not_rebuilt(tmp_path: Path, monkeypatch: p
     assert not target.exists()
 
 
-def test_external_entities_are_not_resolved_and_external_links_are_kept(tmp_path: Path) -> None:
+def _with_rels(body: str, doctype: str = "") -> bytes:
+    rels = (
+        f'{doctype}<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        f"{body}</Relationships>"
+    ).encode()
+    return _zip([(n, rels if n == "_rels/.rels" else d) for n, d in _entries(_deck())])
+
+
+def test_external_entities_are_not_resolved(tmp_path: Path) -> None:
     secret = tmp_path / "secret"
     secret.write_text("TOPSECRET")
-    rels = (
-        f'<!DOCTYPE r [<!ENTITY e SYSTEM "{secret.as_uri()}">]>'
-        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
-        '<Relationship Id="a" Type="t" Target="https://example.com/" TargetMode="External"/>'
-        '<Relationship Id="b" Type="t" Target="docProps/gone.xml"/>&e;</Relationships>'
-    ).encode()
     source, target = tmp_path / "in.pptx", tmp_path / "out.pptx"
-    source.write_bytes(_zip([(n, rels if n == "_rels/.rels" else d) for n, d in _entries(_deck())]))
-    if rebuild_package(source, target):
-        out = zipfile.ZipFile(target).read("_rels/.rels")
-        assert b"TOPSECRET" not in out
-        assert b"example.com" in out and b"gone.xml" not in out
+    source.write_bytes(_with_rels("&e;", f'<!DOCTYPE r [<!ENTITY e SYSTEM "{secret.as_uri()}">]>'))
+    assert rebuild_package(source, target)
+    assert b"TOPSECRET" not in zipfile.ZipFile(target).read("_rels/.rels")
+
+
+def test_only_relationships_to_missing_parts_are_dropped(tmp_path: Path) -> None:
+    source, target = tmp_path / "in.pptx", tmp_path / "out.pptx"
+    source.write_bytes(_with_rels(
+        '<Relationship Id="external" Type="t" Target="https://docs.invalid/" TargetMode="External"/>'
+        '<Relationship Id="present" Type="t" Target="/ppt/presentation.xml"/>'
+        '<Relationship Id="gone" Type="t" Target="docProps/gone.xml"/>'
+    ))
+    assert rebuild_package(source, target)
+    root = etree.fromstring(zipfile.ZipFile(target).read("_rels/.rels"))
+    assert [r.get("Id") for r in root] == ["external", "present"]
 
 
 def test_the_rebuilt_package_keeps_every_part(tmp_path: Path) -> None:

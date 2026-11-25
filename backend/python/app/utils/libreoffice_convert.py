@@ -75,10 +75,13 @@ _PROBE_SAMPLES: dict[str, tuple[str, str]] = {
     "doc": ("fodt", _FODT),
     "xls": ("fods", _FODS),
     "ppt": ("fodp", _FODP),
-    "docx": ("fodt", _FODT),
-    "pptx": ("fodp", _FODP),
     "odt": ("fodt", _FODT),
     "rtf": ("fodt", _FODT),
+}
+# Formats previewed as PDF that indexing does not convert with LibreOffice.
+_PREVIEW_PROBE_SAMPLES: dict[str, tuple[str, str]] = {
+    "docx": ("fodt", _FODT),
+    "pptx": ("fodp", _FODP),
 }
 # Formats LibreOffice can write but not open, in any release (its only EPUB
 # filter is export-only). Converting from them is refused before LibreOffice
@@ -262,7 +265,7 @@ async def _libreoffice_can_convert(input_ext: str, output_ext: str) -> bool | No
     """Whether LibreOffice on this host converts a known-good *input_ext* file
     to *output_ext*, or None when there is no sample to check that format with.
     Only run after a conversion has already failed."""
-    sample = _PROBE_SAMPLES.get(input_ext)
+    sample = _PROBE_SAMPLES.get(input_ext) or _PREVIEW_PROBE_SAMPLES.get(input_ext)
     if sample is None:
         return None
     key = (input_ext, output_ext)
