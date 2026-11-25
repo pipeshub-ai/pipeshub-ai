@@ -1619,11 +1619,6 @@ class SlackIndividualConnector(BaseConnector):
                         replies_complete = await self._process_thread(
                             dt.msg, dt.ctx, dt.rg_id
                         )
-                        if replies_complete is None:
-                            # Kept, not read: later syncs read it again, however old.
-                            if ts not in pending_threads:
-                                pending_threads.append(ts)
-                            continue
                     else:
                         self.logger.info(
                             f"[DeferredThread] Processing thread parent ts={ts}, "
@@ -1632,6 +1627,11 @@ class SlackIndividualConnector(BaseConnector):
                         replies_complete = await self._process_thread_incremental(
                             dt.msg, dt.ctx, existing_rg_id, last_reply_ts
                         )
+                    if replies_complete is None:
+                        # Kept, not read: later syncs read it again, however old.
+                        if ts not in pending_threads:
+                            pending_threads.append(ts)
+                        continue
 
                     if not replies_complete:
                         incomplete_threads += 1
@@ -2004,7 +2004,7 @@ class SlackIndividualConnector(BaseConnector):
         thread_ts: str,
         ctx: ProcessingContext,
         oldest: Optional[str] = None,
-    ) -> tuple[list[dict[str, Any]], bool]:
+    ) -> tuple[list[dict[str, Any]], bool | None]:
         """Fetch raw thread replies (excluding the parent) via conversations.replies.
 
         Args:
@@ -2015,6 +2015,8 @@ class SlackIndividualConnector(BaseConnector):
             ``(replies, complete)``. ``complete`` is False when a page failed
             before the cursor ran out; ``replies`` then holds only the pages
             fetched so far, and the caller must not record the thread as synced.
+            It is None, with no replies, when Slack refused the first page
+            (thread_not_found, channel_not_found, not_in_channel).
         """
         replies: list[dict[str, Any]] = []
         cursor:  Optional[str] = None
@@ -2032,14 +2034,13 @@ class SlackIndividualConnector(BaseConnector):
             resp = await ds.conversations_replies(**kwargs)
             if not resp or not resp.success:
                 error = getattr(resp, "error", "no response")
-                # The thread or channel is gone: nothing more can be read, so
-                # a retry would fail the same way. Treat it as finished, but only
-                # before any page was fetched; after that the replies are partial.
+                # Refused before any page was read: not an empty thread, so the
+                # caller keeps what is stored. After a page the replies are partial.
                 if cursor is None and error in ("thread_not_found", "channel_not_found", "not_in_channel"):
                     self.logger.warning(
                         f"Skipping replies of thread ts={thread_ts} in {channel_id}: {error}"
                     )
-                    return replies, True
+                    return replies, None
                 self.logger.warning(
                     f"conversations.replies({channel_id}, ts={thread_ts}) failed: "
                     f"{error}; returning {len(replies)} replies fetched so far as incomplete"
@@ -2212,7 +2213,7 @@ class SlackIndividualConnector(BaseConnector):
         replies, replies_complete = await self._fetch_thread_replies_raw(
             ctx.channel_id, ts, ctx
         )
-        if replies_complete and not replies and reply_count > 0:
+        if replies_complete is None or (replies_complete and not replies and reply_count > 0):
             # Slack refused the replies: a parent-only burst would get a new id and
             # leave the stored thread bursts unseen, so keep those instead.
             await self._keep_unread_thread(thread_rg.external_group_id)
@@ -2323,18 +2324,23 @@ class SlackIndividualConnector(BaseConnector):
         ctx: ProcessingContext,
         thread_rg_id: str,
         last_reply_ts: str,
-    ) -> bool:
+    ) -> Optional[bool]:
         """
         Incremental thread processing: only fetch and process replies newer
         than ``last_reply_ts``.
 
         Creates thread-burst/single records for the new replies only.
-        Returns False when the new replies could only be partly fetched.
+        Returns False when the new replies could only be partly fetched, and
+        None when Slack refused them (the stored records are kept), so the
+        caller must not move the thread's sync point.
         """
         thread_ts = parent_msg.get("ts", "")
         new_replies, replies_complete = await self._fetch_thread_replies_raw(
             ctx.channel_id, thread_ts, ctx, oldest=last_reply_ts,
         )
+        if replies_complete is None:
+            await self._keep_unread_thread(f"thread_{ctx.channel_id}_{thread_ts}")
+            return None
         if not new_replies:
             return replies_complete
         await self._warm_user_cache_for_messages(new_replies, ctx)
@@ -3990,6 +3996,8 @@ class SlackIndividualConnector(BaseConnector):
         replies_complete = await self._process_thread_incremental(
             md, ctx, thread_rg_id, last_reply_ts,
         )
+        if replies_complete is None:
+            return None
         if not replies_complete:
             self.logger.warning(
                 f"[ThreadGrowth] Thread checkpoint NOT updated for ts={ts}, "

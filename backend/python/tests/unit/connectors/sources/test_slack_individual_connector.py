@@ -1499,7 +1499,7 @@ class TestFetchThreadReplies:
         assert complete is False
 
     @pytest.mark.asyncio
-    async def test_fetch_thread_replies_raw_first_page_gone_is_complete(self) -> None:
+    async def test_fetch_thread_replies_raw_first_page_gone_is_refused(self) -> None:
         c = _make_connector()
         ctx = _ctx(c)
         ds = MagicMock()
@@ -1507,7 +1507,7 @@ class TestFetchThreadReplies:
         with patch.object(type(c), "_fresh_datasource", new=AsyncMock(return_value=ds)):
             got, complete = await c._fetch_thread_replies_raw("C1", "1.0", ctx)
         assert got == []
-        assert complete is True
+        assert complete is None
 
 
 class TestProcessThread:

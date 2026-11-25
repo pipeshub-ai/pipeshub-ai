@@ -395,6 +395,12 @@ def pending_threads(checkpoints: FakeCheckpoints, channel: str) -> list[str] | N
     return None if value is None else value["thread_ts"]
 
 
+def rewind_thread_growth(checkpoints: FakeCheckpoints, channel: str) -> None:
+    """The personal scan reads only parents posted since its last run, so rewind it to see an older one."""
+    (key,) = [k for k in checkpoints.sync_points if k.endswith(f"thread_growth/{channel}")]
+    checkpoints.sync_points[key] = {"last_check_time": 1000}
+
+
 def in_thread(store: FakeSlackStore, channel: str, parent: str) -> bool:
     group = f"thread_{channel}_{parent}"
     return any(r.external_record_group_id == group for r in store.records.values())
@@ -519,6 +525,89 @@ class TestRefusedThreadsAreRetried:
             pending = pending_threads(checkpoints, GENERAL)
             assert len(pending) == 2
             assert set(pending) <= set(parents)
+
+    @pytest.mark.parametrize("error", ["channel_not_found", "thread_not_found"])
+    @pytest.mark.parametrize("parent_read_again", [False, True], ids=["thread-growth-scan", "channel-history"])
+    async def test_a_new_reply_refused_on_a_thread_already_read_is_read_once_slack_answers(
+        self, workspace, store, checkpoints, parent_read_again, error,
+    ) -> None:
+        parent, first = ts_minutes_ago(300), ts_minutes_ago(299)
+        workspace.post(GENERAL, parent, BOB, "question?")
+        workspace.reply(GENERAL, parent, first, ALICE, "answer")
+        connector, _ = await personal_connector(store, checkpoints)
+        await connector.run_sync()
+        thread_key = f"slack_thread/{GENERAL}_{parent}"
+        assert checkpoints.value(thread_key)["last_reply_ts"] == first
+
+        later = ts_minutes_ago(5)
+        workspace.reply(GENERAL, parent, later, BOB, "one more thing")
+        refused = True
+        workspace.fail("conversations.replies", SlackError(error), times=None, when=lambda p: refused)
+        if parent_read_again:
+            # Without the message checkpoint the parent comes back through the channel history.
+            (key,) = [k for k in checkpoints.sync_points if k.endswith(f"slack_messages/{GENERAL}")]
+            del checkpoints.sync_points[key]
+        else:
+            rewind_thread_growth(checkpoints, GENERAL)
+        await connector.run_sync()
+
+        assert later not in store.message_ts_count()
+        assert checkpoints.value(thread_key)["last_reply_ts"] == first
+        assert pending_threads(checkpoints, GENERAL) == [parent]
+        # A refused thread is kept, not incomplete: the run and the channel checkpoint still move.
+        assert connector.full_sync_coverage().complete
+        if parent_read_again:
+            assert [k for k in checkpoints.sync_points if k.endswith(f"slack_messages/{GENERAL}")]
+
+        refused = False
+        await connector.run_sync()
+
+        assert store.message_ts_count().get(later) == 1
+        assert checkpoints.value(thread_key)["last_reply_ts"] == later
+        assert pending_threads(checkpoints, GENERAL) == []
+
+    async def test_new_replies_refused_on_two_syncs_leave_one_pending_entry(
+        self, workspace, store, checkpoints,
+    ) -> None:
+        parent, first = ts_minutes_ago(300), ts_minutes_ago(299)
+        workspace.post(GENERAL, parent, BOB, "question?")
+        workspace.reply(GENERAL, parent, first, ALICE, "answer")
+        connector, _ = await personal_connector(store, checkpoints)
+        await connector.run_sync()
+
+        workspace.reply(GENERAL, parent, ts_minutes_ago(5), BOB, "one more thing")
+        workspace.fail("conversations.replies", SlackError("not_in_channel"), times=None)
+        for _ in range(2):
+            rewind_thread_growth(checkpoints, GENERAL)
+            await connector.run_sync()
+            assert pending_threads(checkpoints, GENERAL) == [parent]
+            assert checkpoints.value(f"slack_thread/{GENERAL}_{parent}")["last_reply_ts"] == first
+
+    async def test_another_thread_in_the_channel_still_moves_its_checkpoint(
+        self, workspace, store, checkpoints,
+    ) -> None:
+        refused_parent, refused_first = ts_minutes_ago(300), ts_minutes_ago(299)
+        open_parent, open_first = ts_minutes_ago(200), ts_minutes_ago(199)
+        for parent, first in ((refused_parent, refused_first), (open_parent, open_first)):
+            workspace.post(GENERAL, parent, BOB, "question?")
+            workspace.reply(GENERAL, parent, first, ALICE, "answer")
+        connector, _ = await personal_connector(store, checkpoints)
+        await connector.run_sync()
+
+        refused_later, open_later = ts_minutes_ago(6), ts_minutes_ago(5)
+        workspace.reply(GENERAL, refused_parent, refused_later, BOB, "one more thing")
+        workspace.reply(GENERAL, open_parent, open_later, BOB, "and here")
+        workspace.fail("conversations.replies", SlackError("channel_not_found"), times=None,
+                       when=lambda p: p.get("ts") == refused_parent)
+        rewind_thread_growth(checkpoints, GENERAL)
+        await connector.run_sync()
+
+        written = store.message_ts_count()
+        assert refused_later not in written
+        assert written.get(open_later) == 1
+        assert checkpoints.value(f"slack_thread/{GENERAL}_{refused_parent}")["last_reply_ts"] == refused_first
+        assert checkpoints.value(f"slack_thread/{GENERAL}_{open_parent}")["last_reply_ts"] == open_later
+        assert pending_threads(checkpoints, GENERAL) == [refused_parent]
 
 
 class TestGoneFromSlack:
