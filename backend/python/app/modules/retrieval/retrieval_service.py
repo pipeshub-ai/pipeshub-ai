@@ -15,6 +15,7 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.ai_models import (
     DEFAULT_EMBEDDING_MODEL,
+    LOCAL_QUERY_EMBEDDING_DEADLINE_SECONDS,
     QUERY_EMBEDDING_ATTEMPT_TIMEOUT_SECONDS,
 )
 
@@ -2909,6 +2910,15 @@ class RetrievalService:
             QueryContext(org_id=org_id, accessible_connector_names=connector_names)
         )
 
+    def _query_embed_bounds(self) -> tuple[float | None, float | None]:
+        """(per-attempt timeout, deadline for all attempts) for embedding a search query."""
+        if self._cached_embedding_is_local:
+            # A local model may be loading, so no attempt is cut short; but one deadline over all of
+            # them, so a server that accepts the connection and never answers can't hold the search
+            # for the client's own timeout, while a quick transient error is still retried.
+            return None, LOCAL_QUERY_EMBEDDING_DEADLINE_SECONDS
+        return QUERY_EMBEDDING_ATTEMPT_TIMEOUT_SECONDS, None
+
     async def _execute_parallel_searches(
         self, queries, filter, limit, org_id: str, user_id: str | None = None,
         *, plan: "_QueryPlan | None" = None, record_cut: RecordCut | None = None,
@@ -2941,7 +2951,7 @@ class RetrievalService:
         if not dense_embeddings:
             raise ValueError("No dense embeddings found")
         # Read before the next await, while it still describes the instance just returned.
-        attempt_timeout = None if self._cached_embedding_is_local else QUERY_EMBEDDING_ATTEMPT_TIMEOUT_SECONDS
+        attempt_timeout, deadline = self._query_embed_bounds()
         # Read with it: the config the vectors below come from, the key they are cached under.
         config_hash = getattr(self, "_cached_embedding_config_hash", None)
 
@@ -2955,12 +2965,12 @@ class RetrievalService:
         async def embed(text: str) -> list[float]:
             if cache is not None and (cached := cache.get(org_id, config_hash, text)) is not None:
                 return cached
-            vector = await await_with_retry(
+            vector = await asyncio.wait_for(await_with_retry(
                 lambda: asyncio.wait_for(dense_embeddings.aembed_query(text), timeout=attempt_timeout),
                 max_retries=_RETRIEVAL_EMBED_MAX_RETRIES,
                 operation="aembed_query",
                 service_name="retrieval",
-            )
+            ), timeout=deadline)
             if cache is not None and isinstance(vector, list):
                 cache.put(org_id, config_hash, text, vector)
             return vector
