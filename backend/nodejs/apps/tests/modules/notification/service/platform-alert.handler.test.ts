@@ -285,6 +285,24 @@ describe('notification/service/platform-alert.handler', () => {
       expect(mailProducer.publishEvent.callCount).to.equal(14);
     });
 
+    it('a warning copy that arrives after its resolved notice reached the same org is not delivered; another org still gets it', async () => {
+      resolveRecipients.resolves([
+        { orgId: orgA, userIds: [admin1] },
+        { orgId: orgB, userIds: [admin2] },
+      ]);
+      const resolved = (orgId: string) =>
+        event(
+          { type: 'SANDBOX_CAPACITY_RESOLVED', severity: 'success', email: false },
+          { level: 'warning', alertId: 'r1', resolvesAlertId: 'a1', orgId },
+        );
+      await signedFor(orgB, () => handler.handle(resolved(orgB)));
+      await signedFor(orgB, () => handler.handle(event({}, { orgId: orgB })));    // the late warning copy for org B
+      await signedFor(orgA, () => handler.handle(event({}, { orgId: orgA })));    // org A never had the notice: delivered
+      expect(insertOrgs).to.deep.equal([orgB, orgA]);
+      expect(insertMany.secondCall.args[0][0].type).to.equal('SANDBOX_CAPACITY_WARNING');
+      expect(insertMany.firstCall.args[0][0].type).to.equal('SANDBOX_CAPACITY_RESOLVED');
+    });
+
     it('a copy signed for an org that receives no installation alerts is skipped quietly, as an unsigned alert never reaches it', async () => {
       const other = id();
       await signedFor(other, () => handler.handle(event({}, { orgId: other })));

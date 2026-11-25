@@ -95,6 +95,10 @@ export function platformAlertsBlockedByEnvelope(): string | null {
   return null;
 }
 
+/** The remembered mark that the alert's resolved notice was delivered (to `org`'s admins, or to every org's when unsigned). */
+const resolvedKey = (alertId: string, org: string | null): string =>
+  `${alertId}@${org ?? ''}#resolved`;
+
 /** The org a verified envelope bound for this delivery: a signed copy of an alert is for that org's admins only. */
 function signedOrg(): string | null {
   const ctx = orgContextStorage.getStore();
@@ -338,6 +342,17 @@ export class PlatformAlertHandler {
       });
       return;
     }
+    // An alert that arrives after its resolved notice (a late retry of one org's copy) is stale: its admins already read that it ended.
+    if (
+      alert.kind !== 'resolved' &&
+      this.alreadyDelivered(resolvedKey(alertId, org), now)
+    ) {
+      this.logger.debug('Platform alert skipped: already resolved', {
+        type,
+        alertId,
+      });
+      return;
+    }
     const scope = budgetScope(alert);
     const durable = inDurableDelivery();
     let orgs: PlatformRecipientOrg[] | undefined;
@@ -418,6 +433,8 @@ export class PlatformAlertHandler {
 
     // Only now: an alert remembered before its mail was queued would drop the redelivery that queues it.
     this.remember(deliveryKey, now);
+    if (alert.kind === 'resolved' && alert.resolvesAlertId)
+      this.remember(resolvedKey(alert.resolvesAlertId, org), now);
     this.logger.info('Platform alert delivered', {
       type,
       alertId,
