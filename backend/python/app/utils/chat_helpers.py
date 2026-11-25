@@ -4767,6 +4767,35 @@ def _render_blocks_with_images(
     return content
 
 
+def _group_block_indices(block_groups: list[dict[str, Any]], group_index: int) -> list[int]:
+    """Block indices of a group in reading order, including those of nested groups that expand as text
+    (a list inside a panel or comment), not nested tables, which are their own units."""
+    found: set[int] = set()
+    seen: set[int] = set()
+    pending = [group_index]
+    while pending:
+        gi = pending.pop()
+        if gi in seen or not 0 <= gi < len(block_groups):
+            continue
+        seen.add(gi)
+        children = block_groups[gi].get("children")
+        if not isinstance(children, dict):
+            continue
+        for key, into in (("block_ranges", None), ("block_group_ranges", pending)):
+            for r in children.get(key) or []:
+                start, end = r.get("start"), r.get("end")
+                if start is None or end is None:
+                    continue
+                if into is None:
+                    found.update(range(start, end + 1))
+                else:
+                    into.extend(
+                        i for i in range(start, end + 1)
+                        if 0 <= i < len(block_groups) and block_groups[i].get("type") in valid_group_labels
+                    )
+    return sorted(found)
+
+
 def build_group_blocks(block_groups: list[dict[str, Any]], blocks: list[dict[str, Any]], parent_index: int, virtual_record_id: str = None, record: dict[str, Any] = None, result: dict[str, Any] = None, is_multimodal_llm: bool = False, fragment_map: dict[int, list[dict[str, Any]]] | None = None) -> list[dict[str, Any]]:  # noqa: FBT001, FBT002
     if parent_index < 0 or parent_index >= len(block_groups):
         return None
@@ -4780,16 +4809,11 @@ def build_group_blocks(block_groups: list[dict[str, Any]], blocks: list[dict[str
 
     # Handle new range-based format
     if isinstance(children, dict) and 'block_ranges' in children:
-        block_ranges = children.get('block_ranges', [])
-        for range_obj in block_ranges:
-            start = range_obj.get('start')
-            end = range_obj.get('end')
-            if start is not None and end is not None:
-                for block_index in range(start, end + 1):
-                    if 0 <= block_index < len(blocks):
-                        if blocks[block_index].get("type") == BlockType.IMAGE.value:
-                            continue
-                        result_blocks.append(blocks[block_index])
+        for block_index in _group_block_indices(block_groups, parent_index):
+            if 0 <= block_index < len(blocks):
+                if blocks[block_index].get("type") == BlockType.IMAGE.value:
+                    continue
+                result_blocks.append(blocks[block_index])
     # Handle old format (list of BlockContainerIndex)
     elif isinstance(children, list):
         for child in children:

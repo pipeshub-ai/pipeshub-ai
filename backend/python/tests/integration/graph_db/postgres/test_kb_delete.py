@@ -5,7 +5,8 @@ test_kb_delete_real_backends.Deleting. Needs a migrated database: PG_CORE_URL (a
 
 Without a caller's transaction the store deletes in batches, each its own transaction, the app in the last one
 (``_finish_connector``, which also checks nothing of the KB is left). It answers ``success: False`` for a KB that is gone
-when a rival delete finished it first, or when the last unit committed and its reply was lost (``partial``).
+when a rival delete finished it first, or when the last unit committed and its reply was lost (``partial``). The KB service
+and an admin connector delete then still publish the vector cleanup, built without the lost answer.
 """
 from __future__ import annotations
 
@@ -13,17 +14,21 @@ import logging
 import uuid
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 import app.services.graph_db.postgres.delete as delete_module
 from app.config.constants.arangodb import CollectionNames
+from app.connectors.services import event_service as es_module
+from app.connectors.services.event_service import EventService
 from app.connectors.sources.localKB.handlers.kb_service import KnowledgeBaseService
 from app.services.graph_db.entity_index_queries import APP_STATUS_DELETING
 from tests.integration.graph_db.test_kb_delete_real_backends import (
     Deleting,
+    gone_cleanup,
     one_after_the_other,
+    vector_cleanup,
 )
 
 if TYPE_CHECKING:
@@ -81,11 +86,13 @@ async def test_a_delete_whose_kb_a_rival_delete_removed_first_succeeds(env, dele
     assert deleting.cascade_results[-1] == {"success": False, "error": f"Connector instance {env.kb_id} not found"}
     assert await kb_doc(env) is None and await records_left(env) == set()
     assert a["success"] is True, a
+    assert [t for t, _ in vector_cleanup(deleting.events, env.kb_id)] == 2 * ["deleteConnectorEmbeddings", "deleteConnectorEntities"]
     retry = await deleting.delete()
     assert b["success"] is True and b.get("code", 200) == 200, (f"a 500 for a KB that is gone; a retry got {retry.get('code')}", b)
 
 
-async def test_a_delete_whose_last_unit_committed_but_lost_its_reply_succeeds(env, deleting, monkeypatch) -> None:
+def lose_last_reply(env, m: pytest.MonkeyPatch) -> None:
+    """The last delete unit (the one that removes the app) commits, and its reply is lost."""
     real_finish, real_q = delete_module._finish_connector, env.graph._q
     state = {"finishing": False}
 
@@ -100,16 +107,46 @@ async def test_a_delete_whose_last_unit_committed_but_lost_its_reply_succeeds(en
             raise ConnectionError("connection reset before the commit reply")
         return result
 
+    m.setattr(delete_module, "_finish_connector", finish)
+    m.setattr(env.graph, "_q", q)
+
+
+async def test_a_delete_whose_last_unit_committed_but_lost_its_reply_succeeds(env, deleting, monkeypatch) -> None:
     with monkeypatch.context() as m:
-        m.setattr(delete_module, "_finish_connector", finish)
-        m.setattr(env.graph, "_q", q)
+        lose_last_reply(env, m)
         owner = await deleting.delete()
     retry = await deleting.delete()
 
     assert deleting.cascade_results[0]["partial"] is True, deleting.cascade_results
     assert await kb_doc(env) is None and await records_left(env) == set(), "the last unit committed"
     assert (owner["success"], owner["code"]) == (True, 200), (f"a 500 for a KB that is gone; a retry got {retry.get('code')}", owner)
-    assert {e["eventType"] for e in deleting.events} <= {"deleteStoredDocuments"}, "the gone path publishes no cleanup"
+    assert vector_cleanup(deleting.events, env.kb_id) == gone_cleanup(env, "KB"), deleting.events
+
+
+async def test_an_admin_connector_delete_whose_last_unit_lost_its_reply_cleans_its_vectors(env, deleting, monkeypatch) -> None:
+    sent: list[dict] = []
+    container = MagicMock()
+    container.config_service.return_value = deleting.config
+
+    async def send_message(topic: str, message: dict, **_kw: object) -> bool:
+        sent.append(message)
+        return True
+
+    container.messaging_producer.send_message = send_message
+    logger = MagicMock()
+    service = EventService(logger, container, env.graph)
+    monkeypatch.setattr(service, "_await_remote_sync_stop", AsyncMock(return_value=True))
+    freed = AsyncMock()
+    monkeypatch.setattr(es_module, "free_lane_of_deleted_connector", freed)
+    with monkeypatch.context() as m:
+        lose_last_reply(env, m)
+        handled = await service._handle_delete("kb", {"orgId": env.org_id, "connectorId": env.kb_id})
+
+    assert handled is True and await kb_doc(env) is None and await records_left(env) == set()
+    assert vector_cleanup(sent, env.kb_id) == gone_cleanup(env, "KB")
+    freed.assert_awaited_once()
+    # A tagged app: the real read returns the stored membership flags, so no untagged ERROR.
+    assert not [c for c in logger.error.call_args_list if "membership arrays" in c.args[0]], logger.error.call_args_list
 
 
 async def test_a_delete_that_stopped_part_way_with_the_kb_still_there_is_500(env, deleting, monkeypatch) -> None:
@@ -128,6 +165,7 @@ async def test_a_delete_that_stopped_part_way_with_the_kb_still_there_is_500(env
     owner = await deleting.delete()
 
     assert (owner["success"], owner["code"]) == (False, 500), owner
+    assert vector_cleanup(deleting.events, env.kb_id) == [], "a KB still there owes no vector cleanup yet"
     assert deleting.cascade_results[0]["partial"] is True, deleting.cascade_results
     assert (await kb_doc(env))["status"] == APP_STATUS_DELETING
     assert await records_left(env) == {"r-2"}, "the first batch committed, the second did not"
