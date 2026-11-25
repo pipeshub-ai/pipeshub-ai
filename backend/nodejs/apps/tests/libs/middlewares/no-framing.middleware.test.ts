@@ -6,7 +6,7 @@ import { noFraming, UNFRAMEABLE_PAGE_PATHS } from '../../../src/libs/middlewares
 describe('noFraming', () => {
   async function headersFor(path: string): Promise<Headers> {
     const app = express()
-    // Stands in for a policy set earlier (helmet's, in strict mode), which must survive.
+    // Stands in for helmet's policy, set earlier, which must survive.
     app.use((_req, res, next) => {
       res.setHeader('Content-Security-Policy', "default-src 'self'")
       next()
