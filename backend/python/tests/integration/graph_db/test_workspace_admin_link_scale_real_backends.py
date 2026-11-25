@@ -21,7 +21,10 @@ from app.migrations.workspace_admin_link_migration import (
 )
 
 from .test_connector_entities import arango_provider, neo4j_provider  # noqa: F401  (fixtures)
-from .test_workspace_admin_link_store_real_backends import _Config, _ensure_arango_collections
+from .test_workspace_admin_link_store_real_backends import (
+    _Config,
+    _ensure_arango_collections,
+)
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="module"), pytest.mark.timeout(600)]
 

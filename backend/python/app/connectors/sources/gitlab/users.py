@@ -5,7 +5,7 @@ Responsibilities:
 - Resolve the sync scope (which groups/projects to walk for members).
 - Walk group and project member listings (scoped and unscoped paths).
 - Enrich ``GroupMember`` objects with full ``User`` objects to retrieve ``public_email``.
-- Inject the connector creator into the member set.
+- Add the connector creator's user (a stub under the token account's id) when they get the token's view.
 - Persist ``AppUser`` rows and migrate pseudo-group permissions.
 """
 
@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Any
 
 from gitlab.v4.objects import GroupMember
 
+from app.connectors.core.base.connector.source_user_listing import SourceUserListing
 from app.connectors.core.registry.filters import FilterOperator, SyncFilterKey
 from app.models.entities import AppUser
 
@@ -38,12 +39,8 @@ class UsersSync:
     def __init__(self, connector: "GitLabConnector") -> None:
         self.c = connector
         self.logger = connector.logger
-        self._read_cut = False
-        self._member_rows = 0
-        self._unresolved_members = 0
-        # The creator stubs this listing injected. Made here, not read from GitLab: never evidence that
-        # the creator is a listed member. Kept apart from the rows, which carry only GitLab's fields.
-        self._creator_stubs: list[Any] = []
+        # Built anew by each sync_users; GitLab member listings name blocked and deactivated users too.
+        self._listing = SourceUserListing(includes_inactive=True)
 
     # ------------------------------------------------------------------
     # Entry point
@@ -59,12 +56,7 @@ class UsersSync:
         bot account is Guest+ on.
         """
         c = self.c
-        c._users_listing_complete, c._listed_user_emails = False, set()
-        self._unresolved_members = 0
-        self._creator_stubs = []
-        # Set by any member read that was skipped or failed: what was read is then partial.
-        self._read_cut = False
-        self._member_rows = 0
+        self._listing = c._user_listing = SourceUserListing(includes_inactive=True)
         scope = await self._resolve_user_sync_scope()
         if scope is not None:
             group_paths, project_paths = scope
@@ -76,9 +68,10 @@ class UsersSync:
             await self._sync_users_scoped(group_paths, project_paths)
         else:
             await self._sync_users_unscoped()
-        # A directory with no member at all is a read that found nothing, not an empty directory. A member
-        # whose email GitLab did not show may be the creator under their own account: not a complete listing.
-        c._users_listing_complete = not self._read_cut and self._member_rows > 0 and not self._unresolved_members
+
+    def _cut(self) -> None:
+        """A group or project member read was skipped or failed: what was read is partial."""
+        self._listing.cut("a GitLab group or project member read was skipped or failed")
 
     # ------------------------------------------------------------------
     # Scope resolution
@@ -130,7 +123,7 @@ class UsersSync:
                 progress_label="list_groups NOT_IN user-sync scope",
             )
             if not groups_res.success:
-                self._read_cut = True
+                self._cut()
                 self.logger.error(
                     "Could not list groups for NOT_IN user-sync scope: %s", groups_res.error
                 )
@@ -166,7 +159,7 @@ class UsersSync:
                 progress_label="list_projects NOT_IN user-sync scope",
             )
             if not proj_res.success:
-                self._read_cut = True
+                self._cut()
                 self.logger.error(
                     "Could not list projects for NOT_IN user-sync scope: %s", proj_res.error
                 )
@@ -228,7 +221,7 @@ class UsersSync:
                     get_all=True,
                 )
                 if not pres.success:
-                    self._read_cut = True
+                    self._cut()
                     self.logger.error("Error fetching members for %s: %s", label, pres.error)
                     return False, 0
                 rows = list(pres.data or [])
@@ -236,7 +229,7 @@ class UsersSync:
                     dict_member[member.id] = member
                 return bool(rows), len(rows)
             except Exception as e:
-                self._read_cut = True
+                self._cut()
                 self.logger.error("Error in syncing users for %s: %s", label, e, exc_info=True)
                 return False, 0
 
@@ -252,7 +245,7 @@ class UsersSync:
                     get_all=True,
                 )
                 if not members_res.success:
-                    self._read_cut = True
+                    self._cut()
                     self.logger.error(
                         "Error fetching members for configured group %s: %s",
                         group_path, members_res.error,
@@ -266,7 +259,7 @@ class UsersSync:
                         any_success = True
                     total_groups_synced += 1
             except Exception as e:
-                self._read_cut = True
+                self._cut()
                 self.logger.error(
                     "Error in syncing users for group %s: %s", group_path, e, exc_info=True
                 )
@@ -279,11 +272,11 @@ class UsersSync:
                     progress_label=f"list_group_projects user-sync({group_path})",
                 )
             except Exception as e:
-                self._read_cut = True
+                self._cut()
                 self.logger.error("Error expanding subgroup projects for %s: %s", group_path, e, exc_info=True)
                 continue
             if not gres.success:
-                self._read_cut = True
+                self._cut()
                 self.logger.error(
                     "Could not fully list subgroup projects for user sync of "
                     "group %s: %s. Walking partial list (%s project(s)).",
@@ -334,8 +327,7 @@ class UsersSync:
             else:
                 total_projects_skipped += 1
 
-        self._member_rows = len(dict_member)
-        creator_added = self._inject_creator_member_into(dict_member)
+        creator_added = self._build_creator_member_stub() is not None
         all_failed = bool(group_paths or project_paths) and not any_success
         if all_failed and not creator_added:
             raise RuntimeError(
@@ -346,7 +338,7 @@ class UsersSync:
             self.logger.warning(
                 "GitLab user sync: every configured group/project failed to enumerate members; "
                 "the creator (%s) is the only user listed this run. The listing is incomplete, so "
-                "they get creator-only access only as the token's own account or by an earlier stored grant.",
+                "they get creator-only access only as the token's own account.",
                 c.creator_email,
             )
 
@@ -384,7 +376,7 @@ class UsersSync:
         dict_member: dict[int, Any] = {}
         groups_failed = not groups_res.success
         if groups_failed:
-            self._read_cut = True
+            self._cut()
             self.logger.error(
                 "Error in fetching groups: %s, continuing with projects members", groups_res.error
             )
@@ -395,7 +387,7 @@ class UsersSync:
                 try:
                     group_id = getattr(group, "id", None)
                     if group_id is None:
-                        self._read_cut = True
+                        self._cut()
                         self.logger.warning("Group missing ID, skipping")
                         total_groups_skipped += 1
                         continue
@@ -408,7 +400,7 @@ class UsersSync:
                         get_all=True,
                     )
                     if not members_res.success:
-                        self._read_cut = True
+                        self._cut()
                         self.logger.info("Error in fetching members for group %s", group_id)
                         total_groups_skipped += 1
                         continue
@@ -416,7 +408,7 @@ class UsersSync:
                         dict_member[member.id] = member
                     total_groups_synced += 1
                 except Exception as e:
-                    self._read_cut = True
+                    self._cut()
                     self.logger.error(
                         "Error in syncing users for group %s: %s", group_id, e, exc_info=True
                     )
@@ -431,7 +423,7 @@ class UsersSync:
         )
         projects_failed = not projects_res.success
         if projects_failed:
-            self._read_cut = True
+            self._cut()
             self.logger.error("Error in fetching projects: %s", projects_res.error)
 
         creator_added = self._build_creator_member_stub() is not None
@@ -445,7 +437,7 @@ class UsersSync:
             self.logger.warning(
                 "GitLab user sync (unscoped): both list_groups (%s) and list_projects (%s) "
                 "failed; the creator (%s) is the only user listed this run. The listing is incomplete, so "
-                "they get creator-only access only as the token's own account or by an earlier stored grant.",
+                "they get creator-only access only as the token's own account.",
                 groups_res.error, projects_res.error, c.creator_email,
             )
 
@@ -456,7 +448,7 @@ class UsersSync:
                 try:
                     project_id = getattr(project, "id", None)
                     if project_id is None:
-                        self._read_cut = True
+                        self._cut()
                         self.logger.warning("Project missing ID, skipping")
                         total_projects_skipped += 1
                         continue
@@ -469,7 +461,7 @@ class UsersSync:
                         get_all=True,
                     )
                     if not members_res.success:
-                        self._read_cut = True
+                        self._cut()
                         self.logger.error("Error in fetching members for project %s", project_id)
                         total_projects_skipped += 1
                         continue
@@ -477,12 +469,9 @@ class UsersSync:
                         dict_member[member.id] = member
                     total_projects_synced += 1
                 except Exception as e:
-                    self._read_cut = True
+                    self._cut()
                     self.logger.error("Error in syncing users for project: %s", e, exc_info=True)
 
-        # Counted before the creator is added: a row the source returned for the token's own account counts.
-        self._member_rows = len(dict_member)
-        self._inject_creator_member_into(dict_member)
         self.logger.info(
             "Total groups synced: %s, Total groups skipped: %s",
             total_groups_synced, total_groups_skipped,
@@ -533,7 +522,7 @@ class UsersSync:
                     )
                     if user_res.success and user_res.data is not None:
                         return member_id, user_res.data
-                    self._read_cut = True
+                    self._cut()
                     self.logger.warning(
                         "Could not fetch full GitLab user id=%s (%s); using member payload.",
                         member_id,
@@ -541,7 +530,7 @@ class UsersSync:
                     )
                     return member_id, member
                 except Exception as e:
-                    self._read_cut = True
+                    self._cut()
                     self.logger.warning(
                         "Exception fetching GitLab user id=%s; using member payload: %s",
                         member_id, e, exc_info=True,
@@ -597,8 +586,7 @@ class UsersSync:
         creator = self._build_creator_member_stub()
         if creator is None:
             return False
-        if dict_member.setdefault(creator.id, creator) is creator:
-            self._creator_stubs.append(creator)
+        dict_member.setdefault(creator.id, creator)
         return True
 
     # ------------------------------------------------------------------
@@ -610,16 +598,26 @@ class UsersSync:
     ) -> None:
         """Create ``AppUser`` rows from the enriched member dict.
 
-        Special case: the row whose ``id`` matches the connector creator's
-        GitLab numeric id always becomes an ``AppUser`` using
-        ``creator_email``, even when ``public_email`` is empty.  Without this
-        bypass the creator becomes a pseudo-group keyed by a numeric id their
-        PipesHub identity never matches.
+        Special case: the token account's own row becomes an ``AppUser`` using
+        ``creator_email`` when GitLab shows it no email, but only when the
+        creator is the token holder (``GET /user`` returned the creator's
+        email). Without this bypass the creator becomes a pseudo-group keyed
+        by a numeric id their PipesHub identity never matches. Anyone else's
+        token account row stays a member whose identity is unknown.
+
+        Every row GitLab listed goes into this sync's user listing, which
+        is then finished. Only after that is the creator stub added (an
+        ``AppUser`` under the token account's GitLab id, for an Admin or
+        Auditor persona GitLab lists no row for): it is never a row, and
+        only a creator who gets the token's view has it, since its user
+        takes over the token account's pseudo-group grants.
         """
         c = self.c
+        listing = self._listing
+        creator = (c.creator_email or "").strip().lower()
+        creator_holds_token = bool(creator) and c._token_account_email == creator
         total_users_synced = total_users_skipped = 0
         app_users: list[AppUser] = []
-        source_emails: set[str] = set()
         for member_id, member in dict_member.items():
             raw_email = getattr(member, "public_email", None)
             if isinstance(raw_email, str) and raw_email.strip():
@@ -628,23 +626,20 @@ class UsersSync:
                 fallback = getattr(member, "email", None)
                 user_email = fallback.strip() if isinstance(fallback, str) else ""
 
-            synthesized = any(member is stub for stub in self._creator_stubs)
-            # Creator bypass: if this is the configuring user and GitLab
-            # did not surface an email for them, use the PipesHub email.
             if (
                 not user_email
+                and creator_holds_token
                 and c._gitlab_user_id is not None
                 and member_id == c._gitlab_user_id
-                and c.creator_email
             ):
                 user_email = c.creator_email
-                synthesized = True
                 self.logger.info(
                     "Resolved creator AppUser %r via PipesHub identity "
                     "(public_email not set on GitLab profile, gitlab id=%s).",
                     user_email, member_id,
                 )
 
+            listing.add_row(user_email or None, str(member_id))
             if not user_email:
                 total_users_skipped += 1
                 self.logger.debug(
@@ -652,8 +647,6 @@ class UsersSync:
                     getattr(member, "username", "unknown"), member_id,
                 )
             else:
-                if not synthesized:
-                    source_emails.add(user_email.lower())
                 app_users.append(
                     AppUser(
                         app_name=c.connector_name,
@@ -666,8 +659,23 @@ class UsersSync:
                     )
                 )
 
-        c._listed_user_emails = source_emails
-        self._unresolved_members = total_users_skipped
+        # The walk ended; a member read it skipped or lost has cut the listing.
+        listing.finish()
+        await c._decide_creator_token_view()
+        stub = self._build_creator_member_stub() if c._creator_token_view else None
+        if stub is not None and stub.id not in dict_member:
+            app_users.append(
+                AppUser(
+                    app_name=c.connector_name,
+                    org_id=c.data_entities_processor.org_id,
+                    connector_id=c.connector_id,
+                    source_user_id=str(stub.id),
+                    is_active=True,
+                    email=stub.email,
+                    full_name=stub.name,
+                )
+            )
+
         if app_users:
             await c.data_entities_processor.on_new_app_users(app_users)
             total_users_synced += len(app_users)

@@ -142,6 +142,17 @@ async def test_an_unlisted_creator_is_linked_to_the_admin(ws: Harness) -> None:
     assert _readable_mailboxes(ws, "vendor@elsewhere.com") == {f"mailbox:{ADMIN}"}
 
 
+async def test_a_delegated_admins_listing_never_links_an_unlisted_creator(ws: Harness) -> None:
+    # users.list answers a delegated admin with the users of its organizational units only.
+    ws.directory.delegated_admin = True
+    ws.records.authenticator_emails["admin-user"] = "vendor@elsewhere.com"
+
+    await ws.sync()
+
+    assert ws.records.linked_authenticators == []
+    assert ws.records.authenticator_links == {}
+
+
 @pytest.mark.parametrize("remembered", [True, False], ids=["marker", "control-without-marker"])
 async def test_a_creator_once_listed_is_not_linked_after_their_account_goes(ws: Harness, remembered: bool) -> None:
     ws.records.authenticator_emails["admin-user"] = ALICE

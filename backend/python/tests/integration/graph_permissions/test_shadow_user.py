@@ -7,9 +7,17 @@ on them agree."""
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 
 import pytest
+
+from app.config.constants.arangodb import Connectors
+from app.connectors.core.base.connector.source_user_listing import SourceUserListing
+from app.connectors.core.base.data_processor.data_source_entities_processor import (
+    DataSourceEntitiesProcessor,
+)
+from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 
 from .fixture_graph import _node, app, authenticated_as, bt, nr, perm, rec, rg, user_app
 from .loaders import load_into_arango, load_into_neo4j
@@ -33,7 +41,7 @@ def _org(node: dict) -> dict:
     return node
 
 
-def _graph(*, linked: bool = True) -> tuple[list[dict], list[dict]]:
+def _graph(*, linked: bool = True, listed: bool = False) -> tuple[list[dict], list[dict]]:
     def group(app_id: str) -> dict:
         return {"connector": "JIRA", "connectorId": app_id, "group_type": "PROJECT"}
 
@@ -62,6 +70,9 @@ def _graph(*, linked: bool = True) -> tuple[list[dict], list[dict]]:
     ]
     if linked:
         edges.append(authenticated_as(CREATOR, SOURCE, LINKED))
+    if listed:
+        # The creator's own source account and its grant; the test writes its membership, as a listing does.
+        edges.append(perm(CREATOR, "shu-direct"))
     return nodes, edges
 
 
@@ -79,8 +90,9 @@ async def _clear_arango(provider) -> None:
             "FOR d IN @@c FILTER STARTS_WITH(d._key, 'shu-') REMOVE d IN @@c", {"@c": c})
 
 
-async def _load(request, neo4j_provider, neo4j_settings, arango_provider, arango_settings, *, linked: bool) -> tuple[IGraphDBProvider, Callable[[IGraphDBProvider], Awaitable[None]]]:
-    nodes, edges = _graph(linked=linked)
+async def _load(request, neo4j_provider, neo4j_settings, arango_provider, arango_settings, *, linked: bool,
+                listed: bool = False) -> tuple[IGraphDBProvider, Callable[[IGraphDBProvider], Awaitable[None]]]:
+    nodes, edges = _graph(linked=linked, listed=listed)
     if request.param == "neo4j":
         await _clear_neo4j(neo4j_provider)
         await load_into_neo4j(neo4j_settings, nodes, edges)
@@ -102,6 +114,45 @@ async def unlinked(request, neo4j_provider, neo4j_settings, arango_provider, ara
     p, clear = await _load(request, neo4j_provider, neo4j_settings, arango_provider, arango_settings, linked=False)
     yield p
     await clear(p)
+
+
+@pytest.fixture(params=["neo4j", "arango"])
+async def listed(request, neo4j_provider, neo4j_settings, arango_provider, arango_settings) -> AsyncIterator[IGraphDBProvider]:
+    """A creator with a source account of their own, which the connector's listing does not name yet."""
+    p, clear = await _load(request, neo4j_provider, neo4j_settings, arango_provider, arango_settings, linked=False,
+                           listed=True)
+    yield p
+    await clear(p)
+
+
+class _Config:
+    """The config store the processor keeps the listed-authenticators marker in."""
+
+    def __init__(self) -> None:
+        self.values: dict[str, object] = {}
+
+    async def get_config(self, key: str, *_: object, **__: object) -> object:
+        return self.values.get(key)
+
+    async def set_config(self, key: str, value: object) -> bool:
+        self.values[key] = value
+        return True
+
+
+async def _decide_link(provider, config: _Config, *, names_creator: bool = False) -> str:
+    """The link decision a sync makes after a whole user listing, through the real processor and this store."""
+    listing = SourceUserListing(includes_inactive=True)
+    listing.add_row("someone@source.example")
+    if names_creator:
+        listing.add_row("creator@example.com")
+    listing.finish()
+    processor = DataSourceEntitiesProcessor(logging.getLogger("shu"), GraphDataStore(logging.getLogger("shu"), provider), config)
+    processor.org_id = ORG
+    result = await processor.link_authenticator_to_source_user(
+        LINKED, "shu-m-creator", "svc@source.example", "shu-m-source", Connectors.JIRA,
+        presence=listing.presence("creator@example.com"),
+    )
+    return result.outcome.value
 
 
 async def _flatten(provider, app_id: str) -> set[str]:
@@ -145,3 +196,28 @@ async def test_without_the_link_the_creator_sees_nothing(unlinked) -> None:
     admitted = (await unlinked.check_access(
         CREATOR, ORG, node_ids=["shu-direct", "shu-via-group", "shu-other"])).node_ids
     assert not admitted
+
+
+async def test_a_creator_the_connector_lists_loses_the_link_and_keeps_only_their_own_grants(listed) -> None:
+    """An earlier sync linked the creator; a later listing names them under their own account: the link goes, and
+    with it the source account's view. The link is the processor's own (ArangoDB keys it by connector)."""
+    config = _Config()
+    assert await _decide_link(listed, config) == "linked"
+    before = set((await listed.check_access(CREATOR, ORG, node_ids=["shu-direct", "shu-via-group"])).node_ids)
+    assert before == {"shu-direct", "shu-via-group"}
+    # What the user sync writes for the creator's own account: their way in, not the evidence.
+    await listed.ensure_app_membership(CREATOR, "users", LINKED, is_external=False, source_user_id="shu-own-account")
+    assert await _decide_link(listed, config, names_creator=True) == "unlinked"
+    assert not await listed.get_edges_from_node(f"users/{CREATOR}", "authenticatedAs")
+    admitted = set((await listed.check_access(
+        CREATOR, ORG, node_ids=["shu-direct", "shu-via-group", "shu-other"])).node_ids)
+    assert admitted == {"shu-direct"}, "only the creator's own grant is left"
+    assert await _decide_link(listed, config) == "unchanged", "a creator listed once is never linked again"
+
+
+async def test_an_unlisted_creator_is_linked_and_reads_through_the_source_account(unlinked) -> None:
+    assert await _decide_link(unlinked, _Config()) == "linked"
+    admitted = set((await unlinked.check_access(
+        CREATOR, ORG, node_ids=["shu-direct", "shu-via-group", "shu-other"])).node_ids)
+    assert admitted == {"shu-direct", "shu-via-group"}
+    assert {a.get("id") or a.get("_key") for a in await unlinked.get_gated_apps(CREATOR, ORG)} == {LINKED}

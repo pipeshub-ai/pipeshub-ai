@@ -120,8 +120,6 @@ class ProjectsSync:
                 try:
                     await step()
                 except Exception as e:
-                    if step_name == "members":
-                        self.c._creator_withdrawal_incomplete = True
                     self.logger.error(
                         "Unhandled error syncing %s for project %s (%s); continuing: %s",
                         step_name, project_id, project_path, e, exc_info=True,
@@ -176,7 +174,6 @@ class ProjectsSync:
                     self.logger.error("Repository not found or inaccessible: %s (%s)", pth, res.error)
                     if res.status_code != 404:
                         c.note_failed_read(f"project {pth}", res)
-                        c._creator_withdrawal_incomplete = True
                     continue
                 by_id[int(project.id)] = project
                 await c.removed_projects.remember(pth, int(project.id))
@@ -191,7 +188,6 @@ class ProjectsSync:
                     self.logger.error("Could not list projects for group %s: %s", gp, gres.error)
                     c.note_failed_read(f"projects of group {gp}", gres)
                     listing_complete = False
-                    c._creator_withdrawal_incomplete = True
                     continue
                 for p in gres.data or []:
                     by_id[int(p.id)] = p
@@ -302,7 +298,6 @@ class ProjectsSync:
                     "record_group", c.connector_id, group_path, keep=True,
                 ):
                     # Unreadable for now is not gone: the stored group and its grants stay.
-                    await self._withdraw_withheld_creator([group_path])
                     continue
             if not group_res.success or not group_res.data:
                 creator_permission = c.creator_token_view_permission()
@@ -372,28 +367,6 @@ class ProjectsSync:
                 inherit_permissions=parent_path is not None,
             )
             await c.data_entities_processor.on_new_record_groups([(group_rg, group_permissions)])
-            if group_permissions is None:
-                await self._withdraw_withheld_creator([full_path])
-
-    async def _withdraw_withheld_creator(self, external_group_ids: list[str]) -> None:
-        """While the creator's token view is taken back, take their grant off groups whose grants are
-        kept as stored because their members could not be read. Only until "no grant" is stored: a
-        creator who is a member of such a group holds the same grant through their membership.
-        Non-fatal; a failure leaves the withdrawal unconfirmed so the next sync tries again."""
-        c = self.c
-        email = c._withheld_creator_email
-        if not email or not external_group_ids:
-            return
-        try:
-            await c.data_entities_processor.remove_user_grant_from_record_groups(
-                c.connector_id, external_group_ids, email,
-            )
-        except Exception as e:
-            c._creator_withdrawal_incomplete = True
-            self.logger.warning(
-                "Could not take the creator's creator-only access away from %s; the next sync tries again: %s",
-                external_group_ids, e,
-            )
 
     # ------------------------------------------------------------------
     # Project member sync
@@ -431,7 +404,6 @@ class ProjectsSync:
             )
             kept = self._build_project_record_groups(project)
             await c.data_entities_processor.on_new_record_groups([(group, None) for group in kept])
-            await self._withdraw_withheld_creator([group.external_group_id for group in kept])
             return
         if listing_failed or listing_empty:
             creator_perm = c.creator_token_view_permission()

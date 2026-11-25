@@ -1,9 +1,8 @@
 from abc import ABC, abstractmethod
 import asyncio
-from collections.abc import Collection, Iterator
+from collections.abc import Iterator
 from contextlib import contextmanager
 import copy
-from dataclasses import dataclass
 import json
 from logging import Logger
 from typing import Any, Dict, List, Literal, Optional
@@ -12,16 +11,15 @@ import weakref
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from app.config.configuration_service import ConfigurationService, delete_config_confirmed
+from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import CollectionNames, Connectors
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
-    AUTHENTICATOR_GRANT_KEY,
-    LISTED_AUTHENTICATORS_KEY,
     AuthenticatorLink,
     AuthenticatorLinkResult,
     DataSourceEntitiesProcessor,
-    listed_authenticator_keys,
 )
+from app.connectors.core.base.connector.listed_authenticators import read_listed_authenticators
+from app.connectors.core.base.connector.source_user_listing import Presence, SourceUserListing
 from app.connectors.core.base.data_store.data_store import DataStoreProvider
 from app.connectors.core.constants import INTERNAL_CONNECTOR_GROUP_NAME
 from app.connectors.core.interfaces.connector.apps import App, AppGroup
@@ -44,16 +42,6 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 DEFAULT_CONNECTOR_NOTIFICATION_LINK = "workspace/connectors/"
 INITIAL_NOTIFICATION_BACKOFF = 3600 * 1000 # 1 hour in ms
 MAX_NOTIFICATION_BACKOFF = 604800 * 1000 # 7 days in ms
-
-
-@dataclass(frozen=True)
-class AuthenticatorGrant:
-    """What decide_authenticator_grant decided. ``withdraw``: the token's view was given on an
-    earlier sync and is taken away on this one, so its grants left where the source cannot be read
-    go now; on later syncs the stored "no grant" says nothing is left to take."""
-
-    granted: bool
-    withdraw: bool = False
 
 
 class ConnectorInitError(Exception):
@@ -836,15 +824,16 @@ class BaseConnector(ABC):
         email: str | None,
         source_user_id: str | None,
         *,
-        listing_complete: bool = True,
-        extra_present_emails: Collection[str] = (),
+        listing: SourceUserListing | None = None,
     ) -> None:
         """Record which source account this connector is authenticated as, so the user who
         authenticated it resolves that account's permissions for this connector instance.
-        Connectors call this at the start of ``run_sync`` with the email and id of the
-        source "me" account; the id must be the one their user sync stores as sourceUserId.
-        ``listing_complete`` is False when the user listing is partial or failed: the link is
-        then only ever removed, never made. Never aborts the sync."""
+        Connectors call this after their user sync with the email and id of the source "me"
+        account (the id their user sync stores as sourceUserId) and the ``listing`` that sync
+        built. The link is made only when the listing proves the authenticator ABSENT, removed
+        when it shows them PRESENT; no listing is UNKNOWN, which can only remove a link. A
+        personal connector's account is its user's own, so it needs no listing. Never aborts
+        the sync."""
         if not email or not source_user_id:
             self.logger.warning(
                 "Connector %s: the authenticated source account's email or id could not be read "
@@ -853,9 +842,7 @@ class BaseConnector(ABC):
                 self.connector_id, email, source_user_id,
             )
         result = await self._link_authenticator(
-            email, source_user_id,
-            may_link=listing_complete and bool(email) and bool(source_user_id),
-            extra_present_emails=extra_present_emails,
+            email, source_user_id, presence=await self._authenticator_presence(listing),
         )
         if result is None or result.outcome is not AuthenticatorLink.LINKED:
             return
@@ -870,99 +857,23 @@ class BaseConnector(ABC):
             recipient_user_ids=[result.authenticator_user_id],
         )
 
-    async def decide_authenticator_grant(
-        self, email: str, *, listing_complete: bool, listed: bool,
-    ) -> AuthenticatorGrant:
-        """Whether the authenticator gets the connector account's view this sync, and the decision
-        stored for later syncs. A listing that names them, complete or not, withholds it and stores
-        that; a complete listing that does not grants it and stores that. An incomplete listing that
-        does not name them cannot decide: the stored decision stands (authenticator_grant_kept).
-
-        ``withdraw`` is set while the stored record shows the token's view was given to them, or when
-        there is no record at all (a release before records existed gave it to every creator): the
-        caller takes it back where the source cannot be read, and only then stores "no grant"
-        (confirm_authenticator_withdrawn), so a removal that fails is tried again next sync. A record
-        that cannot be read withdraws nothing and stores nothing: the next sync reads it again. A
-        grant is given only once it is stored, so a later sync always knows what to take back.
-
-        A listing that does not name them still never gives the token's view to an authenticator
-        the listed-authenticators marker holds (a listing named them once), and a grant stored for
-        them is still owed back, so a withdrawal that failed is retried on any later sync."""
-        if listed:
-            try:
-                stored = await self._read_grant_record()
-            except Exception as e:
-                self.logger.warning(
-                    "Connector %s: could not read the authenticator's last grant; withholding it this sync, "
-                    "nothing withdrawn or stored: %s",
-                    self.connector_id, e,
-                )
-                return AuthenticatorGrant(granted=False)
-            if stored is None or (stored["granted"] and stored["email"] == email.strip().lower()):
-                return AuthenticatorGrant(granted=False, withdraw=True)
-            await self.remember_authenticator_grant(email, granted=False)
-            return AuthenticatorGrant(granted=False)
-        held = await self._marker_holds(email)
-        if held is None:
-            return AuthenticatorGrant(granted=False)
-        if held:
-            try:
-                stored = await self._read_grant_record()
-            except Exception as e:
-                self.logger.warning(
-                    "Connector %s: could not read the authenticator's last grant; nothing withdrawn: %s",
-                    self.connector_id, e,
-                )
-                return AuthenticatorGrant(granted=False)
-            owed = bool(stored and stored["granted"] and stored["email"] == email.strip().lower())
-            return AuthenticatorGrant(granted=False, withdraw=owed)
-        if listing_complete:
-            return AuthenticatorGrant(granted=await self.remember_authenticator_grant(email, granted=True))
-        return AuthenticatorGrant(granted=await self.authenticator_grant_kept(email))
-
-    async def confirm_authenticator_withdrawn(self, email: str) -> None:
-        """Store "no grant" once the token's view a withdraw decision named has been taken back."""
-        await self.remember_authenticator_grant(email, granted=False)
-
-    async def _read_grant_record(self) -> dict | None:
-        """The stored grant record, None when there is none. Raises when it cannot be read or is malformed."""
-        stored = await self.config_service.get_config(
-            AUTHENTICATOR_GRANT_KEY.format(connector_id=self.connector_id), use_cache=False, raise_on_error=True,
-        )
-        if stored is None:
-            return None
-        if not isinstance(stored, dict) or not isinstance(stored.get("granted"), bool):
-            raise ValueError(f"the authenticator's last grant is unreadable ({stored!r})")
-        return {**stored, "email": str(stored.get("email") or "").lower()}
-
-    async def authenticator_grant_kept(self, email: str) -> bool:
-        """Whether the last complete user listing left this authenticator the connector account's
-        view. A sync whose listing is incomplete cannot decide it again, so it keeps this one; a
-        fresh instance (a restart, another replica) reads it here. False when nothing is stored for
-        this authenticator, when the listed-authenticators marker holds them, or when either cannot
-        be read: no new grant. Never raises."""
-        try:
-            stored = await self._read_grant_record()
-        except Exception as e:
-            self.logger.warning(
-                "Connector %s: could not read the authenticator's last grant; granting nothing new: %s",
-                self.connector_id, e,
-            )
+    async def authenticator_gets_token_view(self, listing: SourceUserListing | None) -> bool:
+        """Whether the user who authenticated this connector is given the connector account's view
+        (a grant on what the token reads) this sync: only when ``listing`` proves them ABSENT from the
+        source and the listed-authenticators marker does not hold them. Anything unknown, the marker
+        unreadable included, gives nothing. A grant given on an earlier sync is not taken back here:
+        a group rewritten from its members drops it, one whose members cannot be read keeps it."""
+        if listing is None:
             return False
-        if stored is None:
+        email = await self.authenticator_email()
+        if not email or listing.presence(email) is not Presence.ABSENT:
             return False
-        if stored["email"] != email.strip().lower():
-            # Another authenticator's record: replaced, so a later switch back cannot revive it.
-            await self.remember_authenticator_grant(email, granted=False)
-            return False
-        return stored["granted"] and await self._marker_holds(email) is False
+        return await self._marker_holds(email) is False
 
     async def _marker_holds(self, email: str) -> bool | None:
         """Whether the listed-authenticators marker holds this authenticator; None when it cannot be checked."""
         try:
-            keys = listed_authenticator_keys(await self.config_service.get_config(
-                LISTED_AUTHENTICATORS_KEY.format(connector_id=self.connector_id), use_cache=False, raise_on_error=True,
-            ))
+            keys = await read_listed_authenticators(self.config_service, self.connector_id)
             if not keys:
                 return False
             user = await self.data_entities_processor.get_app_authenticator_user(self.connector_id, self.created_by)
@@ -976,55 +887,32 @@ class BaseConnector(ABC):
             return False
         return (user.get("_key") or user.get("id")) in keys
 
-    async def remember_authenticator_grant(self, email: str, *, granted: bool) -> bool:
-        """Store the decision a complete user listing made, for authenticator_grant_kept. Answers whether
-        it was written. Never raises.
-
-        set_config answers False on a store error rather than raising. When a "no grant" cannot be
-        written the record is removed instead: an earlier grant left in place would be kept by the
-        next incomplete listing."""
-        key = AUTHENTICATOR_GRANT_KEY.format(connector_id=self.connector_id)
-        try:
-            written = await self.config_service.set_config(key, {"email": email.strip().lower(), "granted": granted})
-            error = None
-        except Exception as e:
-            written, error = False, e
-        if written:
-            return True
-        self.logger.warning(
-            "Connector %s: could not store the authenticator's grant (granted=%s): %s",
-            self.connector_id, granted, error or "the store refused the write",
-        )
-        if granted:
-            return False
-        try:
-            removed = await delete_config_confirmed(self.config_service, key)
-        except Exception:
-            removed = False
-        if not removed:
-            self.logger.warning(
-                "Connector %s: could not remove the authenticator's earlier grant either; a stale grant "
-                "may remain until a complete user listing is stored",
-                self.connector_id,
-            )
-        return False
-
-    async def drop_authenticator_link_if_listed(self, extra_present_emails: Collection[str] = ()) -> None:
-        """Remove the authenticator's link when the connector lists them as a source user.
-        Runs before a sync reads anything, so a sync that fails early cannot leave a stale
-        link; ``extra_present_emails`` (the emails a listing read) lets a sync that cannot read
-        its own account still remove it. Never links and never aborts the sync."""
+    async def drop_authenticator_link_if_listed(self, listing: SourceUserListing | None = None) -> None:
+        """Remove the authenticator's link when the listed-authenticators marker holds them, or
+        when ``listing`` shows them PRESENT. Runs before a sync reads anything, so a sync that
+        fails early cannot leave a stale link, and lets a sync that cannot read its own account
+        still remove it. Never links and never aborts the sync."""
         if self.scope == ConnectorScope.PERSONAL.value:
             return
-        await self._link_authenticator(None, None, may_link=False, extra_present_emails=extra_present_emails)
+        presence = await self._authenticator_presence(listing)
+        await self._link_authenticator(
+            None, None, presence=Presence.PRESENT if presence is Presence.PRESENT else Presence.UNKNOWN,
+        )
+
+    async def _authenticator_presence(self, listing: SourceUserListing | None) -> Presence:
+        """What ``listing`` proves about the user who authenticated this connector."""
+        if self.scope == ConnectorScope.PERSONAL.value:
+            return Presence.ABSENT
+        if listing is None:
+            return Presence.UNKNOWN
+        return listing.presence(await self.authenticator_email())
 
     async def _link_authenticator(
         self,
         email: str | None,
         source_user_id: str | None,
         *,
-        may_link: bool,
-        extra_present_emails: Collection[str] = (),
+        presence: Presence,
     ) -> AuthenticatorLinkResult | None:
         if not self.created_by:
             return None
@@ -1037,10 +925,7 @@ class BaseConnector(ABC):
                 else Connectors(self.connector_name)
             )
             return await self.data_entities_processor.link_authenticator_to_source_user(
-                self.connector_id, self.created_by, email, source_user_id, app_name,
-                may_link=may_link,
-                check_listing=self.scope != ConnectorScope.PERSONAL.value,
-                extra_present_emails=extra_present_emails,
+                self.connector_id, self.created_by, email, source_user_id, app_name, presence=presence,
             )
         except Exception as e:
             self.logger.warning(

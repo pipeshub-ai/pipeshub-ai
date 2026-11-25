@@ -13,6 +13,7 @@ from app.core.org_context import system
 from .test_connector_entities import arango_provider, neo4j_provider  # noqa: F401
 from .test_workspace_admin_link_store_real_backends import _ensure_arango_collections
 
+
 async def _ensure_relation_collection(p) -> None:
     import aiohttp
 
@@ -49,6 +50,7 @@ async def test_arango_only_the_exact_type_names_lose_their_link(arango_provider)
     assert failed == []
     mine = {r["connectorId"]: r["org"] for r in removed if r["connectorId"].endswith(t)}
     assert mine == {f"{k}-{t}": org for k in REMOVED}
+    assert {(r["user"], r["selfLink"]) for r in removed if r["connectorId"].endswith(t)} == {(f"c-{t}", False)}
     left = await p.execute_query("FOR l IN authenticatedAs FILTER l.orgId == @o RETURN l.connectorId", bind_vars={"o": org})
     assert sorted(left) == sorted([f"{k}-{t}" for k in CASES if k not in REMOVED] + [f"orphan-{t}"])
 
@@ -72,5 +74,6 @@ async def test_neo4j_only_the_exact_type_names_lose_their_link(neo4j_provider) -
     assert failed == []
     mine = {r["connectorId"]: r["org"] for r in removed if r["connectorId"].endswith(t)}
     assert mine == {f"{k}-{t}": org for k in REMOVED}
+    assert {(r["user"], r["selfLink"]) for r in removed if r["connectorId"].endswith(t)} == {(f"c-{t}", False)}
     left = await q("MATCH ()-[r:AUTHENTICATED_AS]->() WHERE r.orgId = $o RETURN r.connectorId AS c", parameters={"o": org})
     assert sorted(r["c"] for r in left) == sorted([f"{k}-{t}" for k in CASES if k not in REMOVED] + [f"orphan-{t}"])

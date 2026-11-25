@@ -158,6 +158,11 @@ on:
       - 'backend/python/app/modules/parsers/code_parser/**'
       - 'backend/python/app/connectors/core/base/sync_point/**'
       - 'backend/python/app/connectors/core/registry/filters.py'
+      # The base connector decides the creator's token view and link the GitLab suite checks
+      # (test_gitlab_sim_authenticator.py).
+      - 'backend/python/app/connectors/core/base/connector/connector_service.py'
+      - 'backend/python/app/connectors/core/base/connector/source_user_listing.py'
+      - 'backend/python/app/connectors/core/base/connector/listed_authenticators.py'
       # Helpers outside tests/integration that the suites import.
       - 'backend/python/tests/conftest.py'
       - 'backend/python/tests/support/**'

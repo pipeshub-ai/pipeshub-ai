@@ -18,6 +18,10 @@ import pytest
 
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.base.connector.connector_service import BaseConnector
+from app.connectors.core.base.connector.source_user_listing import (
+    Presence,
+    SourceUserListing,
+)
 from app.connectors.sources.atlassian.confluence_cloud.connector import (
     ConfluenceConnector,
 )
@@ -67,6 +71,26 @@ def _registered(conn: MagicMock) -> tuple:
     return conn.register_authenticated_source_user.await_args.args
 
 
+def _finished(*emails: str | None, includes_inactive: bool = True) -> SourceUserListing:
+    """A listing the source said ended, with one row per email."""
+    listing = SourceUserListing(includes_inactive=includes_inactive)
+    for email in emails:
+        listing.add_row(email)
+    listing.finish()
+    return listing
+
+
+def _cut(*emails: str | None) -> SourceUserListing:
+    listing = _finished(*emails)
+    listing.cut("cut")
+    return listing
+
+
+def _nobody(conn: MagicMock) -> Presence:
+    """What this sync's listing says about someone it did not name."""
+    return conn._user_listing.presence("nobody@corp.com")
+
+
 def _json_response(status: int, body: dict) -> MagicMock:
     response = MagicMock(status=status)
     response.json.return_value = body
@@ -109,14 +133,14 @@ class TestDropboxSyncOrder:
     def _conn(self, order: list[str], complete: bool = True, auth_error: bool = False) -> MagicMock:
         conn = _connector(
             DropboxConnector, config_service=MagicMock(), _health=MagicMock(auth_error=None),
-            _members_complete=False,
+            _user_listing=None,
         )
 
         def step(name: str, effect: object = None) -> AsyncMock:
             async def _run(*_: object, **__: object) -> object:
                 order.append(name)
                 if name == "members":
-                    conn._members_complete = complete
+                    conn._user_listing = _finished("a@corp.com") if complete else _cut("a@corp.com")
                 if name == "register":
                     raise _DropboxStop()
                 return effect
@@ -147,7 +171,8 @@ class TestDropboxSyncOrder:
 
         await self._run(conn)
 
-        assert conn.register_authenticated_source_user.await_args.kwargs["listing_complete"] is False
+        listing = conn.register_authenticated_source_user.await_args.kwargs["listing"]
+        assert listing.presence("nobody@corp.com") is Presence.UNKNOWN
 
     async def test_a_complete_member_listing_is_passed_on(self) -> None:
         conn = self._conn([])
@@ -155,26 +180,27 @@ class TestDropboxSyncOrder:
         await self._run(conn)
 
         assert conn.register_authenticated_source_user.await_args.args == ("admin@corp.com", "dbmid:1")
-        assert conn.register_authenticated_source_user.await_args.kwargs["listing_complete"] is True
+        assert conn.register_authenticated_source_user.await_args.kwargs == {"listing": conn._user_listing}
+        assert _nobody(conn) is Presence.ABSENT
 
-    async def test_a_stale_complete_flag_never_survives_into_a_sync_whose_listing_did_not_run(self) -> None:
+    async def test_a_listing_of_an_earlier_sync_never_survives_into_a_sync_whose_listing_did_not_run(self) -> None:
         conn = self._conn([])
-        conn._members_complete = True
+        conn._user_listing = _finished("a@corp.com")
         conn._sync_members = AsyncMock(return_value=[])
 
         await self._run(conn)
 
-        assert conn.register_authenticated_source_user.await_args.kwargs["listing_complete"] is False
+        assert conn.register_authenticated_source_user.await_args.kwargs["listing"] is None
 
     async def test_auth_error_listing_never_links(self) -> None:
         members = SimpleNamespace(raw=[], complete=False, error="expired_access_token", auth_error=True)
         conn = _connector(
-            DropboxConnector, data_source=MagicMock(), _health=MagicMock(), _members_complete=True,
+            DropboxConnector, data_source=MagicMock(), _health=MagicMock(), _user_listing=_finished("a@corp.com"),
         )
         with patch("app.connectors.sources.dropbox.connector.read_team_members", AsyncMock(return_value=members)):
             assert await DropboxConnector._sync_members(conn) == []
 
-        assert conn._members_complete is False
+        assert conn._user_listing.is_cut
         conn._health.auth_failed.assert_called_once()
 
     @pytest.mark.parametrize("tag", ["suspended", "invited"])
@@ -198,7 +224,7 @@ class TestDropboxSyncOrder:
         processor.withdraw_app_user_access = AsyncMock()
         conn = _connector(
             DropboxConnector, config_service=MagicMock(), data_source=MagicMock(),
-            _health=MagicMock(auth_error=None), _members_complete=False, _team_emails=set(),
+            _health=MagicMock(auth_error=None), _user_listing=None, _team_emails=set(),
             data_entities_processor=processor, connector_name="DROPBOX",
         )
         conn.get_app_users = partial(DropboxConnector.get_app_users, conn)
@@ -213,9 +239,39 @@ class TestDropboxSyncOrder:
             await DropboxConnector._sync_steps(conn)
 
         processor.withdraw_app_user_access.assert_awaited_once()
-        kwargs = conn.register_authenticated_source_user.await_args.kwargs
-        assert kwargs["listing_complete"] is True
-        assert "creator@corp.com" in kwargs["extra_present_emails"]
+        listing = conn.register_authenticated_source_user.await_args.kwargs["listing"]
+        assert listing.presence("creator@corp.com") is Presence.PRESENT
+        assert listing.presence("nobody@corp.com") is Presence.ABSENT
+
+    async def test_a_creator_whose_email_is_a_members_secondary_email_is_listed(self) -> None:
+        profile = SimpleNamespace(
+            team_member_id="dbmid:M", email="m.primary@corp.com",
+            secondary_emails=[
+                SimpleNamespace(email="Creator@Corp.com", is_verified=True),
+                SimpleNamespace(email="old@corp.com", is_verified=False),
+            ],
+            status=SimpleNamespace(_tag="active", is_active=lambda: True),
+            name=SimpleNamespace(display_name="M"),
+        )
+        members = SimpleNamespace(
+            raw=[SimpleNamespace(profile=profile, role=SimpleNamespace(_tag="member_only"))],
+            complete=True, error=None, auth_error=False, active_ids=lambda: {"dbmid:M"},
+        )
+        processor = MagicMock(
+            on_new_app_users=AsyncMock(), get_all_app_users=AsyncMock(return_value=[]),
+            withdraw_app_user_access=AsyncMock(),
+        )
+        conn = _connector(
+            DropboxConnector, data_source=MagicMock(), _health=MagicMock(), _user_listing=None,
+            data_entities_processor=processor, get_app_users=MagicMock(return_value=[]),
+        )
+
+        with patch("app.connectors.sources.dropbox.connector.read_team_members", AsyncMock(return_value=members)):
+            await DropboxConnector._sync_members(conn)
+
+        assert conn._user_listing.presence("creator@corp.com") is Presence.PRESENT
+        assert conn._user_listing.presence("old@corp.com") is Presence.PRESENT
+        assert conn._user_listing.presence("nobody@corp.com") is Presence.ABSENT
 
 
 class TestNotion:
@@ -227,8 +283,7 @@ class TestNotion:
         return datasource
 
     def _conn(self, client_cls: type) -> MagicMock:
-        conn = _connector(NotionConnector, notion_client=MagicMock(), _users_listing_complete=True,
-                          _listed_user_emails=set())
+        conn = _connector(NotionConnector, notion_client=MagicMock(), _user_listing=None)
         conn.notion_client.get_client.return_value = MagicMock(spec=client_cls)
         return conn
 
@@ -257,8 +312,7 @@ class TestServiceNow:
         datasource = MagicMock()
         datasource.get_now_table_tableName = AsyncMock(return_value=SimpleNamespace(result=rows))
         conn = _connector(ServiceNowConnector, _get_fresh_datasource=AsyncMock(return_value=datasource),
-                          servicenow_client=None, refresh_token=None, _users_listing_complete=True,
-                          _listed_user_emails=set())
+                          servicenow_client=None, refresh_token=None, _user_listing=None)
         conn._table_get = partial(ServiceNowConnector._table_get, conn)
         conn._with_token_retry = partial(ServiceNowConnector._with_token_retry, conn)
         return conn
@@ -301,8 +355,7 @@ class TestSalesforce:
             SalesforceConnector,
             config_service=MagicMock(),
             _fetch_first_record=AsyncMock(return_value=record),
-            _users_listing_complete=True,
-            _listed_user_emails=set(),
+            _user_listing=None,
         )
         conn.config_service.get_config = AsyncMock(return_value={"credentials": credentials})
         conn._authenticated_user_id = partial(SalesforceConnector._authenticated_user_id, conn)
@@ -338,7 +391,7 @@ class TestZoom:
         datasource = MagicMock()
         datasource.user = AsyncMock(return_value=response)
         return _connector(
-            ZoomConnector, _users_listing_complete=True,
+            ZoomConnector, _user_listing=None,
             _get_fresh_datasource=AsyncMock(return_value=datasource, side_effect=error),
         )
 
@@ -367,14 +420,14 @@ class TestZoom:
 
         conn.register_authenticated_source_user.assert_not_awaited()
 
-    async def test_the_full_pass_is_told_whether_the_user_listing_was_complete(self) -> None:
+    async def test_the_full_pass_carries_the_user_listing(self) -> None:
         conn = self._conn(SimpleNamespace(success=True, data={"id": "z1", "email": "admin@corp.com"}))
-        conn._users_listing_complete = False
+        conn._user_listing = _finished("a@corp.com", includes_inactive=False)
 
         await ZoomConnector._register_authenticated_identity(conn)
 
         conn.register_authenticated_source_user.assert_awaited_once()
-        assert conn.register_authenticated_source_user.await_args.kwargs == {"listing_complete": False}
+        assert conn.register_authenticated_source_user.await_args.kwargs == {"listing": conn._user_listing}
 
     def test_the_oauth_app_asks_for_the_scope_users_me_needs(self) -> None:
         oauth = ZoomConnector._connector_metadata["config"]["auth"]["oauthConfigs"]["OAUTH"]
@@ -395,7 +448,7 @@ class TestZoomSyncOrder:
                 return result
             return AsyncMock(side_effect=_run)
 
-        conn = _connector(ZoomConnector, data_source=MagicMock(), _users_listing_complete=True)
+        conn = _connector(ZoomConnector, data_source=MagicMock(), _user_listing=_finished("a@corp.com"))
         conn.drop_authenticator_link_if_listed = step("drop")
         conn._load_filters = step("filters")
         conn._today = MagicMock(return_value=MagicMock())
@@ -424,64 +477,66 @@ class TestZoomSyncOrder:
 
         assert "register" not in order
 
-    async def test_a_stale_complete_flag_is_reset_before_the_listing_runs(self) -> None:
+    async def test_a_listing_of_an_earlier_sync_is_dropped_before_the_listing_runs(self) -> None:
         conn = self._conn([])
-        conn._users_listing_complete = True
         conn._list_users = AsyncMock(side_effect=RuntimeError("zoom down"))
 
         with pytest.raises(RuntimeError):
             await ZoomConnector.run_sync(conn)
 
-        assert conn._users_listing_complete is False
+        assert conn._user_listing is None
 
-    async def test_a_failed_page_is_an_incomplete_listing(self) -> None:
+    async def test_a_failed_page_cuts_the_listing(self) -> None:
         ok = MagicMock(success=True, data={"users": [], "next_page_token": "t"})
         failed = MagicMock(success=False, data=None, message="429")
-        conn = _connector(ZoomConnector, _users_listing_complete=True)
+        conn = _connector(ZoomConnector, _user_listing=None)
         conn._get_fresh_datasource = AsyncMock(return_value=MagicMock(users=AsyncMock(side_effect=[ok, failed])))
 
         await ZoomConnector._list_users(conn)
 
-        assert conn._users_listing_complete is False
+        assert conn._user_listing.is_cut
 
-    async def test_a_page_with_no_data_is_an_incomplete_listing(self) -> None:
-        conn = _connector(ZoomConnector, _users_listing_complete=True)
+    async def test_a_page_with_no_data_cuts_the_listing(self) -> None:
+        conn = _connector(ZoomConnector, _user_listing=None)
         datasource = MagicMock(users=AsyncMock(return_value=MagicMock(success=True, data={})))
         conn._get_fresh_datasource = AsyncMock(return_value=datasource)
 
         await ZoomConnector._list_users(conn)
 
-        assert conn._users_listing_complete is False
+        assert conn._user_listing.is_cut
 
-    async def test_a_listing_read_to_its_last_page_is_complete(self) -> None:
+    async def test_a_listing_read_to_its_last_page_names_its_users_but_proves_nobody_absent(self) -> None:
         pages = [
             MagicMock(success=True, data={"users": [], "next_page_token": "t"}),
-            MagicMock(success=True, data={"users": [{"id": "u1", "email": "a@corp.com"}], "next_page_token": ""}),
+            MagicMock(success=True, data={"users": [{"id": "u1", "email": "A@corp.com"}], "next_page_token": ""}),
         ]
-        conn = _connector(ZoomConnector, _users_listing_complete=False)
+        conn = _connector(ZoomConnector, _user_listing=None)
         conn._get_fresh_datasource = AsyncMock(return_value=MagicMock(users=AsyncMock(side_effect=pages)))
 
         await ZoomConnector._list_users(conn)
 
-        assert conn._users_listing_complete is True
+        assert not conn._user_listing.is_cut
+        assert conn._user_listing.presence("a@corp.com") is Presence.PRESENT
+        # Zoom lists active users only: a suspended authenticator is not in it either.
+        assert _nobody(conn) is Presence.UNKNOWN
 
-    async def test_an_empty_listing_is_incomplete(self) -> None:
+    async def test_an_empty_listing_proves_nothing(self) -> None:
         empty = MagicMock(success=True, data={"users": [], "next_page_token": ""})
-        conn = _connector(ZoomConnector, _users_listing_complete=False)
+        conn = _connector(ZoomConnector, _user_listing=None)
         conn._get_fresh_datasource = AsyncMock(return_value=MagicMock(users=AsyncMock(return_value=empty)))
 
         await ZoomConnector._list_users(conn)
 
-        assert conn._users_listing_complete is False
+        assert _nobody(conn) is Presence.UNKNOWN
 
-    async def test_a_listing_that_raises_is_an_incomplete_listing(self) -> None:
-        conn = _connector(ZoomConnector, _users_listing_complete=True)
+    async def test_a_listing_that_raises_proves_nothing(self) -> None:
+        conn = _connector(ZoomConnector, _user_listing=_finished("a@corp.com"))
         conn._get_fresh_datasource = AsyncMock(return_value=MagicMock(users=AsyncMock(side_effect=OSError("reset"))))
 
         with pytest.raises(OSError):
             await ZoomConnector._list_users(conn)
 
-        assert conn._users_listing_complete is False
+        assert conn._user_listing.presence("a@corp.com") is Presence.UNKNOWN
 
 
 @pytest.mark.parametrize("connector_cls", [GoogleDriveTeamConnector, GoogleGmailTeamConnector])
@@ -493,8 +548,7 @@ class TestGoogleWorkspace:
             connector_cls,
             config={"credentials": {"auth": {"adminEmail": "admin@corp.com"}}},
             admin_data_source=admin_data_source,
-            _users_listing_complete=True,
-            _listed_aliases=set(),
+            _user_listing=None,
         )
 
     async def test_registers_the_admin_the_service_account_acts_as(self, connector_cls: type) -> None:
@@ -513,17 +567,13 @@ class TestGoogleWorkspace:
 
         conn.register_authenticated_source_user.assert_not_awaited()
 
-    async def test_the_registration_passes_the_listing_state_and_the_listed_aliases(self, connector_cls: type) -> None:
+    async def test_the_registration_carries_the_user_listing(self, connector_cls: type) -> None:
         conn = self._conn(connector_cls, admin={"id": "1", "primaryEmail": "admin@corp.com"})
-        conn._users_listing_complete = False
-        conn._listed_aliases = {"a@corp.com"}
+        conn._user_listing = _cut("a@corp.com")
 
         await connector_cls._register_authenticated_identity(conn)
 
-        assert conn.register_authenticated_source_user.await_args.kwargs == {
-            "listing_complete": False,
-            "extra_present_emails": {"a@corp.com"},
-        }
+        assert conn.register_authenticated_source_user.await_args.kwargs == {"listing": conn._user_listing}
 
 
 _ENTRY = {GoogleDriveTeamConnector: "_run_sync_steps", GoogleGmailTeamConnector: "run_sync"}
@@ -595,9 +645,15 @@ class TestGoogleWorkspaceSyncOrder:
 _APP_NAME = {GoogleDriveTeamConnector: "DRIVE WORKSPACE", GoogleGmailTeamConnector: "GMAIL WORKSPACE"}
 
 
-def _directory_conn(connector_cls: type, pages: list[dict]) -> MagicMock:
+def _directory_conn(connector_cls: type, pages: list[dict], admin: object = None) -> MagicMock:
     admin_data_source = MagicMock()
     admin_data_source.users_list = AsyncMock(side_effect=pages)
+    # users.get of the admin the service account acts as: a super admin unless a test says otherwise.
+    admin = {"id": "0", "primaryEmail": "admin@corp.com", "isAdmin": True} if admin is None else admin
+    admin_data_source.users_get = AsyncMock(
+        return_value=None if isinstance(admin, Exception) else admin,
+        side_effect=admin if isinstance(admin, Exception) else None,
+    )
     return _connector(
         connector_cls,
         config={"credentials": {"auth": {"adminEmail": "admin@corp.com"}}},
@@ -626,14 +682,14 @@ class TestGoogleWorkspaceListing:
 
         await GoogleGmailTeamConnector._sync_users(conn)
 
-        assert conn._users_listing_complete is False
+        assert _nobody(conn) is Presence.UNKNOWN
 
     async def test_a_complete_gmail_listing_is_complete(self) -> None:
         conn = _directory_conn(GoogleGmailTeamConnector, [{"users": [_row("alice@corp.com", "1")]}])
 
         await GoogleGmailTeamConnector._sync_users(conn)
 
-        assert conn._users_listing_complete is True
+        assert _nobody(conn) is Presence.ABSENT
 
     async def test_a_cut_listing_is_incomplete(self) -> None:
         conn = _directory_conn(
@@ -645,7 +701,7 @@ class TestGoogleWorkspaceListing:
         await GoogleDriveTeamConnector._sync_users(conn)
 
         assert conn._listing_cut is True
-        assert conn._users_listing_complete is False
+        assert _nobody(conn) is Presence.UNKNOWN
 
     async def test_an_empty_page_after_users_is_an_incomplete_listing(self) -> None:
         conn = _directory_conn(
@@ -654,7 +710,7 @@ class TestGoogleWorkspaceListing:
 
         await GoogleGmailTeamConnector._sync_users(conn)
 
-        assert conn._users_listing_complete is False
+        assert _nobody(conn) is Presence.UNKNOWN
 
     @pytest.mark.parametrize("connector_cls", [GoogleDriveTeamConnector, GoogleGmailTeamConnector])
     async def test_an_empty_listing_is_incomplete(self, connector_cls: type) -> None:
@@ -663,20 +719,20 @@ class TestGoogleWorkspaceListing:
 
         await connector_cls._sync_users(conn)
 
-        assert conn._users_listing_complete is False
+        assert _nobody(conn) is Presence.UNKNOWN
 
     @pytest.mark.parametrize("connector_cls", [GoogleDriveTeamConnector, GoogleGmailTeamConnector])
     async def test_a_failed_listing_does_not_keep_the_previous_syncs_result(self, connector_cls: type) -> None:
         conn = _directory_conn(connector_cls, [{"users": [_row("alice@corp.com", "1", ["a@corp.com"])]}, RuntimeError("down")])
         conn._listing_cut = False
         await connector_cls._sync_users(conn)
-        assert conn._users_listing_complete is True
+        assert _nobody(conn) is Presence.ABSENT
 
         with pytest.raises(RuntimeError):
             await connector_cls._sync_users(conn)
 
-        assert conn._users_listing_complete is False
-        assert conn._listed_aliases == set()
+        assert _nobody(conn) is Presence.UNKNOWN
+        assert conn._user_listing.emails == frozenset()
 
     @pytest.mark.parametrize("connector_cls", [GoogleDriveTeamConnector, GoogleGmailTeamConnector])
     async def test_a_row_that_fails_to_process_makes_the_listing_incomplete(self, connector_cls: type) -> None:
@@ -686,19 +742,49 @@ class TestGoogleWorkspaceListing:
 
         await connector_cls._sync_users(conn)
 
-        assert conn._users_listing_complete is False
+        assert _nobody(conn) is Presence.UNKNOWN
 
     @pytest.mark.parametrize("connector_cls", [GoogleDriveTeamConnector, GoogleGmailTeamConnector])
-    async def test_a_row_without_an_email_does_not_make_the_listing_incomplete(self, connector_cls: type) -> None:
+    async def test_a_row_without_an_email_proves_nobody_absent(self, connector_cls: type) -> None:
         conn = _directory_conn(connector_cls, [{"users": [_row("alice@corp.com", "1"), {"id": "9"}]}])
         conn._listing_cut = False
 
         await connector_cls._sync_users(conn)
 
-        assert conn._users_listing_complete is True
+        # Whoever that row is may be the authenticator.
+        assert _nobody(conn) is Presence.UNKNOWN
+        assert conn._user_listing.presence("alice@corp.com") is Presence.PRESENT
+
+    @pytest.mark.parametrize("admin", [
+        {"id": "0", "primaryEmail": "admin@corp.com", "isAdmin": False},
+        {"id": "0", "primaryEmail": "admin@corp.com"},
+        RuntimeError("Not Authorized to access this resource/api"),
+    ], ids=["delegated-admin", "is-admin-not-shown", "admin-unreadable"])
+    @pytest.mark.parametrize("connector_cls", [GoogleDriveTeamConnector, GoogleGmailTeamConnector])
+    async def test_only_a_super_admins_listing_is_the_whole_directory(self, connector_cls: type, admin: object) -> None:
+        # A delegated admin's users.list(customer="my_customer") returns only the OUs it manages.
+        conn = _directory_conn(connector_cls, [{"users": [_row("alice@corp.com", "1")]}], admin=admin)
+        conn._listing_cut = False
+
+        await connector_cls._sync_users(conn)
+
+        assert conn._user_listing.is_cut
+        assert _nobody(conn) is Presence.UNKNOWN
+        assert conn._user_listing.presence("alice@corp.com") is Presence.PRESENT
+        conn.admin_data_source.users_get.assert_awaited_once_with(userKey="admin@corp.com")
 
     @pytest.mark.parametrize("connector_cls", [GoogleDriveTeamConnector, GoogleGmailTeamConnector])
-    async def test_aliases_of_listed_users_are_passed_but_not_the_admins(self, connector_cls: type) -> None:
+    async def test_a_super_admins_full_listing_proves_anyone_else_absent(self, connector_cls: type) -> None:
+        conn = _directory_conn(connector_cls, [{"users": [_row("alice@corp.com", "1")]}])
+        conn._listing_cut = False
+
+        await connector_cls._sync_users(conn)
+
+        assert not conn._user_listing.is_cut
+        assert _nobody(conn) is Presence.ABSENT
+
+    @pytest.mark.parametrize("connector_cls", [GoogleDriveTeamConnector, GoogleGmailTeamConnector])
+    async def test_aliases_of_listed_users_are_rows_but_not_the_admins(self, connector_cls: type) -> None:
         conn = _directory_conn(
             connector_cls,
             [{
@@ -712,51 +798,32 @@ class TestGoogleWorkspaceListing:
 
         await connector_cls._sync_users(conn)
 
-        assert conn._listed_aliases == {"alice.a@corp.com", "alice@old.corp.com"}
+        assert conn._user_listing.emails == {
+            "alice@corp.com", "alice.a@corp.com", "alice@old.corp.com", "it-admin@corp.com",
+        }
+        assert conn._user_listing.presence("admin@corp.com") is not Presence.PRESENT
+
 
 class _Kv:
-    """The configuration store as a dict, shared by connector instances like the real one."""
+    """The configuration store as a dict."""
 
-    def __init__(
-        self, values: dict | None = None, error: Exception | None = None, *, writes_fail: bool = False,
-    ) -> None:
+    def __init__(self, values: dict | None = None, error: Exception | None = None) -> None:
         self.values = dict(values or {})
         self.error = error
-        self.writes_fail = writes_fail
 
     async def get_config(self, key: str, **_: object) -> object:
         if self.error:
             raise self.error
         return self.values.get(key)
 
-    async def set_config(self, key: str, value: object) -> bool:
-        # The real service answers False on a store error instead of raising.
-        if self.writes_fail:
-            return False
-        self.values[key] = value
-        return True
 
-    async def delete_config(self, key: str) -> bool:
-        return self.values.pop(key, None) is not None
-
-
-GRANT_KEY = "/services/connectors/connector-1/authenticatorGrant"
-
-
-def _with_grant_record(conn: MagicMock, kv: _Kv) -> MagicMock:
-    conn.config_service = kv
-    for name in (
-        "decide_authenticator_grant", "authenticator_grant_kept", "remember_authenticator_grant", "_marker_holds",
-        "_read_grant_record", "confirm_authenticator_withdrawn",
-    ):
-        setattr(conn, name, partial(getattr(BaseConnector, name), conn))
-    return conn
+MARKER_KEY = "/services/connectors/connector-1/listedAuthenticators"
 
 
 class TestSlackWorkspace:
     def _conn(
         self, auth: dict | None = None, error: Exception | None = None, authenticator: str | None = None,
-        kv: _Kv | None = None,
+        kv: _Kv | None = None, listing: SourceUserListing | None = None,
     ) -> MagicMock:
         datasource = MagicMock()
         datasource.auth_test = AsyncMock(return_value=SimpleNamespace(success=True, data=auth), side_effect=error)
@@ -764,17 +831,17 @@ class TestSlackWorkspace:
             SlackConnector,
             _fresh_datasource=AsyncMock(return_value=datasource),
             user_id_to_email_cache={"U0ALICE": "alice@corp.com"},
-            _users_read_failed=False, _users_listing_cut=False, _listed_user_emails=set(),
+            _users_read_failed=False, _user_listing=listing,
             authenticator_email=AsyncMock(return_value=authenticator),
             data_entities_processor=MagicMock(
-                unlink_authenticator=AsyncMock(), remove_user_grant_from_record_groups=AsyncMock(return_value=1),
+                unlink_authenticator=AsyncMock(),
                 get_app_authenticator_user=AsyncMock(return_value={"_key": "admin-key", "email": authenticator}),
             ),
-            created_by="admin-id", _channel_list_failed=False,
+            created_by="admin-id", config_service=kv or _Kv(),
         )
-        conn._withdraw_withheld_authenticator = partial(SlackConnector._withdraw_withheld_authenticator, conn)
-        conn._confirm_authenticator_withdrawal = partial(SlackConnector._confirm_authenticator_withdrawal, conn)
-        return _with_grant_record(conn, kv or _Kv())
+        for name in ("authenticator_gets_token_view", "_marker_holds"):
+            setattr(conn, name, partial(getattr(BaseConnector, name), conn))
+        return conn
 
     async def test_a_user_token_registers_the_account_it_belongs_to(self) -> None:
         conn = self._conn({"user_id": "U0ALICE"})
@@ -800,250 +867,44 @@ class TestSlackWorkspace:
         conn.register_authenticated_source_user.assert_not_awaited()
         conn.data_entities_processor.unlink_authenticator.assert_not_awaited()
 
-    async def test_the_authenticator_is_granted_read(self) -> None:
-        conn = self._conn(authenticator="admin@corp.com")
+    async def test_an_authenticator_the_listing_proves_absent_is_granted_read(self) -> None:
+        kv = _Kv()
+        conn = self._conn(authenticator="admin@corp.com", kv=kv, listing=_finished("bob@corp.com"))
 
         grant = await SlackConnector._authenticator_grant(conn)
 
         assert (grant.email, grant.entity_type, grant.type) == ("admin@corp.com", EntityType.USER, PermissionType.READ)
+        assert kv.values == {}, "nothing is stored: the next sync decides again"
 
     async def test_a_listed_authenticator_gets_no_grant_even_when_suspended(self) -> None:
-        conn = self._conn(authenticator="Admin@corp.com")
-        conn._listed_user_emails = {"admin@corp.com"}
+        conn = self._conn(authenticator="Admin@corp.com", listing=_finished("bob@corp.com", "admin@corp.com"))
 
         assert await SlackConnector._authenticator_grant(conn) is None
 
-    @pytest.mark.parametrize("flag", ["_users_read_failed", "_users_listing_cut"])
-    async def test_an_incomplete_listing_adds_no_new_grant(self, flag: str) -> None:
-        conn = self._conn(authenticator="admin@corp.com")
-        setattr(conn, flag, True)
-
-        assert await SlackConnector._authenticator_grant(conn) is None
-
-    @pytest.mark.parametrize("granted", [True, False])
-    async def test_a_complete_listing_stores_the_decision(self, granted: bool) -> None:
-        kv = _Kv()
-        conn = self._conn(authenticator="Admin@corp.com", kv=kv)
-        conn._listed_user_emails = set() if granted else {"admin@corp.com"}
-
-        await SlackConnector._authenticator_grant(conn)
-        # "No grant" with no record before it waits for the channel pass to take the token's view back.
-        await SlackConnector._confirm_authenticator_withdrawal(conn)
-
-        assert kv.values[GRANT_KEY] == {"email": "admin@corp.com", "granted": granted}
-
-    async def test_a_grant_that_cannot_be_stored_is_not_given(self) -> None:
-        conn = self._conn(authenticator="admin@corp.com", kv=_Kv(writes_fail=True))
-
-        assert await SlackConnector._authenticator_grant(conn) is None
-
-    @pytest.mark.parametrize("flag", ["_users_read_failed", "_users_listing_cut"])
-    async def test_after_a_restart_an_incomplete_listing_keeps_the_stored_grant(self, flag: str) -> None:
-        kv = _Kv()
-        await SlackConnector._authenticator_grant(self._conn(authenticator="admin@corp.com", kv=kv))
-        fresh = self._conn(authenticator="admin@corp.com", kv=kv)
-        setattr(fresh, flag, True)
-
-        grant = await SlackConnector._authenticator_grant(fresh)
-
-        assert grant is not None and grant.email == "admin@corp.com"
-
-    @pytest.mark.parametrize("stored", [None, {"email": "admin@corp.com", "granted": False}])
-    async def test_an_incomplete_listing_with_no_stored_grant_grants_nothing(self, stored: object) -> None:
-        conn = self._conn(authenticator="admin@corp.com", kv=_Kv({GRANT_KEY: stored}))
-        conn._users_listing_cut = True
-
-        assert await SlackConnector._authenticator_grant(conn) is None
-
-    async def test_a_stored_grant_for_another_authenticator_is_not_this_ones(self) -> None:
-        conn = self._conn(authenticator="admin@corp.com", kv=_Kv({GRANT_KEY: {"email": "old@corp.com", "granted": True}}))
-        conn._users_listing_cut = True
-
-        assert await SlackConnector._authenticator_grant(conn) is None
-
-    async def test_a_withdrawn_grant_whose_write_fails_is_not_revived_by_an_incomplete_listing(self) -> None:
-        kv = _Kv({GRANT_KEY: {"email": "admin@corp.com", "granted": True}}, writes_fail=True)
-        conn = self._conn(authenticator="admin@corp.com", kv=kv)
-        conn._listed_user_emails = {"admin@corp.com"}
-        await SlackConnector._authenticator_grant(conn)
-        await SlackConnector._confirm_authenticator_withdrawal(conn)
-        fresh = self._conn(authenticator="admin@corp.com", kv=kv)
-        fresh._users_listing_cut = True
-
-        assert await SlackConnector._authenticator_grant(fresh) is None
-
-    async def test_an_incomplete_listing_that_names_the_authenticator_stores_no_grant_once_withdrawn(self) -> None:
-        kv = _Kv({GRANT_KEY: {"email": "admin@corp.com", "granted": True}})
-        conn = self._conn(authenticator="admin@corp.com", kv=kv)
-        conn._users_listing_cut = True
-        conn._listed_user_emails = {"admin@corp.com"}
-
-        assert await SlackConnector._authenticator_grant(conn) is None
-        assert kv.values[GRANT_KEY]["granted"] is True, "kept until the token's view is taken back"
-        await SlackConnector._confirm_authenticator_withdrawal(conn)
-        assert kv.values[GRANT_KEY] == {"email": "admin@corp.com", "granted": False}
-
-    async def test_two_incomplete_listings_the_first_naming_the_authenticator_both_grant_nothing(self) -> None:
-        # The processor writes the listed-authenticators marker when the first listing names them.
-        kv = _Kv({
-            GRANT_KEY: {"email": "admin@corp.com", "granted": True},
-            "/services/connectors/connector-1/listedAuthenticators": ["admin-key"],
-        })
-        first = self._conn(authenticator="admin@corp.com", kv=kv)
-        first._users_listing_cut = True
-        first._listed_user_emails = {"admin@corp.com"}
-        second = self._conn(authenticator="admin@corp.com", kv=kv)
-        second._users_read_failed = True
-
-        assert await SlackConnector._authenticator_grant(first) is None
-        assert await SlackConnector._authenticator_grant(second) is None
-
-    async def test_a_stored_grant_is_not_kept_for_an_authenticator_the_marker_lists(self) -> None:
-        kv = _Kv({
-            GRANT_KEY: {"email": "admin@corp.com", "granted": True},
-            "/services/connectors/connector-1/listedAuthenticators": ["admin-key"],
-        })
-        conn = self._conn(authenticator="admin@corp.com", kv=kv)
-        conn.created_by = "admin-id"
-        conn.data_entities_processor.get_app_authenticator_user = AsyncMock(
-            return_value={"_key": "admin-key", "email": "admin@corp.com"},
-        )
-        conn._users_listing_cut = True
-
-        assert await SlackConnector._authenticator_grant(conn) is None
-
-    @pytest.mark.parametrize(("listed", "stored", "withheld"), [
-        ({"admin@corp.com"}, {"email": "admin@corp.com", "granted": True}, "admin@corp.com"),
-        ({"admin@corp.com"}, {"email": "admin@corp.com", "granted": False}, None),
-        ({"admin@corp.com"}, None, "admin@corp.com"),
-        (set(), {"email": "admin@corp.com", "granted": True}, None),
-    ], ids=["grant-taken-back", "no-earlier-grant", "no-record-may-be-an-earlier-release", "not-listed"])
-    async def test_only_a_given_grant_is_withdrawn_and_only_until_that_is_confirmed(
-        self, listed: set[str], stored: object, withheld: str | None,
+    @pytest.mark.parametrize("listing", [
+        None, _cut("bob@corp.com"), _finished("bob@corp.com", None), _finished(),
+    ], ids=["not-read", "cut", "a-member-without-an-email", "no-rows"])
+    async def test_a_listing_that_does_not_prove_the_authenticator_absent_adds_no_grant(
+        self, listing: SourceUserListing | None,
     ) -> None:
-        kv = _Kv({GRANT_KEY: stored})
-        conn = self._conn(authenticator="admin@corp.com", kv=kv)
-        conn._listed_user_emails = listed
-
-        await SlackConnector._authenticator_grant(conn)
-        assert conn._withheld_authenticator_email == withheld
-        await SlackConnector._withdraw_withheld_authenticator(conn, ["C1"])
-        await SlackConnector._confirm_authenticator_withdrawal(conn)
-
-        await SlackConnector._authenticator_grant(conn)
-        assert conn._withheld_authenticator_email is None, "the next sync has nothing left to take"
-
-    async def test_a_failed_removal_leaves_the_grant_stored_and_the_next_sync_withdraws_again(self) -> None:
-        kv = _Kv({GRANT_KEY: {"email": "admin@corp.com", "granted": True}})
-        conn = self._conn(authenticator="admin@corp.com", kv=kv)
-        conn._listed_user_emails = {"admin@corp.com"}
-        remove = conn.data_entities_processor.remove_user_grant_from_record_groups
-        remove.side_effect = [RuntimeError("graph down"), 1]
-
-        await SlackConnector._authenticator_grant(conn)
-        await SlackConnector._withdraw_withheld_authenticator(conn, ["C1"])
-        await SlackConnector._confirm_authenticator_withdrawal(conn)
-        assert kv.values[GRANT_KEY]["granted"] is True
-
-        await SlackConnector._authenticator_grant(conn)
-        assert conn._withheld_authenticator_email == "admin@corp.com"
-        await SlackConnector._withdraw_withheld_authenticator(conn, ["C1"])
-        await SlackConnector._confirm_authenticator_withdrawal(conn)
-
-        assert remove.await_count == 2
-        assert kv.values[GRANT_KEY] == {"email": "admin@corp.com", "granted": False}
-
-    async def test_no_channel_left_to_clean_still_confirms_the_withdrawal(self) -> None:
-        kv = _Kv({GRANT_KEY: {"email": "admin@corp.com", "granted": True}})
-        conn = self._conn(authenticator="admin@corp.com", kv=kv)
-        conn._listed_user_emails = {"admin@corp.com"}
-
-        await SlackConnector._authenticator_grant(conn)
-        await SlackConnector._withdraw_withheld_authenticator(conn, [])
-        await SlackConnector._confirm_authenticator_withdrawal(conn)
-
-        conn.data_entities_processor.remove_user_grant_from_record_groups.assert_not_awaited()
-        assert kv.values[GRANT_KEY] == {"email": "admin@corp.com", "granted": False}
-
-    async def test_a_channel_list_not_read_in_full_does_not_confirm_the_withdrawal(self) -> None:
-        kv = _Kv({GRANT_KEY: {"email": "admin@corp.com", "granted": True}})
-        conn = self._conn(authenticator="admin@corp.com", kv=kv)
-        conn._listed_user_emails = {"admin@corp.com"}
-
-        await SlackConnector._authenticator_grant(conn)
-        conn._channel_list_failed = True
-        await SlackConnector._confirm_authenticator_withdrawal(conn)
-
-        assert kv.values[GRANT_KEY]["granted"] is True
-
-    async def test_a_failed_withdrawal_is_retried_by_an_incomplete_listing_that_omits_the_authenticator(self) -> None:
-        # The processor wrote the marker when the first listing named them.
-        kv = _Kv({
-            GRANT_KEY: {"email": "admin@corp.com", "granted": True},
-            "/services/connectors/connector-1/listedAuthenticators": ["admin-key"],
-        })
-        first = self._conn(authenticator="admin@corp.com", kv=kv)
-        first._listed_user_emails = {"admin@corp.com"}
-        first.data_entities_processor.remove_user_grant_from_record_groups.side_effect = RuntimeError("graph down")
-        await SlackConnector._authenticator_grant(first)
-        await SlackConnector._withdraw_withheld_authenticator(first, ["C1"])
-        await SlackConnector._confirm_authenticator_withdrawal(first)
-        assert kv.values[GRANT_KEY]["granted"] is True
-
-        second = self._conn(authenticator="admin@corp.com", kv=kv)
-        second._users_listing_cut = True
-        assert await SlackConnector._authenticator_grant(second) is None
-        assert second._withheld_authenticator_email == "admin@corp.com"
-        await SlackConnector._withdraw_withheld_authenticator(second, ["C1"])
-        await SlackConnector._confirm_authenticator_withdrawal(second)
-
-        second.data_entities_processor.remove_user_grant_from_record_groups.assert_awaited_once_with(
-            "connector-1", ["C1"], "admin@corp.com",
-        )
-        assert kv.values[GRANT_KEY] == {"email": "admin@corp.com", "granted": False}
-
-    async def test_a_later_sync_that_reads_the_given_grant_withdraws_it_where_members_are_unknown(self) -> None:
-        kv = _Kv({GRANT_KEY: {"email": "admin@corp.com", "granted": True}}, error=RuntimeError("kv down"))
-        first = self._conn(authenticator="admin@corp.com", kv=kv)
-        first._listed_user_emails = {"admin@corp.com"}
-        await SlackConnector._authenticator_grant(first)
-        assert first._withheld_authenticator_email is None
-
-        kv.error = None
-        second = self._conn(authenticator="admin@corp.com", kv=kv)
-        second._listed_user_emails = {"admin@corp.com"}
-        await SlackConnector._authenticator_grant(second)
-        await SlackConnector._withdraw_withheld_authenticator(second, ["C1"])
-        await SlackConnector._confirm_authenticator_withdrawal(second)
-
-        second.data_entities_processor.remove_user_grant_from_record_groups.assert_awaited_once()
-        assert kv.values[GRANT_KEY] == {"email": "admin@corp.com", "granted": False}
-
-    async def test_an_unreadable_grant_record_withdraws_nothing_and_stores_nothing(self) -> None:
-        kv = _Kv(error=RuntimeError("kv down"))
-        conn = self._conn(authenticator="admin@corp.com", kv=kv)
-        conn._listed_user_emails = {"admin@corp.com"}
+        conn = self._conn(authenticator="admin@corp.com", listing=listing)
 
         assert await SlackConnector._authenticator_grant(conn) is None
-        await SlackConnector._confirm_authenticator_withdrawal(conn)
 
-        assert conn._withheld_authenticator_email is None
-        assert kv.values == {}
-        conn.logger.warning.assert_called()
+    async def test_an_authenticator_once_listed_gets_no_grant(self) -> None:
+        conn = self._conn(
+            authenticator="admin@corp.com", kv=_Kv({MARKER_KEY: ["admin-key"]}), listing=_finished("bob@corp.com"),
+        )
 
-    async def test_a_failed_read_of_the_stored_grant_grants_nothing(self) -> None:
-        conn = self._conn(authenticator="admin@corp.com", kv=_Kv(error=RuntimeError("kv down")))
-        conn._users_read_failed = True
+        assert await SlackConnector._authenticator_grant(conn) is None
+
+    async def test_a_marker_that_cannot_be_read_gives_no_grant(self) -> None:
+        conn = self._conn(
+            authenticator="admin@corp.com", kv=_Kv(error=RuntimeError("kv down")), listing=_finished("bob@corp.com"),
+        )
 
         assert await SlackConnector._authenticator_grant(conn) is None
         conn.logger.warning.assert_called_once()
-
-    async def test_an_incomplete_listing_that_shows_the_authenticator_drops_the_grant(self) -> None:
-        conn = self._conn(authenticator="admin@corp.com", kv=_Kv({GRANT_KEY: {"email": "admin@corp.com", "granted": True}}))
-        conn._users_listing_cut = True
-        conn._listed_user_emails = {"admin@corp.com"}
-
-        assert await SlackConnector._authenticator_grant(conn) is None
 
     async def test_no_authenticator_means_no_grant(self) -> None:
         conn = self._conn(authenticator=None)
@@ -1071,29 +932,32 @@ class TestSlackWorkspace:
 
 class TestGitLab:
     def _conn(self, result: object = None, error: Exception | None = None) -> MagicMock:
-        conn = _connector(GitLabConnector, data_source=MagicMock(), runtime=MagicMock(),
-                          _users_listing_complete=True, _listed_user_emails=set())
+        conn = _connector(GitLabConnector, data_source=MagicMock(), runtime=MagicMock(), _user_listing=None)
         conn.runtime.ds_call = AsyncMock(return_value=result, side_effect=error)
         return conn
+
+    async def _register(self, conn: MagicMock) -> None:
+        await GitLabConnector._read_token_account(conn)
+        await GitLabConnector._register_authenticated_identity(conn)
 
     async def test_registers_the_token_owner_by_numeric_id(self) -> None:
         conn = self._conn(SimpleNamespace(success=True, data=SimpleNamespace(email=" dev@corp.com ", public_email=None, id=42)))
 
-        await GitLabConnector._register_authenticated_identity(conn)
+        await self._register(conn)
 
         assert _registered(conn) == ("dev@corp.com", "42")
 
     async def test_falls_back_to_the_public_email(self) -> None:
         conn = self._conn(SimpleNamespace(success=True, data=SimpleNamespace(email=None, public_email="dev@public.com", id=42)))
 
-        await GitLabConnector._register_authenticated_identity(conn)
+        await self._register(conn)
 
         assert _registered(conn) == ("dev@public.com", "42")
 
     async def test_a_failed_read_never_reaches_the_link(self) -> None:
         conn = self._conn(error=RuntimeError("401 Unauthorized"))
 
-        await GitLabConnector._register_authenticated_identity(conn)
+        await self._register(conn)
 
         conn.register_authenticated_source_user.assert_not_awaited()
 
@@ -1136,7 +1000,7 @@ class TestLinear:
         datasource.viewer = AsyncMock(return_value=response, side_effect=error)
         return _connector(
             LinearConnector, data_source=MagicMock(), _get_fresh_datasource=AsyncMock(return_value=datasource),
-            _users_listing_complete=True, _listed_user_emails=set(),
+            _user_listing=None,
         )
 
     async def test_registers_the_viewer(self) -> None:
@@ -1195,8 +1059,7 @@ class TestConfluenceDataCenter:
             ConfluenceDataCenterConnector,
             data_source=MagicMock(),
             _get_fresh_datasource=AsyncMock(return_value=datasource),
-            _users_listing_complete=True,
-            _listed_user_emails={"dev@corp.com"},
+            _user_listing=None,
         )
 
     async def test_registers_the_current_user_by_user_key(self) -> None:
@@ -1223,11 +1086,15 @@ class TestConfluenceDataCenter:
         if failure == "raises":
             conn._get_fresh_datasource.return_value.get_current_user_v1.side_effect = OSError("reset")
         conn.drop_authenticator_link_if_listed = AsyncMock()
+        conn._user_listing = _cut("dev@corp.com")
 
         await ConfluenceDataCenterConnector._register_authenticated_identity(conn)
 
         conn.register_authenticated_source_user.assert_not_awaited()
-        conn.drop_authenticator_link_if_listed.assert_awaited_once_with({"dev@corp.com"})
+        conn.drop_authenticator_link_if_listed.assert_awaited_once()
+        (listing,) = conn.drop_authenticator_link_if_listed.await_args.args
+        assert listing is conn._user_listing
+        assert listing.presence("dev@corp.com") is Presence.PRESENT
 
 
 class TestJiraCloud:
@@ -1337,24 +1204,33 @@ def _steps(order: list[str]) -> Callable[..., AsyncMock]:
     return step
 
 
+def _creator_listing(*emails: str) -> SourceUserListing:
+    listing = SourceUserListing(includes_inactive=True)
+    for email in emails:
+        listing.add_row(email)
+    listing.finish()
+    return listing
+
+
 class TestJiraCloudSyncOrder:
-    def _conn(self, order: list[str], *, active_users: list, complete: bool = True) -> MagicMock:
+    def _conn(self, order: list[str], *, active_users: list) -> MagicMock:
         step = _steps(order)
         conn = _connector(
             JiraConnector, data_source=MagicMock(), config_service=MagicMock(),
             _authenticated_jira_email="admin@corp.com", _authenticated_jira_account_id="acc-admin",
-            _listed_user_emails=set(), _deactivated_account_ids=set(), _shown_inactive_ids=set(),
-            _user_read_unfinished=False, _listed_account_ids={"acc-1"}, _listing_complete_for_link=complete,
+            _deactivated_account_ids=set(), _shown_inactive_ids=set(), _user_listing=None,
+            _user_read_unfinished=False, _listed_account_ids={"acc-1"},
         )
         conn._expire_org_gate = step("gate")
         conn.drop_authenticator_link_if_listed = step("drop")
         conn.data_entities_processor = MagicMock(
             get_all_active_users=step("active", active_users), on_new_app_users=step("write"),
         )
+        self.listing = _creator_listing("creator@corp.com")
 
         async def fetch(**_: object) -> list:
             order.append("fetch")
-            conn._listed_user_emails = {"creator@corp.com"}
+            conn._user_listing = self.listing
             return [MagicMock()]
 
         conn._fetch_users = AsyncMock(side_effect=fetch)
@@ -1393,17 +1269,19 @@ class TestJiraCloudSyncOrder:
 
         assert order == ["drop"]
 
-    async def test_an_empty_first_listing_is_not_complete(self) -> None:
+    async def test_an_empty_first_listing_proves_no_absence(self) -> None:
         conn = self._conn([], active_users=[MagicMock()])
-        for name in ("_fetch_users", "_fetch_all_jira_users_bulk", "_user_listing_complete_for_link",
-                     "_authenticator_is_listed", "_directory_read_complete", "_safe_json_parse"):
+        for name in ("_fetch_users", "_fetch_all_jira_users_bulk", "_listing_of", "_settle_authenticator",
+                     "_directory_read_complete", "_safe_json_parse", "_find_atlassian_accounts"):
             setattr(conn, name, partial(getattr(JiraConnector, name), conn))
+        conn._names_email = JiraConnector._names_email
+        conn.authenticator_email = AsyncMock(return_value="creator@corp.com")
         conn.connector_name, conn._stored_app_users = "JIRA", []
         conn._user_bulk_forbidden = conn._user_bulk_refused = False
         conn.data_entities_processor.org_id = "org"
         conn.data_entities_processor.get_all_app_users = AsyncMock(return_value=[])
-        datasource = MagicMock(get_all_users=AsyncMock(return_value=SimpleNamespace(
-            status=HttpStatusCode.OK.value, json=lambda: [], text=lambda: "")))
+        empty = SimpleNamespace(status=HttpStatusCode.OK.value, json=lambda: [], text=lambda: "")
+        datasource = MagicMock(get_all_users=AsyncMock(return_value=empty), find_users=AsyncMock(return_value=empty))
 
         async def call_with_retry(call: Callable[..., object], **_: object) -> object:
             return await call(datasource)
@@ -1414,9 +1292,12 @@ class TestJiraCloudSyncOrder:
             await self._run(conn)
 
         datasource.get_all_users.assert_awaited_once()
-        assert conn.register_authenticated_source_user.await_args.kwargs["listing_complete"] is False
+        listing = conn.register_authenticated_source_user.await_args.kwargs["listing"]
+        assert listing.presence("creator@corp.com") is Presence.UNKNOWN
 
-    async def test_the_full_pass_runs_after_the_users_are_written_and_withdrawn(self) -> None:
+    async def test_the_full_pass_runs_after_the_users_are_written_and_withdrawn_with_this_syncs_listing(
+        self,
+    ) -> None:
         order: list[str] = []
         conn = self._conn(order, active_users=[MagicMock()])
 
@@ -1425,27 +1306,17 @@ class TestJiraCloudSyncOrder:
 
         assert order.index("drop") < order.index("fetch")
         assert order.index("write") < order.index("withdraw") < order.index("register")
-        kwargs = conn.register_authenticated_source_user.await_args.kwargs
-        assert kwargs["extra_present_emails"] == {"creator@corp.com"}
+        assert conn.register_authenticated_source_user.await_args.kwargs == {"listing": self.listing}
 
-    @pytest.mark.parametrize("complete", [True, False])
-    async def test_listing_complete_follows_the_directory_read(self, complete: bool) -> None:
-        conn = self._conn([], active_users=[MagicMock()], complete=complete)
-
-        with pytest.raises(_AtlassianStop):
-            await self._run(conn)
-
-        assert conn.register_authenticated_source_user.await_args.kwargs["listing_complete"] is complete
-
-    async def test_the_emails_of_a_previous_run_are_not_this_runs_listing(self) -> None:
+    async def test_the_listing_of_a_previous_run_is_not_this_runs_listing(self) -> None:
         conn = self._conn([], active_users=[MagicMock()])
-        conn._listed_user_emails = {"stale@corp.com"}
+        conn._user_listing = _creator_listing("stale@corp.com")
         conn._fetch_users = AsyncMock(return_value=[MagicMock()])
 
         with pytest.raises(_AtlassianStop):
             await self._run(conn)
 
-        assert conn.register_authenticated_source_user.await_args.kwargs["extra_present_emails"] == set()
+        assert conn.register_authenticated_source_user.await_args.kwargs["listing"] is None
 
     async def test_every_listed_account_counts_as_listed_whatever_its_status(self) -> None:
         raw = [
@@ -1456,24 +1327,30 @@ class TestJiraCloudSyncOrder:
         ]
         conn = _connector(
             JiraConnector, data_source=MagicMock(), connector_name="JIRA", _user_bulk_forbidden=False,
-            _user_read_unfinished=False, _listed_user_emails={"stale@corp.com"}, _listing_complete_for_link=False,
+            _user_bulk_refused=False, _user_read_unfinished=False, _user_listing=None,
         )
         conn.data_entities_processor = MagicMock(
             org_id="org", get_all_app_users=AsyncMock(return_value=[]),
         )
         conn._fetch_all_jira_users_bulk = AsyncMock(return_value=raw)
+        conn._listing_of = partial(JiraConnector._listing_of, conn)
+        conn.authenticator_email = AsyncMock(return_value="creator@corp.com")
+        conn._find_atlassian_accounts = AsyncMock(return_value=None)
 
         await JiraConnector._fetch_users(conn, active_pipeshub_users=[])
 
-        assert conn._listed_user_emails == {"live@corp.com", "gone@corp.com"}
+        listing = conn._user_listing
+        assert listing.emails == {"live@corp.com", "gone@corp.com"}
+        assert listing.presence("gone@corp.com") is Presence.PRESENT
+        assert listing.presence("creator@corp.com") is Presence.UNKNOWN  # a4's email is hidden
 
 
 class TestJiraDataCenterSyncOrder:
-    def _conn(self, order: list[str], *, active_users: list, complete: bool = True) -> MagicMock:
+    def _conn(self, order: list[str], *, active_users: list) -> MagicMock:
         step = _steps(order)
         conn = _connector(
-            JiraDataCenterConnector, data_source=MagicMock(), config_service=MagicMock(), _listed_user_emails=set(),
-            _user_read_unfinished=False, _listed_user_keys={"key-1"}, _listing_complete_for_link=complete,
+            JiraDataCenterConnector, data_source=MagicMock(), config_service=MagicMock(), _user_listing=None,
+            _user_read_unfinished=False, _listed_user_keys={"key-1"},
         )
         conn.drop_authenticator_link_if_listed = step("drop")
         conn._read_own_account = step("own", ("admin@corp.com", "key-admin"))
@@ -1481,10 +1358,11 @@ class TestJiraDataCenterSyncOrder:
         conn.data_entities_processor = MagicMock(
             get_all_active_users=step("active", active_users), on_new_app_users=step("write"),
         )
+        self.listing = _creator_listing("creator@corp.com")
 
         async def fetch() -> list:
             order.append("fetch")
-            conn._listed_user_emails = {"creator@corp.com"}
+            conn._user_listing = self.listing
             return [MagicMock()]
 
         conn._fetch_users = AsyncMock(side_effect=fetch)
@@ -1521,27 +1399,32 @@ class TestJiraDataCenterSyncOrder:
 
         assert order == ["drop"]
 
-    async def test_an_empty_first_listing_is_not_complete(self) -> None:
+    async def test_an_empty_first_listing_proves_no_absence(self) -> None:
         conn = self._conn([], active_users=[MagicMock()])
-        for name in ("_fetch_users", "_fetch_all_jira_users_bulk", "_fetch_users_via_list",
-                     "_user_listing_complete_for_link", "_authenticator_is_listed", "_directory_read_complete",
-                     "_safe_json_parse"):
+        for name in ("_fetch_users", "_fetch_all_jira_users_bulk", "_fetch_users_via_list", "_listing_of",
+                     "_settle_authenticator", "_directory_read_complete", "_safe_json_parse"):
             setattr(conn, name, partial(getattr(JiraDataCenterConnector, name), conn))
+        conn.authenticator_email = AsyncMock(return_value="creator@corp.com")
         conn.connector_name, conn._stored_app_users = "JIRA", []
         conn._dc_profile = DcRestProfile(supported=True, user_list=True)
         conn.data_entities_processor.org_id = "org"
         conn.data_entities_processor.get_all_app_users = AsyncMock(return_value=[])
-        datasource = MagicMock(get_user_list_v2=AsyncMock(return_value=SimpleNamespace(
-            status=HttpStatusCode.OK.value, json=lambda: {"values": [], "isLast": True}, text=lambda: "")))
+        datasource = MagicMock(
+            get_user_list_v2=AsyncMock(return_value=SimpleNamespace(
+                status=HttpStatusCode.OK.value, json=lambda: {"values": [], "isLast": True}, text=lambda: "")),
+            get_user_search_v2=AsyncMock(return_value=SimpleNamespace(
+                status=HttpStatusCode.OK.value, json=lambda: [], text=lambda: "")),
+        )
         conn._get_fresh_datasource = AsyncMock(return_value=datasource)
 
         with pytest.raises(_AtlassianStop):
             await self._run(conn)
 
         datasource.get_user_list_v2.assert_awaited_once()
-        assert conn.register_authenticated_source_user.await_args.kwargs["listing_complete"] is False
+        listing = conn.register_authenticated_source_user.await_args.kwargs["listing"]
+        assert listing.presence("creator@corp.com") is Presence.UNKNOWN
 
-    async def test_the_account_is_read_early_and_registered_after_the_users(self) -> None:
+    async def test_the_account_is_read_early_and_registered_after_the_users_with_this_syncs_listing(self) -> None:
         order: list[str] = []
         conn = self._conn(order, active_users=[MagicMock()])
 
@@ -1552,26 +1435,17 @@ class TestJiraDataCenterSyncOrder:
         assert order.index("write") < order.index("withdraw") < order.index("register")
         args = conn.register_authenticated_source_user.await_args
         assert args.args == ("admin@corp.com", "key-admin")
-        assert args.kwargs["extra_present_emails"] == {"creator@corp.com"}
+        assert args.kwargs == {"listing": self.listing}
 
-    @pytest.mark.parametrize("complete", [True, False])
-    async def test_listing_complete_follows_the_directory_read(self, complete: bool) -> None:
-        conn = self._conn([], active_users=[MagicMock()], complete=complete)
-
-        with pytest.raises(_AtlassianStop):
-            await self._run(conn)
-
-        assert conn.register_authenticated_source_user.await_args.kwargs["listing_complete"] is complete
-
-    async def test_the_emails_of_a_previous_run_are_not_this_runs_listing(self) -> None:
+    async def test_the_listing_of_a_previous_run_is_not_this_runs_listing(self) -> None:
         conn = self._conn([], active_users=[MagicMock()])
-        conn._listed_user_emails = {"stale@corp.com"}
+        conn._user_listing = _creator_listing("stale@corp.com")
         conn._fetch_users = AsyncMock(return_value=[MagicMock()])
 
         with pytest.raises(_AtlassianStop):
             await self._run(conn)
 
-        assert conn.register_authenticated_source_user.await_args.kwargs["extra_present_emails"] == set()
+        assert conn.register_authenticated_source_user.await_args.kwargs["listing"] is None
 
     async def test_every_listed_account_counts_as_listed_whatever_its_status(self) -> None:
         raw = [
@@ -1580,32 +1454,43 @@ class TestJiraDataCenterSyncOrder:
         ]
         conn = _connector(
             JiraDataCenterConnector, data_source=MagicMock(), connector_name="JIRA", _user_bulk_forbidden=False,
-            _user_bulk_incomplete=False, _user_read_unfinished=False, _listed_user_emails={"stale@corp.com"},
-            _dc_name_to_source_id={}, _seen_user_keys=set(), _listing_complete_for_link=False,
+            _user_bulk_incomplete=False, _user_read_unfinished=False, _user_listing=None,
+            _dc_name_to_source_id={}, _seen_user_keys=set(),
         )
         conn.data_entities_processor = MagicMock(
             org_id="org", get_all_app_users=AsyncMock(return_value=[]),
             get_all_active_users=AsyncMock(return_value=[]),
         )
         conn._fetch_all_jira_users_bulk = AsyncMock(return_value=raw)
+        conn._listing_of = partial(JiraDataCenterConnector._listing_of, conn)
+        conn._settle_authenticator = AsyncMock()
 
         await JiraDataCenterConnector._fetch_users(conn)
 
-        assert conn._listed_user_emails == {"live@corp.com", "gone@corp.com"}
+        listing = conn._user_listing
+        assert listing.emails == {"live@corp.com", "gone@corp.com"}
+        assert listing.presence("gone@corp.com") is Presence.PRESENT
+        assert listing.presence("creator@corp.com") is Presence.ABSENT  # /user/list names every account
 
 
 class TestConfluenceCloudSyncOrder:
-    def _conn(self, order: list[str], *, complete: bool = True) -> MagicMock:
+    def _conn(self, order: list[str]) -> MagicMock:
         step = _steps(order)
         conn = _connector(
             ConfluenceConnector, data_source=MagicMock(), external_client=MagicMock(), config_service=MagicMock(),
             _authenticated_confluence_email="admin@corp.com", _authenticated_confluence_account_id="acc-admin",
-            _user_list_complete=complete, _listed_user_emails={"creator@corp.com"}, _in_use=0, _close_after_sync=False,
+            _user_listing=None, _in_use=0, _close_after_sync=False,
         )
         conn.data_entities_processor = MagicMock(org_id="org")
         conn.drop_authenticator_link_if_listed = step("drop")
         conn._open_audit_window = step("audit")
-        conn._sync_users = step("users")
+        self.listing = _creator_listing("creator@corp.com")
+
+        async def users() -> None:
+            order.append("users")
+            conn._user_listing = self.listing
+
+        conn._sync_users = AsyncMock(side_effect=users)
         conn._sync_user_groups = step("groups")
         conn._reconcile_inactive_app_users = step("reconcile")
         conn.register_authenticated_source_user = step("register")
@@ -1628,7 +1513,8 @@ class TestConfluenceCloudSyncOrder:
         with pytest.raises(_AtlassianStop):
             await self._run(conn)
 
-        assert order == ["drop", "audit", "users", "register", "groups", "reconcile", "register", "spaces"]
+        assert order == ["drop", "audit", "users", "drop", "groups", "reconcile", "register", "spaces"]
+        assert conn.register_authenticated_source_user.await_args.kwargs == {"listing": self.listing}
 
     async def test_what_the_user_search_showed_removes_a_link_before_the_group_sync_can_stop_the_run(self) -> None:
         order: list[str] = []
@@ -1638,9 +1524,8 @@ class TestConfluenceCloudSyncOrder:
         await self._run(conn)
 
         step.assert_awaited_once()
-        conn.register_authenticated_source_user.assert_awaited_once_with(
-            "admin@corp.com", "acc-admin", listing_complete=False, extra_present_emails=conn._listed_user_emails,
-        )
+        assert conn.drop_authenticator_link_if_listed.await_args_list[-1].args == (self.listing,)
+        conn.register_authenticated_source_user.assert_not_awaited()
 
     async def test_the_removal_pass_runs_even_without_a_client(self) -> None:
         order: list[str] = []
@@ -1652,26 +1537,15 @@ class TestConfluenceCloudSyncOrder:
 
         assert order == ["drop"]
 
-    @pytest.mark.parametrize("complete", [True, False])
-    async def test_listing_complete_follows_the_user_search(self, complete: bool) -> None:
+    async def test_a_listing_left_by_an_earlier_run_is_reset_before_the_search(self) -> None:
         conn = self._conn([])
-        conn._sync_users = AsyncMock(side_effect=lambda: setattr(conn, "_user_list_complete", complete))
-
-        with pytest.raises(_AtlassianStop):
-            await self._run(conn)
-
-        kwargs = conn.register_authenticated_source_user.await_args.kwargs
-        assert kwargs["listing_complete"] is complete
-        assert kwargs["extra_present_emails"] is conn._listed_user_emails
-
-    async def test_a_flag_left_by_an_earlier_run_is_reset_before_the_search(self) -> None:
-        conn = self._conn([], complete=True)
+        conn._user_listing = _creator_listing("stale@corp.com")
         conn._sync_users = AsyncMock(side_effect=RuntimeError("search down"))
 
         with pytest.raises(RuntimeError):
             await self._run(conn)
 
-        assert conn._user_list_complete is False and conn._listed_user_emails == set()
+        assert conn._user_listing is None
 
 
 def _confluence_cloud_search(pages: list) -> MagicMock:
@@ -1684,9 +1558,12 @@ def _cloud_user(account_id: str, email: str = "") -> dict:
 
 
 class TestConfluenceCloudUserListing:
+    """The user search pages by offset with no snapshot, so it can show the authenticator present but
+    never absent; the listing keeps every email it saw for the removal pass."""
+
     def _conn(self, datasource: MagicMock, inactive: set[str] | None = None) -> MagicMock:
         conn = _connector(
-            ConfluenceConnector, _held_back_users=[], _user_list_complete=True, _listed_user_emails={"stale@corp.com"},
+            ConfluenceConnector, _held_back_users=[], _user_listing=None,
             _account_statuses_known=True, _inactive_account_ids=inactive or set(),
         )
         conn._get_fresh_datasource = AsyncMock(return_value=datasource)
@@ -1694,13 +1571,17 @@ class TestConfluenceCloudUserListing:
         conn._save_app_users = AsyncMock()
         conn._withdraw_users_gone_from_source = AsyncMock()
         conn._link_platform_users_via_jira = AsyncMock()
-        conn._authenticator_is_listed = AsyncMock(return_value=True)
+        conn._settle_authenticator = AsyncMock()
         conn._transform_to_app_user = lambda data: SimpleNamespace(
             source_user_id=data["accountId"], email=data["email"],
         )
         return conn
 
-    async def test_a_search_read_to_an_empty_page_is_complete_and_names_every_listed_email(self) -> None:
+    @staticmethod
+    def _presence(conn: MagicMock, email: str = "creator@corp.com") -> Presence:
+        return conn._user_listing.presence(email)
+
+    async def test_a_search_read_to_an_empty_page_names_every_listed_email_but_proves_no_absence(self) -> None:
         datasource = _confluence_cloud_search([
             (200, {"results": [_cloud_user("a1", "Live@corp.com"), _cloud_user("a2", "Gone@corp.com")]}),
             (200, {"results": []}),
@@ -1709,33 +1590,25 @@ class TestConfluenceCloudUserListing:
 
         await ConfluenceConnector._sync_users(conn)
 
-        assert conn._user_list_complete is True
-        assert conn._listed_user_emails == {"live@corp.com", "gone@corp.com"}
+        assert conn._user_listing.emails == {"live@corp.com", "gone@corp.com"}
+        assert self._presence(conn, "gone@corp.com") is Presence.PRESENT
+        assert self._presence(conn) is Presence.UNKNOWN
+        conn._settle_authenticator.assert_awaited_once_with(conn._user_listing)
 
-    async def test_a_search_read_to_the_end_still_needs_the_authenticator_settled(self) -> None:
+    async def test_a_hidden_email_is_an_unidentified_row(self) -> None:
         datasource = _confluence_cloud_search([
             (200, {"results": [_cloud_user("a1", "live@corp.com"), _cloud_user("a2")]}),
             (200, {"results": []}),
         ])
         conn = self._conn(datasource)
-        conn._authenticator_is_listed = AsyncMock(return_value=False)
 
         await ConfluenceConnector._sync_users(conn)
 
-        conn._authenticator_is_listed.assert_awaited_once()
-        assert conn._user_list_complete is False
-        assert conn._listed_user_emails == {"live@corp.com"}
-
-    async def test_an_incomplete_search_does_not_look_the_authenticator_up(self) -> None:
-        conn = self._conn(_confluence_cloud_search([(200, {"results": [_cloud_user("a1", "a@corp.com")]}), (503, {})]))
-
-        await ConfluenceConnector._sync_users(conn)
-
-        conn._authenticator_is_listed.assert_not_awaited()
-        assert conn._user_list_complete is False
+        assert conn._user_listing.emails == {"live@corp.com"}
+        assert self._presence(conn) is Presence.UNKNOWN
 
     @pytest.mark.parametrize("malformed", [{}, {"results": None}, {"results": {"user": {}}}, ["not", "a", "page"]])
-    async def test_a_page_without_a_results_list_is_incomplete_and_keeps_the_emails_seen(self, malformed: object) -> None:
+    async def test_a_page_without_a_results_list_keeps_the_emails_seen(self, malformed: object) -> None:
         datasource = _confluence_cloud_search([
             (200, {"results": [_cloud_user("a1", "Live@corp.com")]}),
             (200, malformed),
@@ -1744,32 +1617,24 @@ class TestConfluenceCloudUserListing:
 
         await ConfluenceConnector._sync_users(conn)
 
-        assert conn._user_list_complete is False
-        assert conn._listed_user_emails == {"live@corp.com"}
-        conn._authenticator_is_listed.assert_not_awaited()
+        assert self._presence(conn, "live@corp.com") is Presence.PRESENT
+        assert self._presence(conn) is Presence.UNKNOWN
 
-    async def test_a_failed_page_is_an_incomplete_search(self) -> None:
-        datasource = _confluence_cloud_search([
-            (200, {"results": [_cloud_user("a1", "live@corp.com")]}),
-            (503, {}),
-        ])
-        conn = self._conn(datasource)
-
-        await ConfluenceConnector._sync_users(conn)
-
-        assert conn._user_list_complete is False
-
-    async def test_a_repeated_page_is_an_incomplete_search(self) -> None:
-        page = (200, {"results": [_cloud_user("a1", "live@corp.com")]})
-        conn = self._conn(_confluence_cloud_search([page, page]))
+    @pytest.mark.parametrize("pages", [
+        [(200, {"results": [_cloud_user("a1", "live@corp.com")]}), (503, {})],
+        [(200, {"results": [_cloud_user("a1", "live@corp.com")]}), (200, {"results": [_cloud_user("a1", "live@corp.com")]})],
+        [(200, {"results": []})],
+    ])
+    async def test_a_failed_repeated_or_empty_search_proves_no_absence(self, pages: list) -> None:
+        conn = self._conn(_confluence_cloud_search(pages))
 
         await ConfluenceConnector._sync_users(conn)
 
-        assert conn._user_list_complete is False
+        assert self._presence(conn) is Presence.UNKNOWN
 
-    async def test_a_capped_search_is_incomplete(self) -> None:
+    async def test_a_listed_creator_is_present_even_on_a_capped_search(self) -> None:
         datasource = _confluence_cloud_search([
-            (200, {"results": [_cloud_user("a1", "a@corp.com"), _cloud_user("a2", "b@corp.com")]}),
+            (200, {"results": [_cloud_user("a1", "Creator@corp.com"), _cloud_user("a2", "b@corp.com")]}),
             (200, {"results": []}),
         ])
         conn = self._conn(datasource)
@@ -1777,22 +1642,15 @@ class TestConfluenceCloudUserListing:
         with patch("app.connectors.sources.atlassian.confluence_cloud.connector.USER_SEARCH_CAP", 2):
             await ConfluenceConnector._sync_users(conn)
 
-        assert conn._user_list_complete is False
+        assert self._presence(conn) is Presence.PRESENT
 
-    async def test_an_empty_search_is_incomplete(self) -> None:
-        conn = self._conn(_confluence_cloud_search([(200, {"results": []})]))
-
-        await ConfluenceConnector._sync_users(conn)
-
-        assert conn._user_list_complete is False
-
-    async def test_a_search_that_raises_never_leaves_a_complete_flag(self) -> None:
+    async def test_a_search_that_raises_never_proves_absence(self) -> None:
         conn = self._conn(MagicMock(search_users=AsyncMock(side_effect=OSError("reset"))))
 
         with pytest.raises(OSError):
             await ConfluenceConnector._sync_users(conn)
 
-        assert conn._user_list_complete is False
+        assert self._presence(conn) is Presence.UNKNOWN
 
 
 def _jira_rows(*rows: dict | str) -> SimpleNamespace:
@@ -1816,17 +1674,26 @@ class TestConfluenceCloudAuthenticatorLookup:
     def _conn(self, search: Callable[[str], object], *, creator: str | None = "Creator@Corp.com",
               listed: set[str] | None = None, auth: dict | None = None) -> MagicMock:
         conn = _connector(
-            ConfluenceConnector, _listed_user_emails=set(listed or ()), _client_policy=None,
-            _authenticated_confluence_email=self.TOKEN,
+            ConfluenceConnector, _client_policy=None, _authenticated_confluence_email=self.TOKEN,
         )
+        self.listed = set(listed or ())
         conn.authenticator_email = AsyncMock(return_value=creator)
         conn.config_service = MagicMock(get_config=AsyncMock(return_value={"auth": auth or {"authType": "API_TOKEN"}}))
         datasource = MagicMock(search_jira_users=AsyncMock(side_effect=search))
         conn._get_fresh_datasource = AsyncMock(return_value=datasource)
-        for name in ("_authenticator_is_listed", "_jira_user_search_allowed", "_find_jira_accounts",
+        for name in ("_settle_authenticator", "_jira_user_search_allowed", "_find_jira_accounts",
                      "_forget_jira_quota"):
             setattr(conn, name, partial(getattr(ConfluenceConnector, name), conn))
         return conn
+
+    async def _settled(self, conn: MagicMock) -> Presence:
+        """What the lookup leaves the creator as, after a user search that showed ``listed``."""
+        listing = SourceUserListing(includes_inactive=False)
+        for email in self.listed or {"someone@corp.com"}:
+            listing.add_row(email)
+        listing.finish()
+        await ConfluenceConnector._settle_authenticator(conn, listing)
+        return listing.presence("creator@corp.com")
 
     def _by_query(self, creator_rows: list, token_rows: list | None = None) -> Callable[[str], object]:
         token = [_jira_account("tok", self.TOKEN)] if token_rows is None else token_rows
@@ -1835,27 +1702,25 @@ class TestConfluenceCloudAuthenticatorLookup:
     async def test_a_listed_authenticator_needs_no_lookup(self) -> None:
         conn = self._conn(lambda *_, **__: pytest.fail("looked up"), listed={"creator@corp.com"})
 
-        assert await ConfluenceConnector._authenticator_is_listed(conn) is True
+        assert await self._settled(conn) is Presence.PRESENT
 
     async def test_not_found_by_the_active_only_search_is_incomplete_whatever_the_token_account_shows(self) -> None:
         conn = self._conn(self._by_query([_jira_account("a1", "someone.else@corp.com")]))
 
-        assert await ConfluenceConnector._authenticator_is_listed(conn) is False
-        assert "creator@corp.com" not in conn._listed_user_emails
+        assert await self._settled(conn) is Presence.UNKNOWN
         searched = [c.args[0] for c in conn._get_fresh_datasource.return_value.search_jira_users.await_args_list]
         assert searched == ["creator@corp.com"]
 
     async def test_an_authenticator_jira_finds_is_listed(self) -> None:
         conn = self._conn(self._by_query([_jira_account("a1", "creator@corp.com")]))
 
-        assert await ConfluenceConnector._authenticator_is_listed(conn) is True
-        assert "creator@corp.com" in conn._listed_user_emails
+        assert await self._settled(conn) is Presence.PRESENT
 
     async def test_an_authenticator_jira_finds_on_a_full_page_with_app_accounts_is_listed(self) -> None:
         rows = [_jira_account(f"bot{i}", kind="app") for i in range(49)] + [_jira_account("a1", "creator@corp.com")]
         conn = self._conn(self._by_query(rows))
 
-        assert await ConfluenceConnector._authenticator_is_listed(conn) is True
+        assert await self._settled(conn) is Presence.PRESENT
 
     @pytest.mark.parametrize("search", [
         lambda query, **_: _jira_rows(),
@@ -1873,18 +1738,18 @@ class TestConfluenceCloudAuthenticatorLookup:
     ) -> None:
         conn = self._conn(search)
 
-        assert await ConfluenceConnector._authenticator_is_listed(conn) is False
+        assert await self._settled(conn) is Presence.UNKNOWN
 
     async def test_no_authenticator_email_is_incomplete(self) -> None:
         conn = self._conn(self._by_query([]), creator=None)
 
-        assert await ConfluenceConnector._authenticator_is_listed(conn) is False
+        assert await self._settled(conn) is Presence.UNKNOWN
 
     async def test_an_oauth_app_without_jira_access_is_incomplete_without_a_lookup(self) -> None:
         conn = self._conn(lambda *_, **__: pytest.fail("looked up"), auth={"authType": "OAUTH"})
         conn._include_jira_scope_setting = AsyncMock(return_value=False)
 
-        assert await ConfluenceConnector._authenticator_is_listed(conn) is False
+        assert await self._settled(conn) is Presence.UNKNOWN
 
     async def test_the_pause_a_jira_quota_hit_set_is_undone(self) -> None:
         conn = self._conn(self._by_query([]))
@@ -1896,7 +1761,7 @@ class TestConfluenceCloudAuthenticatorLookup:
 
         conn._get_fresh_datasource.return_value.search_jira_users = AsyncMock(side_effect=search)
 
-        assert await ConfluenceConnector._authenticator_is_listed(conn) is False
+        assert await self._settled(conn) is Presence.UNKNOWN
         assert conn._client_policy.quota_reset_at is None
 
     async def test_a_pause_this_lookup_did_not_set_stays(self) -> None:
@@ -1911,7 +1776,7 @@ class TestConfluenceCloudAuthenticatorLookup:
 
         conn._get_fresh_datasource.return_value.search_jira_users = AsyncMock(side_effect=search)
 
-        assert await ConfluenceConnector._authenticator_is_listed(conn) is False
+        assert await self._settled(conn) is Presence.UNKNOWN
         assert conn._client_policy.quota_reset_at == other
 
     async def test_a_pause_set_after_this_lookups_own_stays(self) -> None:
@@ -1926,7 +1791,7 @@ class TestConfluenceCloudAuthenticatorLookup:
 
         conn._get_fresh_datasource.return_value.search_jira_users = AsyncMock(side_effect=search)
 
-        assert await ConfluenceConnector._authenticator_is_listed(conn) is False
+        assert await self._settled(conn) is Presence.UNKNOWN
         assert conn._client_policy.quota_reset_at == later
 
 
@@ -1935,7 +1800,7 @@ class TestConfluenceDataCenterSyncOrder:
         step = _steps(order)
         conn = _connector(
             ConfluenceDataCenterConnector, external_client=MagicMock(), data_source=MagicMock(),
-            config_service=MagicMock(), _users_listing_complete=True, _listed_user_emails={"stale@corp.com"},
+            config_service=MagicMock(), _user_listing=_creator_listing("stale@corp.com"),
         )
         conn.data_entities_processor = MagicMock(org_id="org")
         conn.drop_authenticator_link_if_listed = step("drop")
@@ -1955,7 +1820,7 @@ class TestConfluenceDataCenterSyncOrder:
 
         assert order == ["drop", "users", "register"]
 
-    async def test_a_flag_left_by_an_earlier_run_is_reset_before_the_listing(self) -> None:
+    async def test_a_listing_left_by_an_earlier_run_is_reset_before_the_listing(self) -> None:
         conn = self._conn([])
         conn._sync_users = AsyncMock(side_effect=RuntimeError("down"))
 
@@ -1965,27 +1830,34 @@ class TestConfluenceDataCenterSyncOrder:
         ), pytest.raises(RuntimeError):
             await ConfluenceDataCenterConnector.run_sync(conn)
 
-        assert conn._users_listing_complete is False and conn._listed_user_emails == set()
+        assert conn._user_listing is None
 
-    async def test_the_full_pass_carries_the_listing_state(self) -> None:
-        conn = _connector(
-            ConfluenceDataCenterConnector, data_source=MagicMock(), _users_listing_complete=False,
-            _listed_user_emails={"creator@corp.com"},
-        )
+    async def test_the_full_pass_carries_the_listing(self) -> None:
+        listing = _creator_listing("creator@corp.com")
+        conn = _connector(ConfluenceDataCenterConnector, data_source=MagicMock(), _user_listing=listing)
         datasource = MagicMock(get_current_user_v1=AsyncMock(
             return_value=_json_response(200, {"userKey": "k", "email": "dev@corp.com"})))
         conn._get_fresh_datasource = AsyncMock(return_value=datasource)
 
         await ConfluenceDataCenterConnector._register_authenticated_identity(conn)
 
-        kwargs = conn.register_authenticated_source_user.await_args.kwargs
-        assert kwargs["listing_complete"] is False
-        assert kwargs["extra_present_emails"] == {"creator@corp.com"}
+        assert conn.register_authenticated_source_user.await_args.kwargs == {"listing": listing}
+
+    async def test_an_unreadable_account_still_runs_the_removal_pass_with_the_listing(self) -> None:
+        listing = _creator_listing("creator@corp.com")
+        conn = _connector(ConfluenceDataCenterConnector, data_source=MagicMock(), _user_listing=listing)
+        datasource = MagicMock(get_current_user_v1=AsyncMock(return_value=_json_response(401, {})))
+        conn._get_fresh_datasource = AsyncMock(return_value=datasource)
+
+        await ConfluenceDataCenterConnector._register_authenticated_identity(conn)
+
+        conn.drop_authenticator_link_if_listed.assert_awaited_once_with(listing)
+        conn.register_authenticated_source_user.assert_not_awaited()
 
 
 class TestConfluenceDataCenterUserListing:
     def _conn(self, pages: list) -> MagicMock:
-        conn = _connector(ConfluenceDataCenterConnector, _users_listing_complete=False, _listed_user_emails=set())
+        conn = _connector(ConfluenceDataCenterConnector, _user_listing=None)
         responses = [SimpleNamespace(status=status, json=lambda body=body: body) for status, body in pages]
         self.datasource_calls = responses
         datasource = MagicMock(get_user_list_v1=AsyncMock(side_effect=responses))
@@ -1999,6 +1871,16 @@ class TestConfluenceDataCenterUserListing:
         return conn
 
     @staticmethod
+    def _read_in_full(conn: MagicMock) -> bool:
+        """Whether the listing was read to its end with every row identified. /user/list may leave
+        deactivated users out, so on its own it proves no one absent: only a lookup's answer would."""
+        listing = conn._user_listing
+        if listing.presence("creator@corp.com") is not Presence.UNKNOWN:
+            return False
+        listing.settle("creator@corp.com", Presence.ABSENT)
+        return listing.presence("creator@corp.com") is Presence.ABSENT
+
+    @staticmethod
     def _users(count: int, prefix: str = "u") -> dict:
         return {"results": [{"userKey": f"{prefix}{i}", "email": f"{prefix}{i}@corp.com"} for i in range(count)]}
 
@@ -2007,29 +1889,44 @@ class TestConfluenceDataCenterUserListing:
 
         await ConfluenceDataCenterConnector._sync_users(conn)
 
-        assert conn._users_listing_complete is True
-        assert conn._listed_user_emails == {"u0@corp.com", "u1@corp.com", "u2@corp.com"}
+        assert self._read_in_full(conn) is True
+        assert conn._user_listing.emails == {"u0@corp.com", "u1@corp.com", "u2@corp.com"}
+
+    async def test_a_listed_creator_is_present(self) -> None:
+        conn = self._conn([(200, {"results": [{"userKey": "c", "email": "Creator@corp.com"}]})])
+
+        await ConfluenceDataCenterConnector._sync_users(conn)
+
+        assert conn._user_listing.presence("creator@corp.com") is Presence.PRESENT
+
+    async def test_an_unlisted_creator_is_never_absent_without_a_lookup(self) -> None:
+        conn = self._conn([(200, self._users(3))])
+
+        await ConfluenceDataCenterConnector._sync_users(conn)
+
+        assert conn._user_listing.includes_inactive is False
+        assert conn._user_listing.presence("creator@corp.com") is Presence.UNKNOWN
 
     async def test_a_full_page_then_an_empty_one_is_complete(self) -> None:
         conn = self._conn([(200, self._users(200)), (200, {"results": []})])
 
         await ConfluenceDataCenterConnector._sync_users(conn)
 
-        assert conn._users_listing_complete is True
+        assert self._read_in_full(conn) is True
 
     async def test_a_failed_page_is_an_incomplete_listing(self) -> None:
         conn = self._conn([(200, self._users(200)), (500, {})])
 
         await ConfluenceDataCenterConnector._sync_users(conn)
 
-        assert conn._users_listing_complete is False
+        assert self._read_in_full(conn) is False
 
     async def test_an_empty_listing_is_incomplete(self) -> None:
         conn = self._conn([(200, {"results": []})])
 
         await ConfluenceDataCenterConnector._sync_users(conn)
 
-        assert conn._users_listing_complete is False
+        assert self._read_in_full(conn) is False
 
     async def test_a_short_page_with_a_next_link_keeps_paging_to_the_last_page(self) -> None:
         first = {**self._users(3), "_links": {"next": "/rest/api/user/list?start=3"}}
@@ -2038,8 +1935,8 @@ class TestConfluenceDataCenterUserListing:
 
         await ConfluenceDataCenterConnector._sync_users(conn)
 
-        assert conn._users_listing_complete is True
-        assert conn._listed_user_emails == {"u0@corp.com", "u1@corp.com", "u2@corp.com", "v0@corp.com", "v1@corp.com"}
+        assert self._read_in_full(conn) is True
+        assert conn._user_listing.emails == {"u0@corp.com", "u1@corp.com", "u2@corp.com", "v0@corp.com", "v1@corp.com"}
         starts = [c.kwargs["start"] for c in conn._get_fresh_datasource.return_value.get_user_list_v1.await_args_list]
         assert starts == [0, 3]
 
@@ -2049,14 +1946,14 @@ class TestConfluenceDataCenterUserListing:
 
         await ConfluenceDataCenterConnector._sync_users(conn)
 
-        assert conn._users_listing_complete is False
+        assert self._read_in_full(conn) is False
 
     async def test_a_last_page_without_a_next_link_is_complete(self) -> None:
         conn = self._conn([(200, {**self._users(3), "_links": {}})])
 
         await ConfluenceDataCenterConnector._sync_users(conn)
 
-        assert conn._users_listing_complete is True
+        assert self._read_in_full(conn) is True
 
     @pytest.mark.parametrize("malformed", [{}, {"results": None}, {"results": {"userKey": "u0"}}])
     async def test_a_page_without_a_results_list_is_an_incomplete_listing(self, malformed: dict) -> None:
@@ -2065,18 +1962,19 @@ class TestConfluenceDataCenterUserListing:
 
         await ConfluenceDataCenterConnector._sync_users(conn)
 
-        assert conn._users_listing_complete is False
+        assert self._read_in_full(conn) is False
 
     @pytest.mark.parametrize("pages", [
         [(200, {"results": [{"userKey": "u0", "email": "u0@corp.com"}, {"userKey": "u1", "email": ""}]})],
         [(200, {"results": [{"userKey": "u1"}], "_links": {"next": "/x"}}), (200, {"results": []})],
     ])
-    async def test_a_listed_row_without_an_email_leaves_the_listing_incomplete(self, pages: list) -> None:
+    async def test_a_listed_row_without_an_email_is_an_unidentified_row(self, pages: list) -> None:
         conn = self._conn(pages)
 
         await ConfluenceDataCenterConnector._sync_users(conn)
 
-        assert conn._users_listing_complete is False
+        assert conn._user_listing.presence("creator@corp.com") is Presence.UNKNOWN
+        assert "u1@corp.com" not in conn._user_listing.emails
 
     async def test_a_row_that_raises_is_never_a_complete_listing(self) -> None:
         conn = self._conn([(200, self._users(3))])
@@ -2085,7 +1983,7 @@ class TestConfluenceDataCenterUserListing:
         with pytest.raises(ValueError):
             await ConfluenceDataCenterConnector._sync_users(conn)
 
-        assert conn._users_listing_complete is False
+        assert self._read_in_full(conn) is False
 
 
 # ---------------------------------------------------------------------------
@@ -2106,7 +2004,7 @@ class TestSlackSyncOrder:
         step = _steps(order)
         conn = _connector(
             SlackConnector, external_client=MagicMock(), config_service=MagicMock(),
-            _users_read_failed=False, _users_listing_cut=False, _listed_user_emails={"stale@corp.com"},
+            _users_read_failed=False, _user_listing=_finished("stale@corp.com"),
         )
         conn.data_entities_processor = MagicMock(org_id="org")
         conn.drop_authenticator_link_if_listed = step("drop")
@@ -2154,7 +2052,7 @@ class TestSlackUserListing:
         conn = _connector(
             SlackConnector, user_id_to_email_cache={}, user_id_to_internal_id_cache={}, user_id_to_name_cache={},
             rate_limiter=MagicMock(acquire=AsyncMock()), _full_sync_read_failed=False,
-            _users_read_failed=False, _users_listing_cut=False, _listed_user_emails=set(),
+            _users_read_failed=False, _user_listing=None,
         )
         datasource = MagicMock(users_list=AsyncMock(side_effect=pages))
         conn._fresh_datasource = AsyncMock(return_value=datasource)
@@ -2170,7 +2068,7 @@ class TestSlackUserListing:
 
     @staticmethod
     def _complete(conn: MagicMock) -> bool:
-        return not (conn._users_read_failed or conn._users_listing_cut)
+        return _nobody(conn) is Presence.ABSENT
 
     async def test_a_listing_read_to_its_last_page_is_complete(self) -> None:
         conn = self._conn([
@@ -2180,7 +2078,7 @@ class TestSlackUserListing:
         await SlackConnector._sync_users(conn)
 
         assert self._complete(conn)
-        assert conn._listed_user_emails == {"a@corp.com", "b@corp.com"}
+        assert conn._user_listing.emails == {"a@corp.com", "b@corp.com"}
 
     @pytest.mark.parametrize("deleted", [False, True])
     async def test_a_person_without_an_email_makes_the_listing_incomplete(self, deleted: bool) -> None:
@@ -2209,7 +2107,7 @@ class TestSlackUserListing:
 
         await SlackConnector._sync_users(conn)
 
-        assert conn._listed_user_emails == {"active@corp.com", "gone@corp.com", "guest@corp.com"}
+        assert conn._user_listing.emails == {"active@corp.com", "gone@corp.com", "guest@corp.com"}
 
     async def test_a_failed_or_cut_user_page_never_links(self) -> None:
         failed = self._conn([
@@ -2224,28 +2122,24 @@ class TestSlackUserListing:
 
         assert [self._complete(c) for c in (failed, empty_with_more, nothing, bad_row)] == [False] * 4
 
-    async def test_a_flag_left_by_an_earlier_sync_is_reset(self) -> None:
+    async def test_a_listing_left_by_an_earlier_sync_is_replaced(self) -> None:
         conn = self._conn([self._page([_slack_member("U1", "a@corp.com")])])
-        conn._users_listing_cut = True
-        conn._listed_user_emails = {"stale@corp.com"}
+        conn._user_listing = _cut("stale@corp.com")
 
         await SlackConnector._sync_users(conn)
 
-        assert self._complete(conn) and conn._listed_user_emails == {"a@corp.com"}
+        assert self._complete(conn) and conn._user_listing.emails == {"a@corp.com"}
 
-    async def test_the_full_pass_carries_the_listing_state(self) -> None:
+    async def test_the_full_pass_carries_the_listing(self) -> None:
         conn = self._conn([])
-        conn._users_listing_cut = True
-        conn._listed_user_emails = {"creator@corp.com"}
+        conn._user_listing = _cut("creator@corp.com")
         conn.user_id_to_email_cache = {"U0ALICE": "alice@corp.com"}
         auth = SimpleNamespace(success=True, data={"user_id": "U0ALICE"})
         conn._fresh_datasource = AsyncMock(return_value=MagicMock(auth_test=AsyncMock(return_value=auth)))
 
         await SlackConnector._register_authenticated_identity(conn)
 
-        kwargs = conn.register_authenticated_source_user.await_args.kwargs
-        assert kwargs["listing_complete"] is False
-        assert kwargs["extra_present_emails"] == {"creator@corp.com"}
+        assert conn.register_authenticated_source_user.await_args.kwargs == {"listing": conn._user_listing}
 
     async def test_bot_token_still_unlinks(self) -> None:
         conn = self._conn([])
@@ -2291,32 +2185,43 @@ class TestGitHubTeamsListing:
     def _ok(*members: object) -> SimpleNamespace:
         return SimpleNamespace(success=True, data=list(members))
 
-    async def test_every_org_read_to_its_end_is_a_complete_listing(self) -> None:
+    @staticmethod
+    def _presence(users: object, email: str = "creator@corp.com") -> Presence:
+        return users.listing.presence(email)
+
+    async def test_every_org_read_to_its_end_proves_an_unlisted_creator_absent(self) -> None:
         users = self._users({
             "o1": self._ok(self._member(1, "A@corp.com")), "o2": self._ok(self._member(2, "b@corp.com")),
         })
 
         await users.sync_users()
 
-        assert users.listing_complete is True
-        assert users.listed_emails() == {"a@corp.com", "b@corp.com"}
+        assert self._presence(users) is Presence.ABSENT
+        assert users.listing.emails == {"a@corp.com", "b@corp.com"}
 
-    async def test_a_member_whose_email_stays_unresolved_makes_the_listing_incomplete(self) -> None:
+    async def test_a_listed_creator_is_present(self) -> None:
+        users = self._users({"o1": self._ok(self._member(1, "Creator@corp.com"))})
+
+        await users.sync_users()
+
+        assert self._presence(users) is Presence.PRESENT
+
+    async def test_a_member_whose_email_stays_unresolved_leaves_the_creator_unknown(self) -> None:
         users = self._users({"o1": self._ok(self._member(1, "a@corp.com"), self._member(2))})
 
         await users.sync_users()
 
-        assert users.listing_complete is False
-        assert users.listed_emails() == {"a@corp.com"}
+        assert self._presence(users) is Presence.UNKNOWN
+        assert self._presence(users, "a@corp.com") is Presence.PRESENT
 
-    async def test_an_outside_collaborator_whose_email_stays_unresolved_makes_the_listing_incomplete(self) -> None:
+    async def test_an_outside_collaborator_whose_email_stays_unresolved_leaves_the_creator_unknown(self) -> None:
         users = self._users({"o1": self._ok(self._member(1, "a@corp.com"))}, outside=self._ok(self._member(3)))
 
         await users.sync_users()
 
-        assert users.listing_complete is False
+        assert self._presence(users) is Presence.UNKNOWN
 
-    async def test_one_failed_org_is_an_incomplete_listing(self) -> None:
+    async def test_one_failed_org_leaves_the_creator_unknown(self) -> None:
         users = self._users({
             "o1": self._ok(self._member(1, "a@corp.com")),
             "o2": SimpleNamespace(success=False, error="boom", status_code=500),
@@ -2324,9 +2229,9 @@ class TestGitHubTeamsListing:
 
         await users.sync_users()
 
-        assert users.listing_complete is False
+        assert self._presence(users) is Presence.UNKNOWN
 
-    async def test_a_failed_outside_collaborator_listing_is_incomplete(self) -> None:
+    async def test_a_failed_outside_collaborator_listing_leaves_the_creator_unknown(self) -> None:
         users = self._users(
             {"o1": self._ok(self._member(1, "a@corp.com"))},
             outside=SimpleNamespace(success=False, error="forbidden"),
@@ -2334,41 +2239,39 @@ class TestGitHubTeamsListing:
 
         await users.sync_users()
 
-        assert users.listing_complete is False
+        assert self._presence(users) is Presence.UNKNOWN
 
-    async def test_an_empty_listing_and_a_non_org_login_are_incomplete(self) -> None:
+    async def test_an_empty_listing_and_a_non_org_login_leave_the_creator_unknown(self) -> None:
         empty = self._users({"o1": self._ok()})
         not_an_org = self._users({"me": SimpleNamespace(success=False, error="nf", status_code=404)})
         for users in (empty, not_an_org):
             await users.sync_users()
 
-        assert (empty.listing_complete, not_an_org.listing_complete) == (False, False)
+        assert (self._presence(empty), self._presence(not_an_org)) == (Presence.UNKNOWN, Presence.UNKNOWN)
 
-    async def test_a_failed_persist_is_never_a_complete_listing(self) -> None:
+    async def test_a_failed_persist_never_proves_absence(self) -> None:
         users = self._users({"o1": self._ok(self._member(1, "a@corp.com"))})
         users._persist_app_users = AsyncMock(side_effect=RuntimeError("store down"))
 
         with pytest.raises(RuntimeError):
             await users.sync_users()
 
-        assert users.listing_complete is False
+        assert self._presence(users) is Presence.UNKNOWN
 
-    async def test_the_state_of_an_earlier_sync_is_reset(self) -> None:
+    async def test_the_listing_of_an_earlier_sync_is_replaced(self) -> None:
         users = self._users({"o1": self._ok(self._member(1, "a@corp.com"))})
         await users.sync_users()
         users._resolve_target_orgs = AsyncMock(return_value=([], True))
 
         await users.sync_users()
 
-        assert users.listing_complete is False and users.listed_emails() == set()
+        assert self._presence(users) is Presence.UNKNOWN and users.listing.emails == frozenset()
 
     async def test_registration_still_uses_the_resolved_email(self) -> None:
+        listing = SourceUserListing(includes_inactive=True)
         conn = _connector(
             GitHubTeamsConnector, data_source=MagicMock(), runtime=MagicMock(),
-            users=MagicMock(
-                resolved_email=MagicMock(return_value="dev@corp.com"), listing_complete=False,
-                listed_emails=MagicMock(return_value={"creator@corp.com"}),
-            ),
+            users=MagicMock(resolved_email=MagicMock(return_value="dev@corp.com"), listing=listing),
         )
         me = SimpleNamespace(success=True, data=SimpleNamespace(email=None, id=7))
         conn.runtime.ds_call = AsyncMock(return_value=me)
@@ -2376,9 +2279,7 @@ class TestGitHubTeamsListing:
         await GitHubTeamsConnector._register_authenticated_identity(conn)
 
         assert _registered(conn) == ("dev@corp.com", "7")
-        kwargs = conn.register_authenticated_source_user.await_args.kwargs
-        assert kwargs["listing_complete"] is False
-        assert kwargs["extra_present_emails"] == {"creator@corp.com"}
+        assert conn.register_authenticated_source_user.await_args.kwargs == {"listing": listing}
 
 
 class TestGitHubTeamsSyncOrder:
@@ -2403,9 +2304,14 @@ class TestGitHubTeamsListingReads:
         conn.data_source = MagicMock()
         conn.data_entities_processor.org_id = "org-fix1"
         conn.runtime.ds_call = ds_call
-        users = UsersSync(conn)
-        users._listing_read_to_the_end = True
-        return users
+        return UsersSync(conn)
+
+    @staticmethod
+    def _proves_absence(users: object) -> bool:
+        """Whether the listing, with one more named member and finished, still proves the creator absent."""
+        users.listing.add_row("someone@corp.com")
+        users.listing.finish()
+        return users.listing.presence("creator@corp.com") is Presence.ABSENT
 
     @staticmethod
     def _members(count: int, base: int = 5000) -> dict:
@@ -2420,7 +2326,7 @@ class TestGitHubTeamsListingReads:
 
         await users._enrich_members_with_full_profile(members, set(members))
 
-        assert users._listing_read_to_the_end is False
+        assert self._proves_absence(users) is False
 
     async def test_profiles_all_fetched_leave_the_listing_complete(self) -> None:
         async def ds_call(fn: object, login: str) -> object:
@@ -2431,7 +2337,7 @@ class TestGitHubTeamsListingReads:
 
         await users._enrich_members_with_full_profile(members, set(members))
 
-        assert users._listing_read_to_the_end is True
+        assert self._proves_absence(users) is True
 
     async def test_a_failure_after_an_earlier_verified_domain_chunk_is_incomplete(self) -> None:
         answers = iter([SimpleNamespace(success=True, data={}), SimpleNamespace(success=False, error="502")])
@@ -2445,7 +2351,7 @@ class TestGitHubTeamsListingReads:
 
         await users._resolve_via_verified_domains(members, set(members), ["org1"])
 
-        assert users._listing_read_to_the_end is False
+        assert self._proves_absence(users) is False
 
     @pytest.mark.parametrize("failure", [
         SimpleNamespace(success=False, error="502", status_code=502, exception_type="GitHubHTTPError"),
@@ -2465,7 +2371,7 @@ class TestGitHubTeamsListingReads:
 
         await users._resolve_via_verified_domains(members, set(members), ["org1"])
 
-        assert users._listing_read_to_the_end is False
+        assert self._proves_absence(users) is False
 
     @pytest.mark.parametrize("refusal", [
         SimpleNamespace(success=False, error="403 not an owner"),
@@ -2481,7 +2387,7 @@ class TestGitHubTeamsListingReads:
 
         await users._resolve_via_verified_domains(members, set(members), ["org1"])
 
-        assert users._listing_read_to_the_end is True
+        assert self._proves_absence(users) is True
 
 
 class TestUserSyncRaisesNoFullPass:

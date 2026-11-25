@@ -1,8 +1,8 @@
-"""Linear links the user who authenticated the connector only after a complete user listing.
+"""Linear links the user who authenticated the connector only when its user listing proves them absent.
 
 The removal pass runs before the user listing. The full pass runs once the users are written and the
-absent ones withdrawn, told whether the listing was read in full and every listed account's email,
-a guest too (its connector access is withdrawn).
+absent ones withdrawn, with the listing the user sync built: every listed account, suspended ones and
+guests too (their connector access is withdrawn).
 """
 
 from collections.abc import AsyncIterator
@@ -10,6 +10,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.connectors.core.base.connector.source_user_listing import (
+    Presence,
+    SourceUserListing,
+)
 from app.connectors.core.registry.filters import FilterCollection
 from app.connectors.sources.linear import connector as connector_module
 from app.connectors.sources.linear.api_gateway import LinearPaginationError
@@ -34,8 +38,11 @@ def _listing(connector: LinearConnector, users: list[dict], error: Exception | N
     connector._api.pages = pages
 
 
+CREATOR = "creator@corp.com"
+
+
 @pytest.mark.asyncio
-async def test_a_listing_read_to_its_end_is_complete_and_names_every_listed_account() -> None:
+async def test_a_listing_read_to_its_end_proves_an_unlisted_creator_absent_and_names_every_account() -> None:
     # Guests and suspended accounts are listed too, and are withdrawn from the connector like
     # other non-full members.
     connector = _make_connector()
@@ -44,13 +51,22 @@ async def test_a_listing_read_to_its_end_is_complete_and_names_every_listed_acco
         {"id": "u2", "email": "guest@corp.com", "active": True, "guest": True},
         {"id": "u4", "email": "Suspended@Corp.com", "active": False},
     ])
-    connector._listed_user_emails = {"stale@corp.com"}
 
     users = await connector._fetch_users()
 
-    assert connector._users_listing_complete is True
-    assert connector._listed_user_emails == {"live@corp.com", "guest@corp.com", "suspended@corp.com"}
+    assert connector._user_listing.presence(CREATOR) is Presence.ABSENT
+    assert connector._user_listing.emails == {"live@corp.com", "guest@corp.com", "suspended@corp.com"}
     assert "suspended@corp.com" not in {u.email for u in users}
+
+
+@pytest.mark.asyncio
+async def test_a_suspended_creator_is_present() -> None:
+    connector = _make_connector()
+    _listing(connector, [{"id": "u1", "email": "a@corp.com"}, {"id": "u4", "email": "Creator@Corp.com", "active": False}])
+
+    await connector._fetch_users()
+
+    assert connector._user_listing.presence(CREATOR) is Presence.PRESENT
 
 
 @pytest.mark.asyncio
@@ -89,38 +105,36 @@ async def test_the_users_query_passes_include_disabled_to_linear() -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_listed_account_without_an_email_leaves_the_listing_incomplete() -> None:
-    # Linear's User.email is non-null: a row without one is malformed, and may be the authenticator.
+async def test_a_listed_account_without_an_email_leaves_the_creator_unknown() -> None:
+    # A row without an email may be the authenticator.
     connector = _make_connector()
     _listing(connector, [{"id": "u1", "email": "live@corp.com", "active": True}, {"id": "u3", "active": True}])
 
     await connector._fetch_users()
 
-    assert connector._users_listing_complete is False
-    assert connector._listed_user_emails == {"live@corp.com"}
+    assert connector._user_listing.presence(CREATOR) is Presence.UNKNOWN
+    assert connector._user_listing.presence("live@corp.com") is Presence.PRESENT
 
 
 @pytest.mark.asyncio
-async def test_an_empty_listing_is_incomplete() -> None:
+async def test_an_empty_listing_leaves_the_creator_unknown() -> None:
     connector = _make_connector()
     _listing(connector, [])
-    connector._users_listing_complete = True
 
     await connector._fetch_users()
 
-    assert connector._users_listing_complete is False
+    assert connector._user_listing.presence(CREATOR) is Presence.UNKNOWN
 
 
 @pytest.mark.asyncio
-async def test_a_listing_that_cannot_continue_is_incomplete() -> None:
+async def test_a_listing_that_cannot_continue_leaves_the_creator_unknown() -> None:
     connector = _make_connector()
     _listing(connector, [{"id": "u1", "email": "a@corp.com"}], error=LinearPaginationError("more without a cursor"))
-    connector._users_listing_complete = True
 
     with pytest.raises(RuntimeError):
         await connector._fetch_users()
 
-    assert connector._users_listing_complete is False
+    assert connector._user_listing.presence(CREATOR) is Presence.UNKNOWN
 
 
 class TestRunOrder:
@@ -196,19 +210,18 @@ class TestRunOrder:
     async def test_a_flag_left_by_an_earlier_run_is_reset_before_the_removal_pass(self) -> None:
         order: list[str] = []
         connector = self._conn(order, active=[])
-        connector._users_listing_complete, connector._listed_user_emails = True, {"stale@corp.com"}
+        connector._user_listing = SourceUserListing(includes_inactive=True)
 
         await self._run(connector)
 
-        assert connector._users_listing_complete is False and connector._listed_user_emails == set()
+        assert connector._user_listing is None
 
 
 @pytest.mark.asyncio
 async def test_the_full_pass_carries_the_listing_state() -> None:
     connector = _make_connector()
     connector.data_source = MagicMock()
-    connector._users_listing_complete = True
-    connector._listed_user_emails = {"creator@corp.com"}
+    listing = connector._user_listing = SourceUserListing(includes_inactive=True)
     connector.register_authenticated_source_user = AsyncMock()
     datasource = MagicMock()
     datasource.viewer = AsyncMock(return_value=MagicMock(success=True, data={"viewer": {"id": "v1", "email": "a@corp.com"}}))
@@ -216,6 +229,4 @@ async def test_the_full_pass_carries_the_listing_state() -> None:
 
     await connector._register_authenticated_identity()
 
-    assert connector.register_authenticated_source_user.await_args.kwargs == {
-        "listing_complete": True, "extra_present_emails": {"creator@corp.com"},
-    }
+    assert connector.register_authenticated_source_user.await_args.kwargs == {"listing": listing}

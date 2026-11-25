@@ -1,8 +1,8 @@
-"""ServiceNow links the user who authenticated the connector only after a complete user listing.
+"""ServiceNow links the user who authenticated the connector only when its user listing proves them absent.
 
 The removal pass runs before anything else in a sync. The full pass runs once the users are written,
-told whether the listing was read in full and every listed user's email, an inactive one too (its
-connector access is withdrawn, so no stored edge shows it as listed).
+with the listing the user sync built: every listed user, an inactive one too. A full read lists every
+user; a delta, or a full read with a user that has no email, is settled by looking the authenticator up.
 """
 
 from collections.abc import AsyncIterator
@@ -11,6 +11,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from servicenow_fakes import T0, FakeServiceNow, MemorySyncPoint, wire_listing
 
+from app.connectors.core.base.connector.source_user_listing import (
+    Presence,
+    SourceUserListing,
+)
 from app.sources.external.servicenow.models import TableAPIRecord
 
 
@@ -36,32 +40,18 @@ class _Stop(Exception):
     pass
 
 
-async def test_a_full_listing_is_complete_and_names_every_email_whatever_the_status(servicenow_connector) -> None:
-    sc = servicenow_connector
-    _wire_users(sc, [_user(1, "Live@Corp.com"), _user(2, "Gone@corp.com", active="false"), _user(3, email="")])
-    sc._listed_user_emails = {"stale@corp.com"}
-
-    await sc._sync_users()
-
-    assert sc._users_listing_complete is True
-    assert sc._listed_user_emails == {"live@corp.com", "gone@corp.com"}
+CREATOR = "creator@corp.com"
 
 
-async def test_an_empty_full_listing_is_incomplete(servicenow_connector) -> None:
-    sc = servicenow_connector
-    _wire_users(sc, [])
-    sc._users_listing_complete = True
-
-    await sc._sync_users()
-
-    assert sc._users_listing_complete is False
+def _presence(sc) -> Presence:
+    return sc._user_listing.presence(CREATOR)
 
 
 _VISIBLE = object()
 
 
 def _lookup(
-    sc, rows: list | None = None, error: Exception | None = None, email: str | None = "creator@corp.com",
+    sc, rows: list | None = None, error: Exception | None = None, email: str | None = CREATOR,
     total: object = _VISIBLE,
 ) -> AsyncMock:
     """The authenticator's lookup answers ``rows``, counted ``total`` before ACLs (by default, every row shows)."""
@@ -80,33 +70,95 @@ def _lookup(
     return lookup
 
 
+async def test_a_full_listing_proves_an_unlisted_creator_absent_and_names_every_email_whatever_the_status(
+    servicenow_connector,
+) -> None:
+    sc = servicenow_connector
+    _wire_users(sc, [_user(1, "Live@Corp.com"), _user(2, "Gone@corp.com", active="false")])
+    lookup = _lookup(sc)
+
+    await sc._sync_users()
+
+    assert _presence(sc) is Presence.ABSENT
+    assert sc._user_listing.emails == {"live@corp.com", "gone@corp.com"}
+    lookup.assert_not_awaited()
+
+
+async def test_an_inactive_creator_in_a_full_listing_is_present(servicenow_connector) -> None:
+    sc = servicenow_connector
+    _wire_users(sc, [_user(1), _user(2, "Creator@corp.com", active="false")])
+
+    await sc._sync_users()
+
+    assert _presence(sc) is Presence.PRESENT
+
+
+async def test_a_user_without_an_email_in_a_full_listing_is_settled_by_the_lookup(servicenow_connector) -> None:
+    sc = servicenow_connector
+    _wire_users(sc, [_user(1), _user(3, email="")])
+    lookup = _lookup(sc, [])
+
+    await sc._sync_users()
+
+    lookup.assert_awaited_once()
+    assert _presence(sc) is Presence.ABSENT
+
+
+async def test_a_user_without_an_email_and_a_failed_lookup_leave_the_creator_unknown(servicenow_connector) -> None:
+    sc = servicenow_connector
+    _wire_users(sc, [_user(1), _user(3, email="")])
+    _lookup(sc, error=RuntimeError("down"))
+
+    await sc._sync_users()
+
+    assert _presence(sc) is Presence.UNKNOWN
+
+
+async def test_an_empty_full_listing_leaves_the_creator_unknown(servicenow_connector) -> None:
+    sc = servicenow_connector
+    _wire_users(sc, [])
+    _lookup(sc, [])
+
+    await sc._sync_users()
+
+    assert _presence(sc) is Presence.UNKNOWN
+
+
 async def test_a_delta_whose_lookup_finds_the_authenticator_in_any_status_lists_them(servicenow_connector) -> None:
     sc = servicenow_connector
-    _wire_users(sc, [], delta=True)
+    _wire_users(sc, [_user(1)], delta=True)
     table_get = _lookup(sc, [TableAPIRecord(sys_id="a1", email="Creator@Corp.com")])
 
     await sc._sync_users()
 
-    assert sc._users_listing_complete is True
-    assert sc._listed_user_emails == {"creator@corp.com"}
+    assert _presence(sc) is Presence.PRESENT
     query = table_get.await_args.kwargs["sysparm_query"]
     assert query == "emailLIKEcreator@corp.com" and "active" not in query
 
 
-async def test_a_delta_whose_lookup_finds_nothing_is_complete(servicenow_connector) -> None:
+async def test_a_delta_whose_lookup_finds_nothing_proves_absence(servicenow_connector) -> None:
+    sc = servicenow_connector
+    _wire_users(sc, [_user(1)], delta=True)
+    _lookup(sc, [])
+
+    await sc._sync_users()
+
+    assert _presence(sc) is Presence.ABSENT
+
+
+async def test_a_delta_that_lists_nobody_leaves_the_creator_unknown(servicenow_connector) -> None:
     sc = servicenow_connector
     _wire_users(sc, [], delta=True)
     _lookup(sc, [])
 
     await sc._sync_users()
 
-    assert sc._users_listing_complete is True
-    assert sc._listed_user_emails == set()
+    assert _presence(sc) is Presence.UNKNOWN
 
 
 async def test_the_lookup_asks_for_the_count_before_acls(servicenow_connector) -> None:
     sc = servicenow_connector
-    _wire_users(sc, [], delta=True)
+    _wire_users(sc, [_user(1)], delta=True)
     table_get = _lookup(sc, [])
 
     await sc._sync_users()
@@ -121,39 +173,42 @@ async def test_the_lookup_asks_for_the_count_before_acls(servicenow_connector) -
     ([], None),  # no count: nothing says a row was not hidden
     ([TableAPIRecord(sys_id="a3", email="")], 1),  # the row's email field is hidden
 ])
-async def test_a_delta_whose_lookup_may_hide_the_authenticator_is_incomplete(servicenow_connector, rows, total) -> None:
+async def test_a_delta_whose_lookup_may_hide_the_authenticator_leaves_them_unknown(
+    servicenow_connector, rows, total,
+) -> None:
     sc = servicenow_connector
-    _wire_users(sc, [], delta=True)
+    _wire_users(sc, [_user(1)], delta=True)
     _lookup(sc, rows, total=total)
 
     await sc._sync_users()
 
-    assert sc._users_listing_complete is False
+    assert _presence(sc) is Presence.UNKNOWN
 
 
-async def test_a_delta_whose_lookup_fails_is_incomplete(servicenow_connector) -> None:
+async def test_a_delta_whose_lookup_fails_leaves_the_creator_unknown(servicenow_connector) -> None:
     sc = servicenow_connector
-    _wire_users(sc, [], delta=True)
+    _wire_users(sc, [_user(1)], delta=True)
     _lookup(sc, error=RuntimeError("down"))
 
     await sc._sync_users()
 
-    assert sc._users_listing_complete is False
+    assert _presence(sc) is Presence.UNKNOWN
 
 
-async def test_a_delta_with_no_authenticator_email_is_incomplete(servicenow_connector) -> None:
+async def test_a_delta_with_no_authenticator_email_looks_nobody_up(servicenow_connector) -> None:
     sc = servicenow_connector
-    _wire_users(sc, [], delta=True)
-    _lookup(sc, email=None)
+    _wire_users(sc, [_user(1)], delta=True)
+    lookup = _lookup(sc, email=None)
 
     await sc._sync_users()
 
-    assert sc._users_listing_complete is False
+    lookup.assert_not_awaited()
+    assert _presence(sc) is Presence.UNKNOWN
 
 
 async def test_a_literal_caret_in_the_email_cannot_add_a_condition(servicenow_connector) -> None:
     sc = servicenow_connector
-    _wire_users(sc, [], delta=True)
+    _wire_users(sc, [_user(1)], delta=True)
     table_get = _lookup(sc, [], email="a^active=true@corp.com")
 
     await sc._sync_users()
@@ -161,9 +216,12 @@ async def test_a_literal_caret_in_the_email_cannot_add_a_condition(servicenow_co
     assert table_get.await_args.kwargs["sysparm_query"] == "emailLIKEa^^active=true@corp.com"
 
 
-async def test_a_listing_that_shows_fewer_users_than_it_counts_is_incomplete(servicenow_connector) -> None:
+async def test_a_listing_that_shows_fewer_users_than_it_counts_leaves_the_creator_unknown(
+    servicenow_connector,
+) -> None:
     sc = servicenow_connector
     _wire_users(sc, [_user(1)])
+    lookup = _lookup(sc, [])
 
     async def iter_table(*_a: object, listing=None, **_k: object) -> AsyncIterator[list[TableAPIRecord]]:
         listing.total, listing.seen = 5, 1  # an ACL or domain separation hid four rows
@@ -173,12 +231,14 @@ async def test_a_listing_that_shows_fewer_users_than_it_counts_is_incomplete(ser
 
     await sc._sync_users()
 
-    assert sc._users_listing_complete is False
+    assert _presence(sc) is Presence.UNKNOWN
+    lookup.assert_not_awaited()
 
 
-async def test_a_user_row_that_fails_to_transform_makes_the_listing_incomplete(servicenow_connector) -> None:
+async def test_a_user_row_that_fails_to_transform_leaves_the_creator_unknown(servicenow_connector) -> None:
     sc = servicenow_connector
     _wire_users(sc, [_user(1)])
+    _lookup(sc, [])
     sc._sync_read_incomplete = False
 
     async def fail(_: object) -> None:
@@ -187,19 +247,18 @@ async def test_a_user_row_that_fails_to_transform_makes_the_listing_incomplete(s
     with patch.object(sc, "_transform_to_app_user", AsyncMock(side_effect=fail)):
         await sc._sync_users()
 
-    assert sc._users_listing_complete is False
+    assert _presence(sc) is Presence.UNKNOWN
 
 
-async def test_a_listing_that_raises_never_stays_complete(servicenow_connector) -> None:
+async def test_a_listing_that_raises_never_proves_absence(servicenow_connector) -> None:
     sc = servicenow_connector
     _wire_users(sc, [_user(1)])
-    sc._users_listing_complete = True
     sc._get_fresh_datasource = AsyncMock(side_effect=RuntimeError("down"))
 
     with pytest.raises(RuntimeError):
         await sc._sync_users()
 
-    assert sc._users_listing_complete is False
+    assert _presence(sc) is Presence.UNKNOWN
 
 
 class TestSyncOrder:
@@ -218,7 +277,6 @@ class TestSyncOrder:
         sc._read_access_state = step("access", result=(None, True))
         sc._sync_users_and_groups = step("users", users_error)
         sc._register_authenticated_identity = step("register", _Stop())
-        sc._users_listing_complete = True
 
     async def test_the_removal_pass_runs_first_and_the_full_pass_after_the_users(self, servicenow_connector) -> None:
         order: list[str] = []
@@ -252,19 +310,18 @@ class TestSyncOrder:
         sc = servicenow_connector
         order: list[str] = []
         self._wire(sc, order)
-        sc._listed_user_emails = {"stale@corp.com"}
+        sc._user_listing = SourceUserListing(includes_inactive=True)
         sc._load_filters = AsyncMock(side_effect=RuntimeError("filters"))
 
         with pytest.raises(RuntimeError):
             await sc.run_sync()
 
-        assert sc._users_listing_complete is False and sc._listed_user_emails == set()
+        assert sc._user_listing is None
 
 
 async def test_the_full_pass_carries_the_listing_state(servicenow_connector) -> None:
     sc = servicenow_connector
-    sc._users_listing_complete = True
-    sc._listed_user_emails = {"creator@corp.com"}
+    listing = sc._user_listing = SourceUserListing(includes_inactive=True)
     sc.register_authenticated_source_user = AsyncMock()
     datasource = MagicMock()
     datasource.get_now_table_tableName = AsyncMock(
@@ -275,4 +332,4 @@ async def test_the_full_pass_carries_the_listing_state(servicenow_connector) -> 
     await sc._register_authenticated_identity()
 
     kwargs = sc.register_authenticated_source_user.await_args.kwargs
-    assert kwargs == {"listing_complete": True, "extra_present_emails": {"creator@corp.com"}}
+    assert kwargs == {"listing": listing}

@@ -20,6 +20,10 @@ from app.config.constants.arangodb import (
     ProgressStatus,
 )
 from app.config.constants.http_status_code import HttpStatusCode
+from app.connectors.core.base.connector.source_user_listing import (
+    Presence,
+    SourceUserListing,
+)
 from app.connectors.sources.salesforce.connector import (
     ACCOUNTS_SYNC_POINT_KEY,
     CASES_SYNC_POINT_KEY,
@@ -9979,15 +9983,19 @@ class TestAuthenticatorLink:
     @pytest.mark.asyncio
     async def test_every_listed_email_is_kept_whatever_the_status(self) -> None:
         connector = _make_connector()
+        listing = SourceUserListing(includes_inactive=True)
         rows = [
             {"Id": "005000000000001AAA", "Email": " Live@Corp.com ", "IsActive": True},
             {"Id": "005000000000002AAA", "Email": "Gone@Corp.com", "IsActive": False},
             {"Id": "005000000000003AAA", "IsActive": True},
         ]
 
-        await connector._sync_users(_async_iter_pages(rows))
+        await connector._sync_users(_async_iter_pages(rows), listing)
+        listing.finish()
 
-        assert connector._listed_user_emails == {"live@corp.com", "gone@corp.com"}
+        assert listing.emails == {"live@corp.com", "gone@corp.com"}
+        assert listing.presence("gone@corp.com") is Presence.PRESENT
+        assert listing.presence("creator@corp.com") is Presence.UNKNOWN  # the row with no email may be them
 
     def _run_conn(
         self, order: list[str], pages: list, *, checkpoint: object = None, cut: bool = False
@@ -10040,32 +10048,43 @@ class TestAuthenticatorLink:
         assert order == ["drop", "list", "withdraw", "register"]
 
     @pytest.mark.asyncio
-    async def test_a_cut_listing_is_incomplete(self) -> None:
+    async def test_a_cut_listing_leaves_the_creator_unknown(self) -> None:
         connector = self._run_conn([], [[{"Id": "005000000000001AAA", "Email": "a@corp.com"}]], cut=True)
 
         await self._run(connector)
 
-        assert connector._users_listing_complete is False
+        assert connector._user_listing.presence("creator@corp.com") is Presence.UNKNOWN
 
     @pytest.mark.asyncio
-    async def test_a_full_listing_read_to_its_end_is_complete(self) -> None:
+    async def test_a_full_listing_read_to_its_end_proves_an_unlisted_creator_absent(self) -> None:
         connector = self._run_conn([], [[{"Id": "005000000000001AAA", "Email": "a@corp.com"}]])
 
         await self._run(connector)
 
-        assert connector._users_listing_complete is True
+        assert connector._user_listing.presence("creator@corp.com") is Presence.ABSENT
 
     @pytest.mark.asyncio
-    async def test_an_empty_full_listing_is_incomplete(self) -> None:
-        full = self._run_conn([], [[]])
-        await self._run(full)
+    async def test_an_inactive_creator_in_a_full_listing_is_present(self) -> None:
+        connector = self._run_conn([], [[{"Id": "005000000000001AAA", "Email": "a@corp.com"},
+                                        {"Id": "005000000000002AAA", "Email": "Creator@corp.com", "IsActive": False}]])
 
-        assert full._users_listing_complete is False
+        await self._run(connector)
+
+        assert connector._user_listing.presence("creator@corp.com") is Presence.PRESENT
+
+    @pytest.mark.asyncio
+    async def test_an_empty_full_listing_leaves_the_creator_unknown(self) -> None:
+        connector = self._run_conn([], [[]])
+        await self._run(connector)
+
+        assert connector._user_listing.presence("creator@corp.com") is Presence.UNKNOWN
 
     def _delta(
         self, *, email: str | None = "creator@corp.com", found: object = None, error: Exception | None = None
     ) -> SalesforceConnector:
-        connector = self._run_conn([], [[]], checkpoint=1700000000000)
+        connector = self._run_conn(
+            [], [[{"Id": "005000000000009AAA", "Email": "changed@corp.com"}]], checkpoint=1700000000000,
+        )
         connector.authenticator_email = AsyncMock(return_value=email)
         connector._fetch_first_record = AsyncMock(return_value=found, side_effect=error)
         return connector
@@ -10076,20 +10095,18 @@ class TestAuthenticatorLink:
 
         await self._run(connector)
 
-        assert connector._users_listing_complete is True
-        assert connector._listed_user_emails == {"creator@corp.com"}
+        assert connector._user_listing.presence("creator@corp.com") is Presence.PRESENT
         assert connector._fetch_first_record.await_args.kwargs["soql"] == (
             "SELECT Id FROM User WHERE Email = 'creator@corp.com' LIMIT 1"
         )
 
     @pytest.mark.asyncio
-    async def test_a_delta_whose_lookup_finds_nothing_is_complete(self) -> None:
+    async def test_a_delta_whose_lookup_finds_nothing_proves_absence(self) -> None:
         connector = self._delta(found=None)
 
         await self._run(connector)
 
-        assert connector._users_listing_complete is True
-        assert connector._listed_user_emails == set()
+        assert connector._user_listing.presence("creator@corp.com") is Presence.ABSENT
 
     @pytest.mark.asyncio
     async def test_a_delta_whose_lookup_was_cut_before_any_record_is_incomplete(self) -> None:
@@ -10108,24 +10125,24 @@ class TestAuthenticatorLink:
 
         connector.data_source.soql_query.assert_awaited_once()
         assert "WHERE Email" in connector.data_source.soql_query.await_args.kwargs["q"]
-        assert connector._users_listing_complete is False
-        assert connector._listed_user_emails == set()
+        assert connector._user_listing.presence("creator@corp.com") is Presence.UNKNOWN
 
     @pytest.mark.asyncio
-    async def test_a_delta_whose_lookup_fails_is_incomplete(self) -> None:
+    async def test_a_delta_whose_lookup_fails_leaves_the_creator_unknown(self) -> None:
         connector = self._delta(error=RuntimeError("down"))
 
         await self._run(connector)
 
-        assert connector._users_listing_complete is False
+        assert connector._user_listing.presence("creator@corp.com") is Presence.UNKNOWN
 
     @pytest.mark.asyncio
-    async def test_a_delta_with_no_authenticator_email_is_incomplete(self) -> None:
+    async def test_a_delta_with_no_authenticator_email_looks_nobody_up(self) -> None:
         connector = self._delta(email=None)
 
         await self._run(connector)
 
-        assert connector._users_listing_complete is False
+        connector._fetch_first_record.assert_not_awaited()
+        assert connector._user_listing.presence("creator@corp.com") is Presence.UNKNOWN
 
     @pytest.mark.asyncio
     async def test_a_quote_in_the_email_stays_inside_the_string(self) -> None:
@@ -10143,26 +10160,22 @@ class TestAuthenticatorLink:
         connector.data_source = MagicMock()
         connector.drop_authenticator_link_if_listed = AsyncMock()
         connector._reinitialize_token_if_needed = AsyncMock(side_effect=RuntimeError("no token"))
-        connector._users_listing_complete = True
-        connector._listed_user_emails = {"stale@corp.com"}
+        connector._user_listing = SourceUserListing(includes_inactive=True)
 
         with pytest.raises(RuntimeError):
             await connector.run_sync()
 
-        assert connector._users_listing_complete is False and connector._listed_user_emails == set()
+        assert connector._user_listing is None
         connector.drop_authenticator_link_if_listed.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_the_full_pass_carries_the_listing_state(self) -> None:
         connector = _make_connector()
-        connector._users_listing_complete = True
-        connector._listed_user_emails = {"creator@corp.com"}
+        listing = connector._user_listing = SourceUserListing(includes_inactive=True)
         connector._authenticated_user_id = AsyncMock(return_value="005000000000001AAA")
         connector._fetch_first_record = AsyncMock(return_value={"Id": "005000000000001AAA", "Email": "a@corp.com"})
         connector.register_authenticated_source_user = AsyncMock()
 
         await connector._register_authenticated_identity("59.0")
 
-        assert connector.register_authenticated_source_user.await_args.kwargs == {
-            "listing_complete": True, "extra_present_emails": {"creator@corp.com"},
-        }
+        assert connector.register_authenticated_source_user.await_args.kwargs == {"listing": listing}

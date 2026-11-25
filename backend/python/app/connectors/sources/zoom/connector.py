@@ -20,6 +20,7 @@ from app.config.constants.arangodb import (
 )
 from app.connectors.core.constants import IconPaths
 from app.connectors.core.base.connector.connector_service import BaseConnector
+from app.connectors.core.base.connector.source_user_listing import SourceUserListing
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
@@ -294,8 +295,8 @@ class ZoomConnector(BaseConnector):
         )
         self.sync_filters: Optional[FilterCollection] = None
         self.indexing_filters: Optional[FilterCollection] = None
-        # Whether this run's user listing was read to its last page; a partial listing never links the authenticator.
-        self._users_listing_complete = False
+        # This sync's user listing. Zoom lists active users only, so it never proves anyone absent.
+        self._user_listing: SourceUserListing | None = None
 
     # ============================================================================
     # Initialization
@@ -340,7 +341,7 @@ class ZoomConnector(BaseConnector):
         await self.register_authenticated_source_user(
             email.strip().lower() if isinstance(email, str) else None,
             source_user_id.strip() if isinstance(source_user_id, str) else None,
-            listing_complete=self._users_listing_complete,
+            listing=self._user_listing,
         )
 
     async def run_sync(self) -> None:
@@ -349,7 +350,7 @@ class ZoomConnector(BaseConnector):
             if not self.data_source:
                 await self.init()
 
-            self._users_listing_complete = False
+            self._user_listing = None
             await self.drop_authenticator_link_if_listed()
 
             await self._load_filters()
@@ -583,7 +584,7 @@ class ZoomConnector(BaseConnector):
         datasource = await self._get_fresh_datasource()
         all_users: list[ZoomUser] = []
         next_page_token: Optional[str] = None
-        self._users_listing_complete = False
+        listing = self._user_listing = SourceUserListing(includes_inactive=False)
         while True:
             resp = await datasource.users(
                 status="active",
@@ -592,14 +593,18 @@ class ZoomConnector(BaseConnector):
             )
             if not resp.success or not resp.data:
                 self.logger.warning("Zoom: users() failed — %s", resp.message)
+                listing.cut(f"users() failed: {resp.message}")
                 break
-            all_users.extend(
+            page = [
                 ZoomUser.model_validate(u)
                 for u in (resp.data.get("users") or [])  # type: ignore[union-attr]
-            )
+            ]
+            for user in page:
+                listing.add_row(user.email or None, user.id or None)
+            all_users.extend(page)
             next_page_token = resp.data.get("next_page_token")  # type: ignore[union-attr]
             if not next_page_token:
-                self._users_listing_complete = bool(all_users)
+                listing.finish()
                 break
         return all_users
 

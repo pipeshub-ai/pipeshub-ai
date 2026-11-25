@@ -40,6 +40,10 @@ from app.connectors.core.base.connector.connector_service import (
     ConnectorInitError,
     IncompleteSyncError,
 )
+from app.connectors.core.base.connector.source_user_listing import (
+    Presence,
+    SourceUserListing,
+)
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
@@ -620,10 +624,8 @@ class JiraConnector(BaseConnector):
         # are held back. A read refused from its first page is the account's lasting answer
         # and does not set this: the sync then fails closed.
         self._user_read_unfinished: bool = False
-        # Whether the user read can stand for the whole directory when deciding the authenticator's link; set by _fetch_users.
-        self._listing_complete_for_link: bool = False
-        # Emails of every account this sync's user read listed, whatever its status.
-        self._listed_user_emails: set[str] = set()
+        # This sync's user listing, for the authenticator's link; None until _fetch_users builds one.
+        self._user_listing: SourceUserListing | None = None
         # Members of the product groups this run, by account id; None when they could not be read.
         self._licensed_account_ids: set[str] | None = None
         # True when this sync kept stored groups, roles, a lead, a project or its issues after
@@ -659,8 +661,6 @@ class JiraConnector(BaseConnector):
         self._listed_account_ids: set[str] = set()
         # Every account the user list showed, active or not.
         self._seen_account_ids: set[str] = set()
-        # Listed accounts whose email this sync could not resolve: any of them may be the authenticator.
-        self._unresolved_account_ids: set[str] = set()
         # Projects this sync could not build, so their issues were not read: they still owe a re-read.
         self._skipped_project_keys: list[str] = []
         # The emails of the directory snapshot last filtered against (the map itself, then its emails).
@@ -1047,7 +1047,7 @@ class JiraConnector(BaseConnector):
         """Main sync flow: users → groups → projects/roles → issues → deletions."""
         try:
             # First, with no source call: it can raise outside its own try, and must not skip the removal pass.
-            self._listed_user_emails = set()
+            self._user_listing = None
             await self.drop_authenticator_link_if_listed()
             await self._expire_org_gate()
             # 1. Init is done by event_service / setup before run_sync is scheduled
@@ -1077,9 +1077,6 @@ class JiraConnector(BaseConnector):
             self._kept_unread_access = False
             self._kept_after_refusal = []
             jira_users = await self._fetch_users(active_pipeshub_users=users)
-            # Taken here: the withdrawals below prune the stored users this reads.
-            # An empty listing is not a read of the directory, whatever is stored.
-            directory_complete = self._listing_complete_for_link
             if self._user_read_unfinished:
                 # Access already stored is kept; what has none stored yet is saved from what
                 # was read, since holding it back would leave it with no access at all.
@@ -1106,10 +1103,7 @@ class JiraConnector(BaseConnector):
             )
             await self.register_authenticated_source_user(
                 self._authenticated_jira_email, self._authenticated_jira_account_id,
-                listing_complete=directory_complete,
-                # Every listed account, deactivated or without product access too: withdrawing one removes the edge
-                # that would otherwise show them as listed.
-                extra_present_emails=self._listed_user_emails,
+                listing=self._user_listing,
             )
             # Saving a group replaces its members, so on an unfinished user read a group whose
             # members are stored keeps them.
@@ -2449,9 +2443,7 @@ class JiraConnector(BaseConnector):
             raise ValueError("DataSource not initialized")
 
         self._user_read_unfinished = False
-        self._listing_complete_for_link = False
-        self._listed_user_emails = set()
-        self._unresolved_account_ids = set()
+        self._user_listing = None
 
         # ====================================================================
         # Phase 1: DB reads (0 API calls)
@@ -2487,10 +2479,6 @@ class JiraConnector(BaseConnector):
         }
         self._listed_account_ids = listed_active
         self._seen_account_ids = {u["accountId"] for u in raw_jira_users if u.get("accountId")}
-        self._listed_user_emails = {
-            u["emailAddress"].strip().lower() for u in raw_jira_users
-            if u.get("accountType") == "atlassian" and isinstance(u.get("emailAddress"), str) and u["emailAddress"].strip()
-        }
         # GET /rest/api/3/users/search: "Returns a list of all users, including active users, inactive users and
         # previously deleted users that have an Atlassian account"; User.active: "Whether the user is active."
         # (https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-users/)
@@ -2588,48 +2576,47 @@ class JiraConnector(BaseConnector):
             self.logger.info("👥 All Jira users resolved, no reverse lookup needed")
 
         self.logger.info(f"👥 Total: {len(resolved)} Jira AppUsers resolved")
-        self._listed_user_emails |= {u.email.lower() for u in resolved.values() if u.email}
-        self._unresolved_account_ids = {
-            u["accountId"] for u in raw_jira_users
-            if u.get("accountType") == "atlassian" and u.get("accountId")
-            and not (isinstance(u.get("emailAddress"), str) and u["emailAddress"].strip())
-        } - resolved.keys()
         if self._user_read_unfinished:
             self.logger.warning(
                 "⚠️ The Jira user list could not be read in full; when an earlier sync left access to keep, "
                 "every group's members and project role, and the lead and access of projects that name "
                 "a missing user, are kept as stored this sync"
             )
-        self._listing_complete_for_link = await self._user_listing_complete_for_link()
+        self._user_listing = self._listing_of(raw_jira_users, resolved)
+        await self._settle_authenticator(self._user_listing)
         return list(resolved.values())
 
-    async def _user_listing_complete_for_link(self) -> bool:
-        """Whether this sync's user read shows everyone the authenticator's link depends on. A full read
-        does, unless it shows an account (inactive ones too) whose email it could not resolve: then, as when
-        a bulk read is refused from its first page, only finding the authenticator on their own settles it.
-        Any other shortfall stays incomplete."""
+    def _listing_of(self, raw_jira_users: list[dict[str, Any]], resolved: dict[str, AppUser]) -> SourceUserListing:
+        """The bulk read as a listing for the authenticator's link. /users/search lists inactive and deleted
+        accounts too; an account whose email neither the read nor the reverse lookup resolved is an
+        unidentified row. A read that was refused or cut short proves no one absent."""
+        listing = SourceUserListing(includes_inactive=True)
+        for user in raw_jira_users:
+            if user.get("accountType") != "atlassian":
+                continue
+            account_id = user.get("accountId")
+            email = user.get("emailAddress") if isinstance(user.get("emailAddress"), str) else None
+            if not (email and email.strip()) and account_id in resolved:
+                email = resolved[account_id].email
+            listing.add_row(email, account_id)
         if self._user_read_unfinished:
-            return False
-        if not (self._user_bulk_forbidden or self._user_bulk_refused):
-            if not (self._directory_read_complete() and self._listed_account_ids):
-                return False
-            return not self._unresolved_account_ids or await self._authenticator_is_listed()
-        return await self._authenticator_is_listed()
+            listing.cut("the user list was not read to its end")
+        elif self._user_bulk_forbidden or self._user_bulk_refused:
+            listing.cut("the user list was refused")
+        else:
+            listing.finish()
+        return listing
 
-    async def _authenticator_is_listed(self) -> bool:
-        """Look the authenticator up by email and add it to the listed emails when found: True then.
-        The user search lists active users only, so not finding them shows nothing about a deactivated
-        account: False, and the pass only ever removes a link."""
+    async def _settle_authenticator(self, listing: SourceUserListing) -> None:
+        """When the read cannot tell, look the authenticator up by email: found, they are PRESENT. The user
+        search lists active users only, so not finding them shows nothing about a deactivated account and
+        leaves them UNKNOWN."""
         email = (await self.authenticator_email() or "").strip().lower()
-        if not email:
-            return False
-        if email in self._listed_user_emails:
-            return True
+        if not email or listing.presence(email) is not Presence.UNKNOWN:
+            return
         rows = await self._find_atlassian_accounts(email)
-        if rows is None or not self._names_email(rows, email):
-            return False
-        self._listed_user_emails.add(email)
-        return True
+        if rows is not None and self._names_email(rows, email):
+            listing.settle(email, Presence.PRESENT)
 
     async def _find_atlassian_accounts(self, email: str) -> list[dict] | None:
         """The user accounts the user search returns for an email; None when it gives no answer."""

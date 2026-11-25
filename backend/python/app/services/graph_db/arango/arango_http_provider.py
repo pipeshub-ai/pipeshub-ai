@@ -11835,7 +11835,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             ) > 0
             FILTER listed OR link._from == link._to
             REMOVE link IN {CollectionNames.AUTHENTICATED_AS.value}
-            RETURN {{connectorId: link.connectorId, org: NOT_NULL(app.orgId, link.orgId)}}
+            RETURN {{connectorId: link.connectorId, org: NOT_NULL(app.orgId, link.orgId),
+                user: PARSE_IDENTIFIER(link._from).key, selfLink: link._from == link._to}}
         """
         return await self.execute_query(query, bind_vars={"appTypes": list(app_types)}) or [], []
 

@@ -704,9 +704,10 @@ class IdentityMixin(PgBase):
                         AND (e.from_id = e.to_id OR EXISTS (SELECT 1 FROM graph.edges r WHERE r.org_id = e.org_id AND r.coll = 'userAppRelation'
                             AND r.from_id = e.from_id AND r.to_id = a.id AND coalesce(r.doc->>'sourceUserId', '') <> ''
                             AND coalesce((r.doc->>'isExternalUser')::boolean, false) = false))
-                        RETURNING e.doc->>'connectorId' AS connector_id""",
+                        RETURNING e.doc->>'connectorId' AS connector_id, e.from_id AS user_key, e.from_id = e.to_id AS self_link""",
                                                              current_org_id(), list(app_types)), None, write=True)
-                removed.extend({"connectorId": r["connector_id"], "org": org_id} for r in rows)
+                removed.extend({"connectorId": r["connector_id"], "org": org_id, "user": r["user_key"], "selfLink": r["self_link"]}
+                               for r in rows)
             except Exception as exc:
                 failed.append(org_id)
                 error_class.log_failure(self.logger, "graph.provider.step_failed", exc, include_error_text=False,

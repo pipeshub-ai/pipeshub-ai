@@ -34,6 +34,7 @@ from app.connectors.core.base.connector.connector_service import (
     BaseConnector,
     oauth_app_not_linked_error,
 )
+from app.connectors.core.base.connector.source_user_listing import SourceUserListing
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
@@ -384,6 +385,8 @@ class DropboxConnector(BaseConnector):
         self._web_links: WebLinks | None = None
         # Emails of the team's members, and of the people outside the team that this run granted something to.
         self._team_emails: set[str] = set()
+        # This sync's member listing: a creator it lists is never linked to the admin's account.
+        self._user_listing: SourceUserListing | None = None
         self._external_emails: set[str] = set()
         # Folders whose stored path changed in the page being written: (external id, old path, new path).
         self._moved_folders: list[tuple[str, str, str]] = []
@@ -1630,11 +1633,22 @@ class DropboxConnector(BaseConnector):
         """Every member of the team, saved as the connector's users, and the access of those who can no longer
         open anything (suspended, invited, removed) withdrawn. Returns the members."""
         members = await read_team_members(self.data_source)
+        # Active, invited and suspended members alike.
+        listing = self._user_listing = SourceUserListing(includes_inactive=True)
         if members.auth_error:
             self._health.auth_failed(members.error)
-            self._members_complete = False
+            listing.cut(f"the member list could not be read: {members.error}")
             return []
-        self._members_complete = members.complete
+        for member in members.raw:
+            listing.add_row(member.profile.email, member.profile.team_member_id)
+            # A creator whose email is one of a member's secondary emails is that member.
+            for secondary in getattr(member.profile, "secondary_emails", None) or []:
+                if email := getattr(secondary, "email", None):
+                    listing.add_row(email, member.profile.team_member_id)
+        if members.complete:
+            listing.finish()
+        else:
+            listing.cut(f"the member list was not read to its end: {members.error}")
         if not members.raw:
             raise RuntimeError(f"Could not list the Dropbox team's members: {members.error}")
         if not members.complete:
@@ -1695,8 +1709,8 @@ class DropboxConnector(BaseConnector):
         activity_log_missing: str | None = None
         self.logger.info("Starting Dropbox full sync.")
 
-        # Whether this run read every member; reset so a flag left by an earlier run never counts.
-        self._members_complete = False
+        # Reset so a listing left by an earlier run never counts.
+        self._user_listing = None
         self._team_emails = set()
         await self.drop_authenticator_link_if_listed()
         admin_email, admin_id = await self._read_authenticated_admin()
@@ -1712,11 +1726,7 @@ class DropboxConnector(BaseConnector):
         app_users = await self._sync_members()
         if self._health.auth_error is not None:
             return
-        await self.register_authenticated_source_user(
-            admin_email, admin_id, listing_complete=self._members_complete,
-            # Every listed member, suspended or invited too: withdrawn() removes their edge, so it cannot show them as listed.
-            extra_present_emails=self._team_emails,
-        )
+        await self.register_authenticated_source_user(admin_email, admin_id, listing=self._user_listing)
 
         # Step 2: fetch and sync all user groups
         group_sync_key = generate_record_sync_point_key("user_group_events", "team_events", "global")

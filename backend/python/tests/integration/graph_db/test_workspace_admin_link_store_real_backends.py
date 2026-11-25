@@ -26,8 +26,9 @@ class _Config:
     async def get_config(self, key: str, **_: object) -> Any:  # noqa: ANN401
         return self.values.get(key)
 
-    async def set_config(self, key: str, value: Any) -> None:  # noqa: ANN401
+    async def set_config(self, key: str, value: Any) -> bool:  # noqa: ANN401
         self.values[key] = value
+        return True
 
 
 async def _ensure_arango_collections(provider) -> None:
@@ -136,9 +137,12 @@ async def test_arango_a_moved_link_keeps_its_key_so_the_next_upsert_repoints_it(
 
 
 async def test_neo4j_a_link_moved_by_a_verified_email_change_is_still_removed(monkeypatch) -> None:
-    from tests.integration.real_graph import connect_neo4j
+    from tests.integration.real_graph import backend_unavailable, connect_neo4j
 
-    provider = await connect_neo4j(logging.getLogger("wsleak-it"), monkeypatch)
+    try:
+        provider = await connect_neo4j(logging.getLogger("wsleak-it"), monkeypatch)
+    except Exception as exc:
+        backend_unavailable("neo4j", exc)
     try:
         await _moved_link_case(provider, _neo4j_users, _neo4j_links_of)
     finally:
@@ -200,9 +204,12 @@ async def test_arango_upsert_repoints_only_its_own_connector(arango_provider) ->
 # ---- the indexes the lookups rely on ------------------------------------------------------------------------------
 
 async def test_arango_the_link_collection_has_an_index_on_the_connector_id(monkeypatch) -> None:
-    from tests.integration.real_graph import connect_arango
+    from tests.integration.real_graph import backend_unavailable, connect_arango
 
-    p = await connect_arango(logging.getLogger("wsleak-it"), f"wsleak_idx_{uuid.uuid4().hex[:6]}")
+    try:
+        p = await connect_arango(logging.getLogger("wsleak-it"), f"wsleak_idx_{uuid.uuid4().hex[:6]}")
+    except Exception as exc:
+        backend_unavailable("arango", exc)
     try:
         indexes = await p.http_client.get_indexes("authenticatedAs") if hasattr(p.http_client, "get_indexes") else None
         if indexes is None:
@@ -218,9 +225,12 @@ async def test_arango_the_link_collection_has_an_index_on_the_connector_id(monke
 
 
 async def test_neo4j_the_link_relationship_has_an_index_on_the_connector_id(monkeypatch) -> None:
-    from tests.integration.real_graph import connect_neo4j
+    from tests.integration.real_graph import backend_unavailable, connect_neo4j
 
-    p = await connect_neo4j(logging.getLogger("wsleak-it"), monkeypatch)
+    try:
+        p = await connect_neo4j(logging.getLogger("wsleak-it"), monkeypatch)
+    except Exception as exc:
+        backend_unavailable("neo4j", exc)
     try:
         await p.ensure_schema()
         rows = await p.client.execute_query(
@@ -243,7 +253,6 @@ async def test_arango_concurrent_reauth_keeps_one_link(arango_provider) -> None:
             await p.execute_query("INSERT {_key: @u, orgId: @o} INTO users", bind_vars={"u": u, "o": org})
         await p.execute_query("INSERT {_from: @f, _to: @to, connectorId: @c, orgId: @o} INTO authenticatedAs",
                               bind_vars={"f": f"users/c-{t}", "to": f"users/{targets[0]}", "c": c, "o": org})
-        out = await asyncio.gather(*[p.upsert_authenticated_as(f"c-{t}", s, c, org) for s in targets], return_exceptions=True)
-        errors = [type(o).__name__ + ":" + str(o)[:120] for o in out if isinstance(o, Exception)]
+        await asyncio.gather(*[p.upsert_authenticated_as(f"c-{t}", s, c, org) for s in targets], return_exceptions=True)
         links = await p.execute_query("FOR l IN authenticatedAs FILTER l.connectorId == @c RETURN {k: l._key, to: l._to}", bind_vars={"c": c})
         assert len(links) == 1, f"round {rnd}: {links}"

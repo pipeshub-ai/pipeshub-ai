@@ -1083,7 +1083,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
         await run_workspace_admin_link_migration(graph_provider, app_container.config_service(), logger)
     except Exception as e:
-        logger.error(f"❌ Workspace admin link migration failed: {e}", exc_info=True)
+        logger.error(f"Workspace admin link migration failed: {e}", exc_info=True)
 
     # Before any connector reads its settings, so none crawls with a value the form doesn't show.
     try:

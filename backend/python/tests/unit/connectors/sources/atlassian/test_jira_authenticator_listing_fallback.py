@@ -1,11 +1,11 @@
-"""The authenticator's link when Jira's bulk user read is not a full directory read.
+"""What Jira's user read proves about the authenticator when it is not a full directory read.
 
-On a Data Center release without /user/list the bulk read goes through /user/search, and
-on either edition it may be refused. Neither can say who is missing, so the authenticator
-is looked up on their own: found, they are listed; a lookup that fails leaves the pass
-removal-only. On Data Center the lookup includes inactive users, so "absent" completes the
-listing. Jira Cloud's user search lists active users only, so there "not found" never does,
-whatever the token's own account shows: only a found authenticator settles it.
+On a Data Center release without /user/list the bulk read goes through /user/search, and on
+either edition it may be refused or show an account whose email it cannot resolve. Then the
+authenticator is looked up on their own: found, they are PRESENT; a lookup that fails leaves
+them UNKNOWN. On Data Center the lookup includes inactive users, so not finding them settles
+ABSENT. Jira Cloud's user search lists active users only, so there "not found" never does,
+whatever the token's own account shows. A refused read lists no one, so it proves no absence.
 """
 
 from collections.abc import Callable
@@ -17,6 +17,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from app.config.constants.http_status_code import HttpStatusCode
+from app.connectors.core.base.connector.source_user_listing import Presence
 from app.connectors.sources.atlassian.jira_cloud.connector import JiraConnector
 from app.connectors.sources.atlassian.jira_data_center.connector import (
     DcRestProfile,
@@ -49,8 +50,7 @@ def _dc(search, *, user_list: bool = False, creator: str | None = CREATOR) -> Ma
     conn._dc_profile = DcRestProfile(supported=True, user_list=user_list)
     conn._user_bulk_forbidden = conn._user_bulk_refused = conn._user_bulk_incomplete = False
     conn._user_read_unfinished = False
-    conn._listing_complete_for_link = False
-    conn._listed_user_emails = set()
+    conn._user_listing = None
     conn._listed_user_keys = set()
     conn._seen_user_keys = set()
     conn._dc_name_to_source_id = {}
@@ -65,9 +65,13 @@ def _dc(search, *, user_list: bool = False, creator: str | None = CREATOR) -> Ma
     conn._notification_title = MagicMock(return_value="title")
     _bind(
         conn, JiraDataCenterConnector, "_fetch_users", "_fetch_all_jira_users_bulk", "_fetch_users_via_search",
-        "_user_listing_complete_for_link", "_authenticator_is_listed", "_directory_read_complete", "_safe_json_parse",
+        "_listing_of", "_settle_authenticator", "_directory_read_complete", "_safe_json_parse",
     )
     return conn
+
+
+def _presence(conn: MagicMock) -> Presence:
+    return conn._user_listing.presence(CREATOR)
 
 
 def _row(key: str, email: str | None, active: bool = True) -> dict:
@@ -84,13 +88,12 @@ def _search(listing: list[dict], lookup) -> Callable[..., object]:
 
 
 class TestJiraDataCenterSearchFallback:
-    async def test_an_unlisted_authenticator_gets_a_complete_listing(self) -> None:
+    async def test_an_authenticator_the_lookup_does_not_find_is_absent(self) -> None:
         conn = _dc(_search([_row("k1", "other@corp.com")], lambda _: _resp(OK, [])))
 
         await conn._fetch_users()
 
-        assert conn._listing_complete_for_link is True
-        assert CREATOR.lower() not in conn._listed_user_emails
+        assert _presence(conn) is Presence.ABSENT
 
     async def test_a_found_authenticator_is_listed(self) -> None:
         conn = _dc(_search(
@@ -99,15 +102,13 @@ class TestJiraDataCenterSearchFallback:
 
         await conn._fetch_users()
 
-        assert conn._listing_complete_for_link is True
-        assert "creator@corp.com" in conn._listed_user_emails
+        assert _presence(conn) is Presence.PRESENT
 
     async def test_a_found_authenticator_is_listed_beside_a_malformed_row(self) -> None:
         conn = _dc(_search([_row("k1", "other@corp.com")], lambda _: _resp(OK, [None, _row("k2", "creator@corp.com")])))
 
         await conn._fetch_users()
 
-        assert "creator@corp.com" in conn._listed_user_emails
 
     async def test_the_lookup_asks_for_inactive_users_too(self) -> None:
         conn = _dc(_search([_row("k1", "other@corp.com")], lambda _: _resp(OK, [])))
@@ -126,28 +127,28 @@ class TestJiraDataCenterSearchFallback:
         lambda _: _resp(OK, [None]),
         lambda _: _resp(OK, [_row("k1", "other@corp.com"), "k2"]),
     ])
-    async def test_a_lookup_that_cannot_answer_is_incomplete(self, lookup) -> None:
+    async def test_a_lookup_that_cannot_answer_leaves_them_unknown(self, lookup) -> None:
         conn = _dc(_search([_row("k1", "other@corp.com")], lookup))
 
         await conn._fetch_users()
 
-        assert conn._listing_complete_for_link is False
+        assert _presence(conn) is Presence.UNKNOWN
 
-    async def test_no_authenticator_email_is_incomplete(self) -> None:
+    async def test_no_authenticator_email_is_unknown(self) -> None:
         conn = _dc(_search([_row("k1", "other@corp.com")], lambda _: _resp(OK, [])), creator=None)
 
         await conn._fetch_users()
 
-        assert conn._listing_complete_for_link is False
+        assert _presence(conn) is Presence.UNKNOWN
 
-    async def test_a_fallback_that_listed_no_one_is_incomplete(self) -> None:
+    async def test_a_fallback_that_listed_no_one_proves_no_absence(self) -> None:
         conn = _dc(_search([], lambda _: _resp(OK, [])))
 
         await conn._fetch_users()
 
-        assert conn._listing_complete_for_link is False
+        assert _presence(conn) is Presence.UNKNOWN
 
-    async def test_an_unfinished_read_is_incomplete_whatever_the_lookup_says(self) -> None:
+    async def test_an_unfinished_read_proves_no_absence_whatever_the_lookup_says(self) -> None:
         conn = _dc(_search([_row("k1", "other@corp.com")], lambda _: _resp(OK, [])))
         conn._fetch_users_via_search = AsyncMock(
             side_effect=lambda: setattr(conn, "_user_read_unfinished", True) or [_row("k1", "other@corp.com")]
@@ -155,9 +156,9 @@ class TestJiraDataCenterSearchFallback:
 
         await conn._fetch_users()
 
-        assert conn._listing_complete_for_link is False
+        assert _presence(conn) is Presence.UNKNOWN
 
-    async def test_a_refused_bulk_read_looks_the_authenticator_up(self) -> None:
+    async def test_a_refused_bulk_read_lists_no_one_so_proves_no_absence(self) -> None:
         def search(*, username, **_) -> object:
             return _resp(403) if username == "." else _resp(OK, [])
         conn = _dc(search)
@@ -165,15 +166,15 @@ class TestJiraDataCenterSearchFallback:
         await conn._fetch_users()
 
         assert conn._user_bulk_refused is True
-        assert conn._listing_complete_for_link is True
+        assert _presence(conn) is Presence.UNKNOWN
 
-    async def test_a_full_list_read_needs_no_lookup(self) -> None:
+    async def test_a_full_list_read_proves_absence_with_no_lookup(self) -> None:
         conn = _dc(lambda **_: pytest.fail("looked up"), user_list=True)
         conn._fetch_users_via_list = AsyncMock(return_value=[_row("k1", "other@corp.com")])
 
         await conn._fetch_users()
 
-        assert conn._listing_complete_for_link is True
+        assert _presence(conn) is Presence.ABSENT
 
 
 def _acct(account_id: str, email: str | None, *, kind: str = "atlassian") -> dict:
@@ -204,8 +205,7 @@ def _cloud(find_users, *, creator: str | None = CREATOR, token: str | None = TOK
     conn.connector_id = "c1"
     conn._user_bulk_forbidden = conn._user_bulk_refused = False
     conn._user_read_unfinished = False
-    conn._listing_complete_for_link = False
-    conn._listed_user_emails = set()
+    conn._user_listing = None
     conn._listed_account_ids = set()
     conn._stored_app_users = []
     conn.data_entities_processor = MagicMock(org_id="org", get_all_app_users=AsyncMock(return_value=[]))
@@ -222,7 +222,7 @@ def _cloud(find_users, *, creator: str | None = CREATOR, token: str | None = TOK
 
     conn._fetch_all_jira_users_bulk = AsyncMock(side_effect=refused)
     _bind(
-        conn, JiraConnector, "_fetch_users", "_user_listing_complete_for_link", "_authenticator_is_listed",
+        conn, JiraConnector, "_fetch_users", "_listing_of", "_settle_authenticator",
         "_directory_read_complete", "_safe_json_parse", "_find_atlassian_accounts",
     )
     conn._names_email = JiraConnector._names_email
@@ -230,66 +230,64 @@ def _cloud(find_users, *, creator: str | None = CREATOR, token: str | None = TOK
 
 
 class TestJiraCloudRefusedBulkRead:
-    async def test_an_authenticator_the_active_only_search_does_not_find_is_incomplete(self) -> None:
+    async def test_an_authenticator_the_active_only_search_does_not_find_is_unknown(self) -> None:
         # The token's own account is found, so the search can see users: a deactivated creator still could not be.
         conn = _cloud(_by_query([_acct("a1", "someone.else@corp.com")]))
 
         await conn._fetch_users(active_pipeshub_users=[])
 
-        assert conn._listing_complete_for_link is False
-        assert "creator@corp.com" not in conn._listed_user_emails
+        assert _presence(conn) is Presence.UNKNOWN
 
-    async def test_a_search_that_cannot_find_the_tokens_own_account_is_incomplete(self) -> None:
+    async def test_a_search_that_cannot_find_the_tokens_own_account_leaves_them_unknown(self) -> None:
         # Without Browse users the search answers 200 with no rows: not found may mean cannot see.
         conn = _cloud(_by_query([], token_rows=[]))
 
         await conn._fetch_users(active_pipeshub_users=[])
 
-        assert conn._listing_complete_for_link is False
-        assert "creator@corp.com" not in conn._listed_user_emails
+        assert _presence(conn) is Presence.UNKNOWN
 
-    async def test_an_unknown_token_account_email_is_incomplete(self) -> None:
+    async def test_an_unknown_token_account_email_leaves_them_unknown(self) -> None:
         conn = _cloud(_by_query([]), token=None)
 
         await conn._fetch_users(active_pipeshub_users=[])
 
-        assert conn._listing_complete_for_link is False
+        assert _presence(conn) is Presence.UNKNOWN
 
-    async def test_an_authenticator_who_is_the_token_account_and_is_not_found_is_incomplete(self) -> None:
+    async def test_an_authenticator_who_is_the_token_account_and_is_not_found_is_unknown(self) -> None:
         conn = _cloud(_by_query([], token_rows=[]), creator=TOKEN)
 
         await conn._fetch_users(active_pipeshub_users=[])
 
-        assert conn._listing_complete_for_link is False
+        assert _presence(conn) is Presence.UNKNOWN
 
     async def test_the_token_account_is_never_probed(self) -> None:
         def find_users(*, query: str, **_: object) -> SimpleNamespace:
-            assert query.lower() != TOKEN.lower(), "probed the token account"
+            if query.lower() == TOKEN.lower():  # not an assert: the lookup swallows any Exception
+                pytest.fail("probed the token account")
             return _resp(OK, [])
         conn = _cloud(find_users)
 
         await conn._fetch_users(active_pipeshub_users=[])
 
-        assert conn._listing_complete_for_link is False
+        assert _presence(conn) is Presence.UNKNOWN
 
     async def test_a_found_authenticator_needs_no_probe_of_the_token_account(self) -> None:
         def find_users(*, query: str, **_: object) -> SimpleNamespace:
-            assert query.lower() != TOKEN.lower(), "probed the token account"
+            if query.lower() == TOKEN.lower():  # not an assert: the lookup swallows any Exception
+                pytest.fail("probed the token account")
             return _resp(OK, [_acct("a1", "creator@corp.com")])
         conn = _cloud(find_users)
 
         await conn._fetch_users(active_pipeshub_users=[])
 
-        assert conn._listing_complete_for_link is True
-        assert "creator@corp.com" in conn._listed_user_emails
+        assert _presence(conn) is Presence.PRESENT
 
     async def test_a_found_authenticator_is_listed(self) -> None:
         conn = _cloud(lambda **_: _resp(OK, [_acct("a1", "creator@corp.com")]))
 
         await conn._fetch_users(active_pipeshub_users=[])
 
-        assert conn._listing_complete_for_link is True
-        assert "creator@corp.com" in conn._listed_user_emails
+        assert _presence(conn) is Presence.PRESENT
 
     @pytest.mark.parametrize("answer", [
         lambda **_: _resp(500),
@@ -297,26 +295,26 @@ class TestJiraCloudRefusedBulkRead:
         lambda **_: _raise(OSError("reset")),
         lambda **_: _resp(OK, [_acct("a9", None)]),
     ])
-    async def test_a_lookup_that_cannot_answer_is_incomplete(self, answer) -> None:
+    async def test_a_lookup_that_cannot_answer_leaves_them_unknown(self, answer) -> None:
         conn = _cloud(answer)
 
         await conn._fetch_users(active_pipeshub_users=[])
 
-        assert conn._listing_complete_for_link is False
+        assert _presence(conn) is Presence.UNKNOWN
 
-    async def test_no_authenticator_email_is_incomplete(self) -> None:
+    async def test_no_authenticator_email_is_unknown(self) -> None:
         conn = _cloud(lambda **_: _resp(OK, []), creator=None)
 
         await conn._fetch_users(active_pipeshub_users=[])
 
-        assert conn._listing_complete_for_link is False
+        assert _presence(conn) is Presence.UNKNOWN
 
     async def test_an_app_account_beside_the_found_authenticator_does_not_hide_the_match(self) -> None:
         conn = _cloud(_by_query([_acct("bot", None, kind="app"), _acct("a1", "creator@corp.com")]))
 
         await conn._fetch_users(active_pipeshub_users=[])
 
-        assert conn._listing_complete_for_link is True
+        assert _presence(conn) is Presence.PRESENT
 
 
 def _cloud_bulk(rows: list[dict], find_users: Callable[..., object], **kwargs: object) -> MagicMock:
@@ -334,16 +332,16 @@ class TestJiraCloudBulkReadWithHiddenEmails:
     """A listed account whose email the read cannot resolve may be the authenticator, so a complete bulk
     read settles the link only once the authenticator's own lookup finds them."""
 
-    async def test_a_read_where_every_email_shows_needs_no_lookup(self) -> None:
+    async def test_a_read_where_every_email_shows_proves_absence_with_no_lookup(self) -> None:
         conn = _cloud_bulk([_acct("a1", "other@corp.com"), _inactive("a2", "gone@corp.com")],
                            lambda **_: pytest.fail("looked up"))
 
         await conn._fetch_users(active_pipeshub_users=[])
 
-        assert conn._listing_complete_for_link is True
+        assert _presence(conn) is Presence.ABSENT
 
     @pytest.mark.parametrize("hidden", [_inactive("a2"), _acct("a2", None)])
-    async def test_a_hidden_email_and_an_authenticator_the_lookup_does_not_find_is_incomplete(
+    async def test_a_hidden_email_and_an_authenticator_the_lookup_does_not_find_is_unknown(
         self, hidden: dict,
     ) -> None:
         # The active-only search cannot find a deactivated account, so the hidden one may still be them.
@@ -351,8 +349,7 @@ class TestJiraCloudBulkReadWithHiddenEmails:
 
         await conn._fetch_users(active_pipeshub_users=[])
 
-        assert conn._listing_complete_for_link is False
-        assert "creator@corp.com" not in conn._listed_user_emails
+        assert _presence(conn) is Presence.UNKNOWN
 
     async def test_a_hidden_email_and_an_authenticator_the_lookup_finds_is_listed(self) -> None:
         conn = _cloud_bulk([_acct("a1", "other@corp.com"), _inactive("a2")],
@@ -360,27 +357,26 @@ class TestJiraCloudBulkReadWithHiddenEmails:
 
         await conn._fetch_users(active_pipeshub_users=[])
 
-        assert conn._listing_complete_for_link is True
-        assert "creator@corp.com" in conn._listed_user_emails
+        assert _presence(conn) is Presence.PRESENT
 
     async def test_a_hidden_email_beside_the_authenticators_own_listed_email_needs_no_lookup(self) -> None:
         conn = _cloud_bulk([_acct("a1", "creator@corp.com"), _inactive("a2")], lambda **_: pytest.fail("looked up"))
 
         await conn._fetch_users(active_pipeshub_users=[])
 
-        assert conn._listing_complete_for_link is True
+        assert _presence(conn) is Presence.PRESENT
 
     @pytest.mark.parametrize("find_users", [
         _by_query([_inactive("a2")]),
         _by_query([], token_rows=[]),
         lambda **_: _resp(500),
     ])
-    async def test_a_hidden_email_the_lookup_cannot_settle_is_incomplete(self, find_users: Callable[..., object]) -> None:
+    async def test_a_hidden_email_the_lookup_cannot_settle_leaves_them_unknown(self, find_users: Callable[..., object]) -> None:
         conn = _cloud_bulk([_acct("a1", "other@corp.com"), _inactive("a2")], find_users)
 
         await conn._fetch_users(active_pipeshub_users=[])
 
-        assert conn._listing_complete_for_link is False
+        assert _presence(conn) is Presence.UNKNOWN
 
 
 class TestJiraDataCenterListReadWithHiddenEmails:
@@ -389,21 +385,21 @@ class TestJiraDataCenterListReadWithHiddenEmails:
         conn._fetch_users_via_list = AsyncMock(return_value=rows)
         return conn
 
-    async def test_a_read_where_every_email_shows_needs_no_lookup(self) -> None:
+    async def test_a_read_where_every_email_shows_proves_absence_with_no_lookup(self) -> None:
         conn = self._conn([_row("k1", "other@corp.com"), _row("k2", "gone@corp.com", active=False)],
                           lambda _: pytest.fail("looked up"))
 
         await conn._fetch_users()
 
-        assert conn._listing_complete_for_link is True
+        assert _presence(conn) is Presence.ABSENT
 
     @pytest.mark.parametrize("hidden", [_row("k2", None, active=False), _row("k2", None)])
-    async def test_a_hidden_email_and_an_authenticator_the_lookup_does_not_find_is_complete(self, hidden: dict) -> None:
+    async def test_a_hidden_email_and_an_authenticator_the_lookup_does_not_find_is_absent(self, hidden: dict) -> None:
         conn = self._conn([_row("k1", "other@corp.com"), hidden], lambda _: _resp(OK, []))
 
         await conn._fetch_users()
 
-        assert conn._listing_complete_for_link is True
+        assert _presence(conn) is Presence.ABSENT
 
     async def test_a_hidden_email_and_an_authenticator_the_lookup_finds_is_listed(self) -> None:
         conn = self._conn([_row("k1", "other@corp.com"), _row("k2", None, active=False)],
@@ -411,12 +407,11 @@ class TestJiraDataCenterListReadWithHiddenEmails:
 
         await conn._fetch_users()
 
-        assert "creator@corp.com" in conn._listed_user_emails
 
     @pytest.mark.parametrize("lookup", [lambda _: _resp(OK, [_row("k2", None)]), lambda _: _resp(500)])
-    async def test_a_hidden_email_the_lookup_cannot_settle_is_incomplete(self, lookup: Callable[..., object]) -> None:
+    async def test_a_hidden_email_the_lookup_cannot_settle_leaves_them_unknown(self, lookup: Callable[..., object]) -> None:
         conn = self._conn([_row("k1", "other@corp.com"), _row("k2", None, active=False)], lookup)
 
         await conn._fetch_users()
 
-        assert conn._listing_complete_for_link is False
+        assert _presence(conn) is Presence.UNKNOWN

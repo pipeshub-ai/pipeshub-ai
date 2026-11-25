@@ -33,6 +33,10 @@ from app.connectors.core.base.connector.connector_service import (
     BaseConnector,
     ConnectorInitError,
 )
+from app.connectors.core.base.connector.source_user_listing import (
+    Presence,
+    SourceUserListing,
+)
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
@@ -567,16 +571,12 @@ class JiraDataCenterConnector(BaseConnector):
         # are held back. A read refused from its first page is the account's lasting answer
         # and does not set this: the sync then fails closed.
         self._user_read_unfinished: bool = False
-        # Whether the user read can stand for the whole directory when deciding the authenticator's link; set by _fetch_users.
-        self._listing_complete_for_link: bool = False
-        # Emails of every account this sync's user read listed, whatever its status.
-        self._listed_user_emails: set[str] = set()
+        # This sync's user listing, for the authenticator's link; None until _fetch_users builds one.
+        self._user_listing: SourceUserListing | None = None
         self._stored_app_users: list[AppUser] = []
         self._listed_user_keys: set[str] = set()
         # Every account the user list showed, active or not.
         self._seen_user_keys: set[str] = set()
-        # Listed accounts whose email this sync could not resolve: any of them may be the authenticator.
-        self._unresolved_user_keys: set[str] = set()
         self._newly_listed_user_keys: set[str] = set()
         # The people re-read: ``generation`` goes up with each sync that admits accounts, ``base`` is the generation the
         # queue was last emptied at, so the queue names every account admitted after it. A project saves the generation
@@ -1056,7 +1056,7 @@ class JiraDataCenterConnector(BaseConnector):
         try:
             # Reset so a value left by an earlier run never counts as this run's listing. The removal
             # pass needs no client, so a run whose init fails still removes a link it should not keep.
-            self._listed_user_emails = set()
+            self._user_listing = None
             await self.drop_authenticator_link_if_listed()
 
             if not self.data_source:
@@ -1093,9 +1093,6 @@ class JiraDataCenterConnector(BaseConnector):
             self._kept_unread_access = False
             self._kept_after_refusal = []
             jira_users = await self._fetch_users()
-            # Taken here: the withdrawals below prune the stored users this reads.
-            # An empty listing is not a read of the directory, whatever is stored.
-            directory_complete = self._listing_complete_for_link
             if self._user_read_unfinished:
                 # Access already stored is kept; what has none stored yet is saved from what
                 # was read, since holding it back would leave it with no access at all.
@@ -1111,10 +1108,7 @@ class JiraDataCenterConnector(BaseConnector):
                 self.logger.info(f"👥 Synced {len(jira_users)} Jira users")
             await self._withdraw_unlisted_app_users(jira_users)
             await self.register_authenticated_source_user(
-                own_email, own_key, listing_complete=directory_complete,
-                # Every listed account, deactivated or ineligible too: withdrawing one removes the edge that
-                # would otherwise show them as listed.
-                extra_present_emails=self._listed_user_emails,
+                own_email, own_key, listing=self._user_listing,
             )
 
             # Fetch and sync user groups (returns mapping for role resolution). Saving a
@@ -1717,9 +1711,7 @@ class JiraDataCenterConnector(BaseConnector):
 
         self._dc_name_to_source_id = {}
         self._user_read_unfinished = False
-        self._listing_complete_for_link = False
-        self._listed_user_emails = set()
-        self._unresolved_user_keys = set()
+        self._user_listing = None
 
         # A failed read raises: read as no links, it would link no one while product access is unknown.
         cached_app_users = await self.data_entities_processor.get_all_app_users(self.connector_id, raise_on_error=True)
@@ -1743,17 +1735,11 @@ class JiraDataCenterConnector(BaseConnector):
         key_to_display: dict[str, str] = {}
 
         self._seen_user_keys = set()
-        hidden_email_keys: set[str] = set()
         for user in raw_jira_users:
             user_key = user.get("accountId") or user.get("key") or user.get("name")
             if not user_key:
                 continue
             self._seen_user_keys.add(user_key)
-            listed_email = user.get("emailAddress")
-            if isinstance(listed_email, str) and listed_email.strip():
-                self._listed_user_emails.add(listed_email.strip().lower())
-            else:
-                hidden_email_keys.add(user_key)
             if not user.get("active", True):
                 continue
 
@@ -1823,57 +1809,57 @@ class JiraDataCenterConnector(BaseConnector):
             self.logger.info("👥 All Jira DC users resolved, no reverse lookup needed")
 
         self.logger.info(f"👥 Total: {len(resolved)} Jira DC AppUsers resolved")
-        self._listed_user_emails |= {u.email.lower() for u in resolved.values() if u.email}
-        self._unresolved_user_keys = hidden_email_keys - resolved.keys()
         if self._user_read_unfinished:
             self.logger.warning(
                 "⚠️ The Jira user list could not be read in full; when an earlier sync left access to keep, "
                 "every group's members and project role, and the lead and access of projects that name "
                 "a missing user, are kept as stored this sync"
             )
-        self._listing_complete_for_link = await self._user_listing_complete_for_link()
+        self._user_listing = self._listing_of(raw_jira_users, resolved)
+        await self._settle_authenticator(self._user_listing)
         return list(resolved.values())
 
-    async def _user_listing_complete_for_link(self) -> bool:
-        """Whether this sync's user read shows everyone the authenticator's link depends on. A full read
-        does. A read cut down to the search fallback (a release without /user/list) or refused cannot say who
-        is missing, so the authenticator is looked up on their own, as they are when a full read shows an
-        account (inactive ones too) whose email it could not resolve; any other shortfall stays incomplete."""
+    def _listing_of(self, raw_jira_users: list[dict[str, Any]], resolved: dict[str, AppUser]) -> SourceUserListing:
+        """The user read as a listing for the authenticator's link. /user/list lists every account, active or
+        not; the search fallback (a release without /user/list) or a refused read may leave anyone out, so
+        only the authenticator's own lookup can show them absent. An account whose email neither the read
+        nor the reverse lookup resolved is an unidentified row."""
+        listing = SourceUserListing(includes_inactive=not (self._user_bulk_incomplete or self._user_bulk_forbidden))
+        for user in raw_jira_users:
+            user_key = user.get("accountId") or user.get("key") or user.get("name")
+            email = user.get("emailAddress") if isinstance(user.get("emailAddress"), str) else None
+            if not (email and email.strip()) and user_key in resolved:
+                email = resolved[user_key].email
+            listing.add_row(email, user_key)
         if self._user_read_unfinished:
-            return False
-        if not (self._user_bulk_incomplete or self._user_bulk_forbidden):
-            if not (self._directory_read_complete() and self._listed_user_keys):
-                return False
-            return not self._unresolved_user_keys or await self._authenticator_is_listed()
-        if not self._user_bulk_forbidden and not self._listed_user_keys:
-            return False
-        return await self._authenticator_is_listed()
+            listing.cut("the user list was not read to its end")
+        else:
+            listing.finish()
+        return listing
 
-    async def _authenticator_is_listed(self) -> bool:
-        """Look the authenticator up by email, active or not, and add it to the listed emails when found.
-        False when it cannot be looked up or the answer cannot be told from a hidden email: the pass then
-        only ever removes a link."""
+    async def _settle_authenticator(self, listing: SourceUserListing) -> None:
+        """When the read cannot tell, look the authenticator up by email, active or not: found, they are
+        PRESENT; ABSENT only when no row of the answer may hide them. A failed lookup leaves them UNKNOWN."""
         email = await self.authenticator_email()
-        if not email:
-            return False
+        if not email or listing.presence(email) is not Presence.UNKNOWN:
+            return
+        wanted = email.strip().lower()
         try:
             datasource = await self._get_fresh_datasource()
             response = await datasource.get_user_search_v2(username=email, includeInactive=True, maxResults=50)
             if response.status != HttpStatusCode.OK.value:
-                return False
+                return
             rows = self._safe_json_parse(response, "authenticator lookup")
         except Exception as e:
             self.logger.warning("Could not look up the authenticator among the Jira users: %s", e)
-            return False
+            return
         if not isinstance(rows, list):
-            return False
-        if any(
-            isinstance(r, dict) and (r.get("emailAddress") or "").strip().lower() == email.lower() for r in rows
-        ):
-            self._listed_user_emails.add(email.lower())
-            return True
+            return
+        if any(isinstance(r, dict) and (r.get("emailAddress") or "").strip().lower() == wanted for r in rows):
+            listing.settle(email, Presence.PRESENT)
         # A malformed row or one with its email hidden may be the authenticator, and a full page may hide the match.
-        return all(isinstance(r, dict) and r.get("emailAddress") for r in rows) and len(rows) < 50
+        elif all(isinstance(r, dict) and r.get("emailAddress") for r in rows) and len(rows) < 50:
+            listing.settle(email, Presence.ABSENT)
 
     async def _fetch_users_via_list(self) -> list[dict[str, Any]] | None:
         """

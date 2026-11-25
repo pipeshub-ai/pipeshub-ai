@@ -1,7 +1,10 @@
-"""GitLab links the user who authenticated the connector only after a complete member listing.
+"""GitLab's member listing decides whether the user who authenticated the connector is linked to the
+token's account and given the token's view.
 
-Any skipped or failed member read makes the listing incomplete, so the full pass only removes. Every
-listed member's email, the injected creator's too, is passed as listed.
+The user sync puts every member row GitLab returned into the sync's ``SourceUserListing``. The creator
+stub it injects is made here, not read from GitLab, so it is never a row; a creator email is put on
+the token account's emailless row only when the creator holds the token. Any skipped or failed member
+read cuts the listing, so it proves nobody absent.
 """
 from __future__ import annotations
 
@@ -11,7 +14,15 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.config.constants.arangodb import Connectors
 from app.connectors.core.base.connector.connector_service import BaseConnector
+from app.connectors.core.base.connector.source_user_listing import (
+    Presence,
+    SourceUserListing,
+)
+from app.connectors.core.base.data_processor.data_source_entities_processor import (
+    DataSourceEntitiesProcessor,
+)
 from app.connectors.sources.gitlab.connector import GitLabConnector
 from app.connectors.sources.gitlab.projects import ProjectsSync
 from app.connectors.sources.gitlab.users import UsersSync
@@ -20,6 +31,10 @@ from app.models.permission import PermissionType
 from .conftest import make_mock_connector
 
 pytestmark = pytest.mark.anyio
+
+CREATOR = "creator@corp.com"
+NOBODY = "nobody@corp.com"
+MARKER_KEY = "/services/connectors/gitlab-conn-1/listedAuthenticators"
 
 
 def _member(uid: int, email: str | None = "m@corp.com") -> SimpleNamespace:
@@ -32,6 +47,18 @@ def _ok(rows: list) -> MagicMock:
 
 def _failed() -> MagicMock:
     return MagicMock(success=False, data=None, error="403")
+
+
+def _presence(c: MagicMock, email: str = NOBODY) -> Presence:
+    return c._user_listing.presence(email)
+
+
+def _app_user_ids(c: MagicMock) -> dict[str, str]:
+    return {
+        u.source_user_id: u.email
+        for call in c.data_entities_processor.on_new_app_users.await_args_list
+        for u in call.args[0]
+    }
 
 
 def _scoped(group_members: object, project_members: object = None, projects: list | None = None) -> tuple[MagicMock, UsersSync]:
@@ -68,92 +95,182 @@ def _unscoped(groups: object, projects: object) -> tuple[MagicMock, UsersSync]:
     return c, users
 
 
-async def test_a_listing_read_in_full_is_complete_and_names_every_member() -> None:
-    c, users = _scoped(_ok([_member(1, "A@Corp.com"), _member(2, "b@corp.com")]))
-    c._listed_user_emails = {"stale@corp.com"}
+class TestTheListing:
+    async def test_a_listing_read_in_full_names_every_member_and_proves_anyone_else_absent(self) -> None:
+        c, users = _scoped(_ok([_member(1, "A@Corp.com"), _member(2, "b@corp.com")]))
+        c._user_listing = SourceUserListing(includes_inactive=True)
 
-    await users.sync_users()
-
-    assert c._users_listing_complete is True
-    assert c._listed_user_emails == {"a@corp.com", "b@corp.com"}
-
-
-async def test_a_skipped_member_read_is_incomplete() -> None:
-    c, users = _scoped(_failed())
-    c._gitlab_user_id, c.creator_email = 9, "creator@corp.com"
-    c._users_listing_complete = True
-
-    await users.sync_users()
-
-    assert c._users_listing_complete is False
-
-
-async def test_a_group_member_read_that_raises_is_incomplete() -> None:
-    c, users = _scoped(RuntimeError("boom"))
-    c._gitlab_user_id, c.creator_email = 9, "creator@corp.com"
-
-    await users.sync_users()
-
-    assert c._users_listing_complete is False
-
-
-async def test_a_failed_project_member_read_under_a_group_is_incomplete() -> None:
-    proj = SimpleNamespace(id=10, path_with_namespace="grp/p")
-    c, users = _scoped(_ok([_member(1)]), project_members=_failed(), projects=[proj])
-
-    await users.sync_users()
-
-    assert c._users_listing_complete is False
-
-
-async def test_a_member_whose_profile_could_not_be_read_is_incomplete() -> None:
-    c, users = _scoped(_ok([_member(1, None)]))
-    users._enrich_members_with_full_user = UsersSync._enrich_members_with_full_user.__get__(users)
-
-    async def ds_call(fn, *_a, **_k) -> object:
-        return _ok([_member(1, None)]) if "list_group_members_all" in str(fn) else _failed()
-
-    c.runtime.ds_call = AsyncMock(side_effect=ds_call)
-
-    await users.sync_users()
-
-    assert c._users_listing_complete is False
-
-
-async def test_an_empty_listing_is_incomplete() -> None:
-    c, users = _scoped(_ok([]))
-    c._users_listing_complete = True
-
-    with pytest.raises(RuntimeError):  # no member and no creator to fall back on: the sync stops
         await users.sync_users()
 
-    assert c._users_listing_complete is False
+        assert c._user_listing.emails == {"a@corp.com", "b@corp.com"}
+        assert _presence(c) is Presence.ABSENT
+
+    async def test_a_skipped_member_read_cuts_the_listing(self) -> None:
+        c, users = _scoped(_failed())
+        c._gitlab_user_id, c.creator_email = 9, CREATOR
+
+        await users.sync_users()
+
+        assert c._user_listing.is_cut and _presence(c) is Presence.UNKNOWN
+
+    async def test_a_group_member_read_that_raises_cuts_the_listing(self) -> None:
+        c, users = _scoped(RuntimeError("boom"))
+        c._gitlab_user_id, c.creator_email = 9, CREATOR
+
+        await users.sync_users()
+
+        assert c._user_listing.is_cut
+
+    async def test_a_failed_project_member_read_under_a_group_cuts_the_listing(self) -> None:
+        proj = SimpleNamespace(id=10, path_with_namespace="grp/p")
+        c, users = _scoped(_ok([_member(1)]), project_members=_failed(), projects=[proj])
+
+        await users.sync_users()
+
+        assert c._user_listing.is_cut
+
+    async def test_a_member_whose_profile_could_not_be_read_cuts_the_listing(self) -> None:
+        c, users = _scoped(_ok([_member(1, None)]))
+        users._enrich_members_with_full_user = UsersSync._enrich_members_with_full_user.__get__(users)
+
+        async def ds_call(fn, *_a, **_k) -> object:
+            return _ok([_member(1, None)]) if "list_group_members_all" in str(fn) else _failed()
+
+        c.runtime.ds_call = AsyncMock(side_effect=ds_call)
+
+        await users.sync_users()
+
+        assert c._user_listing.is_cut
+
+    async def test_an_empty_listing_with_no_creator_to_fall_back_on_stops_the_sync_and_proves_nothing(self) -> None:
+        c, users = _scoped(_ok([]))
+
+        with pytest.raises(RuntimeError):
+            await users.sync_users()
+
+        assert _presence(c) is Presence.UNKNOWN
+
+    async def test_an_unscoped_walk_whose_group_list_failed_cuts_the_listing(self) -> None:
+        c, users = _unscoped(MagicMock(success=False, data=None, error="x"), _ok([SimpleNamespace(id=5)]))
+
+        await users.sync_users()
+
+        assert c._user_listing.is_cut
+
+    async def test_an_unscoped_walk_read_in_full_proves_anyone_else_absent(self) -> None:
+        c, users = _unscoped(_ok([SimpleNamespace(id=3)]), _ok([SimpleNamespace(id=5)]))
+
+        await users.sync_users()
+
+        assert _presence(c) is Presence.ABSENT
+
+    async def test_a_member_whose_email_is_not_shown_proves_nobody_absent(self) -> None:
+        c, users = _scoped(_ok([_member(1, "a@corp.com"), _member(2, None)]))
+
+        await users.sync_users()
+
+        assert not c._user_listing.is_cut
+        assert _presence(c) is Presence.UNKNOWN, "that member may be the creator under their own account"
+
+    async def test_an_injected_creator_is_no_row(self) -> None:
+        c, users = _scoped(_ok([_member(1, "a@corp.com")]))
+        c._gitlab_user_id, c.creator_email = 9, "Creator@Corp.com"
+        c._creator_token_view = True
+
+        await users.sync_users()
+
+        assert c._user_listing.emails == {"a@corp.com"}, "the stub is made here, not read from GitLab"
+        assert _presence(c, CREATOR) is Presence.ABSENT
+        assert _app_user_ids(c)["9"] == "Creator@Corp.com", "the stub still gives the creator their user"
+
+    async def test_the_stub_is_decided_once_the_listing_is_finished(self) -> None:
+        c, users = _scoped(_ok([_member(1, "a@corp.com")]))
+        c._gitlab_user_id, c.creator_email = 9, CREATOR
+        seen: list[Presence] = []
+        c._decide_creator_token_view = AsyncMock(side_effect=lambda: seen.append(_presence(c, CREATOR)))
+
+        await users.sync_users()
+
+        assert seen == [Presence.ABSENT]
+        assert "9" not in _app_user_ids(c), "no token view, no stub"
+
+    @pytest.mark.parametrize("enrich", [False, True], ids=["member-payload", "enriched-profile"])
+    async def test_the_listing_reads_no_field_gitlab_does_not_send(self, enrich: bool) -> None:
+        rows = [_ApiRow(id=1, email="a@corp.com", public_email=None, username="u1", name="U1")]
+        c, users = _scoped(_ok(rows))
+        c._gitlab_user_id, c.creator_email = 9, CREATOR
+        if enrich:
+            users._enrich_members_with_full_user = AsyncMock(side_effect=lambda d: dict(d))
+
+        await users.sync_users()
+
+        assert rows[0].reads <= {"id", "email", "public_email", "username", "name"}
+        assert c._user_listing.emails == {"a@corp.com"}
+
+    async def test_a_real_row_for_the_token_account_is_listed(self) -> None:
+        c, users = _scoped(_ok([_member(1, "a@corp.com"), _member(9, "Bot@Corp.com")]))
+        c._gitlab_user_id, c.creator_email = 9, CREATOR
+
+        await users.sync_users()
+
+        assert c._user_listing.emails == {"a@corp.com", "bot@corp.com"}
+
+    async def test_a_creator_alone_is_not_a_listing(self) -> None:
+        c, users = _scoped(_ok([]))
+        c._gitlab_user_id, c.creator_email = 9, CREATOR
+
+        await users.sync_users()
+
+        assert _presence(c, CREATOR) is Presence.UNKNOWN and _presence(c) is Presence.UNKNOWN
+
+    async def test_the_token_accounts_own_row_counts_as_a_member_row_in_an_unscoped_walk(self) -> None:
+        c, users = _unscoped(_ok([SimpleNamespace(id=3)]), _ok([SimpleNamespace(id=5)]))
+        c._gitlab_user_id, c.creator_email = 9, CREATOR
+
+        async def ds_call(fn: object, *_a: object, **_k: object) -> MagicMock:
+            return _ok([_member(9, "bot@corp.com")]) if "list_project_members_all" in str(fn) else _ok([])
+
+        c.runtime.ds_call = AsyncMock(side_effect=ds_call)
+
+        await users.sync_users()
+
+        assert c._user_listing.emails == {"bot@corp.com"}
+        assert _presence(c) is Presence.ABSENT
+
+    async def test_an_unscoped_walk_that_lists_only_the_injected_creator_proves_nothing(self) -> None:
+        c, users = _unscoped(_ok([SimpleNamespace(id=3)]), _ok([SimpleNamespace(id=5)]))
+        c._gitlab_user_id, c.creator_email = 9, CREATOR
+        c.runtime.ds_call = AsyncMock(return_value=_ok([]))
+
+        await users.sync_users()
+
+        assert _presence(c, CREATOR) is Presence.UNKNOWN
 
 
-async def test_an_unscoped_walk_whose_group_list_failed_is_incomplete() -> None:
-    c, users = _unscoped(MagicMock(success=False, data=None, error="x"), _ok([SimpleNamespace(id=5)]))
+class TestTheTokenAccountRow:
+    """GitLab shows the token's own account no email. Whose row it is follows from GET /user."""
 
-    await users.sync_users()
+    async def test_a_creator_who_holds_the_token_is_named_on_its_row(self) -> None:
+        c, users = _scoped(_ok([_member(1, "a@corp.com"), _member(9, None)]))
+        c._gitlab_user_id, c.creator_email = 9, CREATOR
+        c._token_account_email = CREATOR
 
-    assert c._users_listing_complete is False
+        await users.sync_users()
 
+        assert _app_user_ids(c)["9"] == CREATOR
+        assert _presence(c, CREATOR) is Presence.PRESENT
 
-async def test_an_unscoped_walk_read_in_full_is_complete() -> None:
-    c, users = _unscoped(_ok([SimpleNamespace(id=3)]), _ok([SimpleNamespace(id=5)]))
+    @pytest.mark.parametrize("token_account", [None, "bot@corp.com"], ids=["not-read", "another-account"])
+    async def test_anyone_elses_token_row_stays_unidentified(self, token_account: str | None) -> None:
+        c, users = _scoped(_ok([_member(1, "a@corp.com"), _member(9, None)]))
+        c._gitlab_user_id, c.creator_email = 9, CREATOR
+        c._token_account_email = token_account
 
-    await users.sync_users()
+        await users.sync_users()
 
-    assert c._users_listing_complete is True
-
-
-async def test_an_injected_creator_is_not_listed() -> None:
-    c, users = _scoped(_ok([_member(1, "a@corp.com")]))
-    c._gitlab_user_id, c.creator_email = 9, "Creator@Corp.com"
-
-    await users.sync_users()
-
-    assert c._users_listing_complete is True
-    assert c._listed_user_emails == {"a@corp.com"}, "the stub is made here, not read from GitLab"
+        assert "9" not in _app_user_ids(c), "the creator's email is not put on someone else's account"
+        assert c._user_listing.emails == {"a@corp.com"}
+        assert _presence(c, CREATOR) is Presence.UNKNOWN, "that row may be the creator's own account"
 
 
 class _ApiRow:
@@ -171,61 +288,23 @@ class _ApiRow:
         raise AttributeError(name)
 
 
-@pytest.mark.parametrize("enrich", [False, True], ids=["member-payload", "enriched-profile"])
-async def test_the_listing_reads_no_field_gitlab_does_not_send(enrich: bool) -> None:
-    rows = [_ApiRow(id=1, email="a@corp.com", public_email=None, username="u1", name="U1")]
-    c, users = _scoped(_ok(rows))
-    c._gitlab_user_id, c.creator_email = 9, "creator@corp.com"
-    if enrich:
-        users._enrich_members_with_full_user = AsyncMock(side_effect=lambda d: dict(d))
-
-    await users.sync_users()
-
-    assert rows[0].reads <= {"id", "email", "public_email", "username", "name"}
-    assert c._listed_user_emails == {"a@corp.com"}
-
-
-async def test_the_creator_email_put_on_an_emailless_token_row_is_not_listed() -> None:
-    c, users = _scoped(_ok([_member(1, "a@corp.com"), _member(9, None)]))
-    c._gitlab_user_id, c.creator_email = 9, "creator@corp.com"
-
-    await users.sync_users()
-
-    assert c._listed_user_emails == {"a@corp.com"}
-
-
-async def test_a_real_row_for_the_token_account_is_listed() -> None:
-    c, users = _scoped(_ok([_member(1, "a@corp.com"), _member(9, "Bot@Corp.com")]))
-    c._gitlab_user_id, c.creator_email = 9, "creator@corp.com"
-
-    await users.sync_users()
-
-    assert c._listed_user_emails == {"a@corp.com", "bot@corp.com"}
-
-
-async def test_a_creator_alone_is_not_a_listing() -> None:
-    c, users = _scoped(_ok([]))
-    c._gitlab_user_id, c.creator_email = 9, "creator@corp.com"
-
-    await users.sync_users()
-
-    assert c._users_listing_complete is False
-
-
 class TestRunSyncOrder:
     def _conn(self, order: list[str], users_error: Exception | None = None) -> MagicMock:
         c = make_mock_connector()
 
-        def step(name: str, error: Exception | None = None) -> AsyncMock:
-            async def _run(*_a: object, **_k: object) -> None:
+        def step(name: str, error: Exception | None = None, result: object = None) -> AsyncMock:
+            async def _run(*_a: object, **_k: object) -> object:
                 order.append(name)
                 if error:
                     raise error
+                return result
             return AsyncMock(side_effect=_run)
 
         c.drop_authenticator_link_if_listed = step("drop")
         c.repos = MagicMock(cancel_timestamp_backfill=step("backfill"), schedule_timestamp_backfill=MagicMock())
         c.runtime.refresh_token_if_needed = step("token")
+        c.authenticator_email = step("subject", result=CREATOR)
+        c._read_token_account = step("me")
         c.users = MagicMock(sync_users=step("users", users_error))
         c.projects = MagicMock(sync_all_projects=step("projects"))
         c._register_authenticated_identity = step("register")
@@ -243,6 +322,8 @@ class TestRunSyncOrder:
         await self._run(self._conn(order))
 
         assert order[:2] == ["drop", "backfill"]
+        assert order.index("subject") < order.index("me") < order.index("users")
+        # The user sync decides the creator's token view itself, once its listing is finished.
         assert order.index("users") < order.index("register") < order.index("projects")
 
     async def test_no_full_pass_when_the_user_sync_raises(self) -> None:
@@ -250,120 +331,132 @@ class TestRunSyncOrder:
         with pytest.raises(RuntimeError):
             await self._run(self._conn(order, RuntimeError("down")))
 
-        assert "register" not in order and order[0] == "drop"
+        assert "register" not in order and "projects" not in order and order[0] == "drop"
 
-    async def test_flags_of_an_earlier_run_are_reset_first(self) -> None:
-        order: list[str] = []
-        c = self._conn(order, RuntimeError("down"))
-        c._users_listing_complete, c._listed_user_emails = True, {"stale@corp.com"}
+    async def test_a_listing_of_an_earlier_run_is_dropped_first(self) -> None:
+        c = self._conn([], RuntimeError("down"))
+        c._user_listing = SourceUserListing(includes_inactive=True)
 
         with pytest.raises(RuntimeError):
             await self._run(c)
 
-        assert c._users_listing_complete is False and c._listed_user_emails == set()
+        assert c._user_listing is None
+
+    async def test_the_subject_is_the_user_the_processor_links(self) -> None:
+        c = self._conn([])
+        c.creator_email = "earlier@corp.com"
+
+        await self._run(c)
+
+        assert c.creator_email == CREATOR, "re-read each run: authenticatedBy, else the creator"
 
 
-async def test_the_full_pass_carries_the_listing_state() -> None:
-    c = make_mock_connector()
-    c._users_listing_complete, c._listed_user_emails = True, {"creator@corp.com"}
-    c.register_authenticated_source_user = AsyncMock()
-    c.runtime.ds_call = AsyncMock(return_value=SimpleNamespace(
-        success=True, data=SimpleNamespace(email="a@corp.com", public_email=None, id=4)))
+class TestCreatorStub:
+    """The stub takes the token account's GitLab id, so its user takes over that account's pseudo-group
+    grants: only a creator who gets the token's view has it."""
 
-    await GitLabConnector._register_authenticated_identity(c)
+    async def _sync(self, rows: list, *, token_account_email: str = "bot@corp.com") -> MagicMock:
+        c, users = _scoped(_ok(rows))
+        _with_creator_gate(c)
+        c._gitlab_user_id = 9
+        c._token_account_email = token_account_email
 
-    assert c.register_authenticated_source_user.await_args.kwargs == {
-        "listing_complete": True, "extra_present_emails": {"creator@corp.com"},
-    }
+        await users.sync_users()
+        return c
 
+    @staticmethod
+    def _migrated(c: MagicMock) -> dict[str, str]:
+        return {
+            call.kwargs["group_external_id"]: call.kwargs["user_email"]
+            for call in c.data_entities_processor.migrate_group_to_user_by_external_id.await_args_list
+        }
 
-@pytest.mark.parametrize(("me", "stored"), [
-    (SimpleNamespace(email=" Bot@Corp.com ", public_email=None, id=9), "bot@corp.com"),
-    (SimpleNamespace(email=None, public_email="Bot@Corp.com", id=9), "bot@corp.com"),
-    (SimpleNamespace(email=None, public_email=None, id=9), None),
-])
-async def test_the_identity_read_keeps_the_token_accounts_own_email(me: SimpleNamespace, stored: str | None) -> None:
-    c = make_mock_connector()
-    c._token_account_email = "stale@corp.com"
-    c.register_authenticated_source_user = AsyncMock()
-    c.runtime.ds_call = AsyncMock(return_value=SimpleNamespace(success=True, data=me))
+    async def test_a_listed_creator_who_does_not_hold_the_token_has_no_stub_and_inherits_nothing(self) -> None:
+        c = await self._sync([_member(1, "other@corp.com"), _member(5, CREATOR)])
 
-    await GitLabConnector._register_authenticated_identity(c)
+        assert "9" not in _app_user_ids(c)
+        assert "9" not in self._migrated(c), "the token account's pseudo-group stays its own"
+        assert c._creator_token_view is False
 
-    assert c._token_account_email == stored
+    async def test_an_unlisted_creator_has_the_stub(self) -> None:
+        c = await self._sync([_member(1, "other@corp.com")])
 
+        assert _app_user_ids(c)["9"] == CREATOR
+        assert self._migrated(c)["9"] == CREATOR
+        assert c._creator_token_view is True
 
-async def test_a_failed_identity_read_leaves_no_token_account_email() -> None:
-    c = make_mock_connector()
-    c._token_account_email = "stale@corp.com"
-    c.runtime.ds_call = AsyncMock(side_effect=RuntimeError("down"))
+    async def test_the_token_holder_has_the_stub_even_when_listed(self) -> None:
+        c = await self._sync([_member(1, "other@corp.com"), _member(5, CREATOR)], token_account_email=CREATOR)
 
-    await GitLabConnector._register_authenticated_identity(c)
+        assert _app_user_ids(c)["9"] == CREATOR
 
-    assert c._token_account_email is None
+    async def test_a_creator_once_listed_has_no_stub(self) -> None:
+        c, users = _scoped(_ok([_member(1, "other@corp.com")]))
+        _with_creator_gate(c, _Kv({MARKER_KEY: ["creator-key"]}))
+        c._gitlab_user_id, c._token_account_email = 9, "bot@corp.com"
 
+        await users.sync_users()
 
-async def test_a_member_whose_email_is_not_resolved_makes_the_listing_incomplete() -> None:
-    c, users = _scoped(_ok([_member(1, "a@corp.com"), _member(2, None)]))
-
-    await users.sync_users()
-
-    assert c._users_listing_complete is False
-
-
-async def test_the_token_accounts_own_row_counts_as_a_member_row_in_an_unscoped_walk() -> None:
-    c, users = _unscoped(_ok([SimpleNamespace(id=3)]), _ok([SimpleNamespace(id=5)]))
-    c._gitlab_user_id, c.creator_email = 9, "creator@corp.com"
-
-    async def ds_call(fn: object, *_a: object, **_k: object) -> MagicMock:
-        return _ok([_member(9, "bot@corp.com")]) if "list_project_members_all" in str(fn) else _ok([])
-
-    c.runtime.ds_call = AsyncMock(side_effect=ds_call)
-
-    await users.sync_users()
-
-    assert c._users_listing_complete is True
-    assert c._listed_user_emails == {"bot@corp.com"}
+        assert "9" not in _app_user_ids(c)
 
 
-async def test_an_unscoped_walk_that_lists_only_the_injected_creator_is_incomplete() -> None:
-    c, users = _unscoped(_ok([SimpleNamespace(id=3)]), _ok([SimpleNamespace(id=5)]))
-    c._gitlab_user_id, c.creator_email = 9, "creator@corp.com"
-    c.runtime.ds_call = AsyncMock(return_value=_ok([]))
+class TestTokenAccount:
+    async def test_the_full_pass_carries_the_listing(self) -> None:
+        c = make_mock_connector()
+        c._user_listing = SourceUserListing(includes_inactive=True)
+        c.register_authenticated_source_user = AsyncMock()
+        c.runtime.ds_call = AsyncMock(return_value=SimpleNamespace(
+            success=True, data=SimpleNamespace(email="A@corp.com", public_email=None, id=4)))
 
-    await users.sync_users()
+        await GitLabConnector._read_token_account(c)
+        await GitLabConnector._register_authenticated_identity(c)
 
-    assert c._users_listing_complete is False
+        c.register_authenticated_source_user.assert_awaited_once_with("a@corp.com", "4", listing=c._user_listing)
+
+    @pytest.mark.parametrize(("me", "stored"), [
+        (SimpleNamespace(email=" Bot@Corp.com ", public_email=None, id=9), "bot@corp.com"),
+        (SimpleNamespace(email=None, public_email="Bot@Corp.com", id=9), "bot@corp.com"),
+        (SimpleNamespace(email=None, public_email=None, id=9), None),
+    ])
+    async def test_the_read_keeps_the_token_accounts_own_email(self, me: SimpleNamespace, stored: str | None) -> None:
+        c = make_mock_connector()
+        c._token_account_email = "stale@corp.com"
+        c.runtime.ds_call = AsyncMock(return_value=SimpleNamespace(success=True, data=me))
+
+        await GitLabConnector._read_token_account(c)
+
+        assert (c._token_account_email, c._token_account_id) == (stored, "9")
+
+    async def test_a_failed_read_leaves_no_token_account_and_registers_nothing(self) -> None:
+        c = make_mock_connector()
+        c._token_account_email, c._token_account_read = "stale@corp.com", True
+        c.register_authenticated_source_user = AsyncMock()
+        c.runtime.ds_call = AsyncMock(side_effect=RuntimeError("down"))
+
+        await GitLabConnector._read_token_account(c)
+        await GitLabConnector._register_authenticated_identity(c)
+
+        assert c._token_account_email is None
+        c.register_authenticated_source_user.assert_not_awaited()
 
 
 class _Kv:
-    """The configuration store as a dict, shared by connector instances like the real one."""
+    """The configuration store as a dict, shared by the connector and the processor like the real one."""
 
-    def __init__(
-        self, values: dict | None = None, error: Exception | None = None, *, writes_fail: bool = False,
-    ) -> None:
+    def __init__(self, values: dict | None = None, error: Exception | None = None) -> None:
         self.values = dict(values or {})
         self.error = error
-        self.writes_fail = writes_fail
 
-    async def get_config(self, key: str, **_: object) -> object:
+    async def get_config(self, key: str, *_: object, **__: object) -> object:
         if self.error:
             raise self.error
         return self.values.get(key)
 
     async def set_config(self, key: str, value: object) -> bool:
-        # The real service answers False on a store error instead of raising.
-        if self.writes_fail:
-            return False
         self.values[key] = value
         return True
 
-    async def delete_config(self, key: str) -> bool:
-        return self.values.pop(key, None) is not None
 
-
-GRANT_KEY = "/services/connectors/gitlab-conn-1/authenticatorGrant"
-CREATOR = "creator@corp.com"
 _LISTED = {CREATOR, "bot@corp.com"}
 _UNLISTED = {"bot@corp.com"}
 # (listed emails, token holder, gets the creator's OWNER)
@@ -379,33 +472,35 @@ def _with_creator_gate(c: MagicMock, kv: _Kv | None = None) -> MagicMock:
     c.config_service = kv or _Kv()
     c.creator_user_permission = partial(GitLabConnector.creator_user_permission, c)
     c.creator_token_view_permission = partial(GitLabConnector.creator_token_view_permission, c)
-    for name in (
-        "decide_authenticator_grant", "authenticator_grant_kept", "remember_authenticator_grant", "_marker_holds",
-        "_read_grant_record", "confirm_authenticator_withdrawn",
-    ):
+    c._decide_creator_token_view = partial(GitLabConnector._decide_creator_token_view, c)
+    for name in ("authenticator_gets_token_view", "_marker_holds", "authenticator_email"):
         setattr(c, name, partial(getattr(BaseConnector, name), c))
-    c._confirm_creator_withdrawal = partial(GitLabConnector._confirm_creator_withdrawal, c)
     c.data_entities_processor.get_app_authenticator_user = AsyncMock(
         return_value={"_key": "creator-key", "email": CREATOR},
     )
-    c.data_entities_processor.remove_user_grant_from_record_groups = AsyncMock(return_value=1)
     return c
+
+
+def _listing(emails: set[str], *, complete: bool) -> SourceUserListing:
+    listing = SourceUserListing(includes_inactive=True)
+    for email in emails:
+        listing.add_row(email)
+    if complete:
+        listing.finish()
+    else:
+        listing.cut("a member read failed")
+    return listing
 
 
 async def _decided(
     *, listed: set[str], complete: bool = True, token_holder: bool = False, kv: _Kv | None = None,
 ) -> MagicMock:
     c = _with_creator_gate(make_mock_connector(), kv)
-    c._listed_user_emails, c._users_listing_complete = listed, complete
+    c._user_listing = _listing(listed, complete=complete)
     # The token account's own email, as GitLab returns it for the token: the only proof of a token holder.
     c._token_account_email = CREATOR if token_holder else "bot@corp.com"
     await GitLabConnector._decide_creator_token_view(c)
     return c
-
-
-def _given() -> _Kv:
-    """The store after an earlier sync gave the creator the token's view."""
-    return _Kv({GRANT_KEY: {"email": CREATOR, "granted": True}})
 
 
 def _readable_group(c: MagicMock) -> MagicMock:
@@ -445,12 +540,12 @@ class TestCreatorTokenViewOnGroups:
 
         assert await _group_grantees(c) == set()
 
-    async def test_an_unlisted_creator_still_gets_the_group_grant(self) -> None:
+    async def test_an_unlisted_creator_gets_the_group_grant(self) -> None:
         c = await _decided(listed=_UNLISTED)
 
         assert await _group_grantees(c) == {CREATOR}
 
-    async def test_an_incomplete_listing_grants_nothing_new(self) -> None:
+    async def test_an_incomplete_listing_grants_nothing(self) -> None:
         c = await _decided(listed=_UNLISTED, complete=False)
 
         assert await _group_grantees(c) == set()
@@ -461,19 +556,39 @@ class TestCreatorTokenViewOnGroups:
 
         assert await _group_grantees(c) == {CREATOR}
 
-    async def test_the_grant_is_decided_after_the_user_sync_and_before_the_projects(self) -> None:
-        order: list[str] = []
-        c = TestRunSyncOrder()._conn(order)
-        c._decide_creator_token_view = AsyncMock(side_effect=lambda: order.append("decide"))
+    async def test_a_creator_once_listed_gets_no_grant(self) -> None:
+        c = await _decided(listed=_UNLISTED, kv=_Kv({MARKER_KEY: ["creator-key"]}))
 
-        await TestRunSyncOrder()._run(c)
+        assert await _group_grantees(c) == set()
 
-        assert order.index("users") < order.index("decide") < order.index("projects")
+    async def test_a_marker_that_cannot_be_read_grants_nothing(self) -> None:
+        c = await _decided(listed=_UNLISTED, kv=_Kv(error=RuntimeError("kv down")))
+
+        assert await _group_grantees(c) == set()
+        c.logger.warning.assert_called()
+
+    async def test_nothing_is_stored_and_a_later_incomplete_listing_grants_nothing(self) -> None:
+        kv = _Kv()
+        first = await _decided(listed=_UNLISTED, kv=kv)
+        assert first._creator_token_view is True
+        assert kv.values == {}
+
+        later = await _decided(listed=_UNLISTED, complete=False, kv=kv)
+
+        assert await _group_grantees(later) == set()
+
+    async def test_no_creator_gets_nothing(self) -> None:
+        c = await _decided(listed=_UNLISTED)
+        c.creator_email = None
+
+        await GitLabConnector._decide_creator_token_view(c)
+
+        assert c._creator_token_view is False
 
 
 class TestCreatorTokenViewOnFallbacks:
     """Where GitLab gives no member list, the creator alone used to be granted. They are now only
-    when the listing allows them the token's view: not a creator listed under their own account."""
+    when they get the token's view: not a creator listed under their own account."""
 
     @pytest.mark.parametrize("case", list(_CASES))
     async def test_an_unreadable_group(self, case: str) -> None:
@@ -501,81 +616,38 @@ class TestCreatorTokenViewOnFallbacks:
         assert _owners(c) == ({CREATOR} if granted else set())
 
     @pytest.mark.parametrize("case", list(_CASES))
-    async def test_a_project_whose_members_cannot_be_read_and_whose_grants_are_kept(self, case: str) -> None:
+    async def test_the_creator_only_project_fallback(self, case: str) -> None:
         listed, token_holder, granted = _CASES[case]
-        c = await _decided(listed=listed, token_holder=token_holder, kv=_given())
+        c = await _decided(listed=listed, token_holder=token_holder)
+        c._gitlab_included_group_paths = None
+
+        await ProjectsSync(c)._apply_creator_fallback_for_project(_project())
+
+        assert _owners(c) == ({CREATOR} if granted else set())
+
+    @pytest.mark.parametrize("case", list(_CASES))
+    async def test_a_project_whose_members_cannot_be_read_keeps_its_stored_grants(self, case: str) -> None:
+        listed, token_holder, _granted = _CASES[case]
+        c = await _decided(listed=listed, token_holder=token_holder)
         c._gitlab_included_group_paths = None
         c.runtime.ds_call = AsyncMock(return_value=MagicMock(success=False, data=None, error="500", status_code=500))
         c.data_entities_processor.has_stored_permissions = AsyncMock(return_value=True)
 
         await ProjectsSync(c)._sync_project_members_as_pseudo(_project())
 
-        withdraw = c.data_entities_processor.remove_user_grant_from_record_groups
-        if granted:
-            withdraw.assert_not_awaited()
-        else:
-            connector_id, external_ids, email = withdraw.await_args.args
-            assert (connector_id, email) == (c.connector_id, CREATOR)
-            assert len(external_ids) == 5 and "7" in external_ids, "the project's five groups"
+        (written,) = c.data_entities_processor.on_new_record_groups.await_args.args
+        assert len(written) == 5 and all(perms is None for _group, perms in written)
 
     @pytest.mark.parametrize("case", list(_CASES))
-    async def test_an_unreadable_group_whose_grants_are_kept(self, case: str) -> None:
-        listed, token_holder, granted = _CASES[case]
-        c = await _decided(listed=listed, token_holder=token_holder, kv=_given())
+    async def test_an_unreadable_group_with_stored_grants_keeps_them(self, case: str) -> None:
+        listed, token_holder, _granted = _CASES[case]
+        c = await _decided(listed=listed, token_holder=token_holder)
         c.runtime.ds_call = AsyncMock(return_value=MagicMock(success=False, data=None, error="500", status_code=500))
         c.data_entities_processor.has_stored_permissions = AsyncMock(return_value=True)
 
         await ProjectsSync(c)._ensure_gitlab_group_record_groups(["eng"])
 
-        withdraw = c.data_entities_processor.remove_user_grant_from_record_groups
-        if granted:
-            withdraw.assert_not_awaited()
-        else:
-            withdraw.assert_awaited_once_with(c.connector_id, ["eng"], CREATOR)
-
-    @pytest.mark.parametrize("case", list(_CASES))
-    async def test_a_group_whose_members_cannot_be_read(self, case: str) -> None:
-        listed, token_holder, granted = _CASES[case]
-        c = await _decided(listed=listed, token_holder=token_holder, kv=_given())
-        group = SimpleNamespace(full_path="eng", name="Eng", web_url=None)
-
-        async def ds_call(fn: object, *_a: object, **_k: object) -> MagicMock:
-            return MagicMock(success=True, data=group, error=None) if "get_group" in str(fn) else _failed()
-
-        c.runtime.ds_call = AsyncMock(side_effect=ds_call)
-
-        await ProjectsSync(c)._ensure_gitlab_group_record_groups(["eng"])
-
-        withdraw = c.data_entities_processor.remove_user_grant_from_record_groups
-        if granted:
-            withdraw.assert_not_awaited()
-        else:
-            withdraw.assert_awaited_once_with(c.connector_id, ["eng"], CREATOR)
-
-    @pytest.mark.parametrize("stored", [{"email": CREATOR, "granted": False}, {"email": "other@corp.com", "granted": True}])
-    async def test_nothing_is_withdrawn_from_a_creator_never_given_the_token_view(self, stored: object) -> None:
-        c = await _decided(listed=_LISTED, kv=_Kv({GRANT_KEY: stored}))
-        c.runtime.ds_call = AsyncMock(return_value=MagicMock(success=False, data=None, error="500", status_code=500))
-        c.data_entities_processor.has_stored_permissions = AsyncMock(return_value=True)
-
-        await ProjectsSync(c)._ensure_gitlab_group_record_groups(["eng"])
-
-        c.data_entities_processor.remove_user_grant_from_record_groups.assert_not_awaited()
-
-    async def test_a_creator_grant_from_before_grant_records_existed_is_withdrawn(self) -> None:
-        kv = _Kv()
-        c = await _decided(listed=_LISTED, kv=kv)
-        c.runtime.ds_call = AsyncMock(return_value=MagicMock(success=False, data=None, error="500", status_code=500))
-        c.data_entities_processor.has_stored_permissions = AsyncMock(return_value=True)
-
-        await ProjectsSync(c)._ensure_gitlab_group_record_groups(["eng"])
-        assert kv.values == {}, "nothing stored before the removal"
-        await GitLabConnector._confirm_creator_withdrawal(c)
-
-        c.data_entities_processor.remove_user_grant_from_record_groups.assert_awaited_once_with(
-            c.connector_id, ["eng"], CREATOR,
-        )
-        assert kv.values[GRANT_KEY] == {"email": CREATOR, "granted": False}
+        c.data_entities_processor.on_new_record_groups.assert_not_awaited()
 
     @pytest.mark.parametrize("token_view", [True, False])
     async def test_the_creator_is_injected_into_a_readable_member_list_only_with_the_token_view(
@@ -593,243 +665,81 @@ class TestCreatorTokenViewOnFallbacks:
 
         assert c.users._inject_creator_member_into.called is token_view
 
-    async def test_the_withdrawal_is_stored_only_after_the_removal_and_then_not_repeated(self) -> None:
-        kv = _given()
-        first = await _decided(listed=_LISTED, kv=kv)
-        assert first._withheld_creator_email == CREATOR
-        assert kv.values[GRANT_KEY]["granted"] is True, "nothing stored before the view is taken back"
 
-        await GitLabConnector._confirm_creator_withdrawal(first)
-        second = await _decided(listed=_LISTED, kv=kv)
-
-        assert kv.values[GRANT_KEY] == {"email": CREATOR, "granted": False}
-        assert second._withheld_creator_email is None
-
-    async def test_a_failed_removal_is_retried_when_an_incomplete_listing_omits_the_creator(self) -> None:
-        # The processor wrote the listed-authenticators marker when the earlier listing named them.
-        kv = _Kv({
-            GRANT_KEY: {"email": CREATOR, "granted": True},
-            "/services/connectors/gitlab-conn-1/listedAuthenticators": ["creator-key"],
-        })
-        c = await _decided(listed=_UNLISTED, complete=False, kv=kv)
-        assert c._withheld_creator_email == CREATOR
-        c._gitlab_included_group_paths = None
-        c.runtime.ds_call = AsyncMock(return_value=MagicMock(success=False, data=None, error="500", status_code=500))
-        c.data_entities_processor.has_stored_permissions = AsyncMock(return_value=True)
-
-        await ProjectsSync(c)._sync_project_members_as_pseudo(_project())
-        await GitLabConnector._confirm_creator_withdrawal(c)
-
-        _connector_id, external_ids, email = c.data_entities_processor.remove_user_grant_from_record_groups.await_args.args
-        assert email == CREATOR and "7" in external_ids
-        assert kv.values[GRANT_KEY] == {"email": CREATOR, "granted": False}
-        assert c._creator_token_view is False
-
-    async def test_a_failed_removal_leaves_the_grant_stored_and_the_next_sync_withdraws_again(self) -> None:
-        kv = _given()
-        first = await _decided(listed=_LISTED, kv=kv)
-        first.data_entities_processor.remove_user_grant_from_record_groups.side_effect = RuntimeError("graph down")
-        first.runtime.ds_call = AsyncMock(return_value=MagicMock(success=False, data=None, error="500", status_code=500))
-        first.data_entities_processor.has_stored_permissions = AsyncMock(return_value=True)
-
-        await ProjectsSync(first)._ensure_gitlab_group_record_groups(["eng"])
-        await GitLabConnector._confirm_creator_withdrawal(first)
-        assert kv.values[GRANT_KEY]["granted"] is True
-
-        second = await _decided(listed=_LISTED, kv=kv)
-        second.runtime.ds_call = first.runtime.ds_call
-        second.data_entities_processor.has_stored_permissions = AsyncMock(return_value=True)
-        await ProjectsSync(second)._ensure_gitlab_group_record_groups(["eng"])
-        await GitLabConnector._confirm_creator_withdrawal(second)
-
-        second.data_entities_processor.remove_user_grant_from_record_groups.assert_awaited_once_with(
-            second.connector_id, ["eng"], CREATOR,
-        )
-        assert kv.values[GRANT_KEY] == {"email": CREATOR, "granted": False}
-
-    async def test_a_group_project_list_that_fails_leaves_the_withdrawal_owed(self) -> None:
-        from app.connectors.core.registry.filters import SyncFilterKey
-
-        kv = _given()
-        c = await _decided(listed=_LISTED, kv=kv)
-        c.sync_filters = {SyncFilterKey.GROUP_IDS: SimpleNamespace(
-            is_empty=lambda: False, operator="in", value=["eng", "ops"],
-        )}
-        good = _project()
-
-        async def paged_list(fn: object, group: str, **_: object) -> MagicMock:
-            return _ok([good]) if group == "eng" else MagicMock(success=False, data=[good], error="500")
-
-        c.runtime.paged_list = AsyncMock(side_effect=paged_list)
-        projects = ProjectsSync(c)
-        projects._build_included_group_hierarchy = AsyncMock(return_value=[])
-
-        await projects._resolve_projects_with_filters(prune=True)
-        await GitLabConnector._confirm_creator_withdrawal(c)
-
-        assert kv.values[GRANT_KEY] == {"email": CREATOR, "granted": True}
-
-    async def test_a_project_member_step_that_raises_leaves_the_withdrawal_owed(self) -> None:
-        kv = _given()
-        c = await _decided(listed=_LISTED, kv=kv)
-        c.issues = MagicMock(fetch_issues_batched=AsyncMock())
-        c.repos = MagicMock(run=AsyncMock())
-        c.merge_requests = MagicMock(fetch_prs_batched=AsyncMock())
-        projects = ProjectsSync(c)
-        projects._resolve_projects_with_filters = AsyncMock(return_value=[_project()])
-        projects._sync_project_members_as_pseudo = AsyncMock(side_effect=RuntimeError("members down"))
-
-        await projects._sync_projects()
-        await GitLabConnector._confirm_creator_withdrawal(c)
-
-        assert kv.values[GRANT_KEY] == {"email": CREATOR, "granted": True}
-
-    async def test_a_listed_project_that_cannot_be_read_leaves_the_withdrawal_owed(self) -> None:
-        from app.connectors.core.registry.filters import SyncFilterKey
-
-        kv = _given()
-        c = await _decided(listed=_LISTED, kv=kv)
-        c.sync_filters = {SyncFilterKey.PROJECT_IDS: SimpleNamespace(
-            is_empty=lambda: False, operator="in", value=["eng/p"],
-        )}
-        c.runtime.ds_call = AsyncMock(return_value=MagicMock(success=False, data=None, error="500", status_code=500))
-
-        await ProjectsSync(c)._resolve_projects_with_filters(prune=True)
-        await GitLabConnector._confirm_creator_withdrawal(c)
-
-        assert kv.values[GRANT_KEY] == {"email": CREATOR, "granted": True}
-
-    async def test_no_group_left_to_clean_still_confirms_the_withdrawal(self) -> None:
-        kv = _given()
-        c = await _decided(listed=_LISTED, kv=kv)
-
-        await GitLabConnector._confirm_creator_withdrawal(c)
-
-        c.data_entities_processor.remove_user_grant_from_record_groups.assert_not_awaited()
-        assert kv.values[GRANT_KEY] == {"email": CREATOR, "granted": False}
-
-    async def test_an_unreadable_earlier_grant_withdraws_and_stores_nothing(self) -> None:
-        kv = _Kv(error=RuntimeError("kv down"))
-        c = await _decided(listed=_LISTED, kv=kv)
-        await GitLabConnector._confirm_creator_withdrawal(c)
-
-        assert c._withheld_creator_email is None
-        assert c._creator_token_view is False
-        assert kv.values == {}
-        c.logger.warning.assert_called()
-
-    async def test_the_withdrawal_is_confirmed_after_the_projects_pass(self) -> None:
-        order: list[str] = []
-        c = TestRunSyncOrder()._conn(order)
-        c._confirm_creator_withdrawal = AsyncMock(side_effect=lambda: order.append("confirm"))
-
-        await TestRunSyncOrder()._run(c)
-
-        assert order.index("projects") < order.index("confirm")
-
-    @pytest.mark.parametrize("case", list(_CASES))
-    async def test_the_creator_only_project_fallback(self, case: str) -> None:
-        listed, token_holder, granted = _CASES[case]
-        c = await _decided(listed=listed, token_holder=token_holder)
-        c._gitlab_included_group_paths = None
-
-        await ProjectsSync(c)._apply_creator_fallback_for_project(_project())
-
-        assert _owners(c) == ({CREATOR} if granted else set())
+def _processor_store(kv: _Kv) -> tuple[DataSourceEntitiesProcessor, AsyncMock]:
+    """The real processor over a graph store that knows the creator and the token account."""
+    tx = AsyncMock()
+    tx.get_edges_from_node = AsyncMock(return_value=[])
+    tx.get_app_by_id = AsyncMock(return_value=MagicMock(authenticated_by=None))
+    tx.get_user_by_user_id = AsyncMock(return_value={"_key": "creator-key", "email": CREATOR})
+    tx.get_user_by_email = AsyncMock(return_value=MagicMock(id="bot-user-key", email="bot@corp.com"))
+    ctx = AsyncMock()
+    ctx.__aenter__ = AsyncMock(return_value=tx)
+    ctx.__aexit__ = AsyncMock(return_value=False)
+    provider = MagicMock(transaction=MagicMock(return_value=ctx))
+    proc = DataSourceEntitiesProcessor(MagicMock(), provider, kv)
+    proc.org_id = "org-1"
+    return proc, tx
 
 
-class TestCreatorTokenViewRecord:
-    async def test_a_complete_listing_stores_the_decision(self) -> None:
+class TestEndToEnd:
+    """The real member listing, the real link decision of the processor and the real grant gate."""
+
+    async def _sync(self, rows: list, *, token_account_email: str) -> tuple[MagicMock, AsyncMock, _Kv]:
         kv = _Kv()
-        await _decided(listed=_UNLISTED, kv=kv)
-        assert kv.values[GRANT_KEY] == {"email": CREATOR, "granted": True}
-
-        await GitLabConnector._confirm_creator_withdrawal(await _decided(listed=_LISTED, kv=kv))
-        assert kv.values[GRANT_KEY] == {"email": CREATOR, "granted": False}
-
-    async def test_after_a_restart_an_incomplete_listing_keeps_the_stored_grant(self) -> None:
-        kv = _Kv()
-        await _decided(listed=_UNLISTED, kv=kv)
-
-        fresh = await _decided(listed=_UNLISTED, complete=False, kv=kv)
-
-        assert await _group_grantees(fresh) == {CREATOR}
-
-    @pytest.mark.parametrize("stored", [None, {"email": CREATOR, "granted": False}])
-    async def test_an_incomplete_listing_with_no_stored_grant_grants_nothing(self, stored: object) -> None:
-        c = await _decided(listed=_UNLISTED, complete=False, kv=_Kv({GRANT_KEY: stored}))
-
-        assert await _group_grantees(c) == set()
-
-    async def test_a_withdrawn_grant_whose_write_fails_is_not_revived_by_an_incomplete_listing(self) -> None:
-        kv = _Kv({GRANT_KEY: {"email": CREATOR, "granted": True}}, writes_fail=True)
-        await GitLabConnector._confirm_creator_withdrawal(await _decided(listed=_LISTED, kv=kv))
-
-        fresh = await _decided(listed=_UNLISTED, complete=False, kv=kv)
-
-        assert await _group_grantees(fresh) == set()
-
-    async def test_an_old_creators_grant_does_not_come_back_after_a_creator_swap(self) -> None:
-        kv = _Kv({GRANT_KEY: {"email": "previous@corp.com", "granted": True}})
-
-        c = await _decided(listed=_UNLISTED, complete=False, kv=kv)
-
-        assert await _group_grantees(c) == set()
-        assert kv.values[GRANT_KEY] == {"email": CREATOR, "granted": False}
-
-    async def test_a_partial_listing_that_names_the_creator_withholds_and_stores_no_grant(self) -> None:
-        kv = _Kv({GRANT_KEY: {"email": CREATOR, "granted": True}})
-
-        c = await _decided(listed=_LISTED, complete=False, kv=kv)
-        assert await _group_grantees(c) == set()
-        await GitLabConnector._confirm_creator_withdrawal(c)
-
-        assert kv.values[GRANT_KEY] == {"email": CREATOR, "granted": False}
-
-    async def test_two_partial_listings_the_first_naming_the_creator_both_grant_nothing(self) -> None:
-        # The processor writes the listed-authenticators marker when the first listing names them.
-        kv = _Kv({GRANT_KEY: {"email": CREATOR, "granted": True}, "/services/connectors/gitlab-conn-1/listedAuthenticators": ["creator-key"]})
-        await _decided(listed=_LISTED, complete=False, kv=kv)
-
-        second = await _decided(listed=_UNLISTED, complete=False, kv=kv)
-
-        assert await _group_grantees(second) == set()
-
-    async def test_an_injected_creator_email_is_no_token_holder(self) -> None:
-        c, users = _scoped(_ok([_member(1, "a@corp.com")]))
-        _with_creator_gate(c)
-        c._gitlab_user_id = 9
-        c._token_account_email = None
-
-        await users.sync_users()
-        await GitLabConnector._decide_creator_token_view(c)
-
-        assert CREATOR not in c._listed_user_emails, "the stub is no evidence the creator is a member"
-        assert c._creator_token_view is True, "granted as an unlisted creator, not as the token holder"
-
-    async def test_a_failed_read_of_the_stored_grant_grants_nothing(self) -> None:
-        c = await _decided(listed=_UNLISTED, complete=False, kv=_Kv(error=RuntimeError("kv down")))
-
-        assert await _group_grantees(c) == set()
-        c.logger.warning.assert_called()
-
-
-class TestCreatorTokenViewEndToEnd:
-    """The real member listing decides, and the real group write follows it."""
-
-    @pytest.mark.parametrize(("creator_row", "granted"), [(True, False), (False, True)])
-    async def test_the_listing_decides_the_creator_group_grant(self, creator_row: bool, granted: bool) -> None:
-        rows = [_member(9, "bot@corp.com"), _member(1, "other@corp.com")]
-        if creator_row:
-            rows.append(_member(5, CREATOR))
         c, users = _scoped(_ok(rows))
-        _with_creator_gate(c)
+        _with_creator_gate(c, kv)
+        proc, tx = _processor_store(kv)
+        c.created_by = "creator-user-id"
+        c.connector_name = Connectors.GITLAB
+        c.notify = AsyncMock()
+        c.data_entities_processor.get_app_authenticator_user = proc.get_app_authenticator_user
+        c.data_entities_processor.link_authenticator_to_source_user = proc.link_authenticator_to_source_user
+        for name in ("register_authenticated_source_user", "_authenticator_presence", "_link_authenticator"):
+            setattr(c, name, partial(getattr(BaseConnector, name), c))
+        # GET /user: the token signs in as GitLab account 9.
         c._gitlab_user_id = 9
-        c._token_account_email = "bot@corp.com"
+        c._token_account_email, c._token_account_id, c._token_account_read = token_account_email, "9", True
 
-        await users.sync_users()
-        await GitLabConnector._decide_creator_token_view(c)
-        c.data_entities_processor.on_new_record_groups.reset_mock()
+        with patch(
+            "app.connectors.core.base.data_processor.data_source_entities_processor.notify_connector_sync_completed",
+            AsyncMock(),
+        ):
+            # As run_sync: the user sync decides the token view once its listing is finished.
+            await users.sync_users()
+            await GitLabConnector._register_authenticated_identity(c)
+        return c, tx, kv
 
-        assert c._users_listing_complete is True
-        assert await _group_grantees(c) == ({CREATOR} if granted else set())
+    async def test_a_creator_with_no_account_whose_stub_was_injected_is_linked_and_gets_the_token_view(self) -> None:
+        # The token account (an admin persona) is no member row, so the creator's stub takes its place.
+        c, tx, kv = await self._sync([_member(1, "other@corp.com")], token_account_email="bot@corp.com")
+
+        assert _app_user_ids(c)["9"] == CREATOR, "the stub was injected"
+        assert _presence(c, CREATOR) is Presence.ABSENT, "the injected stub is no row"
+        tx.upsert_authenticated_as.assert_awaited_once_with("creator-key", "bot-user-key", "gitlab-conn-1", "org-1")
+        assert await _group_grantees(c) == {CREATOR}
+        assert MARKER_KEY not in kv.values
+
+    async def test_a_creator_listed_under_their_own_account_gets_neither(self) -> None:
+        c, tx, kv = await self._sync(
+            [_member(9, "bot@corp.com"), _member(1, "other@corp.com"), _member(5, CREATOR)],
+            token_account_email="bot@corp.com",
+        )
+
+        tx.upsert_authenticated_as.assert_not_called()
+        tx.remove_authenticated_as.assert_awaited_once_with("gitlab-conn-1")
+        assert kv.values[MARKER_KEY] == ["creator-key"], "never linked or granted again"
+        assert await _group_grantees(c) == set()
+
+    async def test_a_bot_token_whose_email_is_hidden_leaves_its_row_unidentified(self) -> None:
+        # The bot's GET /user email is not the creator's: the creator does not hold the token, so
+        # the bot's emailless row is not the creator's, and may be anyone's.
+        c, tx, _kv = await self._sync([_member(9, None), _member(1, "other@corp.com")],
+                                      token_account_email="bot@corp.com")
+
+        assert "9" not in _app_user_ids(c)
+        assert _presence(c, CREATOR) is Presence.UNKNOWN
+        tx.upsert_authenticated_as.assert_not_called()
+        assert c._creator_token_view is False
+        assert await _group_grantees(c) == set()
+

@@ -389,9 +389,7 @@ class GitHubTeamsConnector(BaseConnector):
         await self.register_authenticated_source_user(
             email.strip() if isinstance(email, str) else None,
             str(source_user_id) if source_user_id is not None else None,
-            listing_complete=self.users.listing_complete,
-            # Only principals whose email resolved can be matched to the creator.
-            extra_present_emails=self.users.listed_emails(),
+            listing=self.users.listing,
         )
 
     async def run_sync(self) -> None:

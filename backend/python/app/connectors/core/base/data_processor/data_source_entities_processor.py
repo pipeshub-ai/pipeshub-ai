@@ -3,7 +3,7 @@ import contextlib
 import contextvars
 import functools
 import uuid
-from collections.abc import AsyncIterator, Collection, Mapping
+from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import PurePosixPath
@@ -31,6 +31,11 @@ from app.connectors.services.reindex_force import user_forced_intent_id, user_fo
 from app.connectors.core.base.data_processor.record_organizations import (
     link_record_organization,
 )
+from app.connectors.core.base.connector.listed_authenticators import (
+    read_listed_authenticators,
+    write_listed_authenticators,
+)
+from app.connectors.core.base.connector.source_user_listing import Presence
 from app.connectors.core.base.data_processor.record_people import link_record_people
 from app.connectors.core.base.data_processor.pr_links import Linked, write_modifies
 from app.connectors.core.base.data_processor.storage_cleanup import StorageCleanupHelper
@@ -155,24 +160,6 @@ _PENDING_FULL_SYNC_SEEN: contextvars.ContextVar[set[tuple[str, str, str]] | None
 _PENDING_RUN_STATS: contextvars.ContextVar[SyncRunStats | None] = contextvars.ContextVar(
     "pending_run_stats", default=None
 )
-
-
-LISTED_AUTHENTICATORS_KEY = "/services/connectors/{connector_id}/listedAuthenticators"
-
-
-def listed_authenticator_keys(stored: object) -> list[str]:
-    """The user keys a stored listed-authenticators marker holds; nothing stored is none. Raises on
-    anything else, an entry that is not a non-empty string included: coerced, ``[None]`` would read
-    as a key nobody has and let a listed authenticator be linked."""
-    if stored is None:
-        return []
-    if not isinstance(stored, list) or not all(isinstance(k, str) and k.strip() for k in stored):
-        raise TypeError(f"expected a list of user keys, got {stored!r}")
-    return list(stored)
-
-# Whether the authenticator holds the connector account's view, as last decided on a complete
-# user listing: {"email": <authenticator email>, "granted": bool}.
-AUTHENTICATOR_GRANT_KEY = "/services/connectors/{connector_id}/authenticatorGrant"
 
 
 class AuthenticatorLink(str, Enum):
@@ -5917,43 +5904,41 @@ class DataSourceEntitiesProcessor:
         source_user_id: str | None,
         app_name: Connectors | None,
         *,
-        may_link: bool = True,
-        check_listing: bool = True,
-        extra_present_emails: Collection[str] = (),
+        presence: Presence,
     ) -> AuthenticatorLinkResult:
         """Keep the link from the user who authenticated this connector to the source account it
-        is authenticated as. A user the connector lists as one of the source's own users is
-        never linked: they already have their own account there, and the account the
-        credentials act as belongs to someone else. Such a user is remembered in a marker so
-        a later sync that no longer lists them (their account withdrawn) still leaves them
-        unlinked. Otherwise the link is made when the emails differ and removed when they
-        match. Instances written before ``authenticatedBy`` existed fall back to the creator.
+        is authenticated as. ``presence`` is what this sync's user listing proves about that user
+        (``SourceUserListing.presence``).
 
-        A marker that cannot be read blocks making a link, never removing one: a link the
-        listing or the stored membership shows the authenticator should not hold still goes."""
-        marker_key = LISTED_AUTHENTICATORS_KEY.format(connector_id=connector_id)
+        A user the listing shows (PRESENT) has their own account there, and the account the
+        credentials act as belongs to someone else: they are recorded in the listed-authenticators
+        marker, before their link is removed, and never linked again. A link is made only for a
+        user the listing proves ABSENT and the marker does not hold; UNKNOWN never makes one. When
+        the account is the authenticator's own (same email) any link goes. A marker that cannot be
+        read blocks making a link, never removing one. A link for this connector held by someone other
+        than the current authenticator (it was authenticated again by another user, or by one who no
+        longer exists) is removed on any Presence; a failed read of that user changes nothing.
+        Instances written before ``authenticatedBy`` existed fall back to the creator."""
         marker: list[str] = []
         marker_read = True
-        if check_listing:
-            try:
-                marker = listed_authenticator_keys(
-                    await self.config_service.get_config(marker_key, use_cache=False, raise_on_error=True)
-                )
-            except Exception as e:
-                self.logger.warning(
-                    f"Connector {connector_id}: could not read the listed-authenticators marker; "
-                    f"no link is made this sync, a link the source shows should go is still removed: {e}"
-                )
-                marker_read = False
+        try:
+            marker = await read_listed_authenticators(self.config_service, connector_id)
+        except Exception as e:
+            self.logger.warning(
+                f"Connector {connector_id}: could not read the listed-authenticators marker; "
+                f"no link is made this sync, a link the source shows should go is still removed: {e}"
+            )
+            marker_read = False
 
         async def record_listed(authenticator_key: str) -> None:
-            await self._record_listed_authenticator(connector_id, marker_key, [*marker, authenticator_key])
+            await write_listed_authenticators(
+                self.config_service, self.logger, connector_id, [*marker, authenticator_key],
+            )
 
         async with self.data_store_provider.transaction() as tx_store:
             result = await self._decide_authenticator_link(
                 tx_store, connector_id, created_by, email, source_user_id, app_name,
-                may_link=may_link, may_create=marker_read, check_listing=check_listing,
-                marker=marker, extra_present_emails=extra_present_emails,
+                presence=presence, marker=marker, may_create=marker_read,
                 # An unreadable marker is not rewritten: its other entries would be lost.
                 record_listed=record_listed if marker_read else None,
             )
@@ -5974,65 +5959,54 @@ class DataSourceEntitiesProcessor:
         source_user_id: str | None,
         app_name: Connectors | None,
         *,
-        may_link: bool,
-        may_create: bool,
-        check_listing: bool,
+        presence: Presence,
         marker: list[str],
-        extra_present_emails: Collection[str],
+        may_create: bool,
         record_listed: "Callable[[str], Awaitable[None]] | None",
     ) -> AuthenticatorLinkResult:
-        """Apply the link decision inside the open transaction. A listed authenticator missing
-        from the marker is recorded there (``record_listed``) before their link is removed, so the
-        decision outlives the source account that showed it. ``may_create`` False (the marker could
-        not be read) blocks only a link to another account: a link the source account being the
-        authenticator's own makes wrong still goes."""
+        """Apply the link decision inside the open transaction."""
         unchanged = AuthenticatorLinkResult(AuthenticatorLink.UNCHANGED)
         authenticated_by, authenticator = await self._authenticator(tx_store, connector_id, created_by)
         authenticator_key = authenticator.get("_key") or authenticator.get("id")
         if not authenticator_key:
-            self.logger.warning(
-                f"User {authenticated_by} not found; cannot link connector {connector_id} to {email}"
-            )
-            return unchanged
+            self.logger.warning(f"User {authenticated_by} not found; connector {connector_id} has nobody to link")
+            if not authenticated_by:
+                return unchanged
+            # Read, and there is no such user: the credentials are nobody's here, so a link left for the
+            # connector belongs to whoever authenticated it before. A failed read raised above.
+            removed = await tx_store.remove_authenticated_as(connector_id)
+            return AuthenticatorLinkResult(AuthenticatorLink.UNLINKED if removed else AuthenticatorLink.UNCHANGED)
+
+        async def authenticator_links() -> list[dict]:
+            return await tx_store.get_edges_from_node(
+                f"users/{authenticator_key}", CollectionNames.AUTHENTICATED_AS.value, raise_on_error=True,
+            ) or []
+
+        async def drop_another_users_link() -> AuthenticatorLinkResult:
+            # A link for this connector that the authenticator does not hold is someone else's, left from
+            # before the connector was authenticated again: their credentials no longer run it, so it goes
+            # whatever the listing says. A connector whose listing never proves anything still drops it.
+            if any(link.get("connectorId") == connector_id for link in await authenticator_links()):
+                return unchanged
+            removed = await tx_store.remove_authenticated_as(connector_id)
+            return AuthenticatorLinkResult(AuthenticatorLink.UNLINKED if removed else AuthenticatorLink.UNCHANGED)
+
+        if presence is Presence.PRESENT or authenticator_key in marker:
+            if presence is Presence.PRESENT and record_listed is not None and authenticator_key not in marker:
+                await record_listed(authenticator_key)
+            removed = await tx_store.remove_authenticated_as(connector_id)
+            return AuthenticatorLinkResult(AuthenticatorLink.UNLINKED if removed else AuthenticatorLink.UNCHANGED)
+
+        if not email or not source_user_id:
+            return await drop_another_users_link()
 
         authenticator_email = (authenticator.get("email") or "").strip().lower()
-        if check_listing:
-            listed = authenticator_key in marker or authenticator_email in {
-                (e or "").strip().lower() for e in extra_present_emails
-            } - {""}
-            if not listed:
-                try:
-                    edges = await tx_store.get_edges_from_node(
-                        f"users/{authenticator_key}", CollectionNames.USER_APP_RELATION.value,
-                        raise_on_error=True,
-                    )
-                except Exception as e:
-                    self.logger.warning(
-                        f"Connector {connector_id}: could not read the authenticator's source accounts; "
-                        f"leaving the authenticator link as it is: {e}"
-                    )
-                    return unchanged
-                listed = any(
-                    edge.get("_to") == f"apps/{connector_id}"
-                    and edge.get("sourceUserId")
-                    and not edge.get("isExternalUser")
-                    for edge in edges or []
-                )
-            if listed:
-                if record_listed is not None and authenticator_key not in marker:
-                    await record_listed(authenticator_key)
-                removed = await tx_store.remove_authenticated_as(connector_id)
-                return AuthenticatorLinkResult(AuthenticatorLink.UNLINKED if removed else AuthenticatorLink.UNCHANGED)
-
-        if not may_link or not email or not source_user_id:
-            return unchanged
-
         if authenticator_email == email.strip().lower():
             removed = await tx_store.remove_authenticated_as(connector_id)
             return AuthenticatorLinkResult(AuthenticatorLink.UNLINKED if removed else AuthenticatorLink.UNCHANGED)
 
-        if not may_create:
-            return unchanged
+        if presence is not Presence.ABSENT or not may_create:
+            return await drop_another_users_link()
 
         source_user = await tx_store.get_user_by_email(email, org_id=self.org_id)
         if source_user is None:
@@ -6045,34 +6019,15 @@ class DataSourceEntitiesProcessor:
         if source_user is None:
             raise RuntimeError(f"Could not create source user {email} for connector {connector_id}")
 
-        links = await tx_store.get_edges_from_node(
-            f"users/{authenticator_key}", CollectionNames.AUTHENTICATED_AS.value, raise_on_error=True,
-        )
         already = any(
             link.get("connectorId") == connector_id and link.get("_to") == f"users/{source_user.id}"
-            for link in links or []
+            for link in await authenticator_links()
         )
         await tx_store.upsert_authenticated_as(authenticator_key, source_user.id, connector_id, self.org_id)
         if already:
             return unchanged
         self.logger.info(f"Connector {connector_id}: user {authenticated_by} authenticated as {email}")
         return AuthenticatorLinkResult(AuthenticatorLink.LINKED, authenticated_by, email)
-
-    async def _record_listed_authenticator(self, connector_id: str, marker_key: str, marker: list[str]) -> None:
-        """Write the listed-authenticators marker. set_config answers False on a store error
-        instead of raising; one retry, then a warning. Never raises, so the unlink that follows
-        is never held up."""
-        for _ in range(2):
-            try:
-                if await self.config_service.set_config(marker_key, marker):
-                    return
-                error: object = "the store refused the write"
-            except Exception as e:
-                error = e
-        self.logger.warning(
-            f"Connector {connector_id}: could not record the listed authenticator; a later sync that no "
-            f"longer lists them may link them: {error}"
-        )
 
     @staticmethod
     async def _authenticator(
@@ -7968,36 +7923,6 @@ class DataSourceEntitiesProcessor:
             return await tx_store.get_record_by_conversation_index(
                 connector_id, conversation_index, thread_id, self.org_id, user_id
             )
-
-    @retry_on_deadlock()
-    async def remove_user_grant_from_record_groups(
-        self, connector_id: str, external_group_ids: Collection[str], user_email: str,
-    ) -> int:
-        """Delete the permission edge this user holds directly on these record groups of the connector,
-        and no other grant on them. For a grant the connector made itself (the user who authenticated it
-        given the connector account's view) on groups whose source grants are unknown and kept as stored.
-        Returns how many edges went. A failed read raises."""
-        if not external_group_ids:
-            return 0
-        async with self._drop_access_after({connector_id}), self.data_store_provider.transaction() as tx_store:
-            user = await tx_store.get_user_by_email(user_email, raise_on_error=True, org_id=self.org_id)
-            if user is None or not user.id:
-                return 0
-            edges: list[dict] = []
-            for external_id in sorted(set(external_group_ids)):
-                group = await tx_store.get_record_group_by_external_id(
-                    connector_id=connector_id, external_id=external_id,
-                )
-                if group is not None and group.id:
-                    edges.append({
-                        "from_id": user.id,
-                        "from_collection": CollectionNames.USERS.value,
-                        "to_id": group.id,
-                        "to_collection": CollectionNames.RECORD_GROUPS.value,
-                    })
-            if not edges:
-                return 0
-            return await tx_store.batch_delete_edges(edges, collection=CollectionNames.PERMISSION.value)
 
     @retry_on_deadlock()
     async def remove_user_access_to_connector(self, connector_id: str, user_email: str) -> int:

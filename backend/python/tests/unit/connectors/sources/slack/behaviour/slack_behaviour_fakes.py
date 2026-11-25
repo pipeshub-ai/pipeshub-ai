@@ -25,6 +25,7 @@ from urllib.parse import parse_qs, urlparse
 
 import httpx
 
+from app.connectors.core.base.connector.source_user_listing import Presence
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     AuthenticatorLink,
     AuthenticatorLinkResult,
@@ -34,7 +35,7 @@ from app.models.permission import EntityType
 from app.services.graph_db.common.record_visibility import is_live_record
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Callable, Collection
+    from collections.abc import AsyncIterator, Callable
     from urllib.request import Request
 
 TEAM_ID = "T0ACME"
@@ -462,26 +463,32 @@ class FakeSlackStore:
 
     async def link_authenticator_to_source_user(
         self, connector_id: str, created_by: str, email: str, source_user_id: str, app_name: object,
-        *, may_link: bool = True, check_listing: bool = True, extra_present_emails: Collection[str] = (),
+        *, presence: Presence,
     ) -> AuthenticatorLinkResult:
-        """The real processor's rule: a creator the connector lists (a stored source user with an id, or one of
-        ``extra_present_emails``, compared ignoring case and spaces) is never linked and loses an existing link."""
+        """The real processor's rule: an authenticator the listing shows PRESENT is never linked and loses an
+        existing link; only one proved ABSENT is linked."""
         creator = (self.authenticator_email or "").strip().lower()
-        listed = {
-            (u.email or "").strip().lower() for u in self.app_users.values() if getattr(u, "source_user_id", None)
-        } | {e.strip().lower() for e in extra_present_emails}
-        if check_listing and creator and creator in listed:
+        if creator and presence is Presence.PRESENT:
             had, self.stored_link = self.stored_link, None
             return AuthenticatorLinkResult(AuthenticatorLink.UNLINKED if had else AuthenticatorLink.UNCHANGED)
-        if not may_link or not email or not source_user_id:
+        if not email or not source_user_id:
             return AuthenticatorLinkResult(AuthenticatorLink.UNCHANGED)
         if creator and email.strip().lower() == creator:
             # Their own account: nothing to link, and a link to another account goes.
             had, self.stored_link = self.stored_link, None
             return AuthenticatorLinkResult(AuthenticatorLink.UNLINKED if had else AuthenticatorLink.UNCHANGED)
+        if presence is not Presence.ABSENT:
+            return AuthenticatorLinkResult(AuthenticatorLink.UNCHANGED)
         self.links.append((email, source_user_id))
         self.stored_link = (email, source_user_id)
         return AuthenticatorLinkResult(AuthenticatorLink.UNCHANGED)
+
+    async def authenticator_has_source_account(self, connector_id: str, created_by: str | None) -> bool:
+        """TRANSITIONAL, as the processor's: a stored source user with the authenticator's email."""
+        creator = (self.authenticator_email or "").strip().lower()
+        return bool(creator) and creator in {
+            (u.email or "").strip().lower() for u in self.app_users.values() if getattr(u, "source_user_id", None)
+        }
 
     async def unlink_authenticator(self, connector_id: str) -> None:
         self.unlinks += 1
@@ -522,23 +529,6 @@ class FakeSlackStore:
             self.record_groups[group.external_group_id] = group
             if permissions is not None:  # None: the grants are unknown and the stored ones stay
                 self.group_access[group.external_group_id] = list(permissions)
-
-    async def remove_user_grant_from_record_groups(
-        self, connector_id: str, external_group_ids: Collection[str], user_email: str,
-    ) -> int:
-        """Only this user's own grant on these groups goes; the rest stay as stored, as the processor's."""
-        self.events.append(("remove_user_grant_from_record_groups", tuple(sorted(external_group_ids))))
-        removed = 0
-        for external_id in external_group_ids:
-            if external_id not in self.group_access:
-                continue
-            kept = [
-                p for p in self.group_access[external_id]
-                if not (p.entity_type == EntityType.USER and (p.email or "").lower() == user_email.lower())
-            ]
-            removed += len(self.group_access[external_id]) - len(kept)
-            self.group_access[external_id] = kept
-        return removed
 
     async def get_record_group_by_external_id(self, connector_id: str, external_id: str) -> Optional[RecordGroup]:
         return self.record_groups.get(external_id)

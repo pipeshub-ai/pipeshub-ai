@@ -5792,7 +5792,8 @@ class IGraphDBProvider(ABC):
         ``app_types`` and whose link is wrong: the user it hangs off is listed by the connector as one of the source's own users
         (a source-user relation to the app with a source id, not an external collaborator), or the link points at that user
         itself. A link of a user the connector does not list stays. Needs a system context. Answers the links removed,
-        ``{"connectorId", "org"}`` each, and the ids of the orgs whose removal failed (the links removed in the other orgs stay
+        ``{"connectorId", "org", "user", "selfLink"}`` each (``user``: the key of the user the link hung off; ``selfLink``: it
+        pointed at that user, which does not show the source lists them), and the ids of the orgs whose removal failed (the links removed in the other orgs stay
         removed, so the caller still drops their caches).
 
         A store whose reads are not bound to an org makes one pass over the link collection, so the cost grows with the number
