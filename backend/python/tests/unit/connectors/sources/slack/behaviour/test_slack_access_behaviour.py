@@ -278,6 +278,21 @@ class TestArchivedAndDirectConversations:
         # A channel whose members were read still gets the authenticator.
         assert "owner@outside.com" in store.access_emails(GENERAL)
 
+    async def test_a_public_channel_whose_members_cannot_be_read_is_open_to_the_workspace_alone(
+        self, workspace, store, checkpoints,
+    ) -> None:
+        store.authenticator_email = "owner@outside.com"
+        workspace.fail("conversations.members", SlackError("not_in_channel"), times=None,
+                       when=lambda p: p.get("channel") == GENERAL)
+        connector, _ = await workspace_connector(store, checkpoints)
+
+        await connector.run_sync()
+
+        grants = store.group_access[GENERAL]
+        assert [(p.entity_type, p.external_id) for p in grants] == [(EntityType.ROLE, "workspace_member")]
+        # A channel whose members were read still gets the authenticator.
+        assert "owner@outside.com" in store.access_emails(SECRET)
+
     async def test_an_archived_channel_the_bot_is_not_in_is_not_joined(self, workspace, store, checkpoints) -> None:
         workspace.channels[GENERAL].update(is_archived=True, is_member=False)
         connector, _ = await workspace_connector(store, checkpoints)

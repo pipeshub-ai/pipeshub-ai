@@ -75,6 +75,7 @@ def _make_connector():
     c._archived_channel_ids = set()
     c._kept_channel_ids = set()
     c._kept_channel_read_from = {}
+    c._members_unread_channel_ids = set()
     c._channel_list_failed = False
     c._resilience_loaded = True
     c._resilience = None
@@ -4283,7 +4284,7 @@ class TestSlackConnectorCoverageExtended:
         assert complete is False
 
     @pytest.mark.asyncio
-    async def test_fetch_thread_replies_raw_first_page_gone_is_complete(self) -> None:
+    async def test_fetch_thread_replies_raw_first_page_gone_is_refused(self) -> None:
         from app.connectors.sources.slack.team.connector import (
             ProcessingContext,
             RateLimiter,
@@ -4298,7 +4299,7 @@ class TestSlackConnectorCoverageExtended:
         with patch.object(SlackConnector, "_fresh_datasource", new_callable=AsyncMock, return_value=ds):
             got, complete = await c._fetch_thread_replies_raw("C1", "1.0", ctx)
         assert got == []
-        assert complete is True
+        assert complete is None
 
     @pytest.mark.asyncio
     async def test_process_thread_on_new_record_groups_raises(self):

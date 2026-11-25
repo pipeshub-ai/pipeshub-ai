@@ -852,6 +852,104 @@ class TestRefusedThreadsAreRetried:
             assert len(pending) == 2
             assert set(pending) <= set(parents)
 
+    @pytest.mark.parametrize("parent_read_again", [False, True], ids=["thread-growth-scan", "channel-history"])
+    async def test_a_new_reply_refused_on_a_thread_already_read_is_read_once_slack_answers(
+        self, workspace, store, checkpoints, parent_read_again,
+    ) -> None:
+        parent, first = ts_minutes_ago(300), ts_minutes_ago(299)
+        workspace.post(GENERAL, parent, BOB, "question?")
+        workspace.reply(GENERAL, parent, first, ALICE, "answer")
+        connector, _ = await workspace_connector(store, checkpoints)
+        await connector.run_sync()
+        thread_key = f"slack_thread/{GENERAL}_{parent}"
+        assert checkpoints.value(thread_key)["last_reply_ts"] == first
+
+        later = ts_minutes_ago(5)
+        workspace.reply(GENERAL, parent, later, BOB, "one more thing")
+        refused = True
+        workspace.fail("conversations.replies", SlackError("not_in_channel"), times=None, when=lambda p: refused)
+        if parent_read_again:
+            # Without the message checkpoint the parent comes back through the channel history.
+            (key,) = [k for k in checkpoints.sync_points if k.endswith(f"slack_messages/{GENERAL}")]
+            del checkpoints.sync_points[key]
+        await connector.run_sync()
+
+        assert later not in store.message_ts_count()
+        assert checkpoints.value(thread_key)["last_reply_ts"] == first
+        assert pending_threads(checkpoints, GENERAL) == [parent]
+        # A refused thread is kept, not incomplete: the run and the channel checkpoint still move.
+        assert connector.full_sync_coverage().complete
+        if parent_read_again:
+            assert [k for k in checkpoints.sync_points if k.endswith(f"slack_messages/{GENERAL}")]
+
+        refused = False
+        await connector.run_sync()
+
+        assert store.message_ts_count().get(later) == 1
+        assert checkpoints.value(thread_key)["last_reply_ts"] == later
+        assert pending_threads(checkpoints, GENERAL) == []
+
+
+class TestPrivateChannelWhoseMembersCannotBeRead:
+    """Its stored grants are kept, so nothing new of it is written until its members can be read."""
+
+    async def test_new_messages_and_replies_wait_until_the_members_can_be_read(
+        self, workspace, store, checkpoints,
+    ) -> None:
+        parent, first = ts_minutes_ago(300), ts_minutes_ago(299)
+        workspace.post(SECRET, parent, BOB, "question?")
+        workspace.reply(SECRET, parent, first, ALICE, "answer")
+        connector, _ = await workspace_connector(store, checkpoints)
+        await connector.run_sync()
+        stored = await stored_ids_of(store, SECRET)
+        message_checkpoint = checkpoints.value(f"slack_messages/{SECRET}")
+        thread_key = f"slack_thread/{SECRET}_{parent}"
+
+        workspace.members[SECRET].remove(BOB)
+        note, later = ts_minutes_ago(30), ts_minutes_ago(10)
+        workspace.post(SECRET, note, ALICE, "after bob left")
+        workspace.reply(SECRET, parent, later, ALICE, "also after bob left")
+        refused = True
+        workspace.fail("conversations.members", SlackError("missing_scope"), times=None,
+                       when=lambda p: refused and p.get("channel") == SECRET)
+        await connector.run_sync()
+
+        written = store.message_ts_count()
+        assert note not in written and later not in written
+        assert checkpoints.value(f"slack_messages/{SECRET}") == message_checkpoint
+        assert checkpoints.value(thread_key)["last_reply_ts"] == first
+        assert await stored_ids_of(store, SECRET) == stored
+        assert store.access_emails(SECRET) == {"alice@acme.com", "bob@acme.com"}
+        assert connector.full_sync_coverage().complete
+
+        refused = False
+        await connector.run_sync()
+
+        written = store.message_ts_count()
+        assert written.get(note) == 1 and written.get(later) == 1
+        assert store.access_emails(SECRET) == {"alice@acme.com"}
+        new = [r for r in store.messages() if {b.source_id for b in r.block_containers.blocks} & {note, later}]
+        assert {r.external_record_group_id for r in new} == {SECRET, f"thread_{SECRET}_{parent}"}
+        assert all(r.inherit_permissions for r in new)
+        assert checkpoints.value(thread_key)["last_reply_ts"] == later
+
+    async def test_a_full_sync_keeps_what_is_stored_and_is_complete(self, workspace, store, checkpoints) -> None:
+        stage_channel(workspace, SECRET, "secret")
+        connector, _ = await workspace_connector(store, checkpoints)
+        await connector.run_sync()
+        stored = await stored_ids_of(store, SECRET)
+
+        note = ts_minutes_ago(10)
+        workspace.post(SECRET, note, ALICE, "new")
+        workspace.fail("conversations.members", SlackError("missing_scope"), times=None,
+                       when=lambda p: p.get("channel") == SECRET)
+        result = await full_sync(connector, store, checkpoints)
+
+        assert result.complete
+        assert result.unlinked == set()
+        assert note not in store.message_ts_count()
+        assert await stored_ids_of(store, SECRET) == stored
+
 
 class TestGoneFromSlack:
     async def test_a_deleted_channel_and_deleted_messages_lose_their_links(self, workspace, store, checkpoints) -> None:
