@@ -290,6 +290,9 @@ class SandboxAlertRunner:
             fired = claimed[level]
             claimed_at = fired.get("claimedAt")
             fired_at = claimed_at / 1000 if isinstance(claimed_at, (int, float)) else now
+            # The notice supersedes the alerts it resolves: an org still missing one of their copies must not get it after the notice.
+            resolved_ids = {str(v.get("alertId", "")) for v in claimed.values()}
+            self._unsent = [u for u in self._unsent if u.alert_id not in resolved_ids]
             alert_id = str(uuid.uuid4())
             event = build_resolved_event(
                 level=level, resolved_alert_id=str(fired.get("alertId", "")),

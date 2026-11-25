@@ -471,3 +471,30 @@ async def test_a_copy_that_times_out_does_not_stop_the_later_orgs_and_is_sent_ag
     env.warn()
     await runner.run_once()
     assert _copies(env, "SANDBOX_CAPACITY_WARNING") == [("org-a", alert_id), ("org-c", alert_id), ("org-b", alert_id)]
+
+
+async def test_an_org_that_got_the_resolved_notice_never_gets_the_warning_it_had_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The resolved notice supersedes the alert it resolves: the warning copy org B refused is not sent after B read that it ended."""
+
+    class _RefusesTheWarningFor(_OrgFlakyProducer):
+        async def send_message(self, topic: str, message: dict, key: str | None = None) -> bool:
+            if message["payload"].get("orgId") == self.failing and message["type"] == "SANDBOX_CAPACITY_WARNING":
+                return False
+            return await FakeProducer.send_message(self, topic, message, key)
+
+    env = Env(tmp_path)
+    env.producer = _RefusesTheWarningFor()
+    env.producer.failing = "org-b"
+    runner = _signed_runner(env, monkeypatch, ["org-a", "org-b"])
+    env.warn()
+    await runner.run_once()
+    for _ in range(40):                       # the load clears, the notice goes out, and evaluations go on
+        env.clock.now += 10
+        env.quiet()
+        await runner.run_once()
+        if _copies(env, "SANDBOX_CAPACITY_RESOLVED"):
+            env.producer.failing = None       # org B would now accept the warning too
+    assert [o for o, _ in _copies(env, "SANDBOX_CAPACITY_WARNING")] == ["org-a"]
+    assert sorted(o for o, _ in _copies(env, "SANDBOX_CAPACITY_RESOLVED")) == ["org-a", "org-b"]
