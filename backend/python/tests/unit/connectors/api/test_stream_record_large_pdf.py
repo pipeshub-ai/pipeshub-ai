@@ -140,7 +140,7 @@ async def _stream(server: TestServer, headers: dict[str, str]) -> Any:
     )
     with patch.object(StorageDocuments, "_storage_url", AsyncMock(return_value=str(server.make_url("")).rstrip("/"))), \
             patch("app.services.storage_documents.generate_jwt", AsyncMock(return_value="tok")), \
-            patch.object(router_mod, "_refuse_hidden_demo_record", new=AsyncMock()), \
+            patch.object(router_mod, "refuse_hidden_demo_record", new=AsyncMock()), \
             patch.object(router_mod, "refuse_outside_connection", new=AsyncMock()):
         return await router_mod.stream_record(
             request, RECORD_ID, convertTo=None, version=None, graph_provider=graph, config_service=MagicMock(),

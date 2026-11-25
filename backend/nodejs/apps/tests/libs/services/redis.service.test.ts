@@ -336,6 +336,28 @@ describe('RedisService', () => {
     it('leaves TLS off when the stored config does not ask for it', () => {
       expect(capturedConnectionConfig.tls).to.not.equal(true);
     });
+
+    // Sign-in sessions, the SAML desktop hand-off and the e-mail rate-limit
+    // counters change behaviour when lost (a sign-in in progress fails, a
+    // per-address limit restarts), so they never follow the evicting cache Redis.
+    it('stays on the main Redis when REDIS_CACHE_URL is set', () => {
+      const saved = process.env.REDIS_CACHE_URL;
+      process.env.REDIS_CACHE_URL = 'redis://:cache-secret@cache-redis:6390';
+      try {
+        new RedisService(
+          { host: 'main-redis', port: 6379, password: 'main-secret', keyPrefix: 'c:' },
+          createMockLogger(),
+        );
+      } finally {
+        if (saved === undefined) delete process.env.REDIS_CACHE_URL;
+        else process.env.REDIS_CACHE_URL = saved;
+      }
+      expect([
+        capturedConnectionConfig.host,
+        capturedConnectionConfig.port,
+        capturedConnectionConfig.password,
+      ]).to.deep.equal(['main-redis', 6379, 'main-secret']);
+    });
   });
 });
 

@@ -82,10 +82,23 @@ _KEY_SHAPES = re.compile(
     rf"|AIza[{_TOKEN}]{{30,}}"
     rf"|gh[pousr]_[A-Za-z0-9]{{36,}}"
     rf"|github_pat_[A-Za-z0-9_]{{22,}}"
+    # Tokens the connectors hold: Google OAuth access (a service account's has dots: `ya29.c.c0…`) and refresh, GitLab
+    # personal and OAuth-application, Notion current and legacy, Atlassian, Linear API and OAuth. A legacy Notion token
+    # is exactly 43 characters after `secret_`, and not after `_`, so `secret_<sha1>` in a path or `top_secret_…` stays.
+    rf"|ya29\.[{_TOKEN}.]{{20,}}"
+    rf"|1//0[{_TOKEN}]{{30,}}"
+    rf"|gl(?:pat|oas)-[{_TOKEN}]{{20,}}"
+    rf"|ntn_[A-Za-z0-9]{{40,}}"
+    rf"|(?<!_)secret_[A-Za-z0-9]{{43}}(?![A-Za-z0-9])"
+    rf"|ATATT[{_TOKEN}=]{{20,}}"
+    rf"|lin_(?:api|oauth)_[A-Za-z0-9]{{32,}}"
     rf"|(?<![_\-])eyJ[{_TOKEN}]{{8,}}\.[{_TOKEN}]{{8,}}\.[{_TOKEN}]*"
     rf")"
 )
-_KEY_SHAPE_TRIGGERS = ("phpat_", "sk-", "akia", "asia", "xox", "aiza", "gh", "eyj")
+_KEY_SHAPE_TRIGGERS = (
+    "phpat_", "sk-", "akia", "asia", "xox", "aiza", "gh", "eyj", "ya29.", "1//0", "glpat-", "gloas-", "ntn_", "secret_", "atatt",
+    "lin_api_", "lin_oauth_",
+)
 
 # `Bearer` is matched in any case; lowercase "basic" is an ordinary word, so
 # only `Basic` followed by something base64-shaped is taken as a credential.
@@ -278,7 +291,9 @@ def _redact_urls(text: str) -> str:
 def redact_secrets_in_text(text: str) -> str:
     """``text`` with credentials masked: private keys, this process's secret
     env values, known key shapes (``phpat_``, ``sk-``, ``AKIA``, ``xox*-``,
-    ``AIza``, GitHub tokens, JWTs), credential-named ``name: value`` pairs,
+    ``AIza``, GitHub tokens, JWTs, Google OAuth ``ya29.``/``1//0`` tokens,
+    GitLab ``glpat-``/``gloas-``, Notion ``ntn_``/``secret_``, Atlassian
+    ``ATATT``, Linear ``lin_api_``/``lin_oauth_``), credential-named ``name: value`` pairs,
     ``Bearer``/``Basic`` credentials, and URL passwords and query secrets.
 
     A pair value that only describes the credential is kept: a bare presence

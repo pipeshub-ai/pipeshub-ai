@@ -174,7 +174,7 @@ class TestExceptions:
         from app.api.routes.agent import AgentTemplateNotFoundError
         e = AgentTemplateNotFoundError("t1")
         assert e.status_code == 404
-        assert "t1" in e.detail
+        assert e.detail == "Agent template not found or you don't have access to it"
 
     def test_permission_denied(self) -> None:
         from app.api.routes.agent import PermissionDeniedError
@@ -532,7 +532,7 @@ class TestParseToolsets:
 class TestValidateRequiredFields:
     def test_all_present(self) -> None:
         from app.api.routes.agent import _validate_required_fields
-        _validate_required_fields({"a": 1, "b": 2}, ["a", "b"])
+        _validate_required_fields({"a": "x", "b": "y"}, ["a", "b"])
 
     def test_missing_field(self) -> None:
         from app.api.routes.agent import InvalidRequestError, _validate_required_fields
@@ -1360,9 +1360,16 @@ class TestValidateRequiredFieldsValues:
         with pytest.raises(InvalidRequestError):
             _validate_required_fields({"name": ""}, ["name"])
 
-    def test_valid_numeric_value_passes(self) -> None:
-        from app.api.routes.agent import _validate_required_fields
-        _validate_required_fields({"count": 5}, ["count"])
+    def test_a_numeric_value_is_not_text(self) -> None:
+        from app.api.routes.agent import InvalidRequestError, _validate_required_fields
+        with pytest.raises(InvalidRequestError, match="'count' must be text"):
+            _validate_required_fields({"count": 5}, ["count"])
+
+    def test_an_optional_field_may_be_absent_or_null_but_not_another_type(self) -> None:
+        from app.api.routes.agent import InvalidRequestError, _validate_required_fields
+        _validate_required_fields({"name": "n", "note": None}, ["name"], ("note", "absent"))
+        with pytest.raises(InvalidRequestError, match="'note' must be text"):
+            _validate_required_fields({"name": "n", "note": ["x"]}, ["name"], ("note",))
 
 
 # ---------------------------------------------------------------------------
@@ -2047,12 +2054,14 @@ class TestCreateToolsetEdges:
                 "instanceName": None,
             }
         }
-        with patch("app.agents.constants.toolset_constants.normalize_app_name", return_value="jira"):
-            created, failed = await _create_toolset_edges(
+        with (
+            patch("app.agents.constants.toolset_constants.normalize_app_name", return_value="jira"),
+            pytest.raises(Exception, match="db error"),
+        ):
+            await _create_toolset_edges(
                 "agent1", toolsets, {"userId": "u1"}, "uk1",
                 graph_provider, logging.getLogger("test")
             )
-        assert len(failed) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -4223,8 +4232,9 @@ class TestCreateToolsetEdgesFullCoverage:
         gp.batch_upsert_nodes = AsyncMock(side_effect=Exception("db err"))
         toolsets = {"jira": {"displayName": "Jira", "type": "app", "tools": [], "instanceId": None, "instanceName": None}}
         user_info = {"userId": "u1"}
-        created, failed = await _create_toolset_edges("ak1", toolsets, user_info, "uk1", gp, log)
-        assert len(failed) == 1
+        # Raised, not returned as a failed list: the caller's request line keeps the cause.
+        with pytest.raises(Exception, match="db err"):
+            await _create_toolset_edges("ak1", toolsets, user_info, "uk1", gp, log)
 
 
 class TestCreateKnowledgeEdgesFullCoverage:

@@ -81,6 +81,7 @@ from app.utils.oauth_config import (
     get_oauth_config,
 )
 from app.utils import error_class
+from app.utils.credential_refresh_log import token_endpoint_error_class
 from app.utils.desktop_state import mark_desktop_state, strip_desktop_state
 from app.utils.oauth_errors import authorization_error_class, authorization_error_code
 from app.utils.oauth_redirect import resolve_oauth_base_url
@@ -151,8 +152,9 @@ class ToolsetError(HTTPException):
 class ToolsetNotFoundError(ToolsetError):
     """Toolset not found in registry"""
     def __init__(self, toolset_name: str) -> None:
+        # The argument stays for the callers; the detail leaves it out, as it may match nothing.
         super().__init__(
-            detail=f"Toolset '{toolset_name}' not found in registry",
+            detail="Toolset not found in registry",
             status_code=HttpStatusCode.NOT_FOUND.value
         )
 
@@ -2819,7 +2821,9 @@ async def handle_toolset_oauth_callback(
             "redirect_url": f"{base_url}/tools?oauth_error=auth_failed"
         }
     except Exception as e:
-        mark_request_failure(request, e, reason="server_error", include_error_text=False)
+        mark_request_failure(
+            request, e, error_class=token_endpoint_error_class(e), reason="server_error", include_error_text=False,
+        )
         error_message = extract_oauth_error_message(e)
         return {
             "success": False,
@@ -2916,7 +2920,7 @@ async def update_toolset_oauth_config(
 
     cfg = await _get_oauth_config_by_id(toolset_type, oauth_config_id, org_id, config_service)
     if not cfg:
-        raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail=f"OAuth configuration '{oauth_config_id}' not found.")
+        raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="OAuth configuration not found.")
 
     base_url = await resolve_oauth_base_url(config_service, body.get("baseUrl"))
 
@@ -2982,7 +2986,7 @@ async def delete_toolset_oauth_config(
 
     cfg = await _get_oauth_config_by_id(toolset_type, oauth_config_id, org_id, config_service)
     if not cfg:
-        raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail=f"OAuth configuration '{oauth_config_id}' not found.")
+        raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="OAuth configuration not found.")
 
     # Safe-delete: reject if any instance references this oauth config
     instances = await _load_toolset_instances(org_id, config_service, raise_on_error=True)
@@ -3333,12 +3337,12 @@ async def _resolve_agent_with_permission(
         # check_agent_permission(agent_id, user_id, org_id) — correct positional order
         perm = await graph_provider.check_agent_permission(agent_key, user_doc_key, org_id)
         if not perm:
-            raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail=f"Agent '{agent_key}' not found.")
+            raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Agent not found.")
 
         # get_agent(agent_id, org_id) — do NOT pass user_doc_key as org_id or org_id as transaction
         agent = await graph_provider.get_agent(agent_key, org_id)
         if not agent:
-            raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail=f"Agent '{agent_key}' not found.")
+            raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Agent not found.")
 
         agent.update(perm)
         return agent

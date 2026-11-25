@@ -76,8 +76,8 @@ export class FirstPartyDeviceAppService {
     try {
       const app = await this.createApp(orgId, allowedScopes)
       this.logger.info('First-party device app created', {
-        clientId: app.clientId,
-        orgId,
+        client_id: app.clientId,
+        org_id: orgId,
       })
       return app.clientId
     } catch (error) {
@@ -131,13 +131,13 @@ export class FirstPartyDeviceAppService {
     try {
       await getOAuthAppRepository().addAllowedScopes(app._id, missing);
       this.logger.info('First-party device app gained new preset scopes', {
-        clientId: app.clientId,
+        client_id: app.clientId,
         scopes: missing,
       });
     } catch (error) {
       // Discovery must keep working; the next call retries the update.
       this.logger.warn('First-party device app scope update failed', {
-        clientId: app.clientId,
+        client_id: app.clientId,
         error: error instanceof Error ? error.message : String(error),
       });
     }

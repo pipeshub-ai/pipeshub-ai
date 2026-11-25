@@ -261,6 +261,8 @@ const outbox: CollectionMapping = {
   sourceKey: (doc) => String(doc._id),
   orgPath: '__org',
   orgCol: 'org_id',
+  // delivered events stay a week (the TTL sweeper); like a published document in MongoDB they are history, not part of the copy
+  countWhere: "t.status <> 'published'",
   versionCol: 'version',
   fields: [
     { col: 'org_id', path: '__org', type: 'oid' },
@@ -776,6 +778,12 @@ export const CONTENT_MAPPINGS: CollectionMapping[] = LISTED.map((m) =>
 );
 
 export const CONTENT_IGNORED: IgnoredCollection[] = [
+  // shortcut: a store move starts the agent activity log afresh; map it (import access, change-log trigger) if it must survive a move
+  {
+    collection: 'agentCallEvents',
+    reason:
+      'agent activity log with a 30-day retention: a store move starts a new log on the target rather than copying the old one',
+  },
   {
     collection: 'crawlingManagerConfigs',
     reason:

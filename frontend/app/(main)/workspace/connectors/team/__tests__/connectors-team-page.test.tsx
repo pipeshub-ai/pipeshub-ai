@@ -37,6 +37,7 @@ vi.mock('../../components/instance-panel', () => ({ InstanceManagementPanel: () 
 vi.mock('../../demo-data/components', () => ({ DemoDataRemovalNotice: () => null }));
 vi.mock('@/config', async () => ({
   PermissionLockIcon: () => null,
+  useUserPermission: () => true,
   TEAM_CONNECTOR_VISIBILITY_WARNINGS: {
     ...(await import('../../utils/team-visibility-warning')).TEAM_CONNECTOR_VISIBILITY_WARNINGS,
     // No shipped connector is team-only today; this one keeps that dialog covered.
@@ -453,7 +454,7 @@ describe('Team connectors page: turning sync on and off', () => {
 
     fireEvent.click(toggle);
 
-    await waitFor(() => expect(api.toggleConnector).toHaveBeenCalledWith('conn-1', 'sync', undefined));
+    await waitFor(() => expect(api.toggleConnector).toHaveBeenCalledWith('conn-1', 'sync', true, undefined));
     await waitFor(() => expect(toasts().map((t) => t.title)).toContain('Connector sync enabled'));
   });
 
@@ -465,7 +466,7 @@ describe('Team connectors page: turning sync on and off', () => {
     fireEvent.click(toggle);
     await confirmDisable();
 
-    await waitFor(() => expect(api.toggleConnector).toHaveBeenCalledWith('conn-1', 'sync'));
+    await waitFor(() => expect(api.toggleConnector).toHaveBeenCalledWith('conn-1', 'sync', false));
     await waitFor(() => expect(toasts().map((t) => t.title)).toContain('Connector sync disabled'));
   });
 

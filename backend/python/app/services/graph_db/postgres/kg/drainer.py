@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING
 from app.core.org_context import OrgContext, bind
 from app.services.graph_db.postgres.kg.locks import LOCK_CLASS
 from app.services.graph_db.postgres.kg.model import CODE_EPOCH, COLL_CODE
-from app.services.graph_db.postgres.kg.project import decode, project
+from app.services.graph_db.postgres.kg.project import decode, grant_only, project
 from app.services.graph_db.postgres.kg.writers import KgWriter
 from app.telemetry.backend import METRICS_BACKEND
 
@@ -61,20 +61,22 @@ async def drain(db: KernelDB, org: str, *, limit: int = 25000) -> int:
         # by one of them, and a caller that does not get it takes nothing (its rows are still in the log and it looks again).
         if not await tx.fetchval("/* pipeshub:kg.drain_lock */ SELECT pg_try_advisory_xact_lock($1::int, hashtext($2))", LOCK_CLASS, f"{org}|drain"):
             return 0
-        rows = await tx.fetch(r"""/* pipeshub:kg.drain_read */ SELECT id, ends FROM (
-            SELECT id, ends, sum(cardinality(ends)) OVER (ORDER BY txid, id) AS run FROM (
-              SELECT id, txid, ends FROM kg.graph_changes WHERE org_id = $1 AND txid <> pg_current_xact_id() AND NOT (ends @> ARRAY['3:@demote']::text[]) AND NOT EXISTS (SELECT 1 FROM unnest(ends) AS e WHERE e IS NULL OR e !~ '^[1-8]:[\s\S]+$' OR length(e) > 258) ORDER BY txid, id LIMIT 1000) q) r
+        rows = await tx.fetch(r"""/* pipeshub:kg.drain_read */ SELECT id, ends, grant_only FROM (
+            SELECT id, ends, grant_only, sum(cardinality(ends)) OVER (ORDER BY txid, id) AS run FROM (
+              SELECT id, txid, ends, grant_only FROM kg.graph_changes WHERE org_id = $1 AND txid <> pg_current_xact_id() AND NOT (ends @> ARRAY['3:@demote']::text[]) AND NOT EXISTS (SELECT 1 FROM unnest(ends) AS e WHERE e IS NULL OR e !~ '^[1-8]:[\s\S]+$' OR length(e) > 258) ORDER BY txid, id LIMIT 1000) q) r
             WHERE run - cardinality(ends) < $2 ORDER BY id""", org, limit)
         if not rows:
             return 0
         # The rows behind this page, as they are now: a row whose nodes this projection re-derives from the graph is satisfied by it (it was committed, with its graph change,
         # before the projection reads), so it is acknowledged with the page instead of projecting the same nodes again later. A group that appears pulls all its members in
         # (expansion), which in a bulk import is most of the log.
-        ahead = await tx.fetch(r"""/* pipeshub:kg.drain_ahead */ SELECT id, ends FROM kg.graph_changes WHERE org_id = $1 AND txid <> pg_current_xact_id() AND NOT (id = ANY($2::bigint[])) AND NOT (ends @> ARRAY['3:@demote']::text[]) AND NOT EXISTS (SELECT 1 FROM unnest(ends) AS e WHERE e IS NULL OR e !~ '^[1-8]:[\s\S]+$' OR length(e) > 258)
+        ahead = await tx.fetch(r"""/* pipeshub:kg.drain_ahead */ SELECT id, ends, grant_only FROM kg.graph_changes WHERE org_id = $1 AND txid <> pg_current_xact_id() AND NOT (id = ANY($2::bigint[])) AND NOT (ends @> ARRAY['3:@demote']::text[]) AND NOT EXISTS (SELECT 1 FROM unnest(ends) AS e WHERE e IS NULL OR e !~ '^[1-8]:[\s\S]+$' OR length(e) > 258)
             ORDER BY id LIMIT $3""", org, [r["id"] for r in rows], AHEAD)
-        st = await project(tx, org, decode(rows))
+        st = await project(tx, org, decode(rows), grant_only=grant_only(rows))
         covered = {(COLL_CODE[k[0]], k[1]) for k in st.keys}
-        done = [r["id"] for r in rows] + [r["id"] for r in ahead if all(_code_key(e) in covered for e in r["ends"])]
+        # a node restamped alone satisfies a row of a grant change on it, never another change of it (that one restamps what is below the node, when its own page comes)
+        deep = covered - {(COLL_CODE[k[0]], k[1]) for k in st.shallow}
+        done = [r["id"] for r in rows] + [r["id"] for r in ahead if all(_code_key(e) in (covered if r["grant_only"] else deep) for e in r["ends"])]
         await KgWriter(tx).changes_delete(done)
         return sum(len(r["ends"]) for r in rows)
     return await db.run(go, write=True)

@@ -5,6 +5,8 @@
  * a way to make an organisation row. Each scenario uses its own organisation(s)
  * so tests do not depend on each other.
  */
+import { adminLeaseTiming } from '../../../src/libs/repositories/user/mongo';
+import { ServiceUnavailableError } from '../../../src/libs/errors/http.errors';
 import { expect } from 'chai';
 import { UniqueConstraintError } from '../../../src/libs/repositories/errors';
 import type { ScopedUnitOfWork } from './unit-of-work-scope';
@@ -30,6 +32,8 @@ export interface IdentityFixture {
   uow: ScopedUnitOfWork;
   /** True when a failed run rolls back (replica set). */
   transactional: boolean;
+  /** True when the store serves the admin-role lease (MongoDB); PostgreSQL refuses it. */
+  adminLease?: boolean;
   /** Makes an organisation row and returns its id. */
   newOrg(): Promise<string>;
   /** A well-formed id nothing refers to. */
@@ -474,6 +478,20 @@ export function describeIdentityContract(fx: IdentityFixture): void {
       expect((await users.getLive(o1, live._id))!._id).to.equal(live._id);
     });
 
+    it('restoreByEmails brings a removed admin back as a member and leaves live accounts as they are', async () => {
+      const org = await fx.newOrg();
+      const goneAdmin = await person(org, { role: 'admin' });
+      const goneMember = await person(org);
+      const liveAdmin = await person(org, { role: 'admin' });
+      await users.markDeleted(org, goneAdmin._id);
+      await users.markDeleted(org, goneMember._id);
+      const restored = await users.restoreByEmails(org, [goneAdmin.email, goneMember.email, liveAdmin.email]);
+      const roleOf = (id: string) => restored.find((r) => r._id === id)?.role;
+      expect([roleOf(goneAdmin._id), roleOf(goneMember._id), roleOf(liveAdmin._id)]).to.deep.equal(['member', 'member', 'admin']);
+      expect((await users.getLive(org, goneAdmin._id))!.role).to.equal('member');
+      expect((await users.getLive(org, liveAdmin._id))!.role).to.equal('admin');
+    });
+
     it('promoteToAdmin promotes people; a batch that reaches a service account is refused by the schema', async () => {
       const org = await fx.newOrg();
       const p = await person(org);
@@ -819,6 +837,20 @@ export function describeIdentityContract(fx: IdentityFixture): void {
       expect(await users.updateProfile(org, u._id, { fullName: 'x' })).to.equal(null);
     });
 
+    it('updateProfile to an address another account in the organisation holds is a UniqueConstraintError on email', async () => {
+      const org = await fx.newOrg();
+      const [u, other] = [await person(org), await person(org)];
+      let err: unknown;
+      try {
+        await users.updateProfile(org, u._id, { email: other.email });
+      } catch (e) {
+        err = e;
+      }
+      expect(err).to.be.instanceOf(UniqueConstraintError);
+      expect(String((err as UniqueConstraintError).metadata?.key)).to.include('email');
+      expect((await users.getLive(org, u._id))!.email).to.equal(u.email);
+    });
+
     it('markDeleted keeps the row, optionally signs the person out and records who deleted', async () => {
       const org = await fx.newOrg();
       const actor = fx.newId();
@@ -829,6 +861,41 @@ export function describeIdentityContract(fx: IdentityFixture): void {
       const d2 = await users.markDeleted(org, v._id);
       expect(d2).to.include({ isDeleted: true, hasLoggedIn: true });
       expect(await users.markDeleted(await fx.newOrg(), v._id)).to.equal(null);
+    });
+
+    it('markDeleted with onlyMember removes a member, and leaves an admin exactly as it was', async () => {
+      const org = await fx.newOrg();
+      const actor = fx.newId();
+      const m = await person(org, { hasLoggedIn: true });
+      const d = await users.markDeleted(org, m._id, { signedOut: true, deletedBy: actor, onlyMember: true });
+      expect(d).to.include({ isDeleted: true, hasLoggedIn: false, deletedBy: actor, role: 'member' });
+      const a = await person(org, { role: 'admin', hasLoggedIn: true });
+      expect(await users.markDeleted(org, a._id, { signedOut: true, deletedBy: actor, onlyMember: true })).to.equal(null);
+      const kept = await users.getAny(org, a._id);
+      expect(kept).to.include({ isDeleted: false, hasLoggedIn: true, role: 'admin' });
+      expect(kept!.deletedBy ?? undefined).to.equal(undefined);
+      expect(await users.countActiveAdmins(org)).to.equal(1);
+      expect(await users.markDeleted(await fx.newOrg(), m._id, { onlyMember: true })).to.equal(null);
+      // Without the flag an admin is still removed: the other callers keep their behaviour.
+      expect(await users.markDeleted(org, a._id)).to.include({ isDeleted: true, role: 'admin' });
+    });
+
+    it('markDeleted with deletedBy undefined clears who deleted the account', async () => {
+      const org = await fx.newOrg();
+      const m = await person(org);
+      await users.markDeleted(org, m._id, { deletedBy: fx.newId() });
+      const cleared = await users.markDeleted(org, m._id, { deletedBy: undefined });
+      expect(cleared!.deletedBy ?? undefined).to.equal(undefined);
+      expect((await users.getAny(org, m._id))!.deletedBy ?? undefined).to.equal(undefined);
+    });
+
+    it('markDeleted with onlyMember matches a member removed before, so a retried deletion finishes', async () => {
+      const org = await fx.newOrg();
+      const actor = fx.newId();
+      const m = await person(org, { hasLoggedIn: true });
+      await users.markDeleted(org, m._id, { signedOut: true, deletedBy: actor, onlyMember: true });
+      const again = await users.markDeleted(org, m._id, { signedOut: true, deletedBy: actor, onlyMember: true });
+      expect(again).to.include({ _id: m._id, isDeleted: true, hasLoggedIn: false, deletedBy: actor });
     });
 
     it('countActiveAdmins and listAdminIds exclude removed accounts and service accounts', async () => {
@@ -879,6 +946,81 @@ export function describeIdentityContract(fx: IdentityFixture): void {
       expect((err as Error).message).to.equal('abort');
       const d = (await users.getLive(org, u._id))!.designation;
       expect(d).to.equal(fx.transactional ? undefined : 'tx');
+    });
+
+    it('create inside a failing unit of work rolls back only when transactional', async () => {
+      const org = await fx.newOrg();
+      const address = email();
+      let err: unknown;
+      try {
+        await fx.uow.run(async (tx) => {
+          await users.create(org, { email: address, fullName: 'In Tx' }, tx);
+          throw new Error('abort');
+        }, { org });
+      } catch (e) {
+        err = e;
+      }
+      expect((err as Error).message).to.equal('abort');
+      const rows = await users.listByEmails(org, [address]);
+      expect(rows).to.have.length(fx.transactional ? 0 : 1);
+    });
+
+    it('createMany, restoreByEmails and promoteToAdmin inside a failing unit of work roll back only when transactional', async () => {
+      const org = await fx.newOrg();
+      const removed = await person(org, { isDeleted: true });
+      const member = await person(org);
+      const [a, b] = [email(), email()];
+      let err: unknown;
+      try {
+        await fx.uow.run(async (tx) => {
+          await users.restoreByEmails(org, [removed.email], tx);
+          await users.createMany(org, [{ email: a, fullName: 'A' }, { email: b, fullName: 'B' }], tx);
+          await users.promoteToAdmin(org, [member._id], tx);
+          throw new Error('abort');
+        }, { org });
+      } catch (e) {
+        err = e;
+      }
+      expect((err as Error).message).to.equal('abort');
+      const after = {
+        restored: !(await users.getAny(org, removed._id))!.isDeleted,
+        created: (await users.listByEmails(org, [a, b])).length,
+        promoted: (await users.getAny(org, member._id))!.role === 'admin',
+      };
+      expect(after).to.deep.equal(
+        fx.transactional
+          ? { restored: false, created: 0, promoted: false }
+          : { restored: true, created: 2, promoted: true },
+      );
+    });
+
+    it('withAdminLease: one holder per organisation on MongoDB, refused by PostgreSQL', async () => {
+      const org = await fx.newOrg();
+      if (!fx.adminLease) {
+        let refused: unknown;
+        try { await users.withAdminLease(org, async () => 'ran'); } catch (e) { refused = e; }
+        expect((refused as Error)?.message).to.match(/standalone MongoDB/);
+        return;
+      }
+      const other = await fx.newOrg();
+      let release!: () => void;
+      const held = new Promise<void>((resolve) => { release = resolve; });
+      let entered!: () => void;
+      const inside = new Promise<void>((resolve) => { entered = resolve; });
+      const first = users.withAdminLease(org, async () => { entered(); await held; return 'first'; });
+      await inside;
+      // Another organisation is not held up; the same one is refused once the wait runs out.
+      expect(await users.withAdminLease(other, async () => 'other')).to.equal('other');
+      const saved = { ...adminLeaseTiming };
+      adminLeaseTiming.waitMs = 50;
+      let busy: unknown;
+      try { await users.withAdminLease(org, async () => 'second'); } catch (e) { busy = e; } finally { Object.assign(adminLeaseTiming, saved); }
+      expect(busy).to.be.instanceOf(ServiceUnavailableError);
+      expect((busy as ServiceUnavailableError).metadata?.retryAfter).to.equal('5');
+      release();
+      expect(await first).to.equal('first');
+      // Released: the next holder gets it at once.
+      expect(await users.withAdminLease(org, async () => 'third')).to.equal('third');
     });
 
     it('listDirectory: search, service accounts, hasLoggedIn, paging and sort by name', async () => {

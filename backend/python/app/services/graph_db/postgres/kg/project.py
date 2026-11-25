@@ -25,6 +25,7 @@ from app.services.graph_db.postgres.kg.locks import (
 )
 from app.services.graph_db.postgres.kg.model import (
     CODE_COLL,
+    CODE_EPOCH,
     COLL_CODE,
     MAX_ID,
     RECORD_COLLS,
@@ -53,7 +54,11 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 REFUSED = METRICS_BACKEND.counter("pipeshub_kg_refused_rows_total", "Rows with a value a kg writer refuses (a node written without it, a grant left out), and their connector taken off the readers", ["coll"])
-TRASH_HELD = "/* pipeshub:kg.trash_held */ SELECT sk, deleted_ms, delete_batch FROM kg.records WHERE org_id = $1 AND sk = ANY($2::bigint[])"
+TRASH_HELD = "/* pipeshub:kg.trash_held */ SELECT sk, deleted_ms, delete_batch, pc_top FROM kg.records WHERE org_id = $1 AND sk = ANY($2::bigint[])"
+# What kg's rows say of whether a node is granted before the unit writes them, and whether the row is under a verified copy (the stamper reads the flag from kg there).
+GRANTED_HELD = """/* pipeshub:kg.granted_held */ SELECT r.sk, r.granted, r.app_sk, s.app_sk IS NOT NULL AS verified FROM kg.records r
+    LEFT JOIN kg.projection_state s ON s.org_id = r.org_id AND s.app_sk = r.app_sk AND s.mode IN ('shadow', 'enforce') AND s.code_epoch = $3
+    WHERE r.org_id = $1 AND r.sk = ANY($2::bigint[])"""
 
 
 @dataclass
@@ -71,11 +76,12 @@ class Stats:
     wide: bool = False                                        # the unit held the organization-wide lock
     keys: set[Key] = field(default_factory=set)               # the nodes this call took as its focus and looked at the dependants of: a change-log row naming only these is satisfied by it
     off: set[int] = field(default_factory=set)                # the connectors (app sks) this call took off the readers: their copy is not exact and must be copied and verified again
+    shallow: set[Key] = field(default_factory=set)            # nodes whose grants alone changed and stayed granted (or not): restamped alone, not what is below them
 
 
-async def expand(tx: Tx, org: str, focus: set[Key]) -> set[Key]:
+async def expand(tx: Tx, org: str, focus: set[Key], reached: set[Key] | None = None) -> set[Key]:
     """Add what a change to a node's existence changes in its neighbours (a deleted folder re-parents nothing but its children's rows name it), and the users that link to
-    a changed source account (their badge groups are derived through it)."""
+    a changed source account (their badge groups are derived through it). ``reached``: given, it collects every node this adds, those already in ``focus`` too."""
     keys = {k for k in focus if k[0] in COLL_CODE}
     if not keys:
         return focus
@@ -86,7 +92,7 @@ async def expand(tx: Tx, org: str, focus: set[Key]) -> set[Key]:
     # that was gone and comes back keeps it), so a record counts as present for them once kg holds its row, and a principal, which the change capture logs only when it is inserted
     # or deleted, is always a change.
     flipped = {k for k in keys if k[0] not in RECORD_COLLS or ((k in nodes) != (k in held) and (k in nodes or k in held or k in sks))}
-    out = set(focus)
+    out: set[Key] = set()
     gone_apps = sorted(sks[k] for k in flipped if k[0] == "apps" and k not in nodes)
     if gone_apps:          # the records of a connector that is gone lose their app: re-derive every one of them
         out |= {(CODE_COLL[r["coll"]], r["id"]) for r in await tx.fetch("/* pipeshub:kg.expand_app */ SELECT coll, id FROM kg.records WHERE org_id = $1 AND app_sk = ANY($2::bigint[])", org, gone_apps)}
@@ -124,16 +130,18 @@ async def expand(tx: Tx, org: str, focus: set[Key]) -> set[Key]:
                 out.add(end)
         if r["coll"] == "authenticatedAs" and t in keys:                         # a source account changed: its users
             out.add(f)
-    return out
+    if reached is not None:
+        reached |= out
+    return focus | out
 
 
-async def _expanded(tx: Tx, org: str, seeds: set[Key], known: set[Key] | None = None) -> set[Key]:
+async def _expanded(tx: Tx, org: str, seeds: set[Key], known: set[Key] | None = None, reached: set[Key] | None = None) -> set[Key]:
     """``seeds`` and everything their neighbours' rows depend on, to a fixpoint: a node this brings in is itself looked at (:func:`expand`), so every node of the result has had its
     dependents found, which is what lets a log row that names only such nodes be acknowledged by the projection."""
     out = set(seeds)
     frontier = set(seeds)
     while frontier:
-        grown = await expand(tx, org, frontier) - out - (known or set())
+        grown = await expand(tx, org, frontier, reached) - out - (known or set())
         out |= grown
         frontier = grown
     return out
@@ -173,8 +181,10 @@ async def current(tx: Tx, org: str, d: Derived) -> tuple[set, dict, dict]:
     return links, grants, closure
 
 
-async def project(tx: Tx, org: str, focus: set[Key], *, lock_for: set[str] | None = None, expand_neighbours: bool = True, stamps: bool = True) -> Stats:
-    """Make kg agree with the graph for ``focus``. ``lock_for``: connector ids to lock besides those of the focus ('' = org-wide). The lock comes first and everything kg is
+async def project(tx: Tx, org: str, focus: set[Key], *, lock_for: set[str] | None = None, expand_neighbours: bool = True, stamps: bool = True,
+                  grant_only: frozenset[Key] = frozenset()) -> Stats:
+    """Make kg agree with the graph for ``focus``. ``grant_only``: nodes of the focus that the change log names only for a change of a grant on them (rows marked
+    ``grant_only``, kg_0021). ``lock_for``: connector ids to lock besides those of the focus ('' = org-wide). The lock comes first and everything kg is
     compared with is read after it. What a change reaches in its neighbours (:func:`expand`, ``parents_of``) is only known once it is read under the lock: when it reaches a
     connector the unit holds no lock for (a hierarchy parent or child of another connector, or a node that spans the organisation), the unit rolls back to its savepoint, which
     releases its locks, and starts again with the larger set taken in one ascending pass, so no unit waits for a lock below one it holds. After ``MAX_ROUNDS`` it raises ``RuntimeError`` with nothing written: a caller must treat that as "retry later" (leave the work
@@ -184,7 +194,7 @@ async def project(tx: Tx, org: str, focus: set[Key], *, lock_for: set[str] | Non
     for _ in range(MAX_ROUNDS):
         try:
             async with tx.savepoint("kg_project"):
-                st = await _project(tx, org, focus, lock_for=lock_for, expand_neighbours=expand_neighbours, stamps=stamps, extra=extra, wide=wide)
+                st = await _project(tx, org, focus, lock_for=lock_for, expand_neighbours=expand_neighbours, stamps=stamps, extra=extra, wide=wide, grant_only=grant_only)
             bump(org, st.apps, wide=st.wide)
             return st
         except NeedLocks as e:
@@ -193,7 +203,8 @@ async def project(tx: Tx, org: str, focus: set[Key], *, lock_for: set[str] | Non
     raise RuntimeError("the projection kept reaching connectors it had not locked")
 
 
-async def _project(tx: Tx, org: str, focus: set[Key], *, lock_for: set[str] | None, expand_neighbours: bool, stamps: bool, extra: set[str], wide: bool) -> Stats:
+async def _project(tx: Tx, org: str, focus: set[Key], *, lock_for: set[str] | None, expand_neighbours: bool, stamps: bool, extra: set[str], wide: bool,
+                   grant_only: frozenset[Key]) -> Stats:
     st = Stats()
     w = KgWriter(tx)
     focus = {k for k in focus if k[0] in COLL_CODE and len(k[1]) <= MAX_ID}
@@ -209,8 +220,9 @@ async def _project(tx: Tx, org: str, focus: set[Key], *, lock_for: set[str] | No
     st.wide = org_wide
     leaf_only: set[Key] = set()
     logged_apps = {k for k in focus if k[0] == "apps"}
+    reached: set[Key] = set()                                          # what the expansion added, for a reason other than being logged
     if expand_neighbours:
-        focus = await _expanded(tx, org, focus)
+        focus = await _expanded(tx, org, focus, reached=reached)
         while True:
             leaf_only = await parents_of(tx, org, focus) - focus      # a parent that gained or lost its last child: its leaf flag and its grants' flag change
             frontier = set(leaf_only)
@@ -221,7 +233,7 @@ async def _project(tx: Tx, org: str, focus: set[Key], *, lock_for: set[str] | No
             fresh = there - await held_keys(tx, org, there)
             if not fresh:
                 break
-            focus |= await _expanded(tx, org, fresh, focus)             # this unit writes the row of a node kg has none for: it is a node that appears, and its dependents are looked at
+            focus |= await _expanded(tx, org, fresh, focus, reached)    # this unit writes the row of a node kg has none for: it is a node that appears, and its dependents are looked at
     focus = {k for k in focus if len(k[1]) <= MAX_ID}              # what the expansion brought in: a node whose id the writers cannot take is not part of kg
     leaf_only = {k for k in leaf_only if len(k[1]) <= MAX_ID}
     every = focus | leaf_only
@@ -258,14 +270,19 @@ async def _project(tx: Tx, org: str, focus: set[Key], *, lock_for: set[str] | No
     st.focus = len(every)
     st.keys = {k for k in focus if k[0] != "apps" or k in logged_apps}       # an app only the expansion brought in is not restamped (below): a change of its own waits for its own projection
     cur_links, cur_grants, cur_closure = await current(tx, org, d)
+    flips: set[Key] = set()
+    if stamps:
+        flips, st.shallow = await _grant_flags(tx, org, leaf_only, {k for k in grant_only & focus if k[0] != "apps"} - reached, snap.sk, d)
 
     if d.records:
         await w.records_upsert([{"sk": sk, **cols} for sk, cols in sorted(d.records.items())])
         await w.listing_set([(sk, c["coll"], c["id"], c["kind"], c["folder"], c["hide_children"], c["alien"], c["name_sort"]) for sk, c in sorted(d.records.items())])
-        # Only the rows whose trash columns change: a live record (both NULL) is no further tuple to write, nor a statement for the counters' trigger.
-        held = {r["sk"]: (r["deleted_ms"], r["delete_batch"]) for r in await tx.fetch(TRASH_HELD, org, sorted(d.records))}
+        # Only the rows whose trash columns or pc_top change: a live record (both NULL) in a folder (pc_top false, the column's default) is no further tuple to write,
+        # nor a statement for the counters' trigger.
+        held = {r["sk"]: (r["deleted_ms"], r["delete_batch"], r["pc_top"]) for r in await tx.fetch(TRASH_HELD, org, sorted(d.records))}
         await w.trash_set([(sk, c["coll"], c["id"], c["kind"], c["deleted_ms"], c["delete_batch"]) for sk, c in sorted(d.records.items())
-                           if held.get(sk, (None, None)) != (c["deleted_ms"], c["delete_batch"])])
+                           if held.get(sk, (None, None, False))[:2] != (c["deleted_ms"], c["delete_batch"])])
+        await w.pc_top_set([(sk, c["coll"], c["id"], c["kind"], c["pc_top"]) for sk, c in sorted(d.records.items()) if held.get(sk, (None, None, False))[2] != c["pc_top"]])
         st.records = len(d.records)
     if d.gone:
         st.records_deleted = await w.records_delete(sorted(d.gone))
@@ -310,12 +327,34 @@ async def _project(tx: Tx, org: str, focus: set[Key], *, lock_for: set[str] | No
     if stamps:      # after the structural rows: a stamp reads the rows of its parents and groups from kg. ``stamps=False`` is the backfill, which restamps a connector whole once it has copied it.
         # An app among the seeds is restamped whole. One that only the expansion brought in (a principal linked to it or granted on it is in the focus, as for any membership)
         # changed no stamp: no stamp reads who links to an app, and what records' stamps do read of their app (its facts) is compared whenever one of them is stamped.
-        seeds = {k for k in focus if k[0] in RECORD_COLLS and (k[0] != "apps" or k in logged_apps)}
-        st.stamps = await stamp(tx, org, seeds, also=leaf_only, locked=locked, org_wide=org_wide)
+        # A node whose grants alone changed and whose flag stays is restamped alone: no stamp below it reads anything else of a grant on it. A node whose flag kg flips is
+        # restamped with everything below it, even when only its leaf flag brought it here: the records below were compiled with kg's flag (stampgraph).
+        seeds = ({k for k in focus if k[0] in RECORD_COLLS and (k[0] != "apps" or k in logged_apps)} - st.shallow) | (leaf_only & flips)
+        st.stamps = await stamp(tx, org, seeds, also=(leaf_only - flips) | st.shallow, locked=locked, org_wide=org_wide)
     return st
 
 
+async def _grant_flags(tx: Tx, org: str, leaf_only: set[Key], candidates: set[Key], sk: dict[Key, int], d: Derived) -> tuple[set[Key], set[Key]]:
+    """(the ``leaf_only`` nodes whose ``granted`` this unit flips in kg, the ``candidates`` that may be restamped alone). A candidate qualifies when kg held its row under a verified
+    copy of the same connector and the flag stays: every stamp below it was compiled with kg's flag (stampgraph), and a grant reaches a stamp through nothing else. A row of a copy
+    that is not verified may differ from the graph with nothing in the log to say so, and the stamps below it were compiled from the graph: those restamp as before."""
+    new = {k: d.records[sk[k]] for k in leaf_only | candidates if sk.get(k) in d.records}
+    sks = sorted(sk[k] for k in new)
+    held: dict[int, dict] = {}
+    for i in range(0, len(sks), 5000):
+        held |= {r["sk"]: r for r in await tx.fetch(GRANTED_HELD, org, sks[i:i + 5000], CODE_EPOCH)}
+    was = {k: held[sk[k]] for k in new if sk[k] in held}
+    flips = {k for k, h in was.items() if h["granted"] != new[k]["granted"]}
+    alone = {k for k, h in was.items() if k in candidates and k not in flips and h["verified"] and h["app_sk"] == new[k]["app_sk"]}
+    return flips & leaf_only, alone
+
+
 _CODE_STR = {str(c): coll for c, coll in CODE_COLL.items()}
+
+
+def grant_only(rows: list) -> frozenset[Key]:
+    """The keys that change-log rows name only in rows marked ``grant_only`` (a change of a grant on a record or record group, kg_0021)."""
+    return frozenset(decode([r for r in rows if r["grant_only"]]) - decode([r for r in rows if not r["grant_only"]]))
 
 
 def decode(rows: list) -> set[Key]:

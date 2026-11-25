@@ -133,7 +133,7 @@ CONNECTOR_ROUTES = {name: RECORD_ROUTES[name] for name in ("internal_content", "
 
 
 async def _call(route: Route, graph: Neo4jProvider, *, stop_at_content: bool) -> HTTPException | None:
-    with patch.object(router_mod, "_refuse_hidden_demo_record", new=AsyncMock(return_value=None)):
+    with patch.object(router_mod, "refuse_hidden_demo_record", new=AsyncMock(return_value=None)):
         if stop_at_content:
             with patch.object(router_mod, "_resolve_record_content_response", new=AsyncMock(return_value=SENTINEL)):
                 return await _refusal(route, graph)

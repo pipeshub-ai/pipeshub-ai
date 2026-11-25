@@ -164,7 +164,8 @@ class MCPTokenRefreshService:
                     await self.configuration_service.delete_config(config_path)
                     continue
 
-                record, has_oauth, org_id = await self._load_token_from_config(config_path)
+                with _scope(config_path, trigger=Trigger.SCAN):
+                    record, has_oauth, org_id = await self._load_token_from_config(config_path)
                 if not has_oauth or record is None:
                     continue
 
@@ -178,7 +179,7 @@ class MCPTokenRefreshService:
                     log_check_failed(self.logger, e, once_key=_once_key(config_path))
 
     async def _load_token_from_config(self, config_path: str) -> tuple[Optional[OAuthTokens], bool, Optional[str]]:
-        """(tokens, whether they can be refreshed, the record's org)."""
+        """(tokens, whether they can be refreshed, the record's org). Called inside a refresh scope, which names the trigger."""
         record = await self.configuration_service.get_config(config_path, default=None, use_cache=False)
         if not isinstance(record, dict):
             return None, False, None
@@ -189,9 +190,11 @@ class MCPTokenRefreshService:
         if not isinstance(tokens_dict, dict) or not tokens_dict.get("refreshToken"):
             return None, False, org_id
         try:
-            token = OAuthTokens(**tokens_dict)
-        except Exception as e:
-            self.logger.debug("Could not parse the stored OAuth tokens", extra={"error_type": type(e).__name__})
+            token = oauth_client_module.parse_tokens(tokens_dict)
+        except oauth_client_module.MCPMalformedTokenError as e:
+            # Never refreshed ahead of expiry until someone signs in again: say so, once an hour per credential.
+            with _scope(config_path, org_id=org_id):
+                log_check_failed(self.logger, e, once_key=_once_key(config_path))
             return None, False, org_id
         return token, True, org_id
 

@@ -27,6 +27,7 @@ import {
 } from '../config/storage.config';
 import { Logger } from '../../../libs/services/logger.service';
 import { releaseOnClientClose } from '../../../libs/utils/release-on-close';
+import { parseKvObject } from '../../../libs/utils/kv-object.utils';
 import { ConfigurationManagerServiceCommand } from '../../../libs/commands/configuration_manager/cm.service.command';
 import { HttpMethod } from '../../../libs/enums/http-methods.enum';
 import { StorageServiceAdapter } from '../adapter/base-storage.adapter';
@@ -73,15 +74,22 @@ import {
   isValidStorageVendor,
   normalizeExtension,
   serveFileFromLocalStorage,
+  storageUnavailable,
   writeToStorage,
 } from '../utils/utils';
 import {
   paidResultsOrgRoot,
   RECORD_ID,
   isPaidResultManifestPath,
+  isPaidResultMarkerPath,
   isPaidResultObjectPath,
+  ETAG_VALUE,
+  REFRESH_MARKER_FOLDER,
+  REFRESH_MARKER_PATH,
   paidResultsRecordRoot,
 } from '../utils/paid-results';
+import { purgePaidResultsOlderThan } from '../utils/paid-results-purge';
+import { localEtagOf } from '../utils/storage-fingerprint';
 import { UploadDocumentService } from './storage.upload.service';
 import { withWriteWindow } from './storage.write-window';
 import { readDocumentWithFingerprint } from './storage.fingerprint';
@@ -99,7 +107,8 @@ import { HTTP_STATUS } from '../../../libs/enums/http-status.enum';
 import { getMimeType } from '../mimetypes/mimetypes';
 import path from 'path';
 import type { FileHandle } from 'fs/promises';
-import { ErrorMetadata } from '../../../libs/errors/base.error';
+import { ErrorMetadata, withCause } from '../../../libs/errors/base.error';
+import { storageCause } from '../providers/vendor-failure';
 import {
   StorageError,
   StorageNotFoundError,
@@ -312,9 +321,7 @@ export class StorageController {
     };
     // Throws rather than calling next: every caller is inside its own try, and
     // answering here as well would send a second response.
-    return writeToStorage(adapter, cloneFilePayload, {
-      documentId: document._id,
-    });
+    return writeToStorage(adapter, cloneFilePayload);
   }
 
   /** Writes a change to a row this request read; the row may have been removed since. */
@@ -413,11 +420,7 @@ export class StorageController {
       if (!(error instanceof StorageError)) {
         throw error;
       }
-      this.logger.error('Could not open storage to save a file', {
-        error: error.message,
-        metadata: error.metadata,
-      });
-      throw new ServiceUnavailableError(STORAGE_WRITE_FAILED_MESSAGE);
+      throw storageUnavailable(STORAGE_WRITE_FAILED_MESSAGE, error);
     }
   }
 
@@ -431,7 +434,7 @@ export class StorageController {
   ): Promise<string> {
     const storageConfig =
       (await this.keyValueStoreService.get<string>(storageEtcdPaths)) || '{}';
-    const { storageType } = JSON.parse(storageConfig);
+    const { storageType } = parseKvObject(storageConfig);
     return storageType ?? 'local';
   }
 
@@ -444,7 +447,7 @@ export class StorageController {
       const adapter = await this.initializeStorageAdapterForWrite(req);
       const storageConfig =
         (await this.keyValueStoreService.get<string>(storageEtcdPaths)) || '{}';
-      const { storageType } = JSON.parse(storageConfig);
+      const { storageType } = parseKvObject(storageConfig);
       if (!isValidStorageVendor(storageType ?? '')) {
         throw new BadRequestError(`Invalid storage type: ${storageType}`);
       }
@@ -498,7 +501,7 @@ export class StorageController {
       const fullDocumentPath = getFullDocumentPath(orgId, documentPath);
       const storageConfig =
         (await this.keyValueStoreService.get<string>(storageEtcdPaths)) || '{}';
-      const { storageType } = JSON.parse(storageConfig);
+      const { storageType } = parseKvObject(storageConfig);
       const storageVendor = getStorageVendor(storageType ?? '');
       const documentInfo: Partial<Document> = {
         documentName,
@@ -620,12 +623,13 @@ export class StorageController {
         try {
           const adapter = await this.initializeStorageAdapter(req);
           await adapter.deleteTree(rootPath);
-          this.logger.info(
-            `Hard-delete: blob cleanup successful for ${documentId}, ${rootPath}`,
-          );
+          this.logger.debug('Hard-delete: blob cleanup done', {
+            document_id: documentId,
+          });
         } catch (blobErr) {
           this.logger.warn(
-            `Hard-delete: blob cleanup failed for ${documentId}, ${rootPath}, continuing with Mongo removal`,
+            'Hard-delete: blob cleanup failed; removing the record anyway',
+            { document_id: documentId, ...storageCause(blobErr) },
           );
         }
         await repo.remove(document._id);
@@ -822,15 +826,9 @@ export class StorageController {
         try {
           await adapter.deleteTree(artifactRoot);
         } catch (error) {
-          this.logger.error(
-            'Could not remove an artifact set; its document was kept',
-            {
-              documentId: document._id,
-              error: error instanceof Error ? error.message : String(error),
-            },
-          );
-          throw new ServiceUnavailableError(
+          throw storageUnavailable(
             'Could not remove the stored files; the document was kept so the removal can be retried',
+            error,
           );
         }
       }
@@ -838,15 +836,9 @@ export class StorageController {
         try {
           await adapter.deleteObject(copy);
         } catch (error) {
-          this.logger.error(
-            'Could not remove a stored file; its document was kept',
-            {
-              documentId: document._id,
-              error: error instanceof Error ? error.message : String(error),
-            },
-          );
-          throw new ServiceUnavailableError(
+          throw storageUnavailable(
             'Could not remove the stored file; the document was kept so the removal can be retried',
+            error,
           );
         }
       }
@@ -977,12 +969,7 @@ export class StorageController {
           body,
         );
       } catch (error) {
-        this.logger.error('Could not write an artifact file', {
-          documentId: String(document._id),
-          path,
-          error: error instanceof Error ? error.message : String(error),
-        });
-        throw new ServiceUnavailableError(STORAGE_WRITE_FAILED_MESSAGE);
+        throw storageUnavailable(STORAGE_WRITE_FAILED_MESSAGE, error);
       }
       res.status(HTTP_STATUS.OK).json({ path, size: Buffer.byteLength(body) });
     } catch (error) {
@@ -1213,7 +1200,8 @@ export class StorageController {
         recordId: string;
         files: {
           path: string;
-          mode: 'put' | 'get' | 'replace' | 'refresh';
+          mode: 'put' | 'get' | 'replace' | 'refresh' | 'bump';
+          etag?: string;
         }[];
       };
       const root = paidResultsRecordRoot(orgId, recordId);
@@ -1222,8 +1210,17 @@ export class StorageController {
         throw new BadRequestError(`Invalid storage type: ${storageType}`);
       }
       const adapter = await this.remoteArtifactAdapter(req, storageType);
+      const capabilities = await this.paidResultCapabilities(req, adapter);
+      if (
+        files.some((f) => f.mode === 'bump') &&
+        !capabilities.list.includes('bump')
+      ) {
+        throw new BadRequestError(
+          'This store does not support a conditional bump',
+        );
+      }
       const signed = await Promise.all(
-        files.map(async ({ path: filePath, mode }) => {
+        files.map(async ({ path: filePath, mode, etag }) => {
           const method = mode === 'get' ? 'GET' : 'PUT';
           if (adapter === null) {
             const storageEndpoint = await storedServiceEndpoint(
@@ -1235,7 +1232,7 @@ export class StorageController {
               path: filePath,
               mode,
               method,
-              url: `${storageEndpoint}/api/v1/document/internal/paid-results/${recordId}/files/${filePath}${mode === 'replace' ? '?replace=1' : mode === 'refresh' ? '?refresh=1' : ''}`,
+              url: `${storageEndpoint}/api/v1/document/internal/paid-results/${recordId}/files/${filePath}${mode === 'replace' ? '?replace=1' : mode === 'refresh' ? '?refresh=1' : mode === 'bump' ? `?bump=1&ifMatch=${encodeURIComponent(etag ?? '')}` : ''}`,
               headers: {
                 Authorization:
                   req.verifiedToken !== undefined
@@ -1256,6 +1253,7 @@ export class StorageController {
               contentType: mode === 'get' ? undefined : 'application/json',
               expiresInSeconds: PAID_RESULT_URL_TTL_SECONDS,
               ifAbsent: mode === 'put',
+              ...(mode === 'bump' && etag !== undefined && { ifMatch: etag }),
             })),
           };
         }),
@@ -1263,11 +1261,30 @@ export class StorageController {
       res.status(HTTP_STATUS.OK).json({
         recordId,
         expiresInSeconds: PAID_RESULT_URL_TTL_SECONDS,
+        capabilities: capabilities.list,
         files: signed,
       });
     } catch (error) {
       next(error);
     }
+  }
+
+  /**
+   * What the paid-result routes can rely on, named in replies so a client never infers support from a status code:
+   * `conditionalDelete` (a delete by listed ETag), `bump` (a PUT conditional on the ETag).
+   */
+  private async paidResultCapabilities(
+    req: AuthenticatedServiceRequest,
+    remote?: StorageServiceAdapter | null,
+  ): Promise<{ list: string[] }> {
+    const adapter = remote ?? (await this.initializeStorageAdapter(req));
+    const caps = await adapter.conditionalCapabilities();
+    return {
+      list: [
+        ...(caps.conditionalDelete ? ['conditionalDelete'] : []),
+        ...(caps.bump ? ['bump'] : []),
+      ],
+    };
   }
 
   /** Local storage's stand-in for a signed conditional PUT: the first writer wins. */
@@ -1299,25 +1316,51 @@ export class StorageController {
       let written = true;
       const replace = req.query.replace === '1';
       const refresh = req.query.refresh === '1';
-      // The same rule the signed modes have: `replace` rewrites a manifest, `refresh` one result object.
+      const bump = req.query.bump === '1';
+      // The same rule the signed modes have: `replace` rewrites a manifest, `refresh` one result object, `bump` one
+      // result object while its ETag is the one named. The marker is never written through a URL.
       if (
+        isPaidResultMarkerPath(filePath) ||
+        (bump && (replace || refresh || !isPaidResultObjectPath(filePath))) ||
         (replace && refresh) ||
         (replace && !isPaidResultManifestPath(filePath)) ||
         (refresh && !isPaidResultObjectPath(filePath))
       ) {
         throw new BadRequestError('This mode does not apply to this path');
       }
+      if (bump && !(await adapter.conditionalCapabilities()).bump) {
+        // The URL that brought the request was signed by a replica that honoured it: this store does not, and the key
+        // lock alone does not make the compare-then-write safe here. Refused before anything is written.
+        throw new BadRequestError(
+          'This store does not support a conditional bump',
+        );
+      }
       try {
-        if (replace || refresh) {
+        if (bump) {
+          const ifMatch: unknown = req.query.ifMatch;
+          if (typeof ifMatch !== 'string' || !ETAG_VALUE.test(ifMatch)) {
+            throw new BadRequestError('ifMatch must be one ETag');
+          }
+          const outcome = await adapter.writeObjectIfMatch(
+            storageKey,
+            body,
+            ifMatch,
+          );
+          if (outcome === 'gone') {
+            res.status(HTTP_STATUS.NOT_FOUND).json({ error: 'File not found' });
+            return;
+          }
+          if (outcome === 'changed') {
+            res.status(412).json({ error: 'The result changed' });
+            return;
+          }
+        } else if (replace || refresh) {
           await adapter.writeObject(storageKey, body);
         } else {
           written = await adapter.writeObjectIfAbsent(storageKey, body);
         }
       } catch (error) {
-        this.logger.error('Could not write a paid result', {
-          error: error instanceof Error ? error.message : String(error),
-        });
-        throw new ServiceUnavailableError(STORAGE_WRITE_FAILED_MESSAGE);
+        throw storageUnavailable(STORAGE_WRITE_FAILED_MESSAGE, error);
       }
       if (!written) {
         // Answered here, not thrown: losing the race is the normal outcome, not a request error to log.
@@ -1359,6 +1402,18 @@ export class StorageController {
         res.status(HTTP_STATUS.NOT_FOUND).json({ error: 'File not found' });
         return;
       }
+      // The version and write time a client needs for a conditional bump, read from the descriptor being served.
+      try {
+        const st = await opened.handle.stat({ bigint: true });
+        res.set('ETag', `"${localEtagOf(st)}"`);
+        const mtimeMs = Number(st.mtimeNs / BigInt(1_000_000));
+        res.set('Last-Modified', new Date(mtimeMs).toUTCString());
+        // The exact stamp (a local file carries milliseconds, the header whole seconds): what the refresh fence compares.
+        res.set('X-Last-Modified-Ms', String(mtimeMs));
+      } catch (statError) {
+        void opened.handle.close();
+        throw statError;
+      }
       this.sendOpenedFile(req, res, next, opened, filePath);
     } catch (error) {
       next(error);
@@ -1395,6 +1450,7 @@ export class StorageController {
       const after = afterQuery;
       const root = paidResultsRecordRoot(orgId, recordParam);
       const adapter = await this.initializeStorageAdapter(req);
+      const capabilities = await this.paidResultCapabilities(req, adapter);
       const page = await adapter.listObjects(`${root}/${prefix ?? ''}`, {
         after,
         limit: PAID_RESULT_LIST_PAGE,
@@ -1405,13 +1461,16 @@ export class StorageController {
           .filter(
             (o) =>
               o.key.startsWith(`${root}/`) &&
-              !o.key.startsWith(`${root}/${PURGE_CUTOFF_FOLDER}/`),
+              !o.key.startsWith(`${root}/${PURGE_CUTOFF_FOLDER}/`) &&
+              !o.key.startsWith(`${root}/${REFRESH_MARKER_FOLDER}/`),
           )
           .map((o) => ({
             path: o.key.slice(root.length + 1),
             size: o.size,
             lastModifiedMs: o.lastModifiedMs,
+            ...(o.etag !== undefined && { etag: o.etag }),
           })),
+        capabilities: capabilities.list,
         ...(page.next !== undefined && { next: page.next }),
       });
     } catch (error) {
@@ -1437,6 +1496,49 @@ export class StorageController {
       const adapter = await this.initializeStorageAdapter(req);
       await adapter.deleteObjects(paths.map((p) => `${root}/${p}`));
       res.status(HTTP_STATUS.OK).json({ deleted: paths.length });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * Deletes each path only while it is still the version named (its listed ETag). The answer says which were kept
+   * (`changed`). A store that confirmed it cannot delete by version answers 200 with `unsupported: true` and deletes
+   * nothing (the caller then takes its own fallback); one whose probe was denied or could not tell reads as "not supported" for a while and answers the same (never 503).
+   * A request
+   * that names versions is never turned into a plain delete.
+   */
+  async deletePaidResultsIfMatch(
+    req: AuthenticatedServiceRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> {
+    try {
+      const orgId = extractOrgId(req);
+      this.assertBodyOrgMatchesToken(req, orgId);
+      const recordParam: unknown = req.params.recordId;
+      if (typeof recordParam !== 'string' || recordParam === '') {
+        throw new BadRequestError('recordId must be a single value');
+      }
+      const { items } = req.body as {
+        items: { path: string; etag: string }[];
+      };
+      const root = paidResultsRecordRoot(orgId, recordParam);
+      const adapter = await this.initializeStorageAdapter(req);
+      const caps = await adapter.conditionalCapabilities();
+      if (!caps.conditionalDelete) {
+        res
+          .status(HTTP_STATUS.OK)
+          .json({ unsupported: true, deleted: 0, changed: [] });
+        return;
+      }
+      const result = await adapter.deleteObjectsIfMatch(
+        items.map(({ path, etag }) => ({ key: `${root}/${path}`, etag })),
+      );
+      const changed = result.changed.map((k) => k.slice(root.length + 1));
+      res
+        .status(HTTP_STATUS.OK)
+        .json({ deleted: items.length - changed.length, changed });
     } catch (error) {
       next(error);
     }
@@ -1564,34 +1666,12 @@ export class StorageController {
     }
   }
 
-  /**
-   * Removes the objects under `root` last written before `before` (ms). Object versions are not read: a store's
-   * write time is its own clock (whole seconds on S3 and Azure), so the caller passes an instant a margin earlier
-   * than its purge started. An object overwritten between the listing and the delete is the one gap (a conditional
-   * delete on the listed etag would close it, which the storage adapters do not offer yet).
-   */
   private async deletePaidResultsOlderThan(
     adapter: StorageServiceAdapter,
     root: string,
     before: number,
   ): Promise<void> {
-    let after: string | undefined;
-    for (;;) {
-      const page = await adapter.listObjects(`${root}/`, {
-        after,
-        limit: PAID_RESULT_LIST_PAGE,
-      });
-      const doomed = page.objects
-        .filter(
-          (o) => o.key.startsWith(`${root}/`) && o.lastModifiedMs < before,
-        )
-        .map((o) => o.key);
-      if (doomed.length > 0) {
-        await adapter.deleteObjects(doomed);
-      }
-      if (page.next === undefined) return;
-      after = page.next;
-    }
+    await purgePaidResultsOlderThan(adapter, root, before);
   }
 
   /**
@@ -1612,6 +1692,14 @@ export class StorageController {
       }
       const adapter = await this.initializeStorageAdapter(req);
       const root = paidResultsRecordRoot(orgId, recordParam);
+      // The refresh marker first: its own store timestamp is when this refresh began, and it is older than the
+      // cutoff taken below. A bump or re-store of an object that predates it must not carry that object past the purge.
+      await adapter.uploadDocumentToStorageService({
+        buffer: Buffer.from(JSON.stringify({ startedMs: Date.now() })),
+        documentPath: `${root}/${REFRESH_MARKER_PATH}`,
+        mimeType: 'application/json',
+        isVersioned: false,
+      });
       // A folder of its own, so the lookup never depends on how many other sentinels a crash left beside it.
       const folder = `${root}/${PURGE_CUTOFF_FOLDER}/${randomUUID()}/`;
       const key = `${folder}stamp.json`;
@@ -1637,7 +1725,20 @@ export class StorageController {
       } finally {
         await adapter.deleteObjects([key]).catch(() => undefined);
       }
-      res.status(HTTP_STATUS.OK).json({ cutoff });
+      // The marker is written again now that the cutoff is known: its time is then at or after the cutoff, so a result
+      // written before the cutoff (which the purge removes) can never be taken for one written after the refresh began,
+      // by a run that still holds it and would store it again.
+      await adapter.uploadDocumentToStorageService({
+        buffer: Buffer.from(
+          JSON.stringify({ startedMs: Date.now(), cutoffMs: cutoff }),
+        ),
+        documentPath: `${root}/${REFRESH_MARKER_PATH}`,
+        mimeType: 'application/json',
+        isVersioned: false,
+      });
+      // `marker`: the refresh marker was written before this cutoff was taken (a client with paid-result writes on
+      // requires it: a service of an earlier release answers without).
+      res.status(HTTP_STATUS.OK).json({ cutoff, marker: true });
     } catch (error) {
       next(error);
     }
@@ -1849,12 +1950,9 @@ export class StorageController {
       try {
         exists = await adapter.objectExists(document);
       } catch (error) {
-        this.logger.error('Could not check whether a direct upload arrived', {
-          documentId: document._id,
-          error: error instanceof Error ? error.message : String(error),
-        });
-        throw new ServiceUnavailableError(
+        throw storageUnavailable(
           'Could not confirm the file is absent from storage; the document was kept',
+          error,
         );
       }
       if (exists) {
@@ -1978,9 +2076,10 @@ export class StorageController {
 
       const deleted = await repo.deleteByConnector(orgId, scope);
 
-      this.logger.info(
-        `Deleted ${deleted} storage documents for connector ${connectorId}`,
-      );
+      this.logger.info('Deleted storage documents for a connector', {
+        connector_id: connectorId,
+        deleted,
+      });
 
       res.status(HTTP_STATUS.OK).json({
         deleted,
@@ -2364,11 +2463,7 @@ export class StorageController {
     if (missing > 0) {
       this.logger.warn(
         'moveTree: documents not found under the new path were left as they were',
-        {
-          oldFullPath,
-          newFullPath,
-          missing,
-        },
+        { missing },
       );
     }
     // Bounded round trips for a large tree; each update names its own row, so
@@ -2458,8 +2553,8 @@ export class StorageController {
         await getDocumentRepository().setFields(doc._id, extraSet);
         return true;
       } catch (error) {
-        this.logger.warn(`relocate: could not update document ${docId}`, {
-          documentId: docId,
+        this.logger.warn('relocate: could not update a document', {
+          document_id: docId,
           error: error instanceof Error ? error.message : String(error),
         });
         return false;
@@ -2486,17 +2581,11 @@ export class StorageController {
       }
       await adapter.renameObject(oldFilePath, newFilePath);
     } catch (error) {
-      // StorageError wraps the real provider error (e.g. the actual AWS
-      // AccessDenied/NoSuchKey reason) in `metadata.originalError` --
-      // `.message` alone is just the generic "Failed to rename object in
-      // S3" wrapper text and hides the reason the operation failed.
-      const detail =
-        error instanceof StorageError
-          ? (error.metadata?.['originalError'] ?? error.message)
-          : ((error as Error)?.message ?? error);
+      // The wrapper's message ("Failed to rename object in S3") hides why;
+      // the vendor's code (AccessDenied, NoSuchKey) says it.
       this.logger.warn(
-        `moveTree: failed to relocate blob for document ${docId}; leaving it at its old path`,
-        { documentId: docId, oldFilePath, newFilePath, error: detail },
+        'moveTree: failed to relocate a blob; leaving it at its old path',
+        { document_id: docId, ...storageCause(error) },
       );
       return false;
     }
@@ -2521,9 +2610,9 @@ export class StorageController {
     } catch (error) {
       // The blob already moved but Mongo didn't take the update -- this
       // document is now genuinely inconsistent and needs manual repair.
-      this.logger.warn(
-        `moveTree: blob relocated for document ${docId} but the Mongo update failed; document needs manual repair`,
-        { documentId: docId, error: (error as Error)?.message ?? error },
+      this.logger.error(
+        'moveTree: blob relocated but the record update failed; the document needs manual repair',
+        { document_id: docId, error },
       );
       return false;
     }
@@ -2635,7 +2724,7 @@ export class StorageController {
 
       const storageConfig =
         (await this.keyValueStoreService.get<string>(storageEtcdPaths)) || '{}';
-      const { storageType } = JSON.parse(storageConfig);
+      const { storageType } = parseKvObject(storageConfig);
       const storageVendorInETCD = storageType;
 
       // TODO: fix this usage
@@ -2755,20 +2844,13 @@ export class StorageController {
         try {
           uploadResult = await adapter.updateBuffer(buffer, document);
         } catch (error) {
-          this.logger.error('Failed to upload buffer', {
-            documentId: document._id,
-            error: error instanceof Error ? error.message : String(error),
-          });
-          throw new ServiceUnavailableError(STORAGE_WRITE_FAILED_MESSAGE);
+          throw storageUnavailable(STORAGE_WRITE_FAILED_MESSAGE, error);
         }
 
         if (uploadResult.statusCode !== 200) {
-          this.logger.error('Failed to upload buffer', {
-            documentId: document._id,
+          throw storageUnavailable(STORAGE_WRITE_FAILED_MESSAGE, {
             statusCode: uploadResult.statusCode,
-            error: uploadResult.msg,
           });
-          throw new ServiceUnavailableError(STORAGE_WRITE_FAILED_MESSAGE);
         }
         await this.saveDocument(document, {
           mutationCount: (document.mutationCount ?? 0) + 1,
@@ -2916,7 +2998,7 @@ export class StorageController {
         const storageConfig =
           (await this.keyValueStoreService.get<string>(storageEtcdPaths)) ||
           '{}';
-        const { storageType: configStorageType } = JSON.parse(storageConfig);
+        const { storageType: configStorageType } = parseKvObject(storageConfig);
 
         addVersion({
           version: 0,
@@ -3030,17 +3112,11 @@ export class StorageController {
         // The version file first, then the current file. Written together, a
         // failed version write could still replace the current file while the
         // document keeps describing the previous one.
-        const logContext = { documentId: document._id };
         const versionResponse = await writeToStorage(
           adapter,
           nextVersionPayload,
-          logContext,
         );
-        const currentResponse = await writeToStorage(
-          adapter,
-          currentPayload,
-          logContext,
-        );
+        const currentResponse = await writeToStorage(adapter, currentPayload);
 
         const fileExtension = path.extname(originalname);
 
@@ -3262,10 +3338,6 @@ export class StorageController {
         await adapter.generatePresignedUrlForDirectUpload(pathForUpload);
 
       if (presignedUrlResponse.statusCode !== 200) {
-        this.logger.error(
-          'Error generating presigned URL for part:',
-          presignedUrlResponse.data?.url,
-        );
         const errorMetadata: ErrorMetadata = {
           statusCode: presignedUrlResponse.statusCode,
           requestedUrl: presignedUrlResponse.data?.url,
@@ -3308,11 +3380,10 @@ export class StorageController {
           document._id,
         );
       } catch (error) {
-        this.logger.error('Could not record a direct-upload link', {
-          documentId: document._id,
-          error: error instanceof Error ? error.message : String(error),
-        });
-        throw new ServiceUnavailableError(STORAGE_WRITE_FAILED_MESSAGE);
+        throw withCause(
+          new ServiceUnavailableError(STORAGE_WRITE_FAILED_MESSAGE),
+          error,
+        );
       }
       if (!bumped) {
         throw new NotFoundError('Document does not exist');

@@ -32,6 +32,13 @@ const objectId = (label: string) =>
 
 const appOrKbIdSchema = z.string().check(guidCheck('Must be a valid UUID'));
 
+/**
+ * An id in `filters.<key>`. The refusal names the key and the kind of id it
+ * takes: a caller who sees `connector: "JIRA"` on a result will try that name.
+ */
+const filterIdSchema = (key: string, kind: string): z.ZodString =>
+  z.string().check(guidCheck(`Each id in filters.${key} must be ${kind}`));
+
 /** Common pagination preprocessor: coerce string -> number with bounds. */
 const pageSchema = z.preprocess(
   (arg) => (arg === undefined || arg === '' ? undefined : Number(arg)),
@@ -236,8 +243,15 @@ const entityFiltersSchema = z
 const MAX_FILTER_IDS = 200;
 
 const filtersShape = {
-  apps: z.array(appOrKbIdSchema).optional(),
-  kb: z.array(appOrKbIdSchema).optional(),
+  apps: z
+    .array(
+      filterIdSchema(
+        'apps',
+        'a connector instance id (a UUID), not a connector type such as "JIRA". GET /api/v1/connectors/active lists them',
+      ),
+    )
+    .optional(),
+  kb: z.array(filterIdSchema('kb', 'a collection id (a UUID)')).optional(),
   entityFilters: entityFiltersSchema.optional(),
   // Reserved for the typed filter tree that will replace entityFilters.
   where: z
@@ -246,9 +260,15 @@ const filtersShape = {
       message: 'filters.where is not supported yet',
     })
     .optional(),
-  recordGroups: z.array(appOrKbIdSchema).optional(),
-  records: z.array(appOrKbIdSchema).optional(),
-  recordsExact: z.array(appOrKbIdSchema).optional(),
+  recordGroups: z
+    .array(filterIdSchema('recordGroups', 'a record group id (a UUID)'))
+    .optional(),
+  records: z
+    .array(filterIdSchema('records', 'a record id (a UUID)'))
+    .optional(),
+  recordsExact: z
+    .array(filterIdSchema('recordsExact', 'a record id (a UUID)'))
+    .optional(),
 };
 
 /** Keys a client may send in `filters` (`where` is reserved and always refused). */
@@ -1352,20 +1372,31 @@ export const enterpriseSearchSearchSchema = z.object({
 
 /** POST /api/v1/retrieve: chunks with citations, for a developer's own RAG. */
 export const enterpriseSearchRetrieveSchema = z.object({
-  body: z.object({
-    query: z.string().min(1, { message: 'Query is required' }).max(100000, {
-      message: 'Query exceeds maximum length of 100000 characters',
-    }),
-    filters: filtersSchema,
-    // Chunks, not records; the AI service defaults to 8.
-    limit: z.number().int().min(1).max(50).optional(),
-    createdAfter: searchDateSchema,
-    createdBefore: searchDateSchema,
-    modifiedAfter: searchDateSchema,
-    modifiedBefore: searchDateSchema,
-    maxChunksPerRecord: z.number().int().min(1).max(50).optional(),
-    rewriteQuery: z.boolean().optional(),
-  }),
+  body: z
+    .object({
+      // Spaces alone are no query: refused as an empty one is, with the same
+      // words a missing query gets.
+      query: z
+        .string()
+        .max(100000, {
+          message: 'Query exceeds maximum length of 100000 characters',
+        })
+        .refine((query) => query.trim().length > 0, {
+          message: 'Query is required.',
+        }),
+      filters: filtersSchema,
+      // Chunks, not records; the AI service defaults to 8.
+      limit: z.number().int().min(1).max(50).optional(),
+      createdAfter: searchDateSchema,
+      createdBefore: searchDateSchema,
+      modifiedAfter: searchDateSchema,
+      modifiedBefore: searchDateSchema,
+      maxChunksPerRecord: z.number().int().min(1).max(50).optional(),
+      rewriteQuery: z.boolean().optional(),
+    })
+    // A misspelt field (`maxChunkPerRecord`, `rewrite_query`) is refused by
+    // name rather than ignored, so the caller learns it had no effect.
+    .strict(),
 });
 
 /**
@@ -1403,11 +1434,18 @@ const ENTITY_TYPES = [
   'record',
   'named_entity',
 ] as const;
+// Any entity a search returns: a search can be narrowed to people and
+// organizations, and `records` lists theirs; `neighbors` cannot expand them.
+const RECORD_ENTITY_TYPES = [
+  ...ENTITY_TYPES,
+  'person',
+  'organization',
+] as const;
 
 export const enterpriseSearchEntitiesSchema = z.object({
   body: z.object({
     query: z.string().min(1, { message: 'A query is required' }).max(500),
-    entityTypes: z.array(z.enum(ENTITY_TYPES)).max(10).optional(),
+    entityTypes: z.array(z.enum(RECORD_ENTITY_TYPES)).max(10).optional(),
     namedEntityKinds: z.array(z.string().min(1).max(64)).max(10).optional(),
     limit: z.number().int().min(1).max(25).optional(),
   }),
@@ -1428,13 +1466,6 @@ const optionalIds = (max: number): z.ZodOptional<z.ZodArray<z.ZodString>> =>
   z.array(z.string().min(1).max(256)).max(max).optional();
 const pageCursor = z.string().min(1).max(4096).optional();
 const pageLimit = z.number().int().min(1).max(50).optional();
-
-// `records` lists the records of any entity a search returns, people and organizations too.
-const RECORD_ENTITY_TYPES = [
-  ...ENTITY_TYPES,
-  'person',
-  'organization',
-] as const;
 
 export const enterpriseSearchEntityRecordsSchema = z.object({
   body: z.object({

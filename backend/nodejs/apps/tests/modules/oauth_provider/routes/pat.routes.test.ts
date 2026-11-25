@@ -85,7 +85,7 @@ describe('Personal Access Token Routes', () => {
     let app: express.Express
     let server: Server | undefined
     let principal: Record<string, any> | undefined
-    let controller: { createToken: sinon.SinonStub; listTokens: sinon.SinonStub }
+    let controller: { createToken: sinon.SinonStub; listTokens: sinon.SinonStub; updateKnowledgeLimit: sinon.SinonStub }
 
     beforeEach(() => {
       principal = undefined
@@ -95,6 +95,9 @@ describe('Personal Access Token Routes', () => {
         ),
         listTokens: sinon.stub().callsFake((_req: any, res: any) =>
           res.status(200).json({ tokens: [] }),
+        ),
+        updateKnowledgeLimit: sinon.stub().callsFake((_req: any, res: any) =>
+          res.status(200).json({ token: {} }),
         ),
       }
       sinon.stub(Users, 'findOne').returns({
@@ -205,6 +208,50 @@ describe('Personal Access Token Routes', () => {
       const res = await fetch(`http://127.0.0.1:${port}/api/v1/personal-access-tokens`)
       expect(res.status).to.equal(403)
       expect(controller.listTokens.called).to.be.false
+    })
+
+    const tokenUrl = (port: number) =>
+      `http://127.0.0.1:${port}/api/v1/personal-access-tokens/65a1b2c3d4e5f60718293a4b`
+    const patch = (port: number) =>
+      fetch(tokenUrl(port), {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ knowledgeLimit: null }),
+      })
+
+    it("lets a session-authenticated member change their token's knowledge limit", async () => {
+      principal = { userId: 'u1', orgId: 'o1', role: 'member' }
+      const port = await listen()
+
+      const res = await patch(port)
+      expect(res.status).to.equal(200)
+      expect(controller.updateKnowledgeLimit.calledOnce).to.be.true
+    })
+
+    // Otherwise a token limited to one folder could lift its own limit.
+    it('refuses a knowledge-limit change driven by a personal access token with 403', async () => {
+      principal = {
+        userId: 'u1', orgId: 'o1', role: 'member',
+        isOAuth: true, oauthClientId: 'pat-system:o1', oauthScopes: ['org:read'],
+      }
+      const port = await listen()
+
+      const res = await patch(port)
+      expect(res.status).to.equal(403)
+      expect(controller.updateKnowledgeLimit.called).to.be.false
+    })
+
+    it('refuses a knowledge-limit change with no limit in the body, never reaching the controller', async () => {
+      principal = { userId: 'u1', orgId: 'o1', role: 'member' }
+      const port = await listen()
+
+      const res = await fetch(tokenUrl(port), {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({}),
+      })
+      expect(res.status).to.equal(400)
+      expect(controller.updateKnowledgeLimit.called).to.be.false
     })
   })
 })

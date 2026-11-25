@@ -155,6 +155,7 @@ INTEGRATION_HELPERS = (
     f"{PYTHON}/tests/unit/connectors/sources/test_connector_workflow_integration.py",
     f"{PYTHON}/tests/unit/modules/entity_resolution/conftest.py",
     f"{PYTHON}/tests/unit/modules/indexing/test_entity_index_rebuild.py",
+    f"{PYTHON}/tests/unit/agent_loop_lib/sandbox/live_fakes.py",
     f"{PYTHON}/tests/unit/modules/pipeline/fakes.py",
     f"{PYTHON}/tests/unit/modules/transformers/test_entity_vectorstore_delete.py",
     f"{PYTHON}/tests/unit/services/artifact_registry/fakes.py",
@@ -215,6 +216,17 @@ CHECKS["redis_cluster"] = (
         f"{COMPOSE}/docker-compose.integration.redis-cluster.yml",
         ".github/workflows/unit-test.yml",
     )
+)
+
+# unit-test.yml's sandbox-live job: builds the sandbox image and runs the
+# Docker-marked tests against a real daemon, which the unit shards skip.
+CHECKS["sandbox_live"] = (
+    f"{PYTHON}/app/agent_loop_lib/sandbox/**",
+    f"{PYTHON}/app/sandbox/**",
+    f"{PYTHON}/tests/unit/agent_loop_lib/sandbox/test_docker_live.py",
+    f"{PYTHON}/tests/unit/sandbox/test_docker_proxy_live.py",
+    "deployment/sandbox/**",
+    ".github/workflows/unit-test.yml",
 )
 
 # integration-tests.yml's helper unit tests (mocks only). The shards run them
@@ -321,7 +333,7 @@ CONNECTOR_CODE_MARKERS: dict[str, tuple[str, ...]] = {
     **{
         name: ()
         for name in (
-            "airtable", "asana", "bitbucket", "box", "clickhouse", "clickup", "databricks", "discord",
+            "airtable", "asana", "bitbucket", "box", "clickhouse", "clickup", "cloudflare_r2", "databricks", "discord",
             "dropbox_individual", "drupal_wiki", "evernote", "freshdesk", "hackernews", "lattice", "linkedin",
             "lumos", "monday", "pagerduty", "posthog", "redshift", "trello", "workday",
             "zoom",

@@ -6,6 +6,7 @@ import { TokenScopes } from '../enums/token-scopes.enum';
 import { Logger } from '../services/logger.service';
 import { TooManyRequestsError } from '../errors/http.errors';
 import { isMcpRelay } from './mcp-relay';
+import { pathForLog } from './access-log.middleware';
 import { AuthenticatedUserRequest, AuthenticatedServiceRequest } from './types';
 
 /**
@@ -129,7 +130,7 @@ export function createGlobalRateLimiter(
 
       logger.warn('Rate limit exceeded', {
         key: rateLimitKey,
-        path: req.path,
+        path: pathForLog(req),
         method: req.method,
         ip: getClientIp(req),
         retryAfter,
@@ -170,7 +171,9 @@ export function slackEventsRateLimitPerMinute(): number {
 
 export interface KeyedRateLimiterOptions {
   prefix: string;
+  // Per counting window: one minute unless `windowMs` says otherwise.
   maxRequestsPerMinute: number;
+  windowMs?: number;
   message: string;
   countOnlyFailures?: boolean;
   // With `countOnlyFailures`: which responses count (default: any status of 400 or more).
@@ -194,6 +197,7 @@ export function createKeyedRateLimiter(
   const {
     prefix,
     maxRequestsPerMinute,
+    windowMs = 60 * 1000,
     message,
     countOnlyFailures = false,
     isFailure,
@@ -212,7 +216,7 @@ export function createKeyedRateLimiter(
   };
 
   const config: Partial<Options> = {
-    windowMs: 60 * 1000,
+    windowMs,
     max: maxRequestsPerMinute,
     standardHeaders: true,
     legacyHeaders: false,
@@ -228,7 +232,7 @@ export function createKeyedRateLimiter(
       const retryAfter = res.getHeader('Retry-After');
       logger.warn('Rate limit exceeded', {
         key: keyFor(req),
-        path: req.path,
+        path: pathForLog(req),
         method: req.method,
         ip: getClientIp(req),
         retryAfter,

@@ -72,6 +72,7 @@ class Connectors(Enum):
     SALESFORCE = "SALESFORCE"
     S3 = "S3"
     MINIO = "MINIO"
+    CLOUDFLARE_R2 = "CLOUDFLARE R2"
     GCS = "GCS"
     AZURE_BLOB = "AZURE BLOB"
     AZURE_FILES = "AZURE FILES"
@@ -166,6 +167,7 @@ class AppGroups(Enum):
     GITHUB = "Github"
     S3 = "S3"
     MINIO = "MinIO"
+    CLOUDFLARE_R2 = "Cloudflare R2"
     GOOGLE_CLOUD = "Google Cloud"
     AZURE = "Azure"
     LINEAR = "Linear"
@@ -410,6 +412,7 @@ class ExtensionTypes(Enum):
     DOCM = "docm"
     DOTX = "dotx"
     POTX = "potx"
+    PPTM = "pptm"
 
 # Common file types PipesHub cannot index. Sync filters offer them so a user can
 # exclude them (Not in); they are kept out of ExtensionTypes because that enum
@@ -683,6 +686,8 @@ class EntityRelations(Enum):
     FOR_ACCOUNT = "FOR_ACCOUNT"
     # Record -> an organisation its content names (KG-13 slice 3b, EXTRACTED).
     MENTIONS = "MENTIONS"
+    # Record -> a person the source says it is shared with (not the owner).
+    SHARED_WITH = "SHARED_WITH"
 
 
 class EntityOrigin(str, Enum):

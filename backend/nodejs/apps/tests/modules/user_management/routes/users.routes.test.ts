@@ -1246,6 +1246,18 @@ describe('User Routes - handler coverage', () => {
       expect(next.called).to.be.false
     })
 
+    it("should add a personal access token's current knowledge limit, null for none", async () => {
+      sinon.stub(userAdminService, 'getActiveUserOrgRole').resolves('member')
+      const handler = findHandler('/me/role', 'get')
+      const limit = { apps: ['a'], recordGroups: [], records: [] }
+
+      for (const knowledgeLimit of [limit, null]) {
+        const res = mockRes()
+        await handler({ user: { userId, orgId, isOAuth: true, knowledgeLimit } } as any, res, sinon.stub())
+        expect(res.json.calledOnceWithExactly({ role: 'member', knowledgeLimit })).to.be.true
+      }
+    })
+
     it('should answer 401 when the caller no longer has an active account', async () => {
       sinon.stub(userAdminService, 'getActiveUserOrgRole').resolves(null)
       const handler = findHandler('/me/role', 'get')

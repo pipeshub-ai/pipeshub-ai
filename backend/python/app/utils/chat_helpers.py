@@ -3440,6 +3440,10 @@ async def get_flattened_results(result_set: list[dict[str, Any]], blob_store: Bl
 
         block_type = block.get("type")
         result["block_type"] = block_type
+        # What a text block is within its document (heading, paragraph, list item...),
+        # when the parser said: /retrieve joins a lone heading to the passage it heads.
+        if block.get("sub_type"):
+            result["block_sub_type"] = block["sub_type"]
 
         # Fragment block: split from a container due to inline images inside a group.
         # Route through the container's parent group rather than treating as standalone.
@@ -3906,6 +3910,10 @@ async def get_flattened_results(result_set: list[dict[str, Any]], blob_store: Bl
         block = blocks[index]
         block_type = block.get("type")
         result["block_type"] = block_type
+        # What a text block is within its document (heading, paragraph, list item...),
+        # when the parser said: /retrieve joins a lone heading to the passage it heads.
+        if block.get("sub_type"):
+            result["block_sub_type"] = block["sub_type"]
         result["virtual_record_id"] = virtual_record_id
         result["block_index"] = index
         enhanced_metadata = get_enhanced_metadata(record,block,meta)
@@ -4798,7 +4806,7 @@ def build_group_blocks(block_groups: list[dict[str, Any]], blocks: list[dict[str
                                         "citationType": "vectordb|document",
                                     })
             continue
-        child_results.append({
+        child = {
             "content": data,
             "block_type": block.get("type"),
             "virtual_record_id": virtual_record_id,
@@ -4807,7 +4815,11 @@ def build_group_blocks(block_groups: list[dict[str, Any]], blocks: list[dict[str
             "metadata": get_enhanced_metadata(record, block, meta),
             "score": float(result.get("score",0.0)),
             "citationType": "vectordb|document",
-        })
+        }
+        # As for a top-level hit: /retrieve tells a lone heading by it.
+        if block.get("sub_type"):
+            child["block_sub_type"] = block["sub_type"]
+        child_results.append(child)
     return child_results
 
 

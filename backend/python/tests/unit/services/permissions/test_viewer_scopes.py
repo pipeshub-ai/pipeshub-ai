@@ -146,6 +146,79 @@ async def test_a_revoke_is_visible_on_the_next_call() -> None:
     assert "s2" in before.readable_scopes and "s2" not in after.readable_scopes and after.version == before.version + 1
 
 
+async def test_the_counters_live_on_the_main_redis_and_survive_a_flush_of_the_cache_redis() -> None:
+    # The cache Redis may evict anything; only the entries live there. Losing them all is a miss, never a stale answer.
+    main = fakeredis.FakeAsyncRedis(server=fakeredis.FakeServer(), decode_responses=True)
+    entries = fakeredis.FakeAsyncRedis(server=fakeredis.FakeServer(), decode_responses=True)
+    graph = Graph({"g1", "s2"})
+    cache = ViewerScopeCache(lambda: entries, counters=lambda: main)
+    service = graph.service(cache)
+
+    before = await service.resolve_now(ORG, USER)
+    assert all(":ver:" not in key for key in await entries.keys("*"))
+    assert all(":vs:" not in key for key in await main.keys("*"))
+    await entries.flushall()
+    assert (await service.resolve_now(ORG, USER)) == before and graph.resolves == 2  # recomputed, same version
+    graph.admitted.discard("s2")
+    await cache.bump(ORG)
+    after = await service.resolve_now(ORG, USER)
+
+    assert "s2" in before.readable_scopes and "s2" not in after.readable_scopes and after.version == before.version + 1
+
+
+class _ServerWithIdentity:
+    """fakeredis has no INFO, so `seeded_incr` reads an empty identity there; this stands in for a real server's
+    run_id:master_replid, which a restart or a promotion changes."""
+
+    def __init__(self, inner: fakeredis.FakeAsyncRedis) -> None:
+        self._inner, self.identity = inner, "run-1:repl-1"
+
+    async def eval(self, script: str, numkeys: int, *keys_and_args: object) -> list[object]:
+        _, value = await self._inner.eval(script, numkeys, *keys_and_args)
+        return [self.identity, value]
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._inner, name)
+
+
+async def test_a_counter_restored_to_an_older_value_does_not_make_an_old_entry_current() -> None:
+    # A restore from a snapshot (or a failover that dropped the last bump) takes the counter back to a value it already
+    # issued, while the cache Redis still holds the entry from then. The restore restarted the server, so its identity is
+    # new, the version is new, and the entry from before the revoke is not served.
+    raw = fakeredis.FakeAsyncRedis(server=fakeredis.FakeServer(), decode_responses=True)
+    main = _ServerWithIdentity(raw)
+    entries = fakeredis.FakeAsyncRedis(server=fakeredis.FakeServer(), decode_responses=True)
+    graph = Graph({"g1", "s2"})
+    cache = ViewerScopeCache(lambda: entries, counters=lambda: main)  # type: ignore[arg-type,return-value]
+    service = graph.service(cache)
+    before = await service.resolve_now(ORG, USER)
+    snapshot = await raw.get(cache._ver_key(ORG))
+
+    graph.admitted.discard("s2")
+    await cache.bump(ORG)
+    await raw.set(cache._ver_key(ORG), snapshot)  # restored
+    main.identity = "run-2:repl-1"
+    after = await service.resolve_now(ORG, USER)
+
+    assert "s2" in before.readable_scopes and "s2" not in after.readable_scopes
+
+
+async def test_a_counter_lost_on_the_main_redis_never_restarts_below_its_old_value() -> None:
+    # A failover or restore can still lose a counter. It is seeded from the server clock in the same script as the
+    # increment, so the version moves past every value it had and an entry from before a revoke is never current again.
+    client = fakeredis.FakeAsyncRedis(server=fakeredis.FakeServer(), decode_responses=True)
+    graph, cache = Graph({"g1", "s2"}), ViewerScopeCache(lambda: client)
+    service = graph.service(cache)
+    before = await service.resolve_now(ORG, USER)
+
+    await client.delete(cache._ver_key(ORG))  # lost
+    graph.admitted.discard("s2")
+    await cache.bump(ORG)
+    after = await service.resolve_now(ORG, USER)
+
+    assert after.version > before.version and "s2" not in after.readable_scopes
+
+
 async def test_a_bump_of_one_organisation_leaves_another_cached_and_a_global_bump_drops_all() -> None:
     graph, cache = Graph({"g1"}), _cache()
     service = graph.service(cache)

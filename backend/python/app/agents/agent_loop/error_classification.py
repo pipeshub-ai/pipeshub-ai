@@ -35,7 +35,7 @@ from typing import TYPE_CHECKING
 
 from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
 from app.services.model_identity.errors import classify_for_user
-from app.utils.log_redaction import URL_PATTERN
+from app.utils.log_redaction import URL_PATTERN, redact_secrets_in_text
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -187,7 +187,7 @@ _PROVIDER_ACCOUNT_ID_RE = re.compile(r"\b(?:org|proj|acct|account)[-_][A-Za-z0-9
 
 
 def _sanitize_provider_message(message: str) -> str | None:
-    text = URL_PATTERN.sub("", message)
+    text = redact_secrets_in_text(URL_PATTERN.sub("", message))
     text = _PROVIDER_ACCOUNT_ID_RE.sub("[redacted]", text)
     text = " ".join(text.split())
     if not text or "traceback" in text.lower():
@@ -330,8 +330,15 @@ def classify_exception(exc: BaseException) -> tuple[str, str]:
     return classify_error(str(exc))
 
 
+def run_error_text(result: object) -> str | None:
+    """What a run's user-facing answer is classified from: the raw text behind `AgentResult.error` (`error_detail`),
+    else `error`. Duck-typed: a result that keeps no raw text (a stub, an older result type) gives its `error`."""
+    return getattr(result, "error_detail", None) or getattr(result, "error", None)
+
+
 __all__ = [
     "classify_error",
     "classify_exception",
     "register_error_classifier",
+    "run_error_text",
 ]

@@ -17,7 +17,9 @@ from fastapi import HTTPException
 from app.agents.mcp.client import MCPConnectionError, ToolListing
 from app.agents.mcp.models import (
     MCPAuthMode,
+    MCPCategory,
     MCPServerInstanceConfig,
+    MCPServerTemplate,
     MCPToolInfo,
     MCPTransport,
     OAuthTokens,
@@ -103,10 +105,14 @@ def _oauth_instance(**overrides) -> dict:
 
 
 def _admin_request(config_service=None, registry=None) -> MagicMock:
+    config_service = config_service or MagicMock()
+    if not isinstance(getattr(config_service, "list_keys_in_directory", None), AsyncMock):
+        # Saving a server reads every server to check its name; a store set up without them is empty.
+        config_service.list_keys_in_directory = AsyncMock(return_value=[])
     return _mock_request(
         user={"userId": "admin-1", "orgId": "org-1"},
         app_state={
-            "config_service": config_service or MagicMock(),
+            "config_service": config_service,
             "mcp_registry": registry or MagicMock(),
         },
     )
@@ -180,24 +186,33 @@ class TestFilterStdioEnv:
 
 class TestCatalogHandlers:
     @pytest.mark.asyncio
-    async def test_list_catalog_paginates_and_searches(self) -> None:
-        template = MagicMock()
-        template.model_dump.return_value = {"typeId": "github", "displayName": "GitHub"}
+    async def test_list_catalog_ranks_says_why_and_filters_by_category(self) -> None:
+        def template(type_id: str, name: str, category: MCPCategory, capabilities: list[str]) -> MCPServerTemplate:
+            return MCPServerTemplate(
+                type_id=type_id, display_name=name, description=f"{name} things", transport=MCPTransport.STREAMABLE_HTTP,
+                default_auth_mode=MCPAuthMode.OAUTH, category=category, capabilities=capabilities,
+            )
+
         registry = MagicMock()
-        registry.list_templates.return_value = [template]
+        registry.list_templates.return_value = [
+            template("github", "GitHub", MCPCategory.DEVELOPER, ["Review pull requests", "Search code"]),
+            template("google_calendar", "Google Calendar", MCPCategory.MEETINGS, ["Schedule meetings", "Find free time"]),
+        ]
         request = _admin_request(registry=registry)
 
-        with patch(
-            "app.agents.mcp.catalog.search_templates", return_value=[template]
-        ) as search, patch(
-            "app.agents.mcp.catalog.paginate", return_value=([template], 1)
-        ) as paginate:
-            result = await list_catalog(request, page=1, limit=10, search="git")
+        result = await list_catalog(request, page=1, limit=10, search="schedule a meeting", category=None)
 
-        search.assert_called_once()
-        paginate.assert_called_once()
         assert result["total"] == 1
-        assert result["templates"] == [{"typeId": "github", "displayName": "GitHub"}]
+        assert result["templates"][0]["typeId"] == "google_calendar"
+        assert result["templates"][0]["matchedCapability"] == "Schedule meetings"
+        assert result["templates"][0]["category"] == "meetings"
+
+        everything = await list_catalog(request, page=1, limit=10, search=None, category=None)
+        assert [t["typeId"] for t in everything["templates"]] == ["github", "google_calendar"]
+        assert all("matchedCapability" not in t for t in everything["templates"])
+
+        developer = await list_catalog(request, page=1, limit=10, search=None, category=MCPCategory.DEVELOPER)
+        assert [t["typeId"] for t in developer["templates"]] == ["github"]
 
     @pytest.mark.asyncio
     async def test_get_catalog_template_404(self) -> None:
@@ -350,7 +365,7 @@ class TestStdioPolicy:
         self, flag: str, expected: bool, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv("MCP_ALLOW_CUSTOM_STDIO", flag)
-        result = await list_catalog(_admin_request(registry=_real_registry()), page=1, limit=10, search=None)
+        result = await list_catalog(_admin_request(registry=_real_registry()), page=1, limit=10, search=None, category=None)
         assert result["customStdioAllowed"] is expected
 
     @pytest.mark.asyncio
