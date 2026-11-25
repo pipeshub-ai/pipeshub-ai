@@ -23,7 +23,14 @@ import {
 class TestConsumer extends BasePgQueueConsumerConnection {}
 
 /** One delivery row as the SQL keeps it: a claim adds an attempt, a nack whose last parameter is 1 gives it back. */
-function queue(fail: { ack?: number; nack?: number } = {}) {
+function queue(
+  fail: {
+    ack?: number;
+    nack?: number;
+    dead?: number;
+    clock?: { s: number };
+  } = {},
+) {
   const row = {
     attempts: 0,
     state: 'ready',
@@ -34,9 +41,17 @@ function queue(fail: { ack?: number; nack?: number } = {}) {
   };
   let acksToFail = fail.ack ?? 0;
   let nacksToFail = fail.nack ?? 0;
+  let deadsToFail = fail.dead ?? 0;
   const tx = {
     query: sinon.stub().callsFake(async (sql: string, args: unknown[]) => {
-      if (sql.includes('pipeshub:queue.nack')) row.nackTries += 1;
+      if (sql.includes('pipeshub:queue.nack')) {
+        row.nackTries += 1;
+        if (fail.clock) fail.clock.s += 600; // each try of the hand-back comes 10 minutes after the last
+      }
+      if (sql.includes('pipeshub:queue.dead') && deadsToFail > 0) {
+        deadsToFail -= 1;
+        throw mapPgStoreError(new PoolTimeout()); // the message was refused; recording that could not get a connection
+      }
       if (sql.includes('pipeshub:queue.ack') && acksToFail > 0) {
         acksToFail -= 1;
         throw mapPgStoreError(new PoolTimeout()); // the handler finished; the acknowledgement could not get a connection
@@ -253,6 +268,55 @@ describe('PostgreSQL queue consumer: a database that cannot be reached', () => {
     } finally {
       configureEnvelope(null);
     }
+  });
+
+  describe('with signed envelopes', () => {
+    const key = Buffer.alloc(32, 7);
+    const ctx = {
+      orgId: 'aaaaaaaaaaaaaaaaaaaaaaaa',
+      userId: null,
+      requestId: 'r',
+    } as never;
+    const signedAt = (issuedAt: number) =>
+      sign(
+        key,
+        't',
+        { orgId: 'aaaaaaaaaaaaaaaaaaaaaaaa', i: 0 },
+        ctx,
+        issuedAt,
+        'e',
+      );
+    beforeEach(() => {
+      process.env.ORG_CONTEXT_MODE = 'enforce';
+      process.env.PG_QUEUE_NACK_RETRY_MS = '0';
+      configureEnvelope(async () => [key], null, key);
+    });
+    afterEach(() => {
+      delete process.env.ORG_CONTEXT_MODE;
+      delete process.env.PG_QUEUE_NACK_RETRY_MS;
+      configureEnvelope(null);
+    });
+
+    it('a message dated too far ahead is never signed again: its refusal that the outage failed to record is not handed back', async () => {
+      const ahead = signedAt(Math.floor(Date.now() / 1000) + 301);
+      expect(renewEnvelope('t', ahead)).to.equal(null);
+      const row = queue({ dead: 1 });
+      const runs = await deliver(row, [], ahead);
+      expect(runs).to.equal(0);
+      expect(row.values).to.deep.equal([]);
+      expect(row.refunds.every((r) => r === 0)).to.equal(true);
+    });
+
+    it('an outage longer than the envelope lifetime still delivers the message: each try signs again from the last signature', async () => {
+      const clock = { s: 0 };
+      const now = Date.now();
+      sinon.stub(Date, 'now').callsFake(() => now + clock.s * 1000);
+      const row = queue({ nack: 3, clock });
+      const runs = await deliver(row, [lost], signedAt(Math.floor(now / 1000)));
+      expect(clock.s).to.be.greaterThan(900);
+      expect(row.state).to.equal('acked');
+      expect(runs).to.equal(2);
+    });
   });
 
   it('reads the cause of a 503 the repository raised', () => {

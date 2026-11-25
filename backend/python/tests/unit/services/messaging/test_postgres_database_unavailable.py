@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import logging
 import socket
+import time
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock
@@ -292,3 +293,46 @@ async def test_a_refund_nack_stops_when_another_consumer_holds_the_row(monkeypat
     await consumer._settle(row.claim())
 
     assert row.tries == 3 and row.nacks == []
+
+
+class _Clock:
+    def __init__(self) -> None:
+        self.now = time.time()
+
+    def __call__(self) -> float:
+        return self.now
+
+
+class _LongOutage(_AdmitFails):
+    """The admission write and then ``failures`` nacks fail, each 10 minutes after the last: an outage longer than the envelope's
+    lifetime (ENVELOPE_MAX_AGE_SECONDS, 900 s), while the hand-back keeps trying to give its attempt back."""
+
+    def __init__(self, value: str, clock: _Clock, failures: int) -> None:
+        super().__init__(value, [ConnectionLost("terminated", retry_safe=False)])
+        self.clock, self.failures = clock, failures
+
+    async def nack(self, group, d, delay, error="", *, refund=False, value=None, admission=None) -> bool:
+        self.clock.now += 600
+        if self.failures:
+            self.failures -= 1
+            raise ConnectionLost("terminated", retry_safe=False)
+        return await super().nack(group, d, delay, error, refund=refund, value=value, admission=admission)
+
+
+async def test_an_outage_longer_than_the_envelope_lifetime_still_delivers_the_message(monkeypatch) -> None:
+    """Each try of the hand-back signs the message again from the last signature it made, so the value stored when the database
+    answers is fresh. Renewing the stored value on every try would fail once the outage outlasted its lifetime, store the stale
+    one, and the next delivery would dead-letter it as stale."""
+    monkeypatch.setenv("ORG_CONTEXT_MODE", "enforce")     # a stale envelope is refused, not only logged
+    clock = _Clock()
+    monkeypatch.setattr(time, "time", clock)
+    monkeypatch.setattr("app.services.messaging.postgres.consumer._NACK_RETRY_S", (0.0, 0.0))
+    row = _LongOutage(_row().value, clock, failures=3)
+    consumer, runs = _consumer(row, [])
+    consumer.running = True
+
+    await consumer._settle(row.claim())     # the admission write fails: handed back through the outage
+    assert row.nacks and row.nacks[-1][1] is True and row.attempts == 0
+    await _deliver_until_settled(row, consumer)
+
+    assert row.state == "acked" and len(runs) == 1

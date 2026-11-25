@@ -684,21 +684,46 @@ class PgMessagingConsumer(IMessagingConsumer):
         before the hand-back backstop. The nack is conditional on this claim, as always: False (another consumer took the row once
         its claim lapsed) ends the tries."""
         wait, longest = _NACK_RETRY_S
+        current: dict | None = None
         while True:
+            # signed again from the last signature this made, so an outage longer than the envelope's lifetime still stores a fresh one
+            current = await self._reissued(d, current) or current
             try:
-                return await self._nack(d, delay, error, refund=True, reissue=True)
+                return await self._nack(d, delay, error, refund=True, reissue=True, reissued=current)
             except Exception as e:
                 if not self.running or not _database_unavailable(e):
                     raise
             await asyncio.sleep(wait)
             wait = min(longest, max(wait * 2, 0.1)) if longest else 0.0
 
-    async def _nack(self, d: Delivery, delay: float, error: str, *, refund: bool = False, reissue: bool = False) -> bool:
+    async def _reissued(self, d: Delivery, base: "dict | None" = None) -> "dict | None":
+        """The message signed again now, from ``base`` or the stored value; None when it is not renewed (see ``_nack``)."""
+        mode = self._opened.get((d.topic, d.message_id, d.attempts))
+        if mode == "stored":
+            return None
+        raw = base
+        if raw is None:
+            try:
+                raw = decode_message(d.value)
+            except Exception:
+                return None
+        if not isinstance(raw, dict):
+            return None
+        try:
+            return await refresh_envelope(d.topic, raw, admitted=mode == "aged")
+        except Exception as e:
+            self.logger.warning("Could not renew the envelope of %s before its hand-back: %s", d.message_id, type(e).__name__)
+            return None
+
+    async def _nack(
+        self, d: Delivery, delay: float, error: str, *, refund: bool = False, reissue: bool = False, reissued: "dict | None" = None
+    ) -> bool:
         """Send a delivery back. A delivery this process opened renews its admission in the same statement.
 
         ``reissue``: store the message signed again, for a delivery handed back without an attempt, so an older consumer that
         claims it later still finds a fresh signature. Only a message that passed the age check itself is signed again; one that
         was admitted by a stored admission alone keeps the value it has (an admission must never turn into a fresh signature).
+        ``reissued``: that value, already signed again by the caller (``_reissued``).
         """
         mode = self._opened.get((d.topic, d.message_id, d.attempts))
         kwargs: dict[str, Any] = {}
@@ -709,12 +734,8 @@ class PgMessagingConsumer(IMessagingConsumer):
             except Exception:
                 raw = None
         message: Any = raw
-        if reissue and isinstance(raw, dict) and mode != "stored":
-            try:
-                fresh = await refresh_envelope(d.topic, raw, admitted=mode == "aged")
-            except Exception as e:
-                self.logger.warning("Could not renew the envelope of %s before its hand-back: %s", d.message_id, type(e).__name__)
-                fresh = None
+        if reissue:
+            fresh = reissued or await self._reissued(d)
             if fresh is not None:
                 kwargs["value"] = json.dumps(fresh)
                 message = fresh

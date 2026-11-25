@@ -550,9 +550,10 @@ export abstract class BasePgQueueConsumerConnection implements IMessageConsumer 
     const max = MAX_DELIVERY_ATTEMPTS();
     const finish = (sql: string, extra: unknown[] = []): Promise<unknown> =>
       unit(true, (tx) => tx.query(sql, [...key, ...extra]));
-    // Only a failure of the handler itself is an outage hand-back. An acknowledgement that failed after the handler finished is
-    // charged as before: a refund would rerun a finished handler up to the hand-back limit.
-    let handled = false as boolean; // widened: TypeScript narrows it to false inside the catch below
+    // Only a failure of the handler run itself is an outage hand-back. An acknowledgement that failed after the handler finished,
+    // or a refusal of the envelope the outage kept from being recorded, is charged as before: a refund would rerun a finished
+    // handler up to the hand-back limit, or sign a refused message again.
+    let handlerFailed = false as boolean; // widened: TypeScript narrows it to false inside the catch below
     let value: unknown;
     try {
       if (r.attempts > max) {
@@ -580,9 +581,11 @@ export abstract class BasePgQueueConsumerConnection implements IMessageConsumer 
             this.groupId,
           ),
         );
-        handled = true;
       } catch (error) {
-        if (!(error instanceof EnvelopeRejected)) throw error;
+        if (!(error instanceof EnvelopeRejected)) {
+          handlerFailed = true;
+          throw error;
+        }
         this.logger.error('Envelope rejected, message dropped', {
           topic: r.topic,
           id: r.message_id,
@@ -596,7 +599,9 @@ export abstract class BasePgQueueConsumerConnection implements IMessageConsumer 
     } catch (error) {
       const text = error instanceof Error ? error.message : String(error);
       const n =
-        !handled && failedOnDatabaseOnly(error) ? this.countHandback(id) : 0;
+        handlerFailed && failedOnDatabaseOnly(error)
+          ? this.countHandback(id)
+          : 0;
       const refund = n > 0 && n <= HANDBACK_LIMIT();
       this.logger.error('Error processing queue message', {
         topic: r.topic,
@@ -649,12 +654,17 @@ export abstract class BasePgQueueConsumerConnection implements IMessageConsumer 
     delayS: number,
     value: unknown,
   ): Promise<void> {
-    const renewed =
+    let base =
       value !== null && typeof value === 'object' && !Array.isArray(value)
-        ? renewEnvelope(r.topic, value as Record<string, unknown>)
+        ? (value as Record<string, unknown>)
         : null;
+    let renewed: Record<string, unknown> | null = null;
     let waitMs = NACK_RETRY_MS();
     for (;;) {
+      // signed again at each try from the last signature this made, so an outage longer than the envelope's lifetime still stores
+      // a fresh one; a try that cannot renew keeps the last good renewal (never the original value, which may be stale by then)
+      const next = base ? renewEnvelope(r.topic, base) : null;
+      if (next) renewed = base = next;
       try {
         await unit(true, async (tx) => {
           const res = await tx.query(SQL.nack, [...key, error, delayS, 1]);

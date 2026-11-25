@@ -580,9 +580,12 @@ export function renewEnvelope(
   const eventType =
     typeof message.eventType === 'string' ? message.eventType : '';
   const now = Math.floor(Date.now() / 1000);
+  const age = now - c.issuedAt;
+  // the window openEnvelope accepts: neither stale nor dated further ahead than the clock skew it allows
   if (
     !sigOk(signKey, topic, c, payload, eventType) ||
-    now - c.issuedAt > maxAgeSeconds()
+    age > maxAgeSeconds() ||
+    -age > MAX_FUTURE_SKEW_SECONDS
   )
     return null;
   const { sig: _sig, ...fields } = c;

@@ -1133,3 +1133,15 @@ def test_any_driver_error_of_that_type_on_a_closed_connection_is_a_lost_connecti
 def test_a_codec_error_on_a_live_connection_still_passes_through() -> None:
     codec = asyncpg.InternalClientError("missing codec information for OID 1234")
     assert _db().map_error(codec, _on(closed=False)) is codec
+
+
+def test_a_driver_error_on_a_connection_the_pool_already_took_back_is_a_lost_connection() -> None:
+    """asyncpg's pool proxy of a dead connection it already released raises InterfaceError from is_closed(): that is a closed
+    connection too, and the check must not replace the original error."""
+    def released() -> bool:
+        raise asyncpg.InterfaceError("cannot call Connection.is_closed(): connection has been released back to the pool")
+
+    tx = _tx()
+    tx._con = SimpleNamespace(is_closed=released)  # type: ignore[assignment]
+    err = asyncpg.InternalClientError("unexpected message while the backend was ended")
+    assert isinstance(_db().map_error(err, tx), ConnectionLost)

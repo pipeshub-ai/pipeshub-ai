@@ -674,7 +674,7 @@ def _broken_protocol(e: Exception, con: asyncpg.Connection | None) -> bool:
     ``_set_state``, ``_ensure_connected``) or a closed connection is required."""
     if not isinstance(e, asyncpg.InternalClientError):
         return False
-    return str(e).startswith(("cannot switch to state", "not connected")) or (con is not None and con.is_closed())
+    return str(e).startswith(("cannot switch to state", "not connected")) or (con is not None and connection_closed(con))
 
 
 def _class_of_state(state: str) -> str:
