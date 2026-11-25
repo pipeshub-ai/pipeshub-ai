@@ -575,6 +575,8 @@ class TestHandleDelete:
         service.graph_provider.delete_connector_instance = AsyncMock(
             return_value={"success": False, "error": "boom"}
         )
+        # Still there after the failed delete; a connector that reads as gone has its lane freed.
+        service.graph_provider.get_document = AsyncMock(return_value={"type": "Gmail"})
         with patch("app.connectors.services.event_service.reindex_task_manager") as mock_rtm, \
              patch(
                  "app.connectors.services.event_service.free_lane_of_deleted_connector",

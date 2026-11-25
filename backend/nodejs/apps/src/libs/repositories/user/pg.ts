@@ -929,13 +929,13 @@ export class PgUserRepository implements UserRepository, Importable {
     await inUnit(tx, { write: true }, async (k) => {
       assertOrg(k, orgId);
       const service = await k.query(
-        "/* pipeshub:identity.user_promote_check */ SELECT 1 FROM identity.users u WHERE u.org_id = $1 AND u.id = ANY($2::text[]) AND u.kind = 'service' LIMIT 1",
+        "/* pipeshub:identity.user_promote_check */ SELECT 1 FROM identity.users u WHERE u.org_id = $1 AND u.id = ANY($2::text[]) AND u.kind = 'service' AND NOT u.is_deleted LIMIT 1",
         [k.orgId, list],
       );
       if (service.rows.length > 0)
         throw new Error(SERVICE_ACCOUNT_ADMIN_ROLE_MESSAGE);
       await k.query(
-        "/* pipeshub:identity.user_promote */ UPDATE identity.users u SET role = 'admin', updated_at = $3 WHERE u.org_id = $1 AND u.id = ANY($2::text[])",
+        "/* pipeshub:identity.user_promote */ UPDATE identity.users u SET role = 'admin', updated_at = $3 WHERE u.org_id = $1 AND u.id = ANY($2::text[]) AND NOT u.is_deleted",
         [k.orgId, list, new Date()],
       );
     });

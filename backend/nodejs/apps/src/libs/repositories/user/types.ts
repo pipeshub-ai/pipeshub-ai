@@ -285,7 +285,7 @@ export interface UserRepository {
   ): Promise<UserDto | null>;
   /** Brings removed accounts at these addresses back as members; returns every live account at them, restored now or already live. */
   restoreByEmails(orgId: string, emails: string[], tx?: Tx): Promise<UserDto[]>;
-  /** Makes these people admins (service accounts excluded). */
+  /** Makes these live people admins; removed accounts are skipped, and a batch naming a live service account is refused. */
   promoteToAdmin(orgId: string, ids: string[], tx?: Tx): Promise<void>;
   setRole(orgId: string, id: string, role: UserRole): Promise<void>;
   /** Serialises concurrent admin changes in this organisation (inside a transaction). */
