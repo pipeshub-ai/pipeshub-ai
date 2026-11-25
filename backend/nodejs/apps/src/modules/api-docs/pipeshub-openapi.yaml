@@ -21863,8 +21863,12 @@ components:
     OAuthConfig:
       type: object
       description: A saved OAuth app for a connector type. Admins also get `config` (secrets masked when HIDE_SECRET_CONFIG
-        is on) and, in lists, the provider endpoints.
+        is on) and, in lists, the provider endpoints, for the organization's apps only.
       properties:
+        personal:
+          type: boolean
+          description: Present, and `true`, on the caller's own app, which only they can see, link and sign in with.
+            Such an app never comes with `config`.
         _id:
           type: string
           description: 'OAuth app ID: the `oauthConfigId` to link a connector to'
@@ -63154,8 +63158,13 @@ paths:
         flat, and the connector's own sync settings in <code>config.sync</code>. A connector that needs no
         OAuth sign-in is configured on creation.<br><br>
         <b>OAuth:</b><br>
-        An admin may send the OAuth app's credentials in <code>config.auth</code>: the app is saved and
-        linked. Anyone may send <code>config.auth.oauthConfigId</code> to use a saved app; non-admins must.
+        The OAuth app's credentials may be sent in <code>config.auth</code>: the app is saved and linked.
+        On a team connector (admins only) it is the organization's app. On a personal connector it is the
+        caller's own app, admins included: only they can list, link, change or sign in with it, every
+        required OAuth field (the client secret too) must be sent, and an address field must be a public
+        <code>https://</code> address. Otherwise send <code>config.auth.oauthConfigId</code> to use a saved
+        app: an organization app, or on a personal connector one of the caller's own. Someone else's own
+        app answers like one that does not exist. A non-admin must send one or the other.
         Send <code>baseUrl</code>: the provider redirects to <code>{baseUrl}/{redirectUri}</code>.<br><br>
         <b>Scope Permissions:</b><br>
         <ul>
@@ -63265,7 +63274,9 @@ paths:
         '400':
           description: |
             Invalid request: a parameter or the body failed validation, or `config.auth` is present
-            but neither an object nor null ("Auth configuration must be an object.")
+            but neither an object nor null ("Auth configuration must be an object."). For an OAuth
+            connector also: a non-admin sent neither an OAuth app nor its credentials, a personal app's
+            credentials lack a required field, or one of its addresses is not public https.
           content:
             application/json:
               schema:
@@ -63277,14 +63288,13 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: Team scope needs an admin; non-admins cannot send OAuth app credentials; or a missing
-            scope
+          description: Team scope needs an admin, or a missing scope
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: Unknown connector type or OAuth app
+          description: Unknown connector type, or an OAuth app that does not exist or is someone else's own app
           content:
             application/json:
               schema:
@@ -66191,8 +66201,8 @@ paths:
         with secrets as the mask or in full, keeps it signed in.<br><br>
         <b>OAuth apps (OAUTH connectors):</b><br>
         An OAUTH connector signs in with the client ID and secret of its linked OAuth
-        app, so client credentials an admin sends in <code>auth</code> go into an app,
-        as on <code>PUT /{connectorId}/config/auth</code>:
+        app, so client credentials an admin sends in <code>auth</code>, or anyone sends for
+        their own personal connector, go into an app, as on <code>PUT /{connectorId}/config/auth</code>:
         <ul>
           <li>On a connector with no app, an app is created from them and linked
           (<code>auth.oauthConfigId</code> in the response) once every required OAuth
@@ -66203,10 +66213,15 @@ paths:
           connectors may share, is not changed.</li>
           <li>The new app is named <code>auth.oauthInstanceName</code>, or else after the
           connector.</li>
+          <li>On a personal connector the app is the caller's own, which only they can use. It
+          is built only from what was sent: changing a field of an organization app the caller
+          may not change needs every required field, the secret too, and creates their own app.</li>
         </ul>
         A linked connector stores no copy of its app's secret fields: they are not
         stored, and not returned, in <code>config.auth</code>. Its client ID and provider
-        URLs are the app's. Only an admin's credentials create or change an app.
+        URLs are the app's. An organization app is created or changed only by an admin, and only
+        from a team connector; a person's own app only by them. <code>auth.connectorScope</code> is
+        set by the server from the connector; a sent value is ignored.
       operationId: updateConnectorConfig
       x-pipeshub-sdk: true
       security:
@@ -66317,7 +66332,13 @@ paths:
         requiring re-authentication for OAuth connectors.<br><br>
         <b>Secrets:</b><br>
         A secret field sent as <code>••••••••</code> keeps the stored value; send a
-        new value to replace it. The response masks stored secrets the same way.
+        new value to replace it. The response masks stored secrets the same way.<br><br>
+        <b>OAuth app:</b><br>
+        On a personal connector, client credentials update the caller's own OAuth app named in
+        <code>auth.oauthConfigId</code>, or create one (every required field, the secret too) when that
+        app is the organization's or not named. They never change an organization app, an admin's
+        included. <code>auth.connectorScope</code> is set by the server from the connector; a sent
+        value is ignored.
       operationId: updateConnectorAuthConfig
       x-pipeshub-sdk: true
       security:
@@ -76935,9 +76956,13 @@ paths:
         List the organization's OAuth configurations for one connector type.<br><br>
         <b>What comes back depends on the caller:</b><br>
         <ul>
-        <li>An admin gets each stored record in full, including `config` with the client secret in clear text</li>
+        <li>An admin gets each organization app's stored record in full, including `config`. The client secret is masked (`••••••••`) when the server sets `HIDE_SECRET_CONFIG=true`, unless the request passes `reveal=true`</li>
         <li>Any other caller gets only the credential-free fields</li>
+        <li>The caller's own apps (created for their personal connectors) are listed with `personal: true` and never with `config`</li>
         </ul>
+        Other people's own apps are never listed, to anyone, admins included, and never counted in
+        `pagination`. With `scope=team` the caller's own apps are left out too, since they link only
+        to personal connectors.
         A connector type with no configurations, or one that does not exist, yields an empty list.
       operationId: listOAuthConfigsByType
       x-pipeshub-sdk: true
@@ -77134,6 +77159,8 @@ paths:
         Get a specific OAuth configuration by ID.<br><br>
         An admin gets `config` with the stored credentials, client secret in clear text.
         Any other caller gets the same object without `config`.
+        The caller's own app answers with `personal: true` and without `config`, for admins too;
+        someone else's own app answers `404`, as a missing one does.
       operationId: getOAuthConfig
       x-pipeshub-sdk: true
       security:

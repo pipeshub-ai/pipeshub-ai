@@ -66,13 +66,16 @@ def login(role: str) -> str:
 
 
 async def until(cond: Callable[[], Awaitable[bool]], seconds: float, step: float = 0.2) -> bool:
-    end = time.monotonic() + seconds
-    while time.monotonic() < end:
-        with contextlib.suppress(Exception):
-            if await cond():
-                return True
-        await asyncio.sleep(step)
-    return False
+    """Whether ``cond()`` turns true within ``seconds``; the budget covers each call too, so a check that hangs cannot outlast it."""
+    try:
+        async with asyncio.timeout(seconds):
+            while True:
+                with contextlib.suppress(Exception):
+                    if await cond():
+                        return True
+                await asyncio.sleep(step)
+    except TimeoutError:
+        return False
 
 
 class Stack:
@@ -457,8 +460,10 @@ class ConfigLoad(Component):
 
     async def settle(self, seconds: float) -> None:
         async def fresh() -> bool:
-            got = await self.b.get_config(self.key, use_cache=True)
-            return isinstance(got, dict) and got.get("v", -1) >= self.acked
+            # the store may hold a write whose reply was lost (newer than acked): wait for the cache to show what the store holds
+            stored = await self.a.get_config(self.key, use_cache=False)
+            cached = await self.b.get_config(self.key, use_cache=True)
+            return isinstance(stored, dict) and stored.get("v", -1) >= self.acked and cached == stored
         await until(fresh, seconds)
 
     async def check(self) -> list[str]:
@@ -540,6 +545,7 @@ class Search(Component):
         self.wrong: list[str] = []
         self.runs = 0
         self._n = self.SEED                 # the last live point tried
+        self._tried: set[str] = set()       # the ids of every live point tried, written or not (the outcome of a failed write is unknown)
 
     def _point(self, org: str, n: int, conn: str) -> Any:  # noqa: ANN401
         from app.services.vector_db.models import VectorPoint
@@ -582,8 +588,10 @@ class Search(Component):
         while self.running:
             self._n += 1
             n = self._n
+            point = self._point(self.orgs[0], n, "live")
+            self._tried.add(point.id)
             try:
-                await self.writer.upsert_points("records", [self._point(self.orgs[0], n, "live")])
+                await self.writer.upsert_points("records", [point])
                 self.acked.add(n)
                 self.done["write"] += 1
             except Exception as e:
@@ -593,7 +601,7 @@ class Search(Component):
 
     def _wrong(self, org: str, got: set[str]) -> str | None:
         other = next(o for o in self.orgs if o != org)
-        theirs = self._want(other, set(range(self.SEED))) | {self._point(other, n, "live").id for n in range(self.SEED, self._n + 1)}
+        theirs = self._want(other, set(range(self.SEED))) | (self._tried if other == self.orgs[0] else set())     # live points are the first org's
         missing = self._want(org, set(range(self.SEED))) - got
         return f"{org}: {len(missing)} missing, {len(got & theirs)} of another org" if missing or got & theirs else None
 
@@ -748,6 +756,8 @@ class Reads(Component):
         from tests.integration.graph_db.postgres.test_conformance import _hex
         from tests.permissions.graph import Namespace
         worlds = [(w, Namespace(p)) for w, p in self.write_layer._prefix.items()]
+        if len(worlds) < 2:     # paired with itself, a world's own nodes would read as another org's
+            return [f"the cross-org probe needs two worlds, {len(worlds)} stored (a smaller step)"]
         bad = []
         for (w, ns), (other, ons) in zip(worlds, worlds[1:] + worlds[:1], strict=True):
             org = _hex(ns.org)
