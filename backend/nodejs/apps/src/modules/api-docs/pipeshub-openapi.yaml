@@ -68929,6 +68929,21 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: |
+            The credential could not be confirmed deleted: the config store kept it or could not answer, so it may still
+            be stored and the agent stays connected. Retry after `Retry-After` seconds; a retry that finds nothing
+            stored answers 200. The body's detail is "We couldn't reach PipesHub's database just now. Please try again
+            in a few seconds."
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying (5).
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /toolsets/agents/{agentKey}/instances/{instanceId}/reauthenticate:
     post:
       tags:
@@ -69001,6 +69016,21 @@ paths:
             The agent's permissions could not be checked, or the saved record could not be deleted.
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: |
+            The credential could not be confirmed deleted: the config store kept it or could not answer, so it may still
+            be stored and the agent stays connected. Retry after `Retry-After` seconds; a retry that finds nothing
+            stored answers 200. The body's detail is "We couldn't reach PipesHub's database just now. Please try again
+            in a few seconds."
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying (5).
+              schema:
+                type: string
           content:
             application/json:
               schema:
@@ -69950,6 +69980,21 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: |
+            The credential could not be confirmed deleted: the config store kept it or could not answer, so it may still
+            be stored and the caller stays connected. Retry after `Retry-After` seconds; a retry that finds nothing
+            stored answers 200. The body's detail is "We couldn't reach PipesHub's database just now. Please try again
+            in a few seconds."
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying (5).
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /toolsets/instances/{instanceId}/reauthenticate:
     post:
       tags:
@@ -70013,6 +70058,21 @@ paths:
             The saved record could not be deleted.
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: |
+            The credential could not be confirmed deleted: the config store kept it or could not answer, so it may still
+            be stored and the caller stays connected. Retry after `Retry-After` seconds; a retry that finds nothing
+            stored answers 200. The body's detail is "We couldn't reach PipesHub's database just now. Please try again
+            in a few seconds."
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying (5).
+              schema:
+                type: string
           content:
             application/json:
               schema:
@@ -71393,6 +71453,20 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: |
+            Switching `useAdminAuth` removes the shared admin credential first, and the config store kept it or could
+            not answer: the instance was not changed. Retry after `Retry-After` seconds. The body's detail is "We
+            couldn't reach PipesHub's database just now. Please try again in a few seconds."
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying (5).
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
     delete:
       tags:
         - MCP Server Instances
@@ -72061,6 +72135,21 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: |
+            The credential, or on an OAuth instance the caller's registered OAuth client, could not be confirmed
+            deleted: the config store kept it or could not answer, so it may still be stored and the caller stays
+            connected. Retry after `Retry-After` seconds; a retry that finds nothing stored answers 200. The body's
+            detail is "We couldn't reach PipesHub's database just now. Please try again in a few seconds."
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying (5).
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /mcp-servers/instances/{instanceId}/auto-authenticate:
     post:
       tags:
@@ -72185,6 +72274,21 @@ paths:
             Unexpected failure in the gateway or in the connectors service.
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: |
+            The credential or the caller's registered OAuth client could not be confirmed deleted: the config store kept
+            it or could not answer, so it may still be stored and the caller stays connected. Retry after `Retry-After`
+            seconds; a retry that finds nothing stored answers 200. The body's detail is "We couldn't reach PipesHub's
+            database just now. Please try again in a few seconds."
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying (5).
+              schema:
+                type: string
           content:
             application/json:
               schema:
@@ -72977,6 +73081,21 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: |
+            The credential could not be confirmed deleted: the config store kept it or could not answer, so it may still
+            be stored and the agent stays connected. Retry after `Retry-After` seconds; a retry that finds nothing
+            stored answers 200. The body's detail is "We couldn't reach PipesHub's database just now. Please try again
+            in a few seconds."
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying (5).
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /mcp-servers/agents/{agentKey}/instances/{instanceId}/reauthenticate:
     post:
       tags:
@@ -73039,6 +73158,21 @@ paths:
             Unexpected failure in the gateway or in the connectors service.
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: |
+            The credential or the agent's registered OAuth client could not be confirmed deleted: the config store kept
+            it or could not answer, so it may still be stored and the agent stays connected. Retry after `Retry-After`
+            seconds; a retry that finds nothing stored answers 200. The body's detail is "We couldn't reach PipesHub's
+            database just now. Please try again in a few seconds."
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying (5).
+              schema:
+                type: string
           content:
             application/json:
               schema:
@@ -73712,6 +73846,21 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           $ref: '#/components/responses/BodyParserFailure'
+        '503':
+          description: |
+            The new auth scheme needs the old credentials removed first, and the config store kept one or could not
+            answer: the toolset and its OAuth app were not changed (some credentials may already be gone). Retry after
+            `Retry-After` seconds. The body's detail is "We couldn't reach PipesHub's database just now. Please try
+            again in a few seconds."
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying (5).
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
     delete:
       tags:
         - API Toolsets
@@ -73765,7 +73914,17 @@ paths:
         '500':
           $ref: '#/components/responses/BodyParserFailure'
         '503':
-          description: Which agents use the toolset couldn't be checked, so nothing was deleted
+          description: |
+            Which agents use the toolset couldn't be checked, so nothing was deleted (no `Retry-After`). Also when a
+            credential, the OAuth app or the record could not be confirmed deleted: the config store kept it or could
+            not answer ("We couldn't reach PipesHub's database just now. Please try again in a few seconds.", with
+            `Retry-After`). The record goes last, so the delete can be sent again; the toolset may already be gone when
+            only the store's reply to its delete was lost.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying (5).
+              schema:
+                type: string
           content:
             application/json:
               schema:
@@ -73921,6 +74080,21 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           $ref: '#/components/responses/BodyParserFailure'
+        '503':
+          description: |
+            The credential could not be confirmed deleted: the config store kept it or could not answer, so it may still
+            be stored and the caller stays connected. Retry after `Retry-After` seconds; a retry that finds nothing
+            stored answers 200. The body's detail is "We couldn't reach PipesHub's database just now. Please try again
+            in a few seconds."
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying (5).
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /api-toolsets/instances/{instanceId}/shared-credentials:
     parameters:
       - $ref: '#/components/parameters/ApiToolsetInstanceId'
@@ -74030,6 +74204,21 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           $ref: '#/components/responses/BodyParserFailure'
+        '503':
+          description: |
+            The credential could not be confirmed deleted: the config store kept it or could not answer, so it may still
+            be stored and members stay connected through it. Retry after `Retry-After` seconds; a retry that finds
+            nothing stored answers 200. The body's detail is "We couldn't reach PipesHub's database just now. Please try
+            again in a few seconds."
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying (5).
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /api-toolsets/instances/{instanceId}/shared-credentials/oauth/authorize:
     parameters:
       - $ref: '#/components/parameters/ApiToolsetInstanceId'
