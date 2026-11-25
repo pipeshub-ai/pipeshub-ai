@@ -1,4 +1,5 @@
 import { EnvelopeRejected } from '../context/envelope';
+import { runWithInboundContext } from '../context/inbound-readers';
 import { emitPlatformEvent } from '../platform-events';
 
 /**
@@ -7,7 +8,7 @@ import { emitPlatformEvent } from '../platform-events';
  * ended and how long it took. Never a payload or a key.
  */
 
-export type Broker = 'kafka' | 'redis';
+export type Broker = 'kafka' | 'redis' | 'postgres';
 
 export const UNKNOWN_MESSAGE_TYPE = 'unknown';
 export const OTHER_MESSAGE_TYPE = 'other';
@@ -116,8 +117,11 @@ export function announceUnparseable(facts: {
  * Runs one delivery's handler and announces how it ended: `success`,
  * `rejected` (the envelope was refused), `retry` when `retried(error)` says the
  * message will be delivered again, otherwise `failure`. The error is rethrown.
+ *
+ * The handler and the announcement both run inside the scope of the inbound
+ * context readers (`../context/inbound-readers`), which are shown the message.
  */
-export async function consumeAnnounced<R>(
+export function consumeAnnounced<R>(
   facts: {
     broker: Broker;
     topic: string;
@@ -128,26 +132,28 @@ export async function consumeAnnounced<R>(
   run: () => Promise<R>,
 ): Promise<R> {
   const lagMs = lagMsSince(facts.publishedAtMs);
-  const startedAt = process.hrtime.bigint();
-  const announce = (
-    outcome: 'success' | 'failure' | 'rejected' | 'retry',
-  ): void => {
-    emitPlatformEvent('message.consumed', {
-      broker: facts.broker,
-      topic: facts.topic,
-      messageType: messageTypeOf(facts.value),
-      outcome,
-      durationSeconds: secondsSince(startedAt),
-      ...(lagMs === undefined ? {} : { lagMs }),
-    });
-  };
-  try {
-    const result = await run();
-    announce('success');
-    return result;
-  } catch (error) {
-    if (error instanceof EnvelopeRejected) announce('rejected');
-    else announce(facts.retried?.(error) ? 'retry' : 'failure');
-    throw error;
-  }
+  return runWithInboundContext(facts.value, 'message', async () => {
+    const startedAt = process.hrtime.bigint();
+    const announce = (
+      outcome: 'success' | 'failure' | 'rejected' | 'retry',
+    ): void => {
+      emitPlatformEvent('message.consumed', {
+        broker: facts.broker,
+        topic: facts.topic,
+        messageType: messageTypeOf(facts.value),
+        outcome,
+        durationSeconds: secondsSince(startedAt),
+        ...(lagMs === undefined ? {} : { lagMs }),
+      });
+    };
+    try {
+      const result = await run();
+      announce('success');
+      return result;
+    } catch (error) {
+      if (error instanceof EnvelopeRejected) announce('rejected');
+      else announce(facts.retried?.(error) ? 'retry' : 'failure');
+      throw error;
+    }
+  });
 }

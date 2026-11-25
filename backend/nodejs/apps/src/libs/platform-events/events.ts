@@ -257,7 +257,7 @@ export interface PlatformEvents {
    * no key.
    */
   'message.published': {
-    broker: 'kafka' | 'redis';
+    broker: 'kafka' | 'redis' | 'postgres';
     topic: string;
     messageType: string;
     outcome: 'success' | 'failure';
@@ -273,7 +273,7 @@ export interface PlatformEvents {
    * the broker gave one.
    */
   'message.consumed': {
-    broker: 'kafka' | 'redis';
+    broker: 'kafka' | 'redis' | 'postgres';
     topic: string;
     messageType: string;
     outcome: 'success' | 'failure' | 'rejected' | 'retry' | 'unparseable';
