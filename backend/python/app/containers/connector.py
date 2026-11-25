@@ -221,7 +221,7 @@ async def _kh_listing_background(
 
     while True:
         try:
-            await for_each_org(graph_provider, "kh_scope_keeper", restamp, logger)
+            await for_each_org(graph_provider, "kh_scope_keeper", restamp, logger, external=True)
         except Exception as e:
             logger.error(f"❌ Knowledge hub scope keeper failed: {e}")
         await asyncio.sleep(KH_SCOPE_KEEPER_SECONDS)

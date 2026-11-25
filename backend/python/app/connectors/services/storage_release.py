@@ -21,7 +21,10 @@ from app.config.configuration_service import delete_config_confirmed
 from app.config.constants.arangodb import CollectionNames, Connectors
 from app.connectors.core.base.data_processor.storage_cleanup import StorageCleanupHelper
 from app.connectors.core.base.user_access import delete_all_connections
-from app.connectors.services.connector_intents import ConnectorIntentStore
+from app.connectors.services.connector_intents import (
+    ConnectorIntentStore,
+    held_by_another_org,
+)
 from app.connectors.services.vector_cleanup_events import (
     build_connector_cleanup_events,
     log_cleanup_publish_failure,
@@ -81,8 +84,10 @@ async def record_pending_storage_release(
     await _STORE.record(config_service, org_id=org_id, connector_id=connector_id, now_ms=now_ms)
 
 
-async def clear_pending_storage_release(config_service: ConfigurationService, connector_id: str) -> bool:
-    return await _STORE.clear(config_service, connector_id)
+async def clear_pending_storage_release(
+    config_service: ConfigurationService, connector_id: str, *, org_id: str | None = None,
+) -> bool:
+    return await _STORE.clear(config_service, connector_id, org_id=org_id)
 
 
 async def list_pending_storage_releases(config_service: ConfigurationService) -> list[dict[str, Any]]:
@@ -137,7 +142,7 @@ async def release_connector_storage(
         completed = False
     try:
         if completed:
-            if await clear_pending_storage_release(config_service, connector_id):
+            if await clear_pending_storage_release(config_service, connector_id, org_id=org_id):
                 logger.info("Storage release intent cleared | org=%s connector=%s", org_id, connector_id)
             else:
                 logger.warning("Storage release intent not cleared | org=%s connector=%s", org_id, connector_id)
@@ -191,6 +196,8 @@ class StorageReleaseReconciler:
         if not await self.lock.try_acquire():
             return "not_leader"
         now = self.now_ms()
+        unread: Exception | None = None
+        read_any = False
         for intent in await list_pending_storage_releases(self.config_service):
             requested = int(intent.get("requestedAt") or 0)
             if not intent.get("attempts") and requested > now - GRACE_MS:
@@ -201,10 +208,29 @@ class StorageReleaseReconciler:
             if not org_id:
                 self.logger.warning("Storage release intent has no org; skipped | connector=%s", connector_id)
                 continue
-            # Raised, not None: a failed read must never pass for a gone app. Read in the intent's org, where an
-            # id that only another org holds is gone.
-            with for_org(org_id, job="storage_release"):
-                app = await self.graph.get_document(connector_id, CollectionNames.APPS.value, raise_on_error=True)
+            # Raised, not None: a failed read must never pass for a gone app. Read in the intent's org: a store that
+            # scopes reads by org answers None for an id only another org holds, and the others answer its app.
+            try:
+                with for_org(org_id, job="storage_release"):
+                    app = await self.graph.get_document(connector_id, CollectionNames.APPS.value, raise_on_error=True)
+            except Exception as e:
+                # Kept, and no other org's release waits for it.
+                unread = e
+                self.logger.warning(
+                    "Storage release kept; its connector could not be read | org=%s connector=%s error=%s",
+                    org_id, connector_id, type(e).__name__,
+                )
+                continue
+            read_any = True
+            if app is not None and held_by_another_org(app, org_id):
+                self.logger.warning(
+                    "Storage release skipped; the connector is another org's | org=%s connector=%s", org_id, connector_id,
+                )
+                if requested > now - STALE_MS:
+                    continue
+                # It can never be settled, and would keep the connector's own org from recording its delete.
+                await clear_pending_storage_release(self.config_service, connector_id, org_id=org_id)
+                return "dropped"
             if app is not None:
                 if app.get("status") == APP_STATUS_DELETING:
                     finisher = self.finish_kb_delete if app.get("type") == Connectors.KNOWLEDGE_BASE.value else self.finish_connector_delete
@@ -216,7 +242,7 @@ class StorageReleaseReconciler:
                     return outcome
                 if requested > now - STALE_MS:
                     continue
-                await clear_pending_storage_release(self.config_service, connector_id)
+                await clear_pending_storage_release(self.config_service, connector_id, org_id=org_id)
                 self.logger.info(
                     "Storage release intent dropped; the connector still exists | org=%s connector=%s",
                     org_id, connector_id,
@@ -251,6 +277,9 @@ class StorageReleaseReconciler:
             finally:
                 await helper.close()
             return "released" if done else "retrying"
+        if unread is not None and not read_any:
+            # The store, not one connector: the loop backs off.
+            raise unread
         return "idle"
 
 

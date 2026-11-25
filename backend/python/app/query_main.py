@@ -240,7 +240,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         sweep_orphan_views_at_startup,
     )
 
-    await sweep_orphan_views_at_startup(app_container.config_service(), graph_provider)
+    # Reads every org's storage settings, so not while requests wait.
+    app.state.orphan_view_sweep_task = spawn_detached(
+        sweep_orphan_views_at_startup(app_container.config_service(), graph_provider), name="orphan-view-sweep"
+    )
 
     # Chat attachments parse PDFs in parse workers sized from this governor, so
     # one slow or huge file costs only its own upload: a worker can be killed on
@@ -545,7 +548,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     for _warmup_attr in (
         "embedding_warmup_task", "knn_warmup_task", "sandbox_warmup_task",
         "lexical_reconcile_task", "entity_store_warmup_task", "skills_seed_task",
-        "sandbox_alert_task",
+        "sandbox_alert_task", "orphan_view_sweep_task",
     ):
         warmup_task: asyncio.Task | None = getattr(app.state, _warmup_attr, None)
         if warmup_task is not None and not warmup_task.done():

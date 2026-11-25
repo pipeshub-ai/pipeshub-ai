@@ -48,6 +48,7 @@ from app.connectors.core.sync.sync_runner import (
     run_sync_task,
 )
 from app.connectors.core.sync.task_manager import reindex_task_manager
+from app.connectors.services.connector_intents import held_by_another_org
 from app.connectors.services.entity_cleanup_intents import record_pending_entity_cleanup
 from app.connectors.services.late_write_sweep import record_pending_late_write_sweep
 from app.connectors.services.reindex_force import forced_by_user, user_forced_intent_id
@@ -1803,12 +1804,16 @@ class EventService:
             # request back; that event would then arrive for a connector whose
             # rows are gone, fail to build, and be redelivered forever. The stop
             # endpoint clears it first for exactly this reason.
+            # Before anything is stopped, recorded or deleted: not every store scopes this read by org.
+            current = await self.graph_provider.get_document(
+                connector_id, CollectionNames.APPS.value, raise_on_error=True
+            )
+            if current and held_by_another_org(current, org_id):
+                self.logger.error("Connector delete refused: the connector is another org's | org=%s connector=%s", org_id, connector_id)
+                return False
             try:
                 # Only when set: a failed delete reverts and keeps this doc, and
                 # main's strict Arango app schema rejects the field on rollback.
-                current = await self.graph_provider.get_document(
-                    connector_id, CollectionNames.APPS.value
-                )
                 owner_id = (current or {}).get("createdBy")
                 if (current or {}).get(ConnectorStateKeys.PENDING_RESYNC):
                     await self.graph_provider.update_node(
@@ -1968,10 +1973,11 @@ class EventService:
                 # An upsert would recreate a connector that is already gone
                 # (MERGE on Neo4j), and the reconciler would then treat its owed
                 # storage release as a reverted delete.
-                if await self.graph_provider.get_document(
+                app = await self.graph_provider.get_document(
                     connector_id, CollectionNames.APPS.value, raise_on_error=True
-                ) is None:
-                    self.logger.warning(f"Connector {connector_id} is not in the graph; nothing to revert")
+                )
+                if app is None or held_by_another_org(app, org_id):
+                    self.logger.warning(f"Connector {connector_id} is not in this org's graph; nothing to revert")
                     return False
                 await self.graph_provider.batch_upsert_nodes(
                     [{

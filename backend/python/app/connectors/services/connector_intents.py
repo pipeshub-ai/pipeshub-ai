@@ -17,6 +17,16 @@ if TYPE_CHECKING:
     from app.config.configuration_service import ConfigurationService
 
 
+def owner_of(item: dict[str, Any]) -> object:
+    """The org a stored app or intent belongs to: compared with the caller's, never acted as."""
+    return item.get("orgId")
+
+
+def held_by_another_org(app: dict[str, Any], org_id: str) -> bool:
+    """Whether ``app`` is another org's: a store that does not scope reads by org answers it for any caller."""
+    return owner_of(app) not in (None, "", org_id)
+
+
 class ConnectorIntentStore:
     def __init__(self, directory: str, error_type: type[Exception], what: str) -> None:
         self.directory = directory
@@ -35,7 +45,14 @@ class ConnectorIntentStore:
         now_ms: int | None = None,
         **fields: Any,  # noqa: ANN401
     ) -> None:
-        """Raises ``error_type`` when the KV store refuses the write."""
+        """Raises ``error_type`` when the KV store refuses the write, or the connector already has an
+        intent of another org: its cleanup is never replaced."""
+        try:
+            earlier = await config_service.get_config(self.key(connector_id), use_cache=False, raise_on_error=True)
+        except Exception as e:
+            raise self.error_type(f"could not read the earlier {self.what} of connector {connector_id}") from e
+        if isinstance(earlier, dict) and owner_of(earlier) not in (None, org_id):
+            raise self.error_type(f"the {self.what} of connector {connector_id} is recorded for another org")
         intent = {
             "orgId": org_id,
             "connectorId": connector_id,
@@ -45,21 +62,35 @@ class ConnectorIntentStore:
         if not await config_service.set_config(self.key(connector_id), intent):
             raise self.error_type(f"could not record {self.what} for connector {connector_id}")
 
-    async def clear(self, config_service: ConfigurationService, connector_id: str) -> bool:
+    async def clear(
+        self, config_service: ConfigurationService, connector_id: str, *, org_id: str | None = None,
+    ) -> bool:
         """A failed delete is returned, not raised: the intent then runs again,
-        and every cleanup behind one is idempotent."""
+        and every cleanup behind one is idempotent. With ``org_id``, an intent of another org is left."""
         # Absent for deletes made before intents existed and for ones already
         # settled; Redis reports deleting a missing key as a failure.
-        if await config_service.get_config(self.key(connector_id), use_cache=False) is None:
+        current = await config_service.get_config(self.key(connector_id), use_cache=False)
+        if current is None:
             return True
+        if org_id is not None and isinstance(current, dict) and owner_of(current) not in (None, org_id):
+            return False
         return bool(await config_service.delete_config(self.key(connector_id)))
 
     async def reschedule(
         self, config_service: ConfigurationService, intent: dict[str, Any], *, next_attempt_at: int,
     ) -> bool:
-        """Count a failed attempt on ``intent`` and hold it until ``next_attempt_at``."""
+        """Count a failed attempt on ``intent`` and hold it until ``next_attempt_at``. Another org's intent is left."""
+        key = self.key(str(intent["connectorId"]))
+        current = await config_service.get_config(key, use_cache=False)
+        if isinstance(current, dict):
+            if owner_of(current) not in (None, owner_of(intent)):
+                return False
+            # Added to the stored intent since the caller read it.
+            groups = [g for g in current.get("recordGroupIds") or [] if g not in (intent.get("recordGroupIds") or [])]
+            if groups:
+                intent = {**intent, "recordGroupIds": [*(intent.get("recordGroupIds") or []), *groups]}
         updated = {**intent, "attempts": int(intent.get("attempts") or 0) + 1, "nextAttemptAt": next_attempt_at}
-        return bool(await config_service.set_config(self.key(str(intent["connectorId"])), updated))
+        return bool(await config_service.set_config(key, updated))
 
     async def list(self, config_service: ConfigurationService) -> list[dict[str, Any]]:
         """Every recorded intent, oldest first; malformed entries are skipped."""
@@ -68,7 +99,7 @@ class ConnectorIntentStore:
             value = await config_service.get_config(key, use_cache=False)
             if (
                 isinstance(value, dict)
-                and value.get("orgId")
+                and owner_of(value)
                 and value.get("connectorId")
                 and key == self.key(str(value["connectorId"]))
             ):

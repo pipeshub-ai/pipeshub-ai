@@ -156,15 +156,26 @@ def _network_share(connector_type: str) -> bool:
     return bool(getattr(connector_class, "REQUEUE_PARKED", False))
 
 
-async def _disabled_types(config_service: ConfigurationService, org_ids: set[str]) -> dict[str, frozenset[str]]:
-    """The types turned off, by org, read as the indexer reads them: in the org. Raises when a setting cannot be read."""
+async def _disabled_types(
+    config_service: ConfigurationService, org_ids: set[str], logger: Logger,
+) -> dict[str, frozenset[str]]:
+    """The types turned off, by org, read as the indexer reads them: in the org. An org whose setting cannot be read is
+    left out, so its records wait; raises when that is every org."""
+    failure: Exception | None = None
     disabled: dict[str, frozenset[str]] = {}
     for org_id in sorted(org_ids):
-        with for_org(org_id, job=_JOB):
-            config = await config_service.get_config(file_types.FILE_TYPES_CONFIG_KEY, use_cache=False, raise_on_error=True)
+        try:
+            with for_org(org_id, job=_JOB):
+                config = await config_service.get_config(file_types.FILE_TYPES_CONFIG_KEY, use_cache=False, raise_on_error=True)
+        except Exception as exc:
+            failure = exc
+            logger.warning("File-type re-queue: the types turned off could not be read org=%s error=%s", org_id, type(exc).__name__)
+            continue
         if config is None:
             config = file_types.disabled_from_env(os.environ.get("FILE_TYPES_DISABLED"))
         disabled[org_id] = file_types.disabled_keys(config)
+    if failure is not None and not disabled:
+        raise failure
     return disabled
 
 
@@ -518,7 +529,7 @@ async def run_file_type_requeue(
         return result
     try:
         apps = await _list_apps(graph_provider)
-        disabled = await _disabled_types(config_service, {str(org) for org in map(_org_of, apps) if org})
+        disabled = await _disabled_types(config_service, {str(org) for org in map(_org_of, apps) if org}, logger)
     except Exception:
         logger.warning("File-type re-queue skipped: the connectors or the disabled file types could not be read", exc_info=True)
         return result
@@ -591,6 +602,9 @@ async def _walk_all(
             logger.warning("File-type re-queue: connector %s has no org or type; skipped", connector_id)
             continue
         if connector_state(app) in (ConnectorState.DELETING, ConnectorState.REMOVED):
+            continue
+        if str(org_id) not in disabled:
+            complete = False
             continue
         try:
             with for_org(org_id, job=_JOB):

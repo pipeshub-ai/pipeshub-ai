@@ -491,7 +491,8 @@ class TestLifespan:
                 assert org_context.peek() is None
 
         assert all(ctx is not None and ctx.kind == "system" for ctx in seen)
-        assert [ctx.source for ctx in seen] == ["system:orphan_view_sweep", "system:query_startup"]
+        # The view sweep lists the orgs too, in the background.
+        assert {"system:query_startup"} <= {ctx.source for ctx in seen} <= {"system:query_startup", "system:orphan_view_sweep"}
 
     async def test_startup_seed_task_starts_with_no_org_context(self) -> None:
         """With orgs present the seeding task is started after the list; it must not inherit the list's cross-org scope."""

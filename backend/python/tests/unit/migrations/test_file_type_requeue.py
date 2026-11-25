@@ -772,3 +772,22 @@ async def test_a_flag_written_before_types_were_held_back_per_org_is_still_read(
     config.values[file_types.FILE_TYPES_CONFIG_KEY] = {"disabled": []}
     _, _, kafka = await _run(graph, config=config)
     assert kafka.ids() == ["r1"]
+
+
+async def test_an_org_whose_setting_cannot_be_read_waits_and_the_others_run() -> None:
+    other = {**DRIVE, "_key": "c-other", "orgId": "org-2"}
+    graph = FakeGraph([DRIVE, other], [
+        _file("r1", "plan.docm", ext="docm"), _file("r2", "plan.docm", ext="docm", connector="c-other"),
+    ])
+    graph.records["r2"].org_id = "org-2"
+
+    class OneUnreadable(FakeConfig):
+        async def get_config(self, key: str, use_cache: bool = True, *, raise_on_error: bool = False) -> Any:  # noqa: ANN401
+            if key == file_types.FILE_TYPES_CONFIG_KEY and org_context.current_org_id() == "org-1":
+                raise RuntimeError("cannot decrypt")
+            return await super().get_config(key, use_cache, raise_on_error=raise_on_error)
+
+    config = OneUnreadable()
+    _, _, kafka = await _run(graph, config=config)
+    assert kafka.ids() == ["r2"] and graph.status("r1") == FTNS
+    assert FLAG_KEY not in config.values  # org-1's records are still owed

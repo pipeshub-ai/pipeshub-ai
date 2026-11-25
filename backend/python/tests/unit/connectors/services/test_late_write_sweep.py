@@ -305,3 +305,24 @@ async def test_another_replica_holding_the_lease_sweeps_instead() -> None:
 
 def test_passes_back_off_to_an_hour() -> None:
     assert [retry_delay_ms(n) for n in range(6)] == [RETRY_MS * 2 ** n for n in range(4)] + [RETRY_CAP_MS] * 2
+
+
+@pytest.mark.asyncio
+async def test_an_intent_never_sweeps_or_settles_another_orgs_connector() -> None:
+    graph = Graph(app={"_key": CONNECTOR, "orgId": "org2", "status": "DELETING"})
+    config = await recorded(age_ms=STALE_MS - 1)
+    assert await sweeper(graph, config).tick() == {}
+    assert graph.swept_in == [] and intent(config) is not None
+
+    stale = await recorded(age_ms=STALE_MS + 1)
+    assert await sweeper(graph, stale).tick() == {"dropped": 1}
+    assert graph.swept_in == [] and intent(stale) is None
+
+
+@pytest.mark.asyncio
+async def test_another_orgs_pending_sweep_is_neither_replaced_nor_merged() -> None:
+    config = await recorded(age_ms=GRACE_MS, recordGroupIds=["theirs"])
+    before = dict(config.kv)
+    with pytest.raises(LateWriteSweepIntentError):
+        await record_pending_late_write_sweep(config, Graph(), org_id="org2", connector_id=CONNECTOR, now_ms=NOW)
+    assert config.kv == before

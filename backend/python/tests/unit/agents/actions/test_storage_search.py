@@ -2736,6 +2736,23 @@ async def test_startup_sweep_reads_each_orgs_storage_in_its_own_context(monkeypa
     assert org_context.peek() is None
 
 
+@pytest.mark.parametrize("mount", ["..", "/etc", "a/b", "a\\b"])
+async def test_startup_sweep_walks_no_mount_that_is_not_a_directory_name(monkeypatch: pytest.MonkeyPatch, mount: str) -> None:
+    from app.agents.actions.storage_search import storage_search as ss
+
+    graph = MagicMock()
+    graph.get_all_orgs = AsyncMock(return_value=[{"_key": "org-1"}])
+    config = MagicMock()
+    config.get_config = AsyncMock(return_value={"mountName": mount})
+    swept: list[str] = []
+    monkeypatch.setattr(ss, "is_local_storage", lambda _cfg: True)
+    monkeypatch.setattr(ss, "sweep_orphan_views", swept.append)
+
+    await ss.sweep_orphan_views_at_startup(config, graph)
+
+    assert swept == []
+
+
 _needs_grep_and_landlock = pytest.mark.skipif(
     shutil.which("grep") is None
     or __import__("app.agents.actions.storage_search.landlock_exec", fromlist=["abi_version"]).abi_version() < 1,

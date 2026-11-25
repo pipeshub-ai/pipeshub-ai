@@ -77,3 +77,62 @@ async def test_a_gone_app_is_released_in_the_intents_org(released: list) -> None
     assert [c for c, _ in released] == ["z"] and bound_to(released[0][1], ORG_A)
     assert peek() is None
 
+
+class AnyOrgApps:
+    """``get_document`` as a store that ignores the bound org answers it: the app, whoever asks."""
+
+    def __init__(self, apps: dict[str, object]) -> None:
+        self.apps = apps
+
+    async def get_document(self, key: str, collection: str, **_kw: object) -> object:
+        app = self.apps.get(key)
+        if isinstance(app, Exception):
+            raise app
+        return app
+
+
+async def tick_all(apps: dict[str, object], intents: dict[str, str]) -> tuple[str, Config, AsyncMock]:
+    config, finish = Config(), AsyncMock(return_value={"success": True})
+    for n, (connector_id, org) in enumerate(intents.items()):
+        await record_pending_storage_release(config, org_id=org, connector_id=connector_id, now_ms=NOW - GRACE_MS - 100 + n)
+    lock = SimpleNamespace(try_acquire=AsyncMock(return_value=True))
+    outcome = await StorageReleaseReconciler(
+        logger=MagicMock(), graph_provider=AnyOrgApps(apps), config_service=config, lock=lock, now_ms=lambda: NOW,
+        finish_kb_delete=finish, finish_connector_delete=finish,
+    ).tick()
+    return outcome, config, finish
+
+
+@pytest.mark.parametrize("status", ["DELETING", "ACTIVE"])
+async def test_an_intent_never_finishes_or_settles_another_orgs_connector(released: list, status: str) -> None:
+    app = {"_key": "x", "type": "DRIVE", "status": status, "orgId": ORG_B}
+    outcome, config, finish = await tick_all({"x": app}, {"x": ORG_A})
+    assert outcome == "idle" and released == [] and len(config.kv) == 1
+    finish.assert_not_awaited()
+
+
+async def test_a_connector_that_cannot_be_read_does_not_hold_up_another_orgs_release(released: list) -> None:
+    outcome, config, _ = await tick_all({"bad": RuntimeError("unreadable")}, {"bad": ORG_A, "gone": ORG_B})
+    assert outcome == "released" and [c for c, _ in released] == ["gone"]
+    assert "/services/storageRelease/pending/bad" in config.kv
+
+
+async def test_a_store_that_reads_nothing_fails_the_tick_so_the_loop_backs_off(released: list) -> None:
+    with pytest.raises(RuntimeError):
+        await tick_all({"x": RuntimeError("down")}, {"x": ORG_A})
+    assert released == []
+
+
+async def test_a_stale_intent_on_another_orgs_connector_is_dropped_so_its_own_org_can_delete_it() -> None:
+    config = Config()
+    await record_pending_storage_release(config, org_id=ORG_A, connector_id="x", now_ms=NOW - storage_release.STALE_MS - 1)
+    lock = SimpleNamespace(try_acquire=AsyncMock(return_value=True))
+    app = {"_key": "x", "type": "DRIVE", "status": "DELETING", "orgId": ORG_B}
+    finish = AsyncMock()
+    outcome = await StorageReleaseReconciler(
+        logger=MagicMock(), graph_provider=AnyOrgApps({"x": app}), config_service=config, lock=lock, now_ms=lambda: NOW,
+        finish_connector_delete=finish,
+    ).tick()
+    assert outcome == "dropped" and config.kv == {}
+    finish.assert_not_awaited()
+    await record_pending_storage_release(config, org_id=ORG_B, connector_id="x", now_ms=NOW)

@@ -23,7 +23,9 @@ async def test_the_scope_keeper_works_org_by_org_and_one_failure_does_not_stop_t
         return []
 
     graph = MagicMock()
-    graph.get_all_orgs = AsyncMock(return_value=[{"_key": "org-1"}, {"_key": "org-2"}])
+    graph.get_all_orgs = AsyncMock(
+        side_effect=lambda *, active, is_external=False: [{"_key": "ext"}] if is_external else [{"_key": "org-1"}, {"_key": "org-2"}]
+    )
     graph.kh_scope_restamp_stale = AsyncMock(side_effect=restamp)
     monkeypatch.setattr(connector, "_kh_graph_migrations", AsyncMock(return_value=True))
     monkeypatch.setattr(connector.asyncio, "sleep", AsyncMock(side_effect=asyncio.CancelledError))
@@ -31,5 +33,5 @@ async def test_the_scope_keeper_works_org_by_org_and_one_failure_does_not_stop_t
     with pytest.raises(asyncio.CancelledError):
         await connector._kh_listing_background(graph, MagicMock(), logging.getLogger("t"), kb_apps_done=True)
 
-    assert bound == [("org-1", "org-1"), ("org-2", "org-2")]
+    assert bound == [("org-1", "org-1"), ("org-2", "org-2"), ("ext", "ext")]
     assert org_context.peek() is None

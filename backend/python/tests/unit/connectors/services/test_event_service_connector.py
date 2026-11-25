@@ -1534,6 +1534,18 @@ class TestHandleDelete:
             assert service.graph_provider.batch_upsert_nodes.await_count >= 1
 
     @pytest.mark.asyncio
+    async def test_a_delete_event_naming_another_org_changes_nothing(self, service) -> None:
+        service.graph_provider.get_document = AsyncMock(return_value={"_key": "c1", "status": "DELETING", "orgId": "org2"})
+        service.graph_provider.delete_connector_instance = AsyncMock()
+        with current_coordinator() as coordinator:
+            result = await service._handle_delete("gmail", {"orgId": "org1", "connectorId": "c1", "previousIsActive": True})
+        assert result is False
+        service.graph_provider.delete_connector_instance.assert_not_awaited()
+        service.graph_provider.batch_upsert_nodes.assert_not_awaited()
+        service.app_container.config_service().set_config.assert_not_called()
+        coordinator.cancel_and_wait.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_a_delete_that_stopped_part_way_stays_deleting(self, service) -> None:
         """Part of the connector and its grants are gone: reverting the status would show an active connector nobody can open."""
         service.graph_provider.get_document = AsyncMock(return_value={"_key": "c1", "status": "DELETING"})

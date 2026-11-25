@@ -18,7 +18,11 @@ from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from app.config.constants.arangodb import CollectionNames
-from app.connectors.services.connector_intents import ConnectorIntentStore
+from app.connectors.services.connector_intents import (
+    ConnectorIntentStore,
+    held_by_another_org,
+    owner_of,
+)
 from app.core.org_context import for_org
 from app.modules.indexing.vector_membership_backfill import (
     VectorMembershipBackfillLeaderLock,
@@ -92,7 +96,7 @@ async def record_pending_late_write_sweep(
         raise LateWriteSweepIntentError(
             f"could not read the record groups to sweep for connector {connector_id}"
         ) from e
-    kept = earlier.get("recordGroupIds") if isinstance(earlier, dict) else None
+    kept = earlier.get("recordGroupIds") if isinstance(earlier, dict) and owner_of(earlier) == org_id else None
     read = [row.get("_key") for row in rows or []]
     groups = list(dict.fromkeys(str(g) for g in [*(kept if isinstance(kept, list) else []), *read] if g))
     await _STORE.record(
@@ -150,6 +154,16 @@ class LateWriteSweeper:
                 # Raised, not None: a failed read must never pass for a gone app.
                 app = await self.graph.get_document(connector_id, CollectionNames.APPS.value, raise_on_error=True)
                 if app is not None:
+                    if held_by_another_org(app, org_id):
+                        self.logger.warning(
+                            "Late-write sweep skipped; the connector is another org's | org=%s connector=%s",
+                            org_id, connector_id,
+                        )
+                        if requested > now - STALE_MS:
+                            return None
+                        # It can never be settled, and would keep the connector's own org from recording its delete.
+                        await self._clear(org_id, connector_id)
+                        return "dropped"
                     if app.get("status") == APP_STATUS_DELETING or requested > now - STALE_MS:
                         return None
                     await self._clear(org_id, connector_id)
@@ -209,7 +223,7 @@ class LateWriteSweeper:
 
     async def _clear(self, org_id: str, connector_id: str) -> None:
         try:
-            if await _STORE.clear(self.config_service, connector_id):
+            if await _STORE.clear(self.config_service, connector_id, org_id=org_id):
                 return
         except Exception:
             self.logger.warning("Late-write sweep intent not cleared | connector=%s", connector_id, exc_info=True)
