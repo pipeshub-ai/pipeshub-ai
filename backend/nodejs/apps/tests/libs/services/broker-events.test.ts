@@ -10,6 +10,7 @@ import {
   lagMsSince,
   MAX_MESSAGE_TYPES,
   messageTypeOf,
+  parseAnnounced,
   streamEntryMs,
 } from '../../../src/libs/services/broker-events';
 import {
@@ -106,6 +107,30 @@ describe('broker platform events', () => {
     it('reads the time a Redis stream entry id starts with', () => {
       expect(streamEntryMs('1700000000123-4')).to.equal('1700000000123');
       expect(streamEntryMs('abc')).to.equal(undefined);
+    });
+  });
+
+  describe('parseAnnounced', () => {
+    const facts = { broker: 'redis' as const, topic: 't' };
+
+    it('returns the parsed body and announces nothing', () => {
+      expect(parseAnnounced(facts, '{"eventType":"x"}')).to.deep.equal({
+        eventType: 'x',
+      });
+      expect(consumed).to.deep.equal([]);
+    });
+
+    it('announces a body that is not JSON once and rethrows the parse error', () => {
+      expect(() => parseAnnounced(facts, `{${SECRET}`)).to.throw(SyntaxError);
+      expect(consumed).to.deep.equal([
+        {
+          broker: 'redis',
+          topic: 't',
+          messageType: 'unknown',
+          outcome: 'unparseable',
+          durationSeconds: 0,
+        },
+      ]);
     });
   });
 
@@ -275,6 +300,37 @@ describe('broker platform events', () => {
       );
       expect(thrown).to.be.instanceOf(DocStoreReadOnlyError);
       expect(consumed.map((c) => c.outcome)).to.deep.equal(['retry']);
+    });
+
+    it('announces a body that is not JSON as unparseable, with its lag and no handler run', async () => {
+      const handler = sinon.stub().resolves();
+      const thrown = await deliver(
+        {
+          value: Buffer.from(`{not json ${SECRET}`),
+          timestamp: String(Date.now() - 2000),
+        },
+        handler,
+      );
+      expect(thrown).to.equal(undefined);
+      expect(handler.called).to.equal(false);
+      expect(consumed).to.have.length(1);
+      expect(consumed[0]).to.include({
+        broker: 'kafka',
+        topic: 'record-events',
+        messageType: 'unknown',
+        outcome: 'unparseable',
+        durationSeconds: 0,
+      });
+      expect(consumed[0]!.lagMs).to.be.within(2000, 60_000);
+      expect(JSON.stringify(consumed)).not.to.include(SECRET);
+    });
+
+    it('announces a message with no body as unparseable', async () => {
+      await deliver({ value: null }, sinon.stub().resolves());
+      expect(consumed.map((c) => [c.messageType, c.outcome])).to.deep.equal([
+        ['unknown', 'unparseable'],
+      ]);
+      expect(consumed[0]).not.to.have.property('lagMs');
     });
   });
 });

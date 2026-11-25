@@ -37,6 +37,7 @@ import { untilMongoWritable } from '../repositories/fence';
 import {
   announcePublished,
   consumeAnnounced,
+  parseAnnounced,
   streamEntryMs,
 } from './broker-events';
 import {
@@ -66,8 +67,14 @@ function serializeValueWithTrace(value: unknown, topic: string): string {
   return JSON.stringify(value);
 }
 
-/** The message an entry carries; null for an entry without a value (a stream's init entry). */
-function decodeEntry<T>(fields: string[]): StreamMessage<T> | null {
+/**
+ * The message an entry carries; null for an entry without a value (a stream's init entry). A value or headers
+ * that do not parse are announced as unparseable for the delivery before the error is thrown.
+ */
+function decodeEntry<T>(
+  fields: string[],
+  delivery: { broker: 'redis'; topic: string; publishedAtMs?: number },
+): StreamMessage<T> | null {
   const fieldMap: Record<string, string> = {};
   for (let i = 0; i < fields.length; i += 2) {
     const key = fields[i];
@@ -80,11 +87,14 @@ function decodeEntry<T>(fields: string[]): StreamMessage<T> | null {
   if (rawValue === undefined) return null;
   const message: StreamMessage<T> = {
     key: fieldMap[REDIS_STREAM_FIELDS.key] ?? '',
-    value: JSON.parse(rawValue) as T,
+    value: parseAnnounced(delivery, rawValue) as T,
   };
   const rawHeaders = fieldMap[REDIS_STREAM_FIELDS.headers];
   if (rawHeaders !== undefined) {
-    message.headers = JSON.parse(rawHeaders) as Record<string, string>;
+    message.headers = parseAnnounced(delivery, rawHeaders) as Record<
+      string,
+      string
+    >;
   }
   return message;
 }
@@ -622,7 +632,11 @@ export abstract class BaseRedisStreamsConsumerConnection
             const entryId = entry[0];
             try {
               if (await this.setAsideIfOverDelivered(topic, entryId)) continue;
-              const parsedMessage = decodeEntry<T>(entry[1]);
+              const parsedMessage = decodeEntry<T>(entry[1], {
+                broker: 'redis',
+                topic,
+                publishedAtMs: streamEntryMs(entryId),
+              });
               if (parsedMessage === null) {
                 await this.ackRedis.xack(topic, this.groupId, entryId);
                 continue;
@@ -772,7 +786,11 @@ export abstract class BaseRedisStreamsConsumerConnection
             if (!(await untilMongoWritable(() => this.running))) break;
             const entryId = entry[0];
             try {
-              const parsedMessage = decodeEntry<T>(entry[1]);
+              const parsedMessage = decodeEntry<T>(entry[1], {
+                broker: 'redis',
+                topic: streamName,
+                publishedAtMs: streamEntryMs(entryId),
+              });
               if (parsedMessage === null) {
                 this.logger.debug(
                   'Skipping message without value field (likely init message)',
@@ -923,7 +941,11 @@ export class RedisStreamsBroadcastConsumer extends BaseRedisStreamsConsumerConne
     for (const [topic, entries] of read) {
       for (const [entryId, fields] of entries) {
         try {
-          const message = decodeEntry<T>(fields);
+          const message = decodeEntry<T>(fields, {
+            broker: 'redis',
+            topic,
+            publishedAtMs: streamEntryMs(entryId),
+          });
           if (message !== null) {
             await this.handleMessage(topic, entryId, message, handler);
           }

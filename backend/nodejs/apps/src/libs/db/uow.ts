@@ -52,6 +52,10 @@ export interface PgClient {
 /** The slice of `pg.Pool` the runtime uses. */
 export interface PgPool {
   connect(): Promise<PgClient>;
+  /** node-postgres' own counts, when the pool has them: open, open and unused, callers waiting. */
+  totalCount?: number;
+  idleCount?: number;
+  waitingCount?: number;
 }
 
 export interface UowOptions {
@@ -443,6 +447,13 @@ export class PgRuntime {
     emitPlatformEvent('db.connection.acquired', {
       waitSeconds: secondsSince(waited),
     });
+    if (pool.totalCount !== undefined) {
+      emitPlatformEvent('db.pool.sampled', {
+        total: pool.totalCount,
+        idle: pool.idleCount ?? 0,
+        waiting: pool.waitingCount ?? 0,
+      });
+    }
     let destroy = false;
     let tx: Tx | undefined;
     // The pool detaches its own handler while a client is checked out; a connection killed between two statements

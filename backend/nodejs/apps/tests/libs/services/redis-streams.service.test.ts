@@ -796,6 +796,40 @@ describe('Redis Streams Service', () => {
         expect(mockRedis.xack.called).to.be.true;
       });
 
+      it('announces an entry whose value or headers are not JSON as unparseable', async () => {
+        const consumed: any[] = [];
+        const off = onPlatformEvent('message.consumed', (payload) => {
+          consumed.push(payload);
+        });
+        try {
+          mockRedis.xautoclaim.onFirstCall().resolves([
+            '0-0',
+            [
+              [`${Date.now() - 3000}-0`, ['key', 'key-SEEDED', 'value', '{not json SEEDED']],
+              ['6-0', ['key', 'k', 'value', '{"eventType":"orgUpdated"}', 'headers', 'not json SEEDED']],
+            ],
+            [],
+          ]);
+          mockRedis.xreadgroup.callsFake(async () => {
+            consumer.running = false;
+            return null;
+          });
+          const handler = sinon.stub().resolves();
+          await consumer.consume(handler);
+          await consumer.consumeLoopPromise;
+
+          expect(handler.called).to.equal(false);
+          expect(consumed.map((c) => [c.broker, c.topic, c.messageType, c.outcome])).to.deep.equal([
+            ['redis', 'test-stream', 'unknown', 'unparseable'],
+            ['redis', 'test-stream', 'unknown', 'unparseable'],
+          ]);
+          expect(consumed[0].lagMs).to.be.within(3000, 60_000);
+          expect(JSON.stringify(consumed)).not.to.include('SEEDED');
+        } finally {
+          off();
+        }
+      });
+
       it('announces each delivery with its outcome and the lag its entry id gives', async () => {
         const consumed: any[] = [];
         const off = onPlatformEvent('message.consumed', (payload) => {

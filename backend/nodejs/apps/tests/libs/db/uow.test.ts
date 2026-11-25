@@ -4,6 +4,7 @@ import { expect } from 'chai'
 import { Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import { FakePool, pgError } from './fake-pool'
+import { onPlatformEvent } from '../../../src/libs/platform-events'
 import {
   ConnectionLost, DbFenced, DbReadOnly, DbTimeout, DeadlockDetected, FailedTransaction, LockNotAvailable,
   PermissionDenied, PgRuntime, PoolTimeout, WriteIsolationRefused, PrologueFailed, QueryCatalog, SerializationFailure, SessionRoleLeak,
@@ -325,6 +326,20 @@ describe('libs/db unit of work', () => {
         'SAVEPOINT s1', 'RELEASE SAVEPOINT s1', 'SAVEPOINT s2', 'ROLLBACK TO SAVEPOINT s2', 'RELEASE SAVEPOINT s2',
         'SAVEPOINT s3', 'RELEASE SAVEPOINT s3',
       ])
+    })
+
+    it('announces the pool size when a connection is handed out, for a pool that has counts', async () => {
+      const sampled: unknown[] = []
+      const off = onPlatformEvent('db.pool.sampled', (payload) => { sampled.push(payload) })
+      try {
+        await inOrg('o', () => rtFor(new FakePool()).withUow({}, async () => 1))
+        expect(sampled).to.deep.equal([])
+        const pool = Object.assign(new FakePool(), { totalCount: 7, idleCount: 2, waitingCount: 1 })
+        await inOrg('o', () => rtFor(pool).withUow({}, async () => 1))
+        expect(sampled).to.deep.equal([{ total: 7, idle: 2, waiting: 1 }])
+      } finally {
+        off()
+      }
     })
 
     it('refuses a unit started inside a unit, whatever the org, before taking a connection', async () => {

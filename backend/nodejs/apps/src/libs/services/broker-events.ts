@@ -79,6 +79,40 @@ export function announcePublished(
 }
 
 /**
+ * Parses a consumed message body. A body that is not JSON is announced as a
+ * delivery that ended `unparseable` (no handler runs for it) and the parse
+ * error is rethrown.
+ */
+export function parseAnnounced(
+  facts: { broker: Broker; topic: string; publishedAtMs?: unknown },
+  raw: string,
+): unknown {
+  try {
+    return JSON.parse(raw);
+  } catch (error) {
+    announceUnparseable(facts);
+    throw error;
+  }
+}
+
+/** One delivery whose body could not be read at all (empty, or not JSON). */
+export function announceUnparseable(facts: {
+  broker: Broker;
+  topic: string;
+  publishedAtMs?: unknown;
+}): void {
+  const lagMs = lagMsSince(facts.publishedAtMs);
+  emitPlatformEvent('message.consumed', {
+    broker: facts.broker,
+    topic: facts.topic,
+    messageType: UNKNOWN_MESSAGE_TYPE,
+    outcome: 'unparseable',
+    durationSeconds: 0,
+    ...(lagMs === undefined ? {} : { lagMs }),
+  });
+}
+
+/**
  * Runs one delivery's handler and announces how it ended: `success`,
  * `rejected` (the envelope was refused), `retry` when `retried(error)` says the
  * message will be delivered again, otherwise `failure`. The error is rethrown.

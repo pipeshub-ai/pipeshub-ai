@@ -193,6 +193,16 @@ export interface PlatformEvents {
   /** A pool connection was handed out. */
   'db.connection.acquired': { waitSeconds: number };
 
+  /** The size of the relational database pool, read when a connection was handed out. */
+  'db.pool.sampled': {
+    /** Connections the pool holds open. */
+    total: number;
+    /** Open connections not in use. */
+    idle: number;
+    /** Callers waiting for a connection. */
+    waiting: number;
+  };
+
   /** A pooled connection arrived with a session role already set and was destroyed. */
   'db.connection.session_role_leaked': Record<string, never>;
 
@@ -256,15 +266,17 @@ export interface PlatformEvents {
 
   /**
    * One delivery of a broker message ended: `success`, `failure` (the handler
-   * threw and the message was dropped), `rejected` (its envelope was refused)
-   * or `retry` (it will be delivered again). `lagMs` is the time between the
-   * broker's timestamp of the message and its delivery, when the broker gave one.
+   * threw and the message was dropped), `rejected` (its envelope was refused),
+   * `retry` (it will be delivered again) or `unparseable` (its body was empty
+   * or not JSON, so no handler ran and its type is `unknown`). `lagMs` is the
+   * time between the broker's timestamp of the message and its delivery, when
+   * the broker gave one.
    */
   'message.consumed': {
     broker: 'kafka' | 'redis';
     topic: string;
     messageType: string;
-    outcome: 'success' | 'failure' | 'rejected' | 'retry';
+    outcome: 'success' | 'failure' | 'rejected' | 'retry' | 'unparseable';
     durationSeconds: number;
     lagMs?: number;
   };

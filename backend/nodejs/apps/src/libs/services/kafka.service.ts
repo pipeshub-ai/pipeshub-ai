@@ -28,7 +28,12 @@ import {
 } from '../repositories/errors';
 import { mongoStoreMoving, untilMongoWritable } from '../repositories/fence';
 import { spawnDetached } from '../context/orgContext';
-import { announcePublished, consumeAnnounced } from './broker-events';
+import {
+  announcePublished,
+  announceUnparseable,
+  consumeAnnounced,
+  parseAnnounced,
+} from './broker-events';
 
 /** Sign (when enabled) only where the topic is known. */
 function signIfTopic(
@@ -312,14 +317,23 @@ export abstract class BaseKafkaConsumerConnection
               throw new DocStoreReadOnlyError();
             }
             try {
+              const delivery = {
+                broker: 'kafka' as const,
+                topic,
+                publishedAtMs: message.timestamp,
+              };
               if (!message.value) {
+                announceUnparseable(delivery);
                 throw new BadRequestError('Empty message value');
               }
 
-              const parsedValue = JSON.parse(message.value.toString());
+              const parsedValue = parseAnnounced(
+                delivery,
+                message.value.toString(),
+              );
               const parsedMessage: StreamMessage<T> = {
                 key: message.key?.toString() ?? '',
-                value: parsedValue,
+                value: parsedValue as T,
               };
 
               // Carry the producer's trace id and org into consumer-side logs.
