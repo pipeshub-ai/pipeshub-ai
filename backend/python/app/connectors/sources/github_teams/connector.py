@@ -432,7 +432,7 @@ class GitHubTeamsConnector(BaseConnector):
                 type=NotificationType.CONNECTOR_AUTH_ERROR,
                 severity=NotificationSeverity.ERROR,
                 title=f"{self.display_name}: needs to be reconnected",
-                message=f"{_SIGN_IN_REFUSED} Nothing was removed.",
+                message=_SIGN_IN_REFUSED,
             )
         except Exception as e:
             self.logger.warning("The reconnect notice was not sent: %s", type(e).__name__)

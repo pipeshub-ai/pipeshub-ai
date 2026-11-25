@@ -397,6 +397,9 @@ class RuntimeHelper:
 
             response = await self._execute_github_op(op, timeout=_github_timeout, op_label=label)
 
+        # The last attempt was the one made after a token refresh.
+        if self._is_auth_error(response):
+            self.sign_in_refused = True
         return response
 
     # ------------------------------------------------------------------

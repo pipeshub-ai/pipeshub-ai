@@ -9,6 +9,7 @@ import pytest
 
 from app.connectors.core.base.connector.connector_service import ConnectorInitError
 from app.connectors.sources.github_teams.connector import GitHubTeamsConnector
+from app.connectors.sources.github_teams.constants import _GITHUB_MAX_RETRIES
 from app.connectors.sources.github_teams.runtime import RuntimeHelper
 from app.connectors.sources.github_teams.users import UsersSync
 from app.services.notification.types import NotificationType
@@ -52,6 +53,15 @@ async def test_a_refusal_after_a_refresh_is_remembered() -> None:
     _c, runtime = _runtime({"auth": {"authType": "OAUTH"}, "credentials": {"refresh_token": "r"}})
     await _call(runtime, REFUSED, REFUSED)
     assert runtime.sign_in_refused is True
+
+
+@pytest.mark.parametrize(("last", "refused"), [(REFUSED, True), (GitHubResponse(success=True, data="x"), False)])
+async def test_a_refusal_on_the_last_attempt_is_remembered(last: GitHubResponse, refused: bool) -> None:
+    _c, runtime = _runtime({"auth": {"authType": "OAUTH"}, "credentials": {"refresh_token": "r"}})
+    unavailable = GitHubResponse(success=False, error="502", status_code=502)
+    with patch("app.connectors.sources.github_teams.runtime.asyncio.sleep", AsyncMock()):
+        await _call(runtime, *[unavailable] * (_GITHUB_MAX_RETRIES - 1), REFUSED, last)
+    assert runtime.sign_in_refused is refused
 
 
 @pytest.mark.parametrize("answer", [
@@ -99,6 +109,8 @@ async def test_the_owner_is_told_to_reconnect_and_the_run_still_fails() -> None:
     assert isinstance(raised.value.__cause__, RuntimeError)
     assert any("sync stopped" in str(call.args[0]) for call in c.logger.error.call_args_list)
     assert c.notify.await_args.kwargs["type"] is NotificationType.CONNECTOR_AUTH_ERROR
+    # Repositories that left the scope may already have been removed in this run.
+    assert "removed" not in c.notify.await_args.kwargs["message"]
 
 
 async def test_another_failure_is_logged_and_raised_as_before() -> None:
