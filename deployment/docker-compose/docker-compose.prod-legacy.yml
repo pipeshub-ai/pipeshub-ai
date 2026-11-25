@@ -484,7 +484,7 @@ services:
 
   arango:
     <<: *hardened
-    image: arangodb:3.12.4
+    image: arangodb:3.12.13
     ulimits:
       nofile:
         soft: 65536
@@ -508,7 +508,7 @@ services:
 
   etcd:
     <<: [*hardened, *read-only-root]
-    image: quay.io/coreos/etcd:v3.5.17
+    image: quay.io/coreos/etcd:v3.5.36
     ulimits:
       nofile:
         soft: 65536
@@ -539,7 +539,7 @@ services:
 
   zookeeper:
     <<: *hardened
-    image: confluentinc/cp-zookeeper:7.9.0
+    image: confluentinc/cp-zookeeper:7.9.1
     ulimits:
       nofile:
         soft: 65536
@@ -560,7 +560,7 @@ services:
 
   kafka-1:
     <<: *hardened
-    image: confluentinc/cp-kafka:7.9.0
+    image: confluentinc/cp-kafka:7.9.10
     ulimits:
       nofile:
         soft: 100000

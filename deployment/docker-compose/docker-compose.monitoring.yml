@@ -22,7 +22,7 @@ services:
     security_opt:
       - no-new-privileges:true
     pids_limit: 1024
-    image: ${PROMETHEUS_IMAGE:-prom/prometheus:v2.53.0@sha256:075b1ba2c4ebb04bc3a6ab86c06ec8d8099f8fda1c96ef6d104d9bb1def1d8bc}
+    image: ${PROMETHEUS_IMAGE:-prom/prometheus:v2.53.5@sha256:7a34573f0b9c952286b33d537f233cd5b708e12263733aa646e50c33f598f16c}
     restart: unless-stopped
     command:
       - --config.file=/etc/prometheus/prometheus.yml
@@ -52,7 +52,7 @@ services:
     security_opt:
       - no-new-privileges:true
     pids_limit: 1024
-    image: ${GRAFANA_IMAGE:-grafana/grafana:11.1.0@sha256:079600c9517b678c10cda6006b4487d3174512fd4c6cface37df7822756ed7a5}
+    image: ${GRAFANA_IMAGE:-grafana/grafana:11.1.13@sha256:dfdfd26cc20a5e8861259ae624b39ac38013e8c85805b21c06c00e2f18f1689c}
     restart: unless-stopped
     environment:
       - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:?set GRAFANA_ADMIN_PASSWORD to start Grafana}

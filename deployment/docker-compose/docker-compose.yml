@@ -1507,7 +1507,7 @@ services:
     <<: *hardened
     profiles: ["fetch-crawl4ai"]
     # 0.9.4 or later: earlier servers let anyone who can reach them run code or reach internal addresses.
-    image: unclecode/crawl4ai:0.9.4
+    image: unclecode/crawl4ai:0.9.6
     restart: always
     environment:
       - CRAWL4AI_API_TOKEN=${CRAWL4AI_API_TOKEN:-}
@@ -1529,7 +1529,7 @@ services:
   arango:
     <<: *hardened
     profiles: ["graph-arango"]
-    image: arangodb:3.12.4
+    image: arangodb:3.12.13
     ulimits:
       nofile:
         soft: 65536
@@ -1564,7 +1564,7 @@ services:
     # the neo4j user's process; without it neo4j was killed, not shut down.
     cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETUID, SETGID, KILL]
     profiles: ["graph-neo4j"]
-    image: neo4j:5.26.0
+    image: neo4j:5.26.33
     # A clean shutdown checkpoints the store; it took 11 s on an idle database, past Compose's 10 s default.
     stop_grace_period: 120s
     ulimits:
@@ -1639,7 +1639,7 @@ services:
   etcd:
     <<: [*hardened, *read-only-root]
     profiles: ["kv-etcd"]
-    image: quay.io/coreos/etcd:v3.5.17
+    image: quay.io/coreos/etcd:v3.5.36
     ulimits:
       nofile:
         soft: 65536
@@ -1688,7 +1688,7 @@ services:
   zookeeper:
     <<: *hardened
     profiles: ["broker-kafka"]
-    image: confluentinc/cp-zookeeper:7.9.0
+    image: confluentinc/cp-zookeeper:7.9.1
     ulimits:
       nofile:
         soft: 65536
@@ -1719,7 +1719,7 @@ services:
   kafka-init:
     <<: *hardened
     profiles: ["broker-kafka"]
-    image: confluentinc/cp-kafka:7.9.0
+    image: confluentinc/cp-kafka:7.9.10
     ulimits:
       nofile:
         soft: 100000
@@ -1750,7 +1750,7 @@ services:
   kafka-1:
     <<: *hardened
     profiles: ["broker-kafka"]
-    image: confluentinc/cp-kafka:7.9.0
+    image: confluentinc/cp-kafka:7.9.10
     ulimits:
       nofile:
         soft: 100000

@@ -25,7 +25,7 @@ services:
     profiles: !override ["qa6-never"]
 
   kafka-1:
-    image: apache/kafka:3.9.1@sha256:4ceccc577f03f51f6af8dbfda55194d0d892f4fa7913ffbded567ce3895622ed
+    image: apache/kafka:3.9.2@sha256:05b4616e0702ef2729327705d54ad6b50ea70b271c4b730fabd2320789fb7b02
     labels: *e2e-labels
     restart: "no"
     depends_on: !reset {}
@@ -81,7 +81,7 @@ services:
 
   pxh-mongo-standalone:
     profiles: ["mongo-standalone"]
-    image: mongo:8.0.17@sha256:9814652e33f0cf8b9fddea8b46dfc9d8e19b130dcfdd7b510ca58bb0d40c8b71
+    image: mongo:8.0.38@sha256:479e85ced54ffb8a40dade1dcde2da2a9ae858515b9415e9cc54bfb8f0575d01
     ulimits:
       nofile:
         soft: 64000

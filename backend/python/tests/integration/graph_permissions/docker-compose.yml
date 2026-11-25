@@ -13,7 +13,7 @@
 
 services:
   neo4j:
-    image: neo4j:5.26.0@sha256:5a015e53de1895e7eee1574ae0325cf8c4b89587222778108c594bdd45a474b5
+    image: neo4j:5.26.33@sha256:51d0314ef86074f519003da8dd4daaa9fff72b8479672b742d7cab7f3064e3ed
     ports:
       - "7475:7474"
       - "7688:7687"
@@ -37,7 +37,7 @@ services:
       start_period: 20s
 
   arango:
-    image: arangodb:3.12.4@sha256:b7cc8dbf5f24c0fe235b6e50a26dbcfaebaf9abe0d322acefcf3dab63b5a0102
+    image: arangodb:3.12.13@sha256:e48adfc58986a10e0316aa23ccae95ca580d880a41c76a8f0df68f9c29b470f2
     ports:
       - "8530:8529"
     # Raised from 512m/384M: at those values this container was OOM-killed
