@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from .layers import world_org
+from app.core.org_context import for_org
 
 if TYPE_CHECKING:
     from .graph import Namespace
@@ -33,8 +33,9 @@ def linked_viewers(world: World) -> list[str]:
 
 
 async def snapshot(provider: Any, world: World, viewer: str, ns: Namespace, org: str) -> dict[Any, Any]:  # noqa: ANN401
-    """What the readers answer the viewer, with the store's ids mapped back to the world's, inside the world's org as a request binds it."""
-    with world_org(ns):
+    """What the readers answer the viewer, with the store's ids mapped back to the world's, inside ``org`` (the store's id of the world's org) as a
+    request binds it."""
+    with for_org(org, job="permission-conformance"):
         return await _snapshot(provider, world, viewer, ns, org)
 
 
