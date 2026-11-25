@@ -188,7 +188,9 @@ if (existsSync(lockFile) && removedPackages.length > 0) {
   lock = readJson(lockFile);
   const packages = lock.json.packages;
   if (!packages || !packages[''])
-    fail(`${lockFile} is not a lockfile with a "packages" map (version 2 or 3)`);
+    fail(
+      `${lockFile} is not a lockfile with a "packages" map (version 2 or 3)`,
+    );
   const before = reachable(packages);
   for (const name of removedPackages) {
     for (const section of SECTIONS) {
