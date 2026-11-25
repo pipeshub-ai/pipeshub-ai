@@ -97,6 +97,7 @@ class TestDriveReconciler:
                 _record("r1", "kept"), _record("r2", "gone"), _record("r3", "unlisted-but-there"),
             ]),
             on_record_deleted=AsyncMock(),
+            note_kept_records=MagicMock(),
         )
         confirmed_gone = {"gone"}
 
@@ -110,11 +111,46 @@ class TestDriveReconciler:
         assert removed == 1
         processor.on_record_deleted.assert_awaited_once_with(record_id="r2")
 
+    async def test_an_unlisted_record_the_source_still_has_is_noted_kept(self) -> None:
+        processor = SimpleNamespace(
+            get_records_in_record_group=AsyncMock(return_value=[
+                _record("r1", "kept"), _record("r2", "gone"), _record("r3", "unlisted-but-there"),
+            ]),
+            on_record_deleted=AsyncMock(),
+            note_kept_records=MagicMock(),
+        )
+
+        async def is_gone(external_id: str) -> bool:
+            return external_id == "gone"
+
+        await DriveReconciler(processor, "c1", SimpleNamespace(info=lambda *_: None)).remove_unlisted(
+            "drive-1", {"kept"}, is_gone
+        )
+
+        processor.note_kept_records.assert_called_once_with("c1", ["r3"])
+        processor.on_record_deleted.assert_awaited_once_with(record_id="r2")
+
+    async def test_a_listed_record_is_neither_probed_nor_noted(self) -> None:
+        processor = SimpleNamespace(
+            get_records_in_record_group=AsyncMock(return_value=[_record("r1", "listed"), _record("r2", "gone")]),
+            on_record_deleted=AsyncMock(),
+            note_kept_records=MagicMock(),
+        )
+        is_gone = AsyncMock(return_value=True)
+
+        await DriveReconciler(processor, "c1", SimpleNamespace(info=lambda *_: None)).remove_unlisted(
+            "drive-1", {"listed"}, is_gone
+        )
+
+        is_gone.assert_awaited_once_with("gone")
+        processor.note_kept_records.assert_not_called()
+
     async def test_stored_records_are_read_a_page_at_a_time(self) -> None:
         first = [_record(f"r{n:03d}", f"e{n}") for n in range(500)]
         processor = SimpleNamespace(
             get_records_in_record_group=AsyncMock(side_effect=[first, [_record("r999", "late")]]),
             on_record_deleted=AsyncMock(),
+            note_kept_records=MagicMock(),
         )
 
         async def is_gone(external_id: str) -> bool:

@@ -6,7 +6,7 @@ connector's first run. Whatever was deleted in between is never reported, so it 
 
 Only a listing that ran to the end without an error is an answer to "what is gone", and even then each
 record is removed only once the source answers 404 for that very item: an item a listing leaves out is a
-candidate, not a deletion.
+candidate, not a deletion. An unlisted record the source still has is noted kept for a full sync in progress.
 """
 
 from __future__ import annotations
@@ -43,9 +43,13 @@ class DriveReconciler:
             )
             # Pages are keyed on the last record id, so deleting from this page does not shift the next one.
             for record in page:
-                if record.external_record_id not in listed_external_ids and await is_gone(record.external_record_id):
+                if record.external_record_id in listed_external_ids:
+                    continue
+                if await is_gone(record.external_record_id):
                     await self.processor.on_record_deleted(record_id=record.id)
                     removed += 1
+                else:
+                    self.processor.note_kept_records(self.connector_id, [record.id])
             if len(page) < _PAGE:
                 break
             after_key = page[-1].id
