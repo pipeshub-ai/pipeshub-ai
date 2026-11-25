@@ -12,7 +12,7 @@ import threading
 from app.telemetry.backend import METRICS_BACKEND
 
 # Every distinct label value is a time series that lives until the process
-# exits, so values that come from data (a mime type, a KB id, an email domain)
+# exits, so values that come from data (a mime type, a KB id)
 # are mapped to a bounded set before they reach the counter.
 OTHER = "other"
 _MAX_VALUES_PER_LABEL = 500
@@ -36,7 +36,7 @@ _KNOWN_MIMETYPES = frozenset({
 })
 _PASSTHROUGH = frozenset({"none", "unknown", OTHER})
 
-_seen: dict[str, set[str]] = {"org": set(), "kb": set(), "domain": set()}
+_seen: dict[str, set[str]] = {"org": set(), "kb": set()}
 _seen_lock = threading.Lock()
 
 
@@ -64,7 +64,7 @@ def _bound_value(label: str, value: str) -> str:
 ACTIVITY = METRICS_BACKEND.counter(
     "pipeshub_activity_total",
     "Total service activities recorded",
-    ["service", "activity", "connector", "status", "org", "kb", "domain", "mimetype"],
+    ["service", "activity", "connector", "status", "org", "kb", "mimetype"],
 )
 
 
@@ -75,12 +75,10 @@ def record_service_activity(
     status: str = "ok",
     org: str = "unknown",
     kb: str = "none",
-    domain: str = "unknown",
     mimetype: str = "none",
 ) -> None:
     """Increment a service activity counter from a pipeline call site."""
     ACTIVITY.inc(
         service, activity, connector, status,
-        _bound_value("org", org), _bound_value("kb", kb),
-        _bound_value("domain", domain), bound_mimetype(mimetype),
+        _bound_value("org", org), _bound_value("kb", kb), bound_mimetype(mimetype),
     )

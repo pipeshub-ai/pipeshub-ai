@@ -8,7 +8,7 @@ from app.telemetry.backend import METRICS_BACKEND
 HTTP_REQUESTS = METRICS_BACKEND.counter(
     "pipeshub_http_requests_total",
     "Total HTTP requests handled by the service",
-    ["service", "route", "method", "status", "org", "domain"],
+    ["service", "route", "method", "status", "org"],
 )
 
 # Buckets span fast cache hits to slow LLM/RAG calls.

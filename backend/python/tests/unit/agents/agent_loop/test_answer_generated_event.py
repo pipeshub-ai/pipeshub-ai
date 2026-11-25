@@ -102,7 +102,7 @@ def test_never_raises_on_malformed_input() -> None:
 
 
 def test_answer_also_counts_on_the_grafana_activity_counter(monkeypatch) -> None:
-    """The same step is counted for dashboards with org/domain only — no user id or address."""
+    """The same step is counted for dashboards with the org only — no user id, address or email domain."""
     calls: list[dict] = []
     import app.agents.agent_loop.respond as respond
 
@@ -117,9 +117,8 @@ def test_answer_also_counts_on_the_grafana_activity_counter(monkeypatch) -> None
         "connector": "demo",
         "status": "cited",
         "org": "org-1",
-        "domain": "example.com",
     }]
-    assert "dev@example.com" not in str(calls)
+    assert "example.com" not in str(calls)
 
 
 def test_a_stopped_answer_is_flagged_and_counted_under_its_own_status(monkeypatch) -> None:

@@ -3,18 +3,19 @@ import { recordHttpRequest, sessionApiSurface } from '../../../../../src/libs/se
 import { metricsBackend } from '../../../../../src/libs/services/telemetry/metrics-backend';
 
 describe('telemetry modules/http-metrics', () => {
-  it('should count a request with all labels set', async () => {
-    recordHttpRequest('/api/v1/users', 'GET', 200, 'org1', 0.05, 'acme.io');
+  it('should count a request with all labels set, and no email domain', async () => {
+    recordHttpRequest('/api/v1/users', 'GET', 200, 'org1', 0.05);
 
     const text = await metricsBackend.serialize();
     expect(text).to.include(
-      'pipeshub_http_requests_total{service="node_api",route="/api/v1/users",method="GET",status="200",org="org1",domain="acme.io"} 1',
+      'pipeshub_http_requests_total{service="node_api",route="/api/v1/users",method="GET",status="200",org="org1"} 1',
     );
+    expect(text).to.not.match(/pipeshub_http_requests_total\{[^}]*domain=/);
   });
 
   it('should observe latency only when a duration is provided', async () => {
-    recordHttpRequest('/api/v1/timed', 'POST', 201, 'org1', 0.2, 'acme.io');
-    recordHttpRequest('/api/v1/untimed', 'POST', 201, 'org1', undefined, 'acme.io');
+    recordHttpRequest('/api/v1/timed', 'POST', 201, 'org1', 0.2);
+    recordHttpRequest('/api/v1/untimed', 'POST', 201, 'org1', undefined);
 
     const text = await metricsBackend.serialize();
     expect(text).to.include(
@@ -26,30 +27,30 @@ describe('telemetry modules/http-metrics', () => {
     );
   });
 
-  it('should default empty route to "unmatched" and missing org/domain to "unknown"', async () => {
+  it('should default empty route to "unmatched" and missing org to "unknown"', async () => {
     recordHttpRequest('', 'PUT', 404);
 
     const text = await metricsBackend.serialize();
     expect(text).to.include(
-      'pipeshub_http_requests_total{service="node_api",route="unmatched",method="PUT",status="404",org="unknown",domain="unknown"} 1',
+      'pipeshub_http_requests_total{service="node_api",route="unmatched",method="PUT",status="404",org="unknown"} 1',
     );
   });
 
   it('should accumulate counts across calls with identical labels', async () => {
-    recordHttpRequest('/api/v1/repeat', 'GET', 200, 'org2', 0.01, 'x.io');
-    recordHttpRequest('/api/v1/repeat', 'GET', 200, 'org2', 0.01, 'x.io');
+    recordHttpRequest('/api/v1/repeat', 'GET', 200, 'org2', 0.01);
+    recordHttpRequest('/api/v1/repeat', 'GET', 200, 'org2', 0.01);
 
     const text = await metricsBackend.serialize();
     expect(text).to.include(
-      'pipeshub_http_requests_total{service="node_api",route="/api/v1/repeat",method="GET",status="200",org="org2",domain="x.io"} 2',
+      'pipeshub_http_requests_total{service="node_api",route="/api/v1/repeat",method="GET",status="200",org="org2"} 2',
     );
   });
 
   it('C20.48: counts the session API by surface and outcome, without an org label', async () => {
-    recordHttpRequest('/api/v1/conversations/:conversationId/runs/:runId/stream', 'GET', 200, 'org1', 0.1, 'a.io');
-    recordHttpRequest('/api/v1/agents/:agentKey/conversations/stream', 'POST', 503, 'org1', 0.1, 'a.io');
-    recordHttpRequest('/api/v1/agent-harness/admin/dependencies', 'GET', 500, 'org1', 0.1, 'a.io');
-    recordHttpRequest('/api/v1/conversations/:conversationId', 'GET', 500, 'org1', 0.1, 'a.io');
+    recordHttpRequest('/api/v1/conversations/:conversationId/runs/:runId/stream', 'GET', 200, 'org1', 0.1);
+    recordHttpRequest('/api/v1/agents/:agentKey/conversations/stream', 'POST', 503, 'org1', 0.1);
+    recordHttpRequest('/api/v1/agent-harness/admin/dependencies', 'GET', 500, 'org1', 0.1);
+    recordHttpRequest('/api/v1/conversations/:conversationId', 'GET', 500, 'org1', 0.1);
 
     const text = await metricsBackend.serialize();
     expect(text).to.include(
@@ -78,17 +79,17 @@ describe('telemetry modules/http-metrics', () => {
   // Must run last: fills the module-level unique-route set up to the cap.
   it('should collapse routes beyond the unique-route cap into "other"', async () => {
     for (let i = 0; i < 300; i++) {
-      recordHttpRequest(`/api/v1/cap/${i}`, 'GET', 200, 'org1', undefined, 'a.io');
+      recordHttpRequest(`/api/v1/cap/${i}`, 'GET', 200, 'org1', undefined);
     }
-    recordHttpRequest('/api/v1/overflow', 'GET', 200, 'org1', undefined, 'a.io');
-    recordHttpRequest('/api/v1/repeat', 'GET', 200, 'org2', undefined, 'x.io');
+    recordHttpRequest('/api/v1/overflow', 'GET', 200, 'org1', undefined);
+    recordHttpRequest('/api/v1/repeat', 'GET', 200, 'org2', undefined);
 
     const text = await metricsBackend.serialize();
     expect(text).to.not.include('route="/api/v1/overflow"');
     expect(text).to.match(/pipeshub_http_requests_total\{[^}]*route="other"/);
     // Routes seen before the cap keep recording under their own label.
     expect(text).to.include(
-      'pipeshub_http_requests_total{service="node_api",route="/api/v1/repeat",method="GET",status="200",org="org2",domain="x.io"} 3',
+      'pipeshub_http_requests_total{service="node_api",route="/api/v1/repeat",method="GET",status="200",org="org2"} 3',
     );
   });
 });

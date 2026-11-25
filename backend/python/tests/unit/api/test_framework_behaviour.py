@@ -278,7 +278,7 @@ async def test_request_state_reaches_the_endpoint_and_metrics_record_the_route_t
     assert response.status_code == 200
     assert recorder.seen["user"] == {"orgId": "org-1", "email": "user@example.test"}
     http_requests_metric.inc.assert_called_once_with(
-        "test_service", "/stream/{item_id}", "GET", "200", "org-1", "example.test"
+        "test_service", "/stream/{item_id}", "GET", "200", "org-1"
     )
 
 

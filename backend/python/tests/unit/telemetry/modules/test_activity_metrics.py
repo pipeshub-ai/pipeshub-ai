@@ -33,6 +33,7 @@ class TestRecordServiceActivity:
         assert 'org="org-1"' in line
         assert 'kb="kb-1"' in line
         assert 'mimetype="application/pdf"' in line
+        assert "domain=" not in line
         assert line.endswith(" 1.0")
 
     def test_defaults_for_optional_labels(self):
@@ -88,8 +89,8 @@ class TestBoundedLabels:
     def test_shipped_cap_is_500_distinct_values(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from app.telemetry.modules import activity_metrics as am
 
-        monkeypatch.setitem(am._seen, "domain", set())
+        monkeypatch.setitem(am._seen, "kb", set())
         assert am._MAX_VALUES_PER_LABEL == 500
-        bounded = [am._bound_value("domain", f"d{i}.example") for i in range(501)]
-        assert bounded[:500] == [f"d{i}.example" for i in range(500)]
+        bounded = [am._bound_value("kb", f"kb-{i}") for i in range(501)]
+        assert bounded[:500] == [f"kb-{i}" for i in range(500)]
         assert bounded[500] == "other"

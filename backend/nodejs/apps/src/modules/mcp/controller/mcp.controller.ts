@@ -272,14 +272,13 @@ function auditToolCall(
   });
 }
 
-/** The Grafana counter for the same step: org and domain only. */
+/** The Grafana counter for the same step: org only. */
 function recordActivityFromProps(
   activityName: string,
   props: Record<string, unknown>,
 ): void {
   recordServiceActivity(activityName, {
     org: typeof props.orgId === 'string' ? props.orgId : undefined,
-    domain: typeof props.domain === 'string' ? props.domain : undefined,
   });
 }
 

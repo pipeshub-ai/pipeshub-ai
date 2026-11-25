@@ -6,7 +6,6 @@
 export interface OrgMetricRow {
   _id: string;
   accountType?: string | null;
-  domain?: string | null;
 }
 
 export interface AuthConfigMetricRow {

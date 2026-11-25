@@ -51,7 +51,7 @@ describe('metrics.refresh.service', () => {
     sandbox.restore();
   });
 
-  it('should group orgs by accountType+domain for the totals gauge', async () => {
+  it('should group orgs by accountType for the totals gauge, without their domain', async () => {
     stubDb({
       orgs: [
         { _id: 'o1', accountType: 'business', domain: 'acme.io' },
@@ -66,16 +66,20 @@ describe('metrics.refresh.service', () => {
     expect(setOrgsTotalStub.calledOnce).to.be.true;
     const rows = setOrgsTotalStub.firstCall.args[0];
     expect(rows).to.have.deep.members([
-      { accountType: 'business', domain: 'acme.io', count: 2 },
-      { accountType: 'individual', domain: 'solo.dev', count: 1 },
+      { accountType: 'business', count: 2 },
+      { accountType: 'individual', count: 1 },
     ]);
+    // The org's domain is not read at all.
+    expect((Org.find as sinon.SinonStub).firstCall.args[1]).to.deep.equal({
+      accountType: 1,
+    });
   });
 
-  it('should not collide groups when accountType/domain values contain separators', async () => {
+  it('should not collide groups when accountType values contain separators', async () => {
     stubDb({
       orgs: [
-        { _id: 'o1', accountType: 'a b', domain: 'c' },
-        { _id: 'o2', accountType: 'a', domain: 'b c' },
+        { _id: 'o1', accountType: 'a b' },
+        { _id: 'o2', accountType: 'a' },
       ],
     });
 
@@ -86,20 +90,20 @@ describe('metrics.refresh.service', () => {
     expect(rows).to.have.length(2);
   });
 
-  it('should default missing accountType/domain to "unknown"', async () => {
+  it('should default a missing accountType to "unknown"', async () => {
     stubDb({
-      orgs: [{ _id: 'o1', accountType: null, domain: '' }],
+      orgs: [{ _id: 'o1', accountType: null }],
     });
 
     timer = startOrgMetricsRefresh(mockLogger as any, NEVER_MS);
     await flushAsync();
 
     expect(setOrgsTotalStub.firstCall.args[0]).to.deep.equal([
-      { accountType: 'unknown', domain: 'unknown', count: 1 },
+      { accountType: 'unknown', count: 1 },
     ]);
   });
 
-  it('should join user counts to org domains and default unknown orgs', async () => {
+  it('should publish user counts per org, without the org domain', async () => {
     stubDb({
       userAgg: [
         { _id: 'o1', count: 5 },
@@ -113,8 +117,8 @@ describe('metrics.refresh.service', () => {
 
     expect(setOrgUsersStub.calledOnce).to.be.true;
     expect(setOrgUsersStub.firstCall.args[0]).to.have.deep.members([
-      { org: 'o1', domain: 'acme.io', count: 5 },
-      { org: 'orphan-org', domain: 'unknown', count: 2 },
+      { org: 'o1', count: 5 },
+      { org: 'orphan-org', count: 2 },
     ]);
   });
 
@@ -127,7 +131,7 @@ describe('metrics.refresh.service', () => {
     await flushAsync();
 
     expect(setOrgUsersStub.firstCall.args[0]).to.deep.equal([
-      { org: 'unknown', domain: 'unknown', count: 3 },
+      { org: 'unknown', count: 3 },
     ]);
   });
 
@@ -196,7 +200,7 @@ describe('metrics.refresh.service', () => {
   });
 
   it('should refresh again on the interval', async () => {
-    stubDb({ orgs: [{ _id: 'o1', accountType: 'x', domain: 'y' }] });
+    stubDb({ orgs: [{ _id: 'o1', accountType: 'x' }] });
     const clock = sandbox.useFakeTimers({
       toFake: ['setInterval'],
     });

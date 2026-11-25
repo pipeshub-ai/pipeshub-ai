@@ -710,7 +710,7 @@ def _record_answer_generated(
             # the cited ratio of finished answers stays comparable.
             "stopped": stopped,
         })
-        # The Grafana counter for the same step: org and domain only. The
+        # The Grafana counter for the same step: org only. The
         # connector label marks demo answers so the demo funnel has its own line.
         record_service_activity(
             "query_service",
@@ -718,7 +718,6 @@ def _record_answer_generated(
             connector="demo" if demo_sources else "none",
             status="stopped" if stopped else ("cited" if citations else "uncited"),
             org=str(context.org_id or "unknown"),
-            domain=domain_from_email(str(context.user_email or "")),
         )
     except Exception as exc:  # telemetry must never break an answer
         logging.getLogger(__name__).debug("telemetry: answer_generated not recorded: %s", exc)

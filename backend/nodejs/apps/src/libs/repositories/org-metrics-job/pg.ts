@@ -40,15 +40,10 @@ export class PgOrgMetricsJobRepository implements OrgMetricsJobRepository {
       const { rows } = await tx.query<{
         org_id: string;
         account_type: string;
-        domain: string;
       }>(
-        '/* pipeshub:identity.metrics_live_orgs */ SELECT org_id, account_type, domain FROM identity.gauge_live_orgs()',
+        '/* pipeshub:identity.metrics_live_orgs */ SELECT org_id, account_type FROM identity.gauge_live_orgs()',
       );
-      return rows.map((r) => ({
-        _id: r.org_id,
-        accountType: r.account_type,
-        domain: r.domain,
-      }));
+      return rows.map((r) => ({ _id: r.org_id, accountType: r.account_type }));
     }, []);
   }
 

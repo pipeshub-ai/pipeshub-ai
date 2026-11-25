@@ -22,7 +22,7 @@ export class MongoOrgMetricsJobRepository implements OrgMetricsJobRepository {
   async listLiveOrgs(): Promise<OrgMetricRow[]> {
     const rows = await Org.find(
       { isDeleted: { $ne: true } },
-      { accountType: 1, domain: 1 },
+      { accountType: 1 },
     ).lean();
     return toPlain<OrgMetricRow[]>(rows);
   }

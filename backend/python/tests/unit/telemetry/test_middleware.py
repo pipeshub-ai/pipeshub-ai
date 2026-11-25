@@ -97,12 +97,6 @@ class TestIdentityExtraction:
         assert MetricsMiddleware._org(make_request()) == "unknown"
         assert MetricsMiddleware._org(make_request(user="not-a-dict")) == "unknown"
 
-    def test_domain_from_user_email(self):
-        request = make_request(user={"email": "jane@Acme.IO"})
-        assert MetricsMiddleware._domain(request) == "acme.io"
-
-    def test_domain_unknown_without_user(self):
-        assert MetricsMiddleware._domain(make_request()) == "unknown"
 
 
 class TestDispatch:
@@ -139,7 +133,7 @@ class TestDispatch:
 
         assert [m["type"] for m in sent] == ["http.response.start", "http.response.body"]
         requests_mock.inc.assert_called_once_with(
-            "query_service", "/api/v1/search", "POST", "201", "org-9", "b.io"
+            "query_service", "/api/v1/search", "POST", "201", "org-9"
         )
         args, kwargs = duration_mock.observe.call_args
         assert args == ("query_service", "/api/v1/search", "POST")
@@ -165,7 +159,7 @@ class TestDispatch:
             call = asyncio.ensure_future(self._call(request.scope, app))
             await started.wait()
             requests_mock.inc.assert_called_once_with(
-                "query_service", "/api/v1/stream", "GET", "200", "unknown", "unknown"
+                "query_service", "/api/v1/stream", "GET", "200", "unknown"
             )
             duration_mock.observe.assert_called_once()
             body_may_go.set()
@@ -189,5 +183,5 @@ class TestDispatch:
                 await self._call(request.scope, app)
 
         requests_mock.inc.assert_called_once_with(
-            "query_service", "/api/v1/boom", "GET", "500", "unknown", "unknown"
+            "query_service", "/api/v1/boom", "GET", "500", "unknown"
         )

@@ -4,7 +4,7 @@ import { SERVICE_NAME } from '../constants';
 const httpRequests = metricsBackend.createCounter({
   name: 'pipeshub_http_requests_total',
   help: 'Total HTTP requests handled by the service',
-  labelNames: ['service', 'route', 'method', 'status', 'org', 'domain'],
+  labelNames: ['service', 'route', 'method', 'status', 'org'],
 });
 
 const httpRequestDuration = metricsBackend.createHistogram({
@@ -56,7 +56,6 @@ export function recordHttpRequest(
   statusCode: number,
   orgId?: string,
   durationSeconds?: number,
-  domain?: string,
 ): void {
   const labels = {
     service: SERVICE_NAME,
@@ -64,7 +63,6 @@ export function recordHttpRequest(
     method,
     status: String(statusCode),
     org: orgId == null || orgId === '' ? 'unknown' : orgId,
-    domain: domain == null || domain === '' ? 'unknown' : domain,
   };
   httpRequests.inc(labels);
   const surface = sessionApiSurface(route);

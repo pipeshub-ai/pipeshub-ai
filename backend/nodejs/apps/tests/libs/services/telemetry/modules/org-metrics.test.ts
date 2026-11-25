@@ -7,38 +7,35 @@ import { metricsBackend } from '../../../../../src/libs/services/telemetry/metri
 
 describe('telemetry modules/org-metrics', () => {
   describe('setOrgsTotal', () => {
-    it('should publish one series per account-type/domain pair', async () => {
+    it('should publish one series per account type, with no domain label', async () => {
       setOrgsTotal([
-        { accountType: 'business', domain: 'acme.io', count: 3 },
-        { accountType: 'individual', domain: 'solo.dev', count: 1 },
+        { accountType: 'business', count: 3 },
+        { accountType: 'individual', count: 1 },
       ]);
 
       const text = await metricsBackend.serialize();
-      expect(text).to.include(
-        'pipeshub_orgs_total{account_type="business",domain="acme.io"} 3',
-      );
-      expect(text).to.include(
-        'pipeshub_orgs_total{account_type="individual",domain="solo.dev"} 1',
-      );
+      expect(text).to.include('pipeshub_orgs_total{account_type="business"} 3');
+      expect(text).to.include('pipeshub_orgs_total{account_type="individual"} 1');
+      expect(text).to.not.match(/pipeshub_orgs_total\{[^}]*domain=/);
     });
 
     it('should replace previous series on refresh (gauge reset semantics)', async () => {
-      setOrgsTotal([{ accountType: 'stale', domain: 'old.io', count: 9 }]);
-      setOrgsTotal([{ accountType: 'business', domain: 'new.io', count: 2 }]);
+      setOrgsTotal([{ accountType: 'stale', count: 9 }]);
+      setOrgsTotal([{ accountType: 'business', count: 2 }]);
 
       const text = await metricsBackend.serialize();
       expect(text).to.not.include('account_type="stale"');
       expect(text).to.include(
-        'pipeshub_orgs_total{account_type="business",domain="new.io"} 2',
+        'pipeshub_orgs_total{account_type="business"} 2',
       );
     });
 
-    it('should map empty accountType/domain to "unknown"', async () => {
-      setOrgsTotal([{ accountType: '', domain: '', count: 4 }]);
+    it('should map an empty accountType to "unknown"', async () => {
+      setOrgsTotal([{ accountType: '', count: 4 }]);
 
       const text = await metricsBackend.serialize();
       expect(text).to.include(
-        'pipeshub_orgs_total{account_type="unknown",domain="unknown"} 4',
+        'pipeshub_orgs_total{account_type="unknown"} 4',
       );
     });
   });

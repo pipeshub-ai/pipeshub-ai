@@ -10,7 +10,6 @@ import time
 from starlette.requests import Request
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from app.telemetry.identity import domain_from_email
 from app.telemetry.modules.http_metrics import (
     HTTP_REQUEST_DURATION,
     HTTP_REQUESTS,
@@ -44,7 +43,7 @@ class MetricsMiddleware:
             # Never reset counters — push cumulative values, let the TSDB
             # compute rate()/increase().
             HTTP_REQUESTS.inc(
-                self.service_name, route, request.method, str(status_code), self._org(request), self._domain(request)
+                self.service_name, route, request.method, str(status_code), self._org(request)
             )
             HTTP_REQUEST_DURATION.observe(
                 self.service_name, route, request.method, value=time.perf_counter() - start
@@ -74,16 +73,4 @@ class MetricsMiddleware:
             org = user.get("orgId") or user.get("org_id")
             if org:
                 return str(org)
-        return "unknown"
-
-    @staticmethod
-    def _domain(request: Request) -> str:
-        """Org email-domain from the authenticated request state, if present.
-
-        Lets dashboards exclude internal (PipesHub) traffic. Derived from the JWT
-        email attached to ``request.state.user`` by the auth middleware.
-        """
-        user = getattr(request.state, "user", None)
-        if isinstance(user, dict):
-            return domain_from_email(user.get("email"))
         return "unknown"

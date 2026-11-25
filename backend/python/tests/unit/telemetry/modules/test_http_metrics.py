@@ -11,8 +11,8 @@ from app.telemetry.modules.http_metrics import (
 
 class TestHttpMetrics:
     def test_request_counter_labels_and_accumulation(self):
-        HTTP_REQUESTS.inc("query_service", "/api/v1/hm", "GET", "200", "org-1", "a.io")
-        HTTP_REQUESTS.inc("query_service", "/api/v1/hm", "GET", "200", "org-1", "a.io")
+        HTTP_REQUESTS.inc("query_service", "/api/v1/hm", "GET", "200", "org-1")
+        HTTP_REQUESTS.inc("query_service", "/api/v1/hm", "GET", "200", "org-1")
 
         text = METRICS_BACKEND.serialize()
         line = next(
@@ -24,7 +24,7 @@ class TestHttpMetrics:
         assert 'method="GET"' in line
         assert 'status="200"' in line
         assert 'org="org-1"' in line
-        assert 'domain="a.io"' in line
+        assert "domain=" not in line
         assert line.endswith(" 2.0")
 
     def test_duration_histogram_observes_latency(self):

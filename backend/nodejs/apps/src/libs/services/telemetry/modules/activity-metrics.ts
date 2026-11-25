@@ -14,17 +14,15 @@ const activity = metricsBackend.createCounter({
     'status',
     'org',
     'kb',
-    'domain',
     'mimetype',
   ],
 });
 
 export function recordServiceActivity(
   activityName: string,
-  labels: { status?: string; org?: string; domain?: string } = {},
+  labels: { status?: string; org?: string } = {},
 ): void {
   const org = labels.org ?? '';
-  const domain = labels.domain ?? '';
   activity.inc({
     service: SERVICE_NAME,
     activity: activityName,
@@ -32,7 +30,6 @@ export function recordServiceActivity(
     status: labels.status ?? 'ok',
     org: org === '' ? 'unknown' : org,
     kb: 'none',
-    domain: domain === '' ? 'unknown' : domain,
     mimetype: 'none',
   });
 }

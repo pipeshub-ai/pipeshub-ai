@@ -90,7 +90,7 @@ describe('telemetry middleware', () => {
     expect(recordStub.firstCall.args[0]).to.equal('unmatched');
   });
 
-  it('should extract org and email-domain from the authenticated user', () => {
+  it('should extract the org, and no email domain, from the authenticated user', () => {
     const middleware = metricsMiddleware();
     const req = mockReq({
       user: { orgId: 'org-42', email: 'jane@Acme.IO' },
@@ -100,9 +100,10 @@ describe('telemetry middleware', () => {
     middleware(req, res as any, sinon.stub<unknown[]>());
     res.emit('finish');
 
-    const [, , , orgId, , domain] = recordStub.firstCall.args;
-    expect(orgId).to.equal('org-42');
-    expect(domain).to.equal('acme.io');
+    const args = recordStub.firstCall.args;
+    expect(args[3]).to.equal('org-42');
+    expect(args).to.have.length(5);
+    expect(args.map(String).join(' ')).to.not.include('acme');
   });
 
   it('should stringify an ObjectId-like orgId instead of falling back to "unknown"', () => {
@@ -130,7 +131,7 @@ describe('telemetry middleware', () => {
     expect(recordStub.firstCall.args[3]).to.equal('unknown');
   });
 
-  it('should fall back to "unknown" org/domain for unauthenticated requests', () => {
+  it('should fall back to "unknown" org for unauthenticated requests', () => {
     const middleware = metricsMiddleware();
     const req = mockReq();
     const res = mockRes();
@@ -138,9 +139,7 @@ describe('telemetry middleware', () => {
     middleware(req, res as any, sinon.stub<unknown[]>());
     res.emit('finish');
 
-    const [, , , orgId, , domain] = recordStub.firstCall.args;
-    expect(orgId).to.equal('unknown');
-    expect(domain).to.equal('unknown');
+    expect(recordStub.firstCall.args[3]).to.equal('unknown');
   });
 
   it('should attach only once per request even when applied twice', () => {

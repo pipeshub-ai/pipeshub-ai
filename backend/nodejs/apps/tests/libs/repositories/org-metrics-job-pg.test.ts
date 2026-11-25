@@ -28,9 +28,10 @@ describe('PgOrgMetricsJobRepository', () => {
   it('reads the gauges through the functions and maps the rows', async () => {
     const repo = new PgOrgMetricsJobRepository()
     expect(await repo.countUsersByOrg()).to.deep.equal([{ _id: 'a', count: 3 }])
-    expect(await repo.listLiveOrgs()).to.deep.equal([{ _id: 'a', accountType: 'business', domain: 'x.test' }])
+    expect(await repo.listLiveOrgs()).to.deep.equal([{ _id: 'a', accountType: 'business' }])
     expect(await repo.listLiveAuthConfigs()).to.deep.equal([{ orgId: 'a', authSteps: [{ order: 1 }] }])
     expect(sent().map((t) => /identity\.(gauge_\w+)\(\)/.exec(t)?.[1])).to.deep.equal(Object.keys(rows))
     expect(sent().join('\n')).to.not.match(/identity\.(users|orgs|org_auth_config)\b/)
+    expect(sent().join('\n')).to.not.match(/\bdomain\b/)
   })
 })

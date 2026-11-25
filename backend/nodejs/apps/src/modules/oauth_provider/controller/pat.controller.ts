@@ -57,10 +57,7 @@ export class PatController {
         expiry_days: data.expiryDays ?? DEFAULT_EXPIRY_DAYS,
         ...clientTags(req.headers),
       })
-      recordServiceActivity('pat_created', {
-        org: orgId,
-        domain: domainFromEmail(email),
-      })
+      recordServiceActivity('pat_created', { org: orgId })
 
       res.status(201).json({
         message: 'Personal access token created successfully',

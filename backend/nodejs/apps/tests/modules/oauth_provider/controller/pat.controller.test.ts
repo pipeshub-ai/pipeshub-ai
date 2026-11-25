@@ -112,7 +112,7 @@ describe('PatController', () => {
       expect(eventBuffer.drain()[0]!.props!.expiry_days).to.equal(30)
     })
 
-    it('counts the token on the Grafana activity counter with org and domain only', async () => {
+    it('counts the token on the Grafana activity counter with the org only, never the email domain', async () => {
       mockPatService.createToken.resolves({ id: 't', name: 'n', scopes: [], createdAt: new Date(), expiresAt: new Date(), accessToken: 'x' })
       mockReq.user = { orgId: 'org-pat-metric', userId: 'user-1', email: 'dev@pat-metric.example' }
       mockReq.body = { name: 'n' }
@@ -121,8 +121,8 @@ describe('PatController', () => {
 
       const text = await metricsBackend.serialize()
       const line = text.split('\n').find((l) => l.includes('activity="pat_created"') && l.includes('org="org-pat-metric"'))
-      expect(line).to.include('domain="pat-metric.example"')
-      expect(text).to.not.include('dev@pat-metric.example')
+      expect(line).to.be.a('string')
+      expect(text).to.not.include('pat-metric.example')
     })
   })
 

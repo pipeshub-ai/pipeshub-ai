@@ -3,7 +3,7 @@ import { metricsBackend } from '../metrics-backend';
 const orgsTotal = metricsBackend.createGauge({
   name: 'pipeshub_orgs_total',
   help: 'Current number of (non-deleted) organizations',
-  labelNames: ['account_type', 'domain'],
+  labelNames: ['account_type'],
 });
 
 const orgAuthMethods = metricsBackend.createGauge({
@@ -13,15 +13,12 @@ const orgAuthMethods = metricsBackend.createGauge({
 });
 
 export function setOrgsTotal(
-  rows: { accountType: string; domain: string; count: number }[],
+  rows: { accountType: string; count: number }[],
 ): void {
   orgsTotal.reset();
   for (const r of rows) {
     orgsTotal.set(
-      {
-        account_type: r.accountType === '' ? 'unknown' : r.accountType,
-        domain: r.domain === '' ? 'unknown' : r.domain,
-      },
+      { account_type: r.accountType === '' ? 'unknown' : r.accountType },
       r.count,
     );
   }

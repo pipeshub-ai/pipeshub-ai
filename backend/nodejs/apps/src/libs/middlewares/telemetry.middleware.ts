@@ -1,10 +1,7 @@
 import { Response, NextFunction } from 'express';
 import { AuthenticatedUserRequest } from './types';
 import { recordHttpRequest } from '../services/telemetry/modules/http-metrics';
-import {
-  domainFromEmail,
-  normalizeOrgId,
-} from '../services/telemetry/identity';
+import { normalizeOrgId } from '../services/telemetry/identity';
 
 type MetricsRequest = AuthenticatedUserRequest & {
   __metricsAttached?: boolean;
@@ -30,17 +27,6 @@ function getOrgId(req: AuthenticatedUserRequest): string {
   return 'unknown';
 }
 
-function getDomain(req: AuthenticatedUserRequest): string {
-  const user = req.user;
-  if (user != null && typeof user === 'object' && 'email' in user) {
-    const email = (user as { email: unknown }).email;
-    if (typeof email === 'string') {
-      return domainFromEmail(email);
-    }
-  }
-  return 'unknown';
-}
-
 export function metricsMiddleware(): (
   req: AuthenticatedUserRequest,
   res: Response,
@@ -62,7 +48,6 @@ export function metricsMiddleware(): (
       const durationSeconds = Number(process.hrtime.bigint() - start) / 1e9;
       const template = getRouteTemplate(req);
       const orgId = getOrgId(req);
-      const domain = getDomain(req);
 
       recordHttpRequest(
         template,
@@ -70,7 +55,6 @@ export function metricsMiddleware(): (
         res.statusCode,
         orgId,
         durationSeconds,
-        domain,
       );
     });
 

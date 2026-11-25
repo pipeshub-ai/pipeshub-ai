@@ -16,8 +16,7 @@ export function startOrgMetricsRefresh(
 ): NodeJS.Timeout {
   const refresh = async (): Promise<void> => {
     try {
-      // Single org read drives both the per-account-type totals and the
-      // org→domain lookup; grouping for the totals happens in Node.
+      // Grouping for the per-account-type totals happens in Node.
       const jobs = getOrgMetricsJobRepository();
       const [userAgg, orgs] = await Promise.all([
         jobs.countUsersByOrg(),
@@ -27,36 +26,17 @@ export function startOrgMetricsRefresh(
       const norm = (v: string | null | undefined): string =>
         v == null || v === '' ? 'unknown' : v;
 
-      const orgTotals = new Map<
-        string,
-        { accountType: string; domain: string; count: number }
-      >();
+      const orgTotals = new Map<string, number>();
       for (const o of orgs) {
         const accountType = norm(o.accountType);
-        const domain = norm(o.domain);
-        const key = `${accountType}\u0000${domain}`;
-        const row = orgTotals.get(key);
-        if (row) {
-          row.count += 1;
-        } else {
-          orgTotals.set(key, { accountType, domain, count: 1 });
-        }
+        orgTotals.set(accountType, (orgTotals.get(accountType) ?? 0) + 1);
       }
-      setOrgsTotal([...orgTotals.values()]);
-
-      const domainById = new Map<string, string>(
-        orgs.map((o) => [normalizeOrgId(o._id), norm(o.domain)]),
+      setOrgsTotal(
+        [...orgTotals].map(([accountType, count]) => ({ accountType, count })),
       );
+
       setOrgUsers(
-        userAgg.map((r) => {
-          const orgId = normalizeOrgId(r._id);
-          const domain = domainById.get(orgId);
-          return {
-            org: orgId,
-            domain: domain == null || domain === '' ? 'unknown' : domain,
-            count: r.count,
-          };
-        }),
+        userAgg.map((r) => ({ org: normalizeOrgId(r._id), count: r.count })),
       );
 
       // Enabled auth methods per org (presence only — never credentials).
