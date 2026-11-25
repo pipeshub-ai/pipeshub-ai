@@ -1,7 +1,7 @@
 """Background task that pushes this service's usage data to the collector.
 
 Two contracts, chosen each tick by :class:`~app.plugins.telemetry.v3.sender.UsageV3Sender`
-from ``USAGE_TELEMETRY_CONTRACT`` (``auto`` by default, ``v3``, or ``legacy``):
+from ``USAGE_TELEMETRY_CONTRACT`` (``legacy`` by default; ``auto`` or ``v3`` opt in to v3):
 
 * legacy: the whole registry as Prometheus text to ``.../collect-metrics`` and
   the event buffer to ``.../collect-events``, as always.

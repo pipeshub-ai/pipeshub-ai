@@ -56,12 +56,12 @@ class Mode(str, Enum):
 
 
 def contract_mode(raw: str | None = None) -> Mode:
-    """``USAGE_TELEMETRY_CONTRACT`` as a mode; unset or unrecognised is ``auto``."""
+    """``USAGE_TELEMETRY_CONTRACT`` as a mode; unset or unrecognised is ``legacy``: v3 is opt-in."""
     value = (os.getenv(CONTRACT_ENV, "") if raw is None else raw).strip().lower()
     try:
         return Mode(value)
     except ValueError:
-        return Mode.AUTO
+        return Mode.LEGACY
 
 
 class Route(str, Enum):

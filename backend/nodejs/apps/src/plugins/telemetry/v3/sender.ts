@@ -19,10 +19,12 @@
  *   cumulative values), the counter baseline moves to that point, so a later
  *   switch to v3 does not send the same counts again.
  *
- * `USAGE_TELEMETRY_CONTRACT` selects the behaviour: `auto` (the default) uses
- * v3 and falls back to the legacy endpoints when the collector is not a v3
- * collector, remembering that for a day before asking again; `v3` never falls
- * back; `legacy` never tries v3.
+ * `USAGE_TELEMETRY_CONTRACT` selects the behaviour. `legacy` is the default
+ * and never tries v3: v3 leaves out the organisation, the domain and the
+ * operational metrics, and whether to give those up is for whoever runs the
+ * install to decide. `auto` uses v3 and falls back to the legacy endpoints
+ * when the collector is not a v3 collector, remembering that for a day before
+ * asking again; `v3` never falls back.
  */
 import { randomUUID } from 'crypto';
 import type { BufferedEvent } from '../event-buffer';
@@ -44,7 +46,8 @@ export function usageContractMode(
   raw: string | undefined = process.env[USAGE_TELEMETRY_CONTRACT],
 ): UsageContractMode {
   const value = (raw ?? '').trim().toLowerCase();
-  return value === 'v3' || value === 'legacy' ? value : 'auto';
+  // v3 is opt-in: unset, empty or unrecognised means the legacy endpoints.
+  return value === 'v3' || value === 'auto' ? value : 'legacy';
 }
 
 /** `ee` when the build says so, otherwise `oss`. */

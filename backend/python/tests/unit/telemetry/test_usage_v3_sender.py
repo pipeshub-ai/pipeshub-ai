@@ -100,8 +100,8 @@ class Rig:
 class TestMode:
     def test_contract_mode(self, monkeypatch):
         monkeypatch.delenv("USAGE_TELEMETRY_CONTRACT", raising=False)
-        assert contract_mode() is Mode.AUTO
-        for raw, mode in (("v3", Mode.V3), (" LEGACY ", Mode.LEGACY), ("auto", Mode.AUTO), ("v2", Mode.AUTO), ("", Mode.AUTO)):
+        assert contract_mode() is Mode.LEGACY
+        for raw, mode in (("v3", Mode.V3), (" LEGACY ", Mode.LEGACY), (" Auto ", Mode.AUTO), ("v2", Mode.LEGACY), ("", Mode.LEGACY)):
             monkeypatch.setenv("USAGE_TELEMETRY_CONTRACT", raw)
             assert contract_mode() is mode
 
@@ -555,7 +555,8 @@ def node_config(**overrides) -> dict:
     }
 
 
-def make_pusher(config: dict, collector: FakeCollector, monkeypatch, mode: str | None = None) -> MetricsPusher:
+def make_pusher(config: dict, collector: FakeCollector, monkeypatch, mode: str | None = "auto") -> MetricsPusher:
+    """``mode`` is the setting; ``None`` leaves it unset. v3 is opt-in, so these tests opt in by default."""
     if mode is None:
         monkeypatch.delenv("USAGE_TELEMETRY_CONTRACT", raising=False)
     else:
@@ -629,6 +630,14 @@ class TestPusherWiring:
         await run_ticks(pusher, 2)
         assert collector.requests == []
         assert pusher._push.call_count == 2
+
+    async def test_unset_setting_is_legacy_and_never_calls_v3(self, monkeypatch):
+        collector = FakeCollector({INSTALL: SECRET})
+        pusher = make_pusher(node_config(installSecret=SECRET), collector, monkeypatch, mode=None)
+        await run_ticks(pusher, 2)
+        assert collector.requests == []
+        assert pusher._push.call_count == 2
+        assert pusher._ship_events.call_count == 2
 
     async def test_v3_mode_never_calls_legacy(self, monkeypatch):
         collector = FakeCollector(v3=False)

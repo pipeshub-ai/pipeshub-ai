@@ -9,12 +9,16 @@ Setting
 -------
 ``USAGE_TELEMETRY_CONTRACT`` picks the contract (read once, at pusher start):
 
-* ``auto`` (default, and what any unrecognised value means): v3 when the install
-  holds a credential and the collector answers as a v3 collector; the legacy
-  endpoints otherwise.
+* ``legacy`` (default, and what unset or any unrecognised value means): the
+  legacy endpoints only, exactly as before v3 existed. No v3 request is made.
+* ``auto``: v3 when the install holds a credential and the collector answers
+  as a v3 collector; the legacy endpoints otherwise.
 * ``v3``: v3 only. Nothing is ever sent to the legacy endpoints; until v3 is
   possible, counts and events wait in the process.
-* ``legacy``: the legacy endpoints only, exactly as before v3 existed.
+
+v3 is opt-in because it sends less (see the list below): it leaves out the
+organisation, the domain and the operational metrics, and giving those up is
+for whoever runs the install to decide. Set it the same as the Node service.
 
 ``USAGE_TELEMETRY_EDITION`` is the edition a v3 push reports: ``ee`` when it is
 exactly that (any case), ``oss`` otherwise.

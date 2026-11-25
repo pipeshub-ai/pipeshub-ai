@@ -151,10 +151,11 @@ describe('usage telemetry v3: sender', () => {
   });
 
   describe('the setting', () => {
-    it('is auto unless it says v3 or legacy', () => {
-      expect(usageContractMode(undefined)).to.equal('auto');
-      expect(usageContractMode('')).to.equal('auto');
-      expect(usageContractMode('nonsense')).to.equal('auto');
+    it('is legacy unless it says auto or v3', () => {
+      expect(usageContractMode(undefined)).to.equal('legacy');
+      expect(usageContractMode('')).to.equal('legacy');
+      expect(usageContractMode('nonsense')).to.equal('legacy');
+      expect(usageContractMode(' Auto ')).to.equal('auto');
       expect(usageContractMode(' V3 ')).to.equal('v3');
       expect(usageContractMode('legacy')).to.equal('legacy');
     });

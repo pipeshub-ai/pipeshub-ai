@@ -111,7 +111,8 @@ describe('TelemetryService: usage telemetry v3', () => {
       });
     eventBuffer.drain();
     metricsBackend.reset();
-    delete process.env[USAGE_TELEMETRY_CONTRACT];
+    // v3 is opt-in; these tests opt in unless they say otherwise.
+    process.env[USAGE_TELEMETRY_CONTRACT] = 'auto';
   });
 
   afterEach(() => {
@@ -231,6 +232,45 @@ describe('TelemetryService: usage telemetry v3', () => {
       'pipeshub_usage_sdk_requests_total',
     );
     expect(collector.legacyEvents[0].events[0].event).to.equal('login');
+    expect(kv.set.callCount).to.equal(writes);
+  });
+
+  it('uses v3 alone, never the legacy endpoints, when the setting says v3', async () => {
+    process.env[USAGE_TELEMETRY_CONTRACT] = 'v3';
+    collector.legacyOnly = true;
+    const svc = new TelemetryService(statefulKvStore() as any);
+    await flushAsync();
+    sdkRequests.inc(
+      { service: 'node_api', ...SDK, org: 'org-1', domain: 'acme.com' },
+      2,
+    );
+    await svc.flush();
+    expect(paths()).to.deep.equal(['/v3/installs']);
+    collector.legacyOnly = false;
+    (svc as any).v3.retryAt = 0;
+    await svc.flush();
+    expect(paths()).to.deep.equal([
+      '/v3/installs',
+      '/v3/installs',
+      '/v3/metrics',
+    ]);
+    expect(collector.total('pipeshub.usage.sdk.requests', SDK)).to.equal(2);
+  });
+
+  it('never asks for v3, and registers nothing, when the setting is unset', async () => {
+    delete process.env[USAGE_TELEMETRY_CONTRACT];
+    const kv = statefulKvStore();
+    const svc = new TelemetryService(kv as any);
+    await flushAsync();
+    const writes = kv.set.callCount;
+    sdkRequests.inc(
+      { service: 'node_api', ...SDK, org: 'org-1', domain: 'acme.com' },
+      1,
+    );
+    recordEvent('login', { orgId: 'org-1' });
+    await svc.flush();
+    expect(paths()).to.deep.equal(['/collect-metrics', '/collect-events']);
+    expect(collector.secrets.size).to.equal(0);
     expect(kv.set.callCount).to.equal(writes);
   });
 

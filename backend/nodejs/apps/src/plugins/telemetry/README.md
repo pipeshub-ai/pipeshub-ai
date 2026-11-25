@@ -46,7 +46,7 @@ MCP clients of the hosted `/mcp` endpoint are reported separately, by
 None of this carries a user id, an address or a name: only the organisation id
 and the address domain that the other metrics already carry.
 
-## How it is sent: usage telemetry v3, with the legacy endpoints as fallback
+## How it is sent: the legacy endpoints by default, usage telemetry v3 by choice
 
 `USAGE_TELEMETRY_CONTRACT` chooses how the data reaches the collector. It is
 the only setting; the switch above and each organisation's Data Collection
@@ -54,9 +54,15 @@ setting decide whether anything is sent at all, exactly as before.
 
 | Value | Behaviour |
 | --- | --- |
-| `auto` (default) | Use contract v3. If the collector does not answer as a v3 collector, use the legacy endpoints and ask again a day later |
+| `legacy` (default; also unset or unrecognised) | The legacy endpoints only: `/collect-metrics` and `/collect-events`, as every earlier version did. No v3 request is made and the install is not registered |
+| `auto` | Use contract v3. If the collector does not answer as a v3 collector, use the legacy endpoints and ask again a day later |
 | `v3` | v3 only. Against a collector without v3 nothing is sent; what was counted is kept and sent when v3 answers |
-| `legacy` | The legacy endpoints only: `/collect-metrics` and `/collect-events`, as every earlier version did |
+
+v3 is opt-in because it sends less (the table under "What v3 does not carry"):
+dashboards that group by organisation or domain, and those built on the HTTP
+metrics, show nothing for an install that sends v3. Set `auto` or `v3` once
+that is acceptable. The Node and Python services read the same variable; set
+it the same for all of them.
 
 **v3** (`v3/`): the install registers once with `POST /v3/installs` and is
 given a secret, stored as `installSecret` in the same encrypted configuration
