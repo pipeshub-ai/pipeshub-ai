@@ -13033,10 +13033,15 @@ components:
           description: |
             Reciprocal-rank fusion of the semantic and keyword matches. Higher is better.
             Scores order the chunks of one response and are not comparable across queries.
-            Equal scores are broken by id. A query repeated while its embedding is cached
+            Among equal scores the passage that matched comes first, then its neighbours, nearest
+            first; any tie left keeps the search's own order, which equal scores in the index do
+            not change (ties there are broken by passage id). With `rewriteQuery` `false` (the
+            default), a query repeated while its embedding is cached
             (`QUERY_EMBEDDING_CACHE_SECONDS`, 10 minutes by default; at most
             `QUERY_EMBEDDING_CACHE_ENTRIES`, 2048, queries per server process) gives the same
-            chunks and scores on an unchanged index. When the embedding is computed again (the
+            chunks and scores on an unchanged index. With `rewriteQuery` `true`, the rewrite and
+            expansion run again on every request: the model's output can vary, and a step that
+            fails or times out is left out, so the chunks and scores can differ. When the embedding is computed again (the
             cache is off, the entry expired or was evicted, or another process answers), or
             after a re-index, they can differ slightly. They can also differ when passages
             tied at the cut-off of a search leg run past the 4,096 that leg reads at most
@@ -53561,8 +53566,10 @@ paths:
         A search that takes longer than the server's search deadline (50
         seconds by default) is stopped and answered `503`; see that response.
         Every response, an error included, carries the request's id in the
-        `X-Request-Id` header: the one the caller sent in `X-Request-ID`, or a
-        new one. Quote it when reporting a problem.
+        `X-Request-Id` header: the caller's `X-Request-ID` with any character
+        outside `A-Za-z0-9._:-` removed and cut to 64 characters (`trace/42`
+        comes back as `trace42`), or a new one when none was sent or nothing
+        usable is left. Quote it when reporting a problem.
       operationId: retrieve
       x-pipeshub-sdk: true
       x-speakeasy-usage-example:

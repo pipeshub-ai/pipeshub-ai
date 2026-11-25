@@ -334,8 +334,8 @@ class TestHeadingOnlyPassages:
         heading["block_sub_type"] = "heading"
         stored = {"block_containers": {"blocks": [
             *[{"index": i, "type": "text", "data": f"b{i}"} for i in range(5)],
-            {"index": 5, "type": "text", "sub_type": "heading", "data": "Monitor allowance"},
-            {"index": 6, "type": "text", "sub_type": "heading", "data": "Engineers"},
+            {"index": 5, "type": "text", "sub_type": "heading", "data": "# Monitor allowance"},
+            {"index": 6, "type": "text", "sub_type": "heading", "data": "## Engineers"},
             {"index": 7, "type": "text", "sub_type": "paragraph", "data": "Two monitors, 900 USD."},
             {"index": 8, "type": "text", "data": "Not read."},
         ]}}
@@ -343,7 +343,7 @@ class TestHeadingOnlyPassages:
             RetrieveQuery(query="monitors"), _results(heading, _hit("r2", 0, "Other.", 0.7)), stored=stored,
         )
         chunk = body["chunks"][0]
-        assert chunk["text"] == "Monitor allowance\n\nEngineers\n\nTwo monitors, 900 USD."
+        assert chunk["text"] == "Monitor allowance\n\n## Engineers\n\nTwo monitors, 900 USD."
         # The heading keeps its own id and citation: the link opens the section.
         assert (chunk["id"], chunk["citation"]["blockIndex"]) == ("v-r1:5", 5)
 
@@ -379,6 +379,25 @@ class TestHeadingOnlyPassages:
         ]}}
         _, body, _, _ = await _retrieve(RetrieveQuery(query="q"), _results(heading), stored=stored)
         assert [c["text"] for c in body["chunks"]] == ["Monitor allowance"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("own,following", [
+        ("# Contractors", "# Employees"),        # a peer
+        ("## Contractors", "# Staff"),           # an ancestor
+        ("Contractors", "Employees"),            # headings with no level: may be peers
+        ("# Contractors", "Employees"),
+    ])
+    async def test_a_heading_that_may_be_a_peer_ends_the_section(self, own: str, following: str) -> None:
+        heading = _hit("r1", 0, own.lstrip("# "), 0.9)
+        heading["block_sub_type"] = "heading"
+        stored = {"block_containers": {"blocks": [
+            {"index": 0, "type": "text", "sub_type": "heading", "data": own},
+            {"index": 1, "type": "text", "sub_type": "heading", "data": following},
+            {"index": 2, "type": "text", "data": "Employees get 24 days of holiday."},
+        ]}}
+        _, body, _, _ = await _retrieve(RetrieveQuery(query="q"), _results(heading), stored=stored)
+        # The other section's policy is never put under this heading.
+        assert [c["text"] for c in body["chunks"]] == [own.lstrip("# ")]
 
     @pytest.mark.asyncio
     async def test_rows_then_text_stop_at_the_rows(self) -> None:

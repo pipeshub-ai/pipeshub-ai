@@ -4806,7 +4806,7 @@ def build_group_blocks(block_groups: list[dict[str, Any]], blocks: list[dict[str
                                         "citationType": "vectordb|document",
                                     })
             continue
-        child_results.append({
+        child = {
             "content": data,
             "block_type": block.get("type"),
             "virtual_record_id": virtual_record_id,
@@ -4815,7 +4815,11 @@ def build_group_blocks(block_groups: list[dict[str, Any]], blocks: list[dict[str
             "metadata": get_enhanced_metadata(record, block, meta),
             "score": float(result.get("score",0.0)),
             "citationType": "vectordb|document",
-        })
+        }
+        # As for a top-level hit: /retrieve tells a lone heading by it.
+        if block.get("sub_type"):
+            child["block_sub_type"] = block["sub_type"]
+        child_results.append(child)
     return child_results
 
 

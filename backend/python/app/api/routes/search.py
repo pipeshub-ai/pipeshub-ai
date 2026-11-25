@@ -830,20 +830,45 @@ def _block_text(block: Any) -> str | None:  # noqa: ANN401
     return data.strip() if isinstance(data, str) and data.strip() else None
 
 
+def _markdown_heading_level(text: str) -> int | None:
+    """The level of a one-line Markdown heading ("## Setup" is 2), else None."""
+    stripped = text.strip()
+    if _HEADING_ONLY.fullmatch(stripped) is None:
+        return None
+    return len(stripped) - len(stripped.lstrip("#"))
+
+
 def _section_opening(blocks: list[Any], index: int) -> list[str]:
-    """The text after the heading at ``index``: any sub-headings, then the first text
-    block under them or the first rows of a table. Nothing when no such text follows."""
+    """The text after the heading at ``index``: the first text block under it or the
+    first rows of a table, through any sub-headings. Nothing when no such text follows.
+
+    A heading block records no level, so a following heading is read as a sub-heading
+    only when both are Markdown headings and it is deeper ("## Setup" under "# Guide").
+    Any other heading may be a peer ("# Employees" after "# Contractors") and ends the
+    section: its text belongs to another one.
+    """
     texts: list[str] = []
     in_rows = False
+    level = _markdown_heading_level(_block_text(blocks[index]) or "") if index < len(blocks) else None
     for block in blocks[index + 1 : index + 1 + _HEADING_FOLLOW_BLOCKS]:
         text = _block_text(block)
         is_row = isinstance(block, dict) and block.get("type") == BlockType.TABLE_ROW.value
         if text is None or (in_rows and not is_row):
             break
+        is_heading = not is_row and (
+            block.get("sub_type") == BlockSubType.HEADING.value or _markdown_heading_level(text) is not None
+        )
+        if is_heading:
+            deeper = _markdown_heading_level(text)
+            if level is None or deeper is None or deeper <= level:
+                break
+            level = deeper
+            texts.append(text)
+            continue
         texts.append(text)
         if is_row:
             in_rows = True
-        elif block.get("sub_type") != BlockSubType.HEADING.value:
+        else:
             return texts
     # Rows are content; sub-headings alone are not.
     return texts if in_rows else []
