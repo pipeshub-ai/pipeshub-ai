@@ -602,26 +602,45 @@ class TestUnreadableChannels:
         assert result.unlinked == {gone, a_and_b}
         assert {a, b, older} <= set(store.records)
 
-    async def test_an_unreadable_channel_with_nothing_stored_is_not_scanned(self, workspace, store, checkpoints) -> None:
+    async def test_an_unreadable_channel_with_nothing_stored_keeps_nothing_of_other_channels(
+        self, workspace, store, checkpoints,
+    ) -> None:
         workspace.channels[PARTNERS].update(is_archived=True, is_member=False)
-        workspace.post(GENERAL, ts_minutes_ago(30), ALICE, "hello")
+        gone = ts_minutes_ago(30)
+        workspace.post(GENERAL, gone, ALICE, "hello")
         connector, _ = await workspace_connector(store, checkpoints)
         await connector.run_sync()
 
-        scans: list[dict] = []
-        get_records_by_status = store.get_records_by_status
-
-        async def spy(*args: object, **kwargs: object) -> list:
-            if kwargs.get("record_group_id") is None:
-                scans.append(kwargs)
-            return await get_records_by_status(*args, **kwargs)
-
-        store.get_records_by_status = spy
+        delete_message(workspace, GENERAL, gone)
         result = await full_sync(connector, store, checkpoints)
 
         assert PARTNERS in connector._kept_channel_ids
-        assert scans == []
         assert result.complete
+        assert result.unlinked == {gone}
+
+    async def test_a_thread_of_an_unreadable_channel_with_no_record_directly_in_it_is_kept(
+        self, workspace, store, checkpoints,
+    ) -> None:
+        parent, reply = ts_minutes_ago(200), ts_minutes_ago(199)
+        workspace.post(GENERAL, parent, BOB, "question?")
+        workspace.reply(GENERAL, parent, reply, ALICE, "answer")
+        gone = ts_minutes_ago(30)
+        workspace.post(SECRET, gone, ALICE, "secret note")
+        connector, _ = await workspace_connector(store, checkpoints)
+        await connector.run_sync()
+        # The thread-growth scan can write a thread whose channel holds no record of its own.
+        for external_id in [k for k, r in store.records.items() if r.external_record_group_id == GENERAL]:
+            del store.records[external_id]
+        thread = await stored_ids_of(store, GENERAL)
+        assert f"thread_{GENERAL}_{parent}" in thread
+        assert thread & set(store.records)
+
+        workspace.channels[GENERAL].update(is_archived=True, is_member=False)
+        delete_message(workspace, SECRET, gone)
+        result = await full_sync(connector, store, checkpoints)
+
+        assert result.complete
+        assert result.unlinked == {gone}
 
     async def test_a_failed_scan_unlinks_nothing(self, workspace, store, checkpoints) -> None:
         stage_channel(workspace, GENERAL, "general")
@@ -638,24 +657,6 @@ class TestUnreadableChannels:
             return await get_records_by_status(*args, **kwargs)
 
         store.get_records_by_status = failing
-        workspace.channels[GENERAL].update(is_archived=True, is_member=False)
-        delete_message(workspace, SECRET, gone)
-        result = await full_sync(connector, store, checkpoints)
-
-        assert not result.complete
-        assert result.unlinked == set()
-
-    async def test_a_failed_lookup_of_an_unreadable_channel_unlinks_nothing(self, workspace, store, checkpoints) -> None:
-        stage_channel(workspace, GENERAL, "general")
-        gone = ts_minutes_ago(30)
-        workspace.post(SECRET, gone, ALICE, "secret note")
-        connector, _ = await workspace_connector(store, checkpoints)
-        await connector.run_sync()
-
-        async def failing(*args: object, **kwargs: object) -> list:
-            raise RuntimeError("graph unavailable")
-
-        store.get_records_in_record_group = failing
         workspace.channels[GENERAL].update(is_archived=True, is_member=False)
         delete_message(workspace, SECRET, gone)
         result = await full_sync(connector, store, checkpoints)
@@ -724,9 +725,11 @@ class TestUnreadableChannels:
         assert result.unlinked == {gone}
 
 
-def pending_threads(checkpoints: FakeCheckpoints, channel: str) -> list[str] | None:
+def pending_threads(connector: SlackConnector, channel: str) -> list[str] | None:
     """The parent ts of the channel's threads waiting for a retry of their replies."""
-    value = checkpoints.value(f"slack_pending_threads/{channel}")
+    value = connector.config_service.others.get(
+        f"/services/connectors/{connector.connector_id}/slack_pending_threads/{channel}"
+    )
     return None if value is None else value["thread_ts"]
 
 
@@ -747,7 +750,7 @@ class TestRefusedThreadsAreRetried:
         await connector.run_sync()
 
         assert not any(r.external_record_group_id == group for r in store.records.values())
-        assert pending_threads(checkpoints, GENERAL) == [parent]
+        assert pending_threads(connector, GENERAL) == [parent]
         # The refusal does not hold the channel's scans back.
         assert checkpoints.value(f"slack_messages/{GENERAL}") is not None
         assert checkpoints.value(f"thread_growth/{GENERAL}") is not None
@@ -756,7 +759,7 @@ class TestRefusedThreadsAreRetried:
         await connector.run_sync()
 
         assert any(r.external_record_group_id == group for r in store.records.values())
-        assert pending_threads(checkpoints, GENERAL) == []
+        assert pending_threads(connector, GENERAL) == []
 
     async def test_a_new_thread_refused_in_the_thread_growth_scan_is_read_on_a_later_sync(
         self, workspace, store, checkpoints,
@@ -776,14 +779,14 @@ class TestRefusedThreadsAreRetried:
         await connector.run_sync()
 
         assert not any(r.external_record_group_id == group for r in store.records.values())
-        assert pending_threads(checkpoints, GENERAL) == [parent]
+        assert pending_threads(connector, GENERAL) == [parent]
         assert checkpoints.sync_points[key]["last_check_time"] > 1000
 
         refused = False
         await connector.run_sync()
 
         assert any(r.external_record_group_id == group for r in store.records.values())
-        assert pending_threads(checkpoints, GENERAL) == []
+        assert pending_threads(connector, GENERAL) == []
 
     async def test_a_pending_thread_read_again_with_its_parent_leaves_the_pending_set(
         self, workspace, store, checkpoints,
@@ -794,7 +797,7 @@ class TestRefusedThreadsAreRetried:
         workspace.fail("conversations.replies", SlackError("not_in_channel"), times=1)
         connector, _ = await workspace_connector(store, checkpoints)
         await connector.run_sync()
-        assert pending_threads(checkpoints, GENERAL) == [parent]
+        assert pending_threads(connector, GENERAL) == [parent]
 
         # Without the message checkpoint the channel's history, parent included, is read again.
         (key,) = [k for k in checkpoints.sync_points if k.endswith(f"slack_messages/{GENERAL}")]
@@ -802,7 +805,7 @@ class TestRefusedThreadsAreRetried:
         await connector.run_sync()
 
         assert any(r.external_record_group_id == f"thread_{GENERAL}_{parent}" for r in store.records.values())
-        assert pending_threads(checkpoints, GENERAL) == []
+        assert pending_threads(connector, GENERAL) == []
 
     async def test_a_pending_thread_whose_parent_is_gone_is_dropped(self, workspace, store, checkpoints) -> None:
         parent = ts_minutes_ago(3 * DAY_MINUTES)
@@ -811,13 +814,39 @@ class TestRefusedThreadsAreRetried:
         workspace.fail("conversations.replies", SlackError("not_in_channel"), times=2)
         connector, _ = await workspace_connector(store, checkpoints)
         await connector.run_sync()
-        assert pending_threads(checkpoints, GENERAL) == [parent]
+        assert pending_threads(connector, GENERAL) == [parent]
 
         delete_message(workspace, GENERAL, parent)
         del workspace.replies[(GENERAL, parent)]
         await connector.run_sync()
 
-        assert pending_threads(checkpoints, GENERAL) == []
+        assert pending_threads(connector, GENERAL) == []
+
+    async def test_a_pending_thread_outside_the_window_survives_a_full_sync(
+        self, workspace, store, checkpoints,
+    ) -> None:
+        parent = ts_minutes_ago(10 * DAY_MINUTES)
+        workspace.post(GENERAL, parent, BOB, "question?")
+        workspace.reply(GENERAL, parent, ts_minutes_ago(10 * DAY_MINUTES - 1), ALICE, "answer")
+        group = f"thread_{GENERAL}_{parent}"
+        refused = True
+        workspace.fail("conversations.replies", SlackError("not_in_channel"), times=None, when=lambda p: refused)
+        connector, config_service = await workspace_connector(store, checkpoints)
+        await connector.run_sync()
+        assert pending_threads(connector, GENERAL) == [parent]
+
+        # The parent is now older than the window, so a full sync does not read it again.
+        config_service.config = {**workspace_config(), **window_from(7)}
+        result = await full_sync(connector, store, checkpoints)
+
+        assert result.complete
+        assert pending_threads(connector, GENERAL) == [parent]
+
+        refused = False
+        await connector.run_sync()
+
+        assert any(r.external_record_group_id == group for r in store.records.values())
+        assert pending_threads(connector, GENERAL) == []
 
     async def test_a_thread_growth_scan_slack_refuses_does_not_advance_its_checkpoint(
         self, workspace, store, checkpoints,
@@ -848,7 +877,7 @@ class TestRefusedThreadsAreRetried:
 
         for _ in range(3):
             await connector.run_sync()
-            pending = pending_threads(checkpoints, GENERAL)
+            pending = pending_threads(connector, GENERAL)
             assert len(pending) == 2
             assert set(pending) <= set(parents)
 
@@ -876,7 +905,7 @@ class TestRefusedThreadsAreRetried:
 
         assert later not in store.message_ts_count()
         assert checkpoints.value(thread_key)["last_reply_ts"] == first
-        assert pending_threads(checkpoints, GENERAL) == [parent]
+        assert pending_threads(connector, GENERAL) == [parent]
         # A refused thread is kept, not incomplete: the run and the channel checkpoint still move.
         assert connector.full_sync_coverage().complete
         if parent_read_again:
@@ -887,7 +916,7 @@ class TestRefusedThreadsAreRetried:
 
         assert store.message_ts_count().get(later) == 1
         assert checkpoints.value(thread_key)["last_reply_ts"] == later
-        assert pending_threads(checkpoints, GENERAL) == []
+        assert pending_threads(connector, GENERAL) == []
 
 
 class TestPrivateChannelWhoseMembersCannotBeRead:

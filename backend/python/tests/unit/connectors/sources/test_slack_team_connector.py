@@ -42,6 +42,9 @@ def _make_connector():
     dep.org_id = "org-test"
     data_store = MagicMock()
     config_svc = MagicMock()
+    # Threads pending a retry of their replies live in the config store.
+    config_svc.get_config = AsyncMock(return_value=None)
+    config_svc.set_config = AsyncMock(return_value=True)
 
     # Patch the base-class __init__ so we don't need full DI wiring
     with patch.object(SlackConnector, "__init__", lambda self, *a, **kw: None):
@@ -10125,9 +10128,10 @@ class TestFailedPageDoesNotAdvanceCheckpoint:
         _key, payload = c.messages_sync_point.update_sync_point.call_args[0]
         assert payload == {"last_sync_time": "5.0"}
         # Its replies were not read: no thread sync point, but it is pending a retry.
-        c.audit_log_sync_point.update_sync_point.assert_awaited_once()
-        key, payload = c.audit_log_sync_point.update_sync_point.call_args[0]
-        assert "slack_pending_threads" in key
+        c.audit_log_sync_point.update_sync_point.assert_not_awaited()
+        c.config_service.set_config.assert_awaited_once()
+        key, payload = c.config_service.set_config.call_args[0]
+        assert key == "/services/connectors/conn-abc/slack_pending_threads/C1"
         assert payload == {"thread_ts": ["5.0"]}
 
 
