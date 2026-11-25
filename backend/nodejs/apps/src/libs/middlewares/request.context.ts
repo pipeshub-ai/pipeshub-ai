@@ -5,7 +5,9 @@ import {
   runWithRequestContext,
   sanitizeRootId,
 } from "../context/request-context";
+import type { CallerClient } from "../platform-events/events";
 import { Logger } from "../services/logger.service";
+import { classifyCaller } from "../utils/request-client.utils";
 
 /**
  * Interface for the request context object.
@@ -14,6 +16,8 @@ interface RequestContext {
   requestId: string;
   correlationId?: string;
   timestamp: number;
+  /** What kind of client sent the request, from its headers. */
+  client: CallerClient;
   headers: {
     userAgent: string;
     clientIp?: string;
@@ -72,6 +76,7 @@ const createRequestContext = (req: Request): RequestContext => {
     requestId: headers.requestId,
     correlationId: headers.correlationId,
     timestamp: Date.now(),
+    client: classifyCaller(req.headers),
     headers,
     meta: {
       path: req.path,
@@ -100,6 +105,7 @@ export const requestContextMiddleware = (
   runWithRequestContext(
     {
       rootId: req.context.requestId,
+      client: req.context.client,
       ...(typeof relay === 'string' ? { mcpRelay: relay } : {}),
     },
     () => next(),

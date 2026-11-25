@@ -24,6 +24,30 @@ export interface RequestClient {
   channel?: string;
 }
 
+/** The kind of client a request came through. A closed set. */
+export type ClientChannel = 'web' | 'sdk' | 'mcp' | 'api' | 'slack' | 'cli';
+
+/** A PipesHub SDK language, or `unknown` for an SDK that named none we publish. */
+export type SdkLanguage = 'typescript' | 'python' | 'go' | 'unknown';
+
+/**
+ * What kind of client sent a request, as far as it said so itself (headers are
+ * not proof). Every value is from a closed set or is a version of bounded
+ * shape; whatever the client sent that fits neither is `unknown`, never kept
+ * as typed.
+ */
+export interface CallerClient {
+  channel: ClientChannel;
+  /** `sdk` only. */
+  sdkLanguage?: SdkLanguage;
+  /** `sdk` only: the SDK release (`2.0.1`), or `unknown`. */
+  sdkVersion?: string;
+  /** `sdk` and `mcp`: the version of the code generator, when it was sent and well formed. */
+  generatorVersion?: string;
+  /** `mcp` only: the release of the PipesHub MCP server that called, or `unknown`. */
+  mcpServerVersion?: string;
+}
+
 /** Who made an MCP request, and how they authenticated. */
 export interface McpCaller extends RequestClient {
   orgId?: string;
@@ -75,6 +99,24 @@ export interface PlatformEvents {
   'org.data_collection_setting.changed': {
     orgId: unknown;
     enabled: boolean;
+  };
+
+  // ---- HTTP ---------------------------------------------------------------
+
+  /** A request ended: answered, failed or abandoned by the client. */
+  'http.request.completed': {
+    method: string;
+    /** The route template (`/api/v1/kb/:kbId`) or `unmatched`; never the URL. */
+    route: string;
+    /** Absent when the connection closed before a status was sent. */
+    status?: number;
+    durationSeconds: number;
+    outcome: 'success' | 'failure';
+    /** The verified organisation, once the request was authenticated. */
+    orgId?: string;
+    /** Domain part of the caller's address (`unknown` when there is none); never the address. */
+    emailDomain: string;
+    client: CallerClient;
   };
 
   // ---- programmatic access ------------------------------------------------

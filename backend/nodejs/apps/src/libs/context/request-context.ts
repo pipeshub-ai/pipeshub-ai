@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from 'async_hooks';
 import { randomUUID } from 'crypto';
+import type { CallerClient } from '../platform-events/events';
 import {
   applyOutboundContextCarriers,
   hasOutboundContextCarriers,
@@ -27,6 +28,8 @@ export interface RequestContextStore {
   userId?: string;
   /** Ids bound with `bindLogContext`, added to every later line of this context. */
   logFields?: LogContextFields;
+  /** What kind of client sent the request, from its headers (see `classifyCaller`). */
+  client?: CallerClient;
 }
 
 export const HEADER_MCP_RELAY = 'x-pipeshub-mcp-relay';
