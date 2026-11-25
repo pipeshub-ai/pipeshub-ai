@@ -12,6 +12,8 @@ from collections.abc import Awaitable
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, TypeVar
 
+from app.utils import outbound_carriers
+
 HEADER_REQUEST_ID = "x-request-id"
 ENVELOPE_REQUEST_ID = "requestId"
 ENVELOPE_ORG_ID = "orgId"
@@ -169,18 +171,24 @@ def inject_request_headers(
     admitted_in = _admitted_in.get()
     if admitted_in is not None:
         out.setdefault(HEADER_ADMITTED_IN, admitted_in)
+    if outbound_carriers.registered():
+        outbound_carriers.inject(out, outbound_carriers.HTTP)
     return out
 
 
 def inject_envelope(message: Dict[str, Any]) -> Dict[str, Any]:
     """Return a copy of ``message`` with root id and org stamped in (no mutation)."""
     ctx = _ctx.get()
-    if ctx is None:
+    carried = outbound_carriers.registered()
+    if ctx is None and not carried:
         return message
     out = dict(message)
-    out.setdefault(ENVELOPE_REQUEST_ID, ctx.root_id)
-    if ctx.org_id:
-        out.setdefault(ENVELOPE_ORG_ID, ctx.org_id)
+    if ctx is not None:
+        out.setdefault(ENVELOPE_REQUEST_ID, ctx.root_id)
+        if ctx.org_id:
+            out.setdefault(ENVELOPE_ORG_ID, ctx.org_id)
+    if carried:
+        outbound_carriers.inject(out, outbound_carriers.MESSAGE)
     return out
 
 
@@ -188,6 +196,8 @@ def context_from_envelope(message: Dict[str, Any]) -> RequestContext:
     # A message with no id is a propagation gap across the broker boundary
     # (the broker analogue of an inbound HTTP request with no header), not
     # self-initiated machine work — so it gets an `anon-` root, not `sys-`.
+    if outbound_carriers.registered():
+        outbound_carriers.accept_message(message)
     root_id = sanitize_root_id(_envelope_str(message, ENVELOPE_REQUEST_ID))
     org_id = sanitize_root_id(_envelope_str(message, ENVELOPE_ORG_ID))
     return RequestContext(root_id=root_id or new_anon_root(), org_id=org_id)
