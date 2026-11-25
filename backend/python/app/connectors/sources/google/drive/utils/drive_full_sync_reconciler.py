@@ -78,8 +78,12 @@ class FullSyncLedger:
         else:
             self.incomplete = True
 
-    def note_incomplete(self) -> None:
-        self._note_cause()
+    def note_incomplete(self, cause: str | None = None) -> None:
+        """``cause`` names a gap that no error is behind; it must not name people or files."""
+        if cause:
+            self.causes[cause] += 1
+        else:
+            self._note_cause()
         self.incomplete = True
 
     def note_incremental(self) -> None:

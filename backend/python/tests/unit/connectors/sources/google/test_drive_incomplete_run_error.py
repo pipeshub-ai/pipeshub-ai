@@ -57,6 +57,12 @@ def test_a_gap_with_no_error_is_still_reported() -> None:
     assert "could not be read or saved in this run;" in text and "(" not in text
 
 
+def test_a_gap_no_error_is_behind_can_be_named() -> None:
+    ledger = FullSyncLedger()
+    ledger.note_incomplete("a selected folder could not be listed by any synced user")
+    assert "in this run: a selected folder could not be listed by any synced user (1);" in str(incomplete_run_error(ledger))
+
+
 @pytest.mark.parametrize(("items_only", "kind"), [(True, DriveItemsUnread), (False, DriveSyncIncomplete)])
 def test_the_kind_of_error_is_unchanged(items_only: bool, kind: type) -> None:
     ledger = FullSyncLedger()
