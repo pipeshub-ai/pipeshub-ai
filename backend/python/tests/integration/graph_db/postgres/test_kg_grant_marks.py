@@ -127,6 +127,21 @@ async def test_marks_follow_every_change_their_rows_read(pg_provider, pg_db) -> 
         assert (await p._q(lambda tx: verify_app(tx, org, "app1"), None)).ok
 
 
+@pytest.mark.parametrize("edges_too", [True, False])
+async def test_a_parent_removed_from_the_graph_clears_the_mark_of_its_childs_grants(pg_provider, pg_db, edges_too) -> None:
+    """The node of c's folder f2 goes from the graph, with its relations or without them (a relation left behind): c's row is re-derived in the same unit (a relation's delete
+    names its child, and a node that went names the children its relations still reach), so the grant on c is marked from what kg holds after the unit, f2's row gone."""
+    p, org = pg_provider, new_org()
+    await _world(p, pg_db, org)
+    assert (await _marks(pg_db, org))[("u1", "c")] == (True, "g2")
+    if edges_too:
+        await _change(p, pg_db, org, lambda: p.delete_nodes(["f2"], "records"))
+    else:
+        await _admin("DELETE FROM graph.nodes WHERE org_id = $1 AND coll = 'records' AND id = 'f2'", org)
+        await drain_org(pg_db, org)
+    assert (await _marks(pg_db, org))[("u1", "c")] == (False, "g2")
+
+
 async def test_a_mark_its_rows_no_longer_give_fails_the_verify_and_one_not_written_yet_does_not(pg_provider, pg_db) -> None:
     p, org = pg_provider, new_org()
     await _world(p, pg_db, org)
