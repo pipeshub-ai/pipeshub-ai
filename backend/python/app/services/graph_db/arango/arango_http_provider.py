@@ -22216,16 +22216,26 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                             FILTER parent_doc != null
                             // Ensure parent is a record, not recordGroup
                             FILTER PARSE_IDENTIFIER(edge._from).collection == "records"
-                            RETURN PARSE_IDENTIFIER(edge._from).key
+                            SORT parent_doc._key
+                            RETURN parent_doc._key
                     )
-                    // Step 2: If no record parent, check belongsTo edge to recordGroup
+                    // Step 2: If no record parent, check belongsTo edge to recordGroup: its own group first,
+                    // then one listing it in the hierarchy, then the lowest key (as get_knowledge_hub_parent_node)
                     LET rg_parent = record_parent != null ? null : FIRST(
                         FOR edge IN belongsTo
                             FILTER edge._from == record._id
                             LET parent_rg = DOCUMENT(edge._to)
                             FILTER parent_rg != null
                             FILTER PARSE_IDENTIFIER(edge._to).collection == "recordGroups"
-                            RETURN PARSE_IDENTIFIER(edge._to).key
+                            LET listed = LENGTH(
+                                FOR h IN nodeRelations
+                                    FILTER h._from == edge._to AND h._to == record._id
+                                        AND h.relationshipType IN ["PARENT_CHILD", "ATTACHMENT"]
+                                    LIMIT 1
+                                    RETURN 1
+                            ) > 0
+                            SORT parent_rg._key == record.recordGroupId DESC, listed DESC, parent_rg._key
+                            RETURN parent_rg._key
                     )
                     // Step 3: KB records/folders have a belongsTo edge straight to the
                     // App (not a recordGroup) — check that too, or the App/KB root
@@ -24404,7 +24414,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                                 LET parent_record = DOCUMENT(edge._from)
                                 // Ensure the parent is actually a record (folder), not a record group
                                 FILTER parent_record != null AND IS_SAME_COLLECTION("records", parent_record)
-                                RETURN PARSE_IDENTIFIER(edge._from).key
+                                SORT parent_record._key
+                                RETURN parent_record._key
                         )
                         LET parent_from_belongs = parent_from_rel == null ? FIRST(
                             FOR edge IN belongsTo
@@ -24413,7 +24424,17 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                                 FILTER parent_doc != null
                                 // Check if parent is a recordGroup OR a record (for projects/folders)
                                 FILTER IS_SAME_COLLECTION("recordGroups", parent_doc) OR IS_SAME_COLLECTION("records", parent_doc)
-                                RETURN PARSE_IDENTIFIER(edge._to).key
+                                // A record shared into other groups belongs to each of them: its own group comes
+                                // first, then one listing it in the hierarchy, then the lowest key.
+                                LET listed = LENGTH(
+                                    FOR h IN nodeRelations
+                                        FILTER h._from == edge._to AND h._to == record._id
+                                            AND h.relationshipType IN ["PARENT_CHILD", "ATTACHMENT"]
+                                        LIMIT 1
+                                        RETURN 1
+                                ) > 0
+                                SORT parent_doc._key == record.recordGroupId DESC, listed DESC, parent_doc._key
+                                RETURN parent_doc._key
                         ) : null
                         LET parent_from_inherit = (parent_from_rel == null AND parent_from_belongs == null) ? FIRST(
                             FOR edge IN inheritPermissions
@@ -24421,7 +24442,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                                 LET parent_doc = DOCUMENT(edge._to)
                                 // Ensure it's pointing to a record group, not another record
                                 FILTER parent_doc != null AND IS_SAME_COLLECTION("recordGroups", parent_doc)
-                                RETURN PARSE_IDENTIFIER(edge._to).key
+                                SORT parent_doc._key
+                                RETURN parent_doc._key
                         ) : null
                         RETURN parent_from_rel || parent_from_belongs || parent_from_inherit
                     ))

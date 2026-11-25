@@ -252,6 +252,7 @@ from app.utils.user_lookup import (
     get_org_or_503,
     get_record_or_503,
     get_user_or_503,
+    raise_if_unavailable,
 )
 from harness_core.knowledge.errors import PublicationAnswerOnly
 from harness_core.knowledge.publications import require_raw
@@ -2208,6 +2209,7 @@ async def get_record_by_id(
     except HTTPException:
         raise
     except Exception as e:
+        raise_if_unavailable(e)
         raise HTTPException(status_code=500, detail="Failed to check record access") from e
 
 @router.get(
@@ -7547,7 +7549,7 @@ async def handle_oauth_callback(
                 status_code=HttpStatusCode.FORBIDDEN.value,
                 detail="Only the creator or an administrator can handle OAuth callback for this connector"
             )
-        # Bound only after the checks above (stricter than the toolset callback): a state naming a connector the
+        # Bound only after the checks above (as the toolset callback does): a state naming a connector the
         # caller may not use never puts its id on a line.
         bind_request_log_fields(request, connector_id=connector_id, connector_type=connector_type)
         authorized_connector_id = connector_id
