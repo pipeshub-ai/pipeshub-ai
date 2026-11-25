@@ -1123,6 +1123,34 @@ class TestALookupOfTheCreator:
         assert result.presence() is Presence.UNKNOWN
 
 
+class TestTheServiceDeskCustomersJiraCloudLists:
+    @staticmethod
+    def _customer(email: str | None) -> dict:
+        row = {"accountId": "customer-1", "accountType": "customer", "active": True, "displayName": "C"}
+        return {**row, "emailAddress": email} if email else row
+
+    async def _read(self, monkeypatch: pytest.MonkeyPatch, email: str | None) -> Read:
+        monkeypatch.setattr(JiraCloud, "broken", (self._customer(email),))
+        return await read(JiraCloud, page(OTHER, Broken(0)), lookup=Lookup.FAIL)
+
+    async def test_are_people_the_listing_shows(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        assert (await self._read(monkeypatch, LISTED_CREATOR)).presence() is Presence.PRESENT
+
+    async def test_may_be_the_creator_when_their_email_is_hidden(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        assert (await self._read(monkeypatch, None)).presence() is Presence.UNKNOWN
+
+    async def test_with_another_email_leave_the_creator_absent(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        assert (await self._read(monkeypatch, THIRD)).presence() is Presence.ABSENT
+
+    async def test_get_no_app_user(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(JiraCloud, "broken", (self._customer(THIRD),))
+        jira = JiraCloud([page(OTHER, Broken(0))])
+
+        users = await JiraConnector._fetch_users(jira.conn, active_pipeshub_users=[])
+
+        assert [u.email for u in users] == [OTHER]
+
+
 @_each_that(Can.INCREMENTAL)
 async def test_a_read_of_only_the_changed_users_proves_nobody_absent(source: type[Source]) -> None:
     result = await read(source, page(OTHER, more=True), page(THIRD), lookup=Lookup.FAIL, incremental=True)

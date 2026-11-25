@@ -2588,13 +2588,17 @@ class JiraConnector(BaseConnector):
 
     def _listing_of(self, raw_jira_users: list[dict[str, Any]], resolved: dict[str, AppUser]) -> SourceUserListing:
         """The bulk read as a listing for the authenticator's link. /users/search lists inactive and deleted
-        accounts too; an account whose email neither the read nor the reverse lookup resolved is an
-        unidentified row. A read that was refused or cut short proves no one absent."""
+        accounts too, and service desk customers; an account whose email neither the read nor the reverse
+        lookup resolved is an unidentified row. A read that was refused or cut short proves no one absent."""
         listing = SourceUserListing(includes_inactive=True)
         for user in raw_jira_users:
-            if user.get("accountType") != "atlassian":
+            account_type = user.get("accountType")
+            if account_type == "app":
                 continue
             account_id = user.get("accountId")
+            if account_type not in ("atlassian", "customer"):
+                listing.row_failed(f"account {account_id} has the type {account_type}")
+                continue
             email = user.get("emailAddress") if isinstance(user.get("emailAddress"), str) else None
             if not (email and email.strip()) and account_id in resolved:
                 email = resolved[account_id].email
@@ -2632,7 +2636,7 @@ class JiraConnector(BaseConnector):
             return None
         if not isinstance(rows, list):
             return None
-        return [r for r in rows if isinstance(r, dict) and r.get("accountType", "atlassian") == "atlassian"]
+        return [r for r in rows if isinstance(r, dict) and r.get("accountType", "atlassian") != "app"]
 
     @staticmethod
     def _names_email(rows: list[dict], email: str) -> bool:
