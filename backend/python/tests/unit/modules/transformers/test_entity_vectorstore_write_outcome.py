@@ -17,6 +17,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from tests.support.platform_event_capture import event_calls
 from app.models.entities import EntityRecord, EntityType, EntityTypeCategory
 from app.modules.transformers.entity_vectorstore import (
     EMBEDDING_MODEL_FIELD,
@@ -120,9 +121,9 @@ class TestOutcome:
     async def test_outcomes_are_counted_in_metrics(self) -> None:
         db = _DB()
         db.fail_upserts = True
-        with patch("app.modules.transformers.entity_vectorstore.entity_index_metrics") as metrics:
+        with event_calls("entity_index.entities.written", "operation", "outcome", "count") as record_writes:
             await _store(db).upsert_entities_batch([_topic("a"), _topic("b", name="")])
-        calls = {(c.args[0], c.args[1]): c.args[2] for c in metrics.record_writes.call_args_list}
+        calls = {(c.args[0], c.args[1]): c.args[2] for c in record_writes.call_args_list}
         assert calls[("upsert", "failed")] == 1 and calls[("upsert", "skipped")] == 1
 
     async def test_empty_input_is_an_empty_outcome(self) -> None:
