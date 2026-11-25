@@ -158,6 +158,50 @@ class TestWrites:
         assert db.deletions == 1
         assert _models_of(db) == {"t1": (ADA_FP, ADA.value)}
 
+    @pytest.mark.parametrize(("provider", "model"), [
+        ("openAICompatible", "azure/text-embedding-3-small"),
+        ("azureOpenAI", "text-embedding-3-small"),
+        ("openAICompatible", "Text-Embedding-3-Small"),
+    ])
+    async def test_the_same_model_from_another_provider_keeps_the_collection(self, provider: str, model: str) -> None:
+        """Any replica goes on writing at once, and nothing is embedded again: the vectors are the same model's."""
+        db, config = FakeEntityVectorDB(), config_service(SMALL_CONFIG)
+        store = _store(db, config)
+        await store.upsert_entities_batch([_topic("t1")], merge_membership=False)
+
+        with embedding_models({**MODELS, model: SMALL}):
+            await switch_embedding_model(config, embedding_config(provider, model))
+            outcome = await store.upsert_entities_batch([_topic("t1"), _topic("t2")], merge_membership=False)
+            fingerprint = await _leader_tick(store)
+
+        assert db.deletions == 0
+        assert (outcome.written, outcome.unchanged) == (1, 1)
+        assert fingerprint == f"{provider}:{model}:6"
+        assert _models_of(db) == {"t1": (SMALL_FP, SMALL.value), "t2": (fingerprint, SMALL.value)}
+
+    async def test_a_query_store_serves_the_same_model_from_another_provider(self) -> None:
+        db, config = FakeEntityVectorDB(), config_service(SMALL_CONFIG)
+        await _store(db, config).upsert_entities_batch([_topic()], merge_membership=False)
+        reader = _store(db, another_process(config), owner=False)
+
+        with embedding_models({**MODELS, "azure/text-embedding-3-small": SMALL}):
+            await switch_embedding_model(config, embedding_config("openAICompatible", "azure/text-embedding-3-small"))
+            assert await reader.embedding_fingerprint() == "openAICompatible:azure/text-embedding-3-small:6"
+        assert db.deletions == 0
+
+    async def test_another_model_from_another_provider_still_recreates(self) -> None:
+        """A gateway prefix does not make two models one."""
+        db, config = FakeEntityVectorDB(), config_service(SMALL_CONFIG)
+        store = _store(db, config)
+        await store.upsert_entities_batch([_topic()], merge_membership=False)
+
+        with embedding_models({**MODELS, "azure/text-embedding-ada-002": ADA}):
+            await switch_embedding_model(config, embedding_config("openAICompatible", "azure/text-embedding-ada-002"))
+            with pytest.raises(VectorStoreError, match="embedded by openAI:text-embedding-3-small"):
+                await store.embedding_fingerprint()
+            await _leader_tick(store)
+        assert db.deletions == 1
+
     async def test_only_the_rebuild_leader_drops_the_collection(self) -> None:
         """Every indexing replica owns the collection, but one dropping it
         after another had refilled part of it would lose those points."""

@@ -125,6 +125,10 @@ run shell "installer unit tests" \
   'exists deployment/docker-compose/tests/installer_test.sh' \
   bash deployment/docker-compose/tests/installer_test.sh
 
+run shell "fault soak guard tests" \
+  'exists deployment/docker-compose/tests/pg_fault_soak_guard_test.sh' \
+  bash deployment/docker-compose/tests/pg_fault_soak_guard_test.sh
+
 run shell "installer sandbox-plane tests" \
   'exists deployment/docker-compose/tests/sandbox_plane_test.sh' \
   bash deployment/docker-compose/tests/sandbox_plane_test.sh
