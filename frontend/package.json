@@ -111,7 +111,7 @@
     "eslint": "^10.13.0",
     "eslint-config-next": "^16.3.8",
     "fast-check": "^4.10.2",
-    "jsdom": "^26.1.0",
+    "jsdom": "^31.0.1",
     "jszip": "^3.10.2",
     "monocart-reporter": "^2.15.1",
     "pngjs": "^7.0.0",
