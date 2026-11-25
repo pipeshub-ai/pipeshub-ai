@@ -96,7 +96,10 @@ class FlatStorageMigration:
         if not isinstance(progress, dict):
             progress = {}
         if progress.get("done"):
-            return True
+            if not progress.get("failed") or "movedBefore" in progress:
+                return True
+            # Ended by a version that gave up on a run that moved nothing, and did not tell one from another.
+            progress = {}
         headers, nodejs_endpoint, _ = await self.blob_storage._get_auth_and_config(org_id)
         self._reasons.clear()
         self._failures = 0

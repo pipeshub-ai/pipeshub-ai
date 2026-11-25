@@ -253,6 +253,23 @@ async def test_a_copy_moved_in_part_is_progress_and_still_a_failure() -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_run_an_older_version_gave_up_on_is_run_again() -> None:
+    m, kv = _migration([_docs("v1")], {"v1": [_holder("r1")]})
+    kv.data[KEY] = {"done": True, "passes": 3, "moved": 0, "unowned": 16, "failed": 6210, "after": None}
+    with patch(MOVE, new_callable=AsyncMock, return_value={"moved": 2}):
+        await m.run_org("org-1")
+    assert kv.data[KEY]["done"] is True and kv.data[KEY]["moved"] == 1 and not kv.data[KEY].get("failed")
+
+
+@pytest.mark.asyncio
+async def test_copies_this_version_gave_up_on_are_not_tried_at_every_start() -> None:
+    m, kv = _migration([], {})
+    kv.data[KEY] = {"done": True, "passes": 3, "moved": 0, "movedBefore": 4, "failed": 1}
+    await m.run_org("org-1")
+    m._flat_documents.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_error_texts_that_differ_for_every_copy_do_not_pile_up() -> None:
     vrids = [f"v{i}" for i in range(200)]
     m, _ = _migration([_docs(*vrids)] * MAX_PASSES, {v: [_holder(v)] for v in vrids})
