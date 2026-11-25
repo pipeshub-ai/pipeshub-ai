@@ -166,7 +166,8 @@ describe('architecture: telemetry is a plug-in', () => {
         if (name === PLUGIN_LIST) continue;
         if (WITH_TELEMETRY.some((dir) => name.startsWith(`${dir}/`))) continue;
         for (const path of importPaths(readFileSync(file, 'utf8'))) {
-          if (/telemetry/i.test(path)) offenders.push(`${name} -> ${path}`);
+          // The usage telemetry package only; a module merely named *opentelemetry* is not it.
+          if (/(?<!open)telemetry/i.test(path)) offenders.push(`${name} -> ${path}`);
         }
       }
       expect(offenders).to.deep.equal([]);
