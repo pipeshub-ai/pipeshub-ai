@@ -393,7 +393,7 @@ def test_the_statements_the_search_builds_from_parts_are_exactly_these() -> None
             found[(path.name, fn)] = count
     # the four statements of the dense path, and the fragments they and the filters are made of (membership probes and the payload
     # conditions and the scope filter's condition in its two forms, admitting and deferring: fixed text, every value a ``$n``)
-    assert found == {("dense.py", "exact_sql"): 1, ("dense.py", "index_sql"): 1, ("dense.py", "bounded_sql"): 1, ("dense.py", "count_sql"): 3,
+    assert found == {("dense.py", "exact_sql"): 1, ("dense.py", "index_sql"): 1, ("dense.py", "bounded_sql"): 1, ("dense.py", "count_sql"): 4,
                      ("lexical.py", "lexical_sql"): 1, ("scope_filter.py", "predicate"): 2, ("sql_filters.py", "_match"): 2,
                      ("visibility.py", "admitted"): 1, ("visibility.py", "probe"): 1}, found
 

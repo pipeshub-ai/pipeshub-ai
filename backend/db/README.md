@@ -306,6 +306,8 @@ answers the same for a taken and a malformed value and has no `ON CONFLICT` (57)
 ## Tests
 `cd backend/db && pytest`. Integration tests start throwaway clusters from `MIGRATE_TEST_PG_BINS` (comma-separated
 PostgreSQL `bin` dirs; skipped when unset and no `initdb` on PATH). Needs `pip install -r requirements.txt pytest`.
+The servers need pgvector and PostgreSQL's contrib modules, `auto_explain` among them (some tests read the plans of the statements
+inside a vetted function): the `postgresql-contrib` package of a distribution, or `make -C contrib install` in a source build.
 
 ## If a runner dies
 The lock belongs to the runner's session and is released when PostgreSQL notices the client is gone (TCP

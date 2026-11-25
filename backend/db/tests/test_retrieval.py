@@ -790,7 +790,11 @@ def test_a_search_that_admits_nothing_reads_its_candidates_in_windows_of_bounded
     with cluster.admin(name) as a:
         a.add_notice_handler(lambda d: notes.append(d.message_primary or ""))
         with a.transaction():
-            a.execute("LOAD 'auto_explain'")
+            try:
+                a.execute("LOAD 'auto_explain'")
+            except pg.UndefinedFile:
+                pytest.fail("this test reads the search's plans through auto_explain, which the PostgreSQL build in MIGRATE_TEST_PG_BINS "
+                            "lacks: install its contrib modules (backend/db/README.md, Tests)")
             for setting in ("log_min_duration = 0", "log_analyze = on", "log_timing = off", "log_nested_statements = on", "log_level = notice"):
                 a.execute(f"SET LOCAL auto_explain.{setting}")
             a.execute("SET LOCAL ROLE pipeshub_query")
@@ -798,7 +802,9 @@ def test_a_search_that_admits_nothing_reads_its_candidates_in_windows_of_bounded
             assert a.execute("SELECT * FROM retrieval.search_sparse(1::smallint, '{9}', '{1}', NULL, NULL, NULL, NULL, '{nobody}', 1)").fetchall() == []
             a.execute("RESET ROLE")
     windows = [int(n) for p in notes for n in re.findall(r"Function Scan on c .*?\(actual[^)]*?rows=(\d+)", p)]
-    assert sum(windows) >= 20_000 and max(windows) == 4096, windows    # every candidate checked, none in a window above the cap
+    first = next(i for i in range(len(windows) + 1) if sum(windows[:i]) >= 128)
+    assert sum(windows[:first]) == 128 and sum(windows[first:]) == 20_000, windows      # the capped pass's 128, then every candidate once
+    assert max(windows) == 4096, windows                                                 # none in a window above the cap
 
 
 def test_the_upgrade_to_the_term_bounds_takes_its_locks_in_the_order_a_running_fold_does(rdb):
@@ -816,9 +822,11 @@ def test_the_upgrade_to_the_term_bounds_takes_its_locks_in_the_order_a_running_f
             fold_tx.execute("SET LOCAL lock_timeout = '20s'")
             fold_tx.execute("DELETE FROM retrieval.lexical_df_delta WHERE org_id = %s", (ORG_A,))        # what FOLD takes first
             proc = start_migrate(url)
+            fold_pid = fold_tx.info.backend_pid
             with cluster.admin(name) as a:
-                for _ in range(600):
-                    if a.execute("SELECT count(*) FROM pg_stat_activity WHERE usename = 'pipeshub_migrate' AND wait_event_type = 'Lock'").fetchone()[0]:
+                for _ in range(600):           # the upgrade's own session, in this database, blocked by this fold
+                    if a.execute("SELECT count(*) FROM pg_stat_activity WHERE usename = 'pipeshub_migrate' AND datname = %s "
+                                 "AND %s = ANY(pg_blocking_pids(pid))", (name, fold_pid)).fetchone()[0]:
                         break
                     time.sleep(0.05)
                 else:
