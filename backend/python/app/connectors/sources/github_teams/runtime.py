@@ -74,6 +74,9 @@ class RuntimeHelper:
         self._repo_lookups: dict[int, tuple[float, object]] = {}
         self._repo_lookup_locks: dict[int, asyncio.Lock] = {}
 
+        # GitHub answered 401 and no refresh got past it. Reset by each sync.
+        self.sign_in_refused = False
+
     # ------------------------------------------------------------------
     # Auth-error detection
     # ------------------------------------------------------------------
@@ -205,7 +208,7 @@ class RuntimeHelper:
 
             refresh_token = (config.get("credentials") or {}).get("refresh_token")
             if not refresh_token:
-                self.logger.error("No refresh token in connector config; cannot refresh GitHub token.")
+                self.logger.warning("No refresh token in connector config; cannot refresh GitHub token.")
                 return False
 
             connector_type = (
@@ -341,10 +344,12 @@ class RuntimeHelper:
         for attempt in range(1, _GITHUB_MAX_RETRIES + 1):
             if self._is_auth_error(response):
                 if refreshed:
+                    self.sign_in_refused = True
                     return response
                 refreshed = True
                 self.logger.info("GitHub op %s returned auth error; refreshing OAuth token and retrying.", label)
                 if not await self.force_refresh_oauth_token():
+                    self.sign_in_refused = True
                     return response
             elif self._is_rate_limited(response):
                 wait = self._rate_limit_wait_seconds(response)

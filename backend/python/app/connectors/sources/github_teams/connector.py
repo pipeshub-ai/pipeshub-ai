@@ -76,6 +76,7 @@ from app.connectors.sources.github_teams.common.utils import (
     updated_since_filter_field,
 )
 from app.models.entities import Record
+from app.services.notification.types import NotificationSeverity, NotificationType
 from app.sources.client.github.github import GitHubClient
 from app.sources.external.github.github_async import GitHubAsyncDataSource
 
@@ -95,6 +96,10 @@ from .users import UsersSync
 
 AUTHORIZE_URL = "https://github.com/login/oauth/authorize"
 TOKEN_URL = "https://github.com/login/oauth/access_token"
+_SIGN_IN_REFUSED = (
+    "GitHub refused this connector's sign-in and it could not be refreshed. "
+    "Reconnect it from the connector's settings."
+)
 
 
 @(
@@ -393,6 +398,7 @@ class GitHubTeamsConnector(BaseConnector):
 
     async def run_sync(self) -> None:
         """Run a full GitHub sync (users -> repos -> issues/PRs/code)."""
+        self.runtime.sign_in_refused = False
         try:
             self.record_sync_point.org_id = self.data_entities_processor.org_id
             await self.repos.timestamps.cancel()
@@ -413,8 +419,23 @@ class GitHubTeamsConnector(BaseConnector):
                     "GitHub Teams sync did not complete: " + "; ".join(self.projects.failures[:10])
                 )
         except Exception as e:
+            if self.runtime.sign_in_refused is True:
+                await self._tell_to_reconnect()
+                raise ConnectorInitError(_SIGN_IN_REFUSED) from e
             self.logger.error("Error in GitHub Teams sync: %s", e, exc_info=True)
             raise
+
+    async def _tell_to_reconnect(self) -> None:
+        self.logger.warning("GitHub Teams sync stopped: GitHub refused the sign-in and it could not be refreshed")
+        try:
+            await self.notify(
+                type=NotificationType.CONNECTOR_AUTH_ERROR,
+                severity=NotificationSeverity.ERROR,
+                title=f"{self.display_name}: needs to be reconnected",
+                message=f"{_SIGN_IN_REFUSED} Nothing was removed.",
+            )
+        except Exception as e:
+            self.logger.warning("The reconnect notice was not sent: %s", type(e).__name__)
 
     def full_sync_coverage(self) -> FullSyncCoverage:
         """An issue or pull request last updated before the "updated since" window is not
