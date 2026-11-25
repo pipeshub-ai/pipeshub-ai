@@ -37,6 +37,7 @@ export type ConnectorType =
   | 'amazon-s3'
   | 'gcs'
   | 'minio'
+  | 'cloudflare-r2'
   | 'azure-blob'
   | 'azure-files'
   | 'azure-fileshares'
@@ -96,6 +97,8 @@ export type ConnectorType =
   | 'discord'
   | 'posthog'
   | 'brave'
+  // A repository the run fetched (ADR-RUN-01 D3): its files are cited as sources
+  | 'repository'
   | 'stripe'
   | 'paypal'
   | 'vercel'
@@ -112,8 +115,10 @@ export type ConnectorType =
   | 'fathom'
   | 'lucid'
   | 'miro'
+  | 'canva'
   | 'instantly'
   | 'apollo'
+  | 'zapmail'
   // Generic / Fallback
   | 'web'
   | 'api'
@@ -156,6 +161,7 @@ export const CONNECTOR_ICONS: Record<ConnectorType, { svg: string | null; fallba
   'amazon-s3': { svg: svg('s3'), fallback: 'cloud' },
   'gcs': { svg: svg('gcs'), fallback: 'cloud' },
   'minio': { svg: svg('minio'), fallback: 'cloud' },
+  'cloudflare-r2': { svg: svg('cloudflarer2'), fallback: 'cloud' },
   'azure-blob': { svg: svg('azureblob'), fallback: 'cloud' },
   'azure-files': { svg: svg('azurefiles'), fallback: 'folder_shared' },
   'azure-fileshares': { svg: svg('azurefiles'), fallback: 'folder_shared' },
@@ -214,6 +220,7 @@ export const CONNECTOR_ICONS: Record<ConnectorType, { svg: string | null; fallba
   'discord': { svg: null, fallback: 'forum' },
   'posthog': { svg: svg('posthog'), fallback: 'insights' },
   'brave': { svg: svg('brave'), fallback: 'travel_explore' },
+  'repository': { svg: null, fallback: 'code' },
   'stripe': { svg: svg('stripe'), fallback: 'payments' },
   'paypal': { svg: svg('paypal'), fallback: 'payments' },
   'vercel': { svg: svg('vercel'), fallback: 'code' },
@@ -231,8 +238,10 @@ export const CONNECTOR_ICONS: Record<ConnectorType, { svg: string | null; fallba
   'fathom': { svg: svg('fathom'), fallback: 'videocam' },
   'lucid': { svg: svg('lucid'), fallback: 'schema', needDarkModeInvert: true },
   'miro': { svg: svg('miro'), fallback: 'dashboard', needDarkModeInvert: true },
+  'canva': { svg: svg('canva'), fallback: 'palette' },
   'instantly': { svg: svg('instantly'), fallback: 'mail' },
   'apollo': { svg: svg('apollo'), fallback: 'search' },
+  'zapmail': { svg: svg('zapmail'), fallback: 'mail', needDarkModeInvert: true },
   // Generic / Fallback
   'web': { svg: svg('web'), fallback: 'language' },
   // API toolsets (admin-uploaded OpenAPI specs)
@@ -274,6 +283,7 @@ const FUZZY_MATCH_RULES: Array<[string, ConnectorType, boolean?]> = [
   ['local-files', 'local-fs'],
   ['dropbox', 'dropbox'], ['box', 'box'],
   ['minio', 'minio'], ['nextcloud', 'nextcloud'],
+  ['cloudflare-r2', 'cloudflare-r2'], ['cloudflarer2', 'cloudflare-r2'],
   ['network-drive', 'smb'], ['smb3', 'smb'], ['smb2', 'smb'], ['smb', 'smb'],
   ['cifs', 'cifs'],
   // Dev tools & project tracking
@@ -313,8 +323,10 @@ const FUZZY_MATCH_RULES: Array<[string, ConnectorType, boolean?]> = [
   ['fathom', 'fathom', true],
   ['lucid', 'lucid'],
   ['miro', 'miro'],
+  ['canva', 'canva'],
   ['instantly', 'instantly', true],
   ['apollo', 'apollo', true],
+  ['zapmail', 'zapmail', true],
   // Broad fallbacks (last — only match if nothing specific matched)
   // Google toolset slugs are bare (`docs`, `sheets`); check them before the `google` catch-all.
   ['docs', 'google-docs'], ['sheets', 'google-sheets'],

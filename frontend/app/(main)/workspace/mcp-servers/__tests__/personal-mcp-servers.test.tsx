@@ -18,6 +18,7 @@ const mcpApi = vi.hoisted(() => ({
   getInstanceTools: vi.fn(),
   getMyToolRules: vi.fn(),
   updateMyToolRules: vi.fn(),
+  getPopular: vi.fn(async () => []),
 }));
 // These tests cover the default notices, whatever the build's config provides.
 // The Enterprise notices these screens show are for admins; render them as an admin would see them.

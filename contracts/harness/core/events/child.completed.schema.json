@@ -1,0 +1,119 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/core/events/child.completed.schema.json",
+  "title": "ChildCompletedEvent",
+  "description": "Child finished; Node appends it to the parent's stream in the transaction that ends the child. Its result (resultRef) is the sub-agent result document and carries the child's label.",
+  "x-writer": [
+    "node"
+  ],
+  "allOf": [
+    {
+      "$ref": "../envelope.schema.json#/$defs/InlineEnvelope"
+    }
+  ],
+  "properties": {
+    "type": {
+      "const": "child.completed"
+    },
+    "writer": {
+      "const": "node"
+    },
+    "data": {
+      "$ref": "#/$defs/ChildCompletedData"
+    }
+  },
+  "$defs": {
+    "ChildCompletedData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "childRunId",
+        "resultRef",
+        "labels"
+      ],
+      "properties": {
+        "childRunId": {
+          "$ref": "../common.schema.json#/$defs/Id"
+        },
+        "resultRef": {
+          "$ref": "../common.schema.json#/$defs/ContentRef"
+        },
+        "labels": {
+          "$ref": "../labels.schema.json"
+        },
+        "outcome": {
+          "description": "How the child ended.",
+          "enum": [
+            "answered",
+            "needs_input",
+            "failed",
+            "cancelled"
+          ]
+        },
+        "errorType": {
+          "description": "Why a failed or cancelled child ended (machine name).",
+          "$ref": "../common.schema.json#/$defs/Name"
+        },
+        "memoryLimitMb": {
+          "description": "With errorType out_of_memory: the memory limit, in MB, of the sandbox whose limit ended the child's work (R32SECCOMP-FU-4), as run.failed carries it, so the job card names it.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1048576
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "type": "child.completed",
+      "schemaVersion": 1,
+      "critical": true,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "node",
+      "visibility": "owner",
+      "data": {
+        "childRunId": "run_c1",
+        "resultRef": {
+          "ref": "cas/c1",
+          "hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "size": 10
+        },
+        "labels": {
+          "integrity": "internal"
+        },
+        "outcome": "answered"
+      }
+    },
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "type": "child.completed",
+      "schemaVersion": 1,
+      "critical": true,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "node",
+      "visibility": "owner",
+      "data": {
+        "childRunId": "run_c2",
+        "resultRef": {
+          "ref": "cas/c1",
+          "hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "size": 10
+        },
+        "labels": {
+          "integrity": "internal"
+        },
+        "outcome": "failed",
+        "errorType": "deadline_exceeded"
+      }
+    }
+  ]
+}

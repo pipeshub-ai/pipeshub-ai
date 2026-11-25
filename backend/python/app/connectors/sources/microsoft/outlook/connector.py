@@ -44,6 +44,7 @@ from app.connectors.core.base.error.stream_errors import (
     not_found_at_source,
     raise_for_stream_fetch,
 )
+from app.connectors.core.base.source_metadata import apply_source_metadata, held_metadata, source_metadata
 from app.connectors.core.base.sync_point.sync_point import (
     SyncDataPointType,
     SyncPoint,
@@ -126,7 +127,6 @@ from app.connectors.sources.microsoft.common.outlook_folders import (
     mail_thread_ref,
     notify_sync_outcome,
     open_graph_stream,
-    pace_graph_calls,
     prefer_immutable_ids,
     raise_for_graph_stream,
     read_child_folders,
@@ -189,6 +189,13 @@ class OutlookUserListing(UserListing):
     .with_description("Sync emails from Outlook")\
     .with_categories(["Email"])\
     .with_scopes([ConnectorScope.TEAM.value])\
+    .with_resilience_config(
+        # The vendor's quota is the org's shared budget (app.services.rate_budget.families), which this policy
+        # takes from; the rate is this process's own cap when that budget is unreachable. Retries stay the
+        # connector's own (max_retries 0): the Graph SDK's retry handler retries below the pacing hook.
+        rate_limit=OutlookSyncConfig.GRAPH_RATE_LIMIT,
+        max_retries=0,
+    )\
     .with_auth([
         AuthBuilder.type(AuthType.OAUTH_ADMIN_CONSENT).fields([
             AuthField(
@@ -224,7 +231,6 @@ class OutlookUserListing(UserListing):
         ])
     ])\
     .with_info(CONNECTOR_EMAIL_IDENTITY_INFO)\
-    .with_resilience_config(rate_limit=OutlookSyncConfig.GRAPH_RATE_LIMIT, max_retries=3)\
     .configure(lambda builder: builder
         .with_icon(IconPaths.connector_icon(Connectors.OUTLOOK.value))
         .add_documentation_link(DocumentationLink(
@@ -388,14 +394,16 @@ class OutlookConnector(OutlookFolderInventoryMixin, BaseConnector):
             # A re-init (config change) replaces the client: close the old one's sign-in session.
             await close_graph_client(getattr(self, "external_client", None), self.logger)
             try:
-                # Create shared MSGraph client - store as instance variable for proper cleanup
+                # Create shared MSGraph client - store as instance variable for proper cleanup.
+                # resilience paces every attempt by the shared vendor budget (G-31); pace_graph_calls on top would take two slots a call.
                 self.external_client: ExternalMSGraphClient = prefer_immutable_ids(ExternalMSGraphClient.build_with_config(
                     MSGraphClientWithClientIdSecretConfig(
                         self.credentials.client_id,
                         self.credentials.client_secret,
                         self.credentials.tenant_id
                     ),
-                    mode=GraphMode.APP
+                    mode=GraphMode.APP,
+                    resilience=self.resilience,
                 ))
             except ValueError as e:
                 # azure-identity rejects a malformed tenant id or an empty secret before any request.
@@ -403,7 +411,6 @@ class OutlookConnector(OutlookFolderInventoryMixin, BaseConnector):
                     f"The connector's Microsoft credentials are not valid: {e}. Check the Directory "
                     "(Tenant) ID, Application (Client) ID and client secret on the connector's settings."
                 ) from e
-            pace_graph_calls(self.external_client, self.resilience)
 
             # Create both data source clients
             self.external_outlook_client = OutlookCalendarContactsDataSource(self.external_client)
@@ -442,9 +449,9 @@ class OutlookConnector(OutlookFolderInventoryMixin, BaseConnector):
                 self.credentials.client_secret,
                 self.credentials.tenant_id
             ),
-            mode=GraphMode.APP
+            mode=GraphMode.APP,
+            resilience=self.resilience,
         ))
-        pace_graph_calls(self.external_client, self.resilience)
         self.external_outlook_client = OutlookCalendarContactsDataSource(self.external_client)
         self.external_users_client = UsersGroupsDataSource(self.external_client)
 
@@ -1615,6 +1622,9 @@ class OutlookConnector(OutlookFolderInventoryMixin, BaseConnector):
 
                     content_type = attachment.content_type
                     if not content_type:
+                        self.logger.warning(f"Skipping attachment {attachment_id} of post {post_id} - no content_type available")
+                        if existing_record:
+                            self.data_entities_processor.note_kept_records(self.connector_id, [existing_record.id])
                         continue
 
                     is_new = existing_record is None
@@ -2059,6 +2069,8 @@ class OutlookConnector(OutlookFolderInventoryMixin, BaseConnector):
                 ids.add(response.data.id)
             elif is_folder_not_found_error(response.error):
                 self._standard_folder_missing = True
+                if name not in OutlookFolders.MAY_BE_ABSENT:
+                    self._hold_folders_maybe_present = True
             else:
                 raise Exception(f"Failed to read the '{name}' folder: {response.error}")
         return ids
@@ -2128,7 +2140,7 @@ class OutlookConnector(OutlookFolderInventoryMixin, BaseConnector):
             self.logger.info(f"Retrieved {len(top_level_folders)} top-level folders across {page_num} page(s)")
 
             if folder_names is not None and folder_filter_mode:
-                self._standard_folder_missing = False
+                self._standard_folder_missing = self._hold_folders_maybe_present = False
                 standard_ids = await self._get_standard_folder_ids(user_id, folder_names)
                 keep = folder_filter_mode == "include"
                 if keep and self._standard_folder_missing:
@@ -2348,6 +2360,11 @@ class OutlookConnector(OutlookFolderInventoryMixin, BaseConnector):
             sync_point_key = self._folder_sync_point_key(user, folder_id)
             sync_point = await self.email_delta_sync_point.read_sync_point(sync_point_key)
             delta_link = self._saved_delta_link(sync_point)
+            # A fresh read asks for source metadata when the reader names what to expand; a saved link continues the
+            # query it was started with.
+            metadata_read = bool(source_metadata().mail_expand()) and (
+                delta_link is None or bool((sync_point or {}).get(OutlookSyncPointKeys.METADATA_READ))
+            )
 
             # Each delta page is written before the next is fetched, so a large folder is
             # never held in memory. The link is saved only once every page succeeded.
@@ -2365,7 +2382,9 @@ class OutlookConnector(OutlookFolderInventoryMixin, BaseConnector):
                     seen_ids = (seen_ids or set()) | {m.id for m in result.messages if m.id}
                 page_records = []
                 for message in result.messages:
-                    record_updates, ok = await self._process_single_message(org_id, user, message, folder_id, folder_name)
+                    record_updates, ok = await self._process_single_message(
+                        org_id, user, message, folder_id, folder_name, metadata_read=metadata_read
+                    )
                     if not ok:
                         failed_ids.append(message.id)
                     for update in record_updates:
@@ -2382,6 +2401,7 @@ class OutlookConnector(OutlookFolderInventoryMixin, BaseConnector):
 
             sync_point_data = {
                 OutlookSyncPointKeys.DELTA_LINK: new_delta_link,
+                OutlookSyncPointKeys.METADATA_READ: metadata_read,
                 OutlookSyncPointKeys.LAST_SYNC_TIMESTAMP: get_epoch_timestamp_in_ms(),
                 OutlookSyncPointKeys.FOLDER_ID: folder_id,
                 OutlookSyncPointKeys.FOLDER_NAME: folder_name,
@@ -2461,6 +2481,7 @@ class OutlookConnector(OutlookFolderInventoryMixin, BaseConnector):
                     page_size=OutlookSyncConfig.MESSAGE_PAGE_SIZE,
                     filter=filter_string,
                     select=OutlookAPIFields.MESSAGE_SELECT_FIELDS,
+                    expand=list(source_metadata().mail_expand()) or None,
                 )
 
             async for page_messages, new_delta_link, full_read in read_delta_pages(fetch_page, delta_link, folder_id, self.logger):
@@ -2506,7 +2527,8 @@ class OutlookConnector(OutlookFolderInventoryMixin, BaseConnector):
             raise
 
     async def _process_single_message(
-        self, org_id: str, user: AppUser, message: Message, folder_id: str, folder_name: str
+        self, org_id: str, user: AppUser, message: Message, folder_id: str, folder_name: str,
+        *, metadata_read: bool = False,
     ) -> tuple[list[RecordUpdate], bool]:
         """Process one message and its attachments together.
 
@@ -2531,7 +2553,9 @@ class OutlookConnector(OutlookFolderInventoryMixin, BaseConnector):
                 return [removed_mail_update(message_id)], True
 
             # Process email with attachments
-            email_update = await self._process_single_email_with_folder(org_id, user.email, message, folder_id, folder_name)
+            email_update = await self._process_single_email_with_folder(
+                org_id, user.email, message, folder_id, folder_name, metadata_read=metadata_read
+            )
             if email_update and not email_update.is_new and not email_update.is_updated and not self._full_sync_running():
                 # Same content, same folder (a read or flag change): nothing to write and no
                 # attachment listing. A full sync still writes it, so it counts as seen.
@@ -2571,12 +2595,15 @@ class OutlookConnector(OutlookFolderInventoryMixin, BaseConnector):
         folder_id: str,
         folder_name: str,
         existing_record: Record | None = None,
+        *,
+        metadata_read: bool = False,
     ) -> RecordUpdate | None:
         """Process a single email with folder information.
 
         Args:
             message: Pydantic Message object
             existing_record: Optional existing record to skip DB lookup (used during reindex)
+            metadata_read: The read asked for the mail's source metadata; otherwise the record keeps what it holds
         """
         try:
             # message is a Pydantic Message object
@@ -2638,6 +2665,12 @@ class OutlookConnector(OutlookFolderInventoryMixin, BaseConnector):
                 internet_message_id=message.internet_message_id or '',
                 conversation_index=normalize_conversation_index(message.conversation_index),
             )
+
+            held = held_metadata(existing_record)
+            fields = source_metadata().mail_metadata(message, held) if metadata_read else held
+            if apply_source_metadata(email_record, existing_record, fields) and not is_new:
+                metadata_changed = True
+                is_updated = True
 
             # Apply indexing filter for mail records
             if not self.indexing_filters.is_enabled(IndexingFilterKey.MAILS, default=True):
@@ -2789,7 +2822,8 @@ class OutlookConnector(OutlookFolderInventoryMixin, BaseConnector):
         Args:
             message: Pydantic Message object
             kept_ids: gets the ids of listed attachments skipped this time (no content type),
-                so a stored record of theirs is not taken as removed
+                so a stored record of theirs is not taken as removed, here or by the sweep
+                after a full sync
         """
         attachment_updates = []
 
@@ -2835,8 +2869,11 @@ class OutlookConnector(OutlookFolderInventoryMixin, BaseConnector):
 
                 # Skip if attachment was filtered out (e.g., no content_type)
                 if not attachment_record:
-                    if kept_ids is not None and not unsynced_attachment_kind(attachment):
-                        kept_ids.add(attachment_id)
+                    if not unsynced_attachment_kind(attachment):
+                        if kept_ids is not None:
+                            kept_ids.add(attachment_id)
+                        if existing_record:
+                            self.data_entities_processor.note_kept_records(self.connector_id, [existing_record.id])
                     continue
 
                 attachment_updates.append(RecordUpdate(

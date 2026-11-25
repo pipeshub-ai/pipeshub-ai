@@ -1,0 +1,206 @@
+{
+ "name": "p1b-t4",
+ "recordedAt": "2026-10-02T14:05:50Z",
+ "gitRef": "2d261f9a23e95af19692ade83d2e2fd0d758ce72",
+ "foldVersion": 5,
+ "eventSchemaVersion": 1,
+ "runSpecSchemaVersion": 2,
+ "journals": [
+  "agent_artifact_marker_answer",
+  "agent_ask_user_question",
+  "agent_cancel_mid_stream",
+  "agent_final_answer_with_write",
+  "agent_live_file_citation",
+  "agent_pre_run_clarification",
+  "agent_quick_final_answer",
+  "agent_quick_reasoning",
+  "agent_quick_tool_call",
+  "agent_react_tool_error_then_success",
+  "agent_search_tools_unavailable",
+  "agent_steered_after_answer",
+  "agent_steered_during_tool",
+  "agent_truncated_response_continued",
+  "chat_answer_with_citations",
+  "chat_llm_rejected",
+  "chat_llm_unavailable"
+ ],
+ "l4": [
+  {
+   "name": "kafka-after_outcome_ack",
+   "status": "completed"
+  },
+  {
+   "name": "kafka-after_settle_ack",
+   "status": "completed"
+  },
+  {
+   "name": "kafka-chat_answer_before_commit",
+   "status": "completed"
+  },
+  {
+   "name": "kafka-chat_claim_kill",
+   "status": "completed"
+  },
+  {
+   "name": "kafka-chat_read_before_outcome",
+   "status": "completed"
+  },
+  {
+   "name": "kafka-claim_kill",
+   "status": "completed"
+  },
+  {
+   "name": "kafka-control_plane_outage",
+   "status": "completed"
+  },
+  {
+   "name": "kafka-drain_mid_model",
+   "status": "completed"
+  },
+  {
+   "name": "kafka-drain_mid_tool",
+   "status": "completed"
+  },
+  {
+   "name": "kafka-drain_timeout",
+   "status": "completed"
+  },
+  {
+   "name": "kafka-mcp_surface_claim_kill",
+   "status": "completed"
+  },
+  {
+   "name": "kafka-model_after_commit",
+   "status": "completed"
+  },
+  {
+   "name": "kafka-model_before_commit",
+   "status": "completed"
+  },
+  {
+   "name": "kafka-node_restart_mid_run",
+   "status": "completed"
+  },
+  {
+   "name": "kafka-read_before_outcome",
+   "status": "completed"
+  },
+  {
+   "name": "kafka-rollback_waits",
+   "status": "completed"
+  },
+  {
+   "name": "kafka-slack_surface_claim_kill",
+   "status": "completed"
+  },
+  {
+   "name": "kafka-steer_after_consume",
+   "status": "completed"
+  },
+  {
+   "name": "kafka-steer_before_consume",
+   "status": "completed"
+  },
+  {
+   "name": "kafka-write_after_effect_idempotent",
+   "status": "completed"
+  },
+  {
+   "name": "kafka-write_after_effect_not_idempotent",
+   "status": "waiting_approval"
+  },
+  {
+   "name": "kafka-write_after_intent",
+   "status": "completed"
+  },
+  {
+   "name": "redis-after_outcome_ack",
+   "status": "completed"
+  },
+  {
+   "name": "redis-after_settle_ack",
+   "status": "completed"
+  },
+  {
+   "name": "redis-chat_answer_before_commit",
+   "status": "completed"
+  },
+  {
+   "name": "redis-chat_claim_kill",
+   "status": "completed"
+  },
+  {
+   "name": "redis-chat_read_before_outcome",
+   "status": "completed"
+  },
+  {
+   "name": "redis-claim_kill",
+   "status": "completed"
+  },
+  {
+   "name": "redis-control_plane_outage",
+   "status": "completed"
+  },
+  {
+   "name": "redis-drain_mid_model",
+   "status": "completed"
+  },
+  {
+   "name": "redis-drain_mid_tool",
+   "status": "completed"
+  },
+  {
+   "name": "redis-drain_timeout",
+   "status": "completed"
+  },
+  {
+   "name": "redis-mcp_surface_claim_kill",
+   "status": "completed"
+  },
+  {
+   "name": "redis-model_after_commit",
+   "status": "completed"
+  },
+  {
+   "name": "redis-model_before_commit",
+   "status": "completed"
+  },
+  {
+   "name": "redis-node_restart_mid_run",
+   "status": "completed"
+  },
+  {
+   "name": "redis-read_before_outcome",
+   "status": "completed"
+  },
+  {
+   "name": "redis-rollback_waits",
+   "status": "completed"
+  },
+  {
+   "name": "redis-slack_surface_claim_kill",
+   "status": "completed"
+  },
+  {
+   "name": "redis-steer_after_consume",
+   "status": "completed"
+  },
+  {
+   "name": "redis-steer_before_consume",
+   "status": "completed"
+  },
+  {
+   "name": "redis-write_after_effect_idempotent",
+   "status": "completed"
+  },
+  {
+   "name": "redis-write_after_effect_not_idempotent",
+   "status": "waiting_approval"
+  },
+  {
+   "name": "redis-write_after_intent",
+   "status": "completed"
+  }
+ ],
+ "checkpoint": "agent_quick_tool_call"
+}

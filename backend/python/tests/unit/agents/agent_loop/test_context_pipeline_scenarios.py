@@ -706,6 +706,10 @@ def test_factory_and_control_plane_build_one_pipeline(monkeypatch) -> None:
 
     factory_layers, control_plane_layers = built
     assert factory_layers[0] == "shape_image_injection"
+    # The chat's own `before_history` (the harness's QAFIX4 notice that history was cut) wraps L4-L9 and changes
+    # no message; the library has no person to tell.
+    assert factory_layers.index("report_context_reduction") == factory_layers.index("shape_loop_compaction") - 1
+    chat_layers = [layer for layer in factory_layers[1:] if layer != "report_context_reduction"]
     # Chat runs two auto-compact tails (gentle, then aggressive), the library one.
-    assert list(dict.fromkeys(factory_layers[1:])) == list(dict.fromkeys(control_plane_layers))
+    assert list(dict.fromkeys(chat_layers)) == list(dict.fromkeys(control_plane_layers))
     assert control_plane_layers[-1] == "shape_context_invariants"

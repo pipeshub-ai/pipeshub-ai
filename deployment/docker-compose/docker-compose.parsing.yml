@@ -19,6 +19,19 @@ services:
   parsing:
     image: ${PIPESHUB_IMAGE:-pipeshubai/pipeshub-ai}:${IMAGE_TAG:-latest}
     restart: always
+    # The app's image entrypoint, as in the base file: it takes earlier root-owned volumes for uid 1000 (CHOWN,
+    # DAC_OVERRIDE, FOWNER), drops to it (SETUID, SETGID) and empties its bounding set (SETPCAP). There is no root
+    # init here to signal uid 1000, so no KILL.
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETUID, SETGID, SETPCAP]
+    security_opt:
+      - no-new-privileges:true
+    # The Helm chart's parsing limit (parsing.resources.limits.memory).
+    deploy:
+      resources:
+        limits:
+          memory: ${PARSING_MEMORY_LIMIT:-8G}
+          pids: ${PARSING_PIDS_LIMIT:-4096}
     # On stop the parsing process finishes its in-flight parses, then Docling stops;
     # Compose's default 10 s would kill a parse that needs longer. Matches the Helm
     # chart's parsing.terminationGracePeriodSeconds.
@@ -67,6 +80,7 @@ services:
       # The same outbound-address policy as the app, for the model endpoints this service calls.
       - PIPESHUB_BLOCK_PRIVATE_ADDRESSES=${PIPESHUB_BLOCK_PRIVATE_ADDRESSES:-}
       - REDIS_URL=redis://:${REDIS_PASSWORD:-}@${REDIS_HOST:-redis}:${REDIS_PORT:-6379}
+      - REDIS_CACHE_URL=${REDIS_CACHE_URL:-}
       - ETCD_URL=http://etcd:2379
       - ETCD_HOST=etcd
       - LOG_LEVEL=${LOG_LEVEL:-info}

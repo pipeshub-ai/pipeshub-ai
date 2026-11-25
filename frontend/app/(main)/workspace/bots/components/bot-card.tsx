@@ -79,7 +79,7 @@ export function BotCard({ name, botType, agentName, onManage }: BotCardProps) {
           }}
         >
           {iconError ? (
-            <MaterialIcon name="smart_toy" size={16} color="var(--gray-9)" />
+            <MaterialIcon name="smart_toy" size={16} color="var(--gray-11)" />
           ) : (
             <img
               src={iconSrc}
@@ -103,7 +103,7 @@ export function BotCard({ name, botType, agentName, onManage }: BotCardProps) {
           <Text
             size="1"
             style={{
-              color: 'var(--gray-10)',
+              color: 'var(--gray-11)',
               overflow: 'hidden',
               textOverflow: 'ellipsis',
               whiteSpace: 'nowrap',

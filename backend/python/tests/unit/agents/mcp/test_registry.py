@@ -106,8 +106,10 @@ class TestMCPRegistry:
         assert "fireflies" in type_ids
         assert "fathom" in type_ids
         assert "miro" in type_ids
+        assert "canva" in type_ids
         assert "instantly" in type_ids
         assert "apollo" in type_ids
+        assert "zapmail" in type_ids
 
     def test_apollo_catalog_entry(self) -> None:
         registry = MCPRegistry()
@@ -129,6 +131,20 @@ class TestMCPRegistry:
         ]
         assert apollo.icon == "/icons/connectors/apollo.svg"
 
+    def test_zapmail_catalog_entry(self) -> None:
+        registry = MCPRegistry()
+        registry.auto_discover_templates()
+        zapmail = registry.get_template("zapmail")
+
+        assert zapmail is not None
+        assert zapmail.default_url == "https://mcp.zapmail.ai/mcp"
+        assert zapmail.transport == MCPTransport.STREAMABLE_HTTP
+        assert zapmail.supported_auth_modes == [MCPAuthMode.OAUTH]
+        assert zapmail.supports_dcr
+        assert not zapmail.require_oauth_client
+        assert zapmail.default_scopes == ["mailboxes", "inbox"]
+        assert zapmail.icon == "/icons/connectors/zapmail.svg"
+
     def test_miro_catalog_entry(self) -> None:
         registry = MCPRegistry()
         registry.auto_discover_templates()
@@ -149,6 +165,25 @@ class TestMCPRegistry:
         assert miro.icon == "/icons/connectors/miro.svg"
         assert miro.documentation_url == "https://developers.miro.com/docs/mcp-intro"
 
+    def test_canva_catalog_entry(self) -> None:
+        registry = MCPRegistry()
+        registry.auto_discover_templates()
+        canva = registry.get_template("canva")
+
+        assert canva is not None
+        assert canva.display_name == "Canva"
+        assert canva.transport == MCPTransport.STREAMABLE_HTTP
+        assert canva.default_url == "https://mcp.canva.com/mcp"
+        assert canva.default_auth_mode == MCPAuthMode.OAUTH
+        assert canva.supported_auth_modes == [MCPAuthMode.OAUTH]
+        assert canva.supports_dcr is True
+        assert canva.require_oauth_client is False
+        assert canva.url_editable is False
+        assert canva.authorization_url == "https://mcp.canva.com/authorize"
+        assert canva.token_url == "https://mcp.canva.com/token"
+        assert canva.default_scopes == []
+        assert canva.icon == "/icons/connectors/canva.svg"
+        assert canva.documentation_url == "https://www.canva.dev/docs/apps/mcp/"
     def test_instantly_catalog_entry(self) -> None:
         registry = MCPRegistry()
         registry.auto_discover_templates()

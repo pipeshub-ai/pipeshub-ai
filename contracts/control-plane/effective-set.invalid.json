@@ -1,0 +1,14 @@
+[
+  {
+    "description": "a secret pinned with the binding",
+    "instance": {"items": [{"installation": "i1", "item": "mcp:pipeshub/linear@3", "kind": "mcp", "state": "ready", "reason": null, "tools": [], "binding": {"ref": "bnd_01J9ZQ5Y8K3M4N5P6Q7R8S9T0V", "owner": "user:u3", "versionDigest": "sha256:3333333333333333333333333333333333333333333333333333333333333333", "token": "ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}, "provenance": {"grantedBy": "agent:a7", "visibleVia": "org", "approvedBy": null}}], "digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555"}
+  },
+  {
+    "description": "an unknown reason",
+    "instance": {"items": [{"installation": "i1", "item": "mcp:pipeshub/linear@3", "kind": "mcp", "state": "unavailable", "reason": "because", "tools": [], "binding": null, "provenance": {"grantedBy": "agent:a7", "visibleVia": null, "approvedBy": null}}], "digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555"}
+  },
+  {
+    "description": "no digest",
+    "instance": {"items": []}
+  }
+]

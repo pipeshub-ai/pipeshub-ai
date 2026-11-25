@@ -12,6 +12,8 @@ from app.config.constants.service import (
     HealthCheckConfig,
     config_node_constants,
 )
+from app.config.providers.etcd.etcd_env import etcd_store_config
+from app.services.messaging.kafka.config.kafka_config import kafka_security_kwargs
 from app.services.redis.config import RedisConnectionConfig
 from app.services.redis.connection_provider_factory import get_redis_provider
 
@@ -207,6 +209,13 @@ class Health:
             logger.error(f"❌ {error_msg}")
             raise Exception(error_msg)
 
+        # SEC-D-06: the bundled etcd accepts only TLS clients with this component's certificate.
+        tls_context = None
+        store_config = etcd_store_config()
+        if store_config is not None and store_config.ca_cert:
+            tls_context = ssl.create_default_context(cafile=store_config.ca_cert)
+            tls_context.load_cert_chain(store_config.cert_cert, store_config.cert_key)
+
         max_retries = HealthCheckConfig.CONNECTOR_HEALTH_CHECK_MAX_RETRIES.value
         last_error_msg = None
 
@@ -219,7 +228,9 @@ class Health:
 
                 # TODO: remove aiohttp dependency and use http client from sources module
                 async with aiohttp.ClientSession() as session:
-                    async with session.get(f"{etcd_url}/health", timeout=aiohttp.ClientTimeout(total=5.0)) as response:
+                    async with session.get(
+                        f"{etcd_url}/health", timeout=aiohttp.ClientTimeout(total=5.0), ssl=tls_context or True
+                    ) as response:
                         if response.status == HttpStatusCode.SUCCESS.value:
                             response_text = await response.text()
                             logger.info("✅ etcd health check passed")
@@ -371,16 +382,9 @@ class Health:
                     "enable_auto_commit": True,
                 }
 
-                if kafka_config.get("ssl"):
-                    config["ssl_context"] = ssl.create_default_context()
-                    sasl_config = kafka_config.get("sasl", {})
-                    if sasl_config.get("username"):
-                        config["security_protocol"] = "SASL_SSL"
-                        config["sasl_mechanism"] = sasl_config.get("mechanism", "SCRAM-SHA-512").upper()
-                        config["sasl_plain_username"] = sasl_config["username"]
-                        config["sasl_plain_password"] = sasl_config["password"]
-                    else:
-                        config["security_protocol"] = "SSL"
+                config.update(
+                    kafka_security_kwargs(ssl_enabled=bool(kafka_config.get("ssl")), sasl=kafka_config.get("sasl"))
+                )
 
                 from aiokafka import (
                     AIOKafkaConsumer,  # type: ignore   # only when Kafka is the broker

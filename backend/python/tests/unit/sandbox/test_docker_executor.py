@@ -47,7 +47,7 @@ def _fake_docker_module():
 
 class TestDockerExecutorInit:
     def test_creates_sandbox_root(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("app.sandbox.docker_executor._SANDBOX_ROOT", str(tmp_path / "docker_sandbox"))
+        monkeypatch.setattr("app.sandbox.docker_executor._sandbox_root", lambda: str(tmp_path / "docker_sandbox"))
         executor = DockerExecutor()
         assert os.path.isdir(str(tmp_path / "docker_sandbox"))
 
@@ -68,7 +68,7 @@ class TestDockerExecutorExecute:
     @pytest.fixture
     def executor(self, tmp_path, monkeypatch):
         root = str(tmp_path / "docker_sandbox")
-        monkeypatch.setattr("app.sandbox.docker_executor._SANDBOX_ROOT", root)
+        monkeypatch.setattr("app.sandbox.docker_executor._sandbox_root", lambda: root)
         return DockerExecutor()
 
     @pytest.mark.asyncio
@@ -112,7 +112,7 @@ class TestBuildCommand:
     @pytest.fixture
     def executor(self, tmp_path, monkeypatch):
         root = str(tmp_path / "docker_sandbox")
-        monkeypatch.setattr("app.sandbox.docker_executor._SANDBOX_ROOT", root)
+        monkeypatch.setattr("app.sandbox.docker_executor._sandbox_root", lambda: root)
         return DockerExecutor()
 
     def test_python_command_is_clean(self, executor, tmp_path):
@@ -152,7 +152,7 @@ class TestRunContainerDockerMissing:
     @pytest.fixture
     def executor(self, tmp_path, monkeypatch):
         root = str(tmp_path / "docker_sandbox")
-        monkeypatch.setattr("app.sandbox.docker_executor._SANDBOX_ROOT", root)
+        monkeypatch.setattr("app.sandbox.docker_executor._sandbox_root", lambda: root)
         return DockerExecutor()
 
     @pytest.mark.asyncio
@@ -178,7 +178,7 @@ class TestExecutePackageValidation:
     @pytest.fixture
     def executor(self, tmp_path, monkeypatch):
         root = str(tmp_path / "docker_sandbox")
-        monkeypatch.setattr("app.sandbox.docker_executor._SANDBOX_ROOT", root)
+        monkeypatch.setattr("app.sandbox.docker_executor._sandbox_root", lambda: root)
         return DockerExecutor()
 
     @pytest.mark.asyncio
@@ -250,6 +250,7 @@ class TestExtractContainerDir:
     def test_safe_extraction(self, tmp_path):
         import io
         import tarfile
+
         from app.sandbox.docker_executor import _extract_container_dir
 
         # Build a mock container that returns a tar with a safe file
@@ -276,6 +277,7 @@ class TestExtractContainerDir:
     def test_blocks_path_traversal(self, tmp_path):
         import io
         import tarfile
+
         from app.sandbox.docker_executor import _extract_container_dir
 
         tar_buf = io.BytesIO()
@@ -334,7 +336,7 @@ class TestDockerEnvAllowlist:
     @pytest.fixture
     def executor(self, tmp_path, monkeypatch):
         root = str(tmp_path / "docker_sandbox")
-        monkeypatch.setattr("app.sandbox.docker_executor._SANDBOX_ROOT", root)
+        monkeypatch.setattr("app.sandbox.docker_executor._sandbox_root", lambda: root)
         return DockerExecutor()
 
     @pytest.mark.asyncio
@@ -368,7 +370,7 @@ class TestDockerEnvAllowlist:
 
 class TestDockerCleanup:
     def test_cleanup_execution(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("app.sandbox.docker_executor._SANDBOX_ROOT", str(tmp_path))
+        monkeypatch.setattr("app.sandbox.docker_executor._sandbox_root", lambda: str(tmp_path))
         exec_dir = tmp_path / "exec-id"
         exec_dir.mkdir()
         (exec_dir / "file.txt").write_text("data")
@@ -453,7 +455,7 @@ class TestInstallPhase:
     @pytest.fixture
     def executor(self, tmp_path, monkeypatch):
         root = str(tmp_path / "docker_sandbox")
-        monkeypatch.setattr("app.sandbox.docker_executor._SANDBOX_ROOT", root)
+        monkeypatch.setattr("app.sandbox.docker_executor._sandbox_root", lambda: root)
         return DockerExecutor()
 
     def test_install_python_uses_target_and_egress_network(self, executor):
@@ -500,7 +502,7 @@ class TestInstallPhase:
         ), pytest.raises(RuntimeError, match="Package install refused"):
             executor._install_dependencies(["pandas"], SandboxLanguage.PYTHON, timeout=60)
         client.containers.create.assert_called_once()
-        no_firewall.remove.assert_called_once_with(force=True)
+        no_firewall.remove.assert_called_once_with(force=True, v=True)
 
     def test_install_output_faking_the_signal_is_a_plain_failure(self, executor) -> None:
         client, _, _, _ = _make_mock_docker_client()
@@ -547,7 +549,7 @@ class TestInstallPhase:
     def test_custom_egress_network_env(self, tmp_path, monkeypatch):
         """SANDBOX_EGRESS_NETWORK should override the default network name."""
         root = str(tmp_path / "docker_sandbox")
-        monkeypatch.setattr("app.sandbox.docker_executor._SANDBOX_ROOT", root)
+        monkeypatch.setattr("app.sandbox.docker_executor._sandbox_root", lambda: root)
         monkeypatch.setenv("SANDBOX_EGRESS_NETWORK", "my-private-net")
         executor = DockerExecutor()
         client, tracker, _, _ = _make_mock_docker_client()
@@ -609,7 +611,7 @@ class TestRunContainerIsolation:
     @pytest.fixture
     def executor(self, tmp_path, monkeypatch):
         root = str(tmp_path / "docker_sandbox")
-        monkeypatch.setattr("app.sandbox.docker_executor._SANDBOX_ROOT", root)
+        monkeypatch.setattr("app.sandbox.docker_executor._sandbox_root", lambda: root)
         return DockerExecutor()
 
     @pytest.mark.asyncio
@@ -706,7 +708,7 @@ class TestEndToEndExecuteSetsPythonPath:
     @pytest.fixture
     def executor(self, tmp_path, monkeypatch):
         root = str(tmp_path / "docker_sandbox")
-        monkeypatch.setattr("app.sandbox.docker_executor._SANDBOX_ROOT", root)
+        monkeypatch.setattr("app.sandbox.docker_executor._sandbox_root", lambda: root)
         return DockerExecutor()
 
     @pytest.mark.asyncio
@@ -778,7 +780,7 @@ class TestInstallDependenciesErrors:
     @pytest.fixture
     def executor(self, tmp_path, monkeypatch):
         root = str(tmp_path / "docker_sandbox")
-        monkeypatch.setattr("app.sandbox.docker_executor._SANDBOX_ROOT", root)
+        monkeypatch.setattr("app.sandbox.docker_executor._sandbox_root", lambda: root)
         return DockerExecutor()
 
     def test_unsupported_language_raises(self, executor):
@@ -827,7 +829,7 @@ class TestEnsureEgressNetworkErrors:
     @pytest.fixture
     def executor(self, tmp_path, monkeypatch):
         root = str(tmp_path / "docker_sandbox")
-        monkeypatch.setattr("app.sandbox.docker_executor._SANDBOX_ROOT", root)
+        monkeypatch.setattr("app.sandbox.docker_executor._sandbox_root", lambda: root)
         return DockerExecutor()
 
     def test_create_race_recovers_via_list(self, executor):
@@ -836,6 +838,8 @@ class TestEnsureEgressNetworkErrors:
         # First list returns empty; create raises; second list finds it.
         raced = MagicMock()
         raced.name = "pipeshub_sandbox_egress"
+        raced.attrs = {"Options": {"com.docker.network.bridge.enable_icc": "false"}}
+        client.networks.get.return_value = raced
         # Create's own re-check, then the subnet lookup.
         client.networks.list.side_effect = [[], [raced], [raced]]
         client.networks.create.side_effect = RuntimeError("already exists")
@@ -874,7 +878,7 @@ class TestRunContainerImagePull:
     @pytest.fixture
     def executor(self, tmp_path, monkeypatch):
         root = str(tmp_path / "docker_sandbox")
-        monkeypatch.setattr("app.sandbox.docker_executor._SANDBOX_ROOT", root)
+        monkeypatch.setattr("app.sandbox.docker_executor._sandbox_root", lambda: root)
         return DockerExecutor()
 
     @pytest.mark.asyncio
@@ -947,7 +951,7 @@ class TestRunContainerTimeout:
     @pytest.fixture
     def executor(self, tmp_path, monkeypatch):
         root = str(tmp_path / "docker_sandbox")
-        monkeypatch.setattr("app.sandbox.docker_executor._SANDBOX_ROOT", root)
+        monkeypatch.setattr("app.sandbox.docker_executor._sandbox_root", lambda: root)
         return DockerExecutor()
 
     @pytest.mark.asyncio
@@ -980,6 +984,33 @@ class TestRunContainerTimeout:
         assert result.success is False
         assert result.exit_code == -1
         assert "timed out" in (result.error or "").lower()
+        container.kill.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_x1_cancellation_kills_the_container_and_propagates(self, executor, tmp_path) -> None:
+        """A cancelled run (Stop, drain) is not a timeout: the container is killed and the task stays cancelled."""
+        client, tracker, container = _make_mock_run_client()
+        work_dir = str(tmp_path / "work")
+        src_dir = os.path.join(work_dir, "src")
+        output_dir = os.path.join(work_dir, "output")
+        os.makedirs(src_dir, exist_ok=True)
+        os.makedirs(output_dir, exist_ok=True)
+
+        async def _cancelled(*args, **kwargs) -> None:
+            raise asyncio.CancelledError()
+
+        with patch("docker.from_env", return_value=client):
+            with patch("asyncio.wait_for", side_effect=_cancelled):
+                with pytest.raises(asyncio.CancelledError):
+                    await executor._run_container(
+                        image="pipeshub/sandbox:latest",
+                        command=["sh", "-c", "sleep 1000"],
+                        work_dir=work_dir,
+                        src_dir=src_dir,
+                        output_dir=output_dir,
+                        env={},
+                        timeout=1,
+                    )
         container.kill.assert_called()
 
     @pytest.mark.asyncio
@@ -1049,7 +1080,7 @@ class TestRunContainerExceptionCleanup:
     @pytest.fixture
     def executor(self, tmp_path, monkeypatch):
         root = str(tmp_path / "docker_sandbox")
-        monkeypatch.setattr("app.sandbox.docker_executor._SANDBOX_ROOT", root)
+        monkeypatch.setattr("app.sandbox.docker_executor._sandbox_root", lambda: root)
         return DockerExecutor()
 
     @pytest.mark.asyncio
@@ -1131,12 +1162,12 @@ class TestSandboxHelpers:
     """Miscellaneous helpers: cleanup_execution on missing dirs, get_sandbox_root."""
 
     def test_cleanup_execution_noop_when_missing(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("app.sandbox.docker_executor._SANDBOX_ROOT", str(tmp_path))
+        monkeypatch.setattr("app.sandbox.docker_executor._sandbox_root", lambda: str(tmp_path))
         # Must not raise
         DockerExecutor.cleanup_execution("does-not-exist")
 
     def test_get_sandbox_root(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("app.sandbox.docker_executor._SANDBOX_ROOT", str(tmp_path))
+        monkeypatch.setattr("app.sandbox.docker_executor._sandbox_root", lambda: str(tmp_path))
         assert DockerExecutor.get_sandbox_root() == str(tmp_path)
 
 
@@ -1287,7 +1318,7 @@ class TestRunContainerCreateFailure:
     @pytest.fixture
     def executor(self, tmp_path, monkeypatch):
         root = str(tmp_path / "docker_sandbox")
-        monkeypatch.setattr("app.sandbox.docker_executor._SANDBOX_ROOT", root)
+        monkeypatch.setattr("app.sandbox.docker_executor._sandbox_root", lambda: root)
         return DockerExecutor()
 
     @pytest.mark.asyncio
@@ -1324,7 +1355,7 @@ class TestRunContainerKillFailureInExcept:
     @pytest.fixture
     def executor(self, tmp_path, monkeypatch):
         root = str(tmp_path / "docker_sandbox")
-        monkeypatch.setattr("app.sandbox.docker_executor._SANDBOX_ROOT", root)
+        monkeypatch.setattr("app.sandbox.docker_executor._sandbox_root", lambda: root)
         return DockerExecutor()
 
     @pytest.mark.asyncio

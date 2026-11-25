@@ -1,0 +1,11 @@
+{
+ "scenario": "chat_llm_rejected",
+ "parts": [
+  {
+   "type": "text",
+   "content": "The AI model's provider rejected its API key. Ask a workspace admin to check the key in Workspace → AI Models.",
+   "runId": "run-golden",
+   "isFinal": true
+  }
+ ]
+}

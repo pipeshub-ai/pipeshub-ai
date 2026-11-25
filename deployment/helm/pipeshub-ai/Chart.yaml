@@ -3,7 +3,7 @@ name: pipeshub-ai
 description: AI-powered workflow automation and integration platform
 type: application
 version: 0.2.1
-appVersion: "0.10.0"
+appVersion: "1.0.0"
 home: https://pipeshub.com
 icon: https://pipeshub.com/logo.svg
 sources:

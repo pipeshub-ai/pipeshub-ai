@@ -21,6 +21,7 @@ from app.agents.openapi.auth import ApiToolsetAuthError
 from app.agents.openapi.executor import ApiCallError
 from app.agents.openapi.request_builder import RequestBuildError
 from app.utils import error_class
+from harness_core.security.display_safe import tool_display_name
 
 if TYPE_CHECKING:
     from app.agent_loop_lib.core.types import ToolResult
@@ -104,7 +105,8 @@ class OpenAPIToolAdapter(SchemaShallowValidationMixin, Tool):
 
     @property
     def display_name(self) -> str:
-        return f"{self._instance.name} · {self._operation.summary or self._operation.tool_name}"
+        # The summary is the spec's text: display-safe, and never a second "Name · " (SEC-B-04).
+        return tool_display_name(self._instance.name, self._operation.summary or self._operation.tool_name)
 
     @property
     def parameters(self) -> list[ToolParameter]:

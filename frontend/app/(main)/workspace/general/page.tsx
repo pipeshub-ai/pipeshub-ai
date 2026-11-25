@@ -25,6 +25,12 @@ import { OrgApi, MetricsApi, type MetricsConfig, type OrgResponse } from './api'
 import { useOrg, useOrgLogo, useOrgMetrics } from './use-org';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { useUserStore, selectIsAdmin, selectIsProfileInitialized } from '@/lib/store/user-store';
+import { orgConfirmationName } from '@/lib/org-deletion';
+import { DeleteOrgSection, GeneralSettingsExtras } from '@/config';
+import {
+  useFeatureFlagsStore,
+  selectAgentHarnessOn,
+} from '@/lib/store/feature-flags-store';
 import { SettingsPageContainer } from '@/app/(main)/workspace/components/settings-page-container';
 
 // ========================================
@@ -51,7 +57,7 @@ function ReadOnlyGeneralPage({ form, logoUrl }: ReadOnlyGeneralPageProps) {
           <Heading size="5" weight="medium" style={{ color: 'var(--gray-12)' }}>
             {t('workspace.sidebar.nav.general')}
           </Heading>
-          <Text size="2" style={{ color: 'var(--gray-10)', marginTop: 'var(--space-1)', display: 'block' }}>
+          <Text size="2" style={{ color: 'var(--gray-11)', marginTop: 'var(--space-1)', display: 'block' }}>
             {t('workspace.general.subtitle')}
           </Text>
         </Box>
@@ -114,6 +120,7 @@ export default function GeneralPage() {
   const addToast = useToastStore((s) => s.addToast);
   const isAdmin = useUserStore(selectIsAdmin);
   const isProfileInitialized = useUserStore(selectIsProfileInitialized);
+  const harnessOn = useFeatureFlagsStore(selectAgentHarnessOn);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const { data: org, error: orgError, isValidating: orgValidating, mutate: rereadOrg } = useOrg();
   const { data: savedLogoUrl, isLoading: logoLoading } = useOrgLogo();
@@ -351,7 +358,7 @@ export default function GeneralPage() {
           <Heading size="5" weight="medium" style={{ color: 'var(--slate-12)' }}>
             {t('workspace.sidebar.nav.general')}
           </Heading>
-          <Text size="2" style={{ color: 'var(--slate-10)', marginTop: 'var(--space-1)', display: 'block' }}>
+          <Text size="2" style={{ color: 'var(--slate-11)', marginTop: 'var(--space-1)', display: 'block' }}>
            {t('workspace.general.manageSubtitle')}
           </Text>
         </Box>
@@ -481,8 +488,7 @@ export default function GeneralPage() {
         </Box>
 
         {/* ── Data Collection Settings Section ── */}
-        {/* Extra bottom padding so save bar doesn't overlap last section */}
-        <Box style={{ marginBottom: 80 }}>
+        <Box style={{ marginBottom: 'var(--space-5)' }}>
           <SettingsSection
             title={t('workspace.general.dataCollection')}
             rightAction={
@@ -532,6 +538,28 @@ export default function GeneralPage() {
               </Flex>
             </Box>
           </SettingsSection>
+        </Box>
+
+        {/* ── An edition's cards, beside the org's deletion ── */}
+        {harnessOn && (
+          <Flex direction="column" gap="5" style={{ marginBottom: 'var(--space-5)' }}>
+            <GeneralSettingsExtras />
+          </Flex>
+        )}
+
+        {/* ── Delete organization ── */}
+        {/* Extra bottom padding so save bar doesn't overlap last section */}
+        <Box style={{ marginBottom: 80 }}>
+          {harnessOn && (
+            <DeleteOrgSection
+              orgName={savedForm.displayName || savedForm.registeredName}
+              confirmName={orgConfirmationName({
+                registeredName: savedForm.registeredName,
+                shortName: savedForm.displayName,
+                contactEmail: savedForm.contactEmail,
+              })}
+            />
+          )}
         </Box>
       </SettingsPageContainer>
 

@@ -14,8 +14,12 @@ from unittest.mock import ANY, AsyncMock, MagicMock, patch
 import pytest
 
 from app.config.constants.arangodb import CollectionNames, EventTypes
-from app.exceptions.indexing_exceptions import PasswordProtectedError
+from app.exceptions.indexing_exceptions import (
+    DocumentProcessingError,
+    PasswordProtectedError,
+)
 from app.modules.indexing.parse_now_marker import current_run, store_only_active
+from app.modules.parsers.parse_pool import ParseWorkerError
 from app.services.messaging import record_budget
 from app.services.messaging.config import (
     IndexingEvent,
@@ -26,6 +30,12 @@ from app.services.messaging.config import (
 )
 from app.services.messaging.kafka.handlers import record as record_module
 from app.services.messaging.kafka.handlers.record import RecordEventHandler
+from app.utils.user_errors import (
+    PARSE_WORKER_KILLED_RETRYING,
+    PARSE_WORKER_OUT_OF_MEMORY,
+    RETRY_SCHEDULED,
+)
+from tests.support.record_access import InMemoryRecordAccess
 from tests.unit.attempt_start import attempt_start_via
 
 RECORDS = CollectionNames.RECORDS.value
@@ -80,7 +90,10 @@ class Harness:
         graph.get_document = AsyncMock(side_effect=self._get)
         graph.update_node = AsyncMock(return_value=True)
         graph.write_attempt_start = attempt_start_via(graph)
-        graph.check_record_access_with_details = AsyncMock(return_value={"record": {}} if access else None)
+        self.access = InMemoryRecordAccess().user("user-1", "org-1").record("rec-1", "org-1")
+        if access:
+            self.access.grant("rec-1", user="user-1")
+        self.access.serve(graph)
         event_processor.graph_provider = graph
         event_processor.stage_ingress = None
         event_processor.sink_orchestrator = None  # no vector store to ask about the weight precision
@@ -171,7 +184,7 @@ class TestRechecksBeforeParsing:
 
         await self._assert_dropped(harness)  # a user without access marks nothing
 
-        harness.graph.check_record_access_with_details.assert_awaited_once_with("user-1", "org-1", "rec-1")
+        assert harness.access.asked_about == [("user-1", "org-1", "rec-1")]
 
     async def test_an_event_naming_no_user_is_dropped(self) -> None:
         await self._assert_dropped(Harness(_record()), _payload(requestedByUserId=None))
@@ -378,7 +391,7 @@ class TestFailuresEndInTheMarker:
         harness = await self._fail(RuntimeError("parser busy"), final=False)
 
         assert harness.writes()[-1] == {
-            "parseNowStatus": "QUEUED", "parseNowRev": REV, "parseNowReason": record_module.RETRY_SCHEDULED, "parseNowAt": ANY,
+            "parseNowStatus": "QUEUED", "parseNowRev": REV, "parseNowReason": RETRY_SCHEDULED, "parseNowAt": ANY,
         }
         assert all("indexingStatus" not in write for write in harness.writes())
 
@@ -423,7 +436,7 @@ class TestFailuresEndInTheMarker:
         """
         marker, record_status = self._UNANSWERED_CHECK[(status, final)]
         harness = Harness(_record(indexingStatus=status))
-        harness.graph.check_record_access_with_details = AsyncMock(side_effect=ConnectionError("graph down"))
+        harness.access.fail_with(ConnectionError("graph down"))
         with pytest.raises(ConnectionError):
             await harness.run(_payload(is_final_failure=final))
 
@@ -479,6 +492,67 @@ class TestFailuresEndInTheMarker:
         await harness.handler.on_message_abandoned(message, reason="x", attempts=3)
 
         assert not any("parseNowStatus" in write for write in harness.writes())
+
+
+class TestRecordWhoseParseWorkerWasKilled:
+    """The first kill of a record's parse worker is retried; what the record shows must match what happens."""
+
+    @staticmethod
+    def _killed_first() -> DocumentProcessingError:
+        killed = ParseWorkerError(PARSE_WORKER_KILLED_RETRYING, "crashed", retrying=True)
+        try:
+            raise DocumentProcessingError("Failed to process document") from killed
+        except DocumentProcessingError as wrapped:
+            return wrapped
+
+    async def test_a_record_that_will_retry_shows_the_memory_pressure_reason(self) -> None:
+        harness = Harness(_record(indexingStatus="IN_PROGRESS"))
+        harness.fail_with = self._killed_first()
+
+        with pytest.raises(DocumentProcessingError):
+            await harness.run(_payload(is_final_failure=False, parseNow=False))
+
+        final = harness.writes()[-1]
+        assert PARSE_WORKER_KILLED_RETRYING in (final.get("reason"), final.get("parseNowReason"))
+
+    async def test_a_record_that_is_failed_for_it_does_not_promise_a_retry(self) -> None:
+        # The last attempt (or a process that has no retry tracker): nothing comes after it.
+        harness = Harness(_record(indexingStatus="QUEUED"))
+        harness.fail_with = self._killed_first()
+
+        with pytest.raises(DocumentProcessingError):
+            await harness.run(_payload(is_final_failure=True))
+
+        final = harness.writes()[-1]
+        assert final.get("indexingStatus") == "FAILED"
+        reasons = [final.get("reason"), final.get("parseNowReason")]
+        assert PARSE_WORKER_KILLED_RETRYING not in reasons
+        assert PARSE_WORKER_OUT_OF_MEMORY in reasons
+
+    async def test_a_failed_status_write_does_not_hide_the_retry_from_the_consumer(self) -> None:
+        from app.services.messaging.error_classifier import (
+            MessageErrorClassifier,
+            MessageErrorType,
+        )
+
+        harness = Harness(_record(indexingStatus="IN_PROGRESS"))
+        harness.fail_with = self._killed_first()
+        write_failure = ConnectionError("graph down")
+
+        async def failing_requeue_write(key: str, collection: str, updates: dict[str, Any]) -> bool:
+            if "reason" in updates:
+                raise write_failure
+            return True
+
+        harness.graph.update_node = AsyncMock(side_effect=failing_requeue_write)
+
+        with pytest.raises(DocumentProcessingError) as raised:
+            await harness.run(_payload(is_final_failure=False, parseNow=False))
+
+        # The consumer reads explicit causes: the worker death must still be the cause, with the write as context.
+        assert isinstance(raised.value.__cause__, ParseWorkerError)
+        assert raised.value.__context__ is write_failure
+        assert MessageErrorClassifier.classify_by_exception(raised.value) == MessageErrorType.TRANSIENT
 
 
 @pytest.mark.parametrize("stored", ["application/pdf", "application/octet-stream"])

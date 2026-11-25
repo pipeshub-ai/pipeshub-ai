@@ -25,6 +25,11 @@ import {
 
 const FILTERS: ToolFilter[] = ['all', 'read', 'writes', 'off'];
 
+/** Every group open while a search or filter narrows the list, so its matches show; none otherwise. */
+function openWhileSearching(query: string, filter: ToolFilter): Set<ToolGroup> {
+  return query.trim() !== '' || filter !== 'all' ? new Set(TOOL_GROUPS) : new Set();
+}
+
 const samePolicy = (a: McpAccessPolicy, b: McpAccessPolicy): boolean =>
   a.enabled === b.enabled &&
   a.allowWriteTools === b.allowWriteTools &&
@@ -99,7 +104,8 @@ export default function McpAccessPage() {
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState<ToolFilter>('all');
   const [openTools, setOpenTools] = useState<Set<string>>(new Set());
-  const [closedGroups, setClosedGroups] = useState<Set<ToolGroup>>(new Set());
+  // Groups start closed; a search or filter opens them all, so the matches show.
+  const [openGroups, setOpenGroups] = useState<Set<ToolGroup>>(new Set());
 
   useEffect(() => {
     if (isProfileInitialized && isAdmin === false) {
@@ -184,7 +190,9 @@ export default function McpAccessPage() {
   const allTools = tools ?? [];
   const offeredCount = form ? allTools.filter((tool) => isOffered(tool, form)).length : 0;
   const searching = query.trim() !== '' || filter !== 'all';
-  const allOpen = allTools.length > 0 && allTools.every((tool) => openTools.has(tool.name));
+  const allOpen =
+    allTools.length > 0 &&
+    allTools.every((tool) => openTools.has(tool.name) && openGroups.has(groupOf(tool.name)));
 
   const availabilityOf = (tool: McpAccessTool, group: ToolGroup): string =>
     optionalText(`workspace.mcpAccess.tools.availability.${tool.name}`) ??
@@ -215,7 +223,7 @@ export default function McpAccessPage() {
             <Heading size="5" weight="medium" style={{ color: 'var(--slate-12)' }}>
               {t('workspace.mcpAccess.title')}
             </Heading>
-            <Text size="2" style={{ color: 'var(--slate-10)', marginTop: 'var(--space-1)', display: 'block' }}>
+            <Text size="2" style={{ color: 'var(--slate-11)', marginTop: 'var(--space-1)', display: 'block' }}>
               {t('workspace.mcpAccess.subtitle')}
             </Text>
           </Box>
@@ -276,7 +284,7 @@ export default function McpAccessPage() {
                     color="gray"
                     onClick={() => {
                       setOpenTools(allOpen ? new Set() : new Set(allTools.map((tool) => tool.name)));
-                      setClosedGroups(new Set());
+                      setOpenGroups(allOpen ? new Set() : new Set(TOOL_GROUPS));
                     }}
                   >
                     {t(allOpen ? 'workspace.mcpAccess.tools.collapseAll' : 'workspace.mcpAccess.tools.expandAll')}
@@ -290,7 +298,7 @@ export default function McpAccessPage() {
                     value={query}
                     onChange={(event) => {
                       setQuery(event.target.value);
-                      setClosedGroups(new Set());
+                      setOpenGroups(openWhileSearching(event.target.value, filter));
                     }}
                     placeholder={t('workspace.mcpAccess.tools.searchPlaceholder')}
                     aria-label={t('workspace.mcpAccess.tools.searchLabel')}
@@ -298,7 +306,7 @@ export default function McpAccessPage() {
                   >
                     <TextField.Slot>
                       <span aria-hidden="true" style={{ display: 'inline-flex' }}>
-                        <MaterialIcon name="search" size={16} color="var(--gray-10)" />
+                        <MaterialIcon name="search" size={16} color="var(--gray-11)" />
                       </span>
                     </TextField.Slot>
                   </TextField.Root>
@@ -314,7 +322,7 @@ export default function McpAccessPage() {
                         aria-pressed={filter === id}
                         onClick={() => {
                           setFilter(id);
-                          setClosedGroups(new Set());
+                          setOpenGroups(openWhileSearching(query, id));
                         }}
                       >
                         {t(`workspace.mcpAccess.tools.filters.${id}`)}
@@ -340,12 +348,12 @@ export default function McpAccessPage() {
                     total={all.length}
                     allOn={allOn}
                     switchDisabled={!form.enabled || switchable.length === 0}
-                    open={!closedGroups.has(group)}
+                    open={openGroups.has(group)}
                     onOpenChange={(open) =>
-                      setClosedGroups((current) => {
+                      setOpenGroups((current) => {
                         const next = new Set(current);
-                        if (open) next.delete(group);
-                        else next.add(group);
+                        if (open) next.add(group);
+                        else next.delete(group);
                         return next;
                       })
                     }

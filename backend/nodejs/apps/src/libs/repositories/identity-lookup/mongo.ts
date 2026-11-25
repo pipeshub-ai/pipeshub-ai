@@ -12,10 +12,12 @@ import type {
 
 export class MongoIdentityLookup implements IdentityLookup {
   async resolveToken(tokenHash: string): Promise<ResolvedAccessToken | null> {
+    // Lean: hydrating a document drops a knowledgeLimit that is not an object, and a missing
+    // limit reads as everything the owner can see. The caller must see it to refuse it.
     const row = await OAuthAccessToken.findOne({
       tokenHash: { $eq: tokenHash },
       isRevoked: { $eq: false },
-    });
+    }).lean();
     if (!row) {
       return null;
     }
@@ -28,6 +30,8 @@ export class MongoIdentityLookup implements IdentityLookup {
       scopes: t.scopes,
       expiresAt: t.expiresAt,
       lastUsedAt: t.lastUsedAt,
+      // Passed on as stored, even when malformed, so the caller can refuse it.
+      ...(t.knowledgeLimit != null ? { knowledgeLimit: t.knowledgeLimit } : {}),
     };
   }
 

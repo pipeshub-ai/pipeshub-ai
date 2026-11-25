@@ -37,6 +37,8 @@ vi.mock('../../components/instance-panel', () => ({ InstanceManagementPanel: () 
 vi.mock('../../demo-data/components', () => ({ DemoDataRemovalNotice: () => null }));
 vi.mock('@/config', async () => ({
   PermissionLockIcon: () => null,
+  EnterpriseFeatureNotice: ({ title }: { title: string }) => <div>{title}</div>,
+  useUserPermission: () => true,
   TEAM_CONNECTOR_VISIBILITY_WARNINGS: {
     ...(await import('../../utils/team-visibility-warning')).TEAM_CONNECTOR_VISIBILITY_WARNINGS,
     // No shipped connector is team-only today; this one keeps that dialog covered.
@@ -121,6 +123,8 @@ describe('Team connectors page: list', () => {
     expect(screen.getByTestId('connector-card-Slack')).toBeTruthy();
     expect(api.getRegistryConnectors).toHaveBeenCalledWith('team');
     expect(api.getActiveConnectors).toHaveBeenCalledWith('team', 1, 100, { suppressErrorToast: true });
+    // Reviewing people's own OAuth apps is an Enterprise Edition feature.
+    expect(screen.getByText("People's own OAuth apps")).toBeTruthy();
   });
 
   it('still lists the catalog when only the configured list fails', async () => {

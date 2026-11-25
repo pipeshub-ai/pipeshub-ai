@@ -1,5 +1,13 @@
+import {
+  etcdTlsFromEnv,
+  type EtcdTlsFiles,
+} from '../../../libs/keyValueStore/etcd-tls';
 import { StoreType } from '../../../libs/keyValueStore/constants/KeyValueStoreType';
-import crypto from 'crypto';
+import {
+  cipherRing,
+  hashedRing,
+  secretKeyRing,
+} from '../../../libs/encryptor/secret-key-ring';
 import { Logger } from '../../../libs/services/logger.service';
 import { RedisStoreConfig } from '../../../libs/keyValueStore/providers/RedisDistributedKeyValueStore';
 
@@ -9,6 +17,8 @@ export interface ConfigurationManagerStoreConfig {
   host: string;
   port: number;
   dialTimeout: number;
+  /** Set when ETCD_URL is https: the client certificate etcd requires (SEC-D-06). */
+  tls?: EtcdTlsFiles;
 }
 
 export interface ConfigurationManagerConfig {
@@ -19,15 +29,23 @@ export interface ConfigurationManagerConfig {
   algorithm: string;
 }
 
-export const getHashedSecretKey = (): string => {
-  const secretKey = process.env.SECRET_KEY;
-  if (!secretKey) {
-    logger.warn('SECRET_KEY environment variable is not set. It is required');
-    throw new Error('SECRET_KEY environment variable is required');
+/** The platform cipher's writer key (ADR-KEY-02: HKDF of `SECRET_KEY`). */
+export const getHashedSecretKey = (): string =>
+  cipherRing(checkedRing())[0] as string;
+
+/** SHA-256 of each ring secret, the writer's first: the KEK's and run-key digests' input keying material. */
+export const getHashedSecretKeyRing = (): string[] => hashedRing(checkedRing());
+
+function checkedRing(): ReturnType<typeof secretKeyRing> {
+  try {
+    return secretKeyRing();
+  } catch (error) {
+    logger.warn('The deployment secret key ring is not usable', {
+      reason: error instanceof Error ? error.message : 'unknown',
+    });
+    throw error;
   }
-  const hashedKey = crypto.createHash('sha256').update(secretKey).digest();
-  return hashedKey.toString('hex');
-};
+}
 
 export const loadConfigurationManagerConfig =
   (): ConfigurationManagerConfig => {
@@ -46,6 +64,7 @@ export const loadConfigurationManagerConfig =
         host: process.env.ETCD_HOST || 'http://localhost',
         port: parseInt(process.env.ETCD_PORT || '2379', 10),
         dialTimeout: parseInt(process.env.ETCD_DIAL_TIMEOUT || '2000', 10),
+        tls: etcdTlsFromEnv(),
       },
       redisConfig: {
         host: process.env.REDIS_HOST || 'localhost',

@@ -38,12 +38,49 @@ SCRIPTS = {"log-emoji": os.path.join(_SCRIPTS_DIR, "log_emoji.py"), "log-pii": o
 WARN_ONLY = frozenset({"LOG-PII-OK"})
 
 
+# npx hands its command to `sh -c` as one string, and Linux refuses any single argument over 128 KiB
+# (MAX_ARG_STRLEN): a pull request touching a couple of thousand files made ESLint exit 249 with no output.
+BATCH_BYTES = 64 * 1024
+
+
+def batches(paths: list[str]) -> list[list[str]]:
+    """Split paths into runs whose joined length stays under BATCH_BYTES."""
+    out: list[list[str]] = []
+    size = 0
+    for path in paths:
+        if not out or size + len(path) + 1 > BATCH_BYTES:
+            out.append([])
+            size = 0
+        out[-1].append(path)
+        size += len(path) + 1
+    return out
+
+
 def lint(tool: str, files: list[str], tree: str = ".") -> list[tuple[str, str, int]]:
     """Return (repo-relative file, rule, line) for every finding that fails the build, linting the copies in tree."""
     cwd = os.path.join(tree, CWD[tool])
     rel = [os.path.relpath(f, CWD[tool]) for f in files]
+    items = []
+    for batch in batches(rel):
+        items.extend(_run(tool, cwd, batch))
+    root = os.path.abspath(tree)
+    found = []
+    for item in items:
+        if tool != "eslint":   # ruff, log-emoji and log-pii print the same shape
+            loc = item.get("location") or {}
+            found.append((os.path.relpath(item["filename"], root), item["code"] or "syntax", loc.get("row", 0)))
+        else:
+            for msg in item["messages"]:
+                if msg.get("severity") == 2:   # warnings do not fail ESLint, so they are not counted
+                    found.append((os.path.relpath(item["filePath"], root), msg.get("ruleId") or "fatal", msg.get("line", 0)))
+    return found
+
+
+def _run(tool: str, cwd: str, rel: list[str]) -> list[dict]:
     if tool == "ruff":
-        cmd = ["ruff", "check", "--output-format=json", "--exit-zero", *rel]
+        # Ruff lints a path named on the command line even when the config excludes it; --force-exclude keeps
+        # generated code that pyproject.toml excludes out of the count.
+        cmd = ["ruff", "check", "--force-exclude", "--output-format=json", "--exit-zero", *rel]
     elif tool in SCRIPTS:
         cmd = [sys.executable, SCRIPTS[tool], *rel]
     else:
@@ -53,17 +90,7 @@ def lint(tool: str, files: list[str], tree: str = ".") -> list[tuple[str, str, i
     if proc.returncode not in (0, 1) or (tool != "eslint" and proc.returncode):
         sys.stderr.write(proc.stderr)
         sys.exit(f"{tool} could not run (exit {proc.returncode})")
-    root = os.path.abspath(tree)
-    found = []
-    for item in json.loads(proc.stdout or "[]"):
-        if tool != "eslint":   # ruff, log-emoji and log-pii print the same shape
-            loc = item.get("location") or {}
-            found.append((os.path.relpath(item["filename"], root), item["code"] or "syntax", loc.get("row", 0)))
-        else:
-            for msg in item["messages"]:
-                if msg.get("severity") == 2:   # warnings do not fail ESLint, so they are not counted
-                    found.append((os.path.relpath(item["filePath"], root), msg.get("ruleId") or "fatal", msg.get("line", 0)))
-    return found
+    return json.loads(proc.stdout or "[]")
 
 
 def git(*args: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess:

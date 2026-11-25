@@ -267,7 +267,7 @@ class TestArangoValidateFolderCreation:
 
         assert result["valid"] is False
         assert result["code"] == 404
-        assert "kb-1" in result["reason"]
+        assert result["reason"] == "Knowledge base not found"
 
     @pytest.mark.asyncio
     async def test_insufficient_role_returns_403_with_role_in_message(self, arango_provider):
@@ -331,7 +331,7 @@ class TestNeo4jValidateFolderCreation:
 
         assert result["valid"] is False
         assert result["code"] == 404
-        assert "kb-1" in result["reason"]
+        assert result["reason"] == "Knowledge base not found"
 
     @pytest.mark.asyncio
     async def test_insufficient_role_message_names_role(self, neo4j_provider):

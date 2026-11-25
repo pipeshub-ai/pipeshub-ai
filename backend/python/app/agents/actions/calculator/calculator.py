@@ -5,9 +5,11 @@ from pydantic import BaseModel, Field
 
 from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
 from app.agent_loop_lib.tools.decorators import tool
+from app.agent_loop_lib.tools.tags import TAG_OUTPUT_DERIVED
 from app.agents.actions.calculator import exact
 from app.connectors.core.registry.auth_builder import AuthBuilder
 from app.connectors.core.registry.tool_builder import (
+    ToolProvider,
     ToolsetBuilder,
     ToolsetCategory,
 )
@@ -26,7 +28,7 @@ class CalculatorTwoOperandsInput(BaseModel):
 # Internal, no auth, backend-only. Not essential: under lazy tool disclosure
 # the agent sees this description and loads the tools when a question needs
 # them, so the description must say what the tools can do.
-@ToolsetBuilder("Calculator")\
+@ToolsetBuilder("Calculator", provider=ToolProvider.PLATFORM)\
     .in_group("Internal Tools")\
     .with_description(
         "Exact arithmetic on whole expressions (fractions, powers, roots, logs, "
@@ -71,7 +73,7 @@ class Calculator:
             ToolParameter(name="a", type=ParameterType.FLOAT, description="The number to operate on", required=True),
             ToolParameter(name="operation", type=ParameterType.STRING, description="Mathematical operation: 'sqrt' (square root), 'cbrt' (cube root)", required=True),
         ],
-        tags=[Tag(key="category", value="utility"), Tag(key="type", value="utility")],
+        tags=[Tag(key="category", value="utility"), Tag(key="type", value="utility"), Tag(key="effect", value="read"), TAG_OUTPUT_DERIVED],
     )
     async def calculate_single_operand(self, a: float, operation: str) -> float:
         """Calculate the result of a mathematical operation
@@ -101,7 +103,7 @@ class Calculator:
             ToolParameter(name="b", type=ParameterType.FLOAT, description="The second number", required=True),
             ToolParameter(name="operation", type=ParameterType.STRING, description="Mathematical operation: 'add', 'subtract', 'multiply', 'divide', 'power'", required=True),
         ],
-        tags=[Tag(key="category", value="utility"), Tag(key="type", value="utility")],
+        tags=[Tag(key="category", value="utility"), Tag(key="type", value="utility"), Tag(key="effect", value="read"), TAG_OUTPUT_DERIVED],
     )
     async def calculate_two_operands(self, a: float, b: float, operation: str) -> float:
         """Calculate the result of a mathematical operation
@@ -150,7 +152,7 @@ class Calculator:
                 description="The arithmetic expression to evaluate", required=True,
             ),
         ],
-        tags=[Tag(key="category", value="utility"), Tag(key="type", value="utility")],
+        tags=[Tag(key="category", value="utility"), Tag(key="type", value="utility"), Tag(key="effect", value="read"), TAG_OUTPUT_DERIVED],
     )
     async def evaluate_expression(self, expression: str) -> str:
         try:
@@ -179,7 +181,7 @@ class Calculator:
                 description="The later date, YYYY-MM-DD", required=True,
             ),
         ],
-        tags=[Tag(key="category", value="utility"), Tag(key="type", value="utility")],
+        tags=[Tag(key="category", value="utility"), Tag(key="type", value="utility"), Tag(key="effect", value="read"), TAG_OUTPUT_DERIVED],
     )
     async def date_difference(self, start: str, end: str) -> str:
         try:
@@ -210,7 +212,7 @@ class Calculator:
                 description="Optional single letter to count occurrences of", required=False,
             ),
         ],
-        tags=[Tag(key="category", value="utility"), Tag(key="type", value="utility")],
+        tags=[Tag(key="category", value="utility"), Tag(key="type", value="utility"), Tag(key="effect", value="read"), TAG_OUTPUT_DERIVED],
     )
     async def count_text(self, text: str, letter: str | None = None) -> str:
         try:

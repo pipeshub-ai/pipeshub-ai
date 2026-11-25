@@ -242,7 +242,7 @@ export function DocxRenderer({ fileUrl, fileName, fileBlob, citations, activeCit
             padding: 'var(--space-6)',
           }}
         >
-          <span className="material-icons-outlined" style={{ fontSize: '48px', color: 'var(--red-9)' }}>
+          <span className="material-icons-outlined" style={{ fontSize: '48px', color: 'var(--red-11)' }}>
             error_outline
           </span>
           <Text size="3" weight="medium" color="red">{error}</Text>

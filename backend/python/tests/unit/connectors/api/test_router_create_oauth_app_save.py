@@ -126,7 +126,9 @@ async def test_an_app_that_was_not_saved_fails_the_create_and_stores_no_connecto
         answer, request = await _create(store, _body())
 
     assert isinstance(answer, HTTPException)
-    assert (answer.status_code, answer.detail) == (500, APP_FAILED)
+    # A new app's failed save may still have landed, so the answer says to check (test_router_create_rollback.py).
+    assert answer.status_code == 500 and "may have been saved" in answer.detail
+    assert isinstance(answer.__cause__, HTTPException) and answer.__cause__.detail == APP_FAILED
     assert CONFIG_PATH not in store.values and OAUTH_APPS_PATH not in store.values
     request.app.state.connector_registry.create_connector_instance_on_configuration.assert_awaited_once()
     assert CLIENT_SECRET not in caplog.text
@@ -137,7 +139,8 @@ async def test_a_failed_update_of_a_named_app_fails_and_leaves_the_app_as_it_was
     store = Store(failing=(OAUTH_APPS_PATH,))
     store.values[OAUTH_APPS_PATH] = [copy.deepcopy(EXISTING_APP)]
 
-    answer, _ = await _create(store, _body(oauthConfigId="app-1"))
+    # An org app changes only from a team connector.
+    answer, _ = await _create(store, _body(oauthConfigId="app-1", scope="team"))
 
     assert isinstance(answer, HTTPException)
     assert (answer.status_code, answer.detail) == (500, APP_FAILED)
@@ -145,16 +148,25 @@ async def test_a_failed_update_of_a_named_app_fails_and_leaves_the_app_as_it_was
     assert CONFIG_PATH not in store.values
 
 
-async def test_a_connector_config_that_was_not_saved_fails_the_create_with_how_to_finish_it(
-    caplog: pytest.LogCaptureFixture,
+@pytest.mark.parametrize(("instance_removed", "detail"), [
+    # The app this create made is kept: another connector may already link to it.
+    (True, "The connector's settings could not be saved, so it was not created. "
+           "Its OAuth app was saved: pick that app when you try again."),
+    (False, "The connector was created, but its settings were not saved. Open it to finish setting it up, or delete it."),
+], ids=["rolled-back", "rollback-failed"])
+async def test_a_connector_config_that_was_not_saved_fails_the_create_and_says_what_is_left(
+    instance_removed: bool, detail: str, caplog: pytest.LogCaptureFixture,
 ) -> None:
+    # The rollback itself: test_router_create_rollback.py.
     store = Store(failing=(CONFIG_PATH,))
 
-    with caplog.at_level(logging.DEBUG):
+    with caplog.at_level(logging.DEBUG), patch.object(
+        routes._CreateUndo, "run", AsyncMock(return_value=instance_removed)
+    ):
         answer, _ = await _create(store, _body())
 
     assert isinstance(answer, HTTPException) and answer.status_code == 500
-    assert "were not saved" in answer.detail and "delete it" in answer.detail
+    assert answer.detail == detail
     assert isinstance(answer.__cause__, OAuthStoreUnavailableError)
     assert classify_error(answer) == "unavailable"  # the request line's class: our store, not our bug
     assert CONFIG_PATH not in store.values

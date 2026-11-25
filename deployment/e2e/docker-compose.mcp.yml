@@ -1,0 +1,58 @@
+# DEV-ONLY overlay for the MCP rows of the e2e lanes (deployment/e2e/run.sh with E2E_MCP_HUB=1), on top of
+# docker-compose.e2e.yml: the MCP hub and the STDIO runners on, as an operator turns them on, and the scripted MCP
+# servers.
+#
+# The servers sit on the stack's own (private) network, as a self-hosted customer's do: with MCP_HUB on a private
+# address is allowed unless the deployment blocks private addresses (PIPESHUB_BLOCK_PRIVATE_ADDRESSES), which this
+# stack, like a self-hosted install, does not (MCPFIX F2).
+#
+#   pxh-fake-mcp    fake_saas/kinds.py: an MCP server per transport and auth kind, and an OAuth provider
+
+x-e2e-labels: &e2e-labels
+  pipeshub.harness.owner: x-lead
+  io.pipeshub.e2e.run: ${E2E_RUN:?set E2E_RUN}
+
+services:
+  pipeshub-ai:
+    environment:
+      - MCP_HUB=true
+      - MCP_STDIO_RUNNERS=true
+      - MCP_ALLOW_CUSTOM_STDIO=true
+      # The scripted STDIO server is a Python program in the runner image (/opt/pxh-echo/server.py); the product's
+      # default allows only npx and uvx.
+      - MCP_STDIO_ALLOWED_COMMANDS=npx,uvx,python3
+      # The journeys make an STDIO server per hub journey and remove it after; a removed server's runners stop only
+      # when idle (R36COVER-FU-4), and each held a sandbox of the org's limit for the default 15 minutes.
+      - MCP_RUNNER_IDLE_TTL_S=${E2E_MCP_RUNNER_IDLE_TTL_S:-60}
+      - MCP_RUNNER_IMAGE=${E2E_MCP_RUNNER_IMAGE:?}
+      # A scripted server sends no tools/list_changed, so a change on it is seen when the cached list ages out.
+      - MCP_HUB_SCHEMA_TTL_S=${E2E_MCP_SCHEMA_TTL_S:-1}
+
+  sandbox-broker:
+    environment:
+      MCP_RUNNER_IMAGE: ${E2E_MCP_RUNNER_IMAGE:?}
+
+  pxh-fake-mcp:
+    image: python:3.12-slim@sha256:f77ac9e44ae96ef2c90b8053ea08c31f8be030f824196b0ae4db6d462c84e51f
+    user: "${E2E_UID:?}:${E2E_GID:?}"
+    working_dir: /tmp
+    labels: *e2e-labels
+    restart: "no"
+    entrypoint: ["python", "/e2e/pyrun.py", "/e2e/fake_saas/kinds.py", "8091"]
+    environment:
+      HOME: /tmp
+      FAKE_SAAS_CONTROL_TOKEN: ${E2E_LLM_CONTROL:?}
+    ports:
+      - "127.0.0.1:${E2E_MCP_PORT:?}:8091"
+    volumes:
+      - ${E2E_SRC:?}/backend/python:/app/python:ro
+      - ${E2E_SITE_PACKAGES:?}:/site:ro
+      - ${E2E_SRC}/deployment/e2e:/e2e:ro
+    networks:
+      - pipeshub
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8091/healthz', timeout=3)"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+      start_period: 3s

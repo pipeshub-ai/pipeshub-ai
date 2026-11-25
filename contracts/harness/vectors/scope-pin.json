@@ -1,0 +1,143 @@
+{
+  "description": "SYNC4 (#4255 turn scope on the durable path). Node pins, at admission, the selection the request named below app level (recordGroups, records, recordsExact: sorted, unique, valid ids) and a saved agent's per-source limits (sourceLimits) next to apps/kb/strictScope in x.pipeshub.knowledge; never the expanded node set or any access result. A request with a selection that leaves apps or kb out means none of that kind, never all of the agent's (main's resolve_agent_filters). With internal search off nothing is pinned. A child keeps its parent's selection and limits unchanged and may only narrow apps/kb. Python reads the pin back as the filters it hands main's _resolve_turn_filters / prepare_turn_scope (`requested`), resolving and checking access on every attempt. `pins` cases: Node `grantedKnowledge` (domain/run-spec.ts) and Python `requested_filters` (app/harness/assembly/scope.py). `children` cases: Node `childGrants` then `childRunSpec` (domain/child-runs.ts); the child's pin is read by Python like any other. `feature` is whether the run needs the `knowledge_selection` worker feature (an older worker's strict models would refuse the new fields).",
+  "pins": [
+    {
+      "id": "assistant-without-selection",
+      "definition": null,
+      "filters": { "apps": ["app-b", "app-a"], "kb": ["kb-1"] },
+      "pinned": { "apps": ["app-a", "app-b"], "kb": ["kb-1"], "strictScope": false },
+      "requested": { "apps": ["app-a", "app-b"], "kb": ["kb-1"] },
+      "feature": false
+    },
+    {
+      "id": "assistant-nothing-picked",
+      "definition": null,
+      "filters": {},
+      "pinned": { "apps": [], "kb": [], "strictScope": false },
+      "requested": {},
+      "feature": false
+    },
+    {
+      "id": "assistant-selection",
+      "definition": null,
+      "filters": { "records": ["rec-2", "rec-1", "rec-1"], "recordGroups": ["grp-1"], "recordsExact": ["rec-9"] },
+      "pinned": {
+        "apps": [],
+        "kb": [],
+        "strictScope": false,
+        "recordGroups": ["grp-1"],
+        "records": ["rec-1", "rec-2"],
+        "recordsExact": ["rec-9"]
+      },
+      "requested": { "apps": [], "kb": [], "recordGroups": ["grp-1"], "records": ["rec-1", "rec-2"], "recordsExact": ["rec-9"] },
+      "feature": true
+    },
+    {
+      "id": "assistant-selection-beside-whole-app",
+      "definition": null,
+      "filters": { "apps": ["app-a"], "records": ["rec-1"] },
+      "pinned": { "apps": ["app-a"], "kb": [], "strictScope": false, "records": ["rec-1"] },
+      "requested": { "apps": ["app-a"], "kb": [], "records": ["rec-1"] },
+      "feature": true
+    },
+    {
+      "id": "selection-drops-ids-that-are-not-ids",
+      "definition": null,
+      "filters": { "records": ["rec-1", "", "../x", 7] },
+      "pinned": { "apps": [], "kb": [], "strictScope": false, "records": ["rec-1"] },
+      "requested": { "apps": [], "kb": [], "records": ["rec-1"] },
+      "feature": true
+    },
+    {
+      "id": "agent-without-selection",
+      "definition": { "knowledge": [{ "connectorId": "app-a", "isKb": false }, { "connectorId": "kb-1", "isKb": true }] },
+      "filters": {},
+      "pinned": { "apps": ["app-a"], "kb": ["kb-1"], "strictScope": true },
+      "requested": { "apps": ["app-a"], "kb": ["kb-1"] },
+      "feature": false
+    },
+    {
+      "id": "agent-selection-never-adds-the-agents-whole-sources",
+      "definition": { "knowledge": [{ "connectorId": "app-a", "isKb": false }, { "connectorId": "kb-1", "isKb": true }] },
+      "filters": { "records": ["rec-1"] },
+      "pinned": { "apps": [], "kb": [], "strictScope": true, "records": ["rec-1"] },
+      "requested": { "apps": [], "kb": [], "records": ["rec-1"] },
+      "feature": true
+    },
+    {
+      "id": "agent-selection-beside-a-picked-source",
+      "definition": { "knowledge": [{ "connectorId": "app-a", "isKb": false }, { "connectorId": "kb-1", "isKb": true }] },
+      "filters": { "kb": ["kb-1", "kb-other"], "recordGroups": ["grp-1"] },
+      "pinned": { "apps": [], "kb": ["kb-1"], "strictScope": true, "recordGroups": ["grp-1"] },
+      "requested": { "apps": [], "kb": ["kb-1"], "recordGroups": ["grp-1"] },
+      "feature": true
+    },
+    {
+      "id": "agent-internal-search-off-pins-nothing",
+      "definition": { "knowledge": [{ "connectorId": "app-a", "isKb": false }] },
+      "filters": { "records": ["rec-1"] },
+      "internalSearch": false,
+      "pinned": { "apps": [], "kb": [], "strictScope": true },
+      "requested": { "apps": [], "kb": [] },
+      "feature": false
+    },
+    {
+      "id": "agent-source-limits",
+      "definition": {
+        "knowledge": [
+          { "connectorId": "app-a", "isKb": false, "limit": { "recordGroups": ["grp-2", "grp-1"], "records": [] } },
+          { "connectorId": "app-c", "isKb": false, "limit": { "recordGroups": [], "records": [] } },
+          { "connectorId": "kb-1", "isKb": true }
+        ]
+      },
+      "filters": {},
+      "pinned": {
+        "apps": ["app-a", "app-c"],
+        "kb": ["kb-1"],
+        "strictScope": true,
+        "sourceLimits": [
+          { "connectorId": "app-a", "recordGroups": ["grp-1", "grp-2"], "records": [] },
+          { "connectorId": "app-c", "recordGroups": [], "records": [] }
+        ]
+      },
+      "requested": { "apps": ["app-a", "app-c"], "kb": ["kb-1"] },
+      "feature": true
+    }
+  ],
+  "children": [
+    {
+      "id": "child-inherits-the-selection",
+      "parent": { "apps": [], "kb": [], "strictScope": true, "records": ["rec-1"] },
+      "request": {},
+      "child": { "apps": [], "kb": [], "strictScope": true, "records": ["rec-1"] }
+    },
+    {
+      "id": "child-asking-for-a-whole-app-is-refused",
+      "parent": { "apps": [], "kb": [], "strictScope": true, "records": ["rec-1"] },
+      "request": { "apps": ["app-a"] },
+      "refused": ["app:app-a"]
+    },
+    {
+      "id": "child-narrowing-apps-keeps-the-selection",
+      "parent": { "apps": ["app-a", "app-b"], "kb": [], "strictScope": true, "recordGroups": ["grp-1"] },
+      "request": { "apps": ["app-b"] },
+      "child": { "apps": ["app-b"], "kb": [], "strictScope": true, "recordGroups": ["grp-1"] }
+    },
+    {
+      "id": "child-keeps-the-agents-limits",
+      "parent": {
+        "apps": ["app-a"],
+        "kb": [],
+        "strictScope": true,
+        "sourceLimits": [{ "connectorId": "app-a", "recordGroups": ["grp-1"], "records": [] }]
+      },
+      "request": { "apps": ["app-a"] },
+      "child": {
+        "apps": ["app-a"],
+        "kb": [],
+        "strictScope": true,
+        "sourceLimits": [{ "connectorId": "app-a", "recordGroups": ["grp-1"], "records": [] }]
+      }
+    }
+  ]
+}

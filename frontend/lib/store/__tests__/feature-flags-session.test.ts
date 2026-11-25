@@ -15,7 +15,7 @@ vi.mock('@/config', async () => {
   return { useAuthStore: auth.useAuthStore, logoutAndRedirect: vi.fn() };
 });
 
-const { useAuthStore } = await import('@/lib/store/auth-store');
+const { useAuthStore } = await import('@/config');
 const { apiClient } = await import('@/lib/api/axios-instance');
 const { useFeatureFlagsStore, selectFeatureFlagsLoaded } = await import('../feature-flags-store');
 const { clearSessionCache } = await import('@/lib/api/session-cache');
@@ -36,7 +36,7 @@ async function flush() {
   await new Promise((r) => setTimeout(r, 0));
 }
 
-const signIn = () => useAuthStore.setState({ accessToken: jwtExpiringIn(3600), refreshToken: 'r', isAuthenticated: true });
+const signIn = () => useAuthStore.setState({ accessToken: jwtExpiringIn(3600), isAuthenticated: true });
 const signOut = () => useAuthStore.getState().logout();
 const loaded = () => selectFeatureFlagsLoaded(useFeatureFlagsStore.getState());
 

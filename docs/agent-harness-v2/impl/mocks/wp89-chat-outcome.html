@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chat outcome, timeline header and activity drawer (WP-89)</title>
+<style>
+:root {
+  --bg: #fbfbfa; --surface: #ffffff; --surface-2: #f3f4f1; --border: #dfe2dc; --text: #1d211c; --muted: #646b62;
+  --accent: #0f7a5c; --accent-ink: #ffffff; --warn: #9a5b00; --warn-soft: #fdf1dc; --warn-line: #f0d29b;
+  --focus: #2b6cd8; --code-bg: #eef0ec; --shadow: 0 1px 2px rgba(0,0,0,.06), 0 4px 16px rgba(0,0,0,.05);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #141614; --surface: #1c1f1c; --surface-2: #232723; --border: #343a33; --text: #e8ebe6; --muted: #a2aa9f;
+    --accent: #3fbf93; --accent-ink: #0b1a14; --warn: #f0b555; --warn-soft: #34290f; --warn-line: #5b4417;
+    --focus: #7aa7ff; --code-bg: #2a2f29; --shadow: none;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #141614; --surface: #1c1f1c; --surface-2: #232723; --border: #343a33; --text: #e8ebe6; --muted: #a2aa9f;
+  --accent: #3fbf93; --accent-ink: #0b1a14; --warn: #f0b555; --warn-soft: #34290f; --warn-line: #5b4417;
+  --focus: #7aa7ff; --code-bg: #2a2f29; --shadow: none;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+header.top { padding: 16px; border-bottom: 1px solid var(--border); display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; }
+header.top h1 { font-size: 17px; margin: 0; flex: 1 1 240px; }
+.tabs { display: flex; flex-wrap: wrap; gap: 6px; }
+.tabs button { font: inherit; border: 1px solid var(--border); background: var(--surface); color: var(--text); border-radius: 999px; padding: 6px 12px; min-height: 36px; cursor: pointer; }
+.tabs button[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+button:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+main { padding: 16px; max-width: 1280px; margin: 0 auto; display: grid; gap: 16px; }
+.intro { color: var(--muted); max-width: 860px; margin: 0; }
+.cols { display: grid; grid-template-columns: minmax(0, 1fr) 390px; gap: 16px; align-items: start; }
+@media (max-width: 980px) { .cols { grid-template-columns: 1fr; } }
+.frame { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow); overflow: hidden; }
+.frame > .cap { padding: 8px 12px; font-size: 12px; color: var(--muted); border-bottom: 1px solid var(--border); background: var(--surface-2); }
+.chat { padding: 18px; display: flex; flex-direction: column; gap: 12px; }
+.q { align-self: flex-end; background: var(--surface-2); border-radius: 12px; padding: 8px 12px; max-width: 80%; }
+.summary { color: var(--muted); font-size: 12px; display: flex; gap: 6px; align-items: center; cursor: pointer; }
+.summary .live { color: var(--text); }
+.notice { color: var(--warn); font-size: 12px; margin: 0; }
+.answer h3 { margin: 0 0 6px; font-size: 16px; }
+.answer p { margin: 0 0 8px; }
+.outcome { border: 1px solid var(--warn-line); background: var(--warn-soft); border-radius: 8px; padding: 8px 12px; display: flex; flex-direction: column; gap: 4px; max-width: 100%; align-self: flex-start; }
+.outcome .t { color: var(--warn); font-weight: 600; font-size: 12px; }
+.outcome .d { color: var(--muted); font-size: 12px; }
+.outcome .btn { align-self: flex-start; margin-top: 4px; }
+.btn { font: inherit; font-size: 13px; border-radius: 8px; padding: 6px 12px; min-height: 44px; cursor: pointer; border: 1px solid var(--border); background: var(--surface); color: var(--text); }
+.cmd { font-family: ui-monospace, monospace; font-size: 12px; }
+pre { margin: 4px 0; background: var(--code-bg); border-radius: 6px; padding: 8px; font-size: 12px; overflow: auto; max-height: 140px; }
+.link { background: none; border: 0; color: var(--accent); padding: 0; font: inherit; font-size: 12px; text-decoration: underline; cursor: pointer; min-height: 24px; }
+.drawer { padding: 14px; display: flex; flex-direction: column; gap: 12px; }
+.sec h4 { margin: 0 0 6px; font-size: 13px; display: flex; justify-content: space-between; }
+.tree { font-family: ui-monospace, monospace; font-size: 12px; }
+.tree div { padding: 2px 0; display: flex; justify-content: space-between; gap: 8px; }
+.tree .dir { color: var(--muted); }
+.ref { color: var(--muted); font-size: 12px; }
+.variant { display: none; }
+.variant.on { display: contents; }
+</style>
+</head>
+<body>
+<header class="top">
+  <h1>WP-89: the chat words a run's outcome, its time and cost, and the drawer's file tree</h1>
+  <div class="tabs" role="group" aria-label="Case">
+    <button aria-pressed="true" data-case="cut">Cut short, file written</button>
+    <button aria-pressed="false" data-case="unwritten">File not written</button>
+    <button aria-pressed="false" data-case="nothing">Nothing gathered</button>
+    <button aria-pressed="false" data-case="live">Running</button>
+    <button aria-pressed="false" data-case="degraded">Ran without code tools</button>
+  </div>
+</header>
+<main>
+<p class="intro">The existing chat, improved: one collapsed timeline line above the answer, the model's own words as the answer, and one outcome note under it in the reader's language with the one action that fits. The words come from the run's settled outcome, never from English text in the answer. Details stay in the activity drawer.</p>
+<div class="cols">
+  <section class="frame" aria-label="Chat">
+    <div class="cap">Chat (desktop)</div>
+    <div class="chat">
+      <div class="q">Research how Onyx compares with PipesHub. Write report.md.</div>
+
+      <div class="variant on" data-case="cut">
+        <div class="summary" role="button" aria-expanded="false">▸ Searched the web (38) · Ran 4 commands · Edited report.md · 24m 10s</div>
+        <p class="notice" role="note">Time plan: gathering until 17:20 at the latest, then writing; done by 17:45.</p>
+        <div class="answer"><h3>Onyx vs PipesHub</h3><p><strong>Executive summary.</strong> Onyx documents its connectors and admin tooling …</p></div>
+        <div class="outcome" role="note"><span class="t">⏳ Stopped early: time limit reached</span>
+          <span class="d">report.md holds what the task had written when it stopped; its last part may be missing.</span>
+          <span class="d">The full report is in report.md.</span>
+          <button class="btn">Continue</button></div>
+      </div>
+
+      <div class="variant" data-case="unwritten">
+        <div class="summary">▸ Searched the web (21) · Read 3 records · 31m 02s</div>
+        <div class="outcome" role="note"><span class="t">⏳ report.md isn't written yet.</span>
+          <span class="d">Stopped early: time limit reached</span>
+          <span class="d">It read 21 sources.</span>
+          <span class="d">What it gathered is saved in this conversation's files.</span>
+          <button class="btn">Continue</button></div>
+      </div>
+
+      <div class="variant" data-case="nothing">
+        <div class="summary">▸ Used 6 tools · 2m 40s</div>
+        <div class="outcome" role="note"><span class="t">⏳ report.md isn't written yet.</span>
+          <span class="d">Stopped early: turn limit reached</span>
+          <span class="d">It stopped before it gathered anything.</span>
+          <button class="btn">Try again</button></div>
+      </div>
+
+      <div class="variant" data-case="live">
+        <div class="summary" role="button" aria-expanded="true">▾ <span class="live">Completed 2 of 4 steps · Searched the web (12) · 6m 14s · $0.42 so far</span></div>
+        <div class="cmd">Ran <code>pytest -q</code> ✓ ▾</div>
+        <pre>… 18,204 more lines
+tests/test_api.py ........                                  [ 98%]
+tests/test_cli.py ..                                        [100%]
+212 passed in 41.2s</pre>
+        <span><button class="link">Full log in Activity</button></span>
+      </div>
+
+      <div class="variant" data-case="degraded">
+        <p class="notice" role="note">This answer was written without code tools: the coding engine isn't available on this server right now.</p>
+        <p class="notice" role="note">The usual AI model wasn't responding, so this answer was written with Claude Sonnet 4.5.</p>
+        <div class="summary">▸ Searched the knowledge base (3) · 18s</div>
+        <div class="answer"><p>The Q3 policy says … [1]</p></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="frame" aria-label="Activity drawer">
+    <div class="cap">Activity drawer (opened from "View activity")</div>
+    <div class="drawer">
+      <div class="sec"><h4>Commands <span class="ref">4</span></h4>
+        <div class="cmd">$ pytest -q · exit 0 · <button class="link">Full log</button></div>
+        <p class="ref">The full log opens in a dialog, up to 1 MiB, with Download.</p></div>
+      <div class="sec"><h4>Files changed <span class="ref">1</span></h4><div class="cmd">Edited out/report.md</div></div>
+      <div class="sec"><h4>Workspace <span class="ref">revision 7 · 5 files · 142 KB</span></h4>
+        <div class="tree" role="tree" aria-label="Workspace files, read only">
+          <div class="dir" role="treeitem">notes/</div>
+          <div role="treeitem">&nbsp;&nbsp;handoff.json <span class="ref">3 KB</span></div>
+          <div class="dir" role="treeitem">out/</div>
+          <div role="treeitem">&nbsp;&nbsp;report.md <span class="ref">138 KB</span></div>
+        </div>
+        <p class="ref">onyx-dot-app/onyx at 57cb7b8 — fetched copy, not saved</p>
+        <p class="ref">Read only. Use /open or /download in the chat to read a file.</p></div>
+    </div>
+  </section>
+</div>
+</main>
+<script>
+document.querySelectorAll('.tabs button').forEach((b) => b.addEventListener('click', () => {
+  document.querySelectorAll('.tabs button').forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
+  document.querySelectorAll('.variant').forEach((v) => v.classList.toggle('on', v.dataset.case === b.dataset.case));
+}));
+</script>
+</body>
+</html>

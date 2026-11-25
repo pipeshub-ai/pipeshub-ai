@@ -46,6 +46,7 @@ from app.modules.retrieval.selection_scope import (
 )
 from app.services.graph_db.interface.graph_db_provider import AccessCheck
 from app.utils.attachment_utils import keep_accessible_attachments
+from tests.support.record_access import InMemoryRecordAccess
 
 ROUTER = "app.connectors.api.router"
 DEMO_CHECK = "app.modules.demo_data.access.is_hidden_demo_record"  # looked up there by refuse_hidden_demo_record
@@ -172,7 +173,10 @@ class TestRecordsById:
     @staticmethod
     def _graph_with_access() -> AsyncMock:
         graph = _graph()
-        graph.check_record_access_with_details = AsyncMock(return_value={"hasAccess": True})
+        # The shared fake answers the record read; the limit's own check stays this file's stub (C-27 allows it).
+        check_access = graph.check_access
+        InMemoryRecordAccess().readable("user-1", "org-1", "rec-in", "rec-out").serve(graph)
+        graph.check_access = check_access
         graph.get_document = AsyncMock(return_value={"connectorId": "app-out", "_key": "org-1"})
         return graph
 
@@ -608,6 +612,19 @@ def _file_doc() -> dict:
     }
 
 
+def _readable(
+    graph: AsyncMock, record: dict | None = None, *, knowledge_base: dict | None = None, folder: dict | None = None,
+) -> AsyncMock:
+    """user-1 owns ``rec-in`` (``record`` its stored document) in the shared fake, which answers the record's
+    access and details read; the limit's own check (``check_access``) stays this file's stub."""
+    check_access = graph.check_access
+    access = InMemoryRecordAccess().user("user-1", "org-1").record("rec-in", "org-1", **(record or {}))
+    access.grant("rec-in", user="user-1", role="OWNER").place("rec-in", knowledge_base=knowledge_base, folder=folder)
+    access.serve(graph)
+    graph.check_access = check_access
+    return graph
+
+
 class TestParentsOutsideTheLimit:
     """A file the limit names can sit in a folder the limit leaves out: the
     file is returned and that folder is not named."""
@@ -694,12 +711,11 @@ class TestParentsOutsideTheLimit:
 
     @staticmethod
     async def _details(limit: dict | None) -> dict:
-        graph = _graph_under(limit or FILE_LIMIT)
-        graph.check_record_access_with_details = AsyncMock(return_value={
-            "record": _file_doc(),
-            "knowledgeBase": {"id": "app-in", "name": "Finance", "orgId": "org-1"},
-            "folder": {"id": "folder-in", "name": "Q3"},
-        })
+        graph = _readable(
+            _graph_under(limit or FILE_LIMIT), _file_doc(),
+            knowledge_base={"id": "app-in", "name": "Finance", "orgId": "org-1"},
+            folder={"id": "folder-in", "name": "Q3"},
+        )
         graph.get_document = AsyncMock(return_value={"connectorId": "app-in", "_key": "rec-in"})
         request = _request(limit)
         request.app.container.config_service.return_value = AsyncMock()
@@ -726,7 +742,7 @@ class TestParentsOutsideTheLimit:
         details = await self._details(None)
 
         assert details["folder"]["id"] == "folder-in" and details["knowledgeBase"]["id"] == "app-in"
-        assert details["record"] == _file_doc()
+        assert details["record"].items() >= _file_doc().items()
 
     @pytest.mark.asyncio
     async def test_a_restore_refusal_does_not_name_a_trashed_folder_outside_the_limit(self) -> None:
@@ -762,13 +778,12 @@ class TestSourcePathsUnderALimit:
 
     @staticmethod
     async def _details(limit: dict | None, record: dict | None = None) -> dict:
-        graph = _graph_under(limit if limit and limit.get("records") else FILE_LIMIT)
-        graph.check_record_access_with_details = AsyncMock(return_value={
-            "record": record or {**_file_doc(), "fileRecord": {
+        graph = _readable(
+            _graph_under(limit if limit and limit.get("records") else FILE_LIMIT),
+            record or {**_file_doc(), "fileRecord": {
                 "path": SOURCE_PATH, "webUrl": "https://files.example/budget.xlsx", "extension": "xlsx",
             }},
-            "knowledgeBase": None, "folder": None,
-        })
+        )
         graph.get_document = AsyncMock(return_value={"connectorId": "app-in", "_key": "rec-in"})
         request = _request(limit)
         request.app.container.config_service.return_value = AsyncMock()
@@ -868,10 +883,9 @@ class TestCollectionFilesWithNoParentNode:
 
     @staticmethod
     async def _details(limit: dict | None, store: str) -> dict:
-        graph = _graph_under(limit if limit and limit.get("records") else FILE_LIMIT)
-        graph.check_record_access_with_details = AsyncMock(return_value={
-            "record": _collection_file(store), "knowledgeBase": None, "folder": None,
-        })
+        graph = _readable(
+            _graph_under(limit if limit and limit.get("records") else FILE_LIMIT), _collection_file(store),
+        )
         graph.get_document = AsyncMock(return_value={"connectorId": "app-in", "_key": "rec-in"})
         request = _request(limit)
         request.app.container.config_service.return_value = AsyncMock()
@@ -913,8 +927,7 @@ class TestWhatAReadNamesBesideTheRecord:
 
     @staticmethod
     def _graph_with_access() -> AsyncMock:
-        graph = _graph()
-        graph.check_record_access_with_details = AsyncMock(return_value={"hasAccess": True})
+        graph = _readable(_graph())
         graph.get_document = AsyncMock(return_value={"connectorId": "app-in", "_key": "rec-in"})
         return graph
 
@@ -933,8 +946,7 @@ class TestWhatAReadNamesBesideTheRecord:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("limit", [None, FILE_LIMIT])
     async def test_the_budgeted_read_route(self, limit) -> None:
-        graph = _graph_under(FILE_LIMIT)
-        graph.check_record_access_with_details = AsyncMock(return_value={"hasAccess": True})
+        graph = _readable(_graph_under(FILE_LIMIT))
         graph.get_document = AsyncMock(return_value={"connectorId": "app-in", "_key": "rec-in"})
         request = _request(limit, graph=graph)
         request.app.container.graph_provider = AsyncMock(return_value=graph)

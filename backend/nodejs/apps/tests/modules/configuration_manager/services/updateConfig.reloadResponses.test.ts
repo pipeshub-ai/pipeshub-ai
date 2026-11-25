@@ -100,6 +100,7 @@ function buildContainer(): Container {
   bind('SyncEventProducer', events);
   bind('KeyValueStoreService', { get: sinon.stub().resolves(null) });
   bind('StorageController', { watchStorageType: noop });
+  bind('StorageControllerFactory', () => ({ watchStorageType: noop }));
   container
     .bind(MailSenderService)
     .toConstantValue({} as unknown as MailSenderService);

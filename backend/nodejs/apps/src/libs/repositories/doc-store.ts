@@ -28,12 +28,14 @@ export function unitsAreAtomic(rsAvailable: boolean): boolean {
 }
 
 /** The newest revisions of each schema branch this code needs. */
-const CONVERSATION_EPOCH = 2;
+const CONVERSATION_EPOCH = 3;
 const CONTENT_EPOCH = 2;
 const PLATFORM_DATA_EPOCH = 5;
-const IDENTITY_EPOCH = 5;
+const IDENTITY_EPOCH = 6;
 const OAUTH_EPOCH = 6;
-const INTEGRATIONS_EPOCH = 2;
+const INTEGRATIONS_EPOCH = 3;
+/** The harness branch (`backend/db/versions/harness`): every harness and control-plane store's tables. */
+const HARNESS_EPOCH = 11;
 const IDENTITY_REPOSITORIES = [
   'identity',
   'credential',
@@ -45,6 +47,7 @@ const IDENTITY_REPOSITORIES = [
   'picture',
   'reset-link',
   'org-metrics-job',
+  'session-family',
 ];
 
 /** The schema a process needs under `DOC_STORE=postgres`: the fence, and the tables of each repository that is not kept on Mongo. */
@@ -73,7 +76,7 @@ export function schemaRequirements(): SchemaRequirements {
     ].some(onPg)
       ? { oauth: { requires: OAUTH_EPOCH, code: OAUTH_EPOCH } }
       : {}),
-    ...(onPg('slack-thread')
+    ...(['slack-thread', 'slack-user-link'].some(onPg)
       ? {
           integrations: {
             requires: INTEGRATIONS_EPOCH,
@@ -84,6 +87,8 @@ export function schemaRequirements(): SchemaRequirements {
     ...([...IDENTITY_REPOSITORIES, 'oauth-app'].some(onPg)
       ? { identity: { requires: IDENTITY_EPOCH, code: IDENTITY_EPOCH } }
       : {}),
+    // The harness has no per-store fallback to Mongo: its tables are needed whenever the document store is PostgreSQL.
+    harness: { requires: HARNESS_EPOCH, code: HARNESS_EPOCH },
     ...(onPg('conversation') || onPg('semantic-search')
       ? {
           conversation: {

@@ -70,7 +70,7 @@ export function McpAddServerDialog({
             autoFocus
           >
             <TextField.Slot>
-              <MaterialIcon name="search" size={16} color="var(--gray-9)" />
+              <MaterialIcon name="search" size={16} color="var(--gray-11)" />
             </TextField.Slot>
           </TextField.Root>
 
@@ -88,7 +88,7 @@ export function McpAddServerDialog({
                   tpl.icon ? (
                     <img src={tpl.icon} alt="" width={16} height={16} />
                   ) : (
-                    <MaterialIcon name="hub" size={16} color="var(--gray-10)" />
+                    <MaterialIcon name="hub" size={16} color="var(--gray-11)" />
                   )
                 }
                 title={tpl.displayName}
@@ -97,7 +97,7 @@ export function McpAddServerDialog({
               />
             ))}
             {remoteTemplates.length === 0 && query.trim() && (
-              <Text size="2" style={{ color: 'var(--gray-10)', padding: 'var(--space-2)' }}>
+              <Text size="2" style={{ color: 'var(--gray-11)', padding: 'var(--space-2)' }}>
                 {t('workspace.mcpServers.noResults')}
               </Text>
             )}
@@ -171,7 +171,7 @@ function PickerRow({
         </Text>
         <Text
           size="1"
-          style={{ color: 'var(--gray-10)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+          style={{ color: 'var(--gray-11)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
         >
           {description}
         </Text>

@@ -302,7 +302,11 @@ async def execute_search_entities(
     # A kind put in entity_types ("organization") was ignored, leaving only the
     # other types searched; it is a named-entity kind. One that is also an
     # entity type ("person") stays one too, so it is searched with extraction off.
-    kinds = list(dict.fromkeys([*kinds, *(t for t in requested if t in _ENTITY_KIND_NAMES)]))
+    # Beside an explicit named_entity such a type means only the type: it must not narrow named_entity to its kind.
+    named_asked = "named_entity" in requested
+    kinds = list(dict.fromkeys([
+        *kinds, *(t for t in requested if t in _ENTITY_KIND_NAMES and not (named_asked and t in SEARCHABLE_ENTITY_TYPES)),
+    ]))
     requested = [t for t in requested if t not in _ENTITY_KIND_NAMES or t in SEARCHABLE_ENTITY_TYPES]
     kind_notes: list[str] = []
     asked_kinds = bool(kinds)

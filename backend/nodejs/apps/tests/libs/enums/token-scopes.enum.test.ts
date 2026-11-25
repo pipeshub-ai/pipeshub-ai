@@ -53,6 +53,18 @@ describe('TokenScopes', () => {
     expect(TokenScopes.EMAIL_VERIFIED).to.equal('email:verified');
   });
 
+  it('should have CONVERSATION_FORK as "conversation:fork"', () => {
+    expect(TokenScopes.CONVERSATION_FORK).to.equal('conversation:fork');
+  });
+
+  it('should have AGENT_ERASE as "agent:erase"', () => {
+    expect(TokenScopes.AGENT_ERASE).to.equal('agent:erase');
+  });
+
+  it('should have AGENT_NAMES as "agent:names"', () => {
+    expect(TokenScopes.AGENT_NAMES).to.equal('agent:names');
+  });
+
   it('should have DESKTOP_COMMAND as "desktop:command"', () => {
     expect(TokenScopes.DESKTOP_COMMAND).to.equal('desktop:command');
   });
@@ -69,8 +81,12 @@ describe('TokenScopes', () => {
     expect(TokenScopes.SLACK_BOT_VERIFY).to.equal('slack-bot:verify');
   });
 
-  it('should have exactly 16 scopes', () => {
-    expect(Object.keys(TokenScopes)).to.have.lengthOf(16);
+  it('should have CONTROL_PLANE_BINDINGS as "control-plane:bindings"', () => {
+    expect(TokenScopes.CONTROL_PLANE_BINDINGS).to.equal('control-plane:bindings');
+  });
+
+  it('should have exactly 25 scopes', () => {
+    expect(Object.keys(TokenScopes)).to.have.lengthOf(25);
   });
 
   it('should contain only the expected keys', () => {
@@ -83,6 +99,10 @@ describe('TokenScopes', () => {
       'STORAGE_TOKEN',
       'CONVERSATION_CREATE',
       'CONVERSATION_PERMISSIONS',
+      'CONVERSATION_ERASE',
+      'CONVERSATION_FORK',
+      'AGENT_ERASE',
+      'AGENT_NAMES',
       'VALIDATE_EMAIL',
       'ENTITY_USER_WRITE',
       'ORG_EMAIL_VERIFY',
@@ -91,6 +111,11 @@ describe('TokenScopes', () => {
       'CALLER_ROLE',
       'MCP_RELAY',
       'SLACK_BOT_VERIFY',
+      'CONTROL_PLANE_BINDINGS',
+      'CAPABILITIES_READ',
+      'DIRECTORY_READ',
+      'CAPABILITIES_SYNC',
+      'PRINCIPAL_ERASE',
     ];
     expect(Object.keys(TokenScopes)).to.have.members(expectedKeys);
   });
@@ -135,7 +160,9 @@ describe('isUserActionScope', () => {
       TokenScopes.CALLER_ROLE,
       TokenScopes.MCP_RELAY,
       TokenScopes.SLACK_BOT_VERIFY,
+      TokenScopes.CONTROL_PLANE_BINDINGS,
       TokenScopes.ENTITY_USER_WRITE,
+      TokenScopes.PRINCIPAL_ERASE,
       'not:a:scope',
     ].forEach((scope) => expect(isUserActionScope(scope)).to.be.false);
   });

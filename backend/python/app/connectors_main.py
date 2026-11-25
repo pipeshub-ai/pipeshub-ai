@@ -108,6 +108,7 @@ from app.services.messaging.utils import MessagingUtils
 from app.telemetry.flag import telemetry_enabled  # noqa: E402 - like the imports around it, after set_service_suffix()
 from app.telemetry.modules.connector_metrics import set_connector_active
 from app.telemetry.setup import setup_telemetry
+from app.utils.pdf_stream_conversion import document_conversion_available  # noqa: E402 - after set_service_suffix(), like the imports around it
 from app.utils.process_hardening import mark_process_non_dumpable
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -944,6 +945,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     app.state.config_service = app_container.config_service()
     await configure_envelope(app.state.config_service)
+    from app.modules.indexing.replay_set import check_main_redis_eviction_policy
+
+    await check_main_redis_eviction_policy(app.state.config_service, app_container.logger(), "connectors")
 
     # Resolve data_store first - this internally resolves graph_provider
     data_store = await app_container.data_store()
@@ -1087,6 +1091,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             )
     except Exception as e:
         logger.error(f"❌ Web connector identity backfill failed: {e}", exc_info=True)
+
+    if not document_conversion_available():
+        # Without this line a missing converter only showed up as bare 500s on PPTX/DOC previews.
+        logger.warning(
+            "Document conversion is unavailable: soffice (LibreOffice) is not on PATH, "
+            "so PPT/PPTX and DOC previews will offer a download instead"
+        )
 
     logger.debug("🚀 Starting application")
 
@@ -1275,6 +1286,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         )
 
         app.state.kg_worker = start_kg_worker(graph_provider, logger)
+    except ValueError:          # a setting the worker cannot run with (the message names it, e.g. PG_KG_PROJECT=0): refuse to start rather than serve a knowledge hub that never lists
+        raise
     except Exception as e:      # the service runs without it: reads stay on the walk, and the change log is drained at the next start
         logger.error(f"Failed to start the kg worker: {e}", exc_info=True)
 
@@ -1332,6 +1345,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             logger.info("✅ Accessible-records cache closed")
     except Exception as e:
         logger.error(f"❌ Error closing accessible-records cache: {e}")
+    from app.harness.mcp_hub.hub import process_mcp_hub
+
+    try:
+        await process_mcp_hub.aclose()
+    except Exception as e:
+        logger.error(f"Error closing pooled MCP sessions: {type(e).__name__}")
     try:
         from app.connectors.sources.localKB.push import api as kb_push_api
 
@@ -1425,6 +1444,7 @@ async def health_check() -> JSONResponse:
             status_code=503 if required_down else 200,
             content={
                 "status": overall,
+                "documentConversion": "available" if document_conversion_available() else "unavailable",
                 "components": components,
                 "timestamp": get_epoch_timestamp_in_ms(),
             },

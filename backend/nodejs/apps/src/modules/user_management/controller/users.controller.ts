@@ -1,12 +1,37 @@
+import { erasureOnDelete } from '../../agent-harness/config';
+import {
+  INBOX_ERASER,
+  type InboxEraser,
+} from '../../agent-harness/ports/inbox';
+import {
+  ENGINE_SIGNIN_ERASER,
+  type EngineSignInEraser,
+} from '../../agent-harness/ports/engine-signins';
+import {
+  PERSONAL_INSTANCE_ERASER,
+  type PersonalInstanceEraser,
+} from '../../agent-harness/ports/personal-instances';
 import { Response, NextFunction } from 'express';
+import {
+  SCHEDULE_ERASER,
+  ScheduleEraser,
+} from '../../agent-harness/ports/schedules';
+// Deactivation (isDisabled) has no repository method yet; it reads and writes the Mongo document directly.
+import { setAccountDisabled } from '../../../libs/repositories/agent-harness/org-deletion';
 import {
   AuthenticatedServiceRequest,
   AuthenticatedUserRequest,
 } from '../../../libs/middlewares/types';
+import {
+  PRINCIPAL_DELETION,
+  PrincipalDeletionService,
+} from '../services/principal-deletion.service';
 import { idOf, isValidId } from '../../../libs/repositories/ids';
 import { UniqueConstraintError } from '../../../libs/repositories/errors';
+import { getSlackUserLinkRepository } from '../../../libs/repositories/slack-user-link';
 import { getUserRepository } from '../../../libs/repositories/user';
 import { audit } from '../../../libs/services/audit';
+import { classifyError, levelFor } from '../../../libs/utils/error-class';
 import { withCause } from '../../../libs/errors/base.error';
 import {
   auditMemberships,
@@ -49,7 +74,28 @@ import {
 import {
   markClientSafe,
 } from '../../../libs/errors/reader-friendly';
-import { inject, injectable } from 'inversify';
+import { inject, injectable, optional } from 'inversify';
+import {
+  PRINCIPAL_DEACTIVATION,
+  type PrincipalDeactivationPort,
+} from '../../agent-harness/application/principal-deactivation';
+import {
+  oauthUserTokenRevoker,
+  USER_TOKEN_REVOKER,
+  type UserTokenRevoker,
+} from '../services/user-token-revoker';
+import {
+  MODEL_ACCOUNT_ERASER,
+  ModelAccountEraser,
+} from '../../agent-harness/ports/model-accounts';
+import {
+  MEMORY_ERASER,
+  MemoryEraser,
+} from '../../agent-harness/ports/memory-store';
+import {
+  DATA_ERASER_EXTENSION,
+  DataEraserExtension,
+} from '../../agent-harness/ports/data-eraser-extension';
 import { MailService, mailFailureError } from '../services/mail.service';
 import {
   EntitiesEventProducer,
@@ -184,8 +230,17 @@ function timeRange(from: unknown, to: unknown): TimeRange | undefined {
 }
 
 export const MAX_BULK_INVITE = 1000;
+export const USER_DEACTIVATE_NOT_FINISHED =
+  'The account is deactivated, but some of its work could not be stopped just now. Deactivate it again to finish.';
+export const USER_DEACTIVATE_NOT_RECORDED =
+  "We couldn't deactivate this user just now. Nothing was changed; please try again in a moment.";
+export const USER_REACTIVATED_MESSAGE =
+  'User reactivated. Their schedules stay paused until they resume them, and their access tokens must be created again.';
+
 export const USER_DELETE_NOT_RECORDED =
   "We couldn't delete this user just now. They are still a member; please try again in a moment.";
+export const USER_PROMOTED_DURING_DELETE =
+  'This user was made an admin while being deleted, so the account was kept. Cleanup that had already run is not undone.';
 
 // Linear-time email check: each segment excludes its following separator
 // (`@`/`.`), so there is no ambiguous backtracking (avoids ReDoS). The local
@@ -231,6 +286,33 @@ function isDuplicateEmailKeyError(error: unknown): boolean {
   );
 }
 
+/**
+ * Refuses an email change to an address the organisation cannot give this account. An account
+ * removed from the organisation still holds its address (the unique index covers removed rows),
+ * so the confirmation link could never be applied: say so here, before one is mailed.
+ */
+async function assertEmailFreeForChange(
+  orgId: string,
+  newEmail: string,
+  userId: string,
+): Promise<void> {
+  const users = getUserRepository();
+  if (await users.emailTakenByOther(orgId, newEmail, userId)) {
+    throw userRefusal(
+      new BadRequestError('Email already exists for another user'),
+      'email_taken',
+    );
+  }
+  if (await users.hasRemovedAccount(orgId, newEmail)) {
+    throw userRefusal(
+      new BadRequestError(
+        'This email belongs to an account that was removed. Restore that account or use another address.',
+      ),
+      'email_taken',
+    );
+  }
+}
+
 @injectable()
 export class UserController {
   constructor(
@@ -242,6 +324,36 @@ export class UserController {
     protected eventService: EntitiesEventProducer,
     @inject('NotificationProducer')
     protected notificationProducer: NotificationProducer,
+    @inject(MODEL_ACCOUNT_ERASER)
+    @optional()
+    protected modelAccounts: ModelAccountEraser | null = null,
+    @inject(SCHEDULE_ERASER)
+    @optional()
+    protected schedules: ScheduleEraser | null = null,
+    @inject(MEMORY_ERASER)
+    @optional()
+    protected memories: MemoryEraser | null = null,
+    @inject(ENGINE_SIGNIN_ERASER)
+    @optional()
+    protected engineSignIns: EngineSignInEraser | null = null,
+    @inject(PRINCIPAL_DELETION)
+    @optional()
+    protected principalDeletion: PrincipalDeletionService | null = null,
+    @inject(PERSONAL_INSTANCE_ERASER)
+    @optional()
+    protected personalInstances: PersonalInstanceEraser | null = null,
+    @inject(DATA_ERASER_EXTENSION)
+    @optional()
+    protected extension: DataEraserExtension | null = null,
+    @inject(PRINCIPAL_DEACTIVATION)
+    @optional()
+    protected deactivation: PrincipalDeactivationPort | null = null,
+    @inject(USER_TOKEN_REVOKER)
+    @optional()
+    protected tokenRevoker: UserTokenRevoker | null = null,
+    @inject(INBOX_ERASER)
+    @optional()
+    protected inbox: InboxEraser | null = null,
   ) {}
 
   async getAllUsers(
@@ -388,9 +500,13 @@ export class UserController {
         // them apart. Without it the picker offers a machine identity with
         // nothing to mark it, which is worse than not offering it at all.
         kind: u.kind,
-        isActive: !blockedUserIds.has(uid) && (u.hasLoggedIn ?? false),
+        isActive:
+          !blockedUserIds.has(uid) &&
+          u.isDisabled !== true &&
+          (u.hasLoggedIn ?? false),
         hasLoggedIn: u.hasLoggedIn ?? false,
         isBlocked: blockedUserIds.has(uid),
+        isDisabled: u.isDisabled === true,
         createdAtTimestamp: timestamps.createdAt
           ? new Date(timestamps.createdAt).getTime()
           : undefined,
@@ -511,6 +627,150 @@ export class UserController {
       res.status(200).json({
         message: 'User unblocked successfully',
       });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * SEC-AZ-08: switches a member's account off. The account is marked disabled
+   * first, so sign-in, token minting, admission and schedule firings refuse
+   * them from then on; then what was already handed out is stopped: their
+   * tokens revoked, their harness runs cancelled, their schedules paused. A
+   * failure there leaves the account disabled and answers a retry, which runs
+   * the whole of it again.
+   */
+  async deactivateUser(
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> {
+    try {
+      const caller = req.user;
+      if (!caller?.orgId) throw new UnauthorizedError('Unauthorized');
+      const callerId = String(caller.userId ?? caller._id);
+      const user = await getUserRepository().getLive(
+        String(caller.orgId),
+        String(req.params.id),
+      );
+      if (!user) throw new NotFoundError('User not found');
+      const userId = user._id;
+      if (userId === callerId) {
+        throw new BadRequestError('You cannot deactivate your own account');
+      }
+      // A stored user may lack an email, whatever the DTO type says.
+      const stored: { email?: string } = user;
+      if (isServiceAccountEmail(stored.email ?? '')) {
+        throw new BadRequestError(
+          'Service accounts are turned off from their own settings',
+        );
+      }
+      // Fail closed as delete does: only explicit members (an admin is demoted first).
+      if (user.role !== 'member') {
+        throw new BadRequestError(
+          'User cannot be deactivated. Please demote the user from admin first.',
+        );
+      }
+      const orgId = user.orgId;
+
+      if (user.isDisabled !== true) {
+        // Recorded before the switch: it ends the sessions issued before it,
+        // and keeps them ended after a reactivation.
+        try {
+          await getActivityRepository().record({
+            orgId,
+            userId,
+            email: user.email,
+            activityType: userActivitiesType.ACCOUNT_DISABLED,
+            ipAddress: req.ip ?? '',
+          });
+        } catch (activityError) {
+          this.logger.error('Deactivation not recorded; nothing was changed', {
+            userId,
+            error:
+              activityError instanceof Error
+                ? activityError.message
+                : String(activityError),
+          });
+          throw markClientSafe(
+            new ServiceUnavailableError(USER_DEACTIVATE_NOT_RECORDED),
+          );
+        }
+        await setAccountDisabled(orgId, userId, true);
+      }
+
+      const counts = await this.stopWorkOf(orgId, userId, callerId);
+      res.status(200).json({
+        message: 'User deactivated',
+        cancelledRuns: counts.cancelledRuns,
+        pausedSchedules: counts.pausedSchedules,
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /** What a disabled person still has running or handed out; every step idempotent. */
+  protected async stopWorkOf(
+    orgId: string,
+    userId: string,
+    byUserId: string,
+  ): Promise<{ cancelledRuns: number; pausedSchedules: number }> {
+    try {
+      await (
+        this.tokenRevoker ?? oauthUserTokenRevoker
+      ).revokeEveryTokenForUser(userId);
+      return (
+        (await this.deactivation?.deactivate(orgId, userId, byUserId)) ?? {
+          cancelledRuns: 0,
+          pausedSchedules: 0,
+        }
+      );
+    } catch (error) {
+      this.logger.error(
+        'Deactivation not finished; the account stays disabled',
+        {
+          orgId,
+          userId,
+          error: error instanceof Error ? error.message : String(error),
+        },
+      );
+      throw markClientSafe(
+        new ServiceUnavailableError(USER_DEACTIVATE_NOT_FINISHED),
+      );
+    }
+  }
+
+  /**
+   * Switches a deactivated member back on. Nothing they had resumes: their
+   * schedules stay paused for them to resume, their tokens stay revoked, their
+   * cancelled runs stay cancelled, and sessions from before stay ended.
+   */
+  async reactivateUser(
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> {
+    try {
+      const caller = req.user;
+      if (!caller?.orgId) throw new UnauthorizedError('Unauthorized');
+      const user = await getUserRepository().getLive(
+        String(caller.orgId),
+        String(req.params.id),
+      );
+      if (!user) throw new NotFoundError('User not found');
+      if (user.isDisabled !== true) {
+        throw new BadRequestError('User is not deactivated');
+      }
+      await getActivityRepository().record({
+        orgId: user.orgId,
+        userId: user._id,
+        email: user.email,
+        activityType: userActivitiesType.ACCOUNT_ENABLED,
+        ipAddress: req.ip ?? '',
+      });
+      await setAccountDisabled(user.orgId, user._id, false);
+      res.status(200).json({ message: USER_REACTIVATED_MESSAGE });
     } catch (error) {
       next(error);
     }
@@ -725,10 +985,104 @@ export class UserController {
       // before it, there is nothing to take back.
       let groupWriteAttempted = false;
       let newUser!: UserDto;
+      const rsAvailable = this.config.rsAvailable === 'true';
+      // The undo could not safely remove a live account, so it stays: a create
+      // that failed, but an account that exists, possibly as an admin.
+      const keepAccount = (
+        reason: 'admin_now' | 'restored' | 'remove_failed',
+        grantStands: boolean,
+        error?: unknown,
+      ): void => {
+        const errorClass =
+          error === undefined ? undefined : classifyError(error);
+        this.logger[errorClass === undefined ? 'warn' : levelFor(errorClass)](
+          'Account kept after a failed create',
+          { target_user_id: newUser._id, reason, error_class: errorClass },
+        );
+        audit('user.create', {
+          target: newUser._id,
+          targetIsUser: true,
+          outcome: 'partial',
+          reason: 'kept_after_failure',
+        });
+        if (grantStands) {
+          auditUserChange('user.role.change', newUser._id, 'new_admin');
+        }
+      };
       const undoSavedAccount = async (reason: string): Promise<void> => {
-        // Membership goes first, so nothing is left pointing at a user that is
-        // about to go, and in its own try: when the group write is what failed,
-        // this is likely to fail too, and the account still has to go.
+        // Taking an admin back is a demotion first. Under the admin lock it is
+        // refused when another admin was demoted meanwhile on the strength of
+        // this one; the conditional removal below then keeps the account.
+        let demoted = false;
+        if (fields.role === 'admin') {
+          try {
+            await saveUserEnsuringOrgRetainsAdmin(
+              orgId,
+              newUser._id,
+              { role: 'member' },
+              rsAvailable,
+            );
+            demoted = true;
+          } catch (demoteError) {
+            const errorClass = classifyError(demoteError);
+            this.logger[levelFor(errorClass)](
+              'Account could not be made a member before its removal',
+              { target_user_id: newUser._id, error_class: errorClass },
+            );
+          }
+        }
+        const grantStands = fields.role === 'admin' && !demoted;
+        // Only a member goes: the store judges the role at the moment of the
+        // write, since the account may have been made an admin since it was
+        // saved. Nothing is taken apart before this decides.
+        let removed: UserDto | null;
+        try {
+          removed = await users.markDeleted(newUser.orgId, newUser._id, {
+            onlyMember: true,
+          });
+        } catch (removeError) {
+          // A refused demotion does not make the account an admin: another
+          // request may have demoted it already. Read the role back, and
+          // record no grant when that read fails too.
+          const isAdmin =
+            grantStands &&
+            (await users
+              .getRoleSnapshot(newUser.orgId, newUser._id)
+              .then((s) => normalizeUserRole(s?.role) === 'admin')
+              .catch(() => false));
+          keepAccount('remove_failed', isAdmin, removeError);
+          return;
+        }
+        if (!removed) {
+          keepAccount('admin_now', grantStands);
+          return;
+        }
+        // The hard delete decides before anything else is taken apart. False:
+        // an invite brought the account back meanwhile (it may have re-added
+        // it to the everyone group), or (demo addresses) a sample-account
+        // cleanup already deleted it. Either way nothing more is taken.
+        try {
+          if (!(await users.deleteRemoved(newUser.orgId, newUser._id))) {
+            keepAccount('restored', false);
+            return;
+          }
+        } catch (cleanupError) {
+          this.logger.error(
+            `Account was saved but ${reason}, and removing it failed too`,
+            {
+              userId: newUser._id,
+              error:
+                cleanupError instanceof Error
+                  ? cleanupError.message
+                  : String(cleanupError),
+            },
+          );
+          return;
+        }
+        // Only then what pointed at it (PostgreSQL drops the credential with
+        // the row). Each in its own try: when the group write is what failed,
+        // this is likely to fail too. A row left behind only names an account
+        // that no longer exists, which is better than stripping a live one.
         try {
           if (groupWriteAttempted) {
             await getGroupRepository().removeFromEveryone(
@@ -755,17 +1109,11 @@ export class UserController {
               newUser.email,
             );
           }
-          await users.deleteById(newUser._id);
-        } catch (cleanupError) {
-          this.logger.error(
-            `Account was saved but ${reason}, and removing it failed too`,
-            {
-              userId: newUser._id,
-              error:
-                cleanupError instanceof Error
-                  ? cleanupError.message
-                  : String(cleanupError),
-            },
+        } catch (credentialError) {
+          const errorClass = classifyError(credentialError);
+          this.logger[levelFor(errorClass)](
+            'Account was removed, but discarding its credential failed',
+            { target_user_id: newUser._id, error_class: errorClass },
           );
         }
       };
@@ -773,11 +1121,7 @@ export class UserController {
       try {
         newUser =
           fields.role === 'admin'
-            ? await createUserEnsuringAdminCap(
-                orgId,
-                fields,
-                this.config.rsAvailable === 'true',
-              )
+            ? await createUserEnsuringAdminCap(orgId, fields, rsAvailable)
             : await users.create(orgId, fields);
       } catch (saveError) {
         // The check above only sees live accounts, but the unique index covers
@@ -1135,18 +1479,11 @@ export class UserController {
           // Stored addresses are lowercased and the unique index is
           // case-sensitive, so the raw request value can miss an existing
           // lowercase match and the change would only fail later on save.
-          if (
-            await getUserRepository().emailTakenByOther(
-              req.user.orgId as string,
-              newEmail as string,
-              id as string,
-            )
-          ) {
-            throw userRefusal(
-              new BadRequestError('Email already exists for another user'),
-              'email_taken',
-            );
-          }
+          await assertEmailFreeForChange(
+            req.user.orgId as string,
+            newEmail as string,
+            id as string,
+          );
 
           const emailSentResponse = await this.emailChange(
             email as string,
@@ -1504,18 +1841,11 @@ export class UserController {
         return;
       }
       assertEmailChangeIsSelf(req.user.userId, id);
-      if (
-        await getUserRepository().emailTakenByOther(
-          req.user.orgId as string,
-          newEmail,
-          id as string,
-        )
-      ) {
-        throw userRefusal(
-          new BadRequestError('Email already exists for another user'),
-          'email_taken',
-        );
-      }
+      await assertEmailFreeForChange(
+        req.user.orgId as string,
+        newEmail,
+        id as string,
+      );
       const emailSentResponse = await this.emailChange(
         requested,
         newEmail,
@@ -1598,6 +1928,21 @@ export class UserController {
     await apps.transferCreatedBy(orgOid, userOid, actorId);
   }
 
+  private async handOverConversations(
+    orgId: string,
+    userId: string,
+    actor: AuthenticatedUserRequest['user'],
+  ): Promise<void> {
+    // Where a delete erases for the org (ADR-OPS-08): otherwise the user's conversations stay as a release without
+    // CLEANUP-G2 kept them.
+    if (!(await erasureOnDelete(orgId))) return;
+    await this.principalDeletion?.handOverUser(
+      orgId,
+      userId,
+      String(actor?.userId ?? actor?._id),
+    );
+  }
+
   async deleteUser(
     req: AuthenticatedUserRequest,
     res: Response,
@@ -1675,11 +2020,43 @@ export class UserController {
       }
       await ProjectService.removeUserFromAllProjects(orgId, userId);
 
+      // CLEANUP-G2: their private conversations go, the shared ones move to an admin; before the user is
+      // marked deleted, so a retry finds what is left.
+      await this.handOverConversations(orgId, userId, req.user);
+
+      // Before the user is marked deleted, so a failed erasure leaves the
+      // user deletable and a retry reaches the keys again.
+      await this.modelAccounts?.eraseUser(orgId, userId);
+      // Nothing may run as a deleted user again (P8a).
+      await this.schedules?.eraseUser(orgId, userId);
+      await this.memories?.eraseUser(orgId, userId);
+      // What stores this build does not know of keep for them (`DataEraserExtension`).
+      await this.extension?.eraseUser(orgId, userId);
+      // Their own Claude sign-in (SIGNIN): the record removed, live sandboxes signed out.
+      await this.engineSignIns?.eraseUser(orgId, userId);
+      // Their Inbox settings, run-notice claims and watch leases (G2).
+      await this.inbox?.eraseUser(orgId, userId);
+      // Their own toolset and MCP instances (main #4324) with the sign-ins and rules stored for them.
+      await this.personalInstances?.eraseUser(orgId, userId);
+
+      // The Slack accounts they linked (ADR-SLACKID-01): Slack can no longer reach this account.
+      await getSlackUserLinkRepository().removeForUser(orgId, userId);
+
       await getCredentialRepository().clearPassword(userId, user.email);
-      await getUserRepository().markDeleted(orgId, userId, {
+      // Only while still a member: someone promoted since the check above may be
+      // the admin a concurrent demotion counted on, and removing them could
+      // leave the organisation with none.
+      const removed = await getUserRepository().markDeleted(orgId, userId, {
         signedOut: true,
         deletedBy: req.user?.userId ?? req.user?._id,
+        onlyMember: true,
       });
+      if (!removed) {
+        throw userRefusal(
+          new BadRequestError(USER_PROMOTED_DURING_DELETE),
+          'not_member',
+        );
+      }
       auditUserChange('user.delete', userId);
 
       await this.eventService.start();
@@ -2329,6 +2706,9 @@ export class UserController {
           )
         : await grant();
 
+    // shortcut: the audit lines and mails below use what was read before the grant, so an account removed
+    // meanwhile (or, on standalone Mongo, created by this invite and removed before the grant) still gets its
+    // restore/promote/new_admin line, mail and reinvited count; re-read the accounts inside the grant to fix it.
     for (const restored of restoredUsers) {
       auditUserChange('user.restore', restored._id, 'invite');
     }

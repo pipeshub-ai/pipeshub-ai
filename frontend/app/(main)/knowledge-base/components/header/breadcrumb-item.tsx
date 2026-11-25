@@ -134,5 +134,5 @@ export function BreadcrumbItem({
 }
 
 export function BreadcrumbSeparator() {
-  return <MaterialIcon name="chevron_right" size={16} color="var(--slate-8)" style={{ flexShrink: 0 }} />;
+  return <MaterialIcon name="chevron_right" size={16} color="var(--slate-11)" style={{ flexShrink: 0 }} />;
 }

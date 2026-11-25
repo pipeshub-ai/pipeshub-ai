@@ -1,0 +1,181 @@
+"""The kept record counts of ``get_connector_stats`` (graph_0021, ``connector_stats``) against the walk, after every kind of change, read before and after the projection.
+
+Needs a migrated database: PG_CORE_URL (a `pipeshub_connectors_login` DSN), PG_POOLER=none.
+"""
+from __future__ import annotations
+
+import re
+from collections import Counter
+
+import pytest
+
+from app.config.constants.arangodb import FOLDER_MIME_TYPES, Connectors
+from app.services.graph_db.postgres import connector_stats
+from app.services.graph_db.postgres.lookups import STATS_CONNECTOR, STATS_KB
+
+from .test_access import APP, World, _org
+from .test_access import w as w
+from .test_grants import in_org
+
+pytestmark = pytest.mark.integration
+
+KB_APP = "kb1"
+BASE = {"recordType": "FILE", "indexingStatus": "QUEUED", "extractionStatus": "NOT_STARTED"}
+
+
+async def walk(w: World, app: str) -> Counter:
+    is_kb = await w.p._lrows("SELECT 1 FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = 'apps' AND n.id = $2 AND n.doc->>'type' = $3", w.org, app,
+                             Connectors.KNOWLEDGE_BASE.value)
+    sql = STATS_KB if is_kb else STATS_CONNECTOR
+    rows = await w.p._lrows(sql, w.org, app, FOLDER_MIME_TYPES)
+    return Counter({(r["recordType"], r["indexingStatus"], r["extractionStatus"], r["entitiesStatus"]): r["cnt"] for r in rows})
+
+
+async def kept(w: World, app: str) -> Counter | None:
+    rows = await w.p._q(lambda tx: connector_stats.read(tx, w.org, app), None, isolation="repeatable_read")
+    return None if rows is None else Counter({(r["recordType"], r["indexingStatus"], r["extractionStatus"], r["entitiesStatus"]): r["cnt"] for r in rows})
+
+
+async def settle(w: World, pg_db) -> None:
+    while await connector_stats.run(pg_db, w.org):
+        pass
+
+
+async def same(w: World, pg_db, *, logged_whole: bool = False) -> None:
+    """Both apps: before the projection the read corrects for the log (or, while a group or an app is logged, answers None); after it, the counts alone match."""
+    for app in (APP, KB_APP):
+        got = await kept(w, app)
+        assert (got is None) if logged_whole else (got == await walk(w, app)), (app, got)
+    await settle(w, pg_db)
+    for app in (APP, KB_APP):
+        assert await kept(w, app) == await walk(w, app), app
+    assert await pg_db.run(lambda tx: tx.fetchval("SELECT count(*) FROM graph.stats_changes WHERE org_id = $1", w.org)) == 0
+
+
+async def world(w: World, pg_db) -> None:
+    await w.nodes("apps", {"_key": KB_APP, "type": Connectors.KNOWLEDGE_BASE.value})
+    await w.nodes("recordGroups", *({"_key": g} for g in ("top", "mid", "low", "cut", "side")))
+    await w.edge("belongsTo", ("recordGroups", "top"), ("apps", APP))
+    await w.edge("belongsTo", ("recordGroups", "mid"), ("recordGroups", "top"))
+    await w.edge("belongsTo", ("recordGroups", "low"), ("recordGroups", "mid"))
+    await w.edge("belongsTo", ("recordGroups", "side"), ("apps", APP))
+    await w.edge("belongsTo", ("recordGroups", "cut"), ("recordGroups", "gone"))
+    await w.nodes("records", {"_key": "a", **BASE, "virtualRecordId": "va", "contentRev": "1"}, {"_key": "b", **BASE, "virtualRecordId": "vb", "contentRev": "1"},
+                  {"_key": "twice", **BASE}, {"_key": "deep", **BASE, "recordType": "MAIL"}, {"_key": "stray", **BASE},
+                  {"_key": "folder", **BASE, "mimeType": FOLDER_MIME_TYPES[0]}, {"_key": "k1", **BASE}, {"_key": "k2", **BASE, "isDeleted": True})
+    await w.nodes("stageStates", {"_key": "va:1:entities", "status": "COMPLETED"}, {"_key": "vb:1:other", "status": "COMPLETED"})
+    for r, g in (("a", "top"), ("b", "mid"), ("twice", "top"), ("twice", "side"), ("deep", "low"), ("stray", "cut"), ("folder", "top")):
+        await w.edge("belongsTo", ("records", r), ("recordGroups", g))
+    for r in ("k1", "k2", "a"):
+        await w.edge("belongsTo", ("records", r), ("apps", KB_APP))
+    await w.edge("belongsTo", ("records", "b"), ("apps", APP))      # a record linked straight to an app that is not a collection does not count there
+
+
+async def test_the_kept_counts_equal_the_walk_after_every_change(w: World, pg_db) -> None:
+    await world(w, pg_db)
+    assert await kept(w, APP) is None                                  # not counted whole yet: the walk answers
+    await settle(w, pg_db)
+    assert (await walk(w, APP)).total() == 4 and (await walk(w, KB_APP)).total() == 2
+    await same(w, pg_db)
+    # a record's own fields: status flips, its type, trash, a folder, internal, placeholder, its revision (another stage state)
+    await w.nodes("records", {"_key": "a", "indexingStatus": "COMPLETED", "extractionStatus": "COMPLETED"})
+    await same(w, pg_db)
+    await w.nodes("records", {"_key": "deep", "recordType": "WEBPAGE"}, {"_key": "twice", "isDeleted": True})
+    await same(w, pg_db)
+    await w.nodes("records", {"_key": "twice", "isDeleted": False}, {"_key": "b", "mimeType": FOLDER_MIME_TYPES[0]}, {"_key": "k1", "isInternal": True})
+    await same(w, pg_db)
+    await w.nodes("records", {"_key": "b", "mimeType": "text/plain", "contentRev": "2"}, {"_key": "k1", "isPlaceholder": True, "isInternal": False})
+    await same(w, pg_db)
+    # the entities stage state: its status, one on a new revision, one deleted
+    await w.nodes("stageStates", {"_key": "va:1:entities", "status": "FAILED"}, {"_key": "vb:2:entities", "status": "IN_PROGRESS"})
+    await same(w, pg_db)
+    await w.p.delete_nodes(["va:1:entities"], "stageStates")
+    await same(w, pg_db)
+    # membership of a record: a new link, a link gone, a new record, a record deleted, a link to a collection
+    await w.nodes("records", {"_key": "new", **BASE, "recordType": "TICKET"})
+    await w.edge("belongsTo", ("records", "new"), ("recordGroups", "low"))
+    await w.edge("belongsTo", ("records", "stray"), ("recordGroups", "side"))
+    await same(w, pg_db)
+    await w.p.delete_edge("twice", "records", "top", "recordGroups", "belongsTo")
+    await w.edge("belongsTo", ("records", "new"), ("apps", KB_APP))
+    await same(w, pg_db)
+    await w.p.delete_nodes(["deep"], "records")
+    await same(w, pg_db)
+    # a record group moves: the cut group joins, the mid group leaves (its records with it), then comes back further down
+    await w.edge("belongsTo", ("recordGroups", "cut"), ("recordGroups", "side"))
+    await same(w, pg_db, logged_whole=True)
+    await w.p.delete_edge("mid", "recordGroups", "top", "recordGroups", "belongsTo")
+    await same(w, pg_db, logged_whole=True)
+    await w.edge("belongsTo", ("recordGroups", "mid"), ("recordGroups", "cut"))
+    await same(w, pg_db, logged_whole=True)
+    # the app itself: the collection stops being one (its records now count by group, and it has none), then is one again
+    await w.nodes("apps", {"_key": KB_APP, "type": "DRIVE"})
+    await same(w, pg_db, logged_whole=True)
+    await w.nodes("apps", {"_key": KB_APP, "type": Connectors.KNOWLEDGE_BASE.value})
+    await same(w, pg_db, logged_whole=True)
+    stats = (await w.p.get_connector_stats(w.org, APP))["data"]["stats"]
+    assert stats["total"] == (await walk(w, APP)).total()
+
+
+async def test_the_ten_group_bound_of_the_walk_holds(w: World, pg_db) -> None:
+    for i in range(1, 13):
+        await w.nodes("recordGroups", {"_key": f"d{i}"})
+        await w.edge("belongsTo", ("recordGroups", f"d{i}"), ("apps", APP) if i == 1 else ("recordGroups", f"d{i - 1}"))
+    await w.nodes("records", {"_key": "at10", **BASE}, {"_key": "at11", **BASE})
+    await w.edge("belongsTo", ("records", "at10"), ("recordGroups", "d10"))
+    await w.edge("belongsTo", ("records", "at11"), ("recordGroups", "d11"))
+    await settle(w, pg_db)
+    assert (await kept(w, APP)).total() == 1
+    await w.p.delete_edge("d2", "recordGroups", "d1", "recordGroups", "belongsTo")
+    await w.edge("belongsTo", ("recordGroups", "d2"), ("apps", APP))          # one group shorter: the record eleven groups down is now ten
+    await settle(w, pg_db)
+    assert await kept(w, APP) == await walk(w, APP) and (await walk(w, APP)).total() == 2
+
+
+async def test_a_write_not_yet_committed_is_counted_when_it_commits(w: World, pg_db) -> None:
+    await world(w, pg_db)
+    await settle(w, pg_db)
+    txn = await w.p.begin_transaction(read=[], write=["records"])
+    await w.p.batch_upsert_nodes([{"_key": "a", "orgId": w.org, "indexingStatus": "FAILED"}], "records", transaction=txn)
+    await settle(w, pg_db)                                                    # the projection does not see it, and leaves its log row
+    assert await kept(w, APP) == await walk(w, APP)
+    await w.p.commit_transaction(txn)
+    assert await kept(w, APP) == await walk(w, APP) and (await walk(w, APP))[("FILE", "FAILED", "NOT_STARTED", "COMPLETED")] == 1
+    await settle(w, pg_db)
+    assert await kept(w, APP) == await walk(w, APP)
+
+
+async def test_a_read_costs_the_same_whatever_the_size_of_the_connector(w: World, pg_db) -> None:
+    await w.nodes("recordGroups", {"_key": "g"})
+    await w.edge("belongsTo", ("recordGroups", "g"), ("apps", APP))
+    await pg_db.run(lambda tx: tx.execute("""INSERT INTO graph.nodes (org_id, coll, id, doc) SELECT $1, 'records', 'r' || g,
+        jsonb_build_object('recordType', 'FILE', 'indexingStatus', CASE WHEN g % 3 = 0 THEN 'COMPLETED' ELSE 'QUEUED' END) FROM generate_series(1, 3000) g""", w.org), write=True)
+    await pg_db.run(lambda tx: tx.execute("""INSERT INTO graph.edges (org_id, coll, from_coll, from_id, to_coll, to_id) SELECT $1, 'belongsTo', 'records', 'r' || g,
+        'recordGroups', 'g' FROM generate_series(1, 3000) g""", w.org), write=True)
+    await settle(w, pg_db)
+    assert (await kept(w, APP)) == await walk(w, APP) and (await walk(w, APP)).total() == 3000
+
+    async def touched(sql: str, *args: object) -> int:
+        plan = "\n".join(r[0] for r in await pg_db.run(lambda tx: tx._con.fetch("EXPLAIN (ANALYZE, BUFFERS, COSTS OFF) " + sql, *args)))
+        root = next(line for line in plan.splitlines() if line.strip().startswith("Buffers:"))
+        return sum(int(m) for m in re.findall(r"(?:hit|read)=(\d+)", root))
+    assert await touched(connector_stats.COUNTS, w.org, APP) < 50
+    assert await touched(STATS_CONNECTOR, w.org, APP, FOLDER_MIME_TYPES) > 3000
+
+
+async def test_the_counts_of_one_org_are_not_read_in_another(w: World, pg_db) -> None:
+    await world(w, pg_db)
+    await settle(w, pg_db)
+    other = World(w.p, _org())
+    with in_org(other.org):
+        assert await kept(other, APP) is None
+        assert await pg_db.run(lambda tx: tx.fetchval("SELECT count(*) FROM graph.stats_counts WHERE app_id = $1", APP)) == 0
+    assert await kept(w, APP) == await walk(w, APP)
+
+
+async def test_a_log_row_that_names_nothing_does_not_stop_the_projection(w: World, pg_db) -> None:
+    await world(w, pg_db)
+    await settle(w, pg_db)
+    await pg_db.run(lambda tx: tx.execute("INSERT INTO graph.stats_changes (org_id, keys) VALUES ($1, ARRAY['x', '', 'q:1', 'r'])", w.org), write=True)
+    await w.nodes("records", {"_key": "a", "indexingStatus": "FAILED"})
+    await same(w, pg_db)

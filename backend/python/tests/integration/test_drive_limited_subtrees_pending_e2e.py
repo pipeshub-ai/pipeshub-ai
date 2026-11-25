@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import secrets
 import uuid
 from typing import TYPE_CHECKING
 
@@ -50,7 +51,7 @@ async def connector(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPa
         disconnect = getattr(graph, "disconnect", None)
         if disconnect is not None:
             cleanup.push_async_callback(disconnect)
-        monkeypatch.setenv("SECRET_KEY", "limited-pending-it-secret")
+        monkeypatch.setenv("SECRET_KEY", secrets.token_urlsafe(32))
         yield pending_queue(graph, f"org-pending-{uuid.uuid4().hex[:10]}")
 
 

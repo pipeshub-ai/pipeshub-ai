@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
+from app.agent_loop_lib.core.scope import StateSlot
 from app.agent_loop_lib.hooks.middleware.context import AgentLifecycleContext
 
 if TYPE_CHECKING:
@@ -43,6 +44,10 @@ at PRE_AGENT time.
 
 logger = logging.getLogger(__name__)
 
+# The skills this pass loaded in full, by name: what a hand-off names to the job it starts (R31HOT2), whose engine has
+# every skill mounted and no other way to know which one the chat already chose. Pointer-tier mentions are not loaded.
+PRELOADED_SKILLS: StateSlot[tuple[str, ...]] = StateSlot(key="skill_preloading.loaded", default_factory=tuple)
+
 
 def skill_preloading(
     manager: "SkillManager",
@@ -78,11 +83,12 @@ def skill_preloading(
             await next_fn()
             return
 
-        section = await _render_preload_section(
+        section, loaded = await _render_preload_section(
             manager, matches, session_id=ctx.session_id,
             preload_body_threshold=preload_body_threshold, mention_threshold=mention_threshold,
             emit_pointers=_can_load_skills_on_demand(ctx.scope),
         )
+        ctx.scope.set(PRELOADED_SKILLS, loaded)
         if section:
             ctx.scope.extra_prompt_sections["preloaded_skills"] = section
         else:
@@ -116,8 +122,10 @@ async def _render_preload_section(
     preload_body_threshold: float,
     mention_threshold: float,
     emit_pointers: bool = True,
-) -> str:
+) -> tuple[str, tuple[str, ...]]:
+    """The section, and the names of the skills it loaded in full."""
     bodies: list[str] = []
+    loaded: list[str] = []
     pointers: list[str] = []
     for match in matches:
         if match.relevance >= preload_body_threshold:
@@ -128,6 +136,7 @@ async def _render_preload_section(
                 if emit_pointers:
                     pointers.append(f"- **{match.skill.name}**: {match.skill.description}")
                 continue
+            loaded.append(skill.metadata.name)
             bodies.append(
                 f"### {skill.metadata.name}\n\n"
                 f"> {skill.metadata.description}\n\n"
@@ -137,7 +146,7 @@ async def _render_preload_section(
             pointers.append(f"- **{match.skill.name}**: {match.skill.description}")
 
     if not bodies and not pointers:
-        return ""
+        return "", ()
 
     parts: list[str] = ["## Preloaded Skills"]
     if bodies:
@@ -151,7 +160,7 @@ async def _render_preload_section(
             "**Also potentially relevant** — call `load_skill(name)` if needed:\n"
             + "\n".join(pointers)
         )
-    return "\n\n".join(parts)
+    return "\n\n".join(parts), tuple(loaded)
 
 
-__all__ = ["skill_preloading"]
+__all__ = ["PRELOADED_SKILLS", "skill_preloading"]

@@ -20,6 +20,7 @@ from app.connectors.core.constants import IconPaths
 from app.connectors.core.registry.connector_builder import CommonFields
 from app.connectors.core.registry.tool_builder import (
     ToolDefinition,
+    ToolProvider,
     ToolsetBuilder,
     ToolsetCategory,
 )
@@ -76,7 +77,7 @@ tools: List[ToolDefinition] = [
 
 
 # Register Box toolset
-@ToolsetBuilder("Box")\
+@ToolsetBuilder("Box", provider=ToolProvider.CONNECTOR)\
     .in_group("Storage")\
     .with_description("Box integration for file storage and management")\
     .with_category(ToolsetCategory.APP)\
@@ -183,7 +184,7 @@ class Box:
                 description="The ID of the file to retrieve"
             )
         ],
-        tags=[Tag(key="category", value="storage"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="storage"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_file(self, file_id: str) -> Tuple[bool, str]:
         """Get file information by ID from Box."""
@@ -219,7 +220,7 @@ class Box:
                 required=False
             )
         ],
-        tags=[Tag(key="category", value="storage"), Tag(key="type", value="update")],
+        tags=[Tag(key="category", value="storage"), Tag(key="type", value="update"), Tag(key="effect", value="write")],
     )
     async def update_file(
         self,
@@ -257,7 +258,7 @@ class Box:
                 description="The ID of the file to delete"
             )
         ],
-        tags=[Tag(key="category", value="storage"), Tag(key="type", value="delete")],
+        tags=[Tag(key="category", value="storage"), Tag(key="type", value="delete"), Tag(key="effect", value="write")],
     )
     async def delete_file(self, file_id: str) -> Tuple[bool, str]:
         """Delete a file from Box."""
@@ -297,7 +298,7 @@ class Box:
                 required=False
             )
         ],
-        tags=[Tag(key="category", value="storage"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="storage"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
     )
     async def upload_file(
         self,
@@ -384,7 +385,7 @@ class Box:
                 required=False
             )
         ],
-        tags=[Tag(key="category", value="storage"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="storage"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def search_content(
         self,

@@ -140,13 +140,127 @@
   "chatStream": {
     "thinkingFallback": "생각하는 중…",
     "refiningResponse": "응답을 다듬는 중…",
+    "reconnecting": "다시 연결하는 중…",
+    "durableStreamLost": "연결이 끊겼지만 답변은 계속 작성되고 있습니다. 페이지를 새로 고쳐 확인하세요.",
     "errorFallback": "오류가 발생했습니다. 다시 시도해 주세요.",
     "askQuestionResumeFailed": "답변을 보내지 못했습니다. 다시 제출해 주세요.",
     "copyCode": "복사",
     "copiedCode": "복사됨",
+    "queued": "시작 대기 중…",
+    "admission": {
+      "quota": "짧은 시간에 메시지를 많이 보냈습니다. 1분 후에 다시 보내세요.",
+      "quotaActiveUser": "작업 공간에서 허용하는 만큼 이미 답변이 실행 중입니다. 하나가 끝날 때까지 기다리거나 중지한 다음 다시 보내세요.",
+      "quotaActiveOrg": "작업 공간에서 허용하는 만큼 답변이 실행 중입니다. 하나가 끝나면 다시 시도하세요.",
+      "readOnly": "이 대화는 읽기 전용으로 공유되었습니다. 질문하려면 \"비공개로 계속\"을 사용하거나 새 채팅을 시작하세요.",
+      "collaboratorTurns": "조직에서 공유받은 사람이 대화에 메시지를 보내는 것을 허용하지 않습니다. 내 사본에서 질문하려면 \"비공개로 계속\"을 사용하세요.",
+      "runActive": "에이전트가 아직 이 대화를 처리하고 있습니다. 끝날 때까지 기다리거나 중지한 다음 다시 시도하세요.",
+      "erased": "이 대화는 삭제되었습니다. 계속하려면 새 채팅을 시작하세요.",
+      "regenerateNotLast": "최신 답변만 다시 생성할 수 있습니다. 대화를 새로 고친 후 다시 시도하세요.",
+      "historyTooLarge": "이 대화는 너무 길어서 계속할 수 없습니다. 새 채팅을 시작하세요.",
+      "engineUnavailable": "이 에이전트의 코딩 엔진은 지금 이 배포에서 실행할 수 없습니다. 관리자에게 문의하세요.",
+      "engineProfileUntrusted": "이 에이전트의 코딩 엔진은 이 배포에 대해 서명되지 않아 여기에서 실행할 수 없습니다. 관리자에게 문의하세요.",
+      "engineSandboxMissing": "코딩 엔진에는 샌드박스 애드온이 필요하지만 이 배포에는 설치되어 있지 않습니다. 관리자에게 문의하세요.",
+      "configUnavailable": "조직 설정을 지금 불러올 수 없어 아무것도 시작되지 않았습니다. 잠시 후 메시지를 다시 보내 주세요.",
+      "placement": "이 서버에서는 조직을 위해 이 에이전트를 실행할 수 없습니다. 관리자에게 문의하세요.",
+      "accountMissing": "이 에이전트의 모델 계정이 여기에 설정되어 있지 않습니다. 관리자에게 AI 모델에서 이 엔진용 모델을 설정해 달라고 요청한 다음 다시 보내세요.",
+      "forbidden": "이 에이전트나 이 메시지에 언급된 항목에 대한 액세스 권한이 없습니다. 에이전트 소유자나 관리자에게 문의하세요.",
+      "notFound": "이 대화 또는 에이전트를 찾을 수 없습니다. 삭제되었거나 공유가 해제되었을 수 있습니다.",
+      "network": "메시지가 서버에 도달하지 못했습니다. 연결을 확인하고 다시 보내세요.",
+      "modelAccess": "조직의 AI 규칙상 여기서는 이 모델이나 계정을 사용할 수 없습니다. 다른 모델을 선택하거나 관리자에게 문의하세요.",
+      "failed": "메시지를 시작할 수 없습니다. 다시 시도하고, 계속 발생하면 관리자에게 문의하세요.",
+      "sharedSessionEngine": "이 대화의 소유자만 코딩 에이전트에게 메시지를 보낼 수 있습니다. 질문하려면 \"비공개로 계속\"을 사용하거나 새 채팅을 시작하세요.",
+      "engineProfile": "이 에이전트의 설정이 조직에서 허용하는 범위를 넘습니다. 관리자에게 엔진 프로필을 확인해 달라고 요청하세요.",
+      "policyUnavailable": "지금 조직의 AI 규칙을 읽을 수 없어 아무것도 보내지 않았습니다. 잠시 기다린 후 다시 보내세요.",
+      "repositoryNeedsEngine": "저장소에는 코딩 엔진이 필요합니다. 먼저 이 채팅의 엔진을 선택한 다음 저장소를 선택하세요.",
+      "repositoryToolsetMissing": "GitHub 연결이 없거나 로그아웃되었습니다. 내 작업에서 GitHub를 연결한 다음 저장소를 다시 선택하세요.",
+      "repositoryNotGithub": "GitHub 저장소만 사용할 수 있습니다. GitHub 저장소를 선택하세요.",
+      "repositoryLocked": "이 채팅의 저장소는 이미 복사되었습니다. 다른 저장소에서 작업하려면 새 채팅을 시작하세요.",
+      "repositoryFailed": "저장소를 저장하지 못했습니다. 다시 시도하세요.",
+      "gatesNeedRuntime": "이 에이전트의 안전 설정에는 에이전트 런타임이 필요하지만 이 워크스페이스에서는 꺼져 있습니다. 관리자에게 켜 달라고 요청하세요.",
+      "harnessGroup": "조직에서 일부 그룹만 에이전트를 사용할 수 있습니다. 관리자에게 그룹에 추가해 달라고 요청하세요.",
+      "modelGroup": "조직에서 일부 그룹만 이 모델을 사용할 수 있습니다. 다른 모델을 선택하거나 관리자에게 추가를 요청하세요.",
+      "engineGroup": "조직에서 일부 그룹만 이 코딩 엔진을 사용할 수 있습니다. 다른 엔진을 선택하거나 관리자에게 추가를 요청하세요.",
+      "operatorStopped": "관리자가 이곳의 에이전트 작업을 잠시 중지했습니다. 관리자에게 문의하세요."
+    },
+    "runError": {
+      "workerLost": "이 작업을 실행하던 서버가 중지되었고, 이 에이전트는 스스로 다시 시작하지 않으므로 작업이 종료되었습니다. 다시 실행하려면 메시지를 다시 보내세요.",
+      "notStarted": "에이전트를 시작할 수 없습니다. 1분 30초 안에 요청을 처리한 서버가 없습니다. 아무 작업도 수행되지 않았습니다. 다시 시도하고, 계속 발생하면 관리자에게 문의하세요.",
+      "noCompatibleWorker": "지금 이 유형의 작업을 실행할 수 있는 서버가 없습니다. 아무 작업도 수행되지 않았습니다. 관리자에게 문의하세요.",
+      "deadlineExceeded": "이 실행은 너무 오래 걸려 중지되었습니다. 더 이상 진행되지 않습니다. 다시 시도하려면 메시지를 다시 보내세요.",
+      "quarantined": "이 실행은 계속 실패하여 중지되었습니다. 다시 시도하려면 메시지를 다시 보내세요.",
+      "capabilityLost": "이 에이전트에 필요한 도구나 연결을 더 이상 사용할 수 없습니다. 다시 시도해 보세요. 계속 발생하면 관리자에게 문의하세요.",
+      "modelNoLongerConfigured": "이 대화에서 사용하던 AI 모델이 더 이상 설정되어 있지 않습니다. 현재 모델로 계속하려면 메시지를 다시 보내거나 관리자에게 AI 모델 설정을 확인해 달라고 요청하세요.",
+      "engineUnavailable": "이 에이전트의 코딩 엔진은 지금 이 배포 환경에서 실행할 수 없습니다. 아무 작업도 수행되지 않았습니다. 관리자에게 문의하세요.",
+      "mcpUnavailable": "지금은 MCP 서버에 연결할 수 없습니다. 1분 후에 다시 시도하세요. 계속 발생하면 관리자에게 문의하세요.",
+      "mcpToolWithdrawn_one": "{{servers}}에서 이 작업이 사용하던 도구를 더 이상 제공하지 않아 작업이 중단되었습니다. 해당 도구 없이 계속하려면 메시지를 다시 보내거나, 관리자에게 앱의 도구를 검토해 달라고 요청하세요.",
+      "mcpToolWithdrawn_other": "{{servers}}에서 이 작업이 사용하던 도구를 더 이상 제공하지 않아 작업이 중단되었습니다. 해당 도구 없이 계속하려면 메시지를 다시 보내거나, 관리자에게 앱의 도구를 검토해 달라고 요청하세요.",
+      "mcpToolWithdrawnUnnamed": "연결된 앱에서 이 작업이 사용하던 도구를 더 이상 제공하지 않아 작업이 중단되었습니다. 해당 도구 없이 계속하려면 메시지를 다시 보내거나, 관리자에게 앱의 도구를 검토해 달라고 요청하세요.",
+      "providerUnavailable": "AI 모델 제공업체를 사용할 수 없어 이 작업이 중단되었습니다. 사용자 쪽 문제는 아닙니다. 몇 분 후에 다시 시도하세요.",
+      "rateLimited": "AI 모델 제공업체가 요청을 제한하고 있어 이 작업이 중단되었습니다. 몇 분 후에 다시 시도하세요.",
+      "sandboxUnavailable": "이 작업을 실행할 수 있는 샌드박스가 없어 아무것도 실행되지 않았습니다. 몇 분 후에 다시 시도하세요. 계속 발생하면 관리자에게 문의하세요.",
+      "storeUnavailable": "파일 저장소에 몇 분 동안 연결할 수 없어 이 작업이 중지되었습니다. 몇 분 후에 다시 시도하세요. 계속 발생하면 관리자에게 문의하세요.",
+      "eventFlood": "코딩 엔진이 작업이 처리할 수 있는 것보다 훨씬 많은 업데이트를 보내 중지되었습니다. 메시지를 다시 보내세요. 계속 발생하면 관리자에게 문의하세요.",
+      "gvisorUnavailable": "코딩 엔진을 사용하려면 이 서버에 gVisor 샌드박스 런타임이 필요합니다. 관리자에게 설치를 요청하세요 — 설치 가이드: https://github.com/pipeshub-ai/pipeshub-ai/blob/main/deployment/docker-compose/GVISOR.md",
+      "engineToolsUnreachable": "코딩 엔진이 PipesHub 도구에 연결하지 못해 이 작업이 완료되기 전에 중지되었습니다. 메시지를 다시 보내세요. 계속 발생하면 관리자에게 문의하세요.",
+      "egressVolumeExceeded": "이 작업이 이 서버에서 한 작업에 허용된 것보다 많은 데이터를 주고받아 중지되었습니다. 더 작은 작업을 요청하거나 관리자에게 한도를 문의하세요.",
+      "secretBlocked": "이 작업의 요청에 비밀 정보(API 키 또는 액세스 토큰)가 포함된 것으로 보여 PipesHub가 차단했고, 작업이 중단되었습니다. 메시지나 파일에서 비밀 정보를 제거한 뒤 다시 보내세요.",
+      "operatorStopped": "관리자가 이 에이전트 작업을 잠시 중지했습니다. 관리자에게 문의하거나, 다시 재개되면 메시지를 다시 보내세요.",
+      "operatorStoppedSession": "관리자가 이 대화의 에이전트 작업을 잠시 중지했습니다.",
+      "operatorStoppedAgent": "관리자가 이 에이전트를 잠시 중지했습니다.",
+      "operatorStoppedOrg": "관리자가 조직의 에이전트 작업을 잠시 중지했습니다.",
+      "operatorStoppedEngineVersion": "관리자가 이 코딩 엔진 버전을 중지했습니다. 다른 버전으로 계속하려면 메시지를 다시 보내세요.",
+      "operatorStoppedEngineVersionSecurity": "관리자가 보안 수정을 위해 이 코딩 엔진 버전을 중지했습니다. 최신 버전으로 계속하려면 메시지를 다시 보내세요.",
+      "operatorStoppedInstance": "관리자가 이 서버의 에이전트 작업을 잠시 중지했습니다.",
+      "operatorStoppedEgress": "관리자가 코딩 샌드박스의 인터넷 접속을 꺼서 이 작업이 중지되었습니다. 메시지를 다시 보내세요. 어시스턴트가 코딩 엔진 없이 답변합니다.",
+      "imageUntrusted": "이 에이전트의 샌드박스 이미지가 이 서버가 신뢰하는 키로 서명되지 않아 아무것도 시작하지 않았습니다. 관리자에게 문의하세요.",
+      "outOfMemory": "이 작업은 메모리가 부족해 중지되었습니다. 더 작은 작업으로 시도하거나 코딩 엔진의 메모리에 대해 관리자에게 문의하세요.",
+      "outOfMemoryLimit": "이 작업은 메모리가 부족해(한도 {{limit}}) 중지되었습니다. 더 작은 작업으로 시도하거나 코딩 엔진의 메모리에 대해 관리자에게 문의하세요."
+    },
+    "toolFailure": {
+      "unavailable": "{{tool}}에 연결할 수 없습니다.",
+      "timeout": "{{tool}}이(가) 제때 응답하지 않았습니다.",
+      "rateLimited": "{{tool}}이(가) 지금 요청을 제한하고 있습니다.",
+      "auth": "{{tool}}이(가) 연결의 자격 증명을 거부했습니다. 관리자에게 연결을 확인해 달라고 요청하세요.",
+      "notFound": "{{tool}}에서 에이전트가 요청한 항목을 찾지 못했습니다.",
+      "invalidCall": "에이전트가 {{tool}}을(를) 잘못 호출했습니다. 다시 시도할 수 있습니다.",
+      "failed": "{{tool}}이(가) 실패했습니다.",
+      "nothingSent": "아무것도 전송되지 않았습니다."
+    },
+    "answerError": {
+      "contentFilter": "AI 제공자의 콘텐츠 필터가 이 요청을 차단했습니다. 대화나 읽은 문서의 내용 때문에 생긴 오탐인 경우가 많습니다. 질문을 바꿔 말하거나 새 대화를 시작해 다시 시도하세요.",
+      "quotaExceeded": "AI 모델 계정의 크레딧이 소진되었거나 사용 한도에 도달했습니다. 워크스페이스 관리자에게 충전하거나 워크스페이스 → AI 모델에서 다른 모델을 선택해 달라고 요청하세요.",
+      "rateLimit": "AI 모델 제공자가 지금 요청을 제한하고 있습니다. 1분 정도 기다린 후 다시 시도하세요.",
+      "authError": "AI 모델 제공자가 API 키를 거부했습니다. 워크스페이스 관리자에게 워크스페이스 → AI 모델에서 키를 확인해 달라고 요청하세요.",
+      "modelNotFound": "AI 모델 제공자가 엔드포인트에서 이 모델을 찾지 못했습니다. 워크스페이스 관리자에게 워크스페이스 → AI 모델에서 모델 이름과 엔드포인트를 확인해 달라고 요청하세요.",
+      "requestTooLarge": "이 대화는 선택한 모델에 비해 너무 깁니다. 메시지를 줄이거나 새 대화를 시작하세요.",
+      "invalidRequest": "AI 모델이 이 요청을 거부했습니다. 워크스페이스 관리자에게 워크스페이스 → AI 모델에서 모델 설정을 확인해 달라고 요청하세요.",
+      "serverError": "AI 모델 제공자가 지금 응답하지 않습니다. 1분 후에 다시 시도하세요.",
+      "timeout": "AI 모델의 응답이 너무 오래 걸렸습니다. 다시 시도하세요.",
+      "unknown": "답변하는 중에 문제가 발생했습니다. 다시 시도하고, 계속 발생하면 워크스페이스 관리자에게 문의하세요.",
+      "needsReconciliation": "도구 작업이 결과가 기록되기 전에 완료되었을 수 있습니다. 이 실행을 계속하려면 관리자가 해당 작업을 조정해야 합니다.",
+      "deadlineExceeded": "이 실행이 너무 오래 걸려 중지되었습니다. 다시 시도하려면 메시지를 다시 보내세요.",
+      "budgetExhausted": "이 응답은 지출 한도에 도달하여 중지되었습니다. 관리자에게 한도를 올려 달라고 요청하거나, 한 번에 더 적게 요청하세요.",
+      "budgetInsufficient": "이 응답은 다음 단계에 쓸 지출 한도가 너무 적게 남아 중지되었습니다. 관리자에게 한도를 올려 달라고 요청하거나, 한 번에 더 적게 요청하세요.",
+      "approvalExpired": "이 작업은 아무도 제때 승인하지 않은 승인을 기다렸기 때문에 작업이 수행되지 않았습니다. 다시 시도하려면 메시지를 다시 보내세요."
+    },
+    "providerWait": "AI 모델을 기다리는 중(사용량이 많거나 요청이 너무 많음), {{seconds}}초 후 다시 시도합니다…",
+    "providerWaitNow": "AI 모델을 기다리는 중(사용량이 많거나 요청이 너무 많음), 다시 시도하고 있습니다…",
+    "sandboxWait": "사용 가능한 샌드박스를 기다리는 중…",
+    "engineVersionWait": "일시 중지됨: 호환되는 코딩 엔진 버전을 기다리는 중…",
+    "storeWait": "파일 저장소가 응답하지 않습니다. 다시 연결되면 작업이 계속됩니다…",
     "remoteImageBlocked": "외부 이미지가 로드되지 않았습니다",
     "remoteImageFrom": "{{host}}에서",
-    "remoteImageLoad": "이미지 불러오기"
+    "remoteImageLoad": "이미지 불러오기",
+    "linkDataHint": "{{host}}에 추가 데이터를 보냅니다",
+    "linkDataTitle": "이 링크는 추가 데이터를 보냅니다",
+    "linkDataBody": "열면 주소에 담긴 정보가 {{host}}에 전달됩니다. 출처를 신뢰할 때만 여세요.",
+    "linkDataOpen": "링크 열기",
+    "nextStep": {
+      "retry": "다시 시도",
+      "reload": "새로고침",
+      "newChat": "새 채팅"
+    },
+    "sandboxWaitIn": "빈 샌드박스를 기다리는 중, {{seconds}}초 후 다시 시도…"
   },
   "uploadProgress": {
     "uploadFailedDefault": "업로드 실패",
@@ -330,7 +444,10 @@
     "searchChats": "채팅 검색",
     "inbox": "받은 편지함",
     "notifications": "알림",
-    "home": "홈"
+    "home": "홈",
+    "needsYou": "확인 필요",
+    "jobs": "작업",
+    "jobsWorkingAria_other": "진행 중인 작업 {{count}}개"
   },
   "artifacts": {
     "title": "모든 아티팩트",
@@ -498,7 +615,6 @@
     "newFolder": "새 컬렉션 폴더",
     "createCollection": "컬렉션 만들기",
     "newCollection": "새 컬렉션",
-    "deleteConfirmation": "삭제 확인",
     "replaceFile": "파일 교체",
     "uploadData": "데이터 업로드",
     "moveFolder": "폴더 이동",
@@ -518,7 +634,16 @@
     "reindexDescription": "이 작업은 이 {{type}} 및 그 내용의 검색 인덱스를 업데이트합니다.",
     "deleteCollectionBody": "'{{name}}' 및 그 안의 모든 항목이 영구적으로 삭제됩니다. 이 컬렉션을 사용하는 모든 에이전트에서도 제거됩니다. 이 작업은 되돌릴 수 없습니다.",
     "deleteFolderBody": "'{{name}}' 및 그 안의 모든 항목이 이 컬렉션에서 삭제됩니다.",
-    "deleteFileBody": "'{{name}}'이(가) 이 컬렉션에서 삭제됩니다."
+    "deleteFileBody": "'{{name}}'이(가) 이 컬렉션에서 삭제됩니다.",
+    "typedConfirmMismatch": "일치하지 않습니다. 표시된 그대로 입력하세요.",
+    "deleteCollectionTitle": "컬렉션을 삭제할까요?",
+    "deleteFolderTitle": "폴더를 삭제할까요?",
+    "deleteFileTitle": "파일을 삭제할까요?",
+    "bulkDeleteTitle_other": "항목 {{count}}개를 삭제할까요?",
+    "bulkDeleteBody": "이 작업은 되돌릴 수 없습니다. 선택한 모든 항목이 영구적으로 삭제됩니다.",
+    "bulkDeleteConfirm_other": "항목 {{count}}개 삭제",
+    "replaceFileSupports": "지원 형식: {{fileType}}만",
+    "folderDetails": "폴더 세부 정보"
   },
   "table": {
     "fileName": "파일 이름",
@@ -632,7 +757,26 @@
       "goToChat": "채팅으로 이동",
       "notFoundTitle": "페이지를 찾을 수 없습니다",
       "notFoundBody": "이 페이지는 존재하지 않거나 이동되었습니다."
-    }
+    },
+    "estimatedCharge": {
+      "label": "추정치(조기 중지됨)",
+      "hint": "일부는 추정치입니다. 제공업체가 사용량을 알리기 전에 단계가 중지되었습니다. 제공업체가 사용량을 알리면 수정됩니다."
+    },
+    "previousPage": "이전 페이지",
+    "nextPage": "다음 페이지",
+    "previousMonth": "이전 달",
+    "nextMonth": "다음 달",
+    "scrollLeft": "왼쪽으로 스크롤",
+    "scrollRight": "오른쪽으로 스크롤",
+    "send": "보내기",
+    "showValue": "값 표시",
+    "hideValue": "값 숨기기",
+    "settings": "설정",
+    "undo": "실행 취소",
+    "redo": "다시 실행",
+    "discard": "버리기",
+    "showDetails": "세부 정보 보기",
+    "clearAll": "모두 지우기"
   },
   "units": {
     "bytes": "바이트",
@@ -678,7 +822,12 @@
     "expand": "사이드바 펼치기",
     "close": "사이드바 닫기",
     "collapse": "사이드바 접기",
-    "navigation": "탐색"
+    "navigation": "탐색",
+    "dot": {
+      "needsYou": "확인 필요",
+      "working": "진행 중",
+      "finished": "마지막으로 확인한 뒤 완료됨"
+    }
   },
   "menu": {
     "reindex": "다시 인덱싱",
@@ -716,7 +865,7 @@
     "allRecordsView": "모든 레코드 보기",
     "newFolder": "새 폴더",
     "newFile": "새 파일",
-    "emptyFolder": "이 폴더는 비어 있습니다",
+    "emptyFolder": "비어 있음",
     "emptyCollection": "이 컬렉션은 비어 있습니다",
     "addFirstItem": "첫 번째 항목을 추가하여 시작하세요",
     "folderEmpty": "이 폴더는 비어 있습니다",
@@ -799,7 +948,11 @@
       "collectionExists": "\"{{name}}\" 컬렉션이 이미 있습니다. 다른 이름을 선택하세요."
     },
     "sourcesNotReady": "일부 소스가 아직 준비 중이라 목록에 표시되지 않습니다({{count}}). 잠시 후 다시 시도하세요.",
-    "sourcePreparing": "이 소스를 준비하는 중입니다… 잠시 후 항목이 여기에 표시됩니다."
+    "sourcePreparing": "이 소스를 준비하는 중입니다… 잠시 후 항목이 여기에 표시됩니다.",
+    "selectionActionsNotice": "먼저 인덱싱",
+    "selectionActionsNoticeEnterprise": "선택한 항목 중 먼저 인덱싱할 항목을 고르는 기능은 Enterprise Edition에 포함됩니다.",
+    "uploadExtrasNotice": "이 파일을 먼저 인덱싱",
+    "uploadExtrasNoticeEnterprise": "업로드 중 먼저 인덱싱할 항목을 고르는 기능은 Enterprise Edition에 포함됩니다."
   },
   "connectorTypes": {
     "slack": "Slack",
@@ -810,7 +963,8 @@
     "confluence": "Confluence",
     "github": "GitHub",
     "gitlab": "GitLab",
-    "localFs": "로컬 파일 시스템"
+    "localFs": "로컬 파일 시스템",
+    "repository": "저장소"
   },
   "itemType": {
     "knowledgeBase": "지식 베이스",
@@ -846,6 +1000,7 @@
     "voiceInputNotSupported": "이 브라우저에서는 음성 입력이 지원되지 않습니다",
     "voiceError": "마이크에 접근할 수 없습니다",
     "noModelsAvailable": "아직 구성된 AI 모델이 없습니다",
+    "modelUnavailableGroup": "사용 불가: 조직에서 일부 그룹만 이 모델을 사용할 수 있도록 허용함",
     "failedToLoadModels": "AI 모델을 불러오지 못했습니다",
     "failedToLoadAgentConfig": "이 에이전트의 모델 구성을 불러오지 못했습니다",
     "openModels": "모델 관리",
@@ -959,6 +1114,8 @@
     "copiedAsMarkdown": "Markdown으로 복사됨",
     "copiedAsText": "텍스트로 복사됨",
     "citations": "인용",
+    "citationUnavailable": "이 출처에 액세스할 수 없습니다",
+    "artifactUnavailable": "이 파일에 액세스할 수 없습니다",
     "showMoreCitations_one": "인용 {{count}}개 더 보기",
     "showMoreCitations_other": "인용 {{count}}개 더 보기",
     "markdownWithCitations": "인용 포함 Markdown",
@@ -1005,7 +1162,8 @@
       "exporting": "채팅을 내보내는 중…",
       "done": "채팅을 내보냈습니다",
       "failed": "채팅을 내보내지 못했습니다",
-      "assistant": "어시스턴트"
+      "assistant": "어시스턴트",
+      "untitled": "채팅"
     },
     "renaming": "이름 변경 중...",
     "archiving": "보관 중...",
@@ -1038,6 +1196,17 @@
     "showDiagramSource": "소스 표시",
     "hideDiagramSource": "소스 숨기기",
     "stoppedMarker": "중지됨",
+    "cutShort": {
+      "budget": "일찍 중지됨: 지출 한도에 도달함",
+      "turns": "일찍 중지됨: 턴 한도에 도달함",
+      "time": "일찍 중지됨: 시간 한도에 도달함",
+      "stall": "일찍 중지됨: 진전 없이 같은 단계가 반복됨",
+      "provider": "일찍 중지됨: AI 모델이 요청을 계속 거부했음(사용량이 많거나 요청이 너무 많음)",
+      "engineError": "일찍 중단됨: 코딩 엔진에 오류가 발생했습니다",
+      "secretBlocked": "일찍 중단됨: PipesHub가 비밀 정보가 포함된 것으로 보이는 요청을 차단했습니다",
+      "hint": "답변은 한도 전에 수집한 내용을 바탕으로 합니다. 계속하려면 “계속”을 보내세요.",
+      "providerHint": "답변은 그때까지 수집한 내용을 바탕으로 합니다. 몇 분 후 다시 시도하거나 관리자에게 모델 한도를 확인해 달라고 요청하세요."
+    },
     "toolCard": {
       "arguments": "인수",
       "query": "쿼리",
@@ -1053,7 +1222,11 @@
       "needsApproval": "승인 필요",
       "approved": "승인됨",
       "declined": "거부됨",
-      "expired": "만료됨"
+      "expired": "만료됨",
+      "showResult": "결과 보기",
+      "hideResult": "결과 숨기기",
+      "details": "세부 정보",
+      "hideDetails": "세부 정보 숨기기"
     },
     "mcpConnect": {
       "title": "이 에이전트를 사용하려면 다음 MCP 서버를 연결하세요",
@@ -1332,7 +1505,15 @@
         },
         "toolNeedsApproval": "승인 필요",
         "toolNeedsApprovalHint": "이 도구는 데이터를 삭제할 수 있습니다. 프로젝트 채팅에서는 누군가 승인한 후에만 실행됩니다.",
-        "indexingStatusLabel": "인덱싱: {{status}}"
+        "indexingStatusLabel": "인덱싱: {{status}}",
+        "collectionsTitle": "컬렉션",
+        "collectionsSubtitle": "이 프로젝트의 채팅은 선택한 컬렉션과 업로드된 프로젝트 파일을 검색합니다.",
+        "noCollectionsAvailable": "추가할 컬렉션이 아직 없습니다.",
+        "failedToLoadCollections": "컬렉션을 불러오지 못했습니다",
+        "updateCollectionsFailed": "컬렉션을 업데이트하지 못했습니다",
+        "collectionsStatusCount": "{{count}}개 선택됨",
+        "collectionsStatusNone": "없음",
+        "untitledCollection": "제목 없는 컬렉션"
       },
       "moveDialog": {
         "title": "프로젝트로 이동",
@@ -1468,6 +1649,8 @@
       "pastedText": "붙여넣은 텍스트",
       "uploadingNamed": "붙여넣은 텍스트 업로드 중",
       "removePastedText": "붙여넣은 텍스트 제거",
+      "removed": "첨부 파일이 삭제됨",
+      "removedTitle": "{{name}}이(가) 포함된 다른 대화가 삭제되어 이 첨부 파일도 삭제되었습니다.",
       "showInTextField": "텍스트 입력란에 표시",
       "previewLoadFailed": "내용을 불러오지 못했습니다",
       "copyText": "복사",
@@ -1525,9 +1708,47 @@
     "agentCapabilities": {
       "notConfiguredOnAgent": "이 에이전트에 구성되지 않음",
       "internalSearch": "내부 검색",
-      "webSearch": "웹 검색"
+      "webSearch": "웹 검색",
+      "newHarness": "새 에이전트 하네스",
+      "newHarnessTooltip": "지속 실행, 실시간 타임라인 및 승인. 클래식 채팅을 사용하려면 끄세요.",
+      "newHarnessAgentNeeds": "이 에이전트에는 새 에이전트 하네스가 필요합니다",
+      "newHarnessNewChats": "새 채팅에 적용됩니다",
+      "newHarnessPaused": "조직의 새 agent harness 실행이 일시 중지되었습니다. 재개될 때까지 채팅은 클래식 채팅을 사용합니다.",
+      "newHarnessPausedHint": "일시 중지됨: 채팅은 클래식 채팅을 사용합니다"
     },
     "resizePanels": "채팅 및 미리보기 패널 크기 조정",
+    "steering": {
+      "added": "진행 중인 작업에 추가됨",
+      "addedDescription": "다음 단계에서 반영됩니다.",
+      "nextRun": "진행 중인 작업 다음으로 대기 중",
+      "nextRunDescription": "다른 사람의 작업이 진행 중입니다. 작업이 끝나면 내 메시지가 내 작업으로 시작됩니다.",
+      "failed": "진행 중인 작업에 추가하지 못했습니다. 작업이 끝나면 다시 보내 주세요.",
+      "send": "진행 중인 작업에 추가",
+      "you": "추가한 메시지",
+      "notTaken": "이 메시지를 사용하기 전에 작업이 종료되었습니다."
+    },
+    "continuePrivately": {
+      "action": "비공개로 계속하기",
+      "title": "비공개로 계속하기",
+      "description": "나만 볼 수 있는 이 대화의 비공개 사본을 만듭니다. 공유된 대화는 그대로 유지됩니다.",
+      "copiedHeading": "비공개 대화로 복사되는 항목",
+      "copiesYourTurns": "내가 보낸 메시지와 그에 대한 답변",
+      "copiesSources": "그 답변의 출처와 파일 중 내가 열 수 있는 것",
+      "copiesWorkspace": "이 대화 작업 공간의 파일",
+      "notCopiedHeading": "복사되지 않는 항목",
+      "othersBecomePlaceholders": "다른 사람의 메시지: 각각 자리 표시자로 바뀝니다",
+      "noToolResults": "도구 결과, 추론 과정 및 첨부 파일",
+      "confirm": "비공개로 계속하기",
+      "forkTitle": "이 채팅 분기",
+      "forkDescription": "나만 볼 수 있는 이 채팅의 사본을 만듭니다. 이 채팅은 그대로 유지됩니다.",
+      "forkConfirm": "분기",
+      "working": "복사 중…",
+      "failed": "비공개 사본을 만들 수 없습니다. 다시 시도하세요.",
+      "foreignTurn": "다른 참여자의 메시지는 비공개 사본에 포함되지 않습니다."
+    },
+    "copiedHistory": {
+      "note": "위 메시지는 원래 대화에서 복사되었습니다. 자세한 활동 내역은 원래 대화에 남아 있습니다."
+    },
     "toolApproval": {
       "noArguments": "세부 정보 없음",
       "deny": "거부",
@@ -1631,7 +1852,105 @@
       "setUp": "웹 검색 설정",
       "notNow": "나중에",
       "gotIt": "확인"
-    }
+    },
+    "pendingEngine": {
+      "label": "이 채팅의 {{engine}}",
+      "clear": "내 기본 엔진 사용"
+    },
+    "repository": {
+      "menuTitle": "저장소에서 작업",
+      "menuSubtitle": "이 채팅에 GitHub 저장소 복제",
+      "chip": "{{branch}}에서 시작하는 {{repository}}",
+      "chipNoBranch": "{{repository}}",
+      "clear": "이 저장소 사용 안 함",
+      "picker": {
+        "title": "저장소에서 작업",
+        "loading": "불러오는 중…",
+        "connectionsFailed": "GitHub 연결을 불러오지 못했습니다. 다시 시도하세요.",
+        "connectFirst": "먼저 GitHub를 연결하세요. PipesHub는 GitHub 연결을 사용해 저장소를 복사하고 엔진의 브랜치를 푸시합니다.",
+        "cancel": "취소",
+        "connectGithub": "GitHub 연결",
+        "connection": "GitHub 연결",
+        "repository": "저장소",
+        "search": "검색하거나 저장소 링크를 붙여넣기",
+        "reposFailed": "저장소를 불러오지 못했습니다. 다시 시도하세요.",
+        "noMatch": "일치하는 저장소가 없습니다. 이 GitHub 로그인으로 볼 수 있는 저장소를 열려면 링크나 owner/name을 붙여넣으세요.",
+        "none": "이 연결에는 저장소가 없습니다.",
+        "loadMore": "더 불러오기",
+        "branch": "시작 브랜치",
+        "branchFirst": "먼저 저장소를 선택하세요",
+        "defaultBranch": "{{branch}} (기본)",
+        "whatHappens": "진행되는 내용:",
+        "noteCopy": "엔진이 시작되기 전에 PipesHub가 {{repository}}을(를) 이 채팅의 작업 공간에 복사합니다.",
+        "noteBranch": "엔진은 자체 브랜치 pipeshub/session-…에서 작업하며 그곳에만 푸시할 수 있습니다.",
+        "noteToken": "엔진은 GitHub 토큰을 절대 볼 수 없습니다. {{branch}}, 태그 또는 다른 브랜치에는 푸시할 수 없습니다.",
+        "notePullRequest": "{{branch}}(으)로의 풀 리퀘스트는 요청할 때만 열립니다.",
+        "use": "저장소 사용",
+        "private": "비공개",
+        "updated": "{{when}} 업데이트됨"
+      }
+    },
+    "pastedSecret": {
+      "title": "이 메시지에 비밀 정보가 있습니다",
+      "description": "비밀번호, API 키 또는 토큰으로 보입니다. 채팅으로 보낸 비밀 정보는 대화에 남고 모델이 보게 되므로 PipesHub가 보내기 전에 제거합니다.",
+      "credentialHint": "에이전트가 사용하게 하려면 대신 작업 페이지에서 자격 증명으로 저장하세요. 에이전트는 자격 증명을 보지 않고 사용합니다.",
+      "keepEditing": "계속 편집",
+      "saveAsCredential": "자격 증명으로 저장",
+      "sendWithout": "제외하고 보내기"
+    },
+    "runGates": {
+      "dryRun": "시험 실행",
+      "dryRunHint": "실제 데이터를 읽지만 아무것도 변경, 전송, 삭제하지 않습니다. 무엇을 했을지 보여 줍니다.",
+      "planApproval": "먼저 계획 승인",
+      "planApprovalHint": "에이전트가 정보를 찾아본 뒤 실행하기 전에 계획을 보여 줍니다.",
+      "planApprovalAgent": "이 에이전트는 실행하기 전에 항상 계획을 보여 줍니다.",
+      "verify": "결과 확인",
+      "verifyHint": "답변이 인용한 내용이 실제로 출처에 있는지 확인합니다.",
+      "verifyAgent": "이 에이전트가 정한 검사를 사용합니다(빌더에서 설정).",
+      "chipAgent": "{{gate}} · 이 에이전트가 설정함",
+      "turnOff": "{{gate}} 끄기"
+    },
+    "outcome": {
+      "unwritten": "{{name}}은(는) 아직 작성되지 않았습니다.",
+      "endedWithout": "작업이 이 파일을 쓰지 않고 차례를 마쳤습니다.",
+      "sources_one": "출처 {{count}}개를 읽었습니다.",
+      "sources_other": "출처 {{count}}개를 읽었습니다.",
+      "nothingGathered": "아무것도 모으기 전에 멈췄습니다.",
+      "kept": "모은 내용은 이 대화의 파일에 저장되어 있습니다.",
+      "lost": "모은 내용을 저장하지 못해 다시 시도하면 처음부터 시작합니다.",
+      "writtenByEngine": "{{name}}에는 작업이 멈출 때까지 쓴 내용이 들어 있습니다. 마지막 부분이 빠졌을 수 있습니다.",
+      "savedPartial": "지금까지 저장됨: {{name}} (일부만 완성으로 표시).",
+      "writtenFromGathered": "작업이 {{name}}을(를) 쓰지 않고 차례를 마쳐서, 모은 출처로 작성했습니다.",
+      "fullReport": "전체 보고서는 {{name}}에 있습니다.",
+      "partial": "이 결과는 일부만 완성되었습니다",
+      "continue": "계속",
+      "retry": "다시 시도"
+    },
+    "responseTabs": "답변 보기",
+    "notFound": {
+      "title": "지식 베이스에서 “{{subject}}”에 관한 내용을 찾지 못했습니다.",
+      "nothing": "이 답변은 이 주제에 관한 문서를 바탕으로 하지 않았습니다.",
+      "related_one": "아래 내용은 이를 언급하지 않는 관련 문서 {{count}}개를 바탕으로 하므로, 활용하기 전에 확인하세요.",
+      "related_other": "아래 내용은 이를 언급하지 않는 관련 문서 {{count}}개를 바탕으로 하므로, 활용하기 전에 확인하세요.",
+      "near": "지식 베이스에서 가장 가까운 항목: {{names}}",
+      "knowledge": "PipesHub 지식 베이스",
+      "titleIn": "{{places}}에서 찾아봤지만 “{{subject}}”에 관한 내용을 찾지 못했습니다."
+    },
+    "couldNotDo": {
+      "declined": "{{what}}을(를) 읽을 수 없었습니다: 복제가 거부되었습니다.",
+      "refused": "{{what}}을(를) 읽을 수 없었습니다: 조직의 규칙이 복제를 거부했습니다.",
+      "notAllowed": "{{what}}을(를) 읽을 수 없었습니다: 이 서버는 해당 호스트에서 복제할 수 없습니다.",
+      "failed": "{{what}}을(를) 읽을 수 없었습니다: 복제에 실패했습니다.",
+      "notCloned": "{{what}}을(를) 읽을 수 없었습니다: 복제하지 않아 코드를 확인하지 못했습니다.",
+      "repositories_one": "코드 저장소 1개",
+      "repositories_other": "코드 저장소 {{count}}개",
+      "attachmentNotAccessible_other": "{{file}}을(를) 읽을 수 없었습니다: 접근이 거부되었습니다.",
+      "attachmentUnreadable_other": "{{file}}을(를) 읽을 수 없었습니다: 내용을 읽을 수 없었습니다.",
+      "attachmentTooLarge_other": "{{file}}을(를) 읽을 수 없었습니다: 작업에 전달할 수 있는 파일 크기 제한을 초과합니다.",
+      "namedFile": "첨부 파일 {{name}}",
+      "unnamedFile_other": "첨부 파일 중 {{count}}개"
+    },
+    "archiveChatTitle": "이 채팅을 보관할까요?"
   },
   "workspaceMenu": {
     "appearance": "화면 모드",
@@ -1677,15 +1996,35 @@
         "demoteAdminBeforeRemoveTitle": "관리자를 제거할 수 없습니다",
         "demoteAdminBeforeRemove": "관리자를 멤버로 강등한 후 제거하세요.",
         "removeUserTitle": "사용자를 제거하시겠습니까?",
-        "removeUserMessage": "정말 {{email}}을(를) {{workspace}} 워크스페이스에서 제거하시겠습니까?",
+        "removeUserMessage": "{{email}}을(를) {{workspace}}에서 제거하시겠습니까?",
         "removeUserOAuthAppsOne": "이 사용자가 만든 OAuth 앱이 1개 있습니다. 이 앱은 회원님에게 이전되므로 이 앱으로 연결한 사용자는 계속 연결됩니다.",
         "removeUserOAuthAppsMany": "이 사용자가 만든 OAuth 앱이 {{count}}개 있습니다. 이 앱들은 회원님에게 이전되므로 이 앱으로 연결한 사용자는 계속 연결됩니다.",
+        "removeUserThisOrg": "이 조직",
+        "removeUserErases": "이 사용자의 비공개 채팅, 업로드한 파일, 워크스페이스, 코드 샌드박스, 엔진 로그인이 삭제됩니다. 되돌릴 수 없습니다.",
+        "removeUserSharedChats": "다른 사람과 공유한 채팅은 삭제되지 않습니다. 관리자에게 넘어가므로 공유받은 사람은 계속 볼 수 있습니다.",
         "removeButton": "제거",
         "cancelButton": "취소",
         "removeSuccess": "사용자가 성공적으로 제거되었습니다",
-        "removeSuccessDescription": "{{name}}은(는) 더 이상 이 워크스페이스에 속하지 않습니다",
+        "removeSuccessDescription": "{{name}}을(를) {{workspace}}에서 제거했습니다",
         "removeError": "사용자를 제거하지 못했습니다",
+        "removeNoAdminForHandover": "이 사용자는 다른 사람과 공유된 채팅을 가지고 있으며, 이를 넘겨받을 다른 활성 관리자가 없습니다. 먼저 다른 사람을 관리자로 지정한 다음 이 사용자를 삭제하세요.",
         "deactivate": "비활성화",
+        "reactivate": "다시 활성화",
+        "deactivateTitle": "{{name}}님을 비활성화할까요?",
+        "deactivateStopsWork": "로그인할 수 없게 되며, 에이전트가 이 사용자를 위해 하고 있던 작업은 지금 중지됩니다.",
+        "deactivatePausesSchedules": "이 사용자의 일정과 트리거가 일시 중지됩니다.",
+        "deactivateRevokesTokens": "이 사용자의 액세스 토큰이 취소됩니다. 채팅과 파일은 유지됩니다.",
+        "deactivateButton": "비활성화",
+        "deactivateSuccess": "사용자를 비활성화했습니다",
+        "deactivateSuccessDescription": "{{name}}님은 더 이상 로그인할 수 없으며, 진행 중이던 작업이 중지되었습니다",
+        "deactivateError": "사용자를 비활성화하지 못했습니다",
+        "reactivateTitle": "{{name}}님을 다시 활성화할까요?",
+        "reactivateNothingRestarts": "다시 로그인할 수 있습니다. 중지된 작업은 다시 시작되지 않으며, 일정은 사용자가 재개할 때까지 일시 중지 상태로 남습니다.",
+        "reactivateNewTokens": "새 액세스 토큰을 만들어야 합니다.",
+        "reactivateButton": "다시 활성화",
+        "reactivateSuccess": "사용자를 다시 활성화했습니다",
+        "reactivateSuccessDescription": "{{name}}님이 다시 로그인할 수 있습니다. 일정은 재개할 때까지 일시 중지 상태로 남습니다.",
+        "reactivateError": "사용자를 다시 활성화하지 못했습니다",
         "resendInvite": "초대 다시 보내기",
         "editInvite": "초대 편집",
         "cancelInvite": "초대 취소",
@@ -2201,9 +2540,29 @@
         "pasteBlockLabel": "MCP 구성에 바로 붙여넣을 수 있습니다",
         "copyPasteBlockAria": "붙여넣기 블록 복사",
         "copySuccessTitle": "복사되었습니다",
-        "copyErrorTitle": "복사할 수 없습니다"
+        "copyErrorTitle": "복사할 수 없습니다",
+        "knowledgeLimitLaterHint": "토큰을 교체하지 않고 나중에 변경할 수 있습니다."
       },
-      "scopeCount_other": "범위 {{count}}개"
+      "scopeCount_other": "범위 {{count}}개",
+      "access": {
+        "panelTitle": "액세스 변경",
+        "intro": "{{name}}이(가) 볼 수 있는 항목을 선택하세요. 토큰은 계속 작동하며 변경 사항은 다음 요청부터 적용되므로 토큰을 사용하는 곳을 업데이트할 필요가 없습니다.",
+        "save": "저장",
+        "savedTitle": "액세스가 변경됨",
+        "savedEverything": "이제 {{name}}에서 내가 볼 수 있는 모든 항목을 볼 수 있습니다.",
+        "savedSome_other": "이제 {{name}}에서 선택한 {{count}}개 항목을 볼 수 있습니다.",
+        "undo": "실행 취소",
+        "undoneTitle": "변경 사항이 취소됨",
+        "undoErrorTitle": "변경 사항을 취소하지 못했습니다. 액세스 변경을 열어 다시 설정하세요.",
+        "errorTitle": "액세스를 변경하지 못했습니다",
+        "errorDescription": "변경된 내용이 없습니다. 다시 시도하세요.",
+        "unknownTitle": "변경 사항을 확인할 수 없음",
+        "unknownDescription": "저장되었을 수 있습니다. 다시 시도하기 전에 여기에 표시된 액세스를 확인하세요.",
+        "unknownReloadFailedDescription": "저장되었을 수 있지만 최신 액세스를 불러오지 못했습니다. 표시된 내용을 믿기 전에 페이지를 새로 고치세요.",
+        "rowAction": "액세스 변경",
+        "rowActionAria": "{{name}}이(가) 볼 수 있는 항목 변경",
+        "rowActionTooltip": "액세스 변경: 이 토큰이 볼 수 있는 항목 선택"
+      }
     },
     "agentSignIns": {
       "title": "에이전트 로그인",
@@ -2466,7 +2825,11 @@
     "pagination": {
       "showing_other": "전체 {{count}}개 중 {{from}}-{{to}} 표시",
       "previous": "이전",
-      "next": "다음"
+      "next": "다음",
+      "showingRange": "{{from}}–{{to}} 표시 중",
+      "newer": "최신",
+      "older": "이전",
+      "perPage": "페이지당 {{count}}개"
     },
     "sidebar": {
       "backToApp": "앱으로 돌아가기",
@@ -2477,7 +2840,8 @@
         "security": "보안",
         "personal": "개인",
         "people": "구성원",
-        "developerSettings": "개발자 설정"
+        "developerSettings": "개발자 설정",
+        "help": "도움말"
       },
       "nav": {
         "general": "일반",
@@ -2512,7 +2876,11 @@
         "tenants": "테넌트",
         "superOrgs": "조직",
         "oauthApps": "커넥터 OAuth 앱",
-        "serviceAccounts": "서비스 계정"
+        "serviceAccounts": "서비스 계정",
+        "aiAccounts": "AI 계정",
+        "schedules": "스케줄",
+        "memories": "메모리",
+        "aiSettings": "AI 설정"
       }
     },
     "actions": {
@@ -2620,7 +2988,9 @@
         "availableActionsLabel": "사용 가능한 액션",
         "enabledByLabel": "활성화한 사람",
         "authBannerTitle": "계정 인증",
-        "authBannerBody": "로그인하여 내 계정과 권한으로 이 액션을 사용하세요."
+        "authBannerBody": "로그인하여 내 계정과 권한으로 이 액션을 사용하세요.",
+        "signInRejected": "{{item}}에서 저장된 로그인을 거부했습니다. 사용하려면 다시 로그인하세요.",
+        "signInRejectedAt": "{{item}}에서 {{time}}에 저장된 로그인을 거부했습니다. 사용하려면 다시 로그인하세요."
       },
       "manage": {
         "panelTitle": "액션 구성 관리",
@@ -2799,7 +3169,7 @@
           "pipeshub_search": "사용자가 읽을 수 있는 커넥터와 컬렉션의 인덱싱된 문서를 의미 기준으로 검색하고, 일치하는 구절을 해당 레코드와 함께 반환합니다.",
           "pipeshub_get_record_content": "레코드 하나의 전체 텍스트를 읽습니다. URL, 이슈 키 또는 외부 ID로 레코드를 찾고, 폴더, 스페이스 또는 에픽 아래의 항목을 탐색하고, Slack 스레드 전체를 읽을 수도 있습니다.",
           "pipeshub_download_record": "레코드에 저장된 원본 파일을 다운로드합니다. 필요하면 PDF로 변환합니다.",
-          "pipeshub_directory": "로그인한 사용자, 워크스페이스의 사용자와 그룹, 사용자가 속한 팀을 조회합니다. 아무것도 변경하지 않습니다.",
+          "pipeshub_directory": "로그인한 사용자, 워크스페이스의 사용자, 사용자가 속한 팀을 조회합니다. 아무것도 변경하지 않습니다.",
           "pipeshub_create_collection": "사용자가 소유하는 비어 있는 새 컬렉션을 만들어 업로드할 수 있게 합니다.",
           "pipeshub_upload": "문서를 컬렉션에 업로드하여 인덱싱하고 검색할 수 있게 합니다. 호출당 최대 20개 문서, 약 3MB까지입니다.",
           "pipeshub_indexing_status": "컬렉션의 인덱싱이 얼마나 진행되었는지, 어떤 문서가 왜 실패했는지 알려 줍니다.",
@@ -2848,7 +3218,7 @@
           },
           "people": {
             "label": "사람 및 엔터티",
-            "description": "워크스페이스의 사용자와 그룹, 그리고 지식 그래프의 사람, 프로젝트, 주제, 값입니다."
+            "description": "워크스페이스의 사용자, 그리고 지식 그래프의 사람, 프로젝트, 주제, 값입니다."
           },
           "chat": {
             "label": "채팅 및 에이전트",
@@ -2995,6 +3365,30 @@
       "vectorStore": {
         "title": "벡터 스토어",
         "subtitle": "모든 임베딩을 삭제하거나 저장된 콘텐츠에서 모든 레코드의 임베딩을 다시 생성합니다."
+      },
+      "overrides": {
+        "changed": "기본값에서 변경됨",
+        "reset": "기본값으로 재설정 ({{value}})",
+        "resetLabel": "{{flag}}을(를) 기본값으로 재설정",
+        "on": "켜짐",
+        "off": "꺼짐"
+      },
+      "durableNotice": {
+        "title": "에이전트 하네스(베타)를 사용할 수 있습니다",
+        "body": "이 서버는 에이전트 채팅을 에이전트 하네스에서 실행할 수 있습니다. 베타 기능이며 기본적으로 꺼져 있어, 관리자가 Labs에서 Agent harness를 켜기 전까지 조직의 모든 사용자는 기존 채팅을 사용합니다. 켜면 사용자에게 다음이 달라집니다:",
+        "openLabs": "Labs 열기",
+        "dismiss": "닫기",
+        "failed": "선택을 저장하지 못했습니다. 다시 시도하세요.",
+        "changes": {
+          "asks": "회사 콘텐츠를 조직 외부로 보내기 전에(Slack 게시물, 이메일, 새 이슈) 에이전트가 먼저 사용자에게 확인합니다.",
+          "steering": "에이전트가 작업하는 동안 보낸 메시지는 실행 중인 작업에 추가되며, 중지하면 지금까지 작성된 답변이 유지됩니다.",
+          "screens": "새 설정 페이지: 승인, 기억, 그리고 관리자용 알 수 없는 결과.",
+          "legacy": "계획 후 실행, 유니버설 에이전트 모드, 프로젝트 채팅은 이전과 같이 실행됩니다. 이 모드에서는 에이전트가 회사 콘텐츠를 읽은 후 외부로 보내지 않으며 그 사실을 알려 줍니다."
+        }
+      },
+      "conflict": {
+        "message": "편집하는 동안 다른 사람이 Labs를 변경했습니다. 이제 페이지에 저장된 내용이 표시되며, 저장하지 않은 변경 사항은 그대로 유지됩니다. 검토한 후 다시 저장하세요.",
+        "badge": "다른 사람이 변경함"
       }
     },
     "authentication": {
@@ -3096,10 +3490,7 @@
         "createError": "커넥터를 생성하지 못했습니다",
         "createSuccess": "커넥터 인스턴스 '{{name}}'이(가) 생성되었습니다",
         "authSaveError": "인증 설정을 저장하지 못했습니다",
-        "configSaveError": "설정을 저장하지 못했습니다",
-        "oauthAppUnavailableTitle": "이 커넥터에 사용할 수 있는 OAuth 앱이 없습니다",
-        "oauthAppUnavailableDescription": "먼저 워크스페이스 관리자에게 {{name}}용 OAuth 앱 생성을 요청한 후 다시 시도하세요.",
-        "thisConnectorFallback": "이 커넥터"
+        "configSaveError": "설정을 저장하지 못했습니다"
       },
       "tabs": {
         "authenticate": "인스턴스 인증",
@@ -3235,6 +3626,8 @@
         "oauthAppNameLabel": "OAuth 앱 이름",
         "oauthAppNamePlaceholder": "예: {{name}} OAuth",
         "oauthAppNameHelper": "이 이름은 OAuth 등록과 함께 저장되며, 사용자가 다른 인스턴스에서 저장된 앱을 선택할 때 표시됩니다.",
+        "oauthAppNameHelperPersonal": "이 OAuth 앱은 나만 보고 사용할 수 있습니다. 같은 유형의 다른 커넥터에서도 다시 선택할 수 있습니다.",
+        "oauthAppYours": "{{name}} · 내 앱",
         "oauthAppNameRequired": "새 OAuth 앱의 이름을 입력하세요.",
         "oauthAppChangeReauthWarning": "OAuth 앱 또는 자격 증명을 변경하면 커넥터를 다시 인증해야 합니다."
       },
@@ -3776,6 +4169,25 @@
         "reach": "{{connector}}의 변경 사항은 {{interval}} 이내에 PipesHub에 반영됩니다.",
         "reachUnknown": "{{connector}}의 변경 사항은 다음 동기화 때 PipesHub에 반영됩니다.",
         "syncNow": "지금 권한 동기화",
+        "filter": {
+          "label": "검색이 접근 권한을 확인하는 방식",
+          "mode": {
+            "inherit": "배포 기본값",
+            "legacy": "기본 확인",
+            "scopes": "더 빠른 검색"
+          },
+          "effective": {
+            "scopes": "{{connector}} 검색은 더 빠른 검색을 사용합니다. 결과는 찾기 전에 각 사용자가 볼 수 있는 항목으로 좁혀지며, 모든 결과는 계속 확인됩니다.",
+            "legacy": "{{connector}} 검색은 기본 확인을 사용합니다. 결과는 찾은 뒤에 확인됩니다."
+          },
+          "waiting": "{{connector}}의 권한이 최신 상태가 되면 더 빠른 검색이 시작됩니다.",
+          "applies": "이 변경 사항은 30초 이내에 검색에 적용됩니다.",
+          "blocker": {
+            "serving_off": "이 배포에서는 더 빠른 검색이 꺼져 있습니다.",
+            "store_unsupported": "이 배포의 벡터 저장소는 더 빠른 검색을 지원하지 않습니다."
+          },
+          "saveError": "이 설정을 변경하지 못했습니다. 다시 시도하세요."
+        },
         "span": {
           "minutes": "{{count, number(style: unit; unit: minute; unitDisplay: long)}}",
           "hours": "{{count, number(style: unit; unit: hour; unitDisplay: long)}}",
@@ -3810,6 +4222,10 @@
           "other": "이 커넥터의 권한에 대해 사람이 확인해야 할 사항이 있습니다.",
           "unreadable": "업데이트를 기다리는 폴더 목록을 읽을 수 없습니다. PipesHub를 운영하는 담당자에게 이 커넥터의 권한 인덱스를 다시 만들어 달라고 요청하세요. 그동안 검색은 각 결과를 확인합니다."
         }
+      },
+      "enterprise": {
+        "userOAuthAppsTitle": "구성원의 개인 OAuth 앱",
+        "userOAuthAppsDescription": "조직 구성원이 자신의 커넥터에 직접 추가한 OAuth 앱을 검토하고 삭제합니다."
       },
       "userAccess": {
         "connect": "연결",
@@ -3895,7 +4311,9 @@
           "cancelled": "로그인을 취소했습니다.",
           "signInFailed": "로그인이 완료되지 않았습니다. 다시 시도하세요."
         }
-      }
+      },
+      "indexPriorityNotice": "이 커넥터의 인덱싱 우선순위 지정",
+      "indexPriorityNoticeEnterprise": "인덱싱 우선순위는 Enterprise Edition 기능입니다."
     },
     "mcpServers": {
       "searchPlaceholder": "MCP 서버 검색...",
@@ -3946,7 +4364,6 @@
         "unavailable": "사용 불가"
       },
       "catalog": {
-        "title": "서버 더 추가",
         "description": "바로 쓸 수 있는 서버입니다. 추가한 다음 로그인하세요.",
         "personalDescription": "여기서 추가한 서버는 나만 볼 수 있습니다.",
         "added": "추가됨",
@@ -4023,6 +4440,9 @@
         "argsPlaceholder": "인수 추가",
         "requiredEnv": "필수 환경 변수",
         "requiredEnvPlaceholder": "환경 변수 이름 추가 (예: API_KEY)",
+        "egressHosts": "접속하는 호스트",
+        "egressHostsPlaceholder": "호스트 추가 (예: api.example.com)",
+        "egressHostsHint": "MCP 러너는 이 호스트에만 접속합니다. 변경하면 모든 사용자가 이 서버에서 로그아웃됩니다.",
         "defaultTokenEnvHint": "변수를 지정하지 않으면 토큰이 {{name}}(으)로 명령에 전달됩니다.",
         "url": "URL",
         "authMode": "인증 모드",
@@ -4049,7 +4469,8 @@
           "shared": "모두가 쓰는 공유 자격 증명 하나",
           "sharedHint": "아래에서 한 번만 추가합니다. 모두가 이 자격 증명의 권한으로 작업합니다."
         },
-        "advanced": "고급"
+        "advanced": "고급",
+        "nameTaken": "이 이름을 이미 다른 서버가 쓰고 있습니다. 다른 이름을 고르세요."
       },
       "configPanel": {
         "editTitle": "MCP 서버 편집",
@@ -4200,6 +4621,67 @@
         "signIn": "{{name}}이(가) 추가되었습니다. 도구를 실행하려면 아래에서 로그인하세요.",
         "other": "{{name}}이(가) 추가되었지만 아직 작동하지 않습니다. 아래에서 이유를 확인하세요.",
         "dismiss": "완료"
+      },
+      "searchYourServers": "내 서버 검색",
+      "categories": {
+        "communication": "커뮤니케이션",
+        "meetings": "회의 및 캘린더",
+        "docs": "문서 및 파일",
+        "projects": "프로젝트 관리",
+        "developer": "개발자 도구",
+        "data": "데이터 및 분석",
+        "sales": "영업 및 CRM",
+        "support": "고객 지원",
+        "finance": "재무 및 법무",
+        "design": "디자인 및 화이트보드",
+        "automation": "자동화",
+        "search": "검색 및 리서치",
+        "security": "보안 및 ID"
+      },
+      "discover": {
+        "title": "서버 찾기",
+        "searchPlaceholder": "이름이나 하려는 일(영어)로 검색하세요. 예: “schedule meetings”",
+        "searchLabel": "준비된 서버 검색",
+        "clearSearch": "검색 지우기",
+        "categoriesLabel": "카테고리",
+        "all": "전체",
+        "allServers": "모든 서버",
+        "resultsFor_one": "“{{query}}” 검색 결과 서버 {{count}}개",
+        "resultsFor_other": "“{{query}}” 검색 결과 서버 {{count}}개",
+        "searching": "검색 중…",
+        "catalogLoadFailed": "카탈로그를 불러오지 못했습니다.",
+        "noMatch": "“{{query}}”에 맞는 준비된 서버가 없습니다. 어떤 서버든 URL로 추가할 수 있습니다.",
+        "whatItDoes": "할 수 있는 일",
+        "beforeYouAdd": "추가하기 전에",
+        "readOnly": "읽기 전용",
+        "changesData": "데이터를 읽고 변경함",
+        "readOnlyNote": "정보를 조회하기만 합니다.",
+        "changesDataNote": "데이터를 바꾸는 도구는 허용하지 않는 한 실행 전에 확인을 요청합니다.",
+        "signIn": "로그인",
+        "signInOauth": "각자 자신의 {{name}} 계정으로 로그인합니다",
+        "signInToken": "API 토큰",
+        "signInNone": "로그인 필요 없음",
+        "documentation": "문서",
+        "added_one": "추가됨",
+        "added_other": "{{count}}개 추가됨",
+        "addOrg": "조직에 추가",
+        "addPersonal": "나만 쓰도록 추가",
+        "orgNote": "조직의 모든 사람이 볼 수 있습니다. 각자 로그인해서 사용합니다.",
+        "personalNote": "나만 볼 수 있습니다.",
+        "popularTitle": "조직에서 인기 있는 서버",
+        "popularHint": "로그인한 사람 수 기준",
+        "peopleUse_one": "{{count}}명이 사용 중",
+        "peopleUse_other": "{{count}}명이 사용 중",
+        "browse": "MCP 서버 둘러보기",
+        "browseHint": "서버를 추가하고 로그인하면 목록에 나타나며 캔버스로 끌어올 수 있습니다.",
+        "fromCatalog": "카탈로그에서",
+        "add": "추가",
+        "view": "보기",
+        "askAdmin": "공유 에이전트는 조직이 추가한 서버만 사용할 수 있습니다. 관리자에게 추가를 요청하세요.",
+        "sharedAgentNote": "공유 에이전트가 쓸 수 있는 서버는 관리자만 추가할 수 있습니다. 관리자에게 조직용 {{name}} 추가를 요청하세요.",
+        "addedSignIn": "{{name}}이(가) 추가되었습니다. 도구를 사용하려면 목록에서 로그인하세요.",
+        "emptyBuilder": "아직 MCP 서버가 없습니다. Linear, Slack, GitHub 같은 앱의 도구를 이 에이전트에 주려면 하나를 추가하세요.",
+        "noAddedMatch": "일치하는 서버가 없습니다."
       }
     },
     "bots": {
@@ -4285,7 +4767,20 @@
         "loadConfigs": "봇 구성을 불러오지 못했습니다",
         "loadData": "데이터를 불러오지 못했습니다"
       },
-      "refreshed": "새로 고침됨"
+      "refreshed": "새로 고침됨",
+      "identityLinks": {
+        "title": "연결된 Slack 계정",
+        "subtitle": "각 Slack 사용자는 로그인해 연결한 PipesHub 계정으로 동작합니다. 연결하지 않은 사람은 봇에게서 비공개 로그인 링크를 받습니다.",
+        "empty": "아직 Slack 계정을 연결한 사람이 없습니다.",
+        "loadFailed": "연결된 Slack 계정을 불러오지 못했습니다.",
+        "slackPerson": "Slack 사용자",
+        "account": "PipesHub 계정",
+        "linkedAt": "연결일",
+        "inactive": "계정이 비활성화되었거나 삭제됨",
+        "remove": "연결 해제",
+        "removed": "Slack 계정 연결이 해제되었습니다",
+        "removeFailed": "Slack 계정 연결을 해제하지 못했습니다."
+      }
     },
     "skills": {
       "title": "스킬",
@@ -4335,6 +4830,7 @@
         "candidateApproved": "\"{{name}}\"이(가) 승인되었습니다",
         "candidateRejected": "\"{{name}}\"이(가) 거부되었습니다",
         "candidateActionError": "후보를 업데이트하지 못했습니다",
+        "candidateGone": "이 후보는 이미 검토되었습니다",
         "conflict": "이 스킬이 다른 곳에서 변경되었습니다",
         "conflictDescription": "최신 버전을 다시 불러온 다음 수정 사항을 적용하세요.",
         "conflictReload": "다시 불러오기"
@@ -4350,7 +4846,8 @@
         "content": "콘텐츠",
         "metadata": "메타데이터",
         "resources": "리소스",
-        "versions": "버전"
+        "versions": "버전",
+        "command": "명령"
       },
       "form": {
         "name": "이름",
@@ -4435,6 +4932,61 @@
         "description": "끄면 이 스킬은 라이브러리에 남아 있지만 에이전트가 찾거나 불러올 수 없습니다.",
         "descriptionBuiltin": "끄면 이 기본 제공 스킬은 라이브러리에 남아 있지만 조직 전체의 에이전트가 찾거나 불러올 수 없습니다.",
         "short": "사용 가능"
+      },
+      "command": {
+        "toggle": "/명령으로 사용 가능",
+        "toggleDescription": "채팅의 / 메뉴에 표시됩니다. 텍스트는 내 메시지로 전송됩니다.",
+        "modelToggle": "에이전트도 스스로 사용할 수 있음",
+        "modelToggleDescription": "끄면 사람만 / 메뉴에서 실행합니다.",
+        "arguments": "인수",
+        "argumentsHint": "명령 뒤에 입력한 내용으로 순서대로 또는 name=value 형식으로 채워집니다. 텍스트에 $name, $1 또는 $ARGUMENTS를 사용하세요.",
+        "argName": "이름",
+        "argDescription": "설명",
+        "argValues": "허용 값(쉼표로 구분)",
+        "argDefault": "기본값",
+        "argRequired": "필수",
+        "addArgument": "인수 추가",
+        "removeArgument": "인수 제거",
+        "problemReserved": "/{{name}}은(는) 예약되어 있습니다. 다른 이름을 선택하세요.",
+        "problemArgumentName": "인수 이름은 소문자, 숫자, _로 구성되며 문자로 시작해야 합니다.",
+        "problemDuplicate": "각 인수에는 고유한 이름이 필요합니다.",
+        "preview": "미리 보기",
+        "sampleArguments": "예시 인수",
+        "tryIt": "사용해 보기",
+        "saveFirst": "사용해 보려면 변경 사항을 저장하세요.",
+        "share": "사용할 수 있는 사람",
+        "shareDescription": "공유된 명령은 공유 대상 모두의 / 메뉴에 작성자 이름과 함께 표시됩니다.",
+        "sharePersonal": "나만",
+        "shareTeam": "팀: {{team}}",
+        "shareOrg": "조직의 모든 사용자",
+        "shareError": "저장했지만 명령을 공유하지 못했습니다. 다시 시도하세요.",
+        "problemShadowed": "기본 제공 /{{name}}에 가려져 있습니다. 사용하려면 이름을 변경하세요.",
+        "shadowedTitle": "일부 명령이 기본 제공 명령에 가려져 있습니다",
+        "shadowedBody": "PipesHub에 이제 같은 이름의 기본 제공 명령이 있어 기본 제공 명령이 실행됩니다. 사용하려면 다음 명령의 이름을 변경하세요:",
+        "shadowedDismiss": "확인"
+      },
+      "scan": {
+        "findingsTitle": "스캐너가 찾은 내용",
+        "findingsHint": "발견 항목은 그 줄을 읽어 볼 이유이지 공격의 증거가 아닙니다.",
+        "at": "{{path}}, {{line}}번째 줄",
+        "finding": {
+          "remote_code_execution": "코드를 내려받아 실행합니다",
+          "encoded_code_execution": "숨겨진 코드를 디코딩해 실행합니다",
+          "credential_access": "자격 증명이나 비밀 정보를 읽습니다",
+          "destructive_command": "파일이나 디스크를 삭제하거나 덮어씁니다",
+          "native_binary": "컴파일된 프로그램이 들어 있습니다",
+          "instruction_override": "AI에게 지시를 무시하라고 합니다",
+          "hidden_directive": "태그 안에 지시를 숨깁니다",
+          "secret_access": "비밀 정보를 요구합니다",
+          "exfiltration": "데이터를 다른 곳으로 보냅니다",
+          "concealment": "AI에게 사용자에게 무언가를 숨기라고 합니다",
+          "tool_shadowing": "다른 도구의 동작을 바꾸려고 합니다",
+          "invisible_text": "보이지 않는 문자가 들어 있습니다",
+          "other": "자세히 살펴볼 필요가 있습니다"
+        },
+        "flagged": "콘텐츠 검사기가 이 가져온 스킬을 표시했으므로 에이전트가 사용할 수 없습니다. 사용하려면 표시된 줄을 수정하세요.",
+        "notUsable": "에이전트가 아직 이 가져온 스킬을 사용할 수 없습니다.",
+        "importNote": "에이전트는 콘텐츠를 신뢰할 수 있을 때만 가져온 스킬을 사용합니다. 먼저 검사기가 찾은 내용을 읽어 보세요."
       }
     },
     "mail": {
@@ -4823,6 +5375,19 @@
         "extraction": {
           "label": "추출 서비스",
           "description": "LLM 기반 문서 분류 및 메타데이터 추출"
+        },
+        "agentHarness": {
+          "label": "에이전트 실행",
+          "description": "재시작 후에도 계속되는 지속형 에이전트 실행",
+          "statusUnavailable": "사용할 수 없음",
+          "reason": {
+            "standalone": "MongoDB가 복제본 세트가 아닌 단일 서버로 실행되어 지속형 에이전트 실행이 꺼져 있으며 채팅은 기본 경로를 사용합니다. 켜려면 MongoDB를 복제본 세트로 실행하세요.",
+            "arbiter": "MongoDB에 아비터가 있어 데이터 멤버 하나만으로 쓰기가 확인되고 장애 조치 시 유실될 수 있습니다. 지속형 에이전트 실행은 꺼져 있습니다. 데이터를 가진 멤버 3개를 사용하고 아비터는 두지 마세요.",
+            "majorityUnavailable": "MongoDB가 멤버 과반수에서 테스트 쓰기를 확인하지 못했습니다. 복제본 세트 멤버 대부분이 실행될 때까지 지속형 에이전트 실행은 꺼져 있습니다.",
+            "probeFailed": "PipesHub가 MongoDB가 지속형 에이전트 실행을 안전하게 저장하는지 확인하지 못해 꺼져 있습니다. Node 로그를 확인하세요.",
+            "preparationFailed": "PipesHub가 지속형 에이전트 실행용 데이터베이스를 준비하지 못해 계속 시도 중입니다. 그동안 채팅은 기본 경로를 사용합니다. Node 로그를 확인하세요.",
+            "unknown": "지속형 에이전트 실행이 꺼져 있습니다. Node 로그를 확인하세요."
+          }
         }
       },
       "healthWarnings": {
@@ -5039,6 +5604,7 @@
       "deleteDescription": "{{name}}은(는) 즉시 작동을 멈추고, 보유한 모든 토큰이 취소됩니다. 그 토큰을 사용하던 모든 것이 실패하기 시작합니다.",
       "deleteSuccessTitle": "서비스 계정을 삭제했습니다",
       "deleteErrorTitle": "서비스 계정을 삭제하지 못했습니다",
+      "deleteNoAdminForHandover": "이 서비스 계정은 다른 사람과 공유된 채팅을 가지고 있으며, 이를 넘겨받을 활성 관리자가 없습니다. 먼저 다른 사람을 관리자로 지정한 다음 삭제하세요.",
       "create": {
         "title": "새 서비스 계정",
         "intro": "자동화는 사람이 아니라 이 계정으로 인증합니다. 따라서 읽을 수 있는 범위는 설정한 사람에게서 상속되지 않고 여기서 결정됩니다.",
@@ -5466,6 +6032,30 @@
     "responseSection": "응답",
     "connectModel": "모델 연결",
     "usingOrgDefault": "조직 기본 모델 사용 중",
+    "subAgentModels": {
+      "title": "하위 에이전트 모델",
+      "hint": "이 에이전트가 시작하는 하위 에이전트에 별도의 모델을 지정합니다. 지정하지 않으면 하위 에이전트는 자신을 시작한 에이전트의 모델을 사용합니다.",
+      "startsNone": "이 에이전트는 하위 에이전트를 시작하지 않으므로 이 모델들은 사용되지 않습니다. 심층 모드 요청은 에이전트가 직접 답합니다.",
+      "allSubAgents": "모든 하위 에이전트",
+      "unnamedRole": "이름 없는 역할",
+      "roleNameLabel": "역할 이름",
+      "roleNamePlaceholder": "예: researcher",
+      "savedAs": "{{key}}(으)로 저장됩니다",
+      "sameAsAgent": "에이전트와 동일",
+      "modelFor": "{{role}}의 모델",
+      "price": "토큰 100만 개당 {{price}}",
+      "notAllowed": "워크스페이스에서 더 이상 허용하지 않습니다. 다른 모델을 선택할 때까지 이 역할의 하위 에이전트는 시작되지 않습니다.",
+      "notAllowedOption": "{{model}}(더 이상 허용되지 않음)",
+      "duplicateRole": "이 역할은 이미 목록에 있습니다. 첫 번째 항목만 저장됩니다.",
+      "nameNeeded": "이 선택을 저장하려면 역할 이름을 입력하세요.",
+      "loading": "허용된 모델을 불러오는 중…",
+      "ceiling": "워크스페이스에서 하위 에이전트 모델을 {{limit}}(으)로 제한합니다.",
+      "roleCeiling": "워크스페이스에서 {{role}}을(를) {{limit}}(으)로 제한합니다.",
+      "addAllSubAgents": "모든 하위 에이전트의 모델 지정",
+      "addRole": "역할 추가",
+      "removeRole": "{{role}} 제거",
+      "limit": "에이전트에는 역할을 최대 {{max}}개까지 둘 수 있습니다."
+    },
     "optional": "선택 사항",
     "connectChatInput": "채팅 입력 연결",
     "toChatOutput": "채팅 출력으로",
@@ -5651,15 +6241,28 @@
     "mcpServerAlreadyAttachedNotify": "이 에이전트에는 이미 {{name}}과(와) 같은 유형의 다른 서버가 있습니다. 에이전트는 유형별로 서버를 하나만 사용할 수 있습니다.",
     "webSearchOnlyOne": "웹 검색 제공자는 하나만 연결할 수 있습니다",
     "mcpServerNodeSubtitle": "MCP 서버의 도구",
-    "noMcpServersAvailable": "사용 가능한 MCP 서버가 없습니다",
     "webSearchLocked": "이 에이전트의 웹 검색은 변경할 수 없습니다",
     "webSearchLoading": "웹 검색 제공자를 불러오는 중…",
+    "webSearchNotSetUp": "웹 검색이 아직 설정되지 않았습니다. 관리자에게 Workspace → 웹 검색에서 제공자를 선택해 달라고 요청하세요.",
+    "webSearchLoadFailed": "웹 검색 제공자를 불러오지 못했습니다.",
     "webSearchConfigureFirst": "먼저 {{name}}을(를) 구성하세요",
     "webSearch": "웹 검색",
     "toolsetOAuthServerError": "인증에 실패했습니다. 다시 시도하거나 관리자에게 문의하세요.",
     "attached": "연결됨",
     "mcpServerWithToolCount_other": "도구 {{count}}개가 있는 MCP 서버",
     "deprecatedToolsBanner_other": "이 에이전트의 도구 {{count}}개가 더 이상 사용되지 않습니다. 제거하세요: {{tools}}",
+    "mcpToolApproval": {
+      "unapproved": "승인되지 않음: 관리자가 이 도구를 승인하지 않아 추가되지 않습니다",
+      "changed": "관리자가 승인한 후 변경됨",
+      "unknown": "지금은 승인 여부를 확인할 수 없습니다"
+    },
+    "capability": {
+      "needsConnection": "내 연결 필요",
+      "waitingApproval": "승인 대기 중",
+      "disabled": "비활성화됨",
+      "notShared": "나와 공유되지 않음",
+      "blockedByPolicy": "조직 정책에 의해 차단됨"
+    },
     "mcpAllTools": "모든 도구",
     "mcpAllToolsHint": "서버가 나중에 추가하는 도구도 포함됩니다.",
     "mcpServerUnavailable": "사용할 수 없음",
@@ -5677,12 +6280,151 @@
     "limitSource": "{{name}}에서 검색할 범위 선택",
     "limitSourceHint": "소스 전체를 선택된 상태로 두거나, 선택을 해제하고 에이전트가 검색할 폴더와 항목을 선택하세요.",
     "limitSourceCount": "선택한 {{count}}개 항목으로 제한됨",
+    "initDraftNote": "/init으로 채팅에서 작성한 초안입니다. 검토한 후 저장하세요. 에이전트를 저장할 때까지 아무것도 저장되지 않습니다.",
     "toolsetPersonalOnSharedAgentNotify": "{{name}}은(는) 개인 액션입니다. 조직과 공유된 에이전트나 서비스 계정으로 실행되는 에이전트에는 추가할 수 없습니다.",
     "apiToolsets": {
       "section": "API 액션",
       "connectTooltip": "액션에서 연결하세요",
       "serviceAccountBlocked": "서비스 계정 에이전트는 공유 자격 증명이 있거나 로그인이 필요 없는 API 액션만 사용할 수 있습니다."
+    },
+    "gates": {
+      "title": "안전 및 검사",
+      "planApproval": "계획 승인 필요",
+      "planApprovalHint": "모든 실행이 작업 전에 계획을 보여 줍니다. 예약 실행과 백그라운드 실행에 적합합니다.",
+      "verify": "완료 전에 결과 검사",
+      "verifyHint": "모델 자신의 판단이 아닌 결정적 검사입니다.",
+      "kindLabel": "검사",
+      "kind": {
+        "file": "파일이 있고 열림",
+        "json_schema": "JSON 파일이 스키마와 일치함",
+        "citations": "인용이 출처에 있음",
+        "command": "명령이 성공함(테스트)"
+      },
+      "pathLabel": "\"{{check}}\"의 파일",
+      "pathPlaceholder": "out/report.pdf",
+      "formatLabel": "열리는 형식",
+      "anyFormat": "모든 파일",
+      "schemaLabel": "JSON 스키마",
+      "schemaPlaceholder": "{\"type\": \"object\"}",
+      "commandLabel": "명령",
+      "within": "제한 시간",
+      "timeoutLabel": "제한 시간(초)",
+      "seconds": "초",
+      "remove": "\"{{check}}\" 삭제",
+      "addCheck": "검사 추가",
+      "whenFails": "검사가 실패하면",
+      "onFailContinue": "에이전트에게 알리고 고치게 하기(최대 {{rounds}}번)",
+      "onFailFlag": "완료하고 확인되지 않음으로 표시",
+      "problem": {
+        "path": "작업 공간 안의 파일 경로를 입력하세요(예: out/report.pdf).",
+        "schema": "스키마는 JSON 객체여야 합니다.",
+        "command": "실행할 명령을 입력하세요(예: pytest -q).",
+        "timeout": "제한 시간은 1~600초 사이의 정수입니다."
+      }
+    },
+    "runtime": {
+      "title": "실행 방식",
+      "hint": "모델, 코딩 엔진, 지출, 웹사이트, 일정. 각 항목은 저장할 때 확인됩니다."
+    },
+    "schedules": {
+      "title": "일정",
+      "hint": "이 에이전트를 자동으로 실행하는 내 일정입니다.",
+      "empty": "아직 이 에이전트를 실행하는 내 일정이 없습니다.",
+      "saveFirst": "일정에 따라 실행하려면 에이전트를 저장하세요.",
+      "unavailable": "지금은 일정을 읽을 수 없습니다.",
+      "add": "일정 추가",
+      "manage": "모든 일정 관리",
+      "thisAgent": "이 에이전트",
+      "pausedByYou": "일시 중지됨. 모든 일정 관리에서 다시 시작하세요."
+    },
+    "environment": {
+      "title": "환경",
+      "intro": "에이전트 작업 공간이 시작 전에 필요한 것: 도구, 패키지, 설정. 에이전트가 코딩 엔진에서 작업할 때 쓰입니다.",
+      "howLabel": "환경 준비 방식",
+      "steps": "설정 단계",
+      "devcontainer": "devcontainer.json에서",
+      "setupLabel": "설정 명령",
+      "setupHint": "파일을 추가하기 전에 새 작업 공간에서 실행됩니다. 최대 64KB.",
+      "settingsLabel": "설정(한 줄에 하나, NAME=값)",
+      "settingsHint": "비밀 정보용이 아닙니다. PipesHub가 직접 정하는 이름(PATH, HOME, 프록시)은 쓸 수 없습니다.",
+      "devcontainerLabel": "devcontainer.json",
+      "devcontainerHint": "저장소의 파일을 붙여 넣으세요. 설정과 생성 명령이 사용됩니다.",
+      "ignored": "사용 안 함: {{keys}} (코딩 엔진 자체 이미지가 기반입니다).",
+      "problem": {
+        "setting": "\"{{name}}\"은(는) NAME=값 줄이 아닙니다.",
+        "reserved": "{{name}}은(는) PipesHub가 정하므로 여기서 바꿀 수 없습니다.",
+        "secret": "{{name}}은(는) 비밀 정보처럼 보입니다. 계정으로 연결하세요. 여기 설정은 비밀이 아닙니다.",
+        "tooMany": "설정은 최대 64개입니다.",
+        "folder": "각 폴더는 /로 시작하는 전체 경로이며 최대 16개입니다.",
+        "devcontainer": "JSON 객체가 아닙니다."
+      }
     }
+  },
+  "agentVersions": {
+    "liveVersion": "사용 중: 버전 {{version}}",
+    "unpublishedChanges": "게시되지 않은 변경 사항",
+    "notPublishedYet": "아직 게시되지 않음",
+    "versions": "버전",
+    "versionsTooltip": "게시된 모든 버전: 게시한 사람, 시간, 그리고 되돌리기.",
+    "saveDraft": "초안 저장",
+    "saveDraftTooltip": "채팅이 실행하는 내용은 바꾸지 않고 편집 내용을 보관합니다.",
+    "publish": "게시",
+    "publishing": "게시 중…",
+    "publishTooltip": "편집 내용을 채팅이 실행하는 버전으로 만듭니다.",
+    "nothingToPublish": "게시할 내용이 없습니다. 사용 중인 버전이 이미 편집 내용과 같습니다.",
+    "draftSaved": "초안을 저장했습니다. 게시할 때까지 채팅은 버전 {{version}}을(를) 계속 실행합니다.",
+    "draftSavedNoVersion": "초안을 저장했습니다. 게시할 때까지 채팅은 사용 중인 버전을 계속 실행합니다.",
+    "saveDraftFailed": "초안을 저장하지 못했습니다. 다시 시도하세요.",
+    "publishTitle": "버전 {{version}}을(를) 게시할까요?",
+    "publishTitleGeneric": "변경 사항을 게시할까요?",
+    "publishBody": "이제부터 이 에이전트와의 채팅은 버전 {{version}}을(를) 사용합니다. 예약 작업은 소유자가 옮길 때까지 기존 버전을 유지합니다.",
+    "publishBodyGeneric": "이제부터 이 에이전트와의 채팅은 변경 사항을 사용합니다. 예약 작업은 소유자가 옮길 때까지 기존 버전을 유지합니다.",
+    "noteLabel": "변경 내용 (선택 사항)",
+    "notePlaceholder": "예: P1 티켓을 지원 책임자에게 에스컬레이션.",
+    "publishedTitle": "버전 {{version}} 게시됨",
+    "publishedTitleGeneric": "게시됨",
+    "publishedDesc": "이제부터 이 에이전트와의 채팅이 이 버전을 사용합니다.",
+    "publishUnchanged": "버전 {{version}} 이후 변경된 내용이 없어 새로 게시하지 않았습니다.",
+    "publishIncomplete": "편집 내용은 초안으로 저장되었지만 게시에 실패했습니다. 다시 게시하세요.",
+    "publishFailed": "에이전트를 게시하지 못했습니다. 다시 시도하세요.",
+    "panelTitle": "버전",
+    "loading": "버전을 불러오는 중…",
+    "loadFailed": "버전을 불러오지 못했습니다.",
+    "retry": "다시 시도",
+    "empty": "아직 게시된 버전이 없습니다. 에이전트를 게시하면 버전 1이 만들어집니다.",
+    "unpublishedCallout": "게시되지 않은 변경 사항이 있습니다. 이전 버전으로 되돌리면 삭제됩니다.",
+    "publishAs": "버전 {{version}}(으)로 게시",
+    "versionLabel": "버전 {{version}}",
+    "live": "사용 중",
+    "rolledBackFrom": "버전 {{version}}(으)로 되돌림",
+    "beforeVersions": "버전 도입 이전 상태",
+    "migrationMeta": "버전 기능을 켤 때 생성됨 · {{when}}",
+    "publishedMeta": "{{who}} · {{when}}",
+    "unknownPublisher": "알 수 없는 사용자",
+    "details": "이 버전이 하는 일",
+    "detailsLoading": "불러오는 중…",
+    "detailsFailed": "세부 정보를 불러오지 못했습니다.",
+    "detailModels": "모델: {{list}}",
+    "detailOrgDefaultModel": "모델: 조직 기본값",
+    "detailTools": "도구: {{list}}",
+    "detailMcpServers": "MCP 서버: {{list}}",
+    "detailKnowledge": "지식 소스: {{amount}}",
+    "detailSkills": "스킬: {{amount}}",
+    "detailInstructions": "지침: {{amount}}자",
+    "rollback": "이 버전으로 되돌리기",
+    "rollbackTitle": "버전 {{version}}(으)로 되돌릴까요?",
+    "rollbackBody": "에이전트를 버전 {{version}}(으)로 되돌리고 버전 {{next}}(으)로 게시합니다. 이제부터 채팅이 이 버전을 사용합니다.",
+    "rollbackBodyGeneric": "에이전트를 버전 {{version}}(으)로 되돌리고 다시 게시합니다. 이제부터 채팅이 이 버전을 사용합니다.",
+    "rollbackDiscardWarning": "게시되지 않은 변경 사항이 삭제됩니다.",
+    "rollbackNoteLabel": "이유 (선택 사항)",
+    "rollbackConfirm": "되돌리기",
+    "rollingBack": "되돌리는 중…",
+    "rolledBack": "버전 {{from}}(으)로 되돌렸습니다. 버전 {{version}}(으)로 사용 중입니다.",
+    "rolledBackUnchanged": "버전 {{version}}이(가) 이미 버전 {{from}}과(와) 같아 새로 게시하지 않았습니다.",
+    "discarded": "게시되지 않은 변경 사항이 삭제되었습니다.",
+    "rollbackFailed": "되돌리기를 완료하지 못했습니다. 다시 시도하세요.",
+    "chatLabel": "{{name}} · 버전 {{version}}",
+    "chatLabelNoName": "에이전트 버전 {{version}}"
   },
   "recordView": {
     "sections": {
@@ -6030,7 +6772,18 @@
     "selectMany": "해당하는 항목 모두 선택",
     "skipAll": "모두 건너뛰기",
     "expired": "이 질문은 만료되었습니다. 계속하려면 채팅에서 답장하세요.",
-    "repliedInChat": "채팅에서 답장했습니다."
+    "repliedInChat": "채팅에서 답장했습니다.",
+    "grounding": {
+      "header": "찾지 못함",
+      "intent": "작업을 시작하기 전에 접근할 수 있는 자료에서 “{{subject}}”을(를) 찾아봤습니다.",
+      "questionNear": "지식 베이스에서 “{{subject}}”에 관한 내용을 찾지 못했습니다. 다음 중 하나를 말씀하신 건가요?",
+      "questionNone": "지식 베이스에서 “{{subject}}”에 관한 내용을 찾지 못했습니다. 어떻게 진행할까요?",
+      "useFound": "찾은 자료로 진행",
+      "nameIt": "문서나 폴더 지정",
+      "intentIn": "작업을 시작하기 전에 {{places}}에서 “{{subject}}”을(를) 찾아봤습니다.",
+      "questionNearIn": "{{places}}에서 찾아봤지만 “{{subject}}”에 관한 내용을 찾지 못했습니다. 다음 중 하나를 말씀하신 건가요?",
+      "questionNoneIn": "{{places}}에서 찾아봤지만 “{{subject}}”에 관한 내용을 찾지 못했습니다. 어떻게 진행할까요?"
+    }
   },
   "agentClaim": {
     "title": "에이전트 연결",
@@ -6044,6 +6797,161 @@
     "doneLine": "이제 에이전트가 계속할 수 있습니다. 이 창을 닫아도 됩니다.",
     "deniedTitle": "요청 거부됨",
     "deniedLine": "에이전트에게 액세스를 부여하지 않았습니다."
+  },
+  "approvalCard": {
+    "title": "{{tool}}을(를) 승인할까요?",
+    "description": "에이전트가 이 도구를 실행하려고 합니다. 결정하기 전까지는 아무것도 실행되지 않습니다.",
+    "arguments": "인수",
+    "approve": "승인",
+    "deny": "거부",
+    "approveLabel": "{{tool}} 실행 승인",
+    "denyLabel": "{{tool}} 실행 거부",
+    "sending": "결정을 보내는 중…",
+    "approved": "승인됨",
+    "denied": "거부됨",
+    "closed": "닫힘",
+    "failed": "결정이 서버에 전달되지 않았습니다. 연결을 확인한 후 다시 선택하세요.",
+    "refusedApprover": "이 작업의 요청자 또는 승인자만 승인할 수 있습니다.",
+    "refusedNotAllowed": "이 작업에 대해 결정할 수 없습니다.",
+    "refusedClosed": "이 요청은 더 이상 열려 있지 않습니다.",
+    "expired": "만료됨",
+    "expiredDescription": "아무도 결정하기 전에 작업이 끝났습니다.",
+    "noAuthority": "이 작업을 실행한 사람이나 승인자만 결정할 수 있습니다.",
+    "argumentsHidden": "인수는 승인할 수 있거나 대화에 참여한 사람에게만 표시됩니다.",
+    "flow": {
+      "titleToIn": "{{app}}에서 {{destination}}(으)로 {{action}}할까요?",
+      "titleTo": "{{destination}}(으)로 {{action}}할까요?",
+      "titleIn": "{{app}}에서 {{action}}할까요?",
+      "titleAction": "{{action}}할까요?",
+      "whyPrivate": "이 대화에서 에이전트가 앞서 비공개 콘텐츠를 읽었으며, 이 작업은 조직 외부로 무언가를 보냅니다. 결정하기 전에는 아무것도 보내지 않습니다.",
+      "whyUnknown": "이 대화에서 에이전트가 앞서 출처를 확인할 수 없는 연결된 앱이나 도구의 콘텐츠를 사용했으며, 이 작업은 조직 외부로 무언가를 보냅니다. 결정하기 전에는 아무것도 보내지 않습니다.",
+      "willSend": "보낼 내용",
+      "nothingToSend": "콘텐츠 없이 작업만 수행합니다.",
+      "redacted": "비밀번호나 키로 보입니다. 여기서는 숨겨져 있지만 작성된 그대로 전송됩니다.",
+      "showAll": "모두 보기",
+      "showLess": "간단히 보기",
+      "sources": "이 대화에서 앞서 읽은 항목",
+      "untitledSource": "제목 없는 출처",
+      "moreSources": "외 {{count}}개",
+      "deny": "거부",
+      "denyLabel": "거부: {{tool}}, 아무것도 보내지 않습니다",
+      "allowOnce": "한 번 허용",
+      "buttonName": "{{action}}: {{subject}}",
+      "allowConversation": "이 대화에서 허용",
+      "allowConversationFor": "이 대화에서 {{destination}} 허용",
+      "conversationScope": "이 대화에서의 허용은 {{destination}}에만 적용됩니다. 그 밖의 작업은 계속 확인을 요청합니다.",
+      "allowedConversationScope": "이 대화에서 {{destination}}(으)로의 이후 호출은 확인 없이 실행됩니다.",
+      "allowedConversation": "이 대화에서 허용됨",
+      "expiredDescription": "아무도 제때 결정하지 않아 아무것도 보내지 않았습니다.",
+      "refusedConversation": "이 항목은 한 번만 허용할 수 있습니다. 한 번 허용 또는 거부를 선택하세요."
+    },
+    "engine": {
+      "why": "코딩 에이전트는 내 공간 밖의 다른 사람이나 시스템에 전달되는 변경을 하기 전에 매번 묻습니다. 결정하기 전까지는 아무것도 전송되지 않습니다.",
+      "whyRead": "코딩 에이전트는 내 공간 밖의 다른 사람이나 시스템에 전달되는 변경을 하기 전에 매번 묻습니다. 또한 이 대화에서 앞서 아래에 나열된 내용을 읽었습니다. 결정하기 전까지는 아무것도 전송되지 않습니다."
+    },
+    "policy": {
+      "why": "승인 규칙에 따라 이 작업 전에 결정이 필요합니다. 결정하기 전까지는 아무것도 실행되지 않습니다.",
+      "whyDeployment": "관리자가 에이전트가 이 작업을 하기 전에 승인을 받도록 설정했습니다. 결정하기 전까지는 아무것도 실행되지 않습니다.",
+      "whyOrg": "조직에서 에이전트가 이 작업을 하기 전에 승인을 받도록 설정했습니다. 결정하기 전까지는 아무것도 실행되지 않습니다.",
+      "whyAgent": "이 에이전트는 이 작업을 하기 전에 승인을 요청하도록 설정되어 있습니다. 결정하기 전까지는 아무것도 실행되지 않습니다.",
+      "whyEngine": "코딩 에이전트 설정에 따라 이 작업을 하기 전에 승인이 필요합니다. 결정하기 전까지는 아무것도 실행되지 않습니다."
+    },
+    "child": {
+      "from": "하위 에이전트 “{{role}}”의 요청:"
+    },
+    "refusedEnded": "이 작업은 이미 끝나서 더 이상 결정할 것이 없습니다.",
+    "effect": {
+      "whatChanges": "바뀌는 내용",
+      "diffLabel": "{{target}}의 변경 사항",
+      "diffUntitled": "파일",
+      "showFull_one": "전체 변경 보기({{count}}줄)",
+      "showFull_other": "전체 변경 보기({{count}}줄)",
+      "showLess": "간단히 보기",
+      "truncated": "변경 내용이 카드에 표시할 수 있는 것보다 길어서 끝부분이 잘렸습니다.",
+      "cost": "예상 비용: 약 {{amount}}",
+      "costBasis": "도구가 밝힌 기준",
+      "costEach": "호출당 {{amount}} × {{calls}}, 도구가 밝힌 기준"
+    },
+    "denyReason": {
+      "label": "거부 이유 (선택 사항, 에이전트가 읽습니다)",
+      "placeholder": "예: 대신 #team-updates에 게시하세요",
+      "counter": "{{count}} / {{max}}",
+      "cancel": "취소",
+      "given": "사유: “{{reason}}”"
+    },
+    "plan": {
+      "why": "에이전트가 계획을 작성했습니다. 승인하기 전까지 무엇도 변경하는 작업은 실행되지 않습니다."
+    },
+    "edit": {
+      "edit": "편집",
+      "editLabel": "{{tool}}이(가) 보낼 내용을 편집한 뒤 승인",
+      "intro": "보낼 내용을 바꾼 뒤 승인하세요. 작업에는 실제로 실행된 내용이 그대로 전달됩니다.",
+      "changed": "변경됨",
+      "cannotEdit": "여기서는 편집할 수 없습니다",
+      "yes": "예",
+      "no": "아니요",
+      "notANumber": "숫자를 입력하세요.",
+      "undo": "변경 취소",
+      "cancel": "취소",
+      "approve": "변경 사항으로 승인",
+      "keys": "Esc는 취소, Ctrl 또는 Cmd + Enter는 변경 사항으로 승인합니다.",
+      "approvedWithChanges": "변경 사항으로 승인됨",
+      "before": "이전",
+      "after": "이후",
+      "showAll": "보낸 내용 모두 보기",
+      "hideAll": "보낸 내용 숨기기",
+      "hasSecret": "비밀번호나 키처럼 보입니다. 여기에 입력하지 말고 작업(Actions) 페이지에 자격 증명으로 저장하세요.",
+      "openActions": "작업 열기",
+      "refusedNotAllowed": "이 작업이 실행되는 대상자만 보낼 내용을 바꿀 수 있습니다. 요청대로 허용하거나 거부할 수 있습니다.",
+      "refusedNotOffered": "이 요청은 편집할 수 없습니다. 요청대로 허용하거나 거부하세요."
+    },
+    "externalPolicy": {
+      "why": "조직의 정책 시스템이 이 작업을 사람이 승인하도록 요청했습니다. 결정하기 전까지는 아무것도 실행되지 않습니다."
+    },
+    "editHasSecret": "변경 내용에 비밀번호, API 키 또는 토큰으로 보이는 값이 있어 아무것도 승인되지 않았습니다. 해당 값을 지우세요. 에이전트가 사용하게 하려면 대신 작업 페이지에서 자격 증명으로 저장하세요. 에이전트는 자격 증명을 보지 않고 사용합니다.",
+    "clone": {
+      "sizeAbout": "약 {{mb}}MB",
+      "sizeUpTo": "최대 {{mb}}MB",
+      "what": "공개, 읽기 전용.",
+      "whatSized": "공개, 읽기 전용, {{size}}.",
+      "nothingBack": "PipesHub가 에이전트의 작업 공간에 복사합니다. {{host}}(으)로는 아무것도 다시 보내지 않습니다.",
+      "privateRead": "이 대화에서 비공개 데이터를 읽었습니다. 저장소 주소가 {{host}}(으)로 전송됩니다.",
+      "privateReadShort": "이 대화에서 비공개 데이터를 읽었습니다.",
+      "allowConversation": "이 대화에서 이 저장소 허용",
+      "allowConversationShort": "여기서 이 저장소 허용"
+    },
+    "siteUpload": {
+      "allowRun": "이 실행에서 허용"
+    },
+    "textCheck": {
+      "hidden": "일부 문자는 보이지 않거나 텍스트 순서를 바꿀 수 있어 ⟨U+202E⟩ 같은 코드로 표시됩니다. 보내려는 내용이 맞는지 확인하세요.",
+      "host": "{{ascii}}은(는) 여러 문자 체계가 섞여 있어 {{unicode}}처럼 보입니다. 보이는 사이트가 아닐 수 있어 실제 형태로 표시합니다.",
+      "markerTitle": "그대로 두면 보이지 않거나 텍스트 순서를 바꾸는 문자"
+    }
+  },
+  "codeTaskCard": {
+    "change": {
+      "added": "추가됨",
+      "modified": "수정됨",
+      "deleted": "삭제됨"
+    },
+    "showDiff": "{{path}}의 변경 사항 표시",
+    "hideDiff": "{{path}}의 변경 사항 숨기기",
+    "diffLabel": "{{path}}의 변경 사항",
+    "diffSummary": "{{added}}줄 추가, {{removed}}줄 삭제",
+    "diffTruncated": "차이가 줄여서 표시됩니다.",
+    "binary": "바이너리 파일, {{size}}. 텍스트 차이가 없습니다.",
+    "tooLarge": "비교하기에 너무 큽니다({{size}}).",
+    "noDiff": "아직 차이를 볼 수 없습니다.",
+    "versionReason": {
+      "autosave": "작업 중 저장됨",
+      "turnEnd": "마지막에 저장됨",
+      "beforeEffect": "도구 호출 전에 저장됨",
+      "other": "저장됨",
+      "rollback": "복원됨",
+      "merge": "하위 작업 파일 병합됨"
+    },
+    "draft": "초안"
   },
   "oauthDevice": {
     "title": "기기 연결",
@@ -6364,5 +7272,2557 @@
       "copyDetails": "관리자용 세부 정보 복사",
       "copied": "세부 정보를 복사했습니다"
     }
+  },
+  "support": {
+    "menuLabel": "지원팀에 문의",
+    "title": "지원팀에 문의",
+    "steps": {
+      "area": "영역",
+      "details": "세부 정보"
+    },
+    "close": "닫기",
+    "cancel": "취소",
+    "back": "뒤로",
+    "continue": "계속",
+    "send": "요청 보내기",
+    "sending": "보내는 중…",
+    "changeArea": "영역 변경",
+    "change": "변경",
+    "issueOther": "기타(목록에 없음)",
+    "areaStep": {
+      "title": "어떤 도움이 필요하신가요?",
+      "subtitle": "문제와 가장 가까운 영역을 선택하세요.",
+      "suggested": "추천",
+      "suggestion": "{{time}}에 {{area}}에서 오류가 발생해 이 영역을 추천했습니다.",
+      "idea": "아이디어가 있으신가요? 피드백 보내기"
+    },
+    "areas": {
+      "connectors": {
+        "label": "커넥터 및 동기화",
+        "hint": "앱 연결, 동기화 오류 또는 누락된 데이터"
+      },
+      "chat": {
+        "label": "채팅 및 검색",
+        "hint": "답변, 인용 또는 검색 결과"
+      },
+      "agents": {
+        "label": "에이전트 및 작업",
+        "hint": "에이전트 만들기, 실행 또는 공유"
+      },
+      "files": {
+        "label": "파일 및 컬렉션",
+        "hint": "업로드, 폴더 또는 파일 미리보기"
+      },
+      "access": {
+        "label": "로그인 및 액세스",
+        "hint": "로그인, 비밀번호 또는 SSO"
+      },
+      "people": {
+        "label": "사용자 및 권한",
+        "hint": "사용자 초대, 역할 또는 그룹"
+      },
+      "other": {
+        "label": "기타",
+        "hint": "여기에 없는 모든 항목"
+      }
+    },
+    "details": {
+      "descriptionLabel": "무슨 일이 있었나요?",
+      "descriptionPlaceholder": "무엇을 하려고 했고, 대신 어떤 일이 일어났나요?",
+      "descriptionMin_other": "최소 {{count}}자 이상 입력하세요.",
+      "descriptionMax_other": "{{count}}자 제한에 도달했습니다.",
+      "attach": "스크린샷 첨부",
+      "removeFile": "{{name}} 제거",
+      "fileUnsupported": "{{name}}: 지원되지 않는 파일 형식입니다.",
+      "fileTooLarge": "{{name}} 파일이 5MB를 초과합니다.",
+      "tooManyFiles": "파일은 최대 5개까지 첨부할 수 있습니다.",
+      "filesTotalTooLarge": "파일은 합쳐서 8MB까지 첨부할 수 있습니다.",
+      "smtpTitle": "이 워크스페이스에 이메일이 설정되어 있지 않습니다",
+      "smtpBody": "사용 중인 이메일 앱에서 {{email}}(으)로 보낼 수 있는 메시지를 제공해 드립니다.",
+      "smtpAdmin": "요청을 바로 보내려면 워크스페이스 설정에서 SMTP를 구성하세요.",
+      "smtpMember": "요청을 바로 보내려면 관리자에게 SMTP 구성을 요청하세요.",
+      "includeErrors_other": "최근 오류 {{count}}개 포함",
+      "errorLine": "{{area}}: {{time}}에 오류 {{status}}",
+      "errorLineUnknown": "{{time}}에 오류 {{status}}",
+      "sentWith": "요청과 함께 전송되는 정보: {{list}}.",
+      "sentParts": {
+        "workspace": "워크스페이스",
+        "identity": "이름과 이메일",
+        "browser": "브라우저",
+        "errors": "최근 오류"
+      },
+      "viewDetails": "세부 정보 보기",
+      "hideDetails": "세부 정보 숨기기",
+      "rows": {
+        "issue": "문의 유형",
+        "workspace": "워크스페이스",
+        "signedInAs": "로그인 계정",
+        "browser": "브라우저",
+        "recentErrors": "최근 오류"
+      }
+    },
+    "blocked": {
+      "area": "계속하려면 영역을 선택하세요.",
+      "description": "'무슨 일이 있었나요?'에 최소 {{min}}자가 필요합니다({{left}}자 남음)."
+    },
+    "result": {
+      "sentTitle": "요청을 보냈습니다",
+      "sentBody": "지원팀이 요청을 받았습니다. 사본을 이메일로 보내 드렸으며, 답변은 받은편지함으로 전달됩니다.",
+      "pendingTitle": "아직 보내는 중입니다",
+      "pendingBody": "{{email}}(으)로 이메일을 보내는 데 평소보다 오래 걸리고 있습니다. 답변을 받지 못하면 이 참조 번호로 문의해 주세요.",
+      "referenceLabel": "참조 번호",
+      "copyReference": "참조 번호 복사",
+      "quote": "같은 문제로 다시 문의할 때 이 참조 번호를 알려 주세요.",
+      "done": "완료"
+    },
+    "email": {
+      "title": "이메일 앱에서 보내기",
+      "noSmtp": "이곳에는 이메일이 설정되어 있지 않아 요청 {{reference}}을(를) 보내지 못했습니다. 지원팀에 전달되도록 사용 중인 이메일 앱에서 이 메시지를 보내 주세요.",
+      "failed": "요청 {{reference}}을(를) 이메일로 보내지 못했습니다. 지원팀에 전달되도록 사용 중인 이메일 앱에서 이 메시지를 보내 주세요.",
+      "limit": "최근 1시간 동안 여러 건의 요청을 보내셨습니다. 이번 요청은 이메일 앱에서 보내 주세요.",
+      "unsaved": "요청을 보내지 못했습니다. 지원팀에 전달되도록 사용 중인 이메일 앱에서 이 메시지를 보내 주세요.",
+      "to": "받는 사람",
+      "subject": "제목",
+      "copy": "메시지 복사",
+      "copied": "복사됨",
+      "open": "이메일 앱 열기",
+      "shortened": "이메일 앱에는 짧게 줄인 내용이 전달됩니다. 전체 내용은 메시지 복사를 사용하세요.",
+      "attachFiles_other": "파일 {{count}}개는 이 메시지에 포함되지 않습니다. 이메일 앱에서 직접 첨부해 주세요.",
+      "copyFallback": "자동으로 복사하지 못했습니다. 메시지가 선택되어 있으니 Ctrl+C(Mac에서는 ⌘C)를 누르세요."
+    },
+    "errors": {
+      "load": "지원 옵션을 불러오지 못했습니다.",
+      "retry": "다시 시도",
+      "send": "요청을 보내지 못했습니다. 다시 시도해 주세요.",
+      "emailInstead": "이메일로 보내기"
+    }
+  },
+  "feedback": {
+    "menuLabel": "피드백 보내기",
+    "title": "피드백 보내기",
+    "subtitle": "잘 되는 점, 안 되는 점, 원하는 기능을 알려 주세요.",
+    "kindIssue": "일반 피드백",
+    "kindFeedback": "기능 요청",
+    "descriptionPlaceholder": "어떤 일이 있었나요, 또는 무엇을 개선할까요?",
+    "addFiles": "파일 추가",
+    "removeFile": "제거",
+    "fileHint": "선택 사항. 파일 최대 5개, 각 5MB. 이미지, PDF, 텍스트 또는 CSV.",
+    "cancel": "취소",
+    "submit": "제출",
+    "needReply": "답변이 필요하신가요? 지원팀에 문의",
+    "success": "감사합니다. 피드백을 받았습니다.",
+    "pending": "{{email}}(으)로 보내는 이메일이 평소보다 오래 걸리고 있습니다. 답변이 없으면 문의해 주세요.",
+    "submitError": "제출하지 못했습니다. 다시 시도해 주세요.",
+    "descriptionTooShort": "조금 더 자세히 적어 주세요(최소 10자).",
+    "invalidType": "지원하지 않는 파일 형식입니다.",
+    "fileTooLarge": "각 파일은 5MB 이하여야 합니다.",
+    "tooManyFiles": "파일은 최대 5개까지 첨부할 수 있습니다.",
+    "filesTotalTooLarge": "파일은 합쳐서 8MB까지 첨부할 수 있습니다."
+  },
+  "aiAccounts": {
+    "common": {
+      "loading": "불러오는 중…",
+      "unavailable": "지금은 연결할 수 없습니다. 변경된 내용은 없습니다. 잠시 후 다시 시도하세요.",
+      "adminOnly": "조직 관리자만 관리할 수 있습니다.",
+      "forbidden": "이 항목을 변경할 권한이 없습니다.",
+      "notFound": "이미 삭제되었습니다.",
+      "failed": "문제가 발생했습니다. 다시 시도하세요.",
+      "tryAgain": "다시 시도",
+      "offering": "설치 유형: {{offering}}",
+      "rulesVersion": "규칙 {{version}}",
+      "conflict": "연 뒤에 다른 사람이 저장했습니다. 변경 내용을 보려면 새로고침하세요."
+    },
+    "my": {
+      "title": "내 AI 계정",
+      "subtitle": "내 AI 설정: Claude 로그인, 코딩 엔진, 그리고 사용할 수 있는 AI 모델 이용 방법입니다.",
+      "accessTitle": "사용할 수 있는 항목",
+      "accessDescription": "이 설치 환경과 조직에서 허용하는 AI 모델 이용 방식과, 나머지를 사용할 수 없는 이유입니다."
+    },
+    "table": {
+      "provider": "제공업체",
+      "account": "계정",
+      "engines": "엔진",
+      "status": "상태",
+      "consumer": "개인 요금제",
+      "allEngines": "전체",
+      "notAvailable": "사용 불가"
+    },
+    "routes": {
+      "gateway": "PipesHub를 통해",
+      "vendor_injected": "제공업체로 직접",
+      "vendor_sandbox_login": "작업 안에서 제공업체 로그인"
+    },
+    "kinds": {
+      "org_api_key": "조직 키",
+      "org_cloud": "조직 클라우드 계정",
+      "user_api_key": "개인 키",
+      "user_plan_injected": "개인 구독(PipesHub를 통해 로그인)",
+      "user_plan_sandbox_login": "개인 구독(작업 안에서 로그인)"
+    },
+    "offerings": {
+      "oss": "오픈 소스",
+      "managed": "관리형 서비스",
+      "unknown": "알 수 없음"
+    },
+    "reasons": {
+      "available": "사용 가능",
+      "vendor_prohibited": "제공업체 약관에서 허용하지 않습니다.",
+      "vendor_pending": "이 사용이 허용되는지 제공업체의 확인을 기다리는 중입니다.",
+      "offering_not_permitted": "이 설치 유형에서는 사용할 수 없습니다.",
+      "org_policy_refused": "조직에서 꺼 두었습니다.",
+      "route_not_built": "PipesHub에서 아직 지원하지 않습니다.",
+      "transport_not_built": "저장할 수는 있지만 PipesHub에서 아직 이 제공업체를 사용할 수 없습니다.",
+      "vendor_rule_missing": "이를 허용하는 규칙이 없습니다.",
+      "vendor_rules_invalid": "이 릴리스의 액세스 규칙을 확인할 수 없어 아무것도 사용할 수 없습니다. 관리자에게 문의하세요.",
+      "access_policy_unavailable": "지금은 조직의 액세스 설정을 읽을 수 없습니다. 잠시 후 다시 시도하세요.",
+      "access_policy_invalid": "이 릴리스의 규칙만 끌 수 있습니다.",
+      "account_not_owned": "본인의 키만 사용할 수 있습니다.",
+      "account_missing": "해당 계정이 더 이상 없습니다.",
+      "account_provider_mismatch": "해당 계정은 모델과 다른 제공업체의 계정입니다.",
+      "account_requires_engine": "엔진에서 실행되는 에이전트만 계정을 선택할 수 있습니다.",
+      "account_model_required": "이 계정과 함께 사용할 모델을 선택하세요.",
+      "route_unavailable": "이 모델 이용 방식은 사용할 수 없습니다.",
+      "route_not_configured": "이 모델이 설정되어 있지 않습니다.",
+      "unknown": "사용할 수 없습니다.",
+      "engine_unavailable": "이 코딩 엔진은 이 배포에 설치되어 있지 않습니다.",
+      "engine_profile_untrusted": "이 엔진의 프로필은 이 배포에 대해 서명되지 않았습니다.",
+      "engine_sandbox_missing": "코딩 엔진에는 샌드박스 애드온이 필요하지만 이 배포에는 설치되어 있지 않습니다.",
+      "engine_profile_widening": "조직에서 허용하지 않습니다."
+    },
+    "agent": {
+      "title": "AI 계정",
+      "description": "이 에이전트의 엔진 작업이 모델에 사용하는 계정 유형입니다.",
+      "any": "조직에서 허용하는 모든 계정",
+      "custom": "여러 유형으로 설정됨: {{kinds}}",
+      "unavailable": "지금은 계정 옵션을 불러올 수 없습니다."
+    },
+    "codingEngine": {
+      "title": "코딩 엔진",
+      "label": "코딩 엔진",
+      "myDescription": "에이전트 모드 채팅에서 코드 및 파일 작업을 맡길 코딩 엔진입니다.",
+      "myHelper": "질문에 코드, 파일 또는 여러 단계의 작업이 필요할 때 에이전트 모드에서 사용됩니다.",
+      "agentHelper": "작업에 코드, 파일 또는 여러 단계가 필요할 때 사용되며, 다른 질문에는 바로 답합니다.",
+      "orgLabel": "조직의 기본 코딩 엔진",
+      "orgHelper": "질문에 코드, 파일 또는 여러 단계의 작업이 필요할 때 에이전트 모드에서 사용됩니다. 단, 사용자가 내 AI 계정에서 다른 엔진을 선택한 경우는 제외합니다.",
+      "autoRoute": {
+        "label": "긴 작업을 코딩 엔진에 넘기기",
+        "helper": "여러 출처에 걸친 조사, 계획, 긴 보고서 등 여러 단계가 필요한 작업은 자동으로 코딩 엔진으로 넘어갑니다. 간단한 질문은 채팅에서 답합니다.",
+        "saved": "긴 작업 설정을 저장했습니다"
+      },
+      "orgDefault": "조직 기본값({{name}})",
+      "noneShort": "없음",
+      "none": "없음",
+      "noneLoop": "없음 – 기본 제공 에이전트 루프",
+      "noneLoopShort": "없음 – 기본 제공 루프",
+      "noneSandbox": "없음 – 기본 제공 샌드박스에서 코드 실행",
+      "anyEngine": "조직에서 허용하는 모든 엔진",
+      "engineSettings": "엔진 설정",
+      "saved": "코딩 엔진을 저장했습니다",
+      "orgSaved": "기본 코딩 엔진을 저장했습니다",
+      "unavailable": "지금은 코딩 엔진을 불러올 수 없습니다.",
+      "reasons": {
+        "route_not_configured": "조직에 AI 모델을 설정해야 함",
+        "engine_unavailable": "이 배포에 설치되어 있지 않음",
+        "engine_profile_untrusted": "이 배포에 대해 서명되지 않은 프로필",
+        "engine_sandbox_missing": "코딩 엔진에는 샌드박스 애드온이 필요하며, 이 배포에는 설치되어 있지 않음",
+        "offering_not_permitted": "조직의 모델로는 이 설치 유형에서 사용할 수 없음",
+        "engine_profile_widening": "조직에서 더 이상 허용하지 않음",
+        "engine_isolation_unavailable": "이 서버에 gVisor 샌드박스 런타임이 필요합니다",
+        "engine_group_required": "조직의 일부 그룹만 사용할 수 있습니다"
+      },
+      "isolation": {
+        "required": "코딩 엔진을 사용하려면 이 서버에 gVisor 샌드박스 런타임이 필요합니다 —",
+        "guide": "설치 가이드",
+        "weaker": "코딩 엔진이 gVisor 없이 실행 중입니다 — 격리 수준이 낮습니다",
+        "noSyscallFilter": "코딩 엔진이 gVisor 자체의 시스템 호출 필터 없이 실행됩니다 — 방어 계층이 하나 부족합니다.",
+        "syscallFilterGuide": "켜는 방법"
+      },
+      "orgDescription": "사용자가 다른 엔진을 선택하지 않았을 때 에이전트 모드 채팅이 코드와 파일 작업을 넘기는 엔진입니다."
+    },
+    "org": {
+      "title": "조직 AI 설정",
+      "subtitle": "조직 구성원이 사용하는 에이전트의 기본값입니다."
+    }
+  },
+  "durableRun": {
+    "budget": {
+      "exhausted": "이 작업이 지출 한도에 도달하여 중지되었습니다.",
+      "insufficient": "다음 단계에 필요한 예산이 부족하여 작업이 중지되었습니다.",
+      "unavailable": "지출 한도를 확인할 수 없어 작업이 중지되었습니다.",
+      "closed": "이 작업의 예산이 닫혔습니다.",
+      "childExceeds": "이 하위 작업을 시작할 예산이 부족했습니다."
+    },
+    "cost": {
+      "label": "비용",
+      "spent": "{{spent}} 사용",
+      "spentOf": "{{cap}} 중 {{spent}} 사용",
+      "tokens": "토큰 {{tokens}}개",
+      "tokensOf": "토큰 {{cap}}개 중 {{tokens}}개",
+      "exhausted": "예산 소진"
+    },
+    "child": {
+      "running": "실행 중",
+      "completed": "완료",
+      "failed": "완료되지 않음",
+      "loading": "타임라인을 불러오는 중…",
+      "loadFailed": "타임라인을 불러오지 못했습니다.",
+      "noStepsYet": "아직 단계가 없습니다. 작업이 진행되면 여기에 표시됩니다.",
+      "noSteps": "이 작업은 아무 단계도 실행하지 않고 끝났습니다.",
+      "answer": "답변"
+    },
+    "merge": {
+      "heading": "다시 병합된 파일",
+      "upToDate": "병합할 파일 변경 사항이 없습니다.",
+      "notMerged": "병합된 파일이 없습니다.",
+      "merged_other": "파일 {{count}}개를 작업 공간 버전 {{revision}}에 병합했습니다.",
+      "conflictsHeading": "충돌 (대화의 버전을 유지함)",
+      "forkVersion": "하위 작업의 버전은 해당 작업 공간 버전 {{revision}}에 있습니다.",
+      "repositories": "제외된 저장소: {{paths}}",
+      "kind": {
+        "bothChanged": "양쪽에서 변경됨",
+        "targetDeleted": "대화의 작업 공간에서 삭제됨",
+        "forkDeleted": "하위 작업이 삭제함"
+      }
+    },
+    "versions": {
+      "heading": "작업 공간 버전",
+      "loadFailed": "버전을 불러오지 못했습니다.",
+      "empty": "아직 버전이 없습니다.",
+      "item": "버전 {{revision}}: 파일 {{files}}개 ({{reason}})",
+      "byYou": "내가 복원함",
+      "current": "현재",
+      "restore": "복원",
+      "restoreLabel": "버전 {{revision}} 복원",
+      "confirm": "버전 {{revision}}을 새 버전으로 복원할까요? 아무것도 삭제되지 않습니다.",
+      "confirmYes": "복원",
+      "cancel": "취소",
+      "restored": "버전 {{from}}을 버전 {{to}}(으)로 복원했습니다.",
+      "conflict": "이 목록을 불러온 뒤 작업 공간이 변경되었습니다. 목록을 새로 고쳤습니다.",
+      "busy": "작업이 이 작업 공간에 쓰는 중입니다. 끝난 뒤 다시 시도하세요.",
+      "failed": "버전을 복원하지 못했습니다."
+    }
+  },
+  "approvals": {
+    "policy": {
+      "removeNamed": "{{name}} 제거",
+      "none": "없음",
+      "search": "검색",
+      "searchPlaceholder": "이름",
+      "searchFailed": "지금은 검색할 수 없습니다. 다시 시도하세요.",
+      "noResults": "일치하는 항목이 없습니다.",
+      "results": "{{label}} 검색 결과",
+      "addNamed": "{{name}} 추가"
+    }
+  },
+  "memories": {
+    "title": "메모리",
+    "subtitle": "에이전트가 대화 전반에 걸쳐 나에 대해 기억하는 내용입니다. 메모리는 나만 볼 수 있으며, 출처를 내가 열 수 있는 곳에서만 사용됩니다.",
+    "listTitle": "내 메모리",
+    "listDescription": "메모리를 수정하거나 삭제할 수 있습니다. 검토 대기 중인 메모리는 수락하기 전까지 사용되지 않습니다.",
+    "remember": {
+      "sectionTitle": "메모리",
+      "title": "나에 대한 내용 기억하기",
+      "description": "켜짐: 에이전트가 채팅에서 내 메모리를 사용하고 새 메모리를 저장합니다. 꺼짐: 둘 다 하지 않습니다. 아래 메모리는 삭제할 때까지 남아 있습니다.",
+      "unavailable": "지금은 메모리 설정을 읽을 수 없습니다. 잠시 후 다시 시도하세요.",
+      "failed": "메모리 설정이 저장되지 않았습니다. 잠시 후 다시 시도하세요."
+    },
+    "filterLabel": "보기",
+    "filter": {
+      "all": "전체",
+      "review": "검토 대기 중",
+      "accepted": "수락됨"
+    },
+    "empty": "아직 기억된 내용이 없습니다.",
+    "emptyReview": "검토를 기다리는 항목이 없습니다.",
+    "unavailable": "지금은 메모리에 연결할 수 없습니다. 변경된 내용은 없습니다. 잠시 후 다시 시도하세요.",
+    "rowLabel": "{{date}}의 메모리",
+    "content": "메모리",
+    "editedByYou": "내가 수정함",
+    "unknownOrigin": "출처를 알 수 없는 콘텐츠에서 가져왔습니다. 나만 볼 수 있으며 수락하기 전까지 사용되지 않습니다.",
+    "followedOutsideContent": "어시스턴트가 웹 페이지나 외부 이메일처럼 조직 외부의 콘텐츠를 읽은 뒤 제안한 내용입니다. 수락하기 전에 원하는 내용이 맞는지 확인하세요.",
+    "status": {
+      "pending": "아직 검토 안 됨",
+      "proposed": "검토 대기 중",
+      "accepted": "수락됨"
+    },
+    "kind": {
+      "fact": "사실",
+      "preference": "선호"
+    },
+    "scope": {
+      "user": "내 모든 대화",
+      "session": "대화 하나",
+      "agent": "에이전트 하나"
+    },
+    "actions": {
+      "accept": "수락",
+      "reject": "거부",
+      "edit": "수정",
+      "delete": "삭제"
+    },
+    "confirmReject": {
+      "title": "이 메모리를 거부할까요?",
+      "message": "삭제되며 다시는 사용되지 않습니다."
+    },
+    "confirmDelete": {
+      "title": "이 메모리를 삭제할까요?",
+      "message": "지금 삭제되며 이후 실행에서 사용되지 않습니다."
+    },
+    "refusal": {
+      "notFound": "이 메모리는 더 이상 없습니다.",
+      "invalid": "메모리를 확인하세요.",
+      "writeNotGranted": "메모리는 나만 변경할 수 있으며, 연결된 앱은 변경할 수 없습니다.",
+      "limit": "한 번에 메모리가 너무 많습니다. 나중에 다시 시도하세요.",
+      "notReviewable": "이 메모리는 이미 검토되었습니다.",
+      "policyInvalid": "메모리 설정을 확인하세요.",
+      "replaceUnknown": "이 메모리는 여기서 바꿀 수 없습니다."
+    },
+    "notSaving": "지속형 에이전트 채팅이 꺼져 있는 동안 에이전트는 새 기억을 저장하지 않습니다. 저장된 내용은 여기에서 계속 검토, 편집, 삭제할 수 있습니다."
+  },
+  "publications": {
+    "open": "게시",
+    "title": "{{name}} 게시",
+    "description": "이 컬렉션을 열 수 없는 사람도 컬렉션에서 답변을 받을 수 있게 합니다. 검색과 에이전트도 그들을 위해 이 컬렉션을 사용합니다. 게시는 언제든 취소할 수 있습니다.",
+    "ownersOnly": "이 컬렉션의 소유자와 조직 관리자만 게시할 수 있습니다.",
+    "empty": "이 컬렉션은 아무에게도 게시되지 않았습니다.",
+    "listLabel": "게시 목록",
+    "revoked": "취소됨",
+    "expired": "만료됨",
+    "until": "{{date}}까지",
+    "noExpiry": "만료 없음",
+    "revoke": "취소",
+    "confirmRevoke": {
+      "title": "이 게시를 취소할까요?",
+      "message": "대상자는 다음 질문부터 이 컬렉션에서 답변을 받지 못합니다. 게시 기록은 남습니다."
+    },
+    "audience": {
+      "org": "조직 내 모든 사람",
+      "wholeOrg": "조직 내 모든 사람",
+      "people": "사용자",
+      "searchPeople": "이름이나 이메일로 사용자 검색",
+      "matches": "일치하는 사용자",
+      "removePerson": "{{name}} 제거",
+      "teams": "팀"
+    },
+    "mode": {
+      "label": "제공 범위",
+      "answer_only": {
+        "label": "답변만",
+        "hint": "답변에서 내용을 인용하고 출처를 밝힐 수 있지만, 대상자는 파일을 열거나 다운로드하거나 공유할 수 없습니다."
+      },
+      "full": {
+        "label": "전체 액세스",
+        "hint": "대상자가 파일을 열고 다운로드할 수도 있습니다."
+      }
+    },
+    "create": {
+      "title": "더 많은 사람에게 게시",
+      "expiry": "만료일 종료 시점(선택 사항)",
+      "submit": "게시"
+    },
+    "refusal": {
+      "forbidden": "이 컬렉션의 소유자와 조직 관리자만 게시할 수 있습니다.",
+      "invalid": "게시 설정을 확인하세요.",
+      "notFound": "이 게시 또는 컬렉션은 더 이상 없습니다.",
+      "disabled": "조직에서 지식 게시가 꺼져 있습니다.",
+      "unavailable": "지금은 게시 기능에 연결할 수 없습니다. 변경된 내용은 없습니다. 잠시 후 다시 시도하세요.",
+      "answerOnly": "답변 전용으로 게시되었습니다.",
+      "refused": "지식 서비스가 이 요청을 거부했습니다."
+    }
+  },
+  "schedules": {
+    "title": "스케줄",
+    "subtitle": "에이전트를 정해진 시간이나 웹훅이 호출될 때 실행합니다. 모든 실행은 내 권한으로 이루어지며, 실행할 때마다 액세스 권한을 다시 확인합니다.",
+    "harnessPaused": "일시 중지됨: agent harness가 돌아올 때까지 일정이 실행되지 않습니다.",
+    "mineTitle": "내 스케줄",
+    "mineDescription": "내가 없어도 시작되는 실행입니다. 승인이 필요한 실행은 기한까지 나를 기다립니다.",
+    "new": "새 스케줄",
+    "tabs": {
+      "mine": "내 스케줄",
+      "org": "조직"
+    },
+    "empty": "아직 스케줄이 없습니다.",
+    "unavailable": "지금은 스케줄에 연결할 수 없습니다. 변경된 내용은 없습니다. 잠시 후 다시 시도하세요.",
+    "assistant": "어시스턴트",
+    "runsAs": "{{name}}님 권한으로 실행",
+    "nextRun": "다음 실행 {{date}}",
+    "noNextRun": "예정된 실행 없음",
+    "budget": "실행당 최대 {{amount}} USD",
+    "budgetDefault": "실행당 기본 예산",
+    "pausedBecause": "PipesHub가 일시중지함: {{reason}}",
+    "disabledBecause": "PipesHub가 끔: {{reason}}",
+    "started": "시작했습니다.",
+    "historyLabel": "{{name}} 실행 기록",
+    "status": {
+      "active": "활성",
+      "paused": "일시중지됨",
+      "disabled": "꺼짐"
+    },
+    "trigger": {
+      "cron": "Cron",
+      "webhook": "웹훅이 호출될 때",
+      "connector": "커넥터가 새 레코드를 받을 때"
+    },
+    "actions": {
+      "pause": "일시중지",
+      "resume": "재개",
+      "runNow": "지금 실행",
+      "history": "기록",
+      "delete": "삭제"
+    },
+    "delete": {
+      "title": "{{name}}을(를) 삭제할까요?",
+      "message": "실행이 중단되고 기록이 삭제됩니다. 실행으로 시작된 대화는 유지됩니다."
+    },
+    "firing": {
+      "kind": {
+        "cron": "예약됨",
+        "manual": "지금 실행",
+        "event": "트리거됨",
+        "cronCaughtUp": "예약됨 (밀린 실행)"
+      },
+      "openConversation": "대화 열기",
+      "admitted": "시작됨",
+      "refused": "시작되지 않음: {{reason}}",
+      "skipped": "건너뜀. PipesHub가 중단된 동안 놓친 횟수: {{count}}",
+      "skippedOverlap": "건너뜀: 이전 실행이 아직 진행 중이었음",
+      "skippedQueueFull": "건너뜀: 이미 대기 중인 실행이 있었음",
+      "waitingForLastRun": "이전 실행이 끝나기를 기다리는 중",
+      "pending": "시작하는 중…",
+      "none": "아직 실행 기록이 없습니다."
+    },
+    "create": {
+      "title": "새 스케줄",
+      "name": "이름",
+      "agent": "에이전트",
+      "prompt": "요청할 내용",
+      "promptHint": "실행할 때마다 내 메시지로 전송됩니다.",
+      "when": "실행 시점",
+      "kindCron": "스케줄에 따라(cron)",
+      "kindWebhook": "웹훅이 호출될 때",
+      "cron": "Cron 표현식",
+      "cronHint": "분, 시, 일, 월, 요일 순서입니다. 예: 0 9 * * 1은 매주 월요일 9:00입니다. 5분에 최대 한 번.",
+      "timeZone": "시간대",
+      "catchUp": "PipesHub가 중단되었던 경우",
+      "catchUpSkip": "놓친 실행 건너뛰기",
+      "catchUpRunLatest": "가장 최근에 놓친 시간에 대해 한 번 실행",
+      "webhookHint": "웹훅 주소와 비밀 키는 만든 직후 한 번만 표시됩니다.",
+      "budget": "실행당 예산, USD(선택 사항)",
+      "budgetHint": "최대 5 USD. 비워 두면 기본값을 사용합니다.",
+      "deadline": "기한, 시간(선택 사항)",
+      "deadlineHint": "그때까지 응답하지 않은 승인이 있으면 실행이 종료됩니다. 비워 두면 8시간입니다.",
+      "submit": "만들기",
+      "catchUpRunAll": "놓친 시간마다 한 번씩 실행",
+      "catchUpRunAllHint": "최대 24회, 오래된 것부터 차례로 실행합니다.",
+      "overlap": "이전 실행이 아직 진행 중인 경우",
+      "overlapSkip": "이번 실행 건너뛰기",
+      "overlapQueue": "끝날 때까지 기다린 후 실행",
+      "overlapQueueHint": "실행 하나만 대기할 수 있습니다. 대기 중에 다른 실행 시간이 되면 건너뜁니다.",
+      "overlapAllow": "둘 다 동시에 실행",
+      "notify": "실행이 끝나면 알림 받기",
+      "notifyInApp": "PipesHub에서",
+      "notifyInAppHint": "짧은 요약과 생성된 파일 링크를 함께 보냅니다.",
+      "notifyEmail": "이메일",
+      "notifyEmailHint": "일정 이름, 완료 여부, 링크.",
+      "notifySlack": "Slack",
+      "notifySlackHint": "이 에이전트의 Slack 봇이 보내는 메시지: 일정 이름, 완료 여부, 링크.",
+      "notifyNoSlackBot": "이 에이전트에는 Slack 봇이 없습니다. Slack 설정에서 봇을 추가하면 그곳에서 메시지를 받을 수 있습니다.",
+      "notifyNoSlackBotAssistant": "어시스턴트에는 Slack 봇이 없습니다. 그곳에서 메시지를 받으려면 봇이 있는 에이전트를 선택하세요.",
+      "notifyOrgOff": "조직에서 이 기능을 껐습니다.",
+      "notifyUnknown": "지금은 사용할 수 없습니다.",
+      "notifyCheckFailed": "사용할 수 있는 채널을 확인하지 못해 PipesHub만 제공합니다.",
+      "webhookCantSign": "호출하는 쪽에서 서명할 수 없습니다. 대신 헤더에 토큰 사용",
+      "webhookCantSignHint": "토큰을 본 사람은 누구나 호출할 수 있습니다. 서명이 더 안전합니다."
+    },
+    "webhook": {
+      "title": "내 웹훅",
+      "shownOnce": "비밀 키를 지금 복사하세요. 이번 한 번만 표시되며, PipesHub는 지문만 보관합니다.",
+      "url": "주소",
+      "copyUrl": "주소 복사",
+      "secret": "비밀 키",
+      "copySecret": "비밀 키 복사",
+      "copied": "복사됨",
+      "howTo": "비밀 키를 헤더에 넣어 이 주소로 POST 요청을 보내세요",
+      "done": "완료",
+      "signedShownOnce": "지금 이 비밀 값을 복사하세요. 다시 볼 수 없습니다.",
+      "signHowTo": "모든 호출에 서명하세요: 현재 시간과, 그 시간 및 본문의 HMAC-SHA256을 보냅니다.",
+      "example": "서명 예시",
+      "copyExample": "예시 복사"
+    },
+    "refusal": {
+      "disabledForOrg": "조직에서 예약 실행이 꺼져 있습니다.",
+      "invalid": "스케줄을 확인하세요.",
+      "notFound": "이 스케줄은 더 이상 없습니다.",
+      "forbidden": "이 스케줄에 대해 이 작업을 할 수 없습니다.",
+      "scheduleDisabled": "소유자가 더 이상 실행할 수 없어 이 스케줄이 꺼졌습니다.",
+      "limit": "허용된 스케줄 수에 도달했습니다. 먼저 하나를 삭제하세요.",
+      "budgetCeiling": "실행당 예산이 너무 높습니다.",
+      "unavailable": "예약 실행에는 지속형 에이전트 채팅이 필요하지만 조직에서 꺼져 있습니다.",
+      "triggerTokenInvalid": "웹훅의 트리거 토큰이 일치하지 않습니다. 일정에서 현재 토큰을 복사해 다시 시도하세요."
+    },
+    "reason": {
+      "scheduledRunsDisabled": "조직에서 예약 실행이 꺼졌습니다",
+      "actorDeleted": "소유자가 삭제되었습니다",
+      "actorDisabled": "소유자의 계정이 비활성화되었습니다",
+      "actorNotPerson": "소유자가 사람이 아닙니다",
+      "orgInactive": "조직이 비활성 상태입니다",
+      "agentForbidden": "소유자가 더 이상 이 에이전트를 사용할 수 없습니다",
+      "agentDeleted": "에이전트가 삭제되었습니다",
+      "narrowing": "에이전트 설정이 더 이상 이 실행을 허용하지 않습니다",
+      "rolloutLegacy": "조직에서 내구성 에이전트 하네스가 꺼져 있습니다",
+      "unavailable": "PipesHub가 제때 시작하지 못했습니다",
+      "templateMissing": "프롬프트가 없습니다",
+      "catchUpSkip": "PipesHub가 중단된 동안 놓침",
+      "byActor": "소유자가 일시중지함",
+      "byAdmin": "관리자가 일시중지함",
+      "other": "PipesHub가 이 실행을 거부했습니다"
+    },
+    "version": {
+      "label": "에이전트 버전",
+      "createPinned": "현재 사용 중인 버전",
+      "createLatest": "항상 사용 중인 버전",
+      "pinnedHint": "각 실행은 테스트한 그대로 사용합니다. 나중에 옮길 수 있습니다.",
+      "runs": "버전 {{version}} 실행",
+      "runsLatest": "사용 중인 버전 실행",
+      "liveIs": "버전 {{version}} 사용 중",
+      "change": "버전 변경",
+      "ownerOnly": "예약 작업의 소유자만 변경할 수 있습니다.",
+      "keep": "버전 {{version}} 유지",
+      "keepHint": "각 실행은 테스트한 그대로 사용합니다.",
+      "move": "버전 {{version}}(으)로 이동",
+      "moveHint": "다음 실행부터 적용됩니다. 다시 되돌릴 수 있습니다.",
+      "latest": "항상 사용 중인 버전 사용",
+      "latestHint": "각 실행은 마지막으로 게시된 버전을 사용합니다.",
+      "save": "저장"
+    }
+  },
+  "unknownEffectCard": {
+    "title": "이 작업이 완료되었나요? {{action}}",
+    "titleIn": "이 작업이 완료되었나요? {{app}}에서 {{action}}",
+    "why": "에이전트가 작업 중에 중단되어 완료 여부를 알 수 없습니다. 확인한 후 알려 주세요. 자동으로 다시 시도하지 않습니다.",
+    "whyIn": "에이전트가 작업 중에 중단되어 완료 여부를 알 수 없습니다. {{app}}을(를) 확인한 후 알려 주세요. 자동으로 다시 시도하지 않습니다.",
+    "checked": "자동 확인으로도 알 수 없었습니다.",
+    "done": "완료됨",
+    "notDone": "완료되지 않음",
+    "doneLabel": "완료됨: {{action}}",
+    "notDoneLabel": "완료되지 않음: {{action}}",
+    "markedDone": "완료로 표시됨",
+    "markedNotDone": "미완료로 표시됨",
+    "retried": "다시 시도함",
+    "closed": "더 이상 대기하지 않음",
+    "adminRetry": "다시 시도",
+    "adminNote": "완료되지 않았고 여전히 필요하다면 관리자가 다시 시도할 수 있습니다.",
+    "refusedNotAllowed": "이 채팅의 당사자, 대화 소유자 또는 관리자만 답할 수 있습니다.",
+    "refusedClosed": "더 이상 답변을 기다리지 않습니다.",
+    "failed": "답변을 보낼 수 없습니다. 다시 시도하세요."
+  },
+  "memoryChip": {
+    "saved": "기억에 저장됨",
+    "review": "검토"
+  },
+  "activityPanel": {
+    "title": "활동",
+    "close": "활동 패널 닫기",
+    "subtitle": "에이전트가 샌드박스에서 실행한 내용입니다. 읽기 전용입니다.",
+    "subtitlePersonRan": "이 채팅의 샌드박스에서 직접 실행한 내용입니다. 읽기 전용입니다.",
+    "model": "모델: {{model}}",
+    "reconnecting": "다시 연결하는 중…",
+    "loading": "활동을 불러오는 중…",
+    "unavailable": "이 실행의 활동을 볼 수 없습니다.",
+    "unavailableHint": "조직에서 꺼져 있거나 다른 사람의 실행일 수 있습니다.",
+    "empty": "아직 실행된 것이 없습니다.",
+    "emptyRunning": "에이전트가 작업하는 동안 명령, 도구 호출, 변경된 파일이 여기에 표시됩니다.",
+    "emptyDone": "이 실행은 명령을 실행하거나 도구를 호출하거나 파일을 변경하지 않았습니다.",
+    "jumpToLatest": "최신 항목으로 이동",
+    "planCaption": "에이전트가 다음에 하려는 일입니다.",
+    "omittedCommands": "표시되지 않은 이전 명령: {{count}}",
+    "section": {
+      "plan": "계획",
+      "commands": "명령",
+      "tools": "단계",
+      "files": "변경된 파일",
+      "workspace": "작업 공간 파일"
+    },
+    "status": {
+      "queued": "대기열에 있음",
+      "running": "실행 중",
+      "waiting": "사용자 응답 대기 중",
+      "completed": "완료됨",
+      "failed": "실패함",
+      "cancelled": "중지됨"
+    },
+    "command": {
+      "running": "실행 중",
+      "timedOut": "시간 초과",
+      "cancelled": "취소됨",
+      "failed": "실패",
+      "done": "완료",
+      "exit": "종료 코드 {{code}}",
+      "unnamed": "명령",
+      "truncated": "이전 출력은 여기에 표시되지 않습니다. 전체 로그에 있습니다.",
+      "dropped": "출력 중 {{size}}는 실시간으로 표시되지 않았습니다. 전체 로그에 있습니다.",
+      "outputLabel": "{{command}}의 출력",
+      "waitingOutput": "출력을 기다리는 중…",
+      "noOutput": "출력 없음.",
+      "noOutputCaptured": "캡처된 출력이 없습니다.",
+      "fullLog": "전체 로그",
+      "fullLogLabel": "{{command}}의 전체 로그"
+    },
+    "task": {
+      "pending": "할 일",
+      "inProgress": "진행 중",
+      "completed": "완료",
+      "cancelled": "취소됨"
+    },
+    "tool": {
+      "running": "실행 중",
+      "completed": "완료",
+      "failed": "실패",
+      "awaiting": "승인 대기 중",
+      "denied": "거부됨",
+      "blocked": "차단됨",
+      "waitingGeneric": "이 호출은 승인을 기다리고 있습니다.",
+      "decideInChat": "채팅의 승인 카드에서 결정하세요.",
+      "refusedBy": "“{{rule}}” 규칙에 의해 거부되었습니다.",
+      "deniedGeneric": "이 호출은 거부되어 실행되지 않았습니다.",
+      "blockedBy": "“{{rule}}” 규칙에 의해 차단되었습니다.",
+      "blockedGeneric": "정책에 의해 차단되어 실행되지 않았습니다.",
+      "webAddressRefused": "열지 않음: 이 주소는 검색 결과나 사용자에게서 온 것이 아니며, 채팅이 이미 비공개 콘텐츠를 읽었습니다.",
+      "detail": "세부 정보: {{detail}}",
+      "dryRun": "시험 실행: 실행되지 않음",
+      "dryRunWouldAsk": "시험 실행: 실행되지 않음 (승인을 요청했을 것)"
+    },
+    "announce": {
+      "started": "명령 시작: {{command}}",
+      "finishedExit": "명령이 종료 코드 {{code}}(으)로 끝남: {{command}}",
+      "finished": "명령 완료: {{command}}",
+      "failed": "명령 실패: {{command}}",
+      "timedOut": "명령 시간 초과: {{command}}",
+      "cancelled": "명령 취소: {{command}}",
+      "approval": "승인 필요: {{tool}}",
+      "runCompleted": "실행이 완료되었습니다.",
+      "runFailed": "실행이 실패했습니다.",
+      "runCancelled": "실행이 중지되었습니다."
+    },
+    "log": {
+      "title": "전체 로그",
+      "loading": "전체 로그를 불러오는 중…",
+      "failed": "전체 로그를 불러오지 못했습니다. 다시 시도하세요.",
+      "label": "{{command}}의 전체 로그",
+      "download": "다운로드"
+    },
+    "viewActivity": "활동 보기",
+    "slashCommand": "/{{name}} 실행함 (v{{version}}) · {{chars}}자 전송됨",
+    "steps": {
+      "running": "실행 중…",
+      "done": "완료",
+      "noResults": "결과 없음",
+      "found_one": "결과 {{count}}개 찾음",
+      "found_other": "결과 {{count}}개 찾음",
+      "details": "세부 정보",
+      "lookedUpTools": "사용 가능한 도구 확인",
+      "lookedUpSkills": "스킬 확인",
+      "groupTitle": "{{label}} ({{count}}회)",
+      "groupFinished_one": "{{count}}개 완료",
+      "groupFinished_other": "{{count}}개 완료",
+      "groupRunning_one": "{{count}}개 실행 중",
+      "groupRunning_other": "{{count}}개 실행 중",
+      "groupFailed_one": "{{count}}개 실패",
+      "groupFailed_other": "{{count}}개 실패",
+      "childLoading": "단계를 불러오는 중…",
+      "childEmpty": "아직 단계가 없습니다.",
+      "childUnavailable": "단계를 불러올 수 없습니다.",
+      "exitCode": "종료 코드 {{code}}",
+      "resultLoading": "결과를 불러오는 중…",
+      "resultUnavailable": "결과를 불러올 수 없습니다. 단계를 닫았다가 다시 열어 재시도하세요."
+    },
+    "workspace": {
+      "treeLabel": "작업 공간 파일, 읽기 전용",
+      "failed": "파일 목록을 불러오지 못했습니다.",
+      "readOnly": "읽기 전용입니다. 파일을 읽으려면 채팅에서 /open 또는 /download를 사용하세요."
+    }
+  },
+  "followups": {
+    "title": "추천 다음 단계",
+    "hint": "텍스트를 메시지 입력란에 넣어 수정할 수 있게 합니다. 직접 보내기 전까지는 아무것도 전송되지 않습니다.",
+    "openFiles": "변경된 파일 열기",
+    "runTests": "테스트 다시 실행",
+    "runTestsPrompt": "테스트를 다시 실행해 줘: {{command}}"
+  },
+  "agentActivity": {
+    "summary": {
+      "steps": "{{total}}단계 중 {{done}}단계 완료",
+      "thought_one": "생각함",
+      "thought_other": "{{count}}번 생각함",
+      "tools_one": "도구 {{count}}개 사용",
+      "tools_other": "도구 {{count}}개 사용",
+      "delegated_one": "하위 에이전트 {{count}}개에 위임",
+      "delegated_other": "하위 에이전트 {{count}}개에 위임",
+      "fallback": "단계 보기",
+      "repeated": "{{label}} ({{count}})",
+      "more": "{{count}}개 더",
+      "usedApp": "{{app}} 사용: {{tool}}",
+      "commands_one": "명령 {{count}}개 실행",
+      "commands_other": "명령 {{count}}개 실행",
+      "created": "{{name}} 생성",
+      "edited": "{{name}} 편집",
+      "deleted": "{{name}} 삭제",
+      "files_one": "파일 {{count}}개 편집",
+      "files_other": "파일 {{count}}개 편집",
+      "askedYou": "질문함",
+      "approvals_one": "승인 {{count}}건",
+      "approvals_other": "승인 {{count}}건",
+      "costSoFar": "지금까지 {{cost}}"
+    },
+    "plan": {
+      "label": "계획",
+      "status": {
+        "completed": "완료",
+        "in_progress": "진행 중",
+        "pending": "할 일",
+        "cancelled": "취소됨"
+      }
+    },
+    "duration": {
+      "seconds": "{{seconds}}초",
+      "minutes": "{{minutes}}분 {{seconds}}초"
+    },
+    "notice": {
+      "mcpUnavailable": "일부 MCP 서버가 응답하지 않았거나 승인된 도구가 없어 이 답변에서 사용할 수 없었습니다. MCP 서버에서 확인한 후 다시 시도하세요.",
+      "credentialMissingToolset": "{{item}}이(가) 계정에 연결되어 있지 않아 이 답변에서 사용할 수 없었습니다. 액션에서 연결한 후 다시 질문하세요.",
+      "credentialMissingMcp": "{{item}}이(가) 계정에 연결되어 있지 않아 이 답변에서 사용할 수 없었습니다. MCP 서버에서 연결한 후 다시 질문하세요.",
+      "connectItem": "{{item}} 연결",
+      "signinUnavailable": "이 서버에서는 아직 Claude 계정을 사용할 수 없어 이 작업은 조직 계정으로 실행되었습니다.",
+      "resumed": "이 작업은 중단되었다가(서버가 다시 시작됨) 멈춘 지점부터 이어서 진행되었습니다.",
+      "dryRun": "시험 실행이었습니다. 이 답변의 어떤 것도 실제로 변경, 전송 또는 삭제되지 않았습니다.",
+      "verified": "확인됨: 이 답변은 검사를 통과했습니다.",
+      "unverified": "확인되지 않음: 이 답변은 검사를 통과하지 못했습니다.",
+      "unverifiedBecause": "확인되지 않음: {{reason}}",
+      "engineRetired": "관리자가 이 작업에서 사용하던 코딩 엔진 버전의 사용을 중단했습니다. 작업은 일시 중지되었으며, 호환되는 버전을 사용할 수 있게 되면 저절로 이어서 진행됩니다. 대신 새로 시작하려면 작업을 중지하고 메시지를 다시 보내세요.",
+      "engineContinued": "호환되는 코딩 엔진 버전을 다시 사용할 수 있게 되어 이 작업이 이어서 진행되었습니다.",
+      "timePlan": "시간 계획: 늦어도 {{writeBy}}까지 자료를 모은 뒤 작성합니다. {{finishBy}}까지 완료합니다.",
+      "ranWithoutCodeTools": {
+        "notAvailable": "이 답변은 코드 도구 없이 작성되었습니다: 지금 이 서버에서 코딩 엔진을 사용할 수 없습니다.",
+        "pausedByAdmin": "이 답변은 코드 도구 없이 작성되었습니다: 관리자가 코딩 엔진을 일시 중지했습니다.",
+        "notAllowed": "이 답변은 코드 도구 없이 작성되었습니다: 조직 설정에서 이 채팅이 코딩 엔진을 사용하도록 허용하지 않습니다.",
+        "isolationUnavailable": "이 답변은 코드 도구 없이 작성되었습니다: 이 서버는 조직이 요구하는 격리 수준으로 코딩 엔진을 실행할 수 없습니다.",
+        "engineOff": "코드 도구 없이 작성된 답변입니다: 관리자가 이 채팅 또는 에이전트가 쓰는 코딩 엔진을 껐습니다. 관리자에게 다시 켜 달라고 요청하거나 다른 코딩 엔진을 선택하세요."
+      },
+      "modelSwitched": "평소 사용하는 AI 모델이 응답하지 않아 이 답변은 {{model}}(으)로 작성되었습니다.",
+      "engineSwitched": "조직에서 {{off}}이(가) 꺼져 있어 이 작업의 코딩 작업에 {{engine}}을(를) 사용했습니다.",
+      "sandboxQueued": "이 작업은 실행 전에 빈 샌드박스를 기다리며 대기열에 있었습니다.",
+      "mcpUnused": {
+        "signIn_one": "이 답변에는 {{names}}을(를) 사용하지 않았습니다. 먼저 로그인하세요.",
+        "signIn_other": "이 답변에는 {{names}}을(를) 사용하지 않았습니다. 먼저 로그인하세요.",
+        "notApproved_one": "이 답변에는 {{names}}을(를) 사용하지 않았습니다. 관리자가 아직 해당 도구를 승인하지 않았습니다.",
+        "notApproved_other": "이 답변에는 {{names}}을(를) 사용하지 않았습니다. 관리자가 아직 해당 도구를 승인하지 않았습니다.",
+        "unreachable_one": "이 답변에는 {{names}}을(를) 사용하지 않았습니다. 응답이 없었습니다. MCP 서버에서 확인한 뒤 다시 질문하세요.",
+        "unreachable_other": "이 답변에는 {{names}}을(를) 사용하지 않았습니다. 응답이 없었습니다. MCP 서버에서 확인한 뒤 다시 질문하세요.",
+        "noTools_one": "이 답변에는 {{names}}을(를) 사용하지 않았습니다. 제공하는 도구가 없습니다.",
+        "noTools_other": "이 답변에는 {{names}}을(를) 사용하지 않았습니다. 제공하는 도구가 없습니다.",
+        "unknown_one": "이 답변에는 {{names}}을(를) 사용하지 않았습니다. MCP 서버에서 확인한 뒤 다시 질문하세요.",
+        "unknown_other": "이 답변에는 {{names}}을(를) 사용하지 않았습니다. MCP 서버에서 확인한 뒤 다시 질문하세요.",
+        "approveTools_one": "도구 승인",
+        "approveTools_other": "도구 승인",
+        "openServers": "MCP 서버 열기",
+        "signInTo": "{{name}}에 로그인",
+        "signingIn": "{{name}}에 로그인하는 중…",
+        "signedIn": "{{name}}에 로그인했습니다. 사용하려면 다시 질문하세요.",
+        "flagged_one": "이 답변에는 {{names}}을(를) 사용하지 않았습니다. 도구 설명이 모델에 대한 지시처럼 보여 안전을 위해 보류했습니다.",
+        "flagged_other": "이 답변에는 {{names}}을(를) 사용하지 않았습니다. 도구 설명이 모델에 대한 지시처럼 보여 안전을 위해 보류했습니다.",
+        "held_one": "{{server}}의 도구 {{tools}}을(를) 안전을 위해 보류했습니다. 설명이 모델에 대한 지시처럼 보입니다.",
+        "held_other": "{{server}}의 도구 {{tools}}을(를) 안전을 위해 보류했습니다. 설명이 모델에 대한 지시처럼 보입니다."
+      }
+    },
+    "command": {
+      "ran": "실행함",
+      "running": "실행 중",
+      "exit": "종료 코드 {{code}}",
+      "showWhole": "전체 출력 보기",
+      "showTail": "마지막 줄만 보기",
+      "fullLogInActivity": "활동에서 전체 로그 보기"
+    },
+    "files": {
+      "title": "변경된 파일",
+      "added": "추가됨",
+      "modified": "수정됨",
+      "deleted": "삭제됨",
+      "fullDiff": "전체 diff는 활동 보기에서 확인하세요"
+    },
+    "codeTask": "코드 작업: {{goal}}",
+    "engineHelper": "도우미 에이전트",
+    "engineHelperTask": "도우미 에이전트: {{task}}",
+    "handoff": {
+      "label": "{{engine}}에 넘김: {{reason}}",
+      "engineFallback": "코딩 엔진",
+      "reason": {
+        "research": "여러 출처에 걸친 조사가 필요합니다",
+        "analysis": "여러 항목에 걸친 분석이 필요합니다",
+        "planning": "계획이 필요합니다",
+        "long_report": "긴 보고서가 필요합니다",
+        "many_steps": "여러 단계가 필요합니다",
+        "context": "채팅 답변보다 더 많은 공간이 필요합니다",
+        "budget": "답변 예산의 상당 부분을 쓰고 있었습니다"
+      }
+    },
+    "slashCommand": {
+      "ran": "/{{name}} 실행함",
+      "ranVersion": "/{{name}} 실행함 (v{{version}})"
+    },
+    "fileStep": {
+      "added": "생성함",
+      "modified": "수정함",
+      "deleted": "삭제함"
+    },
+    "skill": {
+      "read": "{{skill}} 스킬을 읽었습니다",
+      "reading": "{{skill}} 스킬을 읽는 중",
+      "readMany": "{{skills}} 스킬을 읽었습니다",
+      "readingMany": "{{skills}} 스킬을 읽는 중",
+      "names": {
+        "docx": "Word 문서",
+        "xlsx": "Excel 스프레드시트",
+        "pptx": "PowerPoint 프레젠테이션"
+      }
+    },
+    "unavailable": {
+      "notConnected": "{{tool}}이(가) 연결되어 있지 않습니다",
+      "notAvailable": "이 에이전트는 {{tool}}을(를) 사용할 수 없습니다",
+      "connect": "연결",
+      "connectLabel": "{{tool}} 연결"
+    },
+    "repo": {
+      "copied": "{{repository}} 복사됨 · 브랜치 {{branch}}",
+      "copiedNoBranch": "{{repository}} 복사됨",
+      "pushed": "{{branch}}에 푸시함",
+      "pushedNoBranch": "브랜치를 푸시함",
+      "pushFailed": "{{target}}에 푸시하지 못함",
+      "pushFailedNoTarget": "푸시하지 못함",
+      "refused": {
+        "otherBranch": "이 채팅은 자체 브랜치만 푸시할 수 있습니다",
+        "overwrite": "브랜치에 추가만 할 수 있으며 덮어쓸 수 없습니다",
+        "delete": "브랜치를 삭제할 수 없습니다",
+        "tags": "태그를 푸시할 수 없습니다",
+        "other": "푸시가 완료되지 않았습니다"
+      },
+      "prOpened": "{{repository}}에 풀 리퀘스트 #{{number}}을(를) 열었습니다",
+      "prOpenedPlain": "풀 리퀘스트를 열었습니다",
+      "prFailed": "풀 리퀘스트를 열지 못했습니다",
+      "viewOnGithub": "GitHub에서 보기"
+    },
+    "runSummary": {
+      "title": "요약",
+      "outcome": {
+        "answered": "답변함",
+        "needs_input": "답변을 기다리는 중",
+        "failed": "실패",
+        "cancelled": "취소됨"
+      },
+      "cutShort": {
+        "budget": "조기 중지: 예산 도달",
+        "turns": "조기 중지: 단계 한도 도달",
+        "time": "조기 중지: 시간 한도 도달",
+        "stall": "조기 중지: 진행 없음",
+        "provider": "조기 중지: 제공업체 사용 불가",
+        "engine_error": "일찍 중단됨: 엔진 오류",
+        "secret_blocked": "일찍 중단됨: 비밀 정보 차단"
+      },
+      "failed_one": "{{count}}개 실패",
+      "failed_other": "{{count}}개 실패",
+      "refused_one": "{{count}}개 중지됨",
+      "refused_other": "{{count}}개 중지됨",
+      "read_one": "레코드 {{count}}개 읽음",
+      "read_other": "레코드 {{count}}개 읽음",
+      "changed_one": "변경 {{count}}건",
+      "changed_other": "변경 {{count}}건",
+      "saved": "저장함: {{names}}",
+      "approvals_one": "승인 {{count}}건 요청",
+      "approvals_other": "승인 {{count}}건 요청",
+      "approved_one": "{{count}}건 승인됨",
+      "approved_other": "{{count}}건 승인됨",
+      "denied_one": "{{count}}건 거부됨",
+      "denied_other": "{{count}}건 거부됨",
+      "unanswered_one": "{{count}}건 응답 없음",
+      "unanswered_other": "{{count}}건 응답 없음",
+      "cost": "비용 {{usd}} · 토큰 {{tokens}}개"
+    },
+    "step": {
+      "results_one": "결과 {{count}}개",
+      "results_other": "결과 {{count}}개",
+      "noResults": "결과 없음",
+      "files_one": "파일 {{count}}개",
+      "files_other": "파일 {{count}}개",
+      "cited": "{{refs}}(으)로 인용됨"
+    }
+  },
+  "controlPlane": {
+    "conflict": {
+      "message": "이 섹션을 연 뒤 다른 사람이 저장했습니다. 내 변경 내용은 아래에 유지됩니다.",
+      "reapply": "새로고침 후 다시 적용",
+      "discard": "취소"
+    },
+    "recentChanges": {
+      "system": "PipesHub"
+    },
+    "agentData": {
+      "who": {
+        "actions": {
+          "email": "이메일",
+          "message": "채팅 메시지",
+          "ticket": "티켓 및 댓글",
+          "document": "페이지 및 문서",
+          "event": "캘린더 일정",
+          "commit": "커밋"
+        }
+      }
+    }
+  },
+  "slashCommands": {
+    "menuLabel": "명령",
+    "owner": {
+      "you": "나",
+      "team": "팀",
+      "org": "조직",
+      "pipeshub": "PipesHub"
+    },
+    "problem": {
+      "missing": "누락됨: {{names}}",
+      "invalid": "올바른 값이 아님: {{names}}",
+      "tooLong": "보내기에는 너무 김"
+    },
+    "preview": "미리 보기",
+    "previewNote": "이 텍스트가 전송됩니다.",
+    "queued": "/{{name}} 명령이 다음에 실행됩니다",
+    "queuedDescription": "현재 작업이 끝나면 바로 시작됩니다.",
+    "saveAsCommand": "명령으로 저장",
+    "byYou": "내가 작성",
+    "byPipeshub": "PipesHub 제공",
+    "whatWasSent": "전송된 내용",
+    "byAuthor": "{{name}}님이 만듦",
+    "byFormerMember": "이전 멤버가 만듦",
+    "reviewOfFiles_one": "변경된 파일 {{count}}개 검토",
+    "reviewOfFiles_other": "변경된 파일 {{count}}개 검토",
+    "teamNamed": "팀 {{team}}",
+    "group": {
+      "builtin": "기본 제공",
+      "you": "내 명령",
+      "team": "팀",
+      "org": "조직",
+      "sandbox": "샌드박스"
+    },
+    "alsoAlias": "{{alias}}도 가능",
+    "moreBuiltins": "기본 제공 명령 더 보기…",
+    "moreCount": "{{n}}개 더",
+    "terminalWord": "PipesHub에는 /{{name}} 명령이 없습니다. 입력한 텍스트가 메시지로 전송됩니다.",
+    "reason": {
+      "notRunning": "실행 중인 작업이 없습니다",
+      "wait": "이 실행이 끝날 때까지 기다리세요",
+      "noConversation": "먼저 메시지를 보내세요",
+      "noAnswer": "아직 답변이 없습니다",
+      "noWorkspace": "이 채팅에는 아직 작업 공간이 없습니다",
+      "sandboxOwner": "채팅 소유자만 샌드박스를 사용할 수 있습니다",
+      "sandboxLegacy": "샌드박스 명령에는 새 하네스가 필요합니다"
+    },
+    "builtin": {
+      "new": {
+        "description": "새 채팅 시작"
+      },
+      "model": {
+        "description": "다음 메시지에 사용할 모델 선택"
+      },
+      "effort": {
+        "description": "다음 메시지의 추론 강도 설정",
+        "reason": {
+          "noEffort": "이 모델에는 강도 설정이 없습니다"
+        }
+      },
+      "stop": {
+        "description": "실행 중인 답변 중지"
+      },
+      "status": {
+        "description": "마지막 답변의 모델, 강도, 실행기, 도구"
+      },
+      "usage": {
+        "description": "이 채팅의 토큰 및 비용",
+        "reason": {
+          "legacy": "비용은 새 하니스 채팅에서만 기록됩니다"
+        }
+      },
+      "fork": {
+        "description": "이 채팅을 복사본에서 비공개로 이어가기",
+        "reason": {
+          "unavailable": "이 채팅에서는 포크를 사용할 수 없습니다"
+        }
+      },
+      "copy": {
+        "description": "마지막 답변 복사"
+      },
+      "help": {
+        "description": "사용할 수 있는 명령 목록 보기"
+      },
+      "resume": {
+        "description": "이전 채팅 찾기"
+      },
+      "rename": {
+        "description": "이 채팅 이름 변경"
+      },
+      "export": {
+        "description": "이 채팅을 Markdown으로 다운로드"
+      },
+      "plan": {
+        "description": "다음 메시지에 계획 후 실행으로 전환",
+        "reason": {
+          "agentOnly": "계획 모드는 에이전트 채팅용입니다"
+        }
+      },
+      "skills": {
+        "description": "이 채팅에서 사용할 수 있는 스킬",
+        "reason": {
+          "off": "조직에서 스킬이 켜져 있지 않습니다"
+        }
+      },
+      "mcp": {
+        "description": "내 MCP 서버와 연결 상태",
+        "reason": {
+          "off": "조직에서 MCP가 꺼져 있습니다"
+        }
+      },
+      "agents": {
+        "description": "채팅할 수 있는 에이전트"
+      },
+      "memory": {
+        "description": "내 메모리 열기",
+        "reason": {
+          "off": "조직에서 메모리가 켜져 있지 않습니다"
+        }
+      },
+      "permissions": {
+        "description": "이 채팅이 묻지 않고 할 수 있는 작업",
+        "reason": {
+          "legacy": "승인은 새 하니스 기능입니다"
+        }
+      },
+      "feedback": {
+        "description": "마지막 답변 평가"
+      },
+      "compact": {
+        "description": "컨텍스트를 확보하도록 이 채팅 요약",
+        "reason": {
+          "legacy": "압축하려면 새 하네스가 필요합니다",
+          "nothing": "아직 압축할 내용이 없습니다",
+          "owner": "채팅 소유자만 압축할 수 있습니다"
+        },
+        "requested": "압축 요청 저장됨 · 다음 메시지 전에 실행됩니다",
+        "requestedFocus": "유지할 초점: {{focus}}",
+        "row": {
+          "compacted": "컨텍스트 압축됨",
+          "tokens": "{{before}} → {{after}} 토큰",
+          "kept": "내 메시지는 유지됨",
+          "unsupported": "이 엔진은 요청 시 압축할 수 없습니다",
+          "failed": "압축이 완료되지 않아 응답에 전체 컨텍스트가 사용되었습니다"
+        }
+      },
+      "diff": {
+        "description": "이 채팅이 변경한 파일"
+      },
+      "undo": {
+        "description": "마지막 답변 이전 상태로 파일 복원"
+      },
+      "review": {
+        "description": "이 채팅 작업 공간의 변경 사항 검토"
+      },
+      "init": {
+        "description": "이 채팅을 바탕으로 이 에이전트의 지침 초안 작성",
+        "reason": {
+          "noAgent": "에이전트와의 채팅에서 /init을 사용하세요",
+          "notEditor": "에이전트의 편집자만 지침을 변경할 수 있습니다"
+        }
+      },
+      "knowledge": {
+        "description": "다음 메시지에 사용할 컬렉션과 커넥터 선택",
+        "reason": {
+          "fixed": "이 채팅의 지식은 여기서 변경할 수 없습니다"
+        }
+      },
+      "files": {
+        "description": "이 채팅 작업 공간의 파일"
+      },
+      "open": {
+        "description": "여기에 파일 표시"
+      },
+      "download": {
+        "description": "파일 하나 또는 전체를 .zip으로"
+      },
+      "upload": {
+        "description": "작업 공간에 파일 추가"
+      },
+      "run": {
+        "description": "모델 없이 명령 실행",
+        "reason": {
+          "noRunCode": "이 채팅에서는 코드를 실행할 수 없습니다",
+          "denied": "조직 정책에 따라 코드 실행이 차단되었습니다"
+        }
+      },
+      "sandbox": {
+        "description": "이 채팅의 코드를 실행하는 환경"
+      },
+      "engine": {
+        "description": "다음 메시지의 코딩 엔진",
+        "reason": {
+          "fixed": "이 에이전트의 엔진은 소유자가 정합니다",
+          "quickChat": "코딩 엔진은 에이전트 모드에서 실행됩니다"
+        }
+      },
+      "logs": {
+        "description": "명령과 그 출력"
+      },
+      "repo": {
+        "description": "이 채팅에서 GitHub 저장소 작업",
+        "reason": {
+          "noEngine": "코딩 엔진이 필요합니다. 먼저 하나를 선택하세요.",
+          "orgOff": "조직에서 코딩 엔진을 켜지 않았습니다.",
+          "hasRepository": "이 채팅은 이미 {{repo}}에서 작업합니다. 다른 저장소는 새 채팅을 시작하세요."
+        }
+      }
+    },
+    "result": {
+      "loading": "불러오는 중…",
+      "failed": "불러오지 못했습니다. 다시 시도하세요.",
+      "none": "—",
+      "dismiss": "닫기",
+      "renamed": "“{{title}}”(으)로 이름이 변경되었습니다",
+      "noSuchModel": "“{{name}}” 모델이 없습니다. 목록에서 선택하세요.",
+      "noSuchEffort": "다음 중 하나를 사용하세요: {{values}}",
+      "modelNext": "다음 메시지의 모델: {{model}}",
+      "was": "이전: {{model}}",
+      "effortNext": "다음 메시지의 추론 강도: {{effort}}",
+      "planNext": "다음 메시지에 계획 후 실행이 켜져 있습니다.",
+      "runKeepsPins": "진행 중인 답변은 기존 설정을 유지합니다.",
+      "manageCommands": "내 명령 관리",
+      "mcpConnected": "연결됨",
+      "mcpNotConnected": "연결 안 됨",
+      "openSkills": "스킬 열기",
+      "noSkills": "아직 스킬이 없습니다",
+      "openMcp": "MCP 서버 열기",
+      "noMcp": "아직 MCP 서버가 없습니다",
+      "openAgents": "모든 에이전트",
+      "noAgents": "아직 에이전트가 없습니다",
+      "yes": "예",
+      "no": "아니요",
+      "status": {
+        "model": "모델",
+        "mode": "모드",
+        "effort": "강도",
+        "executor": "실행기",
+        "codingEngine": "코딩 엔진",
+        "tools": "부여된 도구",
+        "approvals": "승인",
+        "run": "마지막 답변",
+        "tokens": "사용한 토큰",
+        "policyVersion": "설정 버전",
+        "effortDefault": "모델 기본값",
+        "executorLoop": "에이전트 루프",
+        "approvalsNone": "요청 없음",
+        "approvalsAsked": "이 답변에서 {{count}}건 요청",
+        "legacy": "이 채팅은 기존 방식으로 실행되므로 모델과 모드만 표시됩니다."
+      },
+      "usage": {
+        "chat": "이 채팅",
+        "chatValue": "{{tokens}} 토큰 · {{usd}} · 답변: {{runs}}",
+        "last": "마지막 답변",
+        "lastValue": "{{tokens}} 토큰 · {{usd}}",
+        "lastValueCap": "{{tokens}} 토큰 · {{usd}} · 남은 한도 {{left}}"
+      },
+      "permissions": {
+        "approve": "승인할 수 있습니다",
+        "deny": "거부할 수 있습니다",
+        "readOnly": "읽기 전용입니다. 묻지 않고 실행할 항목은 승인 규칙이 결정합니다.",
+        "policy": "이 규칙 변경"
+      },
+      "knowledgeNext": "다음 메시지의 지식: {{names}}",
+      "knowledgeAll": "다음 메시지는 읽을 수 있는 모든 항목을 검색합니다.",
+      "diff": {
+        "summary": "이 채팅이 시작된 이후 변경된 파일: {{count}}",
+        "none": "이 채팅이 시작된 이후 변경된 파일이 없습니다.",
+        "omitted": "표시되지 않은 항목: {{count}}",
+        "undo": "마지막 단계 실행 취소",
+        "review": "이 변경 사항 검토"
+      },
+      "undo": {
+        "nothing": "실행 취소할 작업 공간 변경 사항이 없습니다",
+        "confirm": "이 파일들을 마지막 답변 이전 상태로 복원할까요? 파일: {{count}}",
+        "confirmLabel": "실행 취소 확인",
+        "filesOnly": "파일만 되돌립니다. 메시지는 그대로이며, 대화를 되돌리려면 메시지에서 분기하세요.",
+        "restore": "파일 복원",
+        "moved": "표시된 후 작업 공간이 변경되었습니다. /undo를 다시 실행하세요.",
+        "done": "파일을 버전 {{from}}(으)로 복원했습니다({{count}}개 되돌림). 현재 버전 {{revision}}.",
+        "doneSaved": "작업 공간 파일을 복원했습니다. 현재 버전 {{revision}}.",
+        "forkHint": "메시지는 변경되지 않았습니다.",
+        "savedHeading": "작업 공간 복원됨"
+      },
+      "init": {
+        "open": "에이전트 편집기에서 열기",
+        "notSaved": "에이전트를 저장할 때까지 아무것도 저장되지 않습니다."
+      },
+      "files": {
+        "summary": "버전 {{revision}} · 파일: {{count}} · {{size}}",
+        "lastSave": "{{seconds}}초 전 마지막 저장 기준입니다. 진행 중인 응답에 더 새로운 변경이 있을 수 있습니다.",
+        "treeLabel": "작업 공간 파일",
+        "more": "{{label}}개 더",
+        "hidden": "엔진에서 숨김",
+        "open": "{{path}} 열기",
+        "download": "{{path}} 다운로드",
+        "omitted": "목록에 없음: {{count}}",
+        "downloadAll": "모두 다운로드 (.zip)",
+        "notFound": "{{path}}에 파일이나 폴더가 없습니다",
+        "reference": "{{label}} ({{version}}) — 가져온 사본, 저장되지 않음",
+        "referenceUnversioned": "{{label}} — 가져온 사본, 저장되지 않음"
+      },
+      "download": {
+        "file": "{{name}} 다운로드됨",
+        "zip": "{{name}} 다운로드됨",
+        "tooLarge": "파일이 2 GiB보다 큽니다. 대신 폴더를 다운로드하세요. 예: /download out/"
+      },
+      "logs": {
+        "none": "이 채팅에서 실행된 명령이 없습니다"
+      },
+      "open": {
+        "lastSave": "마지막 저장 기준입니다. 진행 중인 응답에 더 새로운 변경이 있을 수 있습니다.",
+        "download": "다운로드",
+        "image": "{{path}} · {{size}} · 버전 {{revision}}",
+        "binary": "{{path}} · 바이너리 파일, {{size}}",
+        "csv": "{{path}} · 처음 행: {{rows}} · 버전 {{revision}}",
+        "moreRows": "파일에 행이 더 있습니다. 모두 보려면 다운로드하세요",
+        "text": "{{path}} · 줄: {{lines}} · 버전 {{revision}}",
+        "moreLines": "표시되지 않은 줄: {{count}}. 전체를 보려면 파일을 다운로드하세요."
+      },
+      "sandbox": {
+        "executor": "실행기",
+        "noRunYet": "첫 응답 후에 알 수 있습니다",
+        "codeRunsIn": "코드 실행 위치",
+        "gvisor": "gVisor",
+        "runc": "runc",
+        "network": "네트워크",
+        "networkNone": "없음",
+        "networkProxy": "PipesHub 프록시를 통한 공개 호스트, 매번 승인 필요",
+        "approvals": "승인",
+        "approvalsAllow": "묻지 않고 코드 실행 (자체 샌드박스)",
+        "approvalsAsk": "코드 실행 전에 묻습니다",
+        "workspace": "작업 공간",
+        "workspaceValue": "버전 {{revision}} · 파일: {{count}} · {{size}}",
+        "kept": "유지된 샌드박스",
+        "keptValue": "Claude에 로그인됨 · {{idle}}분 유휴 후, 늦어도 로그인 {{hours}}시간 후 종료",
+        "endNowAsk": "지금 종료…",
+        "endNow": "지금 종료",
+        "endConfirm": "유지된 샌드박스를 종료할까요? Claude에서 로그아웃하고 샌드박스를 지웁니다. 다음 메시지에서 다시 로그인해야 합니다.",
+        "ended": "유지된 샌드박스가 종료되었습니다. 다음 메시지에서 다시 로그인합니다.",
+        "foot": "실행 중인 샌드박스가 없습니다. 메시지마다 파일에서 새 샌드박스를 시작합니다.",
+        "footKept": "메시지마다 파일에서 새 샌드박스를 시작합니다. 메시지 사이에는 Claude 로그인 샌드박스만 유지됩니다.",
+        "nextMessage": "다음 메시지: {{engine}}"
+      },
+      "run": {
+        "interactive": "대화형 프로그램은 안 됩니다. /run은 명령 하나를 실행하고 돌아옵니다.",
+        "install": "/run으로는 패키지를 설치할 수 없습니다. 에이전트에게 설치를 요청하세요.",
+        "rateLimited": "/run 명령이 너무 많습니다. {{seconds}}초 후에 다시 시도하세요.",
+        "ask": "이것에 대해 묻기",
+        "undo": "실행 취소",
+        "viewOutput": "전체 출력 보기",
+        "notSent": "이 출력은 직접 묻지 않는 한 모델에 전송되지 않습니다."
+      },
+      "upload": {
+        "replace": "파일을 바꿀까요: {{count}}?",
+        "replaceButton": "바꾸기",
+        "added": "작업 공간에 버전 {{revision}}(으)로 추가됨 · 파일: {{count}}",
+        "addedSaved": "내가 업로드 · 버전 {{revision}}",
+        "savedHeading": "/upload",
+        "notAttachment": "이 파일은 코드가 쓸 수 있도록 샌드박스 폴더에 있습니다. 다음 메시지에 첨부되지 않습니다.",
+        "tooLarge": "너무 큽니다: 파일당 100 MiB, 업로드당 512 MiB, 작업 공간 2 GiB까지입니다.",
+        "refusedPath": "이 파일은 그곳에 둘 수 없습니다: 일부 컴퓨터에서 쓸 수 없는 이름(예: CON 또는 마침표로 끝나는 이름)이거나, 엔진 설정 폴더이거나, 작업 공간 밖의 경로입니다.",
+        "failed": "파일을 작업 공간에 추가하지 못했습니다. 다시 시도하세요."
+      },
+      "engine": {
+        "heading": "이 채팅의 코딩 엔진",
+        "nextMessage": "다음 메시지부터",
+        "asDefaultIs": "내 기본값대로 · {{engine}}",
+        "noEngine": "없음",
+        "none": "없음 – 기본 제공 에이전트 루프",
+        "saved": "저장했습니다. 다음 메시지부터 사용하며 파일은 그대로 유지됩니다.",
+        "refused": "지금은 이 엔진을 사용할 수 없어 선택이 저장되지 않았습니다.",
+        "unknown": "“{{name}}”(이)라는 코딩 엔진이 없습니다. 아래에서 하나를 선택하세요.",
+        "carryOver": "파일은 그대로 유지됩니다. 진행 중인 응답은 기존 엔진을 유지합니다.",
+        "makeDefault": "이것을 기본값으로 설정",
+        "defaultSaved": "새 채팅의 기본값으로 저장했습니다.",
+        "defaultFailed": "기본값이 변경되지 않았습니다. 내 AI 계정에서 다시 시도하세요.",
+        "firstMessage": "이 채팅의 첫 메시지가 이 엔진을 사용합니다.",
+        "firstMessageHeading": "첫 메시지부터",
+        "firstMessageHint": "보내기 전까지는 저장되지 않습니다. 페이지를 새로 고치면 선택이 사라집니다."
+      }
+    }
+  },
+  "interaction": {
+    "title": "{{what}}?",
+    "titleIn": "{{app}}에서 {{what}}?",
+    "titleTo": "{{destination}}(으)로 {{what}}?",
+    "titleToIn": "{{app}}에서 {{destination}}(으)로 {{what}}?",
+    "titleClone": "{{destination}}을(를) 복제할까요?",
+    "titlePush": "{{destination}}(으)로 푸시할까요?",
+    "verb": {
+      "web_search_one": "웹 검색",
+      "web_search_other": "웹 검색 {{count}}회",
+      "fetch_url_one": "웹 페이지 읽기",
+      "fetch_url_other": "웹 페이지 {{count}}개 읽기",
+      "generate_image_one": "이미지 생성",
+      "generate_image_other": "이미지 {{count}}개 생성",
+      "run_code_one": "코드 실행",
+      "run_code_other": "코드 {{count}}회 실행",
+      "generic_one": "{{action}}",
+      "generic_other": "{{action}} ({{count}}회 호출)",
+      "install_packages_one": "패키지 설치",
+      "install_packages_other": "패키지 {{count}}회 설치"
+    },
+    "engineWants": "{{engine}}이(가) 하려는 작업:",
+    "childWants": "코드 작업이 하려는 작업:",
+    "engine": {
+      "codex": "Codex",
+      "claude_code": "Claude Code",
+      "opencode": "OpenCode"
+    },
+    "outside": "조직 외부의 사이트",
+    "why": {
+      "flowReadUnknown_one": "이 작업은 {{destination}}에 단어를 보냅니다. 이전 단계에서 확인할 수 없는 콘텐츠를 가져왔으므로 조직 밖으로 나가기 전에 묻습니다.",
+      "flowReadUnknown_other": "이 작업들은 {{destination}}에 단어를 보냅니다. 이전 단계에서 확인할 수 없는 콘텐츠를 가져왔으므로 조직 밖으로 나가기 전에 묻습니다.",
+      "flowReadPrivate_one": "이 작업은 {{destination}}에 단어를 보냅니다. 이 대화에서 에이전트가 앞서 비공개 콘텐츠를 읽었으므로 조직 밖으로 나가기 전에 묻습니다.",
+      "flowReadPrivate_other": "이 작업들은 {{destination}}에 단어를 보냅니다. 이 대화에서 에이전트가 앞서 비공개 콘텐츠를 읽었으므로 조직 밖으로 나가기 전에 묻습니다.",
+      "siteUpload": "이 대화가 비공개 데이터를 읽었으므로 {{destination}}(으)로의 요청은 승인을 기다립니다. 링크나 업로드에 읽은 내용이 담길 수 있습니다. 그동안 패키지 설치는 계속 작동합니다."
+    },
+    "paused": "일시 중지됨, 결정을 기다리는 중",
+    "pausedHint": "결정하면 실행이 계속됩니다.",
+    "keysHint": "Enter를 누르면 한 번 허용하고, Escape를 누르면 메시지 입력란으로 돌아갑니다.",
+    "keysHintAll_one": "Enter를 누르면 허용하고, Escape를 누르면 메시지 입력란으로 돌아갑니다.",
+    "keysHintAll_other": "Enter를 누르면 {{count}}개 모두 허용하고, Escape를 누르면 메시지 입력란으로 돌아갑니다.",
+    "keysHintQuestion": "Enter를 누르면 계속하고, Escape를 누르면 메시지 입력란으로 돌아갑니다.",
+    "queued": "다음: {{title}}",
+    "reviewEach": "하나씩 검토",
+    "hideEach": "함께 결정",
+    "allowAll_one": "허용",
+    "allowAll_other": "{{count}}개 모두 허용",
+    "denyAll_one": "거부",
+    "denyAll_other": "모두 거부",
+    "allowItem": "한 번 허용: {{item}}",
+    "denyItem": "거부: {{item}}",
+    "moreItems_one": "+{{count}}개 더",
+    "moreItems_other": "+{{count}}개 더",
+    "receipt": {
+      "allowed_one": "내가 한 번 허용함",
+      "allowed_other": "내가 {{count}}개 모두 허용함",
+      "allowedConversation_one": "내가 이 대화에 대해 허용함",
+      "allowedConversation_other": "내가 이 대화에 대해 허용함",
+      "allowedConversationFor": "이 대화에서 {{destination}}을(를) 허용했습니다",
+      "denied_one": "내가 거부함 · 아무것도 보내지 않음",
+      "denied_other": "내가 {{count}}개 모두 거부함 · 아무것도 보내지 않음",
+      "mixed": "{{allowed}}개 허용, {{denied}}개 실행 안 함",
+      "lapsed": "제때 아무도 결정하지 않음 · 아무것도 보내지 않음",
+      "decided": "내가 결정함",
+      "answered": "내 답변: {{answer}}",
+      "skipped": "건너뜀 (새 메시지를 보냄)",
+      "named": "{{title}} · {{decision}}",
+      "deniedBecause": "내가 거부함, 사유: “{{reason}}”",
+      "approvedWithChanges": "변경 사항으로 승인됨"
+    },
+    "waitingCount_one": "{{count}}개 대기 중",
+    "waitingCount_other": "{{count}}개 대기 중",
+    "waitingCountSince_one": "{{time}}부터 {{count}}개 대기 중",
+    "waitingCountSince_other": "{{time}}부터 {{count}}개 대기 중",
+    "pill_one": "{{count}}개 대기 중 · 첫 항목으로",
+    "pill_other": "{{count}}개 대기 중 · 첫 항목으로",
+    "announce_one": "에이전트에 승인이 필요합니다: {{title}}. {{count}}개 대기 중.",
+    "announce_other": "에이전트에 승인이 필요합니다: {{title}}. {{count}}개 대기 중.",
+    "announceQuestion_one": "에이전트의 질문: {{title}}. {{count}}개 대기 중.",
+    "announceQuestion_other": "에이전트의 질문: {{title}}. {{count}}개 대기 중.",
+    "composerWaiting": "위에서 결정을 기다리고 있습니다. 입력하면 실행을 조정합니다",
+    "composerQuestion": "위에 질문이 기다리고 있습니다. 새 메시지를 보내면 건너뜁니다",
+    "steerQueued": "대기열에 추가됨: 다음 단계에서 실행이 읽습니다",
+    "steerQueuedWaiting": "대기열에 추가됨: 위에서 결정한 뒤 실행이 읽습니다",
+    "waitingForOwner_one": "대화 소유자가 한 단계를 결정하기를 기다리는 중",
+    "waitingForOwner_other": "대화 소유자가 {{count}}개 단계를 결정하기를 기다리는 중",
+    "denyAllLabel": "모두 거부: {{title}}",
+    "titleSiteUpload": "이 실행에서 {{destination}}(으)로 업로드를 허용하시겠습니까?"
+  },
+  "engineSignIn": {
+    "title": "코딩 엔진 로그인",
+    "description": "직접 시작한 코딩 작업에는 본인의 구독을 사용합니다. 그 외에는 조직 계정이 사용됩니다.",
+    "plan": {
+      "pro": "Claude Pro",
+      "max": "Claude Max",
+      "team": "Claude Team",
+      "enterprise": "Claude Enterprise",
+      "other": "Claude 요금제"
+    },
+    "can": {
+      "heading": "PipesHub가 할 수 있는 일",
+      "run": "직접 시작한 작업에 한해 내 Claude 요금제로 Claude Code 실행",
+      "plan": "로그인 후 Claude Code가 보고하는 계정과 요금제 표시"
+    },
+    "cannot": {
+      "heading": "PipesHub가 할 수 없는 일",
+      "see": "비밀번호나 로그인 정보 보기, 보관, 복사: Claude Code가 내 샌드박스 안에서만 보관합니다",
+      "others": "다른 사람, 공유된 대화, 예약 실행, Slack 또는 연결된 앱에 사용",
+      "keep_other": "대화가 끝난 후 보관하기. 대화마다 한 번 로그인하며, {{count}}분 동안 사용하지 않거나 연결을 해제하면 로그인이 종료됩니다.",
+      "keepMax_other": "로그인 후 늦어도 {{count}}시간이 지나면 종료됩니다."
+    },
+    "consent": {
+      "limits": "사용량은 조직 예산이 아니라 내 Claude 요금제 한도에 포함됩니다. 요금제에 대한 Anthropic 약관이 적용됩니다.",
+      "operator": "이 PipesHub의 운영자는 기술적으로 실행 중인 샌드박스에 접근할 수 있습니다. 이 배포를 신뢰하는 경우에만 로그인하세요."
+    },
+    "error": {
+      "notAllowed": "조직에서 개인 Claude 계정을 허용하지 않습니다."
+    },
+    "state": {
+      "notAllowed": "조직에서 허용하지 않음",
+      "available": "연결되지 않음",
+      "onWaiting": "켜짐: 작업 시작 시 로그인",
+      "connected": "연결됨",
+      "disconnected": "연결 해제됨",
+      "waitingVendor": "OpenAI 대기 중",
+      "unavailable": "이 서버에서 사용할 수 없음"
+    },
+    "notAllowed": {
+      "org": "관리자가 개인 Claude 계정을 허용하지 않았습니다. 작업에는 조직 계정이 사용됩니다.",
+      "service": "서비스 계정은 개인 Claude 계정을 사용할 수 없습니다."
+    },
+    "connected": {
+      "as": "{{email}}(으)로 로그인됨 · {{plan}}",
+      "when": "마지막 로그인: {{date}}. 새 작업마다 해당 샌드박스 안에서 다시 로그인해야 합니다."
+    },
+    "disconnected": {
+      "body": "{{date}}에 연결 해제됨. 로그인 정보가 있던 모든 샌드박스에서 로그아웃하고 데이터를 삭제했습니다. Anthropic 세션도 종료하려면"
+    },
+    "revokeAtClaude": "Claude 설정을 여세요",
+    "available": {
+      "onBody": "Claude Code로 에이전트 모드 작업을 시작하면 내 샌드박스 안에서 Claude에 로그인하라는 요청이 표시됩니다."
+    },
+    "plans": {
+      "workOnly": "조직에서 Team 및 Enterprise 요금제만 허용합니다.",
+      "any": "조직에서 Pro와 Max를 포함한 모든 Claude 요금제를 허용합니다."
+    },
+    "action": {
+      "useMine": "내 작업에 내 Claude 계정 사용",
+      "connectAgain": "다시 연결",
+      "connect": "연결",
+      "disconnect": "연결 해제",
+      "disconnecting": "연결 해제 중..."
+    },
+    "toast": {
+      "on": "내 작업에 내 Claude 계정이 사용됩니다",
+      "off": "Claude 계정 연결이 해제되었습니다"
+    },
+    "confirm": {
+      "title": "Claude 계정 연결을 해제할까요?",
+      "message": "내 Claude 요금제로 실행 중인 작업이 중지되고, 1분 이내에 해당 샌드박스에서 로그아웃하고 데이터를 삭제합니다. 새 작업에는 조직 계정이 사용됩니다."
+    },
+    "claude": {
+      "title": "Claude 계정",
+      "engine": "내 샌드박스 안에서 Claude Code에 직접 로그인합니다."
+    },
+    "chatgpt": {
+      "title": "ChatGPT 계정",
+      "body": "Codex에서 사용합니다. OpenAI의 PipesHub 승인을 기다리는 중입니다. 그때까지 Codex는 조직의 AI 모델을 사용합니다."
+    },
+    "card": {
+      "title": "Claude Code에 로그인",
+      "body": "이 작업은 내 Claude 계정을 사용합니다. Anthropic 페이지를 열고 승인한 다음 표시된 코드를 붙여넣으세요. 코드는 샌드박스의 Claude Code로 바로 전달되며 PipesHub는 보관하지 않습니다.",
+      "open": "Anthropic 로그인 페이지 열기",
+      "codeLabel": "Anthropic 코드",
+      "continue": "계속",
+      "checking": "확인 중...",
+      "privacy": "이 코드를 다른 곳에 붙여넣지 마세요.",
+      "ended": "이 로그인은 종료되었습니다.",
+      "useOrg": "대신 조직 계정 사용",
+      "orgChosen": "Claude 계정이 꺼져 있습니다. 조직 계정으로 실행하려면 메시지를 다시 보내세요.",
+      "usingPlan": "내 Claude 요금제 사용 중",
+      "usingPlanNamed": "내 Claude 요금제 사용 중 · {{plan}}"
+    },
+    "reason": {
+      "codeInvalid": "이 로그인에 대해 Anthropic이 표시한 코드가 아닙니다. 전체 코드를 복사해 다시 시도하세요.",
+      "failed": "Anthropic이 코드를 수락하지 않았습니다. 새 코드로 다시 시도하세요.",
+      "planNotAllowed": "조직에서 Team 및 Enterprise 요금제만 허용합니다. 다시 로그아웃되었습니다.",
+      "timeout": "15분 내에 로그인하지 않아 작업이 중지되었습니다.",
+      "cancelled": "로그인이 취소되었습니다.",
+      "urlRefused": "Claude Code가 Anthropic이 아닌 로그인 링크를 표시하여 해당 링크를 표시하지 않습니다.",
+      "unavailable": "이 배포에서는 개인 Claude 로그인을 사용할 수 없습니다.",
+      "disconnected": "Claude 로그인이 종료되어 작업이 중지되었습니다.",
+      "expired": "Claude 로그인이 만료되었거나 취소되었습니다. 다시 로그인하려면 메시지를 다시 보내세요.",
+      "planLimit": "Claude 요금제 사용 한도에 도달했습니다. 나중에 다시 시도하거나 조직 계정을 사용하세요.",
+      "required": "Claude Code에 로그인되어 있지 않습니다. 로그인하려면 메시지를 다시 보내세요.",
+      "shared": "공유된 대화에서는 내 Claude 계정이 사용되지 않습니다.",
+      "interactive": "내 Claude 계정은 웹 앱에서 직접 시작한 작업에만 사용됩니다.",
+      "orgOff": "현재 조직에서 개인 Claude 계정을 허용하지 않습니다. 조직 계정을 사용하려면 \"내 Claude 계정 사용\"을 끄세요."
+    },
+    "unavailable": {
+      "reason": "개인 Claude 계정을 사용하려면 이 서버에 로그인 애드온이 필요합니다.",
+      "member": "설치되기 전까지 Claude Code 작업에는 조직 계정이 사용됩니다.",
+      "guide": "설치 가이드 보기"
+    }
+  },
+  "toolNames": {
+    "webSearch": {
+      "present": "웹 검색 중",
+      "past": "웹 검색함"
+    },
+    "readPage": {
+      "present": "페이지 읽는 중",
+      "past": "페이지 읽음"
+    },
+    "generateImage": {
+      "present": "이미지 생성 중",
+      "past": "이미지 생성함"
+    },
+    "runCode": {
+      "present": "코드 실행 중",
+      "past": "코드 실행함"
+    },
+    "installPackages": {
+      "present": "패키지 설치 중",
+      "past": "패키지 설치함"
+    },
+    "readFile": {
+      "present": "파일 읽는 중",
+      "past": "파일 읽음"
+    },
+    "viewImage": {
+      "present": "이미지 보는 중",
+      "past": "이미지 봄"
+    },
+    "askUser": {
+      "present": "질문하는 중",
+      "past": "질문함"
+    },
+    "readRecord": {
+      "present": "전체 레코드 읽는 중",
+      "past": "전체 레코드 읽음"
+    },
+    "listSkills": {
+      "present": "스킬 목록 조회 중",
+      "past": "스킬 목록 조회함"
+    },
+    "searchSkills": {
+      "present": "스킬 검색 중",
+      "past": "스킬 검색함"
+    },
+    "loadSkill": {
+      "present": "스킬 불러오는 중",
+      "past": "스킬 불러옴"
+    },
+    "loadSkillFile": {
+      "present": "스킬 파일 불러오는 중",
+      "past": "스킬 파일 불러옴"
+    },
+    "manageSkill": {
+      "present": "스킬 관리 중",
+      "past": "스킬 관리함"
+    },
+    "using": "{{tool}} 사용 중",
+    "findFiles": {
+      "present": "파일 찾는 중",
+      "past": "파일 찾음"
+    },
+    "searchFiles": {
+      "present": "파일 검색 중",
+      "past": "파일 검색함"
+    },
+    "listFiles": {
+      "present": "파일 목록 보는 중",
+      "past": "파일 목록 봄"
+    },
+    "updatePlan": {
+      "present": "계획 업데이트 중",
+      "past": "계획을 업데이트함"
+    }
+  },
+  "orgDeletion": {
+    "section": {
+      "title": "조직 삭제",
+      "deleteLabel": "{{org}} 삭제",
+      "deleteButton": "조직 삭제…",
+      "descriptionNow": "{{org}}와(과) 그 데이터를 모든 사람에게서 즉시 삭제합니다. 되돌릴 수 없습니다.",
+      "deleteNow": "모든 사람이 즉시 로그아웃되며 아무도 취소할 수 없습니다."
+    },
+    "dialog": {
+      "heading": "{{org}}을(를) 삭제할까요?",
+      "typeToConfirm": "확인하려면 {{name}}을(를) 입력하세요",
+      "keep": "{{org}} 유지",
+      "confirm": "{{org}} 삭제",
+      "deleting": "삭제 중…",
+      "failed": "조직을 삭제하지 못했습니다",
+      "nameMismatch": "입력한 이름이 일치하지 않습니다. 아무것도 삭제되지 않았습니다.",
+      "typedMismatch": "조직 이름과 일치하지 않습니다",
+      "deletedNow": "확인하는 즉시 본인을 포함해 모든 사람이 로그아웃되어 로그인할 수 없으며, {{org}}와(과) 그 데이터가 즉시 삭제됩니다. 되돌릴 수 없습니다."
+    }
+  },
+  "agentTransfer": {
+    "export": {
+      "menuItem": "구성 내보내기…",
+      "title": "구성 내보내기",
+      "body": "이 에이전트의 설정을 다운로드하여 다른 PipesHub에서 설정하세요. 로그인 정보, 키 및 공유 대상은 포함되지 않습니다.",
+      "what": "내보낼 항목",
+      "loading": "버전을 읽는 중…",
+      "liveVersion": "현재 버전",
+      "versionLive": "버전 {{version}}(현재)",
+      "version": "버전 {{version}}",
+      "draft": "게시되지 않은 초안",
+      "notIncluded": "포함되지 않으며 가져온 후 다시 설정해야 함: 공유 대상, 사용하는 모델 계정, 조직의 승인 규칙.",
+      "download": "다운로드",
+      "downloading": "다운로드 중…",
+      "failed": "이 에이전트를 내보내지 못했습니다. 다시 시도하세요."
+    },
+    "import": {
+      "button": "에이전트 가져오기",
+      "title": "에이전트 가져오기",
+      "choose": "PipesHub에서 내보낸 파일을 선택하세요.",
+      "drop": ".agent.json 파일을 여기에 놓거나 파일을 선택하세요",
+      "dropAria": "가져올 에이전트 파일 선택",
+      "fileAria": "에이전트 파일",
+      "previewTitle": "“{{name}}” 가져오기",
+      "fromVersion": "버전 {{version}}에서 내보냈습니다. 공유되지 않은 내 새 에이전트가 됩니다.",
+      "fromDraft": "게시되지 않은 초안에서 내보냈습니다. 공유되지 않은 내 새 에이전트가 됩니다.",
+      "models": "모델",
+      "actions": "작업",
+      "knowledge": "지식",
+      "skills": "스킬",
+      "limits": "제한",
+      "turns_other": "{{count}}턴",
+      "costPerRun": "실행당 {{cost}}",
+      "newAgentNote": "각 이름은 내 모델, 작업, MCP 서버 및 소스와 연결됩니다. 추측하지 않습니다. 찾을 수 없거나 두 번 일치하는 항목은 제외되며 빌더에 선택할 항목으로 표시됩니다.",
+      "refusedTitle": "이 파일을 가져올 수 없습니다.",
+      "notExport": "PipesHub가 가져올 수 있는 에이전트 내보내기 파일이 아닙니다.",
+      "newerSchema": "이 내보내기는 스키마 버전 {{version}}입니다. 이 PipesHub는 버전 1과 2를 읽습니다.",
+      "tooBig": "이 파일은 에이전트 내보내기 파일로 보기에는 너무 큽니다.",
+      "failed": "가져오기에 실패했습니다. 다시 시도하세요.",
+      "back": "뒤로",
+      "cancel": "취소",
+      "import": "가져오기",
+      "importing": "가져오는 중…"
+    },
+    "needsChoice": {
+      "aria": "아직 선택이 필요한 항목",
+      "title_other": "{{count}}개 항목에 선택이 필요합니다",
+      "ready": "“{{name}}” 준비 완료",
+      "matched": "여기서 연결됨: {{names}}.",
+      "choose": "선택",
+      "close": "닫기",
+      "setAgain": "직접 다시 설정: {{items}}.",
+      "reason": {
+        "ambiguous": "여기에 “{{name}}”(이)라는 항목이 여러 개 있습니다. 올바른 항목을 선택하세요.",
+        "limited": "이 소스의 일부 폴더나 파일만 검색했습니다. 다시 선택하세요.",
+        "notReasoning": "여기서 추론 모델인 모델이 없으므로 조직의 기본 모델을 사용합니다.",
+        "notFound": {
+          "model": "여기에 “{{name}}”을(를) 제공하는 모델이 없습니다.",
+          "roleModel": "여기에 “{{name}}”을(를) 제공하는 모델이 없습니다.",
+          "toolset": "여기에 “{{name}}”(이)라는 작업이 없습니다.",
+          "mcpServer": "여기에 “{{name}}”(이)라는 MCP 서버가 없습니다.",
+          "knowledge": "여기에 “{{name}}”(이)라는 소스가 없습니다.",
+          "skill": "여기에 “{{name}}”(이)라는 스킬이 없습니다."
+        }
+      }
+    },
+    "kind": {
+      "model": "모델",
+      "roleModel": "하위 에이전트 모델",
+      "toolset": "작업",
+      "mcpServer": "MCP 서버",
+      "knowledge": "지식",
+      "skill": "스킬"
+    },
+    "excluded": {
+      "modelAccount": "사용하는 모델 계정",
+      "sharing": "공유 대상",
+      "ownerTeam": "소유 팀",
+      "serviceAccount": "서비스 계정으로 실행",
+      "approvals": "조직의 승인 규칙",
+      "gates": "에이전트의 안전 및 검사"
+    },
+    "notImported": {
+      "other": "이 에디션에서는 설정({{section}})을 사용할 수 없어 가져오지 않았습니다."
+    }
+  },
+  "connectCard": {
+    "title": "계속하려면 {{item}}을(를) 연결하세요",
+    "waitingTitle": "이 작업의 실행 대상자가 {{item}}을(를) 연결하기를 기다리는 중",
+    "othersBody": "해당 사용자만 자신의 {{item}} 계정을 연결할 수 있습니다. 대신 이 단계를 건너뛸 수 있습니다.",
+    "needsAccountTo": "이 단계는 {{action}} 작업을 위해 {{item}} 계정이 필요합니다. 연결하면 여기서부터 작업이 이어집니다.",
+    "needsAccount": "이 단계는 {{item}} 계정이 필요합니다. 연결하면 여기서부터 작업이 이어집니다.",
+    "needsMcp": "이 단계는 {{item}} MCP 서버가 필요합니다. 연결하면 여기서부터 작업이 이어집니다.",
+    "finishSigningIn": "열린 창에서 {{item}} 로그인을 완료하세요.",
+    "connectedElsewhere": "다른 탭에서 연결했나요? 작업을 계속하도록 알려 주세요.",
+    "signInFailed": "{{item}} 로그인이 완료되지 않았습니다. 다시 시도하세요.",
+    "notConnectedYet": "{{item}}이(가) 아직 연결되지 않았습니다. 연결한 후 다시 시도하세요.",
+    "connect": "{{item}} 연결",
+    "connecting": "연결 중…",
+    "alreadyConnected": "연결했습니다",
+    "skip": "건너뛰기",
+    "refusedOwner": "이 작업의 실행 대상자만 연결할 수 있습니다. 건너뛸 수는 있습니다.",
+    "receipt": {
+      "connected": "{{item}} 연결됨 · 작업이 계속됨",
+      "skipped": "건너뜀 · {{item}} 없이 작업이 계속됨",
+      "expired": "제때 연결되지 않음 · {{item}} 없이 작업이 계속됨",
+      "closed": "{{item}}이(가) 연결되기 전에 작업이 끝났습니다"
+    },
+    "reconnectTitle": "계속하려면 {{item}}을(를) 다시 연결하세요",
+    "reconnect": "{{item}} 다시 연결",
+    "rejected": "{{item}}에서 저장된 로그인을 거부했습니다. 다시 연결하면 작업이 여기서부터 계속됩니다.",
+    "rejectedAt": "{{item}}에서 {{time}}에 저장된 로그인을 거부했습니다. 다시 연결하면 작업이 여기서부터 계속됩니다.",
+    "waitingReconnectTitle": "이 작업을 실행하는 사용자가 {{item}}을(를) 다시 연결하기를 기다리는 중",
+    "waitingReconnectYou": "{{item}}을(를) 다시 연결하기를 기다리는 중",
+    "waitingConnectYou": "{{item}}을(를) 연결하기를 기다리는 중"
+  },
+  "runGates": {
+    "plan": {
+      "title": "에이전트의 계획 검토",
+      "why": "에이전트가 계획을 작성했습니다. 승인하기 전에는 무엇이든 변경하는 작업이 실행되지 않습니다.",
+      "approve": "계획 승인",
+      "declineMore": "거절…",
+      "decline": "계획 거절",
+      "receiptApproved": "계획 승인됨",
+      "receiptDeclined": "계획 거절됨 · 아무것도 실행되지 않음",
+      "receiptDeclinedBecause": "계획 거절됨 · 아무것도 실행되지 않음: {{reason}}"
+    },
+    "verify": {
+      "verified": "확인됨",
+      "unverified": "확인되지 않음",
+      "passedCount_one": "검사 {{count}}개 통과",
+      "passedCount_other": "검사 {{count}}개 통과",
+      "failedCount_one": "검사 {{count}}개 중 {{failed}}개 실패",
+      "failedCount_other": "검사 {{count}}개 중 {{failed}}개 실패",
+      "checkedTwice": "두 번 확인함",
+      "checkedTimes": "{{count}}번 확인함",
+      "check": {
+        "filePassed": "{{target}} 열림",
+        "fileFailed": "{{target}} 열리지 않음",
+        "schemaPassed": "{{target}}이(가) 스키마와 일치함",
+        "schemaFailed": "{{target}}이(가) 스키마와 일치하지 않음",
+        "citationsPassed": "답변이 인용한 내용이 출처에 있음",
+        "citationsFailed": "답변이 인용한 내용 중 출처에 없는 것이 있음",
+        "commandPassed": "{{target}} 명령이 성공함",
+        "commandFailed": "{{target}} 명령이 실패함",
+        "otherPassed": "검사를 통과함",
+        "otherFailed": "검사에 실패함"
+      }
+    }
+  },
+  "outsideAccess": {
+    "title": "외부 액세스({{n}})",
+    "showAll": "{{n}}개 모두 보기",
+    "unavailable": {
+      "title": "복제할 수 없음",
+      "body": "이 서버는 {{host}}에서 복제할 수 없습니다.",
+      "askAdmin": "관리자에게 보안 설정에서 {{host}}을(를) 켜 달라고 요청하십시오",
+      "copy": "복사",
+      "copied": "복사됨",
+      "adminAdd": "다음 위치에서 추가할 수 있습니다:",
+      "adminLink": "복제용 Git 호스트"
+    },
+    "access": {
+      "read": "읽기 전용",
+      "readWrite": "읽기 및 쓰기",
+      "hostLevel": "호스트 수준 전용"
+    },
+    "line": {
+      "read": "{{at}} 읽음: 허용됨, {{access}}",
+      "write": "{{at}}에 데이터 보냄: 허용됨, {{access}}",
+      "hostLevel": "{{host}}에 연결됨: 호스트 수준 전용, 검사하지 않음",
+      "held": "{{at}}(으)로의 요청이 허용될 때까지 보류됨: 이 대화가 비공개 데이터를 읽었습니다",
+      "uploadAllowed": "{{host}}(으)로의 요청 허용됨",
+      "uploadDenied": "{{host}}(으)로의 요청을 거부함",
+      "cloned": "{{at}} 복제됨 ({{size}}, 읽기 전용)",
+      "cloneDenied": "복제를 거부함",
+      "cloneDeniedAt": "{{at}} 복제를 거부함",
+      "pushDenied": "푸시를 거부함",
+      "pushDeniedAt": "{{at}}(으)로의 푸시를 거부함"
+    },
+    "blocked": {
+      "site_read_only": "{{at}}(으)로의 업로드 차단됨 (읽기 전용)",
+      "site_relay": "{{at}} 차단됨: 받은 내용을 전달하거나 보여 주므로 읽기 및 쓰기 권한이 필요합니다",
+      "site_path_not_allowed": "{{at}} 차단됨: 허용된 경로 밖",
+      "host_mismatch": "다른 사이트를 지정한 {{at}} 요청 차단됨",
+      "site_git_refused": "{{at}}의 git 차단됨: 저장소는 ph git clone으로 복제하세요",
+      "destination_not_allowed": "{{at}} 차단됨: 허용된 웹사이트가 아님",
+      "destination_private_address": "{{at}} 차단됨: 비공개 주소를 가리킴",
+      "destination_unresolvable": "{{at}}에 연결할 수 없음: 이름을 확인할 수 없음",
+      "tunnel_ip_literal": "{{at}} 차단됨: 사이트는 주소가 아닌 이름으로 연결합니다",
+      "tunnel_refused": "{{at}} 차단됨: 이 연결은 허용되지 않음",
+      "volume_cap_exceeded": "{{at}} 차단됨: 실행이 허용량보다 많은 데이터를 전송함",
+      "forbidden_pattern": "자격 증명이 포함된 {{at}} 요청 차단됨",
+      "token_replayed": "자격 증명이 포함된 {{at}} 요청 차단됨",
+      "generic": "{{at}} 요청 차단됨"
+    }
+  },
+  "secretsHidden": {
+    "title_other": "비밀 정보 형태의 값 {{count}}개를 모델에서 숨김",
+    "detail_other": "모델이 보기 전에 PipesHub가 자리 표시자로 바꿨습니다: {{kinds}}.",
+    "kind": {
+      "anthropic_key": "Anthropic API 키",
+      "aws_access_key": "AWS 액세스 키",
+      "github_token": "GitHub 토큰",
+      "gitlab_token": "GitLab 토큰",
+      "google_api_key": "Google API 키",
+      "jwt": "로그인 토큰",
+      "openai_key": "OpenAI API 키",
+      "pipeshub_pat": "PipesHub 액세스 토큰",
+      "private_key": "개인 키",
+      "slack_token": "Slack 토큰",
+      "policy_pattern": "조직에서 비밀로 지정한 값",
+      "other": "비밀 정보"
+    }
+  },
+  "ui": {
+    "common": {
+      "someoneInOrg": "조직 구성원",
+      "anAgent": "에이전트"
+    },
+    "topBar": {
+      "inbox": "받은편지함",
+      "inboxUnread": "받은편지함, 읽지 않음 {{count}}개"
+    },
+    "status": {
+      "upNext": "다음 차례",
+      "working": "작업 중",
+      "needsYou": "확인 필요",
+      "done": "완료",
+      "couldntFinish": "완료하지 못함",
+      "stopped": "중지됨"
+    },
+    "trail": {
+      "reasoning": "생각을 정리함",
+      "readPage": "{{target}} 읽음",
+      "webSearch": "웹에서 {{target}} 검색함",
+      "findFiles": "{{target}} 이름의 파일을 찾음",
+      "searchFiles": "파일에서 {{target}} 검색함",
+      "readFile": "{{target}} 읽음",
+      "listFiles": "{{target}}의 파일 목록을 확인함",
+      "usedTool": "{{tool}} 사용함",
+      "handedOff": "백그라운드 에이전트에게 작업을 넘김",
+      "ranCommand": "명령을 실행함",
+      "runningCommand": "명령 실행 중",
+      "addedFile": "{{path}} 만듦",
+      "modifiedFile": "{{path}} 변경함",
+      "deletedFile": "{{path}} 삭제함",
+      "helper": "도우미가 일부를 처리함",
+      "helperTask": "도우미가 처리함: {{task}}",
+      "approved": "내가 승인함",
+      "declined": "내가 거절함",
+      "expired": "제시간에 응답이 없어 진행하지 않음",
+      "closed": "응답 없이 닫힘",
+      "thinking": "생각 중",
+      "thoughtFor": "{{time}} 동안 생각함",
+      "worked": "작업을 마침",
+      "record": "내 답변",
+      "waitingOnYou": "응답을 기다리는 중",
+      "answerBelow": "계속하려면 아래에서 답하세요",
+      "steps_other": "{{count}}단계",
+      "showAll": "{{count}}단계 모두 보기",
+      "showFewer": "간단히 보기",
+      "ended": {
+        "stopped": "{{time}} 후 중지됨",
+        "offline": "{{time}} 후 중단됨",
+        "timeout": "{{time}} 후 시간 초과",
+        "failed": "{{time}} 후 실패함"
+      },
+      "state": {
+        "running": "진행 중",
+        "waiting": "응답을 기다리는 중",
+        "failed": "완료하지 못함"
+      },
+      "stamp": {
+        "approved": "내가 승인함: {{action}}",
+        "approvedChat": "이 채팅에서 내가 허용함: {{action}}",
+        "happened": "실행되었다고 내가 확인함: {{action}}",
+        "declined": "내가 거절함: {{action}}",
+        "expired": "제시간에 응답이 없어 진행하지 않음: {{action}}",
+        "closed": "응답 없이 닫혀 진행하지 않음: {{action}}",
+        "answered": "내 답변: {{answer}}",
+        "replied": "채팅에서 답함",
+        "unanswered": "답하지 않음"
+      },
+      "waitingFor": "{{action}} · 응답을 기다리는 중",
+      "questions": {
+        "waiting_other": "질문 {{count}}개 · 답을 기다리는 중",
+        "waitingSome_other": "질문 {{count}}개 · {{answered}}개 답함 · 답을 기다리는 중",
+        "answered_other": "질문 {{count}}개에 답함",
+        "answeredSome_other": "질문 {{count}}개 중 {{answered}}개에 답함"
+      }
+    },
+    "job": {
+      "untitled": "백그라운드 작업",
+      "commandFailed": "명령이 코드 {{code}}(으)로 중지됨.",
+      "allowQuestion": "{{action}}을(를) 허용할까요?",
+      "allow": "허용",
+      "dontAllow": "허용 안 함",
+      "adminStopped": "관리자가 중지했습니다: {{reason}}",
+      "stopReason": {
+        "security": "보안",
+        "cost": "비용",
+        "incident": "장애 대응",
+        "maintenance": "유지 보수",
+        "other": "기타 사유"
+      },
+      "clock": {
+        "seconds": "{{s}}초",
+        "minutes": "{{m}}분 {{s}}초",
+        "hours": "{{h}}시간 {{m}}분",
+        "days_other": "{{count}}일"
+      },
+      "workingFor": "작업 중 · {{time}}",
+      "doneIn": "{{time}} 만에 완료",
+      "doingFor": "{{doing}} · {{time}}",
+      "needsYouAt": "확인 필요 · {{doing}}",
+      "needsYouFor": "확인 필요 · {{time}}",
+      "byline": {
+        "failed": "완료하지 못함",
+        "stopped": "중지됨",
+        "done": "완료됨",
+        "doneIn": "{{time}} 만에 완료됨"
+      }
+    },
+    "needsYou": {
+      "allow": "허용",
+      "allowAll": "{{count}}개 모두 허용",
+      "dontAllow": "허용 안 함",
+      "dontAllowAll": "모두 허용 안 함",
+      "allowChat": "이 채팅에서 허용",
+      "allowChatFor": "이 채팅에서 {{destination}} 허용",
+      "refused": "결정이 반영되지 않았습니다. 다시 시도하세요.",
+      "reason": {
+        "outside": "회사 외부로 데이터를 보내기 때문입니다",
+        "upload": "업로드는 회사 외부로 나가기 때문입니다",
+        "engine": "백그라운드 에이전트가 무언가를 변경하려 하기 때문입니다",
+        "externalPolicy": "회사 정책 서비스가 사람의 확인을 요구하기 때문입니다",
+        "policy": "작업 공간에서 이런 종류의 작업 전에 확인하도록 했기 때문입니다",
+        "plan": "시작하기 전에 계획에 대한 승인을 원합니다",
+        "unknownEffect": "실행되었는지 알 수 없어 추측하지 않습니다",
+        "default": "실행하기 전에 확인합니다"
+      },
+      "why": {
+        "read": "이 채팅에서 앞서 읽은 내용: {{sources}}.",
+        "more": "외 {{count}}개."
+      },
+      "unknownEffect": {
+        "title": "실행되었나요: {{action}}?",
+        "happened": "실행됨",
+        "didNot": "실행되지 않음"
+      },
+      "connect": {
+        "title": "계속하려면 {{item}}을(를) 연결하세요",
+        "reason": "{{action}}에 {{item}}이(가) 필요하지만 아직 연결되지 않았습니다",
+        "rejected": "{{item}}에서 저장된 로그인을 거부했습니다. 계속하려면 다시 연결하세요.",
+        "connect": "{{item}} 연결",
+        "done": "연결했습니다",
+        "skip": "건너뛰기"
+      },
+      "question": {
+        "title": "질문 {{count}}개",
+        "reason": "답변에 따라 진행 방식이 정해집니다",
+        "send": "답변 보내기"
+      },
+      "mcp": {
+        "title": "계속하려면 {{servers}}에 로그인하세요",
+        "reason": "아직 없는 권한이 필요합니다",
+        "signIn": "로그인",
+        "retry": "다시 시도"
+      },
+      "engine": {
+        "title": "계속하려면 Claude에 로그인하세요",
+        "reason": "백그라운드 에이전트는 사용자 본인의 요금제로 실행됩니다",
+        "signIn": "로그인 페이지 열기"
+      },
+      "sendsTo": "{{destination}}(으)로 보냄"
+    },
+    "approval": {
+      "actionIn": "{{app}}에서 {{action}}",
+      "question": "{{action}}?",
+      "times": "{{action}}, {{count}}회"
+    },
+    "jobs": {
+      "request": "요청",
+      "section": {
+        "needsYou": "확인 필요",
+        "working": "작업 중",
+        "upNext": "다음 차례",
+        "finished": "완료됨"
+      },
+      "requestView": {
+        "ran_other": "작업 {{count}}개 실행",
+        "back": "{{total}}개 중 {{back}}개 완료",
+        "allBack": "모두 완료"
+      }
+    },
+    "activity": {
+      "answerInCard": "채팅 위의 카드에서 답하세요.",
+      "youStopped": "중지되었습니다",
+      "stoppedText": "이후로는 아무것도 실행되지 않았습니다. 다시 시작하면 처음부터 진행합니다.",
+      "couldntGoOn": "계속할 수 없었음",
+      "failedText": "넘어갈 수 없는 단계에서 멈췄습니다. 그 전에 만든 것은 보관됩니다.",
+      "waitingFor": "확인 대기 중: {{question}}"
+    },
+    "brief": {
+      "sent": {
+        "files_other": "이 채팅의 파일 {{count}}개",
+        "sources_other": "PipesHub가 읽은 출처 {{count}}개",
+        "someSources": "PipesHub가 읽은 내용",
+        "sourcesIncomplete": "일부는 이름을 알 수 없습니다",
+        "knowledge_other": "검색할 수 있는 앱과 컬렉션 {{count}}개",
+        "skills": "스킬: {{skills}}",
+        "continues": "이전 작업을 이어서 합니다",
+        "taskOnly": "작업 내용만"
+      },
+      "withheld": {
+        "conversation": "이 채팅의 나머지 내용",
+        "credentials": "비밀번호, 키, 로그인 정보",
+        "tools": "도구",
+        "knowledge": "지식",
+        "skills": "스킬",
+        "internet": "웹사이트",
+        "files": "이 채팅의 파일"
+      },
+      "reason": {
+        "task_only": "작업 내용만 전달했습니다",
+        "outside_sandbox": "샌드박스 밖, PipesHub에 남습니다",
+        "not_granted": "전달하지 않음",
+        "not_handed_off": "제공하지 않음"
+      },
+      "reasonWithItems": "{{reason}}: {{items}}",
+      "reach": {
+        "noInternet": "웹사이트 없음",
+        "allowedSites": "회사에서 허용한 웹사이트만",
+        "sandbox": "끝나면 닫히는 전용 샌드박스",
+        "tools": "도구: {{tools}}",
+        "noTools": "사용자의 도구 없음",
+        "granted_other": "이 채팅에서 묻지 않고 허용된 작업 {{count}}개",
+        "keys": "비밀번호와 키는 PipesHub에 남으며 전달되지 않습니다."
+      },
+      "change": {
+        "message": "추가한 내용: {{text}}",
+        "approved": "허용함: {{action}}",
+        "denied": "거절함: {{action}}",
+        "replanned": "새 작업으로 넘김: {{goal}}",
+        "replannedPlain": "새 작업으로 넘김"
+      }
+    },
+    "grants": {
+      "toolTo": "{{destination}}에 {{tool}}",
+      "allowedBy": "{{when}}에 {{name}} 님이 허용함",
+      "allowedOn": "{{when}}에 허용됨",
+      "title": "이 채팅의 권한",
+      "empty": "아직 이 채팅에서 허용된 것이 없습니다. 이 채팅에 대해 허용하면 여기에 표시됩니다.",
+      "remove": "삭제",
+      "removeLabel": "{{name}} 삭제",
+      "removed": "삭제됨: {{name}}",
+      "removedBody": "다음에는 다시 확인을 요청합니다.",
+      "removeFailed": "해당 권한이 아직 켜져 있습니다. 다시 시도하세요.",
+      "allowedByYou": "{{when}}에 내가 허용함",
+      "declinedBy": "{{when}}에 {{name}} 님이 거부함",
+      "declinedOn": "{{when}}에 거부됨",
+      "declinedByYou": "{{when}}에 내가 거부함"
+    },
+    "command": {
+      "done": {
+        "clone": "저장소를 복사함",
+        "cloneNamed": "{{name}} 저장소를 복사함",
+        "gitStatus": "변경 사항을 확인함",
+        "gitCommit": "커밋을 저장함",
+        "gitPush": "변경 사항을 푸시함",
+        "gitSwitch": "브랜치를 전환함",
+        "install": "패키지를 설치함",
+        "build": "프로젝트를 빌드함",
+        "typecheck": "타입을 검사함",
+        "look": "파일을 살펴봄",
+        "search": "파일을 검색함",
+        "mkdir": "폴더를 만듦",
+        "tests": "테스트를 실행함",
+        "testsNamed": "{{name}} 테스트를 실행함",
+        "script": "{{script}} 실행함"
+      },
+      "running": {
+        "clone": "저장소를 복사하는 중",
+        "cloneNamed": "{{name}} 저장소를 복사하는 중",
+        "gitStatus": "변경 사항을 확인하는 중",
+        "gitCommit": "커밋을 저장하는 중",
+        "gitPush": "변경 사항을 푸시하는 중",
+        "gitSwitch": "브랜치를 전환하는 중",
+        "install": "패키지를 설치하는 중",
+        "build": "프로젝트를 빌드하는 중",
+        "typecheck": "타입을 검사하는 중",
+        "look": "파일을 살펴보는 중",
+        "search": "파일을 검색하는 중",
+        "mkdir": "폴더를 만드는 중",
+        "tests": "테스트를 실행하는 중",
+        "testsNamed": "{{name}} 테스트를 실행하는 중",
+        "script": "{{script}} 실행 중"
+      },
+      "result": {
+        "passed": "모두 통과",
+        "someFailed": "일부 실패",
+        "failed_other": "{{count}}개 실패"
+      }
+    },
+    "workflows": {
+      "summary": {
+        "inApp": "{{app}}에서 {{what}}",
+        "aStep": "한 단계"
+      }
+    },
+    "inbox": {
+      "justNow": "방금",
+      "glyphPaused": "받은편지함, 알림 일시중지됨",
+      "glyphPausedCount": "받은편지함, 알림 일시중지됨, 대기 중 {{count}}개",
+      "action": {
+        "reviewInChat": "채팅에서 검토",
+        "answerInChat": "채팅에서 답하기",
+        "reviewMemory": "메모리 검토",
+        "reviewSkill": "스킬 검토",
+        "approve": "승인",
+        "edit": "편집",
+        "reject": "거부",
+        "openChat": "채팅 열기",
+        "open": "열기",
+        "viewRun": "실행 보기",
+        "muteWorkflow": "워크플로 알림 끄기",
+        "unmuteWorkflow": "워크플로 알림 켜기",
+        "restore": "복원"
+      },
+      "pause": {
+        "untilResumedLabel": "다시 켤 때",
+        "tomorrowAt": "내일 {{time}}"
+      },
+      "words": {
+        "approvalTitle": "승인: {{what}}",
+        "connectTitle": "계속하려면 {{what}} 연결",
+        "approvalWaiting": "작업이 계속하기 전에 결정을 기다리고 있습니다.",
+        "connectWaiting": "작업이 계속하기 전에 이 연결을 기다리고 있습니다.",
+        "questionTitle": "질문이 있습니다",
+        "memoryOwnTitle": "이 메모리를 유지할까요?",
+        "memoryAgentTitle": "에이전트가 이것을 기억하려고 합니다",
+        "skillTitle": "새 스킬 제안: {{name}}",
+        "skillReviewTitle": "가져온 스킬 {{name}} 검토",
+        "skillReviewFlagged": "콘텐츠 검사에서 승인 전에 확인할 항목이 발견되었습니다.",
+        "yourChat": "내 채팅",
+        "finished": "완료. 답변이 준비되었습니다.",
+        "finishedEarly": "일찍 완료: 한도에서 멈추고 가진 정보로 답했습니다.",
+        "notFinished": "완료하지 못했습니다. 채팅을 열어 무슨 일이 있었는지 보고 다시 시도하세요.",
+        "workflowRan": "실행됨.",
+        "workflowFailed": "완료하지 못했습니다.",
+        "workflowRefused": "실행되지 않았습니다. 예약 페이지를 열어 기록에서 이유를 확인하세요.",
+        "workflowRefusedWhy": {
+          "workflow_changed": "실행되지 않음: 예정 시간 전에 워크플로가 변경, 일시 중지 또는 삭제되었습니다.",
+          "scheduled_runs_off": "실행되지 않음: 이 워크스페이스에서 예약 실행이 꺼져 있습니다.",
+          "no_agent_access": "실행되지 않음: 더 이상 이 에이전트를 사용할 수 없습니다.",
+          "model_not_allowed": "실행되지 않음: 이 모델을 사용할 수 없습니다.",
+          "engine_not_allowed": "실행되지 않음: 이 코딩 엔진은 허용되지 않습니다.",
+          "stopped_by_admin": "실행되지 않음: 관리자가 잠시 중지했습니다.",
+          "budget_reached": "실행되지 않음: 지출 한도에 도달했습니다.",
+          "too_busy": "실행되지 않음: 동시에 실행 중인 작업이 너무 많았습니다.",
+          "not_found": "실행되지 않음: 필요한 항목이 더 이상 없습니다.",
+          "unavailable": "실행되지 않음: PipesHub가 시작하지 못했습니다."
+        },
+        "workflowWaiting": "쓰기 전에 일시중지되었습니다. 승인하거나 거부하지 않으면 중지됩니다.",
+        "workflowWaitingBy": "쓰기 전에 일시중지되었습니다. {{time}}까지 승인하거나 거부하지 않으면 그때 중지됩니다.",
+        "sharedChat": "{{name}} 님이 채팅을 공유했습니다",
+        "sharedAgentChat": "{{name}} 님이 에이전트 채팅을 공유했습니다",
+        "sharedOpen": "이제 “{{title}}”을(를) 열 수 있습니다.",
+        "sharedOpenList": "이제 공유된 채팅에서 열 수 있습니다.",
+        "colleague": "동료",
+        "mentionTitle": "멘션되었습니다",
+        "approvalTitleIn": "승인: {{app}}의 {{what}}",
+        "mentionIn": "“{{chat}}”에서"
+      }
+    },
+    "actionKey": {
+      "name": {
+        "send_message": "메시지 보내기",
+        "post_message": "메시지 게시",
+        "send_email": "이메일 보내기",
+        "reply_to_email": "이메일에 답장",
+        "create_draft": "초안 만들기",
+        "create_issue": "이슈 만들기",
+        "update_issue": "이슈 업데이트",
+        "create_ticket": "티켓 만들기",
+        "create_page": "페이지 만들기",
+        "update_page": "페이지 업데이트",
+        "create_pull_request": "풀 리퀘스트 만들기",
+        "add_comment": "댓글 추가",
+        "create_event": "일정 만들기",
+        "create_task": "작업 만들기",
+        "create_record": "레코드 만들기",
+        "update_record": "레코드 업데이트",
+        "upload_file": "파일 업로드"
+      },
+      "verb": {
+        "send": "무언가 보내기",
+        "post": "무언가 게시",
+        "reply": "답장",
+        "create": "항목 만들기",
+        "add": "항목 추가",
+        "update": "항목 변경",
+        "edit": "항목 변경",
+        "delete": "항목 삭제",
+        "remove": "항목 제거",
+        "comment": "댓글 추가",
+        "upload": "파일 업로드",
+        "draft": "초안 작성",
+        "assign": "항목 할당",
+        "move": "항목 이동",
+        "close": "항목 닫기",
+        "schedule": "일정 잡기"
+      }
+    }
+  },
+  "jobCard": {
+    "status": {
+      "upNext": "시작 중",
+      "working": "작업 중",
+      "needsYou": "확인 필요",
+      "done": "완료",
+      "couldntFinish": "완료하지 못함",
+      "stopped": "중지됨"
+    },
+    "stopped": {
+      "byYou": "내가 중지함",
+      "byAdmin": "관리자가 중지함: {{reason}}",
+      "budget": "중지됨: 예산 소진",
+      "time": "중지됨: 시간이 너무 오래 걸림"
+    },
+    "adminReason": {
+      "security": "보안",
+      "cost": "비용",
+      "incident": "장애",
+      "maintenance": "유지 보수",
+      "other": "기타 사유"
+    },
+    "made": "{{file}} 만듦",
+    "changedFiles_other": "파일 {{count}}개 변경",
+    "finished": "완료됨",
+    "hasQuestion": "질문이 있습니다",
+    "wantsTo": "{{tool}} 사용을 요청합니다",
+    "booting": "머신 준비 중",
+    "steps_other": "{{count}}단계",
+    "showSteps": "단계",
+    "groupLabel": "{{title}}, {{status}}",
+    "needsYouAlert": "{{title}}에서 확인이 필요합니다",
+    "stopAria": "작업 중지: {{title}}",
+    "stopGone": "이미 완료되었습니다",
+    "stopFailed": "중지하지 못했습니다. 다시 시도하세요.",
+    "untitled": "백그라운드 작업",
+    "region": "백그라운드 에이전트",
+    "board": {
+      "count_other": "에이전트 {{count}}개",
+      "hide": "에이전트 숨기기",
+      "show": "에이전트 보기"
+    }
+  },
+  "jobReport": {
+    "region": "백그라운드 에이전트의 보고",
+    "groupLabel": "{{title}}의 보고: {{outcome}}",
+    "finished": "완료됨",
+    "finishedIn": "{{time}} 만에 완료됨",
+    "couldntFinish": "완료하지 못함",
+    "stoppedByYou": "내가 중지함",
+    "stoppedByAdmin": "관리자가 중지함: {{reason}}",
+    "outOfBudget": "예산 소진",
+    "outOfTime": "시간 초과",
+    "stopped": "중지됨",
+    "partial": "일부",
+    "workingFiles_other": "작업 파일 {{count}}개"
+  },
+  "jobPanel": {
+    "title": "작업 세부 정보",
+    "sections": "작업 섹션",
+    "brief": "브리프",
+    "activity": "활동",
+    "terminal": "터미널",
+    "outputs": "결과물",
+    "changed": "변경된 파일",
+    "goalErased": "이 채팅의 내용과 함께 작업 내용이 지워졌습니다.",
+    "sent": "전달함",
+    "keptBack": "보류함",
+    "canReach": "접근 가능",
+    "connectedSources": "연결된 소스",
+    "howItChanged": "변경 내역",
+    "unchanged": "시작 후 변경 없음",
+    "briefLoading": "브리프를 읽는 중",
+    "briefFailed": "브리프를 불러오지 못했습니다.",
+    "tryAgain": "다시 시도",
+    "ownerOnly": "이 작업을 시작한 사람만 세부 정보를 볼 수 있습니다",
+    "noFiles": "아직 파일이 없습니다",
+    "noSteps": "아직 실행된 것이 없습니다",
+    "stop": "중지",
+    "stopAria": "작업 중지: {{title}}",
+    "stopGone": "이미 끝난 작업입니다",
+    "stopFailed": "중지하지 못했습니다. 다시 시도하세요.",
+    "stoppedByYou": "내가 중지함",
+    "withTime": "{{status}} · {{time}}",
+    "withReason": "{{status}} · {{reason}}",
+    "askWaiting_other": "답변 {{count}}개를 기다리고 있습니다",
+    "answerInChat": "채팅에서 답변",
+    "openOutput": "{{name}} 열기",
+    "downloadOutput": "{{name}} 다운로드",
+    "outputGone": "더 이상 사용할 수 없음",
+    "close": "작업 세부 정보 닫기",
+    "machine": "머신",
+    "breadcrumb": "현재 위치",
+    "backgroundAgents": "백그라운드 에이전트",
+    "widen": "패널 넓히기",
+    "narrow": "패널 좁히기",
+    "cameOut": "결과",
+    "whatItWasGiven": "전달받은 것",
+    "noCommands": "아직 명령이 없습니다",
+    "showMachine": "머신으로 이동",
+    "ranCommandsMachine_other": "명령 {{count}}개 실행, 머신에 있음",
+    "youAsked": "요청: “{{request}}”",
+    "limits": {
+      "due": "{{when}}까지",
+      "cost": "최대 {{amount}}",
+      "file": "{{name}} 전달"
+    },
+    "startedWith": "시작할 때 가진 것",
+    "alreadyDone": "넘기기 전에 이미 한 일",
+    "earlier": "이 채팅의 이전 작업",
+    "carried": {
+      "skill": "{{skill}} 스킬을 불러옴",
+      "failed": "실패함",
+      "times": "{{text}} (×{{count}})"
+    },
+    "showMore": "더 보기",
+    "showLess": "간단히 보기",
+    "workingFiles_other": "작업 파일 {{count}}개",
+    "delivered_other": "전달된 파일",
+    "outputsWillShow": "만드는 파일이 여기에 표시됩니다",
+    "outputsNone": "만든 파일이 없습니다",
+    "workingFilesHint": "작업하면서 사용한 메모, 스크립트, 초안입니다. 이 채팅의 작업 공간에 남아 있습니다.",
+    "allFilesMachine": "머신에서 전체 작업 공간 보기"
+  },
+  "needsYou": {
+    "fromChats": "내 채팅과 작업에서",
+    "reviews": "검토",
+    "empty": "지금 확인할 항목이 없습니다.",
+    "seeJobs": "내 작업 보기",
+    "loading": "불러오는 중",
+    "loadFailed": "불러오지 못했습니다. 다시 시도하세요.",
+    "partial": "일부 요청을 지금 불러오지 못해 목록에서 빠졌을 수 있습니다.",
+    "skillApproved": "스킬 {{name}} 승인됨",
+    "skillRejected": "스킬 {{name}} 거부됨",
+    "skillFailed": "저장하지 못했습니다. 다시 시도하세요.",
+    "skillGone": "해당 제안은 더 이상 대기 중이 아닙니다",
+    "badgeAria_other": "확인할 항목 {{count}}개"
+  },
+  "jobsPage": {
+    "title": "작업",
+    "tabsLabel": "확인 필요 및 작업",
+    "tab": {
+      "needsYou": "확인 필요",
+      "jobs": "작업"
+    },
+    "empty": "아직 작업이 없습니다. 에이전트가 백그라운드 작업에 일을 넘기면 여기에 표시됩니다.",
+    "nothingRunning": "진행 중인 작업이 없습니다.",
+    "allCleared": "이 기기에서 완료된 작업을 모두 지웠습니다.",
+    "clearFinished": "완료된 항목 지우기",
+    "undo": "실행 취소",
+    "loadMore": "더 불러오기",
+    "loading": "작업을 불러오는 중",
+    "loadFailed": "작업을 불러오지 못했습니다. 다시 시도하세요.",
+    "retry": "다시 시도",
+    "open": "열기",
+    "openAria": "작업 열기: {{title}}",
+    "stop": "중지",
+    "stopAria": "작업 중지: {{title}}",
+    "stopGone": "이미 완료되었습니다",
+    "stopFailed": "중지하지 못했습니다. 다시 시도하세요.",
+    "stoppedByYou": "내가 중지함",
+    "harnessOff": "워크스페이스에서 백그라운드 작업이 켜져 있지 않습니다.",
+    "backToChat": "채팅으로 돌아가기",
+    "cleared_other": "완료된 작업 {{count}}개를 지웠습니다"
+  },
+  "backgroundAgents": {
+    "title": "백그라운드 에이전트",
+    "openerRunning_other": "백그라운드 에이전트, {{count}}개 실행 중",
+    "openerNeedsYou_other": "백그라운드 에이전트, {{count}}개가 확인 필요",
+    "close": "백그라운드 에이전트 닫기",
+    "back": "백그라운드 에이전트로 돌아가기",
+    "clearFinished": "완료된 에이전트 지우기",
+    "cleared_other": "완료된 에이전트 {{count}}개를 지웠습니다",
+    "clearedBody": "카드는 채팅에 그대로 남습니다.",
+    "undo": "실행 취소",
+    "empty": "항목 없음",
+    "emptyBody": "이 채팅이 시작한 에이전트가 여기에 표시됩니다.",
+    "jobCount_other": "작업 {{count}}개",
+    "tasks_other": "단계 {{count}}개",
+    "showEarlier_other": "이전 단계 {{count}}개 보기",
+    "taskNow": "{{title}}…",
+    "stop": "{{name}} 중지",
+    "stopGone": "이미 끝났습니다.",
+    "stopFailed": "중지하지 못했습니다. 다시 시도하세요.",
+    "requestAsked": "요청한 내용",
+    "requestLoading": "요청을 불러오는 중",
+    "requestUnavailable": "지금은 이 요청을 표시할 수 없습니다.",
+    "requestErased": "요청한 내용이 삭제되었습니다."
+  },
+  "jobAsk": {
+    "asking": "{{job}}이(가) 먼저 확인을 요청합니다",
+    "signIn": "{{job}}에 로그인이 필요합니다",
+    "connect": "{{job}}에 {{item}} 연결이 필요합니다",
+    "where": "{{job}} · {{total}}단계 중 {{n}}단계: {{doing}}",
+    "seeActivity": "활동 보기",
+    "seeJob": "작업 보기",
+    "position": "{{total}}개 중 {{n}}",
+    "previous": "이전 요청",
+    "next": "다음 요청",
+    "announce": "{{job}}에 확인이 필요합니다: {{title}}",
+    "pointer": "기다리는 중입니다. 메시지 입력창 위 카드에서 답하세요.",
+    "showIt": "보기",
+    "paused": "{{job}} 일시 중지됨. 모두 저장되었습니다.",
+    "signInAction": "로그인",
+    "connectAction": "연결",
+    "review": "검토",
+    "keepOut": "허용 안 함",
+    "keepOutAll": "모두 허용 안 함",
+    "details": "자세히",
+    "hideDetails": "자세히 숨기기"
+  },
+  "cardSend": {
+    "reason": {
+      "restarting": "PipesHub가 다시 시작하는 중입니다",
+      "offline": "PipesHub에 연결할 수 없습니다",
+      "server": "PipesHub에 문제가 발생했습니다"
+    },
+    "retrying": "답변을 보내지 못했습니다: {{reason}}. 다시 시도하는 중…",
+    "stopped": "답변을 보내지 못했습니다: {{reason}}.",
+    "codeRetrying": "코드를 보내지 못했습니다: {{reason}}. 다시 시도하는 중…",
+    "codeStopped": "코드를 보내지 못했습니다: {{reason}}.",
+    "tryAgain": "다시 시도"
+  },
+  "fullNameDialog": {
+    "title": "프로필 완성하기",
+    "description": "계속하려면 전체 이름을 입력하세요. 팀원들이 모든 워크스페이스에서 회원님을 알아볼 수 있습니다.",
+    "label": "전체 이름",
+    "placeholder": "예: 김지은",
+    "submit": "저장하고 계속",
+    "required": "전체 이름을 입력해야 합니다",
+    "tooShort": "전체 이름은 2자 이상이어야 합니다",
+    "noUser": "사용자를 확인할 수 없습니다. 새로고침한 후 다시 시도하세요.",
+    "saveFailed": "이름을 저장하지 못했습니다. 다시 시도하세요."
+  },
+  "slackLink": {
+    "title": "Slack 계정 연결",
+    "loading": "링크를 확인하는 중…",
+    "missingLink": "이 페이지에는 PipesHub 봇이 Slack에서 보낸 링크가 필요합니다. 봇에게 메시지를 보내 새 링크를 받으세요.",
+    "summary": "워크스페이스 {{workspace}}의 Slack 사용자 {{slackPerson}}이(가) PipesHub 계정 {{account}}(으)로 동작합니다.",
+    "effect": "Slack에서 PipesHub 봇에게 질문하면, 여기서 질문한 것처럼 PipesHub에 대한 내 권한으로 답합니다.",
+    "replacesOther": "이 Slack 계정은 현재 다른 PipesHub 계정에 연결되어 있습니다. 승인하면 연결이 내 계정으로 옮겨집니다.",
+    "onlyIfYou": "이 링크를 직접 봇에게 요청한 경우에만 승인하세요.",
+    "approve": "내 계정 연결",
+    "deny": "취소",
+    "doneTitle": "Slack 계정이 연결되었습니다",
+    "doneLine": "Slack으로 돌아가 메시지를 다시 보내세요.",
+    "deniedTitle": "연결되지 않았습니다",
+    "deniedLine": "링크가 취소되었습니다. 이 페이지를 닫아도 됩니다.",
+    "otherOrg": "이 링크는 다른 조직용입니다. 링크를 보낸 Slack 봇이 속한 조직의 PipesHub 계정으로 로그인하세요."
   }
 }

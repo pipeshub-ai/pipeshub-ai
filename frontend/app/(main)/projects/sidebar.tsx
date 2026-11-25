@@ -178,7 +178,7 @@ export function ProjectsSidebar() {
             onChange={(e) => setSearch(e.target.value)}
           >
             <TextField.Slot>
-              <MaterialIcon name="search" size={14} color="var(--slate-9)" />
+              <MaterialIcon name="search" size={14} color="var(--slate-11)" />
             </TextField.Slot>
           </TextField.Root>
         </Flex>
@@ -209,7 +209,7 @@ export function ProjectsSidebar() {
               ))}
             </Flex>
           ) : filtered.length === 0 ? (
-            <Text size="1" style={{ padding: 'var(--space-2) var(--space-3)', color: 'var(--slate-10)' }}>
+            <Text size="1" style={{ padding: 'var(--space-2) var(--space-3)', color: 'var(--slate-11)' }}>
               {t('projects.emptyState')}
             </Text>
           ) : (
@@ -217,7 +217,7 @@ export function ProjectsSidebar() {
               {pinned.length > 0 && (
                 <Flex direction="column">
                   <Flex align="center" style={{ height: 28, padding: '0 var(--space-3)' }}>
-                    <Text size="1" style={{ color: 'var(--slate-10)' }}>
+                    <Text size="1" style={{ color: 'var(--slate-11)' }}>
                       {t('projects.pinnedSection')}
                     </Text>
                   </Flex>
@@ -230,7 +230,7 @@ export function ProjectsSidebar() {
                 <Flex direction="column">
                   {pinned.length > 0 && (
                     <Flex align="center" style={{ height: 28, padding: '0 var(--space-3)' }}>
-                      <Text size="1" style={{ color: 'var(--slate-10)' }}>
+                      <Text size="1" style={{ color: 'var(--slate-11)' }}>
                         {t('projects.allSection')}
                       </Text>
                     </Flex>

@@ -104,6 +104,10 @@ REGISTRY: dict[str, tuple[Rule, str]] = {
     # Returned whatever their state.
     "get_record_by_id": (Rule.ALL, _BY_KEY + "; content access is gated by TieredRecordAuthorizer"),
     "get_typed_records_batch": (Rule.ALL, _BY_KEY),
+    "get_records_by_external_ids": (
+        Rule.ALL,
+        "a live item's indexed copies; TieredRecordAuthorizer reads each and never admits one in the trash",
+    ),
     "get_user_granted_records": (
         Rule.ALL,
         "per-user sync drops grants a user lost and deletes records nobody holds; a trashed record's grant goes too",
@@ -199,6 +203,8 @@ REGISTRY: dict[str, tuple[Rule, str]] = {
     "reindex_single_record": (Rule.WRITE, "refuses a deleted record"),
     "reindex_record_group_records": (Rule.WRITE, "walks with get_records_by_record_group"),
     "update_indexing_status_for_record_ids": (Rule.WRITE, ""),
+    "update_record_fields_for_ids": (Rule.WRITE, "the request of a Force reindex, by id, whatever the record's status"),
+    "get_records_with_refresh_intent": (Rule.LIVE, "the intent sweep's read leaves the trash out; it re-reads each record under its lease"),
     "claim_push_record": (Rule.WRITE, "claims a push of a live record only: a trashed record never matches"),
     "retag_push_record": (Rule.WRITE, "retags a live pushed record only"),
     "set_record_properties": (Rule.WRITE, "writes projected values onto a record the caller read live; on a trashed one they are inert"),

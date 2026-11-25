@@ -194,6 +194,12 @@ describe('McpServerIcon', () => {
     expect(logo(<McpServerIcon typeId={null} name="Miro" />)).toBe('miro icon');
   });
 
+  it("shows Canva's logo, also for a custom server named after it", () => {
+    expect(logo(<McpServerIcon typeId="canva" name="Canva" />)).toBe('canva icon');
+    expect(logoPath(<McpServerIcon typeId="canva" name="Canva" />)).toBe('/icons/connectors/canva.svg');
+    expect(logo(<McpServerIcon typeId={null} name="Canva" />)).toBe('canva icon');
+  });
+
   it("shows Instantly's logo, also for a custom server named after it", () => {
     expect(logo(<McpServerIcon typeId="instantly" name="Instantly" />)).toBe('instantly icon');
     expect(logo(<McpServerIcon typeId={null} name="Instantly MCP" />)).toBe('instantly icon');
@@ -204,5 +210,10 @@ describe('McpServerIcon', () => {
   it('shows the Apollo logo for catalog instances and matching custom servers', () => {
     expect(logoPath(<McpServerIcon typeId="apollo" name="Sales research" />)).toBe('/icons/connectors/apollo.svg');
     expect(logoPath(<McpServerIcon typeId={null} name="Apollo MCP" />)).toBe('/icons/connectors/apollo.svg');
+  });
+
+  it('shows the Zapmail logo for catalog instances and matching custom servers', () => {
+    expect(logoPath(<McpServerIcon typeId="zapmail" name="Cold email" />)).toBe('/icons/connectors/zapmail.svg');
+    expect(logoPath(<McpServerIcon typeId={null} name="Zapmail MCP" />)).toBe('/icons/connectors/zapmail.svg');
   });
 });

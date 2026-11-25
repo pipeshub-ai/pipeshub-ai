@@ -477,7 +477,7 @@ class TestGetEmbeddingModelInstanceBedrock:
         mock_embed.model_name = "amazon.titan-embed-v1"
 
         with patch(
-            "app.modules.transformers.vectorstore.get_embedding_model",
+            "app.utils.llm.get_embedding_model",
             return_value=mock_embed,
         ):
             await vs.get_embedding_model_instance()
@@ -507,7 +507,7 @@ class TestGetEmbeddingModelInstanceBedrock:
         mock_embed.aembed_query = AsyncMock(return_value=[0.1] * 1024)
 
         with patch(
-            "app.modules.transformers.vectorstore.get_embedding_model",
+            "app.utils.llm.get_embedding_model",
             return_value=mock_embed,
         ):
             await vs.get_embedding_model_instance()
@@ -534,7 +534,7 @@ class TestGetEmbeddingModelInstanceBedrock:
         mock_embed.model_name = "test-model"
 
         with patch(
-            "app.modules.transformers.vectorstore.get_embedding_model",
+            "app.utils.llm.get_embedding_model",
             return_value=mock_embed,
         ):
             await vs.get_embedding_model_instance()
@@ -605,7 +605,7 @@ class TestGetEmbeddingModelInstanceNullGuard:
 
         mock_default = MagicMock(return_value=fake_embeddings)
         with patch(
-            "app.modules.transformers.vectorstore.get_default_embedding_model",
+            "app.utils.llm.get_default_embedding_model",
             mock_default,
         ):
             result = await vs.get_embedding_model_instance()
@@ -630,7 +630,7 @@ class TestGetEmbeddingModelInstanceNullGuard:
 
         mock_default = MagicMock(return_value=fake_embeddings)
         with patch(
-            "app.modules.transformers.vectorstore.get_default_embedding_model",
+            "app.utils.llm.get_default_embedding_model",
             mock_default,
         ):
             result = await vs.get_embedding_model_instance()
@@ -649,7 +649,7 @@ class TestGetEmbeddingModelInstanceNullGuard:
         vs.config_service.get_config = AsyncMock(return_value=None)
 
         with patch(
-            "app.modules.transformers.vectorstore.get_default_embedding_model",
+            "app.utils.llm.get_default_embedding_model",
             side_effect=RuntimeError("connection refused"),
         ):
             with pytest.raises(IndexingError, match="No embedding model is configured"):

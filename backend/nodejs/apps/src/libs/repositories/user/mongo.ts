@@ -1,6 +1,9 @@
 import { randomUUID } from 'crypto';
-import mongoose from 'mongoose';
-import { Users } from '../../../modules/user_management/schema/users.schema';
+import mongoose, { type UpdateQuery } from 'mongoose';
+import {
+  Users,
+  type User,
+} from '../../../modules/user_management/schema/users.schema';
 import { UserGroups } from '../../../modules/user_management/schema/userGroup.schema';
 import { Org } from '../../../modules/user_management/schema/org.schema';
 import { UserCredentials } from '../../../modules/auth/schema/userCredentials.schema';
@@ -749,10 +752,13 @@ export class MongoUserRepository implements UserRepository {
     const user = await Users.findOne({ orgId, _id: id, isDeleted: false });
     if (!user) return null;
     Object.assign(user, fields);
+    // The account can be removed between the read and the save; the write must not land on it then.
+    user.$where = { isDeleted: false };
     try {
       if (session) await user.save({ session });
       else await user.save();
     } catch (error) {
+      if (error instanceof mongoose.Error.DocumentNotFoundError) return null;
       throw mapMongoError(error);
     }
     return dto(user);
@@ -761,15 +767,27 @@ export class MongoUserRepository implements UserRepository {
   async markDeleted(
     orgId: string,
     id: string,
-    extra?: { signedOut?: boolean; deletedBy?: string },
+    extra?: { signedOut?: boolean; deletedBy?: string; onlyMember?: boolean },
   ): Promise<UserDto | null> {
-    const user = await Users.findOne({ orgId, _id: id });
-    if (!user) return null;
-    user.isDeleted = true;
-    if (extra?.signedOut) user.hasLoggedIn = false;
-    if (extra && 'deletedBy' in extra) user.deletedBy = extra.deletedBy;
-    await user.save();
-    return dto(user);
+    const $set: Partial<User> = { isDeleted: true };
+    if (extra?.signedOut) $set.hasLoggedIn = false;
+    const update: UpdateQuery<User> = { $set };
+    if (extra && 'deletedBy' in extra) {
+      if (extra.deletedBy === undefined) update.$unset = { deletedBy: '' };
+      else $set.deletedBy = extra.deletedBy;
+    }
+    // One conditional write: the role is judged by the store at the moment it removes the account.
+    // `$ne` rather than 'member': a row from before the role backfill has no role and reads as a member.
+    const row = await Users.findOneAndUpdate(
+      {
+        orgId,
+        _id: id,
+        ...(extra?.onlyMember ? { role: { $ne: 'admin' } } : {}),
+      },
+      update,
+      { returnDocument: 'after' },
+    ).exec();
+    return row ? dto(row) : null;
   }
 
   async restoreByEmails(
@@ -779,7 +797,8 @@ export class MongoUserRepository implements UserRepository {
   ): Promise<UserDto[]> {
     const session = sessionOf(tx);
     const filter = { email: { $in: emails }, isDeleted: true, orgId };
-    const restore = { $set: { isDeleted: false } };
+    // A restore grants nothing: an admin invite promotes afterwards, cap-checked.
+    const restore = { $set: { isDeleted: false, role: 'member' as const } };
     if (session) await Users.updateMany(filter, restore, { session });
     else await Users.updateMany(filter, restore);
     const query = Users.find({
@@ -792,14 +811,14 @@ export class MongoUserRepository implements UserRepository {
   }
 
   async promoteToAdmin(orgId: string, ids: string[], tx?: Tx): Promise<void> {
-    // Narrowed to people. The schema refuses to promote a service account, so
-    // without this a batch that happened to include one would fail as a whole
-    // and take the genuine invites with it.
     const session = sessionOf(tx);
     const filter = {
       _id: { $in: ids },
       orgId,
+      // Skips service accounts in the write; the schema hook still refuses a batch that names one.
       kind: { $ne: 'service' as const },
+      // Live accounts only: one removed since the caller read it stays a removed member.
+      isDeleted: { $ne: true },
     };
     const promote = { $set: { role: 'admin' as const } };
     if (session) await Users.updateMany(filter, promote, { session });
@@ -824,6 +843,24 @@ export class MongoUserRepository implements UserRepository {
       { $set: { adminRoleGuardAt: new Date() } },
       { session: sessionOf(tx) },
     );
+  }
+
+  async holdLiveAdmin(orgId: string, id: string, tx?: Tx): Promise<boolean> {
+    if (!mongoose.isValidObjectId(orgId) || !mongoose.isValidObjectId(id))
+      return false;
+    // A write in the transaction: a concurrent demotion of the same document conflicts with it.
+    const fenced = await Users.updateOne(
+      {
+        _id: id,
+        orgId,
+        role: 'admin',
+        kind: { $ne: 'service' },
+        isDeleted: { $ne: true },
+      },
+      { $inc: { approvalDecisionFence: 1 } },
+      { session: sessionOf(tx), strict: false },
+    ).exec();
+    return fenced.matchedCount > 0;
   }
 
   async withAdminLease<T>(
@@ -882,6 +919,39 @@ export class MongoUserRepository implements UserRepository {
     const result = await Users.updateMany(filter, {
       $set: { isDisabled: disabled },
     });
+    return result.modifiedCount;
+  }
+
+  async disableEnabledAccounts(orgId: string): Promise<string[]> {
+    if (!mongoose.Types.ObjectId.isValid(orgId)) return [];
+    const filter = { orgId, isDeleted: false, isDisabled: { $ne: true } };
+    const ids = (await Users.find(filter).select('_id').lean().exec()).map(
+      (u) => String(u._id),
+    );
+    if (ids.length === 0) return [];
+    await Users.updateMany(
+      { ...filter, _id: { $in: ids } },
+      { $set: { isDisabled: true } },
+    );
+    return ids.sort();
+  }
+
+  async setAccountsDisabled(
+    orgId: string,
+    ids: string[],
+    disabled: boolean,
+  ): Promise<number> {
+    const valid = ids.filter((id) => mongoose.Types.ObjectId.isValid(id));
+    if (valid.length === 0 || !mongoose.Types.ObjectId.isValid(orgId)) return 0;
+    const result = await Users.updateMany(
+      {
+        _id: { $in: valid },
+        orgId,
+        isDeleted: false,
+        isDisabled: disabled ? { $ne: true } : true,
+      },
+      { $set: { isDisabled: disabled } },
+    );
     return result.modifiedCount;
   }
 

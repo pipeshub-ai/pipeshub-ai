@@ -41,7 +41,11 @@ export function CreateFolderDialog({
     }
   }, [open]);
 
-  const nameError = title.trim() ? validateName?.(title.trim()) ?? null : null;
+  // Only a name being typed is checked. Once Create is pressed the new collection
+  // joins the list this checks against while the dialog, closing, still holds the
+  // name, so a check then would call it taken for a moment.
+  const nameError =
+    open && !isCreating && title.trim() ? validateName?.(title.trim()) ?? null : null;
 
   const handleSubmit = () => {
     if (title.trim() && !nameError) {

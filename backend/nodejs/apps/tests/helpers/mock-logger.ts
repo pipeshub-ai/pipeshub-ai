@@ -47,3 +47,51 @@ export function assertNotLogged(
     if (hit !== undefined) throw new Error(`${JSON.stringify(value)} was logged: ${hit}`);
   }
 }
+
+const SNAKE_CASE_KEY = /^[a-z0-9_]+$/;
+
+/**
+ * Fails when a log call on `logger` passed a meta object with a key that is not snake_case (docs/logging.md,
+ * "Conventions": field names are snake_case in Python and Node). Only the meta's own top-level keys are checked;
+ * an Error or a non-object meta is skipped.
+ */
+export function assertSnakeCaseLogKeys(
+  logger: Partial<Record<(typeof LOG_LEVELS)[number], sinon.SinonStub>>,
+): void {
+  for (const level of LOG_LEVELS) {
+    for (const call of logger[level]?.getCalls() ?? []) {
+      const meta: unknown = call.args[1];
+      if (meta === null || typeof meta !== 'object' || meta instanceof Error) continue;
+      const bad = Object.keys(meta).filter((key) => !SNAKE_CASE_KEY.test(key));
+      if (bad.length > 0) {
+        throw new Error(`${level} ${JSON.stringify(call.args[0])} has keys that are not snake_case: ${bad.join(', ')}`);
+      }
+    }
+  }
+}
+
+/**
+ * assertSnakeCaseLogKeys for every test of a describe: `check(this, logger…)` in its afterEach records a failure under
+ * the test's title, and `report()` in its `after` throws them all once. Not thrown in afterEach: a failing afterEach
+ * hook makes mocha skip the rest of the suite and its cleanup (tests/helpers/logger-isolation-global.ts).
+ */
+export function createSnakeCaseLogKeyGuard(): {
+  check(context: Mocha.Context, ...loggers: Parameters<typeof assertSnakeCaseLogKeys>[0][]): void;
+  report(): void;
+} {
+  const failures: string[] = [];
+  return {
+    check(context, ...loggers) {
+      for (const logger of loggers) {
+        try {
+          assertSnakeCaseLogKeys(logger);
+        } catch (error) {
+          failures.push(`"${context.currentTest?.fullTitle()}": ${(error as Error).message}`);
+        }
+      }
+    },
+    report() {
+      if (failures.length > 0) throw new Error(failures.splice(0).join('\n'));
+    },
+  };
+}

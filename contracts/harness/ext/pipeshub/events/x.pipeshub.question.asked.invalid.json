@@ -1,0 +1,116 @@
+[
+  {
+    "description": "wrong type for this schema",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "type": "turn.aborted",
+      "data": {
+        "callId": "call_1",
+        "status": "success",
+        "toolData": {
+          "name": "ask_user_question",
+          "questions": [
+            {
+              "question": "Which region?",
+              "options": []
+            }
+          ]
+        }
+      },
+      "attemptId": "att_1",
+      "fence": 3
+    }
+  },
+  {
+    "description": "writer allowlist: only worker writes x.pipeshub.question.asked",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "node",
+      "visibility": "owner",
+      "type": "x.pipeshub.question.asked",
+      "data": {
+        "callId": "call_1",
+        "status": "success",
+        "toolData": {
+          "name": "ask_user_question",
+          "questions": [
+            {
+              "question": "Which region?",
+              "options": []
+            }
+          ]
+        }
+      }
+    }
+  },
+  {
+    "description": "unknown data field",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "type": "x.pipeshub.question.asked",
+      "data": {
+        "callId": "call_1",
+        "status": "success",
+        "toolData": {
+          "name": "ask_user_question",
+          "questions": [
+            {
+              "question": "Which region?",
+              "options": []
+            }
+          ]
+        },
+        "unexpected": true
+      },
+      "attemptId": "att_1",
+      "fence": 3
+    }
+  },
+  {
+    "description": "toolData is required",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "type": "x.pipeshub.question.asked",
+      "data": {
+        "callId": "call_1",
+        "status": "success"
+      },
+      "attemptId": "att_1",
+      "fence": 3
+    }
+  }
+]

@@ -40,6 +40,7 @@ from app.connectors.services.storage_release import (
 from app.connectors.services.trash_purge import load_purge_settings
 from app.connectors.services.vector_cleanup_events import (
     build_connector_cleanup_events,
+    build_gone_connector_cleanup_events,
     build_stored_document_cleanup_events,
     log_cleanup_publish_failure,
 )
@@ -47,6 +48,7 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
 from app.core.org_context import current_org_id
 from app.connectors.sources.localKB.handlers.delete_lease import hold_delete_lease
 from app.connectors.sources.localKB.push.contract import is_pushed_revision
+from app.harness.knowledge.service import KnowledgePublications, container_id
 from app.models.entities import FileRecord, RecordType, SourcePerson
 from app.models.source_dates import (
     UPLOAD_SOURCE_CREATED_FIELD,
@@ -249,6 +251,14 @@ def _mutation_succeeded(result: object) -> bool:
     if isinstance(result, dict):
         return bool(result.get("success"))
     return bool(result)
+
+
+def _deleted() -> dict:
+    return {
+        "success": True,
+        "reason": "Knowledge base and all contents deleted successfully",
+        "code": 200,
+    }
 
 
 def _people_gone() -> dict:
@@ -1268,7 +1278,37 @@ class KnowledgeBaseService:
                 # Whether or not it finished, the cascade may have removed the members' access.
                 await notify_principals_changed(org_id)
 
-            if not result or not result.get("success"):
+            if result and result.get("success"):
+                # Vector cleanup for every record at once (one connector-scoped
+                # event normally, chunked id lists for a KB whose points predate the
+                # membership arrays), then the entity cleanup, which the indexing
+                # service runs and retries.
+                events = build_connector_cleanup_events(
+                    org_id=org_id,
+                    connector_id=kb_id,
+                    vector_membership_backfilled=result.get(
+                        "vector_membership_backfilled", False
+                    ),
+                    vector_membership_backfill_exhausted=result.get(
+                        "vector_membership_backfill_exhausted", False
+                    ),
+                    connector_name=result.get("connector_name"),
+                    # None (the graph did not say) reaches the entity cleanup as None.
+                    record_group_ids=result.get("record_group_ids"),
+                    virtual_record_ids=result.get("virtual_record_ids", []),
+                )
+            # "Could not confirm", not "still there": a rival delete finished the KB first, or the store
+            # applied the delete and its answer was lost. Every store removes the app last, after checking
+            # nothing of the KB remains, so a KB that reads as gone is deleted; its cleanup events go out as
+            # after a confirmed delete, built without the lost answer.
+            elif await self.graph_provider.get_document(
+                kb_id, CollectionNames.APPS.value, raise_on_error=True
+            ) is None:
+                self.logger.warning("Knowledge base %s is already deleted from the graph", kb_id)
+                events = build_gone_connector_cleanup_events(
+                    org_id=org_id, connector_id=kb_id, connector_name=Connectors.KNOWLEDGE_BASE.value,
+                )
+            else:
                 # the provider's "error" can be exception text, so it stays in the log
                 self.logger.warning(
                     "⚠️ Failed to delete knowledge base %s: %s",
@@ -1279,25 +1319,6 @@ class KnowledgeBaseService:
                     "reason": action_failed("delete this knowledge base"),
                     "code": 500,
                 }
-
-            # Vector cleanup for every record at once (one connector-scoped
-            # event normally, chunked id lists for a KB whose points predate the
-            # membership arrays), then the entity cleanup, which the indexing
-            # service runs and retries.
-            events = build_connector_cleanup_events(
-                org_id=org_id,
-                connector_id=kb_id,
-                vector_membership_backfilled=result.get(
-                    "vector_membership_backfilled", False
-                ),
-                vector_membership_backfill_exhausted=result.get(
-                    "vector_membership_backfill_exhausted", False
-                ),
-                connector_name=result.get("connector_name"),
-                # None (the graph did not say) reaches the entity cleanup as None.
-                record_group_ids=result.get("record_group_ids"),
-                virtual_record_ids=result.get("virtual_record_ids", []),
-            )
             published = 0
             for event in events:
                 try:
@@ -1311,11 +1332,8 @@ class KnowledgeBaseService:
                     f"event(s) for KB {kb_id}; some embeddings were not cleaned up"
                 )
             await free_lane_of_deleted_connector(self.logger, kb_id)
-            return {
-                "success": True,
-                "reason": "Knowledge base and all contents deleted successfully",
-                "code": 200,
-            }
+            await self._erase_publications(org_id, kb_id)
+            return _deleted()
 
     def _start_storage_cleanup(self, org_id: str, kb_id: str) -> None:
         # Fire-and-forget: etcd config + blob storage cleanup runs in the
@@ -1328,6 +1346,15 @@ class KnowledgeBaseService:
         _BACKGROUND_TASKS.add(task)
         task.add_done_callback(_BACKGROUND_TASKS.discard)
 
+    async def _erase_publications(self, org_id: str, kb_id: str) -> None:
+        """A deleted knowledge base takes its publications with it (P2.13, C-14 rule), flag on or off. A failure
+        here leaves orphans that grant nothing (their container is gone) and are pruned at the next read."""
+        try:
+            await KnowledgePublications(self.graph_provider, self.config_service).erase_container(
+                org_id, container_id("kb", kb_id)
+            )
+        except Exception as e:
+            self.logger.warning("publications.erase_failed errorType=%s choice=prune_on_read", type(e).__name__)
     async def _schedule_upload_removal(
         self,
         kb_id: str,
@@ -1539,7 +1566,7 @@ class KnowledgeBaseService:
                     kb_id,
                     parent_folder_id,
                     "create a folder in it",
-                    f"Parent folder {parent_folder_id} not found in KB {kb_id}",
+                    "The parent folder was not found in this knowledge base.",
                 )
 
             if await self._exceeds_folder_depth(parent_folder_id, 1):
@@ -3667,7 +3694,7 @@ class KnowledgeBaseService:
                 return {
                     "success": False,
                     "code": 404,
-                    "reason": f"Record {record_id} not found in KB {kb_id}",
+                    "reason": "The record was not found in this knowledge base.",
                 }
             self.logger.info(f"KB context: {kb_context}")
 

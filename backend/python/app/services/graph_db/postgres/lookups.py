@@ -31,6 +31,7 @@ from app.services.graph_db.common.utils import (
     record_status_field,
 )
 from app.services.graph_db.interface.graph_db_provider import REF_LINKS_PER_DOC
+from app.services.graph_db.postgres import connector_stats
 from app.services.graph_db.postgres.base import (
     _LINK_COLLS,
     _VALIDATOR,
@@ -837,20 +838,8 @@ class LookupsMixin(PgBase):
                                     op="get_message_id_header_by_key", record_id=record_key)
             return None
 
-    async def get_related_mails_by_message_id_header(self, message_id_header: str, exclude_key: str, collection: str, transaction: str | None = None) -> list[str]:
-        """The keys of the other documents of the collection with this message id header. A read by a document field: there is no index for it."""
-        org = current_org_id()
-        try:
-            rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.get_related_mails_by_message_id_header */ SELECT id FROM graph.nodes WHERE org_id = $1 AND coll = $2
-                AND doc->>'messageIdHeader' = $3 AND id <> $4 ORDER BY id""", org, collection, message_id_header, exclude_key), transaction)
-            return [r["id"] for r in rows]
-        except Exception as e:
-            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
-                                    op="get_related_mails_by_message_id_header")
-            return []
 
-
-    # ---- keys by external id, linked records, failed records, documents by status, departments, and what is left of a connector's sync ----
+    # ---- linked records, failed records, documents by status, departments, and what is left of a connector's sync ----
     async def filter_linked_record_ids(self, record_ids: list[str], transaction: str | None = None) -> list[str]:
         """The records among ``record_ids`` that belong to a record group or have a canonical hierarchy parent, in the order asked."""
         org = current_org_id()
@@ -882,13 +871,6 @@ class LookupsMixin(PgBase):
             FROM graph.ref_links($1::text[], $2, $3, $4)""", doc_ids, OriginTypes.UPLOAD.value, Connectors.KNOWLEDGE_BASE.value, REF_LINKS_PER_DOC), None)
         return [{"docId": r["doc_id"], "recordId": r["node_id"], "kind": r["kind"], "origin": r["origin"],
                  "connectorName": r["connector_name"], "connectorId": r["connector_id"]} for r in rows]
-
-    async def get_key_by_external_file_id(self, external_file_id: str) -> str | None:
-        """The key of a record of this org by external id, whatever its connector. With no connector named there is no index for it."""
-        return await self._key_by_external(external_file_id, None, None)
-
-    async def get_key_by_external_message_id(self, external_message_id: str, transaction: str | None = None) -> str | None:
-        return await self._key_by_external(external_message_id, None, transaction)
 
     async def get_record_key_by_external_id(self, external_id: str, connector_id: str, transaction: str | None = None) -> str | None:
         return await self._key_by_external(external_id, connector_id, transaction)
@@ -996,7 +978,7 @@ class LookupsMixin(PgBase):
         try:
             d = await self._one("""/* pipeshub:graph.find_next_queued_duplicate */ SELECT n.doc FROM graph.nodes r JOIN graph.nodes n ON n.org_id = r.org_id AND n.coll = 'records'
                 AND n.doc->>'md5Checksum' = r.doc->>'md5Checksum' AND n.doc->>'orgId' = r.doc->>'orgId' AND n.id <> r.id AND n.doc->>'indexingStatus' = 'QUEUED'
-                AND coalesce((n.doc->>'isDeleted')::boolean, false) = false AND (r.doc->>'sizeInBytes' IS NULL OR n.doc->>'sizeInBytes' = r.doc->>'sizeInBytes')
+                AND coalesce((n.doc->>'isDeleted')::boolean, false) = false AND n.doc->>'refreshIntentId' IS NULL AND (r.doc->>'sizeInBytes' IS NULL OR n.doc->>'sizeInBytes' = r.doc->>'sizeInBytes')
                 WHERE r.org_id = $1 AND r.coll = 'records' AND r.id = $2 ORDER BY n.id LIMIT 1""", org, record_id, transaction=transaction)
             return _arango(d, "records") if d else None
         except Exception as e:
@@ -1040,7 +1022,12 @@ class LookupsMixin(PgBase):
             app = await self._one("/* pipeshub:graph.get_connector_stats_app */ SELECT doc FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = 'apps' AND n.id = $2",
                                   org, connector_id, transaction=transaction)
             is_kb = bool(app) and app.get("type") == Connectors.KNOWLEDGE_BASE.value
-            rows = [] if org_id != org else await self._lrows(STATS_KB if is_kb else STATS_CONNECTOR, org, connector_id, FOLDER_MIME_TYPES, transaction=transaction)
+            rows = []
+            if org_id == org:
+                # the kept counts, in one snapshot (a caller's transaction reads statement by statement, so it walks); None: the walk answers
+                kept = None if transaction else await self._q(lambda tx: connector_stats.read(tx, org, connector_id), None, isolation="repeatable_read")
+                rows = kept if kept is not None else await self._lrows(STATS_KB if is_kb else STATS_CONNECTOR, org, connector_id, FOLDER_MIME_TYPES,
+                                                                       transaction=transaction)
             result = build_connector_stats_response([dict(r) for r in rows], statuses, org_id, connector_id, origin="COLLECTION" if is_kb else "CONNECTOR")
             return {"success": True, "data": result}
         except Exception as e:
