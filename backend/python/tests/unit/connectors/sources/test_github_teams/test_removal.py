@@ -501,7 +501,9 @@ class TestConnectorGuards:
         c.users.resolved_email = MagicMock(return_value=bound)
         c.users.listing = listing = MagicMock()
         c.register_authenticated_source_user = AsyncMock()
+        c.drop_authenticator_link_if_listed = AsyncMock()
         await c._register_authenticated_identity()
+        c.drop_authenticator_link_if_listed.assert_awaited_once_with(listing)
         c.users.resolved_email.assert_called_once_with(77)
         c.register_authenticated_source_user.assert_awaited_once_with(
             linked, "77", listing=listing,

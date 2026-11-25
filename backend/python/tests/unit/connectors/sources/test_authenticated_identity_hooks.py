@@ -2464,3 +2464,86 @@ class TestUserSyncRaisesNoFullPass:
             await GitHubTeamsConnector.run_sync(conn)
 
         assert order == ["drop", "users"]
+
+
+async def _hook(conn: MagicMock, cls: type, *args: object) -> None:
+    await cls._register_authenticated_identity(conn, *args)
+
+
+_UNREADABLE = RuntimeError("the account cannot be read")
+
+
+def _unreadable_accounts() -> list:
+    """Every connector with an identity hook, with its own account unreadable each way the hook gives up."""
+    notion_oauth = TestNotion()._conn(NotionRESTClientViaOAuth)
+    notion_source = MagicMock(retrieve_bot_user=AsyncMock(side_effect=_UNREADABLE))
+    servicenow = TestServiceNow()._conn([])
+    servicenow._table_get = AsyncMock(side_effect=_UNREADABLE)
+    salesforce = TestSalesforce()._conn({"id": TestSalesforce.IDENTITY_URL})
+    salesforce._fetch_first_record = AsyncMock(side_effect=_UNREADABLE)
+    confluence = TestConfluenceDataCenter()._conn(_json_response(401, {}))
+    confluence_raises = TestConfluenceDataCenter()._conn(_json_response(200, {}))
+    confluence_raises._get_fresh_datasource.return_value.get_current_user_v1.side_effect = _UNREADABLE
+    unread_token = TestGitLab()._conn()
+    unread_token._token_account_read = False
+    refused_zoom = SimpleNamespace(success=False, data=None, error="denied", message="400")
+    viewer_not_a_dict = SimpleNamespace(success=True, data={"viewer": ["not", "a", "dict"]})
+    cases = [
+        ("notion", NotionConnector, notion_oauth, (notion_source,)),
+        ("notion-integration-secret", NotionConnector, TestNotion()._conn(NotionRESTClientViaToken), (notion_source,)),
+        ("servicenow", ServiceNowConnector, servicenow, ()),
+        ("salesforce", SalesforceConnector, salesforce, ("59.0",)),
+        ("salesforce-no-identity-url", SalesforceConnector, TestSalesforce()._conn({}), ("59.0",)),
+        ("zoom", ZoomConnector, TestZoom()._conn(error=_UNREADABLE), ()),
+        ("zoom-refused", ZoomConnector, TestZoom()._conn(refused_zoom), ()),
+        ("slack", SlackConnector, TestSlackWorkspace()._conn(error=_UNREADABLE), ()),
+        ("gitlab", GitLabConnector, unread_token, ()),
+        ("github-teams", GitHubTeamsConnector, TestGitHubTeams()._conn(error=_UNREADABLE), ()),
+        ("linear", LinearConnector, TestLinear()._conn(error=_UNREADABLE), ()),
+        ("linear-malformed", LinearConnector, TestLinear()._conn(viewer_not_a_dict), ()),
+        ("confluence-dc", ConfluenceDataCenterConnector, confluence, ()),
+        ("confluence-dc-raises", ConfluenceDataCenterConnector, confluence_raises, ()),
+    ]
+    for cls, name in ((GoogleGmailTeamConnector, "gmail"), (GoogleDriveTeamConnector, "drive")):
+        cases.append((name, cls, TestGoogleWorkspace()._conn(cls, error=_UNREADABLE), ()))
+        no_admin = TestGoogleWorkspace()._conn(cls)
+        no_admin.config = {}
+        cases.append((f"{name}-no-admin", cls, no_admin, ()))
+    return [pytest.param(*case[1:], id=case[0]) for case in cases]
+
+
+class TestAnUnreadableAccountStillRemovesALinkTheListingRulesOut:
+    """The sync listed the creator, then could not read its own account. The link must go all the same: until
+    the account reads again nothing else would remove it."""
+
+    def _wire(self, conn: MagicMock, listing: SourceUserListing) -> AsyncMock:
+        conn._user_listing = listing
+        if hasattr(conn, "users"):
+            conn.users.listing = listing
+        conn.scope = "team"
+        conn.created_by = "creator-id"
+        conn.authenticator_email = AsyncMock(return_value="creator@corp.com")
+        link = AsyncMock(return_value=None)
+        conn.data_entities_processor = MagicMock(link_authenticator_to_source_user=link)
+        for name in ("drop_authenticator_link_if_listed", "_authenticator_presence", "_link_authenticator"):
+            setattr(conn, name, partial(getattr(BaseConnector, name), conn))
+        return link
+
+    @pytest.mark.parametrize(("cls", "conn", "args"), _unreadable_accounts())
+    async def test_a_creator_the_listing_names_loses_it(self, cls: type, conn: MagicMock, args: tuple) -> None:
+        link = self._wire(conn, _cut("creator@corp.com"))
+
+        await _hook(conn, cls, *args)
+
+        link.assert_awaited_once_with("connector-1", "creator-id", None, None, None, presence=Presence.PRESENT)
+        conn.register_authenticated_source_user.assert_not_awaited()
+
+    @pytest.mark.parametrize(("cls", "conn", "args"), _unreadable_accounts())
+    async def test_a_creator_the_listing_leaves_out_is_never_linked_by_it(
+        self, cls: type, conn: MagicMock, args: tuple,
+    ) -> None:
+        link = self._wire(conn, _finished("someone@corp.com"))
+
+        await _hook(conn, cls, *args)
+
+        link.assert_awaited_once_with("connector-1", "creator-id", None, None, None, presence=Presence.UNKNOWN)

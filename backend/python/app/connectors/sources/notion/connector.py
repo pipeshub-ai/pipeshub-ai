@@ -715,6 +715,8 @@ class NotionConnector(BaseConnector):
         PipesHub email differs still resolves that account's permissions for this connector.
         Only an OAuth bot is owned by a person; an integration secret's bot belongs to the
         workspace, so there is no account to link."""
+        # First: a read below that fails must not keep a link this sync's listing rules out.
+        await self.drop_authenticator_link_if_listed(self._user_listing)
         client = self.notion_client.get_client() if self.notion_client else None
         if not isinstance(client, NotionRESTClientViaOAuth):
             return

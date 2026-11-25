@@ -1243,6 +1243,7 @@ class TestTheCreatorGitLabInjects:
 
 
 REGISTER = "register_authenticated_source_user"
+REMOVE = "drop_authenticator_link_if_listed"
 CONNECTOR_SOURCES = Path(__file__).resolve().parents[4] / "app" / "connectors" / "sources"
 # A personal connector's account is its user's own: there is no listing to prove anything with.
 PERSONAL = frozenset({
@@ -1299,6 +1300,23 @@ class TestNoConnectorSkipsTheContract:
         ]
 
         assert missing == [], "add a Source for this connector, or name it in NOT_COVERED and the module docstring"
+
+    def test_every_identity_hook_removes_before_it_reads(self) -> None:
+        # A hook that gives up on a failed read must already have removed a link the listing rules out.
+        hooks, late = 0, []
+        for path in sorted(CONNECTOR_SOURCES.rglob("*.py")):
+            for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+                if not (isinstance(node, ast.AsyncFunctionDef) and node.name == "_register_authenticated_identity"):
+                    continue
+                hooks += 1
+                body = node.body[1:] if ast.get_docstring(node) else node.body
+                call = getattr(getattr(body[0], "value", None), "value", None)  # the call in `await call(...)`
+                removes = isinstance(call, ast.Call) and getattr(call.func, "attr", "") == REMOVE and call.args
+                if not removes:
+                    late.append(f"{path.relative_to(CONNECTOR_SOURCES)}:{node.lineno}")
+
+        assert hooks >= 11
+        assert late == [], "start the hook with drop_authenticator_link_if_listed(<this sync's listing>)"
 
     def test_what_is_not_covered_is_named_in_the_docstring_with_a_test_file_that_exists(self) -> None:
         covered = {s.connector.__name__ for s in SOURCES}

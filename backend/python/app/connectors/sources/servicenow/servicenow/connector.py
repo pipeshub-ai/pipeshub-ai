@@ -1334,6 +1334,8 @@ class ServiceNowConnector(BaseConnector):
     async def _register_authenticated_identity(self) -> None:
         """Record which source account this connector is authenticated as, so a creator whose
         PipesHub email differs still resolves that account's permissions for this connector."""
+        # First: a read below that fails must not keep a link this sync's listing rules out.
+        await self.drop_authenticator_link_if_listed(self._user_listing)
         email, source_user_id = None, None
         try:
             response = await self._table_get(

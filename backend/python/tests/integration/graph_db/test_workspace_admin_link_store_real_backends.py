@@ -246,6 +246,10 @@ async def test_neo4j_the_link_relationship_has_an_index_on_the_connector_id(monk
         await p.disconnect()
 
 
+# ArangoDB: write-write conflict, the row another writer already removed, the key another writer already inserted.
+_LOST_TO_ANOTHER_WRITER = (1200, 1202, 1210)
+
+
 async def test_arango_concurrent_reauth_keeps_one_link(arango_provider) -> None:  # noqa: F811
     p = arango_provider
     await _ensure_arango_collections(p)
@@ -260,7 +264,11 @@ async def test_arango_concurrent_reauth_keeps_one_link(arango_provider) -> None:
         results = await asyncio.gather(
             *[p.upsert_authenticated_as(f"c-{t}", s, c, org) for s in targets], return_exceptions=True,
         )
-        # Concurrent writers may conflict, but one must win: the random-key link alone would also be a single link.
-        assert any(not isinstance(r, Exception) for r in results), f"round {rnd}: {results[0]!r}"
+        # A writer may lose only to another writer, and one must win: the random-key link alone would also be a
+        # single link.
+        errors = [r for r in results if isinstance(r, BaseException)]
+        unexpected = [e for e in errors if getattr(e, "error_num", None) not in _LOST_TO_ANOTHER_WRITER]
+        assert not unexpected, f"round {rnd}: {unexpected[0]!r}"
+        assert len(errors) < len(results), f"round {rnd}: {errors[0]!r}"
         links = await p.execute_query("FOR l IN authenticatedAs FILTER l.connectorId == @c RETURN {k: l._key, to: l._to}", bind_vars={"c": c})
         assert [link["k"] for link in links] == [c], f"round {rnd}: {links}"

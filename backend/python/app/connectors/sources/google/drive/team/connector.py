@@ -829,6 +829,8 @@ class GoogleDriveTeamConnector(BaseConnector):
         """Record which source account this connector is authenticated as, so a creator whose
         PipesHub email differs still resolves that account's permissions for this connector.
         The service account acts as the configured admin, so that admin is the account."""
+        # First: a read below that fails must not keep a link this sync's listing rules out.
+        await self.drop_authenticator_link_if_listed(self._user_listing)
         admin_email = (((self.config or {}).get("credentials") or {}).get("auth") or {}).get("adminEmail")
         if not self.admin_data_source or not admin_email:
             return

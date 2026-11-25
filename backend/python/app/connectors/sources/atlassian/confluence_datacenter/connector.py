@@ -462,6 +462,8 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
     async def _register_authenticated_identity(self) -> None:
         """Record which source account this connector is authenticated as, so a creator whose
         PipesHub email differs still resolves that account's permissions for this connector."""
+        # First: a read below that fails must not keep a link this sync's listing rules out.
+        await self.drop_authenticator_link_if_listed(self._user_listing)
         if not self.data_source:
             return
         email, source_user_id = "", None
@@ -469,8 +471,6 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
             datasource = await self._get_fresh_datasource()
             response = await datasource.get_current_user_v1()
             if not response or response.status != HttpStatusCode.SUCCESS.value:
-                # The account cannot be read: still remove a link this sync's listing rules out.
-                await self.drop_authenticator_link_if_listed(self._user_listing)
                 return
             data = response.json() or {}
             source_user_id = data.get("userKey") or data.get("key")
@@ -482,7 +482,6 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                     email = ((detail.json() or {}).get("email") or "").strip()
         except Exception as e:
             self.logger.debug("Could not read the authenticated Confluence account: %s", e)
-            await self.drop_authenticator_link_if_listed(self._user_listing)
             return
         await self.register_authenticated_source_user(
             email or None, source_user_id,

@@ -1453,6 +1453,8 @@ class SlackConnector(BaseConnector):
         belongs to, as the other connectors do. A bot token names a bot, which has no
         account to link: any link left from an earlier user token is removed, and
         _authenticator_grant() gives them the channels instead."""
+        # First: a read below that fails must not keep a link this sync's listing rules out.
+        await self.drop_authenticator_link_if_listed(getattr(self, "_user_listing", None))
         try:
             ds = await self._fresh_datasource()
             resp = await ds.auth_test()
