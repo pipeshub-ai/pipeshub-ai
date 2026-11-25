@@ -18,6 +18,7 @@ from app.connectors.sources.microsoft.sharepoint_online.container_tracker import
 )
 from app.connectors.sources.microsoft.sharepoint_online.drive_reconciler import (
     DriveReconciler,
+    Unlisted,
 )
 from app.connectors.sources.microsoft.sharepoint_online.everyone_groups import (
     EVERYONE,
@@ -101,8 +102,8 @@ class TestDriveReconciler:
         )
         confirmed_gone = {"gone"}
 
-        async def is_gone(external_id: str) -> bool:
-            return external_id in confirmed_gone
+        async def is_gone(external_id: str) -> Unlisted:
+            return Unlisted.GONE if external_id in confirmed_gone else Unlisted.KEPT
 
         removed = await DriveReconciler(processor, "c1", SimpleNamespace(info=lambda *_: None)).remove_unlisted(
             "drive-1", {"kept"}, is_gone
@@ -120,8 +121,8 @@ class TestDriveReconciler:
             note_kept_records=MagicMock(),
         )
 
-        async def is_gone(external_id: str) -> bool:
-            return external_id == "gone"
+        async def is_gone(external_id: str) -> Unlisted:
+            return Unlisted.GONE if external_id == "gone" else Unlisted.KEPT
 
         await DriveReconciler(processor, "c1", SimpleNamespace(info=lambda *_: None)).remove_unlisted(
             "drive-1", {"kept"}, is_gone
@@ -130,13 +131,31 @@ class TestDriveReconciler:
         processor.note_kept_records.assert_called_once_with("c1", ["r3"])
         processor.on_record_deleted.assert_awaited_once_with(record_id="r2")
 
+    async def test_an_unlisted_record_the_sync_filters_exclude_is_neither_removed_nor_noted_kept(self) -> None:
+        processor = SimpleNamespace(
+            get_records_in_record_group=AsyncMock(return_value=[_record("r1", "excluded"), _record("r2", "there")]),
+            on_record_deleted=AsyncMock(),
+            note_kept_records=MagicMock(),
+        )
+
+        async def probe(external_id: str) -> Unlisted:
+            return Unlisted.OUT_OF_SCOPE if external_id == "excluded" else Unlisted.KEPT
+
+        removed = await DriveReconciler(processor, "c1", SimpleNamespace(info=lambda *_: None)).remove_unlisted(
+            "drive-1", set(), probe
+        )
+
+        assert removed == 0
+        processor.on_record_deleted.assert_not_awaited()
+        processor.note_kept_records.assert_called_once_with("c1", ["r2"])
+
     async def test_a_listed_record_is_neither_probed_nor_noted(self) -> None:
         processor = SimpleNamespace(
             get_records_in_record_group=AsyncMock(return_value=[_record("r1", "listed"), _record("r2", "gone")]),
             on_record_deleted=AsyncMock(),
             note_kept_records=MagicMock(),
         )
-        is_gone = AsyncMock(return_value=True)
+        is_gone = AsyncMock(return_value=Unlisted.GONE)
 
         await DriveReconciler(processor, "c1", SimpleNamespace(info=lambda *_: None)).remove_unlisted(
             "drive-1", {"listed"}, is_gone
@@ -153,8 +172,8 @@ class TestDriveReconciler:
             note_kept_records=MagicMock(),
         )
 
-        async def is_gone(external_id: str) -> bool:
-            return external_id == "late"
+        async def is_gone(external_id: str) -> Unlisted:
+            return Unlisted.GONE if external_id == "late" else Unlisted.KEPT
 
         await DriveReconciler(processor, "c1", SimpleNamespace(info=lambda *_: None)).remove_unlisted(
             "drive-1", {f"e{n}" for n in range(500)}, is_gone

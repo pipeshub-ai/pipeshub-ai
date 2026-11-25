@@ -1710,8 +1710,11 @@ def serve_eng_and_ops(api) -> None:
 
     delta_pages(api, {None: page([root_item(), file_item("i1", "plan.pdf"), file_item("i2", "budget.pdf"),
                                   file_item("i-old", "old.pdf")], delta_link=delta_url("d1"))})
-    for item_id in ("i1", "i2", "i-old"):
+    for item_id, name in (("i1", "plan.pdf"), ("i2", "budget.pdf"), ("i-old", "old.pdf")):
         serve_item(api, item_id, [])
+        # The item as Graph returns it: a stored file left out of a complete listing is probed by this read.
+        api.on("GET", f"/v1.0/drives/{DRIVE_ID}/items/{item_id}",
+               {**file_item(item_id, name), "@microsoft.graph.downloadUrl": f"https://download.example/{item_id}"})
     api.on("GET", PAGES, page([site_page("pg1", "Home"), site_page("pg2", "News"), site_page("pg-old", "Old")]))
     for page_id, title in (("pg1", "Home"), ("pg2", "News"), ("pg-old", "Old")):
         api.on("GET", f"{PAGES}/{page_id}", site_page(page_id, title))
@@ -1965,6 +1968,43 @@ class TestFullSyncUnlinksOnlyWhatIsGone:
         assert f"{RECORDS}/i2" in unlinked, "listed but out of scope: neither written nor kept"
         assert seeded.full_sync_coverage().complete is True
 
+    async def test_an_unlisted_file_the_extension_filter_now_excludes_is_not_kept(
+        self, seeded, api, db, checkpoints
+    ) -> None:
+        seeded.config_service.config["filters"] = {"sync": {"values": {
+            "file_extensions": {"operator": "in", "value": ["pdf"], "type": "multiselect"},
+        }}}
+        delta_pages(api, {None: page([root_item(), file_item("i1", "plan.pdf")], delta_link=delta_url("d2"))})
+        api.on("GET", f"/v1.0/drives/{DRIVE_ID}/items/i2", file_item("i2", "budget.docx"))
+
+        unlinked = await run_full_sync(seeded, db, checkpoints)
+
+        assert unlinked == self.REALLY_GONE | {f"{RECORDS}/i2"}, "still there, but out of scope: not noted kept"
+        assert seeded.full_sync_coverage().complete is True
+
+    async def test_an_unlisted_file_the_extension_filter_includes_is_kept(self, seeded, api, db, checkpoints) -> None:
+        seeded.config_service.config["filters"] = {"sync": {"values": {
+            "file_extensions": {"operator": "in", "value": ["pdf"], "type": "multiselect"},
+        }}}
+        delta_pages(api, {None: page([root_item(), file_item("i1", "plan.pdf")], delta_link=delta_url("d2"))})
+
+        unlinked = await run_full_sync(seeded, db, checkpoints)
+
+        assert unlinked == self.REALLY_GONE
+
+    async def test_an_unlisted_file_whose_read_fails_is_kept_whatever_the_filter(
+        self, seeded, api, db, checkpoints
+    ) -> None:
+        seeded.config_service.config["filters"] = {"sync": {"values": {
+            "file_extensions": {"operator": "in", "value": ["pdf"], "type": "multiselect"},
+        }}}
+        delta_pages(api, {None: page([root_item(), file_item("i1", "plan.pdf")], delta_link=delta_url("d2"))})
+        api.on("GET", f"/v1.0/drives/{DRIVE_ID}/items/i2", graph_error(503, "serviceNotAvailable"))
+
+        unlinked = await run_full_sync(seeded, db, checkpoints)
+
+        assert unlinked == self.REALLY_GONE, "the re-read failed: whether i2 is in scope is unknown, so it keeps its links"
+
     async def test_a_page_missing_from_the_listing_that_graph_still_has_keeps_its_links(
         self, seeded, api, db, checkpoints
     ) -> None:
@@ -1989,6 +2029,43 @@ class TestFullSyncUnlinksOnlyWhatIsGone:
         assert f"{RECORDS}/pg2" in unlinked, "listed but out of scope: neither written nor kept"
         assert api.calls("GET", f"{PAGES}/pg2") == [], "a listed page is never probed"
         assert seeded.full_sync_coverage().complete is True
+
+    async def test_an_unlisted_page_the_date_filter_now_excludes_is_not_kept(self, seeded, api, db, checkpoints) -> None:
+        june = int(datetime(2024, 6, 1, tzinfo=timezone.utc).timestamp() * 1000)
+        seeded.config_service.config["filters"] = {"sync": {"values": {
+            "modified": {"operator": "is_after", "type": "datetime", "value": {"start": june, "end": None}},
+        }}}
+        recent = {**site_page("pg1", "Home"), "lastModifiedDateTime": "2024-07-01T10:00:00Z"}
+        api.on("GET", PAGES, page([recent]))
+
+        unlinked = await run_full_sync(seeded, db, checkpoints)
+
+        assert api.calls("GET", f"{PAGES}/pg2"), "unlisted: probed"
+        # The filter also leaves out the seeded files; only the pages are judged here.
+        pages_unlinked = {node for node in unlinked if node.startswith(f"{RECORDS}/pg")}
+        assert pages_unlinked == {f"{RECORDS}/pg-old", f"{RECORDS}/pg2"}, "still there, but out of scope: not noted kept"
+
+    async def test_an_unlisted_page_the_date_filter_includes_is_kept(self, seeded, api, db, checkpoints) -> None:
+        june = int(datetime(2024, 6, 1, tzinfo=timezone.utc).timestamp() * 1000)
+        seeded.config_service.config["filters"] = {"sync": {"values": {
+            "modified": {"operator": "is_after", "type": "datetime", "value": {"start": june, "end": None}},
+        }}}
+        recent = {**site_page("pg1", "Home"), "lastModifiedDateTime": "2024-07-01T10:00:00Z"}
+        api.on("GET", PAGES, page([recent]))
+        api.on("GET", f"{PAGES}/pg2", {**site_page("pg2", "News"), "lastModifiedDateTime": "2024-07-02T10:00:00Z"})
+
+        unlinked = await run_full_sync(seeded, db, checkpoints)
+
+        # The filter also leaves out the seeded files; only the pages are judged here.
+        assert {node for node in unlinked if node.startswith(f"{RECORDS}/pg")} == {f"{RECORDS}/pg-old"}
+
+    async def test_an_unlisted_system_page_is_not_kept(self, seeded, api, db, checkpoints) -> None:
+        api.on("GET", PAGES, page([site_page("pg1", "Home")]))
+        api.on("GET", f"{PAGES}/pg2", {**site_page("pg2", "News"), "createdBy": {"user": {"displayName": "System Account"}}})
+
+        unlinked = await run_full_sync(seeded, db, checkpoints)
+
+        assert unlinked == self.REALLY_GONE | {f"{RECORDS}/pg2"}
 
     async def test_a_system_page_is_still_unlinked(self, seeded, api, db, checkpoints) -> None:
         system = {**site_page("pg2", "News"), "createdBy": {"user": {"displayName": "System Account"}}}

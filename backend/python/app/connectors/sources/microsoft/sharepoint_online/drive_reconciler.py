@@ -6,11 +6,13 @@ connector's first run. Whatever was deleted in between is never reported, so it 
 
 Only a listing that ran to the end without an error is an answer to "what is gone", and even then each
 record is removed only once the source answers 404 for that very item: an item a listing leaves out is a
-candidate, not a deletion. An unlisted record the source still has is noted kept for a full sync in progress.
+candidate, not a deletion. An unlisted record the source still has is noted kept for a full sync in progress,
+unless the sync filters now exclude it.
 """
 
 from __future__ import annotations
 
+from enum import Enum
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -24,6 +26,14 @@ if TYPE_CHECKING:
 _PAGE = 500
 
 
+class Unlisted(Enum):
+    """What the source says of a stored item that a complete listing left out."""
+
+    GONE = "gone"  # Graph answers 404: the record is removed
+    KEPT = "kept"  # still there and in scope, or no answer: noted kept for a full sync in progress
+    OUT_OF_SCOPE = "out_of_scope"  # still there, but the sync filters exclude it: not noted kept
+
+
 class DriveReconciler:
     def __init__(self, processor: "DataSourceEntitiesProcessor", connector_id: str, logger: Logger) -> None:
         self.processor = processor
@@ -31,9 +41,9 @@ class DriveReconciler:
         self.logger = logger
 
     async def remove_unlisted(
-        self, drive_id: str, listed_external_ids: set[str], is_gone: Callable[[str], Awaitable[bool]]
+        self, drive_id: str, listed_external_ids: set[str], probe: Callable[[str], Awaitable[Unlisted]]
     ) -> int:
-        """Deletes the library's records that the complete listing did not contain and that ``is_gone``
+        """Deletes the library's records that the complete listing did not contain and that ``probe``
         (given the record's external id) confirms the source no longer has."""
         removed = 0
         after_key = None
@@ -45,10 +55,11 @@ class DriveReconciler:
             for record in page:
                 if record.external_record_id in listed_external_ids:
                     continue
-                if await is_gone(record.external_record_id):
+                verdict = await probe(record.external_record_id)
+                if verdict is Unlisted.GONE:
                     await self.processor.on_record_deleted(record_id=record.id)
                     removed += 1
-                else:
+                elif verdict is Unlisted.KEPT:
                     self.processor.note_kept_records(self.connector_id, [record.id])
             if len(page) < _PAGE:
                 break
