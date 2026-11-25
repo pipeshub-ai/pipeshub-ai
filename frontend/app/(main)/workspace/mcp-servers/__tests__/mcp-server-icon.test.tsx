@@ -198,6 +198,8 @@ describe('McpServerIcon', () => {
     expect(logo(<McpServerIcon typeId="canva" name="Canva" />)).toBe('canva icon');
     expect(logoPath(<McpServerIcon typeId="canva" name="Canva" />)).toBe('/icons/connectors/canva.svg');
     expect(logo(<McpServerIcon typeId={null} name="Canva" />)).toBe('canva icon');
+  });
+
   it("shows Instantly's logo, also for a custom server named after it", () => {
     expect(logo(<McpServerIcon typeId="instantly" name="Instantly" />)).toBe('instantly icon');
     expect(logo(<McpServerIcon typeId={null} name="Instantly MCP" />)).toBe('instantly icon');
