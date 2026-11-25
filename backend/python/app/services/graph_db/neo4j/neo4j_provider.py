@@ -983,6 +983,10 @@ def _cypher_expectations(expected: dict[str, Any], parameters: dict[str, Any], n
     return conditions
 
 
+def _existence_constraint_name(label: str, field: str) -> str:
+    return f"{label.lower()}_{field}_exists".replace(".", "_")
+
+
 class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
     """
     Neo4j implementation of IGraphDBProvider.
@@ -1875,7 +1879,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     continue
 
                 # Create a safe constraint name (Neo4j constraint names can't have special chars)
-                constraint_name = f"{label.lower()}_{field}_exists".replace(".", "_")
+                constraint_name = _existence_constraint_name(label, field)
 
                 # Neo4j 4.4+ syntax for property existence constraints
                 # Note: Property existence constraints require Neo4j Enterprise Edition
@@ -1887,6 +1891,33 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 constraints.append(constraint_query)
 
         return constraints
+
+    async def _drop_obsolete_existence_constraints(self) -> None:
+        """Drop the existence constraints an earlier version created for fields no longer required.
+
+        ``IF NOT EXISTS`` only adds them, so a database set up before a field became optional refused
+        every write without it, at commit, failing the whole batch. Only a constraint this provider
+        names (``<label>_<field>_exists`` on one label and field of its own) is dropped."""
+        wanted = {statement.split()[2] for statement in self._generate_required_field_constraints()}
+        try:
+            rows = await self.client.execute_query(
+                "SHOW CONSTRAINTS YIELD name, type, entityType, labelsOrTypes, properties "
+                "WHERE entityType = 'NODE' AND type CONTAINS 'PROPERTY_EXISTENCE' "
+                "RETURN name, labelsOrTypes AS labels, properties"
+            )
+        except Exception as e:
+            error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False, level=logging.WARNING,
+                                    op="ensure_schema", step="list_existence_constraints")
+            return
+        obsolete = []
+        for row in rows or []:
+            name, labels, fields = row.get("name"), row.get("labels") or [], row.get("properties") or []
+            if len(labels) != 1 or len(fields) != 1 or labels[0] not in _LABEL_TO_COLLECTION or name in wanted:
+                continue
+            if name == _existence_constraint_name(labels[0], fields[0]):
+                obsolete.append(f"DROP CONSTRAINT `{name}` IF EXISTS")
+        if obsolete:
+            await self._apply_schema(obsolete, "obsolete property existence constraints dropped")
 
     async def _apply_schema(
         self, statements: list[str], what: str, *, failure_level: int = logging.WARNING,
@@ -1950,6 +1981,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             # Property existence constraints need Enterprise Edition. On Community each
             # one is refused, and Neo4j logs every refusal as an error on every start.
             if await self._supports_existence_constraints():
+                await self._drop_obsolete_existence_constraints()
                 await self._apply_schema(
                     self._generate_required_field_constraints(),
                     "property existence constraints",

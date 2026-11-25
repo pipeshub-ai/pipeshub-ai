@@ -523,8 +523,8 @@ jobs:
   # absent, so on a bare runner they skip cleanly and the rest execute.
   # Three paths are excluded below.
   #
-  # tests/integration/pg_runtime, tests/integration/db and
-  # tests/integration/graph_db/postgres need a PostgreSQL server that CI sets
+  # tests/integration/pg_runtime, tests/integration/db, tests/integration/pg_fault
+  # and tests/integration/graph_db/postgres need a PostgreSQL server that CI sets
   # up (a missing one is an error there, not a skip), so they run in the
   # PostgreSQL workflows, not on this bare runner.
   #
@@ -562,6 +562,7 @@ jobs:
             --ignore=tests/integration/redis_cluster \
             --ignore=tests/integration/pg_runtime \
             --ignore=tests/integration/db \
+            --ignore=tests/integration/pg_fault \
             --ignore=tests/integration/graph_db/postgres \
             --ignore=tests/integration/skills/test_npm_import_live.py \
             --ignore=tests/integration/spend \
