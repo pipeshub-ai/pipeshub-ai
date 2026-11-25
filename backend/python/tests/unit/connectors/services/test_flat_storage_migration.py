@@ -237,3 +237,15 @@ async def test_orgs_are_listed_cross_org_and_each_runs_inside_its_own_org() -> N
     with patch(MOVE, new_callable=AsyncMock, return_value={"moved": 2}):
         assert await m.run_all_orgs() is True
     assert seen == [("orgs", "system"), ("storage", "org-1")]
+
+
+@pytest.mark.asyncio
+async def test_error_texts_that_differ_for_every_copy_do_not_pile_up() -> None:
+    vrids = [f"v{i}" for i in range(200)]
+    m, _ = _migration([_docs(*vrids)] * MAX_PASSES, {v: [_holder(v)] for v in vrids})
+    errors = [RuntimeError(f"no such key {i}") for i in range(200 * MAX_PASSES)]
+    with patch(MOVE, new_callable=AsyncMock, side_effect=errors):
+        await m.run_org("org-1")
+    assert len(m._reasons) <= 51 and sum(m._reasons.values()) == 200
+    [call] = m.logger.error.call_args_list
+    assert "other reasons (150)" in call.args[0] % call.args[1:]

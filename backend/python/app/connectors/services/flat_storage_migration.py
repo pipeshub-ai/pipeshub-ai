@@ -45,6 +45,8 @@ MAX_PASSES = 3
 _PAGE = 500
 _NAMED_FAILURES = 5
 _MAX_REASONS = 5
+# An error text can name the document it failed on; the rest share one entry.
+_MAX_TRACKED_REASONS = 50
 
 
 def _key(org_id: str) -> str:
@@ -67,6 +69,7 @@ class FlatStorageMigration:
         self.lock = lock
         self.storage = StorageCleanupHelper(logger, graph_provider, config_service)
         self._reasons: Counter[str] = Counter()
+        self._failures = 0
 
     async def run_all_orgs(self) -> bool:
         """True once every org is done; False when another replica leads or
@@ -96,6 +99,7 @@ class FlatStorageMigration:
             return True
         headers, nodejs_endpoint, _ = await self.blob_storage._get_auth_and_config(org_id)
         self._reasons.clear()
+        self._failures = 0
         while True:
             page = await self._flat_documents(nodejs_endpoint, headers, progress.get("after"))
             vrids = list(OrderedDict.fromkeys(
@@ -128,7 +132,7 @@ class FlatStorageMigration:
             return await self.run_org(org_id)
         if failed and not moved_in_all:
             # One shared cause, not a few bad copies: once it is fixed they can all move.
-            await self.config_service.set_config(_key(org_id), {"failedAt": get_epoch_timestamp_in_ms()})
+            await self.config_service.set_config(_key(org_id), {"movedNothingAt": get_epoch_timestamp_in_ms()})
             self.logger.error(
                 "Flat storage migration for org %s moved nothing: %d with no record to own them, "
                 "%d failed: %s; it runs again at the next start",
@@ -147,9 +151,14 @@ class FlatStorageMigration:
         return True
 
     def _note_failure(self, vrid: str, reason: str) -> None:
-        self._reasons[reason] += 1
-        if sum(self._reasons.values()) <= _NAMED_FAILURES:
+        self._count_failures(reason)
+        if self._failures <= _NAMED_FAILURES:
             self.logger.warning("Flat copy of vrid %s left in place for now: %s", vrid, reason)
+
+    def _count_failures(self, reason: str, copies: int = 1) -> None:
+        self._failures += copies
+        tracked = reason in self._reasons or len(self._reasons) < _MAX_TRACKED_REASONS
+        self._reasons[reason if tracked else "other reasons"] += copies
 
     def _reason_text(self) -> str:
         return ", ".join(f"{reason} ({n})" for reason, n in self._reasons.most_common(_MAX_REASONS)) or "reason not recorded"
@@ -180,7 +189,7 @@ class FlatStorageMigration:
             holders = await self.graph_provider.get_virtual_record_holders(vrids, org_id)
         except Exception as e:
             self.logger.warning("Flat storage migration: could not read holders of a page: %s", e)
-            self._reasons[f"could not read the records holding them: {type(e).__name__}"] += len(vrids)
+            self._count_failures(f"could not read the records holding them: {type(e).__name__}", len(vrids))
             counts["failed"] = len(vrids)
             return counts
         for vrid in vrids:
