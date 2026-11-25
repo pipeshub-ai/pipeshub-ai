@@ -12,8 +12,8 @@ from logging import getLogger
 
 import pytest
 
-from app.plugins.telemetry.modules import envelope_metrics
 from app.core import envelope, org_context
+from app.plugins.telemetry.modules import envelope_metrics
 from app.services.messaging.config import MessageBrokerType, RedisStreamsConfig
 from app.services.messaging.inbox import PgInbox, inbox_message_id, shared_inbox
 from app.services.messaging.interface.consumer import IMessagingConsumer

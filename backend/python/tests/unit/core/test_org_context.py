@@ -4,7 +4,6 @@ import asyncio
 
 import pytest
 
-from app.plugins.telemetry.modules import org_context_metrics
 from app.core.org_context import (
     MissingOrgContext,
     OrgContext,
@@ -18,6 +17,7 @@ from app.core.org_context import (
     spawn_in_request,
     system,
 )
+from app.plugins.telemetry.modules import org_context_metrics
 
 
 def _ctx(org: str) -> OrgContext:

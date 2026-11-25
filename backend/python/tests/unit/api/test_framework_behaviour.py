@@ -25,8 +25,8 @@ from starlette.background import BackgroundTask
 
 from app.api.middlewares.auth import authMiddleware
 from app.api.routes.parsing import router as parsing_router
-from app.services.parsing.registry import ParserRegistry
 from app.plugins.telemetry.middleware import MetricsMiddleware
+from app.services.parsing.registry import ParserRegistry
 
 MIB = 1024 * 1024
 CHUNKS = [b"chunk-0;", b"chunk-1;", b"chunk-2;"]

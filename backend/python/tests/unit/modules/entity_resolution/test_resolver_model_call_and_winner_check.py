@@ -13,13 +13,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from tests.support.platform_event_capture import event_calls
 from app.config.constants.arangodb import CollectionNames
 from app.exceptions.indexing_exceptions import EntityLookupUnavailableError
 from app.models.entities import EntityRecord, EntityType
 from app.modules.entity_resolution import resolver as resolver_module
 from app.modules.entity_resolution.models import MergeDecision, MergeDecisions
 from app.modules.entity_resolution.normalizer import normalize_name
+from tests.support.platform_event_capture import event_calls
 
 TOPICS = CollectionNames.TOPICS.value
 
@@ -72,7 +72,6 @@ class TestWinnerCheckErrors:
     async def test_failed_check_is_a_deferral_not_stale_winners(
         self, make_resolver, fake_graph, fake_store, metadata_factory, ctx_factory, scripted_model,
     ) -> None:
-        from app.modules.entity_resolution import lookup as lookup_module
 
         await _seed_winner(fake_graph, fake_store)
         fake_graph.fail_node_lookup = True

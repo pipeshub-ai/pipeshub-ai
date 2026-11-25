@@ -1,10 +1,8 @@
 """Projection of a record's property values: what is written, for which records, and what is not."""
 
-from unittest.mock import patch
 
 import pytest
 
-from tests.support.platform_event_capture import event_calls
 from app.config.constants.arangodb import Connectors
 from app.models.entities import RecordType, Status
 from app.models.record_metadata import (
@@ -30,6 +28,7 @@ from app.modules.record_metadata.projection import (
     union_of,
 )
 from app.modules.record_metadata.schemas import MetadataSchemaRegistry
+from tests.support.platform_event_capture import event_calls
 
 from .projection_world import (
     FakeConfig,

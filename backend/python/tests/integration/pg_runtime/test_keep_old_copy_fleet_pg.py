@@ -11,8 +11,8 @@ import uuid
 
 import pytest
 
-from app.plugins.telemetry.modules import indexing_metrics
 from app.modules.indexing import keep_old_copy
+from app.plugins.telemetry.modules import indexing_metrics
 from app.services.messaging import config as mconfig
 from app.services.messaging import membership
 from app.services.messaging.postgres.queue import PgQueue

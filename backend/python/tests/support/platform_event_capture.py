@@ -9,11 +9,13 @@ With no names, every event is collected. ``facts(events, name)`` gives the paylo
 
 from __future__ import annotations
 
-from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from app import platform_events
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 Captured = list[tuple[str, dict[str, Any]]]
 

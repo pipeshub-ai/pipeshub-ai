@@ -11,7 +11,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import aiohttp
 import pytest
 
-from tests.support.platform_event_capture import event_calls
 from app.config.constants.arangodb import (
     CollectionNames,
     Connectors,
@@ -49,6 +48,7 @@ from app.services.messaging.kafka.handlers.record import (
 )
 from app.services.vector_db.rebuild_state import PHASE_FAILED, PHASE_READY
 from app.utils import indexing_timing, user_errors
+from tests.support.platform_event_capture import event_calls
 from tests.support.record_handler import make_record_handler
 from tests.support.settle import settle
 from tests.unit.attempt_start import attempt_start_via

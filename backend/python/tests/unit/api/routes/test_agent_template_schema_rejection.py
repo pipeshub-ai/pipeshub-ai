@@ -8,9 +8,9 @@ import pytest
 from fastapi import HTTPException
 from jsonschema import ValidationError as JsonSchemaValidationError
 
-from tests.support.platform_event_capture import event_calls
 from app.api.routes.agent import create_agent_template
 from app.schema.node_validator import NodeSchemaValidator, SchemaValidationError
+from tests.support.platform_event_capture import event_calls
 
 
 async def test_a_schema_rejected_template_is_a_400_and_counted() -> None:

@@ -13,8 +13,8 @@ from typing import Any
 import asyncpg
 import pytest
 
-from app.plugins.telemetry.modules import kg_metrics
 from app.core.db import DbConfig, KernelDB
+from app.plugins.telemetry.modules import kg_metrics
 from app.services.graph_db.postgres.kg import backfill as bf
 from app.services.graph_db.postgres.kg import bootstrap, counts, drainer, net, restamp
 from app.services.graph_db.postgres.kg import read as kg_read

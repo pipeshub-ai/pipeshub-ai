@@ -10,8 +10,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.plugins.telemetry.modules import graph_schema_guard_metrics
 from app.exceptions.graph_db_exceptions import RecordSchemaNarrowError
+from app.plugins.telemetry.modules import graph_schema_guard_metrics
 from app.schema.arango.documents import (
     APP_SCHEMA_GENERATION,
     RECORD_SCHEMA_GENERATION,

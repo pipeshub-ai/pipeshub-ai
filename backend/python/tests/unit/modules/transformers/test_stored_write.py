@@ -13,7 +13,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from tests.support.platform_event_capture import event_calls
 from app.modules.transformers import blob_storage as blob_module
 from app.modules.transformers import sink_orchestrator as sink_module
 from app.modules.transformers.blob_storage import BlobStorage
@@ -35,6 +34,7 @@ from app.services.featureflag.platform_settings import (
     artifact_read_state,
     artifact_settings,
 )
+from tests.support.platform_event_capture import event_calls
 
 GENERATION = "gen-1"
 FLAGS = ("ENABLE_ARTIFACT_READ", "ENABLE_ARTIFACT_READ_SHADOW", "ENABLE_ARTIFACT_WRITE")

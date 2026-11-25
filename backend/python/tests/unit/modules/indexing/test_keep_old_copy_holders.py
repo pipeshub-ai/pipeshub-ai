@@ -1,8 +1,8 @@
 """The holder predicate of a record's pending virtual record, and the switches of the keep-old-copy swap."""
 import pytest
 
-from app.plugins.telemetry.modules import indexing_metrics
 from app.modules.indexing import keep_old_copy
+from app.plugins.telemetry.modules import indexing_metrics
 from app.services.graph_db.common.record_visibility import (
     aql_holds_vrid,
     cypher_holds_vrid,

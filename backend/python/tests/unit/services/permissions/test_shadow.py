@@ -12,9 +12,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from app.plugins.telemetry.modules import permissions_metrics
 from app.core import org_context
-from app.services.permissions import shadow as shadow_mod
+from app.plugins.telemetry.modules import permissions_metrics
 from app.services.permissions.errors import ViewerScopesUnavailable
 from app.services.permissions.mode import ENV_ACL_FILTER_MODE
 from app.services.permissions.scope_fields import (

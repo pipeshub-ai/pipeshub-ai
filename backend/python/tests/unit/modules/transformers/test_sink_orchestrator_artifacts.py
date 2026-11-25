@@ -11,7 +11,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import aiohttp
 import pytest
 
-from tests.support.platform_event_capture import event_calls
 from app.config.constants.arangodb import CollectionNames, Connectors
 from app.models.blocks import (
     Block,
@@ -33,6 +32,7 @@ from app.modules.transformers.sink_orchestrator import SinkOrchestrator
 from app.modules.transformers.stored_write import STORED_WRITE, write_id
 from app.modules.transformers.transformer import ReconciliationContext, TransformContext
 from app.services.featureflag.platform_settings import ArtifactSettings
+from tests.support.platform_event_capture import event_calls
 from tests.unit.modules.artifacts.fake_storage import SIGNATURE, FakeStorage
 
 if TYPE_CHECKING:

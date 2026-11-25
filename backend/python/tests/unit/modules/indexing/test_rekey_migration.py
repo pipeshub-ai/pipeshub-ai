@@ -11,8 +11,8 @@ from unittest.mock import AsyncMock
 import pytest
 import pytest_asyncio
 
-from app.plugins.telemetry.modules import indexing_metrics
 from app.modules.reconciliation.service import ReconciliationService
+from app.plugins.telemetry.modules import indexing_metrics
 from app.services.vector_db.errors import VectorsNotFetchable
 from app.services.vector_db.models import CollectionConfig, ScrollResult
 from tests.support.in_memory_vector_db import InMemoryVectorDBService

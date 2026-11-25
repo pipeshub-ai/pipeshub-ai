@@ -9,7 +9,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from jsonschema import Draft7Validator
 
-from tests.support.platform_event_capture import event_calls
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
@@ -17,6 +16,7 @@ from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.schema import node_validator
 from app.schema.node_validator import SchemaValidationError
 from app.utils.logger import log_record_fields
+from tests.support.platform_event_capture import event_calls
 
 
 def _rejection() -> SchemaValidationError:

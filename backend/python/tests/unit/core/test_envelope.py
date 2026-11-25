@@ -7,7 +7,6 @@ from collections.abc import Iterator
 
 import pytest
 
-from app.plugins.telemetry.modules import envelope_metrics
 from app.core import envelope
 from app.core.envelope import (
     DuplicateEnvelope,
@@ -20,6 +19,7 @@ from app.core.envelope import (
 )
 from app.core.org_context import OrgContext
 from app.exceptions.non_retryable import NonRetryableError
+from app.plugins.telemetry.modules import envelope_metrics
 from app.utils import logging_fields
 from tests.support.undecodable_json import DEEP, LONG_INT
 

@@ -1,10 +1,9 @@
 import json
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from pydantic import ValidationError
 
-from tests.support.platform_event_capture import event_calls
 from app.utils.html_to_blocks import TextBlock
 from app.web.chain import ChainOutcome
 from app.web.errors import Blocked, InvalidUrl, TimedOut, UnsafeUrl
@@ -16,6 +15,7 @@ from app.web.tools.fetch_url import (
     create_fetch_url_tool,
     resolve_tiny_ref_url,
 )
+from tests.support.platform_event_capture import event_calls
 
 CALLER = CallerContext(org_id="org-1", user_id="user-1")
 

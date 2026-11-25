@@ -11,7 +11,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from tests.support.platform_event_capture import event_calls
 from app.config.constants.arangodb import Connectors
 from app.exceptions.indexing_exceptions import RecordDeletedError
 from app.models.entities import Record, RecordType
@@ -21,6 +20,7 @@ from app.modules.transformers import sink_orchestrator as sink_module
 from app.modules.transformers.stored_write import COW
 from app.modules.transformers.transformer import TransformContext
 from app.services.featureflag.platform_settings import ArtifactSettings
+from tests.support.platform_event_capture import event_calls
 from tests.unit.modules.record_metadata.projection_world import (
     FakeGraph,
     add_ticket,

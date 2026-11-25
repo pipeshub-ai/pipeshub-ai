@@ -1,7 +1,6 @@
 import json
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
-from tests.support.platform_event_capture import event_calls
 from app.web.chain import ChainFailed
 from app.web.errors import AccessDenied, Blocked, RateLimited
 from app.web.models import Attempt, CallerContext, WebResult
@@ -11,6 +10,7 @@ from app.web.tools.web_search import (
     WebSearchArgs,
     create_web_search_tool,
 )
+from tests.support.platform_event_capture import event_calls
 
 CALLER = CallerContext(org_id="org-1", user_id="user-1")
 

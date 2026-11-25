@@ -10,11 +10,10 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from app.plugins.telemetry.modules import envelope_metrics
-from app.plugins.telemetry.modules import paid_cache_metrics
 from app.config.constants.arangodb import EventTypes
 from app.core.org_context import OrgContext, bind
 from app.exceptions.indexing_exceptions import ProcessingError
+from app.plugins.telemetry.modules import envelope_metrics, paid_cache_metrics
 from app.services.messaging.config import IndexingEvent
 from app.services.paid_cache import access, repurge, repurge_window
 from app.services.paid_cache.cache import PaidResultCache

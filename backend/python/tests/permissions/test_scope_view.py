@@ -214,7 +214,9 @@ class UnreadableVdb(Vdb):
 
 
 async def test_group_rows_with_a_trusted_stamp_and_a_null_list_are_shown_and_counted() -> None:
-    from app.plugins.telemetry.modules.permissions_metrics import SERVING_UNREADABLE_ROWS
+    from app.plugins.telemetry.modules.permissions_metrics import (
+        SERVING_UNREADABLE_ROWS,
+    )
 
     apps = Apps({"_key": "c", **current_app()})
     view = await org_view(apps, "o", UnreadableVdb(4), clock=Clock())

@@ -19,9 +19,9 @@ from typing import TYPE_CHECKING, Any
 import asyncpg
 import pytest
 
-from app.plugins.telemetry.modules import kg_metrics
 from app.core.db import DbConfig, KernelDB
 from app.core.org_context import OrgContext, bind
+from app.plugins.telemetry.modules import kg_metrics
 from app.services.graph_db.postgres.kg import backfill as bf
 from app.services.graph_db.postgres.kg import read as kg_read
 from app.services.graph_db.postgres.kg.drainer import drain_org

@@ -12,13 +12,13 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from aiokafka import TopicPartition
 
+from app.plugins.telemetry.backend import METRICS_BACKEND
+from app.plugins.telemetry.modules import scheduling_metrics as metrics
 from app.services.messaging.kafka.config.kafka_config import KafkaConsumerConfig
 from app.services.messaging.kafka.consumer.indexing_consumer import (
     IndexingKafkaConsumer,
 )
 from app.services.messaging.scheduling.interface import FairSchedulerConfig
-from app.plugins.telemetry.backend import METRICS_BACKEND
-from app.plugins.telemetry.modules import scheduling_metrics as metrics
 
 
 @pytest.fixture

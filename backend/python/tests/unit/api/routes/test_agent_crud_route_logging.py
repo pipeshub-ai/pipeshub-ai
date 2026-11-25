@@ -13,7 +13,6 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from tests.support.platform_event_capture import event_calls
 from app.api.middlewares.request_log import install_request_logging
 from app.config.constants.service import config_node_constants
 from app.schema.node_validator import SchemaValidationError
@@ -29,6 +28,7 @@ from tests.support.agent_routes import (
 )
 from tests.support.config_service import RIG_PLATFORM_FLAGS
 from tests.support.log_capture import assert_not_logged, failure_line
+from tests.support.platform_event_capture import event_calls
 
 if TYPE_CHECKING:
     from fastapi.testclient import TestClient

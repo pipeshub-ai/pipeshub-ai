@@ -14,7 +14,9 @@ from app.core.org_context import spawn_detached
 from app.plugins.telemetry.backend import METRICS_BACKEND
 from app.plugins.telemetry.event_buffer import event_buffer
 from app.plugins.telemetry.flag import TELEMETRY_COLLECTION_FLAG, telemetry_enabled
-from app.plugins.telemetry.modules.collection_metrics import set_metric_collection_enabled
+from app.plugins.telemetry.modules.collection_metrics import (
+    set_metric_collection_enabled,
+)
 from app.utils.request_context import (
     HEADER_REQUEST_ID,
     get_context,

@@ -13,13 +13,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.plugins.telemetry.modules import indexing_metrics
 from app.config.constants.arangodb import ProgressStatus
 from app.events.events import DedupDecision
 from app.exceptions.indexing_exceptions import PasswordProtectedError
 from app.modules.indexing import page_limit
 from app.modules.parsers.pdf.page_count import Unavailable, Unreadable
 from app.modules.parsers.pdf.untrusted_pdf import InspectedPdf
+from app.plugins.telemetry.modules import indexing_metrics
 from app.utils.user_errors import (
     MAX_INDEXED_PDF_PAGES,
     PDF_PAGE_LIMIT_NOTE,

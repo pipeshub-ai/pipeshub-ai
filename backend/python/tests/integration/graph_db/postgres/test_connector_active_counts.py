@@ -16,9 +16,9 @@ from typing import TYPE_CHECKING, Any
 import pytest
 
 import app.connectors_main as connectors_main
-from tests.support.platform_event_capture import replace_event_listener
 from app.core.org_context import MissingOrgContext, current_org_id, for_org, system
 from app.utils.logger import log_record_fields
+from tests.support.platform_event_capture import replace_event_listener
 
 from .test_legacy_migrations import orgs as orgs
 

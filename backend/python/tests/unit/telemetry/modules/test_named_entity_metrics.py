@@ -10,8 +10,8 @@ from app.modules.named_entities.domain.models import (
     NamedEntity,
     NamedEntityExtraction,
 )
-from app.plugins.telemetry.backend import METRICS_BACKEND
 from app.modules.named_entities.run_announcement import announce_run
+from app.plugins.telemetry.backend import METRICS_BACKEND
 
 _ALLOWED_LABELS = {"kind", "strategy", "termination_reason", "outcome", "le"}
 _SURFACE = "Priya Shah"

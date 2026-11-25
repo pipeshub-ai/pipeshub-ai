@@ -6,7 +6,6 @@ import pytest
 from fastapi import FastAPI
 
 from app import plugins
-
 from app.edition import TELEMETRY_DEFAULT_ENABLED
 from app.plugins.telemetry.backend import NoopBackend
 from app.plugins.telemetry.event_buffer import event_buffer, record_event

@@ -19,7 +19,7 @@ def test_the_manifest_writer_writes_an_importable_list(tmp_path) -> None:
 
     from scripts.write_plugins_manifest import main
 
-    def read(path):
+    def read(path) -> list[str]:
         spec = importlib.util.spec_from_file_location("written_manifest", path)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)

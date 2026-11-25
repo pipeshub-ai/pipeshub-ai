@@ -3,6 +3,7 @@
 import asyncio
 import threading
 import time
+from collections.abc import Callable, Iterator
 from typing import Never
 
 import pytest
@@ -11,12 +12,12 @@ from app import platform_events
 
 
 @pytest.fixture(autouse=True)
-def _own_subscriptions():
+def _own_subscriptions() -> Iterator[None]:
     """Each test adds its own listeners and takes them away; the suite's stay."""
     added = []
     real_on = platform_events.on
 
-    def on(name, handler):
+    def on(name, handler) -> Callable[[], None]:
         unsubscribe = real_on(name, handler)
         added.append(unsubscribe)
         return unsubscribe

@@ -12,7 +12,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.plugins.telemetry.modules import indexing_metrics
 from app import indexing_main
 from app.config.constants.arangodb import EventTypes, ProgressStatus
 from app.connectors.api.router import mark_user_forced_reindex
@@ -25,6 +24,7 @@ from app.connectors.services.reindex_force import forced_by_user, user_forced_in
 from app.modules.indexing import refresh_intent as ri
 from app.modules.indexing.record_republish import is_parked_duplicate, record_event
 from app.modules.indexing.recovery_budget import recovery_tracking_id
+from app.plugins.telemetry.modules import indexing_metrics
 from app.services.paid_cache.locks import DELETED_TTL_MS
 from tests.support.refresh_intent_world import KEY, MINUTE_MS, ORG, World, patched
 

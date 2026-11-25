@@ -13,7 +13,6 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from tests.support.platform_event_capture import replace_event_listener
 from app.config.constants.arangodb import Connectors
 from app.models.blocks import (
     Block,
@@ -54,6 +53,7 @@ from app.modules.transformers.blob_storage import (
 from app.modules.transformers.stored_write import write_id
 from app.modules.transformers.transformer import TransformContext
 from harness_core.testing.virtual_time import run_on_virtual_time
+from tests.support.platform_event_capture import replace_event_listener
 from tests.unit.modules.artifacts.fake_storage import FakeStorage
 
 if TYPE_CHECKING:

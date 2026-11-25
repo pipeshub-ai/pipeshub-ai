@@ -14,11 +14,10 @@ import copy
 import json
 from datetime import datetime, timezone
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from tests.support.platform_event_capture import event_calls, replace_event_listener
 from app.config.constants.arangodb import EventTypes
 from app.connectors.services import trash_purge as purge_module
 from app.connectors.services.trash_purge import (
@@ -34,6 +33,7 @@ from app.core import org_context
 from app.exceptions.graph_db_exceptions import GraphLockUnavailableError
 from app.services.featureflag.platform_settings import PLATFORM_SETTINGS_KEY
 from app.services.graph_db.common.utils import trash_purge_row
+from tests.support.platform_event_capture import event_calls, replace_event_listener
 
 DAY_MS = 24 * 60 * 60 * 1000
 ORG = "org-1"

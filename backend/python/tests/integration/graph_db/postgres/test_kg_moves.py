@@ -14,8 +14,8 @@ from typing import Any
 
 import pytest
 
-from app.plugins.telemetry.modules import kg_metrics
 from app.config.constants.arangodb import FOLDER_MIME_TYPES
+from app.plugins.telemetry.modules import kg_metrics
 from app.services.graph_db.postgres.kg import hierarchy as kg_hier
 
 from .pg_support import new_org

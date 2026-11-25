@@ -29,6 +29,7 @@ import pytest
 pytest.importorskip("fakeredis.aioredis")
 
 from app import platform_events
+from app.plugins.telemetry.modules import scheduling_metrics
 from app.services.messaging.config import (
     IndexingEvent,
     PipelineEvent,
@@ -40,7 +41,6 @@ from app.services.messaging.redis_streams.indexing_consumer import (
     IndexingRedisStreamsConsumer,
 )
 from app.services.messaging.scheduling.interface import FairSchedulerConfig
-from app.plugins.telemetry.modules import scheduling_metrics
 from tests.support.fake_redis_connection_provider import FakeRedisConnectionProvider
 from tests.support.platform_event_capture import captured_events
 from tests.unit.services.messaging.governor_test_helpers import make_test_governor

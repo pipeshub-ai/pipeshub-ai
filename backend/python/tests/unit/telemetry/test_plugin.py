@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+from collections.abc import Iterator
 from unittest.mock import MagicMock
 
 import pytest
@@ -14,7 +15,7 @@ from app.plugins.telemetry.pusher import MetricsPusher
 
 
 @pytest.fixture
-def host():
+def host() -> Iterator[plugins.PluginHost]:
     loaded = plugins.load_plugins("indexing_service", ["app.plugins.telemetry"])
     yield loaded
     loaded.close()

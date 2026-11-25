@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.plugins.telemetry.backend import METRICS_BACKEND
 from app.services.vector_db import search_retry
 from app.services.vector_db.models import SearchFailureKind
 from app.services.vector_db.search_retry import (
@@ -16,7 +17,6 @@ from app.services.vector_db.search_retry import (
     classify_search_error,
     query_nearest_points_with_retry,
 )
-from app.plugins.telemetry.backend import METRICS_BACKEND
 from app.utils import request_deadline
 from harness_core.testing.virtual_time import run_on_virtual_time
 

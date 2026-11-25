@@ -221,7 +221,6 @@ class TestRedisPreFilterIsExact(TestRedisScopeFilter):
 
     @pytest.fixture
     def dropped(self, monkeypatch):  # noqa: ANN201
-        from app.services.vector_db.redis import redis_vector
 
         rec = _Recorder()
         monkeypatch.setattr(permissions_metrics.SCOPE_PREFILTER_DROPPED, "inc", rec.inc)

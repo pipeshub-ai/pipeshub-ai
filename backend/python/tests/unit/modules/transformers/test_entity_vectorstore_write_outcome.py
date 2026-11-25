@@ -13,11 +13,10 @@ from __future__ import annotations
 
 import logging
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
-from tests.support.platform_event_capture import event_calls
 from app.models.entities import EntityRecord, EntityType, EntityTypeCategory
 from app.modules.transformers.entity_vectorstore import (
     EMBEDDING_MODEL_FIELD,
@@ -27,6 +26,7 @@ from app.modules.transformers.entity_vectorstore import (
 from app.services.vector_db.models import VectorPoint
 from tests.support.embedding_config import config_service as embedding_config_service
 from tests.support.embedding_config import skip_bootstrap
+from tests.support.platform_event_capture import event_calls
 
 ORG = "org-1"
 LOGGER = "entity-outcome-test"

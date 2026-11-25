@@ -11,7 +11,6 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from tests.support.platform_event_capture import replace_event_listener
 from app import platform_events
 from app.config.constants.arangodb import CollectionNames
 from app.core import org_context
@@ -19,6 +18,7 @@ from app.modules.artifacts import retention as retention_module
 from app.modules.artifacts.retention import RetentionReport, RevisionRetentionSweep
 from app.modules.artifacts.store import ARTIFACT_ROUTES, ArtifactRoutesUnavailable
 from app.services.graph_db.common.record_visibility import RecordVisibility
+from tests.support.platform_event_capture import replace_event_listener
 
 if TYPE_CHECKING:
     from collections.abc import Iterator

@@ -8,12 +8,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.plugins.telemetry.modules import indexing_metrics
 from app.config.constants.arangodb import ProgressStatus
 from app.events.events import EventProcessor
 from app.modules.indexing import page_limit
 from app.modules.parsers.pdf.page_count import Unavailable, Unreadable
 from app.modules.parsers.pdf.untrusted_pdf import InspectedPdf
+from app.plugins.telemetry.modules import indexing_metrics
 from app.services.messaging.config import IndexingEvent
 from app.utils.user_errors import PDF_PAGE_LIMIT_NOTE
 from tests.unit.modules.indexing.test_page_limit import (

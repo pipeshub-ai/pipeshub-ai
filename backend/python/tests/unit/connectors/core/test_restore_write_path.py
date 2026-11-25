@@ -13,7 +13,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from tests.support.platform_event_capture import event_calls
 from app.config.constants.arangodb import (
     Connectors,
     DeleteSource,
@@ -27,6 +26,7 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
 from app.models.entities import FileRecord, Record, RecordType
 from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.services.graph_db.common.utils import TRASHED_EXTERNAL_ID_PREFIX
+from tests.support.platform_event_capture import event_calls
 
 MODULE = "app.connectors.core.base.data_processor.data_source_entities_processor"
 

@@ -24,14 +24,11 @@ import aiohttp
 import pytest
 from aiohttp import web
 
-from tests.support.platform_event_capture import replace_event_listener
 from app.config.constants.arangodb import CollectionNames, Connectors, ProgressStatus
 from app.config.constants.neo4j import collection_to_label
 from app.config.constants.service import config_node_constants
 from app.models.blocks import Block, BlocksContainer, BlockType, SemanticMetadata
 from app.models.entities import Record, RecordType
-from app.modules.artifacts import reader as reader_module
-from app.modules.artifacts import record_backend as backend_module
 from app.modules.artifacts import store as store_module
 from app.modules.artifacts.reader import record_artifact_reader
 from app.modules.artifacts.sidecars import ArtifactSidecars
@@ -55,6 +52,7 @@ from tests.integration.real_graph import (
     connect_arango,
     connect_neo4j,
 )
+from tests.support.platform_event_capture import replace_event_listener
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable

@@ -9,8 +9,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.plugins.telemetry.modules import envelope_metrics
 from app.core import envelope, org_context
+from app.plugins.telemetry.modules import envelope_metrics
 from app.services.messaging import inbox as inbox_mod
 from app.services.messaging import message_log
 from app.services.messaging.config import (

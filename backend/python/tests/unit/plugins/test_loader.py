@@ -13,7 +13,7 @@ from fastapi.testclient import TestClient
 from app import platform_events, plugins
 
 
-def _module(monkeypatch, name, plugin=None, **attrs):
+def _module(monkeypatch, name, plugin=None, **attrs) -> types.ModuleType:
     module = types.ModuleType(name)
     if plugin is not None:
         module.plugin = plugin
@@ -203,7 +203,7 @@ def test_install_adds_asgi_middleware_and_runs_app_hooks(monkeypatch) -> None:
             self.app = app
             self.label = label
 
-        async def __call__(self, scope, receive, send):
+        async def __call__(self, scope, receive, send) -> None:
             if scope["type"] == "http":
                 calls.append(self.label)
             await self.app(scope, receive, send)
@@ -220,7 +220,7 @@ def test_install_adds_asgi_middleware_and_runs_app_hooks(monkeypatch) -> None:
     app = FastAPI()
 
     @app.get("/ping")
-    def ping():
+    def ping() -> dict[str, bool]:
         return {"ok": True}
 
     host.install(app)

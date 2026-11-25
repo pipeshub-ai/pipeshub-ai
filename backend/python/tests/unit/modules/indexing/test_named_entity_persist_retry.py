@@ -6,10 +6,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from tests.support.platform_event_capture import event_calls
 from app.config.constants.arangodb import Connectors, OriginTypes
 from app.models.blocks import Block, BlocksContainer, BlockType
 from app.modules.indexing import named_entity_persist_retry as retry
+from tests.support.platform_event_capture import event_calls
 
 LOG = logging.getLogger("test")
 

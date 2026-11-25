@@ -11,10 +11,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from tests.support.platform_event_capture import event_calls
 from app.config.constants.arangodb import AppStatus
 from app.connectors.core.sync.sync_coordinator import SyncLease
 from app.connectors.core.sync.sync_runner import SyncStartNotRecorded, run_sync_task
+from tests.support.platform_event_capture import event_calls
 
 
 def _graph_provider() -> AsyncMock:

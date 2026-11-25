@@ -10,7 +10,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from tests.support.platform_event_capture import event_calls
 from app.models.blocks import SemanticMetadata
 from app.modules.artifacts import sidecars as sidecars_module
 from app.modules.artifacts import store as store_module
@@ -22,6 +21,7 @@ from app.modules.artifacts.sidecars import (
 from app.modules.artifacts.store import NodeArtifactStore
 from app.modules.artifacts.writer import canonical_json
 from app.modules.transformers.stored_write import write_id
+from tests.support.platform_event_capture import event_calls
 from tests.unit.modules.artifacts.fake_storage import SIGNATURE, FakeStorage
 
 if TYPE_CHECKING:

@@ -4,11 +4,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from tests.support.platform_event_capture import event_calls
 from app.config.constants.arangodb import CollectionNames
 from app.models.entities import EntityRecord, EntityType
 from app.modules.entity_resolution.keys import taxonomy_node_key
 from app.modules.entity_resolution.models import MergeDecision, MergeDecisions
+from tests.support.platform_event_capture import event_calls
 
 TOPICS = CollectionNames.TOPICS.value
 CATEGORIES = CollectionNames.CATEGORIES.value
@@ -343,7 +343,6 @@ class TestEmptyAnswer:
         self, make_resolver, seeded_store, metadata_factory, ctx_factory
     ) -> None:
         """KG-39: an empty (or all-invalid) decision list is not a success."""
-        from app.modules.entity_resolution import resolver as resolver_module
 
         await seeded_store(_topic("k-bug", "Bug bash testing"))
         p1, p2 = _patched(_answer(MergeDecision(i=7, same=True, target="k-bug")))
