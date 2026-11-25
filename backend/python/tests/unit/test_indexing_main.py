@@ -49,6 +49,9 @@ def _no_fleet_redis(monkeypatch: pytest.MonkeyPatch) -> None:
     from unittest.mock import AsyncMock, MagicMock
 
     monkeypatch.setattr("app.indexing_main._bind_fleet_state", AsyncMock(return_value=MagicMock()))
+    # With no fleet bound, the hold leader that start_kafka_consumers spawns would fail on FleetBreaker(None). That
+    # task is detached, so its error was logged by whichever later test the garbage collector ran in.
+    monkeypatch.setattr("app.indexing_main._run_provider_hold_leader", AsyncMock())
 
 
 
@@ -1862,16 +1865,19 @@ class TestLifespan:
         directory.chmod(0o777)
         cells._warned.clear()
         app = MagicMock()
+        mock_container = _make_container()
         with (
-            patch("app.indexing_main.container", _make_container()),
+            patch("app.indexing_main.container", mock_container),
             patch("app.indexing_main._indexing_worker_count", return_value=2),
             patch("app.indexing_main.cells_directory", return_value=directory),
             patch("app.indexing_main.asyncio.sleep", new=AsyncMock()) as sleep,
             caplog.at_level(logging.WARNING),
         ):
             await _start_cell(app, MagicMock())
-        warnings = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+        # Only the cell code's own records: caplog also holds whatever the process logs meanwhile (a collected task).
+        warnings = [r.getMessage() for r in caplog.records if r.name == cells._log.name and r.levelno >= logging.WARNING]
         assert len(warnings) == 1 and "writable by others" in warnings[0], warnings
+        assert mock_container.logger().warning.call_count == 0
         assert sleep.await_count == 0
         assert app.state.cell_claim is None and app.state.cell_task is None
 
