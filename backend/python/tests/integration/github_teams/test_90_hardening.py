@@ -245,27 +245,32 @@ async def test_member_with_a_private_email_is_matched_through_the_verified_domai
 # --------------------------------------------------------------- the connector's own account
 
 
-async def test_creator_reads_what_the_connected_account_reads(world, org) -> None:
-    """The admin connected GitHub with an account whose email is not their PipesHub one.
-    They read what that account reads, through the product's authenticatedAs link."""
+async def test_creator_gets_no_link_while_members_show_only_public_emails(world, org) -> None:
+    """The admin connected GitHub with an account whose email is not their PipesHub one. A
+    public email is one its user chose to show: any member may be the creator under another
+    address, so nothing proves the creator has no account of their own."""
     gh, repo = world.gh, org["repo"]
     org["admin"].email = "admin@acme-github.example"
     gh.add_issue(repo, "Issue")
     gh.add_pull(repo, "PR")
     await world.sync()
-    assert await world.visible_to(world.creator_email)
+    assert await world.visible_to(world.creator_email) == set()
     diff = await world.diff()
     assert diff.clean(), diff
 
 
-async def test_creator_reads_what_the_connected_account_reads_when_its_email_is_private(world, org) -> None:
+async def test_creator_reads_what_the_connected_account_reads_once_every_member_is_verified(world, org) -> None:
     """Most GitHub accounts keep their email private, so ``GET /user`` gives none. The
-    org's verified domain still names the account's corporate email, and the user sync
-    grants the account's access to it; the link must reach it too."""
+    org's verified domain still names each account's corporate email: none is the creator's,
+    so they read what the connected account reads, through the product's authenticatedAs link,
+    and the link reaches the corporate email the user sync grants that account's access to."""
     gh, repo = world.gh, org["repo"]
     org["org"].verified_domain = True
     admin = org["admin"]
     admin.email, admin.corporate_email = None, "github-admin@acme.com"
+    for name in ("alice", "bob"):
+        org[name].corporate_email = org[name].email
+    del repo.collaborators[org["olga"].id]  # an outside collaborator never has a verified email
     gh.add_issue(repo, "Issue")
     await world.sync()
     assert await world.visible_to(world.creator_email)

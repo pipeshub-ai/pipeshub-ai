@@ -492,6 +492,22 @@ class World:
         head = repo.head(self.branch)
         return head.tree if head else {}
 
+    def creator_proved_absent(self) -> bool:
+        """Whether GitHub shows a verified-domain email for every account that can hold access (an outside
+        collaborator has none), and none of the addresses it shows is the creator's."""
+        token_user = self.gh.token_user(self.gh.sync_token)
+        principals: list[User] = []
+        for org in self.gh.orgs.values():
+            if token_user is None or not org.verified_domain or org.members.get(token_user.id) != "admin":
+                return False
+            principals += [self.gh.users[uid] for uid in org.members]
+            for repo in self.gh.repos.values():
+                if repo.owner is org:
+                    principals += [self.gh.users[uid] for uid in repo.collaborators]
+        return bool(principals) and all(u.corporate_email for u in principals) and all(
+            self.creator_email not in (u.email, u.corporate_email) for u in principals
+        )
+
     def gh_user(self, email: str) -> User | None:
         for u in self.gh.users.values():
             if email in (u.email, u.corporate_email):
@@ -579,12 +595,14 @@ class World:
         for external_id, doc in docs.items():
             if self._truth(None, doc) is None:
                 out.stale.append(f"{doc.get('recordType')}:{doc.get('recordName', external_id)}")
+        token_user = self.gh.token_user(self.gh.sync_token)
+        creator_absent = self.creator_proved_absent()
         for email in emails or list(self.users):
             seen = await self.visible_to(email)
             viewer = self.gh_user(email)
-            # The user who connected the connector also reads what its GitHub account reads
-            # (the product's authenticatedAs link), whatever their own email.
-            linked = self.gh.token_user(self.gh.sync_token) if email == self.creator_email else None
+            # The user who connected the connector also reads what its GitHub account reads (the
+            # product's authenticatedAs link), when GitHub proves they have no account of their own.
+            linked = token_user if email == self.creator_email and creator_absent else None
             for external_id, doc in docs.items():
                 truth = self._truth(viewer, doc) or (linked is not None and self._truth(linked, doc))
                 name = f"{doc.get('recordType')}:{doc.get('recordName', external_id)}"
