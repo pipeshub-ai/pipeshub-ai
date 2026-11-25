@@ -19,7 +19,10 @@ major="${PG_MAJOR:-17}"
 proj="${PROJECT:-pgres-soak-$$-$RANDOM}"
 # before the cleanup trap: its down -v would remove the volumes of a run that is still going or was kept
 label="label=com.docker.compose.project=$proj"
-if [ -n "$($DOCKER ps -aq --filter "$label")$($DOCKER volume ls -q --filter "$label")" ]; then
+# each query on its own line: a failure inside $(...) as an argument of [ does not trip errexit, and would read as "no such project"
+containers="$($DOCKER ps -aq --filter "$label")" || { echo "cannot list Docker containers; not starting" >&2; exit 1; }
+volumes="$($DOCKER volume ls -q --filter "$label")" || { echo "cannot list Docker volumes; not starting" >&2; exit 1; }
+if [ -n "$containers$volumes" ]; then
   echo "the Compose project $proj already exists; name another with PROJECT" >&2; exit 1
 fi
 echo "Compose project: $proj"
