@@ -250,6 +250,38 @@ async def test_a_page_reads_the_listed_ids_on_the_id_index_whatever_the_plan(w) 
     assert hits <= 12 * BIG, hits
 
 
+async def test_a_wide_folders_window_reads_its_edges_in_order_from_the_children_order_index(w, monkeypatch) -> None:
+    """A folder wider than the split browse holds whole, sorted by name: each window of its children is read from the children order index
+    in the page's order, so it reads about a window of edges, not the folder's 5,000, and never sorts them. The pages list every child."""
+    stamped = await w.g.stamp_kh_children_order()
+    assert stamped["stamped"] >= BIG
+
+    async def ready(_self: Neo4jProvider) -> bool:
+        return True
+    monkeypatch.setattr(Neo4jProvider, "_kh_children_order_ready", ready)
+    monkeypatch.setattr(Neo4jProvider, "_KH_SPLIT_START_MAX", 1)
+    ran: list[tuple[str, dict[str, Any]]] = []
+    execute = w.g.client.execute_query
+
+    async def capture(query: str, parameters: dict[str, Any] | None = None, *args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+        if "kh_ur.khFrom = $start_id" in query:
+            ran.append((query, parameters or {}))
+        return await execute(query, parameters, *args, **kwargs)
+
+    monkeypatch.setattr(w.g.client, "execute_query", capture)
+    items, _, _ = await nodes(w, w.n("BIG"), "folder", flattened=False, depth=1, limit=1000)
+    assert len({i.id for i in items}) == BIG
+    assert ran, "the windows were read from the index"
+    monkeypatch.setattr(w.g.client, "execute_query", execute)
+    query, parameters = ran[0]
+    async with w.g.client.driver.session(database="neo4j") as s:
+        prof = (await (await s.run("PROFILE " + query.replace("CYPHER replan=skip", "", 1), parameters)).consume()).profile
+    ops = list(_plan_ops(prof))
+    seeks = [o for o in ops if o["operatorType"].startswith("DirectedRelationshipIndexSeek")]
+    assert seeks and all(o["rows"] <= parameters["kh_uread"] + 1 for o in seeks), [(o["operatorType"], o["rows"]) for o in ops]
+    assert not [o for o in ops if o["operatorType"].startswith(("Sort", "Top", "PartialSort"))], [o["operatorType"] for o in ops]
+
+
 # A seek on an index that holds the id beside the org or App (`Record(orgId, id)`, `RecordGroup(connectorId, id)`): the planner chose it
 # because the statement tests the org or App next to its match by id, and with other statistics it seeks the org or App index alone.
 # A paged read (`id > $after`) on such an index is not one: only an equality or IN on the id is.

@@ -22776,7 +22776,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
     ) -> list[dict[str, Any]]:
         """`_kh_split_window` for the name order, ascending: the start's edges read from the children order index (`KH_CHILDREN_ORDER_INDEX`)
         in its order from the boundary, so a window reads about ``n`` edges whatever the start holds. Its order (stamp, then child id) is the
-        page's: nullRank, the lowercased name, the id. A child whose stamp disagrees with it raises `_KhOrderStale`."""
+        page's: nullRank, the lowercased name, the id. A child whose stamp disagrees with it raises `_KhOrderStale`. The boundary is one range
+        on the index and a list comparison past it, never an OR (nor a negated AND, which the planner rewrites into one): with an OR the
+        planner seeks twice and sorts every child."""
         e = edge or {}
         if not e:
             lo, lo_id = "", ""
@@ -22786,7 +22788,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         rows = await self._kh_query(f"""
         MATCH ()-[kh_ur:NODE_RELATION]->(kh_u:Record|RecordGroup)
         WHERE kh_ur.khFrom = $start_id AND kh_ur.khOrd >= $kh_lo AND kh_ur.khOrd < '2' AND kh_ur.khChild IS NOT NULL
-          AND (kh_ur.khOrd > $kh_lo OR kh_ur.khChild > $kh_lo_id)
+          AND [kh_ur.khOrd, kh_ur.khChild] > [$kh_lo, $kh_lo_id]
           AND kh_ur.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT'] AND kh_u.orgId = $org_id AND kh_u.connectorId = $app_id
           AND NOT coalesce(kh_u.accessOnly, false) AND NOT coalesce(kh_u.isDeleted, false) AND kh_u.id IS NOT NULL AND kh_u.id <> $start_id
           AND NOT kh_u.id IN $kh_listed
@@ -22842,27 +22844,36 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         base, base_arrows = list(params["kh_listed"]), set(params["kh_arrows"])
         lit: set[str] = set()
         decided: set[str] = set()
-        first = [payload]
+        first = [payload] if payload else []
+        # With nothing admitted yet and nothing listed before the page (no stub, no chain-top), the page holds no row: it is read once, at the end.
+        empty: dict[str, Any] = {"rows": []}
+
+        async def page(admitted: list[str]) -> dict[str, Any]:
+            if sidebar:
+                new = [i for i in admitted if i not in decided]
+                decided.update(new)
+                plain = await self._kh_split_plain_records(new, org_id=org_id, state=state, transaction=transaction)
+                lit.update(await self._kh_split_lists(plain, app_id=params["app_id"], org_id=org_id, access=access, transaction=transaction,
+                                                      memo=memo))
+            params.update(kh_listed=[*base, *admitted], kh_arrows=sorted(base_arrows | lit))
+            first.clear()
+            return (await self._kh_query(query, parameters=params, txn_id=transaction) or [{}])[0]
 
         async def read(admitted: list[str], edge: dict[str, Any] | None, n: int) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-            if admitted or not first:
-                if sidebar:
-                    new = [i for i in admitted if i not in decided]
-                    decided.update(new)
-                    plain = await self._kh_split_plain_records(new, org_id=org_id, state=state, transaction=transaction)
-                    lit.update(await self._kh_split_lists(plain, app_id=params["app_id"], org_id=org_id, access=access, transaction=transaction,
-                                                          memo=memo))
-                params.update(kh_listed=[*base, *admitted], kh_arrows=sorted(base_arrows | lit))
-                got = (await self._kh_query(query, parameters=params, txn_id=transaction) or [{}])[0]
-                first.clear()
-            else:
+            if first and not admitted:
                 got = first.pop()
+            elif not admitted and not base:
+                got = empty
+            else:
+                got = await page(admitted)
             window = await self._kh_split_window(start_id, app_id=params["app_id"], org_id=org_id, order=order, listed=base,
                                                  edge=edge or after, n=n, transaction=transaction, indexed=indexed)
             return got, window
 
         got, cut = await self._kh_v3_browse_undecided(read, after=after, limit=limit, descending=descending, direction=direction, org_id=org_id,
                                                       access=access, transaction=transaction)
+        if got is empty:
+            got = await page([])
         for k in ("khUndecided", "khProbes"):
             got.pop(k, None)
         return got, cut
@@ -23450,10 +23461,11 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
              }}] AS crumbNodes,
              // A start the walk from the App does not reach (admitted by the
              // check alone) takes its trail through the ancestors the check admits.
-             // Expanded from each member: an unanchored pattern scans the graph.
-             reduce(edges = [], par IN members | edges + [(par)-[kh_cr:NODE_RELATION]->(ch)
+             // Expanded up from each member, to its few parents: an unanchored pattern scans the graph, and down from the start it reads every
+             // child of a wide folder. The trail takes its parent by a stable order (`build_trail`), not this list's.
+             reduce(edges = [], ch IN members | edges + [(par)-[kh_cr:NODE_RELATION]->(ch)
                 WHERE kh_cr.relationshipType {hierarchy}
-                AND ch IN members
+                AND par IN members
                 AND ([par.id, ch.id] IN pathEdges
                      OR (NOT fromApp
                          AND (par = app OR par.id IN $admittedAncestors)
@@ -23993,7 +24005,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             # A wide start's listing follows the boundary each read starts from, so no other read reuses it.
             if skip_reads is not None and not wide:
                 skip_reads[decided_for] = (params["kh_listed"], params["kh_arrows"])
-        if not use_scope:
+        # A wide start's page statement is read with its windows (`_kh_split_wide_windows`), once they have admitted something.
+        if not use_scope and not wide:
             try:
                 walk_started = time.monotonic()
                 rows = await self._kh_query(query, parameters=params, txn_id=transaction)

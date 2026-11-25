@@ -83,7 +83,17 @@ It is not needed for the cost: the check is a fixed statement already.
   `_KH_UNDECIDED_BUDGET_S` is spent (`_kh_v3_browse_undecided`, the windowing legacy and ArangoDB use). A page then costs its windows, not the
   folder: one ordered read of the start's edges (top-k, so memory follows the window) and the check on the window. Its total is a lower bound
   (`totalCapped`), and a page the budget ended carries a sealed resume cursor. Whether a child is hidden by navigation is read for the window
-  alone. A wide start with more than `_KH_SPLIT_MAX_CHILDREN` stubs is answered by legacy.
+  alone. A wide start with more than `_KH_SPLIT_MAX_CHILDREN` stubs is answered by legacy. Whether a start is wide is read from its
+  degree (its edges out, of any type), so a narrow start pays nothing for it; a read that finds more children than the count said (a sync
+  added some in between) makes the start wide.
+- **The children order index** (`kh_children_order`, a relationship range index on `NODE_RELATION(khFrom, khOrd, khChild)`): every
+  edge into a record or group carries its parent's id, its child's id and the child's place in the name order (`khOrd`: `'0'` + the
+  lowercased name, `'1'` with no name, `'2'` for a stub). The node and tree state writers rewrite it in the same statement as the change
+  (`_cypher_kh_edge_order`), and the children order migration (`KH_CHILDREN_ORDER_FLAG`) stamps older edges and checks that none is
+  stale. Once that flag is set, a wide start sorted by name ascending reads each window from the index in order, from the page's boundary,
+  so a page reads about a window of edges whatever the folder holds, and its stubs from the `'2'` range alone. A window or stub read that
+  meets an edge whose stamp disagrees with its child reads the request again without the index and logs `kh.browse.children_order_stale`.
+  Other sorts, and the name order descending or backwards, read every child as above.
 - **Children read per row:** `_KH_SPLIT_MAX_CHILDREN` (5,000), first by id. A row's arrow asks about that many children; one admitted among
   them decides it, and with none the page is answered by legacy (below), so an arrow is never off for a child past the bound.
 - **Stubs below stubs:** followed to `_KH_SPLIT_STUB_DEPTH` (50), the walks' hop cap.
