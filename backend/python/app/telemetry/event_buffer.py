@@ -4,6 +4,7 @@ Unlike logs, events are individually meaningful (not aggregated). Drained by the
 MetricsPusher tick. Bounded so a burst can't exhaust memory.
 """
 
+import re
 import threading
 from datetime import datetime, timezone
 from typing import Any
@@ -11,6 +12,9 @@ from typing import Any
 from app.telemetry.flag import telemetry_enabled
 
 MAX_EVENTS = 5000
+
+# Props that would say whose event it is; dropped before the event can leave the install.
+IDENTIFYING_PROP = re.compile(r"email|domain|full_?name|org_?name", re.IGNORECASE)
 
 
 class EventBuffer:
@@ -41,9 +45,9 @@ event_buffer = EventBuffer()
 def record_event(event: str, props: dict[str, Any] | None = None) -> None:
     """Record a product-behaviour event (search_performed, agent_run, ...).
 
-    Props may carry identity (email/org/user) and dimensions (connector/feature)
-    but must NOT carry document/query content — the collector drops
-    content-smelling keys as a backstop.
+    Props carry opaque org/user ids and dimensions (connector/feature), never an
+    email, an email domain or a name (dropped here), nor document/query content
+    (the collector drops content-smelling keys as a backstop).
     """
     if not telemetry_enabled():
         return
@@ -51,6 +55,6 @@ def record_event(event: str, props: dict[str, Any] | None = None) -> None:
         {
             "event": event,
             "timestamp": datetime.now(timezone.utc).isoformat(),
-            "props": props or {},
+            "props": {k: v for k, v in (props or {}).items() if not IDENTIFYING_PROP.search(k)},
         }
     )

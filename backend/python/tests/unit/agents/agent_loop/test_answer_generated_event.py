@@ -39,7 +39,6 @@ def test_records_counts_source_types_and_demo_flag() -> None:
     assert events[0]["props"] == {
         "orgId": "org-1",
         "userId": "user-1",
-        "domain": "example.com",
         "chat_mode": "internal_search",
         "citation_count": 3,
         "connectors": ["GITHUB", "JIRA", "UPLOAD"],
@@ -49,7 +48,7 @@ def test_records_counts_source_types_and_demo_flag() -> None:
     serialized = str(events[0])
     assert "secret text" not in serialized
     assert "PR #482" not in serialized
-    assert "dev@example.com" not in serialized
+    assert "example.com" not in serialized
 
 
 def test_demo_flag_from_the_chat_route_source_list() -> None:

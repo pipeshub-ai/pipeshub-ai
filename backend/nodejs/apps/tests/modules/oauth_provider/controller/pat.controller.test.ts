@@ -82,12 +82,11 @@ describe('PatController', () => {
       expect(events[0]!.props).to.deep.equal({
         orgId: 'org-1',
         userId: 'user-1',
-        domain: 'example.com',
         scope_count: 2,
         expiry_days: 30,
       })
       expect(JSON.stringify(events[0])).to.not.include('raw-secret')
-      expect(JSON.stringify(events[0])).to.not.include('dev@example.com')
+      expect(JSON.stringify(events[0])).to.not.include('example.com')
     })
 
     it('tags pat_created with the client and channel that asked for it', async () => {
@@ -221,11 +220,11 @@ describe('PatController', () => {
       expect(events[0].props).to.deep.equal({
         orgId: 'org-1',
         userId: 'user-1',
-        domain: 'example.com',
         limited: true,
         item_count: 1,
       })
       expect(JSON.stringify(events[0])).to.not.include(limit.apps[0])
+      expect(JSON.stringify(events[0])).to.not.include('example.com')
     })
 
     it('records lifting the limit as not limited', async () => {

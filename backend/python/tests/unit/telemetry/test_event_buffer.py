@@ -63,13 +63,23 @@ class TestRecordEvent:
         event_buffer.drain()
 
     def test_records_event_with_timestamp_and_props(self):
-        record_event("search_performed", {"domain": "acme.io"})
+        record_event("search_performed", {"orgId": "org-1", "num_queries": 2})
 
         [event] = event_buffer.drain()
         assert event["event"] == "search_performed"
-        assert event["props"] == {"domain": "acme.io"}
+        assert event["props"] == {"orgId": "org-1", "num_queries": 2}
         # ISO-8601 UTC timestamp
         assert event["timestamp"].endswith("+00:00")
+
+    def test_drops_every_prop_that_names_whose_event_it_is(self) -> None:
+        record_event("agent_run", {
+            "orgId": "org-1", "userId": "user-1", "email": "jane@acme.io", "domain": "acme.io",
+            "user_email": "jane@acme.io", "fullName": "Jane Doe", "full_name": "Jane Doe",
+            "orgName": "Acme", "org_name": "Acme", "has_tools": True,
+        })
+
+        [event] = event_buffer.drain()
+        assert event["props"] == {"orgId": "org-1", "userId": "user-1", "has_tools": True}
 
     def test_props_default_to_empty_dict(self):
         record_event("agent_run")

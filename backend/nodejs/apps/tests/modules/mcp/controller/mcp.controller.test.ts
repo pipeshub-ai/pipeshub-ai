@@ -139,7 +139,7 @@ describe('MCP Controller — handleMCPRequest', () => {
       expect(events).to.have.length(1)
       expect(events[0]!.event).to.equal('mcp_connected')
       expect(events[0]!.props).to.deep.equal({
-        orgId: 'org-1', userId: 'user-1', domain: 'example.com',
+        orgId: 'org-1', userId: 'user-1',
         auth_type: 'pat', client_name: 'claude-code', client_version: '2.1.0',
       })
     })
@@ -161,14 +161,13 @@ describe('MCP Controller — handleMCPRequest', () => {
       expect(eventBuffer.drain()).to.have.length(0)
     })
 
-    it('never puts the address itself into an event', async () => {
+    it('never puts the address or its domain into an event', async () => {
       arm(accepted)
       const res = { ...createMockResponse(), statusCode: 200 }
       await handleMCPRequest(appConfig)(initializeRequest({}), res as any, createMockNext())
 
       const serialised = JSON.stringify(eventBuffer.drain())
-      expect(serialised).to.include('example.com')
-      expect(serialised).to.not.include('dev@example.com')
+      expect(serialised).to.not.include('example.com')
     })
 
     const toolCallRequest = () =>

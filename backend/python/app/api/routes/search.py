@@ -69,7 +69,6 @@ from app.services.model_identity.boundary import principal_from_request_user
 from app.services.model_identity.runtime import call_scope
 from app.services.model_identity.workload import Workload
 from app.telemetry.event_buffer import record_event
-from app.telemetry.identity import domain_from_email
 from app.utils.error_class import log_failure
 from app.utils.opik import get_llm_invoke_config
 from app.utils.query_transform import setup_query_transformation
@@ -696,12 +695,9 @@ async def search(
                 custom_status_code = results.get("status_code", 500)
                 logger.info(f"Custom status code: {custom_status_code}")
 
-                _su_email = request.state.user.get("email")
                 record_event("search_performed", {
                     "orgId": request.state.user.get("orgId"),
                     "userId": request.state.user.get("userId"),
-                    "email": _su_email,
-                    "domain": domain_from_email(_su_email),
                     "status_code": custom_status_code,
                     "num_queries": len(queries),
                     "search_type": "timeline" if timeline else "search",
@@ -1046,7 +1042,6 @@ async def retrieve(
                 record_event("retrieve_performed", {
                     "orgId": user.get("orgId"),
                     "userId": user.get("userId"),
-                    "domain": domain_from_email(user.get("email")),
                     "status_code": status_code,
                     "num_queries": len(queries),
                 })

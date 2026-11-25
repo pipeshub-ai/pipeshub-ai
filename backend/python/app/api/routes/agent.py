@@ -173,7 +173,6 @@ from app.services.model_identity.boundary import principal_from_request_user
 from app.services.model_identity.runtime import assert_identity_allowed, call_scope
 from app.services.model_identity.workload import Workload
 from app.telemetry.event_buffer import record_event
-from app.telemetry.identity import domain_from_email
 from app.telemetry.modules.schema_metrics import record_schema_rejection
 from app.utils import error_class
 from app.utils.aimodels import model_default_reasoning_effort
@@ -461,7 +460,6 @@ def _get_user_context(request: Request) -> dict[str, Any]:
         "userId": user_id,
         "orgId": org_id,
         "email": user.get("email"),
-        "domain": domain_from_email(user.get("email")),
         "isServiceAccount": bool(user.get("isServiceAccount", False)),
         "sendUserInfo": request.query_params.get("sendUserInfo", True),
     }
@@ -5546,8 +5544,6 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
         record_event("agent_run", {
             "orgId": user_context.get("orgId"),
             "userId": user_context.get("userId"),
-            "email": user_context.get("email"),
-            "domain": user_context.get("domain"),
             "has_tools": bool(chat_query.tools),
             "streaming": getattr(request.state, "chat_streaming", True),
         })

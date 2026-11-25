@@ -8,6 +8,9 @@ export interface BufferedEvent {
 
 const MAX_EVENTS = 5000;
 
+/** Event props that would say whose event it is; dropped before the event can leave the install. */
+export const IDENTIFYING_PROP = /email|domain|full_?name|org_?name/i;
+
 class EventBuffer {
   private events: BufferedEvent[] = [];
 
@@ -36,5 +39,13 @@ export function recordEvent(
   if (!isTelemetryEnabled()) {
     return;
   }
-  eventBuffer.enqueue({ event, timestamp: new Date().toISOString(), props });
+  eventBuffer.enqueue({
+    event,
+    timestamp: new Date().toISOString(),
+    props:
+      props &&
+      Object.fromEntries(
+        Object.entries(props).filter(([key]) => !IDENTIFYING_PROP.test(key)),
+      ),
+  });
 }

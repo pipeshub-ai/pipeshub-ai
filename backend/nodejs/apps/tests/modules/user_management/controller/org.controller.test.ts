@@ -993,7 +993,7 @@ describe('OrgController', () => {
       }
     });
 
-    it('records where the signup came from on the org and its org_created event', async () => {
+    it('records where the signup came from on the org, and only the channel on its org_created event', async () => {
       req.body = {
         accountType: 'individual',
         contactEmail: 'admin@example.com',
@@ -1014,7 +1014,8 @@ describe('OrgController', () => {
       const org = orgSave.firstCall.thisValue;
       expect([org.signupChannel, org.signupReferrerDomain]).to.deep.equal(['direct', 'news.ycombinator.com']);
       const [event] = eventBuffer.drain().filter((e) => e.event === 'org_created');
-      expect(event!.props).to.include({ channel: 'direct', referrer_domain: 'news.ycombinator.com' });
+      expect(event!.props).to.include({ channel: 'direct' });
+      expect(event!.props).to.have.all.keys('orgId', 'userId', 'channel');
     });
 
     it('delivers the new org and admin events as soon as they are stored, not at the next poll', async () => {

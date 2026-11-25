@@ -37,7 +37,7 @@ describe('telemetry event-buffer', () => {
       const event: BufferedEvent = {
         event: 'login',
         timestamp: '2026-01-01T00:00:00Z',
-        props: { domain: 'example.com', method: 'saml' },
+        props: { method: 'saml' },
       };
       eventBuffer.enqueue(event);
 
@@ -59,14 +59,36 @@ describe('telemetry event-buffer', () => {
 
   describe('recordEvent', () => {
     it('should enqueue an event with an ISO timestamp and props', () => {
-      recordEvent('signup', { domain: 'acme.io' });
+      recordEvent('signup', { orgId: 'org-1', channel: 'direct' });
 
       const [event] = eventBuffer.drain();
       expect(event!.event).to.equal('signup');
-      expect(event!.props).to.deep.equal({ domain: 'acme.io' });
+      expect(event!.props).to.deep.equal({ orgId: 'org-1', channel: 'direct' });
       expect(new Date(event!.timestamp).toISOString()).to.equal(
         event!.timestamp,
       );
+    });
+
+    it('drops every prop that names whose event it is, and keeps the opaque ids', () => {
+      recordEvent('login', {
+        orgId: 'org-1',
+        userId: 'user-1',
+        email: 'jane@acme.io',
+        domain: 'acme.io',
+        fullName: 'Jane Doe',
+        full_name: 'Jane Doe',
+        orgName: 'Acme',
+        referrer_domain: 'acme.io',
+        user_email: 'jane@acme.io',
+        auth_method: 'password',
+      });
+
+      const [event] = eventBuffer.drain();
+      expect(event!.props).to.deep.equal({
+        orgId: 'org-1',
+        userId: 'user-1',
+        auth_method: 'password',
+      });
     });
 
     it('should allow omitting props', () => {

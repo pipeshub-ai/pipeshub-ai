@@ -123,7 +123,6 @@ from app.services.org_erasure import ORG_ERASE_PAGE, erase_org_page
 from app.services.parsing.interface import ParseError
 from app.services.resource_governor.kinds import ParseKind
 from app.telemetry.event_buffer import record_event
-from app.telemetry.identity import domain_from_email
 from app.utils.attachment_mime_types import (
     DELIMITED_MIME_TYPES,
     DOCX_MIME_TYPES,
@@ -2176,13 +2175,10 @@ async def _parse_chat_query(
         raise HTTPException(status_code=409, detail=f"runId '{query_info.runId}' is already active")
 
     _chat_user = getattr(request.state, "user", {}) or {}
-    _chat_email = _chat_user.get("email")
     _search_type = "web_search" if query_info.chatMode == "web_search" else "internal_search"
     record_event("chat_session_started", {
         "orgId": _chat_user.get("orgId"),
         "userId": _chat_user.get("userId"),
-        "email": _chat_email,
-        "domain": domain_from_email(_chat_email),
         "mode": query_info.chatMode,
         "search_type": _search_type,
         "streaming": streaming,

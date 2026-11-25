@@ -76,10 +76,7 @@ import {
 import { mailJwtGenerator } from '../../../libs/utils/createJwt';
 import { AppConfig } from '../../tokens_manager/config/config';
 import { recordEvent } from '../../../libs/services/telemetry/event-buffer';
-import {
-  domainFromEmail,
-  signupSource,
-} from '../../../libs/services/telemetry/identity';
+import { signupSource } from '../../../libs/services/telemetry/identity';
 import { ORG_CREATED_EVENT } from '../constants/constants';
 import { audit } from '../../../libs/services/audit';
 import { withCause } from '../../../libs/errors/base.error';
@@ -375,13 +372,7 @@ export class OrgController {
       recordEvent(ORG_CREATED_EVENT, {
         orgId: org._id,
         userId: adminUserId,
-        email: contactEmail,
-        domain: domainFromEmail(contactEmail),
-        fullName: adminFullName,
         channel: source.channel,
-        ...(source.referrerDomain !== undefined
-          ? { referrer_domain: source.referrerDomain }
-          : {}),
       });
 
       if (sendEmail) {

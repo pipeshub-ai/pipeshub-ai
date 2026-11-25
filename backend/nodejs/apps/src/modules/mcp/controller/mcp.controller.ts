@@ -22,10 +22,7 @@ import {
 import { sendMcpError } from '../middlewares/mcp-guard.middleware';
 import { insufficientScopeChallenge, missingToolScopes } from '../step-up';
 import { recordEvent } from '../../../libs/services/telemetry/event-buffer';
-import {
-  clientTags,
-  domainFromEmail,
-} from '../../../libs/services/telemetry/identity';
+import { clientTags } from '../../../libs/services/telemetry/identity';
 import { recordServiceActivity } from '../../../libs/services/telemetry/modules/activity-metrics';
 import {
   PAT_APP_CLIENT_ID_PREFIX,
@@ -77,7 +74,6 @@ const oauthScopesModule =
  *  already identifies them where that is needed. */
 function mcpEventBase(req: AuthenticatedUserRequest): Record<string, unknown> {
   const user = req.user ?? {};
-  const email = typeof user.email === 'string' ? user.email : undefined;
   const clientId =
     typeof user.oauthClientId === 'string' ? user.oauthClientId : '';
   const authType = clientId.startsWith(PAT_APP_CLIENT_ID_PREFIX)
@@ -88,7 +84,6 @@ function mcpEventBase(req: AuthenticatedUserRequest): Record<string, unknown> {
   return {
     orgId: typeof user.orgId === 'string' ? user.orgId : undefined,
     userId: typeof user.userId === 'string' ? user.userId : undefined,
-    domain: domainFromEmail(email),
     auth_type: authType,
     // Which client and which of our channels: for a stateless transport,
     // every request has to say it, not only initialize.

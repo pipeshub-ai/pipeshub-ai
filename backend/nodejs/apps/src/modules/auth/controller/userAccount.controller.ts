@@ -104,7 +104,6 @@ import {
 } from '../session-replay-audit';
 import { orgLifecycle } from '../../../libs/org-lifecycle';
 import { recordEvent } from '../../../libs/services/telemetry/event-buffer';
-import { domainFromEmail } from '../../../libs/services/telemetry/identity';
 import {
   ConfigurationManagerService,
   GOOGLE_AUTH_CONFIG_PATH,
@@ -2056,8 +2055,6 @@ export class UserAccountController {
       recordEvent('login', {
         orgId: user.orgId?.toString(),
         userId: user._id?.toString(),
-        email: user.email,
-        domain: domainFromEmail(user.email),
         first_login: isFirstLogin,
         auth_method: method,
       });
@@ -2396,8 +2393,6 @@ export class UserAccountController {
       recordEvent('signup', {
         orgId: orgId?.toString(),
         userId: userId?.toString(),
-        email,
-        domain: domainFromEmail(email),
       });
 
       res.status(200).json(updatedUser);

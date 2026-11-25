@@ -7,10 +7,7 @@ import { AuthenticatedUserRequest } from '../../../libs/middlewares/types'
 import { currentOrgContext } from '../../../libs/context/orgContext';
 import { recordEvent } from '../../../libs/services/telemetry/event-buffer'
 import { knowledgeLimitSize } from '../types/knowledge_limit';
-import {
-  clientTags,
-  domainFromEmail,
-} from '../../../libs/services/telemetry/identity'
+import { clientTags } from '../../../libs/services/telemetry/identity'
 import { recordServiceActivity } from '../../../libs/services/telemetry/modules/activity-metrics'
 
 @injectable()
@@ -47,11 +44,9 @@ export class PatController {
 
       // Activation signal: a token is the first step of every programmatic
       // path (MCP clients, SDKs). Scopes are counted, not listed.
-      const email = req.user?.email as string | undefined
       recordEvent('pat_created', {
         orgId,
         userId,
-        domain: domainFromEmail(email),
         scope_count: token.scopes.length,
         // The lifetime the token was actually minted with.
         expiry_days: data.expiryDays ?? DEFAULT_EXPIRY_DAYS,
@@ -136,7 +131,6 @@ export class PatController {
       recordEvent('pat_access_changed', {
         orgId,
         userId,
-        domain: domainFromEmail(req.user?.email as string | undefined),
         limited: knowledgeLimit !== null,
         item_count: knowledgeLimitSize(knowledgeLimit),
         ...clientTags(req.headers),

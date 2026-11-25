@@ -108,7 +108,6 @@ from app.services.skills.package_importer import (
     PackageImportError,
     SkillPackageImporter,
 )
-from app.telemetry.identity import domain_from_email
 from app.utils.user_lookup import get_user_or_503
 from harness_core.logs import HarnessLog
 from harness_core.skills import SkillRef
@@ -667,7 +666,7 @@ def _get_user_context(request: Request) -> dict[str, Any]:
     org_id = bound_org_id()
     if not user_id or not org_id:
         raise HTTPException(status_code=401, detail="Authentication required. Please provide valid credentials.")
-    return {"userId": user_id, "orgId": org_id, "email": user.get("email"), "domain": domain_from_email(user.get("email"))}
+    return {"userId": user_id, "orgId": org_id, "email": user.get("email")}
 
 
 def _caller_org(request: Request) -> str:
