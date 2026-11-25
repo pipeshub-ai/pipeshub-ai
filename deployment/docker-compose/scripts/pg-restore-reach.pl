@@ -78,7 +78,8 @@ my $dir = "archive/$stanza/$arch->{id}";
 # Every archived segment and history file, from every repository: archive-get falls back to the next repository for a missing segment
 my (%seg, %hist);   # $seg{segment number}{timeline} = [repo, path]; $hist{timeline} = [repo, path]
 for my $r (@repos) {
-  my $ls = out('pgbackrest', '--log-level-console=warn', "--repo=$r", '--output=json', '--recurse', 'repo-ls', $dir) // next;
+  my $ls = out('pgbackrest', '--log-level-console=warn', "--repo=$r", '--output=json', '--recurse', 'repo-ls', $dir)
+    // cantell("could not list the archive of repository $r, so a segment missing from it cannot be told from one not read");
   for my $p (keys %{ decode_json($ls) }) {
     my $f = (split m{/}, $p)[-1];
     if ($f =~ /^([0-9A-F]{8})([0-9A-F]{8})([0-9A-F]{8})-[0-9a-f]{40}(?:\.\w+)?$/) {   # not .partial or .backup
@@ -148,6 +149,9 @@ sub walinfo {
 sub segname { my ($n) = @_; my $f = file($n); return sprintf('%08X', $f ? $f->[1] : $chain[0][0]) . key($n); }
 my ($rec, $commit) = walinfo($end);
 defined $rec or cantell('pg_waldump could not read WAL segment ' . segname($end));
+# recovery to an LSN stops at the first record at or after it ("record->ReadRecPtr >= recoveryTargetLSN", recoveryStopsAfter in
+# src/backend/access/transam/xlogrecovery.c, with recovery_target_inclusive on, the default): no commit is needed
+exit 0 if $type eq 'lsn' && lsn($rec) >= $want;
 # back to the backup's own last segment, or 64 segments at most: commits after its end in none of them means none in reach at all
 my $n = $end;
 for (; !defined $commit && $n > num(substr($stop, 8)) && $n > $end - 64; $n--) { (undef, $commit) = walinfo($n - 1); }
@@ -155,9 +159,9 @@ my $none = !defined $commit && $n == num(substr($stop, 8));
 
 if ($type eq 'time') {
   cantell('no commit was found in the last 64 WAL segments the backup reaches') unless defined $commit || $none;
-  exit 0 if defined $commit && $commit >= $want;   # recovery to a time stops at the first commit at or after it (recovery_target_inclusive)
-} else {
-  exit 0 if lsn($rec) >= $want;   # and to an LSN at the first record at or after it
+  # recovery to a time stops only at a commit or abort later than it: "stopsHere = (recordXtime > recoveryTargetTime)" with
+  # recovery_target_inclusive on (recoveryStopsBefore, xlogrecovery.c), so a commit exactly at the target does not stop it
+  exit 0 if defined $commit && $commit > $want;
 }
 
 print STDERR "pg-restore: the target $target cannot be reached: from backup $bk->{label}, the repository's WAL runs without a break only",

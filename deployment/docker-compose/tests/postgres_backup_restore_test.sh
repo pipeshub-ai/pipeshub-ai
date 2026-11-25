@@ -41,7 +41,7 @@ envfile() { # major image
     echo "REDIS_PASSWORD=x"; echo "COMPOSE_PROFILES=graph-neo4j,sandbox,postgres,postgres-migrate"; echo "PGBACKREST_ENV_FILE=$work/pgbackrest.env"
     echo "PG_MEMORY_LIMIT=${DRILL_PG_MEMORY:-2G}"; echo "PG_SHARED_BUFFERS=${DRILL_PG_SHARED_BUFFERS:-256MB}"
     echo "PG_ARCHIVE_TIMEOUT=${DRILL_ARCHIVE_TIMEOUT:-60}"; echo "PG_BACKUP_INCR_HOURS=10000"; echo "PG_BACKUP_FULL_DAYS=10000"
-    echo "PG_BACKUP_RETRY_SECS=10"
+    echo "PG_BACKUP_RETRY_SECS=10"; echo "PG_ROLES_RECOVERY_WAIT_SECS=7200"
     # 17: the repository in a host directory that does not exist yet, as PG_BACKUP_REPO gives it (Docker creates it, owned by root);
     # 18: the default named volume. Both are new, as on a first start.
     if [ "$1" = 17 ]; then echo "PG_BACKUP_REPO=$work/repo-$1"; fi; } > "$work/env$1"
@@ -138,6 +138,7 @@ for major in ${DRILL_MAJORS:-17 18}; do
   dc up -d --no-build postgres > "$work/up.log" 2>&1 || { echo "FAIL $major: compose up failed:"; cat "$work/up.log"; fail=1; continue; }
   healthy postgres || { echo "FAIL $major: postgres did not become healthy"; dc logs postgres | tail -20; fail=1; continue; }
   check "$major: archiving is on" "$(sql -c 'show archive_mode')" on
+  check "$major: the role setup's recovery wait from .env reaches the server" "$($DOCKER exec "$proj-postgres-1" printenv PG_ROLES_RECOVERY_WAIT_SECS)" 7200
   t0=$(now); seed; echo "info $major: seeded $rows rows per schema in $(secs "$t0" "$(now)")s, database $(sql -c "select pg_size_pretty(pg_database_size('pipeshub'))")"
 
   # the service's first run: stanza, check, then a full backup because there is none

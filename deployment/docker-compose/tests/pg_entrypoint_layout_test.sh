@@ -52,12 +52,14 @@ if [[ "$out" == *"$archive"* ]]; then echo "ok   a stanza turns archiving on"; e
 # Role setup writes, so after a point-in-time restore it waits for the end of recovery (the server answers on TCP while it replays WAL,
 # read-only), and only so long. Stand-ins: the server answers at once, is in recovery for its first three queries, the role script logs.
 printf '#!/bin/sh\nexit 0\n' > "$work/bin/pg_isready"
+# run as root, the entrypoint goes through gosu postgres
+printf '#!/bin/sh\nshift\nexec "$@"\n' > "$work/bin/gosu"
 # shellcheck disable=SC2016 # the stand-ins expand at their own run
 printf '#!/bin/sh\nn=$(($(cat "%s/q" 2>/dev/null || echo 0) + 1)); echo $n > "%s/q"; [ "$n" -le "${RECOVERY_QUERIES:-3}" ] && echo t || echo f\n' \
   "$work" "$work" > "$work/bin/psql"
 # shellcheck disable=SC2016
 printf '#!/bin/sh\necho "ROLES after $(cat "%s/q") queries"\n' "$work" > "$work/roles.sh"
-chmod +x "$work/bin/pg_isready" "$work/bin/psql" "$work/roles.sh"
+chmod +x "$work/bin/pg_isready" "$work/bin/gosu" "$work/bin/psql" "$work/roles.sh"
 roles_run() { rm -f "$work/q"; rm -rf "$work/vol"; mkdir -p "$work/vol/data"
   # the role setup runs in the background with this output: $(...) returns once it is done
   # shellcheck disable=SC2086 # $pw and EXTRA_ENV are NAME=value words
