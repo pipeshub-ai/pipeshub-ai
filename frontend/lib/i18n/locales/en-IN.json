@@ -761,7 +761,7 @@
     "listening": "Listening...",
     "voiceInputNotSupported": "Voice input is not supported in this browser",
     "voiceError": "Could not access microphone",
-    "voiceNoMic": "No microphone found.",
+    "voiceCaptureFailed": "Couldn't use the microphone. Check that it is connected and not in use by another app.",
     "voiceTooLong": "That recording is too long. Try a shorter one.",
     "voiceTranscribeFailed": "Couldn't turn your speech into text. Try again or type.",
     "noModelsAvailable": "No AI models are configured yet",

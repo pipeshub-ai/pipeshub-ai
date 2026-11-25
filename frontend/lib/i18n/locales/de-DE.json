@@ -760,7 +760,7 @@
     "listening": "Zuhören...",
     "voiceInputNotSupported": "Spracheingabe wird in diesem Browser nicht unterstützt",
     "voiceError": "Zugriff auf das Mikrofon nicht möglich",
-    "voiceNoMic": "Kein Mikrofon gefunden.",
+    "voiceCaptureFailed": "Das Mikrofon konnte nicht verwendet werden. Prüfen Sie, ob es angeschlossen ist und nicht von einer anderen App verwendet wird.",
     "voiceTooLong": "Die Aufnahme ist zu lang. Versuchen Sie eine kürzere.",
     "voiceTranscribeFailed": "Ihre Sprache konnte nicht in Text umgewandelt werden. Versuchen Sie es erneut oder tippen Sie.",
     "noModelsAvailable": "Es sind noch keine KI-Modelle konfiguriert",

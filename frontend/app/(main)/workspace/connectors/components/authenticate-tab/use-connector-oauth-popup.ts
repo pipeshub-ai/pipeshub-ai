@@ -249,7 +249,7 @@ export function useConnectorOAuthPopup(options?: ConnectorOAuthPopupOptions) {
       useConnectorsStore.getState().bumpOAuthAuthorizeUiEpoch();
       onDrawerBodyRefreshRef.current?.();
       setIsAuthenticating(false);
-      addToast({ variant: 'warning', title: t('workspace.connectors.oauthNotConfirmed') });
+      if (useConnectorsStore.getState().isPanelOpen) addToast({ variant: 'warning', title: t('workspace.connectors.oauthNotConfirmed') });
     }
   }, [clearOAuthPoll, checkConnectorAuth, addToast, t]);
 
@@ -374,7 +374,7 @@ export function useConnectorOAuthPopup(options?: ConnectorOAuthPopupOptions) {
           }
           useConnectorsStore.getState().setAuthState('empty');
           setIsAuthenticating(false);
-          addToast({ variant: 'warning', title: t('workspace.connectors.oauthTimedOut') });
+          if (useConnectorsStore.getState().isPanelOpen) addToast({ variant: 'warning', title: t('workspace.connectors.oauthTimedOut') });
           return;
         }
         // `oauthCompletionHandledRef` prevents duplicate if postMessage already fired

@@ -1380,7 +1380,7 @@ describe('ChatInput — model, voice and search view', () => {
   });
 
   it.each([
-    ['audio-capture', 'No microphone found.'],
+    ['audio-capture', "Couldn't use the microphone. Check that it is connected and not in use by another app."],
     ['audio-too-large', 'That recording is too long. Try a shorter one.'],
     ['recording-error', "Couldn't turn your speech into text. Try again or type."],
     ['Some raw server text', "Couldn't turn your speech into text. Try again or type."],

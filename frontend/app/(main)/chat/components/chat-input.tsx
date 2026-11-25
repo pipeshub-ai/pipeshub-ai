@@ -401,7 +401,7 @@ export function ChatInput({
       const key = {
         'not-allowed': 'chat.voiceError',
         'service-not-allowed': 'chat.voiceError',
-        'audio-capture': 'chat.voiceNoMic',
+        'audio-capture': 'chat.voiceCaptureFailed',
         'audio-too-large': 'chat.voiceTooLong',
       }[error] ?? 'chat.voiceTranscribeFailed';
       toast.error(t(key));

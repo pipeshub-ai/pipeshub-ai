@@ -850,7 +850,7 @@
     "listening": "聆聽中...",
     "voiceInputNotSupported": "此瀏覽器不支援語音輸入",
     "voiceError": "無法存取麥克風",
-    "voiceNoMic": "找不到麥克風。",
+    "voiceCaptureFailed": "無法使用麥克風。請檢查麥克風是否已連接，且未被其他應用程式佔用。",
     "voiceTooLong": "錄音太長。請嘗試較短的錄音。",
     "voiceTranscribeFailed": "無法將語音轉換為文字。請重試或直接輸入。",
     "noModelsAvailable": "尚未設定任何 AI 模型",

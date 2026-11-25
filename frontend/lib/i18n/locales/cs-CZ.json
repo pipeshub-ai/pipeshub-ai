@@ -896,7 +896,7 @@
     "listening": "Poslouchám...",
     "voiceInputNotSupported": "Hlasový vstup není v tomto prohlížeči podporován",
     "voiceError": "Nepodařilo se získat přístup k mikrofonu",
-    "voiceNoMic": "Nebyl nalezen žádný mikrofon.",
+    "voiceCaptureFailed": "Mikrofon se nepodařilo použít. Zkontrolujte, zda je připojený a nepoužívá ho jiná aplikace.",
     "voiceTooLong": "Nahrávka je příliš dlouhá. Zkuste kratší.",
     "voiceTranscribeFailed": "Řeč se nepodařilo převést na text. Zkuste to znovu nebo pište.",
     "noModelsAvailable": "Zatím nejsou nakonfigurovány žádné modely AI",

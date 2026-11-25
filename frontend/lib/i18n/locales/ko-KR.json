@@ -850,7 +850,7 @@
     "listening": "듣는 중...",
     "voiceInputNotSupported": "이 브라우저에서는 음성 입력이 지원되지 않습니다",
     "voiceError": "마이크에 접근할 수 없습니다",
-    "voiceNoMic": "마이크를 찾을 수 없습니다.",
+    "voiceCaptureFailed": "마이크를 사용할 수 없습니다. 마이크가 연결되어 있고 다른 앱에서 사용 중이 아닌지 확인하세요.",
     "voiceTooLong": "녹음이 너무 깁니다. 더 짧게 녹음해 주세요.",
     "voiceTranscribeFailed": "음성을 텍스트로 변환하지 못했습니다. 다시 시도하거나 직접 입력해 주세요.",
     "noModelsAvailable": "아직 구성된 AI 모델이 없습니다",

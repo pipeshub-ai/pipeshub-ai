@@ -76,6 +76,21 @@ describe('useConnectorOAuthPopup', () => {
     expect(titles()).toEqual([]);
   });
 
+  it('stays silent when the panel was closed but the popup flow is still running', async () => {
+    const popup = stubPopup();
+    await start();
+
+    act(() => {
+      useConnectorsStore.setState({ isPanelOpen: false } as never);
+    });
+    popup.closed = true;
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000 + 10 * 1500);
+    });
+
+    expect(titles()).toEqual([]);
+  });
+
   it('closes the popup and warns after the five-minute wait', async () => {
     const popup = stubPopup();
     await start();

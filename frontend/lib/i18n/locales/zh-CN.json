@@ -850,7 +850,7 @@
     "listening": "正在聆听…",
     "voiceInputNotSupported": "此浏览器不支持语音输入",
     "voiceError": "无法访问麦克风",
-    "voiceNoMic": "未找到麦克风。",
+    "voiceCaptureFailed": "无法使用麦克风。请检查麦克风是否已连接，且未被其他应用占用。",
     "voiceTooLong": "录音太长。请尝试较短的录音。",
     "voiceTranscribeFailed": "无法将语音转换为文字。请重试或直接输入。",
     "noModelsAvailable": "尚未配置任何 AI 模型",
