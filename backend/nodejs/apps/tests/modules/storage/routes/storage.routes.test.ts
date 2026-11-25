@@ -37,6 +37,7 @@ describe('Storage Routes', () => {
       rollBackToPreviousVersion: sinon.stub().resolves(),
       uploadDirectDocument: sinon.stub().resolves(),
       abortDirectUpload: sinon.stub().resolves(),
+      purgeDocumentById: sinon.stub().resolves(),
       documentDiffChecker: sinon.stub().resolves(),
       moveTree: sinon.stub().resolves(),
       relocateVirtualRecords: sinon.stub().callsFake((_req: any, res: any) => res.status(200).json({ ok: true })),
@@ -407,6 +408,17 @@ describe('Storage Routes', () => {
           layer.route.methods.post,
       )
       expect(updateConfigRoute).to.not.be.undefined
+    })
+  })
+
+  describe('purge (E7)', () => {
+    it('registers DELETE /internal/:documentId/purge behind the storage service token only', () => {
+      const router = createStorageRouter(container)
+      const route = (router as any).stack.find(
+        (layer: any) =>
+          layer.route?.path === '/internal/:documentId/purge' && layer.route.methods.delete,
+      )
+      expect(route).to.not.be.undefined
     })
   })
 
@@ -806,6 +818,8 @@ describe('Storage Routes', () => {
       } as any)
 
       container.bind('StorageConfig').toConstantValue({})
+      const factory = sinon.stub().returns(mockStorageController)
+      container.bind('StorageControllerFactory').toConstantValue(factory)
       const router = createStorageRouter(container)
       const handler = findRouteHandler(router, '/updateAppConfig', 'post')
       expect(handler).to.not.be.undefined
@@ -819,6 +833,9 @@ describe('Storage Routes', () => {
       expect(mockRes.json.firstCall.args[0]).to.deep.equal({
         message: 'Storage configuration updated successfully',
       })
+      // The controller is rebuilt by the container's factory, so a subclass survives a reload.
+      expect(factory.calledOnce).to.be.true
+      expect(factory.firstCall.args[1].scopedJwtSecret).to.equal('reloaded-scoped-secret')
 
       loadStub.restore()
     })

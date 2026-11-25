@@ -2,7 +2,7 @@
 
 Covers:
 1. RegistryBackedStore.store() — registry path + L1 cache population
-2. RegistryBackedStore.store() — fallback to InMemoryArtifactStore on failure
+2. RegistryBackedStore.store() — failure preserves the caller's full result
 3. RegistryBackedStore.get() — L1 hit, L2 blob fallback
 4. _convert_conversation_turn — artifact_id reconstruction into compact ref
 5. End-to-end: store → persist → cold get on follow-up turn
@@ -26,8 +26,8 @@ from app.agent_loop_lib.core.messages import (
 )
 from app.agents.agent_loop.artifact_store import RegistryBackedStore
 from app.services.artifact_registry.models import Actor, ArtifactMetadata
+from app.models.entities import ArtifactType, ArtifactVisibility
 from app.services.artifact_registry.registry import ArtifactRegistryService
-from app.models.entities import ArtifactType, LifecycleStatus
 from tests.unit.services.artifact_registry.fakes import FakeBlobStore, FakeGraphProvider
 
 
@@ -89,17 +89,15 @@ class TestRegistryBackedStore:
         assert store.get_schema(aid) == schema
 
     @pytest.mark.asyncio
-    async def test_store_fallback_on_registry_failure(self):
+    async def test_store_propagates_registry_failure(self):
         registry = AsyncMock()
         registry.register.side_effect = RuntimeError("blob down")
         store = RegistryBackedStore(
             registry=registry, actor=_actor(), conversation_id="conv_1",
         )
-        aid = await store.store("data", tool_name="t")
-        # Fallback IDs are plain uuid4 strings (InMemoryArtifactStore), not a
-        # prefixed format.
-        assert uuid.UUID(aid).version == 4
-        assert await store.get(aid) == "data"
+        with pytest.raises(RuntimeError, match="blob down"):
+            await store.store("data", tool_name="t")
+        assert not store._l1._data
 
     @pytest.mark.asyncio
     async def test_get_falls_back_to_registry_on_l1_miss(self):
@@ -149,6 +147,7 @@ class TestRegistryBackedStore:
         call_kwargs = registry.register.call_args.kwargs
         assert call_kwargs["artifact_type"] == ArtifactType.TOOL_RESULT
         assert call_kwargs["is_temporary"] is True
+        assert call_kwargs["visibility"] == ArtifactVisibility.STAGING
 
 
 class TestConversationTurnArtifactReconstruction:

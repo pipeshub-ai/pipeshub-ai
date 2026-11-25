@@ -9,7 +9,7 @@ MAX_TIMESTAMP_LENGTH = 13
 # rendered deep inside tools (search, knowledge graph, fetch) can show each
 # date in the zone the answer is written in, weekday included, without the
 # zone being threaded through every call site. Set once at the top of each
-# run's producer task (``stream_bridge`` and ``chat_modes.bridge``); tasks
+# run's producer task (``stream_bridge._stream_run``, both chat routes); tasks
 # started from it inherit the value. Unset means UTC.
 _llm_time_zone: ContextVar[str | None] = ContextVar("llm_time_zone", default=None)
 

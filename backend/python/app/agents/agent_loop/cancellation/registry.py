@@ -1,4 +1,4 @@
-"""`RunCancellationRegistry`: the contract `stream_bridge.py`/`bridge.py`
+"""`RunCancellationRegistry`: the contract `stream_bridge.py`
 use to make an in-flight agent-loop run cooperatively cancellable, and
 `POST /chat/cancel` (`chatbot.py`) uses to request that cancellation.
 
@@ -62,7 +62,7 @@ class RunCancellationRegistry(Protocol):
     async def register(self, run_id: str, token: "CancellationToken", owner: RunOwner) -> None:
         """Make `run_id` cancellable. Call BEFORE `build_initial_state()` so
         even the "Thinking" phase (before the first LLM call) is
-        cancellable — see `stream_bridge.py`/`bridge.py`."""
+        cancellable — see `stream_bridge.py`."""
         ...
 
     async def cancel(self, run_id: str, requester: RunOwner) -> CancelOutcome:

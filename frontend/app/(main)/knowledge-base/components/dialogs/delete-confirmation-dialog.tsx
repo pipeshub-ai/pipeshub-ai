@@ -1,14 +1,9 @@
 'use client';
 
-// TODO - extract to a reusable confirmation dialog component if the use case arises elsewhere
-import { useState } from 'react';
-import { Dialog, Flex, Text, TextField, Button, Box, Callout, VisuallyHidden } from '@radix-ui/themes';
-import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
-import { LoadingButton } from '@/app/components/ui/loading-button';
+import { Callout } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
-import { matchesConfirmationKeyword } from '@/lib/utils/validators';
-import { useIsMobile } from '@/lib/hooks/use-is-mobile';
-import { touchTarget } from '@/app/components/ui/responsive';
+import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { TypedDeleteDialog } from '@/app/components/ui/typed-delete-dialog';
 
 interface DeleteConfirmationDialogProps {
   open: boolean;
@@ -20,6 +15,19 @@ interface DeleteConfirmationDialogProps {
   isDeleting?: boolean;
 }
 
+const TITLE_KEY = {
+  KB: 'dialog.deleteCollectionTitle',
+  folder: 'dialog.deleteFolderTitle',
+  record: 'dialog.deleteFileTitle',
+} as const;
+
+const BODY_KEY = {
+  KB: 'dialog.deleteCollectionBody',
+  folder: 'dialog.deleteFolderBody',
+  record: 'dialog.deleteFileBody',
+} as const;
+
+/** Deletes one collection, folder or file (the Collections list, its sidebar and the record view). */
 export function DeleteConfirmationDialog({
   open,
   onOpenChange,
@@ -30,114 +38,23 @@ export function DeleteConfirmationDialog({
   isDeleting = false,
 }: DeleteConfirmationDialogProps) {
   const { t } = useTranslation();
-  const isMobile = useIsMobile();
-  const [confirmText, setConfirmText] = useState('');
-  const deleteKeyword = t('dialog.deleteKeyword', { defaultValue: 'DELETE' });
-  const isConfirmed = matchesConfirmationKeyword(confirmText, deleteKeyword);
-
-  const handleConfirm = async () => {
-    if (isConfirmed && !isDeleting) {
-      await onConfirm();
-    }
-  };
-
-  const handleOpenChange = (newOpen: boolean) => {
-    if (!newOpen) {
-      setConfirmText(''); // Reset on close
-    }
-    onOpenChange(newOpen);
-  };
-
-  const BODY_KEY = {
-    KB: 'dialog.deleteCollectionBody',
-    folder: 'dialog.deleteFolderBody',
-    record: 'dialog.deleteFileBody',
-  } as const;
-
   return (
-    <Dialog.Root open={open} onOpenChange={handleOpenChange}>
-      {/* Dark overlay matching conventions */}
-      {open && (
-        <Box
-          style={{
-            position: 'fixed',
-            inset: 0,
-            backgroundColor: 'rgba(28, 32, 36, 0.1)',
-            zIndex: 999,
-            cursor: 'pointer',
-          }}
-          onClick={() => !isDeleting && onOpenChange(false)}
-        />
+    <TypedDeleteDialog
+      open={open}
+      onOpenChange={onOpenChange}
+      onConfirm={onConfirm}
+      title={t(TITLE_KEY[itemType])}
+      description={t(BODY_KEY[itemType], { name: itemName })}
+      isDeleting={isDeleting}
+    >
+      {warningMessage && (
+        <Callout.Root color="amber" size="1">
+          <Callout.Icon>
+            <MaterialIcon name="warning_amber" size={16} />
+          </Callout.Icon>
+          <Callout.Text size="1">{warningMessage}</Callout.Text>
+        </Callout.Root>
       )}
-      <Dialog.Content
-        style={{
-          maxWidth: '37.5rem',
-          padding: 'var(--space-5)',
-          zIndex: 1000,
-        }}
-      >
-        <VisuallyHidden>
-          <Dialog.Title>{t('dialog.deleteConfirmation')}</Dialog.Title>
-        </VisuallyHidden>
-        <Flex direction="column" gap="4">
-          <Flex direction="column" gap="1">
-            <Text size="5" weight="bold">
-              {t('dialog.areYouSure')}
-            </Text>
-            <Text size="2" style={{ color: 'var(--slate-11)', overflowWrap: 'anywhere' }}>
-              {t(BODY_KEY[itemType], { name: itemName })}
-            </Text>
-          </Flex>
-
-          {warningMessage && (
-            <Callout.Root color="amber" size="1">
-              <Callout.Icon>
-                <MaterialIcon name="warning_amber" size={16} />
-              </Callout.Icon>
-              <Callout.Text size="1">
-                {warningMessage}
-              </Callout.Text>
-            </Callout.Root>
-          )}
-
-          <Flex direction="column" gap="2">
-            <Text size="2" weight="medium" style={{ color: 'var(--olive-11)' }}>
-              {t('dialog.typeDeleteToConfirm', { keyword: deleteKeyword })}
-            </Text>
-            <TextField.Root
-              placeholder={deleteKeyword}
-              value={confirmText}
-              onChange={(e) => setConfirmText(e.target.value)}
-              style={{
-                ...(isConfirmed ? { borderColor: 'var(--accent-8)' } : {}),
-              }}
-            />
-          </Flex>
-
-          <Flex gap="2" justify="end">
-            <Button
-              variant="outline"
-              color="gray"
-              size={isMobile ? '3' : '2'}
-              onClick={() => onOpenChange(false)}
-              disabled={isDeleting}
-            >
-              {t('action.cancel')}
-            </Button>
-            <LoadingButton
-              color="red"
-              size={isMobile ? '3' : '2'}
-              style={touchTarget(isMobile)}
-              onClick={handleConfirm}
-              disabled={!isConfirmed}
-              loading={isDeleting}
-              loadingLabel={t('action.deleting')}
-            >
-              {t('action.delete')}
-            </LoadingButton>
-          </Flex>
-        </Flex>
-      </Dialog.Content>
-    </Dialog.Root>
+    </TypedDeleteDialog>
   );
 }

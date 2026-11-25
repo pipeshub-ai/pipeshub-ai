@@ -1,4 +1,10 @@
-import { MongoClient } from 'mongodb';
+import {
+  MongoClient,
+  type AnyClientBulkWriteModel,
+  type ClientBulkWriteOptions,
+  type ClientBulkWriteResult,
+  type Document,
+} from 'mongodb';
 import { Logger } from '../services/logger.service';
 import { ServiceUnavailableError } from '../errors/http.errors';
 import { DocStoreFencedError, DocStoreReadOnlyError } from './errors';
@@ -10,14 +16,16 @@ import { docstoreMetrics } from './metrics';
  * application database; no document means `active`.
  *
  * Every collection write method of the driver is wrapped here, whichever Mongoose model or raw collection issued it
- * (bulk-operation builders, `db.command`, `$merge`/`$out`, `client.bulkWrite` are not: a lint bans them in `src`):
+ * (bulk-operation builders, `db.command`, `$merge`/`$out` are not: a lint bans them in `src`; `client.bulkWrite` goes through
+ * `fencedClientBulkWrite`):
  *  1. it first reads the fence from the primary, with a 2 s deadline for the read, and refuses unless `active`;
  *  2. while the store is being moved (`draining`) it carries `timeoutMS: 5000`, so a write blocked on the server fails (and is not
  *     retried) instead of landing after the fence moved. An `active` store puts no deadline on a write: a long multi-document
  *     write cut off by a client timeout could be left half applied;
  *  3. it carries the server-side `comment` FENCED_WRITE_COMMENT (in a transaction too), so the cutover can see in `$currentOp`
  *     which writes are still running.
- * The server-side revoke of the app user's write role (a later step) is the layer that does not trust this process.
+ * The layer that does not trust this process: the migration tool takes the app user's write roles away at the switch (when the
+ * application has a MongoDB user of its own).
  */
 export const FENCE_COLLECTION = 'docstore_fence';
 export const FENCE_READ_DEADLINE_MS = 2_000;
@@ -100,7 +108,10 @@ export const APP_MONGO_DEFAULT_OPTIONS = {
   serverSelectionTimeoutMS: 5000,
   socketTimeoutMS: 45000,
   family: 4,
-  maxPoolSize: 10,
+  // One Node serves 16 sessions in step (the capacity model's N): their admissions, commits and stream reads reach
+  // the driver in the same instant, and with 10 connections they queued in its wait queue (WP88-FU-5, ADR-PERF-01
+  // D4). Connections still open only on demand.
+  maxPoolSize: 64,
 };
 
 /** The client's resolved options (`mongoose.connection.getClient().options`), as far as the send bound needs them. */
@@ -174,12 +185,10 @@ export const forgetFenceCache = (): void => {
   lastNotActiveSeq = 0;
 };
 
-/**
- * Throws unless writes may proceed; otherwise says which mode allowed it.
- */
-export async function assertMongoWritable(
+/** The fence's mode (a trusted `active` without a read); `unreadable` or `late` when the read failed or came back too late to count. */
+async function readFenceMode(
   db: FenceDb,
-): Promise<'active' | 'draining'> {
+): Promise<Mode | 'unreadable' | 'late'> {
   if (Date.now() < activeUntil) return 'active';
   const seq = ++readSeq;
   const t0 = process.hrtime.bigint();
@@ -192,28 +201,42 @@ export async function assertMongoWritable(
         { readPreference: 'primary', timeoutMS: FENCE_READ_DEADLINE_MS },
       );
   } catch (e) {
-    docstoreMetrics.fenceRefused.inc({ store: 'mongo', reason: 'unreadable' });
-    Logger.getInstance({ service: 'MongoFence' }).error(
-      'fence unreadable; write refused',
-      { error: (e as Error).message },
-    );
-    throw new ServiceUnavailableError(
-      'The document store fence could not be read',
-    );
+    Logger.getInstance({ service: 'MongoFence' }).error('fence unreadable', {
+      error: (e as Error).message,
+    });
+    return 'unreadable';
   }
   const elapsedMs = Number(process.hrtime.bigint() - t0) / 1e6;
   docstoreMetrics.fenceCheck.observe({}, elapsedMs / 1000);
   // a read that came back late says nothing about now
-  if (elapsedMs > FENCE_READ_DEADLINE_MS) {
-    docstoreMetrics.fenceRefused.inc({ store: 'mongo', reason: 'deadline' });
-    throw new ServiceUnavailableError('The document store fence read was late');
-  }
+  if (elapsedMs > FENCE_READ_DEADLINE_MS) return 'late';
   const mode = doc?.mode ?? 'active';
   // only `active` is trusted: `draining` still allows writes, so a cached one would let a write through after a move to `readonly`
   if (mode !== 'active') {
-    lastNotActiveSeq = Math.max(lastNotActiveSeq, seq);
+    // every read already started may have been served before the change: none of them may re-trust `active`
+    lastNotActiveSeq = readSeq;
     activeUntil = 0;
   } else if (seq > lastNotActiveSeq) activeUntil = Date.now() + trustMs();
+  return mode;
+}
+
+/**
+ * Throws unless writes may proceed; otherwise says which mode allowed it.
+ */
+export async function assertMongoWritable(
+  db: FenceDb,
+): Promise<'active' | 'draining'> {
+  const mode = await readFenceMode(db);
+  if (mode === 'unreadable') {
+    docstoreMetrics.fenceRefused.inc({ store: 'mongo', reason: 'unreadable' });
+    throw new ServiceUnavailableError(
+      'The document store fence could not be read',
+    );
+  }
+  if (mode === 'late') {
+    docstoreMetrics.fenceRefused.inc({ store: 'mongo', reason: 'deadline' });
+    throw new ServiceUnavailableError('The document store fence read was late');
+  }
   if (mode === 'readonly') {
     docstoreMetrics.fenceRefused.inc({ store: 'mongo', reason: 'readonly' });
     throw new DocStoreReadOnlyError();
@@ -229,6 +252,52 @@ let installed = false;
 
 /** Whether this process wrapped the driver's writes (`installMongoFence` ran): only then do units of work fence their commits. */
 export const mongoFenceInstalled = (): boolean => installed;
+
+let pauseDb: FenceDb | undefined;
+/** The database background consumers read the fence from: set by the connection that installed the fence, nowhere else. */
+export const setConsumerPauseDb = (db: FenceDb | undefined): void => {
+  pauseDb = installed ? db : undefined;
+};
+export const CONSUMER_PAUSE_POLL_MS = 2_000;
+
+/**
+ * Whether background work should hold off: the fence of this process's MongoDB is not `active` (a move is draining or frozen, or the
+ * store was moved away). False when the fence is off here, and when it cannot be read (writes are still refused then, as before).
+ */
+export async function mongoStoreMoving(): Promise<boolean> {
+  if (!pauseDb) return false;
+  const mode = await readFenceMode(pauseDb);
+  return mode === 'draining' || mode === 'readonly' || mode === 'retired';
+}
+
+/**
+ * Step F3 of a move (the background writers pause): waits while mongoStoreMoving(), so a consumer takes no message whose writes the
+ * fence would refuse (a PostgreSQL queue dead-letters it after its attempts, a Redis entry stays pending until a restart). Resolves
+ * true when the store is writable again, false as soon as `running()` turns false (the consumer is stopping).
+ */
+export async function untilMongoWritable(
+  running: () => boolean,
+  pollMs = CONSUMER_PAUSE_POLL_MS,
+): Promise<boolean> {
+  let paused = false;
+  while (running() && pauseDb) {
+    const mode = await readFenceMode(pauseDb);
+    if (mode === 'active') break;
+    // before a pause, an unreadable fence lets the work go on (its writes are refused anyway); once paused, only `active` ends it
+    if (!paused && (mode === 'unreadable' || mode === 'late')) break;
+    if (!paused)
+      Logger.getInstance({ service: 'MongoFence' }).info(
+        'consumer paused: the document store is being moved',
+      );
+    paused = true;
+    await new Promise((r) => setTimeout(r, pollMs));
+  }
+  if (paused && running())
+    Logger.getInstance({ service: 'MongoFence' }).info(
+      'consumer resumed: the document store is writable',
+    );
+  return running();
+}
 
 /**
  * The Mongo fence is off unless `DOC_STORE_FENCE=on`. Switching it on makes every collection write read a one-document collection
@@ -271,28 +340,53 @@ export function installMongoFence(collectionClass: {
         );
       // shortcut: filter/doc may be omitted by callers of deleteOne()/deleteMany(); pad so options land at optsAt
       while (args.length < optsAt) args.push(undefined);
-      const opts = (args[optsAt] ?? {}) as {
-        timeoutMS?: number;
-        comment?: unknown;
-        session?: { inTransaction(): boolean };
-      };
-      // inside a transaction the deadline belongs to the transaction, not to a statement; and only a store that is being moved has one
-      const bounded =
-        mode === 'draining' &&
-        opts.timeoutMS === undefined &&
-        !opts.session?.inTransaction();
-      const comment = isFencedWriteComment(opts.comment)
-        ? opts.comment
-        : {
-            tag: FENCED_WRITE_COMMENT,
-            ...(opts.comment === undefined ? {} : { caller: opts.comment }),
-          };
-      args[optsAt] = {
-        ...opts,
-        comment,
-        ...(bounded ? { timeoutMS: WRITE_TIMEOUT_MS } : {}),
-      };
+      args[optsAt] = fencedWriteOptions(mode, args[optsAt] as WriteOptions);
       return original.apply(this, args);
     };
   }
+}
+
+interface WriteOptions {
+  timeoutMS?: number;
+  comment?: unknown;
+  session?: { inTransaction(): boolean };
+}
+
+/** The options a write the fence let through is sent with: tagged, and bounded while the store is being moved. */
+function fencedWriteOptions<O extends WriteOptions>(
+  mode: 'active' | 'draining',
+  options: O | undefined,
+): O {
+  const opts = (options ?? {}) as O;
+  // inside a transaction the deadline belongs to the transaction, not to a statement; and only a store that is being moved has one
+  const bounded =
+    mode === 'draining' &&
+    opts.timeoutMS === undefined &&
+    !opts.session?.inTransaction();
+  const comment = isFencedWriteComment(opts.comment)
+    ? opts.comment
+    : {
+        tag: FENCED_WRITE_COMMENT,
+        ...(opts.comment === undefined ? {} : { caller: opts.comment }),
+      };
+  return {
+    ...opts,
+    comment,
+    ...(bounded ? { timeoutMS: WRITE_TIMEOUT_MS } : {}),
+  };
+}
+
+/**
+ * MongoDB 8's client-level `bulkWrite` (one command over several collections), which the per-collection wrapper above cannot see:
+ * it reads the fence and is tagged and bounded as every collection write is. Unfenced when this process did not install the fence.
+ */
+export async function fencedClientBulkWrite(
+  client: MongoClient,
+  db: FenceDb,
+  models: readonly AnyClientBulkWriteModel<Document>[],
+  options: ClientBulkWriteOptions,
+): Promise<ClientBulkWriteResult> {
+  if (!installed) return client.bulkWrite(models, options);
+  const mode = await assertMongoWritable(db);
+  return client.bulkWrite(models, fencedWriteOptions(mode, options));
 }

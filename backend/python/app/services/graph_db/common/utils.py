@@ -1,3 +1,5 @@
+import contextlib
+import json
 import os
 import re
 import uuid
@@ -253,6 +255,109 @@ class PermittedEntityRows(EntityCandidateRows):
             examined=min(examined, window_size),
         )
 
+
+# An engine agent's settings on the agent document (AG1). The narrowing is stored as JSON text on
+# both backends: a Neo4j property cannot hold a map, and Arango's PATCH would merge a stored object
+# with the new one, so a narrowing that drops a dimension could never be written.
+AGENT_ENGINE_PROFILE_FIELD = "engineProfile"
+AGENT_MODEL_ACCOUNT_FIELD = "modelAccountId"
+AGENT_ENGINE_FIELDS = (AGENT_ENGINE_PROFILE_FIELD, AGENT_MODEL_ACCOUNT_FIELD)
+# The team whose layer narrows the agent's runs and whose admins manage it (CPD-9); a team id or null.
+AGENT_OWNER_TEAM_FIELD = "ownerTeam"
+# The model each sub-agent role runs on (MA1), stored as JSON text for the reasons the narrowing is: replacing
+# the map must be able to drop a role.
+AGENT_ROLE_MODELS_FIELD = "roleModels"
+# The agent's own run gates (WP-31 D: plan approval, checks), JSON text for the same reason: a save that drops a
+# gate must be able to drop it.
+AGENT_GATES_FIELD = "gates"
+# The agent's environment for its engine runs (C20.18, WP-100), JSON text for the same reason: a save that drops a
+# variable or a cache folder must be able to drop it.
+AGENT_ENVIRONMENT_FIELD = "environment"
+AGENT_JSON_TEXT_FIELDS = (AGENT_ENGINE_PROFILE_FIELD, AGENT_ROLE_MODELS_FIELD, AGENT_GATES_FIELD, AGENT_ENVIRONMENT_FIELD)
+
+
+def encode_agent_engine_profile(value: object) -> object:
+    """The stored form of an agent's ``engineProfile``: canonical JSON text for an object."""
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, sort_keys=True, separators=(",", ":"))
+    return value
+
+
+def decode_agent_engine_profile(agent: dict[str, Any] | None) -> dict[str, Any] | None:
+    """``agent`` with its stored ``engineProfile`` text read back as JSON, in place. Text that does
+    not parse is kept as is, so the run definition refuses it as invalid rather than run the loop."""
+    if not agent:
+        return agent
+    stored = agent.get(AGENT_ENGINE_PROFILE_FIELD)
+    if isinstance(stored, str):
+        with contextlib.suppress(ValueError):
+            agent[AGENT_ENGINE_PROFILE_FIELD] = json.loads(stored)
+    return agent
+
+
+def encode_agent_json_fields(document: dict[str, Any]) -> None:
+    """``document`` with each setting it names that is stored as JSON text in its stored form, in place."""
+    for field in AGENT_JSON_TEXT_FIELDS:
+        if field in document:
+            document[field] = encode_agent_engine_profile(document[field])
+
+
+def decode_agent_json_fields(agent: dict[str, Any] | None) -> dict[str, Any] | None:
+    """``agent`` with every setting stored as JSON text read back as JSON, in place. Text that does not parse is
+    kept as is, so its reader refuses it rather than take it for unset."""
+    if not agent:
+        return agent
+    for field in AGENT_JSON_TEXT_FIELDS:
+        stored = agent.get(field)
+        if isinstance(stored, str):
+            with contextlib.suppress(ValueError):
+                agent[field] = json.loads(stored)
+    return agent
+
+
+# The agent document fields a save may change; tools, knowledge, toolsets and MCP servers are edges, not fields.
+AGENT_UPDATABLE_FIELDS = (
+    "name", "description", "startMessage", "systemPrompt", "instructions", "tags", "isActive", "isServiceAccount",
+    "serviceAccountUserId", "sendUserContext", "webSearch", "defaultReasoningEffort", "apiToolsetTools",
+    *AGENT_ENGINE_FIELDS, AGENT_OWNER_TEAM_FIELD, AGENT_ROLE_MODELS_FIELD, AGENT_GATES_FIELD, AGENT_ENVIRONMENT_FIELD,
+)
+
+
+def agent_model_entries(raw_models: object) -> list[str] | None:
+    """The stored ``models`` of an agent save: ``<modelKey>[_<modelName>]`` strings, first occurrence kept; None when the save
+    names no list (the stored value stays), ``[]`` for an explicit null."""
+    if raw_models is None:
+        return []
+    if not isinstance(raw_models, list):
+        return None
+    entries: list[str] = []
+    for model in raw_models:
+        if isinstance(model, dict):
+            key, name = model.get("modelKey"), model.get("modelName", "")
+        elif isinstance(model, str):
+            key, _, name = model.partition("_")
+        else:
+            continue
+        if key:
+            entry = f"{key}_{name}" if name else key
+            if entry not in entries:
+                entries.append(entry)
+    return entries
+
+
+def agent_update_document(agent_updates: dict[str, Any], user_id: str, now_ms: int) -> dict[str, Any]:
+    """What an agent save writes to the stored agent: the updatable fields it names (JSON-text settings in their stored form),
+    the normalised model list, and who saved it when."""
+    document: dict[str, Any] = {"updatedAtTimestamp": now_ms, "updatedBy": user_id}
+    for field in AGENT_UPDATABLE_FIELDS:
+        if field in agent_updates:
+            document[field] = agent_updates[field]
+    encode_agent_json_fields(document)
+    if "models" in agent_updates:
+        models = agent_model_entries(agent_updates["models"])
+        if models is not None:
+            document["models"] = models
+    return document
 
 # A person (User node) as a listable entity: the connector-written relations
 # linking a person to a record, by the direction they are stored in.

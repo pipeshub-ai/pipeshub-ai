@@ -8,24 +8,62 @@ The query service does not wire ``FeatureFlagService`` with an ``EtcdProvider``
 from __future__ import annotations
 
 import logging
+from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple, Optional
 
 from app.services.featureflag.config.config import CONFIG
+from app.utils.env_flags import AGENT_HARNESS_WORKER_ENABLED, env_flag
 from app.utils.env_utils import high_accuracy_mode
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from app.config.configuration_service import ConfigurationService
 
 logger = logging.getLogger(__name__)
 
 PLATFORM_SETTINGS_KEY = "/services/platform/settings"
 
+# The release default of each Labs flag this service reads. Labs stores only the flags an admin changed (UX1),
+# so a flag with no stored value reads its default here; it must equal Node's registry
+# (`PLATFORM_FEATURE_FLAGS`), which tests/unit/services/test_ux1_platform_flag_defaults.py checks.
+PLATFORM_FLAG_DEFAULTS: dict[str, bool] = {
+    CONFIG.ENABLE_ACTIONS: True,
+    CONFIG.ENABLE_SKILLS: True,
+    CONFIG.ENABLE_SOFT_DELETE: False,
+    CONFIG.ENABLE_USER_CONTEXT: True,
+    CONFIG.ENABLE_KNOWLEDGE_PUBLICATIONS: False,
+    CONFIG.ENABLE_AGENT_HARNESS: False,
+    CONFIG.ENABLE_MCP: True,
+    CONFIG.ENABLE_VECTOR_STORE_REBUILD: False,
+    CONFIG.ENABLE_BETA_CONNECTORS: False,
+    CONFIG.ENABLE_NAMED_ENTITY_EXTRACTION: False,
+    CONFIG.ENABLE_KH_SCOPE_LISTING: False,
+    CONFIG.ENABLE_API_TOOLSETS: False,
+    CONFIG.ENABLE_CLASSIFY_ON_FIRST_USE: False,
+    CONFIG.ENABLE_ARTIFACT_WRITE: False,
+}
+
+# Flags read here that the Labs page does not list (set in the platform settings directly), so Node's registry
+# has no default to agree with.
+UNLISTED_FLAG_DEFAULTS: dict[str, bool] = {
+    CONFIG.ENABLE_KB_PUSH: False,
+}
+
+
+def platform_flag_default(flag_name: str) -> bool:
+    """A Labs flag's release default (``PLATFORM_FLAG_DEFAULTS``); a flag the table does not list is a
+    ``KeyError``: every reader takes its default from the one table, never from a literal of its own (UX2)."""
+    name = str(flag_name).upper()
+    if name in UNLISTED_FLAG_DEFAULTS:
+        return UNLISTED_FLAG_DEFAULTS[name]
+    return PLATFORM_FLAG_DEFAULTS[name]
+
 
 async def read_platform_feature_flag(
     flag_name: str,
     config_service: Any,
     *,
-    default: bool,
     use_cache: bool = False,
     fail_closed: bool = False,
 ) -> bool:
@@ -34,14 +72,17 @@ async def read_platform_feature_flag(
     Reads with ``use_cache=False`` by default so flipping a flag in Labs takes
     effect on the next request instead of after a service restart. A hot path
     may pass ``use_cache=True``: a save in Labs invalidates the cached key in
-    every process. On missing settings or an absent flag key, returns ``default``.
+    every process. On missing settings or an absent flag key, returns the flag's release default
+    (``PLATFORM_FLAG_DEFAULTS``).
 
     ``get_config`` answers ``default`` for a store outage or an undecryptable
     value, which here reads as "flag absent". For a flag whose default is on,
     that would silently undo an admin's saved opt-out, so ``fail_closed=True``
     asks ``get_config`` to raise and returns ``False`` when the saved value
-    cannot be read. Without it, a read failure also returns ``default``.
+    cannot be read. Without it, a read failure also returns the flag's release default
+    (``PLATFORM_FLAG_DEFAULTS``).
     """
+    default = platform_flag_default(flag_name)
     try:
         if fail_closed:
             settings = await config_service.get_config(
@@ -72,15 +113,33 @@ async def read_platform_feature_flag(
         return fallback
 
 
+# A durable run admitted with a pin (CPD-6) runs on the Labs stages its admission saw: a flag flipped while it
+# runs applies from the next run. Set for the attempt's task when the run is assembled; ``None``: no pinned run.
+_PINNED_STAGES: ContextVar["Mapping[str, bool] | None"] = ContextVar("pinned_labs_stages", default=None)
+
+
+def bind_pinned_stages(stages: "Mapping[str, bool] | None") -> None:
+    """The Labs stages every flag read of this task answers from; ``None`` reads the settings again."""
+    _PINNED_STAGES.set(None if stages is None else {str(name).upper(): on for name, on in stages.items()})
+
+
+def pinned_stage(flag: str) -> bool | None:
+    """The flag's value in the stages this task is bound to (``bind_pinned_stages``); ``None`` when unbound or not
+    among them, so the caller reads the settings."""
+    pinned = _PINNED_STAGES.get()
+    return None if pinned is None else pinned.get(str(flag).upper())
+
+
 async def _platform_flag(
     config_service: Optional["ConfigurationService"],
     flag: str,
     *,
-    default: bool,
+    fail_closed: bool = False,
 ) -> bool:
     """Shared resolution path for org-level platform feature flags.
 
-    Resolution order (first hit wins), mirroring ``is_mcp_enabled``:
+    Resolution order (first hit wins):
+    0. the stages a pinned run is bound to (``bind_pinned_stages``)
     1. ``config_service`` — live read of the platform settings the Labs UI writes,
        via the shared ``read_platform_feature_flag`` helper (``use_cache=False``,
        so flipping the flag in Labs takes effect on the next request instead of
@@ -88,29 +147,31 @@ async def _platform_flag(
     2. ``FeatureFlagService`` — only reachable in services that wire an
        ``EtcdProvider`` (the connectors service); the query service does not, which
        is why the ``config_service`` read above is the primary path
-    3. ``default``
+    3. the flag's release default (``PLATFORM_FLAG_DEFAULTS``)
     """
+    pinned = pinned_stage(flag)
+    if pinned is not None:
+        return pinned
     if config_service is not None:
-        return await read_platform_feature_flag(flag, config_service, default=default)
+        return await read_platform_feature_flag(flag, config_service, fail_closed=fail_closed)
 
     try:
         from app.services.featureflag.featureflag import FeatureFlagService
 
         return bool(
-            FeatureFlagService.get_service().is_feature_enabled(flag, default=default)
+            FeatureFlagService.get_service().is_feature_enabled(flag)
         )
     except Exception as e:
-        logger.warning(
-            f"FeatureFlagService unavailable for {flag}, treating as default={default}: {e}"
-        )
-        return default
+        fallback = False if fail_closed else platform_flag_default(flag)
+        logger.warning(f"FeatureFlagService unavailable for {flag}, treating it as {fallback}: {e}")
+        return fallback
 
 
 async def is_api_toolsets_enabled(config_service: Optional["ConfigurationService"] = None) -> bool:
     """Org-level gate for API Toolsets: their routes, UI and agent tools. Source of truth is
     the ``ENABLE_API_TOOLSETS`` platform feature flag. Defaults to DISABLED: agents call
     org-internal APIs only once an admin opts in from Labs."""
-    return await _platform_flag(config_service, CONFIG.ENABLE_API_TOOLSETS, default=False)
+    return await _platform_flag(config_service, CONFIG.ENABLE_API_TOOLSETS)
 
 
 async def is_actions_enabled(config_service: Optional["ConfigurationService"] = None) -> bool:
@@ -119,7 +180,17 @@ async def is_actions_enabled(config_service: Optional["ConfigurationService"] = 
     ``ENABLE_ACTIONS`` platform feature flag. Defaults to ENABLED; admins
     may opt out from Labs.
     """
-    return await _platform_flag(config_service, CONFIG.ENABLE_ACTIONS, default=True)
+    return await _platform_flag(config_service, CONFIG.ENABLE_ACTIONS)
+
+
+async def is_mcp_enabled(config_service: "ConfigurationService | None" = None) -> bool:
+    """Deployment-level gate for MCP: agents may only load/use MCP servers when
+    this is true. Source of truth is the ``ENABLE_MCP`` platform feature flag.
+    Defaults to ENABLED when the flag was never saved; admins may opt out from
+    Labs. A saved value that cannot be read is treated as DISABLED, so an outage
+    never re-enables MCP for a workspace that turned it off.
+    """
+    return await _platform_flag(config_service, CONFIG.ENABLE_MCP, fail_closed=True)
 
 
 async def is_skills_enabled(config_service: Optional["ConfigurationService"] = None) -> bool:
@@ -132,7 +203,7 @@ async def is_skills_enabled(config_service: Optional["ConfigurationService"] = N
     kill-switch (see ``skills_wiring.skills_enabled()``); both must be true for
     skills to run.
     """
-    return await _platform_flag(config_service, CONFIG.ENABLE_SKILLS, default=True)
+    return await _platform_flag(config_service, CONFIG.ENABLE_SKILLS)
 
 
 async def is_named_entity_extraction_enabled(config_service: ConfigurationService | None = None) -> bool:
@@ -141,7 +212,7 @@ async def is_named_entity_extraction_enabled(config_service: ConfigurationServic
     read live and defaults to off; under ``HIGH_ACCURACY_MODE`` it is not read."""
     if high_accuracy_mode():
         return True
-    return await _platform_flag(config_service, CONFIG.ENABLE_NAMED_ENTITY_EXTRACTION, default=False)
+    return await _platform_flag(config_service, CONFIG.ENABLE_NAMED_ENTITY_EXTRACTION)
 
 
 async def is_artifact_write_enabled(config_service: ConfigurationService | None = None) -> bool:
@@ -151,7 +222,7 @@ async def is_artifact_write_enabled(config_service: ConfigurationService | None 
     if config_service is None:
         return False
     return await read_platform_feature_flag(
-        CONFIG.ENABLE_ARTIFACT_WRITE, config_service, default=False, use_cache=True,
+        CONFIG.ENABLE_ARTIFACT_WRITE, config_service, use_cache=True,
     )
 
 
@@ -161,7 +232,7 @@ async def is_kb_push_enabled(config_service: ConfigurationService | None = None)
     if config_service is None:
         return False
     return await read_platform_feature_flag(
-        CONFIG.ENABLE_KB_PUSH, config_service, default=False, use_cache=True,
+        CONFIG.ENABLE_KB_PUSH, config_service, use_cache=True,
     )
 
 
@@ -263,9 +334,9 @@ async def is_classify_on_first_use_enabled(config_service: ConfigurationService 
     save invalidates. Defaults to disabled: classify right after indexing."""
     if config_service is not None:
         return await read_platform_feature_flag(
-            CONFIG.ENABLE_CLASSIFY_ON_FIRST_USE, config_service, default=False, use_cache=True
+            CONFIG.ENABLE_CLASSIFY_ON_FIRST_USE, config_service, use_cache=True
         )
-    return await _platform_flag(None, CONFIG.ENABLE_CLASSIFY_ON_FIRST_USE, default=False)
+    return await _platform_flag(None, CONFIG.ENABLE_CLASSIFY_ON_FIRST_USE)
 
 
 async def is_soft_delete_enabled(config_service: ConfigurationService | None = None) -> bool:
@@ -273,7 +344,7 @@ async def is_soft_delete_enabled(config_service: ConfigurationService | None = N
 
     Read live on every delete. Defaults to DISABLED: off means today's hard delete.
     """
-    return await _platform_flag(config_service, CONFIG.ENABLE_SOFT_DELETE, default=False)
+    return await _platform_flag(config_service, CONFIG.ENABLE_SOFT_DELETE)
 
 
 async def is_user_context_enabled(config_service: Optional["ConfigurationService"] = None) -> bool:
@@ -285,7 +356,26 @@ async def is_user_context_enabled(config_service: Optional["ConfigurationService
     Agent Builder agents do not use this flag. Each stored agent has its
     own ``sendUserContext`` field.
     """
-    return await _platform_flag(config_service, CONFIG.ENABLE_USER_CONTEXT, default=True)
+    return await _platform_flag(config_service, CONFIG.ENABLE_USER_CONTEXT)
+
+
+async def is_knowledge_publications_enabled(config_service: "ConfigurationService | None" = None) -> bool:
+    """Org-level gate for knowledge publications (P2.13, D21). Defaults to DISABLED; an unreadable setting
+    reads as off, which is today's retrieval: no publication is read or created."""
+    return await _platform_flag(config_service, CONFIG.ENABLE_KNOWLEDGE_PUBLICATIONS)
+
+
+async def is_agent_harness_on(config_service: ConfigurationService | None) -> bool:
+    """Whether the agent harness is on for the org (ADR-OPS-08): the server switch ``AGENT_HARNESS_WORKER_ENABLED``
+    and the org's Labs ``ENABLE_AGENT_HARNESS``, the same two inputs Node's ``orgHarnessOn`` reads. Everything a person
+    or an org sees of the harness keys on it; process start-up keys on the switch alone. Read through the config
+    cache (a Labs save invalidates it everywhere); a setting that cannot be read is off, which is what a release
+    without the harness does."""
+    if not env_flag(AGENT_HARNESS_WORKER_ENABLED) or config_service is None:
+        return False
+    return await read_platform_feature_flag(
+        CONFIG.ENABLE_AGENT_HARNESS, config_service, use_cache=True, fail_closed=True,
+    )
 
 
 async def is_kh_scope_listing_enabled(config_service: Optional["ConfigurationService"]) -> bool:
@@ -296,9 +386,7 @@ async def is_kh_scope_listing_enabled(config_service: Optional["ConfigurationSer
     """
     if config_service is None:
         return False
-    return await read_platform_feature_flag(
-        CONFIG.ENABLE_KH_SCOPE_LISTING, config_service, default=False, use_cache=True,
-    )
+    return await read_platform_feature_flag(CONFIG.ENABLE_KH_SCOPE_LISTING, config_service, use_cache=True)
 
 
 PARSE_NOW_DEFAULT_WAIT_SECONDS = 55

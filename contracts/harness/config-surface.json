@@ -1,0 +1,327 @@
+{
+  "description": "Checklist §4.2 (C4.10): each configuration row and what carries it. `dimension`: rows of core/policy/policy-dimensions.json, resolved, narrowed and lockable by the one resolver (QA-2 and C4.02's vectors hold every row); `flag`: operator env in flags.json, set by the deployment alone; `section`: a policy-layer section a feature reads directly; `partial` and `missing` name what is left and the package that adds it. tests/cohesion/test_c4_10_config_surface.py holds this file to the checklist, the dimension table and flags.json.",
+  "rows": [
+    {
+      "setting": "Feature enabled",
+      "status": "dimension",
+      "dimensions": [
+        "rollout.ENABLE_AGENT_HARNESS"
+      ]
+    },
+    {
+      "setting": "Allowed harnesses + versions",
+      "status": "dimension",
+      "dimensions": [
+        "engineProfile.engine"
+      ],
+      "note": "engines are admitted by kind or kind@version selectors, narrowed per layer; the release allowlist names the versions a deployment can run (one per engine ships today, which is a release fact, not a setting)"
+    },
+    {
+      "setting": "Harness default version / pin",
+      "status": "dimension",
+      "dimensions": [
+        "engineProfile.engine"
+      ],
+      "note": "unpinned, a run takes its engine's first admitted allowlist entry, the latest approved; an org or agent selector `kind@version` pins one; a conversation keeps the version it started on (C14.01)"
+    },
+    {
+      "setting": "Sandbox provider + runtime class",
+      "status": "dimension",
+      "dimensions": [
+        "operator.SANDBOX_MODE",
+        "engineProfile.isolationMin"
+      ],
+      "note": "the backend is the deployment's; the weakest runtime a run accepts narrows per layer"
+    },
+    {
+      "setting": "Sandbox CPU / memory / disk / pids",
+      "status": "dimension",
+      "dimensions": [
+        "sandbox.cpus",
+        "sandbox.memoryMb",
+        "sandbox.pids",
+        "sandbox.scratchMb",
+        "sandbox.inputMaxMb"
+      ],
+      "flags": [
+        "SANDBOX_WORKSPACE_QUOTA_MB",
+        "HARNESS_INPUT_MAX_MB"
+      ],
+      "note": "each lowers the engine template's value, never raises it (default: the template's); the workspace's disk quota is operator env; the largest input is the deployment's HARNESS_INPUT_MAX_MB (100 MiB), which sandbox.inputMaxMb lowers for an org (J-26)"
+    },
+    {
+      "setting": "Warm-pool size per template",
+      "status": "flag",
+      "flags": [
+        "SANDBOX_WARM_POOL_MAX"
+      ],
+      "note": "operator env: the broker's pool is per host, not per template, so no layer below the deployment sets it"
+    },
+    {
+      "setting": "Idle timeout / max lifetime",
+      "status": "dimension",
+      "dimensions": [
+        "budgets.activeTimeS",
+        "engineProfile.limits.maxWallS"
+      ],
+      "flags": [
+        "SANDBOX_MAX_LIFETIME_S",
+        "HARNESS_SIGNIN_IDLE_MINUTES"
+      ],
+      "note": "a run's lifetime narrows per layer. An engine sandbox is released at the end of every turn (keep-warm 0), so a run has no idle sandbox to time out; a signed-in sandbox's idle time is operator env"
+    },
+    {
+      "setting": "Snapshot TTL / retention",
+      "status": "dimension",
+      "dimensions": [
+        "snapshots.ttlDays"
+      ],
+      "note": "7 days in the release; the deployment or the org may shorten it. The retention sweeper deletes older snapshots and admission never carries one"
+    },
+    {
+      "setting": "Allowed models per harness",
+      "status": "dimension",
+      "dimensions": [
+        "models.routes",
+        "models.primary",
+        "models.roles"
+      ]
+    },
+    {
+      "setting": "Model alias map",
+      "status": "dimension",
+      "dimensions": [
+        "models.routes",
+        "models.primary",
+        "models.roles"
+      ],
+      "note": "an engine asks for one neutral model id, which the model gateway maps to the run's pinned primary route (MG-06, C3.61); `pipeshub:org-default` names the org's default model; named roles map to an org's models per layer; a vendor name is refused, never mapped. Default: the org's default model"
+    },
+    {
+      "setting": "Egress policy (setup phase)",
+      "status": "dimension",
+      "dimensions": [
+        "engineProfile.egress"
+      ],
+      "sections": [
+        "websites",
+        "repositories"
+      ],
+      "note": "the setup phase is the run's agent-phase egress plus its repository, fetch-only, with the person's read token (WP-26), then dropped; a clone a person approves is fetched by the worker outside the sandbox from the `repositories` hosts (WP-63)"
+    },
+    {
+      "setting": "Egress policy (agent phase)",
+      "status": "dimension",
+      "dimensions": [
+        "engineProfile.egress"
+      ]
+    },
+    {
+      "setting": "Package mirrors",
+      "status": "section",
+      "sections": [
+        "websites"
+      ],
+      "flags": [
+        "EGRESS_UPSTREAM_PROXY"
+      ],
+      "note": "run images carry their packages and no installer; a registry or an internal mirror is a site an admin allows (the `package-registries` preset, or the mirror's host) under `websites`, off by default; a deployment's corporate proxy is EGRESS_UPSTREAM_PROXY"
+    },
+    {
+      "setting": "Git hosts + push policy",
+      "status": "section",
+      "sections": [
+        "repositories"
+      ],
+      "note": "the hosts an agent may ask to clone from, per org and narrowed per agent, off by default. Push policy is fixed, not a setting: only the session branch, fast-forward, each push approved by a person (GT-02/03, OWD); git hosts are never reachable from a sandbox"
+    },
+    {
+      "setting": "Toolsets / MCP servers / skills / knowledge",
+      "status": "dimension",
+      "dimensions": [
+        "engineProfile.skills",
+        "engineProfile.tools.effects",
+        "engineProfile.tools.maxTools",
+        "rollout.ENABLE_MCP",
+        "rollout.ENABLE_ACTIONS",
+        "rollout.ENABLE_SKILLS",
+        "catalog.approval",
+        "catalog.delegation"
+      ],
+      "note": "which items an agent holds are control-plane grants (CPD-7), not a dimension"
+    },
+    {
+      "setting": "Tool disclosure (`eager` / `lazy` / `filesystem`)",
+      "status": "dimension",
+      "dimensions": [
+        "toolDisclosure.modes",
+        "toolDisclosure.mode"
+      ]
+    },
+    {
+      "setting": "Direct-tool count cap",
+      "status": "flag",
+      "flags": [
+        "PIPESHUB_ENGINE_LAZY_TOOLS_THRESHOLD"
+      ],
+      "note": "operator tuning; an agent that wants every tool listed picks toolDisclosure.mode eager"
+    },
+    {
+      "setting": "Tool result cap / offload threshold",
+      "status": "dimension",
+      "dimensions": [
+        "toolResults.maxChars"
+      ],
+      "note": "null: each executor's own (the loop 64,000 characters, an engine 24,000, about 8k tokens); a set value lowers both. Past it an engine's knowledge results go to /pipeshub/knowledge and other results are cut head and tail with how to get the rest"
+    },
+    {
+      "setting": "`response_format` default",
+      "status": "dimension",
+      "dimensions": [
+        "toolResults.formats",
+        "toolResults.format"
+      ],
+      "note": "the org's allowed formats and the agent's default; unset: concise. A model may still ask for either format in a call"
+    },
+    {
+      "setting": "Policy: risk-class defaults (allow / ask / deny)",
+      "status": "dimension",
+      "dimensions": [
+        "approvals",
+        "engineProfile.approvals.read",
+        "engineProfile.approvals.workspace",
+        "engineProfile.approvals.write",
+        "engineProfile.approvals.execute"
+      ]
+    },
+    {
+      "setting": "Rule-of-Two enforcement",
+      "status": "dimension",
+      "dimensions": [
+        "approvals"
+      ],
+      "note": "the flow rule is a member of the approval rules (approvals.flow)"
+    },
+    {
+      "setting": "Approval TTL / approver set",
+      "status": "dimension",
+      "dimensions": [
+        "interactions.waitS"
+      ],
+      "flags": [
+        "HARNESS_WAIT_FOR_PERSON_DAYS"
+      ],
+      "note": "how long a run waits for an answer, narrowed per layer (default: the deployment's 7 days, not the 1 hour proposed: a person away for a meeting should not lose the run); the person the run acts for approves"
+    },
+    {
+      "setting": "\"Approve for session\" allowed",
+      "status": "dimension",
+      "dimensions": [
+        "interactions.conversationGrants"
+      ],
+      "note": "on by default; off, every call is asked. Plan approvals and an edition's asks are never answered for the conversation"
+    },
+    {
+      "setting": "Budgets: tokens / cost / turns / wall-clock / sandbox-seconds",
+      "status": "dimension",
+      "dimensions": [
+        "budgets.maxTokens",
+        "budgets.maxCostUsd",
+        "budgets.maxTurns",
+        "budgets.activeTimeS",
+        "engineProfile.limits.maxTokens",
+        "engineProfile.limits.maxUsd",
+        "engineProfile.limits.maxSteps",
+        "engineProfile.limits.maxWallS"
+      ],
+      "note": "per run: the dimensions narrow per layer (the USD cap is the real limit, tokens a backstop)"
+    },
+    {
+      "setting": "Concurrency caps (org / user)",
+      "status": "dimension",
+      "dimensions": [
+        "quotas.activeRunsPerOrg",
+        "quotas.activeRunsPerUser"
+      ],
+      "flags": [
+        "SANDBOX_MAX_PER_ORG",
+        "SANDBOX_MAX_TOTAL"
+      ],
+      "note": "runs queued or running at once: 200 per org and 10 per person in the release (not the 10 / 2 proposed, which would refuse a team's ordinary use), lowered by the deployment or the org; sandbox caps are operator env"
+    },
+    {
+      "setting": "Reasoning visibility in UI",
+      "status": "dimension",
+      "dimensions": [
+        "ui.reasoning"
+      ],
+      "note": "on by default where the model exposes reasoning; off, reasoning is never sent to the browser"
+    },
+    {
+      "setting": "Terminal view (read-only / hidden)",
+      "status": "dimension",
+      "dimensions": [
+        "ui.terminal"
+      ],
+      "note": "read-only by default (true); hidden (false) sends commands by name only, never their output"
+    },
+    {
+      "setting": "Transcript + audit retention",
+      "status": "section",
+      "sections": [
+        "retention"
+      ],
+      "note": "a layer section the retention sweeper reads (E7); default: no expiry, configurable per org, not the 90 days / 1 year the table proposed. Audit records hold ids and counts only and stay with the org (CLEANUP-G1)",
+      "default": null
+    },
+    {
+      "setting": "Trace content capture",
+      "status": "dimension",
+      "dimensions": [
+        "operator.OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT"
+      ]
+    },
+    {
+      "setting": "Schedules / triggers",
+      "status": "dimension",
+      "dimensions": [
+        "rollout.ENABLE_SCHEDULED_RUNS",
+        "triggers.webhookMaxBytes",
+        "triggers.webhookPerMinute"
+      ],
+      "note": "Labs turns scheduled runs on per org; a webhook trigger's body cap and per-minute rate are ceilings the deployment or the org may lower. Catch-up, overlap and the webhook's signature are each schedule's own (TR-02, TR-04, TR-06)"
+    },
+    {
+      "setting": "Notifications channels",
+      "status": "dimension",
+      "dimensions": [
+        "triggers.notifyChannels"
+      ],
+      "note": "the org's ceiling of channels (in_app, email, slack), in-app by default; each schedule's owner picks among them for its completion notice (TR-07), and approver link notices use the same ceiling."
+    },
+    {
+      "setting": "Harness telemetry export (OTel)",
+      "status": "flag",
+      "flags": [
+        "HARNESS_OTEL"
+      ],
+      "note": "operator env: the exporter is per process"
+    },
+    {
+      "setting": "Auto-resume after crash",
+      "status": "dimension",
+      "dimensions": [
+        "recovery.autoResume"
+      ],
+      "note": "on by default: a run whose worker was lost is queued again and resumes from its checkpoint; a call whose outcome is unknown is reconciled or asked, never repeated. Off: the run ends as interrupted"
+    },
+    {
+      "setting": "Dev / insecure mode (runc, open egress)",
+      "status": "flag",
+      "flags": [
+        "PIPESHUB_ENGINES_WITHOUT_GVISOR"
+      ],
+      "note": "dev/test only: the release's gVisor floor is the one override"
+    }
+  ]
+}

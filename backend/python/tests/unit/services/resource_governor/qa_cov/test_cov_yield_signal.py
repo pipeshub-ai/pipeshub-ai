@@ -204,6 +204,7 @@ class TestLock:
         monkeypatch.setattr(ys.fcntl, "flock", broken_flock)
         started = time.monotonic()
         assert signal.refresh(reason="live_memory", budget=5.0) is None
+        # wall-clock-ok: a spin would last the whole 5 s budget; 1 s is a fifth of it (the call count is the exact check)
         assert time.monotonic() - started < 1.0
         assert len(calls) == 1  # no retry, and no unlock of a lock never taken
         assert signal._thread_lock.acquire(blocking=False)

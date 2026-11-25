@@ -1,0 +1,46 @@
+[
+  {
+    "description": "no unknown dimension",
+    "instance": {
+      "network": "open"
+    }
+  },
+  {
+    "description": "an engine is kind or kind@version",
+    "instance": {
+      "engines": [
+        "Engine A"
+      ]
+    }
+  },
+  {
+    "description": "an empty engine list admits nothing; say so by omitting it",
+    "instance": {
+      "engines": []
+    }
+  },
+  {
+    "description": "no unknown approval class",
+    "instance": {
+      "approvals": {
+        "network": "deny"
+      }
+    }
+  },
+  {
+    "description": "a tool ceiling is positive",
+    "instance": {
+      "tools": {
+        "maxTools": 0
+      }
+    }
+  },
+  {
+    "description": "no unknown limit",
+    "instance": {
+      "limits": {
+        "maxFiles": 3
+      }
+    }
+  }
+]

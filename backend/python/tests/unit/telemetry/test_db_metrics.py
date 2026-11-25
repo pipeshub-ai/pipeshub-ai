@@ -2,13 +2,13 @@
 
 import asyncio
 import sys
-import time
 from typing import Never
 
 import pytest
 
 from app.telemetry.backend import PrometheusBackend
 from app.telemetry.modules import db_metrics
+from tests.support.cpu_budget import thread_cpu
 
 
 @pytest.fixture
@@ -92,7 +92,7 @@ def test_overhead_relative_to_realistic_await(hist) -> None:
     """The wrapper adds a few function calls to a store call, not real work.
 
     Checked by counting the Python and C calls it makes (24 more per call today, a bound of 60) and by a time bound that
-    only a wrapper doing real work reaches (0.5 ms per call, against 20 microseconds before), not by a microsecond bound
+    only a wrapper doing real work reaches (0.5 ms of CPU per call, against 20 microseconds before), not by a microsecond bound
     that a shared runner's noise exceeds."""
 
     class Fast:
@@ -119,10 +119,10 @@ def test_overhead_relative_to_realistic_await(hist) -> None:
         return seen / n
 
     async def seconds_per_op(obj: Fast, n: int = 2000) -> float:
-        t = time.perf_counter()
-        for _ in range(n):
-            await obj.op()
-        return (time.perf_counter() - t) / n
+        with thread_cpu() as cpu:
+            for _ in range(n):
+                await obj.op()
+        return cpu.seconds / n
 
     instrumented = db_metrics.instrument_store(Fast(), "kv")
     assert calls_per_op(instrumented) - calls_per_op(Fast()) < 60

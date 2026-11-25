@@ -29,6 +29,7 @@ from app.services.storage_documents import (
 )
 from app.utils.byte_range import MAX_RANGE_SPAN, ByteRange
 from app.utils.content_tag import content_tag
+from tests.support.record_access import InMemoryRecordAccess
 
 RECORD_ID = "rec-1"
 PIPELINE = "lo:test|conv:1"
@@ -119,8 +120,10 @@ class World:
         graph = MagicMock()
         graph.get_record_by_id = AsyncMock(return_value=self.record)
         graph.get_document = AsyncMock(side_effect=get_document)
-        graph.check_record_access_with_details = AsyncMock(return_value=self.access)
-        return graph
+        access = InMemoryRecordAccess().user("u1", "org-1").record(RECORD_ID, "org-1")
+        if self.access is not None:
+            access.grant(RECORD_ID, user="u1", role="OWNER")
+        return access.serve(graph)
 
     def request(self, inm: str | None = None, org: str = "org-1", asks: bool = True, extra: dict[str, str] | None = None) -> SimpleNamespace:
         headers = {"if-none-match": inm} if inm is not None else {}

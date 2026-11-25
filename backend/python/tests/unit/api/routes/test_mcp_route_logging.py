@@ -43,6 +43,7 @@ from app.api.routes import mcp_servers
 from app.utils.logger import log_record_fields
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_messages import action_failed
+from tests.support.bound_org import bound_like_auth
 from tests.support.refresh_log_fakes import (
     SEEDED_RT,
     SEEDED_SECRET,
@@ -70,7 +71,8 @@ def _app(config_service: FakeConfigService) -> FastAPI:
     @app.middleware("http")
     async def authenticate(request: Request, call_next: Callable[[Request], Awaitable[Response]]) -> Response:
         request.state.user = {"userId": USER, "orgId": ORG}
-        return await call_next(request)
+        with bound_like_auth(request.state.user):
+            return await call_next(request)
 
     install_request_logging(app)
     app.include_router(mcp_servers.router)

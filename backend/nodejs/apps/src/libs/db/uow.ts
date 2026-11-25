@@ -77,6 +77,9 @@ export interface PgRuntimeConfig {
   pool: PgPool;
   /** Only processes that run jobs have one. */
   jobsPool?: PgPool;
+  /** The import login's pool, where a process holds it beside the jobs login's (a test stack); `service: 'import'` units
+   * run on it. Absent, they run on `jobsPool` (the copy's own process, whose jobs pool is the import login). */
+  importPool?: PgPool;
   defaultService: string;
   pooler?: Pooler;
   /** Write units call `fn(epoch)` in the prologue. `fn` is a schema-qualified function name. */
@@ -323,7 +326,11 @@ export class PgRuntime {
     // `service: 'import'` is the one-off copy of an existing install: a login of its own, on this pool
     const service = opts.service === 'import' ? 'import' : 'jobs';
     const b = this.binding(service, ctx.orgId ?? '', ctx);
-    return this.retrying(this.cfg.jobsPool, b, { ...opts, service }, fn);
+    const pool =
+      service === 'import'
+        ? (this.cfg.importPool ?? this.cfg.jobsPool)
+        : this.cfg.jobsPool;
+    return this.retrying(pool, b, { ...opts, service }, fn);
   }
 
   private countMissing(e: unknown): never {

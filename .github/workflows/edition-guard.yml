@@ -1,0 +1,53 @@
+name: Edition guard
+
+# A change keeps this repository edition-neutral: no edition-only path, import
+# or licence marker, and no new file in a directory that accepts fixes only
+# (scripts/edition_guard.py; CONTRIBUTING.md, "Extension points"). Standard
+# library only, so nothing is installed and no secret is in reach.
+on:
+  pull_request:
+    branches:
+      - 'main'
+  push:
+    branches:
+      - 'main'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: edition-guard-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  edition-guard:
+    name: Edition guard
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12'
+
+      - name: Test the guard
+        run: python3 -I -m unittest discover -s scripts -p 'test_edition_guard.py'
+
+      # The pull request's commits against its base; on a push, the commits the push added.
+      - name: Check the change
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          set -euo pipefail
+          printf '%s' "${PR_BODY:-}" > "$RUNNER_TEMP/pr-body.txt"
+          if [ -z "$BASE_SHA" ] || [ "$BASE_SHA" = "0000000000000000000000000000000000000000" ]; then
+            BASE_SHA="$(git rev-parse HEAD~1)"
+          fi
+          python3 -I scripts/edition_guard.py --base "$BASE_SHA" --pr-body "$RUNNER_TEMP/pr-body.txt"

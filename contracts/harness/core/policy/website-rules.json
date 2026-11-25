@@ -1,0 +1,181 @@
+{
+  "schemaVersion": 1,
+  "presets": [
+    {
+      "id": "package-registries",
+      "name": "Package registries",
+      "description": "Install packages from npm, PyPI, crates.io, Maven Central and RubyGems; never a publish. They stay open after a private read: they serve only their own files.",
+      "sites": [
+        "registry.npmjs.org",
+        "pypi.org",
+        "files.pythonhosted.org",
+        "crates.io",
+        "index.crates.io",
+        "static.crates.io",
+        "repo1.maven.org",
+        "repo.maven.apache.org",
+        "rubygems.org",
+        "index.rubygems.org"
+      ]
+    }
+  ],
+  "readOnlyHosts": [
+    "api.github.com",
+    "uploads.github.com",
+    "pastebin.com",
+    "paste.ee",
+    "hastebin.com",
+    "dpaste.org",
+    "dpaste.com",
+    "rentry.co",
+    "controlc.com",
+    "termbin.com",
+    "ix.io",
+    "0x0.st",
+    "transfer.sh",
+    "file.io",
+    "webhook.site",
+    "requestbin.com",
+    "pipedream.net",
+    "*.pipedream.net",
+    "*.ngrok.io",
+    "*.ngrok-free.app",
+    "*.trycloudflare.com",
+    "*.workers.dev",
+    "*.pages.dev",
+    "*.r2.dev",
+    "s3.amazonaws.com",
+    "*.s3.amazonaws.com",
+    "*.amazonaws.com",
+    "*.cloudfront.net",
+    "*.blob.core.windows.net",
+    "*.azureedge.net",
+    "*.azurefd.net",
+    "*.web.core.windows.net",
+    "storage.googleapis.com",
+    "*.storage.googleapis.com",
+    "*.appspot.com",
+    "*.fastly.net",
+    "*.akamaized.net",
+    "*.firebaseio.com",
+    "*.netlify.app",
+    "*.vercel.app",
+    "bit.ly",
+    "tinyurl.com",
+    "discord.com",
+    "discordapp.com",
+    "hooks.slack.com",
+    "api.telegram.org"
+  ],
+  "gitHosts": [
+    "github.com",
+    "codeload.github.com",
+    "gist.github.com",
+    "githubusercontent.com",
+    "*.githubusercontent.com",
+    "gitlab.com",
+    "bitbucket.org",
+    "dev.azure.com",
+    "ssh.dev.azure.com",
+    "codeberg.org",
+    "git.sr.ht"
+  ],
+  "registryHosts": [
+    {
+      "host": "registry.npmjs.org",
+      "reason": "npm's registry: package documents and tarballs are files npm stores, by package name; it fetches nothing on a request's behalf."
+    },
+    {
+      "host": "pypi.org",
+      "reason": "PyPI's index (simple and JSON APIs): pages PyPI builds from its own database, by project name; it fetches nothing on a request's behalf."
+    },
+    {
+      "host": "files.pythonhosted.org",
+      "reason": "PyPI's file store: distributions PyPI holds, by content path; it fetches nothing on a request's behalf."
+    },
+    {
+      "host": "crates.io",
+      "reason": "The Rust registry's API and download redirects, by crate name and version, from its own database; it fetches nothing on a request's behalf."
+    },
+    {
+      "host": "index.crates.io",
+      "reason": "The Rust sparse index: files crates.io publishes, by crate name; it fetches nothing on a request's behalf."
+    },
+    {
+      "host": "static.crates.io",
+      "reason": "The Rust crate file store: archives crates.io holds, by crate name and version; it fetches nothing on a request's behalf."
+    },
+    {
+      "host": "repo1.maven.org",
+      "reason": "Maven Central: artifacts Sonatype stores, by group, artifact and version path; it fetches nothing on a request's behalf."
+    },
+    {
+      "host": "repo.maven.apache.org",
+      "reason": "Maven Central's Apache name: the same store as repo1.maven.org; it fetches nothing on a request's behalf."
+    },
+    {
+      "host": "rubygems.org",
+      "reason": "RubyGems' API and gem files, by gem name, from its own storage; it fetches nothing on a request's behalf."
+    },
+    {
+      "host": "index.rubygems.org",
+      "reason": "RubyGems' compact index for Bundler: files RubyGems publishes, by gem name; it fetches nothing on a request's behalf."
+    }
+  ],
+  "relayHosts": [
+    "proxy.golang.org",
+    "sum.golang.org",
+    "goproxy.io",
+    "goproxy.cn",
+    "webhook.site",
+    "requestbin.com",
+    "*.requestbin.com",
+    "pipedream.net",
+    "*.pipedream.net",
+    "*.requestcatcher.com",
+    "*.free.beeceptor.com",
+    "*.ngrok.io",
+    "*.ngrok-free.app",
+    "*.ngrok.app",
+    "*.trycloudflare.com",
+    "*.loca.lt",
+    "*.workers.dev",
+    "*.pages.dev",
+    "bit.ly",
+    "tinyurl.com",
+    "is.gd",
+    "t.co",
+    "rebrand.ly",
+    "corsproxy.io",
+    "api.allorigins.win",
+    "cors-anywhere.herokuapp.com",
+    "thingproxy.freeboard.io",
+    "api.codetabs.com",
+    "r.jina.ai",
+    "*.translate.goog",
+    "web.archive.org"
+  ],
+  "repositoryPresets": [
+    {
+      "id": "github-public",
+      "name": "github.com public repos",
+      "description": "Agents may ask to clone public repositories from github.com, read-only; the person approves each one.",
+      "host": "github.com",
+      "default": true
+    },
+    {
+      "id": "gitlab-public",
+      "name": "gitlab.com public repos",
+      "description": "Agents may ask to clone public repositories from gitlab.com, read-only; the person approves each one.",
+      "host": "gitlab.com",
+      "default": true
+    },
+    {
+      "id": "bitbucket-public",
+      "name": "bitbucket.org public repos",
+      "description": "Agents may ask to clone public repositories from bitbucket.org, read-only; the person approves each one.",
+      "host": "bitbucket.org",
+      "default": true
+    }
+  ]
+}

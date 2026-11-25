@@ -107,10 +107,10 @@ export function ChangeEmailDialog({
 
             {/* Description */}
             <Flex direction="column" gap="3">
-              <Text size="2" style={{ color: 'var(--gray-10)', lineHeight: '20px' }}>
+              <Text size="2" style={{ color: 'var(--gray-11)', lineHeight: '20px' }}>
                 {t('workspace.profile.changeEmail.description')}
               </Text>
-              <Text size="2" style={{ color: 'var(--gray-10)', lineHeight: '20px' }}>
+              <Text size="2" style={{ color: 'var(--gray-11)', lineHeight: '20px' }}>
                 {t('workspace.profile.changeEmail.validityNote')}
               </Text>
             </Flex>
@@ -183,7 +183,7 @@ export function ChangeEmailDialog({
             </Text>
 
             {/* Confirmation message */}
-            <Text size="2" style={{ color: 'var(--gray-10)', lineHeight: '20px' }}>
+            <Text size="2" style={{ color: 'var(--gray-11)', lineHeight: '20px' }}>
               {t('workspace.profile.changeEmail.validSuccess', { email: checkedEmail })}
             </Text>
 

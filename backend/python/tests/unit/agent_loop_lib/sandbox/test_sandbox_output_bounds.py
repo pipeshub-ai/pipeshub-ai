@@ -13,10 +13,12 @@
 from __future__ import annotations
 
 import asyncio
+import gc
 import io
 import os
 import sys
 import tarfile
+import threading
 import time
 import types
 from collections.abc import Iterator  # noqa: TC003
@@ -239,12 +241,22 @@ class TestStdioIsBounded:
         container = MagicMock()
         container.wait.return_value = {"StatusCode": 0}
         big = b"y" * (50 * MiB)
+        loop_thread = threading.get_ident()
+        on_loop: list[int] = []
+
+        def _chunks() -> Iterator[bytes]:
+            for i in range(0, len(big), MiB):
+                if threading.get_ident() == loop_thread:
+                    on_loop.append(i)
+                yield big[i:i + MiB]
 
         def _logs(**kw: object) -> object:
+            if threading.get_ident() == loop_thread:
+                on_loop.append(-1)
             if not kw.get("stdout"):
                 return iter([]) if kw.get("stream") else b""
             if kw.get("stream"):
-                return iter(big[i:i + MiB] for i in range(0, len(big), MiB))
+                return _chunks()
             return big
 
         container.logs.side_effect = _logs
@@ -252,26 +264,14 @@ class TestStdioIsBounded:
         client = MagicMock()
         client.containers.create.return_value = container
 
-        gaps: list[float] = []
-
-        async def _ticker() -> None:
-            last = time.monotonic()
-            while True:
-                await asyncio.sleep(0.01)
-                now = time.monotonic()
-                gaps.append(now - last)
-                last = now
-
-        ticker = asyncio.create_task(_ticker())
-        try:
-            with patch("docker.from_env", return_value=client):
-                result = await sandbox.execute(CodeRequest(code="print(1)", language="python"))
-        finally:
-            ticker.cancel()
+        with patch("docker.from_env", return_value=client):
+            result = await sandbox.execute(CodeRequest(code="print(1)", language="python"))
 
         assert len(result.stdout) < 300 * 1024
         assert "bytes truncated" in result.stdout
-        assert max(gaps, default=0) < 0.5
+        # The 50 MB is read where the logs are read: on a worker thread, never on the loop's. A loop-lag bound would
+        # also hold every host stall a busy gate adds (WALLCLOCK-1).
+        assert on_loop == []
 
     async def test_a_50_mb_local_stdout_is_bounded_and_does_not_hold_the_loop(self, tmp_path) -> None:
         work = tmp_path / "w"
@@ -287,6 +287,10 @@ class TestStdioIsBounded:
                 gaps.append(now - last)
                 last = now
 
+        # Passes of the collector during the window scan only what this run makes, not the xdist worker's heap: a
+        # full pass over ten million objects stops the world for seconds (WALLCLOCK-1).
+        gc.collect()
+        gc.freeze()
         ticker = asyncio.create_task(_ticker())
         try:
             stdout, stderr, code = await executor._run(
@@ -297,10 +301,12 @@ class TestStdioIsBounded:
             )
         finally:
             ticker.cancel()
+            gc.unfreeze()
 
         assert code == 0
         assert len(stdout) < 300 * 1024 and "bytes truncated" in stdout
         assert len(stderr) < 300 * 1024 and "bytes truncated" in stderr
+        # wall-clock-ok: the pipes are read in chunks of _READ_CHUNK, a step of microseconds; 0.5 s is fifty 10 ms ticks
         assert max(gaps, default=0) < 0.5
 
     async def test_small_output_is_unchanged(self, tmp_path) -> None:

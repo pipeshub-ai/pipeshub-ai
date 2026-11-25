@@ -393,9 +393,9 @@ def test_the_statements_the_search_builds_from_parts_are_exactly_these() -> None
             found[(path.name, fn)] = count
     # the four statements of the dense path, and the fragments they and the filters are made of (membership probes and the payload
     # conditions and the scope filter's condition in its two forms, admitting and deferring: fixed text, every value a ``$n``)
-    assert found == {("dense.py", "exact_sql"): 1, ("dense.py", "index_sql"): 1, ("dense.py", "bounded_sql"): 1, ("dense.py", "count_sql"): 1,
+    assert found == {("dense.py", "exact_sql"): 1, ("dense.py", "index_sql"): 1, ("dense.py", "bounded_sql"): 1, ("dense.py", "count_sql"): 4,
                      ("lexical.py", "lexical_sql"): 1, ("scope_filter.py", "predicate"): 2, ("sql_filters.py", "_match"): 2,
-                     ("visibility.py", "candidates"): 1, ("visibility.py", "probe"): 1}, found
+                     ("visibility.py", "admitted"): 1, ("visibility.py", "probe"): 1}, found
 
 
 @pytest.mark.asyncio
@@ -488,7 +488,7 @@ class _SlowPoolDb:
     and the statements together (a wait longer than it is a timeout). The checked org has one connector and no unconnected point."""
 
     def __init__(self, wait_s: float, *, fail: Exception | None = None) -> None:
-        self.wait_s, self.fail, self.runs, self.budgets = wait_s, fail, 0, []
+        self.wait_s, self.fail, self.runs, self.budgets, self.waited = wait_s, fail, 0, [], 0
 
     async def run(self, fn, **opts: object) -> object:
         import asyncio
@@ -497,6 +497,7 @@ class _SlowPoolDb:
 
         self.runs += 1
         await asyncio.sleep(self.wait_s)
+        self.waited += 1
         timeout_ms = opts.get("timeout_ms")
         if timeout_ms is not None and self.wait_s * 1000 >= timeout_ms:
             raise DbTimeout("the statement ran out of the budget the pool wait used up")

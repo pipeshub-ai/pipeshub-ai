@@ -407,11 +407,19 @@ class TestLifespan:
             mock_container.retrieval_service = AsyncMock(return_value=mock_retrieval)
             mock_container.config_service.return_value = mock_config_service
 
-            async with lifespan(mock_app):
-                # Inside lifespan — app should have container set
-                assert mock_app.container is mock_container
-                # Chat attachment PDFs parse in killable worker processes.
-                assert parse_pool.parse_pool_workers() > 0
+            with (
+                patch("app.sandbox.artifact_cleanup.start_cleanup_task") as start_cleanup,
+                patch("app.sandbox.artifact_cleanup.stop_cleanup_task") as stop_cleanup,
+            ):
+                async with lifespan(mock_app):
+                    # Inside lifespan — app should have container set
+                    assert mock_app.container is mock_container
+                    # Chat attachment PDFs parse in killable worker processes.
+                    assert parse_pool.parse_pool_workers() > 0
+                    # CLEANUP-2: the sandbox temp-folder sweeper runs while the service does.
+                    start_cleanup.assert_called_once_with()
+                    stop_cleanup.assert_not_called()
+                stop_cleanup.assert_called_once_with()
 
             # After shutdown, config_service.close should be called
             mock_config_service.close.assert_awaited_once()

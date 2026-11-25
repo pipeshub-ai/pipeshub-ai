@@ -1,0 +1,148 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/ext/pipeshub/events/x.pipeshub.context.compacted.schema.json",
+  "title": "PipeshubContextCompactedEvent",
+  "description": "The conversation's context was compacted. trigger user: the person asked (`/compact [focus]`, SLASH2 C2), and the run that took the request did it before its first turn: the durable loop journals its summary as `context.compacted` and then this; an engine run compacts its own session (Codex `thread/compact/start`, opencode `summarize`, Claude Code's own compaction) and journals this with the turn. trigger auto (LC2FIX-3): nobody asked; the durable loop's ladder compacted when the provider counted a request past its threshold (journaled after its `context.compacted`), or an engine compacted its own session mid-turn (Claude Code's compact_boundary, opencode's session.compacted, Codex's contextCompaction), journaled with the turn. Token counts: before is the provider's count of the latest request where the executor has one (else an estimate), after that less what the summary removed; an engine's as it reports them; null when unknown. Written only when the claim's journal accepts `context_compacted` (trigger user) or `context_compacted_auto` (trigger auto). Presentation and audit only (non-critical); folds ignore it.",
+  "x-writer": [
+    "worker"
+  ],
+  "allOf": [
+    {
+      "$ref": "../../../core/envelope.schema.json#/$defs/InlineEnvelope"
+    }
+  ],
+  "properties": {
+    "type": {
+      "const": "x.pipeshub.context.compacted"
+    },
+    "writer": {
+      "const": "worker"
+    },
+    "data": {
+      "$ref": "#/$defs/PipeshubContextCompactedData"
+    }
+  },
+  "$defs": {
+    "PipeshubContextCompactedData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "trigger",
+        "executor",
+        "outcome",
+        "beforeTokens",
+        "afterTokens",
+        "userMessagesKept"
+      ],
+      "properties": {
+        "trigger": {
+          "description": "Who asked: user, the person with /compact; auto, nobody (the loop's ladder or the engine's own compaction).",
+          "enum": [
+            "user",
+            "auto"
+          ]
+        },
+        "executor": {
+          "description": "What compacted: the durable loop, or the engine the run is pinned to (an ACP agent profile's acp-<agent> included).",
+          "anyOf": [
+            {
+              "enum": [
+                "loop",
+                "opencode",
+                "codex",
+                "claude_code",
+                "jcode"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^acp-[a-z][a-z0-9_-]{0,31}$"
+            }
+          ]
+        },
+        "outcome": {
+          "description": "compacted: the context is smaller now; nothing_to_compact: nothing is older than what is always kept; unsupported: the engine cannot compact on request; failed: the compaction was tried and did not complete (the run goes on uncompacted).",
+          "enum": [
+            "compacted",
+            "nothing_to_compact",
+            "unsupported",
+            "failed"
+          ]
+        },
+        "beforeTokens": {
+          "description": "Estimated context tokens before; null when unknown.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "afterTokens": {
+          "description": "Estimated context tokens after; null when unknown.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "userMessagesKept": {
+          "description": "The person's own messages are kept word for word after the summary (the loop, Codex); false: the engine folds them into its summary.",
+          "type": "boolean"
+        },
+        "focus": {
+          "description": "What the person asked the summary to keep (`/compact <focus>`).",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 4,
+      "runId": "run_2",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-18T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "type": "x.pipeshub.context.compacted",
+      "data": {
+        "trigger": "user",
+        "executor": "loop",
+        "outcome": "compacted",
+        "beforeTokens": 148000,
+        "afterTokens": 19000,
+        "userMessagesKept": true,
+        "focus": "the travel policy numbers"
+      }
+    },
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 9,
+      "runId": "run_3",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-18T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "type": "x.pipeshub.context.compacted",
+      "data": {
+        "trigger": "user",
+        "executor": "opencode",
+        "outcome": "compacted",
+        "beforeTokens": null,
+        "afterTokens": null,
+        "userMessagesKept": false
+      }
+    }
+  ]
+}

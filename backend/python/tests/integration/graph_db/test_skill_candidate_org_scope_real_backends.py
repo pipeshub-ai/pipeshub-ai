@@ -17,7 +17,7 @@ import pytest
 from app.agent_loop_lib.core.exceptions import RegistryError
 from app.agent_loop_lib.modules.providers.skills.base import SkillCandidate
 from app.agent_loop_lib.modules.providers.skills.manager import SkillManager
-from app.agents.agent_loop.skills.graph_store import GraphSkillStore
+from app.agents.agent_loop.skills.graph_store import GraphSkillStore, SkillVisibility
 from tests.integration.real_graph import (
     backend_unavailable,
     connect_arango,
@@ -42,7 +42,7 @@ async def _provider(kind: str, monkeypatch: pytest.MonkeyPatch) -> IGraphDBProvi
 
 def _manager_for(provider: IGraphDBProvider, org_id: str, user_id: str) -> SkillManager:
     """The route's manager for one org: only the attributes the candidate methods read when a store is bound."""
-    store = GraphSkillStore(provider, org_id, user_id, visibility_scope=user_id)
+    store = GraphSkillStore(provider, org_id, user_id, visibility=SkillVisibility.of([user_id]))
     mgr = SkillManager.__new__(SkillManager)
     mgr._candidate_store = store
     return mgr

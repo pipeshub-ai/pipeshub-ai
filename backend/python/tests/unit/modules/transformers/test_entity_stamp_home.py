@@ -10,7 +10,6 @@ from unittest.mock import patch
 import pytest
 
 from app.core import org_context
-from app.modules.transformers import entity_vectorstore as module
 from app.modules.transformers.entity_vectorstore import EntityVectorStore
 from app.services.vector_db.models import VectorDBCapabilities, VectorPoint
 from tests.support.embedding_config import config_service
@@ -27,7 +26,7 @@ if TYPE_CHECKING:
 
 @pytest.fixture(autouse=True)
 def _env() -> Iterator[None]:
-    with embedding_models({}), patch.object(module, "get_default_embedding_model", return_value=FakeEmbeddingModel(1.0, 4)), recreate_lock_redis():
+    with embedding_models({}), patch("app.utils.llm.get_default_embedding_model", return_value=FakeEmbeddingModel(1.0, 4)), recreate_lock_redis():
         yield
 
 

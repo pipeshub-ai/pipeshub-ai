@@ -34,7 +34,11 @@ from app.agents.actions.util.tool_summaries import (
 )
 from app.connectors.core.constants import IconPaths
 from app.connectors.core.registry.auth_builder import AuthBuilder, AuthType
-from app.connectors.core.registry.tool_builder import ToolsetBuilder, ToolsetCategory
+from app.connectors.core.registry.tool_builder import (
+    ToolProvider,
+    ToolsetBuilder,
+    ToolsetCategory,
+)
 from app.connectors.core.registry.types import AuthField, DocumentationLink
 from app.sources.client.http.exception.exception import HttpStatusCode
 from app.sources.client.http.http_response import HTTPResponse
@@ -326,7 +330,7 @@ def _jira_dc_comment_label(comment: dict[str, Any]) -> str:
 _DC_INLINE_NOTE = "Images are shown in the text; other files are linked."
 
 
-@ToolsetBuilder("Jira Data Center")\
+@ToolsetBuilder("Jira Data Center", provider=ToolProvider.CONNECTOR)\
     .in_group("Atlassian")\
     .with_description(
         "Jira Data Center / Server integration for issue tracking and project "
@@ -984,7 +988,7 @@ class JiraDataCenter:
             "authenticated user. Use as a first-step health check before other Jira Data Center actions."
         ),
         parameters=[],
-        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="utility")],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="utility"), Tag(key="effect", value="read")],
     )
     async def validate_connection(self) -> tuple[bool, str]:
         try:
@@ -1013,7 +1017,7 @@ class JiraDataCenter:
             "'me'/'my' before building JQL such as `assignee = currentUser()`."
         ),
         parameters=[],
-        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_current_user(self) -> tuple[bool, str]:
         try:
@@ -1058,7 +1062,7 @@ class JiraDataCenter:
             ToolParameter(name="project_key", type=ParameterType.STRING, description="The key of the Jira project (e.g., 'PA')", required=True),
             ToolParameter(name="issue_type_name", type=ParameterType.STRING, description="The name of the issue type (e.g., 'Task', 'Bug', 'Story')", required=True),
         ],
-        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_create_issue_fields(self, project_key: str, issue_type_name: str) -> tuple[bool, str]:
         try:
@@ -1180,7 +1184,7 @@ class JiraDataCenter:
             attachment_record_ids_parameter(required=False),
             attachment_display_parameter(inline_note=_DC_INLINE_NOTE),
         ],
-        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
         args_summary=args_template('Creating Jira issue in {project_key}: "{summary}"', "project_key", "summary"),
         result_summary=entity_summary(lambda e: f"Created {e.get('key', '?')}"),
     )
@@ -1363,7 +1367,7 @@ class JiraDataCenter:
             attachment_record_ids_parameter(required=False),
             attachment_display_parameter(inline_note=_DC_INLINE_NOTE),
         ],
-        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
         args_summary=args_template("Updating Jira issue {issue_key}", "issue_key"),
         result_summary=entity_summary(lambda e: f"Updated {e.get('key', '?')}"),
     )
@@ -1424,7 +1428,7 @@ class JiraDataCenter:
             attachment_record_ids_parameter(required=True),
             attachment_display_parameter(inline_note=_DC_INLINE_NOTE),
         ],
-        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
         args_summary=args_template("Attaching files to {issue_key}", "issue_key"),
         result_summary=confirmation("Files attached to {issue_key}", "issue_key"),
     )
@@ -1645,7 +1649,7 @@ class JiraDataCenter:
         short_description="Get all Jira Data Center projects",
         description="Get all Jira Data Center projects accessible by the current user.",
         parameters=[],
-        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
         args_summary=lambda args: "Fetching Jira Data Center projects",
         result_summary=list_summary(("data",), _jira_dc_project_label, "project"),
     )
@@ -1677,7 +1681,7 @@ class JiraDataCenter:
         parameters=[
             ToolParameter(name="project_key", type=ParameterType.STRING, description="Project key (e.g., 'PA')", required=True),
         ],
-        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
         args_summary=args_template("Fetching Jira project {project_key}", "project_key"),
         result_summary=entity_summary(_jira_dc_project_label),
     )
@@ -1710,7 +1714,7 @@ class JiraDataCenter:
         parameters=[
             ToolParameter(name="issue_key", type=ParameterType.STRING, description="Issue key (e.g., 'PA-123')", required=True),
         ],
-        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
         args_summary=args_template("Fetching Jira issue {issue_key}", "issue_key"),
         result_summary=entity_summary(lambda e: f"Fetched {_jira_dc_issue_label(e)}"),
     )
@@ -1777,7 +1781,7 @@ class JiraDataCenter:
             ToolParameter(name="jql", type=ParameterType.STRING, description="JQL query string with time filter", required=True),
             ToolParameter(name="maxResults", type=ParameterType.INTEGER, description="Max results to return (default 50)", required=False),
         ],
-        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
         args_summary=args_template('Searching Jira issues: "{jql}"', "jql"),
         result_summary=list_summary("issues", _jira_dc_issue_label, "issue"),
     )
@@ -1839,7 +1843,7 @@ class JiraDataCenter:
             attachment_record_ids_parameter(required=False),
             attachment_display_parameter(inline_note=_DC_INLINE_NOTE),
         ],
-        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
         args_summary=args_template("Adding comment to {issue_key}", "issue_key"),
         result_summary=confirmation("Comment added to {issue_key}", "issue_key"),
     )
@@ -1894,7 +1898,7 @@ class JiraDataCenter:
         parameters=[
             ToolParameter(name="issue_key", type=ParameterType.STRING, description="Issue key (e.g., 'PA-123')", required=True),
         ],
-        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
         args_summary=args_template("Fetching comments for {issue_key}", "issue_key"),
         result_summary=list_summary("comments", _jira_dc_comment_label, "comment"),
     )
@@ -1935,7 +1939,7 @@ class JiraDataCenter:
             ToolParameter(name="query", type=ParameterType.STRING, description="Search query (name or email)", required=True),
             ToolParameter(name="max_results", type=ParameterType.INTEGER, description="Max results (default 20)", required=False),
         ],
-        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
         args_summary=args_template('Searching Jira users: "{query}"', "query"),
         result_summary=list_summary(("data", "results"), _jira_dc_user_label, "user"),
     )
@@ -1987,7 +1991,7 @@ class JiraDataCenter:
         parameters=[
             ToolParameter(name="project_key", type=ParameterType.STRING, description="Project key (e.g., 'PA')", required=True),
         ],
-        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_project_metadata(self, project_key: str) -> tuple[bool, str]:
         try:

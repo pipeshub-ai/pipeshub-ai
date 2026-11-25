@@ -65,11 +65,15 @@ jobs:
       promote: ${{ steps.v.outputs.promote }}
     steps:
       - id: v
+        # Dispatch inputs reach the script as data, never as script text (SEC-D-12).
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_PROMOTE: ${{ inputs.promote }}
         run: |
           set -euo pipefail
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            version="${{ inputs.version }}"
-            promote="${{ inputs.promote }}"
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            version="$INPUT_VERSION"
+            promote="$INPUT_PROMOTE"
           else
             version="${GITHUB_REF_NAME#v}"
             promote="true"
@@ -124,6 +128,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
@@ -134,17 +140,24 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      # The base images are rebuilt deliberately, not on every release — see the
-      # header of Dockerfile.base. Pull whatever is published and fail loudly if
-      # it is absent, rather than silently building a 40-minute base layer here.
-      - name: Pull base images
+      # The base images are rebuilt deliberately, not on every release (see the
+      # header of Dockerfile.base), and are built from by digest: a base tag
+      # re-pushed on Docker Hub cannot reach a release unless a reviewed change
+      # moves contracts/supply-chain/release-bases.json (SEC-D-04).
+      - name: Pull base images by digest
+        id: bases
+        env:
+          PYTHON_DEPS_TAG: ${{ matrix.python_deps }}
         run: |
           set -euo pipefail
-          for tag in ${{ matrix.python_deps }} runtime; do
-            if ! docker pull "${BASE_IMAGE}:${tag}"; then
-              echo "::error::${BASE_IMAGE}:${tag} is not published. Build it from Dockerfile.base first (see its header)."
+          for tag in "$PYTHON_DEPS_TAG" runtime; do
+            digest="$(jq -er --arg t "$tag" '.digests[$t]' contracts/supply-chain/release-bases.json)"
+            ref="${BASE_IMAGE}@${digest}"
+            if ! docker pull "$ref"; then
+              echo "::error::${BASE_IMAGE}:${tag} at ${digest} is not on Docker Hub. Publish the base (Dockerfile.base) and record its digest in contracts/supply-chain/release-bases.json."
               exit 1
             fi
+            echo "${tag//-/_}=${ref}" >> "$GITHUB_OUTPUT"
           done
           # The base is published by hand, so it can lag the Node the backend is built with and needs.
           # Read from the image's build history, so the arm64 image needs no emulation here.
@@ -166,8 +179,8 @@ jobs:
           provenance: true
           sbom: true
           build-args: |
-            PYTHON_DEPS_IMAGE=${{ env.BASE_IMAGE }}:${{ matrix.python_deps }}
-            RUNTIME_BASE_IMAGE=${{ env.BASE_IMAGE }}:runtime
+            PYTHON_DEPS_IMAGE=${{ matrix.python_deps == 'python-deps' && steps.bases.outputs.python_deps || steps.bases.outputs.python_deps_slim }}
+            RUNTIME_BASE_IMAGE=${{ steps.bases.outputs.runtime }}
             APP_VERSION=${{ needs.resolve.outputs.version }}
             GIT_COMMIT=${{ github.sha }}
           tags: |
@@ -255,6 +268,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       # The GitHub-hosted arm64 runners have a much smaller disk than the
       # RunsOn x64 ones, and the full image is large. Reclaim what the image
@@ -309,6 +324,169 @@ jobs:
           if-no-files-found: ignore
 
   # ---------------------------------------------------------------------------
+  # C6.42: the security suite and the canary scans on this commit, the same gate every harness pull request
+  # runs. No tag moves unless it passes.
+  security:
+    name: Harness security gate
+    needs: resolve
+    uses: ./.github/workflows/harness-security-gate.yml
+
+  # ---------------------------------------------------------------------------
+  # SEC-D-11: no candidate with a known, fixable CRITICAL vulnerability is
+  # promoted. Trivy runs from a digest-pinned image, never a moving action tag.
+  scan:
+    name: Scan ${{ matrix.ref }}
+    needs: [resolve, build, build-sandbox]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        ref: [app, app-slim, sandbox]
+    steps:
+      - name: Trivy (CRITICAL, fixable)
+        env:
+          CANDIDATE: ${{ needs.resolve.outputs.candidate }}
+          WHICH: ${{ matrix.ref }}
+          TRIVY_IMAGE: aquasec/trivy:0.76.2@sha256:8f6bb947dbc528902e11f2f5be52f7b519f6a39d5d148f41166f2040499768fb
+        run: |
+          set -euo pipefail
+          case "$WHICH" in
+            app) ref="${IMAGE}:${CANDIDATE}" ;;
+            app-slim) ref="${IMAGE}:${CANDIDATE}-slim" ;;
+            sandbox) ref="${SANDBOX_IMAGE}:${CANDIDATE}" ;;
+          esac
+          docker run --rm "$TRIVY_IMAGE" image --no-progress --exit-code 1 \
+            --severity CRITICAL --ignore-unfixed --scanners vuln "$ref"
+
+  # ---------------------------------------------------------------------------
+  # SEC-D-04 (ADR-SEC-05): sign the verified candidates by digest before any
+  # tag points at them. crane copy keeps the digest, so the release tags carry
+  # these signatures, and install.sh checks them (cosign verify) before it runs
+  # anything. Keyless: a Sigstore certificate naming this workflow at the
+  # release tag, recorded in Rekor; no key exists to steal. It signs only for a
+  # tag push once the owner has turned it on (repository variable
+  # RELEASE_SIGNING: keyless, or key for the vault-held key in the
+  # RELEASE_COSIGN_KEY secret), and waits for the release-signing environment's
+  # reviewers: that approval is the owner's go-ahead for each release. Off, its
+  # steps are no-ops and promotion goes ahead with unsigned images, as before.
+  sign:
+    name: Sign ${{ matrix.image }}
+    needs: [resolve, verify, security, scan]
+    # No job-level `if`: promote needs this job to succeed, and a skipped job must never stand in for a gate.
+    runs-on: ubuntu-latest
+    environment: release-signing
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - image: app
+            repo: pipeshubai/pipeshub-ai
+            suffix: ''
+          - image: app-slim
+            repo: pipeshubai/pipeshub-ai
+            suffix: '-slim'
+          - image: sandbox
+            repo: pipeshubai/pipeshub-sandbox
+            suffix: ''
+          - image: sandbox-slim
+            repo: pipeshubai/pipeshub-sandbox
+            suffix: '-slim'
+    steps:
+      - name: Is signing on for this run
+        id: plan
+        env:
+          MODE: ${{ vars.RELEASE_SIGNING }}
+          REF_TYPE: ${{ github.ref_type }}
+        run: |
+          if [ "$REF_TYPE" = tag ] && { [ "$MODE" = keyless ] || [ "$MODE" = key ]; }; then
+            echo "on=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "on=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::Release images are not signed (RELEASE_SIGNING='${MODE}', ref type ${REF_TYPE}). install.sh pins their digests but cannot verify them."
+          fi
+
+      - name: Log in to Docker Hub
+        if: steps.plan.outputs.on == 'true'
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Install crane
+        if: steps.plan.outputs.on == 'true'
+        uses: imjasonh/setup-crane@feee3b6bb0d4c68370f256a4502498c9227e5c6b # v0.7
+
+      - name: Install cosign
+        if: steps.plan.outputs.on == 'true'
+        uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3
+        with:
+          cosign-release: 'v2.4.1'
+
+      - name: Resolve the candidate's digest
+        if: steps.plan.outputs.on == 'true'
+        id: digest
+        env:
+          REF: ${{ matrix.repo }}:${{ needs.resolve.outputs.candidate }}${{ matrix.suffix }}
+        run: |
+          set -euo pipefail
+          digest="$(crane digest "$REF")"
+          printf '%s' "$digest" | grep -Eq '^sha256:[0-9a-f]{64}$'
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+
+      - name: Sign (keyless)
+        if: steps.plan.outputs.on == 'true' && vars.RELEASE_SIGNING == 'keyless'
+        env:
+          REF: ${{ matrix.repo }}@${{ steps.digest.outputs.digest }}
+        run: cosign sign --yes "$REF"
+
+      - name: Sign (vault-held key)
+        if: steps.plan.outputs.on == 'true' && vars.RELEASE_SIGNING == 'key'
+        env:
+          REF: ${{ matrix.repo }}@${{ steps.digest.outputs.digest }}
+          COSIGN_PRIVATE_KEY: ${{ secrets.RELEASE_COSIGN_KEY }}
+          COSIGN_PASSWORD: ${{ secrets.RELEASE_COSIGN_PASSWORD }}
+        run: cosign sign --yes --key env://COSIGN_PRIVATE_KEY "$REF"
+
+      # Signed SLSA provenance, pushed beside the image. The SBOM BuildKit
+      # attached is inside the image index the signature covers.
+      - name: Attest build provenance
+        if: steps.plan.outputs.on == 'true'
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: index.docker.io/${{ matrix.repo }}
+          subject-digest: ${{ steps.digest.outputs.digest }}
+          push-to-registry: true
+
+      - name: Check the signature as install.sh will
+        if: steps.plan.outputs.on == 'true' && vars.RELEASE_SIGNING == 'keyless'
+        env:
+          REF: ${{ matrix.repo }}@${{ steps.digest.outputs.digest }}
+        run: |
+          cosign verify "$REF" \
+            --certificate-identity-regexp '^https://github\.com/pipeshub-ai/pipeshub-ai/\.github/workflows/release-publish\.yml@refs/tags/v[0-9]' \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com > /dev/null
+
+      - name: Record the digest
+        if: steps.plan.outputs.on == 'true'
+        env:
+          PINNED: ${{ matrix.repo }}:${{ needs.resolve.outputs.version }}${{ matrix.suffix }}@${{ steps.digest.outputs.digest }}
+        run: printf '%s\n' "$PINNED" > "$RUNNER_TEMP/digest.txt"
+
+      - name: Keep the digest for the release notes
+        if: steps.plan.outputs.on == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: image-digest-${{ matrix.image }}
+          path: ${{ runner.temp }}/digest.txt
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
   # With promote=true the version tags are written (overwriting if present)
   # and, for a stable version, :latest and :slim move. With promote=false a
   # prerelease version is published only onto tags that do not exist yet, and
@@ -316,8 +494,10 @@ jobs:
   # overwrites, so an existing tag is never replaced without promote.
   promote:
     name: Publish release tags
-    needs: [resolve, verify]
+    needs: [resolve, verify, security, scan, sign]
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     # Every publisher of the shared tags queues here, across versions and
     # triggers, so two runs cannot interleave their copies of :latest/:slim
     # or undo each other's moves.
@@ -495,3 +675,155 @@ jobs:
               echo "delete ${repo}:${tag} -> HTTP ${code}"
             done
           done
+
+  # ---------------------------------------------------------------------------
+  # The digests users pin (install.sh writes them to .env; Helm takes
+  # image.digest), attached to the GitHub release when it exists, and always to
+  # this run's summary.
+  publish-digests:
+    name: Publish image digests
+    needs: [resolve, sign, promote]
+    if: github.ref_type == 'tag' && (vars.RELEASE_SIGNING == 'keyless' || vars.RELEASE_SIGNING == 'key')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Collect the digests
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: image-digest-*
+          path: ${{ runner.temp }}/digests
+
+      - name: Attach image-digests.txt
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          find "$RUNNER_TEMP/digests" -name digest.txt -exec cat {} + | sort > "$RUNNER_TEMP/image-digests.txt"
+          { echo '### Image digests'; echo '```'; cat "$RUNNER_TEMP/image-digests.txt"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            gh release upload "$TAG" "$RUNNER_TEMP/image-digests.txt" --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            echo "::notice::No GitHub release for ${TAG} yet; attach image-digests.txt from this run's summary when it is published."
+          fi
+
+  # ---------------------------------------------------------------------------
+  # The air-gapped install's bundle (R41SUPPLY-FU-7, ADR-SEC-06 D2): the signed
+  # app and sandbox images for one CPU architecture, saved and split under the
+  # 2 GiB asset limit, with a manifest naming each part by SHA-256 and the image
+  # tags the archive holds. The manifest is signed keyless like the images; its Sigstore bundle
+  # carries the transparency-log proof, so install.sh --offline-bundle checks it
+  # with no network against the trusted root it pins, before docker load.
+  offline-bundle:
+    name: Offline bundle (${{ matrix.arch }})
+    needs: [resolve, sign, promote]
+    if: github.ref_type == 'tag' && (vars.RELEASE_SIGNING == 'keyless' || vars.RELEASE_SIGNING == 'key')
+    runs-on: runs-on=${{ github.run_id }}/runner=4cpu-linux-x64/volume=100gb
+    environment: release-signing
+    permissions:
+      contents: write
+      id-token: write
+    strategy:
+      fail-fast: true
+      matrix:
+        arch: [amd64, arm64]
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Collect the signed digests
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: image-digest-*
+          path: ${{ runner.temp }}/digests
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3
+        with:
+          cosign-release: 'v2.4.1'
+
+      - name: Save, split and describe the images
+        env:
+          VERSION: ${{ needs.resolve.outputs.version }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/bundle"; mkdir -p "$out"
+          name="pipeshub-offline-${VERSION}-${ARCH}"
+          refs=()
+          for image in app sandbox; do
+            pinned="$(cat "$RUNNER_TEMP/digests/image-digest-${image}/digest.txt")"
+            repo="${pinned%%:*}"
+            ref="${repo}:${VERSION}"
+            docker pull --platform "linux/${ARCH}" "${repo}@${pinned##*@}"
+            docker tag "${repo}@${pinned##*@}" "$ref"
+            refs+=("$ref")
+          done
+          docker save "${refs[@]}" | gzip -1 | split -b 1900m -d -a 2 - "$out/${name}.tar.gz."
+          {
+            echo "pipeshub-offline-bundle 1"
+            echo "version ${VERSION}"
+            echo "arch ${ARCH}"
+            for ref in "${refs[@]}"; do echo "image ${ref}"; done
+            for part in "$out/${name}.tar.gz."*; do echo "part $(basename "$part") $(sha256sum "$part" | cut -d' ' -f1)"; done
+          } > "$out/${name}.manifest"
+          cp deployment/docker-compose/sigstore-trusted-root.json "$out/"
+          cat "$out/${name}.manifest"
+
+      - name: Sign the manifest (keyless)
+        if: vars.RELEASE_SIGNING == 'keyless'
+        env:
+          VERSION: ${{ needs.resolve.outputs.version }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          m="$RUNNER_TEMP/bundle/pipeshub-offline-${VERSION}-${ARCH}.manifest"
+          cosign sign-blob --yes --new-bundle-format --bundle "${m}.sigstore.json" "$m"
+
+      - name: Sign the manifest (vault-held key)
+        if: vars.RELEASE_SIGNING == 'key'
+        env:
+          VERSION: ${{ needs.resolve.outputs.version }}
+          ARCH: ${{ matrix.arch }}
+          COSIGN_PRIVATE_KEY: ${{ secrets.RELEASE_COSIGN_KEY }}
+          COSIGN_PASSWORD: ${{ secrets.RELEASE_COSIGN_PASSWORD }}
+        run: |
+          m="$RUNNER_TEMP/bundle/pipeshub-offline-${VERSION}-${ARCH}.manifest"
+          cosign sign-blob --yes --new-bundle-format --key env://COSIGN_PRIVATE_KEY --bundle "${m}.sigstore.json" "$m"
+
+      # install.sh's own functions, offline: a flag cosign does not take, or a
+      # trusted root that no longer matches, fails here rather than on a customer's host.
+      - name: Check the bundle as install.sh will
+        if: vars.RELEASE_SIGNING == 'keyless'
+        env:
+          VERSION: ${{ needs.resolve.outputs.version }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          installer=deployment/docker-compose/install.sh
+          eval "$(grep -E '^(PIPESHUB_SIGNER_IDENTITY|PIPESHUB_SIGNER_ISSUER|PIPESHUB_SIGSTORE_ROOT_SHA256)=' "$installer")"
+          for fn in sha256_file offline_bundle_trusted_root verify_offline_bundle_signature; do
+            eval "$(awk -v fn="$fn" '$0 ~ "^"fn"\\(\\) \\{"{g=1} g{print} g&&/^\}/{exit}' "$installer")"
+          done
+          # Read by the installer functions eval'd above.
+          # shellcheck disable=SC2034
+          SCRIPT_DIR="$PWD/deployment/docker-compose"
+          m="$RUNNER_TEMP/bundle/pipeshub-offline-${VERSION}-${ARCH}.manifest"
+          root="$(offline_bundle_trusted_root "$m")"
+          test -n "$root"
+          verify_offline_bundle_signature "$m" "$root"
+
+      - name: Attach the bundle to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            gh release upload "$TAG" "$RUNNER_TEMP"/bundle/* --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            echo "::error::No GitHub release for ${TAG}; the offline bundle has nowhere to go."
+            exit 1
+          fi

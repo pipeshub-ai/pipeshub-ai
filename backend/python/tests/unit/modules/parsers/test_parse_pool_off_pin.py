@@ -59,6 +59,9 @@ PARSE_POOL_ALLOWED = {
     "_ParsePool.__init__", "_ParsePool._make_lane",  # one lane factory hook; the default factory builds the same _Lane (test_parse_pool_classes::test_default_lane_factory_is_the_legacy_lane)
     "set_resource_governor",  # refuses PARSE_LANES=on with PARSE_ADMISSION=classes; a no-op with the flag off
     "_Job.kind", "_Job.covered", "_covered",  # the optional kind and covered fields: None and False leave the legacy pool untouched
+    # A worker wedged at its own RLIMIT_DATA is stopped (only the Excel load sets one), pinned by
+    # test_r47polish_fu2_excel_at_cap.test_a_load_wedged_in_c_at_the_cap_is_stopped_by_the_pool.
+    "_Lane._run", "_at_data_limit", "assign:_AT_DATA_LIMIT_MARGIN_KB", "assign:_AT_DATA_LIMIT_SECONDS",
     "_Lane._crashed",  # a worker ended by its job's CPU limit is a timeout (test_excel_worker_load_round6); the first SIGKILL of a record's worker is retried (TestKilledWorkerIsRetriedOnce); any other death is still a crash (test_parse_pool::TestWorkerCrash)
     "ParseWorkerError.__init__",  # the optional retrying flag, False unless a worker was SIGKILLed on its record's first death (test_parse_pool::TestKilledWorkerIsRetriedOnce)
     "_Job.record_id", "_current_record_id",  # the record the job parses for, read where the job is made; None outside a record leaves a crash terminal as before

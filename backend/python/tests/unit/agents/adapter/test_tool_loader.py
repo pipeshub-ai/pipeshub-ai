@@ -22,6 +22,7 @@ from app.agents.actions.coding_sandbox.coding_sandbox import CodingSandbox
 from app.agents.agent_loop.context import AgentContext
 from app.agents.agent_loop.tool_loader import PipesHubToolLoader, _build_dynamic_tools
 from app.agents.agent_loop.web_tool_adapter import WebToolAdapter
+from tests.support.record_access import InMemoryRecordAccess
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -138,9 +139,9 @@ class TestOwnFileDownloadLinks:
             id="rec-1", org_id="org-1", origin=OriginTypes.UPLOAD, external_record_id="doc-1",
             record_name="report.pdf", mime_type="application/pdf", weburl=None,
         ))
-        graph.get_user_by_user_id = AsyncMock(return_value={"_key": "ukey-1"})
-        graph.get_edge = AsyncMock(return_value=None)
-        graph.check_record_access_with_details = AsyncMock(return_value={"access": "KB"})
+        # The caller's read of the upload, through the graph's record-access surface as the providers answer it.
+        access = InMemoryRecordAccess().user("user-1", "org-1").record("rec-1", "org-1", origin="UPLOAD")
+        access.grant("rec-1", user="user-1").serve(graph)
         context.tool_state["graph_provider"] = graph
         context.tool_state["blob_store"] = MagicMock(get_download_url=AsyncMock(return_value=link))
         # Toolsets get the request's state dict itself (ToolInstanceCreator), as here.
@@ -201,7 +202,7 @@ class TestSandboxToolsetGate:
     def _only_coding_sandbox(self) -> Iterator[None]:
         registry = MagicMock()
         registry.get_all_toolsets.return_value = {
-            "codingsandbox": {"class": CodingSandbox, "isInternal": True, "description": "sandbox"},
+            "codingsandbox": {"class": CodingSandbox, "isInternal": True, "provider": "platform", "description": "sandbox"},
         }
         with patch(
             "app.agents.registry.toolset_registry.get_toolset_registry", return_value=registry,

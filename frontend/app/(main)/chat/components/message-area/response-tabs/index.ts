@@ -1,2 +1,2 @@
-export { ResponseTabs } from './response-tabs';
+export { ResponseTabs, responseTabIds } from './response-tabs';
 export * from './citations';
