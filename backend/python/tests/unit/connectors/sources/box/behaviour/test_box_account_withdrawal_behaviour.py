@@ -132,8 +132,9 @@ class TestAnAccountThatLeftBox:
         box_api.page_cap["/2.0/users"] = 2
         enterprise(box_api, db)
         connector = await synced(box_api, db, checkpoints)
-        # Carol is on the second page, which cannot be read; Alice, on the first, now shows inactive.
-        box_api.users[ALICE]["status"] = "inactive"
+        # Carol is on the second page, which cannot be read; Alice, on the first, now shows inactive (her content kept
+        # available, so Carol still reads Alice's file in Box).
+        box_api.deactivate(ALICE, keep_content_available=True)
         box_api.fail("GET", "/2.0/users", 503, times=10, query={"marker": "2"})
 
         await sync(connector, checkpoints, path)
@@ -391,10 +392,11 @@ class TestWhoIsLinked:
         assert CAROL_EMAIL in readers(db, "file-shared")
         assert CAROL_EMAIL in readers(db, "file-company")
 
-    async def test_an_item_an_inactive_owner_shares_is_not_homed_in_a_drive_that_is_not_synced(
+    async def test_an_item_an_inactive_owner_shares_is_homed_in_their_drive_that_is_not_synced(
         self, box_api, db, checkpoints
     ) -> None:
-        enterprise(box_api, db, carol_status="inactive")
+        enterprise(box_api, db)
+        box_api.deactivate(CAROL, keep_content_available=True)
         box_api.add_folder("fold-carol", "Carol's", CAROL)
         box_api.collaborate("fold-carol", BOB)
         connector = await ready_connector(db, checkpoints)
@@ -402,7 +404,8 @@ class TestWhoIsLinked:
         await connector.run_sync()
 
         assert CAROL not in db.record_groups
-        assert db.records["fold-carol"].external_record_group_id is None
+        # Homed in her drive, which has no grant: there it is found if her content is hidden later.
+        assert db.records["fold-carol"].external_record_group_id == CAROL
         assert f"0S:{BOB_EMAIL}" in db.shared_links["fold-carol"]
 
     async def test_a_stored_item_keeps_its_home_when_its_owner_becomes_inactive(self, box_api, db, checkpoints) -> None:
@@ -412,7 +415,7 @@ class TestWhoIsLinked:
         box_api.collaborate("fold-carol", BOB)
         connector = await synced(box_api, db, checkpoints)
         assert db.records["fold-carol"].external_record_group_id == CAROL
-        box_api.users[CAROL]["status"] = "inactive"
+        box_api.deactivate(CAROL, keep_content_available=True)
 
         await sync(connector, checkpoints, "full")
 

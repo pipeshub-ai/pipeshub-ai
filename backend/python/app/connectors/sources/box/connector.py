@@ -30,6 +30,7 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
     DataSourceEntitiesProcessor,
 )
 from app.connectors.core.base.data_store.data_store import DataStoreProvider
+from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
 from app.connectors.core.base.sync_point.sync_point import (
     SyncDataPointType,
     SyncPoint,
@@ -78,6 +79,7 @@ from app.sources.client.box.box import (
     BoxCCGConfig,
     BoxClient,
 )
+from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.sources.external.box.box import BoxDataSource
 from app.connectors.core.base.error.stream_errors import (
     connector_not_ready,
@@ -104,6 +106,12 @@ _BOX_APP_LOGIN_DOMAIN = '@boxdevedition.com'
 # User statuses that can sign in to Box. The Admin Console lists Active, Active View Only and Active View/Upload
 # Only as able to log in; an Inactive user cannot. Any other status links no one.
 BOX_SIGN_IN_STATUSES = frozenset({'active', 'cannot_delete_edit', 'cannot_delete_edit_upload'})
+# Naming any field returns only the fields named (https://developer.box.com/reference/get-users/), so each one read is
+# here. is_collaborated_content_available_when_owner_inactive: "Whether collaborators can access content owned by the
+# user when the user is inactive" (https://developer.box.com/reference/resources/user--full/).
+USER_FIELDS = ['id', 'type', 'name', 'login', 'status', 'job_title', 'is_collaborated_content_available_when_owner_inactive']
+# Records read per page when closing the content of an owner whose content Box hides.
+RECORD_PAGE_SIZE = 500
 
 
 # Helper functions
@@ -267,6 +275,12 @@ class BoxConnector(BaseConnector):
     WITHDRAWN_ACCOUNTS_KEY = "withdrawn_accounts"
     # Box ids the last user list showed as unable to sign in: no grant is written to them.
     _cannot_sign_in_ids: frozenset = frozenset()
+    # Sync-point key (users) for the owners whose content PipesHub has closed because Box hides it.
+    HIDDEN_OWNERS_KEY = "hidden_owners"
+    # Owners the last user list showed with their content hidden from collaborators: it carries no grant.
+    _hidden_owner_ids: frozenset = frozenset()
+    # Owners this run's user list showed with their content open to collaborators.
+    _shown_owner_ids: frozenset = frozenset()
 
     def __init__(
         self,
@@ -526,12 +540,19 @@ class BoxConnector(BaseConnector):
 
             # Collaborations created on an ancestor are not copied here: the child inherits them.
             # None means the collaborator list was only partly read: apply none of it, so stored access stays.
-            api_permissions = await self._get_permissions(entry_id, entry_type)
+            # Content of an owner whose content Box hides from collaborators (see _sync_users) carries no grant.
+            hidden = owner_id in self._hidden_owner_ids
+            api_permissions = None if hidden else await self._get_permissions(entry_id, entry_type)
             permissions: list[Permission] | None = None
-            if api_permissions is not None:
+            if hidden:
+                permissions = []
+                file_record.rewrite_permissions = True
+            elif api_permissions is not None:
                 final_permissions_map = {p.external_id: p for p in api_permissions}
                 shared_link = entry.get('shared_link') or {}
-                if shared_link.get('access') == 'company':
+                # Box keeps an inactive owner's content available only "to existing collaborators"; what a company
+                # link then opens is not documented, so it opens nothing.
+                if shared_link.get('access') == 'company' and owner_id not in self._cannot_sign_in_ids:
                     org_id = self.data_entities_processor.org_id
                     final_permissions_map[org_id] = Permission(
                         external_id=org_id,
@@ -572,10 +593,12 @@ class BoxConnector(BaseConnector):
                     file_record.parent_external_record_id = existing_record.parent_external_record_id
                     file_record.parent_record_type = existing_record.parent_record_type
                     file_record.path = await self._stored_path(existing_record)
-                elif not self._user_list_complete and owner_id and await self.data_entities_processor.get_user_by_source_id(
-                    owner_id, self.connector_id
+                elif owner_id in self._cannot_sign_in_ids or (
+                    not self._user_list_complete and owner_id
+                    and await self.data_entities_processor.get_user_by_source_id(owner_id, self.connector_id)
                 ):
-                    # A new item whose owner we already know from an earlier sync still belongs in their drive.
+                    # A new item whose owner we already know from an earlier sync still belongs in their drive, and so
+                    # does one of an owner who cannot sign in: there it is found if Box hides that owner's content.
                     file_record.external_record_group_id = owner_id
                 else:
                     file_record.external_record_group_id = None
@@ -763,13 +786,15 @@ class BoxConnector(BaseConnector):
             self.logger.info("Syncing Box users...")
 
             app_users = []
+            hidden: set[str] = set()
             marker = None
             self._user_list_complete = True
+            self._shown_owner_ids = frozenset()
 
             while True:
                 # Marker paging: Box rejects an offset above 10000, which would cut a large enterprise's list short.
                 response = await self.data_source.users_get_users(
-                    limit=1000, usemarker=True, marker=marker, user_type="managed"
+                    limit=1000, usemarker=True, marker=marker, user_type="managed", fields=USER_FIELDS
                 )
 
                 if not response.success:
@@ -798,6 +823,12 @@ class BoxConnector(BaseConnector):
                         title=user.get('job_title')
                     )
                     app_users.append(app_user)
+                    # For an Inactive user "by default, folders owned by this user are hidden from all collaborators",
+                    # unless an admin chose "Keep this user's content available to existing collaborators"
+                    # (https://docs.box.com/en/box-admin-tools/managing-box-users-and-admins/understanding-user-management/users-groups-settings).
+                    # The field missing, or any status that cannot sign in, is taken as hidden.
+                    if not app_user.is_active and user.get('is_collaborated_content_available_when_owner_inactive') is not True:
+                        hidden.add(str(user.get('id')))
 
                 marker = data.get('next_marker')
                 if not marker:
@@ -812,6 +843,8 @@ class BoxConnector(BaseConnector):
                 self._user_list_complete = False
             # A listed row is evidence on its own, even when a later page could not be read.
             self._cannot_sign_in_ids = frozenset(str(u.source_user_id) for u in app_users if u.source_user_id and not u.is_active)
+            self._hidden_owner_ids = frozenset(hidden)
+            self._shown_owner_ids = frozenset(str(u.source_user_id) for u in app_users if u.source_user_id) - self._hidden_owner_ids
             if self._user_list_complete:
                 # Only accounts that can sign in get a drive record group (see _sync_record_groups).
                 self._synced_box_user_ids = frozenset(
@@ -890,6 +923,46 @@ class BoxConnector(BaseConnector):
             self.logger.error(f"Could not withdraw the Box accounts that left Box; retried next run: {e}")
             self._read_complete = False
         return returning
+
+    async def _close_hidden_content(self, *, full_sync: bool) -> bool:
+        """Remove the grants on the content of each owner this run's user list newly shows as hidden from collaborators
+        (their drive's records; see _sync_users). Returns whether the content of an owner closed before is open again
+        (reactivated, or kept available by an admin): only a full sync writes those grants back, so an incremental run
+        leaves the owner recorded for the full sync it owes, and the full sync replays the share history from the start,
+        as for a returning account. A failure removes the record of nothing, so the next run does it again."""
+        try:
+            record = await self.user_sync_point.read_sync_point(self.HIDDEN_OWNERS_KEY)
+            closed = set((record or {}).get("ids") or [])
+            reopened = closed & self._shown_owner_ids
+            newly_hidden = self._hidden_owner_ids - closed
+            for owner_id in sorted(newly_hidden):
+                await self._remove_grants_in_drive(owner_id)
+            if full_sync and reopened:
+                # shortcut: Box keeps that history for a limited time; a share older than it comes back only by a walk.
+                await self.box_cursor_sync_point.update_sync_point(self.SHARE_HISTORY_KEY, {"position": "0"})
+            if newly_hidden or (full_sync and reopened):
+                kept = closed - reopened if full_sync else closed
+                await self.user_sync_point.update_sync_point(self.HIDDEN_OWNERS_KEY, {"ids": sorted(kept | newly_hidden)})
+            if newly_hidden:
+                self.logger.info(f"Closed the content of {len(newly_hidden)} Box owner(s) whose content Box hides from collaborators")
+            return bool(reopened)
+        except Exception as e:
+            self.logger.error(f"Could not close the content Box hides from collaborators; retried next run: {e}")
+            self._read_complete = False
+            return False
+
+    async def _remove_grants_in_drive(self, owner_id: str) -> None:
+        """Replace the grants on every record of this owner's drive with none (records below inherit from them)."""
+        after_key: str | None = None
+        while True:
+            page = await self.data_entities_processor.get_records_in_record_group(
+                self.connector_id, owner_id, RECORD_PAGE_SIZE, after_key, visibility=RecordVisibility.ALL,
+            )
+            for record in page:
+                await self.data_entities_processor.on_updated_record_permissions(record, [])
+            if len(page) < RECORD_PAGE_SIZE:
+                return
+            after_key = page[-1].id
 
     async def _get_app_users_by_emails(self, emails: List[str]) -> List[AppUser]:
         """
@@ -1405,6 +1478,10 @@ class BoxConnector(BaseConnector):
             self.logger.error(f"Failed to create virtual groups: {e}")
             self._mark_read_incomplete(e)
 
+    def full_sync_coverage(self) -> FullSyncCoverage:
+        """A run that could not read part of Box removes nothing it did not see."""
+        return FullSyncCoverage(complete=self._read_complete)
+
     async def run_sync(self) -> None:
         """
         Smart Sync: Decides between Full vs. Incremental based on cursor state.
@@ -1490,6 +1567,7 @@ class BoxConnector(BaseConnector):
             self.logger.info("📦 [Full Sync] Syncing users...")
             users = await self._sync_users()
             await self._link_users(users, full_sync=True)
+            await self._close_hidden_content(full_sync=True)
 
             self.logger.info("📦 [Full Sync] Creating virtual groups...")
             await self._ensure_virtual_groups()
@@ -1619,6 +1697,7 @@ class BoxConnector(BaseConnector):
             users = await self._sync_users()
 
             returning = await self._link_users(users, full_sync=False)
+            reopened = await self._close_hidden_content(full_sync=False)
             users_complete = self._read_complete
 
             # Box user IDs that belong to our org (for distinguishing external vs internal shares)
@@ -1643,10 +1722,10 @@ class BoxConnector(BaseConnector):
                 "the event-stream position is kept until it can be read."
             )
             return
-        if returning:
+        if returning or reopened:
             # Their grants were dropped when they left, so a full sync follows the events below. It is recorded apart
             # from the stream position: a cut-short run is full again and the changes since that position still apply.
-            self.logger.info(f"[Incremental] {len(returning)} Box account(s) came back; running a full sync for them.")
+            self.logger.info("[Incremental] Box accounts or content came back; running a full sync for them.")
             await self.box_cursor_sync_point.update_sync_point("event_stream_cursor", {"full_sync_pending": True})
         # Pages applied with a stale group list lose grants, so a failed refresh stops at one page.
         refresh_complete = self._read_complete
@@ -1735,7 +1814,7 @@ class BoxConnector(BaseConnector):
 
         except Exception as e:
             self.logger.error(f"❌ [Incremental] Error during sync: {e}", exc_info=True)
-        if returning:
+        if returning or reopened:
             await self._run_sync()
 
     @staticmethod

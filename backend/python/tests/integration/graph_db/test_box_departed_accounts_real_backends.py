@@ -308,3 +308,40 @@ async def test_a_return_seen_on_a_user_list_cut_short_still_gets_its_full_sync(e
     await env.sync()
 
     assert await env.readable("carol") == CAROL_READS
+
+
+def _carol_shares_a_folder_with_bob(env: _Env) -> None:
+    env.api.add_folder("fold-carol", "Carol's", "u-carol")
+    env.api.collaborate("fold-carol", "u-bob")
+    env.api.add_file("file-carol", "notes.pdf", "u-carol", parent="fold-carol")
+
+
+async def test_content_box_hides_with_its_inactive_owner_is_read_by_no_collaborator(env: _Env) -> None:
+    """For an Inactive user "by default, folders owned by this user are hidden from all collaborators"
+    (https://docs.box.com/en/box-admin-tools/managing-box-users-and-admins/understanding-user-management/users-groups-settings)."""
+    _carol_shares_a_folder_with_bob(env)
+    await env.sync()
+    assert {"Carol's", "notes.pdf"} <= await env.readable("bob")
+    env.api.deactivate("u-carol")
+
+    await env.sync()
+
+    assert await env.readable("bob") == BOB_READS
+    env.api.reactivate("u-carol")
+    await env.sync()
+    assert await env.readable("bob") == BOB_READS | {"Carol's", "notes.pdf"}
+
+
+async def test_content_kept_available_to_collaborators_is_still_read_by_them(env: _Env) -> None:
+    """The admin's "Keep this user's content available to existing collaborators" (same page), which the API reads
+    as is_collaborated_content_available_when_owner_inactive (https://developer.box.com/reference/resources/user--full/)."""
+    _carol_shares_a_folder_with_bob(env)
+    await env.sync()
+    env.api.deactivate("u-carol", keep_content_available=True)
+
+    await env.full_sync()
+
+    assert await env.readable("bob") == BOB_READS | {"Carol's", "notes.pdf"}
+    env.api.users["u-carol"]["is_collaborated_content_available_when_owner_inactive"] = False
+    await env.sync()
+    assert await env.readable("bob") == BOB_READS
