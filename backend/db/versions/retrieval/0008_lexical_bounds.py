@@ -3,6 +3,7 @@ import re
 from pathlib import Path
 
 from alembic import op
+from db.lib.ddl import ensure_partitioned_index
 from db.lib.run_sql import run_sql
 from db.lib.vetted import run_vetted
 
@@ -15,11 +16,17 @@ older_code_compatible = ("adds nullable columns, a table and a trigger, and repl
                          "older fold or recount writes loses its bound (the trigger), so the search sums that term in full, as before, until "
                          "the fold worker fills it again")
 
+blocking_index_ok = "the index keys the rows without a bound by wmax, which this revision adds, so it cannot be built before its transaction"
+# The rows still without a bound, for the fill: it reads them by this index, so a batch reads its own rows and never the filled ones before
+# them. Every row of an upgraded install is in it at first; it shrinks to nothing as the fill runs, and holds only the rest after.
+UNBOUNDED = {"table": "retrieval.lexical_df", "name": "lexical_df_unbounded", "cols": "org_id, collection_id, space_id, term", "where": "wmax IS NULL"}
+
 SIG = "retrieval.search_sparse(smallint, bigint[], real[], text[], text[], text[], text[], text[], int)"
 
 
 def upgrade():
     run_sql(__file__)
+    ensure_partitioned_index(op.get_bind(), **UNBOUNDED, blocking=True)
     # The generated file creates the function and its registry row: the old ones go first, in this transaction.
     op.execute(f"DELETE FROM kernel.function_registry WHERE proc = '{SIG}'::regprocedure")
     op.execute(f"DROP FUNCTION {SIG}")

@@ -1917,6 +1917,7 @@ index retrieval.lexical_df_delta_count on retrieval.lexical_df_delta unique=fals
 index retrieval.lexical_df_delta_pkey on retrieval.lexical_df_delta unique=true exclusion=false valid=true def=e549fc595c3305bddb94c73fd9d2ae15
 index retrieval.lexical_df_pending_pkey on retrieval.lexical_df_pending unique=true exclusion=false valid=true def=e519e8443a7dcd2b47771b41cf2d3160
 index retrieval.lexical_df_pkey on retrieval.lexical_df unique=true exclusion=false valid=true def=7311944cf83bbf007def75370e2f9395
+index retrieval.lexical_df_unbounded on retrieval.lexical_df unique=false exclusion=false valid=true def=c137fcaaf5f3e027e725d5622d3311f4
 index retrieval.lexical_term_delta_pkey on retrieval.lexical_term_delta unique=true exclusion=false valid=true def=1bb11a5fe71ad0c35e8ac91eabceb726
 index retrieval.lexical_term_delta_term on retrieval.lexical_term_delta unique=false exclusion=false valid=true def=83369b27ae378fb115627b6f854fd843
 index retrieval.member_stats_pkey on retrieval.member_stats unique=true exclusion=false valid=true def=07d00888fdba4a3afaff417af5314abb

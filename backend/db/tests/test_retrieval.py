@@ -584,7 +584,9 @@ def test_a_large_collection_is_answered_exactly_by_pruning_and_by_scoring_narrow
     check_against_reference(cluster, name, ORG_A, queries, (((None, None, None, None), None), ((["conn"], None, None, None), None),
                                                             ((None, ["rg1"], None, None), {"g1", "g6"}), ((None, None, None, ["g0"]), {"g0"})), (1, 10, 40))
     _, read = postings_scanned(cluster, name, ORG_A, terms)
-    assert read < 20_000                                    # of 216,000: the rare terms' postings and a probe per candidate and common term
+    assert read < 20_000
+    _, read = postings_scanned(cluster, name, ORG_A, terms, arms=(None, None, None, ["g0"]))
+    assert read <= 8_000 * 7                                # g0's points, one probe per point and term; the sum would read all 216,000                                    # of 216,000: the rare terms' postings and a probe per candidate and common term
     with cluster.admin(name) as c:
         sk = c.execute("SELECT point_sk FROM retrieval.points WHERE org_id = %s AND point_sk %% 5 = 0 AND point_sk %% 97 <> 0 "
                        "AND point_sk %% 251 <> 0 AND point_sk %% 1009 <> 0 ORDER BY point_sk LIMIT 1", (ORG_A,)).fetchone()[0]
@@ -594,14 +596,14 @@ def test_a_large_collection_is_answered_exactly_by_pruning_and_by_scoring_narrow
     check_against_reference(cluster, name, ORG_A, queries[:1], (((None, None, None, None), None), ((None, None, None, ["g0", "g1"]), {"g0", "g1"})), (10,))
 
 
-def postings_scanned(cluster, name, org, terms) -> tuple[list, int]:
-    """A whole-org search's answer (leg 10) and the rows its scans of the postings returned, table and index. Sequential scans are off: on a
-    collection this small the planner may read a term's postings by scanning the whole table, which says nothing about the rows the search
-    asks for (a large one reads them by index)."""
+def postings_scanned(cluster, name, org, terms, arms=(None, None, None, None)) -> tuple[list, int]:
+    """A search's answer (leg 10; the whole org unless ``arms`` are given) and the rows its scans of the postings returned, table and index.
+    Sequential scans are off: on a collection this small the planner may read a term's postings by scanning the whole table, which says
+    nothing about the rows the search asks for (a large one reads them by index)."""
     with connect_as(cluster, name, "pipeshub_query_login") as c, uow(c, "pipeshub_query", org):
         c.execute("SET LOCAL enable_seqscan = off")
-        got = c.execute("SELECT point_sk, score FROM retrieval.search_sparse(1::smallint, %s::bigint[], %s::real[], NULL, NULL, NULL, NULL, NULL, 10)",
-                        (list(terms), [1.0] * len(terms))).fetchall()
+        got = c.execute("SELECT point_sk, score FROM retrieval.search_sparse(1::smallint, %s::bigint[], %s::real[], %s::text[], %s::text[], %s::text[], "
+                        "%s::text[], NULL, 10)", (list(terms), [1.0] * len(terms), *arms)).fetchall()
         read = c.execute("SELECT sum(pg_stat_get_xact_tuples_returned(c.oid))::int FROM pg_class c "
                          "WHERE c.relnamespace = 'retrieval'::regnamespace AND c.relname LIKE 'postings%%'").fetchone()[0]
         return got, read
@@ -689,14 +691,46 @@ def test_a_terms_bound_follows_every_weight_written_through_folds_and_recount(rd
 
 
 def safe(bound: float | None, w: float) -> bool:
-    """A bound the search may prune on must not be below a weight a posting of the term has; not known is always safe."""
-    return bound is None or bound >= w
+    """A bound the search may prune on must not be below the magnitude of a weight a posting of the term has; not known is always safe."""
+    return bound is None or bound >= abs(w)
 
 
-def test_a_recount_leaves_the_deltas_without_a_bound_not_known_until_they_are_folded(rdb, monkeypatch):
-    """A posting replaced by one of weight 1000 before the upgrade leaves two deltas without a bound. Recount bounds the folded row at 1000;
-    if the fold then takes the deletion alone, the row goes, and the insertion must not be left with a bound below 1000, between the two
-    batches or after the second one."""
+def test_a_fill_batch_reads_the_rows_without_a_bound_and_not_the_filled_ones(rdb):
+    """The fill finds the rows without a bound by their own index (lexical_df_unbounded): a batch reads its 200 rows and the rows it
+    writes, however many rows of the org were filled before them (without it, every batch read the org's rows from the start)."""
+    cluster, name = rdb
+    adopt(cluster, name, ORG_A)
+    filled = 20_000
+    with cluster.admin(name) as c:
+        c.execute("SELECT set_config('retrieval.bounds_kept', 'on', false)")       # filled rows, as the fill leaves them
+        c.execute("INSERT INTO retrieval.lexical_df (org_id, collection_id, space_id, term, df, wmax) SELECT %s, 1, 1, t, 1, 1 FROM generate_series(1, %s::int) t",
+                  (ORG_A, filled))
+        c.execute("SELECT set_config('retrieval.bounds_kept', '', false)")
+        c.execute("INSERT INTO retrieval.lexical_df (org_id, collection_id, space_id, term, df) SELECT %s, 1, 1, t, 1 FROM generate_series(%s::int, %s::int) t",
+                  (ORG_A, filled + 1, filled + 300))
+        c.execute("VACUUM (ANALYZE) retrieval.lexical_df")
+        assert c.execute("SELECT reltuples FROM pg_class WHERE oid = 'retrieval.lexical_df_unbounded'::regclass").fetchone()[0] == 300
+    assert pending_bounds(cluster, name) == [(ORG_A, 1, 1)]
+    with connect_as(cluster, name, "pipeshub_jobs") as jobs, jobs.transaction():
+        jobs.execute("SET LOCAL enable_seqscan = off")            # as postings_scanned: a table this small may be read whole, a large one is not
+        fold.keeps_bounds(jobs)
+        assert jobs.execute(fold.FILL_BOUNDS, {"org": ORG_A, "terms": fold.BOUND_TERMS}).fetchone()[0] == fold.BOUND_TERMS
+        read = jobs.execute("SELECT pg_stat_get_xact_tuples_returned('retrieval.lexical_df'::regclass) + sum(pg_stat_get_xact_tuples_returned(indexrelid)) "
+                            "FROM pg_index WHERE indrelid = 'retrieval.lexical_df'::regclass").fetchone()[0]
+        assert read <= 4 * fold.BOUND_TERMS, read                 # of 20,300 rows
+    with connect_as(cluster, name, "pipeshub_jobs") as jobs:
+        assert fold.fill_bounds(jobs)[1] == {}
+    assert pending_bounds(cluster, name) == []
+    with cluster.admin(name) as c:                                # the index holds the rows without a bound, and none once they are filled
+        c.execute("VACUUM (INDEX_CLEANUP ON) retrieval.lexical_df")
+        assert c.execute("SELECT reltuples FROM pg_class WHERE oid = 'retrieval.lexical_df_unbounded'::regclass").fetchone()[0] == 0
+
+
+@pytest.mark.parametrize("w", [1000.0, -1000.0])
+def test_a_recount_leaves_the_deltas_without_a_bound_not_known_until_they_are_folded(rdb, monkeypatch, w):
+    """A posting replaced by one of weight 1000 (or -1000: the bound is a magnitude) before the upgrade leaves two deltas without a bound.
+    Recount bounds the folded row at 1000; if the fold then takes the deletion alone, the row goes, and the insertion must not be left with
+    a bound below 1000, between the two batches or after the second one."""
     cluster, name = rdb
     adopt(cluster, name, ORG_A)
     with connect_as(cluster, name, "pipeshub_indexing_login") as c, uow(c, "pipeshub_indexing", ORG_A):
@@ -705,17 +739,17 @@ def test_a_recount_leaves_the_deltas_without_a_bound_not_known_until_they_are_fo
         assert fold.run(jobs)[1] == {}
     with cluster.admin(name) as c:                    # as the trigger of the earlier release wrote them: deltas without a bound
         c.execute("SET session_replication_role = replica")
-        c.execute("UPDATE retrieval.postings SET w = 1000 WHERE org_id = %s AND point_sk = %s AND term = 5", (ORG_A, sk))
+        c.execute("UPDATE retrieval.postings SET w = %s WHERE org_id = %s AND point_sk = %s AND term = 5", (w, ORG_A, sk))
         c.execute("INSERT INTO retrieval.lexical_term_delta (org_id, collection_id, space_id, term, d) VALUES (%s, 1, 1, 5, -1), (%s, 1, 1, 5, 1)",
                   (ORG_A, ORG_A))
     with connect_as(cluster, name, "pipeshub_jobs") as jobs:
         assert fold.recount_org(jobs, ORG_A) is not None
-        assert safe(bounds(cluster, name, ORG_A)[5], 1000)
+        assert safe(bounds(cluster, name, ORG_A)[5], w)
         monkeypatch.setattr(fold, "BATCH", 1)
         assert fold.fold_org(jobs, ORG_A) == 1        # the deletion alone: the folded row goes
-        assert safe(bounds(cluster, name, ORG_A).get(5), 1000)
+        assert safe(bounds(cluster, name, ORG_A).get(5), w)
         assert fold.fold_org(jobs, ORG_A) == 1        # the insertion
-        assert safe(bounds(cluster, name, ORG_A)[5], 1000)
+        assert safe(bounds(cluster, name, ORG_A)[5], w)
         assert fold.fill_bounds(jobs)[1] == {}
     assert bounds(cluster, name, ORG_A) == {5: 1000.0}
 
