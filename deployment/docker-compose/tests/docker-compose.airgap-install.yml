@@ -1,0 +1,58 @@
+# TEST-ONLY overlay for airgap_install_smoke.sh (C15.04, docs/agent-harness-v2/guides/air-gapped-install.md):
+# an install made by install.sh, layered through PIPESHUB_COMPOSE_OVERRIDES, on Docker networks with no route out.
+# `pipeshub` becomes internal like the shipped file's other networks. Published ports move to `pxh-ingress`, the one
+# container also on a routed network, which forwards inbound connections only (deployment/e2e/ingress.py). The
+# in-network model is the scripted model (deployment/e2e/fake_llm), standing in for an Ollama or vLLM endpoint; the
+# scripted SaaS gives the engine job a tool. All three run from the installed image itself, so the test needs no
+# image the install does not.
+
+x-airgap-tool: &airgap-tool
+  image: ${PIPESHUB_IMAGE:-pipeshubai/pipeshub-ai}:${IMAGE_TAG:-latest}
+  restart: "no"
+  user: "1000:1000"
+  working_dir: /app/python
+  volumes:
+    - ${AIRGAP_E2E_DIR:?}:/e2e:ro
+
+networks:
+  pipeshub:
+    internal: true
+  web-readers:
+    internal: true
+  ingress:
+    driver: bridge
+
+services:
+  pipeshub-ai:
+    ports: !reset []
+
+  pxh-ingress:
+    <<: *airgap-tool
+    entrypoint: ["python", "/e2e/ingress.py", "3000=pipeshub-ai:3000", "8080=pxh-fake-llm:8080", "8090=pxh-fake-saas:8090"]
+    ports:
+      - "127.0.0.1:${APP_PORT:-3000}:3000"
+      - "127.0.0.1:${AIRGAP_LLM_PORT:?}:8080"
+      - "127.0.0.1:${AIRGAP_SAAS_PORT:?}:8090"
+    networks:
+      - ingress
+      - pipeshub
+
+  pxh-fake-llm:
+    <<: *airgap-tool
+    entrypoint: ["python", "/e2e/fake_llm/server.py", "8080"]
+    environment:
+      PYTHONPATH: /app/python
+      FAKE_LLM_API_KEY: ${AIRGAP_LLM_KEY:?}
+      FAKE_LLM_CONTROL_TOKEN: ${AIRGAP_CONTROL_TOKEN:?}
+      FAKE_LLM_MODELS: e2e-llm,e2e-embedding
+    networks:
+      - pipeshub
+
+  pxh-fake-saas:
+    <<: *airgap-tool
+    entrypoint: ["python", "/e2e/fake_saas/server.py", "8090"]
+    environment:
+      PYTHONPATH: /app/python
+      FAKE_SAAS_CONTROL_TOKEN: ${AIRGAP_CONTROL_TOKEN:?}
+    networks:
+      - pipeshub

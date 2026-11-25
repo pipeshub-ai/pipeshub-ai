@@ -10,6 +10,8 @@ import {
   BaseKafkaProducerConnection,
 } from '../../../../src/libs/services/kafka.service'
 import { Container } from 'inversify'
+import { PRINCIPAL_DATA_STORES } from '../../../../src/modules/agent-harness/domain/session-erasure'
+import { ORG_QUERY_SERVICE_ERASER } from '../../../../src/modules/agent-harness/binders/tokens'
 
 describe('UserManagerContainer', () => {
   afterEach(() => {
@@ -278,6 +280,30 @@ describe('UserManagerContainer - coverage', () => {
 
       const instance = UserManagerContainer.getInstance()
       expect(instance).to.equal(container)
+
+      // The org delete is composed with every eraser the org's stores list for it, and the query service's.
+      const org = container.get<any>('OrgController')
+      const listed = PRINCIPAL_DATA_STORES.filter((entry) =>
+        entry.callers.includes('modules/user_management/controller/org.controller.ts#deleteOrganization'),
+      )
+      expect(listed.length).to.be.greaterThan(0)
+      for (const entry of [...listed.map((e) => e.field), 'queryService']) {
+        expect(org[entry], entry).to.be.an('object')
+        expect(org[entry].eraseOrg, entry).to.be.a('function')
+      }
+      expect(container.isBound(ORG_QUERY_SERVICE_ERASER)).to.be.true
+
+      // And a person's delete with every eraser the stores list for it (the factory had stopped at the golden
+      // traces, so the Inbox store was never erased).
+      const user = container.get<any>('UserController')
+      const userListed = PRINCIPAL_DATA_STORES.filter((entry) =>
+        entry.callers.includes('modules/user_management/controller/users.controller.ts#deleteUser'),
+      )
+      expect(userListed.length).to.be.greaterThan(0)
+      for (const entry of userListed.map((e) => e.field)) {
+        expect(user[entry], entry).to.be.an('object')
+        expect(user[entry].eraseUser, entry).to.be.a('function')
+      }
 
       ;(UserManagerContainer as any).instance = null
     })

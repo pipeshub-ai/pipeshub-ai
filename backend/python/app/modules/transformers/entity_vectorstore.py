@@ -105,14 +105,10 @@ from app.services.vector_db.sparse_embeddings import (
     get_default_sparse_embedder,
 )
 from app.telemetry.modules import entity_index_metrics
-from app.utils.aimodels import (
-    INDEXING_SDK_RETRIES,
-    embedding_config_hash,
-    get_default_embedding_model,
-    get_embedding_model,
-)
+from app.utils.aimodels import INDEXING_SDK_RETRIES, embedding_config_hash
 from app.utils.embedding_server_client import EmbeddingServerEmbeddings
 from app.utils.error_class import log_failure
+from app.utils.llm import build_embeddings, require_embeddings_placement
 from app.utils.query_instruction import instruct_query
 
 if TYPE_CHECKING:
@@ -345,6 +341,8 @@ class EntityVectorStore:
 
         self._capabilities = vector_db_service.get_capabilities()
         self._dense_embeddings = None
+        # The embedding entry the client was built from (``None``: the built-in server), checked again on each use.
+        self._embedding_entry: dict[str, Any] | None = None
         self._sparse_embedder: SparseEmbedder | None = None
         self._sparse_lock: asyncio.Lock | None = None
         self._initialized = False
@@ -398,6 +396,8 @@ class EntityVectorStore:
         entities (``_recreate_mismatched``)."""
         read = await self._read_embedding_config()
         if self._is_current(read):
+            # A pin saved after the client was built binds it from the next call on (MG-15).
+            await require_embeddings_placement(self.config_service, self._embedding_entry)
             return
         async with self._init_lock:
             # Read again: a re-initialisation that held the lock meanwhile may
@@ -692,13 +692,15 @@ class EntityVectorStore:
 
     async def _init_embeddings(self, embedding_configs: list[dict[str, Any]] | None = None) -> None:
         if not embedding_configs:
-            self._dense_embeddings = get_default_embedding_model()
+            self._dense_embeddings = await build_embeddings(self.config_service, None)
+            self._embedding_entry = None
             self._model_id = f"default:{DEFAULT_EMBEDDING_MODEL}"
         else:
             config = next(
                 (c for c in embedding_configs if c.get("isDefault")), embedding_configs[0]
             )
             self._dense_embeddings = await self._build_dense_embeddings(config)
+            self._embedding_entry = config
             # get_embedding_model uses the first of a comma-separated list.
             models = str((config.get("configuration") or {}).get("model") or "")
             model = next((m.strip() for m in models.split(",") if m.strip()), "")
@@ -716,7 +718,7 @@ class EntityVectorStore:
                     self._sparse_embedder = embedder
 
     async def _build_dense_embeddings(self, config: dict[str, Any]) -> Any:  # noqa: ANN401
-        return get_embedding_model(config["provider"], config, sdk_retries=INDEXING_SDK_RETRIES)
+        return await build_embeddings(self.config_service, config, sdk_retries=INDEXING_SDK_RETRIES)
 
     async def _embedding_dimension(self) -> int:
         embeddings = self._dense_embeddings

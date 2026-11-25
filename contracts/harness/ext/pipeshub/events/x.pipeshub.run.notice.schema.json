@@ -1,0 +1,185 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/ext/pipeshub/events/x.pipeshub.run.notice.schema.json",
+  "title": "PipeshubRunNoticeEvent",
+  "description": "Something the person should know about the run that is not a step of it (CTL-5b). Node writes it with run.admitted: `mcp_unavailable`, a default-chat Agent-mode run that proceeds without one of the person's MCP servers (a server whose tools admission could not name), one notice per server: the server (`item`), why (`reason`: the server wants a new sign-in, it did not answer, an admin approved none of its tools under the MCP hub, or it offers none), and the server to sign in to from the chat (`instance`) when the person can do that there themselves; an older Node wrote it with the code alone. D-MCP-5: Node writes `mcp_tool_held` naming a server (`item`) and the tools of it the description scanner held back from the run (`tools`), for any agent. The worker writes it when a code_task hand-off is refused for a reason the person can act on (CTL-6): `account_missing` (their own AI key), `model_access` (the org's model access rules), `engine_profile` (the agent's engine profile), `engine_unavailable` (no engine image). The worker also writes it when a granted toolset or MCP server is left out because the person has not connected it (QA23-F1): `credential_missing`, naming the item (`item`) and what kind it is (`kind`), so the chat says where to connect it. Node writes `signin_unavailable` on the parent when a code_task child of a person who turned on their own Claude account runs on the organization's model access instead, because no live worker can carry the sign-in (SIGNGAP). Node writes `resumed` with a run.claimed whose attempt is above 1: the attempt before it never handed the run back (its sandbox or worker died, its lease ran out), and the run carries on from its last saved point (CH-01). The chat shows it once on the answer. Presentation only (non-critical); folds ignore it. ADR-OPS-01 D6: Node writes `engine_retired` when an operator retires the run's engine version and suspends the run, and `engine_continued` when it resumes it. ADR-RUN-01 D4: the worker writes `time_plan` as an engine turn starts, naming when it starts writing at the latest (`writeBy`) and when its work must be finished (`finishBy`), so the person sees the run's time plan. G-48 (the degradation chain): Node writes `ran_without_code_tools` with run.admitted when an engine agent's turn runs without code tools because the coding engine was withheld, naming why in `item` (`not_available`, `paused_by_admin`, `not_allowed`, `isolation_unavailable`) (the turn still answers on the loop). A model.fallback and a run.yielded `sandbox_wait` are shown as notices too, derived by Node's projection from those core events, never journaled again as notices. WP-111 ENGINEOFF: Node writes `engine_switched` with run.admitted when the default chat's chosen coding engine (the chat's, the person's or the org's default) is turned off for the org or the person's groups and the turn's code work moves to an engine that is on, naming the one that is off (`item`) and the one used (`engine`); `ran_without_code_tools` with `item: engine_off` when no engine is left on, or when an agent's own engine is off (an agent never moves outside its profile). The worker writes `ran_without_code_tools` with `item: engine_off` when a code_task hand-off is refused because the engine was turned off after the turn started.",
+  "x-writer": [
+    "node",
+    "worker"
+  ],
+  "allOf": [
+    {
+      "$ref": "../../../core/envelope.schema.json#/$defs/InlineEnvelope"
+    }
+  ],
+  "properties": {
+    "type": {
+      "const": "x.pipeshub.run.notice"
+    },
+    "writer": {
+      "enum": [
+        "node",
+        "worker"
+      ]
+    },
+    "data": {
+      "$ref": "#/$defs/PipeshubRunNoticeData"
+    }
+  },
+  "$defs": {
+    "PipeshubRunNoticeData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "code"
+      ],
+      "properties": {
+        "code": {
+          "description": "What the notice says; the chat words it.",
+          "enum": [
+            "mcp_unavailable",
+            "account_missing",
+            "model_access",
+            "engine_profile",
+            "engine_unavailable",
+            "credential_missing",
+            "signin_unavailable",
+            "resumed",
+            "engine_retired",
+            "engine_continued",
+            "time_plan",
+            "ran_without_code_tools",
+            "engine_switched",
+            "mcp_tool_held"
+          ]
+        },
+        "item": {
+          "description": "The item the notice is about, as the person knows it (credential_missing; mcp_unavailable: the MCP server left out; mcp_tool_held: the server whose tools were held back); why code tools were withheld (ran_without_code_tools: not_available, paused_by_admin, not_allowed, isolation_unavailable or engine_off); the coding engine that is turned off (engine_switched, an engine kind).",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "kind": {
+          "description": "What kind of item it is, so the chat says where to connect it (credential_missing).",
+          "enum": [
+            "toolset",
+            "mcp"
+          ]
+        },
+        "reason": {
+          "description": "mcp_unavailable (MCPNOTE-1): why the server in `item` was left out, so the chat says what to do: `sign_in` (it refused the person's sign-in, or it expired), `unreachable` (its tool listing failed or did not answer in time), `not_approved` (an admin's approval is required, D-MCP-5, and no tool of it is approved, or every approved one changed), `no_tools` (it answered and offers none), `flagged` (the description scanner held back every tool it offers, D-MCP-5).",
+          "enum": [
+            "sign_in",
+            "unreachable",
+            "not_approved",
+            "no_tools",
+            "flagged"
+          ]
+        },
+        "instance": {
+          "description": "mcp_unavailable (MCPNOTE-1): the MCP server instance the notice is about, an id, never a credential or a URL. With `reason` sign_in, the one the person signs in to again from the chat, with its OAuth sign-in, present only when that sign-in is their own; with `reason` not_approved, the one an admin approves, whose approvals the chat's link opens.",
+          "$ref": "../../../core/common.schema.json#/$defs/Id"
+        },
+        "tools": {
+          "description": "mcp_tool_held (D-MCP-5): the tools of the server in `item` the description scanner held back from the run (MX-04), by their names on the server.",
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 20,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          }
+        },
+        "engine": {
+          "description": "engine_switched (WP-111): the coding engine kind the turn's code work runs on instead.",
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9_.-]{0,63}$"
+        },
+        "writeBy": {
+          "description": "time_plan (ADR-RUN-01 D4): when the run starts writing at the latest, from its budget's phase plan.",
+          "$ref": "../../../core/common.schema.json#/$defs/Timestamp"
+        },
+        "finishBy": {
+          "description": "time_plan (ADR-RUN-01 D4): when the run's work must be finished.",
+          "$ref": "../../../core/common.schema.json#/$defs/Timestamp"
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 2,
+      "runId": "run_1",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "node",
+      "visibility": "owner",
+      "type": "x.pipeshub.run.notice",
+      "data": {
+        "code": "mcp_unavailable"
+      }
+    },
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 3,
+      "runId": "run_1",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "type": "x.pipeshub.run.notice",
+      "data": {
+        "code": "credential_missing",
+        "item": "Jira",
+        "kind": "toolset"
+      }
+    },
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 4,
+      "runId": "run_1",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "node",
+      "visibility": "owner",
+      "type": "x.pipeshub.run.notice",
+      "data": {
+        "code": "mcp_unavailable",
+        "item": "Atlassian Rovo",
+        "reason": "sign_in",
+        "instance": "mcp-inst-1"
+      }
+    },
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 5,
+      "runId": "run_1",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "node",
+      "visibility": "owner",
+      "type": "x.pipeshub.run.notice",
+      "data": {
+        "code": "mcp_tool_held",
+        "item": "Atlassian Rovo",
+        "tools": [
+          "getConfluencePage"
+        ]
+      }
+    }
+  ]
+}

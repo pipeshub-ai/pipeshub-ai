@@ -1,0 +1,438 @@
+{
+  "schema": "pipeshub.release-key-vectors/1",
+  "note": "Written by scripts/engines/release_key_vectors.py; throwaway test keys, no release key.",
+  "keys": {
+    "test-a": {
+      "public": "xGrStUPylcdLvM7ZLtXQFY7NOsQi2rbBGaHAdIbfYmg=",
+      "notAfter": "2028-01-01T00:00:00Z"
+    },
+    "test-b": {
+      "public": "79xmtoAO9DLUnkMGcubGq4488oUBfXiJQCcKiFfZ/5I=",
+      "notAfter": "2029-01-01T00:00:00Z"
+    },
+    "test-x": {
+      "public": "HvCE9uXWQTTP6cy5eka56WatLDL+rUC7uPHKbTsTSU8=",
+      "notAfter": "2026-06-01T00:00:00Z"
+    }
+  },
+  "usable": [
+    {
+      "name": "nothing revoked: the expired key is out",
+      "revoked": [],
+      "now": "2027-01-01T00:00:00Z",
+      "expect": [
+        "test-a",
+        "test-b"
+      ]
+    },
+    {
+      "name": "a revoked key is out",
+      "revoked": [
+        "test-b"
+      ],
+      "now": "2027-01-01T00:00:00Z",
+      "expect": [
+        "test-a"
+      ]
+    },
+    {
+      "name": "a key is out at its not-after instant",
+      "revoked": [],
+      "now": "2028-01-01T00:00:00Z",
+      "expect": [
+        "test-b"
+      ]
+    },
+    {
+      "name": "and in a second before",
+      "revoked": [],
+      "now": "2027-12-31T23:59:59Z",
+      "expect": [
+        "test-a",
+        "test-b"
+      ]
+    },
+    {
+      "name": "revoking a key this release does not ship changes nothing",
+      "revoked": [
+        "test-z"
+      ],
+      "now": "2027-01-01T00:00:00Z",
+      "expect": [
+        "test-a",
+        "test-b"
+      ]
+    },
+    {
+      "name": "everything revoked or expired",
+      "revoked": [
+        "test-a",
+        "test-b"
+      ],
+      "now": "2027-01-01T00:00:00Z",
+      "expect": []
+    }
+  ],
+  "revocations": [
+    {
+      "name": "a first list, signed by a usable key",
+      "document": "{\"schema\": \"pipeshub.revoked-keys/1\", \"issued\": \"2026-12-31T00:00:00Z\", \"revoked\": [\"test-b\"]}",
+      "signature": "{\"alg\": \"Ed25519\", \"keyId\": \"test-a\", \"sig\": \"DcAWr4i2R3eIqU30XBxUQuY0c6J2M0tuf2jiHXrnJLYjaRZ2PknQDI3YMvLTqNGqOISRN4Vs49jbTWvGlwioBQ==\"}",
+      "current": {
+        "issued": null,
+        "revoked": []
+      },
+      "now": "2027-01-01T00:00:00Z",
+      "expect": {
+        "issued": "2026-12-31T00:00:00Z",
+        "revoked": [
+          "test-b"
+        ]
+      }
+    },
+    {
+      "name": "a key revokes itself",
+      "document": "{\"schema\": \"pipeshub.revoked-keys/1\", \"issued\": \"2026-12-31T00:00:00Z\", \"revoked\": [\"test-a\"]}",
+      "signature": "{\"alg\": \"Ed25519\", \"keyId\": \"test-a\", \"sig\": \"UueqlwBKHXblfdE70tUZMQ219kTasby79rtvhAw6j6eMm/VHED5k8CFMKkmS5SWexNux/nK8GGJ84kcPubeXBw==\"}",
+      "current": {
+        "issued": null,
+        "revoked": []
+      },
+      "now": "2027-01-01T00:00:00Z",
+      "expect": {
+        "issued": "2026-12-31T00:00:00Z",
+        "revoked": [
+          "test-a"
+        ]
+      }
+    },
+    {
+      "name": "a newer list keeps the earlier revocations and adds one",
+      "document": "{\"schema\": \"pipeshub.revoked-keys/1\", \"issued\": \"2026-12-31T00:00:00Z\", \"revoked\": [\"test-b\", \"test-x\"]}",
+      "signature": "{\"alg\": \"Ed25519\", \"keyId\": \"test-a\", \"sig\": \"v+Q3AQgYVt0GJjYzfEFuQnIIkSkTjnzppda8JYbF/Kobt/72kY2E8ZGTRucU/oqmHoMZsLZGPpbkbwrZbPZlDA==\"}",
+      "current": {
+        "issued": "2026-12-01T00:00:00Z",
+        "revoked": [
+          "test-b"
+        ]
+      },
+      "now": "2027-01-01T00:00:00Z",
+      "expect": {
+        "issued": "2026-12-31T00:00:00Z",
+        "revoked": [
+          "test-b",
+          "test-x"
+        ]
+      }
+    },
+    {
+      "name": "an empty list is a valid list",
+      "document": "{\"schema\": \"pipeshub.revoked-keys/1\", \"issued\": \"2026-12-31T00:00:00Z\", \"revoked\": []}",
+      "signature": "{\"alg\": \"Ed25519\", \"keyId\": \"test-b\", \"sig\": \"zXo2l75uL7ceAlQLAYdkyBb86ltPpCjE2OIhftT0MdV6PDQ+lDgf/ltPKLL0bE4+5dqPByx0SM7k1DYv/9EOBA==\"}",
+      "current": {
+        "issued": null,
+        "revoked": []
+      },
+      "now": "2027-01-01T00:00:00Z",
+      "expect": {
+        "issued": "2026-12-31T00:00:00Z",
+        "revoked": []
+      }
+    },
+    {
+      "name": "dated within a day ahead of the clock",
+      "document": "{\"schema\": \"pipeshub.revoked-keys/1\", \"issued\": \"2027-01-01T23:59:59Z\", \"revoked\": [\"test-b\"]}",
+      "signature": "{\"alg\": \"Ed25519\", \"keyId\": \"test-a\", \"sig\": \"bZ9j0EhdvdeS0T4AnE1wgE6IGwZVau1l8i/TkoYYuL7Wi+Ptvt+KoJL1J9L2oLBZPjbGtOPEkpAh4kSdIirBBg==\"}",
+      "current": {
+        "issued": null,
+        "revoked": []
+      },
+      "now": "2027-01-01T00:00:00Z",
+      "expect": {
+        "issued": "2027-01-01T23:59:59Z",
+        "revoked": [
+          "test-b"
+        ]
+      }
+    },
+    {
+      "name": "no list",
+      "document": null,
+      "signature": null,
+      "current": {
+        "issued": null,
+        "revoked": []
+      },
+      "now": "2027-01-01T00:00:00Z",
+      "expect": {
+        "refused": "missing"
+      }
+    },
+    {
+      "name": "a list with no signature",
+      "document": "{\"schema\": \"pipeshub.revoked-keys/1\", \"issued\": \"2026-12-31T00:00:00Z\", \"revoked\": [\"test-b\"]}",
+      "signature": null,
+      "current": {
+        "issued": null,
+        "revoked": []
+      },
+      "now": "2027-01-01T00:00:00Z",
+      "expect": {
+        "refused": "unsigned"
+      }
+    },
+    {
+      "name": "a signature that is not one",
+      "document": "{\"schema\": \"pipeshub.revoked-keys/1\", \"issued\": \"2026-12-31T00:00:00Z\", \"revoked\": [\"test-b\"]}",
+      "signature": "not json",
+      "current": {
+        "issued": null,
+        "revoked": []
+      },
+      "now": "2027-01-01T00:00:00Z",
+      "expect": {
+        "refused": "unsigned"
+      }
+    },
+    {
+      "name": "signed by a key this release does not ship",
+      "document": "{\"schema\": \"pipeshub.revoked-keys/1\", \"issued\": \"2026-12-31T00:00:00Z\", \"revoked\": [\"test-b\"]}",
+      "signature": "{\"alg\": \"Ed25519\", \"keyId\": \"test-c\", \"sig\": \"Hz7PYvQiBYPZpVnQ1QP8salSwB9GyeQsBM07wgA8wDzW3Q9BE/+GPWqanvBbH5i8GuuP5elaFLN8X/8I8+36BQ==\"}",
+      "current": {
+        "issued": null,
+        "revoked": []
+      },
+      "now": "2027-01-01T00:00:00Z",
+      "expect": {
+        "refused": "unknown_key"
+      }
+    },
+    {
+      "name": "signed by a key past its not-after",
+      "document": "{\"schema\": \"pipeshub.revoked-keys/1\", \"issued\": \"2026-12-31T00:00:00Z\", \"revoked\": [\"test-b\"]}",
+      "signature": "{\"alg\": \"Ed25519\", \"keyId\": \"test-x\", \"sig\": \"RSat2nDEWbEfau/EPXXD29+KyeJibHgAUsO9P94Lm1r0CtNd4l6c+x3x+1+j3lsxCe/OXZeKOJ9DOEPgbRiJBg==\"}",
+      "current": {
+        "issued": null,
+        "revoked": []
+      },
+      "now": "2027-01-01T00:00:00Z",
+      "expect": {
+        "refused": "expired_key"
+      }
+    },
+    {
+      "name": "signed by a key at its not-after instant",
+      "document": "{\"schema\": \"pipeshub.revoked-keys/1\", \"issued\": \"2026-12-31T00:00:00Z\", \"revoked\": [\"test-b\"]}",
+      "signature": "{\"alg\": \"Ed25519\", \"keyId\": \"test-a\", \"sig\": \"DcAWr4i2R3eIqU30XBxUQuY0c6J2M0tuf2jiHXrnJLYjaRZ2PknQDI3YMvLTqNGqOISRN4Vs49jbTWvGlwioBQ==\"}",
+      "current": {
+        "issued": null,
+        "revoked": []
+      },
+      "now": "2028-01-01T00:00:00Z",
+      "expect": {
+        "refused": "expired_key"
+      }
+    },
+    {
+      "name": "signed by a key the list in force revokes",
+      "document": "{\"schema\": \"pipeshub.revoked-keys/1\", \"issued\": \"2026-12-31T00:00:00Z\", \"revoked\": [\"test-b\"]}",
+      "signature": "{\"alg\": \"Ed25519\", \"keyId\": \"test-a\", \"sig\": \"DcAWr4i2R3eIqU30XBxUQuY0c6J2M0tuf2jiHXrnJLYjaRZ2PknQDI3YMvLTqNGqOISRN4Vs49jbTWvGlwioBQ==\"}",
+      "current": {
+        "issued": "2026-12-01T00:00:00Z",
+        "revoked": [
+          "test-a"
+        ]
+      },
+      "now": "2027-01-01T00:00:00Z",
+      "expect": {
+        "refused": "revoked_signer"
+      }
+    },
+    {
+      "name": "a list changed after signing",
+      "document": "{\"schema\": \"pipeshub.revoked-keys/1\", \"issued\": \"2026-12-31T00:00:00Z\", \"revoked\": []}",
+      "signature": "{\"alg\": \"Ed25519\", \"keyId\": \"test-a\", \"sig\": \"DcAWr4i2R3eIqU30XBxUQuY0c6J2M0tuf2jiHXrnJLYjaRZ2PknQDI3YMvLTqNGqOISRN4Vs49jbTWvGlwioBQ==\"}",
+      "current": {
+        "issued": null,
+        "revoked": []
+      },
+      "now": "2027-01-01T00:00:00Z",
+      "expect": {
+        "refused": "bad_signature"
+      }
+    },
+    {
+      "name": "signed by another key under a listed id",
+      "document": "{\"schema\": \"pipeshub.revoked-keys/1\", \"issued\": \"2026-12-31T00:00:00Z\", \"revoked\": [\"test-b\"]}",
+      "signature": "{\"alg\": \"Ed25519\", \"keyId\": \"test-a\", \"sig\": \"bpiJm8sroO8S5I3MbTW2fpKbqqBh8AGAORGKota+js2U2n4iQ+ru5f99NF7zyJyYRhoDxrJJmp3rXWTaVIy1Bg==\"}",
+      "current": {
+        "issued": null,
+        "revoked": []
+      },
+      "now": "2027-01-01T00:00:00Z",
+      "expect": {
+        "refused": "bad_signature"
+      }
+    },
+    {
+      "name": "not newer than the list in force",
+      "document": "{\"schema\": \"pipeshub.revoked-keys/1\", \"issued\": \"2026-12-01T00:00:00Z\", \"revoked\": [\"test-b\"]}",
+      "signature": "{\"alg\": \"Ed25519\", \"keyId\": \"test-a\", \"sig\": \"pe7WPGkjaIWnUSPE4/PVUBtGnJbjh+NLCt/6xLFivQ6servLJHTesHFNEajfGkED1U+z1Xmr4rX0UCKV2PSZDw==\"}",
+      "current": {
+        "issued": "2026-12-01T00:00:00Z",
+        "revoked": [
+          "test-b"
+        ]
+      },
+      "now": "2027-01-01T00:00:00Z",
+      "expect": {
+        "refused": "stale"
+      }
+    },
+    {
+      "name": "older than the list in force",
+      "document": "{\"schema\": \"pipeshub.revoked-keys/1\", \"issued\": \"2026-11-01T00:00:00Z\", \"revoked\": [\"test-b\"]}",
+      "signature": "{\"alg\": \"Ed25519\", \"keyId\": \"test-a\", \"sig\": \"qDFzXC7Ay/A+STqwvyihcPddZ6xamZ/UHQYL4Ju/UIUNhX9DomDoKGHnIt9cvQs1YasvPVxp/8LhCgkLyHGfCA==\"}",
+      "current": {
+        "issued": "2026-12-01T00:00:00Z",
+        "revoked": []
+      },
+      "now": "2027-01-01T00:00:00Z",
+      "expect": {
+        "refused": "stale"
+      }
+    },
+    {
+      "name": "dated more than a day ahead",
+      "document": "{\"schema\": \"pipeshub.revoked-keys/1\", \"issued\": \"2027-01-02T00:00:01Z\", \"revoked\": [\"test-b\"]}",
+      "signature": "{\"alg\": \"Ed25519\", \"keyId\": \"test-a\", \"sig\": \"tbqCoJaSqY9mIUcWhHJJCX4MRjgk9bWLrAfwsCzzyN9jqFVVWeeqaogH9eWn5zcDSLiza9imlg+qjKR0gpmuDQ==\"}",
+      "current": {
+        "issued": null,
+        "revoked": []
+      },
+      "now": "2027-01-01T00:00:00Z",
+      "expect": {
+        "refused": "future"
+      }
+    },
+    {
+      "name": "drops a key the list in force revokes",
+      "document": "{\"schema\": \"pipeshub.revoked-keys/1\", \"issued\": \"2026-12-31T00:00:00Z\", \"revoked\": []}",
+      "signature": "{\"alg\": \"Ed25519\", \"keyId\": \"test-a\", \"sig\": \"9/u1Mmmm6N/GuwnJhrVGiQLWdq0PXTQOP8rLd+Zg+cb2BOs8y5ZxvE37n4IH2mCFU0974oOrFy7Fk91DqcpoAQ==\"}",
+      "current": {
+        "issued": "2026-12-01T00:00:00Z",
+        "revoked": [
+          "test-b"
+        ]
+      },
+      "now": "2027-01-01T00:00:00Z",
+      "expect": {
+        "refused": "drops_revocation"
+      }
+    },
+    {
+      "name": "malformed: another schema",
+      "document": "{\"schema\": \"pipeshub.revoked-keys/2\", \"issued\": \"2026-12-31T00:00:00Z\", \"revoked\": [\"test-b\"]}",
+      "signature": "{\"alg\": \"Ed25519\", \"keyId\": \"test-a\", \"sig\": \"GPNgI4aGyv+SIP+8S3MxWHBB5AQBOPTfsc4z7S1gixadJ9206lItIAZ2DF9XD/lM/vWJjK/oo2/I+oSH+YDUCg==\"}",
+      "current": {
+        "issued": null,
+        "revoked": []
+      },
+      "now": "2027-01-01T00:00:00Z",
+      "expect": {
+        "refused": "malformed"
+      }
+    },
+    {
+      "name": "malformed: an issued date in another spelling",
+      "document": "{\"schema\": \"pipeshub.revoked-keys/1\", \"issued\": \"2026-12-31\", \"revoked\": [\"test-b\"]}",
+      "signature": "{\"alg\": \"Ed25519\", \"keyId\": \"test-a\", \"sig\": \"YIUeHLkEsAFYGZJANSC+TdoK6sWke4RYeeWsLVvHSfkxIx7rT1Z86bJgJuhYFijdUPD11OkXKJhTYs+tBu+SAQ==\"}",
+      "current": {
+        "issued": null,
+        "revoked": []
+      },
+      "now": "2027-01-01T00:00:00Z",
+      "expect": {
+        "refused": "malformed"
+      }
+    },
+    {
+      "name": "malformed: revoked is not a list",
+      "document": "{\"schema\": \"pipeshub.revoked-keys/1\", \"issued\": \"2026-12-31T00:00:00Z\", \"revoked\": \"test-b\"}",
+      "signature": "{\"alg\": \"Ed25519\", \"keyId\": \"test-a\", \"sig\": \"XHDaOdBM76BWF6hhirdPtSGj79nZ2cABdat9oRgTZz69BBmbr+tWC2Kjkq8NQsIkuYljebHIpt6jjdbZu2qCCA==\"}",
+      "current": {
+        "issued": null,
+        "revoked": []
+      },
+      "now": "2027-01-01T00:00:00Z",
+      "expect": {
+        "refused": "malformed"
+      }
+    },
+    {
+      "name": "malformed: a key id twice",
+      "document": "{\"schema\": \"pipeshub.revoked-keys/1\", \"issued\": \"2026-12-31T00:00:00Z\", \"revoked\": [\"test-b\", \"test-b\"]}",
+      "signature": "{\"alg\": \"Ed25519\", \"keyId\": \"test-a\", \"sig\": \"+SM3YOVMb3LCpJkqJ3e7htXkZ4GmYZhaFh56YtpRtX0NYwuo7jaYMr8BhU0gjzivqxfkVyKdvCMIufoekrkjAw==\"}",
+      "current": {
+        "issued": null,
+        "revoked": []
+      },
+      "now": "2027-01-01T00:00:00Z",
+      "expect": {
+        "refused": "malformed"
+      }
+    },
+    {
+      "name": "malformed: a key id that is not one",
+      "document": "{\"schema\": \"pipeshub.revoked-keys/1\", \"issued\": \"2026-12-31T00:00:00Z\", \"revoked\": [\"Test B\"]}",
+      "signature": "{\"alg\": \"Ed25519\", \"keyId\": \"test-a\", \"sig\": \"zmI7U1CgPiP13j6SnQ+55OhHGaJjdIP5iWPrvJY5jC4eVBHTwS5Bsrear1yleLKftAS01nh5I7hr9ws4rm4AAw==\"}",
+      "current": {
+        "issued": null,
+        "revoked": []
+      },
+      "now": "2027-01-01T00:00:00Z",
+      "expect": {
+        "refused": "malformed"
+      }
+    },
+    {
+      "name": "malformed: an extra field",
+      "document": "{\"schema\": \"pipeshub.revoked-keys/1\", \"issued\": \"2026-12-31T00:00:00Z\", \"revoked\": [], \"unrevoked\": [\"test-b\"]}",
+      "signature": "{\"alg\": \"Ed25519\", \"keyId\": \"test-a\", \"sig\": \"2Y331JkfcoUSFBq5zc03t9JnU2M+lKMppBEJSfFm0MDUi7Hc5SXYJebVmTl/zeysNYUbP/LOjuNllO0cmx17BA==\"}",
+      "current": {
+        "issued": null,
+        "revoked": []
+      },
+      "now": "2027-01-01T00:00:00Z",
+      "expect": {
+        "refused": "malformed"
+      }
+    },
+    {
+      "name": "malformed: not an object",
+      "document": "[\"pipeshub.revoked-keys/1\"]",
+      "signature": "{\"alg\": \"Ed25519\", \"keyId\": \"test-a\", \"sig\": \"WDgThBc63I9o9vW2xd5QQjYSdFo+L/8BUxsIzx+Te3yh+QmT5sFWUnnsAMK3pNJ9RzgbL5iihcm9iCGFUQN4Bg==\"}",
+      "current": {
+        "issued": null,
+        "revoked": []
+      },
+      "now": "2027-01-01T00:00:00Z",
+      "expect": {
+        "refused": "malformed"
+      }
+    },
+    {
+      "name": "malformed: not JSON",
+      "document": "revoked: test-b",
+      "signature": "{\"alg\": \"Ed25519\", \"keyId\": \"test-a\", \"sig\": \"ORHCmrwmJvGViGKx4F3g/Aos1Usr21miU46XT4F/HLODhC47CZqXShlxkdj9/NByEUiHXOPs1whhocEUFs5oAA==\"}",
+      "current": {
+        "issued": null,
+        "revoked": []
+      },
+      "now": "2027-01-01T00:00:00Z",
+      "expect": {
+        "refused": "malformed"
+      }
+    }
+  ]
+}

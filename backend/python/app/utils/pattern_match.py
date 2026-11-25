@@ -57,6 +57,7 @@ from app.utils.exact_text_index import (
     run_index_pattern_match,
 )
 from app.utils.llm import get_llm_for_role
+from app.utils.run_model_scope import run_model_scope_bound
 from app.utils.storage_path import build_record_group_prefix_from_chain
 from app.utils.turn_memo import memo
 from app.utils.chat_helpers import (
@@ -874,7 +875,10 @@ async def _grep_generation_llm(
     The chat's own model runs at the conversation's effort, often high, and its
     completions were often cut off before any command was written.
     """
-    cached = _grep_llm_cache.get(org_id)
+    # A harness run's model is that run's (its ledger account, its provider slot class, its conversation's level):
+    # cached, a later run or a classic chat would call it.
+    shared = not run_model_scope_bound()
+    cached = _grep_llm_cache.get(org_id) if shared else None
     if cached is not None:
         return cached
     try:
@@ -891,7 +895,8 @@ async def _grep_generation_llm(
     except Exception as exc:
         logger.info("pattern_match: no low-effort LLM for grep generation, using the chat's: %s", exc)
         return fallback
-    _grep_llm_cache[org_id] = llm
+    if shared:
+        _grep_llm_cache[org_id] = llm
     return llm
 
 

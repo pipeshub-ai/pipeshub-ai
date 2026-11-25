@@ -75,7 +75,7 @@ export function StatCard({
         </Text>
         <Text
           size="1"
-          style={{ color: 'var(--gray-10)', textAlign: 'center', width: '100%' }}
+          style={{ color: 'var(--gray-11)', textAlign: 'center', width: '100%' }}
         >
           {subtitle}
         </Text>

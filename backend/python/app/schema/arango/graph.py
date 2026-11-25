@@ -188,6 +188,12 @@ EDGE_DEFINITIONS = [
         "from_vertex_collections": [CollectionNames.AGENT_INSTANCES.value],
         "to_vertex_collections": [CollectionNames.AGENT_SKILLS.value],
     },
+    # Knowledge publications (P2.13): a knowledge base or record group -> its publication
+    {
+        "edge_collection": CollectionNames.PUBLISHED_VIA.value,
+        "from_vertex_collections": [CollectionNames.APPS.value, CollectionNames.RECORD_GROUPS.value],
+        "to_vertex_collections": [CollectionNames.KNOWLEDGE_PUBLICATIONS.value],
+    },
     {
         "edge_collection": CollectionNames.PROSPECT.value,
         "from_vertex_collections": [CollectionNames.ORGS.value],

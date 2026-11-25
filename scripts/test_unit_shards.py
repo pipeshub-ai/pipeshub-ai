@@ -4,6 +4,9 @@ Stdlib only: main.yml runs `python3 -m unittest discover -s scripts` without
 installing anything.
 """
 
+import contextlib
+import io
+import json
 import re
 import tempfile
 import unittest
@@ -21,10 +24,15 @@ def _collected_by(args: list[str], test_file: str) -> bool:
     included: pytest walks down to that path and stops at the ignored directory.
     """
     ignores = [a.removeprefix("--ignore=") for a in args if a.startswith("--ignore=")]
-    paths = [a for a in args if not a.startswith("--")]
+    paths = _paths(args)
     if any(unit_shards._contains(i, test_file) for i in ignores):
         return False
     return any(unit_shards._contains(p, test_file) for p in paths)
+
+
+def _paths(args: list[str]) -> list[str]:
+    """The positional paths of `args`: neither an option nor the expression after `-m`."""
+    return [a for i, a in enumerate(args) if not a.startswith("-") and (i == 0 or args[i - 1] != "-m")]
 
 
 class UnitShardsTest(unittest.TestCase):
@@ -69,9 +77,16 @@ class UnitShardsTest(unittest.TestCase):
         for shard in unit_shards.SHARDS:
             args = unit_shards.pytest_args(shard)
             ignores = [a.removeprefix("--ignore=") for a in args if a.startswith("--ignore=")]
-            for path in (a for a in args if not a.startswith("--")):
+            for path in _paths(args):
                 hidden = [i for i in ignores if unit_shards._contains(i, path)]
                 self.assertEqual(hidden, [], f"{shard}: {path} is under its own --ignore")
+
+    def test_the_harness_shards_leave_their_gate_runs_out_and_main_keeps_its_slow_modules(self) -> None:
+        for shard in ("harness", "harness-contracts"):
+            args = unit_shards.pytest_args(shard)
+            self.assertEqual(args[-2:], ["-m", "not slow"], shard)
+        for shard in set(unit_shards.SHARDS) - set(unit_shards.SHARD_MARKERS):
+            self.assertNotIn("-m", unit_shards.pytest_args(shard), shard)
 
     def test_core_owns_the_unit_root(self):
         # Anything no other shard claims must still run somewhere.
@@ -92,6 +107,83 @@ class UnitShardsTest(unittest.TestCase):
         # A renamed or deleted file's minutes would no longer count anywhere.
         stale = set(unit_shards.load_durations()) - set(unit_shards.test_files())
         self.assertLess(len(stale), 50, f"refresh unit_shard_durations.json: {sorted(stale)[:10]}")
+
+    def test_almost_every_test_file_has_measured_minutes(self):
+        self.assertEqual(unit_shards.unmeasured_problems(unit_shards.load_durations()), [])
+
+    def test_a_shard_mostly_unmeasured_is_reported(self):
+        durations = unit_shards.load_durations()
+        harness = [f for f in unit_shards.test_files() if f.startswith("tests/unit/harness/")]
+        without = {f: m for f, m in durations.items() if f not in set(harness)}
+        problems = unit_shards.unmeasured_problems(without)
+        self.assertEqual(len(problems), 1)
+        self.assertTrue(problems[0].startswith("harness: "))
+
+    def _balance(self, tmp: str, files: dict[str, float]) -> tuple[int, str]:
+        run = Path(tmp) / "run.json"
+        run.write_text(json.dumps({"files": files}), encoding="utf-8")
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            code = unit_shards.main(["balance", "--durations", str(run)])
+        return code, out.getvalue()
+
+    def _shard_files(self, shard: str) -> list[str]:
+        owners = unit_shards.owned_paths()
+        return [f for f in unit_shards.test_files() if owners[unit_shards.nearest_owner(f, owners)] == shard]
+
+    def test_balance_reads_the_timings_it_is_given(self) -> None:
+        durations = unit_shards.load_durations()
+        services = self._shard_files("services")
+        # The shard's longest third grew fourfold: more tests, not a slower runner, so the median file did not move.
+        longest = set(sorted(services, key=lambda f: -durations.get(f, 0.0))[: len(services) // 3])
+        grown = {f: (m * 4 if f in longest else m) for f, m in durations.items()}
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(self._balance(tmp, durations)[0], 0)
+            code, out = self._balance(tmp, grown)
+        self.assertEqual(code, 1, out)
+        self.assertIn("services has", out)
+
+    def test_a_slow_runner_does_not_make_its_shard_lopsided(self) -> None:
+        # Run 45483121630 measured every services file at a median 1.48 times the run before it, with the same
+        # tests; read as measured, services was over the bound.
+        durations = unit_shards.load_durations()
+        services = set(self._shard_files("services"))
+        slow = {f: (m * 1.8 if f in services else m) for f, m in durations.items()}
+        self.assertNotEqual(unit_shards.balance_problems(unit_shards.shard_minutes(slow)), [])
+        with tempfile.TemporaryDirectory() as tmp:
+            code, out = self._balance(tmp, slow)
+        self.assertEqual(code, 0, out)
+        self.assertIn("runner 1.80x", out)
+
+    def test_new_test_files_count_in_full_on_any_runner(self) -> None:
+        durations = unit_shards.load_durations()
+        services = self._shard_files("services")
+        new = set(services[: len(services) // 3])
+        reference = {f: m for f, m in durations.items() if f not in new}
+        run = {f: (m * 1.5 if f in services else m) for f, m in durations.items()}
+        run.update(dict.fromkeys(new, 0.2))
+        speed = unit_shards.runner_speeds(run, reference)["services"]
+        self.assertAlmostEqual(speed, 1.5)
+        at_reference_speed = unit_shards.shard_minutes(run)["services"] / speed
+        expected = sum(reference.get(f, 0.0) for f in services) + 0.2 * len(new) / speed
+        self.assertAlmostEqual(at_reference_speed, expected, places=6)
+
+    def test_a_runner_speed_needs_enough_files_and_stays_within_the_spread(self) -> None:
+        durations = unit_shards.load_durations()
+        harness = set(self._shard_files("harness"))
+        tenfold = {f: (m * 10 if f in harness else m) for f, m in durations.items()}
+        self.assertEqual(unit_shards.runner_speeds(tenfold, durations)["harness"], unit_shards.MAX_RUNNER_SPREAD)
+        few = {f: m for f, m in durations.items() if f not in harness}
+        few.update({f: durations[f] * 3 for f in sorted(harness)[:3] if f in durations})
+        self.assertEqual(unit_shards.runner_speeds(few, durations)["harness"], 1.0)
+
+    def test_the_median_of_runs_is_taken_per_file(self) -> None:
+        runs = [{"a": 1.0, "b": 4.0}, {"a": 3.0}, {"a": 2.0, "b": 2.0}]
+        self.assertEqual(unit_shards.median_durations(runs), {"a": 2.0, "b": 3.0})
+
+    def test_the_workflow_checks_the_balance_on_each_runs_timings(self):
+        text = WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn("pattern: py-junit-*", text)
+        self.assertRegex(text, r"unit_shards\.py balance --durations \S+")
 
     def test_a_lopsided_split_is_reported(self):
         totals = dict.fromkeys(unit_shards.SHARDS, 5.0)

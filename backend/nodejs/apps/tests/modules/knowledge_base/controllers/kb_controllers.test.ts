@@ -45,7 +45,6 @@ import {
   reindexConnector,
   resyncConnectorRecords,
 } from '../../../../src/modules/tokens_manager/controllers/connector.controllers'
-import * as connectorUtils from '../../../../src/modules/tokens_manager/utils/connector.utils'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -2208,6 +2207,24 @@ describe('Knowledge Base Controller', () => {
 
       // Should return 500 since headersSent is false and no response on the error
       expect(res.status.calledWith(500)).to.be.true
+    })
+
+    it('relays a converter_unavailable refusal with its status and reason code', async () => {
+      const { PassThrough } = await import('stream')
+      const body = new PassThrough()
+      const failure: any = new Error('Request failed with status code 503')
+      failure.response = { status: 503, headers: {}, data: body }
+      sinon.stub(axios, 'get').rejects(failure)
+      const detail = { reasonCode: 'converter_unavailable', message: "Preview isn't available on this server" }
+      body.end(JSON.stringify({ detail }))
+
+      const handler = getRecordBuffer('http://localhost:8088')
+      const req = createMockRequest({ params: { recordId: 'r1' }, query: { convertTo: 'application/pdf' } })
+      const res = createMockResponse()
+      await handler(req, res, createMockNext())
+
+      expect(res.status.calledWith(503)).to.be.true
+      expect(JSON.parse(res.end.firstCall.args[0])).to.deep.equal({ error: detail })
     })
   })
 

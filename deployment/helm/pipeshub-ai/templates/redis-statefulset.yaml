@@ -45,11 +45,16 @@ spec:
         app.kubernetes.io/component: redis
         app.kubernetes.io/role: master
     spec:
+      # Store pods never call the Kubernetes API: no service-account token to steal (SEC-D-10).
+      automountServiceAccountToken: false
       securityContext:
         fsGroup: 999
         fsGroupChangePolicy: OnRootMismatch
         runAsUser: 999
+        runAsGroup: 999
         runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
       affinity:
         podAntiAffinity:
           requiredDuringSchedulingIgnoredDuringExecution:
@@ -75,8 +80,9 @@ spec:
       {{- end }}
       containers:
         - name: redis
-          image: "{{ .Values.redis.builtin.image.repository }}:{{ .Values.redis.builtin.image.tag }}"
+          image: {{ include "pipeshub-ai.image" (dict "image" .Values.redis.builtin.image "global" .Values.global) | quote }}
           imagePullPolicy: {{ .Values.redis.builtin.image.pullPolicy }}
+          {{- include "pipeshub-ai.restrictedContainer" . | nindent 10 }}
           ports:
             - name: redis
               containerPort: 6379
@@ -196,11 +202,16 @@ spec:
         app.kubernetes.io/component: redis
         app.kubernetes.io/role: replica
     spec:
+      # Store pods never call the Kubernetes API: no service-account token to steal (SEC-D-10).
+      automountServiceAccountToken: false
       securityContext:
         fsGroup: 999
         fsGroupChangePolicy: OnRootMismatch
         runAsUser: 999
+        runAsGroup: 999
         runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
       affinity:
         podAntiAffinity:
           requiredDuringSchedulingIgnoredDuringExecution:
@@ -226,8 +237,9 @@ spec:
       {{- end }}
       containers:
         - name: redis
-          image: "{{ .Values.redis.builtin.image.repository }}:{{ .Values.redis.builtin.image.tag }}"
+          image: {{ include "pipeshub-ai.image" (dict "image" .Values.redis.builtin.image "global" .Values.global) | quote }}
           imagePullPolicy: {{ .Values.redis.builtin.image.pullPolicy }}
+          {{- include "pipeshub-ai.restrictedContainer" . | nindent 10 }}
           ports:
             - name: redis
               containerPort: 6379

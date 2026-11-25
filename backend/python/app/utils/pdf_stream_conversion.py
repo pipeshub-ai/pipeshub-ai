@@ -29,6 +29,26 @@ logger = logging.getLogger(__name__)
 
 WriteSource = Callable[[str], Awaitable[None]]
 
+logger = logging.getLogger(__name__)
+
+# The web app and the Node proxy key off these to offer the original file
+# instead of a broken preview; the message is what a person reads.
+CONVERTER_UNAVAILABLE = "converter_unavailable"
+CONVERSION_FAILED = "conversion_failed"
+CONVERSION_TIMED_OUT = "conversion_timed_out"
+
+
+def _conversion_error(status: HttpStatusCode, reason_code: str, message: str) -> HTTPException:
+    return HTTPException(
+        status_code=status.value,
+        detail={"reasonCode": reason_code, "message": message},
+    )
+
+
+def document_conversion_available() -> bool:
+    """Whether the LibreOffice binary previews convert with is on PATH."""
+    return shutil.which("soffice") is not None
+
 
 def safe_conversion_input(directory: str, extension: str) -> str:
     """Path inside ``directory`` whose name is a random stem plus a safe extension."""
@@ -51,8 +71,9 @@ async def libreoffice_to_pdf(
 ) -> str:
     """Convert ``file_path`` to a PDF in ``temp_dir`` and return the PDF path.
 
-    Raises ``HTTPException`` when LibreOffice is missing, times out, or writes
-    nothing. A per-run profile is passed so two conversions do not share the
+    Raises ``HTTPException`` with a ``{reasonCode, message}`` detail when
+    LibreOffice is missing (503 ``converter_unavailable``), times out (504),
+    fails, or writes nothing (500); each is logged with its cause. A per-run profile is passed so two conversions do not share the
     default LibreOffice profile.
     """
     pdf_path = os.path.join(temp_dir, f"{Path(file_path).stem}.pdf")
@@ -68,60 +89,72 @@ async def libreoffice_to_pdf(
         file_path,
     ]
 
-    try:
-        async with libreoffice_convert.conversion_slots.slot():
+    async with libreoffice_convert.conversion_slots.slot():
+        try:
+            # Its own process group, so a stop reaches soffice.bin and not only the launcher.
             process = await asyncio.create_subprocess_exec(
                 *command,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 start_new_session=True,
             )
-            try:
-                _stdout, conversion_error = await asyncio.wait_for(
-                    process.communicate(), timeout=timeout
-                )
-            except asyncio.TimeoutError as error:
-                await libreoffice_convert.stop_process(process)
-                raise HTTPException(
-                    status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                    detail="PDF conversion timed out",
-                ) from error
-            except asyncio.CancelledError:
-                # The caller removes temp_dir next; soffice must not outlive it.
-                await libreoffice_convert.stop_process(process)
-                raise
-
-        if process.returncode != 0:
+        except FileNotFoundError as error:
             logger.error(
-                "LibreOffice PDF conversion failed (exit code %s): %s",
-                process.returncode,
-                (conversion_error or b"").decode("utf-8", errors="replace"),
+                "PDF conversion is unavailable: LibreOffice (soffice) is not installed on this server",
+                exc_info=True,
             )
-            raise HTTPException(
-                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                detail="Failed to convert file to PDF",
-            )
+            raise _conversion_error(
+                HttpStatusCode.SERVICE_UNAVAILABLE,
+                CONVERTER_UNAVAILABLE,
+                "Preview isn't available on this server because document conversion is not installed. "
+                "Download the file to open it.",
+            ) from error
+        except Exception as error:
+            logger.error("PDF conversion could not start LibreOffice", exc_info=True)
+            raise _conversion_error(
+                HttpStatusCode.INTERNAL_SERVER_ERROR, CONVERSION_FAILED, "Error converting file to PDF"
+            ) from error
 
-        if not os.path.exists(pdf_path):
-            pdf_files = sorted(
-                entry
-                for entry in os.listdir(temp_dir)
-                if entry.lower().endswith(".pdf")
+        try:
+            _stdout, conversion_error = await asyncio.wait_for(
+                process.communicate(), timeout=timeout
             )
-            if not pdf_files:
-                raise HTTPException(
-                    status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                    detail="PDF conversion failed - output file not found",
-                )
-            pdf_path = os.path.join(temp_dir, pdf_files[0])
-        return pdf_path
-    except HTTPException:
-        raise
-    except Exception as error:
-        raise HTTPException(
-            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-            detail="Error converting file to PDF",
-        ) from error
+        except asyncio.TimeoutError as error:
+            await libreoffice_convert.stop_process(process)
+            logger.error("PDF conversion timed out after %ss", timeout)
+            raise _conversion_error(
+                HttpStatusCode.GATEWAY_TIMEOUT, CONVERSION_TIMED_OUT, "PDF conversion timed out"
+            ) from error
+        except asyncio.CancelledError:
+            # The caller removes temp_dir next; soffice must not outlive it.
+            await libreoffice_convert.stop_process(process)
+            raise
+
+    if process.returncode != 0:
+        logger.error(
+            "LibreOffice PDF conversion failed (exit code %s): %s",
+            process.returncode,
+            (conversion_error or b"").decode("utf-8", errors="replace").strip(),
+        )
+        raise _conversion_error(
+            HttpStatusCode.INTERNAL_SERVER_ERROR, CONVERSION_FAILED, "Failed to convert file to PDF"
+        )
+
+    if not os.path.exists(pdf_path):
+        pdf_files = sorted(
+            entry
+            for entry in os.listdir(temp_dir)
+            if entry.lower().endswith(".pdf")
+        )
+        if not pdf_files:
+            logger.error("PDF conversion failed: soffice exited 0 but wrote no PDF")
+            raise _conversion_error(
+                HttpStatusCode.INTERNAL_SERVER_ERROR,
+                CONVERSION_FAILED,
+                "PDF conversion failed - output file not found",
+            )
+        pdf_path = os.path.join(temp_dir, pdf_files[0])
+    return pdf_path
 
 
 async def stream_file_then_remove(

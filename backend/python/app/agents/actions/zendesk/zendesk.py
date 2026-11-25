@@ -14,6 +14,7 @@ from app.connectors.core.constants import IconPaths
 from app.connectors.core.registry.connector_builder import CommonFields
 from app.connectors.core.registry.tool_builder import (
     ToolDefinition,
+    ToolProvider,
     ToolsetBuilder,
     ToolsetCategory,
 )
@@ -97,7 +98,7 @@ tools: List[ToolDefinition] = [
 
 
 # Register Zendesk toolset
-@ToolsetBuilder("Zendesk")\
+@ToolsetBuilder("Zendesk", provider=ToolProvider.CONNECTOR)\
     .in_group("Customer Support")\
     .with_description("Zendesk integration for customer support ticket management")\
     .with_category(ToolsetCategory.APP)\
@@ -148,7 +149,7 @@ class Zendesk:
         short_description="Get current user information",
         description="Get current authenticated Zendesk user information.",
         parameters=[],
-        tags=[Tag(key="category", value="customer_support"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="customer_support"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_current_user(self) -> Tuple[bool, str]:
         """Get current user information"""
@@ -198,7 +199,7 @@ class Zendesk:
                 required=False
             )
         ],
-        tags=[Tag(key="category", value="customer_support"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="customer_support"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     def list_tickets(
         self,
@@ -246,7 +247,7 @@ class Zendesk:
                 required=True
             )
         ],
-        tags=[Tag(key="category", value="customer_support"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="customer_support"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_ticket(self, ticket_id: str) -> Tuple[bool, str]:
         """Get a specific ticket"""
@@ -311,7 +312,7 @@ class Zendesk:
                 required=False
             )
         ],
-        tags=[Tag(key="category", value="customer_support"), Tag(key="type", value="create")],
+        tags=[Tag(key="category", value="customer_support"), Tag(key="type", value="create"), Tag(key="effect", value="write")],
     )
     def create_ticket(
         self,
@@ -395,7 +396,7 @@ class Zendesk:
                 required=False
             )
         ],
-        tags=[Tag(key="category", value="customer_support"), Tag(key="type", value="update")],
+        tags=[Tag(key="category", value="customer_support"), Tag(key="type", value="update"), Tag(key="effect", value="write")],
     )
     def update_ticket(
         self,
@@ -450,7 +451,7 @@ class Zendesk:
                 required=True
             )
         ],
-        tags=[Tag(key="category", value="customer_support"), Tag(key="type", value="delete")],
+        tags=[Tag(key="category", value="customer_support"), Tag(key="type", value="delete"), Tag(key="effect", value="write")],
     )
     async def delete_ticket(self, ticket_id: str) -> Tuple[bool, str]:
         """Delete a ticket"""
@@ -491,7 +492,7 @@ class Zendesk:
                 required=False
             )
         ],
-        tags=[Tag(key="category", value="customer_support"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="customer_support"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     def list_users(
         self,
@@ -533,7 +534,7 @@ class Zendesk:
                 required=True
             )
         ],
-        tags=[Tag(key="category", value="customer_support"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="customer_support"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_user(self, user_id: str) -> Tuple[bool, str]:
         """Get a specific user"""
@@ -592,7 +593,7 @@ class Zendesk:
                 required=False
             )
         ],
-        tags=[Tag(key="category", value="customer_support"), Tag(key="type", value="search")],
+        tags=[Tag(key="category", value="customer_support"), Tag(key="type", value="search"), Tag(key="effect", value="read")],
     )
     def search_tickets(
         self,

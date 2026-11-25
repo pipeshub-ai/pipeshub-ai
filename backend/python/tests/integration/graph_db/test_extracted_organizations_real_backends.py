@@ -1,5 +1,6 @@
 """Against real servers (KG-13 slice 3b): organisations extracted from
-document content. On Neo4j 5.26 and ArangoDB 3.12.
+document content. On Neo4j 5.26 and ArangoDB 3.12, at NEO4J_IT_URI and ARANGO_IT_URL (the backend
+fixture of test_record_organizations_real_backends).
 
   docker compose -f deployment/docker-compose/docker-compose.integration.graph-db.yml \\
     up -d --wait neo4j-graph-it arango-graph-it

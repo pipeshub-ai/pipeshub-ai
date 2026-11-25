@@ -33,4 +33,24 @@ describe('locale registry', () => {
     const forms = [1, 2, 2.5, 5].map((count) => t('projects.chatCount', { count }));
     expect(forms).toEqual(['1 chat', '2 chaty', '2.5 chatu', '5 chatů']);
   });
+
+  it('WP70-PLURAL: the sub-task merge line counts its files in every language ("1 file", never "1 files")', () => {
+    const en = instance('en-US').t;
+    expect(en('durableRun.merge.merged', { count: 1, revision: 3 })).toBe('1 file merged into workspace version 3.');
+    expect(en('durableRun.merge.merged', { count: 2, revision: 3 })).toBe('2 files merged into workspace version 3.');
+    const cs = instance('cs-CZ').t;
+    expect([1, 3, 5].map((count) => cs('durableRun.merge.merged', { count, revision: 4 }))).toEqual([
+      '1 soubor sloučen do verze pracovního prostoru 4.',
+      '3 soubory sloučeny do verze pracovního prostoru 4.',
+      '5 souborů sloučeno do verze pracovního prostoru 4.',
+    ]);
+    for (const key of SUPPORTED_LNG_KEYS) {
+      const t = instance(key).t;
+      for (const count of [1, 2, 7]) {
+        const line = t('durableRun.merge.merged', { count, revision: 9 });
+        expect(line, `${key} ${count}`).toContain(String(count));
+        expect(line, `${key} ${count}`).not.toContain('durableRun.merge');
+      }
+    }
+  });
 });

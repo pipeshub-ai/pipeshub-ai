@@ -22,6 +22,8 @@ async def to_thread_settled(fn: Callable[[], _T]) -> _T:
     wire scope of the attempt and no request leaves after the hand-back.
     """
     task = spawn_in_request(_in_thread(fn), name="image_embedding_thread")
+    # shield drops its own reader when the caller is cancelled, so a later thread failure would log "never retrieved"
+    task.add_done_callback(lambda t: t.cancelled() or t.exception())
     try:
         return await asyncio.shield(task)
     except asyncio.CancelledError:

@@ -4,10 +4,8 @@ from __future__ import annotations
 
 import base64
 import contextlib
-import gc
 import json
 import random
-import time
 import tracemalloc
 from typing import TYPE_CHECKING
 
@@ -17,6 +15,7 @@ from app.connectors.sources.localKB.push import images as I
 from app.connectors.sources.localKB.push import worker as W
 from app.connectors.sources.localKB.push.contract import PushRefusal, parse_envelope
 from app.connectors.sources.localKB.push.spool import Spool
+from tests.support.cpu_budget import thread_cpu
 
 from .bodies import envelope, raw
 
@@ -441,9 +440,9 @@ class TestHtmlBudget:
         assert e.reason == "LIMIT_EXCEEDED" and e.extra["limit"] == "htmlGroupBytes"
 
     def test_many_data_prefixes_are_counted_in_linear_time(self) -> None:
-        started = time.perf_counter()
-        I._check_html_budget([parse_envelope(raw(envelope({"block_groups": [group("data:" * 200_000, "html")]}))).blocks.block_groups[0]])
-        assert time.perf_counter() - started < 1.0
+        with thread_cpu() as cpu:
+            I._check_html_budget([parse_envelope(raw(envelope({"block_groups": [group("data:" * 200_000, "html")]}))).blocks.block_groups[0]])
+        assert cpu.seconds < 1.0
 
     def test_markdown_of_the_same_size_is_not_capped(self) -> None:
         groups = [{**g, "format": "markdown"} for g in self.html_groups(I.MAX_HTML_GROUP_BYTES + (1 << 20))]
@@ -486,15 +485,11 @@ class TestTimeBounds:
     @staticmethod
     def timed(data: str, fmt: str) -> float:
         body = group(data, fmt)
-        # A full collection walks the whole test process's heap (over a second here), which the worker's small heap never pays.
-        gc.disable()
-        try:
-            started = time.perf_counter()
-            with contextlib.suppress(PushRefusal):
-                check_groups(body)
-            return time.perf_counter() - started
-        finally:
-            gc.enable()
+        # This thread's CPU with the collector paused: a full collection walks the whole test process's heap (over a
+        # second here), which the worker's small heap never pays.
+        with thread_cpu() as cpu, contextlib.suppress(PushRefusal):
+            check_groups(body)
+        return cpu.seconds
 
     def test_seventy_thousand_image_openers(self) -> None:
         assert self.timed("![" * 70_000, "markdown") < 1.0

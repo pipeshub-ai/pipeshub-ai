@@ -43,7 +43,7 @@ export function SearchResultRow({ conversation, onClick }: SearchResultRowProps)
       <Text
         size="1"
         style={{
-          color: 'var(--slate-a9)',
+          color: 'var(--slate-a11)',
           overflow: 'hidden',
           textOverflow: 'ellipsis',
           whiteSpace: 'nowrap',

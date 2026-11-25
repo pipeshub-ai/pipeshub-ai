@@ -3,10 +3,12 @@ from typing import Optional
 
 import httpx  # type: ignore
 
+from app.services.rate_budget import is_throttle, note_throttled
 from app.sources.client.http.http_request import HTTPRequest
 from app.sources.client.http.http_response import HTTPResponse
+from app.sources.client.http.send_ambiguity import note_httpx_failure, note_status
 from app.sources.client.iclient import IClient
-from app.sources.client.resilience import ResiliencePolicy
+from app.sources.client.resilience import ResiliencePolicy, parse_retry_after
 
 
 class HTTPClient(IClient):
@@ -46,6 +48,13 @@ class HTTPClient(IClient):
         if self.client is not None:
             raise RuntimeError("require_public_addresses() must be called before the first request")
         self._public_only = True
+
+    def use_resilience(self, resilience: ResiliencePolicy | None) -> None:
+        """Pace this client by a connector's policy, and so by its vendor's shared budget (G-31): for a client
+        a builder shared with the agent toolsets made without one. Call before the first request."""
+        if self.client is not None:
+            raise RuntimeError("use_resilience() must be called before the first request")
+        self.resilience = resilience
 
     async def _ensure_client(self) -> httpx.AsyncClient:
         """Ensure client is created and available"""
@@ -105,7 +114,16 @@ class HTTPClient(IClient):
         elif isinstance(request.body, bytes):
             request_kwargs["content"] = request.body
 
-        response = await client.request(request.method, url, **request_kwargs)
+        try:
+            response = await client.request(request.method, url, **request_kwargs)
+        except httpx.HTTPError as exc:
+            note_httpx_failure(request.method, exc)
+            raise
+        note_status(request.method, response.status_code)
+        retry_after = parse_retry_after(response.headers)
+        if is_throttle(response.status_code, retry_after):
+            # The account this call spends, a sync's or an agent tool call's, backs off as a whole (G-31).
+            await note_throttled(retry_after)
         return HTTPResponse(response)
 
     async def close(self) -> None:

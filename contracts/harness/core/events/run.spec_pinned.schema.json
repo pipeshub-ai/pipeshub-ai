@@ -1,0 +1,128 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/core/events/run.spec_pinned.schema.json",
+  "title": "RunSpecPinnedEvent",
+  "description": "Resolved RunSpec pinned at first claim; every retry, resume and child reads it.",
+  "x-writer": [
+    "node"
+  ],
+  "allOf": [
+    {
+      "$ref": "../envelope.schema.json#/$defs/InlineEnvelope"
+    }
+  ],
+  "properties": {
+    "type": {
+      "const": "run.spec_pinned"
+    },
+    "writer": {
+      "const": "node"
+    },
+    "data": {
+      "$ref": "#/$defs/RunSpecPinnedData"
+    }
+  },
+  "$defs": {
+    "RunSpecPinnedData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "specDigest",
+        "spec"
+      ],
+      "properties": {
+        "specDigest": {
+          "$ref": "../common.schema.json#/$defs/Digest"
+        },
+        "spec": {
+          "$ref": "../run-spec.schema.json"
+        },
+        "capabilities": {
+          "description": "The probed capability set the spec's capabilitiesDigest covers; the driver compares it with the live set on wake.",
+          "$ref": "../capabilities.schema.json#/$defs/Capabilities"
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "type": "run.spec_pinned",
+      "schemaVersion": 1,
+      "critical": true,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "node",
+      "visibility": "owner",
+      "data": {
+        "specDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "spec": {
+          "schemaVersion": 2,
+          "harnessMajor": 2,
+          "foldVersion": 1,
+          "runKind": "interactive",
+          "principalRef": "p_u42",
+          "model": {
+            "policy": [
+              {
+                "provider": "anthropic",
+                "model": "claude-x",
+                "transport": "anthropic-native"
+              },
+              {
+                "provider": "openai",
+                "model": "gpt-x",
+                "on": [
+                  "5xx",
+                  "429_exhausted",
+                  "content_filter"
+                ]
+              }
+            ],
+            "promptVersion": "p-2026-10-01",
+            "reasoningEffort": "medium"
+          },
+          "grants": {
+            "tools": [
+              {
+                "toolId": "jira@inst_42/search_issues",
+                "descriptorDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              }
+            ],
+            "sandboxProfile": "agent-code",
+            "egress": "allowlist:pypi"
+          },
+          "budgets": {
+            "maxTurns": 15,
+            "maxTokens": 400000,
+            "maxCostUsd": 2.0,
+            "activeTimeS": 3600,
+            "calendarDeadline": "2026-10-03T00:00:00Z",
+            "maxChildren": 4
+          },
+          "capabilitiesDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "extensions": {
+            "x.acme": {
+              "anything": [
+                "the core never interprets extension payloads"
+              ]
+            }
+          }
+        },
+        "capabilities": {
+          "journal.durable": true,
+          "livebus": "redis",
+          "sandbox.isolation": "none",
+          "sandbox.egress": "none",
+          "mcp.stdio": "off",
+          "blob.cas.gc": false,
+          "triggers.always_on": false,
+          "workers.dispatched": true
+        }
+      }
+    }
+  ]
+}

@@ -151,37 +151,40 @@ export function CreateGroupSidebar({
           label={t('workspace.groups.create.nameLabel', 'Group Name')}
           required
         >
-          <input
-            type="text"
-            value={createGroupName}
-            onChange={(e) => setCreateGroupName(e.target.value)}
-            placeholder={t(
-              'workspace.groups.create.namePlaceholder',
-              'e.g. Data Engineering'
-            )}
-            style={{
-              width: '100%',
-              height: 44, // the touch-target minimum; also ~12px around the 20px line
-              padding: '0 12px',
-              backgroundColor: 'var(--color-surface)',
-              border: '1px solid var(--slate-a5)',
-              borderRadius: 'var(--radius-2)',
-              fontSize: 14,
-              lineHeight: '20px',
-              fontFamily: 'var(--default-font-family)',
-              color: 'var(--slate-12)',
-              outline: 'none',
-              boxSizing: 'border-box',
-            }}
-            onFocus={(e) => {
-              e.currentTarget.style.border = '2px solid var(--accent-8)';
-              e.currentTarget.style.padding = '0 11px';
-            }}
-            onBlur={(e) => {
-              e.currentTarget.style.border = '1px solid var(--slate-a5)';
-              e.currentTarget.style.padding = '0 12px';
-            }}
-          />
+          {(control) => (
+            <input
+              {...control}
+              type="text"
+              value={createGroupName}
+              onChange={(e) => setCreateGroupName(e.target.value)}
+              placeholder={t(
+                'workspace.groups.create.namePlaceholder',
+                'e.g. Data Engineering'
+              )}
+              style={{
+                width: '100%',
+                height: 44, // the touch-target minimum; also ~12px around the 20px line
+                padding: '0 12px',
+                backgroundColor: 'var(--color-surface)',
+                border: '1px solid var(--slate-a5)',
+                borderRadius: 'var(--radius-2)',
+                fontSize: 14,
+                lineHeight: '20px',
+                fontFamily: 'var(--default-font-family)',
+                color: 'var(--slate-12)',
+                outline: 'none',
+                boxSizing: 'border-box',
+              }}
+              onFocus={(e) => {
+                e.currentTarget.style.border = '2px solid var(--accent-8)';
+                e.currentTarget.style.padding = '0 11px';
+              }}
+              onBlur={(e) => {
+                e.currentTarget.style.border = '1px solid var(--slate-a5)';
+                e.currentTarget.style.padding = '0 12px';
+              }}
+            />
+          )}
         </FormField>
 
         {/* Add Users */}
@@ -220,7 +223,7 @@ export function CreateGroupSidebar({
           <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
             {t('workspace.groups.create.accessLabel', 'Access permissions')}
           </Text>
-          <Text size="2" style={{ color: 'var(--slate-9)' }}>
+          <Text size="2" style={{ color: 'var(--slate-11)' }}>
             {t(
               'workspace.groups.create.accessComingSoon',
               'Access permissions coming soon'

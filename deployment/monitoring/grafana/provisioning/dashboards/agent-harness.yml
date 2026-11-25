@@ -1,0 +1,9 @@
+apiVersion: 1
+providers:
+  - name: pipeshub-agent-harness
+    folder: PipesHub
+    type: file
+    disableDeletion: true
+    allowUiUpdates: false
+    options:
+      path: /var/lib/grafana/dashboards

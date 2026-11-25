@@ -19,6 +19,7 @@ from app.connectors.api import router as router_mod
 from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
 from app.modules.demo_data import access as demo_access
 from app.utils.user_messages import DATABASE_UNREACHABLE
+from tests.support.record_access import InMemoryRecordAccess
 
 RECORD_ID = "rec-1"
 ORG_ID = "org-1"
@@ -39,7 +40,7 @@ class _Graph:
 
     def __init__(self, docs: dict[str, dict | None], *, failing: frozenset[str] = frozenset()) -> None:
         self.docs, self.failing = docs, failing
-        self.check_record_access_with_details = AsyncMock(return_value={"record": {"id": RECORD_ID}})
+        InMemoryRecordAccess().readable("u1", ORG_ID, RECORD_ID).serve(self)
 
     async def get_document(self, key: str, collection: str, transaction: str | None = None, *,
                            raise_on_error: bool = False) -> dict | None:

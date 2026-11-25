@@ -39,7 +39,7 @@ export function FileIcon({
       <MaterialIcon
         name={fallbackIcon}
         size={size}
-        color="var(--slate-9)"
+        color="var(--slate-11)"
       />
     );
   }
@@ -52,7 +52,7 @@ export function FileIcon({
       <MaterialIcon
         name={fallbackIcon}
         size={size}
-        color="var(--slate-9)"
+        color="var(--slate-11)"
       />
     );
   }

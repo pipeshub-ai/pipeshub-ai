@@ -1,4 +1,4 @@
-import type { CollectionMapping } from './types';
+import type { CollectionMapping, IgnoredCollection } from './types';
 
 export const org: CollectionMapping = {
   collection: 'org',
@@ -36,6 +36,18 @@ export const org: CollectionMapping = {
       path: 'adminRoleLease',
       reason:
         'standalone-Mongo lease for admin-role changes; PostgreSQL serialises them with the org row lock',
+    },
+  ],
+  held: [
+    {
+      path: 'defaultCodingEngine',
+      reason:
+        "the org's default coding engine lives in harness.personal_choices on PostgreSQL (R45MIGR-FU-1)",
+    },
+    {
+      path: 'codingEngineAutoRoute',
+      reason:
+        "the org's engine auto-route switch lives in harness.personal_choices on PostgreSQL (R45MIGR-FU-1)",
     },
   ],
 };
@@ -114,6 +126,18 @@ export const users: CollectionMapping = {
     { col: 'updated_at', path: 'updatedAt', type: 'date' },
   ],
   derived: [],
+  held: [
+    {
+      path: 'codingEngine',
+      reason:
+        "a person's coding engine lives in harness.personal_choices on PostgreSQL (R45MIGR-FU-1)",
+    },
+    {
+      path: 'harnessMemoryOff',
+      reason:
+        "a person's own memory switch lives in their harness.personal_choices row on PostgreSQL",
+    },
+  ],
   transforms: [
     {
       name: 'email lower-cased',
@@ -376,4 +400,12 @@ export const IDENTITY_MAPPINGS: CollectionMapping[] = [
   usedPasswordResetLinks,
   userDps,
   counters,
+];
+
+export const IDENTITY_IGNORED: IgnoredCollection[] = [
+  {
+    collection: 'session_families',
+    reason:
+      'session families (ADR-WEB-02 D9) name refresh tokens the old store issued; after the move each person signs in once more',
+  },
 ];

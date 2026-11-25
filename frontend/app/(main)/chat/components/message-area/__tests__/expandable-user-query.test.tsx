@@ -171,7 +171,9 @@ describe('ExpandableUserQuery', () => {
     const url = 'https://example.com/docs/guide';
     const q = 'x'.repeat(QUESTION_CHAR_LIMIT - 10) + ' ' + url + ' ' + 'y'.repeat(40);
     renderQuery({ question: q });
-    expect(screen.getByRole('link').getAttribute('href')).toBe(url);
+    // Our "save as command" action is a link too (to the skills page); the question's own links are external.
+    const external = screen.getAllByRole('link').map((a) => a.getAttribute('href')).filter((href) => href?.startsWith('http'));
+    expect(external).toEqual([url]);
   });
 
   it('copies the original URL, not its short label', () => {

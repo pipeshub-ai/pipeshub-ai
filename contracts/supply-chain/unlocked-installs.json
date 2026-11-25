@@ -1,0 +1,41 @@
+{
+  "$comment": "Installs that do not come from a hashed lock and are allowed to stay so (SEC-SC-07, C6.44; scripts/supply_chain.py check, rules PY-INSTALL and NODE-NPX). Each entry excuses the commands of `file` that contain `match` for `rule`, with the reason, and the follow-up that removes it where there is one. An entry that excuses nothing fails the check, so the list only shrinks as installs move to a lock.",
+  "installs": [
+    {
+      "rule": "PY-INSTALL",
+      "file": "backend/python/requirements/install.sh",
+      "match": "-m pip install --disable-pip-version-check --no-input --no-deps",
+      "reason": "The hashed installer itself. Its callers pass --require-hashes for every lock; the vcs lock pins commits and the project goes in with --no-deps."
+    },
+    {
+      "rule": "PY-INSTALL",
+      "file": "integration-tests/sdk_tests/run_sdk_tests.sh",
+      "match": "-m pip install --disable-pip-version-check --quiet --editable",
+      "reason": "The generated or released Python SDK under test, from its own pyproject with its dependencies resolved as its users' installs resolve them: that install is what the suite tests. Its test tools come before it from the hashed integration-tests/sdk_tests/requirements/tests.lock."
+    },
+    {
+      "rule": "PY-INSTALL",
+      "file": "backend/python/app/connectors/sources/demo/harness/acceptance.sh",
+      "match": "uv run --with pipeshub-sdk",
+      "reason": "A person's acceptance check of the demo connector against a running stack, with the published SDK as a user installs it; no CI job or image runs it."
+    },
+    {
+      "rule": "PY-INSTALL",
+      "file": ".github/workflows/perf-costclass.yml",
+      "match": "uv pip install -e .",
+      "reason": "The cost-class benchmark's own client and corpus generators (reportlab, python-docx, openpyxl, Pillow, numpy, pypdfium2), in a throwaway venv on a manually or weekly dispatched runner; nothing it installs reaches an image or a release. Follow-up: lock them in integration-tests/uv.lock and install with uv sync --locked."
+    },
+    {
+      "rule": "PY-INSTALL",
+      "file": ".github/workflows/perf-costclass.yml",
+      "match": "uv pip install 'reportlab>=4,<5'",
+      "reason": "The cost-class benchmark's own client and corpus generators (reportlab, python-docx, openpyxl, Pillow, numpy, pypdfium2), in a throwaway venv on a manually or weekly dispatched runner; nothing it installs reaches an image or a release. Follow-up: lock them in integration-tests/uv.lock and install with uv sync --locked."
+    },
+    {
+      "rule": "PY-INSTALL",
+      "file": ".github/workflows/perf-costclass.yml",
+      "match": ".bench-venv/bin/pip install -q -e integration-tests",
+      "reason": "The cost-class benchmark's own client and corpus generators (reportlab, python-docx, openpyxl, Pillow, numpy, pypdfium2), in a throwaway venv on a manually or weekly dispatched runner; nothing it installs reaches an image or a release. Follow-up: lock them in integration-tests/uv.lock and install with uv sync --locked."
+    }
+  ]
+}

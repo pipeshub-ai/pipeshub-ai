@@ -22,7 +22,9 @@ import { getPictureRepository } from './picture';
 import { getProjectRepository } from './project';
 import { getResetLinkRepository } from './reset-link';
 import { getSemanticSearchRepository } from './semantic-search';
+import { getSessionFamilyRepository } from './session-family';
 import { getSlackThreadRepository } from './slack-thread';
+import { getSlackUserLinkRepository } from './slack-user-link';
 import { getUserRepository } from './user';
 
 /** Every repository, by directory. A test keeps this list equal to the directories. */
@@ -49,7 +51,9 @@ export const REPOSITORIES: Record<string, () => unknown> = {
   project: getProjectRepository,
   'reset-link': getResetLinkRepository,
   'semantic-search': getSemanticSearchRepository,
+  'session-family': getSessionFamilyRepository,
   'slack-thread': getSlackThreadRepository,
+  'slack-user-link': getSlackUserLinkRepository,
   user: getUserRepository,
 };
 

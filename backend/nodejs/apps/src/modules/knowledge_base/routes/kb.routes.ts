@@ -30,6 +30,10 @@ import {
   setDemoDataPreference,
   setDemoDataWorkspace,
 } from '../controllers/kb_controllers';
+import {
+  PRINCIPAL_DEACTIVATION,
+  type PrincipalDeactivationPort,
+} from '../../agent-harness/application/principal-deactivation';
 import { ValidationMiddleware } from '../../../libs/middlewares/validation.middleware';
 import {
   getRecordByIdSchema,
@@ -219,7 +223,11 @@ export function createKnowledgeBaseRouter(
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.KB_WRITE),
     ValidationMiddleware.validate(demoDataWorkspaceSchema),
-    setDemoDataWorkspace(appConfig),
+    setDemoDataWorkspace(appConfig, () =>
+      container.isBound(PRINCIPAL_DEACTIVATION)
+        ? container.get<PrincipalDeactivationPort>(PRINCIPAL_DEACTIVATION)
+        : null,
+    ),
   );
 
   // Knowledge Hub unified browse API - Root

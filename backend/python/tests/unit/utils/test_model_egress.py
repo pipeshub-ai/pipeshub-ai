@@ -3,17 +3,20 @@ the checked address. The DNS answer can change after a config is saved (or the n
 have resolved at all then), so the save-time check alone cannot keep a client off the cloud
 metadata service.
 
-Names are answered by a fake resolver and every TCP connect is recorded and refused, so
-nothing leaves the host.
+Names are answered by a fake resolver and every TCP connect is refused, so nothing leaves the
+host; the test's own connects are recorded.
 """
 
 from __future__ import annotations
 
 import base64
 import contextlib
+import errno
 import ipaddress
+import queue
 import socket
-from collections.abc import Awaitable, Callable
+import threading
+from collections.abc import Awaitable, Callable, Iterator
 from unittest.mock import MagicMock
 
 import httpcore
@@ -93,15 +96,28 @@ def dns(monkeypatch: pytest.MonkeyPatch) -> dict[str, Answer]:
 
 @pytest.fixture
 def connects(monkeypatch: pytest.MonkeyPatch) -> list[tuple]:
-    """Every TCP connect the process attempts; none succeeds."""
+    """Every TCP connect this test attempts; none succeeds, nor does any other thread's.
+
+    Only the test's own thread and threads started during it are counted: the patch is
+    process-wide, and a daemon thread an earlier test left running (H8: Opik's sender dialling
+    Opik Cloud) would otherwise be counted as the model client's dial."""
     attempted: list[tuple] = []
+    foreign = frozenset(threading.enumerate()) - {threading.current_thread()}
+
+    def record(address) -> None:
+        if threading.current_thread() not in foreign:
+            attempted.append(address[:2])
 
     def fake_connect(self, address) -> None:
-        attempted.append(address[:2])
+        record(address)
         raise ConnectionRefusedError("test: connect blocked")
 
+    def fake_connect_ex(self, address) -> int:
+        record(address)
+        return errno.ECONNREFUSED
+
     monkeypatch.setattr(socket.socket, "connect", fake_connect)
-    monkeypatch.setattr(socket.socket, "connect_ex", lambda self, address: (attempted.append(address[:2]), 111)[1])
+    monkeypatch.setattr(socket.socket, "connect_ex", fake_connect_ex)
     return attempted
 
 
@@ -204,6 +220,52 @@ def test_sync_clients_are_guarded_too(dns: dict, connects: list) -> None:
     with pytest.raises(Exception):  # noqa: B017
         get_embedding_model("openAICompatible", _config(ENDPOINT, maxRetries=0)).embed_query("hi")
     assert set(connects) == {(PUBLIC, 8000)}
+
+
+@pytest.fixture
+def earlier_thread() -> Iterator[Callable[[tuple], BaseException | None]]:
+    """A thread started before ``connects``, as one an earlier test left running: dials on request."""
+    requests: queue.Queue[tuple | None] = queue.Queue()
+    results: queue.Queue[BaseException | None] = queue.Queue()
+
+    def serve() -> None:
+        while (address := requests.get()) is not None:
+            with socket.socket() as sock:
+                try:
+                    sock.connect(address)
+                except OSError as e:
+                    results.put(e)
+                else:
+                    results.put(None)
+
+    thread = threading.Thread(target=serve, daemon=True)
+    thread.start()
+
+    def dial(address: tuple) -> BaseException | None:
+        requests.put(address)
+        return results.get(timeout=10)
+
+    yield dial
+    requests.put(None)
+    thread.join(timeout=10)
+
+
+class TestConnectRecording:
+    def test_a_thread_running_before_the_test_is_refused_but_not_counted(
+        self, earlier_thread: Callable[[tuple], BaseException | None], connects: list
+    ) -> None:
+        assert isinstance(earlier_thread(("192.0.2.1", 443)), ConnectionRefusedError)
+        assert connects == []
+
+    def test_a_thread_started_during_the_test_is_counted(self, connects: list) -> None:
+        def dial() -> None:
+            with socket.socket() as sock, contextlib.suppress(ConnectionRefusedError):
+                sock.connect(("192.0.2.1", 443))
+
+        thread = threading.Thread(target=dial)
+        thread.start()
+        thread.join(timeout=10)
+        assert connects == [("192.0.2.1", 443)]
 
 
 class TestSaveAndCallTogether:

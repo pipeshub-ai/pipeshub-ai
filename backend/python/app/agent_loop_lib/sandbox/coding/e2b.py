@@ -66,6 +66,9 @@ _RUN_COMMANDS: dict[CodingLanguage, str] = {
     "python": "python3 {file}",
 }
 _LISTING_IGNORED_DIRS = {"node_modules", ".venv", "__pycache__", ".git"}
+# The run contract every backend keeps (`environment.py::sanitized_subprocess_env`, `DockerCodingSandbox._run_env`).
+_RUN_ENV: dict[str, str] = {"OUTPUT_DIR": f"{_WORKING_DIR}/output", "WORKSPACE_DIR": f"{_WORKING_DIR}/workspace"}
+_MAKE_RUN_DIRS = 'mkdir -p "$OUTPUT_DIR" "$WORKSPACE_DIR" && '
 
 
 class E2BCodingSandbox(CodingSandboxBackend):
@@ -263,9 +266,9 @@ class E2BCodingSandbox(CodingSandboxBackend):
         file_path = f"{_WORKING_DIR}/{entry_file}"
         await self._sbx.files.write(file_path, request.code)
 
-        run_cmd = _RUN_COMMANDS[request.language].format(file=shlex.quote(entry_file))
+        run_cmd = _MAKE_RUN_DIRS + _RUN_COMMANDS[request.language].format(file=shlex.quote(entry_file))
         start = time.monotonic()
-        stdout, stderr, exit_code = await self._run_command(run_cmd, timeout=request.timeout)
+        stdout, stderr, exit_code = await self._run_command(run_cmd, timeout=request.timeout, envs=_RUN_ENV)
         duration_ms = (time.monotonic() - start) * 1000
 
         after = set(await self.list_files())
@@ -412,7 +415,9 @@ class E2BCodingSandbox(CodingSandboxBackend):
         if exit_code != 0:
             raise EnvironmentSetupError(f"npm init failed: {stderr}")
 
-    async def _run_command(self, cmd: str, *, timeout: float) -> tuple[str, str, int]:
+    async def _run_command(
+        self, cmd: str, *, timeout: float, envs: dict[str, str] | None = None
+    ) -> tuple[str, str, int]:
         """Run `cmd` in the sandbox and normalize both the happy path
         (`CommandResult`) and E2B's non-zero-exit path (`run()` internally
         calls `AsyncCommandHandle.wait()`, which RAISES `CommandExitException`
@@ -425,7 +430,7 @@ class E2BCodingSandbox(CodingSandboxBackend):
         # The provider SDK buffers the whole output; only its head and tail
         # are passed on.
         try:
-            result = await self._sbx.commands.run(cmd, cwd=_WORKING_DIR, timeout=timeout)
+            result = await self._sbx.commands.run(cmd, cwd=_WORKING_DIR, envs=envs, timeout=timeout)
             return cap_text(result.stdout), cap_text(result.stderr), result.exit_code
         except CommandExitException as e:
             return cap_text(e.stdout), cap_text(e.stderr), e.exit_code

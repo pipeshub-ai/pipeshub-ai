@@ -1,0 +1,23 @@
+{
+  "description": "ADR-RUN-01 D2 (WP-98): the store-only references record. Python writes `record` (storage_classes.encode_record); Node lists `references` from it and never lists `path` as a file.",
+  "path": ".pipeshub/references.json",
+  "record": "{\"references\":[{\"address\":\"https://github.com/acme/app.git\",\"kind\":\"repository\",\"path\":\"repos/old\",\"source\":\"https://github.com/acme/app.git\"},{\"address\":\"https://github.com/onyx-dot-app/onyx\",\"kind\":\"repository\",\"path\":\"repos/onyx\",\"ref\":\"main\",\"source\":\"https://github.com/onyx-dot-app/onyx@57cb7b8e0f12a9\",\"version\":\"57cb7b8e0f12a9\"}],\"schema\":1}",
+  "references": [
+    {
+      "path": "repos/old",
+      "label": "acme/app",
+      "address": "https://github.com/acme/app.git"
+    },
+    {
+      "path": "repos/onyx",
+      "label": "onyx-dot-app/onyx",
+      "address": "https://github.com/onyx-dot-app/onyx",
+      "version": "57cb7b8e0f12a9"
+    }
+  ],
+  "unreadable": [
+    "not json",
+    "{\"schema\":2,\"references\":[]}",
+    "{\"schema\":1,\"references\":[{\"path\":\"x\",\"address\":\"http://insecure\"}]}"
+  ]
+}

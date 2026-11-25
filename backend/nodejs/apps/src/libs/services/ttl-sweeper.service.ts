@@ -95,6 +95,12 @@ const TARGETS: Target[] = [
     cutoff: (now) => new Date(now.getTime() - DELEGATION_EVENTS_KEEP_MS),
   },
   {
+    name: 'session_families',
+    sql: `/* pipeshub:identity.ttl_sweep_session_families */ DELETE FROM identity.session_families
+            WHERE ctid IN (SELECT ctid FROM identity.session_families WHERE expires_at < $1 LIMIT $2)`,
+    cutoff: expiredAnHourAgo,
+  },
+  {
     name: 'agent_call_events',
     sql: `/* pipeshub:oauth.ttl_sweep_agent_call_events */ DELETE FROM oauth.agent_call_events
             WHERE ctid IN (SELECT ctid FROM oauth.agent_call_events WHERE created_at < $1 LIMIT $2)`,

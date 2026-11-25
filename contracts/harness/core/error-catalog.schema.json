@@ -1,0 +1,150 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/core/error-catalog.schema.json",
+  "title": "ErrorCatalog",
+  "description": "A data file of error codes (an `errors.json` beside a group's schemas): one entry per code, with its HTTP status, whether a retry can succeed, who can fix it and what the person who meets it can do next. The generator emits it as typed constants (`ERROR_CODES`) in every target, so no language hand-copies a code.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["description", "codes"],
+  "properties": {
+    "description": {
+      "type": "string",
+      "minLength": 1
+    },
+    "wirePrefix": {
+      "description": "Prepended to a code on the wire (the HTTP error body's `code`); readers strip it.",
+      "type": "string",
+      "pattern": "^(?:[A-Z][A-Z0-9]*_)*$"
+    },
+    "codes": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 500,
+      "items": {
+        "$ref": "#/$defs/ErrorCatalogEntry"
+      }
+    }
+  },
+  "$defs": {
+    "ErrorCatalogEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "status", "retryable", "meaning", "nextAction"],
+      "properties": {
+        "code": {
+          "type": "string",
+          "pattern": "^[A-Z][A-Z0-9_]{1,127}$"
+        },
+        "status": {
+          "description": "The HTTP status the code is answered with; null where it never travels as an HTTP answer (a tool result, an internal signal).",
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 400,
+              "maximum": 599
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "retryable": {
+          "description": "Whether the same request can succeed later without anyone changing anything.",
+          "type": "boolean"
+        },
+        "group": {
+          "description": "Codes one handler treats alike (one error class, one refusal family).",
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]{0,63}$"
+        },
+        "remediation": {
+          "description": "Who can resolve it.",
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]{0,63}$"
+        },
+        "meaning": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+        },
+        "nextAction": {
+          "$ref": "#/$defs/NextAction"
+        },
+        "aliases": {
+          "description": "Older wire names of the same cause, kept where they are already answered.",
+          "type": "array",
+          "maxItems": 20,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        }
+      }
+    },
+    "NextAction": {
+      "description": "What the person who meets the code can do next (UX-06), in plain language: no codes, ids or field names. `kind` lets a client offer the matching control; `text` is the English words for clients without their own (the web app words each kind in the reader's language).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "text"],
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/NextActionKind"
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        }
+      }
+    },
+    "NextActionKind": {
+      "description": "The kind of step a person can take. none: nothing, the system carries on or there is nothing left to do; retry: send it again now; wait_then_retry: wait, then try again; reload: reload to see the current state, then act on it; change_request: change what was asked or entered (another model, a smaller file, a fixed field); new_conversation: start a new chat or continue privately; reconnect: connect or add the account it needs; ask_owner: ask the conversation's, agent's or object's owner; ask_admin: ask an admin; internal: never shown to a person, a service-to-service answer whose text says what the system does.",
+      "x-constant": "NEXT_ACTION_KINDS",
+      "enum": [
+        "none",
+        "retry",
+        "wait_then_retry",
+        "reload",
+        "change_request",
+        "new_conversation",
+        "reconnect",
+        "ask_owner",
+        "ask_admin",
+        "internal"
+      ]
+    }
+  },
+  "examples": [
+    {
+      "description": "Two codes of one service.",
+      "wirePrefix": "SERVICE_",
+      "codes": [
+        {
+          "code": "REVISION_CONFLICT",
+          "status": 409,
+          "retryable": true,
+          "group": "conflict",
+          "remediation": "self",
+          "meaning": "The object changed since it was read.",
+          "nextAction": {
+            "kind": "reload",
+            "text": "Reload to see the latest version, then make your change again."
+          }
+        },
+        {
+          "code": "STALE",
+          "status": null,
+          "retryable": true,
+          "meaning": "An internal signal; never answered over HTTP.",
+          "nextAction": {
+            "kind": "internal",
+            "text": "Nothing to do: the service reads the object again and retries."
+          },
+          "aliases": ["OLD_STALE"]
+        }
+      ]
+    }
+  ]
+}

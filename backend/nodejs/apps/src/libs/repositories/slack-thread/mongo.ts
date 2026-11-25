@@ -1,5 +1,6 @@
-import { connect as __connect, ConnectOptions } from 'mongoose';
+import mongoose, { connect as __connect, ConnectOptions } from 'mongoose';
 import { MONGO_DB_NAME } from '../../enums/db.enum';
+import { fenceClientOptions, installMongoFence } from '../fence';
 import { SlackThread } from './schema/slack-thread.schema';
 import type { SlackThreadRepository } from './types';
 
@@ -11,9 +12,13 @@ export const connect = async (
   if (url === '') {
     throw new Error('MONGO_URI environment variable is not set.');
   }
+  // the bot writes the same MongoDB as the API: with DOC_STORE_FENCE=on its writes check the store fence too, and its connections carry
+  // the armed name, so a move can see that every writer is fenced
+  installMongoFence(mongoose.mongo.Collection);
   try {
     await __connect(url, {
       dbName: MONGO_DB_NAME,
+      ...fenceClientOptions(),
       ...opts,
     });
     console.log('mongodb running'); // Consider using a proper logger

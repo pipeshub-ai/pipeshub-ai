@@ -211,7 +211,8 @@ export function InstanceCard({
 
           {renderExtraActions?.(instance)}
 
-          <IconButton className="touch-hit"
+          <IconButton
+            className="touch-hit"
             variant="outline"
             color="gray"
             size="1"
@@ -232,7 +233,7 @@ export function InstanceCard({
             <Text
               size="1"
               weight="medium"
-              style={{ color: 'var(--gray-10)', width: isMobile ? 'auto' : 164, flexShrink: 0, textTransform: 'uppercase', letterSpacing: '0.04px', lineHeight: '16px' }}
+              style={{ color: 'var(--gray-11)', width: isMobile ? 'auto' : 164, flexShrink: 0, textTransform: 'uppercase', letterSpacing: '0.04px', lineHeight: '16px' }}
             >
               {t('workspace.connectors.instanceCard.syncStrategy')}
             </Text>
@@ -259,7 +260,7 @@ export function InstanceCard({
             <Text
               size="1"
               weight="medium"
-              style={{ color: 'var(--gray-10)', width: isMobile ? 'auto' : 164, flexShrink: 0, textTransform: 'uppercase', letterSpacing: '0.04px', lineHeight: '16px' }}
+              style={{ color: 'var(--gray-11)', width: isMobile ? 'auto' : 164, flexShrink: 0, textTransform: 'uppercase', letterSpacing: '0.04px', lineHeight: '16px' }}
             >
               {t('workspace.connectors.settingsTab.enabledBy')}
             </Text>
@@ -290,7 +291,7 @@ export function InstanceCard({
               size="1"
               weight="medium"
               style={{
-                color: 'var(--gray-10)',
+                color: 'var(--gray-11)',
                 width: isMobile ? 'auto' : 164,
                 flexShrink: 0,
                 textTransform: 'uppercase',

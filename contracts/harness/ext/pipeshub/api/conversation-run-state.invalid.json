@@ -1,0 +1,31 @@
+[
+  {
+    "description": "a run state that is not working or needs_you",
+    "instance": {
+      "activeRun": {
+        "runId": "run_1",
+        "status": "running"
+      },
+      "runState": "finished",
+      "needsYou": true,
+      "finishedUnseen": false,
+      "seenUpTo": 1762678800000
+    }
+  },
+  {
+    "description": "another person's marks",
+    "instance": {
+      "activeRun": {
+        "runId": "run_1",
+        "status": "running"
+      },
+      "runState": "needs_you",
+      "needsYou": true,
+      "finishedUnseen": false,
+      "seenUpTo": 1762678800000,
+      "seenBy": {
+        "u2": 1
+      }
+    }
+  }
+]

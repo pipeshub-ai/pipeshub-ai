@@ -87,7 +87,7 @@ services:
   # --fake-embeddings through BENCH_FAKE_AI_ARGS for the sensitivity variant. It has no published port:
   # the app reaches it as http://fake-ai:8080/v1.
   fake-ai:
-    image: ${BENCH_FAKE_AI_IMAGE:-python:3.12-slim}
+    image: ${BENCH_FAKE_AI_IMAGE:-python:3.12-slim@sha256:f77ac9e44ae96ef2c90b8053ea08c31f8be030f824196b0ae4db6d462c84e51f}
     # BENCH_FAKE_AI_ARGS adds server flags ("--base-ms 2000", "--fake-embeddings"); the bench reads the
     # running server's configuration back and refuses a run where a flag it was given did not take.
     command: ["sh", "-c", "exec python /srv/fake_ai/server.py --port 8080 $${BENCH_FAKE_AI_ARGS:-}"]

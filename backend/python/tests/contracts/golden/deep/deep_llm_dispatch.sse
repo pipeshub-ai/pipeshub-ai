@@ -1,0 +1,249 @@
+event: RUN_STARTED
+data: {"type": "RUN_STARTED", "threadId": "conv-golden", "runId": "uuid-1"}
+
+event: STATE_SNAPSHOT
+data: {"type": "STATE_SNAPSHOT", "runId": "uuid-1", "snapshot": {"run_id": "uuid-1", "agent_id": "uuid-2", "trace_id": "uuid-3", "parent_run_id": null, "role_name": "pipeshub-agent", "status": "starting", "current_turn": 0, "current_tool": null, "current_child_run_id": null, "hil_request_id": null, "goal_description": "Find the leave policy and the status of ticket T-42.", "started_at": "<timestamp>", "updated_at": "<timestamp>"}}
+
+event: STATE_SNAPSHOT
+data: {"type": "STATE_SNAPSHOT", "runId": "uuid-1", "snapshot": {"run_id": "uuid-1", "agent_id": "uuid-2", "trace_id": "uuid-3", "parent_run_id": null, "role_name": "pipeshub-agent", "status": "calling_llm", "current_turn": 0, "current_tool": null, "current_child_run_id": null, "hil_request_id": null, "goal_description": "Find the leave policy and the status of ticket T-42.", "started_at": "<timestamp>", "updated_at": "<timestamp>"}}
+
+event: TEXT_MESSAGE_START
+data: {"type": "TEXT_MESSAGE_START", "messageId": "msg-8", "role": "assistant", "runId": "uuid-1"}
+
+event: STATE_SNAPSHOT
+data: {"type": "STATE_SNAPSHOT", "runId": "uuid-1", "snapshot": {"run_id": "uuid-1", "agent_id": "uuid-2", "trace_id": "uuid-3", "parent_run_id": null, "role_name": "pipeshub-agent", "status": "calling_llm", "current_turn": 0, "current_tool": null, "current_child_run_id": null, "hil_request_id": null, "goal_description": "Find the leave policy and the status of ticket T-42.", "started_at": "<timestamp>", "updated_at": "<timestamp>"}}
+
+event: TEXT_MESSAGE_END
+data: {"type": "TEXT_MESSAGE_END", "messageId": "msg-8", "runId": "uuid-1"}
+
+event: TOOL_CALL_START
+data: {"type": "TOOL_CALL_START", "toolCallId": "call-plan", "toolCallName": "create_plan", "runId": "uuid-1"}
+
+event: TOOL_CALL_ARGS
+data: {"type": "TOOL_CALL_ARGS", "toolCallId": "call-plan", "delta": "{\"plan\": \"1. leave policy 2. ticket\"}", "runId": "uuid-1", "argsSummary": "Creating a plan", "argsPreview": "{\"plan\": \"1. leave policy 2. ticket\"}"}
+
+event: TOOL_CALL_END
+data: {"type": "TOOL_CALL_END", "toolCallId": "call-plan", "runId": "uuid-1"}
+
+event: TOOL_CALL_RESULT
+data: {"type": "TOOL_CALL_RESULT", "toolCallId": "call-plan", "content": "1. Search the handbook for leave.\n2. Look up T-42.\nConfidence: high", "role": "tool", "status": "completed", "runId": "uuid-1", "resultSummary": "Plan created"}
+
+event: STATE_SNAPSHOT
+data: {"type": "STATE_SNAPSHOT", "runId": "uuid-1", "snapshot": {"run_id": "uuid-1", "agent_id": "uuid-2", "trace_id": "uuid-3", "parent_run_id": null, "role_name": "pipeshub-agent", "status": "calling_llm", "current_turn": 1, "current_tool": null, "current_child_run_id": null, "hil_request_id": null, "goal_description": "Find the leave policy and the status of ticket T-42.", "started_at": "<timestamp>", "updated_at": "<timestamp>"}}
+
+event: TEXT_MESSAGE_START
+data: {"type": "TEXT_MESSAGE_START", "messageId": "msg-9", "role": "assistant", "runId": "uuid-1"}
+
+event: STATE_SNAPSHOT
+data: {"type": "STATE_SNAPSHOT", "runId": "uuid-1", "snapshot": {"run_id": "uuid-1", "agent_id": "uuid-2", "trace_id": "uuid-3", "parent_run_id": null, "role_name": "pipeshub-agent", "status": "calling_llm", "current_turn": 1, "current_tool": null, "current_child_run_id": null, "hil_request_id": null, "goal_description": "Find the leave policy and the status of ticket T-42.", "started_at": "<timestamp>", "updated_at": "<timestamp>"}}
+
+event: TEXT_MESSAGE_END
+data: {"type": "TEXT_MESSAGE_END", "messageId": "msg-9", "runId": "uuid-1"}
+
+event: TOOL_CALL_START
+data: {"type": "TOOL_CALL_START", "toolCallId": "call-critique", "toolCallName": "critique_plan", "runId": "uuid-1"}
+
+event: TOOL_CALL_ARGS
+data: {"type": "TOOL_CALL_ARGS", "toolCallId": "call-critique", "delta": "{\"plan\": \"leave, ticket\"}", "runId": "uuid-1", "argsSummary": "Critique Plan \u2014 plan: \"leave, ticket\"", "argsPreview": "{\"plan\": \"leave, ticket\"}"}
+
+event: TOOL_CALL_END
+data: {"type": "TOOL_CALL_END", "toolCallId": "call-critique", "runId": "uuid-1"}
+
+event: TOOL_CALL_RESULT
+data: {"type": "TOOL_CALL_RESULT", "toolCallId": "call-critique", "content": "{\"passed\": true, \"confidence\": \"high\", \"issues\": [], \"summary\": \"Sound.\"}", "role": "tool", "status": "completed", "runId": "uuid-1", "resultSummary": "Completed successfully"}
+
+event: STATE_SNAPSHOT
+data: {"type": "STATE_SNAPSHOT", "runId": "uuid-1", "snapshot": {"run_id": "uuid-1", "agent_id": "uuid-2", "trace_id": "uuid-3", "parent_run_id": null, "role_name": "pipeshub-agent", "status": "calling_llm", "current_turn": 2, "current_tool": null, "current_child_run_id": null, "hil_request_id": null, "goal_description": "Find the leave policy and the status of ticket T-42.", "started_at": "<timestamp>", "updated_at": "<timestamp>"}}
+
+event: TEXT_MESSAGE_START
+data: {"type": "TEXT_MESSAGE_START", "messageId": "msg-10", "role": "assistant", "runId": "uuid-1"}
+
+event: STATE_SNAPSHOT
+data: {"type": "STATE_SNAPSHOT", "runId": "uuid-1", "snapshot": {"run_id": "uuid-1", "agent_id": "uuid-2", "trace_id": "uuid-3", "parent_run_id": null, "role_name": "pipeshub-agent", "status": "calling_llm", "current_turn": 2, "current_tool": null, "current_child_run_id": null, "hil_request_id": null, "goal_description": "Find the leave policy and the status of ticket T-42.", "started_at": "<timestamp>", "updated_at": "<timestamp>"}}
+
+event: TEXT_MESSAGE_END
+data: {"type": "TEXT_MESSAGE_END", "messageId": "msg-10", "runId": "uuid-1"}
+
+event: STATE_SNAPSHOT
+data: {"type": "STATE_SNAPSHOT", "runId": "uuid-1", "snapshot": {"run_id": "uuid-1", "agent_id": "uuid-2", "trace_id": "uuid-3", "parent_run_id": null, "role_name": "pipeshub-agent", "status": "spawning_agent", "current_turn": 2, "current_tool": "spawn_agent", "current_child_run_id": null, "hil_request_id": null, "goal_description": "Find the leave policy and the status of ticket T-42.", "started_at": "<timestamp>", "updated_at": "<timestamp>"}}
+
+event: STATE_SNAPSHOT
+data: {"type": "STATE_SNAPSHOT", "runId": "uuid-1", "snapshot": {"run_id": "uuid-1", "agent_id": "uuid-2", "trace_id": "uuid-3", "parent_run_id": null, "role_name": "pipeshub-agent", "status": "spawning_agent", "current_turn": 2, "current_tool": "spawn_agent", "current_child_run_id": null, "hil_request_id": null, "goal_description": "Find the leave policy and the status of ticket T-42.", "started_at": "<timestamp>", "updated_at": "<timestamp>"}}
+
+event: TOOL_CALL_START
+data: {"type": "TOOL_CALL_START", "toolCallId": "call-leave", "toolCallName": "spawn_agent", "runId": "uuid-1"}
+
+event: TOOL_CALL_ARGS
+data: {"type": "TOOL_CALL_ARGS", "toolCallId": "call-leave", "delta": "{\"role\": \"handbook\", \"goal\": \"Find how many days of paid leave employees get.\", \"task_id\": \"leave\", \"tools\": [\"goldendocs\"], \"reasoning\": \"separate domain\"}", "runId": "uuid-1", "argsSummary": "Delegating to handbook", "argsPreview": "{\"role\": \"handbook\", \"goal\": \"Find how many days of paid leave employees get.\", \"task_id\": \"leave\", \"tools\": [\"goldendocs\"], \"reasoning\": \"separate domain\"}"}
+
+event: STEP_STARTED
+data: {"type": "STEP_STARTED", "stepName": "sub_agent:pipeshub-subagent-handbook", "runId": "uuid-1"}
+
+event: RUN_STARTED
+data: {"type": "RUN_STARTED", "threadId": "conv-golden", "runId": "uuid-4", "parentRunId": "uuid-1"}
+
+event: STATE_SNAPSHOT
+data: {"type": "STATE_SNAPSHOT", "runId": "uuid-4", "snapshot": {"run_id": "uuid-4", "agent_id": "uuid-5", "trace_id": "uuid-3", "parent_run_id": "uuid-1", "role_name": "pipeshub-subagent-handbook", "status": "starting", "current_turn": 0, "current_tool": null, "current_child_run_id": null, "hil_request_id": null, "goal_description": "## The user's request (verbatim, for context: work only on your delegated task)\n\nLeave policy and ticket T-42 status?\n\n## Your delegated task\n\nFind how many days of paid leave employees get.", "started_at": "<timestamp>", "updated_at": "<timestamp>"}}
+
+event: STATE_SNAPSHOT
+data: {"type": "STATE_SNAPSHOT", "runId": "uuid-4", "snapshot": {"run_id": "uuid-4", "agent_id": "uuid-5", "trace_id": "uuid-3", "parent_run_id": "uuid-1", "role_name": "pipeshub-subagent-handbook", "status": "calling_llm", "current_turn": 0, "current_tool": null, "current_child_run_id": null, "hil_request_id": null, "goal_description": "## The user's request (verbatim, for context: work only on your delegated task)\n\nLeave policy and ticket T-42 status?\n\n## Your delegated task\n\nFind how many days of paid leave employees get.", "started_at": "<timestamp>", "updated_at": "<timestamp>"}}
+
+event: STEP_STARTED
+data: {"type": "STEP_STARTED", "stepName": "sub_agent:pipeshub-subagent-tickets", "runId": "uuid-1"}
+
+event: RUN_STARTED
+data: {"type": "RUN_STARTED", "threadId": "conv-golden", "runId": "uuid-6", "parentRunId": "uuid-1"}
+
+event: STATE_SNAPSHOT
+data: {"type": "STATE_SNAPSHOT", "runId": "uuid-6", "snapshot": {"run_id": "uuid-6", "agent_id": "uuid-7", "trace_id": "uuid-3", "parent_run_id": "uuid-1", "role_name": "pipeshub-subagent-tickets", "status": "starting", "current_turn": 0, "current_tool": null, "current_child_run_id": null, "hil_request_id": null, "goal_description": "## The user's request (verbatim, for context: work only on your delegated task)\n\nLeave policy and ticket T-42 status?\n\n## Your delegated task\n\nReport the status of support ticket T-42.", "started_at": "<timestamp>", "updated_at": "<timestamp>"}}
+
+event: STATE_SNAPSHOT
+data: {"type": "STATE_SNAPSHOT", "runId": "uuid-6", "snapshot": {"run_id": "uuid-6", "agent_id": "uuid-7", "trace_id": "uuid-3", "parent_run_id": "uuid-1", "role_name": "pipeshub-subagent-tickets", "status": "calling_llm", "current_turn": 0, "current_tool": null, "current_child_run_id": null, "hil_request_id": null, "goal_description": "## The user's request (verbatim, for context: work only on your delegated task)\n\nLeave policy and ticket T-42 status?\n\n## Your delegated task\n\nReport the status of support ticket T-42.", "started_at": "<timestamp>", "updated_at": "<timestamp>"}}
+
+event: TEXT_MESSAGE_START
+data: {"type": "TEXT_MESSAGE_START", "messageId": "msg-11", "role": "assistant", "runId": "uuid-4"}
+
+event: STATE_SNAPSHOT
+data: {"type": "STATE_SNAPSHOT", "runId": "uuid-4", "snapshot": {"run_id": "uuid-4", "agent_id": "uuid-5", "trace_id": "uuid-3", "parent_run_id": "uuid-1", "role_name": "pipeshub-subagent-handbook", "status": "calling_llm", "current_turn": 0, "current_tool": null, "current_child_run_id": null, "hil_request_id": null, "goal_description": "## The user's request (verbatim, for context: work only on your delegated task)\n\nLeave policy and ticket T-42 status?\n\n## Your delegated task\n\nFind how many days of paid leave employees get.", "started_at": "<timestamp>", "updated_at": "<timestamp>"}}
+
+event: TEXT_MESSAGE_END
+data: {"type": "TEXT_MESSAGE_END", "messageId": "msg-11", "runId": "uuid-4"}
+
+event: TEXT_MESSAGE_START
+data: {"type": "TEXT_MESSAGE_START", "messageId": "msg-12", "role": "assistant", "runId": "uuid-6"}
+
+event: STATE_SNAPSHOT
+data: {"type": "STATE_SNAPSHOT", "runId": "uuid-6", "snapshot": {"run_id": "uuid-6", "agent_id": "uuid-7", "trace_id": "uuid-3", "parent_run_id": "uuid-1", "role_name": "pipeshub-subagent-tickets", "status": "calling_llm", "current_turn": 0, "current_tool": null, "current_child_run_id": null, "hil_request_id": null, "goal_description": "## The user's request (verbatim, for context: work only on your delegated task)\n\nLeave policy and ticket T-42 status?\n\n## Your delegated task\n\nReport the status of support ticket T-42.", "started_at": "<timestamp>", "updated_at": "<timestamp>"}}
+
+event: TEXT_MESSAGE_END
+data: {"type": "TEXT_MESSAGE_END", "messageId": "msg-12", "runId": "uuid-6"}
+
+event: TOOL_CALL_START
+data: {"type": "TOOL_CALL_START", "toolCallId": "call-search", "toolCallName": "goldendocs__search_docs", "runId": "uuid-4"}
+
+event: TOOL_CALL_ARGS
+data: {"type": "TOOL_CALL_ARGS", "toolCallId": "call-search", "delta": "{\"query\": \"paid leave\"}", "runId": "uuid-4", "argsSummary": "Search Docs: \"paid leave\"", "argsPreview": "{\"query\": \"paid leave\"}"}
+
+event: STATE_SNAPSHOT
+data: {"type": "STATE_SNAPSHOT", "runId": "uuid-4", "snapshot": {"run_id": "uuid-4", "agent_id": "uuid-5", "trace_id": "uuid-3", "parent_run_id": "uuid-1", "role_name": "pipeshub-subagent-handbook", "status": "running_tool", "current_turn": 0, "current_tool": "goldendocs__search_docs", "current_child_run_id": null, "hil_request_id": null, "goal_description": "## The user's request (verbatim, for context: work only on your delegated task)\n\nLeave policy and ticket T-42 status?\n\n## Your delegated task\n\nFind how many days of paid leave employees get.", "started_at": "<timestamp>", "updated_at": "<timestamp>"}}
+
+event: TOOL_CALL_END
+data: {"type": "TOOL_CALL_END", "toolCallId": "call-search", "runId": "uuid-4"}
+
+event: TOOL_CALL_RESULT
+data: {"type": "TOOL_CALL_RESULT", "toolCallId": "call-search", "content": "{\"query\": \"paid leave\", \"hits\": [{\"title\": \"Leave policy\", \"excerpt\": \"25 days of paid leave.\"}]}", "role": "tool", "status": "completed", "runId": "uuid-4", "resultSummary": "Completed successfully"}
+
+event: TOOL_CALL_START
+data: {"type": "TOOL_CALL_START", "toolCallId": "call-lookup", "toolCallName": "goldendocs__lookup_ticket", "runId": "uuid-6"}
+
+event: TOOL_CALL_ARGS
+data: {"type": "TOOL_CALL_ARGS", "toolCallId": "call-lookup", "delta": "{\"ticket_id\": \"T-42\"}", "runId": "uuid-6", "argsSummary": "Lookup Ticket \u2014 ticket_id: \"T-42\"", "argsPreview": "{\"ticket_id\": \"T-42\"}"}
+
+event: STATE_SNAPSHOT
+data: {"type": "STATE_SNAPSHOT", "runId": "uuid-6", "snapshot": {"run_id": "uuid-6", "agent_id": "uuid-7", "trace_id": "uuid-3", "parent_run_id": "uuid-1", "role_name": "pipeshub-subagent-tickets", "status": "running_tool", "current_turn": 0, "current_tool": "goldendocs__lookup_ticket", "current_child_run_id": null, "hil_request_id": null, "goal_description": "## The user's request (verbatim, for context: work only on your delegated task)\n\nLeave policy and ticket T-42 status?\n\n## Your delegated task\n\nReport the status of support ticket T-42.", "started_at": "<timestamp>", "updated_at": "<timestamp>"}}
+
+event: TOOL_CALL_END
+data: {"type": "TOOL_CALL_END", "toolCallId": "call-lookup", "runId": "uuid-6"}
+
+event: TOOL_CALL_RESULT
+data: {"type": "TOOL_CALL_RESULT", "toolCallId": "call-lookup", "content": "{\"id\": \"T-42\", \"status\": \"resolved\", \"owner\": \"Priya\"}", "role": "tool", "status": "completed", "runId": "uuid-6", "resultSummary": "Completed successfully"}
+
+event: STATE_SNAPSHOT
+data: {"type": "STATE_SNAPSHOT", "runId": "uuid-4", "snapshot": {"run_id": "uuid-4", "agent_id": "uuid-5", "trace_id": "uuid-3", "parent_run_id": "uuid-1", "role_name": "pipeshub-subagent-handbook", "status": "calling_llm", "current_turn": 1, "current_tool": null, "current_child_run_id": null, "hil_request_id": null, "goal_description": "## The user's request (verbatim, for context: work only on your delegated task)\n\nLeave policy and ticket T-42 status?\n\n## Your delegated task\n\nFind how many days of paid leave employees get.", "started_at": "<timestamp>", "updated_at": "<timestamp>"}}
+
+event: STATE_SNAPSHOT
+data: {"type": "STATE_SNAPSHOT", "runId": "uuid-6", "snapshot": {"run_id": "uuid-6", "agent_id": "uuid-7", "trace_id": "uuid-3", "parent_run_id": "uuid-1", "role_name": "pipeshub-subagent-tickets", "status": "calling_llm", "current_turn": 1, "current_tool": null, "current_child_run_id": null, "hil_request_id": null, "goal_description": "## The user's request (verbatim, for context: work only on your delegated task)\n\nLeave policy and ticket T-42 status?\n\n## Your delegated task\n\nReport the status of support ticket T-42.", "started_at": "<timestamp>", "updated_at": "<timestamp>"}}
+
+event: TEXT_MESSAGE_START
+data: {"type": "TEXT_MESSAGE_START", "messageId": "msg-13", "role": "assistant", "runId": "uuid-4"}
+
+event: TEXT_MESSAGE_END
+data: {"type": "TEXT_MESSAGE_END", "messageId": "msg-13", "runId": "uuid-4"}
+
+event: TEXT_MESSAGE_START
+data: {"type": "TEXT_MESSAGE_START", "messageId": "msg-14", "role": "assistant", "runId": "uuid-6"}
+
+event: TEXT_MESSAGE_END
+data: {"type": "TEXT_MESSAGE_END", "messageId": "msg-14", "runId": "uuid-6"}
+
+event: RUN_FINISHED
+data: {"type": "RUN_FINISHED", "runId": "uuid-4", "parentRunId": "uuid-1"}
+
+event: STEP_FINISHED
+data: {"type": "STEP_FINISHED", "stepName": "sub_agent:pipeshub-subagent-handbook", "runId": "uuid-1"}
+
+event: STATE_SNAPSHOT
+data: {"type": "STATE_SNAPSHOT", "runId": "uuid-4", "snapshot": {"run_id": "uuid-4", "agent_id": "uuid-5", "trace_id": "uuid-3", "parent_run_id": "uuid-1", "role_name": "pipeshub-subagent-handbook", "status": "completed", "current_turn": 1, "current_tool": null, "current_child_run_id": null, "hil_request_id": null, "goal_description": "## The user's request (verbatim, for context: work only on your delegated task)\n\nLeave policy and ticket T-42 status?\n\n## Your delegated task\n\nFind how many days of paid leave employees get.", "started_at": "<timestamp>", "updated_at": "<timestamp>"}}
+
+event: RUN_FINISHED
+data: {"type": "RUN_FINISHED", "runId": "uuid-6", "parentRunId": "uuid-1"}
+
+event: STEP_FINISHED
+data: {"type": "STEP_FINISHED", "stepName": "sub_agent:pipeshub-subagent-tickets", "runId": "uuid-1"}
+
+event: STATE_SNAPSHOT
+data: {"type": "STATE_SNAPSHOT", "runId": "uuid-6", "snapshot": {"run_id": "uuid-6", "agent_id": "uuid-7", "trace_id": "uuid-3", "parent_run_id": "uuid-1", "role_name": "pipeshub-subagent-tickets", "status": "completed", "current_turn": 1, "current_tool": null, "current_child_run_id": null, "hil_request_id": null, "goal_description": "## The user's request (verbatim, for context: work only on your delegated task)\n\nLeave policy and ticket T-42 status?\n\n## Your delegated task\n\nReport the status of support ticket T-42.", "started_at": "<timestamp>", "updated_at": "<timestamp>"}}
+
+event: TOOL_CALL_END
+data: {"type": "TOOL_CALL_END", "toolCallId": "call-leave", "runId": "uuid-1"}
+
+event: TOOL_CALL_RESULT
+data: {"type": "TOOL_CALL_RESULT", "toolCallId": "call-leave", "content": "{\"output\": \"Employees get 25 days of paid leave.\", \"success\": true}", "role": "tool", "status": "completed", "runId": "uuid-1", "resultSummary": "Sub-agent completed"}
+
+event: TOOL_CALL_START
+data: {"type": "TOOL_CALL_START", "toolCallId": "call-ticket", "toolCallName": "spawn_agent", "runId": "uuid-1"}
+
+event: TOOL_CALL_ARGS
+data: {"type": "TOOL_CALL_ARGS", "toolCallId": "call-ticket", "delta": "{\"role\": \"tickets\", \"goal\": \"Report the status of support ticket T-42.\", \"task_id\": \"ticket\", \"tools\": [\"goldendocs__lookup_ticket\"], \"reasoning\": \"separate domain\"}", "runId": "uuid-1", "argsSummary": "Delegating to tickets", "argsPreview": "{\"role\": \"tickets\", \"goal\": \"Report the status of support ticket T-42.\", \"task_id\": \"ticket\", \"tools\": [\"goldendocs__lookup_ticket\"], \"reasoning\": \"separate domain\"}"}
+
+event: TOOL_CALL_END
+data: {"type": "TOOL_CALL_END", "toolCallId": "call-ticket", "runId": "uuid-1"}
+
+event: TOOL_CALL_RESULT
+data: {"type": "TOOL_CALL_RESULT", "toolCallId": "call-ticket", "content": "task_id 'ticket' already completed successfully earlier this run \u2014 do not re-dispatch it. Reference its recorded result instead, or use a new, different task_id for genuinely new work.", "role": "tool", "status": "blocked", "runId": "uuid-1", "resultSummary": null}
+
+event: STATE_SNAPSHOT
+data: {"type": "STATE_SNAPSHOT", "runId": "uuid-1", "snapshot": {"run_id": "uuid-1", "agent_id": "uuid-2", "trace_id": "uuid-3", "parent_run_id": null, "role_name": "pipeshub-agent", "status": "calling_llm", "current_turn": 3, "current_tool": null, "current_child_run_id": null, "hil_request_id": null, "goal_description": "Find the leave policy and the status of ticket T-42.", "started_at": "<timestamp>", "updated_at": "<timestamp>"}}
+
+event: TEXT_MESSAGE_START
+data: {"type": "TEXT_MESSAGE_START", "messageId": "msg-15", "role": "assistant", "runId": "uuid-1"}
+
+event: STATE_SNAPSHOT
+data: {"type": "STATE_SNAPSHOT", "runId": "uuid-1", "snapshot": {"run_id": "uuid-1", "agent_id": "uuid-2", "trace_id": "uuid-3", "parent_run_id": null, "role_name": "pipeshub-agent", "status": "calling_llm", "current_turn": 3, "current_tool": null, "current_child_run_id": null, "hil_request_id": null, "goal_description": "Find the leave policy and the status of ticket T-42.", "started_at": "<timestamp>", "updated_at": "<timestamp>"}}
+
+event: TEXT_MESSAGE_END
+data: {"type": "TEXT_MESSAGE_END", "messageId": "msg-15", "runId": "uuid-1"}
+
+event: TOOL_CALL_START
+data: {"type": "TOOL_CALL_START", "toolCallId": "call-verify", "toolCallName": "verify_result", "runId": "uuid-1"}
+
+event: TOOL_CALL_ARGS
+data: {"type": "TOOL_CALL_ARGS", "toolCallId": "call-verify", "delta": "{\"output\": \"25 days; T-42 resolved.\"}", "runId": "uuid-1", "argsSummary": "Verify Result \u2014 output: \"25 days; T-42 resolved.\"", "argsPreview": "{\"output\": \"25 days; T-42 resolved.\"}"}
+
+event: TOOL_CALL_END
+data: {"type": "TOOL_CALL_END", "toolCallId": "call-verify", "runId": "uuid-1"}
+
+event: TOOL_CALL_RESULT
+data: {"type": "TOOL_CALL_RESULT", "toolCallId": "call-verify", "content": "{\"passed\": true, \"confidence\": \"high\", \"issues\": [], \"summary\": \"Sound.\"}", "role": "tool", "status": "completed", "runId": "uuid-1", "resultSummary": "Completed successfully"}
+
+event: STATE_SNAPSHOT
+data: {"type": "STATE_SNAPSHOT", "runId": "uuid-1", "snapshot": {"run_id": "uuid-1", "agent_id": "uuid-2", "trace_id": "uuid-3", "parent_run_id": null, "role_name": "pipeshub-agent", "status": "calling_llm", "current_turn": 4, "current_tool": null, "current_child_run_id": null, "hil_request_id": null, "goal_description": "Find the leave policy and the status of ticket T-42.", "started_at": "<timestamp>", "updated_at": "<timestamp>"}}
+
+event: TEXT_MESSAGE_START
+data: {"type": "TEXT_MESSAGE_START", "messageId": "msg-16", "role": "assistant", "runId": "uuid-1"}
+
+event: TEXT_MESSAGE_END
+data: {"type": "TEXT_MESSAGE_END", "messageId": "msg-16", "runId": "uuid-1"}
+
+event: STATE_SNAPSHOT
+data: {"type": "STATE_SNAPSHOT", "runId": "uuid-1", "snapshot": {"run_id": "uuid-1", "agent_id": "uuid-2", "trace_id": "uuid-3", "parent_run_id": null, "role_name": "pipeshub-agent", "status": "completed", "current_turn": 4, "current_tool": null, "current_child_run_id": null, "hil_request_id": null, "goal_description": "Find the leave policy and the status of ticket T-42.", "started_at": "<timestamp>", "updated_at": "<timestamp>"}}
+
+event: STATE_DELTA
+data: {"type": "STATE_DELTA", "runId": "uuid-1", "delta": [{"op": "replace", "path": "/citations", "value": []}, {"op": "replace", "path": "/normalizedAnswer", "value": "You get 25 days of paid leave, and ticket T-42 is resolved."}, {"op": "replace", "path": "/rawLength", "value": 59}]}
+
+event: STATE_SNAPSHOT
+data: {"type": "STATE_SNAPSHOT", "runId": "uuid-1", "snapshot": {"final": true, "parts": [{"type": "text", "content": "", "runId": "uuid-1"}, {"type": "tool_call", "toolCallId": "call-plan", "toolName": "create_plan", "args": "{\"plan\": \"1. leave policy 2. ticket\"}", "status": "completed", "runId": "uuid-1", "argsSummary": "Creating a plan", "resultPreview": "1. Search the handbook for leave.\n2. Look up T-42.\nConfidence: high", "resultSummary": "Plan created"}, {"type": "text", "content": "", "runId": "uuid-1"}, {"type": "tool_call", "toolCallId": "call-critique", "toolName": "critique_plan", "args": "{\"plan\": \"leave, ticket\"}", "status": "completed", "runId": "uuid-1", "argsSummary": "Critique Plan \u2014 plan: \"leave, ticket\"", "resultPreview": "{\"passed\": true, \"confidence\": \"high\", \"issues\": [], \"summary\": \"Sound.\"}", "resultSummary": "Completed successfully"}, {"type": "text", "content": "", "runId": "uuid-1"}, {"type": "tool_call", "toolCallId": "call-leave", "toolName": "spawn_agent", "args": "{\"role\": \"handbook\", \"goal\": \"Find how many days of paid leave employees get.\", \"task_id\": \"leave\", \"tools\": [\"goldendocs\"], \"reasoning\": \"separate domain\"}", "status": "completed", "runId": "uuid-1", "argsSummary": "Delegating to handbook", "resultPreview": "{\"output\": \"Employees get 25 days of paid leave.\", \"success\": true}", "resultSummary": "Sub-agent completed"}, {"type": "sub_agent", "runId": "uuid-4", "roleName": "pipeshub-subagent-handbook", "parts": [{"type": "text", "content": "", "runId": "uuid-4"}, {"type": "tool_call", "toolCallId": "call-search", "toolName": "goldendocs__search_docs", "args": "{\"query\": \"paid leave\"}", "status": "completed", "runId": "uuid-4", "argsSummary": "Search Docs: \"paid leave\"", "resultPreview": "{\"query\": \"paid leave\", \"hits\": [{\"title\": \"Leave policy\", \"excerpt\": \"25 days of paid leave.\"}]}", "resultSummary": "Completed successfully"}, {"type": "text", "content": "", "runId": "uuid-4"}]}, {"type": "sub_agent", "runId": "uuid-6", "roleName": "pipeshub-subagent-tickets", "parts": [{"type": "text", "content": "", "runId": "uuid-6"}, {"type": "tool_call", "toolCallId": "call-lookup", "toolName": "goldendocs__lookup_ticket", "args": "{\"ticket_id\": \"T-42\"}", "status": "completed", "runId": "uuid-6", "argsSummary": "Lookup Ticket \u2014 ticket_id: \"T-42\"", "resultPreview": "{\"id\": \"T-42\", \"status\": \"resolved\", \"owner\": \"Priya\"}", "resultSummary": "Completed successfully"}, {"type": "text", "content": "", "runId": "uuid-6"}]}, {"type": "tool_call", "toolCallId": "call-ticket", "toolName": "spawn_agent", "args": "{\"role\": \"tickets\", \"goal\": \"Report the status of support ticket T-42.\", \"task_id\": \"ticket\", \"tools\": [\"goldendocs__lookup_ticket\"], \"reasoning\": \"separate domain\"}", "status": "blocked", "runId": "uuid-1", "argsSummary": "Delegating to tickets", "resultPreview": "task_id 'ticket' already completed successfully earlier this run \u2014 do not re-dispatch it. Reference its recorded result instead, or use a new, different task_id for genuinely new work."}, {"type": "text", "content": "", "runId": "uuid-1"}, {"type": "tool_call", "toolCallId": "call-verify", "toolName": "verify_result", "args": "{\"output\": \"25 days; T-42 resolved.\"}", "status": "completed", "runId": "uuid-1", "argsSummary": "Verify Result \u2014 output: \"25 days; T-42 resolved.\"", "resultPreview": "{\"passed\": true, \"confidence\": \"high\", \"issues\": [], \"summary\": \"Sound.\"}", "resultSummary": "Completed successfully"}, {"type": "text", "content": "You get 25 days of paid leave, and ticket T-42 is resolved.", "runId": "uuid-1", "isFinal": true}], "answer": "You get 25 days of paid leave, and ticket T-42 is resolved.", "citations": [], "confidence": null, "succeeded_tool_names": ["create_plan", "critique_plan", "goldendocs__search_docs", "goldendocs__lookup_ticket", "spawn_agent", "verify_result"], "failed_tool_names": []}}
+
+event: RUN_FINISHED
+data: {"type": "RUN_FINISHED", "runId": "uuid-1", "threadId": "conv-golden", "result": {"parts": [{"type": "text", "content": "", "runId": "uuid-1"}, {"type": "tool_call", "toolCallId": "call-plan", "toolName": "create_plan", "args": "{\"plan\": \"1. leave policy 2. ticket\"}", "status": "completed", "runId": "uuid-1", "argsSummary": "Creating a plan", "resultPreview": "1. Search the handbook for leave.\n2. Look up T-42.\nConfidence: high", "resultSummary": "Plan created"}, {"type": "text", "content": "", "runId": "uuid-1"}, {"type": "tool_call", "toolCallId": "call-critique", "toolName": "critique_plan", "args": "{\"plan\": \"leave, ticket\"}", "status": "completed", "runId": "uuid-1", "argsSummary": "Critique Plan \u2014 plan: \"leave, ticket\"", "resultPreview": "{\"passed\": true, \"confidence\": \"high\", \"issues\": [], \"summary\": \"Sound.\"}", "resultSummary": "Completed successfully"}, {"type": "text", "content": "", "runId": "uuid-1"}, {"type": "tool_call", "toolCallId": "call-leave", "toolName": "spawn_agent", "args": "{\"role\": \"handbook\", \"goal\": \"Find how many days of paid leave employees get.\", \"task_id\": \"leave\", \"tools\": [\"goldendocs\"], \"reasoning\": \"separate domain\"}", "status": "completed", "runId": "uuid-1", "argsSummary": "Delegating to handbook", "resultPreview": "{\"output\": \"Employees get 25 days of paid leave.\", \"success\": true}", "resultSummary": "Sub-agent completed"}, {"type": "sub_agent", "runId": "uuid-4", "roleName": "pipeshub-subagent-handbook", "parts": [{"type": "text", "content": "", "runId": "uuid-4"}, {"type": "tool_call", "toolCallId": "call-search", "toolName": "goldendocs__search_docs", "args": "{\"query\": \"paid leave\"}", "status": "completed", "runId": "uuid-4", "argsSummary": "Search Docs: \"paid leave\"", "resultPreview": "{\"query\": \"paid leave\", \"hits\": [{\"title\": \"Leave policy\", \"excerpt\": \"25 days of paid leave.\"}]}", "resultSummary": "Completed successfully"}, {"type": "text", "content": "", "runId": "uuid-4"}]}, {"type": "sub_agent", "runId": "uuid-6", "roleName": "pipeshub-subagent-tickets", "parts": [{"type": "text", "content": "", "runId": "uuid-6"}, {"type": "tool_call", "toolCallId": "call-lookup", "toolName": "goldendocs__lookup_ticket", "args": "{\"ticket_id\": \"T-42\"}", "status": "completed", "runId": "uuid-6", "argsSummary": "Lookup Ticket \u2014 ticket_id: \"T-42\"", "resultPreview": "{\"id\": \"T-42\", \"status\": \"resolved\", \"owner\": \"Priya\"}", "resultSummary": "Completed successfully"}, {"type": "text", "content": "", "runId": "uuid-6"}]}, {"type": "tool_call", "toolCallId": "call-ticket", "toolName": "spawn_agent", "args": "{\"role\": \"tickets\", \"goal\": \"Report the status of support ticket T-42.\", \"task_id\": \"ticket\", \"tools\": [\"goldendocs__lookup_ticket\"], \"reasoning\": \"separate domain\"}", "status": "blocked", "runId": "uuid-1", "argsSummary": "Delegating to tickets", "resultPreview": "task_id 'ticket' already completed successfully earlier this run \u2014 do not re-dispatch it. Reference its recorded result instead, or use a new, different task_id for genuinely new work."}, {"type": "text", "content": "", "runId": "uuid-1"}, {"type": "tool_call", "toolCallId": "call-verify", "toolName": "verify_result", "args": "{\"output\": \"25 days; T-42 resolved.\"}", "status": "completed", "runId": "uuid-1", "argsSummary": "Verify Result \u2014 output: \"25 days; T-42 resolved.\"", "resultPreview": "{\"passed\": true, \"confidence\": \"high\", \"issues\": [], \"summary\": \"Sound.\"}", "resultSummary": "Completed successfully"}, {"type": "text", "content": "You get 25 days of paid leave, and ticket T-42 is resolved.", "runId": "uuid-1", "isFinal": true}], "answer": "You get 25 days of paid leave, and ticket T-42 is resolved.", "citations": [], "confidence": null, "succeeded_tool_names": ["create_plan", "critique_plan", "goldendocs__search_docs", "goldendocs__lookup_ticket", "spawn_agent", "verify_result"], "failed_tool_names": [], "label": {"complete": false, "sources": []}}}
+

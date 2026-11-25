@@ -38,6 +38,37 @@ def _make_manager() -> tuple[VersionManager, FakeGraphProvider, FakeBlobStore]:
     return manager, graph, blob
 
 
+class TestStorageFileName:
+    """SEC-FS-02 SFN-10: an artifact's bytes are stored under a plain file name whatever name it was given; the
+    artifact keeps its own name."""
+
+    @pytest.mark.parametrize(
+        ("name", "stored"),
+        [
+            ("report.pdf", "report.pdf"),
+            ("Q3 report (final).xlsx", "Q3 report (final).xlsx"),
+            ("charts/q3.png", "q3.png"),
+            ("..", "input"),
+            ("../../etc/passwd", "passwd"),
+            ("..\\..\\x.csv", "x.csv"),
+            ("CON.txt", "file_CON.txt"),
+            ("a%2f..%2fb.txt", "a_2f.._2fb.txt"),
+        ],
+    )
+    async def test_sfn_10_the_storage_name_is_one_plain_file(self, name: str, stored: str) -> None:
+        manager, _, blob = _make_manager()
+        metadata = await manager.create(
+            actor=Actor(org_id=ORG, user_id=USER), name=name, artifact_type=ArtifactType.OTHER,
+            mime_type="text/plain", content=b"x", conversation_id="conv-1",
+        )
+        assert metadata.name == name
+        (document,) = blob.documents.values()
+        assert document["file_name"] == stored
+        _ = await manager.add_version(
+            actor=Actor(org_id=ORG, user_id=USER), artifact_id=metadata.artifact_id, content=b"y",
+        )
+
+
 class TestCreate:
     async def test_creates_record_artifact_and_owner_edge(self) -> None:
         manager, graph, blob = _make_manager()

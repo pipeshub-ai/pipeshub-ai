@@ -10,7 +10,6 @@ from __future__ import annotations
 import fnmatch
 import itertools
 import re
-import time
 import warnings
 from typing import TYPE_CHECKING
 
@@ -20,6 +19,7 @@ from hypothesis import strategies as st
 
 from app.modules.parsers.code_parser import gitattributes
 from app.utils.path_glob import glob_regex, name_regex
+from tests.support.cpu_budget import thread_cpu
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -195,7 +195,7 @@ def test_name_regex_matches_as_fnmatch_does(segment: str, name: str, escapes: bo
 def test_a_sixteen_star_name_fails_in_linear_time() -> None:
     # Backtracking over every split of 20,000 characters between 16 stars would never finish.
     regex = name_regex("*a" * 15 + "*b", escapes=False)
-    started = time.perf_counter()
-    assert regex.fullmatch("a" * 20_000) is None
-    assert regex.fullmatch("a" * 20_000 + "b") is not None
-    assert time.perf_counter() - started < 1.0
+    with thread_cpu() as cpu:
+        assert regex.fullmatch("a" * 20_000) is None
+        assert regex.fullmatch("a" * 20_000 + "b") is not None
+    assert cpu.seconds < 1.0

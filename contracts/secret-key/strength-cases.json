@@ -1,0 +1,100 @@
+{
+  "comment": "SEC-D-05: SECRET_KEY strength cases both rings (Python secret_key_ring.py, Node secret-key-ring.ts) must agree on. 'reason' is the stable code of the refusal, null when accepted.",
+  "cases": [
+    {
+      "name": "placeholder",
+      "secret": "your_random_encryption_secret_key",
+      "reason": "placeholder"
+    },
+    {
+      "name": "placeholder upper case",
+      "secret": "YOUR_RANDOM_ENCRYPTION_SECRET_KEY",
+      "reason": "placeholder"
+    },
+    {
+      "name": "placeholder with dashes",
+      "secret": "Your-Random-Encryption-Secret-Key",
+      "reason": "placeholder"
+    },
+    {
+      "name": "placeholder padded to length",
+      "secret": "your_random_encryption_secret_key_0123456789",
+      "reason": "placeholder"
+    },
+    {
+      "name": "changeme",
+      "secret": "changeme",
+      "reason": "placeholder"
+    },
+    {
+      "name": "short",
+      "secret": "abc",
+      "reason": "short"
+    },
+    {
+      "name": "31 random characters",
+      "secret": "Zq3xK9mP2vL7wR4tY8uN1bC6dF0gH5j",
+      "reason": "short"
+    },
+    {
+      "name": "leading space",
+      "secret": " 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+      "reason": "whitespace"
+    },
+    {
+      "name": "trailing newline",
+      "secret": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\n",
+      "reason": "whitespace"
+    },
+    {
+      "name": "one repeated character",
+      "secret": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "reason": "low_entropy"
+    },
+    {
+      "name": "two characters alternating",
+      "secret": "abababababababababababababababababababababababababababababababab",
+      "reason": "low_entropy"
+    },
+    {
+      "name": "repeated block",
+      "secret": "Zq3xK9mP2vL7wR4tZq3xK9mP2vL7wR4tZq3xK9mP2vL7wR4t",
+      "reason": "pattern"
+    },
+    {
+      "name": "sequential run",
+      "secret": "abcdefghijklmnopqrstuvwxyz0123456789ABCDEF",
+      "reason": "pattern"
+    },
+    {
+      "name": "base64 of a passphrase",
+      "secret": "Y29ycmVjdCBob3JzZSBiYXR0ZXJ5IHN0YXBsZSBwaXBlc2h1Yg==",
+      "reason": "encoded_text"
+    },
+    {
+      "name": "hex of a passphrase",
+      "secret": "636f727265637420686f727365206261747465727920737461706c65",
+      "reason": "encoded_text"
+    },
+    {
+      "name": "base64 of a repeated byte",
+      "secret": "YWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWE=",
+      "reason": "low_entropy"
+    },
+    {
+      "name": "install.sh: 64 hex characters",
+      "secret": "e3b98a4da31a127d4bde6e43033f66ba274cab0eb7eb1c70ec41402bf6273dd8",
+      "reason": null
+    },
+    {
+      "name": "openssl rand -base64 32",
+      "secret": "q7Wm1Z3cN8vX0bL5kR2tY9uH4jP6sD1fG3aQ8eC0iO4=",
+      "reason": null
+    },
+    {
+      "name": "unit test key",
+      "secret": "test-secret-key-for-unit-tests-only-0123456789abcdef",
+      "reason": null
+    }
+  ]
+}

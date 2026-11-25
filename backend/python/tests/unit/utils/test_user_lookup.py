@@ -42,6 +42,7 @@ from tests.support.graph_read_errors import (
     unmarked,
 )
 from tests.support.log_capture import assert_text_free
+from tests.support.record_access import InMemoryRecordAccess
 
 
 async def _read_fails(user_id: str, *, raise_on_error: bool = False) -> dict[str, Any] | None:
@@ -295,25 +296,23 @@ class TestGetRecordOr503:
 
 class TestCheckRecordAccessOr503:
     async def test_a_failed_check_is_503(self) -> None:
-        graph = AsyncMock()
         failure = ConnectionError("graph down")
-        graph.check_record_access_with_details = AsyncMock(side_effect=failure)
+        access = InMemoryRecordAccess().fail_with(failure)
+        graph = access.serve(AsyncMock())
         with pytest.raises(HTTPException) as exc:
             await check_record_access_or_503(graph, "user-1", "org-1", "rec-1")
         _assert_outage(exc.value)
         assert exc.value.__cause__ is failure
-        graph.check_record_access_with_details.assert_awaited_once_with("user-1", "org-1", "rec-1")
+        assert access.asked_about == [("user-1", "org-1", "rec-1")]
 
     async def test_no_access_is_none(self) -> None:
-        graph = AsyncMock()
-        graph.check_record_access_with_details = AsyncMock(return_value=None)
+        graph = InMemoryRecordAccess().user("user-1", "org-1").record("rec-1", "org-1").serve(AsyncMock())
         assert await check_record_access_or_503(graph, "user-1", "org-1", "rec-1") is None
 
     async def test_the_details_are_returned_as_read(self) -> None:
-        details = {"record": {"id": "rec-1"}}
-        graph = AsyncMock()
-        graph.check_record_access_with_details = AsyncMock(return_value=details)
-        assert await check_record_access_or_503(graph, "user-1", "org-1", "rec-1") is details
+        graph = InMemoryRecordAccess().readable("user-1", "org-1", "rec-1").serve(AsyncMock())
+        details = await check_record_access_or_503(graph, "user-1", "org-1", "rec-1")
+        assert details is not None and details["record"]["id"] == "rec-1"
 
 
 def _team_request() -> MagicMock:
