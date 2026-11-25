@@ -51,6 +51,7 @@ from app.services.messaging.redis_streams.indexing_consumer import (
 from app.services.resource_governor import Pool
 from app.services.resource_governor.models import ParseTier
 from app.utils import indexing_timing as timing
+from tests.support.settle import settle
 from tests.support.undecodable_json import DEEP, UNDECODABLE
 from tests.unit.services.messaging.governor_test_helpers import make_test_governor
 
@@ -495,20 +496,22 @@ class TestWaitForActiveFutures:
         with consumer._futures_lock:
             consumer._active_futures.update(futures)
 
-        # The waits it asks for, not their wall time: a busy runner could stretch a 0.2 s wait past any small bound.
-        waits: list[tuple[int, float]] = []
+        waits: list[tuple[set, float]] = []
 
-        def recording_wait(fs: list[Future], timeout: float | None = None, **kw: object) -> object:
-            waits.append((len(fs), timeout))
-            return real_wait(fs, timeout=timeout, **kw)
+        def one_wait(fs, timeout=None) -> tuple[set[Future], set[Future]]:
+            waits.append((set(fs), timeout))
+            return set(), set(fs)
 
-        real_wait = indexing_consumer_module.futures_wait
-        with patch.object(
-            type(messaging_env), "shutdown_task_timeout", new_callable=PropertyMock, return_value=0.2,
-        ), patch.object(indexing_consumer_module, "futures_wait", recording_wait):
+        with (
+            patch.object(
+                type(messaging_env), "shutdown_task_timeout", new_callable=PropertyMock, return_value=0.2,
+            ),
+            patch("app.services.messaging.redis_streams.indexing_consumer.futures_wait", one_wait),
+        ):
             consumer._wait_for_active_futures()
 
-        assert waits == [(5, 0.2)]  # one shared 0.2 s window for all five, not one per future
+        assert waits == [(set(futures), 0.2)]
+        assert all(f.cancelled() for f in futures)
 
 
 # ===================================================================
@@ -1009,7 +1012,7 @@ class TestProcessMessageWrapper:
             for i in range(4)
         ]
 
-        await two_handlers_started.wait()
+        await settle(two_handlers_started.wait())
         await asyncio.sleep(0)
 
         assert len(started) == 2
@@ -1074,8 +1077,8 @@ class TestProcessMessageWrapper:
             for i in range(4)
         ]
 
-        await four_started.wait()
-        await two_parsing.wait()
+        await settle(four_started.wait())
+        await settle(two_parsing.wait())
         await asyncio.sleep(0.05)
 
         assert len(started) == 4
@@ -1197,9 +1200,7 @@ class TestProcessMessageWrapper:
                 return_value=0.01,
             ),
         ):
-            # No wall-clock bound: a busy runner stalled this loop 1.5 s with both records admitted (pytest's
-            # --timeout still catches a hang).
-            await two_started.wait()
+            await settle(two_started.wait())
             await asyncio.sleep(0.05)
             assert len(started) == 2
             assert manager.max_active["indexing"] == 2
@@ -1338,7 +1339,7 @@ class TestProcessMessageWrapper:
                 _valid_fields(payload={"recordId": "cancelled-record"}),
             )
         )
-        await entered.wait()
+        await settle(entered.wait())
         processing.cancel()
         with pytest.raises(asyncio.CancelledError):
             await processing

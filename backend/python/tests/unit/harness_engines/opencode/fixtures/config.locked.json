@@ -1,0 +1,53 @@
+{
+  "autoupdate": false,
+  "share": "disabled",
+  "snapshot": false,
+  "formatter": false,
+  "lsp": false,
+  "enabled_providers": ["pipeshub"],
+  "provider": {
+    "pipeshub": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "PipesHub",
+      "options": {
+        "baseURL": "http://127.0.0.1:18801/v1",
+        "apiKey": "{env:PH_MODEL_TOKEN}",
+        "headers": { "X-PipesHub-Run": "{env:PH_RUN_ID}" }
+      },
+      "models": { "fake-model": { "name": "Fake", "tool_call": true, "limit": { "context": 128000, "output": 4096 } } }
+    }
+  },
+  "model": "pipeshub/fake-model",
+  "small_model": "pipeshub/fake-model",
+  "default_agent": "pipeshub",
+  "agent": {
+    "pipeshub": {
+      "mode": "primary",
+      "description": "PipesHub run agent",
+      "prompt": "PIPESHUB-AGENT-PROMPT-MARKER: you are the PipesHub coding engine.",
+      "temperature": 0.1,
+      "steps": 20
+    },
+    "build": { "disable": true },
+    "plan": { "disable": true },
+    "general": { "disable": true },
+    "explore": { "disable": true },
+    "title": { "disable": true }
+  },
+  "permission": {
+    "*": "deny",
+    "pipeshub_*": "allow",
+    "pipeshub_pipeshub_admin": "deny",
+    "skill": { "*": "allow", "customize-opencode": "deny" }
+  },
+  "skills": { "paths": ["{env:PH_SKILLS_DIR}"] },
+  "mcp": {
+    "pipeshub": {
+      "type": "remote",
+      "url": "http://127.0.0.1:18802/mcp",
+      "headers": { "Authorization": "Bearer {env:PH_MCP_TOKEN}" },
+      "oauth": false,
+      "timeout": 600000
+    }
+  }
+}

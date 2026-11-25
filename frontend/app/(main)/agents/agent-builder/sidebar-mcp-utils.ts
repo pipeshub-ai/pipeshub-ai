@@ -41,15 +41,22 @@ export function isMcpTypeIdConflict(
   return Boolean(existingInstanceId && existingInstanceId !== instanceId);
 }
 
+/**
+ * Whether a tool may join an agent: a tool no admin approved cannot (the save
+ * refuses it, `mcp_tool_unapproved`); one changed since approval still can.
+ */
+export const isAttachableMcpTool = (tool: McpToolInfo): boolean => tool.approval?.status !== 'unapproved';
+
 function serverDragFields(entry: McpMyServerEntry): Record<string, string> {
+  const tools = (entry.tools || []).filter(isAttachableMcpTool);
   return {
     instanceId: entry._id,
     name: entry.name,
     displayName: entry.name || entry.typeId || 'MCP Server',
     typeId: entry.typeId || '',
     isAuthenticated: String(Boolean(entry.isAuthenticated)),
-    tools: JSON.stringify((entry.tools || []).map(mcpToolInfoToFlowTool)),
-    toolCount: String((entry.tools || []).length),
+    tools: JSON.stringify(tools.map(mcpToolInfoToFlowTool)),
+    toolCount: String(tools.length),
   };
 }
 
@@ -136,4 +143,17 @@ export function mcpToolInfoToFlowTool(tool: McpToolInfo): McpFlowTool {
     fullName: tool.namespacedName || tool.name,
     description: tool.description || '',
   };
+}
+
+/**
+ * Whether an MCP instance may not join the canvas: another instance of its type, unless tool
+ * ids are instance-scoped (P2.2). The same instance again merges into its node.
+ */
+export function isMcpAttachConflict(
+  typeIdToInstanceId: Map<string, string>,
+  instanceId: string,
+  typeId: string | null | undefined,
+  instanceScoped: boolean
+): boolean {
+  return !instanceScoped && isMcpTypeIdConflict(typeIdToInstanceId, instanceId, typeId);
 }

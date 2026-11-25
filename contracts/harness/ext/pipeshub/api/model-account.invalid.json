@@ -1,0 +1,18 @@
+[
+  {
+    "description": "a key in the answer",
+    "instance": {"id": "openai", "accountRef": {"kind": "user_api_key", "accountId": "users/u1/openai"}, "provider": "openai", "label": null, "last4": "x9Qz", "version": 1, "createdAt": "t", "rotatedAt": "t", "validation": "unvalidated", "apiKey": "sk-secret"}
+  },
+  {
+    "description": "more than the last four characters",
+    "instance": {"id": "openai", "accountRef": {"kind": "user_api_key", "accountId": "users/u1/openai"}, "provider": "openai", "label": null, "last4": "sk-12345", "version": 1, "createdAt": "t", "rotatedAt": "t", "validation": "unvalidated"}
+  },
+  {
+    "description": "an account kind no store holds",
+    "instance": {"id": "openai", "accountRef": {"kind": "org_api_key", "accountId": "x"}, "provider": "openai", "label": null, "last4": "", "version": 1, "createdAt": "t", "rotatedAt": "t", "validation": "unvalidated"}
+  },
+  {
+    "description": "a validation state no check produces",
+    "instance": {"id": "openai", "accountRef": {"kind": "user_api_key", "accountId": "x"}, "provider": "openai", "label": null, "last4": "", "version": 1, "createdAt": "t", "rotatedAt": "t", "validation": "valid"}
+  }
+]

@@ -32,6 +32,26 @@ logger = logging.getLogger(__name__)
 
 WriteSource = Callable[[str], Awaitable[None]]
 
+logger = logging.getLogger(__name__)
+
+# The web app and the Node proxy key off these to offer the original file
+# instead of a broken preview; the message is what a person reads.
+CONVERTER_UNAVAILABLE = "converter_unavailable"
+CONVERSION_FAILED = "conversion_failed"
+CONVERSION_TIMED_OUT = "conversion_timed_out"
+
+
+def _conversion_error(status: HttpStatusCode, reason_code: str, message: str) -> HTTPException:
+    return HTTPException(
+        status_code=status.value,
+        detail={"reasonCode": reason_code, "message": message},
+    )
+
+
+def document_conversion_available() -> bool:
+    """Whether the LibreOffice binary previews convert with is on PATH."""
+    return shutil.which("soffice") is not None
+
 
 def safe_conversion_input(directory: str, extension: str) -> str:
     """Path inside ``directory`` whose name is a random stem plus a safe extension."""
@@ -63,39 +83,57 @@ async def _run_soffice(file_path: str, temp_dir: str, *, timeout: float) -> tupl
     ]
 
     async with libreoffice_convert.conversion_slots.slot():
-        process = await asyncio.create_subprocess_exec(
-            *command,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            start_new_session=True,
-        )
+        try:
+            # Its own process group, so a stop reaches soffice.bin and not only the launcher.
+            process = await asyncio.create_subprocess_exec(
+                *command,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                start_new_session=True,
+            )
+        except FileNotFoundError as error:
+            logger.error(
+                "PDF conversion is unavailable: LibreOffice (soffice) is not installed on this server",
+                exc_info=True,
+            )
+            raise _conversion_error(
+                HttpStatusCode.SERVICE_UNAVAILABLE,
+                CONVERTER_UNAVAILABLE,
+                "Preview isn't available on this server because document conversion is not installed. "
+                "Download the file to open it.",
+            ) from error
+        except Exception as error:
+            logger.error("PDF conversion could not start LibreOffice", exc_info=True)
+            raise _conversion_error(
+                HttpStatusCode.INTERNAL_SERVER_ERROR, CONVERSION_FAILED, "Error converting file to PDF"
+            ) from error
+
         try:
             conversion_output, conversion_error = await asyncio.wait_for(
                 process.communicate(), timeout=timeout
             )
         except asyncio.TimeoutError as error:
             await libreoffice_convert.stop_process(process)
-            raise HTTPException(
-                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                detail="PDF conversion timed out",
+            logger.error("PDF conversion timed out after %ss", timeout)
+            raise _conversion_error(
+                HttpStatusCode.GATEWAY_TIMEOUT, CONVERSION_TIMED_OUT, "PDF conversion timed out"
             ) from error
         except asyncio.CancelledError:
             # The caller removes temp_dir next; soffice must not outlive it.
             await libreoffice_convert.stop_process(process)
             raise
 
-    stderr = (conversion_error or b"").decode("utf-8", errors="replace")
+    stderr = (conversion_error or b"").decode("utf-8", errors="replace").strip()
     # LibreOffice 26 exits 1 for a file it cannot load, earlier releases 0.
     not_loaded = libreoffice_convert.source_not_loaded(stderr) and process.returncode in (0, 1)
     if process.returncode != 0 and not not_loaded:
         logger.error(
-            "LibreOffice PDF conversion failed (exit code %s): %s",
+            "LibreOffice PDF conversion failed (exit code %s): %r",
             process.returncode,
             stderr,
         )
-        raise HTTPException(
-            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-            detail="Failed to convert file to PDF",
+        raise _conversion_error(
+            HttpStatusCode.INTERNAL_SERVER_ERROR, CONVERSION_FAILED, "Failed to convert file to PDF"
         )
 
     if os.path.exists(pdf_path):
@@ -110,10 +148,9 @@ async def _run_soffice(file_path: str, temp_dir: str, *, timeout: float) -> tupl
     # LibreOffice's own output is the only account of what went wrong.
     # %r keeps it on one log line.
     logger.warning(
-        "LibreOffice exited %s and wrote no PDF for a .%s file of %s bytes. stdout: %r stderr: %r",
+        "LibreOffice exited %s and wrote no PDF for a .%s file. stdout: %r stderr: %r",
         process.returncode,
         Path(file_path).suffix.lstrip("."),
-        os.path.getsize(file_path),
         (conversion_output or b"").decode("utf-8", errors="replace"),
         stderr,
     )
@@ -130,45 +167,43 @@ async def libreoffice_to_pdf(
 
     An Office package LibreOffice cannot load is rebuilt and tried once more.
 
-    Raises ``HTTPException``: 422 when LibreOffice cannot load this file but
-    loads a known-good one of its format, otherwise 500 (LibreOffice missing,
-    timed out, or it wrote nothing for another reason). A per-run profile is
+    Raises ``HTTPException`` with a ``{reasonCode, message}`` detail when
+    LibreOffice is missing (503 ``converter_unavailable``), times out (504),
+    cannot load this file but loads a known-good one of its format (422), fails,
+    or writes nothing (500); each is logged with its cause. A per-run profile is
     passed so two conversions do not share the default LibreOffice profile.
     """
-    try:
-        started = time.monotonic()
-        pdf_path, stderr = await _run_soffice(file_path, temp_dir, timeout=timeout)
-        if pdf_path is not None:
-            return pdf_path
+    started = time.monotonic()
+    pdf_path, stderr = await _run_soffice(file_path, temp_dir, timeout=timeout)
+    if pdf_path is not None:
+        return pdf_path
 
-        if libreoffice_convert.source_not_loaded(stderr):
-            source = Path(file_path)
-            rebuilt = source.with_name(f"{uuid4().hex}{source.suffix}")
-            if await asyncio.to_thread(rebuild_package, source, rebuilt):
-                remaining = max(1.0, timeout - (time.monotonic() - started))
-                pdf_path, stderr = await _run_soffice(str(rebuilt), temp_dir, timeout=remaining)
-                if pdf_path is not None:
-                    logger.info("LibreOffice converted the file after its package was rebuilt")
-                    return pdf_path
+    if libreoffice_convert.source_not_loaded(stderr):
+        source = Path(file_path)
+        rebuilt = source.with_name(f"{uuid4().hex}{source.suffix}")
+        # Inflating a package is work too: it counts against the conversion limit.
+        async with libreoffice_convert.conversion_slots.slot():
+            was_rebuilt = await asyncio.to_thread(rebuild_package, source, rebuilt)
+        if was_rebuilt:
+            remaining = max(1.0, timeout - (time.monotonic() - started))
+            pdf_path, stderr = await _run_soffice(str(rebuilt), temp_dir, timeout=remaining)
+            if pdf_path is not None:
+                logger.info("LibreOffice converted the file after its package was rebuilt")
+                return pdf_path
 
-        if libreoffice_convert.source_not_loaded(stderr) and await libreoffice_convert.can_convert_known_good_file(
-            Path(file_path).suffix.lower().lstrip("."), "pdf"
-        ):
-            raise HTTPException(
-                status_code=HttpStatusCode.UNPROCESSABLE_ENTITY.value,
-                detail=FILE_PREVIEW_UNAVAILABLE,
-            )
-        raise HTTPException(
-            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-            detail="PDF conversion failed - output file not found",
+    if libreoffice_convert.source_not_loaded(stderr) and await libreoffice_convert.can_convert_known_good_file(
+        Path(file_path).suffix.lower().lstrip("."), "pdf"
+    ):
+        # The same answer every time, so a 4xx: callers do not retry it.
+        raise _conversion_error(
+            HttpStatusCode.UNPROCESSABLE_ENTITY, CONVERSION_FAILED, FILE_PREVIEW_UNAVAILABLE
         )
-    except HTTPException:
-        raise
-    except Exception as error:
-        raise HTTPException(
-            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-            detail="Error converting file to PDF",
-        ) from error
+    logger.error("PDF conversion failed: soffice wrote no PDF. stderr: %r", stderr)
+    raise _conversion_error(
+        HttpStatusCode.INTERNAL_SERVER_ERROR,
+        CONVERSION_FAILED,
+        "PDF conversion failed - output file not found",
+    )
 
 
 async def stream_file_then_remove(

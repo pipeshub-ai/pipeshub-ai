@@ -40,7 +40,7 @@ function CenteredState({ icon, title, hint, action }: { icon: ReactNode; title: 
         {title}
       </Text>
       {hint && (
-        <Text size="2" style={{ color: 'var(--slate-10)', maxWidth: 360 }}>
+        <Text size="2" style={{ color: 'var(--slate-11)', maxWidth: 360 }}>
           {hint}
         </Text>
       )}
@@ -111,7 +111,7 @@ export function ArtifactsDataTable({
   if (error) {
     return region(
       <CenteredState
-        icon={<MaterialIcon name="cloud_off" size={40} color="var(--slate-9)" />}
+        icon={<MaterialIcon name="cloud_off" size={40} color="var(--slate-11)" />}
         title={error}
         hint={t('artifacts.loadFailedHint')}
         action={
@@ -137,7 +137,7 @@ export function ArtifactsDataTable({
   if (items.length === 0) {
     return region(hasActiveFilters ? (
       <CenteredState
-        icon={<MaterialIcon name="search_off" size={40} color="var(--slate-9)" />}
+        icon={<MaterialIcon name="search_off" size={40} color="var(--slate-11)" />}
         title={t('artifacts.noMatches')}
         hint={t('artifacts.noMatchesHint')}
         action={

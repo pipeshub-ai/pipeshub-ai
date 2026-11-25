@@ -14,7 +14,10 @@ export interface SignInResponse {
   allowedMethods?: AuthMethod[];
   authProviders?: Record<string, Record<string, string>>;
   accessToken?: string;
+  /** Only for a client that did not ask for the cookie (the desktop app). */
   refreshToken?: string;
+  /** `cookie` when the refresh token was set as the HttpOnly session cookie. */
+  session?: 'cookie';
   user?: {
     id: string;
     name?: string;

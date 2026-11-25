@@ -88,6 +88,7 @@ async def test_a_hanging_store_fails_fast_logs_once_and_sends_after_it_recovers(
     env.store.hang = True
     with caplog.at_level(logging.DEBUG):
         for _ in range(3):
+            # wall-clock-ok: the store and publish timeouts are 0.05 s and the hang is forever; 1 s is twenty timeouts
             assert await evaluate(env, r) < 1
     assert env.producer.sent == []
     assert warnings(caplog, "config store unavailable") == 1
@@ -114,6 +115,7 @@ async def test_a_hanging_publish_releases_the_claim_and_rebuilds_the_producer(
     env.producer.hang = True
     with caplog.at_level(logging.DEBUG):
         for _ in range(3):
+            # wall-clock-ok: the store and publish timeouts are 0.05 s and the hang is forever; 1 s is twenty timeouts
             assert await evaluate(env, r) < 1
     assert WARN_KEY not in env.store.values
     assert env.producer.cleaned
@@ -132,6 +134,7 @@ async def test_a_producer_that_never_connects_is_a_failed_send(env: Env) -> None
         raise AssertionError
 
     r = runner(env, hanging_factory)
+    # wall-clock-ok: the publish timeout is 0.05 s and the connect never ends; 1 s is twenty timeouts
     assert await evaluate(env, r) < 1
     assert WARN_KEY not in env.store.values
     assert env.producer.sent == []

@@ -1,0 +1,46 @@
+[
+  {
+    "description": "a built-in names at least one tool",
+    "instance": {
+      "schemaVersion": 1,
+      "description": "x",
+      "builtins": [{"tools": [], "key": "webSearch", "present": "Searching the web", "past": "Searched the web"}],
+      "toolsets": [],
+      "hiddenToolsets": [],
+      "acronyms": []
+    }
+  },
+  {
+    "description": "a toolset prefix is the tool name's lowercase prefix, never a raw id",
+    "instance": {
+      "schemaVersion": 1,
+      "description": "x",
+      "builtins": [],
+      "toolsets": [{"prefix": "pipeshub@github", "name": "GitHub"}],
+      "hiddenToolsets": [],
+      "acronyms": []
+    }
+  },
+  {
+    "description": "an action label is never empty",
+    "instance": {
+      "schemaVersion": 1,
+      "description": "x",
+      "builtins": [{"tools": ["web_search"], "key": "webSearch", "present": "", "past": "Searched the web"}],
+      "toolsets": [],
+      "hiddenToolsets": [],
+      "acronyms": []
+    }
+  },
+  {
+    "description": "a built-in's tool is a bare name, never a source or toolset id",
+    "instance": {
+      "schemaVersion": 1,
+      "description": "x",
+      "builtins": [{"tools": ["pipeshub@web/fetch_url"], "key": "readPage", "present": "Reading a page", "past": "Read a page"}],
+      "toolsets": [],
+      "hiddenToolsets": [],
+      "acronyms": []
+    }
+  }
+]

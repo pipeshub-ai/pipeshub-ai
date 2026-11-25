@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import contextlib
 import io
 import logging
 import shutil
 import warnings
 import zipfile
 from pathlib import Path
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -22,8 +24,13 @@ from app.utils.ooxml_repair import rebuild_package
 from app.utils.pdf_stream_conversion import libreoffice_to_pdf
 from app.utils.user_messages import FILE_PREVIEW_UNAVAILABLE
 
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+
 needs_impress = pytest.mark.skipif(shutil.which("soffice") is None, reason="LibreOffice is not installed on this host")
 
+# The web app falls back to the original file on this reason code.
+UNPREVIEWABLE = {"reasonCode": "conversion_failed", "message": FILE_PREVIEW_UNAVAILABLE}
 NOT_LOADED = b"Error: source file could not be loaded\n"
 
 
@@ -91,7 +98,7 @@ async def test_a_deck_that_cannot_be_rebuilt_is_a_422(tmp_path: Path, caplog: py
     with caplog.at_level(logging.WARNING), pytest.raises(HTTPException) as raised:
         await libreoffice_to_pdf(str(source), str(tmp_path))
 
-    assert (raised.value.status_code, raised.value.detail) == (422, FILE_PREVIEW_UNAVAILABLE)
+    assert (raised.value.status_code, raised.value.detail) == (422, UNPREVIEWABLE)
     assert "source file could not be loaded" in caplog.text
 
 
@@ -147,7 +154,7 @@ async def test_a_file_that_is_not_loaded_is_rebuilt_then_a_422_whatever_the_exit
         pytest.raises(HTTPException) as raised,
     ):
         await libreoffice_to_pdf(str(source), str(tmp_path))
-    assert (raised.value.status_code, raised.value.detail) == (422, FILE_PREVIEW_UNAVAILABLE)
+    assert (raised.value.status_code, raised.value.detail) == (422, UNPREVIEWABLE)
     assert len(ran) == 2
 
 
@@ -239,3 +246,38 @@ def test_the_rebuilt_package_keeps_every_part(tmp_path: Path) -> None:
     before, after = dict(_entries(_deck())), dict(_entries(target.read_bytes()))
     assert before.keys() == after.keys()
     assert all(before[n] == after[n] for n in before if n != "_rels/.rels")
+
+
+def test_a_refusal_logs_nothing_from_the_file(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    source, target = tmp_path / "in.pptx", tmp_path / "out.pptx"
+    content = _zip([("a.txt", b"x"), ("SECRETNAME/../x", b"y")])
+    deck = _zip([(n, b"<SECRETNAME" if n == "_rels/.rels" else d) for n, d in _entries(_deck())])
+    for data in (content, deck):
+        source.write_bytes(data)
+        with caplog.at_level(logging.INFO):
+            assert rebuild_package(source, target) is False
+    assert "not rebuilt" in caplog.text
+    assert "SECRETNAME" not in caplog.text
+
+
+async def test_rebuilding_counts_against_the_conversion_limit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    held: list[str] = []
+
+    class _Slots:
+        @contextlib.asynccontextmanager
+        async def slot(self) -> AsyncIterator[None]:
+            held.append("held")
+            yield
+            held.pop()
+
+    _fake_soffice(monkeypatch, NOT_LOADED)
+    monkeypatch.setattr(pdf_stream_conversion.libreoffice_convert, "conversion_slots", _Slots())
+    during: list[int] = []
+    monkeypatch.setattr(pdf_stream_conversion, "rebuild_package", lambda *_a: bool(during.append(len(held))))
+    source = tmp_path / "deck.bin"
+    source.write_bytes(b"x")
+    with pytest.raises(HTTPException):
+        await libreoffice_to_pdf(str(source), str(tmp_path))
+    assert during == [1]

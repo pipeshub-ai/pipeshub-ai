@@ -163,8 +163,7 @@ jobs:
       - name: Install integration-test dependencies
         working-directory: integration-tests
         run: |
-          uv venv
-          uv pip install -e .
+          uv sync --locked
 
       # Only the app and the stores it depends on: the connector source
       # databases the integration suite also starts would be idle neighbours

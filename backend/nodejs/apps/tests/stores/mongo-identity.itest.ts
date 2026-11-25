@@ -16,6 +16,8 @@ import { MongoGroupRepository } from '../../src/libs/repositories/group/mongo';
 import { MongoActivityRepository } from '../../src/libs/repositories/activity/mongo';
 import { MongoOrgAuthConfigRepository } from '../../src/libs/repositories/org-auth-config/mongo';
 import { MongoResetLinkRepository } from '../../src/libs/repositories/reset-link/mongo';
+import { MongoSessionFamilyRepository } from '../../src/libs/repositories/session-family/mongo';
+import { describeSessionFamilyContract } from './contract/session-family.contract';
 import { MongoPictureRepository } from '../../src/libs/repositories/picture/mongo';
 import { MongoIdentityPort } from '../../src/libs/repositories/identity/mongo';
 import { Users } from '../../src/modules/user_management/schema/users.schema';
@@ -62,6 +64,14 @@ describe('Identity repositories against a real MongoDB', function () {
       await mongo.getConnection().dropDatabase();
       await mongo.destroy();
     }
+  });
+
+  describe('session-family contract', () => {
+    describeSessionFamilyContract({
+      repo: new MongoSessionFamilyRepository(),
+      newOrg: () => new mongoose.Types.ObjectId().toString(),
+      newId: () => randomUUID(),
+    });
   });
 
   describeIdentityContract({

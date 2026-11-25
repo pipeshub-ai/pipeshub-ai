@@ -8,7 +8,6 @@ catch any other distribution that starts writing into litellm/.
 """
 
 import importlib.metadata
-import os
 import re
 import shutil
 import subprocess
@@ -51,9 +50,8 @@ class _FakeDist:
 def test_one_distribution_owns_litellm() -> None:
     owners = litellm_owners()
     assert len(owners) <= 1, (
-        f"{sorted(owners)} all install files into litellm/; keep one (uninstall the others, "
-        f"then reinstall the same litellm: uv pip install --reinstall-package litellm "
-        f"litellm=={importlib.metadata.version('litellm')})"
+        f"{sorted(owners)} all install files into litellm/; keep one: uninstall them and litellm, then install "
+        f"the lock again (requirements/install.sh; CONTRIBUTING.md has the command)"
     )
     if owners:
         assert next(iter(owners)) == "litellm"
@@ -72,11 +70,26 @@ def test_manifest_excludes_the_fork_and_keeps_the_real_package() -> None:
     assert any(d.replace(" ", "").lower().startswith("litellm") for d in data["project"]["dependencies"])
 
 
+# The images and a contributor's venv install from the hashed locks (requirements/install.sh: pip --require-hashes
+# --no-deps), not with uv, so the repair is the lock's own: the fork and litellm leave together (removing the fork
+# deletes files litellm owns too), then the lock installs the locked litellm whole. The locks never hold the fork
+# (PY-LOCK-AGREE refuses an excluded package), so the reinstall cannot bring it back.
+_INSTALL = re.compile(r"requirements/install\.sh (runtime|dev)\b")
+
+
 @pytest.mark.parametrize("path", ["Dockerfile", "deployment/docker-compose/hot-reload/Dockerfile.dev"])
 def test_images_built_over_an_older_base_drop_the_fork(path) -> None:
     text = (REPO_ROOT / path).read_text(encoding="utf-8")
-    uninstall = text.index(f"uv pip uninstall --system {FORK}")
-    assert uninstall < text.index("--reinstall-package litellm -e .")
+    uninstall = text.index(f"pip uninstall -y --disable-pip-version-check {FORK} litellm")
+    install = _INSTALL.search(text)
+    assert install is not None and uninstall < install.start()
+
+
+def test_the_locks_hold_the_real_litellm_and_never_the_fork() -> None:
+    for lock in ("runtime", "dev"):
+        text = (BACKEND_MANIFEST.parent / "requirements" / f"{lock}.lock").read_text(encoding="utf-8")
+        assert re.search(r"^litellm==", text, re.M), lock
+        assert not re.search(rf"^{FORK}==", text, re.M), lock
 
 
 def _bash_repair() -> str:
@@ -86,29 +99,30 @@ def _bash_repair() -> str:
     return block
 
 
-def _run_repair(tmp_path: Path, version_lookup: str) -> list[str]:
-    """Run the documented bash repair with stub python and pip; return the pip calls it made."""
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
-    calls = tmp_path / "pip-calls"
-    (bin_dir / "python").write_text(f"#!/bin/sh\n{version_lookup}\n")
-    (bin_dir / "pip").write_text(f'#!/bin/sh\necho "$*" >> "{calls}"\n')
-    for stub in bin_dir.iterdir():
+def _run_repair(tmp_path: Path, uninstall_exit: int) -> list[str]:
+    """Run the documented bash repair in a stand-in checkout (a stub venv python and install.sh); return their calls."""
+    calls = tmp_path / "calls"
+    (tmp_path / "venv" / "bin").mkdir(parents=True)
+    (tmp_path / "requirements").mkdir()
+    stubs = {
+        tmp_path / "venv" / "bin" / "python": f'#!/bin/sh\necho "python $*" >> "{calls}"\nexit {uninstall_exit}\n',
+        tmp_path / "requirements" / "install.sh": f'#!/bin/sh\necho "install.sh $* PYTHON=$PYTHON" >> "{calls}"\n',
+    }
+    for stub, body in stubs.items():
+        stub.write_text(body)
         stub.chmod(0o755)
-    env = {"PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"}
-    subprocess.run(["bash", "-c", _bash_repair()], env=env, timeout=30, check=False)
+    subprocess.run(["bash", "-c", _bash_repair()], cwd=tmp_path, timeout=30, check=False)
     return calls.read_text().splitlines() if calls.exists() else []
 
 
 @pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
-@pytest.mark.parametrize("version_lookup", ["exit 1", "echo ''"], ids=["lookup-fails", "lookup-empty"])
-def test_bash_repair_touches_nothing_without_a_version(tmp_path, version_lookup) -> None:
-    assert _run_repair(tmp_path, version_lookup) == []
+def test_bash_repair_removes_both_then_installs_the_lock(tmp_path) -> None:
+    assert _run_repair(tmp_path, 0) == [
+        f"python -m pip uninstall -y {FORK} litellm",
+        "install.sh dev --project . --editable PYTHON=venv/bin/python",
+    ]
 
 
 @pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
-def test_bash_repair_reinstalls_the_version_it_read(tmp_path) -> None:
-    assert _run_repair(tmp_path, "echo 1.2.3") == [
-        f"uninstall -y {FORK}",
-        "install --force-reinstall --no-deps litellm==1.2.3",
-    ]
+def test_bash_repair_installs_nothing_when_the_uninstall_fails(tmp_path) -> None:
+    assert _run_repair(tmp_path, 1) == [f"python -m pip uninstall -y {FORK} litellm"]

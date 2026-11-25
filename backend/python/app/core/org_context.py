@@ -17,7 +17,7 @@ import inspect
 import logging
 import os
 import sys
-from collections.abc import Callable, Coroutine, Iterator
+from collections.abc import Callable, Coroutine, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any, Literal
@@ -96,6 +96,25 @@ def current_org_id() -> str:
     org_id = current().org_id
     assert org_id is not None
     return org_id
+
+
+def bound_org_id() -> str | None:
+    """The bound org, or None where none is bound or the scope is cross-org: for a route whose own refusal answers
+    an unbound request (a token with no org), as its read of the claims did."""
+    ctx = _ctx.get()
+    return ctx.org_id if ctx is not None and ctx.kind != "system" else None
+
+
+def org_of(row: Mapping[str, Any] | None) -> str | None:
+    """The org a stored row, document or wire record names (``orgId``, else ``org_id``); None when it names none.
+
+    For a tenancy check of the row against the bound org, never a value to bind from: only an entry point binds."""
+    if not row:
+        return None
+    value = row.get("orgId")
+    if value is None:
+        value = row.get("org_id")
+    return None if value is None else str(value)
 
 
 def set_request_context(ctx: OrgContext) -> None:

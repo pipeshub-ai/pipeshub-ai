@@ -8,10 +8,10 @@ import { useDebouncedSearch } from '@/knowledge-base/hooks/use-debounced-search'
 import { useTranslation } from 'react-i18next';
 import { ServiceGate } from '@/app/components/ui/service-gate';
 import { FilePreviewSidebar } from '@/app/components/file-preview';
+import { effectiveMimeType } from '@/lib/utils/file-icon-utils';
 import {
-  isLegacyWordDocFile,
-  isPresentationFile,
   resolvePreviewMimeAfterStream,
+  streamRecordForPreview,
 } from '@/app/components/file-preview/utils';
 import { KnowledgeBaseApi } from '@/app/(main)/knowledge-base/api';
 import { ShareSidebar } from '@/app/components/share';
@@ -183,22 +183,20 @@ function ArtifactsPageContent() {
     const id = requestId ?? ++previewRequestIdRef.current;
     setPreviewLoading(true);
     setPreviewError(undefined);
-    const mimeType = item.mimeType ?? undefined;
-    const streamAsPdf =
-      isPresentationFile(mimeType, item.name) ||
-      isLegacyWordDocFile(mimeType, item.name);
     try {
-      const blob = await KnowledgeBaseApi.streamRecord(item.artifactId, {
-        version,
-        ...(streamAsPdf ? { convertTo: 'application/pdf' } : {}),
-      });
+      const { blob, asPdf } = await streamRecordForPreview(
+        (options) => KnowledgeBaseApi.streamRecord(item.artifactId, options),
+        item.mimeType ?? undefined,
+        item.name,
+        { version },
+      );
       if (id !== previewRequestIdRef.current) return;
       revokePreviewUrl();
       const url = URL.createObjectURL(blob);
       blobUrlRef.current = url;
       setPreviewUrl(url);
       setPreviewBlob(blob);
-      setPreviewType(resolvePreviewMimeAfterStream(item.mimeType || '', item.name, blob, streamAsPdf));
+      setPreviewType(resolvePreviewMimeAfterStream(item.mimeType || '', item.name, blob, asPdf));
       setPreviewVersion(version ?? item.version);
     } catch {
       if (id !== previewRequestIdRef.current) return;
@@ -378,7 +376,7 @@ function ArtifactsPageContent() {
             style={{ width: '100%' }}
           >
             <TextField.Slot>
-              <MaterialIcon name="search" size={16} color="var(--slate-9)" />
+              <MaterialIcon name="search" size={16} color="var(--slate-11)" />
             </TextField.Slot>
           </TextField.Root>
         </Flex>
@@ -419,6 +417,7 @@ function ArtifactsPageContent() {
             name: previewItem.name,
             url: previewUrl || '',
             type: previewType || previewItem.mimeType || 'application/octet-stream',
+            sourceType: effectiveMimeType(previewItem.name, previewItem.mimeType),
             size: previewItem.sizeInBytes ?? undefined,
             blob: previewBlob,
             version: previewVersion,

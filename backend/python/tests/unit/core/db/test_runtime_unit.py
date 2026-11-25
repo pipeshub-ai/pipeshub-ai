@@ -112,10 +112,26 @@ def test_request_id_is_sanitised() -> None:
         (_pg(asyncpg.AdminShutdownError, "57P01"), ConnectionLost),
         (asyncpg.InterfaceError("connection is closed"), ConnectionLost),
         (ConnectionResetError("reset"), ConnectionLost),
+        # the driver's protocol state after the server or the pooler dropped the connection mid-operation
+        (asyncpg.InternalClientError('cannot switch to state 3; protocol is in the "failed" state'), ConnectionLost),
     ],
 )
 def test_driver_errors_are_typed(exc, kind) -> None:
     assert isinstance(_db().map_error(exc, _tx()), kind)
+
+
+def test_a_broken_protocol_in_the_prologue_is_a_lost_connection_not_a_misconfiguration() -> None:
+    broken = asyncpg.InternalClientError("cannot switch to state 3; another operation (2) is in progress")
+    mapped = _db().map_error(broken, _tx(), prologue=True)
+    assert isinstance(mapped, ConnectionLost) and mapped.retry_safe
+    assert isinstance(_db().map_error(asyncpg.InternalClientError("not connected"), _tx()), ConnectionLost)
+
+
+def test_a_missing_codec_is_not_a_lost_connection() -> None:
+    """The driver raises the same type for a codec it lacks: a bug, which must not be retried as an outage."""
+    codec = asyncpg.InternalClientError("missing codec information for OID 1234")
+    assert _db().map_error(codec, _tx()) is codec
+    assert isinstance(_db().map_error(codec, _tx(), prologue=True), PrologueFailed)
 
 
 def test_unclassified_errors_pass_through_and_timeouts_are_not_connection_loss() -> None:
@@ -832,15 +848,14 @@ def test_an_empty_pooler_setting_means_the_default(monkeypatch) -> None:
 
 
 def test_sql_start_pattern_is_linear_on_unterminated_comment_runs() -> None:
-    import time
-
     from app.core.db import sql_lint
+    from tests.support.cpu_budget import thread_cpu
 
     assert sql_lint._starts_sql("/* tag */ /* more */\n  select 1")
     assert not sql_lint._starts_sql("not sql at all")
-    started = time.monotonic()
-    sql_lint._starts_sql("/*" + "*//*" * 20000 + "x")
-    assert time.monotonic() - started < 5.0
+    with thread_cpu() as cpu:
+        sql_lint._starts_sql("/*" + "*//*" * 20000 + "x")
+    assert cpu.seconds < 5.0  # milliseconds when linear; the bound only has to catch a quadratic scan
 
 
 # ---- Opening a connection fails: no statement exists to record it, so _open stamps it text-hidden itself ------------

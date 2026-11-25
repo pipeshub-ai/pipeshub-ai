@@ -35,6 +35,9 @@ ALLOWED = {
     (LISTING, "record_type"),                                                       # the listing's filter: a connector kg serves only
     ("python/app/services/graph_db/postgres/kg/verify.py", "*"),                    # the verify compares the whole row with the graph: what must see the difference
     ("db/versions/kg/0015_counts.sql", "*"),                                        # the counter trigger takes each changed row whole; its facet keys are read as the line above says
+    # a grant's parent_held and the chain-top rows read the rule: both are read for a connector kg serves only (a row written without its rule takes the connector off the
+    # readers), and the projection that writes the rule again refreshes the marks below it, which the verify compares with the rows
+    ("python/app/services/graph_db/postgres/kg/grant_marks.py", "rule"),
 }
 # (source, tag or start of the statement): statements that name kg.records and that sqlglot does not parse, with the reason they need no reading
 UNPARSED: dict[tuple[str, str], str] = {}
@@ -687,8 +690,9 @@ def test_a_module_s_constants_fill_its_f_strings_and_a_computed_statement_is_nam
 
 
 def test_a_run_of_comments_is_scanned_in_linear_time() -> None:
-    import time
-    t0 = time.perf_counter()
-    assert not _starts_statement("/*" + "*//*" * 5000) and not reads(["/*" + "*//*" * 5000])
-    assert _starts_statement("/* a */ /* b */ SELECT 1") and not _starts_statement("/* never closed SELECT 1")
-    assert time.perf_counter() - t0 < 1.0
+    from tests.support.cpu_budget import thread_cpu
+
+    with thread_cpu() as cpu:
+        assert not _starts_statement("/*" + "*//*" * 5000) and not reads(["/*" + "*//*" * 5000])
+        assert _starts_statement("/* a */ /* b */ SELECT 1") and not _starts_statement("/* never closed SELECT 1")
+    assert cpu.seconds < 1.0

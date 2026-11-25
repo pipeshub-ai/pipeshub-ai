@@ -1,0 +1,225 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/ext/pipeshub/api/job-brief-history.schema.json",
+  "title": "JobBriefHistory",
+  "description": "UI-B5 (UIP2-FU-4, ADR-UI-01 D5): `GET …/conversations/{conversationId}/runs/{runId}/brief/history`: how a job's goal changed since it started, for its conversation's owner only. `startedAs` is the goal its parent gave it; `changes`, oldest first, are the messages added to it, the choices the person made when it asked first, and the jobs the coordinator re-planned it into (a later job that continues it). Access granted is not a change of goal: it is the brief's.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "runId",
+    "startedAs",
+    "changes"
+  ],
+  "properties": {
+    "runId": {
+      "$ref": "../../../core/common.schema.json#/$defs/Id"
+    },
+    "startedAs": {
+      "description": "The goal it started with; null once the conversation's content was erased.",
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 10000
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "changes": {
+      "type": "array",
+      "maxItems": 200,
+      "items": {
+        "anyOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "kind",
+              "at",
+              "text"
+            ],
+            "properties": {
+              "kind": {
+                "const": "message"
+              },
+              "at": {
+                "$ref": "../../../core/common.schema.json#/$defs/UInt"
+              },
+              "text": {
+                "type": "string",
+                "maxLength": 10000
+              }
+            },
+            "description": "A message added to the job while it ran."
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "kind",
+              "at",
+              "decision",
+              "tool",
+              "action",
+              "actionKey"
+            ],
+            "properties": {
+              "kind": {
+                "const": "choice"
+              },
+              "at": {
+                "$ref": "../../../core/common.schema.json#/$defs/UInt"
+              },
+              "decision": {
+                "enum": [
+                  "approved",
+                  "denied"
+                ]
+              },
+              "tool": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512,
+                "description": "The tool it asked to use, as it called it."
+              },
+              "action": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256,
+                "description": "The action in English, the fallback."
+              },
+              "app": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256,
+                "description": "The app in English; absent for a platform tool."
+              },
+              "actionKey": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "name",
+                  "verb",
+                  "app"
+                ],
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 256,
+                    "pattern": "^[a-z0-9][a-z0-9_.-]*$",
+                    "description": "The tool's own name (`send_message`), lower case: the stable key the app words in the reader's language."
+                  },
+                  "verb": {
+                    "description": "Its verb, the name's first word (`send`); null when the name has none.",
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 64,
+                        "pattern": "^[a-z0-9]+$"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "app": {
+                    "description": "The app's machine key (`slack`), from the tool's id; null for a platform tool.",
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 128,
+                        "pattern": "^[a-z0-9][a-z0-9_.-]*$"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "description": "UI-B5 (UIP5-FU-5): the action as stable keys, so the app names it per locale; `action` and `app` stay the English fallback."
+              }
+            },
+            "description": "What the person chose when it asked first."
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "kind",
+              "at",
+              "runId",
+              "goal"
+            ],
+            "properties": {
+              "kind": {
+                "const": "replanned"
+              },
+              "at": {
+                "$ref": "../../../core/common.schema.json#/$defs/UInt"
+              },
+              "runId": {
+                "$ref": "../../../core/common.schema.json#/$defs/Id"
+              },
+              "goal": {
+                "description": "The goal the coordinator gave the job that continues it; null once erased.",
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 10000
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "description": "The coordinator handed its work on to a new job that continues from where it left off."
+          }
+        ]
+      }
+    }
+  },
+  "examples": [
+    {
+      "runId": "run_2",
+      "startedAs": "Fix the failing payment test",
+      "changes": [
+        {
+          "kind": "message",
+          "at": 1762678860000,
+          "text": "Keep the public API unchanged"
+        },
+        {
+          "kind": "choice",
+          "at": 1762678920000,
+          "decision": "approved",
+          "tool": "github__create_pull_request",
+          "action": "Create pull request",
+          "app": "GitHub",
+          "actionKey": {
+            "name": "create_pull_request",
+            "verb": "create",
+            "app": "github"
+          }
+        },
+        {
+          "kind": "replanned",
+          "at": 1762679000000,
+          "runId": "run_3",
+          "goal": "Also cover the refund path"
+        }
+      ]
+    },
+    {
+      "runId": "run_2",
+      "startedAs": null,
+      "changes": []
+    }
+  ]
+}

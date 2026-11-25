@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { DropdownMenu, IconButton, Flex, Text } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { Spinner } from '@/app/components/ui/spinner';
@@ -69,6 +70,7 @@ function isEditableElement(el: Element | null): boolean {
 }
 
 export function ItemActionMenu({ actions, open, onOpenChange, triggerLabel, triggerSize = '1' }: ItemActionMenuProps) {
+  const { t } = useTranslation();
   const visibleActions = actions.filter(Boolean) as MenuAction[];
   // Phones get 44px rows, as the workspace row menus do.
   const isMobile = useIsMobile();
@@ -86,7 +88,7 @@ export function ItemActionMenu({ actions, open, onOpenChange, triggerLabel, trig
           variant="ghost"
           size={triggerSize}
           color="gray"
-          aria-label={triggerLabel}
+          aria-label={triggerLabel ?? t('common.moreOptions')}
           onClick={(e) => e.stopPropagation()}
           style={{
             cursor: 'pointer',
@@ -122,7 +124,7 @@ export function ItemActionMenu({ actions, open, onOpenChange, triggerLabel, trig
         {visibleActions.map((action, i) => {
           const iconColor =
             action.iconColor ||
-            (action.color === 'red' ? 'var(--red-10)' : 'var(--slate-11)');
+            (action.color === 'red' ? 'var(--red-11)' : 'var(--slate-11)');
           const isPending = pendingIndex === i || action.isLoading === true;
           const anyPending = pendingIndex !== null;
           const isBlocked =
@@ -177,7 +179,7 @@ export function ItemActionMenu({ actions, open, onOpenChange, triggerLabel, trig
                       fontWeight: 400,
                       letterSpacing: '0.04px',
                       lineHeight: '16px',
-                      color: action.color === 'red' ? 'var(--red-10)' : 'var(--slate-11)',
+                      color: action.color === 'red' ? 'var(--red-11)' : 'var(--slate-11)',
                     }}
                   >
                     {action.label}

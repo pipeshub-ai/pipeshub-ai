@@ -2,7 +2,7 @@
 
 import React from 'react';
 import { useRouter } from 'next/navigation';
-import { Box, DropdownMenu, Flex, Text, Tooltip } from '@radix-ui/themes';
+import { Badge, Box, DropdownMenu, Flex, Text, Tooltip, VisuallyHidden } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { useChatStore } from '@/chat/store';
@@ -51,6 +51,7 @@ export function AgentChatHeader({
   const title = displayName?.trim() || (readOnly ? t('chat.sharedAgentChat') : t('chat.agentNameLoading'));
   const canEdit = Boolean(access?.canEdit);
   const showViewAgent = Boolean(access?.showViewAgent);
+  const serviceAgent = access?.agentKey === agentId && access.isServiceAccount === true;
   const viewTooltip = showViewAgent
     ? access?.viewAgentTooltipVariant === 'service_account'
       ? t('chat.viewAgentTooltipServiceAccount')
@@ -92,85 +93,95 @@ export function AgentChatHeader({
         pointerEvents: 'auto',
       }}
     >
-      {sharedWithoutAgent ? (
-        <Text size="3" weight="medium" style={{ padding: 'var(--space-1) var(--space-2)', color: 'var(--slate-12)' }}>
-          {title}
-        </Text>
-      ) : (
-      <DropdownMenu.Root>
-        <DropdownMenu.Trigger>
-          <button
-            type="button"
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 2,
-              maxWidth: '100%',
-              margin: 0,
-              padding: 'var(--space-1) var(--space-2)',
-              background: 'transparent',
-              border: 'none',
-              borderRadius: 'var(--radius-2)',
-              cursor: 'pointer',
-              fontFamily: 'var(--default-font-family, Manrope, sans-serif)',
-            }}
-            aria-label={t('chat.agentHeaderMenuAria')}
-          >
-            <span
+      <Flex align="center" gap="2" style={{ minWidth: 0 }}>
+        {sharedWithoutAgent ? (
+          <Text size="3" weight="medium" style={{ padding: 'var(--space-1) var(--space-2)', color: 'var(--slate-12)' }}>
+            {title}
+          </Text>
+        ) : (
+        <DropdownMenu.Root>
+          <DropdownMenu.Trigger>
+            <button
+              type="button"
               style={{
-                fontSize: 15,
-                fontWeight: 500,
-                lineHeight: 'var(--line-height-3)',
-                color: 'var(--slate-12)',
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
-                whiteSpace: 'nowrap',
-                textAlign: 'left',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 2,
+                maxWidth: '100%',
+                margin: 0,
+                padding: 'var(--space-1) var(--space-2)',
+                background: 'transparent',
+                border: 'none',
+                borderRadius: 'var(--radius-2)',
+                cursor: 'pointer',
+                fontFamily: 'var(--default-font-family, Manrope, sans-serif)',
               }}
             >
-              {title}
-            </span>
-            <MaterialIcon name="expand_more" size={22} color="var(--slate-11)" />
-          </button>
-        </DropdownMenu.Trigger>
-        <DropdownMenu.Content align="start" size="2">
-          {isMobile && creatorName && (
-            <>
-              <DropdownMenu.Label>{`${t('agentBuilder.createdBy')}: ${creatorName}`}</DropdownMenu.Label>
-              <DropdownMenu.Separator />
-            </>
-          )}
-          <DropdownMenu.Item onSelect={handleNewAgentChat}>
-            {t('chat.agentMenuNewChat')}
-          </DropdownMenu.Item>
-          <DropdownMenu.Item onSelect={handleAllChats}>
-            {t('chat.agentMenuAllChats')}
-          </DropdownMenu.Item>
-          <DropdownMenu.Item onSelect={handleBrowseAgents}>
-            {t('chat.moreAgents')}
-          </DropdownMenu.Item>
-          {(canEdit || showViewAgent) && <DropdownMenu.Separator />}
-          {canEdit && (
-            <DropdownMenu.Item onSelect={handleOpenBuilder}>
-              <Flex align="center" gap="2">
-                <MaterialIcon name="edit" size={16} color="var(--slate-11)" />
-                <Text size="2">{t('chat.editAgent')}</Text>
-              </Flex>
+              {/* Named by its words, the agent's name first (WCAG 2.5.3); an aria-label would drop the name. */}
+              <span
+                style={{
+                  fontSize: 15,
+                  fontWeight: 500,
+                  lineHeight: 'var(--line-height-3)',
+                  color: 'var(--slate-12)',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                  textAlign: 'left',
+                }}
+              >
+                {title}
+              </span>
+              <VisuallyHidden>{`, ${t('chat.agentHeaderMenuAria')}`}</VisuallyHidden>
+              <MaterialIcon name="expand_more" size={22} color="var(--slate-11)" />
+            </button>
+          </DropdownMenu.Trigger>
+          <DropdownMenu.Content align="start" size="2">
+            {isMobile && creatorName && (
+              <>
+                <DropdownMenu.Label>{`${t('agentBuilder.createdBy')}: ${creatorName}`}</DropdownMenu.Label>
+                <DropdownMenu.Separator />
+              </>
+            )}
+            <DropdownMenu.Item onSelect={handleNewAgentChat}>
+              {t('chat.agentMenuNewChat')}
             </DropdownMenu.Item>
-          )}
-          {showViewAgent && (
-            <DropdownMenu.Item onSelect={handleOpenBuilder}>
-              <Tooltip content={viewTooltip} delayDuration={400}>
-                <Flex align="center" gap="2" style={{ maxWidth: 280 }}>
-                  <MaterialIcon name="visibility" size={16} color="var(--slate-11)" />
-                  <Text size="2">{t('chat.viewAgent')}</Text>
+            <DropdownMenu.Item onSelect={handleAllChats}>
+              {t('chat.agentMenuAllChats')}
+            </DropdownMenu.Item>
+            <DropdownMenu.Item onSelect={handleBrowseAgents}>
+              {t('chat.moreAgents')}
+            </DropdownMenu.Item>
+            {(canEdit || showViewAgent) && <DropdownMenu.Separator />}
+            {canEdit && (
+              <DropdownMenu.Item onSelect={handleOpenBuilder}>
+                <Flex align="center" gap="2">
+                  <MaterialIcon name="edit" size={16} color="var(--slate-11)" />
+                  <Text size="2">{t('chat.editAgent')}</Text>
                 </Flex>
-              </Tooltip>
-            </DropdownMenu.Item>
-          )}
-        </DropdownMenu.Content>
-      </DropdownMenu.Root>
-      )}
+              </DropdownMenu.Item>
+            )}
+            {showViewAgent && (
+              <DropdownMenu.Item onSelect={handleOpenBuilder}>
+                <Tooltip content={viewTooltip} delayDuration={400}>
+                  <Flex align="center" gap="2" style={{ maxWidth: 280 }}>
+                    <MaterialIcon name="visibility" size={16} color="var(--slate-11)" />
+                    <Text size="2">{t('chat.viewAgent')}</Text>
+                  </Flex>
+                </Tooltip>
+              </DropdownMenu.Item>
+            )}
+          </DropdownMenu.Content>
+        </DropdownMenu.Root>
+        )}
+        {serviceAgent && (
+          <Tooltip content={t('agentBuilder.serviceAgentBadgeTooltip')}>
+            <Badge size="1" color="jade" variant="soft" style={{ flexShrink: 0, cursor: 'default', whiteSpace: 'nowrap' }}>
+              {t('agentBuilder.serviceAgentBadge')}
+            </Badge>
+          </Tooltip>
+        )}
+      </Flex>
     </Box>
   );
 }

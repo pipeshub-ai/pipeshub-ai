@@ -15,6 +15,7 @@ import {
   resolveNodeHeaderIconUrl,
 } from '../display-utils';
 import { ThemeableAssetIcon, themeableAssetIconPresets } from '@/app/components/ui/themeable-asset-icon';
+import { skillDisplayName } from '@/chat/utils/tool-display';
 import { NodeHandles } from './node-handles';
 import { AgentCoreNode } from './agent-core-node';
 import { ToolsetFlowNode } from './toolset-flow-node';
@@ -149,7 +150,9 @@ export const FlowNode = React.memo(function FlowNode({
         // Agent node's "Model" chip (agent-core-node.tsx's getModelLabel).
         : NODE_TYPES_WITHOUT_INPUT_HANDLES.LLM_MODELS(data.type)
           ? data.label
-          : normalizeDisplayName(data.label);
+          : data.category === 'skills'
+            ? skillDisplayName(String((data.config as Record<string, unknown> | undefined)?.skillName ?? '').trim() || data.label)
+            : normalizeDisplayName(data.label);
   const icon = data.icon as string | undefined;
   const trimmedIcon = typeof icon === 'string' ? icon.trim() : '';
   const headerIconUrl = resolveNodeHeaderIconUrl(data);

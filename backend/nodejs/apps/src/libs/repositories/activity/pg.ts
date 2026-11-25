@@ -17,6 +17,8 @@ import {
 } from '../pg-util';
 import {
   SESSION_INVALIDATING_ACTIVITIES,
+  USER_ACTIVITY_TYPES,
+  USER_LOGIN_MODES,
   userActivitiesType,
 } from '../../utils/userActivities.utils';
 import type { ActivityDto, ActivityRepository, NewActivity } from './types';
@@ -25,18 +27,8 @@ import { kernelTx } from '../pg';
 import type { Importable, ImportStats, NeutralDoc } from '../import';
 import { importActivityDocs } from './pg-import';
 
-const TYPES: ReadonlySet<string> = new Set(Object.values(userActivitiesType));
-const MODES: ReadonlySet<string> = new Set([
-  'OTP',
-  'PASSWORD',
-  'AUTH SERVICE',
-  'GOOGLE OAUTH',
-  'MICROSOFT OAUTH',
-  'SSO',
-  'AZUREAD OAUTH',
-  'OAUTH',
-  'GITHUB OAUTH',
-]);
+const TYPES: ReadonlySet<string> = new Set(USER_ACTIVITY_TYPES);
+const MODES: ReadonlySet<string> = new Set(USER_LOGIN_MODES);
 
 interface ActivityRow {
   id: string;

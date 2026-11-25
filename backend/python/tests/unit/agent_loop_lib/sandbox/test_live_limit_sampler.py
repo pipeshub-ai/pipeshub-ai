@@ -16,6 +16,7 @@ from app.agent_loop_lib.sandbox.host_reading import LiveMode
 from app.agent_loop_lib.sandbox.live_limit import LiveLimit
 from app.agent_loop_lib.sandbox.live_settings import LiveSettings
 from app.services.resource_governor.shared_slots import LocalTaggedSlots
+from tests.support.settle import settle
 
 from .live_fakes import FakeClock, FakeGovernor, FakeReader, capacity, sample
 
@@ -180,17 +181,24 @@ class TestWaitStamps:
         assert rec is not None and rec.wait_events == 3
         assert rec.last_wait_limit_at == rec.last_wait_mem_at == clock.now
 
-    def test_waiting_never_blocks_on_a_held_lock(self, tmp_path: Path) -> None:
+    def test_waiting_never_blocks_on_a_held_lock(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         clock = FakeClock()
         live = _live(tmp_path, clock, FakeReader())
         live.sample_once()
         holder = _live(tmp_path, clock, FakeReader())
         with holder._ledger.transaction() as txn:
             assert txn is not None
-            started = time.monotonic()
+            budgets: list[float] = []
+            transaction = type(live._ledger).transaction
+
+            def tried(ledger: object, lock_budget: float = 0.020) -> object:
+                budgets.append(lock_budget)
+                return transaction(ledger, lock_budget)  # type: ignore[arg-type]
+
+            monkeypatch.setattr(type(live._ledger), "transaction", tried)
             for _ in range(1000):
                 live.waiting(HoldReason.SLOTS_FULL, 1.0)
-            assert time.monotonic() - started < 0.05
+            assert set(budgets) <= {0.0}  # one try at the held lock each time, never a wait for it
         assert live._ledger.read().wait_events == 0  # type: ignore[union-attr]
         live.waiting(HoldReason.SLOTS_FULL, 1.0)
         assert live._ledger.read().wait_events == 1  # type: ignore[union-attr]
@@ -244,7 +252,8 @@ class TestSamplerTask:
         clock.now += 1.0
         started = time.monotonic()
         assert live.view(fresh=True).limit == 3
-        lease = await asyncio.wait_for(waiter, 1.0)
+        lease = await settle(waiter)
+        # wall-clock-ok: the fresh view wakes the waiter at once; missed, it waits for the 5 s poll; 1 s is a fifth of that
         assert time.monotonic() - started < 1.0
         for held in [*leases, lease]:
             await governor.release(held)

@@ -18,6 +18,8 @@ import {
   resolveMessageBrokerConfig,
   createMessageProducer,
   createMessageConsumer,
+  createBroadcastMessageConsumer,
+  createMessageAdmin,
   createMessageProducerFromConfig,
   createMailMessageConsumer,
   REQUIRED_TOPICS,
@@ -39,6 +41,7 @@ import {
   BaseRedisStreamsProducerConnection,
   BaseRedisStreamsConsumerConnection,
   RedisStreamsAdminService,
+  RedisStreamsBroadcastConsumer,
 } from '../../../src/libs/services/redis-streams.service';
 
 describe('MessageBrokerFactory', () => {
@@ -530,6 +533,42 @@ describe('MessageBrokerFactory', () => {
       const resolved = { type: 'redis' as const, redis: redisConfig };
       const producer = createMessageProducer(resolved, mockLogger as any);
       expect(producer).to.be.instanceOf(BaseRedisStreamsProducerConnection);
+    });
+  });
+
+  describe('createBroadcastMessageConsumer (OPS1-4-12)', () => {
+    it('kafka: a consumer in a group of its own, named by the identity', () => {
+      const consumerSpy = sinon.spy(Kafka.prototype, 'consumer');
+
+      const consumer = createBroadcastMessageConsumer(
+        { type: 'kafka', kafka: kafkaConfig } as never,
+        mockLogger as any,
+        'cp-events-pod-1',
+      );
+
+      expect(consumer).to.be.instanceOf(BaseKafkaConsumerConnection);
+      expect(consumerSpy.firstCall.args[0].groupId).to.equal('cp-events-pod-1');
+    });
+
+    it('redis: the subscriber that holds no consumer group', () => {
+      const consumer = createBroadcastMessageConsumer(
+        { type: 'redis', redis: redisConfig } as never,
+        mockLogger as any,
+        'cp-events-pod-1',
+      );
+
+      expect(consumer).to.be.instanceOf(RedisStreamsBroadcastConsumer);
+    });
+  });
+
+  describe('createMessageAdmin', () => {
+    it('gives the admin of the resolved broker', () => {
+      expect(
+        createMessageAdmin({ type: 'kafka', kafka: kafkaConfig } as never, mockLogger as any),
+      ).to.be.instanceOf(KafkaAdminService);
+      expect(
+        createMessageAdmin({ type: 'redis', redis: redisConfig } as never, mockLogger as any),
+      ).to.be.instanceOf(RedisStreamsAdminService);
     });
   });
 

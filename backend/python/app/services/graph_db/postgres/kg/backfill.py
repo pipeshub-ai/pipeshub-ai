@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from app.core.org_context import OrgContext, bind
-from app.services.graph_db.postgres.kg import modes
+from app.services.graph_db.postgres.kg import grant_marks, modes
 from app.services.graph_db.postgres.kg.drainer import drain_org
 from app.services.graph_db.postgres.kg.locks import NeedLocks, lock_apps
 from app.services.graph_db.postgres.kg.model import CODE_EPOCH, COLL_CODE, Key, _ms, _s
@@ -208,6 +208,7 @@ async def _copied(db: KernelDB, org: str, app_id: str) -> bool:
 # there). It is never copied again.
 FILL_FROM = 7
 TOPS_FROM = 9
+MARKS_FROM = 10
 FILL_STATE = """/* pipeshub:kg.trash_fill_state */ SELECT code_epoch, backfill_cursor, mode, verify_digest, verified_at FROM kg.projection_state WHERE org_id = $1 AND app_sk = $2"""
 # One page of the connector's records in id order, whatever they hold (``has``: a delete time or batch to derive): a page reads at most ``page`` rows, so a large connector with
 # few deleted records never scans past its page under the connector's lock.
@@ -267,7 +268,8 @@ async def _pages(db: KernelDB, org: str, step: Callable[[Tx, Any], Awaitable[Any
 
 # A copy finished by epoch 9 code has pc_top false on every row (kg_0024's default) and nothing else this code derives differently. A record's pc_top is what the copy's own
 # kind-3 links say (no PARENT_CHILD parent that is a record: ``model.record_row`` derives both from the same edges), which that copy holds and its verify compared: a page
-# of the connector's rows is read with that answer and written where it differs, then the copy is relabelled this code's epoch with its mode and its verify. No graph row
+# of the connector's rows is read with that answer and written where it differs, then the copy is relabelled epoch 10 with its mode and its verify (``fill_grant_marks`` takes it
+# on from there). No graph row
 # is read, and the copy is never copied again. A page is a range of the connector's index, each answer one seek of the links by child.
 TOPS_FILL = """/* pipeshub:kg.pc_top_fill */ SELECT r.sk, r.coll, r.id, r.kind, r.pc_top,
     r.kind = 3 AND NOT EXISTS (SELECT 1 FROM kg.links l JOIN kg.records p ON p.org_id = l.org_id AND p.sk = l.parent_sk
@@ -277,7 +279,7 @@ TOPS_FILL = """/* pipeshub:kg.pc_top_fill */ SELECT r.sk, r.coll, r.id, r.kind, 
 
 async def fill_pc_tops(db: KernelDB, org: str, app_id: str, *, page: int = PAGE, after: int = 0, max_pages: int | None = None,
                        stop: asyncio.Event | None = None) -> tuple[str | None, int | None]:
-    """Bring a copy finished by epoch 9 code up to this code's epoch in place, from ``after`` (an sk) for at most ``max_pages`` pages; returns as :func:`fill_trash` does.
+    """Bring a copy finished by epoch 9 code up to epoch 10 in place, from ``after`` (an sk) for at most ``max_pages`` pages; returns as :func:`fill_trash` does.
     Each page holds the connector's lock, as a copy batch does, so the drain never interleaves with it."""
     async def step(tx: Tx, after: int) -> tuple[str, int] | str | None:
         await lock_apps(tx, org, {app_id}, org_wide=False)
@@ -289,6 +291,26 @@ async def fill_pc_tops(db: KernelDB, org: str, app_id: str, *, page: int = PAGE,
         await KgWriter(tx).pc_top_set([(r["sk"], r["coll"], r["id"], r["kind"], r["derived"]) for r in rows if r["pc_top"] != r["derived"]])
         if len(rows) == page:
             return ("next", rows[-1]["sk"])           # the cursor moves only once this unit has committed: a retried unit reads the same page again
+        await KgWriter(tx).projection_set(app_sk, epoch=MARKS_FROM, mode=state["mode"], digest=state["verify_digest"], cursor="done", verified_at=state["verified_at"])
+        return state["mode"]
+    return await _pages(db, org, step, after, max_pages, stop)
+
+
+# A copy finished by epoch 10 code holds every grant with the marks' defaults (kg_0025), which leave nothing out, and nothing else this code derives differently. The marks are
+# functions of the copy's own rows (``grant_marks``): a page of the connector's grants is read with what they should be and written where they differ, then the copy is
+# relabelled this code's epoch with its mode and its verify. No graph row is read, and the copy is never copied again.
+async def fill_grant_marks(db: KernelDB, org: str, app_id: str, *, page: int = PAGE, after: tuple[int, int, str] = (0, 0, ""), max_pages: int | None = None,
+                           stop: asyncio.Event | None = None) -> tuple[str | None, tuple[int, int, str] | None]:
+    """Bring a copy finished by epoch 10 code up to this code's epoch in place, from ``after`` (a grant's key) for at most ``max_pages`` pages; returns as :func:`fill_trash`
+    does. Each page holds the connector's lock, as a copy batch does, so the drain never interleaves with it."""
+    async def step(tx: Tx, after: tuple[int, int, str]) -> tuple[str, tuple[int, int, str]] | str | None:
+        await lock_apps(tx, org, {app_id}, org_wide=False)
+        app_sk = await _app_sk(tx, app_id)
+        state = await tx.fetchrow(FILL_STATE, org, app_sk)
+        if state is None or state["code_epoch"] != MARKS_FROM or state["backfill_cursor"] != "done":
+            return None
+        if (nxt := await grant_marks.fill_page(tx, org, app_sk, after, page)) is not None:
+            return ("next", nxt)                    # the cursor moves only once this unit has committed: a retried unit reads the same page again
         await KgWriter(tx).projection_set(app_sk, epoch=CODE_EPOCH, mode=state["mode"], digest=state["verify_digest"], cursor="done", verified_at=state["verified_at"])
         return state["mode"]
     return await _pages(db, org, step, after, max_pages, stop)

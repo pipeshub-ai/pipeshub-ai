@@ -4,18 +4,20 @@ Shared fixtures for vector DB integration tests.
 These tests require running Docker services:
   docker compose -f tests/integration/compose/vector-db.yml up -d
 
-Run integration tests explicitly:
-  pytest tests/integration/vector_db/ -m integration --timeout=120
+Run integration tests explicitly, naming each backend to use; one whose host
+variable is unset is skipped:
+  QDRANT_HOST=localhost REDIS_VECTOR_HOST=localhost OPENSEARCH_HOST=localhost \\
+    pytest tests/integration/vector_db/ -m integration --timeout=120
 
 Each provider has a dedicated integration module; shared scenarios live in
 ``test_contract_integration.py``.
 
 Environment variables used:
-  REDIS_VECTOR_HOST     (default: localhost)
+  REDIS_VECTOR_HOST     (required for Redis)
   REDIS_VECTOR_PORT     (default: 6399)
-  OPENSEARCH_HOST       (default: localhost)
+  OPENSEARCH_HOST       (required for OpenSearch)
   OPENSEARCH_PORT       (default: 9299)
-  QDRANT_HOST           (default: localhost)
+  QDRANT_HOST           (required for Qdrant)
   QDRANT_PORT           (default: 6334)
   QDRANT_PREFER_GRPC    (default: true; false talks REST to QDRANT_PORT only)
 """
@@ -25,6 +27,7 @@ import os
 import pytest
 
 from app.services.vector_db.models import HealthStatus
+from tests.support import it_backends
 
 # The writers read the epoch of their collection; a test that stands in a mock for the configuration service gets a fixed token.
 from tests.support.mock_config_epoch import (
@@ -71,7 +74,7 @@ async def redis_service():
     from app.services.vector_db.redis.config import RedisVectorConfig
     from app.services.vector_db.redis.redis_vector import RedisVectorService
 
-    host = os.environ.get("REDIS_VECTOR_HOST", "localhost")
+    host = it_backends.endpoint("REDIS_VECTOR_HOST")
     port = int(os.environ.get("REDIS_VECTOR_PORT", "6399"))
     config = RedisVectorConfig(host=host, port=port)
     svc = RedisVectorService(config)
@@ -91,7 +94,7 @@ async def opensearch_service():
     from app.services.vector_db.opensearch.config import OpenSearchConfig
     from app.services.vector_db.opensearch.opensearch import OpenSearchService
 
-    host = os.environ.get("OPENSEARCH_HOST", "localhost")
+    host = it_backends.endpoint("OPENSEARCH_HOST")
     port = int(os.environ.get("OPENSEARCH_PORT", "9299"))
     config = OpenSearchConfig(
         host=host,
@@ -118,7 +121,7 @@ async def qdrant_service():
     from app.services.vector_db.qdrant.config import QdrantConfig
     from app.services.vector_db.qdrant.qdrant import QdrantService
 
-    host = os.environ.get("QDRANT_HOST", "localhost")
+    host = it_backends.endpoint("QDRANT_HOST")
     port = int(os.environ.get("QDRANT_PORT", "6334"))
     # "false" keeps a test container on other ports off whatever else listens on 6334.
     prefer_grpc = os.environ.get("QDRANT_PREFER_GRPC", "true").strip().lower() not in {"0", "false", "no"}

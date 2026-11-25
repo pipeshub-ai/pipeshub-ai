@@ -40,6 +40,7 @@ class TestBusyMutex:
             started = time.monotonic()
             with pytest.raises(TimeoutError):
                 slots.held_by_tag(budget=0.02)
+            # wall-clock-ok: the other holder keeps the mutex for the whole block; 2 s is a hundred times the 20 ms budget
             assert 0.015 <= time.monotonic() - started < 2.0
             with pytest.raises(TimeoutError):
                 slots.held_count(budget=0.0)

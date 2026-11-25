@@ -113,7 +113,8 @@ def rebuild_package(source: Path, target: Path) -> bool:
         _NotRepairableError, zipfile.BadZipFile, zipfile.LargeZipFile, zlib.error, etree.LxmlError,
         OSError, EOFError, ValueError, RuntimeError, NotImplementedError,
     ) as exc:
-        logger.info("Office package not rebuilt (%s: %s)", type(exc).__name__, exc)
+        # Not the message: it can quote the file.
+        logger.info("Office package not rebuilt (%s)", type(exc).__name__)
         target.unlink(missing_ok=True)
         return False
     return True

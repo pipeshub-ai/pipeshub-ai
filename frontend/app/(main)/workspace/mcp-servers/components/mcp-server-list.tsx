@@ -8,7 +8,7 @@ import { LoadingButton } from '@/app/components/ui/loading-button';
 import { SegmentedTabs } from '@/app/components/ui/segmented-tabs';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { asArray } from '@/lib/utils/safe';
-import { McpInheritedBadge } from '@/config';
+import { McpInstanceBadges } from '@/config';
 import {
   McpStatusBadge,
   mcpConnectionState,
@@ -91,7 +91,7 @@ export function McpServerList({ instances, templates, isAdmin, busyInstanceId, o
         }}
       >
         {shown.length === 0 ? (
-          <Text size="2" align="center" style={{ color: 'var(--gray-10)', padding: 'var(--space-5)' }}>
+          <Text size="2" align="center" style={{ color: 'var(--gray-11)', padding: 'var(--space-5)' }}>
             {t('workspace.mcpServers.personal.noneInTab')}
           </Text>
         ) : (
@@ -225,7 +225,7 @@ function McpServerRow({
               {t('workspace.mcpServers.personal.yours')}
             </Badge>
           )}
-          <McpInheritedBadge instance={instance} />
+          <McpInstanceBadges instance={instance} />
         </Flex>
         <Text
           size="1"
@@ -245,7 +245,7 @@ function McpServerRow({
             truncate
             title={instance.toolsError}
             // A slow server still works in chat, so it isn't shown as a failure.
-            style={{ color: state === 'slow' ? 'var(--gray-10)' : 'var(--red-11)' }}
+            style={{ color: state === 'slow' ? 'var(--gray-11)' : 'var(--red-11)' }}
           >
             {instance.toolsError}
           </Text>
@@ -266,7 +266,7 @@ function McpServerRow({
           </Flex>
         </>
       )}
-      <MaterialIcon name="chevron_right" size={20} color="var(--gray-9)" style={{ flexShrink: 0, alignSelf: 'center' }} />
+      <MaterialIcon name="chevron_right" size={20} color="var(--gray-11)" style={{ flexShrink: 0, alignSelf: 'center' }} />
     </Flex>
   );
 }

@@ -4,6 +4,7 @@ import sinon from 'sinon'
 import { xssSanitizationMiddleware } from '../../../src/libs/middlewares/xss-sanitization.middleware'
 import { BadRequestError } from '../../../src/libs/errors/http.errors'
 import { Logger } from '../../../src/libs/services/logger.service'
+import { AGENT_HARNESS_INTERNAL_PREFIX } from '../../../src/modules/agent-harness/transport/internal-routes'
 import { ErrorMiddleware } from '../../../src/libs/middlewares/error.middleware'
 import express from 'express'
 import http from 'http'
@@ -376,6 +377,47 @@ describe('XSS Sanitization Middleware', () => {
 
       expect(next.calledOnce).to.be.true
       expect(next.firstCall.args).to.have.length(0)
+    })
+
+    it('should skip validation for POST and PUT to the worker-only agent-harness routes', () => {
+      for (const method of ['POST', 'PUT']) {
+        const html = '<p>result</p><script>alert(1)</script>'
+        const req = createMockRequest({
+          path: `${AGENT_HARNESS_INTERNAL_PREFIX}/runs/run-1/commit`,
+          method,
+          body: { events: [{ data: { receipt: { body: html } } }] },
+        })
+        const next = createMockNext()
+        xssSanitizationMiddleware(req, createMockResponse(), next)
+        expect(next.calledOnce).to.be.true
+        expect(next.firstCall.args).to.have.length(0)
+        expect(req.body.events[0].data.receipt.body).to.equal(html)
+      }
+    })
+
+    it('should still validate the browser-facing agent-harness routes and look-alike prefixes', () => {
+      for (const path of [
+        '/api/v1/agent-harness/sessions/s-1/runs',
+        `${AGENT_HARNESS_INTERNAL_PREFIX}x/runs/run-1/commit`,
+        AGENT_HARNESS_INTERNAL_PREFIX,
+      ]) {
+        const req = createMockRequest({ path, method: 'POST', body: { text: '<script>alert(1)</script>' } })
+        const next = createMockNext()
+        xssSanitizationMiddleware(req, createMockResponse(), next)
+        expect(next.calledOnce, path).to.be.true
+        expect(next.firstCall.args[0], path).to.be.instanceOf(BadRequestError)
+      }
+    })
+
+    it('should still validate query strings on the worker-only routes (GET)', () => {
+      const req = createMockRequest({
+        path: `${AGENT_HARNESS_INTERNAL_PREFIX}/runs/run-1/content`,
+        method: 'GET',
+        query: { ref: '<script>alert(1)</script>' },
+      })
+      const next = createMockNext()
+      xssSanitizationMiddleware(req, createMockResponse(), next)
+      expect(next.firstCall.args[0]).to.be.instanceOf(BadRequestError)
     })
 
     it('passes an API toolset spec and credentials through unchanged', () => {
@@ -1043,6 +1085,15 @@ describe('XSS Sanitization Middleware', () => {
 
       expect(status).to.equal(200)
       expect(body.received.params.arguments.query).to.equal(question)
+    })
+
+    it("R36-COVER: a schedule's prompt reaches its runs as typed (a < b, code with <<); its other fields are still checked", async () => {
+      const prompt = 'flag rows where a < b\nb.append(x * (64 << 20)) and cite [Summary of <id>]'
+      const made = await post('/api/v1/agent-harness/schedules', { name: 'nightly', input: { query: prompt } })
+      expect(made.status).to.equal(200)
+      expect(made.body.received.input.query).to.equal(prompt)
+      const named = await post('/api/v1/agent-harness/schedules', { name: '<b>nightly</b>', input: { query: 'q' } })
+      expect(named.status).to.equal(400)
     })
 
     it('accepts <id> in the query of POST /api/v1/search, which MCP search calls, unchanged', async () => {

@@ -1,7 +1,7 @@
 # Multi-stage Dockerfile for all services
 
 # Stage 1: Build
-FROM node:24 AS builder
+FROM node:24@sha256:9d266751ca3d7fdbe651c878ffd5ad0a42fed49a18c283509267c97f025b7496 AS builder
 
 # Set working directory for the build
 WORKDIR /build
@@ -12,25 +12,11 @@ RUN apt-get update && apt-get install -y iputils-ping telnet traceroute dnsutils
 # Prepare and build storage-backend
 COPY package*.json ./
 COPY tsconfig.json ./
-# Set up architecture detection and conditional handling
-RUN set -e; \
-    # Detect architecture
-    ARCH=$(uname -m); \
-    echo "Building for architecture: $ARCH"; \
-    # Common configuration for all platforms
-    npm config set legacy-peer-deps true; \
-    # Platform-specific handling
-    if [ "$ARCH" = "arm64" ] || [ "$ARCH" = "aarch64" ]; then \
-        echo "Detected ARM architecture (M1/Apple Silicon)"; \
-        # ARM-specific handling: Skip problematic binary or use alternative
-        npm install --prefix ./ --ignore-scripts && \
-        npm uninstall jpeg-recompress-bin --prefix ./ || true && \
-        npm install imagemin-mozjpeg --prefix ./ --save; \
-    else \
-        echo "Detected x86 architecture"; \
-        # Standard install for x86 platforms
-        apt-get install -y libc6-dev-i386; npm install --prefix ./; \
-    fi
+# No install scripts on any architecture: the lock ships every native part prebuilt (sharp, msgpackr-extract),
+# and what the scripts would add is telemetry (@scarf/scarf), a bun binary nothing runs, or a version notice
+# (contracts/supply-chain/install-scripts.json). An allowlisted `npm rebuild` would run here if one were needed.
+RUN npm config set legacy-peer-deps true && \
+    npm ci --prefix ./ --ignore-scripts
 COPY src ./src
 RUN npm run build --prefix ./
 # tsc does not emit .hbs, and emailTemplates.ts reads them from ${process.cwd()}/src
@@ -38,12 +24,18 @@ RUN npm run build --prefix ./
 RUN mkdir -p /build/templates && cd src && find . -name '*.hbs' -exec cp --parents {} /build/templates/ \;
 
 # Stage 2: Runtime
-FROM node:24
+FROM node:24@sha256:9d266751ca3d7fdbe651c878ffd5ad0a42fed49a18c283509267c97f025b7496
 
 # Install essential networking tools and SSH server
 RUN apt-get update && apt-get install -y \
     iputils-ping telnet traceroute dnsutils net-tools curl wget \
-    openssh-server && npm install -g pm2
+    openssh-server
+
+# pm2 from its committed lock (integrity-checked by npm ci), not the registry's latest
+COPY docker/pm2/package.json docker/pm2/package-lock.json /opt/pm2/
+RUN npm ci --prefix /opt/pm2 --omit=dev --ignore-scripts --no-audit --no-fund && \
+    ln -s /opt/pm2/node_modules/.bin/pm2 /usr/local/bin/pm2 && \
+    npm cache clean --force
 
 # Set working directory for the runtime
 WORKDIR /app

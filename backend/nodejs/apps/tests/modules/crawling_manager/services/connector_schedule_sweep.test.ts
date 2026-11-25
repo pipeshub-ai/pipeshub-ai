@@ -63,8 +63,8 @@ describe('ConnectorScheduleSweepService', () => {
 
     expect(summary.repaired).to.equal(1)
     const [schedule] = schedulesFor('c1')
-    expect(schedule.every).to.equal(String(DAY * 60_000))
-    const run = store.pending().find((j) => j.opts.repeatJobKey === schedule.key)
+    expect(schedule!.every).to.equal(String(DAY * 60_000))
+    const run = store.pending().find((j) => j.opts.repeatJobKey === schedule!.key)
     expect(run?.data.orgId).to.equal('org-b')
   })
 
@@ -293,7 +293,7 @@ describe('ConnectorScheduleSweepService', () => {
     await seed(record('c1'))
     const [matching] = schedulesFor('c1')
     store.repeatables.set('stale-key', {
-      ...matching,
+      ...matching!,
       key: 'stale-key',
       every: String(5 * 60_000),
     })
@@ -302,7 +302,7 @@ describe('ConnectorScheduleSweepService', () => {
     const summary = await sweeper.sweep()
 
     expect(summary.driftFixed).to.equal(1)
-    expect(schedulesFor('c1').map((r) => r.key)).to.deep.equal([matching.key])
+    expect(schedulesFor('c1').map((r) => r.key)).to.deep.equal([matching!.key])
   })
 
   it('keeps the schedule of a listed connector that fails before its job name is built', async () => {

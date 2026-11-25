@@ -382,7 +382,7 @@ describe('knowledge_base/validators/validators', () => {
       const result = createFolderSchema.safeParse(data);
       expect(result.success).to.be.false;
       if (!result.success) {
-        expect(result.error.issues[0].message).to.equal(
+        expect(result.error.issues[0]!.message).to.equal(
           'To create a subfolder, use the subfolder route.',
         );
       }
@@ -400,7 +400,7 @@ describe('knowledge_base/validators/validators', () => {
       const result = createFolderSchema.safeParse(data);
       expect(result.success).to.be.false;
       if (!result.success) {
-        expect(result.error.issues[0].message).to.equal(
+        expect(result.error.issues[0]!.message).to.equal(
           'To create a subfolder, use the subfolder route.',
         );
       }
@@ -418,7 +418,7 @@ describe('knowledge_base/validators/validators', () => {
       const result = createFolderSchema.safeParse(data);
       expect(result.success).to.be.false;
       if (!result.success) {
-        expect(result.error.issues[0].message).to.equal(
+        expect(result.error.issues[0]!.message).to.equal(
           'To create a subfolder, use the subfolder route.',
         );
       }
@@ -433,7 +433,7 @@ describe('knowledge_base/validators/validators', () => {
       const result = createFolderSchema.safeParse(data);
       expect(result.success).to.be.false;
       if (!result.success) {
-        expect(result.error.issues[0].message).to.equal(
+        expect(result.error.issues[0]!.message).to.equal(
           'To create a subfolder, use the subfolder route.',
         );
       }
@@ -448,7 +448,7 @@ describe('knowledge_base/validators/validators', () => {
       const result = createFolderSchema.safeParse(data);
       expect(result.success).to.be.false;
       if (!result.success) {
-        expect(result.error.issues[0].message).to.equal(
+        expect(result.error.issues[0]!.message).to.equal(
           'To create a subfolder, use the subfolder route.',
         );
       }
