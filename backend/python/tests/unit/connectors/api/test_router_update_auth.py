@@ -22,6 +22,7 @@ from app.config.constants.http_status_code import HttpStatusCode
 from app.config.redaction import REDACTED_PLACEHOLDER
 from app.connectors.api.router import (
     _ensure_connector_initialized,
+    _OAuthAppSave,
     _require_auth_is_object,
     update_connector_instance_auth_config,
 )
@@ -288,7 +289,8 @@ class TestAdminOAuthUpdatesExistingConfigFound:
         graph_provider.get_document = AsyncMock(return_value={"scope": "personal"})
 
         with (
-            patch(_PATCH_VALIDATE, new_callable=AsyncMock, return_value=_base_instance()),
+            # A team connector: an admin changes an org app only there.
+            patch(_PATCH_VALIDATE, new_callable=AsyncMock, return_value=_base_instance(scope="team")),
             patch(_PATCH_OAUTH_FIELDS, return_value=["clientId", "clientSecret"]),
             patch(_PATCH_NAME_CONFLICT) as mock_conflict,
             patch(
@@ -607,7 +609,7 @@ class TestOAuthMetadataRedirectUriNoBaseUrl:
 
 
 class TestConnectorScopeMissing:
-    """9. Connector scope missing -> fetches from graph_provider."""
+    """9. The connector instance carries no scope -> fetches it from graph_provider."""
 
     async def test_fetches_scope_from_graph_when_missing(self):
         # Instance config has no connectorScope
@@ -633,7 +635,7 @@ class TestConnectorScopeMissing:
         )
 
         with (
-            patch(_PATCH_VALIDATE, new_callable=AsyncMock, return_value=_base_instance()),
+            patch(_PATCH_VALIDATE, new_callable=AsyncMock, return_value=_base_instance(scope=None)),
             patch(_PATCH_OAUTH_FIELDS, return_value=["clientId", "clientSecret"]),
             patch(_PATCH_TIMESTAMP, return_value=1234567890),
         ):
@@ -909,7 +911,8 @@ class TestAdminOAuthUpdateExistingChangeName:
         graph_provider.get_document = AsyncMock(return_value={"scope": "personal"})
 
         with (
-            patch(_PATCH_VALIDATE, new_callable=AsyncMock, return_value=_base_instance()),
+            # A team connector: an admin changes an org app only there.
+            patch(_PATCH_VALIDATE, new_callable=AsyncMock, return_value=_base_instance(scope="team")),
             patch(_PATCH_OAUTH_FIELDS, return_value=["clientId", "clientSecret"]),
             patch(_PATCH_NAME_CONFLICT) as mock_conflict,
             patch(
@@ -1102,7 +1105,7 @@ class TestOAuthFieldFilteringKeepsMetadataFields:
             },
             "baseUrl": "https://app.example.com",
         }
-        # Use non-admin to skip admin OAuth creation path and test only filtering
+        # Only the filtering is under test: the OAuth app write is stubbed to keep the link.
         request = _make_request(
             body=body,
             container=container,
@@ -1118,6 +1121,7 @@ class TestOAuthFieldFilteringKeepsMetadataFields:
             patch(_PATCH_SECRET_OAUTH_FIELDS, return_value={"clientSecret"}),
             patch(_PATCH_TIMESTAMP, return_value=1234567890),
             patch(f"{_ROUTER}.resolve_oauth_config", AsyncMock(return_value=linked_app)),
+            patch(f"{_ROUTER}._handle_oauth_config_creation", AsyncMock(return_value=_OAuthAppSave("oauth-1", written=True))),
         ):
             result = await update_connector_instance_auth_config(
                 "conn1", request, graph_provider

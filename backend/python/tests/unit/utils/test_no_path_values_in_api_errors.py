@@ -57,6 +57,9 @@ def _interpolated(node: ast.AST) -> set[str]:
 
 
 def quoted_path_values(source: str) -> list[str]:
+    # Parsing the whole app is slow; a file that never names the exception has nothing to find.
+    if "HTTPException" not in source:
+        return []
     found = []
     for fn in ast.walk(ast.parse(source)):
         if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)) or not (params := _path_params(fn)):

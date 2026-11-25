@@ -978,9 +978,7 @@ class TestDeleteAgentServiceAccountCleanup:
         with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
              patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}), \
              patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"_key": "uk1"}), \
-             patch.dict("sys.modules", {
-                 "app.connectors.core.base.token_service.startup_service": MagicMock(startup_service=mock_startup),
-             }):
+             patch("app.connectors.core.base.token_service.startup_service.startup_service", mock_startup):
             result = await delete_agent(request, "a1")
 
         assert result.status_code == 200

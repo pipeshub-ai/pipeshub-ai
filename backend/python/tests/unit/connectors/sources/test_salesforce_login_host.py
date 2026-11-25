@@ -21,7 +21,7 @@ from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.api.router import (
     _build_oauth_flow_config,
     _create_or_update_oauth_config,
-    _validate_admin_oauth_config_before_creation,
+    _validate_oauth_app_before_creation,
     create_oauth_config,
     update_oauth_config,
 )
@@ -278,14 +278,17 @@ class TestSavingRefusesANonSalesforceHost:
 
     async def test_creating_a_connector_is_refused_before_the_instance_exists(self) -> None:
         with pytest.raises(HTTPException) as refused:
-            await _validate_admin_oauth_config_before_creation(
-                connector_type="SALESFORCE",
-                config={"auth": {"clientId": "c", "clientSecret": "s", "loginUrl": "https://evil.example"}},
-                oauth_config_id=None,
-                instance_name="Salesforce",
-                org_id="org-1",
+            await _validate_oauth_app_before_creation(
+                "SALESFORCE",
+                {"auth": {"clientId": "c", "clientSecret": "s", "loginUrl": "https://evil.example"}},
+                None,
+                "Salesforce",
+                "user-1",
+                "org-1",
+                is_admin=True,
+                connector_scope="team",
                 config_service=AsyncMock(),
-                logger=logging.getLogger("test"),
+                container=None,
             )
         assert refused.value.status_code == HttpStatusCode.BAD_REQUEST.value
 
