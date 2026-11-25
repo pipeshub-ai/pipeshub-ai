@@ -1,0 +1,25 @@
+{
+  "about": "QAFINAL-FU-VOL: what a list page may cost at hundreds of items, written down before the first measurement (R30-LAT, 2026-11-12) and held by perf/volume-*.perf.spec.ts with every API served by the spec (no stack, no model). A page is loaded twice, with `small` items and with `large`; `extraRequests` is how many more API requests the large load may make than the small one (0: no request per item, the list's first page only), and `readyMs` is navigation to the page's data drawn at `large` items. SLO.md, 'Volume (QAFINAL-FU-VOL)', states the same numbers and why.",
+  "grounds": {
+    "extraRequests": "A list page asks for one page of its list and names what it holds in that answer or one batched lookup: no request per row (an N+1 fails at any N).",
+    "readyMs": "EV-15: a conversation of 10,000 steps is usable within 2 s of navigation (perf/chat-large-run.perf.spec.ts); a list of hundreds is held to the same 2 s."
+  },
+  "pages": {
+    "agents-sidebar": { "title": "The chat sidebar's agents (My agents, its first page) with the org's agents", "small": 3, "large": 500, "extraRequests": 0, "readyMs": 2000 },
+    "builder-grants": { "title": "The agent builder of an agent holding many tool and knowledge grants", "small": 2, "large": 200, "extraRequests": 0, "readyMs": 2000 },
+    "jobs": { "title": "Jobs (view=all) with the person's jobs", "small": 3, "large": 500, "extraRequests": 0, "readyMs": 2000 },
+    "needs-you": { "title": "Needs you with the waiting items", "small": 3, "large": 300, "extraRequests": 0, "readyMs": 2000 },
+    "schedules": { "title": "Schedules (mine) over many agents, each pinned to a version", "small": 3, "large": 300, "extraRequests": 0, "readyMs": 2000 },
+    "ai-access": { "title": "AI access with many access rules naming groups", "small": 2, "large": 100, "extraRequests": 0, "readyMs": 2000 },
+    "builder-catalogs": { "title": "The agent builder of a new agent in an org with many collections, connected apps and actions (R30-LAT-FU-1, written 2026-11-12 before its first measurement)", "small": 3, "large": 500, "extraRequests": 0, "readyMs": 2000 }
+  },
+  "stores": {
+    "person-handover": { "title": "A person's deletion request over their conversations (handOverUser), MongoDB commands", "small": 4, "large": 250, "extraCommands": 0 },
+    "conversation-erase": { "title": "Erasing one conversation's documents (messages with citations), MongoDB commands", "small": 3, "large": 3000, "extraCommandsPer1000": 2 },
+    "key-rotation": { "title": "A whole rotate (survey, apply, survey) over many records: reads per record per pass and writes per moved record", "readsPerRecordPerPass": 1, "writesPerMovedRecord": 1 },
+    "sync-point-rekey": { "title": "Sync point rekey over many points: page reads per org and writes per stale point", "pageReadsPerOrg": "ceil(points / 500) + 1", "writesPerStalePoint": 1 },
+    "session-erasure-job": { "title": "One session's erasure job run start to end over its ended runs, each stored by an older build with the caller's key (R30-LAT-FU-2): reads of the session's runs per pass, and store commands as the runs grow", "small": 2, "large": 1000, "runReadsPerPass": 2, "extraCommandsPer1000": 2 },
+    "org-sessions-page": { "title": "An org deletion listing its sessions a page at a time (sessionsAfter) over sessions named only by their runs, counters and keys (R30-LAT-FU-2): session ids the store sends per page", "sessions": 1500, "limit": 500, "idsPerPagePerSource": 500 },
+    "abandoned-forks": { "title": "The retention sweep erasing one org's abandoned forks (R30-LAT-FU-2): store commands as the forks grow", "small": 2, "large": 150, "extraCommands": 0 }
+  }
+}

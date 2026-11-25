@@ -390,6 +390,7 @@ async def test_a_slow_redis_does_not_serialise_a_renewal_round() -> None:
     loop = asyncio.get_running_loop()
     started = loop.time()
     assert await renewer.renew_once(_SlowRenewals(0.1)) == 40  # type: ignore[arg-type]
+    # wall-clock-ok: 40 renewals of 0.1 s at concurrency 16 take about 0.3 s; one after another they take 4 s
     assert loop.time() - started < 1.0
 
 
@@ -403,6 +404,7 @@ async def test_a_round_ends_at_its_deadline_and_keeps_the_leases_it_did_not_reac
     loop = asyncio.get_running_loop()
     started = loop.time()
     assert await renewer.renew_once(slow) == 1  # type: ignore[arg-type]
+    # wall-clock-ok: a hang guard: the stuck renewal never answers, the renewer must not wait for it
     assert loop.time() - started < 1.0
     assert slow.renewed == ["fast"]
     assert renewer.held == 2, "a lease the round did not reach is renewed next round, not dropped"

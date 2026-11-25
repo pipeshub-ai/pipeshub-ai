@@ -65,6 +65,14 @@ _TOO_LONG_TO_SEND_BACK = ContextBudget.for_model(None).effective_max_tokens * 4
 _BLOCK = "lorem ipsum " * 100
 
 
+@pytest.fixture(autouse=True)
+def _character_cap_alone(monkeypatch: pytest.MonkeyPatch) -> None:
+    """These runaways repeat one fragment, which P4.17's repetition cut stops long before the character cap;
+    this file tests the cap, the backstop for a provider with no output limit. The cut has its own tests
+    (``tests/unit/harness_core/models/test_output_bound.py``)."""
+    monkeypatch.setenv("HARNESS_MODEL_OUTPUT_LIMIT", "0")
+
+
 def _endless_arguments(index: int = 0) -> "Iterator[StreamEvent]":
     return (ToolCallDeltaEvent(index=index, arguments_delta=_FRAGMENT) for _ in itertools.count())
 
@@ -95,6 +103,8 @@ class _Streams(ScriptedTransport):
         thinking_budget: int | None = None,
         effort: str | None = None,
         system_blocks: list[str] | None = None,
+        *,
+        tool_choice: object = None,
     ) -> "AsyncIterator[StreamEvent]":
         self.calls.append({"messages": list(messages)})
         try:
@@ -336,6 +346,39 @@ class TestConfiguration:
         assert direct_arm.count("with_output_cap(") == 2
         assert langchain_arm.count("output_cap, context_window=configured_window)") == 1
         assert direct_arm.count("output_cap, context_window=configured_window)") == 2
+
+    @pytest.mark.parametrize("direct", [True, False], ids=["direct", "langchain"])
+    async def test_a_durable_runs_transport_is_capped_by_its_models_window(
+        self, monkeypatch: pytest.MonkeyPatch, direct: bool,
+    ) -> None:
+        """SYNC3: the durable run's model (`resolved_model`) gets the same cap, sized by the configured window."""
+        from types import SimpleNamespace
+
+        import app.agents.agent_loop.direct_transport as direct_module
+        import app.agents.agent_loop.langchain_transport as langchain_module
+        from app.harness.assembly.model import resolved_model
+
+        inner = _Streams(itertools.chain(
+            [ToolCallDeltaEvent(index=0, id="call_1", name="final_answer", arguments_delta="")],
+            _endless_arguments(),
+        ))
+        monkeypatch.setenv(MAX_TURN_OUTPUT_CHARS_ENV_VAR, "1000")
+        monkeypatch.setattr(factory, "_transport_provider", lambda: factory.DIRECT_TRANSPORT if direct else "langchain")
+        monkeypatch.setattr(direct_module, "build_direct_transport", lambda *a, **k: inner)
+        monkeypatch.setattr(langchain_module, "LangChainTransport", lambda *a, **k: inner)
+        run = SimpleNamespace(
+            model=SimpleNamespace(provider="openAI", model="gpt-x", model_name="gpt-x", model_key="m-1"),
+            org_id="org-1", session_id="ses-1",
+        )
+
+        model = resolved_model(run, None, {"contextLength": "250000"})  # type: ignore[arg-type]
+
+        assert isinstance(model.transport, OutputCappedTransport)
+        assert model.transport._context_window == 250_000  # pyright: ignore[reportPrivateUsage]
+        final = (await _events(model.transport))[-1]
+        assert isinstance(final, StreamCompleteEvent)
+        assert final.response.message.truncated is True
+        assert inner.closed == 1
 
 
 class _EndlessModel:

@@ -60,10 +60,10 @@ from tests.integration.graph_db.record_diagnostics_support import (
 )
 from tests.integration.real_graph import (
     ARANGO_PASSWORD,
-    ARANGO_URL,
     backend_unavailable,
     connect_arango,
 )
+from tests.support import it_backends
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -172,7 +172,7 @@ async def test_without_the_guard_the_same_write_fails_for_good(cluster: Cluster)
     """The control: a client with no guard (an image older than the hook) is refused, and stays refused."""
     [key] = await cluster.tainted(1)
     await cluster.narrow()
-    bare = ArangoHTTPClient(ARANGO_URL, "root", ARANGO_PASSWORD, cluster.client.database, logger)
+    bare = ArangoHTTPClient(it_backends.endpoint("ARANGO_IT_URL"), "root", ARANGO_PASSWORD, cluster.client.database, logger)
     try:
         with pytest.raises(Exception, match="1620"):
             await bare.update_document(RECORDS, key, {"indexingStatus": "QUEUED"})
@@ -358,7 +358,7 @@ async def test_an_image_without_the_guard_fails_for_at_most_one_poll_interval(cl
     [key] = await cluster.tainted(1)
     await cluster.narrow()
     cluster.provider.start_record_schema_poll(interval=10.0)
-    bare = ArangoHTTPClient(ARANGO_URL, "root", ARANGO_PASSWORD, cluster.client.database, logger)
+    bare = ArangoHTTPClient(it_backends.endpoint("ARANGO_IT_URL"), "root", ARANGO_PASSWORD, cluster.client.database, logger)
     started = time.monotonic()
     try:
         while True:

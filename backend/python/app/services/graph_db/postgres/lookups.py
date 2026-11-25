@@ -31,6 +31,7 @@ from app.services.graph_db.common.utils import (
     record_status_field,
 )
 from app.services.graph_db.interface.graph_db_provider import REF_LINKS_PER_DOC
+from app.services.graph_db.postgres import connector_stats
 from app.services.graph_db.postgres.base import (
     _LINK_COLLS,
     _VALIDATOR,
@@ -1021,7 +1022,12 @@ class LookupsMixin(PgBase):
             app = await self._one("/* pipeshub:graph.get_connector_stats_app */ SELECT doc FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = 'apps' AND n.id = $2",
                                   org, connector_id, transaction=transaction)
             is_kb = bool(app) and app.get("type") == Connectors.KNOWLEDGE_BASE.value
-            rows = [] if org_id != org else await self._lrows(STATS_KB if is_kb else STATS_CONNECTOR, org, connector_id, FOLDER_MIME_TYPES, transaction=transaction)
+            rows = []
+            if org_id == org:
+                # the kept counts, in one snapshot (a caller's transaction reads statement by statement, so it walks); None: the walk answers
+                kept = None if transaction else await self._q(lambda tx: connector_stats.read(tx, org, connector_id), None, isolation="repeatable_read")
+                rows = kept if kept is not None else await self._lrows(STATS_KB if is_kb else STATS_CONNECTOR, org, connector_id, FOLDER_MIME_TYPES,
+                                                                       transaction=transaction)
             result = build_connector_stats_response([dict(r) for r in rows], statuses, org_id, connector_id, origin="COLLECTION" if is_kb else "CONNECTOR")
             return {"success": True, "data": result}
         except Exception as e:

@@ -1,0 +1,2688 @@
+{
+  "description": "Pin-replay determinism (CPD-5, CPD5-23): the release layer (RELEASE_DEFAULTS) then `layers` resolve to an EffectiveRunConfig whose digest is `configDigest`; with `pin`'s members and schemaVersion 1 the ResolvedRunConfig's digest is `digest` (canonical JSON of every member but digest). Node's PolicyRunConfigPinner and Python's pinning module give these answers; member order never changes them. A case with `parent` is a child's pin: the release, then the parent's `effectiveConfig` as a `parent` layer (each dimension the table exposes to `parent`, at its own path), then `layers`; the parent's entries of the dimensions no `parent` layer may set are copied to the result as they are, in place of the release's where the release names the row (`expected.inherited` names each entry the child's own resolution did not give), `configDigest` is the digest of that config, and the pin's `llm` is the parent's, unless the case's `pin` names an `llm` of its own: a child whose role set its model (MA1) is pinned to that model's configured entry.",
+  "cases": [
+    {
+      "id": "PV-1",
+      "description": "agent narrows the org's budgets; the request narrows turns",
+      "layers": [
+        {
+          "schemaVersion": 1,
+          "scope": {
+            "kind": "org"
+          },
+          "budgets": {
+            "maxCostUsd": 5
+          }
+        },
+        {
+          "schemaVersion": 1,
+          "scope": {
+            "kind": "agent"
+          },
+          "budgets": {
+            "maxCostUsd": 3,
+            "maxTurns": 10
+          }
+        },
+        {
+          "schemaVersion": 1,
+          "scope": {
+            "kind": "request"
+          },
+          "budgets": {
+            "maxTurns": 4
+          }
+        }
+      ],
+      "pin": {
+        "headRevision": 41,
+        "routing": {
+          "path": "durable",
+          "reason": null
+        },
+        "scope": {
+          "agentKey": "a7",
+          "projectId": null
+        },
+        "effectiveSet": {
+          "items": [],
+          "digest": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+        },
+        "llm": {
+          "modelKey": "mk-1",
+          "provider": "openai",
+          "model": "gpt-x",
+          "configDigest": "sha256:6666666666666666666666666666666666666666666666666666666666666666"
+        },
+        "deploymentDigest": "sha256:7777777777777777777777777777777777777777777777777777777777777777"
+      },
+      "expected": {
+        "configDigest": "sha256:77a7cbbc0619c251f73b35eb1f2c2a44ff8005453d8b2a1a9d863f1bd35b11b0",
+        "digest": "sha256:5cf9bd2e49f3dc21a99c387c515bad7ef849df381671dba7bada03258df95c6b"
+      }
+    },
+    {
+      "id": "PV-2",
+      "description": "a request that widens the agent's cost ceiling is refused, naming it",
+      "layers": [
+        {
+          "schemaVersion": 1,
+          "scope": {
+            "kind": "agent"
+          },
+          "budgets": {
+            "maxCostUsd": 3
+          }
+        },
+        {
+          "schemaVersion": 1,
+          "scope": {
+            "kind": "request"
+          },
+          "budgets": {
+            "maxCostUsd": 4
+          }
+        }
+      ],
+      "pin": {
+        "headRevision": 41,
+        "routing": {
+          "path": "durable",
+          "reason": null
+        },
+        "scope": {
+          "agentKey": "a7",
+          "projectId": null
+        },
+        "effectiveSet": {
+          "items": [],
+          "digest": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+        },
+        "llm": {
+          "modelKey": "mk-1",
+          "provider": "openai",
+          "model": "gpt-x",
+          "configDigest": "sha256:6666666666666666666666666666666666666666666666666666666666666666"
+        },
+        "deploymentDigest": "sha256:7777777777777777777777777777777777777777777777777777777777777777"
+      },
+      "expected": {
+        "refusal": {
+          "code": "CP_WIDENING",
+          "dimension": "budgets.maxCostUsd",
+          "layer": "request"
+        }
+      }
+    },
+    {
+      "id": "PV-3",
+      "description": "MA1: a model per role, chosen inside the org's routes",
+      "layers": [
+        {
+          "schemaVersion": 1,
+          "scope": {
+            "kind": "org"
+          },
+          "models": {
+            "routes": [
+              "anthropic:claude-z",
+              "openai:gpt-x"
+            ]
+          }
+        },
+        {
+          "schemaVersion": 1,
+          "scope": {
+            "kind": "agent"
+          },
+          "models": {
+            "primary": "openai:gpt-x",
+            "roles": {
+              "researcher": "anthropic:claude-z"
+            }
+          }
+        }
+      ],
+      "pin": {
+        "headRevision": 41,
+        "routing": {
+          "path": "durable",
+          "reason": null
+        },
+        "scope": {
+          "agentKey": "a7",
+          "projectId": "p3"
+        },
+        "effectiveSet": {
+          "items": [],
+          "digest": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+        },
+        "llm": {
+          "modelKey": "mk-1",
+          "provider": "openai",
+          "model": "gpt-x",
+          "configDigest": "sha256:6666666666666666666666666666666666666666666666666666666666666666"
+        },
+        "deploymentDigest": "sha256:7777777777777777777777777777777777777777777777777777777777777777"
+      },
+      "expected": {
+        "configDigest": "sha256:7487c53e5d06ab66eaf11c424e2acc97372a6aaec6cda30cf5ad39b1570a16d2",
+        "digest": "sha256:690dc81916fc6b0ef0426af448e57fc0cf875599ee5f2273f57dbcebcd3f35c1"
+      }
+    },
+    {
+      "id": "PV-4",
+      "description": "a child: the parent's values as a parent layer, the request narrowing them",
+      "layers": [
+        {
+          "schemaVersion": 1,
+          "scope": {
+            "kind": "parent"
+          },
+          "budgets": {
+            "maxCostUsd": 3,
+            "maxTurns": 10
+          }
+        },
+        {
+          "schemaVersion": 1,
+          "scope": {
+            "kind": "request"
+          },
+          "budgets": {
+            "maxCostUsd": 1
+          }
+        }
+      ],
+      "pin": {
+        "headRevision": 41,
+        "routing": {
+          "path": "durable",
+          "reason": null
+        },
+        "scope": {
+          "agentKey": "a7",
+          "projectId": null
+        },
+        "effectiveSet": {
+          "items": [],
+          "digest": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+        },
+        "llm": null,
+        "deploymentDigest": "sha256:7777777777777777777777777777777777777777777777777777777777777777"
+      },
+      "expected": {
+        "configDigest": "sha256:bf31ad2b2c2cb02422babede0720367c7690fea2037fa4a6e7a3d642ceff74aa",
+        "digest": "sha256:dcb98e7a7a9c84a73b0d30557638375b096a27d69d596cf42e8058a516ad5514"
+      }
+    },
+    {
+      "id": "PV-5",
+      "description": "an engine agent: its profile narrows the release's, the org's approvals apply",
+      "layers": [
+        {
+          "schemaVersion": 1,
+          "scope": {
+            "kind": "org"
+          },
+          "engineProfile": {
+            "limits": {
+              "maxSteps": 30
+            }
+          },
+          "approvals": {
+            "writes": "ask"
+          }
+        },
+        {
+          "schemaVersion": 1,
+          "scope": {
+            "kind": "agent"
+          },
+          "engineProfile": {
+            "engines": [
+              "opencode"
+            ],
+            "mode": "build"
+          }
+        }
+      ],
+      "pin": {
+        "headRevision": 41,
+        "routing": {
+          "path": "durable",
+          "reason": null
+        },
+        "scope": {
+          "agentKey": "a7",
+          "projectId": null
+        },
+        "effectiveSet": {
+          "items": [],
+          "digest": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+        },
+        "llm": {
+          "modelKey": "mk-1",
+          "provider": "openai",
+          "model": "gpt-x",
+          "configDigest": "sha256:6666666666666666666666666666666666666666666666666666666666666666"
+        },
+        "deploymentDigest": "sha256:7777777777777777777777777777777777777777777777777777777777777777"
+      },
+      "expected": {
+        "configDigest": "sha256:f8287687aaef5d94759652047d610fa7e4cf99ed5f7e537288b71d5402a42eb3",
+        "digest": "sha256:186414290becf6374b6876b63ad38ee9b2fff7e92e6faa2f0fa3bf93d2f436fa"
+      }
+    },
+    {
+      "id": "PV-6",
+      "description": "a user layer may not set a ceiling",
+      "layers": [
+        {
+          "schemaVersion": 1,
+          "scope": {
+            "kind": "user"
+          },
+          "budgets": {
+            "maxTurns": 3
+          }
+        }
+      ],
+      "pin": {
+        "headRevision": 41,
+        "routing": {
+          "path": "durable",
+          "reason": null
+        },
+        "scope": {
+          "agentKey": "a7",
+          "projectId": null
+        },
+        "effectiveSet": {
+          "items": [],
+          "digest": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+        },
+        "llm": {
+          "modelKey": "mk-1",
+          "provider": "openai",
+          "model": "gpt-x",
+          "configDigest": "sha256:6666666666666666666666666666666666666666666666666666666666666666"
+        },
+        "deploymentDigest": "sha256:7777777777777777777777777777777777777777777777777777777777777777"
+      },
+      "expected": {
+        "refusal": {
+          "code": "CP_NOT_EXPOSED",
+          "dimension": "budgets.maxTurns",
+          "layer": "user"
+        }
+      }
+    },
+    {
+      "id": "PV-7",
+      "description": "a child's pin (release, its parent's pin as a parent layer, its request): the parent's resolved approvals with two flow rules are read as they were resolved and narrowed by the request; the dimensions no parent layer may set (the rollout stages) are the parent's entries as they are; llm is the parent's",
+      "parent": {
+        "effectiveConfig": {
+          "schemaVersion": 1,
+          "dimensions": {
+            "engineProfile.mode": {
+              "value": "build",
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": "build"
+                }
+              ]
+            },
+            "engineProfile.isolationMin": {
+              "value": "gvisor",
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": "gvisor"
+                }
+              ]
+            },
+            "engineProfile.egress": {
+              "value": "none",
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": "none"
+                }
+              ]
+            },
+            "engineProfile.tools.maxTools": {
+              "value": null,
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": null
+                }
+              ]
+            },
+            "engineProfile.tools.effects": {
+              "value": [
+                "execute",
+                "read",
+                "workspace",
+                "write"
+              ],
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": [
+                    "execute",
+                    "read",
+                    "workspace",
+                    "write"
+                  ]
+                }
+              ]
+            },
+            "engineProfile.limits.maxSteps": {
+              "value": 1000,
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": 1000
+                }
+              ]
+            },
+            "engineProfile.limits.maxWallS": {
+              "value": 1800,
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": 1800
+                }
+              ]
+            },
+            "engineProfile.limits.maxTokens": {
+              "value": null,
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": null
+                }
+              ]
+            },
+            "engineProfile.limits.maxUsd": {
+              "value": null,
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": null
+                }
+              ]
+            },
+            "engineProfile.subAgents": {
+              "value": {
+                "enabled": false,
+                "maxDepth": 1,
+                "maxConcurrent": 1
+              },
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": {
+                    "enabled": false,
+                    "maxDepth": 1,
+                    "maxConcurrent": 1
+                  }
+                }
+              ]
+            },
+            "engineProfile.reasoningEffort": {
+              "value": null,
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": null
+                }
+              ]
+            },
+            "engineProfile.approvals.read": {
+              "value": "allow",
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": "allow"
+                }
+              ]
+            },
+            "engineProfile.approvals.workspace": {
+              "value": "allow",
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": "allow"
+                }
+              ]
+            },
+            "engineProfile.approvals.write": {
+              "value": "ask",
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": "ask"
+                }
+              ]
+            },
+            "engineProfile.approvals.execute": {
+              "value": "ask",
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": "ask"
+                }
+              ]
+            },
+            "engineProfile.skills": {
+              "value": null,
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": null
+                }
+              ]
+            },
+            "engineProfile.accountKinds": {
+              "value": [
+                "org_api_key",
+                "org_cloud",
+                "user_api_key"
+              ],
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": [
+                    "org_api_key",
+                    "org_cloud",
+                    "user_api_key"
+                  ]
+                }
+              ]
+            },
+            "approvals": {
+              "value": {
+                "classes": {
+                  "read": "allow",
+                  "workspace": "allow",
+                  "write": "ask",
+                  "execute": "ask"
+                },
+                "tools": {},
+                "flow": [
+                  {
+                    "level": "ask",
+                    "above": "public"
+                  },
+                  {
+                    "level": "deny",
+                    "above": "private"
+                  }
+                ]
+              },
+              "setBy": "org",
+              "ceilings": [
+                {
+                  "layer": "deployment",
+                  "value": {
+                    "flow": {
+                      "level": "ask",
+                      "above": "public"
+                    }
+                  }
+                },
+                {
+                  "layer": "org",
+                  "value": {
+                    "writes": "ask",
+                    "flow": {
+                      "level": "deny",
+                      "above": "private"
+                    }
+                  }
+                }
+              ]
+            },
+            "models.primary": {
+              "value": "openai:gpt-x",
+              "setBy": "request",
+              "ceilings": []
+            },
+            "budgets.maxTurns": {
+              "value": 15,
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": 15
+                }
+              ]
+            },
+            "budgets.maxTokens": {
+              "value": 10000000,
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": 10000000
+                }
+              ]
+            },
+            "budgets.maxCostUsd": {
+              "value": 5,
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": 5
+                }
+              ]
+            },
+            "budgets.activeTimeS": {
+              "value": 600,
+              "setBy": "request",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": null
+                },
+                {
+                  "layer": "request",
+                  "value": 600
+                }
+              ]
+            },
+            "rollout.ENABLE_AGENT_HARNESS": {
+              "value": true,
+              "setBy": "org",
+              "ceilings": [
+                {
+                  "layer": "org",
+                  "value": true
+                }
+              ]
+            },
+            "rollout.AGENT_HARNESS_KILL_SWITCH": {
+              "value": false,
+              "setBy": "org",
+              "ceilings": [
+                {
+                  "layer": "org",
+                  "value": false
+                }
+              ]
+            },
+            "rollout.ENABLE_SKILLS": {
+              "value": false,
+              "setBy": "org",
+              "ceilings": [
+                {
+                  "layer": "org",
+                  "value": false
+                }
+              ]
+            },
+            "rollout.ENABLE_USER_CONTEXT": {
+              "value": true,
+              "setBy": "org",
+              "ceilings": [
+                {
+                  "layer": "org",
+                  "value": true
+                }
+              ]
+            },
+            "rollout.durable.modes": {
+              "value": [
+                "auto",
+                "quick"
+              ],
+              "setBy": "org",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": [
+                    "auto",
+                    "deep",
+                    "quick",
+                    "react"
+                  ]
+                },
+                {
+                  "layer": "org",
+                  "value": [
+                    "auto",
+                    "quick"
+                  ]
+                }
+              ]
+            },
+            "rollout.durable.assistantModes": {
+              "value": [
+                "internal_search",
+                "web_search"
+              ],
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": [
+                    "internal_search",
+                    "web_search"
+                  ]
+                }
+              ]
+            },
+            "rollout.durable.modelFamilies": {
+              "value": null,
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": null
+                }
+              ]
+            },
+            "triggers.webhookMaxBytes": {
+              "value": 262144,
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": 262144
+                }
+              ]
+            },
+            "triggers.webhookPerMinute": {
+              "value": 30,
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": 30
+                }
+              ]
+            },
+            "triggers.notifyChannels": {
+              "value": [
+                "email",
+                "in_app",
+                "slack"
+              ],
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": [
+                    "in_app",
+                    "email",
+                    "slack"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        "llm": {
+          "modelKey": "mk-1",
+          "provider": "openai",
+          "model": "gpt-x",
+          "configDigest": "sha256:6666666666666666666666666666666666666666666666666666666666666666"
+        }
+      },
+      "layers": [
+        {
+          "schemaVersion": 1,
+          "scope": {
+            "kind": "request"
+          },
+          "budgets": {
+            "maxTurns": 3
+          },
+          "approvals": {
+            "tools": {
+              "jira@i1/create_issue": "deny"
+            }
+          }
+        }
+      ],
+      "pin": {
+        "headRevision": 41,
+        "routing": {
+          "path": "durable",
+          "reason": null
+        },
+        "scope": {
+          "agentKey": "a7",
+          "projectId": null
+        },
+        "effectiveSet": {
+          "items": [],
+          "digest": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+        },
+        "deploymentDigest": "sha256:7777777777777777777777777777777777777777777777777777777777777777"
+      },
+      "expected": {
+        "configDigest": "sha256:954cec2b53f3ccec24d60fe346a73763090b43200c71bf978cdb12c3edcd4f4b",
+        "digest": "sha256:5576a0118448ddb4eb2fb59b4e43ddf011767963f13aa7a79de24b2336216ccc",
+        "inherited": [
+          "approvals",
+          "budgets.activeTimeS",
+          "rollout.AGENT_HARNESS_KILL_SWITCH",
+          "rollout.ENABLE_AGENT_HARNESS",
+          "rollout.ENABLE_SKILLS",
+          "rollout.ENABLE_USER_CONTEXT",
+          "rollout.durable.modes"
+        ]
+      }
+    },
+    {
+      "id": "PV-8",
+      "description": "a child's pin names the owner of the agent as its parent's pin holds it, whatever its own subject says (a spawn has no definition in hand): scope is computed from `subject` and the parent's scope, and what the owner shared with the agent stays visible in the child",
+      "parent": {
+        "effectiveConfig": {
+          "schemaVersion": 1,
+          "dimensions": {
+            "engineProfile.mode": {
+              "value": "build",
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": "build"
+                }
+              ]
+            },
+            "engineProfile.isolationMin": {
+              "value": "gvisor",
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": "gvisor"
+                }
+              ]
+            },
+            "engineProfile.egress": {
+              "value": "none",
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": "none"
+                }
+              ]
+            },
+            "engineProfile.tools.maxTools": {
+              "value": null,
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": null
+                }
+              ]
+            },
+            "engineProfile.tools.effects": {
+              "value": [
+                "execute",
+                "read",
+                "workspace",
+                "write"
+              ],
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": [
+                    "execute",
+                    "read",
+                    "workspace",
+                    "write"
+                  ]
+                }
+              ]
+            },
+            "engineProfile.limits.maxSteps": {
+              "value": 1000,
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": 1000
+                }
+              ]
+            },
+            "engineProfile.limits.maxWallS": {
+              "value": 1800,
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": 1800
+                }
+              ]
+            },
+            "engineProfile.limits.maxTokens": {
+              "value": null,
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": null
+                }
+              ]
+            },
+            "engineProfile.limits.maxUsd": {
+              "value": null,
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": null
+                }
+              ]
+            },
+            "engineProfile.subAgents": {
+              "value": {
+                "enabled": false,
+                "maxDepth": 1,
+                "maxConcurrent": 1
+              },
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": {
+                    "enabled": false,
+                    "maxDepth": 1,
+                    "maxConcurrent": 1
+                  }
+                }
+              ]
+            },
+            "engineProfile.reasoningEffort": {
+              "value": null,
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": null
+                }
+              ]
+            },
+            "engineProfile.approvals.read": {
+              "value": "allow",
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": "allow"
+                }
+              ]
+            },
+            "engineProfile.approvals.workspace": {
+              "value": "allow",
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": "allow"
+                }
+              ]
+            },
+            "engineProfile.approvals.write": {
+              "value": "ask",
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": "ask"
+                }
+              ]
+            },
+            "engineProfile.approvals.execute": {
+              "value": "ask",
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": "ask"
+                }
+              ]
+            },
+            "engineProfile.skills": {
+              "value": null,
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": null
+                }
+              ]
+            },
+            "engineProfile.accountKinds": {
+              "value": [
+                "org_api_key",
+                "org_cloud",
+                "user_api_key"
+              ],
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": [
+                    "org_api_key",
+                    "org_cloud",
+                    "user_api_key"
+                  ]
+                }
+              ]
+            },
+            "approvals": {
+              "value": {
+                "classes": {
+                  "read": "allow",
+                  "workspace": "allow",
+                  "write": "ask",
+                  "execute": "ask"
+                },
+                "tools": {},
+                "flow": [
+                  {
+                    "level": "ask",
+                    "above": "public"
+                  },
+                  {
+                    "level": "deny",
+                    "above": "private"
+                  }
+                ]
+              },
+              "setBy": "org",
+              "ceilings": [
+                {
+                  "layer": "deployment",
+                  "value": {
+                    "flow": {
+                      "level": "ask",
+                      "above": "public"
+                    }
+                  }
+                },
+                {
+                  "layer": "org",
+                  "value": {
+                    "writes": "ask",
+                    "flow": {
+                      "level": "deny",
+                      "above": "private"
+                    }
+                  }
+                }
+              ]
+            },
+            "models.primary": {
+              "value": "openai:gpt-x",
+              "setBy": "request",
+              "ceilings": []
+            },
+            "budgets.maxTurns": {
+              "value": 15,
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": 15
+                }
+              ]
+            },
+            "budgets.maxTokens": {
+              "value": 10000000,
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": 10000000
+                }
+              ]
+            },
+            "budgets.maxCostUsd": {
+              "value": 5,
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": 5
+                }
+              ]
+            },
+            "budgets.activeTimeS": {
+              "value": 600,
+              "setBy": "request",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": null
+                },
+                {
+                  "layer": "request",
+                  "value": 600
+                }
+              ]
+            },
+            "rollout.ENABLE_AGENT_HARNESS": {
+              "value": true,
+              "setBy": "org",
+              "ceilings": [
+                {
+                  "layer": "org",
+                  "value": true
+                }
+              ]
+            },
+            "rollout.AGENT_HARNESS_KILL_SWITCH": {
+              "value": false,
+              "setBy": "org",
+              "ceilings": [
+                {
+                  "layer": "org",
+                  "value": false
+                }
+              ]
+            },
+            "rollout.ENABLE_SKILLS": {
+              "value": false,
+              "setBy": "org",
+              "ceilings": [
+                {
+                  "layer": "org",
+                  "value": false
+                }
+              ]
+            },
+            "rollout.ENABLE_USER_CONTEXT": {
+              "value": true,
+              "setBy": "org",
+              "ceilings": [
+                {
+                  "layer": "org",
+                  "value": true
+                }
+              ]
+            },
+            "rollout.durable.modes": {
+              "value": [
+                "auto",
+                "quick"
+              ],
+              "setBy": "org",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": [
+                    "auto",
+                    "deep",
+                    "quick",
+                    "react"
+                  ]
+                },
+                {
+                  "layer": "org",
+                  "value": [
+                    "auto",
+                    "quick"
+                  ]
+                }
+              ]
+            },
+            "rollout.durable.assistantModes": {
+              "value": [
+                "internal_search",
+                "web_search"
+              ],
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": [
+                    "internal_search",
+                    "web_search"
+                  ]
+                }
+              ]
+            },
+            "rollout.durable.modelFamilies": {
+              "value": null,
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": null
+                }
+              ]
+            },
+            "triggers.webhookMaxBytes": {
+              "value": 262144,
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": 262144
+                }
+              ]
+            },
+            "triggers.webhookPerMinute": {
+              "value": 30,
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": 30
+                }
+              ]
+            },
+            "triggers.notifyChannels": {
+              "value": [
+                "email",
+                "in_app",
+                "slack"
+              ],
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": [
+                    "in_app",
+                    "email",
+                    "slack"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        "llm": {
+          "modelKey": "mk-1",
+          "provider": "openai",
+          "model": "gpt-x",
+          "configDigest": "sha256:6666666666666666666666666666666666666666666666666666666666666666"
+        },
+        "scope": {
+          "agentKey": "a7",
+          "projectId": null,
+          "agentOwner": "u1"
+        }
+      },
+      "layers": [
+        {
+          "schemaVersion": 1,
+          "scope": {
+            "kind": "request"
+          },
+          "budgets": {
+            "maxTurns": 3
+          },
+          "approvals": {
+            "tools": {
+              "jira@i1/create_issue": "deny"
+            }
+          }
+        }
+      ],
+      "pin": {
+        "headRevision": 41,
+        "routing": {
+          "path": "durable",
+          "reason": null
+        },
+        "effectiveSet": {
+          "items": [],
+          "digest": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+        },
+        "deploymentDigest": "sha256:7777777777777777777777777777777777777777777777777777777777777777"
+      },
+      "expected": {
+        "configDigest": "sha256:954cec2b53f3ccec24d60fe346a73763090b43200c71bf978cdb12c3edcd4f4b",
+        "digest": "sha256:a13e237651df7c7e91920e2ef769501d950778e4d415abd7693838e1940f0ad2",
+        "scope": {
+          "agentKey": "a7",
+          "projectId": null,
+          "agentOwner": "u1"
+        },
+        "inherited": [
+          "approvals",
+          "budgets.activeTimeS",
+          "rollout.AGENT_HARNESS_KILL_SWITCH",
+          "rollout.ENABLE_AGENT_HARNESS",
+          "rollout.ENABLE_SKILLS",
+          "rollout.ENABLE_USER_CONTEXT",
+          "rollout.durable.modes"
+        ]
+      },
+      "subject": {
+        "agentKey": "a7",
+        "projectId": null,
+        "agentOwner": null
+      }
+    },
+    {
+      "id": "PV-9",
+      "description": "MA1: an agent whose definition sets a model per sub-agent role (`models.roles`, inside the routes it grants) under the org's cost ceilings per role (`models.roleCostCeilings`); the second org layer is the configured-models ceiling",
+      "layers": [
+        {
+          "schemaVersion": 1,
+          "scope": {
+            "kind": "org"
+          },
+          "models": {
+            "roleCostCeilings": {
+              "default": 20,
+              "researcher": 6
+            }
+          }
+        },
+        {
+          "schemaVersion": 1,
+          "scope": {
+            "kind": "org"
+          },
+          "models": {
+            "routes": [
+              "anthropic:claude-haiku-4-5",
+              "openai:gpt-5.4"
+            ]
+          }
+        },
+        {
+          "schemaVersion": 1,
+          "scope": {
+            "kind": "agent"
+          },
+          "models": {
+            "routes": [
+              "anthropic:claude-haiku-4-5",
+              "openai:gpt-5.4"
+            ],
+            "primary": "openai:gpt-5.4",
+            "roles": {
+              "researcher": "anthropic:claude-haiku-4-5"
+            }
+          }
+        },
+        {
+          "schemaVersion": 1,
+          "scope": {
+            "kind": "request"
+          }
+        }
+      ],
+      "pin": {
+        "headRevision": 41,
+        "routing": {
+          "path": "durable",
+          "reason": null
+        },
+        "scope": {
+          "agentKey": "a7",
+          "projectId": "p3"
+        },
+        "effectiveSet": {
+          "items": [],
+          "digest": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+        },
+        "llm": {
+          "modelKey": "mk-1",
+          "provider": "openai",
+          "model": "gpt-5.4",
+          "configDigest": "sha256:6666666666666666666666666666666666666666666666666666666666666666"
+        },
+        "deploymentDigest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+      },
+      "expected": {
+        "configDigest": "sha256:f66eead338c516299f4229a7cda1c158ee8b0e9535682ff34678bb0a61376a5c",
+        "digest": "sha256:f57ea304afafb01ebae6cb9500d755049761334f21f78939cf47d4cea49db488"
+      }
+    },
+    {
+      "id": "PV-10",
+      "description": "MA1: a role-assigned child of PV-9 (role `researcher`): its request names the role's route as `models.primary`, inside its parent's routes; the roles and the cost ceilings are its parent's; its `llm` is the role's configured entry, not its parent's",
+      "parent": {
+        "effectiveConfig": {
+          "schemaVersion": 1,
+          "dimensions": {
+            "engineProfile.mode": {
+              "value": "build",
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": "build"
+                }
+              ]
+            },
+            "engineProfile.isolationMin": {
+              "value": "gvisor",
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": "gvisor"
+                }
+              ]
+            },
+            "engineProfile.egress": {
+              "value": "none",
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": "none"
+                }
+              ]
+            },
+            "engineProfile.tools.maxTools": {
+              "value": null,
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": null
+                }
+              ]
+            },
+            "engineProfile.tools.effects": {
+              "value": [
+                "execute",
+                "read",
+                "workspace",
+                "write"
+              ],
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": [
+                    "execute",
+                    "read",
+                    "workspace",
+                    "write"
+                  ]
+                }
+              ]
+            },
+            "engineProfile.limits.maxSteps": {
+              "value": 1000,
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": 1000
+                }
+              ]
+            },
+            "engineProfile.limits.maxWallS": {
+              "value": 1800,
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": 1800
+                }
+              ]
+            },
+            "engineProfile.limits.maxTokens": {
+              "value": null,
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": null
+                }
+              ]
+            },
+            "engineProfile.limits.maxUsd": {
+              "value": null,
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": null
+                }
+              ]
+            },
+            "engineProfile.subAgents": {
+              "value": {
+                "enabled": false,
+                "maxDepth": 1,
+                "maxConcurrent": 1
+              },
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": {
+                    "enabled": false,
+                    "maxDepth": 1,
+                    "maxConcurrent": 1
+                  }
+                }
+              ]
+            },
+            "engineProfile.reasoningEffort": {
+              "value": null,
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": null
+                }
+              ]
+            },
+            "engineProfile.approvals.read": {
+              "value": "allow",
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": "allow"
+                }
+              ]
+            },
+            "engineProfile.approvals.workspace": {
+              "value": "allow",
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": "allow"
+                }
+              ]
+            },
+            "engineProfile.approvals.write": {
+              "value": "ask",
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": "ask"
+                }
+              ]
+            },
+            "engineProfile.approvals.execute": {
+              "value": "ask",
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": "ask"
+                }
+              ]
+            },
+            "engineProfile.skills": {
+              "value": null,
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": null
+                }
+              ]
+            },
+            "engineProfile.accountKinds": {
+              "value": [
+                "org_api_key",
+                "org_cloud",
+                "user_api_key",
+                "user_plan_sandbox_login"
+              ],
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": [
+                    "org_api_key",
+                    "org_cloud",
+                    "user_api_key",
+                    "user_plan_sandbox_login"
+                  ]
+                }
+              ]
+            },
+            "models.routes": {
+              "value": [
+                "anthropic:claude-haiku-4-5",
+                "openai:gpt-5.4"
+              ],
+              "setBy": "agent",
+              "ceilings": [
+                {
+                  "layer": "org",
+                  "value": [
+                    "anthropic:claude-haiku-4-5",
+                    "openai:gpt-5.4"
+                  ]
+                },
+                {
+                  "layer": "agent",
+                  "value": [
+                    "anthropic:claude-haiku-4-5",
+                    "openai:gpt-5.4"
+                  ]
+                }
+              ]
+            },
+            "models.primary": {
+              "value": "openai:gpt-5.4",
+              "setBy": "agent",
+              "ceilings": []
+            },
+            "models.roles": {
+              "value": {
+                "researcher": "anthropic:claude-haiku-4-5"
+              },
+              "setBy": "agent",
+              "ceilings": []
+            },
+            "models.roleCostCeilings": {
+              "value": {
+                "default": 20,
+                "researcher": 6
+              },
+              "setBy": "org",
+              "ceilings": [
+                {
+                  "layer": "org",
+                  "value": {
+                    "default": 20,
+                    "researcher": 6
+                  }
+                }
+              ]
+            },
+            "budgets.maxTurns": {
+              "value": 15,
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": 15
+                }
+              ]
+            },
+            "budgets.maxTokens": {
+              "value": 10000000,
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": 10000000
+                }
+              ]
+            },
+            "budgets.maxCostUsd": {
+              "value": 5,
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": 5
+                }
+              ]
+            },
+            "budgets.activeTimeS": {
+              "value": null,
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": null
+                }
+              ]
+            },
+            "rollout.durable.modes": {
+              "value": [
+                "auto",
+                "deep",
+                "quick",
+                "react"
+              ],
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": [
+                    "auto",
+                    "deep",
+                    "quick",
+                    "react"
+                  ]
+                }
+              ]
+            },
+            "rollout.durable.assistantModes": {
+              "value": [
+                "internal_search",
+                "web_search"
+              ],
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": [
+                    "internal_search",
+                    "web_search"
+                  ]
+                }
+              ]
+            },
+            "rollout.durable.modelFamilies": {
+              "value": null,
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": null
+                }
+              ]
+            },
+            "snapshots.ttlDays": {
+              "value": 7,
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": 7
+                }
+              ]
+            },
+            "triggers.webhookMaxBytes": {
+              "value": 262144,
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": 262144
+                }
+              ]
+            },
+            "triggers.webhookPerMinute": {
+              "value": 30,
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": 30
+                }
+              ]
+            },
+            "triggers.notifyChannels": {
+              "value": [
+                "email",
+                "in_app",
+                "slack"
+              ],
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": [
+                    "in_app",
+                    "email",
+                    "slack"
+                  ]
+                }
+              ]
+            },
+            "quotas.activeRunsPerOrg": {
+              "value": 200,
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": 200
+                }
+              ]
+            },
+            "quotas.activeRunsPerUser": {
+              "value": 10,
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": 10
+                }
+              ]
+            },
+            "toolResults.maxChars": {
+              "value": null,
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": null
+                }
+              ]
+            },
+            "interactions.waitS": {
+              "value": null,
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": null
+                }
+              ]
+            },
+            "interactions.conversationGrants": {
+              "value": true,
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": true
+                }
+              ]
+            },
+            "recovery.autoResume": {
+              "value": true,
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": true
+                }
+              ]
+            },
+            "sandbox.cpus": {
+              "value": null,
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": null
+                }
+              ]
+            },
+            "sandbox.memoryMb": {
+              "value": null,
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": null
+                }
+              ]
+            },
+            "sandbox.pids": {
+              "value": null,
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": null
+                }
+              ]
+            },
+            "sandbox.scratchMb": {
+              "value": null,
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": null
+                }
+              ]
+            },
+            "sandbox.inputMaxMb": {
+              "value": null,
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": null
+                }
+              ]
+            },
+            "ui.reasoning": {
+              "value": true,
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": true
+                }
+              ]
+            },
+            "ui.terminal": {
+              "value": true,
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": true
+                }
+              ]
+            }
+          }
+        },
+        "llm": {
+          "modelKey": "mk-1",
+          "provider": "openai",
+          "model": "gpt-5.4",
+          "configDigest": "sha256:6666666666666666666666666666666666666666666666666666666666666666"
+        },
+        "scope": {
+          "agentKey": "a7",
+          "projectId": "p3"
+        }
+      },
+      "layers": [
+        {
+          "schemaVersion": 1,
+          "scope": {
+            "kind": "request"
+          },
+          "budgets": {
+            "maxTurns": 3
+          },
+          "models": {
+            "primary": "anthropic:claude-haiku-4-5"
+          }
+        }
+      ],
+      "pin": {
+        "headRevision": 41,
+        "routing": {
+          "path": "durable",
+          "reason": null
+        },
+        "scope": {
+          "agentKey": "a7",
+          "projectId": "p3"
+        },
+        "effectiveSet": {
+          "items": [],
+          "digest": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+        },
+        "llm": {
+          "modelKey": "mk-2",
+          "provider": "anthropic",
+          "model": "claude-haiku-4-5",
+          "configDigest": "sha256:8888888888888888888888888888888888888888888888888888888888888888"
+        },
+        "deploymentDigest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+      },
+      "expected": {
+        "configDigest": "sha256:3fe5003a6d53f1c750df5fc0658b0cc7b38ef7f83acf6d59025470e79bb5fde7",
+        "digest": "sha256:11c571e29a0d86cec446ee15ddafb469f175f4bb3fe9796deff77d2282b15bc7",
+        "inherited": [
+          "models.roleCostCeilings",
+          "models.routes"
+        ]
+      }
+    },
+    {
+      "id": "PV-11",
+      "description": "CPD-10 R3: an org the capability migration recorded as migrated carries rollout.CONTROL_PLANE_CAPABILITIES in its layer (the release holds no such row), so the pin's config holds it true and its effective set is the authority for the run's items",
+      "layers": [
+        {
+          "schemaVersion": 1,
+          "scope": {
+            "kind": "org"
+          },
+          "rollout": {
+            "CONTROL_PLANE_CAPABILITIES": true
+          }
+        },
+        {
+          "schemaVersion": 1,
+          "scope": {
+            "kind": "request"
+          },
+          "budgets": {
+            "maxTurns": 4
+          }
+        }
+      ],
+      "pin": {
+        "headRevision": 41,
+        "routing": {
+          "path": "durable",
+          "reason": null
+        },
+        "scope": {
+          "agentKey": "a7",
+          "projectId": null
+        },
+        "effectiveSet": {
+          "items": [
+            {
+              "installation": "inst_01J9ZQ5Y8K3M4N5P6Q7R8S0001",
+              "item": "mcp:pipeshub/linear@3",
+              "kind": "mcp",
+              "state": "unavailable",
+              "reason": "credential_missing",
+              "tools": [],
+              "binding": null,
+              "provenance": {
+                "grantedBy": "agent:a7",
+                "visibleVia": "org",
+                "approvedBy": null
+              }
+            },
+            {
+              "installation": "jira-1",
+              "item": "toolset:pipeshub/jira@1",
+              "kind": "toolset",
+              "state": "ready",
+              "reason": null,
+              "tools": [
+                {
+                  "toolId": "jira@jira-1/create_issue",
+                  "descriptorDigest": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+                },
+                {
+                  "toolId": "jira@jira-1/search_issues",
+                  "descriptorDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+                }
+              ],
+              "binding": {
+                "ref": "bnd_01J9ZQ5Y8K3M4N5P6Q7R8S0001",
+                "owner": "user:u3",
+                "versionDigest": "sha256:4444444444444444444444444444444444444444444444444444444444444444"
+              },
+              "provenance": {
+                "grantedBy": "agent:a7",
+                "visibleVia": "org",
+                "approvedBy": null
+              }
+            }
+          ],
+          "digest": "sha256:b8528078978f2cbe958ba060fd42624bc4caaa6528873070c5e37cfce5e57661"
+        },
+        "llm": {
+          "modelKey": "mk-1",
+          "provider": "openai",
+          "model": "gpt-x",
+          "configDigest": "sha256:6666666666666666666666666666666666666666666666666666666666666666"
+        },
+        "deploymentDigest": "sha256:7777777777777777777777777777777777777777777777777777777777777777"
+      },
+      "expected": {
+        "configDigest": "sha256:5cf33dd33d8bbffeeaea6cf3bdecb9a7097480ac3892f9a81170b79d7305da92",
+        "digest": "sha256:5945536ca265b3bef32609ef79299a4601a303b9d131a49959d81dc7dd2eac4f"
+      }
+    },
+    {
+      "id": "PV-12",
+      "description": "CPD-10 R3: a child's pin takes its parent's rollout.CONTROL_PLANE_CAPABILITIES verbatim (no layer below the org carries rollout rows), so a migrated org's child run reads its own effective set as the authority too",
+      "parent": {
+        "effectiveConfig": {
+          "schemaVersion": 1,
+          "dimensions": {
+            "engineProfile.mode": {
+              "value": "build",
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": "build"
+                }
+              ]
+            },
+            "engineProfile.isolationMin": {
+              "value": "gvisor",
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": "gvisor"
+                }
+              ]
+            },
+            "engineProfile.egress": {
+              "value": "none",
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": "none"
+                }
+              ]
+            },
+            "engineProfile.tools.maxTools": {
+              "value": null,
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": null
+                }
+              ]
+            },
+            "engineProfile.tools.effects": {
+              "value": [
+                "execute",
+                "read",
+                "workspace",
+                "write"
+              ],
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": [
+                    "execute",
+                    "read",
+                    "workspace",
+                    "write"
+                  ]
+                }
+              ]
+            },
+            "engineProfile.limits.maxSteps": {
+              "value": 1000,
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": 1000
+                }
+              ]
+            },
+            "engineProfile.limits.maxWallS": {
+              "value": 1800,
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": 1800
+                }
+              ]
+            },
+            "engineProfile.limits.maxTokens": {
+              "value": null,
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": null
+                }
+              ]
+            },
+            "engineProfile.limits.maxUsd": {
+              "value": null,
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": null
+                }
+              ]
+            },
+            "engineProfile.subAgents": {
+              "value": {
+                "enabled": false,
+                "maxDepth": 1,
+                "maxConcurrent": 1
+              },
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": {
+                    "enabled": false,
+                    "maxDepth": 1,
+                    "maxConcurrent": 1
+                  }
+                }
+              ]
+            },
+            "engineProfile.reasoningEffort": {
+              "value": null,
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": null
+                }
+              ]
+            },
+            "engineProfile.approvals.read": {
+              "value": "allow",
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": "allow"
+                }
+              ]
+            },
+            "engineProfile.approvals.workspace": {
+              "value": "allow",
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": "allow"
+                }
+              ]
+            },
+            "engineProfile.approvals.write": {
+              "value": "ask",
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": "ask"
+                }
+              ]
+            },
+            "engineProfile.approvals.execute": {
+              "value": "ask",
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": "ask"
+                }
+              ]
+            },
+            "engineProfile.skills": {
+              "value": null,
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": null
+                }
+              ]
+            },
+            "engineProfile.accountKinds": {
+              "value": [
+                "org_api_key",
+                "org_cloud",
+                "user_api_key"
+              ],
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": [
+                    "org_api_key",
+                    "org_cloud",
+                    "user_api_key"
+                  ]
+                }
+              ]
+            },
+            "approvals": {
+              "value": {
+                "classes": {
+                  "read": "allow",
+                  "workspace": "allow",
+                  "write": "ask",
+                  "execute": "ask"
+                },
+                "tools": {},
+                "flow": [
+                  {
+                    "level": "ask",
+                    "above": "public"
+                  },
+                  {
+                    "level": "deny",
+                    "above": "private"
+                  }
+                ]
+              },
+              "setBy": "org",
+              "ceilings": [
+                {
+                  "layer": "deployment",
+                  "value": {
+                    "flow": {
+                      "level": "ask",
+                      "above": "public"
+                    }
+                  }
+                },
+                {
+                  "layer": "org",
+                  "value": {
+                    "writes": "ask",
+                    "flow": {
+                      "level": "deny",
+                      "above": "private"
+                    }
+                  }
+                }
+              ]
+            },
+            "models.primary": {
+              "value": "openai:gpt-x",
+              "setBy": "request",
+              "ceilings": []
+            },
+            "budgets.maxTurns": {
+              "value": 15,
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": 15
+                }
+              ]
+            },
+            "budgets.maxTokens": {
+              "value": 10000000,
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": 10000000
+                }
+              ]
+            },
+            "budgets.maxCostUsd": {
+              "value": 5,
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": 5
+                }
+              ]
+            },
+            "budgets.activeTimeS": {
+              "value": 600,
+              "setBy": "request",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": null
+                },
+                {
+                  "layer": "request",
+                  "value": 600
+                }
+              ]
+            },
+            "rollout.ENABLE_AGENT_HARNESS": {
+              "value": true,
+              "setBy": "org",
+              "ceilings": [
+                {
+                  "layer": "org",
+                  "value": true
+                }
+              ]
+            },
+            "rollout.AGENT_HARNESS_KILL_SWITCH": {
+              "value": false,
+              "setBy": "org",
+              "ceilings": [
+                {
+                  "layer": "org",
+                  "value": false
+                }
+              ]
+            },
+            "rollout.ENABLE_SKILLS": {
+              "value": false,
+              "setBy": "org",
+              "ceilings": [
+                {
+                  "layer": "org",
+                  "value": false
+                }
+              ]
+            },
+            "rollout.ENABLE_USER_CONTEXT": {
+              "value": true,
+              "setBy": "org",
+              "ceilings": [
+                {
+                  "layer": "org",
+                  "value": true
+                }
+              ]
+            },
+            "rollout.durable.modes": {
+              "value": [
+                "auto",
+                "quick"
+              ],
+              "setBy": "org",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": [
+                    "auto",
+                    "deep",
+                    "quick",
+                    "react"
+                  ]
+                },
+                {
+                  "layer": "org",
+                  "value": [
+                    "auto",
+                    "quick"
+                  ]
+                }
+              ]
+            },
+            "rollout.durable.assistantModes": {
+              "value": [
+                "internal_search",
+                "web_search"
+              ],
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": [
+                    "internal_search",
+                    "web_search"
+                  ]
+                }
+              ]
+            },
+            "rollout.durable.modelFamilies": {
+              "value": null,
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": null
+                }
+              ]
+            },
+            "rollout.CONTROL_PLANE_CAPABILITIES": {
+              "value": true,
+              "setBy": "org",
+              "ceilings": [
+                {
+                  "layer": "org",
+                  "value": true
+                }
+              ]
+            },
+            "triggers.webhookMaxBytes": {
+              "value": 262144,
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": 262144
+                }
+              ]
+            },
+            "triggers.webhookPerMinute": {
+              "value": 30,
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": 30
+                }
+              ]
+            },
+            "triggers.notifyChannels": {
+              "value": [
+                "email",
+                "in_app",
+                "slack"
+              ],
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": [
+                    "in_app",
+                    "email",
+                    "slack"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        "llm": {
+          "modelKey": "mk-1",
+          "provider": "openai",
+          "model": "gpt-x",
+          "configDigest": "sha256:6666666666666666666666666666666666666666666666666666666666666666"
+        },
+        "scope": {
+          "agentKey": "a7",
+          "projectId": null,
+          "agentOwner": "u1"
+        }
+      },
+      "layers": [
+        {
+          "schemaVersion": 1,
+          "scope": {
+            "kind": "request"
+          },
+          "budgets": {
+            "maxTurns": 3
+          },
+          "approvals": {
+            "tools": {
+              "jira@i1/create_issue": "deny"
+            }
+          }
+        }
+      ],
+      "pin": {
+        "headRevision": 41,
+        "routing": {
+          "path": "durable",
+          "reason": null
+        },
+        "effectiveSet": {
+          "items": [],
+          "digest": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+        },
+        "deploymentDigest": "sha256:7777777777777777777777777777777777777777777777777777777777777777"
+      },
+      "expected": {
+        "configDigest": "sha256:1bb6c62e2760b979ad9bfda46b1c71c6b77b8757e03fa7fafb4314e7a49dfd54",
+        "digest": "sha256:04ee7ca37654fbc5c8125781ce016e4076afad43453408dc37fe001e33eeedad",
+        "scope": {
+          "agentKey": "a7",
+          "projectId": null,
+          "agentOwner": "u1"
+        },
+        "inherited": [
+          "approvals",
+          "budgets.activeTimeS",
+          "rollout.AGENT_HARNESS_KILL_SWITCH",
+          "rollout.CONTROL_PLANE_CAPABILITIES",
+          "rollout.ENABLE_AGENT_HARNESS",
+          "rollout.ENABLE_SKILLS",
+          "rollout.ENABLE_USER_CONTEXT",
+          "rollout.durable.modes"
+        ]
+      },
+      "subject": {
+        "agentKey": "a7",
+        "projectId": null,
+        "agentOwner": null
+      }
+    },
+    {
+      "id": "PV-13",
+      "description": "SIGNIN-5: a run admitted on the person's own Claude plan narrows accountKinds to user_plan_sandbox_login, which the release default lists, so CONTROL_PLANE_PIN=on pins it",
+      "layers": [
+        {
+          "schemaVersion": 1,
+          "scope": {
+            "kind": "request"
+          },
+          "engineProfile": {
+            "accountKinds": [
+              "user_plan_sandbox_login"
+            ]
+          }
+        }
+      ],
+      "pin": {
+        "headRevision": 41,
+        "routing": {
+          "path": "durable",
+          "reason": null
+        },
+        "scope": {
+          "agentKey": "a7",
+          "projectId": null
+        },
+        "effectiveSet": {
+          "items": [],
+          "digest": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+        },
+        "llm": {
+          "modelKey": "mk-1",
+          "provider": "openai",
+          "model": "gpt-x",
+          "configDigest": "sha256:6666666666666666666666666666666666666666666666666666666666666666"
+        },
+        "deploymentDigest": "sha256:7777777777777777777777777777777777777777777777777777777777777777"
+      },
+      "expected": {
+        "configDigest": "sha256:4a6dd1ba265858815cac6d81f6d2bd4f5676c7e794c4009dbbd25d2911c9d71a",
+        "digest": "sha256:790f92be0858b7f85a970072c1fd5d6dd38c744e13b1ce67424d81697f9c010e"
+      }
+    },
+    {
+      "id": "PV-14",
+      "description": "SIGNIN-5: the release default still lists no injected plan kind: a run narrowed to user_plan_injected is refused, naming the dimension",
+      "layers": [
+        {
+          "schemaVersion": 1,
+          "scope": {
+            "kind": "request"
+          },
+          "engineProfile": {
+            "accountKinds": [
+              "user_plan_injected"
+            ]
+          }
+        }
+      ],
+      "pin": {
+        "headRevision": 41,
+        "routing": {
+          "path": "durable",
+          "reason": null
+        },
+        "scope": {
+          "agentKey": "a7",
+          "projectId": null
+        },
+        "effectiveSet": {
+          "items": [],
+          "digest": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+        },
+        "llm": {
+          "modelKey": "mk-1",
+          "provider": "openai",
+          "model": "gpt-x",
+          "configDigest": "sha256:6666666666666666666666666666666666666666666666666666666666666666"
+        },
+        "deploymentDigest": "sha256:7777777777777777777777777777777777777777777777777777777777777777"
+      },
+      "expected": {
+        "refusal": {
+          "code": "CP_WIDENING",
+          "dimension": "engineProfile.accountKinds",
+          "layer": "request"
+        }
+      }
+    },
+    {
+      "id": "PV-15",
+      "description": "SIGNIN-5: an org whose engine profile ceiling leaves the plan kind out still removes it: a run narrowed to user_plan_sandbox_login is refused at the request",
+      "layers": [
+        {
+          "schemaVersion": 1,
+          "scope": {
+            "kind": "org"
+          },
+          "engineProfile": {
+            "accountKinds": [
+              "org_api_key",
+              "org_cloud",
+              "user_api_key"
+            ]
+          }
+        },
+        {
+          "schemaVersion": 1,
+          "scope": {
+            "kind": "request"
+          },
+          "engineProfile": {
+            "accountKinds": [
+              "user_plan_sandbox_login"
+            ]
+          }
+        }
+      ],
+      "pin": {
+        "headRevision": 41,
+        "routing": {
+          "path": "durable",
+          "reason": null
+        },
+        "scope": {
+          "agentKey": "a7",
+          "projectId": null
+        },
+        "effectiveSet": {
+          "items": [],
+          "digest": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+        },
+        "llm": {
+          "modelKey": "mk-1",
+          "provider": "openai",
+          "model": "gpt-x",
+          "configDigest": "sha256:6666666666666666666666666666666666666666666666666666666666666666"
+        },
+        "deploymentDigest": "sha256:7777777777777777777777777777777777777777777777777777777777777777"
+      },
+      "expected": {
+        "refusal": {
+          "code": "CP_WIDENING",
+          "dimension": "engineProfile.accountKinds",
+          "layer": "request"
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,19 @@
+# An office-document case the parity and replay tests drive: the reference program writes the file.
+cases:
+  - id: od-01-incident-memo
+    knowledge: true
+    sources: {supporting: [inc-301, inc-317, inc-322, inc-330], required: [inc-301, inc-317, inc-322, inc-330]}
+    task: Write a Word memo, q3_incidents_memo.docx, summarising our Q3 2025 production incidents. Use the headings Summary, Incidents and Action items, and cover every postmortem from that period with its date, impact and owner of the follow-up.
+    file:
+      kind: docx
+      headings: [Summary, Incidents, Action items]
+      facts: ["47 min|47-min", "312", "18%", "41"]
+    rubric: Covers all four Q3 2025 postmortems (INC-301, INC-317, INC-322, INC-330) with correct dates, impact and action-item owners; nothing invented.
+    reference:
+      searches: [postmortem incident root cause action item]
+      document:
+        name: q3_incidents_memo.docx
+        sections:
+          - {heading: Summary, text: "Four incidents hit production in Q3 2025."}
+          - {heading: Incidents, text: "INC-301 (14 July): order API down 47 minutes after a Postgres failover failed. INC-317 (22 August): payment webhooks failed for 130 minutes; 312 payments delayed. INC-322 (3 September): 18% of iOS logins failed for 95 minutes. INC-330 (29 September): Pune inventory sync delayed 6 hours; 41 orders oversold."}
+          - {heading: Action items, text: "Monthly failover drills (Priya Raman); secret rotation runbook (Marco Silva); certificate expiry monitoring (Lena Park); consumer lag alert (Arjun Mehta)."}

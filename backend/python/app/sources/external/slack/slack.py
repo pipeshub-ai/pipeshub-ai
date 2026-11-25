@@ -1,10 +1,13 @@
 import asyncio
+import contextvars
 import functools
 import logging
 from collections.abc import Callable
 from concurrent.futures import Executor
 from typing import Any, Optional, Union
 
+from app.agents.actions.util.sign_in_rejected import note_sign_in_rejected
+from app.services.rate_budget import note_throttled
 from app.sources.client.slack.slack import SlackClient, SlackResponse
 
 # Set up logger
@@ -32,6 +35,17 @@ _SLACK_ERROR_MESSAGES: dict[str, str] = {
         "Bot is not a member of this channel. Please invite the bot to the channel first."
     ),
 }
+
+
+# Slack's answers for a token it no longer accepts: HTTP 200 with ``ok: false``, never a 401, so a status check misses
+# them. Noted for the agent's call scope (WP56-DEAUTH-1): the saved sign-in is withdrawn and the next run offers the
+# connect card. ``token_expired`` is not among them: a rotating token is renewed on a schedule.
+SLACK_SIGN_IN_REJECTED = frozenset({"invalid_auth", "not_authed", "token_revoked", "account_inactive"})
+
+
+def _note_if_sign_in_rejected(code: object) -> None:
+    if isinstance(code, str) and code in SLACK_SIGN_IN_REJECTED:
+        note_sign_in_rejected()
 
 
 def _slack_error_details(error: Exception) -> tuple[Optional[str], Optional[int], Optional[str]]:
@@ -88,6 +102,14 @@ def _granted_scopes(response: Any) -> list[str] | None:  # noqa: ANN401 - slack_
     return [scope.strip() for scope in value.split(",") if scope.strip()]
 
 
+def _seconds(value: str | None) -> float | None:
+    try:
+        seconds = float(value) if value is not None else None
+    except ValueError:
+        return None
+    return seconds if seconds is not None and seconds >= 0 else None
+
+
 class SlackDataSource:
     """Auto-generated Slack Web API client wrapper.
     - Uses the **official** SDK client passed as `SlackClient`
@@ -105,8 +127,11 @@ class SlackDataSource:
         The SDK client is synchronous; called on the event loop, every Slack request
         would stall the whole service for as long as Slack takes to answer.
         """
+        # In the caller's context: the send-safe retry handler reports an ambiguous write to the running tool call
+        # through a context variable (QA24-F1), which `run_in_executor` alone does not carry into the thread.
+        context = contextvars.copy_context()
         return await asyncio.get_running_loop().run_in_executor(
-            getattr(self, "_executor", None), functools.partial(method, **kwargs)
+            getattr(self, "_executor", None), context.run, functools.partial(method, **kwargs)
         )
 
     async def _handle_slack_response(self, response: Any) -> SlackResponse:  # noqa: ANN401
@@ -136,6 +161,8 @@ class SlackDataSource:
                 elif 'error' in data:
                     success = False
                     error_msg = data.get('error')
+            if not success:
+                _note_if_sign_in_rejected(error_msg)
             return SlackResponse(
                 success=success,
                 data=data,
@@ -156,11 +183,15 @@ class SlackDataSource:
         logger.error(f"Slack API error: {error_msg}")
 
         raw_code, status_code, retry_after = _slack_error_details(error)
+        if status_code == 429:
+            # Every caller of the workspace backs off, the sync and the org's agents alike (G-31).
+            await note_throttled(_seconds(retry_after))
 
         code = next(
             (known for known in _SLACK_ERROR_MESSAGES if known in error_msg),
             raw_code or "unknown_error",
         )
+        _note_if_sign_in_rejected(code)
         message = _SLACK_ERROR_MESSAGES.get(code, error_msg)
         # Slack names the scope a missing_scope call needed; without it an admin
         # cannot tell which one to add.

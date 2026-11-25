@@ -304,14 +304,6 @@ class TestShutdownAndRestart:
         await _until(done)
         await restarted.stop()
 
-    async def test_a_disposable_group_is_removed_on_shutdown(self, provider) -> None:
-        consumer = await _start(provider, Recorder(), ephemeral_group=True, group_id="broadcast-1")
-        await asyncio.sleep(0.05)
-        groups = await provider.get_client().xinfo_groups(TOPIC)
-        assert [g["name"] for g in groups] == ["broadcast-1"]
-        await consumer.stop()
-        assert await provider.get_client().xinfo_groups(TOPIC) == []
-
     async def test_a_lasting_group_survives_shutdown(self, provider) -> None:
         consumer = await _start(provider, Recorder())
         await asyncio.sleep(0.05)

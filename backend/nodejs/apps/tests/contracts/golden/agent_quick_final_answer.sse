@@ -1,0 +1,93 @@
+event: CUSTOM
+data: {"type":"CUSTOM","name":"conversation_created","value":{"conversationId":"oid-1","title":"How much paid leave do I get?"}}
+
+event: RUN_STARTED
+data: {"type": "RUN_STARTED", "threadId": "conv-golden", "runId": "uuid-1"}
+
+event: STATE_SNAPSHOT
+data: {"type": "STATE_SNAPSHOT", "runId": "uuid-1", "snapshot": {"run_id": "uuid-1", "agent_id": "uuid-2", "trace_id": "uuid-3", "parent_run_id": null, "role_name": "pipeshub-agent", "status": "starting", "current_turn": 0, "current_tool": null, "current_child_run_id": null, "hil_request_id": null, "goal_description": "How much paid leave do I get?", "started_at": "<timestamp>", "updated_at": "<timestamp>"}}
+
+event: STATE_SNAPSHOT
+data: {"type": "STATE_SNAPSHOT", "runId": "uuid-1", "snapshot": {"run_id": "uuid-1", "agent_id": "uuid-2", "trace_id": "uuid-3", "parent_run_id": null, "role_name": "pipeshub-agent", "status": "calling_llm", "current_turn": 0, "current_tool": null, "current_child_run_id": null, "hil_request_id": null, "goal_description": "How much paid leave do I get?", "started_at": "<timestamp>", "updated_at": "<timestamp>"}}
+
+event: TEXT_MESSAGE_START
+data: {"type": "TEXT_MESSAGE_START", "messageId": "msg-4", "role": "assistant", "runId": "uuid-1"}
+
+event: STATE_SNAPSHOT
+data: {"type": "STATE_SNAPSHOT", "runId": "uuid-1", "snapshot": {"run_id": "uuid-1", "agent_id": "uuid-2", "trace_id": "uuid-3", "parent_run_id": null, "role_name": "pipeshub-agent", "status": "calling_llm", "current_turn": 0, "current_tool": null, "current_child_run_id": null, "hil_request_id": null, "goal_description": "How much paid leave do I get?", "started_at": "<timestamp>", "updated_at": "<timestamp>"}}
+
+event: TEXT_MESSAGE_END
+data: {"type": "TEXT_MESSAGE_END", "messageId": "msg-4", "runId": "uuid-1"}
+
+event: TOOL_CALL_START
+data: {"type": "TOOL_CALL_START", "toolCallId": "call-search", "toolCallName": "goldendocs__search_docs", "runId": "uuid-1"}
+
+event: TOOL_CALL_ARGS
+data: {"type": "TOOL_CALL_ARGS", "toolCallId": "call-search", "delta": "{\"query\": \"paid leave\"}", "runId": "uuid-1", "argsSummary": "Search Docs: \"paid leave\"", "argsPreview": "{\"query\": \"paid leave\"}"}
+
+event: STATE_SNAPSHOT
+data: {"type": "STATE_SNAPSHOT", "runId": "uuid-1", "snapshot": {"run_id": "uuid-1", "agent_id": "uuid-2", "trace_id": "uuid-3", "parent_run_id": null, "role_name": "pipeshub-agent", "status": "running_tool", "current_turn": 0, "current_tool": "goldendocs__search_docs", "current_child_run_id": null, "hil_request_id": null, "goal_description": "How much paid leave do I get?", "started_at": "<timestamp>", "updated_at": "<timestamp>"}}
+
+event: TOOL_CALL_END
+data: {"type": "TOOL_CALL_END", "toolCallId": "call-search", "runId": "uuid-1"}
+
+event: TOOL_CALL_RESULT
+data: {"type": "TOOL_CALL_RESULT", "toolCallId": "call-search", "content": "{\"query\": \"paid leave\", \"hits\": [{\"title\": \"Leave policy\", \"excerpt\": \"25 days of paid leave.\"}]}", "role": "tool", "status": "completed", "runId": "uuid-1", "resultSummary": "Completed successfully"}
+
+event: STATE_SNAPSHOT
+data: {"type": "STATE_SNAPSHOT", "runId": "uuid-1", "snapshot": {"run_id": "uuid-1", "agent_id": "uuid-2", "trace_id": "uuid-3", "parent_run_id": null, "role_name": "pipeshub-agent", "status": "calling_llm", "current_turn": 1, "current_tool": null, "current_child_run_id": null, "hil_request_id": null, "goal_description": "How much paid leave do I get?", "started_at": "<timestamp>", "updated_at": "<timestamp>"}}
+
+event: TEXT_MESSAGE_START
+data: {"type": "TEXT_MESSAGE_START", "messageId": "msg-5", "role": "assistant", "runId": "uuid-1"}
+
+event: TEXT_MESSAGE_CONTENT
+data: {"type": "TEXT_MESSAGE_CONTENT", "messageId": "msg-5", "delta": "You", "runId": "uuid-1"}
+
+event: TEXT_MESSAGE_CONTENT
+data: {"type": "TEXT_MESSAGE_CONTENT", "messageId": "msg-5", "delta": " get **25 da", "runId": "uuid-1"}
+
+event: TEXT_MESSAGE_CONTENT
+data: {"type": "TEXT_MESSAGE_CONTENT", "messageId": "msg-5", "delta": "ys** of paid", "runId": "uuid-1"}
+
+event: TEXT_MESSAGE_CONTENT
+data: {"type": "TEXT_MESSAGE_CONTENT", "messageId": "msg-5", "delta": " leave a yea", "runId": "uuid-1"}
+
+event: TEXT_MESSAGE_CONTENT
+data: {"type": "TEXT_MESSAGE_CONTENT", "messageId": "msg-5", "delta": "r.", "runId": "uuid-1"}
+
+event: TEXT_MESSAGE_END
+data: {"type": "TEXT_MESSAGE_END", "messageId": "msg-5", "runId": "uuid-1"}
+
+event: STATE_DELTA
+data: {"type": "STATE_DELTA", "runId": "uuid-1", "delta": [{"op": "replace", "path": "/citations", "value": []}, {"op": "replace", "path": "/normalizedAnswer", "value": "You"}, {"op": "replace", "path": "/rawLength", "value": 3}]}
+
+event: TOOL_CALL_START
+data: {"type": "TOOL_CALL_START", "toolCallId": "call-final", "toolCallName": "final_answer", "runId": "uuid-1"}
+
+event: TOOL_CALL_ARGS
+data: {"type": "TOOL_CALL_ARGS", "toolCallId": "call-final", "delta": "{\"answer_markdown\": \"You get **25 days** of paid leave a year.\", \"confidence\": \"High\"}", "runId": "uuid-1", "argsSummary": "Final Answer \u2014 answer_markdown: \"You get **25 days** of paid leave a year.\", confidence: \"High\"", "argsPreview": "{\"answer_markdown\": \"You get **25 days** of paid leave a year.\", \"confidence\": \"High\"}"}
+
+event: STATE_SNAPSHOT
+data: {"type": "STATE_SNAPSHOT", "runId": "uuid-1", "snapshot": {"run_id": "uuid-1", "agent_id": "uuid-2", "trace_id": "uuid-3", "parent_run_id": null, "role_name": "pipeshub-agent", "status": "running_tool", "current_turn": 1, "current_tool": "final_answer", "current_child_run_id": null, "hil_request_id": null, "goal_description": "How much paid leave do I get?", "started_at": "<timestamp>", "updated_at": "<timestamp>"}}
+
+event: TOOL_CALL_END
+data: {"type": "TOOL_CALL_END", "toolCallId": "call-final", "runId": "uuid-1"}
+
+event: TOOL_CALL_RESULT
+data: {"type": "TOOL_CALL_RESULT", "toolCallId": "call-final", "content": "{\"answer_markdown\": \"You get **25 days** of paid leave a year.\", \"sources_used\": [], \"unavailable_sources\": [], \"confidence\": \"High\", \"confidence_reason\": null}", "role": "tool", "status": "completed", "runId": "uuid-1", "resultSummary": "Completed successfully"}
+
+event: STATE_SNAPSHOT
+data: {"type": "STATE_SNAPSHOT", "runId": "uuid-1", "snapshot": {"run_id": "uuid-1", "agent_id": "uuid-2", "trace_id": "uuid-3", "parent_run_id": null, "role_name": "pipeshub-agent", "status": "completed", "current_turn": 2, "current_tool": null, "current_child_run_id": null, "hil_request_id": null, "goal_description": "How much paid leave do I get?", "started_at": "<timestamp>", "updated_at": "<timestamp>"}}
+
+event: STATE_DELTA
+data: {"type": "STATE_DELTA", "runId": "uuid-1", "delta": [{"op": "replace", "path": "/citations", "value": []}, {"op": "replace", "path": "/normalizedAnswer", "value": "You get **25 days** of paid leave a year."}, {"op": "replace", "path": "/rawLength", "value": 41}]}
+
+event: STATE_DELTA
+data: {"type": "STATE_DELTA", "runId": "uuid-1", "delta": [{"op": "replace", "path": "/citations", "value": []}, {"op": "replace", "path": "/normalizedAnswer", "value": "You get **25 days** of paid leave a year."}, {"op": "replace", "path": "/rawLength", "value": 41}, {"op": "replace", "path": "/confidence", "value": "High"}]}
+
+event: STATE_SNAPSHOT
+data: {"type": "STATE_SNAPSHOT", "runId": "uuid-1", "snapshot": {"final": true, "parts": [{"type": "text", "content": "", "runId": "uuid-1"}, {"type": "tool_call", "toolCallId": "call-search", "toolName": "goldendocs__search_docs", "args": "{\"query\": \"paid leave\"}", "status": "completed", "runId": "uuid-1", "argsSummary": "Search Docs: \"paid leave\"", "resultPreview": "{\"query\": \"paid leave\", \"hits\": [{\"title\": \"Leave policy\", \"excerpt\": \"25 days of paid leave.\"}]}", "resultSummary": "Completed successfully"}, {"type": "text", "content": "You get **25 days** of paid leave a year.", "runId": "uuid-1", "isFinal": true}, {"type": "tool_call", "toolCallId": "call-final", "toolName": "final_answer", "args": "{\"answer_markdown\": \"You get **25 days** of paid leave a year.\", \"confidence\": \"High\"}", "status": "completed", "runId": "uuid-1", "argsSummary": "Final Answer \u2014 answer_markdown: \"You get **25 days** of paid leave a year.\", confidence: \"High\"", "resultPreview": "{\"answer_markdown\": \"You get **25 days** of paid leave a year.\", \"sources_used\": [], \"unavailable_sources\": [], \"confidence\": \"High\", \"confidence_reason\": null}", "resultSummary": "Completed successfully"}], "answer": "You get **25 days** of paid leave a year.", "citations": [], "confidence": "High", "succeeded_tool_names": ["goldendocs__search_docs", "final_answer"], "failed_tool_names": []}}
+
+event: RUN_FINISHED
+data: {"type":"RUN_FINISHED","result":{"conversation":{"userId":"oid-2","orgId":"oid-3","title":"How much paid leave do I get?","initiator":"oid-2","isShared":false,"isDeleted":false,"isArchived":false,"lastActivityAt":"<clock>","status":"Complete","modelInfo":{"chatMode":"quick"},"agentKey":"agent-1","conversationSource":"agent_chat","_id":"oid-1","sharedWith":[],"conversationErrors":[],"createdAt":"<timestamp>","updatedAt":"<timestamp>","__v":0,"messages":[{"messageType":"bot_response","content":"You get **25 days** of paid leave a year.","contentFormat":"MARKDOWN","citations":[],"confidence":"High","followUpQuestions":[],"modelInfo":{"chatMode":"quick"},"appliedFilters":{"apps":[],"kb":[],"recordGroups":[],"records":[],"recordsExact":[]},"parts":[{"type":"text","content":"","runId":"uuid-1"},{"type":"tool_call","toolCallId":"call-search","toolName":"goldendocs__search_docs","args":"{\"query\": \"paid leave\"}","status":"completed","runId":"uuid-1","argsSummary":"Search Docs: \"paid leave\"","resultPreview":"{\"query\": \"paid leave\", \"hits\": [{\"title\": \"Leave policy\", \"excerpt\": \"25 days of paid leave.\"}]}","resultSummary":"Completed successfully"},{"type":"text","content":"You get **25 days** of paid leave a year.","runId":"uuid-1","isFinal":true},{"type":"tool_call","toolCallId":"call-final","toolName":"final_answer","args":"{\"answer_markdown\": \"You get **25 days** of paid leave a year.\", \"confidence\": \"High\"}","status":"completed","runId":"uuid-1","argsSummary":"Final Answer — answer_markdown: \"You get **25 days** of paid leave a year.\", confidence: \"High\"","resultPreview":"{\"answer_markdown\": \"You get **25 days** of paid leave a year.\", \"sources_used\": [], \"unavailable_sources\": [], \"confidence\": \"High\", \"confidence_reason\": null}","resultSummary":"Completed successfully"}],"_id":"oid-4","createdAt":"<timestamp>","updatedAt":"<timestamp>","feedback":[],"attachments":[],"referenceData":[],"tools":[],"reasoning":[]}]},"meta":{"requestId":"req-stream","timestamp":"<timestamp>","duration":"<clock>"}}}
+

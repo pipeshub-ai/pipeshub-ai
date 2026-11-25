@@ -62,6 +62,14 @@ import { buildFilterParams, buildAllRecordsFilterParams, hasKnowledgeHubFlatteni
 import { ShareSidebar } from '@/app/components/share';
 import type { SharedAvatarMember } from '@/app/components/share';
 import { createKBShareAdapter } from './share-adapter';
+import { PublicationsPanel } from './publications/publications-panel';
+import { canPublishCollection } from './publications/api';
+import {
+  useFeatureFlagsStore,
+  selectKnowledgePublicationsEnabled,
+  selectSoftDeleteEnabled,
+} from '@/lib/store/feature-flags-store';
+import { useUserStore, selectIsAdmin } from '@/lib/store/user-store';
 import {
   serializeCollectionsParams,
   serializeAllRecordsParams,
@@ -111,9 +119,8 @@ import {
 import { toast } from '@/lib/store/toast-store';
 import { FilePreviewSidebar, FilePreviewFullscreen } from '@/app/components/file-preview';
 import {
-  isPresentationFile,
+  acquireRecordForPreview,
   isDocxFile,
-  isLegacyWordDocFile,
   resolvePreviewMimeAfterStream,
 } from '@/app/components/file-preview/utils';
 import { useDebouncedSearch } from './hooks/use-debounced-search';
@@ -123,7 +130,6 @@ import { MAX_SELECTED_NODES } from '@/chat/utils/tree-selection';
 import { ErrorType, getUserFacingErrorMessage, isProcessedError, isRequestCancelledError, parseRetryAfter } from '@/lib/api/api-error';
 import { isRejectedCursorError } from './utils/cursor-recovery';
 import { useUserPermission } from '@/config';
-import { useFeatureFlagsStore, selectSoftDeleteEnabled } from '@/lib/store/feature-flags-store';
 import { canOpenRecentlyDeleted } from './recently-deleted/utils';
 
 /** Empty pages in a row that All Records goes on from before it shows the empty state (a page the server stopped scanning early has no rows and a cursor to go on with). */
@@ -2158,6 +2164,17 @@ function KnowledgeBasePageContent() {
     setIsShareSidebarOpen(true);
   }, [canShareCollection]);
 
+  // Publications (P2.13): owners and admins of a collection; the query service decides again.
+  const publicationsEnabled = useFeatureFlagsStore(selectKnowledgePublicationsEnabled);
+  const isOrgAdmin = useUserStore(selectIsAdmin);
+  const [isPublicationsOpen, setIsPublicationsOpen] = useState(false);
+  const canPublishSelectedKb = canPublishCollection({
+    flagOn: publicationsEnabled,
+    isRootCollection: !!shareAdapter,
+    isOwner: isSelectedKbOwner,
+    isAdmin: isOrgAdmin,
+  });
+
   useEffect(() => {
     if (!canManageSelectedKbSharing && isShareSidebarOpen) {
       setIsShareSidebarOpen(false);
@@ -2276,12 +2293,13 @@ function KnowledgeBasePageContent() {
         // Prefer fresh record metadata for conversion; list-item fields are fallbacks.
         const previewMime = record.mimeType || item.mimeType;
         const previewName = record.recordName || item.name;
-        const streamAsPdf =
-          isPresentationFile(previewMime, previewName) ||
-          isLegacyWordDocFile(previewMime, previewName);
-        const streamOptions = streamAsPdf ? { convertTo: 'application/pdf' } : undefined;
-        const lease = await acquirePreviewLease(item.id, streamAsPdf ? 'pdf' : 'original', grant);
-        if (!lease) return;
+        const opened = await acquireRecordForPreview(
+          (variant) => acquirePreviewLease(item.id, variant, grant),
+          previewMime,
+          previewName,
+        );
+        if (!opened) return;
+        const { lease, asPdf } = opened;
         const blob = lease.blob;
 
         // 3. For DOCX we hand the Blob straight through to DocxRenderer.
@@ -2291,7 +2309,7 @@ function KnowledgeBasePageContent() {
           recordMime,
           previewName,
           blob,
-          !!streamOptions,
+          asPdf,
         );
         const fr = record.fileRecord;
         const isDocx = isDocxFile(
@@ -2375,12 +2393,13 @@ function KnowledgeBasePageContent() {
 
         const previewMime = record.mimeType || item.fileType;
         const previewName = record.recordName || item.name;
-        const legacyStreamAsPdf =
-          isPresentationFile(previewMime, previewName) ||
-          isLegacyWordDocFile(previewMime, previewName);
-        const legacyStreamOptions = legacyStreamAsPdf ? { convertTo: 'application/pdf' } : undefined;
-        const lease = await acquirePreviewLease(item.id, legacyStreamAsPdf ? 'pdf' : 'original', grant);
-        if (!lease) return;
+        const opened = await acquireRecordForPreview(
+          (variant) => acquirePreviewLease(item.id, variant, grant),
+          previewMime,
+          previewName,
+        );
+        if (!opened) return;
+        const { lease, asPdf: legacyAsPdf } = opened;
         const blob = lease.blob;
 
         // DOCX uses the Blob directly; other types stay on URLs.
@@ -2389,7 +2408,7 @@ function KnowledgeBasePageContent() {
           legacyRecordMime,
           previewName,
           blob,
-          !!legacyStreamOptions,
+          legacyAsPdf,
         );
         const frLegacy = record.fileRecord;
         const isDocx = isDocxFile(
@@ -3246,6 +3265,7 @@ function KnowledgeBasePageContent() {
               onCreateFolder={isAllRecordsMode || !canAddFolderHere ? undefined : handleCreateFolder}
               onUpload={isAllRecordsMode || !selectedKbId ? undefined : handleUpload}
               onShare={shareAdapter && isSelectedKbOwner ? handleShare : undefined}
+              onPublish={canPublishSelectedKb ? () => setIsPublicationsOpen(true) : undefined}
               // Locked only when nothing it offers is allowed: no create here, and no upload (which needs an open collection).
               createPermissionDenied={!isAllRecordsMode && !canCreateHere && (!selectedKbId || !canEditCollection)}
               folderPermissionDenied={!isAllRecordsMode && !canCreateHere}
@@ -3605,6 +3625,15 @@ function KnowledgeBasePageContent() {
               setSharedMembers([]);
             });
           }}
+        />
+      )}
+
+      {canPublishSelectedKb && selectedNode?.nodeId && (
+        <PublicationsPanel
+          open={isPublicationsOpen}
+          onOpenChange={setIsPublicationsOpen}
+          kbId={selectedNode.nodeId}
+          kbName={collectionStatsTarget?.name ?? currentTitle ?? ''}
         />
       )}
 

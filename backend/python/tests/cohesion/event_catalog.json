@@ -1,0 +1,167 @@
+{
+ "child.completed": [
+  "node"
+ ],
+ "child.spawned": [
+  "node"
+ ],
+ "context.cleared": [
+  "worker"
+ ],
+ "context.compacted": [
+  "worker"
+ ],
+ "egress.allowed": [
+  "node"
+ ],
+ "egress.volume_alert": [
+  "node"
+ ],
+ "engine.checkpointed": [
+  "worker"
+ ],
+ "engine.snapshotted": [
+  "worker"
+ ],
+ "gateway.refused": [
+  "node"
+ ],
+ "gateway.secret_hidden": [
+  "node"
+ ],
+ "input.consumed": [
+  "worker"
+ ],
+ "input.queued": [
+  "node"
+ ],
+ "interaction.declined": [
+  "node"
+ ],
+ "interaction.explained": [
+  "worker"
+ ],
+ "interaction.grant_revoked": [
+  "node"
+ ],
+ "interaction.granted": [
+  "node"
+ ],
+ "interaction.requested": [
+  "worker"
+ ],
+ "interaction.resolved": [
+  "node"
+ ],
+ "label.declassified": [
+  "node",
+  "worker"
+ ],
+ "loop.state_saved": [
+  "worker"
+ ],
+ "message.completed": [
+  "worker"
+ ],
+ "model.fallback": [
+  "node",
+  "worker"
+ ],
+ "model.request": [
+  "worker"
+ ],
+ "model.response": [
+  "worker"
+ ],
+ "reasoning.completed": [
+  "worker"
+ ],
+ "run.admitted": [
+  "node"
+ ],
+ "run.cancel_requested": [
+  "node"
+ ],
+ "run.cancelled": [
+  "node"
+ ],
+ "run.claimed": [
+  "node"
+ ],
+ "run.completed": [
+  "node"
+ ],
+ "run.failed": [
+  "node"
+ ],
+ "run.quarantined": [
+  "node"
+ ],
+ "run.resumed": [
+  "node"
+ ],
+ "run.spec_pinned": [
+  "node"
+ ],
+ "run.suspended": [
+  "node"
+ ],
+ "run.yielded": [
+  "node"
+ ],
+ "session.erased": [
+  "node"
+ ],
+ "session.forked": [
+  "node"
+ ],
+ "session.imported": [
+  "node"
+ ],
+ "session.owner_changed": [
+  "node"
+ ],
+ "session.participant_changed": [
+  "node"
+ ],
+ "session.snapshot": [
+  "node"
+ ],
+ "task.created": [
+  "worker"
+ ],
+ "task.updated": [
+  "worker"
+ ],
+ "tool.denied": [
+  "worker"
+ ],
+ "tool.intent": [
+  "worker"
+ ],
+ "tool.outcome": [
+  "node",
+  "worker"
+ ],
+ "tool.reconciled": [
+  "worker"
+ ],
+ "tool.unknown": [
+  "worker"
+ ],
+ "turn.completed": [
+  "worker"
+ ],
+ "turn.started": [
+  "worker"
+ ],
+ "usage.recorded": [
+  "worker"
+ ],
+ "verification.recorded": [
+  "worker"
+ ],
+ "workspace.committed": [
+  "worker"
+ ]
+}

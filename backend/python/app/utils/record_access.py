@@ -43,6 +43,21 @@ def service_account_upload_permission_edges(
     ]
 
 
+def attachment_reader_id(user_id: str | None, user_info: object) -> str | None:
+    """Whose grant a chat attachment is read under: the person who sent the turn (R33JGAPS-FU-6).
+
+    A service-account agent's chat runs as the agent (``user_id`` is its account), but the files in it were attached
+    by the person chatting, and attaching one is that person's grant to the run they started: so the read is
+    checked as them (``callerUserId``), never as the account. Scoped by construction: only the attachments of this
+    conversation reach the resolver, and another run of the agent carries its own caller, who cannot read them. A
+    request with no person behind it (the Slack bot's own upload) keeps ``user_id``, whose uploads the org edge grants.
+    """
+    from app.harness.knowledge.caller import UNRESOLVED_CALLER, caller_user_id_of
+
+    caller = caller_user_id_of(user_info)
+    return caller if caller is not None and caller != UNRESOLVED_CALLER else user_id
+
+
 async def caller_can_read_virtual_record(
     graph_provider: Any,
     *,

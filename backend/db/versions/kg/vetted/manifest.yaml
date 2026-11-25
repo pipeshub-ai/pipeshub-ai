@@ -11,7 +11,8 @@
 # epoch and refuse one below 7. Code of an older release calls them without it and finds no such function: it wrote stamps without the access lists (kg.scopes)
 # and r13, and would take work off the log or the queue without writing them. Epoch 5 (kg_0014) is refused too: it wrote no PARENT_CHILD links (kind 3). Epoch 6
 # (kg_0017) is refused too: it read PARENT_AND_GRANT as an unknown rule. Epoch 7 (kg_0019) is refused too: it wrote no trash columns. Epoch 8 (kg_0021) is refused
-# too: it compiled stamps from the graph's grants instead of kg's copy of whether a node is granted.
+# too: it compiled stamps from the graph's grants instead of kg's copy of whether a node is granted. Epoch 9 (kg_0024) is refused
+# too: it wrote no pc_top. Epoch 10 (kg_0025) is refused too: it wrote no grant marks.
 functions:
   - name: kg.w_nodes_upsert
     class: write
@@ -282,7 +283,7 @@ functions:
     callers: ["python/app/services/graph_db/postgres/kg"]
     pins: [{"op": "delete", "rel": "kg.graph_changes", "txn": "txid"}]
     args:
-      - {"name": "p_projector_epoch", "type": "int", "range": [9, 1000000]}
+      - {"name": "p_projector_epoch", "type": "int", "range": [11, 1000000]}
     returns: "int"
     no_org: "0"
     body: |
@@ -302,7 +303,7 @@ functions:
     pins: [{"op": "delete", "rel": "kg.graph_changes", "key": ["id"]}]
     args:
       - {"name": "p_ids", "type": "bigint[]", "max_items": 5000, "item_not_null": true}
-      - {"name": "p_projector_epoch", "type": "int", "range": [9, 1000000]}
+      - {"name": "p_projector_epoch", "type": "int", "range": [11, 1000000]}
     returns: "int"
     no_org: "0"
     body: |
@@ -469,7 +470,7 @@ functions:
       - {"name": "p_under_deleted", "type": "boolean[]", "max_items": 5000, "item_not_null": true}
       - {"name": "p_legacy", "type": "smallint[]", "max_items": 5000, "item_range": [0, 8]}
       - {"name": "p_leaves", "type": "boolean[]", "max_items": 5000, "item_not_null": true}
-      - {"name": "p_projector_epoch", "type": "int", "range": [9, 1000000]}
+      - {"name": "p_projector_epoch", "type": "int", "range": [11, 1000000]}
     returns: "int"
     no_org: "0"
     reads: ["kg.records"]
@@ -498,7 +499,7 @@ functions:
       - {"name": "p_ids", "type": "text[]", "max_items": 5000, "item_not_null": true, "item_length": [1, 256]}
       - {"name": "p_kinds", "type": "smallint[]", "max_items": 5000, "item_not_null": true, "item_range": [1, 3]}
       - {"name": "p_jobs", "type": "bigint[]", "max_items": 5000}
-      - {"name": "p_projector_epoch", "type": "int", "range": [9, 1000000]}
+      - {"name": "p_projector_epoch", "type": "int", "range": [11, 1000000]}
     returns: "int"
     no_org: "0"
     reads: ["kg.records"]
@@ -551,7 +552,7 @@ functions:
       - {"name": "p_worker", "type": "text", "length": [1, 128]}
       - {"name": "p_attempts", "type": "int", "range": [0, 1000000]}
       - {"name": "p_cursor", "type": "text", "nullable": true, "length": [0, 512]}
-      - {"name": "p_projector_epoch", "type": "int", "range": [9, 1000000]}
+      - {"name": "p_projector_epoch", "type": "int", "range": [11, 1000000]}
     returns: "bigint"
     no_org: "0"
     reads: ["kg.restamp_queue"]
@@ -597,7 +598,7 @@ functions:
     pins: [{"op": "delete", "rel": "kg.restamp_queue", "key": ["id"]}]
     args:
       - {"name": "p_id", "type": "bigint", "range": [1, 9223372036854775807]}
-      - {"name": "p_projector_epoch", "type": "int", "range": [9, 1000000]}
+      - {"name": "p_projector_epoch", "type": "int", "range": [11, 1000000]}
     returns: "boolean"
     no_org: "false"
     reads: ["kg.restamp_queue"]
@@ -745,6 +746,70 @@ functions:
         INSERT INTO kg.records (org_id, sk, coll, id, kind, deleted_ms, delete_batch) SELECT v_org, k.a, k.b, k.c, k.d, k.e, k.f FROM unnest(p_sks, p_colls, p_ids, p_kinds, p_deleted_ms, p_batches) AS k(a, b, c, d, e, f)
           ON CONFLICT (org_id, sk) DO UPDATE SET deleted_ms = excluded.deleted_ms, delete_batch = excluded.delete_batch;
         GET DIAGNOSTICS v_n = ROW_COUNT;
+        RETURN v_n;
+      END;
+
+  # kg_0024: whether a record has no PARENT_CHILD parent that is a record (kg.model.record_row), which a knowledge base's root lists by.
+  - name: kg.w_pc_top_set
+    class: write
+    scope: org
+    writer: pipeshub_connectors
+    custom_plan: true
+    callers: ["python/app/services/graph_db/postgres/kg"]
+    pins: [{"op": "upsert", "rel": "kg.records", "set": ["pc_top"]}]
+    args:
+      - {"name": "p_sks", "type": "bigint[]", "max_items": 5000, "item_not_null": true}
+      - {"name": "p_colls", "type": "smallint[]", "max_items": 5000, "item_not_null": true, "item_range": [1, 3]}
+      - {"name": "p_ids", "type": "text[]", "max_items": 5000, "item_not_null": true, "item_length": [1, 256]}
+      - {"name": "p_kinds", "type": "smallint[]", "max_items": 5000, "item_not_null": true, "item_range": [1, 3]}
+      - {"name": "p_pc_tops", "type": "boolean[]", "max_items": 5000, "item_not_null": true}
+    returns: "int"
+    no_org: "0"
+    reads: ["kg.records"]
+    body: |
+      DECLARE v_n integer;
+      BEGIN
+        IF cardinality(p_colls) <> cardinality(p_sks) OR cardinality(p_ids) <> cardinality(p_sks) OR cardinality(p_kinds) <> cardinality(p_sks) OR cardinality(p_pc_tops) <> cardinality(p_sks) THEN
+          RAISE EXCEPTION 'the arrays differ in length' USING ERRCODE = '22023';
+        END IF;
+        INSERT INTO kg.records (org_id, sk, coll, id, kind, pc_top) SELECT v_org, k.a, k.b, k.c, k.d, k.e FROM unnest(p_sks, p_colls, p_ids, p_kinds, p_pc_tops) AS k(a, b, c, d, e)
+          ON CONFLICT (org_id, sk) DO UPDATE SET pc_top = excluded.pc_top;
+        GET DIAGNOSTICS v_n = ROW_COUNT;
+        RETURN v_n;
+      END;
+
+  # kg_0025: the placement marks of grants (kg/grant_marks.py), of rows the caller has just read under the connector's lock: it updates rows, it never makes one.
+  - name: kg.w_grant_marks_set
+    class: write
+    scope: org
+    writer: pipeshub_connectors
+    custom_plan: true
+    callers: ["python/app/services/graph_db/postgres/kg"]
+    pins: [{"op": "update", "rel": "kg.scope_members"}]
+    args:
+      - {"name": "p_principals", "type": "bigint[]", "max_items": 5000, "item_not_null": true}
+      - {"name": "p_nodes", "type": "bigint[]", "max_items": 5000, "item_not_null": true}
+      - {"name": "p_gtypes", "type": "text[]", "max_items": 5000, "item_not_null": true, "item_length": [1, 64]}
+      - {"name": "p_helds", "type": "boolean[]", "max_items": 5000, "item_not_null": true}
+      - {"name": "p_groups", "type": "bigint[]", "max_items": 5000}
+    returns: "int"
+    no_org: "0"
+    reads: ["kg.scope_members"]
+    body: |
+      DECLARE v_n integer := 0; v_c integer; v_p bigint; v_nd bigint; v_g text; v_h boolean; v_grp bigint;
+      BEGIN
+        IF cardinality(p_nodes) <> cardinality(p_principals) OR cardinality(p_gtypes) <> cardinality(p_principals) OR cardinality(p_helds) <> cardinality(p_principals) OR cardinality(p_groups) <> cardinality(p_principals) THEN
+          RAISE EXCEPTION 'the arrays differ in length' USING ERRCODE = '22023';
+        END IF;
+        -- Sorted by key (locks are taken in key order) and a key named twice keeps its last item
+        SELECT array_agg(s.c1 ORDER BY s.c1, s.c2, s.c3), array_agg(s.c2 ORDER BY s.c1, s.c2, s.c3), array_agg(s.c3 ORDER BY s.c1, s.c2, s.c3), array_agg(s.c4 ORDER BY s.c1, s.c2, s.c3), array_agg(s.c5 ORDER BY s.c1, s.c2, s.c3) INTO p_principals, p_nodes, p_gtypes, p_helds, p_groups FROM (SELECT DISTINCT ON (k.c1, k.c2, k.c3) k.c1, k.c2, k.c3, k.c4, k.c5 FROM unnest(p_principals, p_nodes, p_gtypes, p_helds, p_groups) WITH ORDINALITY AS k(c1, c2, c3, c4, c5, n) ORDER BY k.c1, k.c2, k.c3, k.n DESC) s;
+        -- An update only: a grant another unit deleted since the caller read it is not made again
+        FOR i IN 1 .. coalesce(cardinality(p_principals), 0) LOOP
+          v_p := p_principals[i]; v_nd := p_nodes[i]; v_g := p_gtypes[i]; v_h := p_helds[i]; v_grp := p_groups[i];
+          UPDATE kg.scope_members m SET parent_held = v_h, node_group = v_grp WHERE m.org_id = v_org AND m.principal_sk = v_p AND m.node_sk = v_nd AND m.gtype = v_g;
+          GET DIAGNOSTICS v_c = ROW_COUNT;
+          v_n := v_n + v_c;
+        END LOOP;
         RETURN v_n;
       END;
 

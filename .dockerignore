@@ -77,6 +77,8 @@ tests
 
 # Build outputs (we rebuild in Docker)
 frontend/dist/
+frontend/.next/
+frontend/out/
 backend/nodejs/apps/dist/
 
 # Documentation
@@ -100,6 +102,9 @@ backend/nodejs/apps/dist/
 **/__tests__/
 **/*.test.*
 **/*.spec.*
+# Playwright's configs import their suites' support code from tests/, which is left out above, and next build
+# type-checks every .ts in frontend/: with them in, the frontend-build stage fails (C644-FU-1).
+frontend/playwright*.config.ts
 
 # Docker
 **/Dockerfile*

@@ -302,6 +302,33 @@ export class PgNotificationRepository
     return this.change(scope, id, 'true', `is_deleted = true, deleted_by = $2`);
   }
 
+  eraseForConversation(orgId: string, conversationId: string): Promise<number> {
+    if (!oidOf(orgId)) return Promise.resolve(0);
+    return inUnit(undefined, { write: true }, async (k) => {
+      assertOrg(k, orgId);
+      const r = await k.query(
+        `/* pipeshub:platform.notification_erase_for_conversation */ DELETE FROM platform.notifications n
+           WHERE n.org_id = $1 AND n.payload->>'conversationId' = $2::text`,
+        [k.orgId, conversationId],
+      );
+      return r.rowCount ?? 0;
+    });
+  }
+
+  eraseForOrg(orgId: string, limit: number): Promise<number> {
+    if (!oidOf(orgId) || limit <= 0) return Promise.resolve(0);
+    return inUnit(undefined, { write: true }, async (k) => {
+      assertOrg(k, orgId);
+      const r = await k.query(
+        `/* pipeshub:platform.notification_erase_for_org */ DELETE FROM platform.notifications n
+           WHERE (n.org_id, n.created_at, n.id) IN
+             (SELECT org_id, created_at, id FROM platform.notifications WHERE org_id = $1 LIMIT $2)`,
+        [k.orgId, limit],
+      );
+      return r.rowCount ?? 0;
+    });
+  }
+
   private async change(
     scope: NotificationScope,
     id: string,

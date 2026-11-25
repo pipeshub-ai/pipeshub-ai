@@ -103,7 +103,7 @@ export function AuthCard({
           <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
             {t('workspace.connectors.authCard.title', { name: connectorName })}
           </Text>
-          <Text size="1" style={{ color: 'var(--gray-10)' }}>
+          <Text size="1" style={{ color: 'var(--gray-11)' }}>
             {t('workspace.connectors.authCard.description', { name: connectorName })}
           </Text>
         </Flex>
@@ -151,6 +151,7 @@ export function AuthCard({
           </Badge>
           {onRetry && (
             <IconButton
+              aria-label={t('action.tryAgain')}
               variant="ghost"
               color="gray"
               size="1"

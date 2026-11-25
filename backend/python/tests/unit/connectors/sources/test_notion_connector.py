@@ -6821,6 +6821,7 @@ class TestNotionConnectorResilience:
 from app.config.constants.arangodb import CollectionNames, RecordRelations  # noqa: E402
 from app.connectors.sources.notion.connector import (  # noqa: E402
     RECORD_GONE,
+    _DatabaseArchived,
     _DatabaseUnavailable,
 )
 
@@ -7362,6 +7363,31 @@ class TestRetireLeftoverDatabaseRecords:
         await conn._retire_leftover_database_records()
 
         conn._retire_database_container_record.assert_awaited_once_with(leftover)
+        conn.data_entities_processor.note_kept_records.assert_not_called()
+        assert conn._sync_incomplete is False
+
+    @pytest.mark.asyncio
+    async def test_no_leftovers_keeps_the_run_complete(self) -> None:
+        conn = _make_connector_fullcov()
+        conn._retire_database_container_record = AsyncMock()
+
+        await conn._retire_leftover_database_records()
+
+        conn._retire_database_container_record.assert_not_awaited()
+        assert conn._sync_incomplete is False
+
+    @pytest.mark.asyncio
+    async def test_listing_failure_marks_the_run_incomplete(self) -> None:
+        conn = _make_connector_fullcov()
+        conn.data_entities_processor.get_records_by_record_type = AsyncMock(
+            side_effect=RuntimeError("store down")
+        )
+        conn._retire_database_container_record = AsyncMock()
+
+        await conn._retire_leftover_database_records()
+
+        conn._retire_database_container_record.assert_not_awaited()
+        assert conn._sync_incomplete is True
 
     @pytest.mark.asyncio
     async def test_per_record_failure_continues(self):
@@ -7382,6 +7408,10 @@ class TestRetireLeftoverDatabaseRecords:
         await conn._retire_leftover_database_records()
 
         assert conn._retire_database_container_record.await_count == 2
+        conn.data_entities_processor.note_kept_records.assert_called_once_with(
+            "notion-conn-1", [first.id]
+        )
+        assert conn._sync_incomplete is False
 
 
 class TestDatabaseParentLookupFailures:
@@ -7500,6 +7530,100 @@ class TestDatabaseParentLookupFailures:
         assert len(result) == 1
         spec = conn._batch_get_or_create_child_records.await_args[0][0]["ds-1"]
         assert spec[2] is None and spec[3] is None
+
+
+class TestDataSourceWhoseDatabaseIsGone:
+    """A listed data source whose database answers 404 keeps its stored record through a full
+    sync; one whose database is archived does not."""
+
+    _DATA_SOURCE = {
+        "id": "ds-1",
+        "object": "data_source",
+        "parent": {"type": "database_id", "database_id": "db-1"},
+    }
+
+    @staticmethod
+    def _conn(*, full_sync: bool = True, stored: bool = True, lookup_error: Exception) -> NotionConnector:
+        conn = _make_connector_fullcov()
+        dep = conn.data_entities_processor
+        dep.full_sync_running = MagicMock(return_value=full_sync)
+        dep.note_kept_records = MagicMock()
+        dep.get_record_by_external_id = AsyncMock(
+            return_value=_make_webpage_record(
+                id="r-ds", record_type=RecordType.DATASOURCE, external_record_id="ds-1",
+            ) if stored else None
+        )
+        conn._get_database_parent_ref = AsyncMock(side_effect=lookup_error)
+        conn._sync_incomplete = False
+        conn._failed_pages = set()
+        return conn
+
+    @pytest.mark.asyncio
+    async def test_a_404_database_notes_the_stored_data_source_kept(self) -> None:
+        conn = self._conn(lookup_error=_DatabaseGone("database db-1 not found"))
+
+        assert await conn._records_for_search_object(dict(self._DATA_SOURCE), "data_source") is None
+
+        conn.data_entities_processor.note_kept_records.assert_called_once_with(
+            "notion-conn-1", ["r-ds"]
+        )
+        assert conn._sync_incomplete is False
+        assert "ds-1" not in conn._failed_pages
+
+    @pytest.mark.asyncio
+    async def test_a_data_source_never_stored_notes_nothing(self) -> None:
+        conn = self._conn(stored=False, lookup_error=_DatabaseGone("database db-1 not found"))
+
+        assert await conn._records_for_search_object(dict(self._DATA_SOURCE), "data_source") is None
+
+        conn.data_entities_processor.note_kept_records.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_outside_a_full_sync_nothing_is_looked_up(self) -> None:
+        conn = self._conn(full_sync=False, lookup_error=_DatabaseGone("database db-1 not found"))
+
+        assert await conn._records_for_search_object(dict(self._DATA_SOURCE), "data_source") is None
+
+        conn.data_entities_processor.get_record_by_external_id.assert_not_awaited()
+        conn.data_entities_processor.note_kept_records.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_an_archived_database_does_not_keep_the_data_source(self) -> None:
+        conn = self._conn(lookup_error=_DatabaseArchived("database db-1 is archived"))
+
+        assert await conn._records_for_search_object(dict(self._DATA_SOURCE), "data_source") is None
+
+        conn.data_entities_processor.note_kept_records.assert_not_called()
+        assert conn._sync_incomplete is False
+
+    @pytest.mark.asyncio
+    async def test_a_transient_database_failure_fails_the_data_source(self) -> None:
+        conn = self._conn(lookup_error=RuntimeError("503"))
+
+        assert await conn._records_for_search_object(dict(self._DATA_SOURCE), "data_source") == []
+
+        assert "ds-1" in conn._failed_pages
+        conn.data_entities_processor.note_kept_records.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_an_archived_or_trashed_database_payload_is_archived(self) -> None:
+        for flag in ("archived", "in_trash"):
+            conn = _make_connector_fullcov()
+            conn._get_fresh_datasource = AsyncMock(return_value=MagicMock(
+                retrieve_database=AsyncMock(return_value=_api_resp(True, {"id": "db-1", flag: True}))
+            ))
+            with pytest.raises(_DatabaseArchived):
+                await conn._retrieve_database_payload("db-1")
+
+    @pytest.mark.asyncio
+    async def test_a_404_database_is_gone_but_not_archived(self) -> None:
+        conn = _make_connector_fullcov()
+        conn._get_fresh_datasource = AsyncMock(return_value=MagicMock(
+            retrieve_database=AsyncMock(return_value=_api_resp(False, status=404))
+        ))
+        with pytest.raises(_DatabaseGone) as raised:
+            await conn._retrieve_database_payload("db-1")
+        assert not isinstance(raised.value, _DatabaseArchived)
 
 
 import re  # noqa: E402

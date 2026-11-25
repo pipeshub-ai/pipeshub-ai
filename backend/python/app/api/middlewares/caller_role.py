@@ -89,7 +89,7 @@ def _str_field(value: object, key: str) -> object:
     return cast("dict[str, object]", value).get(key) if isinstance(value, dict) else None
 
 
-async def _nodejs_endpoint(config_service: ConfigurationService) -> str:
+async def nodejs_endpoint(config_service: ConfigurationService) -> str:
     try:
         endpoints = cast(
             "object",
@@ -155,7 +155,7 @@ async def fetch_caller_role(
         return _UNKNOWN
 
     headers.update(await _service_credentials(config_service))
-    url = f"{await _nodejs_endpoint(config_service)}{CALLER_ROLE_PATH}"
+    url = f"{await nodejs_endpoint(config_service)}{CALLER_ROLE_PATH}"
     try:
         # A bad SSL_CERT_FILE or SSL_CERT_DIR raises OSError here; it must answer
         # "unknown" (503), not escape as a refused token (401).
@@ -212,7 +212,7 @@ async def fetch_own_identity(
     token = mint_service_token(
         secret, {"userId": user_id, "orgId": org_id, "scopes": [TokenScopes.USER_LOOKUP.value]}, ttl=_SERVICE_TOKEN_TTL
     )
-    url = f"{await _nodejs_endpoint(config_service)}{path}"
+    url = f"{await nodejs_endpoint(config_service)}{path}"
     async with httpx.AsyncClient(timeout=_TIMEOUT_SECONDS, verify=_ssl_context()) as client:
         response = await client.get(url, headers={"authorization": f"Bearer {token}"})
     if response.status_code == HttpStatusCode.NOT_FOUND.value:

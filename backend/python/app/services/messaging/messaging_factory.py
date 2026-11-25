@@ -36,6 +36,9 @@ from app.services.messaging.postgres.admin import PgMessageAdmin
 from app.services.messaging.postgres.consumer import PgMessagingConsumer
 from app.services.messaging.postgres.producer import PgMessagingProducer
 from app.services.messaging.redis_streams.admin import RedisStreamsAdmin
+from app.services.messaging.redis_streams.broadcast_consumer import (
+    RedisStreamsBroadcastConsumer,
+)
 from app.services.messaging.redis_streams.consumer import RedisStreamsConsumer
 from app.services.messaging.redis_streams.indexing_consumer import (
     IndexingRedisStreamsConsumer,
@@ -502,4 +505,8 @@ class MessagingFactory:
                     worker=worker,
                     fairness=fairness,
                 )
+            if config.broadcast:
+                # Neither a retry manager nor an inbox: both answer redeliveries, and a broadcast
+                # subscriber reads from a position it keeps in memory, so nothing is delivered twice.
+                return RedisStreamsBroadcastConsumer(logger, config)
             return RedisStreamsConsumer(logger, config, retry_manager, inbox=shared_inbox())

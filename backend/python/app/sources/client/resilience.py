@@ -7,10 +7,10 @@ see. HTTP clients consume this via
 ``app.sources.client.http.http_resilient_transport``; SDK call sites use
 :meth:`ResiliencePolicy.guard` or :meth:`ResiliencePolicy.run` directly.
 
-Scope is one policy per connector *instance*. Two instances pointed at the same
-upstream account get independent budgets, and the limiter is per process — with
-``CONNECTOR_UVICORN_WORKERS > 1`` the effective rate is multiplied by the worker
-count.
+Scope is one policy per connector *instance*, and the local limiter is per
+process. A connector whose vendor has a shared budget (``app.services.rate_budget``,
+G-31) also takes from that budget, which every process and every agent toolset of
+the org spends, and a throttle seen here pauses all of them.
 """
 
 import asyncio
@@ -19,7 +19,7 @@ import threading
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from logging import Logger, getLogger
-from typing import Any, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar
 from weakref import WeakKeyDictionary
 
 import httpx  # type: ignore
@@ -27,6 +27,9 @@ from aiolimiter import AsyncLimiter  # type: ignore
 
 from app.connectors.core.sync.run_context import note_backoff_wait
 from app.sources.client.http.http_retry import is_retryable_status
+
+if TYPE_CHECKING:
+    from app.services.rate_budget import AccountBudget
 
 T = TypeVar("T")
 
@@ -98,6 +101,7 @@ class ResiliencePolicy:
         # practice; the deadline degrades to "resume immediately", never to a
         # missed pause.
         self._resume_at: float = 0.0
+        self.shared: "AccountBudget | None" = None
 
     @classmethod
     def from_config(
@@ -164,6 +168,8 @@ class ResiliencePolicy:
         # once; counting at the waiter would multiply it by the number of waiters.
         note_backoff_wait(resume_at - max(self._resume_at, now))
         self._resume_at = resume_at
+        if self.shared is not None:
+            self.shared.pause_soon(min(seconds, self.max_delay))
 
     async def _wait_for_gate(self) -> None:
         loop = asyncio.get_running_loop()
@@ -185,20 +191,22 @@ class ResiliencePolicy:
             return False
 
     async def acquire(self) -> None:
-        """Wait out any active backoff, then take one rate-limit slot."""
+        """Wait out any active backoff, then take one rate-limit slot, and one of the shared budget's."""
         limiter = self._limiter()
         while True:
             await self._wait_for_gate()
-            if limiter is None:
-                return
-            await limiter.acquire()
+            if limiter is not None:
+                await limiter.acquire()
             # Waiting for a token can take a long time when the queue is deep, and
             # the gate may have armed meanwhile. Checking only before the queue
             # would let every already-queued caller drain into a throttled API,
             # turning one 429 into one per queued request. Loop instead: wait the
             # pause out and take a fresh token, so the released wave stays paced.
-            if not self._gate_is_closed():
-                return
+            if self._gate_is_closed():
+                continue
+            if self.shared is not None:
+                await self.shared.acquire()
+            return
 
     @asynccontextmanager
     async def guard(self) -> AsyncIterator[None]:

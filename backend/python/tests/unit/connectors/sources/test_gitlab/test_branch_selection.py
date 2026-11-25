@@ -47,6 +47,7 @@ def _routed(sync_filters: FilterCollection | None, checkpoint: tuple) -> tuple[M
     repos._update_code_repo_checkpoint = AsyncMock()
     repos._sync_repo_full = AsyncMock(return_value=True)
     repos._sync_repo_incremental = AsyncMock(return_value=True)
+    repos._keep_stored_code = AsyncMock()
     return c, repos
 
 
@@ -146,17 +147,61 @@ class TestSyncRouting:
         [problem] = [call.args[0] for call in c.note_sync_problem.call_args_list]
         assert "'gone'" in problem and "does not exist" in problem
         c.note_failed_read.assert_not_called()
+        repos._keep_stored_code.assert_not_awaited()
 
-    async def test_empty_repository_on_default_branch_is_still_an_answer(self) -> None:
+    async def test_empty_repository_with_no_default_branch_is_not_read(self) -> None:
         c, repos = _routed(None, (None, None, None))
+
+        await repos.run(_PROJECT_ID, _PROJECT_PATH, None)
+
+        c.runtime.ds_call.assert_not_awaited()
+        c.note_failed_read.assert_not_called()
+        c.note_sync_problem.assert_not_called()
+        repos._keep_stored_code.assert_not_awaited()
+        repos._sync_repo_full.assert_not_awaited()
+        repos._update_code_repo_checkpoint.assert_not_awaited()
+
+    async def test_missing_default_branch_keeps_the_stored_code(self) -> None:
+        c, repos = _routed(None, ("old-sha", _PROJECT_PATH, "main"))
         c.runtime.ds_call = AsyncMock(return_value=MagicMock(
-            success=False, data=None, error="404", status_code=404,
+            success=False, data=None, error="404 Branch Not Found", status_code=404,
+        ))
+
+        await repos.run(_PROJECT_ID, _PROJECT_PATH, "main")
+
+        repos._keep_stored_code.assert_awaited_once_with(_PROJECT_ID, _PROJECT_PATH)
+        c.note_failed_read.assert_not_called()
+        c.note_sync_problem.assert_not_called()
+        repos._sync_repo_full.assert_not_awaited()
+        repos._sync_repo_incremental.assert_not_awaited()
+        repos._update_code_repo_checkpoint.assert_not_awaited()
+
+    async def test_branch_without_head_commit_keeps_the_stored_code(self) -> None:
+        c, repos = _routed(None, ("old-sha", _PROJECT_PATH, "main"))
+        c.runtime.ds_call = AsyncMock(return_value=MagicMock(
+            success=True, data={"name": "main", "commit": None}, error=None, status_code=200,
+        ))
+
+        await repos.run(_PROJECT_ID, _PROJECT_PATH, "main")
+
+        repos._keep_stored_code.assert_awaited_once_with(_PROJECT_ID, _PROJECT_PATH)
+        repos._sync_repo_full.assert_not_awaited()
+        repos._sync_repo_incremental.assert_not_awaited()
+        repos._update_code_repo_checkpoint.assert_not_awaited()
+
+    @pytest.mark.parametrize("status", [403, 500])
+    async def test_other_failed_branch_reads_keep_nothing(self, status: int) -> None:
+        # 403 is an answer (an ACL the sync cannot read opens no access); 5xx notes a problem.
+        c, repos = _routed(None, ("old-sha", _PROJECT_PATH, "main"))
+        c.runtime.ds_call = AsyncMock(return_value=MagicMock(
+            success=False, data=None, error=str(status), status_code=status,
         ))
 
         await repos.run(_PROJECT_ID, _PROJECT_PATH, "main")
 
         c.note_failed_read.assert_called_once()
-        c.note_sync_problem.assert_not_called()
+        repos._keep_stored_code.assert_not_awaited()
+        repos._sync_repo_full.assert_not_awaited()
 
 
 class TestWalkAtCommit:

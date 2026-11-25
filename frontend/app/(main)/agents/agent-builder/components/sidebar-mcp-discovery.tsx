@@ -114,7 +114,7 @@ export function AgentBuilderMcpDiscovery({
             size="1"
             weight="bold"
             style={{
-              color: 'var(--gray-10)',
+              color: 'var(--gray-11)',
               padding: '6px 8px 2px',
               textTransform: 'uppercase',
               letterSpacing: '0.06em',
@@ -199,7 +199,7 @@ export function AgentBuilderMcpDiscovery({
                 </Button>
               </Flex>
             ) : catalog === null ? (
-              <Text size="2" style={{ color: 'var(--gray-10)' }}>
+              <Text size="2" style={{ color: 'var(--gray-11)' }}>
                 {t('workspace.mcpServers.loading')}
               </Text>
             ) : (

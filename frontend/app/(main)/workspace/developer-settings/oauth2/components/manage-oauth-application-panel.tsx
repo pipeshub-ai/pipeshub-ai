@@ -11,7 +11,6 @@ import {
   Select,
   Tabs,
   Text,
-  TextArea,
   TextField,
 } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
@@ -28,6 +27,8 @@ import { LoadingButton } from '@/app/components/ui/loading-button';
 import {
   DestructiveTypedConfirmationDialog,
   FormField,
+  FormFieldTextArea,
+  FormFieldTextField,
   WorkspaceRightPanel,
 } from '../../../components';
 import { useToastStore } from '@/lib/store/toast-store';
@@ -1131,7 +1132,7 @@ export function ManageOAuthApplicationPanel({
                       required
                       error={generalErrors.name}
                     >
-                      <TextField.Root
+                      <FormFieldTextField
                         size="2"
                         placeholder={t('workspace.oauth2.create.appNamePlaceholder')}
                         value={name}
@@ -1144,7 +1145,7 @@ export function ManageOAuthApplicationPanel({
                         label={t('workspace.oauth2.create.descriptionLabel')}
                         optional
                       >
-                        <TextArea
+                        <FormFieldTextArea
                           size="2"
                           rows={2}
                           placeholder={t(
@@ -1390,7 +1391,7 @@ export function ManageOAuthApplicationPanel({
                         label={t('workspace.oauth2.create.homepageLabel')}
                         optional
                       >
-                        <TextField.Root
+                        <FormFieldTextField
                           size="2"
                           type="url"
                           placeholder={t('workspace.oauth2.create.urlPlaceholder')}
@@ -1403,7 +1404,7 @@ export function ManageOAuthApplicationPanel({
                         label={t('workspace.oauth2.create.privacyLabel')}
                         optional
                       >
-                        <TextField.Root
+                        <FormFieldTextField
                           size="2"
                           type="url"
                           placeholder={t('workspace.oauth2.create.urlPlaceholder')}
@@ -1416,7 +1417,7 @@ export function ManageOAuthApplicationPanel({
                         label={t('workspace.oauth2.create.termsLabel')}
                         optional
                       >
-                        <TextField.Root
+                        <FormFieldTextField
                           size="2"
                           type="url"
                           placeholder={t('workspace.oauth2.create.urlPlaceholder')}
@@ -1577,7 +1578,7 @@ export function ManageOAuthApplicationPanel({
                                     {scope.description}
                                   </Text>
                                   {scope.requiresUserConsent && (
-                                    <Text size="1" style={{ color: 'var(--slate-10)' }}>
+                                    <Text size="1" style={{ color: 'var(--slate-11)' }}>
                                       {t('workspace.oauth2.create.requiresConsent')}
                                     </Text>
                                   )}

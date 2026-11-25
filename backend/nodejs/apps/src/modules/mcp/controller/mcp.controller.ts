@@ -31,6 +31,8 @@ import {
   PAT_APP_CLIENT_ID_PREFIX,
   SERVICE_TOKEN_APP_CLIENT_ID_PREFIX,
 } from '../../oauth_provider/constants/constants';
+import { PUBLIC_MCP_TOOLS } from '../constants/allowed-tools';
+import { SURFACE_HEADER } from '../../agent-harness/transport/surface-header';
 import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
 import {
   CODE_GRAPH_INSTRUCTIONS,
@@ -352,6 +354,8 @@ export const handleMCPRequest = (appConfig: AppConfig) => {
         'beforeRequest',
         (request) => {
           request.headers.set(MCP_RELAY_HEADER, relay);
+          // The chat routes stream an MCP client the answer-only view (P1b C-5).
+          request.headers.set(SURFACE_HEADER, 'mcp');
           return links.toLoopback(request);
         },
       );
@@ -365,6 +369,7 @@ export const handleMCPRequest = (appConfig: AppConfig) => {
           error: logger.error.bind(logger),
         },
         dynamic: false,
+        allowedTools: [...PUBLIC_MCP_TOOLS],
         // Always offer the citations card. This server is built per request, so it never
         // sees the client's `initialize` and the package would guess from the last one
         // made with this token. Claude's tool loader and its chat share a token and

@@ -25,7 +25,8 @@ fails, naming it; one that is not configured skips:
   docker compose -f deployment/docker-compose/docker-compose.integration.vector-db.yml \
     -f deployment/docker-compose/docker-compose.integration.graph-db.yml \
     up -d --wait qdrant-vector-it neo4j-graph-it arango-graph-it
-  cd backend/python && pytest tests/integration/test_soft_delete_vectors_e2e.py -m integration
+  cd backend/python && NEO4J_IT_URI=bolt://localhost:17687 ARANGO_IT_URL=http://localhost:18529 QDRANT_IT_HOST=localhost \
+    pytest tests/integration/test_soft_delete_vectors_e2e.py -m integration
 
 Environment: QDRANT_IT_HOST, QDRANT_IT_PORT (REST), NEO4J_IT_URI, NEO4J_IT_PASSWORD,
 ARANGO_IT_URL, ARANGO_IT_PASSWORD.
@@ -78,6 +79,7 @@ from app.services.vector_db.strategy import RecordContext
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from tests.integration.test_soft_delete_e2e import _connect_arango, _connect_neo4j
 from tests.integration.test_trash_purge_e2e import _KV, DAY_MS, _Broker, _Lease
+from tests.support import it_backends
 from tests.support.vector_db import make_config_service
 
 if TYPE_CHECKING:
@@ -89,7 +91,6 @@ pytestmark = [pytest.mark.integration, pytest.mark.timeout(300)]
 
 logger = logging.getLogger("soft-delete-vectors-it")
 
-QDRANT_HOST = os.environ.get("QDRANT_IT_HOST", "localhost")
 QDRANT_PORT = int(os.environ.get("QDRANT_IT_PORT", "6343"))
 DIM = 8
 RECORDS = CollectionNames.RECORDS.value
@@ -269,7 +270,8 @@ async def _remove(w: _World) -> None:
 
 
 async def _connect_qdrant() -> QdrantService:
-    service = QdrantService(QdrantConfig(host=QDRANT_HOST, port=QDRANT_PORT, prefer_grpc=False, timeout=30))
+    qdrant_host = it_backends.endpoint("QDRANT_IT_HOST")
+    service = QdrantService(QdrantConfig(host=qdrant_host, port=QDRANT_PORT, prefer_grpc=False, timeout=30))
     await service.connect()
     await service.get_collections()
     return service
@@ -287,17 +289,12 @@ async def world(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch)
         try:
             qdrant = await _connect_qdrant()
         except Exception as exc:
-            if os.environ.get("QDRANT_IT_HOST") or os.environ.get("QDRANT_IT_PORT"):
-                pytest.fail(f"Qdrant is configured (QDRANT_IT_HOST/PORT) but not reachable: {exc!r}")
-            pytest.skip(f"Qdrant not configured (QDRANT_IT_HOST unset) and not reachable locally: {exc!r}")
+            it_backends.unavailable("QDRANT_IT_HOST", exc)
         cleanup.push_async_callback(qdrant.disconnect)
         try:
             graph = await (_connect_neo4j(monkeypatch) if request.param == "neo4j" else _connect_arango())
         except Exception as exc:
-            env = "NEO4J_IT_URI" if request.param == "neo4j" else "ARANGO_IT_URL"
-            if os.environ.get(env):
-                pytest.fail(f"{request.param} is configured ({env}) but not reachable: {exc!r}")
-            pytest.skip(f"{request.param} not configured ({env} unset) and not reachable locally: {exc!r}")
+            it_backends.unavailable("NEO4J_IT_URI" if request.param == "neo4j" else "ARANGO_IT_URL", exc)
         disconnect = getattr(graph, "disconnect", None)
         if disconnect is not None:
             cleanup.push_async_callback(disconnect)

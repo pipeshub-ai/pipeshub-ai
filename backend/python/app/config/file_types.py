@@ -75,6 +75,7 @@ class FilterRole(StrEnum):
     OFFER = "offer"  # offered by the extension filter; the FILE gate accepts the extension
     OFFER_LEGACY = "offer_legacy"  # offered, but the FILE gate refuses the extension
     EXCLUDE_ONLY = "exclude_only"  # not indexable; offered so it can be excluded
+    OFFER_REPOSITORY = "offer_repository"  # offered only by a repository connector's extension filter; read as text when filed as code
     HIDDEN = "hidden"
 
 
@@ -320,10 +321,10 @@ def _new(**kw: object) -> FileType:
 
 
 def _repo_text(key: str, mime: str | None = None) -> FileType:
-    """A repository source file read as text."""
+    """A repository source file read as text; only a repository's extension filter offers it."""
     return FileType(
         key=key, format="txt", extensions=(key,), mimes=(mime,) if mime else (),
-        repo_code=True, upload=mime is not None,
+        repo_code=True, upload=mime is not None, filter=FilterRole.OFFER_REPOSITORY,
     )
 
 
@@ -564,7 +565,7 @@ FILE_TYPES: tuple[FileType, ...] = (
     _exclude("m4a", "audio/x-m4a"),
     _exclude("aac", "audio/aac"),
     _exclude("ogg", "application/ogg"),
-    # Repository sources read as text; not offered by the filter.
+    # Repository sources read as text; offered by the repository extension filter only.
     *(_repo_text(k) for k in ("vue", "svelte", "pl", "pm", "r", "ex", "exs", "erl", "hs", "clj", "cljs",
                               "zsh", "fish", "ps1", "scss", "sass", "less", "proto", "graphql", "gql",
                               "tf", "tfvars")),
@@ -754,6 +755,8 @@ def _problems() -> Iterator[str]:
             yield f"{ft.key}: OFFER_LEGACY, but the gate accepts its extension"
         if ft.filter is FilterRole.EXCLUDE_ONLY and ft.indexable:
             yield f"{ft.key}: exclude-only, but indexable"
+        if ft.filter is FilterRole.OFFER_REPOSITORY and (ft.ext_indexable or not ft.repo_code):
+            yield f"{ft.key}: offered to repositories, but not a repository-only type"
         if ft.alias_mime is not None and (ft.mimes or owned.get(ft.alias_mime) in (None, ft)):
             yield f"{ft.key}: alias_mime must be another type's mime, on a type owning none"
         if ft.mime_indexable and not any("gate" in mime_roles(m) for m in ft.mimes):
@@ -1444,16 +1447,20 @@ def canonical_mime_for_new_extension(extension: str | None) -> str | None:
     return ft.canonical_mime if ft is not None and ft.since > 1 else None
 
 
-def filter_option_ids() -> tuple[str, ...]:
-    """The extension filter's options: every offered type, then the exclude-only ones."""
-    offered = (FilterRole.OFFER, FilterRole.OFFER_LEGACY)
+_OFFERED: Final = (FilterRole.OFFER, FilterRole.OFFER_LEGACY)
+
+
+def filter_option_ids(*, repository: bool = False) -> tuple[str, ...]:
+    """The extension filter's options: every offered type, then the exclude-only ones.
+
+    ``repository`` adds the repository sources read as text.
+    """
+    offered = (*_OFFERED, FilterRole.OFFER_REPOSITORY) if repository else _OFFERED
     return (*_extensions(ft for ft in FILE_TYPES if ft.filter in offered), *EXCLUDE_ONLY_EXTENSIONS)
 
 
 def offered_extensions() -> frozenset[str]:
-    return frozenset(_extensions(
-        ft for ft in FILE_TYPES if ft.filter in (FilterRole.OFFER, FilterRole.OFFER_LEGACY)
-    ))
+    return frozenset(_extensions(ft for ft in FILE_TYPES if ft.filter in _OFFERED))
 
 
 def preview_extensions() -> frozenset[str]:

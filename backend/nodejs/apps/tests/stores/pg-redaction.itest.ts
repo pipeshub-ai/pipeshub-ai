@@ -54,17 +54,22 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
     after(async () => {
       await stack?.stop();
     });
+    // The controller also reads the harness's view of the session; the install's switch sends it to PostgreSQL too.
+    const savedDocStore = process.env.DOC_STORE;
     const stubProjects = () => {
       sinon.stub(ProjectService, 'getAccessibleProjectIds').resolves([]);
       sinon.stub(ProjectService, 'orgHasTeamMembers').resolves(false);
     };
     beforeEach(() => {
+      process.env.DOC_STORE = 'postgres';
       setConversationRepository(conversations);
       setSemanticSearchRepository(searches);
       setUserRepository({ listNamesByIds: () => Promise.resolve([]) } as never);
       stubProjects();
     });
     afterEach(() => {
+      if (savedDocStore === undefined) delete process.env.DOC_STORE;
+      else process.env.DOC_STORE = savedDocStore;
       sinon.restore();
       setConversationRepository();
       setSemanticSearchRepository();

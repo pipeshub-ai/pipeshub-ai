@@ -6,12 +6,13 @@ import { normalizeDisplayName, normalizePaletteLabel } from '../display-utils';
 import {
   collectActiveToolsetTypeKeysFromNodes,
   findMergeTargetToolsetNode,
-  normalizeToolsetTypeKey,
+  isToolsetTypeConflict,
 } from '../sidebar-toolset-utils';
+import { useToolIdentityStore } from '@/app/(main)/toolsets/api/tool-identity';
 import { NODE_TYPES_WITHOUT_INPUT_HANDLES } from './node-constants';
 import {
   collectActiveMcpTypeIdsFromNodes,
-  isMcpTypeIdConflict,
+  isMcpAttachConflict,
   mergeMcpDropIntoConfig,
   type McpFlowTool,
 } from '../sidebar-mcp-utils';
@@ -54,16 +55,17 @@ function findExistingToolsetNodeForMerge(
   return findMergeTargetToolsetNode(nodes, toolsetName, instanceIdRaw) as Node<FlowNodeData> | undefined;
 }
 
-/** If the canvas already has this toolset type, notify and return true (caller should return). */
+/** If the canvas already has this toolset type (and may hold only one), notify and return true (caller should return). */
 function rejectIfDuplicateToolsetType(
   nodes: Node<FlowNodeData>[],
   toolsetName: string,
+  instanceId: string | undefined,
   fallbackName: string,
   t: TFunction,
   onError?: (message: string) => void
 ): boolean {
-  const droppedToolsetTypeKey = normalizeToolsetTypeKey(toolsetName);
-  if (droppedToolsetTypeKey && collectActiveToolsetTypeKeysFromNodes(nodes).has(droppedToolsetTypeKey)) {
+  const instanceScoped = useToolIdentityStore.getState().instanceToolIds;
+  if (isToolsetTypeConflict(collectActiveToolsetTypeKeysFromNodes(nodes), toolsetName, instanceId, instanceScoped)) {
     onError?.(
       t('agentBuilder.toolsetDuplicateNotify', {
         name: normalizePaletteLabel(toolsetName || fallbackName || ''),
@@ -233,7 +235,7 @@ export function handleFlowCanvasDrop(
       return;
     }
 
-    if (rejectIfDuplicateToolsetType(nodes, toolsetName, toolsetDisplayName || '', t, onError)) return;
+    if (rejectIfDuplicateToolsetType(nodes, toolsetName, toolsetInstanceId, toolsetDisplayName || '', t, onError)) return;
 
     const resolvedSelectedNames =
       selectedTools.length > 0
@@ -362,7 +364,7 @@ export function handleFlowCanvasDrop(
       return;
     }
 
-    if (rejectIfDuplicateToolsetType(nodes, toolsetName, toolsetDisplayName || '', t, onError)) return;
+    if (rejectIfDuplicateToolsetType(nodes, toolsetName, toolsetInstanceId, toolsetDisplayName || '', t, onError)) return;
 
     const tsId = `toolset-${toolsetName}-${Date.now()}`;
     const tsTypeSingle = `toolset-${toolsetName}`;
@@ -430,7 +432,14 @@ export function handleFlowCanvasDrop(
       return;
     }
 
-    if (isMcpTypeIdConflict(collectActiveMcpTypeIdsFromNodes(nodes), mcpInstanceId, mcpTypeId || undefined)) {
+    if (
+      isMcpAttachConflict(
+        collectActiveMcpTypeIdsFromNodes(nodes),
+        mcpInstanceId,
+        mcpTypeId || undefined,
+        useToolIdentityStore.getState().instanceToolIds
+      )
+    ) {
       onError?.(t('agentBuilder.mcpServerAlreadyAttachedNotify', { name: mcpDisplayName }));
       return;
     }
@@ -756,7 +765,7 @@ export function handleFlowCanvasDrop(
       // Model names (e.g. "gpt-5.6-luna") already have their own official
       // casing — normalizeDisplayName's snake_case title-casing would mangle
       // them (-> "gpt-5.6-luna"), so only apply it to identifier-style labels.
-      label: NODE_TYPES_WITHOUT_INPUT_HANDLES.LLM_MODELS(template.type)
+      label: NODE_TYPES_WITHOUT_INPUT_HANDLES.LLM_MODELS(template.type) || template.type.startsWith('skill-')
         ? template.label
         : normalizeDisplayName(template.label),
       description: template.description,

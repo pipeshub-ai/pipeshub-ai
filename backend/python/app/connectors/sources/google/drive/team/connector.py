@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from functools import partial
 from logging import Logger
-from typing import TYPE_CHECKING, AsyncGenerator, Awaitable, Callable, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, AsyncGenerator, Awaitable, Callable, Dict, List, Optional, Sequence, Tuple
 
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
@@ -74,6 +74,13 @@ from app.connectors.core.registry.filters import (
     load_connector_filters,
 )
 from app.connectors.sources.google.common.apps import GoogleDriveTeamApp
+from app.connectors.core.base.source_metadata import (
+    HELD_DRIVE_METADATA,
+    DriveMetadata,
+    apply_source_metadata,
+    held_metadata,
+    source_metadata,
+)
 from app.connectors.sources.google.common.drive_file_fields import (
     DRIVE_STREAM_FILE_GET_FIELDS,
     DRIVE_WORKSPACE_FILE_GET_FIELDS,
@@ -425,6 +432,13 @@ class _Settled(Enum):
     .with_description("Sync files and folders from Google Drive")\
     .with_categories(["Storage"])\
     .with_scopes([ConnectorScope.TEAM.value])\
+    .with_resilience_config(
+        # The vendor's quota is the org's shared budget (app.services.rate_budget.families), which this policy
+        # takes from; the rate is this process's own cap when that budget is unreachable. Retries stay the
+        # connector's own (max_retries 0), as before.
+        rate_limit=100,
+        max_retries=0,
+    )\
     .with_auth([
         AuthBuilder.type(AuthType.CUSTOM).fields([
                 AuthField(
@@ -672,6 +686,7 @@ class GoogleDriveTeamConnector(BaseConnector):
         # drive's records from My Drive ones when that filter is checked.
         self._listed_shared_drive_ids: set = set()
         self._shared_drives_listed = False
+        self._kept_drives_noted: set[str] = set()
 
         # Collaborators granted access to a file but outside this Workspace domain.
         # Accumulated across the run and flushed once at the end, so an email repeated
@@ -790,10 +805,11 @@ class GoogleDriveTeamConnector(BaseConnector):
                 )
 
                 # Create Google Drive Data Source from the client
-                self.drive_data_source = GoogleDriveDataSource(
+                self.drive_data_source = self._with_metadata(GoogleDriveDataSource(
                     self.drive_client.get_client(),
                     executor=self._drive_executor,
-                )
+                    resilience=self.resilience,
+                ))
 
                 self.logger.info(
                     "✅ Google Drive client and data source initialized successfully"
@@ -835,6 +851,30 @@ class GoogleDriveTeamConnector(BaseConnector):
             self.logger.debug("Could not read the Google Workspace admin %s: %s", admin_email, e)
             return
         await self.register_authenticated_source_user(email, source_user_id)
+
+    # The sync's source metadata reads, prepared once per sync (``source_metadata``).
+    _drive_metadata: DriveMetadata = HELD_DRIVE_METADATA
+
+    def _with_metadata(self, source: GoogleDriveDataSource) -> GoogleDriveDataSource:
+        """``source``, asking Drive for what the sync's metadata reads need where it needs it."""
+        return source_metadata().drive_source(source, lambda: self._drive_metadata)
+
+    async def _refresh_drive_metadata(self) -> None:
+        """The sync's metadata reads, prepared with the scopes the reader names; none when they are not granted."""
+
+        async def build(scopes: Sequence[str]) -> object:
+            client = await GoogleClient.build_from_services(
+                service_name="drivelabels",
+                logger=self.logger,
+                config_service=self.config_service,
+                is_individual=False,
+                version="v2",
+                connector_instance_id=self.connector_id,
+                delegated_scopes=list(scopes),
+            )
+            return client.get_client()
+
+        self._drive_metadata = await source_metadata().drive_metadata(build, self.logger)
 
     async def run_sync(self) -> None:
         """
@@ -895,6 +935,7 @@ class GoogleDriveTeamConnector(BaseConnector):
         try:
             self.logger.info("Starting Google Drive enterprise connector sync")
             self._shortcut_cache = {}
+            await self._refresh_drive_metadata()
 
             # Load sync and indexing filters
             self.sync_filters, self.indexing_filters = await load_connector_filters(
@@ -912,6 +953,7 @@ class GoogleDriveTeamConnector(BaseConnector):
             self._folder_probe_403s = {}
             self._folders_probed = set()
             self._synced_drive_ids = set()
+            self._kept_drives_noted = set()
             self._drive_has_member_cache = {}
             self._drive_member_emails = {}
             self._drive_managers = {}
@@ -1723,33 +1765,87 @@ class GoogleDriveTeamConnector(BaseConnector):
         A deleted Workspace group keeps its members in PipesHub otherwise, and with them every grant made to
         the group. The directory documents no error answers for members.list
         (https://developers.google.com/workspace/admin/directory/reference/rest/v1/members/list), so its "not
-        found" is confirmed with groups.get for that exact group; any other answer keeps the group for the next run.
+        found" is confirmed with groups.get for that exact group. A group members.list answers for is written
+        with the membership it lists now (none when the answer is empty), read the way a listed group's is; a
+        group whose members cannot all be read, or whose answer is neither, is kept as stored for the next run.
         """
         stored = await self.data_entities_processor.get_all_user_groups(self.connector_id, raise_on_error=True)
+        kept: list[AppUserGroup] = []
         for group in stored:
             group_id = (group.source_user_group_id or "").lower()
             if not group_id or "@" not in group_id or group_id in listed_group_ids:
                 continue
-            try:
-                await self.admin_data_source.members_list(groupKey=group_id, maxResults=1)
-            except HttpError as e:
-                if e.resp.status != HttpStatusCode.NOT_FOUND.value:
-                    self.logger.warning(f"Could not confirm that group {group_id} was deleted; keeping it: {e}")
-                    continue
-                try:
-                    await self.admin_data_source.groups_get(groupKey=group_id)
-                except HttpError as again:
-                    if again.resp.status != HttpStatusCode.NOT_FOUND.value:
-                        self.logger.warning(f"Could not confirm that group {group_id} was deleted; keeping it: {again}")
-                        continue
-                else:
-                    self.logger.warning(f"Group {group_id} is missing from the listing but still exists; keeping it")
-                    continue
-            else:
-                self.logger.warning(f"Group {group_id} is missing from the listing but still exists; keeping it")
+            state = await self._unlisted_group_state(group_id)
+            if state in ("empty", "members"):
+                if not await self._write_unlisted_group(group, state):
+                    kept.append(group)
+                continue
+            if state != "gone":
+                kept.append(group)
                 continue
             self.logger.info(f"Group {group_id} was deleted in Google Workspace; removing it and its access")
             await self.data_entities_processor.on_user_group_deleted(group.source_user_group_id, self.connector_id)
+        # A kept group was not rewritten this run, so the full sync's unlink would otherwise drop its members.
+        self.data_entities_processor.note_kept_user_groups(self.connector_id, kept)
+
+    async def _unlisted_group_state(self, group_id: str) -> str:
+        """What the directory says of a group missing from the listing: "gone" only when members.list and
+        groups.get both answer 404, "empty" when members.list answers that it has no members, "members" when it
+        lists members, else "kept"."""
+        try:
+            answer = await self.admin_data_source.members_list(groupKey=group_id, maxResults=1)
+        except HttpError as e:
+            if e.resp.status != HttpStatusCode.NOT_FOUND.value:
+                self.logger.warning(f"Could not confirm that group {group_id} was deleted; keeping it: {e}")
+                return "kept"
+            try:
+                await self.admin_data_source.groups_get(groupKey=group_id)
+            except HttpError as again:
+                if again.resp.status != HttpStatusCode.NOT_FOUND.value:
+                    self.logger.warning(f"Could not confirm that group {group_id} was deleted; keeping it: {again}")
+                    return "kept"
+                return "gone"
+            self.logger.warning(f"Group {group_id} is missing from the listing but still exists; keeping it")
+            return "kept"
+        if self._is_empty_members_answer(answer):
+            return "empty"
+        if isinstance(answer, dict) and isinstance(answer.get("members"), list) and answer["members"]:
+            return "members"
+        self.logger.warning(f"Group {group_id} is missing from the listing but still exists; keeping it")
+        return "kept"
+
+    @staticmethod
+    def _is_empty_members_answer(answer: object) -> bool:
+        """Whether a members.list answer says the group has no members. The directory leaves an empty list's
+        key out, so an answer without it counts only when its kind marks it a members list; any other shape
+        is unknown, not empty."""
+        if not isinstance(answer, dict) or answer.get("nextPageToken"):
+            return False
+        if "members" in answer:
+            return answer["members"] == []
+        return answer.get("kind") == "admin#directory#members"
+
+    async def _write_unlisted_group(self, group: AppUserGroup, state: str) -> bool:
+        """Write a stored group the listing left out with the membership the directory gives it now ("empty":
+        none; "members": every page read, nested members included), so a user who left it loses the access
+        granted to it. False when the members cannot all be read, or the write fails (the run is then
+        incomplete); the group is then kept as stored."""
+        group_id = group.source_user_group_id
+        app_users: list[AppUser] = []
+        if state == "members":
+            try:
+                app_users = await self._group_app_users(group_id, conclusive=True)
+            except Exception as e:
+                self.logger.warning(f"Could not read all members of group {group_id}; keeping it as stored: {e}")
+                return False
+        try:
+            await self.data_entities_processor.on_new_user_groups([(group, app_users)])
+        except Exception as e:
+            self._sync_ledger.note_incomplete()
+            self.logger.error(f"Could not write the members of group {group_id}: {e}", exc_info=True)
+            return False
+        self.logger.info(f"Group {group_id} is missing from the listing; wrote its {len(app_users)} current members")
+        return True
 
     async def _process_group(self, group: Dict) -> None:
         """
@@ -1763,22 +1859,6 @@ class GoogleDriveTeamConnector(BaseConnector):
             if not group_id:
                 self.logger.warning("Skipping group without ID")
                 return
-
-            # Fetch members for this group
-            self.logger.debug(f"Fetching members for group: {group.get('name', group_id)}")
-            # Drive gives the members of a nested group the outer group's access, so the group's users are
-            # read with their nested memberships, not only its direct members.
-            members = await self._fetch_group_members(group_id, include_derived=True)
-
-            # Filter to only include user members (skip groups and customers), each once: a user can be a
-            # member directly and through a nested group.
-            seen_emails: set[str] = set()
-            user_members = []
-            for m in members:
-                email_key = (m.get("email") or "").lower()
-                if m.get("type") == "USER" and email_key not in seen_emails and not self._is_inactive_email(email_key):
-                    seen_emails.add(email_key)
-                    user_members.append(m)
 
             # Create AppUserGroup object
             group_name = group.get("name", "")
@@ -1803,50 +1883,8 @@ class GoogleDriveTeamConnector(BaseConnector):
                 source_created_at=source_created_at
             )
 
-            # Create AppUser objects for each member
-            app_users: List[AppUser] = []
-            for member in user_members:
-                try:
-                    member_email = member.get("email", "")
-                    if not member_email:
-                        self.logger.warning(f"Skipping member without email: {member.get('id')}")
-                        continue
-
-                    # For group members, we may not have full user details
-                    # Use email as fallback for full_name if not available
-                    member_id = member.get("id", "")
-
-                    # Try to find user in synced users list for full details
-                    full_name = member_email  # Default to email
-                    source_created_at_user = None
-
-                    # Look up user in synced users if available
-                    if self.synced_users:
-                        for synced_user in self.synced_users:
-                            if synced_user.source_user_id == member_id or synced_user.email.lower() == member_email.lower():
-                                full_name = synced_user.full_name
-                                source_created_at_user = synced_user.source_created_at
-                                break
-
-                    app_user = AppUser(
-                        app_name=self.connector_name,
-                        connector_id=self.connector_id,
-                        source_user_id=member_id,
-                        email=member_email,
-                        full_name=full_name,
-                        source_created_at=source_created_at_user
-                    )
-                    app_users.append(app_user)
-
-                    # Directory API reports an out-of-domain member as type USER (its
-                    # EXTERNAL type is documented "not currently used"), so external
-                    # members arrive through the same filter as everyone else and are
-                    # only distinguishable against the synced workspace set.
-                    self._track_external_collaborator(EntityType.USER, member_email)
-
-                except Exception as e:
-                    self.logger.error(f"Error processing group member {member.get('id', 'unknown')}: {e}", exc_info=True)
-                    continue
+            self.logger.debug(f"Fetching members for group: {group.get('name', group_id)}")
+            app_users = await self._group_app_users(group_id)
 
             # Stored even with no direct user members: a group of groups still needs its
             # node, or a file shared with it gets no grant edge and a synced user who
@@ -1858,13 +1896,84 @@ class GoogleDriveTeamConnector(BaseConnector):
             self.logger.error(f"Error processing group {group.get('id', 'unknown')}: {e}", exc_info=True)
             raise
 
-    async def _fetch_group_members(self, group_id: str, *, include_derived: bool = False) -> List[Dict]:
+    async def _group_app_users(self, group_id: str, *, conclusive: bool = False) -> list[AppUser]:
+        """The group's users as the directory lists them now, every page and nested group read; raises when
+        any page cannot be read, so a partial membership is never taken as the whole. With conclusive, it also
+        raises when a page is neither a members list nor the directory's empty answer, or when a member stands
+        for a whole domain (CUSTOMER), whose users the directory does not list."""
+        # Drive gives the members of a nested group the outer group's access, so the group's users are
+        # read with their nested memberships, not only its direct members.
+        members = await self._fetch_group_members(group_id, include_derived=True, conclusive=conclusive)
+        if conclusive and any(str(m.get("type", "")).upper() == "CUSTOMER" for m in members):
+            raise ValueError(f"group {group_id} holds every user of a domain; its users are not listed")
+
+        # Filter to only include user members (skip groups and customers), each once: a user can be a
+        # member directly and through a nested group.
+        seen_emails: set[str] = set()
+        user_members = []
+        for m in members:
+            email_key = (m.get("email") or "").lower()
+            if m.get("type") == "USER" and email_key not in seen_emails and not self._is_inactive_email(email_key):
+                seen_emails.add(email_key)
+                user_members.append(m)
+
+        # Create AppUser objects for each member
+        app_users: List[AppUser] = []
+        for member in user_members:
+            try:
+                member_email = member.get("email", "")
+                if not member_email:
+                    self.logger.warning(f"Skipping member without email: {member.get('id')}")
+                    continue
+
+                # For group members, we may not have full user details
+                # Use email as fallback for full_name if not available
+                member_id = member.get("id", "")
+
+                # Try to find user in synced users list for full details
+                full_name = member_email  # Default to email
+                source_created_at_user = None
+
+                # Look up user in synced users if available
+                if self.synced_users:
+                    for synced_user in self.synced_users:
+                        if synced_user.source_user_id == member_id or synced_user.email.lower() == member_email.lower():
+                            full_name = synced_user.full_name
+                            source_created_at_user = synced_user.source_created_at
+                            break
+
+                app_user = AppUser(
+                    app_name=self.connector_name,
+                    connector_id=self.connector_id,
+                    source_user_id=member_id,
+                    email=member_email,
+                    full_name=full_name,
+                    source_created_at=source_created_at_user
+                )
+                app_users.append(app_user)
+
+                # Directory API reports an out-of-domain member as type USER (its
+                # EXTERNAL type is documented "not currently used"), so external
+                # members arrive through the same filter as everyone else and are
+                # only distinguishable against the synced workspace set.
+                self._track_external_collaborator(EntityType.USER, member_email)
+
+            except Exception as e:
+                self.logger.error(f"Error processing group member {member.get('id', 'unknown')}: {e}", exc_info=True)
+                continue
+        return app_users
+
+    async def _fetch_group_members(
+        self, group_id: str, *, include_derived: bool = False, conclusive: bool = False
+    ) -> List[Dict]:
         """
         Fetch all members of a group with pagination.
 
         Args:
             group_id: The group ID or email
             include_derived: Also list the members of nested groups
+            conclusive: Raise on a page that is neither a members list nor the directory's empty answer,
+                instead of taking it as an empty last page
 
         Returns:
             List of member dictionaries
@@ -1880,6 +1989,11 @@ class GoogleDriveTeamConnector(BaseConnector):
                     pageToken=page_token,
                     maxResults=200  # Maximum allowed by Google Admin API
                 )
+                if conclusive and not (
+                    isinstance(result, dict) and isinstance(result.get("members"), list)
+                    or self._is_empty_members_answer(result)
+                ):
+                    raise ValueError(f"members.list gave group {group_id} a page that is not a members list")
 
                 page_members = result.get("members", [])
                 members.extend(page_members)
@@ -3014,6 +3128,18 @@ class GoogleDriveTeamConnector(BaseConnector):
             {"driveIds": sorted(set(synced_drive_ids) | set(not_removed) | (known & self._listed_shared_drive_ids))},
         )
 
+    async def _note_kept_shared_drive(self, drive_id: str) -> None:
+        """A shared drive a member lists that the admin listing left out is not written this run, so the full sync's
+        unlink would take its members' access unless it is noted kept. Failing that, nothing may be unlinked."""
+        if drive_id in self._listed_shared_drive_ids or drive_id in self._kept_drives_noted:
+            return
+        self._kept_drives_noted.add(drive_id)
+        try:
+            await self.data_entities_processor.note_kept_record_group(self.connector_id, drive_id)
+        except Exception as e:
+            self._sync_ledger.note_incomplete()
+            self.logger.warning(f"Shared drive {drive_id} is kept but could not be noted kept: {e}")
+
     async def _shared_drive_is_gone(self, drive_id: str) -> bool:
         return await self._shared_drive_exists(drive_id) is False
 
@@ -3045,10 +3171,11 @@ class GoogleDriveTeamConnector(BaseConnector):
             )
 
             # Create user-specific GoogleDriveDataSource from the client
-            user_drive_data_source = GoogleDriveDataSource(
+            user_drive_data_source = self._with_metadata(GoogleDriveDataSource(
                 user_drive_client.get_client(),
                 executor=self._drive_executor,
-            )
+                resilience=self.resilience,
+            ))
 
             # Fetch root drive info to get the actual drive ID
             drive_info = await user_drive_data_source.files_get(
@@ -5425,6 +5552,10 @@ class GoogleDriveTeamConnector(BaseConnector):
                 is_shared=is_shared,
             )
             set_drive_people(file_record, people)
+            held = held_metadata(existing_record)
+            if apply_source_metadata(file_record, existing_record, self._drive_metadata.fields_for(metadata, held)):
+                is_updated = True
+                metadata_changed = True
 
             if existing_record and not content_changed:
                 self.logger.debug(f"No content change for file {file_record.record_name} setting indexing status as prev value")
@@ -6062,7 +6193,9 @@ class GoogleDriveTeamConnector(BaseConnector):
             connector_instance_id=self.connector_id
         )
 
-        return GoogleDriveDataSource(user_drive_client.get_client(), executor=self._drive_executor)
+        return GoogleDriveDataSource(
+            user_drive_client.get_client(), executor=self._drive_executor, resilience=self.resilience
+        )
 
     async def _resolve_folder_scope_across_users(self, users: List[AppUser]) -> None:
         """
@@ -7036,6 +7169,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                         self.logger.warning(f"Skipping drive without ID: {drive_name}")
                         continue
 
+                    await self._note_kept_shared_drive(drive_id)
                     try:
                         self.logger.info(f"Syncing shared drive '{drive_name}' (ID: {drive_id}) for user {user.email}")
 
@@ -7643,10 +7777,11 @@ class GoogleDriveTeamConnector(BaseConnector):
                 ):
                     drive_data_source = self.drive_data_source
                 else:
-                    drive_data_source = GoogleDriveDataSource(
+                    drive_data_source = self._with_metadata(GoogleDriveDataSource(
                         drive_service,
                         executor=self._drive_executor,
-                    )
+                        resilience=self.resilience,
+                    ))
             metadata_request = drive_service.files().get(
                 fileId=file_id,
                 fields=DRIVE_STREAM_FILE_GET_FIELDS,
@@ -7843,10 +7978,11 @@ class GoogleDriveTeamConnector(BaseConnector):
             ):
                 drive_data_source = self.drive_data_source
             else:
-                drive_data_source = GoogleDriveDataSource(
+                drive_data_source = self._with_metadata(GoogleDriveDataSource(
                     drive_service,
                     executor=self._drive_executor,
-                )
+                    resilience=self.resilience,
+                ))
 
             mime_type = file_metadata.get("mimeType", "application/octet-stream")
             if is_shortcut_mime(mime_type):
@@ -8056,10 +8192,11 @@ class GoogleDriveTeamConnector(BaseConnector):
                 ):
                     user_drive_data_source = self.drive_data_source
                 else:
-                    user_drive_data_source = GoogleDriveDataSource(
+                    user_drive_data_source = self._with_metadata(GoogleDriveDataSource(
                         drive_service,
                         executor=self._drive_executor,
-                    )
+                        resilience=self.resilience,
+                    ))
                 fields = 'user(displayName,emailAddress,permissionId)'
                 user_about = await user_drive_data_source.about_get(fields=fields)
                 api_user_id = user_about.get('user', {}).get('permissionId')
@@ -8089,10 +8226,11 @@ class GoogleDriveTeamConnector(BaseConnector):
             ):
                 user_drive_data_source = self.drive_data_source
             else:
-                user_drive_data_source = GoogleDriveDataSource(
+                user_drive_data_source = self._with_metadata(GoogleDriveDataSource(
                     drive_service,
                     executor=self._drive_executor,
-                )
+                    resilience=self.resilience,
+                ))
             user_email = api_user_email or resolved_email
             # _process_drive_item keys off user_email only and ignores user_id (shared-drive
             # sync passes "" for it), so a missing permissionId must not abort the reindex.

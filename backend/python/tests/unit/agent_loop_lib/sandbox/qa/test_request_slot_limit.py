@@ -27,6 +27,7 @@ from app.agent_loop_lib.sandbox.manager import (
     SandboxManager,
     SandboxType,
 )
+from tests.support.settle import settle
 
 
 class _PerCall:
@@ -176,13 +177,25 @@ async def test_the_request_wait_and_the_governor_wait_share_one_deadline() -> No
     governor = SandboxResourceGovernor.in_process(GovernorLimits(max_total_sandboxes=1))
     other, other_sid = await _chat(governor)
     manager, sid = await _chat(governor, slot_wait_s=0.2, max_slots_per_request=1)
-    loop = asyncio.get_running_loop()
+    asked: list[float] = []
+    acquire = governor.acquire
+
+    async def recorded(*args: object, wait_s: float = 0.0, **kwargs: object) -> object:
+        asked.append(wait_s)
+        return await acquire(*args, wait_s=wait_s, **kwargs)
+
+    governor.acquire = recorded  # type: ignore[method-assign]
+
+    async def second() -> None:
+        async with manager.slot(SandboxType.CODING, sid):
+            pass
+
     async with manager.slot(SandboxType.CODING, sid):
-        started = loop.time()
+        asked.clear()
         with pytest.raises(SandboxLimitExceeded):
-            async with manager.slot(SandboxType.CODING, sid):
-                pass
-    assert loop.time() - started < 1.0
+            await settle(second())
+    # The governor is given what is left of the request's 0.2 s, never a wait of its own.
+    assert all(0.0 <= wait <= 0.2 for wait in asked)
     del other, other_sid
 
 

@@ -1,0 +1,120 @@
+[
+  {
+    "description": "writer allowlist: only node writes interaction.declined",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "run_2",
+      "seq": 14,
+      "runId": "run_2",
+      "type": "interaction.declined",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-11-13T12:00:00.000Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "data": {
+        "interactionId": "ix.approve.t2.0",
+        "scope": "conversation",
+        "toolId": "jira@default/create_issue",
+        "key": "sha256:4c5c0f51fdaf2b50038b8c674f654f5407e153408d5688d5b5fbcf38395aa0c3",
+        "by": "p_user_1",
+        "reason": "Not this project: we track it in the roadmap board"
+      }
+    }
+  },
+  {
+    "description": "a decline that names no person: it would reach everyone's runs",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "run_2",
+      "seq": 14,
+      "runId": "run_2",
+      "type": "interaction.declined",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-11-13T12:00:00.000Z",
+      "writer": "node",
+      "visibility": "owner",
+      "data": {
+        "interactionId": "ix.approve.t2.0",
+        "scope": "conversation",
+        "toolId": "jira@default/create_issue",
+        "key": "sha256:4c5c0f51fdaf2b50038b8c674f654f5407e153408d5688d5b5fbcf38395aa0c3",
+        "reason": "Not this project: we track it in the roadmap board"
+      }
+    }
+  },
+  {
+    "description": "a decline that names no key",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "run_2",
+      "seq": 14,
+      "runId": "run_2",
+      "type": "interaction.declined",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-11-13T12:00:00.000Z",
+      "writer": "node",
+      "visibility": "owner",
+      "data": {
+        "interactionId": "ix.approve.t2.0",
+        "scope": "conversation",
+        "toolId": "jira@default/create_issue",
+        "by": "p_user_1",
+        "reason": "Not this project: we track it in the roadmap board"
+      }
+    }
+  },
+  {
+    "description": "who declined is a principal reference, never a name",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "run_2",
+      "seq": 14,
+      "runId": "run_2",
+      "type": "interaction.declined",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-11-13T12:00:00.000Z",
+      "writer": "node",
+      "visibility": "owner",
+      "data": {
+        "interactionId": "ix.approve.t2.0",
+        "scope": "conversation",
+        "toolId": "jira@default/create_issue",
+        "key": "sha256:4c5c0f51fdaf2b50038b8c674f654f5407e153408d5688d5b5fbcf38395aa0c3",
+        "by": "alice",
+        "reason": "Not this project: we track it in the roadmap board"
+      }
+    }
+  },
+  {
+    "description": "a reason longer than a person may give",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "run_2",
+      "seq": 14,
+      "runId": "run_2",
+      "type": "interaction.declined",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-11-13T12:00:00.000Z",
+      "writer": "node",
+      "visibility": "owner",
+      "data": {
+        "interactionId": "ix.approve.t2.0",
+        "scope": "conversation",
+        "toolId": "jira@default/create_issue",
+        "key": "sha256:4c5c0f51fdaf2b50038b8c674f654f5407e153408d5688d5b5fbcf38395aa0c3",
+        "by": "p_user_1",
+        "reason": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+      }
+    }
+  }
+]

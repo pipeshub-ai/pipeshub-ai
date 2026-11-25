@@ -117,11 +117,11 @@ class TestLazyDisclosure:
 
     def test_the_toolset_line_says_what_it_can_do(self) -> None:
         stable, _ = _blocks(_EXACT, disclosure="lazy")
-        load_first = stable.split("Tools you must load before calling", 1)[1]
+        load_first = stable.split("Tools outside your tool list", 1)[1]
         line = next(line for line in load_first.splitlines() if line.startswith("- `calculator`"))
         assert "date differences" in line and "word counts" in line
 
-    async def test_fetching_the_named_toolset_makes_the_tools_callable(self) -> None:
+    async def test_fetching_the_named_toolset_answers_its_granted_tools(self) -> None:
         registry = _registry()
         group_connector_toolsets(registry, _EXACT)
         agent = _FakeAgent(AgentSpec(name="pipeshub-agent", tool_names=_EXACT, tool_disclosure="lazy"))
@@ -132,8 +132,9 @@ class TestLazyDisclosure:
         )
 
         assert result.is_error is False
-        # The grant bounds the fetch: the two legacy tools stay out.
-        assert agent.visible_tools == set(_EXACT)
+        # The grant bounds the fetch: the two legacy tools stay out. The list itself never grows (R4).
+        assert {t["name"] for t in result.content["tools"]} == set(_EXACT)
+        assert agent.visible_tools is None
 
     def test_pinned_toolset_is_named_by_its_tools(self) -> None:
         section = _section(_blocks(_EXACT, disclosure="lazy", pinned=["calculator"])[0])

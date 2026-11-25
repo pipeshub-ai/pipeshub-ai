@@ -21,6 +21,7 @@ from app.connectors.core.constants import IconPaths
 from app.connectors.core.registry.connector_builder import CommonFields
 from app.connectors.core.registry.tool_builder import (
     ToolDefinition,
+    ToolProvider,
     ToolsetBuilder,
     ToolsetCategory,
 )
@@ -133,7 +134,7 @@ tools: List[ToolDefinition] = [
 
 
 # Register Dropbox toolset
-@ToolsetBuilder("Dropbox")\
+@ToolsetBuilder("Dropbox", provider=ToolProvider.CONNECTOR)\
     .in_group("Storage")\
     .with_description("Dropbox integration for file storage and management")\
     .with_category(ToolsetCategory.APP)\
@@ -213,7 +214,7 @@ class Dropbox:
         short_description="Get current Dropbox account information",
         description="Get the current authenticated Dropbox account information.",
         parameters=[],
-        tags=[Tag(key="category", value="storage"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="storage"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_account_info(self) -> Tuple[bool, str]:
         """Get current account information"""
@@ -262,7 +263,7 @@ class Dropbox:
                 required=False,
             ),
         ],
-        tags=[Tag(key="category", value="storage"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="storage"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def list_folder(
         self,
@@ -321,7 +322,7 @@ class Dropbox:
                 required=False,
             ),
         ],
-        tags=[Tag(key="category", value="storage"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="storage"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_metadata(
         self,
@@ -365,7 +366,7 @@ class Dropbox:
                 description="Path of the file to download",
             ),
         ],
-        tags=[Tag(key="category", value="storage"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="storage"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def download_file(self, path: str) -> Tuple[bool, str]:
         """Download a file from Dropbox"""
@@ -414,7 +415,7 @@ class Dropbox:
                 required=False,
             ),
         ],
-        tags=[Tag(key="category", value="storage"), Tag(key="type", value="create")],
+        tags=[Tag(key="category", value="storage"), Tag(key="type", value="create"), Tag(key="effect", value="write")],
     )
     async def upload_file(
         self,
@@ -461,7 +462,7 @@ class Dropbox:
                 description="Path of the file or folder to delete",
             ),
         ],
-        tags=[Tag(key="category", value="storage"), Tag(key="type", value="delete")],
+        tags=[Tag(key="category", value="storage"), Tag(key="type", value="delete"), Tag(key="effect", value="write")],
     )
     async def delete_file(self, path: str) -> Tuple[bool, str]:
         """Delete a file or folder from Dropbox"""
@@ -494,7 +495,7 @@ class Dropbox:
                 description="Path where to create the folder",
             ),
         ],
-        tags=[Tag(key="category", value="storage"), Tag(key="type", value="create")],
+        tags=[Tag(key="category", value="storage"), Tag(key="type", value="create"), Tag(key="effect", value="write")],
     )
     async def create_folder(self, path: str) -> Tuple[bool, str]:
         """Create a folder in Dropbox"""
@@ -539,7 +540,7 @@ class Dropbox:
                 required=False,
             ),
         ],
-        tags=[Tag(key="category", value="storage"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="storage"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def search(
         self,
@@ -586,7 +587,7 @@ class Dropbox:
                 description="Path of the file or folder",
             ),
         ],
-        tags=[Tag(key="category", value="storage"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="storage"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
     )
     async def get_shared_link(
         self,

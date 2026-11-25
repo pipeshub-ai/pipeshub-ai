@@ -644,6 +644,16 @@ class TestSearchEndpoint:
         )
 
 
+class TestSearchEditionSeam:
+    """Search resolves its LLM through ``app.edition_config``, the seam an edition replaces."""
+
+    def test_search_uses_the_edition_resolver(self) -> None:
+        import app.api.routes.search as search_route
+        import app.edition_config as edition_config
+
+        assert search_route.resolve_llm_for_search is edition_config.resolve_llm_for_search
+
+
 # ---------------------------------------------------------------------------
 # Query rewrite/expansion failures must not cost the search
 # ---------------------------------------------------------------------------
@@ -917,7 +927,7 @@ class TestSearchSurvivesQueryTransformationFailure:
     async def test_a_rewrite_that_never_answers_does_not_hold_the_search(self) -> None:
         """A stalled LLM call gives up at the route's bound, not at the LLM's own timeout of minutes."""
         request, retrieval = self._build_request(), self._retrieval()
-        async def never(_query: str) -> str:
+        async def never(_query: str, **_kwargs: object) -> str:
             await asyncio.Event().wait()
             return "unreachable"
 
@@ -1102,7 +1112,11 @@ class TestSearchWithoutQueryRewrite:
         self, body: SearchQuery, retrieval: MagicMock, request: MagicMock | None = None
     ) -> tuple[JSONResponse, MagicMock, MagicMock]:
         rewrite, expansion = self._chain("rewritten q"), self._chain("variant a\nvariant b")
+        # The model comes from the search LLM extension point, whichever resolver it holds.
         with patch(
+            "app.api.routes.search.resolve_llm_for_search",
+            new=AsyncMock(return_value=retrieval.llm),
+        ), patch(
             "app.api.routes.search.setup_query_transformation",
             return_value=(rewrite, expansion),
         ) as setup:

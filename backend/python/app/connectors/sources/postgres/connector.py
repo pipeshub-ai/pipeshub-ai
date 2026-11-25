@@ -85,7 +85,9 @@ from app.connectors.core.sql.qualified_names import (
     split_qualified_name,
 )
 from app.connectors.core.sql.record_moves import hold_renames, rename_updates
+from app.connectors.core.sql.sync_lifecycle import note_tables_kept
 from app.connectors.core.sql.sync_outcome import SyncOutcome
+from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
 from app.connectors.sources.postgres.apps import PostgreSQLApp
 from app.connectors.sources.postgres.catalog_diff import (
     PostgresTableState,
@@ -582,6 +584,7 @@ class PostgreSQLConnector(BaseConnector):
         self._names_changed: set[str] = set()
         # The state saved as an incremental sync moves records; see run_incremental_sync.
         self._checkpoint: dict[str, PostgresTableState] | None = None
+        self._skipped_part = False
         self._frontend_url: str = os.getenv("FRONTEND_PUBLIC_URL", "").rstrip("/")
 
         self._schema_filter_cache: list[FilterOption] = []
@@ -721,6 +724,7 @@ class PostgreSQLConnector(BaseConnector):
             self._structure_changed = set()
             self._names_changed = set()
             self._checkpoint = None
+            self._skipped_part = False
 
             if not self.data_source:
                 raise ConnectionError("PostgreSQL connector not initialized")
@@ -753,6 +757,14 @@ class PostgreSQLConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"❌ [Sync] Error: {e}", exc_info=True)
             raise
+
+    def full_sync_coverage(self) -> FullSyncCoverage:
+        """Incomplete only when the stored records of a table left as stored could not be looked up.
+
+        A listed table that could not be read or written is still at the
+        source: its stored records are noted kept, so a full sync unlinks the rest.
+        """
+        return FullSyncCoverage(complete=not self._skipped_part)
 
     async def _resolve_restructured(self) -> None:
         """Turn the restructured tables' ids into the ids of the records saved for them.
@@ -889,6 +901,18 @@ class PostgreSQLConnector(BaseConnector):
                 await self._remove_dropped_columns(schema.name, tables)
 
             self.sync_stats.tables_new += len(synced)
+
+            unwritten = listed - synced
+            if not await note_tables_kept(
+                self.data_entities_processor, self.data_store_provider, self.connector_id, unwritten,
+                logger=self.logger,
+            ):
+                self._skipped_part = True
+                self.sync_stats.errors += 1
+                self.logger.warning(
+                    f"Could not look up the stored records of {len(unwritten)} table(s) not written; "
+                    "a full sync unlinks nothing this sync"
+                )
 
             undeleted = await self._remove_stale_tables(listed)
             await self._remove_stale_schema_groups(synced_schemas=[s.name for s in schemas])
@@ -1100,7 +1124,7 @@ class PostgreSQLConnector(BaseConnector):
         )
         return min(db_row_count, max_rows)
 
-    async def _get_permissions(self) -> list[Permission]:
+    async def _get_permissions(self) -> list[Permission] | None:
         return await database_permissions(self)
 
     async def _build_table_record(
@@ -1490,12 +1514,15 @@ class PostgreSQLConnector(BaseConnector):
         for table in tables:
             try:
                 record, _ = await self._build_table_record(schema_name, table)
-                yield (record, [])
+                # Before the table is yielded: a table whose columns cannot be
+                # built is not written either, so it is not saved as synced.
                 stored = (
                     await self._typed_columns(await self._stored_columns(record.external_record_id))
                     if table.profiling_failed else None
                 )
-                for col_record in self._build_column_records(record, table, stored):
+                columns = self._build_column_records(record, table, stored)
+                yield (record, [])
+                for col_record in columns:
                     yield (col_record, [])
                 await asyncio.sleep(0)
             except Exception as e:

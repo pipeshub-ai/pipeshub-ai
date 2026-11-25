@@ -1,0 +1,20 @@
+[
+  {
+    "description": "a revocation that says nothing of what it reached",
+    "instance": {
+      "revoked": {
+        "grantId": "cg_0000000000000000000000000000000000000000",
+        "toolId": "web@searxng/fetch_url",
+        "tool": {
+          "app": "web",
+          "name": "fetch_url"
+        },
+        "destination": "onyx.app",
+        "sensitivity": "private",
+        "grantedBy": "5f1d7c2e9b1a4c3d2e1f0a9b",
+        "grantedByName": "Ada Lovelace",
+        "grantedAt": "2026-11-07T12:32:30.000Z"
+      }
+    }
+  }
+]

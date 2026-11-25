@@ -4,7 +4,7 @@ import { render, screen, cleanup, fireEvent } from '@testing-library/react';
 import { Theme } from '@radix-ui/themes';
 
 import en from '@/lib/i18n/locales/en-US.json';
-import { ErrorBoundary, ErrorFallback } from '../error-boundary';
+import { ErrorBoundary, ErrorFallback, isChunkLoadError, reloadOnceForChunk } from '../error-boundary';
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
@@ -78,5 +78,39 @@ describe('ErrorBoundary', () => {
     const alert = container.querySelector('[role="alert"]') as HTMLElement;
     expect(alert.classList.contains('viewport-height')).toBe(false);
     expect(alert.style.height).toBe('100%');
+  });
+});
+
+describe('QA-AUTO F2: a code split that failed to load reloads the page once', () => {
+  const chunk = () => Object.assign(new Error('Loading chunk 4777 failed.\n(error: /_next/static/chunks/4777.js)'), { name: 'ChunkLoadError' });
+
+  it('knows a chunk failure by name or message, and nothing else', () => {
+    expect(isChunkLoadError(chunk())).toBe(true);
+    expect(isChunkLoadError(new Error('Loading CSS chunk 12 failed.'))).toBe(true);
+    expect(isChunkLoadError(new Error('boom'))).toBe(false);
+    expect(isChunkLoadError(null)).toBe(false);
+  });
+
+  it('reloads once, then not again within the window, then again after it', () => {
+    sessionStorage.clear();
+    const reload = vi.fn();
+    expect(reloadOnceForChunk(chunk(), 1_000_000, sessionStorage, reload)).toBe(true);
+    expect(reloadOnceForChunk(chunk(), 1_010_000, sessionStorage, reload)).toBe(false);
+    expect(reload).toHaveBeenCalledTimes(1);
+    expect(reloadOnceForChunk(chunk(), 1_040_001, sessionStorage, reload)).toBe(true);
+    expect(reload).toHaveBeenCalledTimes(2);
+  });
+
+  it('never reloads for an ordinary error', () => {
+    sessionStorage.clear();
+    const reload = vi.fn();
+    expect(reloadOnceForChunk(new Error('boom'), 1, sessionStorage, reload)).toBe(false);
+    expect(reload).not.toHaveBeenCalled();
+  });
+
+  it('the fallback still shows while the page reloads', () => {
+    sessionStorage.setItem('pipeshub-chunk-reload-at', String(Date.now()));
+    render(wrap(<ErrorFallback error={chunk()} reset={() => {}} />));
+    expect(screen.getByText(TITLE)).toBeTruthy();
   });
 });
