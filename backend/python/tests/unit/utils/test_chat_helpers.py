@@ -695,6 +695,38 @@ class TestFindFirstBlockIndexRecursive:
 # build_group_blocks
 # ===================================================================
 class TestBuildGroupBlocks:
+    def test_nested_lists_are_included_in_reading_order(self) -> None:
+        """A panel holding paragraphs and lists: the lists are child groups, and the panel's
+        text includes their items where they appear, not after the paragraphs."""
+        blocks = [{"data": t, "index": i} for i, t in enumerate(["lead", "a", "b", "mid", "c"])]
+        block_groups = [
+            {"type": "text_section", "children": {"block_ranges": [{"start": 0, "end": 0}, {"start": 3, "end": 3}],
+                                                  "block_group_ranges": [{"start": 1, "end": 2}]}},
+            {"type": "list", "children": {"block_ranges": [{"start": 1, "end": 2}]}},
+            {"type": "list", "children": {"block_ranges": [{"start": 4, "end": 4}]}},
+        ]
+        result = build_group_blocks(block_groups, blocks, 0)
+        assert [r["content"] for r in result] == ["lead", "a", "b", "mid", "c"]
+
+    def test_nested_table_is_not_expanded_into_the_group(self) -> None:
+        blocks = [{"data": "lead", "index": 0}, {"data": "row", "index": 1}]
+        block_groups = [
+            {"type": "text_section", "children": {"block_ranges": [{"start": 0, "end": 0}],
+                                                  "block_group_ranges": [{"start": 1, "end": 1}]}},
+            {"type": "table", "children": {"block_ranges": [{"start": 1, "end": 1}]}},
+        ]
+        result = build_group_blocks(block_groups, blocks, 0)
+        assert [r["content"] for r in result] == ["lead"]
+
+    def test_a_group_cycle_does_not_loop(self) -> None:
+        blocks = [{"data": "x", "index": 0}]
+        block_groups = [
+            {"type": "list", "children": {"block_ranges": [{"start": 0, "end": 0}], "block_group_ranges": [{"start": 1, "end": 1}]}},
+            {"type": "list", "children": {"block_group_ranges": [{"start": 0, "end": 0}]}},
+        ]
+        result = build_group_blocks(block_groups, blocks, 0)
+        assert [r["content"] for r in result] == ["x"]
+
     def test_out_of_bounds_parent_index_negative(self):
         result = build_group_blocks([], [], -1)
         assert result is None
