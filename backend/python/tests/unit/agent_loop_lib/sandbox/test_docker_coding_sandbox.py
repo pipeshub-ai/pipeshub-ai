@@ -605,12 +605,27 @@ class TestInstallPackagesIdempotency:
             assert kwargs["network"] == "sandbox_egress"
             assert kwargs["command"][7:9] == ["sandbox-deadline", "300"]
             assert "pip install" in kwargs["command"][11]
+            assert "--only-binary=:all:" in kwargs["command"][11]
             assert "-d 169.254.0.0/16 -j REJECT" in kwargs["command"][2]
 
             second = await sandbox.install_packages(["pandas"], "python")
             assert second.success is True
             assert second.installed == []
             assert fake_client.containers.create.call_count == 1
+
+
+    async def test_npm_install_ignores_lifecycle_scripts(self, tmp_path) -> None:
+        sandbox = DockerCodingSandbox(working_dir=str(tmp_path / "wd"))
+        container = _fake_container(exit_code=0, output_files={"node_modules/lodash/index.js": b""})
+        fake_client = MagicMock()
+        fake_client.containers.create.return_value = container
+        _with_egress_network(fake_client, "sandbox_egress")
+
+        with patch("docker.from_env", return_value=fake_client):
+            await sandbox.install_packages(["lodash@4.17.21"], "typescript")
+        command = fake_client.containers.create.call_args.kwargs["command"][11]
+        assert "npm install --ignore-scripts " in command
+        assert command.endswith(" lodash@4.17.21")
 
 
 class TestInstallFailsClosed:
