@@ -22709,8 +22709,14 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         edges = await self._kh_query(f"""{_cypher_by_ids("kh_p", "App|RecordGroup|Record", "[$start_id]")}
         RETURN COUNT {{ (kh_p)-[:NODE_RELATION]->() }} AS n""", parameters={"start_id": start_id}, txn_id=transaction)
         wide = bool(edges) and edges[0]["n"] > self._KH_SPLIT_START_MAX
-        kids = (await self._kh_split_children([start_id], app_id=app_id, org_id=org_id, transaction=transaction, stubs_only=wide,
-                                              indexed=wide and indexed, most=None if wide else self._KH_SPLIT_START_MAX))[start_id]
+        if not wide:
+            kids = (await self._kh_split_children([start_id], app_id=app_id, org_id=org_id, transaction=transaction,
+                                                  most=self._KH_SPLIT_START_MAX))[start_id]
+            # Children added between the count and the read: the read holds one past the bound, so the start is wide after all.
+            wide = len(kids) > self._KH_SPLIT_START_MAX
+        if wide:
+            kids = (await self._kh_split_children([start_id], app_id=app_id, org_id=org_id, transaction=transaction, stubs_only=True,
+                                                  indexed=indexed))[start_id]
         if wide and indexed and not all(k["stub"] for k in kids):
             # An edge stamped as a stub's whose child is not one: its order is stale, so the index cannot be trusted for this start.
             raise _KhOrderStale(start_id)
