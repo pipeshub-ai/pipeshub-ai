@@ -9,6 +9,7 @@ indexing accept such files, so a deck can be indexed and still have no preview.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import posixpath
 import zipfile
@@ -18,6 +19,7 @@ from typing import TYPE_CHECKING
 from lxml import etree
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -26,6 +28,9 @@ logger = logging.getLogger(__name__)
 MAX_ENTRIES = 10_000
 MAX_UNCOMPRESSED_BYTES = 512 * 1024 * 1024
 _MAX_RELATIONSHIPS_BYTES = 1024 * 1024
+# zipfile loads the whole directory before anything can be counted.
+_MAX_DIRECTORY_BYTES = 4 * 1024 * 1024
+_OPC_COMPRESSION = frozenset({zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED})
 _READ_CHUNK = 1024 * 1024
 _ENCRYPTED_ENTRY = 0x1
 
@@ -45,6 +50,14 @@ def _part_name(entry: str) -> str:
     return name
 
 
+def _check_directory(source: Path) -> None:
+    """Refuse an oversized directory. Asks zipfile's own reader, so that both see the same one."""
+    with source.open("rb") as handle:
+        end = zipfile._EndRecData(handle)  # noqa: SLF001 - the public API loads the directory first
+    if not end or end[zipfile._ECD_SIZE] > _MAX_DIRECTORY_BYTES:  # noqa: SLF001
+        raise _NotRepairableError("no directory, or one over the size limit")
+
+
 def _parts(archive: zipfile.ZipFile) -> dict[str, zipfile.ZipInfo]:
     """Each part once. Part names are case-insensitive; a repeated entry's last
     copy is the one zip readers use."""
@@ -58,6 +71,8 @@ def _parts(archive: zipfile.ZipFile) -> dict[str, zipfile.ZipInfo]:
             continue
         if info.flag_bits & _ENCRYPTED_ENTRY:
             raise _NotRepairableError("encrypted entry")
+        if info.compress_type not in _OPC_COMPRESSION:
+            raise _NotRepairableError("compression an Office package does not use")
         name = _part_name(info.filename)
         if names.setdefault(name.lower(), name) == name:
             parts[name] = info
@@ -69,10 +84,14 @@ def _parts(archive: zipfile.ZipFile) -> dict[str, zipfile.ZipInfo]:
 def _root_relationships(archive: zipfile.ZipFile, parts: dict[str, zipfile.ZipInfo]) -> bytes:
     """The package's root relationships without those to parts that are missing."""
     info = parts[_ROOT_RELS]
-    if info.file_size > _MAX_RELATIONSHIPS_BYTES:
+    # A sized read: the declared size is the file's own claim, and an unsized
+    # read inflates everything before it is cut to that claim.
+    with archive.open(info) as reader:
+        content = reader.read(_MAX_RELATIONSHIPS_BYTES + 1)
+    if len(content) > _MAX_RELATIONSHIPS_BYTES:
         raise _NotRepairableError("root relationships too large")
     parser = etree.XMLParser(resolve_entities=False, no_network=True, load_dtd=False, huge_tree=False)
-    root = etree.fromstring(archive.read(info), parser)
+    root = etree.fromstring(content, parser)
     present = {name.lower() for name in parts}
     for relationship in list(root.iter(_RELATIONSHIP)):
         if relationship.get("TargetMode") == "External":
@@ -83,7 +102,8 @@ def _root_relationships(archive: zipfile.ZipFile, parts: dict[str, zipfile.ZipIn
     return etree.tostring(root, xml_declaration=True, encoding="UTF-8", standalone=True)
 
 
-def _rebuild(source: Path, target: Path) -> None:
+def _rebuild(source: Path, target: Path, stopped: Callable[[], bool]) -> None:
+    _check_directory(source)
     inflated = 0
     with zipfile.ZipFile(source) as archive:
         parts = _parts(archive)
@@ -95,26 +115,30 @@ def _rebuild(source: Path, target: Path) -> None:
                     continue
                 with archive.open(info) as reader, rebuilt.open(name, "w", force_zip64=False) as writer:
                     while chunk := reader.read(_READ_CHUNK):
+                        if stopped():
+                            raise _NotRepairableError("stopped")
                         inflated += len(chunk)
                         if inflated > MAX_UNCOMPRESSED_BYTES:
                             raise _NotRepairableError("over the size limits")
                         writer.write(chunk)
 
 
-def rebuild_package(source: Path, target: Path) -> bool:
+def rebuild_package(source: Path, target: Path, stopped: Callable[[], bool] = lambda: False) -> bool:
     """Write *source* to *target* as a clean package; False when it cannot be.
 
     Every part's bytes are kept (their CRC is checked on the way), except root
-    relationships to missing parts. Blocking: call it in a thread.
+    relationships to missing parts. Blocking: call it in a thread; it gives up soon
+    after *stopped* answers True.
     """
     try:
-        _rebuild(source, target)
+        _rebuild(source, target, stopped)
     except (
         _NotRepairableError, zipfile.BadZipFile, zipfile.LargeZipFile, zlib.error, etree.LxmlError,
         OSError, EOFError, ValueError, RuntimeError, NotImplementedError,
     ) as exc:
         # Not the message: it can quote the file.
         logger.info("Office package not rebuilt (%s)", type(exc).__name__)
-        target.unlink(missing_ok=True)
+        with contextlib.suppress(OSError):
+            target.unlink(missing_ok=True)
         return False
     return True

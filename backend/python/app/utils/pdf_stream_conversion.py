@@ -13,7 +13,7 @@ import logging
 import os
 import shutil
 import tempfile
-import time
+import threading
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from pathlib import Path
 from uuid import uuid4
@@ -148,13 +148,32 @@ async def _run_soffice(file_path: str, temp_dir: str, *, timeout: float) -> tupl
     # LibreOffice's own output is the only account of what went wrong.
     # %r keeps it on one log line.
     logger.warning(
-        "LibreOffice exited %s and wrote no PDF for a .%s file. stdout: %r stderr: %r",
+        "LibreOffice exited %s and wrote no PDF for a %r file. stdout: %r stderr: %r",
         process.returncode,
-        Path(file_path).suffix.lstrip("."),
+        Path(file_path).suffix,
         (conversion_output or b"").decode("utf-8", errors="replace"),
         stderr,
     )
     return None, stderr
+
+
+async def _rebuild_package(source: str, target: str, *, timeout: float) -> bool:
+    """Rebuild the package in a thread, within the conversion limit. The slot is
+    held until the thread is done, also when the caller is cancelled."""
+    stop = threading.Event()
+    async with libreoffice_convert.conversion_slots.slot():
+        worker = asyncio.ensure_future(asyncio.to_thread(rebuild_package, Path(source), Path(target), stop.is_set))
+        try:
+            return await asyncio.wait_for(asyncio.shield(worker), timeout=timeout)
+        except asyncio.TimeoutError as error:
+            logger.error("Rebuilding an Office package timed out after %ss", timeout)
+            raise _conversion_error(
+                HttpStatusCode.GATEWAY_TIMEOUT, CONVERSION_TIMED_OUT, "PDF conversion timed out"
+            ) from error
+        finally:
+            # The caller removes the directory next; the thread must not outlive it.
+            stop.set()
+            await asyncio.wait([worker])
 
 
 async def libreoffice_to_pdf(
@@ -173,20 +192,15 @@ async def libreoffice_to_pdf(
     or writes nothing (500); each is logged with its cause. A per-run profile is
     passed so two conversions do not share the default LibreOffice profile.
     """
-    started = time.monotonic()
     pdf_path, stderr = await _run_soffice(file_path, temp_dir, timeout=timeout)
     if pdf_path is not None:
         return pdf_path
 
     if libreoffice_convert.source_not_loaded(stderr):
-        source = Path(file_path)
-        rebuilt = source.with_name(f"{uuid4().hex}{source.suffix}")
-        # Inflating a package is work too: it counts against the conversion limit.
-        async with libreoffice_convert.conversion_slots.slot():
-            was_rebuilt = await asyncio.to_thread(rebuild_package, source, rebuilt)
-        if was_rebuilt:
-            remaining = max(1.0, timeout - (time.monotonic() - started))
-            pdf_path, stderr = await _run_soffice(str(rebuilt), temp_dir, timeout=remaining)
+        rebuilt = safe_conversion_input(temp_dir, Path(file_path).suffix)
+        if await _rebuild_package(file_path, rebuilt, timeout=timeout):
+            # Its own budget: time spent queueing for the first run is not the file's fault.
+            pdf_path, stderr = await _run_soffice(rebuilt, temp_dir, timeout=timeout)
             if pdf_path is not None:
                 logger.info("LibreOffice converted the file after its package was rebuilt")
                 return pdf_path
@@ -237,7 +251,7 @@ async def convert_file_to_pdf_stream(
         input_path = safe_conversion_input(directory, extension)
         await write_source(input_path)
         pdf_path = await libreoffice_to_pdf(input_path, directory, timeout=timeout)
-    except Exception:
+    except BaseException:
         shutil.rmtree(directory, ignore_errors=True)
         raise
     async for chunk in stream_file_then_remove(pdf_path, directory):

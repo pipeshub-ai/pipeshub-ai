@@ -92,6 +92,7 @@ _IMPORT_UNSUPPORTED = frozenset({"epub"})
 # after a while, so one bad moment does not keep every file of that type retrying.
 _PROBE_FAILURE_TTL_SECONDS = 300.0
 _format_probe_results: dict[tuple[str, str], tuple[bool, float]] = {}
+_probes_in_flight: dict[tuple[str, str], asyncio.Task[bool]] = {}
 
 
 class LibreOfficeCouldNotReadFileError(DocumentProcessingError):
@@ -274,6 +275,17 @@ async def _libreoffice_can_convert(input_ext: str, output_ext: str) -> bool | No
     if cached is not None and (cached[0] or now - cached[1] < _PROBE_FAILURE_TTL_SECONDS):
         return cached[0]
 
+    # Files that fail together share one probe.
+    loop = asyncio.get_running_loop()
+    probe = _probes_in_flight.get(key)
+    if probe is None or probe.done() or probe.get_loop() is not loop:
+        probe = loop.create_task(_probe_format(key, sample))
+        _probes_in_flight[key] = probe
+    return await asyncio.shield(probe)
+
+
+async def _probe_format(key: tuple[str, str], sample: tuple[str, str]) -> bool:
+    input_ext, output_ext = key
     sample_ext, sample_text = sample
     ok = False
     try:
@@ -284,7 +296,7 @@ async def _libreoffice_can_convert(input_ext: str, output_ext: str) -> bool | No
     # Any failure here, expected or not, means support could not be confirmed.
     except Exception:
         logger.debug("LibreOffice probe for .%s -> .%s raised", input_ext, output_ext, exc_info=True)
-    _format_probe_results[key] = (ok, now)
+    _format_probe_results[key] = (ok, time.monotonic())
     return ok
 
 
