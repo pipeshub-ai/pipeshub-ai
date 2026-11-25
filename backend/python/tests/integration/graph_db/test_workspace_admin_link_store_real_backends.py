@@ -132,8 +132,12 @@ async def test_arango_a_moved_link_keeps_its_key_so_the_next_upsert_repoints_it(
 
     keys = await p.execute_query("FOR l IN authenticatedAs FILTER l.connectorId == @c RETURN l._key", bind_vars={"c": conn})
     assert keys == [conn]
-    await p.upsert_authenticated_as(f"creator-{t}", f"adminstub-{t}", conn, org)
-    assert len(await _arango_links_of(p, conn)) == 1, "one link per connector, even after a move"
+    # The stub was merged away, so the next account is another live user: the link must move to it.
+    await p.execute_query("INSERT {_key: @u, orgId: @o} INTO users", bind_vars={"u": f"admin2-{t}", "o": org})
+    await p.upsert_authenticated_as(f"creator-{t}", f"admin2-{t}", conn, org)
+    assert await _arango_links_of(p, conn) == [f"admin2-{t}"], "one link per connector, at the new account"
+    keys = await p.execute_query("FOR l IN authenticatedAs FILTER l.connectorId == @c RETURN l._key", bind_vars={"c": conn})
+    assert keys == [conn]
 
 
 async def test_neo4j_a_link_moved_by_a_verified_email_change_is_still_removed(monkeypatch) -> None:
@@ -253,6 +257,10 @@ async def test_arango_concurrent_reauth_keeps_one_link(arango_provider) -> None:
             await p.execute_query("INSERT {_key: @u, orgId: @o} INTO users", bind_vars={"u": u, "o": org})
         await p.execute_query("INSERT {_from: @f, _to: @to, connectorId: @c, orgId: @o} INTO authenticatedAs",
                               bind_vars={"f": f"users/c-{t}", "to": f"users/{targets[0]}", "c": c, "o": org})
-        await asyncio.gather(*[p.upsert_authenticated_as(f"c-{t}", s, c, org) for s in targets], return_exceptions=True)
+        results = await asyncio.gather(
+            *[p.upsert_authenticated_as(f"c-{t}", s, c, org) for s in targets], return_exceptions=True,
+        )
+        # Concurrent writers may conflict, but one must win: the random-key link alone would also be a single link.
+        assert any(not isinstance(r, Exception) for r in results), f"round {rnd}: {results[0]!r}"
         links = await p.execute_query("FOR l IN authenticatedAs FILTER l.connectorId == @c RETURN {k: l._key, to: l._to}", bind_vars={"c": c})
-        assert len(links) == 1, f"round {rnd}: {links}"
+        assert [link["k"] for link in links] == [c], f"round {rnd}: {links}"
