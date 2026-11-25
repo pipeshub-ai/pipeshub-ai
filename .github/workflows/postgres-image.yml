@@ -17,6 +17,7 @@ on:
       - 'deployment/docker-compose/docker-compose.postgres-backup.yml'
       - 'deployment/docker-compose/pgbackrest.env.example'
       - 'deployment/docker-compose/scripts/pg-restore.sh'
+      - 'deployment/docker-compose/scripts/pg-restore-reach.pl'
       - 'deployment/docker-compose/tests/pg_backup_schedule_test.sh'
       - 'deployment/docker-compose/docker-compose.postgres-only.yml'
       - 'backend/db/**'
