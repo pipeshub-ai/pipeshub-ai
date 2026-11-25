@@ -91,7 +91,7 @@
     "bcryptjs": "^3.0.3",
     "bullmq": "^5.81.5",
     "cors": "^2.8.6",
-    "cron-parser": "4.9.0",
+    "cron-parser": "5.10.6",
     "crypto": "^1.0.1",
     "dotenv": "^18.0.9",
     "etcd3": "^1.1.2",
