@@ -24,7 +24,10 @@ from app.migrations.service_account_kind_migration import (
 from app.migrations.folder_mime_type_migration import run_folder_mime_type_migration
 from app.migrations.hierarchy_backfill_migration import run_hierarchy_backfill_migration
 from app.migrations.kb_apps_migration import run_kb_apps_migration
-from app.migrations.kh_listing_state_migration import run_kh_listing_state_migration
+from app.migrations.kh_listing_state_migration import (
+    run_kh_children_order_migration,
+    run_kh_listing_state_migration,
+)
 from app.migrations.node_relation_migration import run_node_relation_migration
 from app.migrations.record_link_migration import run_record_link_migration
 from app.migrations.redundant_group_edges_migration import run_redundant_group_edges_migration
@@ -186,6 +189,7 @@ async def _kh_graph_migrations(
             ("Hierarchy backfill", run_hierarchy_backfill_migration, ("Record link",)),
             ("Redundant group edges", run_redundant_group_edges_migration, ("Hierarchy backfill",)),
             ("Knowledge hub listing state", run_kh_listing_state_migration, ("Redundant group edges",)),
+            ("Knowledge hub children order", run_kh_children_order_migration, ("Redundant group edges",)),
         ]
     else:
         # The backfill would hang collection roots from the old KB groups the KB apps migration removes.

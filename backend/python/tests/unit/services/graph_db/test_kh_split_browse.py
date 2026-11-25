@@ -40,7 +40,7 @@ def _provider(world: World) -> Neo4jProvider:
 
     async def kh_query(query: str, parameters: dict[str, Any] | None = None, txn_id: str | None = None) -> list[dict]:
         ids = (parameters or {}).get("ids") or []
-        if "-[kh_d:NODE_RELATION]->() WHERE" in query:
+        if "-[:NODE_RELATION]->() } AS n" in query:
             return [{"n": len(world.children.get(parameters["start_id"], []))}]
         if "kh_c:Record|RecordGroup" in query:
             per_parent, stubs_only = parameters["per_parent"], "kh_c <> kh_p AND coalesce(kh_c.isPlaceholder, false)" in query

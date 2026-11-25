@@ -35,6 +35,7 @@ async def state_graph(neo4j_provider, neo4j_settings) -> dict:
     nodes, edges = _graph()
     await load_into_neo4j(neo4j_settings, nodes, edges)
     await neo4j_provider.stamp_kh_listing_state(batch_size=7)
+    await neo4j_provider.stamp_kh_children_order(batch_size=7)
     return {"nodes": nodes}
 
 
@@ -71,6 +72,7 @@ async def _labels(settings: dict, node_id: str) -> set[str]:
 
 async def test_the_stamp_leaves_nothing_stale(state_graph, neo4j_provider, neo4j_settings) -> None:
     assert await neo4j_provider.count_stale_kh_listing_state() == 0
+    assert await neo4j_provider.count_stale_kh_children_order() == 0
     assert await _labels(neo4j_settings, "v3-dec-deleted") >= {"KhDeleted"}
     assert await _labels(neo4j_settings, "v3-hidden") >= {"KhHidesChildren"}
     assert await _labels(neo4j_settings, "v3-dec-placeholder") >= {"KhPlaceholder"}
@@ -139,6 +141,8 @@ async def test_every_write_keeps_the_state_current(state_graph, neo4j_provider, 
 
     async def fresh(step: str) -> None:
         assert await p.count_stale_kh_listing_state() == 0, f"stale after {step}"
+        # The children order the wide browse reads (`KH_CHILDREN_ORDER_INDEX`): a child's edges carry its name and stub flag as they are now.
+        assert await p.count_stale_kh_children_order() == 0, f"children order stale after {step}"
 
     await p.batch_upsert_nodes([
         _node("ls-g1", groupName="Listing group", groupType="DRIVE"),
@@ -220,6 +224,7 @@ async def test_every_write_keeps_the_state_current(state_graph, neo4j_provider, 
         MATCH (a {id: 'ls-r2'}), (b {id: 'ls-r1'})
         CREATE (a)-[:NODE_RELATION {relationshipType: 'RELATED'}]->(b)""")
     assert await p.count_stale_kh_listing_state() > 0
+    assert await p.count_stale_kh_children_order() > 0
     await p.split_link_edges()
     await fresh("split_link_edges")
     await _cypher(neo4j_settings, """
