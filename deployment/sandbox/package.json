@@ -13,7 +13,7 @@
     "pdf-lib": "1.17.1",
     "pdfkit": "0.20.2",
     "pptxgenjs": "4.0.1",
-    "sharp": "0.35.4"
+    "sharp": "0.35.5"
   },
   "overrides": {
     "uuid": "11.1.1"
