@@ -1661,7 +1661,7 @@ async def perform_llm_health_check(
         )
 
     except asyncio.TimeoutError:
-        logger.error(
+        logger.warning(
             "LLM health check timed out for %s model %s (%s)", provider, model_string, friendly_name,
         )
         return JSONResponse(
@@ -1682,10 +1682,11 @@ async def perform_llm_health_check(
             },
         )
     except HTTPException as he:
-        logger.error("LLM health check failed for %s model %s: %s", provider, model_string, he)
+        logger.warning("LLM health check failed for %s model %s: %s", provider, model_string, he)
         return _http_exception_response(he)
     except Exception as e:
-        logger.error(
+        # Whoever ran the test is told; a model that refuses it is not a fault of this service.
+        logger.warning(
             "LLM health check failed for %s model %s (%s): %s",
             provider, model_string, friendly_name, e,
         )

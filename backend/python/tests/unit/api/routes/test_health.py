@@ -416,6 +416,21 @@ class TestPerformLlmHealthCheck:
             yield
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("error", [RuntimeError("ValidationException"), asyncio.TimeoutError()], ids=["refused", "timed out"])
+    async def test_a_model_that_fails_its_test_is_a_warning(self, error: Exception) -> None:
+        """The person who ran the test gets the reason; it raised an alert as a service error."""
+        logger = MagicMock()
+        config = {"provider": "bedrock", "configuration": {"model": "some-model"}}
+
+        with patch(f"{MODULE}._check_one_llm", new_callable=AsyncMock, side_effect=error):
+            from app.api.routes.health import perform_llm_health_check
+            resp = await perform_llm_health_check(config, logger)
+
+        assert resp.status_code >= 400
+        logger.error.assert_not_called()
+        logger.warning.assert_called()
+
+    @pytest.mark.asyncio
     async def test_success_text(self):
         logger = MagicMock()
         config = {"provider": "openai", "configuration": {"model": "gpt-4"}}
