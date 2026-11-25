@@ -7,6 +7,7 @@ answered by an in-memory stub, and our databases are in-memory fakes.
 """
 
 import base64
+import inspect
 import logging
 import re
 import sys
@@ -14,7 +15,7 @@ from datetime import datetime, timedelta, timezone
 from email.utils import format_datetime
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 from urllib.parse import parse_qs
 
 import httpx
@@ -45,19 +46,35 @@ from ms_graph_fakes import (
 from msgraph import GraphServiceClient
 from msgraph.generated.models.o_data_errors.o_data_error import ODataError
 
-from app.config.constants.arangodb import Connectors, OriginTypes
+from app.config.constants.arangodb import (
+    AppStatus,
+    CollectionNames,
+    Connectors,
+    OriginTypes,
+)
 from app.connectors.core.base.connector.connector_service import (
     BaseConnector,
     ConnectionCheckResult,
 )
+from app.connectors.core.registry.filters import FilterCollection, IndexingFilterKey
+from app.connectors.core.sync import sync_runner
+from app.connectors.core.sync.full_sync_coverage import FullSyncSeen
+from app.connectors.core.sync.sync_runner import run_sync_task
 from app.connectors.sources.microsoft.common.msgraph_client import MSGraphClient
+from app.connectors.sources.microsoft.onedrive import (
+    connector as onedrive_connector_module,
+)
 from app.connectors.sources.microsoft.onedrive.connector import (
+    KNOWN_DRIVES_KEY,
     MAX_PAGE_ATTEMPTS,
     OneDriveConnector,
     _drive_permissions_key,
     certificate_pem,
     certificate_problem,
     onedrive_config_action_items,
+)
+from app.connectors.sources.microsoft.sharepoint_online.container_tracker import (
+    ContainerTracker,
 )
 from app.models.entities import FileRecord, RecordGroupType, RecordType, SourcePerson
 from app.models.permission import EntityType, PermissionType
@@ -150,7 +167,9 @@ class Tenant:
         self.drive_delta: dict[str, TokenFeed] = {}
         self.groups_delta = TokenFeed("$deltatoken")
         self.groups_delta.by_token[None] = page([], delta_link=groups_link("G1"))
-        cloud.on("GET", "/v1.0/users", lambda _r: json_response(page(self.users)))
+        self.hidden_users = 0  # users the directory counts but the listing leaves out
+        cloud.on("GET", "/v1.0/users",
+                 lambda _r: json_response(page(self.users, count=len(self.users) + self.hidden_users)))
         cloud.on("GET", "/v1.0/groups", lambda _r: json_response(page(self.groups)))
         cloud.on("GET", GROUPS_DELTA_PATH, self.groups_delta)
 
@@ -2844,3 +2863,712 @@ class TestRunActionItems:
 
         assert codes(connector.last_action_items) == ["sharepoint_permission_missing"]
         assert connector.last_action_items[0].severity == "error"
+
+
+RECORDS, RECORD_GROUPS, USER_GROUPS = (
+    CollectionNames.RECORDS.value, CollectionNames.RECORD_GROUPS.value, CollectionNames.GROUPS.value,
+)
+
+
+def stored_nodes(db: FakeRecordsDb) -> set[str]:
+    return (
+        {f"{RECORDS}/{k}" for k in db.records}
+        | {f"{RECORD_GROUPS}/{k}" for k in db.record_groups}
+        | {f"{USER_GROUPS}/{k}" for k in db.user_groups}
+    )
+
+
+async def run_full_sync(connector: OneDriveConnector, db: FakeRecordsDb, checkpoints: FakeCheckpointStore) -> set[str]:
+    """Run ``run_sync`` as a full sync runs: its sync points deleted first, as the event service
+    does, then the sync runner's sweep. Returns the stored nodes the sweep unlinks: those stored
+    before the run that it neither wrote nor noted kept (none when the run reports itself incomplete).
+
+    The fake db notes each record, record group and user group written, as the real processor does
+    (a record also notes its drive's record group), and what the connector notes kept.
+    """
+    checkpoints.sync_points.clear()
+    before = stored_nodes(db)
+    seen = FullSyncSeen()
+
+    def note(collection: str, node_id: str | None) -> None:
+        if node_id:
+            seen.add(collection, node_id)
+
+    def note_record(record: Any) -> None:  # noqa: ANN401
+        note(RECORDS, record.external_record_id)
+        note(RECORD_GROUPS, record.external_record_group_id)
+
+    def wrap(name: str, mark: Any) -> Any:  # noqa: ANN401
+        original = getattr(db, name, None)
+
+        async def write(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+            # The connector passes some arguments by keyword; the marker gets them as the fake write bound them.
+            call = inspect.signature(original).bind(*args, **kwargs) if original else None
+            result = await original(*call.args, **call.kwargs) if call else None
+            mark(*(call.args if call else args))
+            return result
+
+        return write
+
+    def note_kept_records(connector_id: str, record_ids: list[str]) -> None:
+        for record in db.records.values():
+            if record.id in record_ids:
+                note(RECORDS, record.external_record_id)
+
+    patches = {
+        "on_new_records": wrap("on_new_records", lambda items: [note_record(r) for r, _ in items]),
+        "on_record_metadata_update": wrap("on_record_metadata_update", note_record),
+        "on_record_content_update": wrap("on_record_content_update", lambda r, *_: note_record(r)),
+        "on_updated_record_permissions": wrap("on_updated_record_permissions", lambda r, *_: note_record(r)),
+        "on_new_record_groups": wrap("on_new_record_groups", lambda gs: [note(RECORD_GROUPS, g.external_group_id) for g, _ in gs]),
+        "on_new_user_groups": wrap("on_new_user_groups", lambda gs: [note(USER_GROUPS, g.source_user_group_id) for g, _ in gs]),
+        "note_kept_user_group": wrap("note_kept_user_group", lambda _c, group_id: note(USER_GROUPS, group_id)),
+        "note_kept_record_group": wrap("note_kept_record_group", lambda _c, group_id: note(RECORD_GROUPS, group_id)),
+        "note_kept_user_groups": lambda c, gs: [note(USER_GROUPS, g.source_user_group_id) for g in gs],
+        "note_kept_records": note_kept_records,
+        "full_sync_running": lambda connector_id: True,
+        "begin_full_sync_run": lambda connector_id: seen,
+        "end_full_sync_run": lambda connector_id, run: None,
+    }
+    # A fault a test installed on the instance stays in place after the run.
+    overridden = {name: db.__dict__[name] for name in patches if name in db.__dict__}
+    for name, patch in patches.items():
+        setattr(db, name, patch)
+    graph = AsyncMock()
+    graph.get_document.return_value = {"id": CONNECTOR_ID, "status": AppStatus.FULL_SYNCING.value}
+    graph.unlink_nodes_missed_by_full_sync.return_value = (0, True)
+    try:
+        await run_sync_task(connector, CONNECTOR_ID, graph, logging.getLogger("test.full_sync"),
+                            start_status=AppStatus.FULL_SYNCING.value)
+    finally:
+        for name in patches:
+            delattr(db, name)
+        for name, value in overridden.items():
+            setattr(db, name, value)
+    if not graph.unlink_nodes_missed_by_full_sync.await_count:
+        return set()
+    by_collection = graph.unlink_nodes_missed_by_full_sync.await_args.args[1]
+    still_stored = stored_nodes(db)
+    return {
+        node for node in before & still_stored
+        if node.partition("/")[2] not in by_collection.get(node.partition("/")[0], set())
+    }
+
+
+async def seed_ana_and_bo(cloud: MicrosoftCloudStub, tenant: Tenant, db: FakeRecordsDb,
+                          checkpoints: FakeCheckpointStore) -> tuple[OneDriveConnector, TokenFeed, TokenFeed]:
+    ana = tenant.add_user("u-ana", "ana@acme.com", "Ana")
+    bo = tenant.add_user("u-bo", "bo@acme.com", "Bo")
+    ana.by_token[None] = page(
+        [drive_item("a1", "a1.pdf"), drive_item("a2", "a2.pdf"), drive_item("a-old", "old.pdf")],
+        delta_link=delta_link("u-ana", "D1"),
+    )
+    bo.by_token[None] = page(
+        [drive_item("b1", "b1.pdf", drive="drive-bo", parent="root-bo"),
+         drive_item("b2", "b2.pdf", drive="drive-bo", parent="root-bo")],
+        delta_link=delta_link("u-bo", "D1"),
+    )
+    for item_id in ("a1", "a2", "a-old"):
+        tenant.share(item_id, [user_grant("u-ana", "ana@acme.com", "owner")])
+    for item_id in ("b1", "b2"):
+        tenant.share(item_id, [user_grant("u-bo", "bo@acme.com", "owner"), user_grant("u-ana", "ana@acme.com")],
+                     drive="drive-bo")
+    tenant.add_group("g-eng", "Eng", [member("u-ana", "ana@acme.com"), member("u-bo", "bo@acme.com")])
+    tenant.add_group("g-old", "Old", [member("u-ana", "ana@acme.com")])
+    cloud.on("GET", f"/v1.0/drives/{DRIVE}", {"id": DRIVE, "owner": {"user": {"id": "u-ana"}}})
+    connector = await ready_connector(db, checkpoints)
+    await connector.run_sync()
+    assert stored_nodes(db) == {
+        f"{RECORDS}/{i}" for i in ("a1", "a2", "a-old", "b1", "b2")
+    } | {f"{RECORD_GROUPS}/{DRIVE}", f"{RECORD_GROUPS}/drive-bo", f"{USER_GROUPS}/g-eng", f"{USER_GROUPS}/g-old"}
+
+    ana.by_token[None] = page([drive_item("a1", "a1.pdf"), drive_item("a2", "a2.pdf")], delta_link=delta_link("u-ana", "D2"))
+    bo.by_token[None] = page(
+        [drive_item("b1", "b1.pdf", drive="drive-bo", parent="root-bo"),
+         drive_item("b2", "b2.pdf", drive="drive-bo", parent="root-bo")],
+        delta_link=delta_link("u-bo", "D2"),
+    )
+    tenant.groups = [g for g in tenant.groups if g["id"] != "g-old"]
+    return connector, ana, bo
+
+
+class TestFullSyncUnlinksOnlyWhatIsGone:
+    """A full sync unlinks every stored node it neither writes nor notes kept. A node still in
+    OneDrive or the directory must not lose its links because the sync skipped it after an error;
+    what is really gone at the source still does.
+
+    Each scenario: a first sync stores Ana's drive (a1, a2, a-old), Bo's drive (b1, b2) and the
+    groups g-eng and g-old. Before the full sync a-old is deleted from Ana's drive and g-old from
+    the directory: both are really gone, and must still be unlinked.
+    """
+
+    REALLY_GONE = {f"{RECORDS}/a-old", f"{USER_GROUPS}/g-old"}
+
+    @pytest.fixture(autouse=True)
+    def no_retry_owed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # An incomplete full sync leaves the connector id in this module-level set for the rest of the process.
+        monkeypatch.setattr(sync_runner, "_INCOMPLETE_FULL_SYNC_RETRYING", set())
+
+    async def test_a_locked_users_drive_keeps_its_links(self, cloud, tenant, db, checkpoints) -> None:
+        connector, _, _ = await seed_ana_and_bo(cloud, tenant, db, checkpoints)
+        cloud.on("GET", "/v1.0/users/u-bo/drive", graph_error(423, "resourceLocked", "resourceLocked"))
+        cloud.on("GET", "/v1.0/drives/drive-bo", graph_error(423, "resourceLocked", "resourceLocked"))
+
+        unlinked = await run_full_sync(connector, db, checkpoints)
+
+        assert unlinked - self.REALLY_GONE == set()
+        assert unlinked & self.REALLY_GONE == self.REALLY_GONE
+
+    async def test_a_locked_users_drive_that_answers_keeps_its_links(self, cloud, tenant, db, checkpoints) -> None:
+        connector, _, _ = await seed_ana_and_bo(cloud, tenant, db, checkpoints)
+        cloud.on("GET", "/v1.0/users/u-bo/drive", graph_error(423, "resourceLocked", "resourceLocked"))
+        cloud.on("GET", "/v1.0/drives/drive-bo", {"id": "drive-bo", "owner": {"user": {"id": "u-bo"}}})
+
+        unlinked = await run_full_sync(connector, db, checkpoints)
+
+        assert "drive-bo" in db.kept_record_groups
+        assert connector.full_sync_coverage().complete is True
+        assert unlinked == self.REALLY_GONE
+
+    async def test_a_locked_users_drive_that_answers_404_keeps_its_links(self, cloud, tenant, db, checkpoints) -> None:
+        # The full sync drops the remembered owners; the drive id resolved on the first sync still names Bo.
+        connector, _, _ = await seed_ana_and_bo(cloud, tenant, db, checkpoints)
+        cloud.on("GET", "/v1.0/users/u-bo/drive", graph_error(423, "resourceLocked", "resourceLocked"))
+        cloud.on("GET", "/v1.0/drives/drive-bo", graph_error(404, "itemNotFound"))
+
+        unlinked = await run_full_sync(connector, db, checkpoints)
+
+        assert "drive-bo" in db.kept_record_groups
+        assert unlinked == self.REALLY_GONE
+
+    async def test_a_drive_whose_check_fails_keeps_its_links(self, cloud, tenant, db, checkpoints) -> None:
+        connector, _, _ = await seed_ana_and_bo(cloud, tenant, db, checkpoints)
+        cloud.on("GET", "/v1.0/users/u-bo/drive", graph_error(500, "generalException"))
+        cloud.on("GET", "/v1.0/drives/drive-bo", {"id": "drive-bo", "owner": {"user": {"id": "u-bo"}}})
+
+        unlinked = await run_full_sync(connector, db, checkpoints)
+
+        assert unlinked - self.REALLY_GONE == set()
+        assert unlinked & self.REALLY_GONE == self.REALLY_GONE
+
+    async def test_a_drive_whose_delta_fails_keeps_its_links(self, cloud, tenant, db, checkpoints) -> None:
+        connector, _, bo = await seed_ana_and_bo(cloud, tenant, db, checkpoints)
+        bo.by_token[None] = graph_error(500, "generalException")
+
+        unlinked = await run_full_sync(connector, db, checkpoints)
+
+        assert unlinked - self.REALLY_GONE == set()
+        assert unlinked & self.REALLY_GONE == self.REALLY_GONE
+
+    async def test_an_item_that_fails_to_process_keeps_its_links(self, cloud, tenant, db, checkpoints) -> None:
+        connector, ana, _ = await seed_ana_and_bo(cloud, tenant, db, checkpoints)
+        broken = drive_item("a2", "a2.pdf")
+        del broken["lastModifiedDateTime"]
+        ana.by_token[None] = page([drive_item("a1", "a1.pdf"), broken], delta_link=delta_link("u-ana", "D2"))
+
+        unlinked = await run_full_sync(connector, db, checkpoints)
+
+        assert unlinked - self.REALLY_GONE == set()
+        assert unlinked & self.REALLY_GONE == self.REALLY_GONE
+
+    async def test_an_item_whose_update_fails_to_save_keeps_its_links(self, cloud, tenant, db, checkpoints) -> None:
+        connector, _, _ = await seed_ana_and_bo(cloud, tenant, db, checkpoints)
+        save = db.on_updated_record_permissions
+
+        async def failing_for_a2(record: Any, permissions: list[Any]) -> None:  # noqa: ANN401
+            if record.external_record_id == "a2":
+                raise RuntimeError("database unavailable")
+            await save(record, permissions)
+
+        db.on_updated_record_permissions = failing_for_a2
+
+        unlinked = await run_full_sync(connector, db, checkpoints)
+
+        assert unlinked - self.REALLY_GONE == set()
+        assert unlinked & self.REALLY_GONE == self.REALLY_GONE
+
+    async def test_a_group_whose_members_are_forbidden_keeps_its_links(self, cloud, tenant, db, checkpoints) -> None:
+        connector, _, _ = await seed_ana_and_bo(cloud, tenant, db, checkpoints)
+        cloud.on("GET", "/v1.0/groups/g-eng/members", graph_error(403, "Authorization_RequestDenied"))
+
+        unlinked = await run_full_sync(connector, db, checkpoints)
+
+        assert db.user_groups["g-eng"] == ["ana@acme.com", "bo@acme.com"]
+        assert unlinked - self.REALLY_GONE == set()
+        assert unlinked & self.REALLY_GONE == self.REALLY_GONE
+
+    async def test_a_group_whose_members_fail_to_read_keeps_its_links(self, cloud, tenant, db, checkpoints) -> None:
+        connector, _, _ = await seed_ana_and_bo(cloud, tenant, db, checkpoints)
+        cloud.on("GET", "/v1.0/groups/g-eng/members", graph_error(500, "generalException"))
+
+        unlinked = await run_full_sync(connector, db, checkpoints)
+
+        assert db.user_groups["g-eng"] == ["ana@acme.com", "bo@acme.com"]
+        assert unlinked - self.REALLY_GONE == set()
+        assert unlinked & self.REALLY_GONE == self.REALLY_GONE
+
+    async def test_a_nested_group_member_failure_keeps_the_parent_group(self, cloud, tenant, db, checkpoints) -> None:
+        connector, _, _ = await seed_ana_and_bo(cloud, tenant, db, checkpoints)
+        cloud.on("GET", "/v1.0/groups/g-eng/members",
+                 page([member("u-ana", "ana@acme.com"), member("u-bo", "bo@acme.com"), nested("g-sub")]))
+        cloud.on("GET", "/v1.0/groups/g-sub/members", graph_error(500, "generalException"))
+
+        unlinked = await run_full_sync(connector, db, checkpoints)
+
+        assert db.kept_user_groups == ["g-eng"]
+        assert db.user_groups["g-eng"] == ["ana@acme.com", "bo@acme.com"]
+        assert unlinked == self.REALLY_GONE
+
+    async def test_a_group_that_fails_to_process_keeps_its_links(self, cloud, tenant, db, checkpoints) -> None:
+        connector, _, _ = await seed_ana_and_bo(cloud, tenant, db, checkpoints)
+        process_group = connector._process_single_group
+
+        async def failing_for_eng(group: Any) -> Any:  # noqa: ANN401
+            if group.id == "g-eng":
+                raise RuntimeError("unexpected payload")
+            return await process_group(group)
+
+        connector._process_single_group = failing_for_eng
+
+        unlinked = await run_full_sync(connector, db, checkpoints)
+
+        assert db.kept_user_groups == ["g-eng"]
+        assert db.user_groups["g-eng"] == ["ana@acme.com", "bo@acme.com"]
+        assert connector.full_sync_coverage().complete is True
+        assert unlinked == self.REALLY_GONE
+
+    async def test_a_group_that_cannot_be_noted_makes_the_full_sync_incomplete(self, cloud, tenant, db, checkpoints) -> None:
+        connector, _, _ = await seed_ana_and_bo(cloud, tenant, db, checkpoints)
+        cloud.on("GET", "/v1.0/groups/g-eng/members", graph_error(500, "generalException"))
+        db.note_kept_user_group = AsyncMock(side_effect=RuntimeError("database unavailable"))
+
+        unlinked = await run_full_sync(connector, db, checkpoints)
+
+        assert connector.full_sync_coverage().complete is False
+        assert unlinked == set()
+
+    async def test_a_readable_group_is_not_noted_kept(self, cloud, tenant, db, checkpoints) -> None:
+        connector, _, _ = await seed_ana_and_bo(cloud, tenant, db, checkpoints)
+
+        unlinked = await run_full_sync(connector, db, checkpoints)
+
+        assert db.kept_user_groups == []
+        assert unlinked == self.REALLY_GONE
+
+    async def test_a_deleted_users_drive_that_cannot_be_read_is_unlinked_not_deleted(
+        self, cloud, tenant, db, checkpoints,
+    ) -> None:
+        # Bo is no longer listed, so his drive is outside this run's users: it is left unseen even
+        # though it cannot be read, and only a 404 with his account gone deletes it.
+        connector, _, _ = await seed_ana_and_bo(cloud, tenant, db, checkpoints)
+        tenant.users = [u for u in tenant.users if u["id"] != "u-bo"]
+        cloud.on("GET", "/v1.0/users/u-bo", graph_error(404, "Request_ResourceNotFound"))
+        cloud.on("GET", "/v1.0/drives/drive-bo", graph_error(500, "generalException"))
+
+        unlinked = await run_full_sync(connector, db, checkpoints)
+
+        assert "drive-bo" in db.record_groups
+        assert db.kept_record_groups == []
+        assert unlinked == self.REALLY_GONE | {f"{RECORD_GROUPS}/drive-bo", f"{RECORDS}/b1", f"{RECORDS}/b2"}
+
+    async def test_what_is_gone_at_the_source_is_unlinked_or_deleted(self, cloud, tenant, db, checkpoints) -> None:
+        connector, _, _ = await seed_ana_and_bo(cloud, tenant, db, checkpoints)
+        tenant.users = [u for u in tenant.users if u["id"] != "u-bo"]
+        cloud.on("GET", "/v1.0/users/u-bo", graph_error(404, "Request_ResourceNotFound"))
+        cloud.on("GET", "/v1.0/drives/drive-bo", graph_error(404, "itemNotFound"))
+        tenant.add_user("u-cal", "cal@acme.com", "Cal")
+        cloud.on("GET", "/v1.0/users/u-cal/drive", graph_error(404, "ResourceNotFound", "User's mysite not found."))
+
+        before = stored_nodes(db)
+
+        unlinked = await run_full_sync(connector, db, checkpoints)
+
+        # The sync points a full sync deletes held the drive owners, so the drive's owner is not known
+        # and it is not deleted; unlinking it is what takes it away.
+        assert unlinked | (before - stored_nodes(db)) == self.REALLY_GONE | {
+            f"{RECORD_GROUPS}/drive-bo", f"{RECORDS}/b1", f"{RECORDS}/b2",
+        }
+
+    async def test_full_sync_coverage_is_complete_after_a_clean_run(self, cloud, tenant, db, checkpoints) -> None:
+        connector, _, _ = await seed_ana_and_bo(cloud, tenant, db, checkpoints)
+
+        unlinked = await run_full_sync(connector, db, checkpoints)
+
+        assert connector.full_sync_coverage().complete is True
+        assert unlinked == self.REALLY_GONE
+
+    async def test_the_incomplete_flag_is_reset_by_the_next_run(self, cloud, tenant, db, checkpoints) -> None:
+        connector, _, bo = await seed_ana_and_bo(cloud, tenant, db, checkpoints)
+        bo.by_token[None] = graph_error(500, "generalException")
+        records_in_group = db.get_records_in_record_group
+        db.get_records_in_record_group = AsyncMock(side_effect=RuntimeError("database unavailable"))
+
+        await run_full_sync(connector, db, checkpoints)
+        assert connector.full_sync_coverage().complete is False
+
+        db.get_records_in_record_group = records_in_group
+        bo.by_token[None] = page([], delta_link=delta_link("u-bo", "D3"))
+        await connector.run_sync()
+
+        assert connector.full_sync_coverage().complete is True
+
+    async def test_a_drive_whose_page_is_held_keeps_its_links(self, cloud, tenant, db, checkpoints) -> None:
+        connector, _, bo = await seed_ana_and_bo(cloud, tenant, db, checkpoints)
+        bo.by_token[None] = page(
+            [drive_item("b1", "b1.pdf", drive="drive-bo", parent="root-bo"),
+             drive_item("b2", "b2.pdf", drive="drive-bo", parent="root-bo", etag="v2", quick_xor="hash-2")],
+            delta_link=delta_link("u-bo", "D2"),
+        )
+        db.unreadable_file_records.add(db.records["b2"].id)
+
+        unlinked = await run_full_sync(connector, db, checkpoints)
+
+        assert "drive-bo" in db.kept_record_groups
+        assert connector.full_sync_coverage().complete is True
+        assert unlinked == self.REALLY_GONE
+
+    async def test_a_drive_that_cannot_be_kept_makes_the_full_sync_incomplete(self, cloud, tenant, db, checkpoints) -> None:
+        connector, _, bo = await seed_ana_and_bo(cloud, tenant, db, checkpoints)
+        bo.by_token[None] = graph_error(500, "generalException")
+        db.get_records_in_record_group = AsyncMock(side_effect=RuntimeError("database unavailable"))
+
+        unlinked = await run_full_sync(connector, db, checkpoints)
+
+        assert connector.full_sync_coverage().complete is False
+        assert unlinked == set()
+
+    async def test_an_incremental_run_does_not_page_a_failed_drive(self, cloud, tenant, db, checkpoints) -> None:
+        connector, _, bo = await seed_ana_and_bo(cloud, tenant, db, checkpoints)
+        bo.by_token["D1"] = graph_error(500, "generalException")
+        db.get_records_in_record_group = AsyncMock(wraps=db.get_records_in_record_group)
+
+        await connector.run_sync()
+
+        db.get_records_in_record_group.assert_not_awaited()
+        assert db.kept_record_groups == []
+        assert connector.full_sync_coverage().complete is True
+
+    async def test_healthy_drive_deletions_still_unlinked_when_another_drive_fails(self, cloud, tenant, db, checkpoints) -> None:
+        connector, _, bo = await seed_ana_and_bo(cloud, tenant, db, checkpoints)
+        bo.by_token[None] = graph_error(500, "generalException")
+
+        unlinked = await run_full_sync(connector, db, checkpoints)
+
+        assert db.kept_record_groups == ["drive-bo"]
+        assert f"{RECORDS}/a-old" in unlinked
+        assert connector.full_sync_coverage().complete is True
+
+    async def test_an_inactive_users_drive_is_still_unlinked(self, cloud, tenant, db, checkpoints) -> None:
+        connector, _, _ = await seed_ana_and_bo(cloud, tenant, db, checkpoints)
+        db.active_users = [u for u in db.active_users if u.email != "bo@acme.com"]
+        cloud.on("GET", "/v1.0/drives/drive-bo", {"id": "drive-bo", "owner": {"user": {"id": "u-bo"}}})
+
+        unlinked = await run_full_sync(connector, db, checkpoints)
+
+        assert unlinked == self.REALLY_GONE | {f"{RECORD_GROUPS}/drive-bo", f"{RECORDS}/b1", f"{RECORDS}/b2"}
+        assert db.kept_record_groups == []
+        assert connector.full_sync_coverage().complete is True
+
+    async def test_an_inactive_users_drive_is_still_unlinked_when_it_cannot_be_read(
+        self, cloud, tenant, db, checkpoints,
+    ) -> None:
+        connector, _, _ = await seed_ana_and_bo(cloud, tenant, db, checkpoints)
+        db.active_users = [u for u in db.active_users if u.email != "bo@acme.com"]
+        cloud.on("GET", "/v1.0/drives/drive-bo", graph_error(500, "generalException"))
+
+        unlinked = await run_full_sync(connector, db, checkpoints)
+
+        assert unlinked == self.REALLY_GONE | {f"{RECORD_GROUPS}/drive-bo", f"{RECORDS}/b1", f"{RECORDS}/b2"}
+        assert db.kept_record_groups == []
+        assert connector.full_sync_coverage().complete is True
+
+    async def test_an_unprovisioned_active_users_drive_that_cannot_be_read_keeps_its_links(
+        self, cloud, tenant, db, checkpoints,
+    ) -> None:
+        connector, _, _ = await seed_ana_and_bo(cloud, tenant, db, checkpoints)
+        cloud.on("GET", "/v1.0/users/u-bo/drive", graph_error(404, "ResourceNotFound", "User's mysite not found."))
+        cloud.on("GET", "/v1.0/drives/drive-bo", graph_error(500, "generalException"))
+
+        unlinked = await run_full_sync(connector, db, checkpoints)
+
+        assert db.kept_record_groups == ["drive-bo"]
+        assert unlinked == self.REALLY_GONE
+        assert connector.full_sync_coverage().complete is True
+
+    async def test_a_drive_whose_owner_is_not_known_keeps_its_links_when_it_cannot_be_read(
+        self, cloud, tenant, db, checkpoints,
+    ) -> None:
+        connector, _, _ = await seed_ana_and_bo(cloud, tenant, db, checkpoints)
+        # The full sync drops the remembered owners, and Bo's drive id cannot be read this run.
+        connector._user_drive_ids = {}
+        cloud.on("GET", "/v1.0/users/u-bo/drive", graph_error(500, "generalException"))
+        cloud.on("GET", "/v1.0/drives/drive-bo", graph_error(500, "generalException"))
+
+        unlinked = await run_full_sync(connector, db, checkpoints)
+
+        assert db.kept_record_groups == ["drive-bo"]
+        assert unlinked == self.REALLY_GONE
+        assert connector.full_sync_coverage().complete is True
+
+    async def test_an_unreadable_drive_that_is_no_active_users_known_drive_is_still_unlinked(
+        self, cloud, tenant, db, checkpoints,
+    ) -> None:
+        connector, _, _ = await seed_ana_and_bo(cloud, tenant, db, checkpoints)
+        db.active_users = [u for u in db.active_users if u.email != "bo@acme.com"]
+        # The full sync drops the remembered owners; Ana's drive id is read this run and is not Bo's drive.
+        connector._user_drive_ids = {}
+        cloud.on("GET", "/v1.0/drives/drive-bo", graph_error(500, "generalException"))
+
+        unlinked = await run_full_sync(connector, db, checkpoints)
+
+        assert unlinked == self.REALLY_GONE | {f"{RECORD_GROUPS}/drive-bo", f"{RECORDS}/b1", f"{RECORDS}/b2"}
+        assert db.kept_record_groups == []
+        assert connector.full_sync_coverage().complete is True
+
+    async def test_a_partial_user_listing_makes_the_full_sync_incomplete(self, cloud, tenant, db, checkpoints) -> None:
+        connector, _, _ = await seed_ana_and_bo(cloud, tenant, db, checkpoints)
+        tenant.users = [u for u in tenant.users if u["id"] != "u-bo"]
+        tenant.hidden_users = 1
+        cloud.on("GET", "/v1.0/drives/drive-bo", {"id": "drive-bo", "owner": {"user": {"id": "u-bo"}}})
+
+        unlinked = await run_full_sync(connector, db, checkpoints)
+
+        assert connector.full_sync_coverage().complete is False
+        assert unlinked == set()
+
+    async def test_a_complete_user_listing_without_a_user_still_unlinks_their_drive(
+        self, cloud, tenant, db, checkpoints,
+    ) -> None:
+        connector, _, _ = await seed_ana_and_bo(cloud, tenant, db, checkpoints)
+        tenant.users = [u for u in tenant.users if u["id"] != "u-bo"]
+        cloud.on("GET", "/v1.0/drives/drive-bo", {"id": "drive-bo", "owner": {"user": {"id": "u-bo"}}})
+
+        unlinked = await run_full_sync(connector, db, checkpoints)
+
+        assert connector.full_sync_coverage().complete is True
+        assert unlinked == self.REALLY_GONE | {f"{RECORD_GROUPS}/drive-bo", f"{RECORDS}/b1", f"{RECORDS}/b2"}
+
+    async def test_a_locked_user_with_nothing_stored_does_not_flag(self, cloud, tenant, db, checkpoints) -> None:
+        connector, _, _ = await seed_ana_and_bo(cloud, tenant, db, checkpoints)
+        tenant.add_user("u-dee", "dee@acme.com", "Dee")
+        cloud.on("GET", "/v1.0/users/u-dee/drive", graph_error(423, "resourceLocked", "resourceLocked"))
+
+        unlinked = await run_full_sync(connector, db, checkpoints)
+
+        assert db.kept_record_groups == []
+        assert connector.full_sync_coverage().complete is True
+        assert unlinked == self.REALLY_GONE
+
+    async def test_a_failed_stored_drive_read_makes_the_full_sync_incomplete(self, cloud, tenant, db, checkpoints) -> None:
+        connector, _, _ = await seed_ana_and_bo(cloud, tenant, db, checkpoints)
+        cloud.on("GET", "/v1.0/users/u-bo/drive", graph_error(423, "resourceLocked", "resourceLocked"))
+        db.get_nodes_by_filters = AsyncMock(side_effect=RuntimeError("database unavailable"))
+
+        unlinked = await run_full_sync(connector, db, checkpoints)
+
+        assert connector.full_sync_coverage().complete is False
+        assert unlinked == set()
+
+    async def test_a_new_item_that_fails_to_process_does_not_flag(self, cloud, tenant, db, checkpoints) -> None:
+        connector, ana, _ = await seed_ana_and_bo(cloud, tenant, db, checkpoints)
+        broken = drive_item("a3", "a3.pdf")
+        del broken["lastModifiedDateTime"]
+        ana.by_token[None] = page(
+            [drive_item("a1", "a1.pdf"), drive_item("a2", "a2.pdf"), broken], delta_link=delta_link("u-ana", "D2"),
+        )
+
+        unlinked = await run_full_sync(connector, db, checkpoints)
+
+        assert "a3" not in db.records
+        assert connector.full_sync_coverage().complete is True
+        assert unlinked == self.REALLY_GONE
+
+    async def test_an_item_whose_lookup_fails_makes_the_full_sync_incomplete(self, cloud, tenant, db, checkpoints) -> None:
+        connector, ana, _ = await seed_ana_and_bo(cloud, tenant, db, checkpoints)
+        broken = drive_item("a2", "a2.pdf")
+        del broken["lastModifiedDateTime"]
+        ana.by_token[None] = page([drive_item("a1", "a1.pdf"), broken], delta_link=delta_link("u-ana", "D2"))
+        lookup = db.get_record_by_external_id
+
+        async def failing_for_a2(connector_id: str, external_record_id: str) -> Any:  # noqa: ANN401
+            if external_record_id == "a2":
+                raise RuntimeError("database unavailable")
+            return await lookup(connector_id, external_record_id)
+
+        db.get_record_by_external_id = failing_for_a2
+
+        unlinked = await run_full_sync(connector, db, checkpoints)
+
+        assert connector.full_sync_coverage().complete is False
+        assert unlinked == set()
+
+    async def test_a_failed_delete_is_not_kept(self, cloud, tenant, db, checkpoints) -> None:
+        connector, ana, _ = await seed_ana_and_bo(cloud, tenant, db, checkpoints)
+        ana.by_token[None] = page(
+            [drive_item("a1", "a1.pdf"), drive_item("a2", "a2.pdf"), drive_item("a-old", "old.pdf", deleted=True)],
+            delta_link=delta_link("u-ana", "D2"),
+        )
+        db.on_record_deleted = AsyncMock(side_effect=RuntimeError("database unavailable"))
+
+        unlinked = await run_full_sync(connector, db, checkpoints)
+
+        assert "a-old" in db.records
+        assert connector.full_sync_coverage().complete is True
+        assert unlinked == self.REALLY_GONE
+
+    async def test_generator_error_keeps_the_stored_item(self, cloud, tenant, db, checkpoints, monkeypatch) -> None:
+        connector, ana, _ = await seed_ana_and_bo(cloud, tenant, db, checkpoints)
+        ana.by_token[None] = page(
+            [drive_item("a1", "a1.pdf"), drive_item("a2", "a2.pdf", shared=True)], delta_link=delta_link("u-ana", "D2"),
+        )
+
+        def is_enabled(key: IndexingFilterKey, default: bool = True) -> bool:
+            if key == IndexingFilterKey.SHARED:
+                raise RuntimeError("filter unreadable")
+            return default
+
+        indexing_filters = MagicMock()
+        indexing_filters.is_enabled.side_effect = is_enabled
+        monkeypatch.setattr(
+            onedrive_connector_module, "load_connector_filters",
+            AsyncMock(return_value=(FilterCollection(), indexing_filters)),
+        )
+
+        unlinked = await run_full_sync(connector, db, checkpoints)
+
+        assert connector.full_sync_coverage().complete is True
+        assert unlinked == self.REALLY_GONE
+
+    async def test_an_empty_drive_whose_group_cannot_be_written_keeps_its_group(
+        self, cloud, tenant, db, checkpoints,
+    ) -> None:
+        connector, _, bo = await seed_ana_and_bo(cloud, tenant, db, checkpoints)
+        bo.by_token[None] = page([], delta_link=delta_link("u-bo", "D2"))
+        cloud.on("GET", "/v1.0/users/u-bo", graph_error(500, "generalException"))
+
+        unlinked = await run_full_sync(connector, db, checkpoints)
+
+        assert db.kept_record_groups == ["drive-bo"]
+        assert f"{RECORD_GROUPS}/drive-bo" not in unlinked
+        assert unlinked == self.REALLY_GONE | {f"{RECORDS}/b1", f"{RECORDS}/b2"}
+        assert connector.full_sync_coverage().complete is True
+
+    async def test_an_empty_drive_whose_group_cannot_be_kept_makes_the_full_sync_incomplete(
+        self, cloud, tenant, db, checkpoints,
+    ) -> None:
+        connector, _, bo = await seed_ana_and_bo(cloud, tenant, db, checkpoints)
+        bo.by_token[None] = page([], delta_link=delta_link("u-bo", "D2"))
+        cloud.on("GET", "/v1.0/users/u-bo", graph_error(500, "generalException"))
+        db.note_kept_record_group = AsyncMock(side_effect=RuntimeError("database unavailable"))
+
+        unlinked = await run_full_sync(connector, db, checkpoints)
+
+        assert connector.full_sync_coverage().complete is False
+        assert unlinked == set()
+
+    async def test_an_empty_drive_whose_group_write_fails_keeps_its_group(self, cloud, tenant, db, checkpoints) -> None:
+        connector, _, bo = await seed_ana_and_bo(cloud, tenant, db, checkpoints)
+        bo.by_token[None] = page([], delta_link=delta_link("u-bo", "D2"))
+        write_groups = db.on_new_record_groups
+
+        async def failing_for_bo(groups: list[tuple[Any, list[Any] | None]]) -> None:
+            if any(group.external_group_id == "drive-bo" for group, _ in groups):
+                raise RuntimeError("database unavailable")
+            await write_groups(groups)
+
+        db.on_new_record_groups = failing_for_bo
+
+        unlinked = await run_full_sync(connector, db, checkpoints)
+
+        assert db.kept_record_groups == ["drive-bo"]
+        assert f"{RECORD_GROUPS}/drive-bo" not in unlinked
+        assert unlinked == self.REALLY_GONE | {f"{RECORDS}/b1", f"{RECORDS}/b2"}
+        assert connector.full_sync_coverage().complete is True
+
+    async def test_the_group_creation_path_is_unchanged(self, cloud, tenant, db, checkpoints) -> None:
+        connector, _, _ = await seed_ana_and_bo(cloud, tenant, db, checkpoints)
+        db.record_group_writes.clear()
+
+        unlinked = await run_full_sync(connector, db, checkpoints)
+
+        assert [(group.external_group_id, [(p.email, p.type) for p in permissions])
+                for group, permissions in db.record_group_writes] == [
+            (DRIVE, [("ana@acme.com", PermissionType.OWNER)]),
+            ("drive-bo", [("bo@acme.com", PermissionType.OWNER)]),
+        ]
+        assert db.kept_record_groups == []
+        assert unlinked == self.REALLY_GONE
+
+
+class TestRemoveDeletedDrivesKeepsWhatItCannotVerify:
+    """A stored drive whose owner is known and which answers 404 is kept when its owner is still
+    in the directory or cannot be read; a full sync in progress notes it and its records kept."""
+
+    async def prepare(self, cloud, tenant, db, checkpoints, owner_status: AsyncMock) -> OneDriveConnector:
+        connector, _, _ = await seed_ana_and_bo(cloud, tenant, db, checkpoints)
+        assert "drive-bo|u-bo" in await ContainerTracker(connector.drive_delta_sync_point, KNOWN_DRIVES_KEY).known()
+        cloud.on("GET", "/v1.0/drives/drive-bo", graph_error(404, "itemNotFound"))
+        connector._drives_read = {DRIVE: "u-ana"}
+        connector.msgraph_client.get_user_status = owner_status
+        db.get_records_in_record_group = AsyncMock(wraps=db.get_records_in_record_group)
+        return connector
+
+    @pytest.mark.parametrize("owner_status", [
+        pytest.param(AsyncMock(return_value="present"), id="owner-present"),
+        pytest.param(AsyncMock(side_effect=RuntimeError("directory unavailable")), id="owner-unreadable"),
+    ])
+    async def test_kept_branches_note_the_drive_when_owner_known(
+        self, cloud, tenant, db, checkpoints, owner_status,
+    ) -> None:
+        connector = await self.prepare(cloud, tenant, db, checkpoints, owner_status)
+        db.full_sync_running = lambda connector_id: True
+
+        await connector._remove_deleted_drives()
+
+        assert db.kept_record_groups == ["drive-bo"]
+        assert sorted(db.kept_records) == sorted([db.records["b1"].id, db.records["b2"].id])
+        assert "drive-bo" in db.record_groups
+        assert connector.full_sync_coverage().complete is True
+
+    async def test_a_drive_kept_because_no_synced_drive_answers_is_noted(self, cloud, tenant, db, checkpoints) -> None:
+        connector = await self.prepare(cloud, tenant, db, checkpoints, AsyncMock(return_value="gone"))
+        connector._drives_read = {}
+        db.full_sync_running = lambda connector_id: True
+
+        await connector._remove_deleted_drives()
+
+        assert db.kept_record_groups == ["drive-bo"]
+        assert sorted(db.kept_records) == sorted([db.records["b1"].id, db.records["b2"].id])
+        assert "drive-bo" in db.record_groups
+        assert connector.full_sync_coverage().complete is True
+
+    async def test_kept_drive_owner_still_present_not_noted_outside_full_sync(self, cloud, tenant, db, checkpoints) -> None:
+        connector = await self.prepare(cloud, tenant, db, checkpoints, AsyncMock(return_value="present"))
+        before = await ContainerTracker(connector.drive_delta_sync_point, KNOWN_DRIVES_KEY).known()
+
+        await connector._remove_deleted_drives()
+
+        assert db.kept_record_groups == []
+        assert db.kept_records == []
+        db.get_records_in_record_group.assert_not_awaited()
+        assert await ContainerTracker(connector.drive_delta_sync_point, KNOWN_DRIVES_KEY).known() == before
+
+    @pytest.mark.parametrize("scope, kept", [
+        pytest.param({"u-ana"}, [], id="owner-not-active"),
+        pytest.param({"u-ana", "u-bo"}, ["drive-bo"], id="active-owner-not-synced"),
+        pytest.param(None, ["drive-bo"], id="active-users-not-read"),
+    ])
+    async def test_an_unreadable_drive_of_a_remembered_owner_is_kept_only_when_unverified(
+        self, cloud, tenant, db, checkpoints, scope, kept,
+    ) -> None:
+        connector, _, _ = await seed_ana_and_bo(cloud, tenant, db, checkpoints)
+        assert "drive-bo|u-bo" in await ContainerTracker(connector.drive_delta_sync_point, KNOWN_DRIVES_KEY).known()
+        cloud.on("GET", "/v1.0/drives/drive-bo", graph_error(500, "generalException"))
+        connector._drives_read = {DRIVE: "u-ana"}
+        connector._drive_owners_in_scope = scope
+        db.full_sync_running = lambda connector_id: True
+
+        await connector._remove_deleted_drives()
+
+        assert db.kept_record_groups == kept
+        assert "drive-bo" in db.record_groups
