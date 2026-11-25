@@ -121,6 +121,10 @@ WITH_CHILDREN = ("(r.kind = 2 OR r.folder OR EXISTS (SELECT 1 FROM kg.records k 
 # The graph nodes of the connector ``$1`` a name search can match (``graph.records_by_name``, graph_0022: a trigram index of the nodes' names): ``$2`` a pattern
 # of :func:`name_pattern`, ``$3`` nodes at most.
 NAME_NODES = "/* pipeshub:kg.listing_name_nodes */ SELECT coll, node_id FROM graph.records_by_name($1, $2, $3)"
+# The keys ('code:id') of the connector's nodes whose changes the projection has not taken yet (the capture logs a node under its connector, and under the
+# one it left), ``$3`` at most: their kg rows may still hold the names the graph no longer has, which the listing's search reads.
+NAME_PENDING = ("/* pipeshub:kg.listing_name_pending */ SELECT e AS key FROM kg.graph_changes c CROSS JOIN LATERAL unnest(c.ends) AS e "
+                "WHERE c.org_id = $1 AND c.app_id = $2 LIMIT $3")
 # Their rows in kg (``$2`` the kg codes of their collections, ``$3`` their ids), each a probe of its key (OFFSET 0): as one join with the function the plan
 # hashed the organisation's rows.
 NAME_ROWS = ("/* pipeshub:kg.listing_name_rows */ SELECT r.sk FROM unnest($2::smallint[], $3::text[]) AS g(coll, id) "

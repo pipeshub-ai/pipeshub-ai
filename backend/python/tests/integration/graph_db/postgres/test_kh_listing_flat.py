@@ -923,3 +923,33 @@ async def test_a_name_search_by_the_trigram_index_lists_what_the_walk_listed(pg_
     with ctx(org):
         page = await p.get_knowledge_hub_connector_page_v3(**asks(org, granted_ids=sorted(NAMED)), limit=50, filters={"search_query": "printer jam"})
     assert [r["id"] for r in page["rows"]] == ["n01", "n00", "n02"]      # the separators read as spaces, as before (" " sorts before "-")
+
+
+async def test_a_name_search_lists_what_the_walk_lists_while_a_rename_waits_for_the_drain(pg_db, monkeypatch) -> None:
+    """A record renamed in the graph whose change the drain has not projected yet: kg still holds the old name, and the listing's search condition reads kg's.
+    The walk lists it for the old name and not for the new one until the drain; the trigram lookup, which reads the graph's names, must list the same (the
+    connector's rows that wait for the drain are candidates too), and both list the new name once it is drained."""
+    from app.services.graph_db.postgres.kg.drainer import drain_org
+    p, org = prov(pg_db), new_org()
+    await _seed_named(p, pg_db, org, {"n00": "alpha report", "n01": "other report", "n02": "alphabet soup"})
+    # a writer whose change the projection has not taken yet (as one by the query or indexing role, which no inline flush follows)
+    await _admin("UPDATE graph.nodes SET doc = jsonb_set(doc, '{recordName}', '\"bravo report\"') WHERE org_id = $1 AND coll = 'records' AND id = 'n00'", org)
+
+    async def walked(self, *a, **kw) -> None:
+        return None
+
+    async def both(q: str) -> tuple[list[str], list[str]]:
+        kw = {"granted_ids": ["n00", "n01", "n02"], "filters": {"search_query": q}}
+        by_index, _, first = await walk(p, org, 2, **kw)
+        with monkeypatch.context() as m:
+            m.setattr(kh_listing.KhListingMixin, "_kh_name_hits", walked)
+            by_walk, _, old = await walk(p, org, 2, **kw)
+        assert first["total"] == old["total"], (q, first["total"], old["total"])
+        return by_index, by_walk
+    for q, want in (("alpha", ["n00", "n02"]), ("alpha report", ["n00"]), ("bravo", []), ("report", ["n00", "n01"])):
+        by_index, by_walk = await both(q)
+        assert by_index == by_walk == want, (q, by_index, by_walk)
+    await drain_org(pg_db, org)
+    for q, want in (("alpha", ["n02"]), ("bravo", ["n00"]), ("report", ["n00", "n01"])):
+        by_index, by_walk = await both(q)
+        assert by_index == by_walk == want, (q, by_index, by_walk)

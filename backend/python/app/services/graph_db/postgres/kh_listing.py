@@ -16,6 +16,7 @@ The arrow of a group or a folder is on exactly when the browse of it (``kh_brows
 from __future__ import annotations
 
 import json
+import re
 import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -45,6 +46,7 @@ HIDDEN_MAX = 100_000        # rows hidden by groups that hide their children tha
 # statement over the hierarchy if a folder that large must be searched whole.
 SCOPE_MAX = 100_000
 COUNT_CAP = 10_000          # a count of what kg decides is exact up to this many rows; a listing with more reports the cap
+PENDING_KEY = re.compile(r"[1-8]:[\s\S]+\Z")      # a change-log key the drain can read (drainer.quarantined refuses the others)
 NAME_HITS_MAX = 10_000      # nodes a name search reads by the name index (``_kh_name_hits``); a search that matches more walks the sort order, where it meets its rows early
 UNDECIDED_MAX = 200         # rows kg does not decide that a count may hand to the walk
 CLASS_MAX = 50_000          # classes of a connector a count evaluates
@@ -394,8 +396,9 @@ class KhListingMixin(PgBase):
         and some more, which the page's own conditions (the search's among them) drop. None, so that the page walks its sort order as before, when the search has
         nothing the index can look up, matches more than NAME_HITS_MAX nodes, or runs as a job (the vetted read is the services' only).
         The org is the session's: ``graph.records_by_name`` reads ``app.org_id`` itself.
-        shortcut: the candidates are the graph's names and the search's condition is kg's, so a row renamed in the graph and not yet drained into kg is found by
-        neither name until the drain reaches it; upgrade by adding the connector's rows still waiting for the drain to the candidates if that window must list it."""
+        The index reads the graph's names and the search's condition kg's, which differ for a node whose change the drain has not projected: those nodes (the
+        connector's keys in the change log, read in the same snapshot as the rows, since a drain projects and acknowledges in one commit) are candidates too, so
+        a row still listed under its old name is found by it, as the walk finds it. More than NAME_HITS_MAX of them, or a key that cannot be read, walks."""
         pattern = kgl.name_pattern(filters.get("search_query"))
         if pattern is None or current_or_system().kind == "system" or not 0 < len(app_id) <= 200:      # the function's own argument check
             return None
@@ -404,8 +407,15 @@ class KhListingMixin(PgBase):
             nodes = await tx.fetch(kgl.NAME_NODES, app_id, pattern, NAME_HITS_MAX + 1)
             if len(nodes) > NAME_HITS_MAX:
                 return None
-            rows = await tx.fetch(kgl.NAME_ROWS, org, [COLL_CODE[n["coll"]] for n in nodes], [n["node_id"] for n in nodes]) if nodes else []
-            return [r["sk"] for r in rows]
+            keys = {(COLL_CODE[n["coll"]], n["node_id"]) for n in nodes}
+            pending = [r["key"] for r in await tx.fetch(kgl.NAME_PENDING, org, app_id, NAME_HITS_MAX + 1)]
+            if len(pending) > NAME_HITS_MAX or any(k is None or not PENDING_KEY.match(k) for k in pending):
+                return None
+            keys |= {(int(k[0]), k[2:]) for k in pending if k[0] in "23"}
+            if not keys:
+                return []
+            colls, ids = zip(*sorted(keys), strict=True)
+            return [r["sk"] for r in await tx.fetch(kgl.NAME_ROWS, org, list(colls), list(ids))]
         return await self._kq(read, transaction)
 
     async def _kh_not_ready(self, org: str, start_id: str, *, at_app: bool, access: dict[str, Any], transaction: str | None, include_scope: bool, include_total: bool) -> dict[str, Any]:
