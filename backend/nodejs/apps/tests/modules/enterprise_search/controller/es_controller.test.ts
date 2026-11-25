@@ -2972,12 +2972,12 @@ describe('Enterprise Search Controller', () => {
     })
 
     // The error goes through the real error middleware, so the body is what a client gets.
-    const bodyOf = (error: any, requestId?: string): { status: number; body: any } => {
+    const bodyOf = (error: any, requestId?: string): { status: number; body: any; setHeader: any } => {
       const res: any = { status: sinon.stub(), json: sinon.stub(), setHeader: sinon.stub(), headersSent: false }
       res.status.returns(res)
       res.json.returns(res)
       ErrorMiddleware.handleError()(error, { method: 'POST', params: {}, context: { requestId } } as any, res, sinon.stub() as any)
-      return { status: res.status.firstCall.args[0], body: res.json.firstCall.args[0] }
+      return { status: res.status.firstCall.args[0], body: res.json.firstCall.args[0], setHeader: res.setHeader }
     }
     const NOTICES = [{ code: 'connector_syncing', connectorId: 'c1', connectorName: 'Jira' }]
 
@@ -3003,6 +3003,7 @@ describe('Enterprise Search Controller', () => {
         expect(error.statusCode).to.equal(503)
         expect(error.message).to.equal(message)
         expect(error.metadata).to.deep.equal({ retryAfter: '60' })
+        expect(bodyOf(error).setHeader.args).to.deep.equal([['Retry-After', '60']])
       }
     })
 
@@ -3025,6 +3026,7 @@ describe('Enterprise Search Controller', () => {
 
         const error: any = next.firstCall.args[0]
         expect(error.metadata).to.deep.equal({ retryAfter: '60' })
+        expect(bodyOf(error).setHeader.args).to.deep.equal([['Retry-After', '60']])
         expect(JSON.stringify({ ...error, message: error.message })).to.not.contain('secret')
       }
     })
