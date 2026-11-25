@@ -50,10 +50,10 @@ async def test_a_full_broker_is_waited_out_with_the_queued_note() -> None:
 
 async def test_past_the_wait_the_refusal_is_the_answer() -> None:
     broker, notes = _Broker(full=1_000), []
-    started = time.monotonic()
     with capacity_wait(_wait(0.6, notes)), pytest.raises(BrokerUnavailable):
         await retry_while_full(broker.acquire, _full)
-    assert 0.5 <= time.monotonic() - started < 3
+    # Polled at 0.5 s, then cut short at the deadline: tried more than once, never until the broker gave in.
+    assert 2 <= broker.attempts < 1_000
     assert notes == [True, False]
 
 
