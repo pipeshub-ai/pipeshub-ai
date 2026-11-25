@@ -1,0 +1,63 @@
+name: telemetry-stub-build
+
+# A PR that adds telemetry code without its stub would break a downstream build
+# that swaps in the stubs (telemetry-impl.stub.ts, app/telemetry_stub). This job does that
+# swap without building an image:
+#   - Node: delete the real telemetry files, rename *.stub.ts, then tsc
+#   - Python: stub/real parity test (names and parameters the app imports)
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'backend/nodejs/apps/**'
+      - 'backend/python/**'
+      - '.github/workflows/telemetry-stub-build.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: telemetry-stub-build-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  node-stub-compiles:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: backend/nodejs/apps
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: backend/nodejs/apps/package-lock.json
+      - run: npm ci --ignore-scripts
+      - name: Swap in the stubs
+        run: |
+          set -e
+          cd src/libs/services/telemetry
+          find . -type f ! -name '*.stub.ts' ! -name identity.ts -delete
+          find . -mindepth 1 -type d -empty -delete
+          for f in *.stub.ts; do mv "$f" "${f%.stub.ts}.ts"; done
+          cd ../../../..
+          rm src/libs/middlewares/telemetry.middleware.ts \
+             src/modules/user_management/services/metrics.refresh.service.ts
+      - name: Compile (a file that bypasses the door fails here)
+        run: npx tsc --noEmit -p tsconfig.json
+
+  python-stub-parity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install pytest
+      - name: Stub matches what the app imports from app.telemetry
+        working-directory: backend/python
+        run: python -m pytest tests/unit/telemetry/test_stub_parity.py -p no:cacheprovider -q --confcutdir=tests/unit/telemetry
