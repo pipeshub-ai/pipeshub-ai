@@ -805,7 +805,7 @@ class BoxConnector(BaseConnector):
 
             self.logger.info(f"Synced {len(app_users)} Box users")
             if not app_users and self._user_list_complete:
-                # An enterprise has at least its admin, and user_type=managed lists managed and app users: a list with no
+                # A Box organization has at least its admin, and user_type=managed lists managed and app users: a list with no
                 # one in it is taken as unread rather than as everyone gone.
                 self.logger.error("Box listed no users; the list is read again next run")
                 self._read_complete = False
