@@ -575,7 +575,7 @@ CREATOR = "creator@corp.com"
 
 
 @pytest.mark.asyncio
-async def test_a_listing_read_to_its_end_shows_an_unlisted_creator_absent_and_names_every_person() -> None:
+async def test_a_listing_read_to_its_end_names_every_person_but_proves_nobody_absent() -> None:
     conn = _wired(_listing(
         {"results": [_person("u1", "Live@Corp.com")], "has_more": True, "next_cursor": "c1"},
         {"results": [_person("u2", "other@corp.com")], "has_more": False, "next_cursor": None},
@@ -583,7 +583,8 @@ async def test_a_listing_read_to_its_end_shows_an_unlisted_creator_absent_and_na
 
     await conn._sync_users()
 
-    assert conn._user_listing.presence(CREATOR) is Presence.ABSENT
+    assert conn._user_listing.presence(CREATOR) is Presence.UNKNOWN, "Notion leaves guests out"
+    assert not conn._user_listing.is_cut
     assert conn._user_listing.presence("LIVE@corp.com") is Presence.PRESENT
     assert conn._user_listing.emails == {"live@corp.com", "other@corp.com"}
 

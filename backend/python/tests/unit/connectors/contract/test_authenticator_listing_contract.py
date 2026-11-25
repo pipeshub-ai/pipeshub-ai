@@ -777,7 +777,8 @@ class Notion(Source):
     name = "notion"
     connector = NotionConnector
     can = frozenset({Can.EMPTY_PAGE_WITH_CURSOR, Can.MORE_WITHOUT_CURSOR})
-    malformed = ({}, {"results": None, "has_more": False}, ["not a page"])
+    proves_absence = False  # guests are not listed
+    malformed = ({}, {"results": None, "has_more": False}, {"results": []}, ["not a page"])
     broken = (
         {"id": "unreadable", "type": "person", "name": "its details cannot be read", "person": {}},
         {"object": "user", "id": "b1"},  # a partial user object
