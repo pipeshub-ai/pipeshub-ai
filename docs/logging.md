@@ -621,7 +621,9 @@ the calls are dispatched, bind their own call's `tool` and `tool_call_id`.
   A callback that is not for the sign-in in progress (a stale or replayed state, a used code, or a code another callback
   claimed: `OAuthStateError`) is `bad_request` at WARNING on both the connector and the toolset callback, as on the MCP
   one; so are the connector callback's missing `code` or `state` (`reason=missing_parameters`) and a state it cannot
-  decode or that is not a string `state` and `connector_id` (`reason=invalid_state`, no text).
+  decode or that is not a string `state` and `connector_id` (`reason=invalid_state`, no text), and a toolset callback
+  state that cannot be decoded or is not a string `state`, `instance_id` and `user_id` (`reason=OAuthConfigError`). The toolset callback's line carries `toolset_id`
+  (and `agent_id` for an agent's sign-in) only once the instance is found for the caller: the state is the caller's own text.
   Both callbacks class their token exchange's failure as a refresh classes the same answer
   (`credential_refresh_log.token_endpoint_error_class`): an unusable token URL, a 2xx answer that is not a token or whose
   `error` is neither a dead grant nor busy, and a token field that cannot be parsed are ERROR `misconfigured`. A 2xx answer
