@@ -1,5 +1,8 @@
 import { expect } from 'chai';
-import { PrometheusBackend } from '../../../src/plugins/telemetry/metrics-backend';
+import {
+  NoopBackend,
+  PrometheusBackend,
+} from '../../../src/plugins/telemetry/metrics-backend';
 
 describe('telemetry metrics-backend (PrometheusBackend)', () => {
   let backend: PrometheusBackend;
@@ -151,6 +154,35 @@ describe('telemetry metrics-backend (PrometheusBackend)', () => {
 
       expect(await backend.serialize()).to.include('test_isolated_total 1');
       expect(await other.serialize()).to.not.include('test_isolated_total');
+    });
+  });
+
+  describe('snapshot', () => {
+    it('should list counter and gauge series with their labels and leave histograms out', async () => {
+      const backend = new PrometheusBackend();
+      backend
+        .createCounter({ name: 'snap_total', help: 'test', labelNames: ['a'] })
+        .inc({ a: 'x' }, 3);
+      backend
+        .createGauge({ name: 'snap_gauge', help: 'test', labelNames: ['b'] })
+        .set({ b: 7 }, 2);
+      backend
+        .createHistogram({
+          name: 'snap_seconds',
+          help: 'test',
+          labelNames: [],
+          buckets: [1],
+        })
+        .observe({}, 0.5);
+
+      expect(await backend.snapshot()).to.deep.equal([
+        { name: 'snap_total', type: 'counter', labels: { a: 'x' }, value: 3 },
+        { name: 'snap_gauge', type: 'gauge', labels: { b: '7' }, value: 2 },
+      ]);
+    });
+
+    it('should be empty for the no-op backend', async () => {
+      expect(await new NoopBackend().snapshot()).to.deep.equal([]);
     });
   });
 });

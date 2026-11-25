@@ -22,6 +22,16 @@ class EventBuffer {
     return drained;
   }
 
+  /** Remove and return up to `max` events, oldest first. */
+  take(max: number): BufferedEvent[] {
+    return this.events.splice(0, Math.max(0, max));
+  }
+
+  /** Put events back at the front, to be sent before newer ones; the newest are dropped past the cap. */
+  putBack(events: BufferedEvent[]): void {
+    this.events = [...events, ...this.events].slice(0, MAX_EVENTS);
+  }
+
   size(): number {
     return this.events.length;
   }

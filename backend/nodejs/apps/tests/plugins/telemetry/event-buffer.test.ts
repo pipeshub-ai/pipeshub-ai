@@ -77,4 +77,40 @@ describe('telemetry event-buffer', () => {
       expect(event!.props).to.be.undefined;
     });
   });
+
+  describe('take / putBack', () => {
+    it('should take the oldest events and leave the rest', () => {
+      for (const event of ['a', 'b', 'c']) {
+        eventBuffer.enqueue({ event, timestamp: 't' });
+      }
+
+      expect(eventBuffer.take(2).map((e) => e.event)).to.deep.equal(['a', 'b']);
+      expect(eventBuffer.size()).to.equal(1);
+      expect(eventBuffer.take(0)).to.deep.equal([]);
+      expect(eventBuffer.take(5).map((e) => e.event)).to.deep.equal(['c']);
+    });
+
+    it('should put events back in front of newer ones', () => {
+      eventBuffer.enqueue({ event: 'a', timestamp: 't' });
+      const taken = eventBuffer.take(1);
+      eventBuffer.enqueue({ event: 'b', timestamp: 't' });
+
+      eventBuffer.putBack(taken);
+
+      expect(eventBuffer.drain().map((e) => e.event)).to.deep.equal(['a', 'b']);
+    });
+
+    it('should stay within the cap when events are put back', () => {
+      const taken = [{ event: 'old', timestamp: 't' }];
+      for (let i = 0; i < 5000; i++) {
+        eventBuffer.enqueue({ event: `e${String(i)}`, timestamp: 't' });
+      }
+
+      eventBuffer.putBack(taken);
+
+      const drained = eventBuffer.drain();
+      expect(drained).to.have.length(5000);
+      expect(drained[0]!.event).to.equal('old');
+    });
+  });
 });

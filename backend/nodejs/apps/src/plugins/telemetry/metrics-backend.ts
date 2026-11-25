@@ -39,8 +39,17 @@ export interface MetricsBackend {
   createHistogram(def: HistogramDefinition): HistogramHandle;
   /** Serialize all registered metrics in the backend's exposition format. */
   serialize(): Promise<string>;
+  /** Every counter and gauge series with its current value. Histograms are left out. */
+  snapshot(): Promise<MetricSnapshotSample[]>;
   /** Drop all recorded series. */
   reset(): void;
+}
+
+export interface MetricSnapshotSample {
+  name: string;
+  type: 'counter' | 'gauge';
+  labels: Record<string, string>;
+  value: number;
 }
 
 /** prom-client implementation of {@link MetricsBackend}. */
@@ -109,6 +118,22 @@ export class PrometheusBackend implements MetricsBackend {
     return this.registry.metrics();
   }
 
+  async snapshot(): Promise<MetricSnapshotSample[]> {
+    const out: MetricSnapshotSample[] = [];
+    for (const metric of await this.registry.getMetricsAsJSON()) {
+      const type = String(metric.type);
+      if (type !== 'counter' && type !== 'gauge') continue;
+      for (const sample of metric.values) {
+        const labels: Record<string, string> = {};
+        for (const [key, value] of Object.entries(sample.labels)) {
+          labels[key] = String(value);
+        }
+        out.push({ name: metric.name, type, labels, value: sample.value });
+      }
+    }
+    return out;
+  }
+
   reset(): void {
     this.registry.resetMetrics();
   }
@@ -133,6 +158,10 @@ export class NoopBackend implements MetricsBackend {
 
   serialize(): Promise<string> {
     return Promise.resolve('');
+  }
+
+  snapshot(): Promise<MetricSnapshotSample[]> {
+    return Promise.resolve([]);
   }
 
   reset(): void {}
