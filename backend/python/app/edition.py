@@ -5,8 +5,8 @@ their behaviour before anything else loads; ``app.edition_config`` pulls in
 routers, so neither can import that.
 """
 
-# Used when TELEMETRY_COLLECTION_FLAG is unset.
-TELEMETRY_DEFAULT_ENABLED = True
+# Whether usage data collection is on when the deployment's flag is unset.
+USAGE_DATA_DEFAULT_ENABLED = True
 
 # The most characters of a tool call's arguments the chat transcript keeps; the live stream sends the
 # same preview as ``argsPreview``, which the chat shows as it is.

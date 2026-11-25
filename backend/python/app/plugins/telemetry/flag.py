@@ -9,7 +9,7 @@ consent in the KV store, which only matters once this flag is on.
 
 import os
 
-from app.edition import TELEMETRY_DEFAULT_ENABLED
+from app.edition import USAGE_DATA_DEFAULT_ENABLED
 
 TELEMETRY_COLLECTION_FLAG = "TELEMETRY_COLLECTION_FLAG"
 
@@ -17,5 +17,5 @@ TELEMETRY_COLLECTION_FLAG = "TELEMETRY_COLLECTION_FLAG"
 def telemetry_enabled() -> bool:
     raw = os.getenv(TELEMETRY_COLLECTION_FLAG, "").strip()
     if not raw:
-        return TELEMETRY_DEFAULT_ENABLED
+        return USAGE_DATA_DEFAULT_ENABLED
     return raw.lower() == "true"

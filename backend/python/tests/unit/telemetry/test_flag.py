@@ -6,7 +6,7 @@ import pytest
 from fastapi import FastAPI
 
 from app import plugins
-from app.edition import TELEMETRY_DEFAULT_ENABLED
+from app.edition import USAGE_DATA_DEFAULT_ENABLED
 from app.plugins.telemetry.backend import NoopBackend
 from app.plugins.telemetry.event_buffer import event_buffer, record_event
 from app.plugins.telemetry.flag import TELEMETRY_COLLECTION_FLAG, telemetry_enabled
@@ -18,13 +18,13 @@ class TestTelemetryEnabled:
     def test_unset_uses_edition_default(self, monkeypatch) -> None:
         monkeypatch.delenv(TELEMETRY_COLLECTION_FLAG, raising=False)
 
-        assert telemetry_enabled() is TELEMETRY_DEFAULT_ENABLED
+        assert telemetry_enabled() is USAGE_DATA_DEFAULT_ENABLED
 
     @pytest.mark.parametrize("value", ["", "   "])
     def test_empty_uses_edition_default(self, monkeypatch, value) -> None:
         monkeypatch.setenv(TELEMETRY_COLLECTION_FLAG, value)
 
-        assert telemetry_enabled() is TELEMETRY_DEFAULT_ENABLED
+        assert telemetry_enabled() is USAGE_DATA_DEFAULT_ENABLED
 
     @pytest.mark.parametrize("value", ["true", "TRUE", " True "])
     def test_true_enables(self, monkeypatch, value) -> None:

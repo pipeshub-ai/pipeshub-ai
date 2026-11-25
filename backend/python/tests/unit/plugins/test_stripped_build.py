@@ -138,10 +138,6 @@ ALLOWED_MENTIONS: dict[tuple[str, str], str] = {
     ("app/services/skills/npm_command_parser.py", "--no-telemetry"): (
         "a flag of other people's npm tools that the skill-install command parser recognises as taking no value"
     ),
-    # Not a product string: the edition default for a plug-in this build does not contain. Kept because the constant is
-    # an edition seam shared with the Node backend and the enterprise edition; renaming it is the owner's decision.
-    ("app/edition.py", "# Used when TELEMETRY_COLLECTION_FLAG is unset."): "edition seam, see above",
-    ("app/edition.py", "TELEMETRY_DEFAULT_ENABLED = True"): "edition seam, see above",
 }
 
 PROBE = """
