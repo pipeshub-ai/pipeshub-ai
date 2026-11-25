@@ -134,7 +134,7 @@ class DriveRunReport:
     def note_unreadable_folders(self, folder_ids: list[str]) -> None:
         self.unreadable_folders = sorted(set(folder_ids))
 
-    def note_nobody_to_sync(self, nobody: bool) -> None:
+    def note_nobody_to_sync(self, *, nobody: bool) -> None:
         """Whether no active user of this deployment has an account in the Workspace. The last selection counts."""
         self.nobody_to_sync = nobody
 

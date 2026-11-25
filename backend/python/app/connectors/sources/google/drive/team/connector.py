@@ -7594,7 +7594,7 @@ class GoogleDriveTeamConnector(BaseConnector):
         # leave out the one account that matches.
         if self._run_report is not None:  # also called outside a run
             self._run_report.note_nobody_to_sync(
-                bool(users and active_user_emails) and not matching and not self._listing_cut
+                nobody=bool(users and active_user_emails) and not matching and not self._listing_cut
             )
         return matching
 

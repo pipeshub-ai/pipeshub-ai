@@ -197,7 +197,7 @@ class TestRunReport:
         sync_point = _SyncPoint()
         for _ in range(3):
             report = self._report(sent, sync_point)
-            report.note_nobody_to_sync(True)
+            report.note_nobody_to_sync(nobody=True)
             await report.finish(complete=False)
         assert {s["title"] for s in sent} == {"Drive: nobody to sync Google Drive for"}
         for _ in range(3):  # an outage after that is still reported
