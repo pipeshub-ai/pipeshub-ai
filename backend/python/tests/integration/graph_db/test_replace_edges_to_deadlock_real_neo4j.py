@@ -125,22 +125,26 @@ async def test_concurrent_group_replaces_sharing_dense_members_do_not_deadlock(p
 
 
 async def test_concurrent_group_and_record_permission_replaces_do_not_deadlock(provider: Neo4jProvider) -> None:
-    """A record's permissions come from users and from groups, so a record replace locks groups as
-    members while a group replace holds its group and locks the same users. The target is locked
-    in the same order as the members, or the two hold what the other waits for."""
+    """A record's permissions come from users and from groups, so a record replace that adds or
+    removes a group locks that group as a member, while a group replace holds its group and locks
+    the same users. The target is locked in the same order as the members, or the two hold what
+    the other waits for. Each round gives the records a different half of the groups, so groups
+    that are being replaced in that round are also added to and removed from records."""
     run_id = f"dl-{uuid.uuid4().hex[:8]}"
     try:
         members, groups = await _seed(provider, run_id)
         records = [f"{run_id}-r{i:03d}" for i in range(GROUP_COUNT)]
         share = int(MEMBERS * SHARE)
 
-        def record_edges(record: str, users: list[str]) -> list[dict]:
+        def record_edges(record: str, users: list[str], record_groups: list[str]) -> list[dict]:
             return permissions(users, record, to_collection=RECORDS) + permissions(
-                groups, record, from_collection=GROUPS, to_collection=RECORDS,
+                record_groups, record, from_collection=GROUPS, to_collection=RECORDS,
             )
 
         await asyncio.gather(*[replace(provider, g, permissions(members[:share], g)) for g in groups])
-        await asyncio.gather(*[replace(provider, r, record_edges(r, members[:share]), to_collection=RECORDS) for r in records])
+        await asyncio.gather(*[
+            replace(provider, r, record_edges(r, members[:share], groups), to_collection=RECORDS) for r in records
+        ])
         rng = random.Random(13)
         deadlocks: list[str] = []
 
@@ -152,9 +156,12 @@ async def test_concurrent_group_and_record_permission_replaces_do_not_deadlock(p
                     raise
                 deadlocks.append(str(e))
 
-        for _ in range(ROUNDS):
+        for round_no in range(ROUNDS):
+            # Alternate halves of the groups: every round adds three groups to each record and
+            # removes the other three, all six of them being replaced at the same time.
+            record_groups = groups[: GROUP_COUNT // 2] if round_no % 2 else groups[GROUP_COUNT // 2 :]
             writes = [one(g, permissions(rng.sample(members, share), g), GROUPS) for g in groups]
-            writes += [one(r, record_edges(r, rng.sample(members, share)), RECORDS) for r in records]
+            writes += [one(r, record_edges(r, rng.sample(members, share), record_groups), RECORDS) for r in records]
             await asyncio.gather(*writes)
 
         assert not deadlocks, (
