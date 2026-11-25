@@ -25985,6 +25985,16 @@ components:
           enum:
             - approve
             - deny
+        scopes:
+          type: array
+          maxItems: 64
+          items:
+            type: string
+            maxLength: 64
+          description: |
+            The scope names the claim page showed (`POST /agent/identity/claim/verify`). Required to approve: the
+            approval records exactly these, and is refused with `invalid_request` when the scopes the agent would get
+            have changed since.
       required:
         - claim_attempt_token
         - action
@@ -91677,7 +91687,8 @@ paths:
         '400':
           description: |
             `invalid_user_code` (wrong code), or `invalid_request` (the link is unknown, used,
-            replaced, or the registration expired after too many wrong codes).
+            replaced, or the registration expired after too many wrong codes; or, to approve, `scopes`
+            is missing or no longer the list the agent would get).
           content:
             application/json:
               schema:
