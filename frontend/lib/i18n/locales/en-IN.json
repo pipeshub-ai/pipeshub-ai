@@ -3326,10 +3326,7 @@
         "createError": "Failed to create connector",
         "createSuccess": "Connector instance '{{name}}' created successfully",
         "authSaveError": "Failed to save auth configuration",
-        "configSaveError": "Failed to save configuration",
-        "oauthAppUnavailableTitle": "No OAuth apps are available for this connector",
-        "oauthAppUnavailableDescription": "Ask your workspace administrator to create an OAuth app for {{name}} first, then try again.",
-        "thisConnectorFallback": "this connector"
+        "configSaveError": "Failed to save configuration"
       },
       "tabs": {
         "authenticate": "Authenticate",
@@ -3465,6 +3462,8 @@
         "oauthAppNameLabel": "OAuth app name",
         "oauthAppNamePlaceholder": "e.g., {{name}} OAuth",
         "oauthAppNameHelper": "This name is stored with the OAuth registration and appears when users pick a saved app for other instances.",
+        "oauthAppNameHelperPersonal": "Only you can see and use this OAuth app. You can choose it again for your other connectors of this type.",
+        "oauthAppYours": "{{name}} · Yours",
         "oauthAppNameRequired": "Enter a name for the new OAuth app.",
         "oauthAppChangeReauthWarning": "Changing the OAuth app or its credentials will require you to authenticate your connector again."
       },
@@ -4060,6 +4059,10 @@
           "other": "Something about this connector's permissions needs a person to look at it.",
           "unreadable": "The list of folders waiting to update can't be read. Ask whoever runs PipesHub to rebuild this connector's permission index. Search checks each result meanwhile."
         }
+      },
+      "enterprise": {
+        "userOAuthAppsTitle": "People's own OAuth apps",
+        "userOAuthAppsDescription": "Review and remove the OAuth apps people in your organisation add for their own connectors."
       },
       "userAccess": {
         "connect": "Connect",
