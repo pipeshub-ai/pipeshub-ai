@@ -911,7 +911,8 @@ class TestReplayedShareLookups:
 
         await connector.run_sync()
 
-        assert BOB_EMAIL in db.access("file-1")
+        # The walk rewrote the file's grants from Box's collaborators, so only the replay is held back.
+        assert BOB_EMAIL not in db.access("file-1")
         assert checkpoints.cursor() is None
 
         await connector.run_sync()
@@ -948,7 +949,8 @@ class TestReplayedShareLookups:
 
         await connector.run_sync()
 
-        assert BOB_EMAIL in db.access("file-1")
+        # The walk rewrote the file's grants from Box's collaborators, so only the replay is held back.
+        assert BOB_EMAIL not in db.access("file-1")
         assert checkpoints.cursor() is None
 
         db.failing.clear()

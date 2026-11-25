@@ -565,8 +565,9 @@ class BoxConnector(BaseConnector):
                         file_record.parent_external_record_id = existing_record.parent_external_record_id
                         file_record.parent_record_type = existing_record.parent_record_type
                         file_record.path = await self._stored_path(existing_record)
-                elif existing_record and not self._user_list_complete:
-                    # The owner may be on a page of users that couldn't be read: keep the stored home.
+                elif existing_record and (not self._user_list_complete or owner_id in self._cannot_sign_in_ids):
+                    # The owner may be on a page of users that couldn't be read, or be inactive with their content kept
+                    # open to collaborators: keep the stored home.
                     file_record.external_record_group_id = existing_record.external_record_group_id
                     file_record.parent_external_record_id = existing_record.parent_external_record_id
                     file_record.parent_record_type = existing_record.parent_record_type
@@ -803,6 +804,12 @@ class BoxConnector(BaseConnector):
                     break
 
             self.logger.info(f"Synced {len(app_users)} Box users")
+            if not app_users and self._user_list_complete:
+                # An enterprise has at least its admin, and user_type=managed lists managed and app users: a list with no
+                # one in it is taken as unread rather than as everyone gone.
+                self.logger.error("Box listed no users; the list is read again next run")
+                self._read_complete = False
+                self._user_list_complete = False
             # A listed row is evidence on its own, even when a later page could not be read.
             self._cannot_sign_in_ids = frozenset(str(u.source_user_id) for u in app_users if u.source_user_id and not u.is_active)
             if self._user_list_complete:
@@ -842,7 +849,7 @@ class BoxConnector(BaseConnector):
             u for u in signed_in
             if str(u.source_user_id) not in stored_ids and (u.email or "").lower() not in stored_emails
         ]
-        if withdrawn is None and newly_linked and not full_sync:
+        if withdrawn is None and newly_linked:
             withdrawn = {str(u.source_user_id) for u in newly_linked if u.source_user_id}
             try:
                 await self.user_sync_point.update_sync_point(self.WITHDRAWN_ACCOUNTS_KEY, {"ids": sorted(withdrawn)})
@@ -852,8 +859,7 @@ class BoxConnector(BaseConnector):
                 return []
         await self.data_entities_processor.on_new_app_users(signed_in)
         returning = [u for u in signed_in if str(u.source_user_id) in (withdrawn or set())]
-        # An empty list is no evidence that everyone left; a complete list in which no one can sign in is.
-        if not self._user_list_complete or not users:
+        if not self._user_list_complete:
             return returning
         kept_ids = {str(u.source_user_id) for u in signed_in if u.source_user_id}
         kept_emails = {u.email.lower() for u in signed_in if u.email}
@@ -1428,7 +1434,9 @@ class BoxConnector(BaseConnector):
                 raise
 
             # 2. DECISION LOGIC
-            if cursor_data and cursor_data.get("cursor"):
+            # A full sync owed to a returning account anchors at the saved position, so no change after it is passed over.
+            pending = bool(cursor_data and cursor_data.get("cursor") and cursor_data.get("full_sync_pending"))
+            if cursor_data and cursor_data.get("cursor") and not pending:
                 cursor_val = cursor_data.get("cursor")
                 cursor_updated_at_ms = cursor_data.get("cursor_updated_at")
                 now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
@@ -1451,26 +1459,29 @@ class BoxConnector(BaseConnector):
 
             # ANCHOR THE STREAM (saved only once the full sync below has finished)
             anchor: dict[str, object] | None = None
-            try:
-                # Get current position ('now')
-                response = await self.data_source.events_get_events(
-                    stream_type='admin_logs_streaming',
-                    stream_position='now',
-                    limit=1
-                )
+            if pending:
+                anchor = {**cursor_data, "full_sync_pending": False}
+            else:
+                try:
+                    # Get current position ('now')
+                    response = await self.data_source.events_get_events(
+                        stream_type='admin_logs_streaming',
+                        stream_position='now',
+                        limit=1
+                    )
 
-                if response.success:
-                    data = self._to_dict(response.data)
-                    next_stream_pos = data.get('next_stream_position')
+                    if response.success:
+                        data = self._to_dict(response.data)
+                        next_stream_pos = data.get('next_stream_position')
 
-                    if next_stream_pos:
-                        now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
-                        anchor = {"cursor": next_stream_pos, "cursor_updated_at": now_ms, "held_attempts": 0}
-                        self.logger.info(f"⚓ [Smart Sync] Anchoring Event Stream at: {next_stream_pos}")
-                    else:
-                        self.logger.warning("⚠️ [Smart Sync] Anchoring Warning: 'next_stream_position' not found.")
-            except Exception as e:
-                self.logger.warning(f"❌ [Smart Sync] Failed to anchor event stream: {e}", exc_info=True)
+                        if next_stream_pos:
+                            now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+                            anchor = {"cursor": next_stream_pos, "cursor_updated_at": now_ms, "held_attempts": 0}
+                            self.logger.info(f"⚓ [Smart Sync] Anchoring Event Stream at: {next_stream_pos}")
+                        else:
+                            self.logger.warning("⚠️ [Smart Sync] Anchoring Warning: 'next_stream_position' not found.")
+                except Exception as e:
+                    self.logger.warning(f"❌ [Smart Sync] Failed to anchor event stream: {e}", exc_info=True)
 
             # SYNC RESOURCES (Full Scan)
             self._read_complete = True
@@ -1631,11 +1642,10 @@ class BoxConnector(BaseConnector):
             )
             return
         if returning:
-            # Their grants were dropped when they left; dropping the stream position makes any cut-short run full again.
+            # Their grants were dropped when they left, so a full sync follows the events below. It is recorded apart
+            # from the stream position: a cut-short run is full again and the changes since that position still apply.
             self.logger.info(f"[Incremental] {len(returning)} Box account(s) came back; running a full sync for them.")
-            await self.box_cursor_sync_point.update_sync_point("event_stream_cursor", {"cursor": None})
-            await self._run_sync()
-            return
+            await self.box_cursor_sync_point.update_sync_point("event_stream_cursor", {"full_sync_pending": True})
         # Pages applied with a stale group list lose grants, so a failed refresh stops at one page.
         refresh_complete = self._read_complete
 
@@ -1723,6 +1733,8 @@ class BoxConnector(BaseConnector):
 
         except Exception as e:
             self.logger.error(f"❌ [Incremental] Error during sync: {e}", exc_info=True)
+        if returning:
+            await self._run_sync()
 
     @staticmethod
     def _get_collaboration_id(

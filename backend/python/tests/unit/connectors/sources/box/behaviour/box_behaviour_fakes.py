@@ -496,6 +496,9 @@ class FakeBoxRecordsDb:
             links = self.shared_links.setdefault(record.external_record_id, set())
             links.update(g for g in record.shared_with_me_record_group_ids or [] if g in self.record_groups)
             stored = self.permissions.setdefault(record.external_record_id, {})
+            # As the real processor: a record flagged rewrite_permissions has its stored grants replaced.
+            if record.rewrite_permissions:
+                stored.clear()
             for p in permissions or []:
                 if p.entity_type.value == "GROUP" and p.external_id not in self.user_groups:
                     continue

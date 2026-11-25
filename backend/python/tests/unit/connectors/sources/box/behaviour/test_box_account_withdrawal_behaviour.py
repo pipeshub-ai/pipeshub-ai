@@ -182,6 +182,21 @@ def owner_walks(api: FakeBoxApi) -> int:
     return len([r for r in api.calls("GET", "/2.0/folders/0/items") if r.as_user == ALICE])
 
 
+def share_only_the_history_names(api: FakeBoxApi) -> None:
+    """Erin has no PipesHub account, so her files are not walked: Carol's share is known from the history alone."""
+    api.add_user("u-erin", "erin@acme.test", "Erin")
+    api.add_folder("fold-erin", "Erin's", "u-erin")
+    api.add_file("file-direct", "direct.pdf", "u-erin", parent="fold-erin")
+    collab_id = api.collaborate("file-direct", CAROL)
+    api.add_event(
+        "COLLABORATION_INVITE",
+        {"type": "collaboration", "id": collab_id, "item": {"type": "file", "id": "file-direct"},
+         "accessible_by": {"type": "user", "id": CAROL, "login": CAROL_EMAIL}},
+        created_by={"type": "user", "id": "u-erin", "login": "erin@acme.test"},
+        additional_details={"collab_id": collab_id},
+    )
+
+
 class TestReturningAccounts:
     async def test_an_account_coming_back_between_full_syncs_gets_a_full_sync(self, box_api, db, checkpoints) -> None:
         enterprise(box_api, db)
@@ -245,24 +260,98 @@ class TestReturningAccounts:
 
     async def test_a_returning_account_gets_back_a_share_only_the_share_history_names(self, box_api, db, checkpoints) -> None:
         enterprise(box_api, db)
-        # Erin has no PipesHub account, so her files are not walked: Carol's share is known from the history alone.
-        box_api.add_user("u-erin", "erin@acme.test", "Erin")
-        box_api.add_folder("fold-erin", "Erin's", "u-erin")
-        box_api.add_file("file-direct", "direct.pdf", "u-erin", parent="fold-erin")
-        collab_id = box_api.collaborate("file-direct", CAROL)
-        box_api.add_event(
-            "COLLABORATION_INVITE",
-            {"type": "collaboration", "id": collab_id, "item": {"type": "file", "id": "file-direct"},
-             "accessible_by": {"type": "user", "id": CAROL, "login": CAROL_EMAIL}},
-            created_by={"type": "user", "id": "u-erin", "login": "erin@acme.test"},
-            additional_details={"collab_id": collab_id},
-        )
+        share_only_the_history_names(box_api)
         connector = await synced(box_api, db, checkpoints)
         assert CAROL_EMAIL in readers(db, "file-direct")
         box_api.users[CAROL]["status"] = "inactive"
         await connector.run_sync()
         assert CAROL_EMAIL not in readers(db, "file-direct")
         box_api.users[CAROL]["status"] = "active"
+
+        await connector.run_sync()
+
+        assert CAROL_EMAIL in readers(db, "file-direct")
+
+    async def test_a_newly_linked_account_on_the_full_path_gets_its_shares_back_from_the_history(
+        self, box_api, db, checkpoints
+    ) -> None:
+        enterprise(box_api, db)
+        share_only_the_history_names(box_api)
+        connector = await synced(box_api, db, checkpoints)
+        box_api.users[CAROL]["status"] = "inactive"
+        await connector.run_sync()
+        forget_withdrawals(checkpoints)
+        box_api.users[CAROL]["status"] = "active"
+        # The stream position expired; the share history position is kept.
+        checkpoints.cursor().clear()
+
+        await connector.run_sync()
+
+        assert CAROL_EMAIL in readers(db, "file-direct")
+
+    async def test_a_change_made_before_an_account_returns_is_still_applied(self, box_api, db, checkpoints) -> None:
+        enterprise(box_api, db)
+        box_api.add_file("file-old", "old.pdf", ALICE)
+        connector = await synced(box_api, db, checkpoints)
+        box_api.users[CAROL]["status"] = "inactive"
+        await connector.run_sync()
+        # Alice trashes a file, and Carol is reactivated before the next run reads that change.
+        del box_api.items["file-old"]
+        box_api.add_event(
+            "ITEM_TRASH",
+            {"item_type": "file", "item_id": "file-old", "item_name": "old.pdf", "owned_by": {"type": "user", "id": ALICE}},
+            created_by={"type": "user", "id": ALICE, "login": ALICE_EMAIL},
+        )
+        box_api.users[CAROL]["status"] = "active"
+
+        await connector.run_sync()
+
+        assert "file-old" not in db.records
+        assert CAROL_EMAIL in readers(db, "file-shared")
+        assert not checkpoints.cursor().get("full_sync_pending")
+
+    async def test_a_full_sync_owed_to_a_returning_account_is_run_again_after_a_cut_short_run(
+        self, box_api, db, checkpoints
+    ) -> None:
+        enterprise(box_api, db)
+        connector = await synced(box_api, db, checkpoints)
+        box_api.users[CAROL]["status"] = "inactive"
+        await connector.run_sync()
+        box_api.users[CAROL]["status"] = "active"
+        box_api.fail("GET", "/2.0/folders/0/items", 503, times=50)
+        await connector.run_sync()
+        assert checkpoints.cursor()["full_sync_pending"]
+        box_api.faults.clear()
+        walks = owner_walks(box_api)
+
+        await connector.run_sync()
+
+        assert owner_walks(box_api) == walks + 1
+        assert CAROL_EMAIL in readers(db, "file-shared")
+        assert not checkpoints.cursor()["full_sync_pending"]
+
+    async def test_a_removal_replayed_without_its_later_regrant_is_undone_by_the_next_run(
+        self, box_api, db, checkpoints
+    ) -> None:
+        enterprise(box_api, db)
+        share_only_the_history_names(box_api)
+        collab_id = box_api.collaborations["file-direct"][0]["id"]
+        for event_type in ("COLLABORATION_REMOVE", "COLLABORATION_INVITE"):
+            box_api.add_event(
+                event_type,
+                {"type": "collaboration", "id": collab_id, "item": {"type": "file", "id": "file-direct"},
+                 "accessible_by": {"type": "user", "id": CAROL, "login": CAROL_EMAIL}},
+                created_by={"type": "user", "id": "u-erin", "login": "erin@acme.test"},
+            )
+        box_api.page_cap["/2.0/events"] = 1
+        connector = await synced(box_api, db, checkpoints)
+        box_api.users[CAROL]["status"] = "inactive"
+        await connector.run_sync()
+        box_api.users[CAROL]["status"] = "active"
+        # The replay from the start applies the removal, then cannot read the page that shares the file again.
+        box_api.fail("GET", "/2.0/events", 503, times=5, query={"stream_type": "admin_logs", "stream_position": "2"})
+        await connector.run_sync()
+        assert checkpoints.cursor()["full_sync_pending"]
 
         await connector.run_sync()
 
@@ -315,6 +404,39 @@ class TestWhoIsLinked:
         assert CAROL not in db.record_groups
         assert db.records["fold-carol"].external_record_group_id is None
         assert f"0S:{BOB_EMAIL}" in db.shared_links["fold-carol"]
+
+    async def test_a_stored_item_keeps_its_home_when_its_owner_becomes_inactive(self, box_api, db, checkpoints) -> None:
+        # The admin kept Carol's content open to her collaborators, so Bob still lists her folder.
+        enterprise(box_api, db)
+        box_api.add_folder("fold-carol", "Carol's", CAROL)
+        box_api.collaborate("fold-carol", BOB)
+        connector = await synced(box_api, db, checkpoints)
+        assert db.records["fold-carol"].external_record_group_id == CAROL
+        box_api.users[CAROL]["status"] = "inactive"
+
+        await sync(connector, checkpoints, "full")
+
+        assert db.records["fold-carol"].external_record_group_id == CAROL
+        assert BOB_EMAIL in readers(db, "fold-carol")
+
+    async def test_an_empty_user_list_moves_no_position_on(self, box_api, db, checkpoints) -> None:
+        enterprise(box_api, db)
+        connector = await synced(box_api, db, checkpoints)
+        cursor = dict(checkpoints.cursor())
+        box_api.users.clear()
+        box_api.add_event(
+            "ITEM_UPLOAD", {"item_type": "file", "item_id": "file-shared", "owned_by": {"type": "user", "id": ALICE}}
+        )
+
+        await connector.run_sync()
+
+        assert checkpoints.cursor() == cursor
+        assert db.withdrawn == []
+        checkpoints.sync_points.clear()
+
+        await connector.run_sync()
+
+        assert checkpoints.cursor() is None
 
     async def test_an_unknown_status_links_no_one(self, box_api, db, checkpoints) -> None:
         enterprise(box_api, db, carol_status="pending_review")
