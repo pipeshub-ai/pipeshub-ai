@@ -10,6 +10,7 @@ import pytest
 
 from app import edition, edition_services
 from app.agents.agent_loop import error_classification
+from tests.edition_overlay import edition_tree_present
 
 
 def test_model_decorators_return_their_input() -> None:
@@ -19,6 +20,7 @@ def test_model_decorators_return_their_input() -> None:
     assert edition_services.decorate_embeddings(embeddings, "openAI", "embed", {}) is embeddings
 
 
+@pytest.mark.skipif(edition_tree_present(), reason="these hooks are another edition's in this checkout")
 def test_configure_app_and_extra_toolsets_do_nothing() -> None:
     app, registry = MagicMock(), MagicMock()
 

@@ -45,7 +45,9 @@ from app.utils.embedding_gate import (
 )
 from app.utils.embedding_server_client import EmbeddingServerEmbeddings
 from app.utils.indexing_workers import indexing_worker_count
+from harness_core.testing.virtual_time import on_virtual_time
 from tests.support.loop_clock import virtual_loop_time
+from tests.support.settle import settle
 from tests.unit.modules.transformers.test_vectorstore_deep import _make_vectorstore
 from tests.unit.modules.transformers.test_vectorstore_point_ids import (
     _reconciling_store,
@@ -335,7 +337,7 @@ class TestCancellation:
         waiter.cancel()
         with pytest.raises(asyncio.CancelledError):
             await waiter
-        await asyncio.wait_for(third_entered.wait(), 1.0)
+        await settle(third_entered.wait())
         third_release.set()
         await third
         assert gate._s.holders == 0 and not gate._s.waiters
@@ -363,7 +365,7 @@ class TestCancellation:
         await asyncio.sleep(0.01)
         release.set()
         await holder
-        await asyncio.wait_for(live_entered.wait(), 1.0)
+        await settle(live_entered.wait())
         live_release.set()
         await live
         assert gate._s.holders == 0
@@ -621,7 +623,7 @@ class TestWidth:
         now[0] += 61
         health.body = encode_gate(2)
         await gate._current_width()
-        await asyncio.wait_for(second_entered.wait(), 1.0)
+        await settle(second_entered.wait())
         release.set()
         await asyncio.gather(holder, second)
 
@@ -689,6 +691,8 @@ class TestHealthRead:
         assert BulkGate("http://h:8002").health_url == "http://h:8002/health"
 
 
+# The budget, the stall timer and the waits are all on the loop's clock: on virtual time they are read exactly.
+@on_virtual_time
 class TestTheRecordBudget:
     """A real ``RecordProgress`` and a real ``asyncio.timeout``: the pause must survive the next batch's re-arm."""
 
@@ -923,7 +927,7 @@ class TestGrantsAndFairness:
         assert not late_entered.is_set()
         release.set()
         first_release.set()
-        await asyncio.wait_for(late_entered.wait(), 1.0)
+        await settle(late_entered.wait())
         late_release.set()
         await asyncio.gather(holder, first, late)
 
@@ -992,6 +996,7 @@ class TestOverlappingWaits:
         assert not budget.expired()
 
 
+@on_virtual_time
 class TestBudgetPause:
     async def test_one_wait_longer_than_the_whole_budget_does_not_cut_a_record_that_is_only_queued(self) -> None:
         progress, budget = await TestTheRecordBudget().run_record(cap=0.3, floor=5.0, waits=[0.5])

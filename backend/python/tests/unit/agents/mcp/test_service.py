@@ -7,6 +7,7 @@ import pytest
 from app.agents.mcp import service as mcp_service
 from app.agents.mcp.models import MCPAuthMode
 from app.agents.mcp.service import (
+    MCPInstancesUnavailable,
     belongs_to_org,
     credentials_to_discovery_dict,
     get_authenticated_mcp_servers,
@@ -56,11 +57,11 @@ class TestLoadOrgInstances:
         assert len(result) == 1
 
     @pytest.mark.asyncio
-    async def test_list_failure_returns_empty(self) -> None:
+    async def test_list_failure_is_unavailable_never_empty(self) -> None:
         cfg = MagicMock()
         cfg.list_keys_in_directory = AsyncMock(side_effect=RuntimeError("etcd down"))
-        result = await load_org_instances(cfg, "org-1")
-        assert result == []
+        with pytest.raises(MCPInstancesUnavailable):
+            _ = await load_org_instances(cfg, "org-1")
 
     @pytest.mark.asyncio
     async def test_skips_keys_that_fail_to_load(self) -> None:
@@ -280,11 +281,12 @@ class TestGetAuthenticatedMcpServers:
         assert result == []
 
     @pytest.mark.asyncio
-    async def test_load_failure_returns_empty(self) -> None:
+    async def test_a_store_that_cannot_be_listed_is_unavailable_not_empty(self) -> None:
+        """CPD-7 FB-3: an outage must not read as "no MCP servers"."""
         cfg = MagicMock()
         cfg.list_keys_in_directory = AsyncMock(side_effect=RuntimeError("boom"))
-        result = await get_authenticated_mcp_servers("user-1", cfg, org_id="org-1")
-        assert result == []
+        with pytest.raises(MCPInstancesUnavailable):
+            _ = await get_authenticated_mcp_servers("user-1", cfg, org_id="org-1")
 
     @pytest.mark.asyncio
     async def test_load_org_instances_raising_returns_empty(self, monkeypatch: pytest.MonkeyPatch) -> None:

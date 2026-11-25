@@ -314,12 +314,14 @@ describe('createJwt', () => {
       expect(decoded).to.not.have.property('configId')
     })
 
-    it('should not put an orgId on the token in this edition', () => {
-      const token = slackJwtGenerator('slack@example.com', secret, undefined, {
-        configId: 'cfg-1',
-      })
-      const decoded = jwt.verify(token, secret) as any
-      expect(decoded).to.not.have.property('orgId')
+    it('should put an orgId on the token only when the bot names the org it serves', () => {
+      const without = jwt.verify(slackJwtGenerator('slack@example.com', secret, undefined, { configId: 'cfg-1' }), secret) as any
+      expect(without).to.not.have.property('orgId')
+      const named = jwt.verify(
+        slackJwtGenerator('slack@example.com', secret, undefined, { configId: 'cfg-1', orgId: 'org-1' }),
+        secret,
+      ) as any
+      expect(named.orgId).to.equal('org-1')
     })
   })
 

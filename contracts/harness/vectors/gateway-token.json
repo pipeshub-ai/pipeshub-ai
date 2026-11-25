@@ -1,0 +1,64 @@
+{
+  "description": "E2 GT-9 / NA-8 cross-language vector: gateway tokens (compact JWS, Ed25519) signed with a throwaway test key given as a JWK (d = the 32-byte seed). Node's codec must produce exactly these tokens from these header and payload objects (key order as written) and verify them; the Python GatewayTokenVerifier must accept them at nowSeconds. kid = 'hgk_' + the first 22 base64url chars of sha256(SPKI DER). toolIdsDigest = canonical digest of the sorted, de-duplicated toolIds; routesDigest = the same of []. Never used outside tests. 'refused' holds tokens both sides must refuse as malformed (Python token_malformed, Node GATEWAY_TOKEN_INVALID): the stage-1 request binding, retired by S1R, as Node signed it before the upgrade.",
+  "jwk": {
+    "kty": "OKP",
+    "crv": "Ed25519",
+    "d": "JrAEXR8DlOhb4fiVpzYfMOoGi3Use-1qqo_E7J1bg1A",
+    "x": "LPzay8yUseiPXPo2NfHga8OOoJxbnmfB6Nb0yMyI86Y"
+  },
+  "kid": "hgk_Ir2Eg8OlZVs9lT_PFs9VII",
+  "publicKeyPem": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEALPzay8yUseiPXPo2NfHga8OOoJxbnmfB6Nb0yMyI86Y=\n-----END PUBLIC KEY-----\n",
+  "nowSeconds": 1790000001,
+  "toolIds": [
+    "knowledge@default/search",
+    "crm@inst-1/lookup",
+    "jira@inst-2/create_issue",
+    "crm@inst-1/lookup"
+  ],
+  "toolIdsDigest": "sha256:a78e5d3705c30b18bffaa7f93fb17f9005b30533b1afd699f0061c2aa700ac99",
+  "routesDigest": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+  "header": {
+    "alg": "EdDSA",
+    "typ": "JWT",
+    "kid": "hgk_Ir2Eg8OlZVs9lT_PFs9VII"
+  },
+  "tokens": [
+    {
+      "binding": "run",
+      "payload": {
+        "iss": "pipeshub-node/agent-harness",
+        "aud": "pipeshub-agent-harness/gateway",
+        "bnd": "run",
+        "orgId": "org-1",
+        "sessionId": "session-1",
+        "runId": "run-2",
+        "parentRunId": "run-1",
+        "attemptId": "run-2.a1",
+        "fence": 3,
+        "toolIdsDigest": "sha256:a78e5d3705c30b18bffaa7f93fb17f9005b30533b1afd699f0061c2aa700ac99",
+        "routesDigest": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "iat": 1790000000,
+        "exp": 1790000600
+      },
+      "token": "eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCIsImtpZCI6Imhna19JcjJFZzhPbFpWczlsVF9QRnM5VklJIn0.eyJpc3MiOiJwaXBlc2h1Yi1ub2RlL2FnZW50LWhhcm5lc3MiLCJhdWQiOiJwaXBlc2h1Yi1hZ2VudC1oYXJuZXNzL2dhdGV3YXkiLCJibmQiOiJydW4iLCJvcmdJZCI6Im9yZy0xIiwic2Vzc2lvbklkIjoic2Vzc2lvbi0xIiwicnVuSWQiOiJydW4tMiIsInBhcmVudFJ1bklkIjoicnVuLTEiLCJhdHRlbXB0SWQiOiJydW4tMi5hMSIsImZlbmNlIjozLCJ0b29sSWRzRGlnZXN0Ijoic2hhMjU2OmE3OGU1ZDM3MDVjMzBiMThiZmZhYTdmOTNmYjE3ZjkwMDViMzA1MzNiMWFmZDY5OWYwMDYxYzJhYTcwMGFjOTkiLCJyb3V0ZXNEaWdlc3QiOiJzaGEyNTY6NGY1M2NkYTE4YzJiYWEwYzAzNTRiYjVmOWEzZWNiZTVlZDEyYWI0ZDhlMTFiYTg3M2MyZjExMTYxMjAyYjk0NSIsImlhdCI6MTc5MDAwMDAwMCwiZXhwIjoxNzkwMDAwNjAwfQ.aGCLsBAmCudQdUCxwxvNjlOk_o2HGbvK14ifFg5ZOkNCwkghlyoyEli1uEKTFVxPo0mLE2j4ajp_AgR_DrqZCw"
+    }
+  ],
+  "refused": [
+    {
+      "binding": "request",
+      "reason": "token_malformed",
+      "payload": {
+        "iss": "pipeshub-node/agent-harness",
+        "aud": "pipeshub-agent-harness/gateway",
+        "bnd": "request",
+        "orgId": "org-1",
+        "sessionId": "session-1",
+        "userId": "user-1",
+        "requestId": "req-7f3a",
+        "iat": 1790000000,
+        "exp": 1790000600
+      },
+      "token": "eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCIsImtpZCI6Imhna19JcjJFZzhPbFpWczlsVF9QRnM5VklJIn0.eyJpc3MiOiJwaXBlc2h1Yi1ub2RlL2FnZW50LWhhcm5lc3MiLCJhdWQiOiJwaXBlc2h1Yi1hZ2VudC1oYXJuZXNzL2dhdGV3YXkiLCJibmQiOiJyZXF1ZXN0Iiwib3JnSWQiOiJvcmctMSIsInNlc3Npb25JZCI6InNlc3Npb24tMSIsInVzZXJJZCI6InVzZXItMSIsInJlcXVlc3RJZCI6InJlcS03ZjNhIiwiaWF0IjoxNzkwMDAwMDAwLCJleHAiOjE3OTAwMDA2MDB9.YUyr-3_bPhpZAIHmn8giq-Ap3HbF2AAW8QxHiI2siBI_N0bvKuVcJx_qTLuKe8TcWHXIu1iJJx73VWDE_oilAA"
+    }
+  ]
+}

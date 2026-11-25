@@ -33,6 +33,7 @@ from app.api.routes.toolsets import (
     update_toolset_oauth_config,
 )
 from app.config.configuration_service import ConfigurationService
+from tests.support.bound_org import bind_test_org
 from tests.unit.api.routes import test_mcp_servers as mcp_tests
 from tests.unit.api.routes import test_toolsets_full_coverage as toolset_tests
 from tests.unit.api.routes.test_mcp_servers import _mock_request
@@ -131,6 +132,14 @@ async def test_authenticate_with_the_store_up_is_unchanged() -> None:
 
 # --- every other toolset route that answered "saved" ----------------------------------------
 
+
+@pytest.fixture
+def bound_o1() -> Iterator[str]:
+    """The credential routes read the request's org from the binding the auth middleware makes."""
+    yield from bind_test_org("o1")
+
+
+@pytest.mark.usefixtures("bound_o1")
 async def test_update_credentials_write_failure_is_500() -> None:
     cs = _failing_writes()
     cs.get_config = AsyncMock(return_value={"isAuthenticated": True, "auth": {}})
@@ -151,6 +160,7 @@ async def test_authenticate_agent_write_failure_is_500() -> None:
     assert (exc.value.status_code, exc.value.detail) == (500, "Failed to save agent credentials.")
 
 
+@pytest.mark.usefixtures("bound_o1")
 async def test_update_agent_credentials_write_failure_is_500() -> None:
     cs = _failing_writes()
     cs.get_config = AsyncMock(return_value={"isAuthenticated": True, "auth": {}})
@@ -362,6 +372,7 @@ async def test_delete_oauth_config_with_readable_lists_removes_only_that_app() -
     assert stored[OAUTH_APPS_PATH] == [{"_id": "oc-9", "orgId": "o9"}]
 
 
+@pytest.mark.usefixtures("bound_o1")
 @pytest.mark.parametrize("agent", [False, True], ids=["user", "agent"])
 async def test_credential_update_with_an_unreadable_record_is_500_not_missing(agent: bool) -> None:
     cs, store, _stored = _service(reads=False)

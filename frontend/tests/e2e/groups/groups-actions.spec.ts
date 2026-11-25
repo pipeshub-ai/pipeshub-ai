@@ -1,7 +1,8 @@
 import { test, expect } from '../fixtures/base.fixture';
 
 // OSS Groups page is an Enterprise placeholder — row/delete UI lives in EE.
-test.describe.skip('Groups Actions', () => {
+test.describe('Groups Actions', () => {
+  test.skip(true, 'Groups is an Enterprise feature: this build shows its placeholder (groups-enterprise-placeholder.spec.ts)');
   test.beforeEach(async ({ page }) => {
     await page.goto('/workspace/groups/');
     await page.waitForTimeout(3_000);

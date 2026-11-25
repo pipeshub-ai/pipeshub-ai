@@ -23,12 +23,21 @@ CHECKED = {
 }
 # No connection to PipesHub's Redis at all.
 NO_REDIS = {"embedding_main.py", "docker_proxy_main.py"}
+# The agent harness's processes that write to the main Redis, checked where they start (no FastAPI lifespan): the worker
+# (live bus, run hints) and the model gateway (the provider gate's shared counters).
+CHECKED_AT = {
+    "harness_main.py": ("run_worker", "check_main_redis_eviction_policy"),
+    "model_gateway_main.py": ("run_gateway", "check_main_redis_eviction_policy"),
+}
+# The sandbox plane's components hold Redis users that may read only their own component document (ADR-KEY-02): they
+# cannot run INFO, and write nothing to the main Redis.
+READS_ONLY = {"sandbox_broker_main.py", "egress_proxy_main.py"}
 
 
-def _calls_in_lifespan(path: Path) -> set[str]:
+def _calls_in_lifespan(path: Path, function: str = "lifespan") -> set[str]:
     tree = ast.parse(path.read_text())
     lifespan = next(
-        node for node in ast.walk(tree) if isinstance(node, ast.AsyncFunctionDef) and node.name == "lifespan"
+        node for node in ast.walk(tree) if isinstance(node, ast.AsyncFunctionDef) and node.name == function
     )
     return {
         node.func.id if isinstance(node.func, ast.Name) else getattr(node.func, "attr", "")
@@ -38,7 +47,13 @@ def _calls_in_lifespan(path: Path) -> set[str]:
 
 
 def test_every_service_entry_point_is_classified() -> None:
-    assert {p.name for p in APP.glob("*_main.py")} == set(CHECKED) | NO_REDIS
+    assert {p.name for p in APP.glob("*_main.py")} == set(CHECKED) | NO_REDIS | set(CHECKED_AT) | READS_ONLY
+
+
+@pytest.mark.parametrize(("main", "where"), sorted(CHECKED_AT.items()))
+def test_a_harness_process_runs_the_check_where_it_starts(main: str, where: tuple[str, str]) -> None:
+    function, call = where
+    assert call in _calls_in_lifespan(APP / main, function)
 
 
 @pytest.mark.parametrize(("main", "call"), sorted(CHECKED.items()))
