@@ -108,6 +108,7 @@ from app.services.messaging.utils import MessagingUtils
 from app.telemetry.flag import telemetry_enabled  # noqa: E402 - like the imports around it, after set_service_suffix()
 from app.telemetry.modules.connector_metrics import set_connector_active
 from app.telemetry.setup import setup_telemetry
+from app.utils.pdf_stream_conversion import document_conversion_available  # noqa: E402 - after set_service_suffix(), like the imports around it
 from app.utils.process_hardening import mark_process_non_dumpable
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -1101,6 +1102,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     except Exception as e:
         logger.error(f"❌ Web connector identity backfill failed: {e}", exc_info=True)
 
+    if not document_conversion_available():
+        # Without this line a missing converter only showed up as bare 500s on PPTX/DOC previews.
+        logger.warning(
+            "Document conversion is unavailable: soffice (LibreOffice) is not on PATH, "
+            "so PPT/PPTX and DOC previews will offer a download instead"
+        )
+
     logger.debug("🚀 Starting application")
 
     # Start messaging producer first
@@ -1347,6 +1355,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             logger.info("✅ Accessible-records cache closed")
     except Exception as e:
         logger.error(f"❌ Error closing accessible-records cache: {e}")
+    from app.harness.mcp_hub.hub import process_mcp_hub
+
+    try:
+        await process_mcp_hub.aclose()
+    except Exception as e:
+        logger.error(f"Error closing pooled MCP sessions: {type(e).__name__}")
     try:
         from app.connectors.sources.localKB.push import api as kb_push_api
 
@@ -1440,6 +1454,7 @@ async def health_check() -> JSONResponse:
             status_code=503 if required_down else 200,
             content={
                 "status": overall,
+                "documentConversion": "available" if document_conversion_available() else "unavailable",
                 "components": components,
                 "timestamp": get_epoch_timestamp_in_ms(),
             },

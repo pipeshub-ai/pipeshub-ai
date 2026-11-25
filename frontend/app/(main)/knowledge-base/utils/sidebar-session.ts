@@ -1,4 +1,4 @@
-import { useAuthStore } from '@/lib/store/auth-store';
+import { useAuthStore } from '@/config';
 import { onSessionEnd } from '@/lib/api/session-cache';
 import { useKnowledgeBaseStore } from '../store';
 import { forgetPendingNodeChildrenRequests } from '../api';

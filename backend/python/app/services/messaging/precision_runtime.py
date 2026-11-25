@@ -7,8 +7,6 @@ import contextlib
 import time
 from typing import TYPE_CHECKING
 
-import openai
-
 from app.core.org_context import spawn_detached, system
 
 from app.services.messaging.precision_check import (
@@ -24,10 +22,7 @@ from app.services.messaging.precision_check import (
 )
 from app.services.vector_db.collection_pin import CollectionPinStore
 from app.services.vector_db.precision_guard import PrecisionGuard
-from app.utils.embedding_server_client import (
-    _EMBEDDING_SERVER_API_KEY,
-    _embedding_server_base_url,
-)
+from app.utils.embedding_server_client import list_embedding_server_models
 
 if TYPE_CHECKING:
     from logging import Logger
@@ -49,12 +44,7 @@ def _state_of(item: object) -> ServerState:
 
 
 async def fetch_server_states() -> dict[str, ServerState]:
-    client = openai.AsyncOpenAI(base_url=_embedding_server_base_url(), api_key=_EMBEDDING_SERVER_API_KEY, max_retries=0, timeout=5.0)
-    try:
-        page = await client.models.list()
-    finally:
-        await client.close()
-    return {item.id: _state_of(item) for item in page.data}
+    return {item.id: _state_of(item) for item in await list_embedding_server_models()}
 
 
 def build_precision_verdict(config_service, collection_registry, vector_db_service, graph_provider, logger: Logger) -> PrecisionVerdict:  # noqa: ANN001

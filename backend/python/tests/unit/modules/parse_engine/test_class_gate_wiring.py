@@ -9,6 +9,7 @@ from app.modules.parse_engine.class_gate import ClassGate, GateRequest, PoolCapa
 from app.modules.parse_engine.cost import CostClass
 from tests.support.eventually import done_without_waiting
 from tests.support.fake_member_budget import FakeMemberBudget
+from tests.support.settle import SETTLE_S
 
 S, L, H = CostClass.SMALL, CostClass.LARGE, CostClass.HUGE
 N = AdmissionNumbers()
@@ -70,7 +71,7 @@ async def test_an_upgraded_large_counts_against_larges_share_for_the_next_grant(
     small = done_without_waiting(gate.acquire(req(S), deadline_s=1))  # a small one is not held back
     small.release()
     a.release()
-    got = await asyncio.wait_for(waiting, 1.0)
+    got = await asyncio.wait_for(waiting, SETTLE_S)
     got.release()
     b.release()
 

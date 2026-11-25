@@ -48,7 +48,7 @@ export default function UserBadge({ user }: UserBadgeProps) {
           </Text>
         )}
         {user.email && (
-          <Text size="1" style={{ color: 'var(--gray-10)', ...ELLIPSIS }}>
+          <Text size="1" style={{ color: 'var(--gray-11)', ...ELLIPSIS }}>
             {user.email}
           </Text>
         )}

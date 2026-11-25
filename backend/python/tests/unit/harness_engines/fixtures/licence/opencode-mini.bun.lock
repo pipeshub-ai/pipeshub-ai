@@ -1,0 +1,20 @@
+{
+  "lockfileVersion": 1,
+  "workspaces": {
+    "packages/opencode": {
+      "name": "opencode",
+      "dependencies": { "dompurify": "3.3.1", "@scope/x": "^1.0.0", "core": "workspace:*", },
+    },
+    "packages/core": { "name": "core", "dependencies": { "leftpad": "1.0.0" } },
+    "packages/console": { "name": "console", "dependencies": { "gpl-thing": "1.0.0" } },
+  },
+  "packages": {
+    "@scope/x": ["@scope/x@1.0.0", "", { "dependencies": { "nested": "^2" } }, "sha512-x"],
+    "@scope/x/nested": ["nested@2.0.0", "", {}, "sha512-n2"],
+    "core": ["core@workspace:packages/core"],
+    "dompurify": ["dompurify@3.3.1", "", {}, "sha512-d"],
+    "gpl-thing": ["gpl-thing@1.0.0", "", {}, "sha512-g"],
+    "leftpad": ["leftpad@1.0.0", "", {}, "sha512-l"],
+    "nested": ["nested@1.0.0", "", {}, "sha512-n1"],
+  }
+}

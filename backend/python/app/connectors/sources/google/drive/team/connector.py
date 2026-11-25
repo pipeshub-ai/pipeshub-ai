@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from functools import partial
 from logging import Logger
-from typing import TYPE_CHECKING, AsyncGenerator, Awaitable, Callable, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, AsyncGenerator, Awaitable, Callable, Dict, List, Optional, Sequence, Tuple
 
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
@@ -76,6 +76,13 @@ from app.connectors.core.registry.filters import (
 )
 from app.connectors.sources.google.common.apps import GoogleDriveTeamApp
 from app.connectors.sources.google.common.directory_listing import partial_directory_reason
+from app.connectors.core.base.source_metadata import (
+    HELD_DRIVE_METADATA,
+    DriveMetadata,
+    apply_source_metadata,
+    held_metadata,
+    source_metadata,
+)
 from app.connectors.sources.google.common.drive_file_fields import (
     DRIVE_STREAM_FILE_GET_FIELDS,
     DRIVE_WORKSPACE_FILE_GET_FIELDS,
@@ -427,6 +434,13 @@ class _Settled(Enum):
     .with_description("Sync files and folders from Google Drive")\
     .with_categories(["Storage"])\
     .with_scopes([ConnectorScope.TEAM.value])\
+    .with_resilience_config(
+        # The vendor's quota is the org's shared budget (app.services.rate_budget.families), which this policy
+        # takes from; the rate is this process's own cap when that budget is unreachable. Retries stay the
+        # connector's own (max_retries 0), as before.
+        rate_limit=100,
+        max_retries=0,
+    )\
     .with_auth([
         AuthBuilder.type(AuthType.CUSTOM).fields([
                 AuthField(
@@ -795,10 +809,11 @@ class GoogleDriveTeamConnector(BaseConnector):
                 )
 
                 # Create Google Drive Data Source from the client
-                self.drive_data_source = GoogleDriveDataSource(
+                self.drive_data_source = self._with_metadata(GoogleDriveDataSource(
                     self.drive_client.get_client(),
                     executor=self._drive_executor,
-                )
+                    resilience=self.resilience,
+                ))
 
                 self.logger.info(
                     "✅ Google Drive client and data source initialized successfully"
@@ -842,6 +857,30 @@ class GoogleDriveTeamConnector(BaseConnector):
             self.logger.debug("Could not read the Google Workspace admin %s: %s", admin_email, e)
             return
         await self.register_authenticated_source_user(email, source_user_id, listing=self._user_listing)
+
+    # The sync's source metadata reads, prepared once per sync (``source_metadata``).
+    _drive_metadata: DriveMetadata = HELD_DRIVE_METADATA
+
+    def _with_metadata(self, source: GoogleDriveDataSource) -> GoogleDriveDataSource:
+        """``source``, asking Drive for what the sync's metadata reads need where it needs it."""
+        return source_metadata().drive_source(source, lambda: self._drive_metadata)
+
+    async def _refresh_drive_metadata(self) -> None:
+        """The sync's metadata reads, prepared with the scopes the reader names; none when they are not granted."""
+
+        async def build(scopes: Sequence[str]) -> object:
+            client = await GoogleClient.build_from_services(
+                service_name="drivelabels",
+                logger=self.logger,
+                config_service=self.config_service,
+                is_individual=False,
+                version="v2",
+                connector_instance_id=self.connector_id,
+                delegated_scopes=list(scopes),
+            )
+            return client.get_client()
+
+        self._drive_metadata = await source_metadata().drive_metadata(build, self.logger)
 
     async def run_sync(self) -> None:
         """
@@ -905,6 +944,7 @@ class GoogleDriveTeamConnector(BaseConnector):
 
             self.logger.info("Starting Google Drive enterprise connector sync")
             self._shortcut_cache = {}
+            await self._refresh_drive_metadata()
 
             # Load sync and indexing filters
             self.sync_filters, self.indexing_filters = await load_connector_filters(
@@ -3079,10 +3119,11 @@ class GoogleDriveTeamConnector(BaseConnector):
             )
 
             # Create user-specific GoogleDriveDataSource from the client
-            user_drive_data_source = GoogleDriveDataSource(
+            user_drive_data_source = self._with_metadata(GoogleDriveDataSource(
                 user_drive_client.get_client(),
                 executor=self._drive_executor,
-            )
+                resilience=self.resilience,
+            ))
 
             # Fetch root drive info to get the actual drive ID
             drive_info = await user_drive_data_source.files_get(
@@ -5459,6 +5500,10 @@ class GoogleDriveTeamConnector(BaseConnector):
                 is_shared=is_shared,
             )
             set_drive_people(file_record, people)
+            held = held_metadata(existing_record)
+            if apply_source_metadata(file_record, existing_record, self._drive_metadata.fields_for(metadata, held)):
+                is_updated = True
+                metadata_changed = True
 
             if existing_record and not content_changed:
                 self.logger.debug(f"No content change for file {file_record.record_name} setting indexing status as prev value")
@@ -6096,7 +6141,9 @@ class GoogleDriveTeamConnector(BaseConnector):
             connector_instance_id=self.connector_id
         )
 
-        return GoogleDriveDataSource(user_drive_client.get_client(), executor=self._drive_executor)
+        return GoogleDriveDataSource(
+            user_drive_client.get_client(), executor=self._drive_executor, resilience=self.resilience
+        )
 
     async def _resolve_folder_scope_across_users(self, users: List[AppUser]) -> None:
         """
@@ -7677,10 +7724,11 @@ class GoogleDriveTeamConnector(BaseConnector):
                 ):
                     drive_data_source = self.drive_data_source
                 else:
-                    drive_data_source = GoogleDriveDataSource(
+                    drive_data_source = self._with_metadata(GoogleDriveDataSource(
                         drive_service,
                         executor=self._drive_executor,
-                    )
+                        resilience=self.resilience,
+                    ))
             metadata_request = drive_service.files().get(
                 fileId=file_id,
                 fields=DRIVE_STREAM_FILE_GET_FIELDS,
@@ -7877,10 +7925,11 @@ class GoogleDriveTeamConnector(BaseConnector):
             ):
                 drive_data_source = self.drive_data_source
             else:
-                drive_data_source = GoogleDriveDataSource(
+                drive_data_source = self._with_metadata(GoogleDriveDataSource(
                     drive_service,
                     executor=self._drive_executor,
-                )
+                    resilience=self.resilience,
+                ))
 
             mime_type = file_metadata.get("mimeType", "application/octet-stream")
             if is_shortcut_mime(mime_type):
@@ -8090,10 +8139,11 @@ class GoogleDriveTeamConnector(BaseConnector):
                 ):
                     user_drive_data_source = self.drive_data_source
                 else:
-                    user_drive_data_source = GoogleDriveDataSource(
+                    user_drive_data_source = self._with_metadata(GoogleDriveDataSource(
                         drive_service,
                         executor=self._drive_executor,
-                    )
+                        resilience=self.resilience,
+                    ))
                 fields = 'user(displayName,emailAddress,permissionId)'
                 user_about = await user_drive_data_source.about_get(fields=fields)
                 api_user_id = user_about.get('user', {}).get('permissionId')
@@ -8123,10 +8173,11 @@ class GoogleDriveTeamConnector(BaseConnector):
             ):
                 user_drive_data_source = self.drive_data_source
             else:
-                user_drive_data_source = GoogleDriveDataSource(
+                user_drive_data_source = self._with_metadata(GoogleDriveDataSource(
                     drive_service,
                     executor=self._drive_executor,
-                )
+                    resilience=self.resilience,
+                ))
             user_email = api_user_email or resolved_email
             # _process_drive_item keys off user_email only and ignores user_id (shared-drive
             # sync passes "" for it), so a missing permissionId must not abort the reindex.

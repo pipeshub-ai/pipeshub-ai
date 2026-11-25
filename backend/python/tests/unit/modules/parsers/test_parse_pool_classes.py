@@ -93,6 +93,7 @@ def test_an_inspection_runs_while_every_big_worker_is_busy(classes) -> None:
 
     waited = asyncio.run(run())
     assert started.is_set()
+    # wall-clock-ok: upstream's bound: a big job would hold the slot for the 0.9 s left on the long parses plus a spawn
     assert waited < 1.0, waited  # a big job would have held it for the 0.9 s left on the long parses (plus a spawn)
 
 

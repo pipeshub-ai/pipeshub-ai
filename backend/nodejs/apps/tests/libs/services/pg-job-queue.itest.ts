@@ -399,8 +399,8 @@ type D = { n?: number; tag?: string }
     await queue.add('c', { tag: 'x' }, { repeat: { every: 60_000 } })
     await queue.add('d', { tag: 'y' }, { repeat: { every: 60_000 } })
     const [c] = (await queue.getRepeatableJobs()).filter((r) => r.name === 'c')
-    expect(await queue.removeRepeatableByKey(c.key)).to.equal(true)
-    expect(await queue.removeRepeatableByKey(c.key)).to.equal(false)          // gone: says so
+    expect(await queue.removeRepeatableByKey(c!.key)).to.equal(true)
+    expect(await queue.removeRepeatableByKey(c!.key)).to.equal(false)          // gone: says so
     expect((await queue.getRepeatableJobs()).map((r) => r.name)).to.deep.equal(['d'])
 
     await queue.upsertJobScheduler('sweep', { every: 60_000 }, { name: 'sweep' })

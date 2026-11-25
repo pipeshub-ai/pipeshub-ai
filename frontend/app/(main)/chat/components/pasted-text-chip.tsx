@@ -62,7 +62,7 @@ export function PastedTextChip({ file, onPreview, onShowInTextField, onRemove, o
       <Flex direction="column" gap="2">
         <Flex align="center" justify="between">
           <Flex align="center" gap="1" style={{ overflow: 'hidden' }}>
-            <MaterialIcon name="content_paste" size={16} color="var(--accent-9)" />
+            <MaterialIcon name="content_paste" size={16} color="var(--accent-11)" />
             <Text
               size="1"
               style={{ color: 'var(--accent-11)', textTransform: 'uppercase', letterSpacing: '0.02em' }}
@@ -133,7 +133,7 @@ export function PastedTextChip({ file, onPreview, onShowInTextField, onRemove, o
             <Text
               size="1"
               style={{
-                color: file.status === 'error' ? 'var(--red-11)' : 'var(--slate-10)',
+                color: file.status === 'error' ? 'var(--red-11)' : 'var(--slate-11)',
                 overflow: 'hidden',
                 textOverflow: 'ellipsis',
                 whiteSpace: 'nowrap',
@@ -154,8 +154,8 @@ export function PastedTextChip({ file, onPreview, onShowInTextField, onRemove, o
               style={{ ...BUTTON_RESET, cursor: 'pointer' }}
               aria-label={t('chat.attachments.showInTextField', { defaultValue: 'Show in text field' })}
             >
-              <MaterialIcon name="text_fields" size={12} color="var(--accent-10)" />
-              <Text size="1" style={{ color: 'var(--accent-10)' }}>
+              <MaterialIcon name="text_fields" size={12} color="var(--accent-11)" />
+              <Text size="1" style={{ color: 'var(--accent-11)' }}>
                 {t('chat.attachments.showInTextField', { defaultValue: 'Show in text field' })}
               </Text>
             </button>

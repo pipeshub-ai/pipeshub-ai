@@ -166,6 +166,7 @@ describe('Conditional delete, version bump and capability probe of the paid-resu
       let thrown: unknown
       try { await a.writeObject(key(1), Buffer.from('x')) } catch (e) { thrown = e }
       expect(thrown).to.be.instanceOf(StorageUploadError)
+      // wall-clock-ok: the failure it guards is waiting out the 15 s key-lock wait; 3 s is 5x below that
       expect(Date.now() - started).to.be.lessThan(3000)
     })
 
@@ -348,6 +349,7 @@ describe('Conditional delete, version bump and capability probe of the paid-resu
       fs.utimesSync(path.join(dir, name), old, old)
       const t = Date.now()
       await a.writeObject(key(1), Buffer.from('after the lease'))
+      // wall-clock-ok: the failure it guards is waiting out the 15 s key-lock wait for a stale lock; 1.5 s is 10x below
       expect(Date.now() - t).to.be.lessThan(1500)
     })
 
@@ -407,6 +409,7 @@ describe('Conditional delete, version bump and capability probe of the paid-resu
       lock(2147483646) // no such process
       const started = Date.now()
       await a.writeObject(key(1), Buffer.from('after the crash'))
+      // wall-clock-ok: the failure it guards is waiting the 15 s key-lock wait on a dead owner's lock; 1 s is 15x below
       expect(Date.now() - started, 'a crash-left lock made the writer wait').to.be.lessThan(1000)
 
       lock(process.pid) // this process: alive. Inside its lease it is waited for.
@@ -422,6 +425,7 @@ describe('Conditional delete, version bump and capability probe of the paid-resu
       fs.utimesSync(path.join(dir, name), old, old)
       const t1 = Date.now()
       await a.writeObject(key(1), Buffer.from('after the lease'))
+      // wall-clock-ok: the failure it guards is waiting the 15 s key-lock wait on an expired lease; 1 s is 15x below
       expect(Date.now() - t1).to.be.lessThan(1000)
     })
 
@@ -434,6 +438,7 @@ describe('Conditional delete, version bump and capability probe of the paid-resu
       require('child_process').execFileSync('mkfifo', [full])
       const started = Date.now()
       const r = await a.deleteObjectsIfMatch([{ key: key(1), etag: 'x' }])
+      // wall-clock-ok: the failure it guards is a FIFO open that blocks until mocha's timeout; 2 s only separates that from a return
       expect(Date.now() - started).to.be.lessThan(2000)
       expect(r.changed).to.deep.equal([])
     })
@@ -596,6 +601,7 @@ describe('Conditional delete, version bump and capability probe of the paid-resu
         new Promise((_resolve, reject) => init.signal.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'TimeoutError' }))))) as any)
       const started = Date.now()
       expect(await a.conditionalCapabilities()).to.deep.equal({ conditionalDelete: false, bump: false })
+      // wall-clock-ok: the probe deadline is 40 ms and the failure is a hang; 2 s is 50x the deadline
       expect(Date.now() - started).to.be.lessThan(2000)
     })
 
@@ -612,6 +618,7 @@ describe('Conditional delete, version bump and capability probe of the paid-resu
         let outcome: unknown = 'resolved'
         try { await run() } catch (e) { outcome = e }
         expect(outcome, `${name} reported an answer for a call that never answered`).to.be.instanceOf(Error)
+        // wall-clock-ok: the call deadline is 40 ms and the failure is a hang; 2 s is 50x the deadline
         expect(Date.now() - started, name).to.be.lessThan(2000)
       }
     })
@@ -729,6 +736,7 @@ describe('Conditional delete, version bump and capability probe of the paid-resu
       ;(a as any).s3 = { ...(a as any).s3, headObject: () => ({ promise: () => new Promise(() => undefined) }) }
       const started = Date.now()
       expect(await a.conditionalCapabilities()).to.deep.equal({ conditionalDelete: false, bump: false })
+      // wall-clock-ok: the probe deadline is 40 ms and the failure is a hang; 2 s is 50x the deadline
       expect(Date.now() - started).to.be.lessThan(2000)
     })
 
@@ -850,6 +858,7 @@ describe('Conditional delete, version bump and capability probe of the paid-resu
         let outcome: unknown = 'resolved'
         try { await run() } catch (e) { outcome = e }
         expect(outcome, `${name} reported an answer for a call that never answered`).to.be.instanceOf(Error)
+        // wall-clock-ok: the call deadline is 40 ms and the failure is a hang; 2 s is 50x the deadline
         expect(Date.now() - started, name).to.be.lessThan(2000)
       }
     })

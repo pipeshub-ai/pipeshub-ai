@@ -31,6 +31,8 @@ PINNED = {
     5: "2bd8de874f749e4b50db9eb74e190a8454421135c5de15bf53119f546b5cf632",  # + incarnationId
     6: "de869b01e604dcf9eba8ac2c4d1854afe61e37deaf19615098f2ebe0fea54538",  # + indexedParser, indexedParserAt, indexedParserVrid, indexedParserSource
     7: "1e9862aa1f14c599127cd4014e6cbeef6c75f1136661ceed458d5f832f7e8add",  # + indexedMd5, pendingTaxonomyRefs
+    8: "38cb8cba9a68b08cd185a0e5384b2f785d564d87d4975ceb30b208614f957b7b",  # + CLOUDFLARE R2 connectorName
+    9: "eea21e16acad8d9b84cbe912b9c2d9fb1e7919bfc4739b33685ce402f1ddef82",  # + editionFields, chat-attachment uploader fields
 }
 # Change app_schema's rule -> bump APP_SCHEMA_GENERATION, then pin the new hash here.
 APPS_PINNED = {

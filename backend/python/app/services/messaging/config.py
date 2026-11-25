@@ -39,6 +39,8 @@ class Topic(str, Enum):
     SYNC_EVENTS = "sync-events"
     HEALTH_CHECK = "health-check"
     NOTIFICATION = "notification"
+    AGENT_RUN_EVENTS = "agent-run-events"
+    CONTROL_PLANE_EVENTS = "control-plane-events"
 
 
 REQUIRED_TOPICS: list[str] = [t.value for t in Topic]
@@ -889,13 +891,12 @@ class RedisStreamsConfig(RedisConfig):
     client_id: str = "pipeshub"
     group_id: str = "default_group"
     topics: list[str] = Field(default_factory=list)
-    ephemeral_group: bool = Field(
+    broadcast: bool = Field(
         default=False,
         description=(
-            "Group belongs to one process and is disposable: created at the stream tail "
-            "instead of the head (so a fresh group does not replay retained history) and "
-            "destroyed on shutdown (so groups do not accumulate, since Redis never "
-            "expires them). Used for broadcast consumers, where every process needs its "
-            "own group to receive every message."
+            "Every process that subscribes sees every message (a consumer group would "
+            "hand each message to one member). The subscriber reads from the stream's "
+            "tail with a position of its own and joins no group, so a process that dies "
+            "leaves nothing on the server: Redis never expires a group."
         ),
     )

@@ -1,0 +1,13 @@
+{
+  "model": "llama3.2",
+  "created_at": "2026-10-09T10:00:00.000000Z",
+  "message": {"role": "assistant", "content": "Paris is the capital of France."},
+  "done_reason": "stop",
+  "done": true,
+  "total_duration": 812345678,
+  "load_duration": 12345678,
+  "prompt_eval_count": 26,
+  "prompt_eval_duration": 120000000,
+  "eval_count": 9,
+  "eval_duration": 650000000
+}

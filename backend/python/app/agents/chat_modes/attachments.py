@@ -33,7 +33,8 @@ __all__ = ["ResolvedAttachments", "resolve_attachments"]
 
 @dataclass
 class ResolvedAttachments:
-    """Everything the bridge needs from this turn's attachments."""
+    """Everything `setup.py` needs to fold attachments into a chat-mode
+    turn without re-deriving any of it."""
 
     virtual_record_ids: list[str] = field(default_factory=list)
     has_image_attachments: bool = False

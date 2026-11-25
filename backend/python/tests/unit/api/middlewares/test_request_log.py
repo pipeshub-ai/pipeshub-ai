@@ -37,6 +37,7 @@ from app.utils import error_class
 from app.utils.logger import RedactingFormatter, log_record_fields
 from app.utils.request_context import get_context, set_context_org
 from tests.support.graph_read_errors import DRIVER_TEXT, marked_internal
+from tests.support.settle import settle
 from tests.unit.api.test_framework_behaviour import (  # noqa: F401 - autouse fixture
     Recorder,
     _drive,
@@ -1293,7 +1294,7 @@ async def test_the_body_reaches_the_route_in_order_and_is_read_one_message_ahead
 
     server = _Server(b'{"a": ', b'"b"', b"}")
     request = asyncio.create_task(app(_scope("POST", "/api/v1/gated-body"), server.receive, server.send))
-    await asyncio.wait_for(server.second_read.wait(), 1)
+    await settle(server.second_read.wait())
     await _settle()
     assert server.calls == 2  # one message in the slot, one in the read-ahead's hand: a body is not buffered
     gate.set()

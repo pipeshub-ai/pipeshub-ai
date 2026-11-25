@@ -1,0 +1,89 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/control-plane/v1/config-changed.schema.json",
+  "title": "ConfigChanged",
+  "description": "The payload of a `config.changed` audit entry on the org's chain (stream `cp:{orgId}`, 02-lld §2.10, §7): one per committed control-plane write. Ids, revisions, digests and field paths only; never a value of a binding, a credential or a run's content.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["orgId", "scope", "object", "revisionFrom", "revisionTo", "changeDigest", "changed", "actor", "approvalRef", "headRevision"],
+  "properties": {
+    "orgId": { "$ref": "common.schema.json#/$defs/OrgId" },
+    "scope": { "$ref": "common.schema.json#/$defs/ScopeRef" },
+    "object": {
+      "description": "What changed: a kind of control-plane object and its id (`policy-section`/`approvals`, `model-account`/`org/{accountId}`, `schedule`/`{id}`, `platform-settings`/`labs`, `mcp-manifest`/`{instanceId}`).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "id"],
+      "properties": {
+        "type": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,63}$" },
+        "id": { "type": "string", "minLength": 1, "maxLength": 256 }
+      }
+    },
+    "revisionFrom": {
+      "description": "The object's own revision before the write; null where the object has none yet (KV documents until CPD-4).",
+      "anyOf": [{ "$ref": "common.schema.json#/$defs/Revision" }, { "type": "null" }]
+    },
+    "revisionTo": {
+      "anyOf": [{ "$ref": "common.schema.json#/$defs/Revision" }, { "type": "null" }]
+    },
+    "changeDigest": {
+      "description": "Canonical digest of the object's new non-secret value.",
+      "$ref": "common.schema.json#/$defs/Digest"
+    },
+    "beforeDigest": {
+      "description": "Canonical digest of the object's non-secret value before the write; null when it did not exist. Absent on entries written before CPD-11.",
+      "anyOf": [{ "$ref": "common.schema.json#/$defs/Digest" }, { "type": "null" }]
+    },
+    "changed": {
+      "description": "Dotted paths of the fields that changed, sorted; empty for a save that kept the stored value.",
+      "type": "array",
+      "maxItems": 1000,
+      "items": { "type": "string", "minLength": 1, "maxLength": 512 }
+    },
+    "narrowing": {
+      "description": "True only when the change can only remove authority (drives the live layer, CPD-6).",
+      "type": "boolean"
+    },
+    "actor": { "$ref": "common.schema.json#/$defs/ActorRef" },
+    "approvalRef": {
+      "description": "The approval request the write applied, if any.",
+      "anyOf": [{ "type": "string", "minLength": 1, "maxLength": 128 }, { "type": "null" }]
+    },
+    "headRevision": {
+      "description": "The org head revision the write committed as; the audit entry's `journalSeq`.",
+      "$ref": "common.schema.json#/$defs/Revision"
+    },
+    "repaired": {
+      "description": "Recorded by the ordered-steps repair for a writer that stopped after its effects (standalone Mongo).",
+      "const": true
+    }
+  },
+  "examples": [
+    {
+      "orgId": "o1",
+      "scope": "org:o1",
+      "object": { "type": "policy-section", "id": "approvals" },
+      "revisionFrom": null,
+      "revisionTo": null,
+      "changeDigest": "sha256:9f2c1f0e6b5a4d3c2b1a0f9e8d7c6b5a4f3e2d1c0b9a8f7e6d5c4b3a2f1e0d9c",
+      "changed": ["agents.agent-a", "org"],
+      "actor": "user:u3",
+      "approvalRef": null,
+      "headRevision": 1042
+    },
+    {
+      "orgId": "o1",
+      "scope": "user:u3",
+      "object": { "type": "model-account", "id": "user/u3/openAI" },
+      "revisionFrom": 2,
+      "revisionTo": null,
+      "changeDigest": "sha256:0e1d2c3b4a5f6e7d8c9b0a1f2e3d4c5b6a7f8e9d0c1b2a3f4e5d6c7b8a9f0e1d",
+      "changed": ["credentials"],
+      "narrowing": false,
+      "actor": "user:u3",
+      "approvalRef": null,
+      "headRevision": 1043,
+      "repaired": true
+    }
+  ]
+}

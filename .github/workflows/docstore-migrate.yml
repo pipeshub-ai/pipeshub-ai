@@ -86,11 +86,11 @@ jobs:
           sudo apt-get install -y -qq -o Acquire::Retries=5 "postgresql-${{ matrix.pg }}" "postgresql-${{ matrix.pg }}-pgvector" pgbouncer mongodb-org-server mongodb-mongosh
           sudo systemctl stop postgresql || true
           python -m venv "$RUNNER_TEMP/migrate-venv"
-          "$RUNNER_TEMP/migrate-venv/bin/pip" install -r backend/db/requirements.txt
+          "$RUNNER_TEMP/migrate-venv/bin/pip" install --require-hashes --no-deps -r backend/db/requirements.lock
 
       - name: Install Node dependencies
         working-directory: backend/nodejs/apps
-        run: npm ci
+        run: npm ci --ignore-scripts
 
       - name: Migration tool suites (${{ matrix.shard }})
         # fail fast: a shard takes minutes; a test past 240 s (mocha's per-test limit) or the step past 40 minutes is a hang, and the log names the test (progress-hooks.ts)
@@ -189,10 +189,15 @@ jobs:
                 --expect-suite 'docstore-migrate: identity collections=8' \
                 --expect-suite 'docstore-migrate: organisations=1' \
                 --expect-suite 'docstore-migrate: bulk copy=3' \
-                --expect-suite 'docstore-migrate: conversation collections=4' \
+                --expect-suite 'docstore-migrate: conversation collections=5' \
                 --expect-suite 'docstore-migrate: content mappings=2' \
-                --expect-suite 'docstore-migrate: content, OAuth and platform data=14' \
-                --expect-suite 'docstore-migrate: collection coverage=7' \
+                --expect-suite 'docstore-migrate: content, OAuth and platform data=18' \
+                --expect-suite 'docstore-migrate: carriers on PostgreSQL=10' \
+                --expect-suite 'docstore-migrate: carriers in a whole move=3' \
+                --expect-suite 'docstore-migrate: the control plane carried to PostgreSQL=8' \
+                --expect-suite 'docstore-migrate: ledgers, people=8' \
+                --expect-suite 'docstore-migrate: durable runs, journal and payloads on PostgreSQL=9' \
+                --expect-suite 'docstore-migrate: every refusal is known past the job state=3' \
                 --expect-suite 'docstore-migrate: table coverage=3' \
                 --expect-suite 'fence cutover waits for fenced writes=3' \
                 --expect-suite 'pre-flight _id check=1' \
@@ -200,5 +205,6 @@ jobs:
                 --expect-suite 'store fence against PostgreSQL=15' \
                 --expect-suite 'Mongo store fence against a real MongoDB=18' \
                 --expect-suite 'docstore-migrate: pre-flight checks=14' \
-                --expect-suite 'docstore-migrate: command line gates=6' ;;
+                --expect-suite 'docstore-migrate: command line gates=6' \
+                --expect-suite 'docstore-migrate: the application loses MongoDB writes at the switch=4' ;;
           esac

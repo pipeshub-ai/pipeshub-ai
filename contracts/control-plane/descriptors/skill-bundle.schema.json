@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/control-plane/v1/descriptors/skill-bundle.schema.json",
+  "title": "CatalogSkillBundleDescriptor",
+  "description": "A skill's bundle by its file list (P7.1 `skill-bundle/1`). `digest` is the bundle digest admission pins, recomputable from `files` without the bytes.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "name",
+    "format",
+    "files",
+    "digest"
+  ],
+  "properties": {
+    "name": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"
+    },
+    "format": {
+      "const": "skill-bundle/1"
+    },
+    "files": {
+      "description": "Canonical path to plaintext SHA-256 and size (the bundle itself holds `SKILL.md` at its root).",
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/File"
+      }
+    },
+    "digest": {
+      "$ref": "https://schemas.pipeshub.com/harness/v2/core/common.schema.json#/$defs/Digest"
+    }
+  },
+  "$defs": {
+    "File": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sha256",
+        "size"
+      ],
+      "properties": {
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "size": {
+          "$ref": "https://schemas.pipeshub.com/harness/v2/core/common.schema.json#/$defs/UInt"
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "name": "quarterly-report",
+      "format": "skill-bundle/1",
+      "files": {
+        "SKILL.md": {
+          "sha256": "89bc9236218276ba24ae56d5feee949728f2cfdd13885876666b06f0c3f396ba",
+          "size": 72
+        }
+      },
+      "digest": "sha256:468475bd15c20d9951c9ccf5ef0bf2f9cb79f6d0c130c4fdc4aa9df897db804d"
+    }
+  ]
+}

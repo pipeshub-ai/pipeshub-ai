@@ -144,7 +144,7 @@ export function ChangePasswordDialog({
               <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
                 {t('workspace.profile.changePassword.newPassword')}
               </Text>
-              <Text size="1" style={{ color: 'var(--gray-10)', fontWeight: 300 }}>
+              <Text size="1" style={{ color: 'var(--gray-11)', fontWeight: 300 }}>
                 {t('validation.password.rules')}
               </Text>
               <TextField.Root
@@ -173,6 +173,7 @@ export function ChangePasswordDialog({
               >
                 <TextField.Slot side="right">
                   <IconButton
+                    aria-label={showNewPassword ? t('auth.common.hidePassword') : t('auth.common.showPassword')}
                     variant="ghost"
                     color="gray"
                     size="1"
@@ -183,7 +184,7 @@ export function ChangePasswordDialog({
                     <MaterialIcon
                       name={showNewPassword ? 'visibility' : 'visibility_off'}
                       size={16}
-                      color="var(--gray-9)"
+                      color="var(--gray-11)"
                     />
                   </IconButton>
                 </TextField.Slot>
@@ -222,6 +223,7 @@ export function ChangePasswordDialog({
               >
                 <TextField.Slot side="right">
                   <IconButton
+                    aria-label={showConfirmPassword ? t('auth.common.hidePassword') : t('auth.common.showPassword')}
                     variant="ghost"
                     color="gray"
                     size="1"
@@ -232,7 +234,7 @@ export function ChangePasswordDialog({
                     <MaterialIcon
                       name={showConfirmPassword ? 'visibility' : 'visibility_off'}
                       size={16}
-                      color="var(--gray-9)"
+                      color="var(--gray-11)"
                     />
                   </IconButton>
                 </TextField.Slot>
@@ -286,7 +288,7 @@ export function ChangePasswordDialog({
                 flexShrink: 0,
               }}
             >
-              <MaterialIcon name="error_outline" size={18} color="var(--red-9)" />
+              <MaterialIcon name="error_outline" size={18} color="var(--red-11)" />
             </Flex>
 
             <Flex direction="column" gap="2">
@@ -295,7 +297,7 @@ export function ChangePasswordDialog({
               </Text>
               <Text
                 size="2"
-                style={{ color: 'var(--gray-10)', lineHeight: '20px' }}
+                style={{ color: 'var(--gray-11)', lineHeight: '20px' }}
               >
                 {apiErrorMessage}
               </Text>

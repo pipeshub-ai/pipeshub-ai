@@ -8,7 +8,9 @@ calls, and any failure raises ``EntityAccessError`` instead of looking like
 import asyncio
 import base64
 import json
+from collections.abc import Callable, Coroutine
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -24,10 +26,18 @@ from app.modules.retrieval.entity_permissions import (
     search_entities_for_user,
 )
 from app.services.graph_db.common.utils import PermittedEntityRows
+from harness_core.testing.virtual_time import run_on_virtual_time
 from tests.unit.modules.retrieval.entity_access_fakes import (
     RESOLVED_ACCESS,
     entity_graph,
 )
+
+
+def _on_virtual_time(monkeypatch: pytest.MonkeyPatch, main: Callable[[], Coroutine[Any, Any, float]]) -> float:
+    """The module's deadlines read ``time.monotonic()``: point them at the virtual loop's clock."""
+    monkeypatch.setattr(ep, "time", SimpleNamespace(monotonic=lambda: asyncio.get_running_loop().time()))
+    return run_on_virtual_time(main)
+
 
 ORG = "org-1"
 USER = "user-1"
@@ -790,8 +800,7 @@ class TestReadPathRoundTrips:
         refs = graph.get_permitted_entity_records.call_args.args[0]
         assert sorted(r["id"] for r in refs) == ["t1", "t2"]
 
-    @pytest.mark.asyncio
-    async def test_a_first_round_cut_at_the_deadline_is_a_timeout_not_no_matches(self, monkeypatch) -> None:
+    def test_a_first_round_cut_at_the_deadline_is_a_timeout_not_no_matches(self, monkeypatch) -> None:
         """Nothing was checked, so "no accessible entities" would be a guess: the
         live failure of 2026-11-17, where a cold plan cache made the first round
         miss the deadline and the agent was told nothing matched."""
@@ -805,14 +814,16 @@ class TestReadPathRoundTrips:
 
         graph = _graph()
         graph.get_permitted_entity_records = AsyncMock(side_effect=_slow)
-        started = asyncio.get_running_loop().time()
 
-        with pytest.raises(EntitySearchTimedOut):
-            await search_entities_for_user(store, graph, _context(), "q", top_k=5)
-        assert asyncio.get_running_loop().time() - started < 2
+        async def main() -> float:
+            started = asyncio.get_running_loop().time()
+            with pytest.raises(EntitySearchTimedOut):
+                await search_entities_for_user(store, graph, _context(), "q", top_k=5)
+            return asyncio.get_running_loop().time() - started
 
-    @pytest.mark.asyncio
-    async def test_a_slow_record_group_access_check_is_cut_at_the_deadline(self, monkeypatch) -> None:
+        assert _on_virtual_time(monkeypatch, main) == pytest.approx(0.2)  # the deadline, not the 5 s probe
+
+    def test_a_slow_record_group_access_check_is_cut_at_the_deadline(self, monkeypatch) -> None:
         """An undecided record group is a timeout, not "no matches", and no probe round starts."""
         import asyncio
 
@@ -824,12 +835,15 @@ class TestReadPathRoundTrips:
 
         graph = _graph(candidates=lambda refs, org, **k: {"space-a": []})
         graph.check_access = AsyncMock(side_effect=_slow)
-        started = asyncio.get_running_loop().time()
 
-        with pytest.raises(ep.EntitySearchTimedOut):
-            await search_entities_for_user(store, graph, _context(), "q", top_k=5)
+        async def main() -> float:
+            started = asyncio.get_running_loop().time()
+            with pytest.raises(ep.EntitySearchTimedOut):
+                await search_entities_for_user(store, graph, _context(), "q", top_k=5)
+            return asyncio.get_running_loop().time() - started
 
-        assert asyncio.get_running_loop().time() - started < 2
+        # The access check runs in the probe round, which keeps its floor past the 0.2 s deadline.
+        assert _on_virtual_time(monkeypatch, main) == pytest.approx(ep.PROBE_MIN_SECONDS)
         graph.get_permitted_entity_records.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -1089,8 +1103,7 @@ class TestListingWindowPastTheDeadline:
 
 
 class TestListingFirstWindowPastTheDeadline:
-    @pytest.mark.asyncio
-    async def test_a_stalled_first_window_fails_the_call_near_its_deadline(self, monkeypatch) -> None:
+    def test_a_stalled_first_window_fails_the_call_near_its_deadline(self, monkeypatch) -> None:
         """Nothing is found yet, so it is an access failure, not an empty page;
         and a stalled connection must not hold the call past the deadline."""
         import asyncio
@@ -1104,10 +1117,14 @@ class TestListingFirstWindowPastTheDeadline:
 
         graph = MagicMock()
         graph.get_permitted_entity_records = AsyncMock(side_effect=_stalled)
-        started = asyncio.get_running_loop().time()
-        with pytest.raises(EntityAccessError):
-            await list_accessible_entity_records(graph, _context(), entity_id="t1", entity_type="topic", limit=5)
-        assert asyncio.get_running_loop().time() - started < 2
+
+        async def main() -> float:
+            started = asyncio.get_running_loop().time()
+            with pytest.raises(EntityAccessError):
+                await list_accessible_entity_records(graph, _context(), entity_id="t1", entity_type="topic", limit=5)
+            return asyncio.get_running_loop().time() - started
+
+        assert _on_virtual_time(monkeypatch, main) == pytest.approx(0.2 + 0.1)  # the deadline plus the server grace
 
 
 @pytest.mark.asyncio
@@ -1364,8 +1381,7 @@ class TestNamesWalkPastRecordsWithoutASpelling:
         with pytest.raises(ep.EntitySearchTimedOut):
             await search_entities_for_user(store, graph, _context(), "launch", top_k=5)
 
-    @pytest.mark.asyncio
-    async def test_a_stalled_name_lookup_is_a_timeout(self, monkeypatch) -> None:
+    def test_a_stalled_name_lookup_is_a_timeout(self, monkeypatch) -> None:
         import asyncio
 
         monkeypatch.setattr(ep, "SEARCH_DEADLINE_SECONDS", 0.2)
@@ -1379,12 +1395,14 @@ class TestNamesWalkPastRecordsWithoutASpelling:
 
         graph.get_record_taxonomy_links = AsyncMock(side_effect=_stalled)
         store = _store([_hit("t1", "topic", 0.9, name="Project Falcon")])
-        started = asyncio.get_running_loop().time()
 
-        with pytest.raises(ep.EntitySearchTimedOut):
-            await search_entities_for_user(store, graph, _context(), "launch", top_k=5)
+        async def main() -> float:
+            started = asyncio.get_running_loop().time()
+            with pytest.raises(ep.EntitySearchTimedOut):
+                await search_entities_for_user(store, graph, _context(), "launch", top_k=5)
+            return asyncio.get_running_loop().time() - started
 
-        assert asyncio.get_running_loop().time() - started < 2
+        assert _on_virtual_time(monkeypatch, main) == pytest.approx(0.2)
 
     @pytest.mark.asyncio
     async def test_probes_that_use_the_deadline_still_leave_time_to_name(self, monkeypatch) -> None:

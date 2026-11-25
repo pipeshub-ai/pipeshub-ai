@@ -6,6 +6,8 @@ export interface ServiceMeta {
   logoSlug?: string;
   label: string;
   description: string;
+  /** Why the service is not ready, shown in full under the description. */
+  reason?: string;
 }
 
 export interface Deployment {

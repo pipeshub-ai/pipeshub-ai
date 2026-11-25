@@ -209,7 +209,8 @@ for major in ${DRILL_MAJORS:-17 18}; do
   pre_outage="$(untouched "$(sql -c "$checksums")")"
   arch=/var/lib/pgbackrest/archive/pipeshub
   mode="$($DOCKER exec "$proj-pg-backup-1" stat -c %a "$arch")"
-  $DOCKER exec -u root "$proj-pg-backup-1" chmod 000 "$arch"
+  # as its owner, postgres: pg-backup drops every capability, so root could not even reach the directory
+  $DOCKER exec "$proj-pg-backup-1" chmod 000 "$arch"
   # many small transactions, so the dropped segments hold commits and the report can name the first lost one
   sql -c "create table platform.filler (g int, pad text)" \
       -c "do \$\$ begin for i in 1..250 loop insert into platform.filler select g, repeat(md5(g::text), 30) from generate_series(1, 1000) g; commit; end loop; end \$\$" \
@@ -222,7 +223,7 @@ for major in ${DRILL_MAJORS:-17 18}; do
   check "$major: and the first lost commit, read from the earliest dropped segment" "$([ -n "$lost" ] && echo yes)" yes
   for _ in $(seq 1 75); do [ "$($DOCKER inspect -f '{{.State.Health.Status}}' "$proj-pg-backup-1")" = unhealthy ] && break; sleep 2; done
   check "$major: docker reports pg-backup unhealthy" "$($DOCKER inspect -f '{{.State.Health.Status}}' "$proj-pg-backup-1")" unhealthy
-  $DOCKER exec -u root "$proj-pg-backup-1" chmod "$mode" "$arch"
+  $DOCKER exec "$proj-pg-backup-1" chmod "$mode" "$arch"
   for _ in $(seq 1 150); do dc exec -T pg-backup test -f /tmp/pg-backup.ok && break; sleep 2; done
   check "$major: a full backup closes the gap once the repository is back" \
     "$(dc exec -T pg-backup sh -c 'test -f /tmp/pg-backup.ok && [ -z "$(ls -A /var/run/postgresql/pgbackrest-wal-gap.d)" ]' && echo closed || echo open)" closed

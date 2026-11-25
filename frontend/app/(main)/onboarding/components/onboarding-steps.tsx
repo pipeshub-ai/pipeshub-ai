@@ -71,7 +71,7 @@ export function OnboardingSteps({ steps, currentStepId }: OnboardingStepsProps) 
               size="2"
               weight="medium"
               style={{
-                color: isFuture ? 'var(--gray-9)' : 'var(--gray-12)',
+                color: isFuture ? 'var(--gray-11)' : 'var(--gray-12)',
                 marginBottom: '4px',
                 lineHeight: '1.4',
               }}
@@ -85,8 +85,8 @@ export function OnboardingSteps({ steps, currentStepId }: OnboardingStepsProps) 
                 color: isCurrent
                   ? 'var(--gray-11)'
                   : isPast
-                    ? 'var(--gray-9)'
-                    : 'var(--gray-8)',
+                    ? 'var(--gray-11)'
+                    : 'var(--gray-11)',
                 lineHeight: '1.4',
               }}
             >

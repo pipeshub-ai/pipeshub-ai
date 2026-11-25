@@ -207,6 +207,34 @@ async def test_the_vector_index_tests_membership_on_the_point_row_with_the_answe
     assert [h.id for h in after] == [pid(A, n) for n in range(2, 31) if n % 3 == 1][:8]
 
 
+async def test_a_narrowing_list_bounds_the_candidate_count_by_its_own_groups(store) -> None:
+    """A scope that admits 300 groups narrowed to one record: the count reads that record's group only (no membership row of the 300
+    admitted ones), and counts what the admitted-groups form counts, with and without the narrowing."""
+    from app.services.vector_db.pgvector.visibility import scope_of
+
+    await store.upsert_points("records", [point(A, n, conn=["c0"]) for n in range(1, 301)])
+    admin = await store.env.admin()
+    try:
+        space = await admin.fetchval("SELECT space_id FROM retrieval.org_spaces WHERE org_id = $1 AND role = 'active'", A)
+        await admin.execute(f"SET app.org_id = '{A}'")
+
+        def query(must: list[str] | None) -> dense.Query:
+            flt = FilterExpression(must=[FieldCondition(key="metadata.orgId", value=A),
+                                         *([FieldCondition(key="metadata.virtualRecordId", values=must)] if must else [])],
+                                   should=[FieldCondition(key="connectorIds", values=["c0"])])
+            return dense.Query(A, 1, space, 4, "cosine", "[1,0,0,0]", scope_of(flt), 16)
+
+        narrowed = query(["r7", "r9", "nowhere"])
+        assert await admin.fetchval(dense.count_sql(narrowed), *narrowed.args(1000)) == 2
+        assert await admin.fetchval(dense.count_sql(query(None)), *query(None).args(1000)) == 300
+        shown = "\n".join(r[0] for r in await admin.fetch("EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF) " + dense.count_sql(narrowed),
+                                                       *narrowed.args(1000)))
+        read = [line for line in shown.splitlines() if "Scan" in line and "group_members" in line and "never executed" not in line]
+        assert read == [], shown                                         # no membership row read: the narrowing's groups, tested on the row
+    finally:
+        await admin.close()
+
+
 async def test_the_quantisation_check_stores_a_verdict_for_the_orgs_space(store) -> None:
     await store.upsert_points("records", [point(A, n) for n in range(1, 61)])
     assert await store.validate_space("records", C) is None                                               # an org with no space has nothing to check

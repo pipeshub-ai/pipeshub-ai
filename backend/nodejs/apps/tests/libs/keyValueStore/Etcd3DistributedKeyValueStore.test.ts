@@ -298,69 +298,81 @@ describe('Etcd3DistributedKeyValueStore', () => {
     });
   });
 
-  // ---- compareAndSet --------------------------------------------
+  // ---- compareAndSet (UX2 LC-6: one etcd transaction) -----------
   describe('compareAndSet', () => {
-    it('should succeed when current value matches expected', async () => {
-      // First get returns current value, second get returns updated value
-      const getStub = sinon.stub();
-      getStub.onFirstCall().returns({
-        buffer: sinon.stub().resolves(Buffer.from('current')),
+    /** etcd as a transaction sees it: the comparison and the put are applied together, or not at all. */
+    const etcd = (initial: string | null) => {
+      const state = { value: initial === null ? null : Buffer.from(initial), puts: 0, keptLease: false };
+      const client = (store as any).client;
+      client.get = sinon.stub().throws(new Error('a compare-and-set must not read first'));
+      client.put = (key: string) => ({
+        value: (buffer: Buffer) => {
+          const op = { op: 'put', key, buffer, keepsLease: false, ignoreLease: () => ({ ...op, keepsLease: true }) };
+          return op;
+        },
       });
-      getStub.onSecondCall().returns({
-        buffer: sinon.stub().resolves(Buffer.from('new-val')),
-      });
-      (store as any).client.get = getStub;
+      client.if = (_key: string, column: string, cmp: string, expected: Buffer | number) => {
+        const ops: Array<{ buffer: Buffer; keepsLease?: boolean }> = [];
+        const txn = {
+          then: (...clauses: Array<{ buffer: Buffer; keepsLease?: boolean }>) => {
+            ops.push(...clauses);
+            return txn;
+          },
+          commit: async () => {
+            const holds =
+              cmp === '==' &&
+              (column === 'Create'
+                ? state.value === null && expected === 0
+                : state.value !== null && Buffer.isBuffer(expected) && state.value.equals(expected));
+            if (holds) {
+              for (const op of ops) {
+                state.value = op.buffer;
+                state.puts += 1;
+                state.keptLease = op.keepsLease === true;
+              }
+            }
+            return { succeeded: holds };
+          },
+        };
+        return txn;
+      };
+      return state;
+    };
 
-      const result = await store.compareAndSet('key', 'current', 'new-val');
-      expect(result).to.be.true;
+    it('writes when the stored value is the expected one, keeping the key\'s lease', async () => {
+      const state = etcd('current');
+      expect(await store.compareAndSet('key', 'current', 'new-val')).to.be.true;
+      expect(state.value?.toString()).to.equal('new-val');
+      expect(state.keptLease).to.equal(true);
     });
 
-    it('should fail when current value does not match expected', async () => {
-      (store as any).client.get = sinon.stub().returns({
-        buffer: sinon.stub().resolves(Buffer.from('different')),
-      });
-
-      const result = await store.compareAndSet('key', 'expected', 'new-val');
-      expect(result).to.be.false;
+    it('LC-6: a write made since the caller read makes it fail, and nothing is overwritten', async () => {
+      const state = etcd('read-by-caller');
+      state.value = Buffer.from('written-by-someone-else');
+      expect(await store.compareAndSet('key', 'read-by-caller', 'mine')).to.be.false;
+      expect(state.value?.toString()).to.equal('written-by-someone-else');
+      expect(state.puts).to.equal(0);
     });
 
-    it('should succeed when both expected and current are null', async () => {
-      const getStub = sinon.stub();
-      getStub.onFirstCall().returns({
-        buffer: sinon.stub().resolves(null),
-      });
-      getStub.onSecondCall().returns({
-        buffer: sinon.stub().resolves(Buffer.from('new-val')),
-      });
-      (store as any).client.get = getStub;
-
-      const result = await store.compareAndSet('key', null, 'new-val');
-      expect(result).to.be.true;
+    it('creates only when the key is absent', async () => {
+      const absent = etcd(null);
+      expect(await store.compareAndSet('key', null, 'new-val')).to.be.true;
+      expect(absent.value?.toString()).to.equal('new-val');
+      const present = etcd('exists');
+      expect(await store.compareAndSet('key', null, 'new-val')).to.be.false;
+      expect(present.value?.toString()).to.equal('exists');
     });
 
-    it('should fail when expected is null but current exists', async () => {
-      (store as any).client.get = sinon.stub().returns({
-        buffer: sinon.stub().resolves(Buffer.from('exists')),
-      });
-
-      const result = await store.compareAndSet('key', null, 'new-val');
-      expect(result).to.be.false;
+    it('fails when a value is expected and the key is absent', async () => {
+      etcd(null);
+      expect(await store.compareAndSet('key', 'expected', 'new-val')).to.be.false;
     });
 
-    it('should fail when expected is set but current is null', async () => {
-      (store as any).client.get = sinon.stub().returns({
-        buffer: sinon.stub().resolves(null),
-      });
-
-      const result = await store.compareAndSet('key', 'expected', 'new-val');
-      expect(result).to.be.false;
-    });
-
-    it('should return false on error', async () => {
-      (store as any).client.get = sinon.stub().throws(new Error('etcd down'));
-
-      const result = await store.compareAndSet('key', 'old', 'new');
-      expect(result).to.be.false;
+    it('returns false when etcd fails', async () => {
+      (store as any).client.if = () => {
+        throw new Error('etcd down');
+      };
+      expect(await store.compareAndSet('key', 'old', 'new')).to.be.false;
     });
   });
 

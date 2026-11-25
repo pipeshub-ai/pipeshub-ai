@@ -44,6 +44,7 @@ from app.services.resource_governor import Pool
 from app.services.resource_governor.models import ParseTier
 from app.utils import indexing_timing as timing
 from tests.support.eventually import until
+from tests.support.settle import settle
 from tests.unit.services.messaging.governor_test_helpers import make_test_governor
 
 # ---------------------------------------------------------------------------
@@ -943,7 +944,7 @@ class TestProcessMessageWrapper:
             for i in range(4)
         ]
 
-        await asyncio.wait_for(two_handlers_started.wait(), timeout=1)
+        await settle(two_handlers_started.wait())
         await asyncio.sleep(0)
 
         assert len(started) == 2
@@ -1149,7 +1150,7 @@ class TestProcessMessageWrapper:
                 return_value=0.01,
             ),
         ):
-            await asyncio.wait_for(two_started.wait(), timeout=1)
+            await settle(two_started.wait())
             await asyncio.sleep(0.05)
             assert len(started) == 2
             assert manager.max_active["indexing"] == 2
@@ -1382,12 +1383,12 @@ class TestProcessMessageWrapper:
         processing = asyncio.create_task(
             consumer._IndexingKafkaConsumer__process_message_wrapper(msg)
         )
-        await asyncio.wait_for(entered.wait(), timeout=1)
+        await settle(entered.wait())
         processing.cancel()
         with pytest.raises(asyncio.CancelledError):
             await processing
 
-        await asyncio.wait_for(handler_cancelled.wait(), timeout=1)
+        await settle(handler_cancelled.wait())
         assert consumer.parsing_semaphore._value == 1
         assert consumer.indexing_semaphore._value == 1
         # The owner must be gone from the renewer, or a cancelled record keeps

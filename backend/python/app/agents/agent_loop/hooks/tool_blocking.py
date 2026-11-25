@@ -33,6 +33,14 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _DEFAULT_ERROR_THRESHOLD = 3
+# Turns a blocked tool sits out before the model may try it once more (FIX-P1-F1: the message said "temporarily"
+# but nothing lifted the block). Legacy `_get_blocked_tools` lifted it the same way, once the failures slid out of
+# its window of recent results.
+_DEFAULT_COOLDOWN_TURNS = 2
+# Failures that say the tool's service was down, not that the call was wrong: blocking the tool would not stop a
+# flailing model, it would take the tool away for the rest of the run once the service is back (FIX-P1 S2: a
+# sandbox broker restart disabled run_code and the task's next effect was lost).
+_SERVICE_DOWN = frozenset({"unavailable"})
 
 
 class ToolErrorTracker:
@@ -43,15 +51,29 @@ class ToolErrorTracker:
     `app/agents/agent_loop/factory.py`.
     """
 
-    def __init__(self, threshold: int = _DEFAULT_ERROR_THRESHOLD) -> None:
+    def __init__(self, threshold: int = _DEFAULT_ERROR_THRESHOLD, cooldown_turns: int = _DEFAULT_COOLDOWN_TURNS) -> None:
         self._threshold = threshold
+        self._cooldown_turns = cooldown_turns
         self._consecutive_errors: dict[str, int] = {}
         # Last turn_index that already contributed a failure to a tool's
         # streak — makes `record()` turn-aware instead of call-aware.
         self._last_failed_turn: dict[str, int] = {}
 
-    def is_blocked(self, tool_path: str) -> bool:
-        return self._consecutive_errors.get(tool_path, 0) >= self._threshold
+    def is_blocked(self, tool_path: str, turn_index: int | None = None) -> bool:
+        return self._turns_left(tool_path, turn_index) is not None
+
+    def _turns_left(self, tool_path: str, turn_index: int | None) -> int | None:
+        """``None``: not blocked. ``0``: blocked for the rest of the request (no turn to count a pause by).
+        Otherwise the turns of the pause still to come, this one included: it starts after the turn of the
+        failure that reached the threshold, and a failure on the first turn after it pauses the tool again
+        (the streak is still over the threshold)."""
+        if self._consecutive_errors.get(tool_path, 0) < self._threshold:
+            return None
+        last = self._last_failed_turn.get(tool_path)
+        if turn_index is None or last is None:
+            return 0
+        left = last + self._cooldown_turns - turn_index + 1
+        return left if left > 0 else None
 
     def record(self, tool_path: str, *, is_error: bool, turn_index: int | None = None) -> None:
         """A success resets the streak — only *consecutive* failures count,
@@ -69,6 +91,9 @@ class ToolErrorTracker:
         if is_error:
             if turn_index is not None and self._last_failed_turn.get(tool_path) == turn_index:
                 return
+            # A live run never records a denied call; a run rebuilt from its journal reads one as a failure.
+            if self.is_blocked(tool_path, turn_index):
+                return
             self._consecutive_errors[tool_path] = self._consecutive_errors.get(tool_path, 0) + 1
             if turn_index is not None:
                 self._last_failed_turn[tool_path] = turn_index
@@ -82,19 +107,32 @@ class ToolErrorTracker:
             self._last_failed_turn.pop(tool_path, None)
 
     async def pre_tool_use(self, ctx: ToolCallContext, next_fn: Next) -> None:
-        if self.is_blocked(ctx.tool_path):
-            ctx.deny(
-                f"Tool at {ctx.tool_path!r} has failed {self._threshold}+ times in a row this "
-                "conversation and has been temporarily disabled. Try a different tool or approach.",
-                code="consecutive_failures",
-            )
+        turn_index = ctx.scope.turn.turn_index if ctx.scope is not None else None
+        left = self._turns_left(ctx.tool_path, turn_index)
+        if left is not None:
+            failed = f"Tool at {ctx.tool_path!r} has failed {self._threshold}+ times in a row"
+            if left == 0:
+                ctx.deny(
+                    f"{failed} and is disabled for the rest of this request. Use a different tool or approach.",
+                    code="consecutive_failures",
+                )
+            else:
+                turns = "1 turn" if left == 1 else f"{left} turns"
+                ctx.deny(
+                    f"{failed}, so it is paused for {turns} (this one included). Use a different tool or "
+                    "approach meanwhile; after that you may try it again, and another failure pauses it again.",
+                    code="consecutive_failures",
+                )
             return
         await next_fn()
 
     async def post_tool_use(self, ctx: ToolResultContext, next_fn: Next) -> None:
         await next_fn()
+        response = ctx.tool_response
+        if not response.success and response.error_code in _SERVICE_DOWN:
+            return
         turn_index = ctx.scope.turn.turn_index if ctx.scope is not None else None
-        self.record(ctx.tool_path, is_error=not ctx.tool_response.success, turn_index=turn_index)
+        self.record(ctx.tool_path, is_error=not response.success, turn_index=turn_index)
 
 
 __all__ = ["ToolErrorTracker"]

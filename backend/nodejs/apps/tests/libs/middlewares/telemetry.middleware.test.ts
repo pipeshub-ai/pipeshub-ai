@@ -51,7 +51,7 @@ describe('telemetry middleware', () => {
     const req = mockReq({ method: 'POST', route: { path: '/api/v1/users' } });
     const res = mockRes(201);
 
-    middleware(req, res as any, sinon.stub());
+    middleware(req, res as any, sinon.stub<unknown[]>());
     res.emit('finish');
 
     expect(recordStub.calledOnce).to.be.true;
@@ -71,7 +71,7 @@ describe('telemetry middleware', () => {
     });
     const res = mockRes();
 
-    middleware(req, res as any, sinon.stub());
+    middleware(req, res as any, sinon.stub<unknown[]>());
     res.emit('finish');
 
     expect(recordStub.firstCall.args[0]).to.equal('/api/v1/users/:userId');
@@ -84,7 +84,7 @@ describe('telemetry middleware', () => {
     });
     const res = mockRes(404);
 
-    middleware(req, res as any, sinon.stub());
+    middleware(req, res as any, sinon.stub<unknown[]>());
     res.emit('finish');
 
     expect(recordStub.firstCall.args[0]).to.equal('unmatched');
@@ -97,7 +97,7 @@ describe('telemetry middleware', () => {
     });
     const res = mockRes();
 
-    middleware(req, res as any, sinon.stub());
+    middleware(req, res as any, sinon.stub<unknown[]>());
     res.emit('finish');
 
     const [, , , orgId, , domain] = recordStub.firstCall.args;
@@ -113,7 +113,7 @@ describe('telemetry middleware', () => {
     const req = mockReq({ user: { orgId: objectIdLike } });
     const res = mockRes();
 
-    middleware(req, res as any, sinon.stub());
+    middleware(req, res as any, sinon.stub<unknown[]>());
     res.emit('finish');
 
     expect(recordStub.firstCall.args[3]).to.equal('507f1f77bcf86cd799439011');
@@ -124,7 +124,7 @@ describe('telemetry middleware', () => {
     const req = mockReq({ user: { orgId: { nested: true } } });
     const res = mockRes();
 
-    middleware(req, res as any, sinon.stub());
+    middleware(req, res as any, sinon.stub<unknown[]>());
     res.emit('finish');
 
     expect(recordStub.firstCall.args[3]).to.equal('unknown');
@@ -135,7 +135,7 @@ describe('telemetry middleware', () => {
     const req = mockReq();
     const res = mockRes();
 
-    middleware(req, res as any, sinon.stub());
+    middleware(req, res as any, sinon.stub<unknown[]>());
     res.emit('finish');
 
     const [, , , orgId, , domain] = recordStub.firstCall.args;

@@ -93,6 +93,13 @@ def _excludes(project_keys_operator: FilterOperatorType | None) -> bool:
     )
     .with_categories(["IT Service Management", "Storage"])
     .with_scopes([ConnectorScope.PERSONAL.value])
+    .with_resilience_config(
+        # The vendor's quota is the org's shared budget (app.services.rate_budget.families), which this policy
+        # takes from; the rate is this process's own cap when that budget is unreachable. Retries stay the
+        # connector's own (max_retries 0), as before.
+        rate_limit=10,
+        max_retries=0,
+    )
     .with_permission_model(PermissionModel.APP_LEVEL)
     .with_auth(
         [

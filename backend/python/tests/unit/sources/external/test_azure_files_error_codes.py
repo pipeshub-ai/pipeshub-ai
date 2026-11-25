@@ -5,7 +5,6 @@ The real SDK runs over an in-process transport that answers like the Azure Files
 REST API, so the error classes and codes are the ones the service would produce.
 """
 
-import time
 from types import SimpleNamespace
 from urllib.parse import parse_qs, urlparse
 
@@ -178,8 +177,19 @@ class _BusyOnce(_Service):
 
 
 class TestRetryAfter:
-    async def test_the_wait_the_service_asks_for_is_used(self) -> None:
+    async def test_the_wait_the_service_asks_for_is_used(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """The SDK's own first wait is 15 s give or take 3; Retry-After says 1."""
+        from azure.storage.fileshare._shared.base_client_async import (
+            AsyncTransportWrapper,
+        )
+
+        slept: list[float] = []
+
+        async def sleep(_: object, duration: float) -> None:
+            slept.append(duration)
+
+        # The storage pipeline wraps the transport, and the retry sleeps on the wrapper.
+        monkeypatch.setattr(AsyncTransportWrapper, "sleep", sleep)
         service = _BusyOnce()
         config = AzureFilesConnectionStringConfig(connectionString=KEY_CONNECTION_STRING)
         from azure.storage.fileshare.aio import ShareServiceClient
@@ -191,12 +201,10 @@ class TestRetryAfter:
 
         config.create_async_share_service_client = create
         ds = AzureFilesDataSource(AzureFilesClient(AzureFilesRESTClient(config)))
-        started = time.monotonic()
         response = await ds.list_directories_and_files("s", "", results_per_page=2)
-        elapsed = time.monotonic() - started
         assert response.success is True
         assert len(service.requests) == 2
-        assert 1 <= elapsed < 5
+        assert slept == [1]
 
     def test_a_long_retry_after_is_capped(self) -> None:
         settings = {"history": [SimpleNamespace(http_response=SimpleNamespace(headers={"Retry-After": "3600"}))]}

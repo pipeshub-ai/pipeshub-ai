@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/ext/pipeshub/api/inbox-notices-result.schema.json",
+  "title": "InboxNoticesResult",
+  "description": "`PATCH /api/v1/agent-harness/inbox/notices` and `POST …/inbox/notices/delete` (G2, UIP3-FU-2): the notices the action changed or deleted (their item ids, for an Undo) and the counts after it.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "changed",
+    "counts"
+  ],
+  "properties": {
+    "changed": {
+      "type": "array",
+      "maxItems": 500,
+      "items": {
+        "type": "string",
+        "pattern": "^n:[A-Za-z0-9_-]{1,64}$"
+      }
+    },
+    "counts": {
+      "$ref": "inbox-counts.schema.json"
+    }
+  },
+  "examples": [
+    {
+      "changed": [
+        "n:65f1a2b3c4d5e6f708192a3b"
+      ],
+      "counts": {
+        "unread": 0,
+        "waiting": 0,
+        "badge": 0,
+        "paused": false,
+        "pausedUntil": null
+      }
+    }
+  ]
+}

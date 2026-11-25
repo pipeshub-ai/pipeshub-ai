@@ -83,7 +83,7 @@ function routeScopes(): Record<string, string> {
   const scopes: Record<string, string> = { read: 'connector:read', write: 'connector:write', remove: 'connector:delete' }
   const found: Record<string, string> = {}
   for (const m of source.matchAll(/router\.(get|post|put|delete)\(\s*'([^']+)',\s*authenticate,\s*(read|write|remove)\b/g)) {
-    found[`${m[1]} /api-toolsets${m[2].replace(/:(\w+)/g, '{$1}')}`] = scopes[m[3]!]!
+    found[`${m[1]} /api-toolsets${m[2]!.replace(/:(\w+)/g, '{$1}')}`] = scopes[m[3]!]!
   }
   return found
 }

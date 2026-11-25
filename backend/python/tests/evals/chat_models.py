@@ -36,11 +36,14 @@ def build_chat_model(
     azure_deployment: str | None = None,
     azure_api_version: str | None = None,
 ) -> BaseChatModel:
-    """A LangChain chat model for ``provider``.
+    """A LangChain chat model for ``provider``, with the product's client timeout: without one the
+    OpenAI client waits forever on a stalled connection (P4.9 FB-2).
 
     Azure's endpoint and deployment default to ``TEST_AZURE_OPENAI_*``; the
     demo answer judge passes its own.
     """
+    from app.utils.aimodels import DEFAULT_LLM_TIMEOUT_S
+
     if not api_key:
         raise MissingModelError(
             f"No API key for '{provider}'. Set the key in the workflow's "
@@ -50,7 +53,7 @@ def build_chat_model(
     if provider == "openai":
         from langchain_openai import ChatOpenAI
 
-        return ChatOpenAI(model=model, api_key=api_key, temperature=0)
+        return ChatOpenAI(model=model, api_key=api_key, temperature=0, timeout=DEFAULT_LLM_TIMEOUT_S)
     if provider == "azure_openai":
         from langchain_openai import AzureChatOpenAI
 
@@ -71,11 +74,12 @@ def build_chat_model(
             # thing they are measuring does.
             api_version=azure_api_version or AzureOpenAILLM.AZURE_OPENAI_VERSION.value,
             temperature=0,
+            timeout=DEFAULT_LLM_TIMEOUT_S,
         )
     if provider == "anthropic":
         from langchain_anthropic import ChatAnthropic
 
-        return ChatAnthropic(model=model, api_key=api_key, temperature=0)
+        return ChatAnthropic(model=model, api_key=api_key, temperature=0, timeout=DEFAULT_LLM_TIMEOUT_S)
     raise MissingModelError(
         f"'{provider}' is not a provider this runner knows. Use 'azure_openai', "
         "'openai' or 'anthropic', or add it to build_chat_model in "

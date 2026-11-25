@@ -100,4 +100,5 @@ async def test_release_with_a_thousand_waiters_is_cheap() -> None:
         w.cancel()
     await asyncio.gather(*waiters, return_exceptions=True)
     print(f"release p99 {p99 * 1e6:.0f} us over {len(samples)} releases")
+    # wall-clock-ok: upstream's release-latency bench (#6201): 1 ms is ten times its 100 us target
     assert p99 < 1e-3, f"p99 {p99 * 1e6:.0f} us"  # the target is 100 us; the bound leaves room for a quiet host

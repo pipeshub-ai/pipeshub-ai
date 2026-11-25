@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING
 
 from app.agent_loop_lib.context.protection import protected_indices
 from app.agent_loop_lib.context.watermark import watermarks
+from app.agent_loop_lib.core.messages import ToolMessage
 from app.agent_loop_lib.core.tokens import (
     CHARS_PER_TOKEN,
     count_message_tokens,
@@ -12,6 +13,7 @@ from app.agent_loop_lib.core.tokens import (
 )
 from app.agent_loop_lib.core.types import MessageRole
 from app.agent_loop_lib.hooks.middleware.context import ModelCallContext
+from harness_core.context.results import RESULT_CAP_CHARS, batch_result_cap, cap_result
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
@@ -23,79 +25,10 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 LAYER = "budget_reduction"
-_MARKER = "\n[…truncated"
 
 # A tool that can size its own output under this cap should, so what it drops
 # is its least useful part rather than a character range.
-DEFAULT_MAX_RESULT_CHARS = 64_000
-
-
-def _marker(dropped: int) -> str:
-    return f"{_MARKER} {dropped} chars by budget_reduction]\n"
-
-
-def _cut(length: int, limit: int) -> tuple[int, int, str]:
-    """What a both-ends cut of ``length`` characters keeps within ``limit``,
-    marker included: the head length, the tail length and the marker.
-
-    A tool result carries its instructions last -- the citation rule, the
-    continuation hint, which ids were unavailable -- so a tail cut removes
-    precisely what the model needs to act on.
-    """
-    if limit <= 0:
-        return 0, 0, ""
-    # Budgeted against the widest the dropped count can print, so the real
-    # marker always fits and the result never exceeds `limit`.
-    keep = limit - len(_marker(length))
-    if keep <= 0:
-        # No room for both; a fragment of the marker would say nothing.
-        return limit, 0, ""
-    keep_head = int(keep * 0.75)
-    return keep_head, keep - keep_head, _marker(length - keep)
-
-
-def _truncate(text: str, limit: int) -> str:
-    """``text`` cut at both ends to ``limit`` characters (`_cut`)."""
-    head, tail, marker = _cut(len(text), limit)
-    # Not `text[-tail:]`: at tail == 0 that returns the whole string rather
-    # than nothing.
-    return text[:head] + marker + text[len(text) - tail:]
-
-
-def _cap_parts(msg, max_result_chars: int):
-    """Cap the text parts of a multipart tool message, leaving images alone.
-
-    Images are bounded by their own admission path; what runs away here is the
-    text a large record renders to. The cut is the string cut applied to the
-    parts' text as one: capping part by part spent the whole allowance on an
-    oversized first part and emptied the last one, where the closing
-    instructions are.
-    """
-    def is_text(part) -> bool:
-        return getattr(part, "type", None) == "text" and isinstance(getattr(part, "text", None), str)
-
-    total = sum(len(p.text) for p in msg.content if is_text(p))
-    if total <= max_result_chars:
-        return msg
-
-    head, tail, marker = _cut(total, max_result_chars)
-    tail_from = total - tail
-    capped = []
-    offset = 0
-    for part in msg.content:
-        if not is_text(part):
-            capped.append(part)
-            continue
-        start, end = offset, offset + len(part.text)
-        offset = end
-        kept = part.text[: max(0, min(end, head) - start)]
-        # The marker sits where the head stops, in the part the cut starts in.
-        if start <= head < end:
-            kept += marker
-            marker = ""
-        kept += part.text[max(0, tail_from - start):] if end > tail_from else ""
-        capped.append(part.model_copy(update={"text": kept}))
-    return msg.model_copy(update={"content": capped, "compacted_by": LAYER})
+DEFAULT_MAX_RESULT_CHARS = RESULT_CAP_CHARS
 
 
 def _fitting_caps(ctx: ModelCallContext) -> dict[int, int]:
@@ -166,48 +99,52 @@ def shape_budget_reduction(
     own merits. Direct replacement for `BudgetReductionHook`.
     """
 
-    def _calls_by_id(messages) -> dict[str, object]:
-        return {
-            call.id: call
-            for msg in messages if msg.role == MessageRole.ASSISTANT
-            for call in getattr(msg, "tool_calls", None) or ()
-        }
+    def _caps_by_call_id(messages, window: int | None) -> tuple[dict[str, int], dict[str, object]]:
+        # A batch's results share a slice of the window (BUDGETEND): many calls at once each get less.
+        caps: dict[str, int] = {}
+        calls_by_id: dict[str, object] = {}
+        for msg in messages:
+            if msg.role == MessageRole.ASSISTANT:
+                calls = getattr(msg, "tool_calls", None) or ()
+                shared = batch_result_cap(len(calls), window, max_result_chars)
+                for call in calls:
+                    own = tool_caps.get(getattr(call, "name", "")) if tool_caps else None
+                    caps[call.id] = own if own is not None else shared
+                    calls_by_id[call.id] = call
+        return caps, calls_by_id
 
     async def _middleware(ctx: ModelCallContext, next_fn) -> None:
-        calls = _calls_by_id(ctx.messages) if tool_caps or refitters else {}
+        budget = ctx.budget
+        window = budget.max_tokens + budget.reserved_prompt_tokens + budget.reserved_output_tokens
+        caps, calls = _caps_by_call_id(ctx.messages, window)
         # Later layers never shorten a protected result (context/protection.py),
         # so this is what keeps the newest one able to fit a small window.
-        budget_cap = ctx.budget.effective_max_tokens * CHARS_PER_TOKEN
+        budget_cap = budget.effective_max_tokens * CHARS_PER_TOKEN
         fitting = _fitting_caps(ctx)
         shaped = []
         for index, msg in enumerate(ctx.messages):
-            if msg.role != MessageRole.TOOL or getattr(msg, "compacted_by", None) == LAYER:
+            if (
+                msg.role != MessageRole.TOOL
+                or not isinstance(msg, ToolMessage)
+                or msg.compacted_by == LAYER
+            ):
                 shaped.append(msg)
                 continue
-            call = calls.get(getattr(msg, "tool_call_id", None) or "")
+            call_id = msg.tool_call_id or ""
+            call = calls.get(call_id)
             tool_name = getattr(call, "name", "")
-            limit = min((tool_caps or {}).get(tool_name, max_result_chars), fitting.get(index, budget_cap))
-            # Multipart content (a tool that returned images) used to skip this
-            # cap entirely -- the one result shape most likely to be oversized.
-            if isinstance(msg.content, list):
-                shaped.append(_cap_parts(msg, limit))
-                continue
-            if not isinstance(msg.content, str):
-                shaped.append(msg)
-                continue
-            # Artifact-bearing messages have their full content safely stored
-            # in the artifact store — truncate here like any other tool
-            # result.  L2 artifact_compaction handles turn-aware replacement
-            # with compact references on later turns; the model can call
-            # retrieve_artifact_content for the full data.
-            if len(msg.content) <= limit:
-                shaped.append(msg)
-                continue
+            limit = min(caps.get(call_id, max_result_chars), fitting.get(index, budget_cap))
             refit = (refitters or {}).get(tool_name)
-            content = refit(msg.content, limit, getattr(call, "arguments", None) or {}) if refit else None
-            if content is None:
-                content = _truncate(msg.content, limit)
-            shaped.append(msg.model_copy(update={"content": content, "compacted_by": LAYER}))
+            if refit is not None and isinstance(msg.content, str) and len(msg.content) > limit:
+                content = refit(msg.content, limit, getattr(call, "arguments", None) or {})
+                if content is not None:
+                    shaped.append(msg.model_copy(update={"content": content, "compacted_by": LAYER}))
+                    continue
+            # Artifact-bearing results are cut like any other (L2 replaces them with references
+            # on later turns); a result this shaper already cut is not cut twice, but a foreign
+            # marker (retrieve_artifact_content's) grants no pass. Images are left alone.
+            capped = cap_result(msg, limit)
+            shaped.append(capped if capped is msg else capped.model_copy(update={"compacted_by": LAYER}))
         capped = sum(1 for old, new in zip(ctx.messages, shaped) if new is not old)
         if capped:
             logger.info(

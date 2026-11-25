@@ -319,4 +319,32 @@ export class MongoOAuthAppRepository implements OAuthAppRepository {
       { $set: { createdBy: oid(toUserId) } },
     );
   }
+
+  async listClientSecrets(
+    orgId: string,
+  ): Promise<Array<{ id: string; clientSecretEncrypted: string }>> {
+    const apps = await OAuthApp.find({ orgId: oid(orgId) })
+      .select('clientSecretEncrypted')
+      .sort({ _id: 1 })
+      .lean()
+      .exec();
+    return apps.map((app) => ({
+      id: String(app._id),
+      clientSecretEncrypted: app.clientSecretEncrypted,
+    }));
+  }
+
+  async replaceClientSecret(
+    orgId: string,
+    id: string,
+    expected: string,
+    next: string,
+  ): Promise<boolean> {
+    if (!Types.ObjectId.isValid(id)) return false;
+    const result = await OAuthApp.updateOne(
+      { _id: oid(id), orgId: oid(orgId), clientSecretEncrypted: expected },
+      { $set: { clientSecretEncrypted: next } },
+    );
+    return result.modifiedCount === 1;
+  }
 }

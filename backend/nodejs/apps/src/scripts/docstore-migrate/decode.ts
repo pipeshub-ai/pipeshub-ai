@@ -1,4 +1,3 @@
-/* eslint-disable @typescript-eslint/no-base-to-string -- BSON values print themselves */
 /**
  * The verifier's PostgreSQL-side decoder: rows to the document the mapping describes. It shares no code with the
  * repositories' mappers.
@@ -57,6 +56,12 @@ function putField(doc: Doc, f: FieldMap, row: Row, nulls: Set<string>): void {
     return;
   }
   const v = decodeValue(f, raw);
+  if (f.spread && f.path === '') {
+    // the object's keys sit at the top of the document; a key it does not list is put too, so the comparison sees it
+    if (v !== null && typeof v === 'object' && !Array.isArray(v))
+      Object.assign(doc, v);
+    return;
+  }
   if (
     f.absentWhen !== undefined &&
     JSON.stringify(v) === JSON.stringify(f.absentWhen)

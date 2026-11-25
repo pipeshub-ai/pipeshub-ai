@@ -37,6 +37,7 @@ from app.utils.kh_cursor import (
     derive_cursor_secret,
     encode,
 )
+from app.utils.user_messages import DATABASE_UNREACHABLE
 
 
 @pytest.fixture
@@ -505,9 +506,54 @@ def test_a_cause_chain_that_loops_through_a_group_ends() -> None:
     assert listing_busy(group) is None
 
 
+class _ConnectionLost(Exception):
+    """What a store client stamps on a lost connection (the PostgreSQL kernel's ``ConnectionLost`` declares the same)."""
+
+    log_error_class = "unavailable"
+
+
 @pytest.mark.asyncio
-async def test_a_batch_check_the_graph_could_not_answer_is_still_a_500(service, provider) -> None:
+async def test_a_batch_check_the_graph_could_not_answer_is_a_503_to_retry(service, provider) -> None:
     provider.get_knowledge_hub_connector_page_v3.side_effect = _check_stopped_by(ConnectionError("graph down"))
+    result = await service.get_nodes(user_id="u1", org_id="o1", parent_id="app1", parent_type="app")
+
+    assert (result.success, result.errorCode, result.error, result.items) == (False, 503, DATABASE_UNREACHABLE, [])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("shape", ["raised", "wrapped", "in_a_group", "a_group_below_the_wrap", "stamped", "timed_out"])
+async def test_a_graph_store_that_could_not_answer_is_a_503_to_retry(service, provider, shape) -> None:
+    """A lost connection, however it reaches the listing, is the store restarting, not a fault: the web app asks again on a 503."""
+    lost = ConnectionRefusedError("graph restarting")
+    side_effect = {
+        "raised": lost,
+        "wrapped": _check_stopped_by(lost),
+        "in_a_group": ExceptionGroup("pages", [lost, _ConnectionLost()]),
+        "a_group_below_the_wrap": _check_stopped_by(ExceptionGroup("walks", [lost])),
+        "stamped": _ConnectionLost(),
+        "timed_out": TimeoutError(),
+    }[shape]
+    provider.get_knowledge_hub_connector_page_v3.side_effect = side_effect
+    result = await service.get_nodes(user_id="u1", org_id="o1", parent_id="app1", parent_type="app")
+
+    assert (result.success, result.errorCode, result.error, result.items) == (False, 503, DATABASE_UNREACHABLE, [])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("shape", ["raised", "wrapped", "beside_an_outage", "raised_while_handling_an_outage", "bare_wrap"])
+async def test_a_bug_is_still_a_500_not_a_retry(service, provider, shape) -> None:
+    """A bug of ours stays a 500, also when it sits beside, or was raised while handling, an outage: retrying would hide it."""
+    bug = TypeError("bad arg")
+    if shape == "raised_while_handling_an_outage":
+        bug.__context__ = ConnectionError("graph down")
+    side_effect = {
+        "raised": bug,
+        "wrapped": _check_stopped_by(bug),
+        "beside_an_outage": ExceptionGroup("pages", [ConnectionError("graph down"), bug]),
+        "raised_while_handling_an_outage": bug,
+        "bare_wrap": PermissionVerificationUnavailableError(),
+    }[shape]
+    provider.get_knowledge_hub_connector_page_v3.side_effect = side_effect
     result = await service.get_nodes(user_id="u1", org_id="o1", parent_id="app1", parent_type="app")
 
     assert (result.success, result.errorCode, result.items) == (False, 500, [])

@@ -20,6 +20,7 @@ from app.connectors.sources.localKB.push.contract import PushRefusal
 from app.connectors.sources.localKB.push.service import KbPushService, PushResult
 from app.core import org_context
 from app.modules.record_metadata.schemas import MetadataSchemaRegistry
+from harness_core.testing.virtual_time import run_on_virtual_time
 
 from .bodies import envelope, raw
 
@@ -460,26 +461,35 @@ async def never_more() -> AsyncIterator[bytes]:
     await asyncio.Event().wait()
 
 
-async def test_a_sender_that_stalls_after_one_byte_is_cut_at_the_deadline_and_frees_its_slot() -> None:
-    adm = A.Admission(read_slots=1, grace_s=0.2, min_rate_bps=1000, max_read_s=1.0, slot_wait_s=0.1)
-    started = asyncio.get_running_loop().time()
-    with pytest.raises(PushRefusal) as e:
-        await adm.read_body({"content-type": "application/json", "content-length": "1000"}, never_more())
-    waited = asyncio.get_running_loop().time() - started
-    assert (e.value.status, e.value.reason) == (408, "BODY_TIMEOUT") and 0.15 < waited < 1.0, waited
+def test_a_sender_that_stalls_after_one_byte_is_cut_at_the_deadline_and_frees_its_slot() -> None:
+    async def main() -> None:
+        loop = asyncio.get_running_loop()
+        adm = A.Admission(read_slots=1, grace_s=0.2, min_rate_bps=1000, max_read_s=1.0, slot_wait_s=0.1, clock=loop.time)
+        started = loop.time()
+        with pytest.raises(PushRefusal) as e:
+            await adm.read_body({"content-type": "application/json", "content-length": "1000"}, never_more())
+        waited = loop.time() - started
+        # The rate rule's 0.2 s grace, not the 1.0 s deadline the declared length allows.
+        assert (e.value.status, e.value.reason, waited) == (408, "BODY_TIMEOUT", pytest.approx(0.2))
 
-    async def ok() -> AsyncIterator[bytes]:
-        yield b"{}"
+        async def ok() -> AsyncIterator[bytes]:
+            yield b"{}"
 
-    assert await adm.read_body({"content-type": "application/json"}, ok()) == b"{}"  # the slot came back
+        assert await adm.read_body({"content-type": "application/json"}, ok()) == b"{}"  # the slot came back
+
+    run_on_virtual_time(main)
 
 
-async def test_a_stall_without_a_content_length_is_cut_by_the_rate_rule_not_only_the_cap() -> None:
-    adm = A.Admission(grace_s=0.2, min_rate_bps=1000, max_read_s=60.0)
-    started = asyncio.get_running_loop().time()
-    with pytest.raises(PushRefusal) as e:
-        await adm.read_body({"content-type": "application/json"}, never_more())
-    assert e.value.reason == "BODY_TIMEOUT" and asyncio.get_running_loop().time() - started < 2.0
+def test_a_stall_without_a_content_length_is_cut_by_the_rate_rule_not_only_the_cap() -> None:
+    async def main() -> None:
+        loop = asyncio.get_running_loop()
+        adm = A.Admission(grace_s=0.2, min_rate_bps=1000, max_read_s=60.0, clock=loop.time)
+        started = loop.time()
+        with pytest.raises(PushRefusal) as e:
+            await adm.read_body({"content-type": "application/json"}, never_more())
+        assert (e.value.reason, loop.time() - started) == ("BODY_TIMEOUT", pytest.approx(0.2))
+
+    run_on_virtual_time(main)
 
 
 async def test_four_stalled_senders_do_not_starve_the_next_push_for_long() -> None:

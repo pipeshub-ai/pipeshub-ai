@@ -1,0 +1,143 @@
+[
+  {
+    "description": "wrong type for this schema",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "attemptId": "att_1",
+      "fence": 3,
+      "type": "turn.aborted",
+      "data": {
+        "turnId": "trn_1",
+        "kind": "item/newThing/delta",
+        "sizeBytes": 412,
+        "truncated": false,
+        "content": {
+          "ref": "sealed:org_1/ses_1/c1",
+          "hash": "sha256:abababababababababababababababababababababababababababababababab",
+          "size": 412
+        }
+      }
+    }
+  },
+  {
+    "description": "writer allowlist: only worker writes x.pipeshub.native.unknown",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "node",
+      "visibility": "owner",
+      "attemptId": "att_1",
+      "fence": 3,
+      "type": "x.pipeshub.native.unknown",
+      "data": {
+        "turnId": "trn_1",
+        "kind": "item/newThing/delta",
+        "sizeBytes": 412,
+        "truncated": false,
+        "content": {
+          "ref": "sealed:org_1/ses_1/c1",
+          "hash": "sha256:abababababababababababababababababababababababababababababababab",
+          "size": 412
+        }
+      }
+    }
+  },
+  {
+    "description": "unknown data field",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "attemptId": "att_1",
+      "fence": 3,
+      "type": "x.pipeshub.native.unknown",
+      "data": {
+        "turnId": "trn_1",
+        "kind": "item/newThing/delta",
+        "sizeBytes": 412,
+        "truncated": false,
+        "content": {
+          "ref": "sealed:org_1/ses_1/c1",
+          "hash": "sha256:abababababababababababababababababababababababababababababababab",
+          "size": 412
+        },
+        "raw": "{}"
+      }
+    }
+  },
+  {
+    "description": "the kind is a protocol name, never free text",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "attemptId": "att_1",
+      "fence": 3,
+      "type": "x.pipeshub.native.unknown",
+      "data": {
+        "turnId": "trn_1",
+        "kind": "an engine's error: secret",
+        "sizeBytes": 412,
+        "truncated": false,
+        "content": {
+          "ref": "sealed:org_1/ses_1/c1",
+          "hash": "sha256:abababababababababababababababababababababababababababababababab",
+          "size": 412
+        }
+      }
+    }
+  },
+  {
+    "description": "the content is required",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "attemptId": "att_1",
+      "fence": 3,
+      "type": "x.pipeshub.native.unknown",
+      "data": {
+        "turnId": "trn_1",
+        "kind": "item/newThing/delta",
+        "sizeBytes": 412,
+        "truncated": false
+      }
+    }
+  }
+]

@@ -1,0 +1,120 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/ext/pipeshub/events/x.pipeshub.artifact.presented.schema.json",
+  "title": "PipeshubArtifactPresentedEvent",
+  "description": "An artifact a tool delivered to the user (download card). Carries no download URL: downloads go through the record.",
+  "x-writer": [
+    "worker"
+  ],
+  "allOf": [
+    {
+      "$ref": "../../../core/envelope.schema.json#/$defs/InlineEnvelope"
+    }
+  ],
+  "properties": {
+    "type": {
+      "const": "x.pipeshub.artifact.presented"
+    },
+    "writer": {
+      "const": "worker"
+    },
+    "data": {
+      "$ref": "#/$defs/PipeshubArtifactPresentedData"
+    }
+  },
+  "$defs": {
+    "PipeshubArtifactPresentedData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "artifactId",
+        "fileName",
+        "mimeType",
+        "sizeBytes",
+        "artifactType",
+        "isTemporary",
+        "visibility"
+      ],
+      "properties": {
+        "callId": {
+          "$ref": "../../../core/common.schema.json#/$defs/Text"
+        },
+        "artifactId": {
+          "$ref": "../../../core/common.schema.json#/$defs/Id"
+        },
+        "fileName": {
+          "$ref": "../../../core/common.schema.json#/$defs/Text"
+        },
+        "mimeType": {
+          "$ref": "../../../core/common.schema.json#/$defs/Text"
+        },
+        "sizeBytes": {
+          "$ref": "../../../core/common.schema.json#/$defs/UInt"
+        },
+        "artifactType": {
+          "$ref": "../../../core/common.schema.json#/$defs/Text"
+        },
+        "isTemporary": {
+          "type": "boolean"
+        },
+        "recordId": {
+          "$ref": "../../../core/common.schema.json#/$defs/Id"
+        },
+        "documentId": {
+          "$ref": "../../../core/common.schema.json#/$defs/Id"
+        },
+        "version": {
+          "$ref": "../../../core/common.schema.json#/$defs/PosInt"
+        },
+        "derivedFromCodeArtifactId": {
+          "$ref": "../../../core/common.schema.json#/$defs/Id"
+        },
+        "visibility": {
+          "$ref": "../../../core/common.schema.json#/$defs/Text"
+        },
+        "card": {
+          "description": "The tool showed a live download card while the run streamed (the answer's marker is shown either way).",
+          "type": "boolean"
+        },
+        "lifecycle": {
+          "description": "An engine task's artifact: a draft while the task works, final when it completes, discarded when it is cancelled. Absent: final.",
+          "enum": [
+            "draft",
+            "final",
+            "discarded"
+          ]
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "type": "x.pipeshub.artifact.presented",
+      "data": {
+        "callId": "call_1",
+        "artifactId": "art_1",
+        "fileName": "q3.csv",
+        "mimeType": "text/csv",
+        "sizeBytes": 2048,
+        "artifactType": "SPREADSHEET",
+        "isTemporary": false,
+        "recordId": "art_1",
+        "documentId": "doc_1",
+        "version": 2,
+        "visibility": "VISIBLE"
+      },
+      "attemptId": "att_1",
+      "fence": 3
+    }
+  ]
+}

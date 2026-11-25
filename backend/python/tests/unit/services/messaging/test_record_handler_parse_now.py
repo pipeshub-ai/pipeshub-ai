@@ -35,6 +35,7 @@ from app.utils.user_errors import (
     PARSE_WORKER_OUT_OF_MEMORY,
     RETRY_SCHEDULED,
 )
+from tests.support.record_access import InMemoryRecordAccess
 from tests.unit.attempt_start import attempt_start_via
 
 RECORDS = CollectionNames.RECORDS.value
@@ -89,7 +90,10 @@ class Harness:
         graph.get_document = AsyncMock(side_effect=self._get)
         graph.update_node = AsyncMock(return_value=True)
         graph.write_attempt_start = attempt_start_via(graph)
-        graph.check_record_access_with_details = AsyncMock(return_value={"record": {}} if access else None)
+        self.access = InMemoryRecordAccess().user("user-1", "org-1").record("rec-1", "org-1")
+        if access:
+            self.access.grant("rec-1", user="user-1")
+        self.access.serve(graph)
         event_processor.graph_provider = graph
         event_processor.stage_ingress = None
         event_processor.sink_orchestrator = None  # no vector store to ask about the weight precision
@@ -180,7 +184,7 @@ class TestRechecksBeforeParsing:
 
         await self._assert_dropped(harness)  # a user without access marks nothing
 
-        harness.graph.check_record_access_with_details.assert_awaited_once_with("user-1", "org-1", "rec-1")
+        assert harness.access.asked_about == [("user-1", "org-1", "rec-1")]
 
     async def test_an_event_naming_no_user_is_dropped(self) -> None:
         await self._assert_dropped(Harness(_record()), _payload(requestedByUserId=None))
@@ -432,7 +436,7 @@ class TestFailuresEndInTheMarker:
         """
         marker, record_status = self._UNANSWERED_CHECK[(status, final)]
         harness = Harness(_record(indexingStatus=status))
-        harness.graph.check_record_access_with_details = AsyncMock(side_effect=ConnectionError("graph down"))
+        harness.access.fail_with(ConnectionError("graph down"))
         with pytest.raises(ConnectionError):
             await harness.run(_payload(is_final_failure=final))
 

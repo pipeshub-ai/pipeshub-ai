@@ -30,6 +30,7 @@ class _FakeSkillManager:
         self.activations: list[tuple[str, str]] = []
         self.outcomes: list[tuple[str, str, bool]] = []
         self.learn_calls: list[str | None] = []
+        self.learned_from: list[tuple[str | None, str | None]] = []
 
     async def record_activation(self, name: str, session_id: str) -> None:
         self.activations.append((name, session_id))
@@ -37,8 +38,11 @@ class _FakeSkillManager:
     async def record_outcome(self, name: str, session_id: str, success: bool, notes: str = "") -> None:
         self.outcomes.append((name, session_id, success))
 
-    async def learn_from_execution(self, result, trajectory, decision_trace, session_id=None) -> list[SkillCandidate]:
+    async def learn_from_execution(
+        self, result, trajectory, decision_trace, session_id=None, *, agent_key=None, run_id=None,
+    ) -> list[SkillCandidate]:
         self.learn_calls.append(session_id)
+        self.learned_from.append((agent_key, run_id))
         if self._learn_raises:
             raise RuntimeError("extraction backend unavailable")
         return self._candidates
@@ -200,3 +204,24 @@ class TestLearningLoopCandidateRouting:
 
         assert len(spawned) == 1
         assert "skill-cand-2" in spawned[0]
+
+
+class TestLearnedByAgent:
+    async def test_the_learning_names_the_agent_and_the_run_it_learned_from(self) -> None:
+        """UI-B4: a proposal says which agent learned it, so the person deciding it knows where it came from."""
+        manager = _FakeSkillManager([_candidate("cand-1", "pending")])
+
+        async def spawn(goal_description: str) -> AgentResult:
+            return _result()
+
+        learning = SkillLearning(manager, spawn, source_agent_key="a7")
+        await learning.settle(_result(success=True), session_id="session-1", run_id="run-9")
+
+        assert manager.learned_from == [("a7", "run-9")]
+
+    async def test_the_assistants_learning_names_no_agent(self) -> None:
+        manager = _FakeSkillManager([_candidate("cand-1", "pending")])
+
+        await _run(manager, _result(success=True))
+
+        assert manager.learned_from == [(None, None)]

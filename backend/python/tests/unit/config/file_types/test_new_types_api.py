@@ -125,3 +125,21 @@ def test_the_live_check_script_writes_one_file_of_each_type(tmp_path: Path) -> N
             mime="application/octet-stream", extension=Path(name).suffix.lstrip("."), record_name=name,
             is_code_file=False, code_file_extension=None,
         ).supported
+
+
+def _repository_text() -> list[str]:
+    return [e for ft in file_types.FILE_TYPES if ft.repo_code and not ft.ext_indexable for e in ft.extensions]
+
+
+def test_the_repository_filter_offers_the_repository_text_types_before_the_exclude_only_ones() -> None:
+    offered = [e.value for e in ExtensionTypes]
+    assert file_types.filter_option_ids(repository=True) == (
+        *offered, *_repository_text(), *file_types.EXCLUDE_ONLY_EXTENSIONS,
+    )
+    assert len(_repository_text()) == 24
+    assert not set(_repository_text()) & set(file_types.filter_option_ids())
+
+
+def test_an_explicit_extension_list_wins_over_the_repository_list() -> None:
+    field = CommonFields.file_extension_filter(repository=True, extensions=[ExtensionTypes.PDF])
+    assert [o.id for o in field.options] == ["pdf"]

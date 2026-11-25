@@ -1503,7 +1503,8 @@ export function createConnectorRouter(
         const receivedScopes = tokenData.scope.split(' ');
         const enabledApps = Object.keys(scopeToAppMap)
           .filter((scope) => receivedScopes.includes(scope))
-          .map((scope) => scopeToAppMap[scope]);
+          .map((scope) => scopeToAppMap[scope])
+          .filter((app): app is GoogleWorkspaceApp => app !== undefined);
 
         // Prepare event for sync service. The producer is the container's shared one, connected at start-up and
         // reconnected by publish itself: it is neither started nor stopped here.
