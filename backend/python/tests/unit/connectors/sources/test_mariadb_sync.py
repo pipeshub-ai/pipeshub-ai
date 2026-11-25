@@ -12,7 +12,11 @@ import pytest
 from fastapi import HTTPException
 
 from app.config.constants.arangodb import ProgressStatus
-from app.connectors.core.registry.filters import Filter, FilterCollection
+from app.connectors.core.registry.filters import (
+    Filter,
+    FilterCollection,
+    name_passes_filter,
+)
 from app.connectors.core.sql.profiling import ColumnProfile
 from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
 from app.connectors.sources.mariadb.connector import (
@@ -531,11 +535,12 @@ class TestFullSync:
         assert ("update", "shop.orders") not in world.store.writes
 
 
-async def full_sync_unlinks(world: World) -> tuple[set[str], set[str]]:
+async def full_sync_unlinks(world: World, filters: FilterCollection | None = None) -> tuple[set[str], set[str]]:
     """Run a full sync and see what its end would unlink (sync_runner._unlink_what_full_sync_missed).
 
-    Returns the stored records still at the source that the sync neither wrote
-    nor noted kept, while it reports having read the whole database; and the
+    Returns the stored records of tables at the source that ``filters`` keeps
+    which the sync neither wrote nor noted kept, and either deleted or (while
+    it reports having read the whole database) leaves to be unlinked; and the
     stored records gone from the source that are removed or unlinked.
     """
     before = {fqn: record.id for fqn, record in world.store.records.items()}
@@ -561,24 +566,51 @@ async def full_sync_unlinks(world: World) -> tuple[set[str], set[str]]:
 
     processor.note_kept_records = note_kept_records
     world.point.data.pop(SYNC_STATE_KEY, None)  # what a full sync starts from
-    await world.sync()
+    await world.sync(filters=filters)
 
     coverage = getattr(world.connector, "full_sync_coverage", FullSyncCoverage)()
     unlinks = coverage.complete and coverage.lists_everything
-    at_source = set()
+    at_source: set[str] = set()
+    kept: set[str] = set()  # at the source, of a table the filter keeps
     for name, table in world.catalog.tables.items():
         fqn = table_fqn("shop", name)
-        at_source |= {fqn} | {f"{fqn}.{Catalog.column(c)[0]}" for c in table["columns"]}
+        records = {fqn} | {f"{fqn}.{Catalog.column(c)[0]}" for c in table["columns"]}
+        at_source |= records
+        if name_passes_filter(filters, "tables", fqn):
+            kept |= records
     unlinked = {
         fqn for fqn, record_id in before.items()
         if fqn in world.store.records and record_id not in seen and unlinks
     }
-    removed = {fqn for fqn in before if fqn not in world.store.records} | unlinked
-    return unlinked & at_source, removed - at_source
+    deleted = {fqn for fqn in before if fqn not in world.store.records}
+    deleted_unseen = {fqn for fqn in deleted if before[fqn] not in seen}
+    return (unlinked & at_source) | (deleted_unseen & kept), (deleted | unlinked) - at_source
 
 
 class TestFullSyncUnlink:
     """A full sync unlinks what it did not write: a table it could not write is still there."""
+
+    async def test_the_check_counts_a_kept_table_the_sync_deleted(self, world) -> None:
+        # A sync that deletes a table still at the source loses it as surely as an unlink.
+        for name in ("orders", "customers", "old"):
+            world.catalog.add(name)
+        await world.sync()
+        # Neither written nor kept: unreadable, and its stored record not found.
+        world.catalog.unreadable = {"customers"}
+        self._lookup_fails_for(world, "shop.customers")
+        sync = world.sync
+
+        async def deleting_sync(filters=None, indexing=None) -> None:
+            await sync(filters=filters, indexing=indexing)
+            for fqn in [k for k in world.store.records if k.startswith(("shop.customers", "shop.old"))]:
+                del world.store.records[fqn]
+
+        world.sync = deleting_sync
+        excluded = FilterCollection(filters=[Filter(key="tables", value=["shop.old"], type="list", operator="not_in")])
+        wrongly, gone = await full_sync_unlinks(world, excluded)
+        # The filter leaves out "old", so removing it is expected.
+        assert sorted(wrongly) == ["shop.customers", "shop.customers.id", "shop.customers.name"]
+        assert sorted(gone) == []
 
     async def test_a_table_the_catalog_read_does_not_show_keeps_its_links(self, world) -> None:
         for name in ("orders", "customers", "old"):

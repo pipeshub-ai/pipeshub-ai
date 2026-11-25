@@ -16,7 +16,12 @@ from app.config.constants.arangodb import (
     RecordRelations,
 )
 from app.connectors.core.registry.connector_builder import ConnectorScope
-from app.connectors.core.registry.filters import Filter, FilterCollection, FilterOption
+from app.connectors.core.registry.filters import (
+    Filter,
+    FilterCollection,
+    FilterOption,
+    name_passes_filter,
+)
 from app.connectors.core.sql.column_records import column_revision as _column_revision
 from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
 from app.connectors.sources.postgres.catalog_diff import TableChange, diff_catalog
@@ -5286,24 +5291,31 @@ class _FullSyncWorld:
     async def full_sync(self) -> tuple[set[str], set[str]]:
         """Run a full sync; see what its end would unlink (sync_runner._unlink_what_full_sync_missed).
 
-        Returns the stored records still at the source that the sync neither
-        wrote nor noted kept, while it reports having read the whole database;
-        and the stored records gone from the source that are removed or unlinked.
+        Returns the stored records of tables at the source that the filter
+        keeps which the sync neither wrote nor noted kept, and either deleted
+        or (while it reports having read the whole database) leaves to be
+        unlinked; and the stored records gone from the source that are removed
+        or unlinked.
         """
         before = {fqn: record.id for fqn, record in self.records.items()}
         self.seen = set()
         await self.sync()
         coverage = getattr(self.connector, "full_sync_coverage", FullSyncCoverage)()
         unlinks = coverage.complete and coverage.lists_everything
-        at_source = set(self.tables) | {
-            f"testdb.{fqn}.{column}" for fqn, columns in self.tables.items() for column in columns
-        }
+        at_source: set[str] = set()
+        kept: set[str] = set()  # at the source, of a table the filter keeps
+        for fqn, columns in self.tables.items():
+            records = {fqn} | {f"testdb.{fqn}.{column}" for column in columns}
+            at_source |= records
+            if name_passes_filter(self.sync_filters, "tables", fqn):
+                kept |= records
         unlinked = {
             fqn for fqn, record_id in before.items()
             if fqn in self.records and record_id not in self.seen and unlinks
         }
-        removed = {fqn for fqn in before if fqn not in self.records} | unlinked
-        return unlinked & at_source, removed - at_source
+        deleted = {fqn for fqn in before if fqn not in self.records}
+        deleted_unseen = {fqn for fqn in deleted if before[fqn] not in self.seen}
+        return (unlinked & at_source) | (deleted_unseen & kept), (deleted | unlinked) - at_source
 
 
 class TestFullSyncUnlink:
@@ -5319,6 +5331,38 @@ class TestFullSyncUnlink:
         await world.full_sync()
         del world.tables["public.old"]
         return world
+
+    @pytest.mark.asyncio
+    async def test_the_check_counts_a_kept_table_the_sync_deleted(self) -> None:
+        # A sync that deletes a table still at the source loses it as surely as an unlink.
+        world = await self._world()
+        world.tables["public.old"] = ["id", "note"]
+        # Neither written nor kept: unreadable, and its stored record not found.
+        world.unreadable = {"public.customers"}
+        processor = world.connector.data_entities_processor
+        lookup = processor.get_record_by_external_id
+
+        async def get_record_by_external_id(connector_id, external_record_id, **kwargs) -> object:
+            if external_record_id == "public.customers" and kwargs.get("raise_on_error"):
+                raise RuntimeError("graph down")
+            return await lookup(connector_id, external_record_id, **kwargs)
+
+        processor.get_record_by_external_id = AsyncMock(side_effect=get_record_by_external_id)
+        sync = world.sync
+
+        async def deleting_sync() -> None:
+            await sync()
+            for fqn in [k for k in world.records if "public.customers" in k or "public.old" in k]:
+                del world.records[fqn]
+
+        world.sync = deleting_sync
+        world.sync_filters = FilterCollection(filters=[
+            Filter(key="tables", value=["public.old"], type="list", operator="not_in"),
+        ])
+        wrongly, gone = await world.full_sync()
+        # The filter leaves out public.old, so removing it is expected.
+        assert sorted(wrongly) == ["public.customers", "testdb.public.customers.id", "testdb.public.customers.name"]
+        assert sorted(gone) == []
 
     @pytest.mark.asyncio
     async def test_a_table_whose_columns_cannot_be_read_keeps_its_links(self) -> None:
