@@ -1,14 +1,18 @@
 """Application code never imports, names or calls telemetry: it announces platform events.
 
 Only the telemetry plug-in package and the plug-in manifest may. A build that leaves
-telemetry out deletes those two and must find nothing else to fix.
+telemetry out deletes those two and must find nothing else to fix. A build with
+more plug-ins names their packages in ``tests/support/edition_defaults.py``; each
+is one a build may delete, so each may hold a client library.
 """
 
 import ast
 from pathlib import Path
 
+from tests.support import edition_defaults
+
 APP = Path(__file__).resolve().parents[3] / "app"
-ALLOWED = ("plugins/telemetry/", "plugins_manifest.py")
+ALLOWED = ("plugins_manifest.py", *(package.removeprefix("app/") + "/" for package in edition_defaults.optional_plugin_packages()))
 
 
 def _modules() -> list[Path]:

@@ -6,12 +6,13 @@ from pathlib import Path
 import pytest
 
 from app import plugins
+from tests.support import edition_defaults
 
 
 def test_the_checked_in_manifest_is_a_list_of_importable_plugin_modules() -> None:
     from app.plugins_manifest import PLUGINS
 
-    assert PLUGINS == ["app.plugins.telemetry"]
+    assert PLUGINS == edition_defaults.default_plugins()
     for path in PLUGINS:
         plugin = __import__(path, fromlist=["plugin"]).plugin
         assert isinstance(plugin, plugins.Plugin)
@@ -56,12 +57,14 @@ def test_the_writer_drops_the_extra_of_a_plugin_the_build_leaves_out(tmp_path) -
     from scripts.write_plugins_manifest import drop_plugin_extras, main
 
     original = PYPROJECT.read_text(encoding="utf-8")
-    kept, dropped = drop_plugin_extras(original, ["app.plugins.telemetry"])
+    everything = edition_defaults.default_plugins()
+    extras = sorted({module.rsplit(".", 1)[-1] for module in everything} & set(tomllib.loads(original)["project"]["optional-dependencies"]))
+    kept, dropped = drop_plugin_extras(original, everything)
     assert (kept, dropped) == (original, [])
 
     stripped, dropped = drop_plugin_extras(original, [])
-    assert dropped == ["telemetry"]
-    assert sorted(set(_dependencies(original)) - set(_dependencies(stripped))) == ["ai-service[telemetry]"]
+    assert "telemetry" in extras and sorted(dropped) == extras
+    assert sorted(set(_dependencies(original)) - set(_dependencies(stripped))) == sorted(f"ai-service[{extra}]" for extra in extras)
     # still declared, so an install can ask for it by name
     assert "telemetry" in tomllib.loads(stripped)["project"]["optional-dependencies"]
 
@@ -70,7 +73,7 @@ def test_the_writer_drops_the_extra_of_a_plugin_the_build_leaves_out(tmp_path) -
     assert main(["--output", str(tmp_path / "manifest.py"), "--pyproject", str(copy)]) == 0
     assert copy.read_text(encoding="utf-8") == stripped
     copy.write_text(original, encoding="utf-8")
-    assert main(["--output", str(tmp_path / "manifest.py"), "--pyproject", str(copy), "app.plugins.telemetry"]) == 0
+    assert main(["--output", str(tmp_path / "manifest.py"), "--pyproject", str(copy), *everything]) == 0
     assert copy.read_text(encoding="utf-8") == original
 
 

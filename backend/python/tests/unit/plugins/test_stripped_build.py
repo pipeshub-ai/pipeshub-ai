@@ -16,7 +16,11 @@ from pathlib import Path
 
 import pytest
 
+from tests.support import edition_defaults
+
 PY = Path(__file__).resolve().parents[3]
+# Every package a build may leave out: the telemetry plug-in and whatever else this build names.
+OPTIONAL_PACKAGES = list(edition_defaults.optional_plugin_packages())
 
 ENTRY_MODULES = [
     "app.connectors_main",
@@ -113,6 +117,8 @@ FORMER_IMPORTERS = [
     "app.web.tools.fetch_url",
     "app.web.tools.web_search",
 ]
+# A module this tree does not have cannot import anything; the rest are probed.
+FORMER_IMPORTERS = [m for m in FORMER_IMPORTERS if (PY / (m.replace(".", "/") + ".py")).is_file()]
 
 # ``grep -ri telemetry`` over the stripped tree may find only these, each a product fact and none of
 # them this product's own collection: (file, text on the line) -> why it stays.
@@ -138,6 +144,7 @@ ALLOWED_MENTIONS: dict[tuple[str, str], str] = {
     ("app/services/skills/npm_command_parser.py", "--no-telemetry"): (
         "a flag of other people's npm tools that the skill-install command parser recognises as taking no value"
     ),
+    **edition_defaults.allowed_usage_collection_mentions(),
 }
 
 PROBE = """
@@ -152,8 +159,9 @@ class NoPrometheus(importlib.abc.MetaPathFinder):
 sys.meta_path.insert(0, NoPrometheus())
 import app
 assert app.__file__.startswith(sys.argv[1]), app.__file__
+OPTIONAL = sys.argv[2].split(",")
 out = {}
-for module in sys.argv[2:]:
+for module in sys.argv[3:]:
     try:
         importlib.import_module(module)
         out[module] = "ok"
@@ -167,6 +175,7 @@ out["__plugins__"] = [host.loaded, [f.plugin for f in host.failures], plugins.ge
 out["__listeners__"] = sorted(platform_events._listeners)
 out["__loaded__"] = sorted(m for m in sys.modules if m.split(".")[0] == "prometheus_client" or (m.split(".")[0] == "app" and "telemetry" in m.lower()))
 out["__third_party__"] = sorted({m.split(".")[0] for m in sys.modules if m.split(".")[0] == "opentelemetry"})
+out["__ours__"] = sorted(m for m in sys.modules if any(m == p or m.startswith(p + ".") for p in OPTIONAL))
 sys.stdout.write("\\nRESULT " + json.dumps(out))
 """
 
@@ -175,7 +184,8 @@ sys.stdout.write("\\nRESULT " + json.dumps(out))
 def stripped(tmp_path_factory: pytest.TempPathFactory) -> Path:
     root = tmp_path_factory.mktemp("stripped")
     shutil.copytree(PY / "app", root / "app", ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
-    shutil.rmtree(root / "app" / "plugins" / "telemetry")
+    for package in OPTIONAL_PACKAGES:
+        shutil.rmtree(root / package, ignore_errors=True)
     subprocess.run(
         [sys.executable, str(PY / "scripts" / "write_plugins_manifest.py"), "--output", str(root / "app" / "plugins_manifest.py")],
         check=True, timeout=60,
@@ -190,14 +200,15 @@ def _probe(root: Path, modules: list[str]) -> dict:
     others = [entry for entry in os.environ.get("PYTHONPATH", "").split(os.pathsep) if entry and Path(entry).resolve() != PY]
     env["PYTHONPATH"] = os.pathsep.join([str(root), *others])
     done = subprocess.run(
-        [sys.executable, "-c", PROBE, str(root), *modules], cwd=root, env=env, capture_output=True, text=True, timeout=1500, check=False,
+        [sys.executable, "-c", PROBE, str(root), ",".join(p.replace("/", ".") for p in OPTIONAL_PACKAGES), *modules], cwd=root, env=env, capture_output=True, text=True, timeout=1500, check=False,
     )
     assert "\nRESULT " in done.stdout, done.stderr[-3000:]
     return json.loads(done.stdout.rsplit("\nRESULT ", 1)[1])
 
 
 def test_the_stripped_tree_has_no_plugin_and_an_empty_manifest(stripped: Path) -> None:
-    assert not (stripped / "app" / "plugins" / "telemetry").exists()
+    assert "app/plugins/telemetry" in OPTIONAL_PACKAGES
+    assert not any((stripped / package).exists() for package in OPTIONAL_PACKAGES)
     assert "PLUGINS: list[str] = []" in (stripped / "app" / "plugins_manifest.py").read_text()
 
 
@@ -209,6 +220,7 @@ def test_every_entry_module_and_former_importer_imports_without_the_plugin(strip
     assert (loaded, failed, nothing_collected) == ([], [], True)
     assert result.pop("__listeners__") == [], "nothing listens in a build with no plug-in"
     assert result.pop("__loaded__") == [], "a telemetry module of ours, or the Prometheus client, was imported"
+    assert result.pop("__ours__") == [], "a module of a package this build leaves out was imported"
     # Not ours to remove here: a dependency (a cloud SDK, say) may import the OpenTelemetry API when it is installed.
     if result.pop("__third_party__"):
         warnings.warn("a third-party dependency imported the opentelemetry package in the stripped build", stacklevel=1)

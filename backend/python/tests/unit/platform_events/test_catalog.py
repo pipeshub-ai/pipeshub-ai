@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from app.platform_events import catalog
+from tests.support import edition_defaults
 
 APP = Path(__file__).resolve().parents[3] / "app"
 
@@ -44,6 +45,9 @@ def _emits() -> list[tuple[str, int, list[ast.expr], list[ast.keyword]]]:
 
 
 EMITS = _emits()
+# The shared catalogue, and what a build's own modules announce besides it.
+EVENTS = {**catalog.EVENTS, **edition_defaults.extra_platform_events()}
+FIELDS = {**catalog.FIELDS, **edition_defaults.extra_platform_event_fields()}
 
 
 def test_the_application_emits_events() -> None:
@@ -57,34 +61,39 @@ def test_emit_names_a_catalogued_event_and_its_fields(path: str, line: int, args
     )
     assert len(args) == 1, "facts are passed by keyword"
     name = args[0].value
-    assert name in catalog.EVENTS, f"{name!r} is not in app/platform_events/catalog.py"
+    assert name in EVENTS, f"{name!r} is not in app/platform_events/catalog.py"
     for keyword in keywords:
         assert keyword.arg is not None, "no **payload: the fields must be visible at the call site"
-        assert keyword.arg in catalog.EVENTS[name].fields, f"{name!r} has no field {keyword.arg!r}"
+        assert keyword.arg in EVENTS[name].fields, f"{name!r} has no field {keyword.arg!r}"
 
 
 def test_every_catalogued_event_is_emitted_somewhere() -> None:
     emitted = {args[0].value for _p, _n, args, _k in EMITS if args and isinstance(args[0], ast.Constant)}
-    assert sorted(set(catalog.EVENTS) - emitted) == []
+    assert sorted(set(EVENTS) - emitted - edition_defaults.PLATFORM_EVENTS_NOT_EMITTED_HERE) == []
+    assert sorted(edition_defaults.PLATFORM_EVENTS_NOT_EMITTED_HERE & emitted) == [], "emitted after all: drop it from the list"
+
+
+def test_a_build_adds_events_and_never_renames_a_shared_one() -> None:
+    assert sorted(set(catalog.EVENTS) & set(edition_defaults.extra_platform_events())) == []
 
 
 def test_names_are_dot_separated_product_terms_and_fields_are_described() -> None:
-    for name, event in catalog.EVENTS.items():
+    for name, event in EVENTS.items():
         assert name == event.name
         parts = name.split(".")
         assert len(parts) >= 2 and all(part and part.replace("_", "").isalnum() and part == part.lower() for part in parts), name
         assert event.summary.strip(), name
         for field in event.fields:
-            assert field in catalog.FIELDS, f"{name}: field {field!r} has no description in catalog.FIELDS"
+            assert field in FIELDS, f"{name}: field {field!r} has no description in FIELDS"
             assert field.isidentifier() and field == field.lower()
-    used = {field for event in catalog.EVENTS.values() for field in event.fields}
-    assert sorted(set(catalog.FIELDS) - used) == [], "a described field no event carries"
+    used = {field for event in EVENTS.values() for field in event.fields}
+    assert sorted(set(FIELDS) - used) == [], "a described field no event carries"
 
 
 def test_no_name_or_field_speaks_of_how_it_is_measured() -> None:
     """Payloads carry product facts; metric names, label sets and handles belong to listeners."""
     banned = ("metric", "label", "counter", "gauge", "histogram", "prometheus", "handle", "timer")
-    for name, event in catalog.EVENTS.items():
+    for name, event in EVENTS.items():
         for word in banned:
             assert word not in name, name
             assert all(word not in field for field in event.fields), (name, event.fields)
