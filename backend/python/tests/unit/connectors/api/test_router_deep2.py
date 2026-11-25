@@ -335,7 +335,8 @@ class TestHandleOAuthCallbackDeep:
         mock_oauth_provider.handle_callback = AsyncMock(return_value=mock_token)
         mock_oauth_provider.close = AsyncMock()
 
-        # startup_service import itself fails
+        # Getting the refresh service fails: the callback still succeeds
+        get_refresh = MagicMock(side_effect=RuntimeError("startup error"))
         with patch(_SETTINGS_PATH_PATCH, new_callable=AsyncMock, return_value="/settings/connectors"), \
              patch(_BETA_PATCH, new_callable=AsyncMock), \
              patch(_BUILD_FLOW_PATCH, new_callable=AsyncMock, return_value={"clientId": "cid"}), \
@@ -344,7 +345,7 @@ class TestHandleOAuthCallbackDeep:
              patch(_TIMESTAMP_PATCH, return_value=1000), \
              patch(
                  "app.connectors.core.base.token_service.startup_service.startup_service",
-                 MagicMock(get_token_refresh_service=MagicMock(side_effect=RuntimeError("startup error"))),
+                 MagicMock(get_token_refresh_service=get_refresh),
              ):
             result = await handle_oauth_callback(
                 req, code="auth_code", state=state, error=None,
@@ -352,6 +353,7 @@ class TestHandleOAuthCallbackDeep:
             )
 
         assert result["success"] is True
+        get_refresh.assert_called_once_with()
 
     async def test_exception_updates_instance_and_returns_server_error(self):
         """Lines 4341-4365: general exception marks instance as unauthenticated."""
