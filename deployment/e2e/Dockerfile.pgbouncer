@@ -2,7 +2,7 @@
 # pxh-e2e-pgbouncer:<hash of this file>). On the PostgreSQL image the store runs on, whose PGDG apt source carries a
 # PgBouncer recent enough for prepared statements in transaction mode (max_prepared_statements, 1.21+), as CI's
 # pg-stores job installs it.
-FROM pgvector/pgvector:pg17@sha256:7d0a41464797aeb9862dfdc0bbf1526b82cfd324cdd8036df19e3545f4a9ccb8
+FROM pgvector/pgvector:pg17@sha256:b513c48566e4777cd3370451400000c78eda6a08131d68f4c31d4a76f27bd8fd
 RUN apt-get update && apt-get install -y --no-install-recommends pgbouncer \
     && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 USER postgres
