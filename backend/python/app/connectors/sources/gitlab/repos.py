@@ -48,6 +48,7 @@ from app.modules.code_graph.synced_commit import record_synced_commit
 from app.modules.parsers.code_parser.file_role import (
     FileRole,
     classify_file_role,
+    is_sensitive_path,
 )
 from app.modules.parsers.code_parser.gitattributes import (
     LinguistExclusions,
@@ -1470,8 +1471,11 @@ def _classify_compare_diffs(
     seen_modify: set[str] = set()
     seen_rename_old: set[str] = set()
 
+    # A credential file's delete always goes through: its record may predate the rule that now excludes it.
     def _add_delete(path: str) -> None:
-        if path and path not in seen_delete and not _should_skip_dotfile_repo_path(path, policy):
+        if path and path not in seen_delete and (
+            is_sensitive_path(path) or not _should_skip_dotfile_repo_path(path, policy)
+        ):
             deletes.append(path)
             seen_delete.add(path)
 
@@ -1481,6 +1485,9 @@ def _classify_compare_diffs(
             seen_add.add(path)
 
     def _add_modify(path: str) -> None:
+        if is_sensitive_path(path):
+            _add_delete(path)  # the stored record holds the old content, secret included
+            return
         if path and path not in seen_modify and not _should_skip_dotfile_repo_path(path, policy):
             modifies.append(path)
             seen_modify.add(path)
@@ -1502,6 +1509,7 @@ def _classify_compare_diffs(
                 _add_delete(effective_old)
                 continue
             if _should_skip_dotfile_repo_path(effective_old, policy):
+                _add_delete(effective_old)
                 _add_add(effective_new)
                 continue
             if effective_old and effective_old not in seen_rename_old:
