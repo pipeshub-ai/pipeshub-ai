@@ -57,7 +57,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: pip install pytest
+      - run: pip install pytest pytest-timeout pytest-asyncio fastapi prometheus_client aiohttp python-dotenv
       - name: Stub matches what the app imports from app.telemetry
         working-directory: backend/python
         run: python -m pytest tests/unit/telemetry/test_stub_parity.py -p no:cacheprovider -q --confcutdir=tests/unit/telemetry
