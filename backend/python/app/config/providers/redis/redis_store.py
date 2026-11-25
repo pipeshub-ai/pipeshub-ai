@@ -37,6 +37,11 @@ end
 return 0
 """
 
+# Keys SCAN examines per round trip. SCAN walks the whole database whatever MATCH is, and
+# Redis' default of 10 made every directory listing one round trip per 10 keys in it, which
+# took seconds on a shared Redis.
+_SCAN_COUNT = 1000
+
 # Retry configuration
 RETRY_BASE_DELAY = 0.5  # seconds
 RETRY_MAX_DELAY = 30.0  # seconds
@@ -387,7 +392,7 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
             pattern = f"{self._key_namespace_prefix}{self.key_prefix}*"
             keys = []
 
-            async for key in self._get_client().scan_iter(match=pattern):
+            async for key in self._get_client().scan_iter(match=pattern, count=_SCAN_COUNT):
                 # Decode if bytes
                 if isinstance(key, bytes):
                     key = key.decode("utf-8")
@@ -465,7 +470,7 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
         try:
 
             keys = []
-            async for key in self._get_client().scan_iter(match=pattern):
+            async for key in self._get_client().scan_iter(match=pattern, count=_SCAN_COUNT):
                 if isinstance(key, bytes):
                     key = key.decode("utf-8")
                 keys.append(self._strip_prefix(key))

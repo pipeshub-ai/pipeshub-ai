@@ -2960,15 +2960,16 @@ class DataSourceEntitiesProcessor:
         # are the addresses and issue keys in its text (see record_links). An
         # edit can remove one, so they are always cleaned up as well.
         # None, unlike [], means the connector did not read the record's links on
-        # this save (a Slack reindex): its link edges are kept as they are.
+        # this save (a Slack reindex, a Jira issue stored closed after its build
+        # failed): its link edges are kept as they are.
         if (
             isinstance(
                 record,
                 (TicketRecord, ProjectRecord, SQLTableRecord, SQLViewRecord, MessageRecord, PullRequestRecord),
             )
-            and not (isinstance(record, MessageRecord) and record.related_external_records is None)
+            and record.related_external_records is not None
         ):
-            await self._handle_related_external_records(record, record.related_external_records or [], tx_store)
+            await self._handle_related_external_records(record, record.related_external_records, tx_store)
 
         # Records that pasted this record's address before it was indexed. On
         # every save: on Neo4j's default auto-commit sessions the record row is
