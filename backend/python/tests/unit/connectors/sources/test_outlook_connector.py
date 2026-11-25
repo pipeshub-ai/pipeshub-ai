@@ -689,26 +689,30 @@ class TestGetGroupMembers:
         member.display_name = "Alice"
         member.id = "m1"
 
-        mock_data = MagicMock()
-        mock_data.value = [member]
-        mock_data.odata_next_link = None
+        first, second = MagicMock(), MagicMock()
+        first.value, first.odata_next_link = [member], "https://graph/next"
+        second.value, second.odata_next_link = [member], None
 
         connector.external_users_client = MagicMock()
-        connector.external_users_client.groups_list_transitive_members = AsyncMock(
-            return_value=_make_graph_response(success=True, data=mock_data)
-        )
+        builder = connector.external_users_client.client.groups.by_group_id.return_value.transitive_members
+        builder.get = AsyncMock(return_value=first)
+        builder.with_url.return_value.get = AsyncMock(return_value=second)
 
         members = await connector._get_group_members("g1")
-        assert len(members) == 1
+        assert len(members) == 2
+        builder.with_url.assert_called_once_with("https://graph/next")
 
     @pytest.mark.asyncio
-    async def test_api_failure_raises(self) -> None:
+    async def test_api_failure_raises_microsofts_error(self) -> None:
+        from msgraph.generated.models.o_data_errors.o_data_error import ODataError
+
         connector = _make_connector()
         connector.external_users_client = MagicMock()
-        connector.external_users_client.groups_list_transitive_members = AsyncMock(
-            return_value=_make_graph_response(success=False, error="Forbidden")
-        )
-        with pytest.raises(Exception, match="Forbidden"):
+        refusal = ODataError()
+        refusal.response_status_code = 403
+        builder = connector.external_users_client.client.groups.by_group_id.return_value.transitive_members
+        builder.get = AsyncMock(side_effect=refusal)
+        with pytest.raises(ODataError):
             await connector._get_group_members("g1")
 
 

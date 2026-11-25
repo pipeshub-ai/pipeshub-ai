@@ -105,11 +105,13 @@ from app.connectors.core.registry.types import (
 )
 from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
 from app.connectors.sources.microsoft.common.account_check import (
+    GroupMemberGrace,
     withdraw_unconfirmed_accounts,
 )
 from app.connectors.sources.microsoft.common.apps import SharePointOnlineApp
 from app.connectors.sources.microsoft.common.graph_people import source_person
 from app.connectors.sources.microsoft.common.msgraph_client import (
+    EmptyGraphAnswer,
     MSGraphClient,
     RecordUpdate,
     UserListing,
@@ -700,6 +702,7 @@ class SharePointConnector(BaseConnector):
 
         self._reset_permission_caches()
         self._health = SyncHealth()
+        self._group_grace = GroupMemberGrace(self, self.user_sync_point)
         # Emails of accounts the tenant has disabled or deleted, from this run's user list.
         self._inactive_emails: set[str] = set()
         # Emails the user listing showed as active; the only users granted directly while no disabled set is known.
@@ -2847,17 +2850,19 @@ class SharePointConnector(BaseConnector):
                 raise
             self.logger.warning(f"⚠️ Entra group {group_id} no longer exists; it grants nobody")
             return []
-        while response:
+        while True:
+            if response is None:
+                # Not the end of the list: a page with no body would save the members read so far as the whole group.
+                raise EmptyGraphAnswer(f"Graph answered a members page of group {group_id} with no body")
             for item in response.value or []:
                 user = self._graph_member_user(item)
                 if user and user['email'].lower() not in self._inactive_emails:
                     users.append(user)
             next_link = getattr(response, 'odata_next_link', None)
             if not next_link:
-                break
+                return users
             async with self.rate_limiter:
                 response = await builder.with_url(next_link).get()
-        return users
 
     async def _get_drive_permissions(self, site_id: str, drive_id: str) -> List[Permission]:
         """Get permissions for a document library."""
@@ -3098,7 +3103,7 @@ class SharePointConnector(BaseConnector):
 
     async def _m365_owner_permissions(self, group_id: str, role: PermissionType) -> list[Permission]:
         if group_id not in self._m365_group_owners:
-            self._m365_group_owners[group_id] = await self._fetch_graph_group_members(group_id, is_owner=True)
+            self._m365_group_owners[group_id] = await self._claim_group_members(group_id, is_owner=True)
         return [
             Permission(external_id=owner['id'], email=owner['email'], type=role, entity_type=EntityType.USER)
             for owner in self._m365_group_owners[group_id]
@@ -3183,7 +3188,7 @@ class SharePointConnector(BaseConnector):
                     if user['email'].lower() not in self._inactive_emails:
                         users.append(user)
                 elif 'group' in (getattr(member, 'odata_type', None) or '').lower() and getattr(member, 'id', None):
-                    users.extend(await self._fetch_graph_group_members(member.id))
+                    users.extend(await self._claim_group_members(member.id))
             next_link = getattr(response, 'odata_next_link', None)
             if not next_link:
                 break
@@ -3433,12 +3438,46 @@ class SharePointConnector(BaseConnector):
         A group whose members can't all be read keeps the members stored for it: writing what was read
         would take access away from everyone who was not. Such a group is reported to the run's health.
         """
+        # The grace counts every member read of the run, the role-assignment reads after this included; run_sync
+        # finishes it at the end.
+        await self._group_grace.load()
         try:
             await self._sync_azure_ad_groups()
         except Exception as groups_error:
             self.logger.error(f"❌ Error syncing Azure AD Groups with delta: {groups_error}")
             self._health.skipped("Entra groups", groups_error)
+        await self._reread_closed_groups()
+        await self._sync_site_groups(sites)
 
+    async def _reread_closed_groups(self) -> None:
+        """Entra groups closed past the grace are no longer held on a group-change page, so each sync reads their
+        members again here: the first read that succeeds writes them back."""
+        refreshed = []
+        # "<id>/members" and "<id>/owners" count claim reads, which run every sync anyway.
+        for group_id in (g for g in self._group_grace.closed_ids() if "/" not in g):
+            try:
+                async with self.rate_limiter:
+                    group = await self.client.groups.by_group_id(group_id).get()
+                if group is None:
+                    raise EmptyGraphAnswer(f"Graph answered group {group_id} with no body")
+                refreshed.append(await self._group_with_members(group))
+            except Exception as e:
+                if getattr(e, 'response_status_code', None) == HTTPStatus.NOT_FOUND:
+                    self._group_grace.read(group_id)  # deleted: the group-change delta removes it
+                    continue
+                self._health.skipped(f"members of Entra group {group_id}", e)
+                await self._group_grace.refused(group_id, e)
+        await self._write_groups_then_mark_read(refreshed, [g.source_user_group_id for g, _ in refreshed])
+
+    async def _write_groups_then_mark_read(self, groups: list[tuple[AppUserGroup, list[AppUser]]], read: list[str]) -> None:
+        """Write groups, then clear the count of those whose members were read. Cleared first, a write that fails
+        would leave a closed group uncounted: nothing would read it again once its change page has moved on."""
+        if groups:
+            await self.data_entities_processor.on_new_user_groups(groups)
+        for group_id in read:
+            self._group_grace.read(group_id)
+
+    async def _sync_site_groups(self, sites: list[Site] | None) -> None:
         self.logger.info("Starting SharePoint Site Groups fetch...")
         self._org_wide_site_groups = {}
         self._unreadable_site_groups = {}
@@ -3505,6 +3544,24 @@ class SharePointConnector(BaseConnector):
         self._site_groups_read.add(site_id)
         return out
 
+    async def _claim_group_members(self, group_id: str, *, is_owner: bool = False) -> list[dict]:
+        """An Entra group's people (or its owners) where they stand for something else: a SharePoint group that holds
+        its claim, a directory role it is nested in, an owners claim in a role assignment. Raises when they can't be
+        read, so what they stand for keeps what is stored, until Microsoft has refused them past the grace: then they
+        count as none. Every such read goes through here, so none keeps stored access with no bound."""
+        # Its own key: a good read here must not clear the count of the Entra group's own node, which only an Entra
+        # group write brings up to date. A claim is read again every sync, so clearing it at once strands nothing.
+        key = f"{group_id}/owners" if is_owner else f"{group_id}/members"
+        try:
+            users = await self._fetch_graph_group_members(group_id, is_owner=is_owner)
+        except Exception as e:
+            if await self._group_grace.refused(key, e):
+                self._health.skipped(f"members of Entra group {key}", e)
+                return []
+            raise
+        self._group_grace.read(key)
+        return users
+
     async def _site_group_member_users(self, site_id: str, group_id: str, principals: list[dict]) -> list[AppUser]:
         """The enabled people a SharePoint group's members stand for. Raises when a member group can't be read.
         A tenant-wide claim is noted for the group (see _site_group_permissions), not expanded."""
@@ -3519,9 +3576,7 @@ class SharePointConnector(BaseConnector):
                 if match:
                     # The claim says which half of an M365 group it is; the SharePoint group's
                     # title is free text, and in another language never says "Owner".
-                    users.extend(await self._fetch_graph_group_members(
-                        match.group(1), is_owner=is_m365_owners_claim(login_name)
-                    ))
+                    users.extend(await self._claim_group_members(match.group(1), is_owner=is_m365_owners_claim(login_name)))
             elif principal.get('PrincipalType') == SP_PRINCIPAL_SECURITY_GROUP:
                 match = TENANT_CLAIM_PATTERN.search(login_name)
                 if match:
@@ -3529,7 +3584,7 @@ class SharePointConnector(BaseConnector):
                     if await self._get_directory_object_type(claim_id) == DIRECTORY_ROLE_ODATA_TYPE:
                         users.extend(await self._get_directory_role_member_users(claim_id))
                     else:
-                        users.extend(await self._fetch_graph_group_members(claim_id))
+                        users.extend(await self._claim_group_members(claim_id))
             else:
                 email = principal.get('Email') or principal.get('UserPrincipalName')
                 if email and email.lower() not in self._inactive_emails:
@@ -3630,16 +3685,19 @@ class SharePointConnector(BaseConnector):
         """Every Entra group with its members. True when every group's members were read."""
         groups = await self.msgraph_client.get_all_user_groups()
         results = await asyncio.gather(*[self._group_with_members(group) for group in groups], return_exceptions=True)
-        group_with_members = []
+        group_with_members, read = [], []
         complete = True
         for group, result in zip(groups, results):
             if isinstance(result, Exception):
-                complete = False
                 self._health.skipped(f"members of Entra group {getattr(group, 'display_name', group.id)}", result)
+                if await self._group_grace.refused(group.id, result):
+                    group_with_members.append((self._app_user_group(group), []))  # read again by _reread_closed_groups
+                else:
+                    complete = False
             else:
+                read.append(group.id)
                 group_with_members.append(result)
-        if group_with_members:
-            await self.data_entities_processor.on_new_user_groups(group_with_members)
+        await self._write_groups_then_mark_read(group_with_members, read)
         self.logger.info(f"Initial full sync completed: processed {len(groups)} Azure AD groups")
         return complete
 
@@ -3692,15 +3750,20 @@ class SharePointConnector(BaseConnector):
                 except Exception as e:
                     applied = False
                     self._health.skipped(f"groups containing Entra group {group_id}", e)
-            refreshed = []
+            refreshed, read = [], []
             for group in changed.values():
                 try:
                     refreshed.append(await self._group_with_members(group))
+                    read.append(group.id)
                 except Exception as e:
-                    applied = False
                     self._health.skipped(f"members of Entra group {getattr(group, 'display_name', group.id)}", e)
-            if refreshed:
-                await self.data_entities_processor.on_new_user_groups(refreshed)
+                    if await self._group_grace.refused(group.id, e):
+                        # Past the grace the page moves on: a group refused for good (hidden membership) would
+                        # otherwise hold every later change. _reread_closed_groups reads it again each sync.
+                        refreshed.append((self._app_user_group(group), []))
+                    else:
+                        applied = False
+            await self._write_groups_then_mark_read(refreshed, read)
             if not applied:
                 return False
             if result.get('next_link'):
@@ -3963,6 +4026,8 @@ class SharePointConnector(BaseConnector):
             'errors_encountered': 0
         }
         self._health = SyncHealth()
+        # Unloaded until _sync_user_groups: a run that reads no group counts nothing and closes nothing.
+        self._group_grace = GroupMemberGrace(self, self.user_sync_point)
         self._drive_roots = {}
         self._filtered_out_site_ids = set()
         self._token_failure_notified = False
@@ -4067,6 +4132,11 @@ class SharePointConnector(BaseConnector):
             duration = datetime.now() - start_time
             self.logger.error(f"💥 Critical error in SharePoint connector after {duration}: {e}")
             raise
+        finally:
+            try:
+                await self._group_grace.finish()
+            except Exception as e:
+                self.logger.warning(f"Could not save the unread-group-member count or send its notice: {e}")
 
     def full_sync_coverage(self) -> FullSyncCoverage:
         """A run that skipped part of the source removes nothing it did not see."""
