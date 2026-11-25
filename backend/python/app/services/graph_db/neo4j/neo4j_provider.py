@@ -2904,7 +2904,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             WITH member ORDER BY elementId(member)
             SET member.{_MATCH_LOCK} = true
             REMOVE member.{_MATCH_LOCK}
-            WITH count(*) AS _
+            WITH count(*) AS locked
             OPTIONAL MATCH (source)-[old:{relationship_type}]->(:{to_node_label} {{id: $to_id}})
             WHERE NOT any(l IN labels(source) WHERE (l + '|' + source.id) IN $keep)
             DELETE old
