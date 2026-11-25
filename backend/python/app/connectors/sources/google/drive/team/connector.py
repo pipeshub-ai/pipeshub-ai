@@ -1794,7 +1794,7 @@ class GoogleDriveTeamConnector(BaseConnector):
         app_users: list[AppUser] = []
         if state == "members":
             try:
-                app_users = await self._group_app_users(group_id)
+                app_users = await self._group_app_users(group_id, conclusive=True)
             except Exception as e:
                 self.logger.warning(f"Could not read all members of group {group_id}; keeping it as stored: {e}")
                 return False
@@ -1856,12 +1856,16 @@ class GoogleDriveTeamConnector(BaseConnector):
             self.logger.error(f"Error processing group {group.get('id', 'unknown')}: {e}", exc_info=True)
             raise
 
-    async def _group_app_users(self, group_id: str) -> list[AppUser]:
+    async def _group_app_users(self, group_id: str, *, conclusive: bool = False) -> list[AppUser]:
         """The group's users as the directory lists them now, every page and nested group read; raises when
-        any page cannot be read, so a partial membership is never taken as the whole."""
+        any page cannot be read, so a partial membership is never taken as the whole. With conclusive, it also
+        raises when a page is neither a members list nor the directory's empty answer, or when a member stands
+        for a whole domain (CUSTOMER), whose users the directory does not list."""
         # Drive gives the members of a nested group the outer group's access, so the group's users are
         # read with their nested memberships, not only its direct members.
-        members = await self._fetch_group_members(group_id, include_derived=True)
+        members = await self._fetch_group_members(group_id, include_derived=True, conclusive=conclusive)
+        if conclusive and any(str(m.get("type", "")).upper() == "CUSTOMER" for m in members):
+            raise ValueError(f"group {group_id} holds every user of a domain; its users are not listed")
 
         # Filter to only include user members (skip groups and customers), each once: a user can be a
         # member directly and through a nested group.
@@ -1919,13 +1923,17 @@ class GoogleDriveTeamConnector(BaseConnector):
                 continue
         return app_users
 
-    async def _fetch_group_members(self, group_id: str, *, include_derived: bool = False) -> List[Dict]:
+    async def _fetch_group_members(
+        self, group_id: str, *, include_derived: bool = False, conclusive: bool = False
+    ) -> List[Dict]:
         """
         Fetch all members of a group with pagination.
 
         Args:
             group_id: The group ID or email
             include_derived: Also list the members of nested groups
+            conclusive: Raise on a page that is neither a members list nor the directory's empty answer,
+                instead of taking it as an empty last page
 
         Returns:
             List of member dictionaries
@@ -1941,6 +1949,11 @@ class GoogleDriveTeamConnector(BaseConnector):
                     pageToken=page_token,
                     maxResults=200  # Maximum allowed by Google Admin API
                 )
+                if conclusive and not (
+                    isinstance(result, dict) and isinstance(result.get("members"), list)
+                    or self._is_empty_members_answer(result)
+                ):
+                    raise ValueError(f"members.list gave group {group_id} a page that is not a members list")
 
                 page_members = result.get("members", [])
                 members.extend(page_members)

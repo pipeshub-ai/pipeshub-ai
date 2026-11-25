@@ -192,6 +192,86 @@ async def test_a_group_left_out_of_the_listing_whose_members_are_read_in_part_ke
     assert unlinked.user_groups & {KEPT} == set()
 
 
+def _probe_then_full_read(ws: Workspace, pages: list[dict[str, Any]]) -> None:  # noqa: F811
+    """members.list answers KEPT's probe with a member, then gives the full read these pages in order (each page's
+    nextPageToken is its index plus one)."""
+
+    def members(req: ApiRequest) -> object:
+        if req.query.get("maxResults") == "1":
+            return {"kind": "admin#directory#members", "members": [
+                {"id": "ext-x", "email": CAROL, "type": "USER", "role": "MEMBER"},
+            ]}
+        return pages[int(req.query.get("pageToken") or 0)]
+
+    ws.http.route("GET", f"{ADMIN_API}/groups/{KEPT}/members", members)
+
+
+CAROL_PAGE = {"kind": "admin#directory#members", "nextPageToken": "1", "members": [
+    {"id": "ext-x", "email": CAROL, "type": "USER", "role": "MEMBER"},
+]}
+
+
+@pytest.mark.parametrize("pages", [
+    [{}],
+    [CAROL_PAGE, {}],
+    [CAROL_PAGE, {"etag": "e1"}],
+    # A page with more to come but no members list, before the directory's empty last page.
+    [CAROL_PAGE, {"kind": "admin#directory#members", "nextPageToken": "2"}, {"kind": "admin#directory#members"}],
+], ids=["first-page-empty-dict", "later-page-empty-dict", "later-page-no-kind", "middle-page-no-members-with-more"])
+async def test_a_full_member_read_with_a_page_that_is_not_a_members_list_keeps_the_stored_members(
+    ws: Workspace, pages: list[dict[str, Any]]  # noqa: F811
+) -> None:
+    await _group_with_a_leaver_synced(ws)
+    _probe_then_full_read(ws, pages)
+
+    unlinked = await _runner_full_sync(ws)
+
+    assert _members(ws, KEPT) == {BOB, CAROL}, "an unknown page is not the end of the membership"
+    assert _reaches_through_a_group(ws, BOB, "f1")
+    assert ws.records.kept_user_groups == [KEPT]
+    assert unlinked.user_groups & {KEPT} == set()
+
+
+async def test_a_full_member_read_ending_on_the_directory_empty_page_writes_what_it_read(ws: Workspace) -> None:  # noqa: F811
+    await _group_with_a_leaver_synced(ws)
+    _probe_then_full_read(ws, [CAROL_PAGE, {"kind": "admin#directory#members", "etag": "e1"}])
+
+    await _runner_full_sync(ws)
+
+    assert _members(ws, KEPT) == {CAROL}, "the directory's empty last page ends the read"
+    assert not _reaches_through_a_group(ws, BOB, "f1")
+    assert KEPT not in ws.records.kept_user_groups
+
+
+async def test_a_full_member_read_whose_only_page_is_empty_clears_the_group(ws: Workspace) -> None:  # noqa: F811
+    await _group_with_a_leaver_synced(ws)
+    _probe_then_full_read(ws, [{"kind": "admin#directory#members", "members": []}])
+
+    await _runner_full_sync(ws)
+
+    assert _members(ws, KEPT) == set()
+    assert not _reaches_through_a_group(ws, BOB, "f1")
+    assert KEPT not in ws.records.kept_user_groups
+
+
+@pytest.mark.parametrize("others", [[], [{"id": "ext-x", "email": CAROL, "type": "USER", "role": "MEMBER"}]],
+                         ids=["only-customer", "customer-and-user"])
+async def test_a_group_left_out_of_the_listing_that_holds_a_whole_domain_keeps_the_stored_members(
+    ws: Workspace, others: list[dict[str, Any]]  # noqa: F811
+) -> None:
+    await _group_with_a_leaver_synced(ws)
+    _probe_then_full_read(ws, [{"kind": "admin#directory#members", "members": [
+        *others, {"id": "C0abc", "type": "CUSTOMER", "role": "MEMBER"},
+    ]}])
+
+    unlinked = await _runner_full_sync(ws)
+
+    assert _members(ws, KEPT) == {BOB, CAROL}, "the domain's users are not listed, so the membership is unknown"
+    assert _reaches_through_a_group(ws, BOB, "f1")
+    assert ws.records.kept_user_groups == [KEPT]
+    assert unlinked.user_groups & {KEPT} == set()
+
+
 async def test_a_group_with_members_that_cannot_be_written_is_kept_and_the_run_is_incomplete(
     ws: Workspace, monkeypatch: pytest.MonkeyPatch  # noqa: F811
 ) -> None:
