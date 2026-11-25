@@ -342,7 +342,10 @@ class TestHandleOAuthCallbackDeep:
              patch(_OAUTH_CONFIG_PATCH, return_value=MagicMock()), \
              patch(_OAUTH_PROVIDER_PATCH, return_value=mock_oauth_provider), \
              patch(_TIMESTAMP_PATCH, return_value=1000), \
-             patch.dict("sys.modules", {"app.connectors.core.base.token_service.startup_service": MagicMock(startup_service=MagicMock(get_token_refresh_service=MagicMock(side_effect=RuntimeError("startup error"))))}):
+             patch(
+                 "app.connectors.core.base.token_service.startup_service.startup_service",
+                 MagicMock(get_token_refresh_service=MagicMock(side_effect=RuntimeError("startup error"))),
+             ):
             result = await handle_oauth_callback(
                 req, code="auth_code", state=state, error=None,
                 base_url="https://example.com", graph_provider=AsyncMock(),

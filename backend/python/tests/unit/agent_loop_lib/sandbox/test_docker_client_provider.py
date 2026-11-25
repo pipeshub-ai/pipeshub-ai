@@ -3,7 +3,6 @@ client, image/network caches, and bounded executor."""
 
 from __future__ import annotations
 
-import sys
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -29,24 +28,19 @@ class TestDockerClientProvider:
         provider = DockerClientProvider()
         assert provider._client is None
 
-        mock_docker = MagicMock()
-        mock_docker.from_env.return_value = MagicMock()
-        with patch.dict(sys.modules, {"docker": mock_docker}):
+        with patch("docker.from_env", return_value=MagicMock()) as from_env:
             _ = provider.client
-            mock_docker.from_env.assert_called_once()
+            from_env.assert_called_once()
             assert provider._client is not None
         provider.close()
 
     def test_client_is_singleton(self) -> None:
         provider = DockerClientProvider()
-        mock_docker = MagicMock()
-        fake_client = MagicMock()
-        mock_docker.from_env.return_value = fake_client
-        with patch.dict(sys.modules, {"docker": mock_docker}):
+        with patch("docker.from_env", return_value=MagicMock()) as from_env:
             c1 = provider.client
             c2 = provider.client
             assert c1 is c2
-            mock_docker.from_env.assert_called_once()
+            from_env.assert_called_once()
         provider.close()
 
     async def test_ensure_image_caches(self) -> None:
