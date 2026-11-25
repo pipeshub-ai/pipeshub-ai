@@ -64,7 +64,7 @@ def test_no_handler_raises_on_its_events_own_fields() -> None:
     only show up as a swallowed listener error in production."""
     samples = {
         "active_by_level": {"org": 1}, "active_by_type": {"slack": 2}, "edges_by_relation": {"CALLS": 1},
-        "entities_by_kind": {"person": 1}, "mentions_by_grounding": {"exact": 1}, "connectors": ["slack"],
+        "entities_by_kind": {"person": 1}, "records_by_connector_status": {("slack", "COMPLETED"): 1}, "complete": True, "mentions_by_grounding": {"exact": 1}, "connectors": ["slack"],
         "ok": True, "open": True, "unsafe": False, "streaming": True, "has_tools": False, "demo_sources": False, "stopped": False,
     }
     before = dict(platform_events.listener_errors())

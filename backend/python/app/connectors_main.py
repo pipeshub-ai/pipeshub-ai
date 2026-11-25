@@ -72,6 +72,12 @@ from app.connectors.core.sync.task_manager import (
     reindex_task_manager,
 )
 from app.connectors.core.thread_pool import get_shared_connector_thread_pool
+from app.connectors.services.records_snapshot import EVENT as RECORDS_SNAPSHOT_EVENT
+from app.connectors.services.records_snapshot import (
+    RecordsSnapshot,
+    interval_seconds,
+    run_records_snapshot,
+)
 from app.connectors.api.artifacts_router import artifacts_router
 from app.connectors.api.permission_explain_router import permission_explain_router  # noqa: E402
 from app.connectors.api.user_access_router import user_access_router  # noqa: E402
@@ -987,6 +993,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             refresh_connector_metrics(graph_provider, logger, interval_s=60*5), name="connector_metrics_refresh"
         )
 
+    # Counting records reads every connector of the orgs it covers: started only while something listens, and
+    # RECORDS_SNAPSHOT_INTERVAL_SECONDS=0 turns it off.
+    records_snapshot_interval = interval_seconds()
+    if records_snapshot_interval and platform_events.has_listeners(RECORDS_SNAPSHOT_EVENT):
+        app.state.records_snapshot_task = spawn_detached(
+            run_records_snapshot(RecordsSnapshot(graph_provider, logger), logger, records_snapshot_interval),
+            name="records_snapshot",
+        )
+
     # Every connector's blocking vendor-SDK calls run here, each through a capped
     # lease. Created before _post_startup so resume_sync_services and the event
     # service both find it already on the container.
@@ -1322,7 +1337,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # The code-edge reconciler stops before the task managers drain, so its
     # sweep cannot start a build into the unwind.
     for task_name in (
-        "connector_metrics_task", "trash_purge_task", "storage_release_task",
+        "connector_metrics_task", "records_snapshot_task", "trash_purge_task", "storage_release_task",
         "late_write_sweep_task", "stored_content_heal_task", "code_edge_build_reconcile_task",
         "flat_storage_migration_task",
     ):

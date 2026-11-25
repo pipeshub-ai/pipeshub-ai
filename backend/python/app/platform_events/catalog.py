@@ -45,6 +45,7 @@ FIELDS: dict[str, str] = {
     "chat_mode": "chat mode of the request",
     "citation_count": "citations the answer carries",
     "collection": "graph collection name",
+    "complete": "whether everything was covered; false when a cap or a failed read left part out",
     "connector": "connector type name",
     "connector_id": "connector instance id",
     "connectors": "connector type names the citations came from, sorted",
@@ -96,6 +97,7 @@ FIELDS: dict[str, str] = {
     "query": "which read: descendants or levels",
     "query_count": "number of queries in the request",
     "reason": "why, from a closed set fixed by code",
+    "records_by_connector_status": "records held, by (connector type, indexing status)",
     "recall": "recall measured, 0 to 1",
     "rejected": "entities the validator rejected",
     "result": "what was found, from a closed set named in the event's summary",
@@ -1116,6 +1118,14 @@ _event(
     "connector.inventory.counted",
     "The active connector instances were counted, by connector type",
     "active_by_type",
+)
+_event(
+    "records.snapshot.taken",
+    "The records one org holds were counted, by connector type and indexing status",
+    "org_id",
+    "email_domain",
+    "records_by_connector_status",
+    "complete",
 )
 _event(
     "connector.added",

@@ -1309,6 +1309,15 @@
   ],
   "type": "gauge"
  },
+ "pipeshub_usage_records": {
+  "labels": [
+   "connector_type",
+   "indexing_status",
+   "org",
+   "domain"
+  ],
+  "type": "gauge"
+ },
  "pipeshub_vector_org_skipped": {
   "labels": [
    "site"

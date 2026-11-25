@@ -119,6 +119,9 @@ def handlers() -> dict[str, Handler]:
         **product_events.handlers(),
         "db.query.completed": _histogram(db_metrics.DB_QUERY_SECONDS, "store", "operation", value="duration_seconds"),
         "connector.inventory.counted": _call(connector_metrics.set_connector_active, active_by_type="counts"),
+        "records.snapshot.taken": _call(
+            connector_metrics.set_records, email_domain="domain", records_by_connector_status="counts"
+        ),
         "graph_view.request.completed": _call(
             graph_view_metrics.record, duration_seconds="seconds", node_count="nodes", edge_count="edges", id_count="ids"
         ),
