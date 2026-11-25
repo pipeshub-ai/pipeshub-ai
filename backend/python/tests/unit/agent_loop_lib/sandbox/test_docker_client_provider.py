@@ -9,6 +9,9 @@ from unittest.mock import MagicMock, patch
 import pytest
 from docker.types import IPAMConfig, IPAMPool
 
+# The client property imports docker_proxy on first use; loaded here, the tests' patch.dict(sys.modules) does not
+# drop it on exit.
+import app.sandbox.docker_proxy  # noqa: F401
 from app.agent_loop_lib.sandbox.coding.docker_client import (
     DockerClientProvider,
 )
