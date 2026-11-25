@@ -16,6 +16,7 @@ import {
 } from '../context/request-context';
 import {
   EnvelopeRejected,
+  renewEnvelope,
   runWithEnvelope,
   signMessage,
 } from '../context/envelope';
@@ -72,6 +73,7 @@ const SQL = {
     FROM upd u JOIN platform.queue_messages m ON m.id = u.message_id ORDER BY u.message_id`,
   ack: `/* pipeshub:queue.ack */ DELETE FROM platform.queue_deliveries
     WHERE group_id = $1 AND topic = $2 AND message_id = $3 AND attempts = $4 AND status = 'claimed'`,
+  reissue: `/* pipeshub:queue.reissue */ UPDATE platform.queue_messages SET value = $2 WHERE id = $1`,
   nack: `/* pipeshub:queue.nack */ UPDATE platform.queue_deliveries
     SET status = 'ready', locked_until = NULL, consumer = NULL, last_error = $5, attempts = attempts - $7::int,
       visible_at = now() + make_interval(secs => $6::double precision)
@@ -228,6 +230,10 @@ const HANDBACK_BASE_S = (): number =>
 const HANDBACK_LIMIT = (): number =>
   Number(process.env.PG_QUEUE_HANDBACK_LIMIT ?? 200);
 const HANDBACK_CAP_S = 60; // longest the per-message back-off of hand-backs grows to
+// first wait between tries of an outage hand-back's nack while the database is still away (the Python consumer's _NACK_RETRY_S)
+const NACK_RETRY_MS = (): number =>
+  Number(process.env.PG_QUEUE_NACK_RETRY_MS ?? 1000);
+const NACK_RETRY_MAX_MS = 10_000;
 const HANDBACK_TABLE_MAX = 10_000; // hand-back counts kept in memory
 const SAFETY_NET_MS = 300_000; // longest an idle consumer with a LISTEN connection sleeps
 const POLL_MS = 1000; // without LISTEN
@@ -544,6 +550,10 @@ export abstract class BasePgQueueConsumerConnection implements IMessageConsumer 
     const max = MAX_DELIVERY_ATTEMPTS();
     const finish = (sql: string, extra: unknown[] = []): Promise<unknown> =>
       unit(true, (tx) => tx.query(sql, [...key, ...extra]));
+    // Only a failure of the handler itself is an outage hand-back. An acknowledgement that failed after the handler finished is
+    // charged as before: a refund would rerun a finished handler up to the hand-back limit.
+    let handled = false;
+    let value: unknown;
     try {
       if (r.attempts > max) {
         this.logger.warn('Dead-lettered a message delivered too often', {
@@ -558,6 +568,7 @@ export abstract class BasePgQueueConsumerConnection implements IMessageConsumer 
         key: r.msg_key ?? '',
         value: JSON.parse(r.value) as T,
       };
+      value = message.value;
       if (r.headers)
         message.headers = JSON.parse(r.headers) as Record<string, string>;
       try {
@@ -569,6 +580,7 @@ export abstract class BasePgQueueConsumerConnection implements IMessageConsumer 
             this.groupId,
           ),
         );
+        handled = true;
       } catch (error) {
         if (!(error instanceof EnvelopeRejected)) throw error;
         this.logger.error('Envelope rejected, message dropped', {
@@ -583,7 +595,8 @@ export abstract class BasePgQueueConsumerConnection implements IMessageConsumer 
       this.handbacks.delete(id);
     } catch (error) {
       const text = error instanceof Error ? error.message : String(error);
-      const n = failedOnDatabaseOnly(error) ? this.countHandback(id) : 0;
+      const n =
+        !handled && failedOnDatabaseOnly(error) ? this.countHandback(id) : 0;
       const refund = n > 0 && n <= HANDBACK_LIMIT();
       this.logger.error('Error processing queue message', {
         topic: r.topic,
@@ -596,7 +609,9 @@ export abstract class BasePgQueueConsumerConnection implements IMessageConsumer 
       const retryS = Math.min(RETRY_BASE_S() * r.attempts, 30);
       try {
         if (refund)
-          await finish(SQL.nack, [
+          await this.handBack(
+            r,
+            key,
             storedError(text),
             Math.max(
               retryS,
@@ -605,8 +620,8 @@ export abstract class BasePgQueueConsumerConnection implements IMessageConsumer 
                 HANDBACK_CAP_S,
               ),
             ),
-            1,
-          ]);
+            value,
+          );
         else if (r.attempts >= max) {
           this.handbacks.delete(id);
           await finish(SQL.dead, [storedError(text)]);
@@ -618,6 +633,43 @@ export abstract class BasePgQueueConsumerConnection implements IMessageConsumer 
       }
     } finally {
       this.held.delete(id);
+    }
+  }
+
+  /**
+   * The refunding nack of an outage hand-back, with the event signed again (`renewEnvelope`) so a long outage does not leave it
+   * stale. Tried again while the outage also fails it: left to expire instead, the claim would hand the row out again with the
+   * attempt it counted still spent, and repeated outages would dead-letter good work long before the hand-back limit. The nack is
+   * conditional on this claim, as always: a row another consumer took once the claim lapsed matches nothing, and that ends it.
+   */
+  private async handBack(
+    r: ClaimedRow,
+    key: unknown[],
+    error: string,
+    delayS: number,
+    value: unknown,
+  ): Promise<void> {
+    const renewed =
+      value !== null && typeof value === 'object' && !Array.isArray(value)
+        ? renewEnvelope(r.topic, value as Record<string, unknown>)
+        : null;
+    let waitMs = NACK_RETRY_MS();
+    for (;;) {
+      try {
+        await unit(true, async (tx) => {
+          const res = await tx.query(SQL.nack, [...key, error, delayS, 1]);
+          if (res.rowCount === 1 && renewed)
+            await tx.query(SQL.reissue, [
+              r.message_id,
+              JSON.stringify(renewed),
+            ]);
+        });
+        return;
+      } catch (e) {
+        if (!this.isRunning() || !failedOnDatabaseOnly(e)) throw e;
+      }
+      await new Promise((done) => setTimeout(done, waitMs));
+      waitMs = Math.min(waitMs * 2, NACK_RETRY_MAX_MS);
     }
   }
 

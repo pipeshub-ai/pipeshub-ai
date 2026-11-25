@@ -89,6 +89,7 @@ _SWEEP_EVERY_S = 60.0
 _INDEX_POOL = "pg-queue-indexing"
 _SAFETY_NET_S = 300.0  # longest an idle consumer with a LISTEN connection sleeps
 _HANDBACK_CAP_S = 60.0   # longest the per-message back-off of hand-backs grows to
+_NACK_RETRY_S = (1.0, 10.0)   # first and longest wait between tries of an outage hand-back's nack while the database is still away
 _HANDBACK_TABLE_MAX = 10_000   # hand-back counts kept in memory
 
 
@@ -570,7 +571,10 @@ class PgMessagingConsumer(IMessagingConsumer):
                     timing.note(disposition="retry", reason="claim_lost")
                 return "failed"
             with _queue_write("nack_failed"):
-                nacked = await self._nack(d, delay, str(e), refund=True, reissue=True)
+                if isinstance(e, DatabaseUnavailable):
+                    nacked = await self._nack_through_outage(d, delay, str(e))
+                else:
+                    nacked = await self._nack(d, delay, str(e), refund=True, reissue=True)
             if nacked:
                 timing.note(disposition="retry")
             else:
@@ -673,6 +677,21 @@ class PgMessagingConsumer(IMessagingConsumer):
         self._handback_log["precision"] = self._handback_log.get("precision", 0) + 1
         await self._nack(d, delay, "waiting for the embedding precision", refund=True, reissue=True)
         return True
+
+    async def _nack_through_outage(self, d: Delivery, delay: float, error: str) -> bool:
+        """The refunding nack of an outage hand-back, tried again while the outage also fails it. Left to expire instead, the claim
+        would hand the row out again with the attempt it counted still spent, and repeated outages would dead-letter good work long
+        before the hand-back backstop. The nack is conditional on this claim, as always: False (another consumer took the row once
+        its claim lapsed) ends the tries."""
+        wait, longest = _NACK_RETRY_S
+        while True:
+            try:
+                return await self._nack(d, delay, error, refund=True, reissue=True)
+            except Exception as e:
+                if not self.running or not _database_unavailable(e):
+                    raise
+            await asyncio.sleep(wait)
+            wait = min(longest, max(wait * 2, 0.1)) if longest else 0.0
 
     async def _nack(self, d: Delivery, delay: float, error: str, *, refund: bool = False, reissue: bool = False) -> bool:
         """Send a delivery back. A delivery this process opened renews its admission in the same statement.
@@ -820,6 +839,8 @@ class PgMessagingConsumer(IMessagingConsumer):
                         d, raw, lambda admitted: open_stream_message(d.topic, raw, StreamMessage, admitted=admitted)
                     )
                 except AdmissionWriteError as e:
+                    if _database_unavailable(e.__cause__):
+                        raise e.__cause__ from e     # the outage, not the message: handed back below
                     return False, False, None, f"admission could not be recorded: {e}"
                 except DuplicateEnvelope:
                     timing.note(outcome="skipped", reason="duplicate_envelope")
@@ -842,6 +863,8 @@ class PgMessagingConsumer(IMessagingConsumer):
                     d, raw, lambda admitted: open_configured(d.topic, raw, inbox=self.inbox, consumer=self.config.group_id, admitted=admitted)
                 )
             except AdmissionWriteError as e:
+                if _database_unavailable(e.__cause__):
+                    raise e.__cause__ from e     # the outage, not the message: handed back below
                 return False, False, None, f"admission could not be recorded: {e}"
             except DuplicateEnvelope:
                 return True, False, None, ""

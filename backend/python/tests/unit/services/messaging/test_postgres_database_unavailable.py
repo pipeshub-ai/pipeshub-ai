@@ -203,3 +203,92 @@ async def test_a_database_that_never_comes_back_is_dead_lettered_by_the_backstop
     # five refunded hand-backs (PG_QUEUE_HANDBACK_LIMIT), then each one is charged until the three attempts are spent
     assert [refund for _, refund in row.nacks] == [True] * 5 + [False] * 3
     assert len(runs) == 8
+
+
+async def test_hand_back_delays_grow_to_the_cap(monkeypatch) -> None:
+    """The delays passed to the nack, without waiting for them: never shorter than the first retry, doubling per hand-back, then
+    held at the 60 s cap."""
+    from app.services.messaging.config import compute_retry_backoff_seconds
+    from app.services.messaging.postgres import consumer as mod
+
+    monkeypatch.setenv("PG_QUEUE_HANDBACK_LIMIT", "20")
+    row = _row()
+    consumer, _ = _consumer(row, [ConnectionLost("terminated", retry_safe=False) for _ in range(10)])
+
+    await _deliver_until_settled(row, consumer)
+
+    first, base = compute_retry_backoff_seconds(1), mod._handback_base_s()
+    assert [d for d, _ in row.nacks] == [max(first, min(base * 2 ** n, 60.0)) for n in range(10)]
+    assert row.nacks[-1][0] == 60.0
+
+
+class _AdmitFails(_Row):
+    """A row whose admission write fails with ``errors`` in turn, then works."""
+
+    def __init__(self, value: str, errors: list[BaseException]) -> None:
+        super().__init__(value)
+        self.errors = errors
+
+    async def admit(self, group, d, ms, mac) -> bool:
+        if self.errors:
+            raise self.errors.pop(0)
+        return await super().admit(group, d, ms, mac)
+
+
+async def test_an_admission_the_database_could_not_record_is_handed_back_not_charged() -> None:
+    row = _AdmitFails(_row().value, [ConnectionLost("terminated", retry_safe=False) for _ in range(5)])
+    consumer, runs = _consumer(row, [])
+
+    await _deliver_until_settled(row, consumer)
+
+    assert row.state == "acked" and len(runs) == 1
+    assert [refund for _, refund in row.nacks] == [True] * 5
+
+
+async def test_an_admission_that_failed_for_another_reason_still_dead_letters() -> None:
+    row = _AdmitFails(_row().value, [ValueError("bad stamp") for _ in range(10)])
+    consumer, runs = _consumer(row, [])
+
+    await _deliver_until_settled(row, consumer)
+
+    assert row.state == "dead" and runs == []
+    assert not any(refund for _, refund in row.nacks)
+
+
+class _NackFails(_Row):
+    """A row whose refunding nack fails ``failures`` times (the outage outlasts the handler), then applies, or reports the claim lost."""
+
+    def __init__(self, value: str, failures: int, *, lost: bool = False) -> None:
+        super().__init__(value)
+        self.failures, self.lost, self.tries = failures, lost, 0
+
+    async def nack(self, group, d, delay, error="", *, refund=False, value=None, admission=None) -> bool:
+        self.tries += 1
+        if self.failures:
+            self.failures -= 1
+            raise ConnectionLost("terminated", retry_safe=False)
+        if self.lost:
+            return False
+        return await super().nack(group, d, delay, error, refund=refund, value=value, admission=admission)
+
+
+async def test_a_refund_survives_a_nack_the_outage_also_failed(monkeypatch) -> None:
+    monkeypatch.setattr("app.services.messaging.postgres.consumer._NACK_RETRY_S", (0.0, 0.0))
+    row = _NackFails(_row().value, failures=3)
+    consumer, runs = _consumer(row, [ConnectionLost("terminated", retry_safe=False)])
+    consumer.running = True
+
+    await consumer._settle(row.claim())
+
+    assert row.tries == 4 and row.nacks == [(row.nacks[0][0], True)] and row.attempts == 0     # applied once, refunded
+
+
+async def test_a_refund_nack_stops_when_another_consumer_holds_the_row(monkeypatch) -> None:
+    monkeypatch.setattr("app.services.messaging.postgres.consumer._NACK_RETRY_S", (0.0, 0.0))
+    row = _NackFails(_row().value, failures=2, lost=True)
+    consumer, _ = _consumer(row, [ConnectionLost("terminated", retry_safe=False)])
+    consumer.running = True
+
+    await consumer._settle(row.claim())
+
+    assert row.tries == 3 and row.nacks == []
