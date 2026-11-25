@@ -233,3 +233,11 @@ async def test_a_malformed_group_list_does_not_stop_the_listing() -> None:
 ])
 def test_an_app_with_no_org_is_not_another_orgs(app: dict, other: bool) -> None:
     assert held_by_another_org(app, "org-a") is other
+
+
+async def test_a_malformed_request_time_does_not_stop_the_listing() -> None:
+    config = Config()
+    config.kv["/services/cleanup/pending/org-a/c1/bad"] = {"orgId": "org-a", "connectorId": "c1", "requestedAt": "soon"}
+    await record(config, at=2)
+    await record(config, "org-b", at=3)
+    assert await pending(config) == [("org-a", 2), ("org-b", 3)]

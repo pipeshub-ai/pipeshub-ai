@@ -154,6 +154,8 @@ class ConnectorIntentStore:
             )
             if not isinstance(value, dict) or not owner_of(value) or not value.get("connectorId"):
                 continue
+            if not isinstance(value.get("requestedAt") or 0, (int, float)):
+                continue
             at = (str(owner_of(value)), str(value["connectorId"]))
             if shared and key == self._unscoped_key(at[1]):
                 unscoped[at] = value

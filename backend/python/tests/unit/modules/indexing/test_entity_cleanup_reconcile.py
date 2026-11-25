@@ -388,3 +388,16 @@ async def test_an_intent_that_cannot_be_cleared_does_not_hold_up_another_orgs(mo
     assert await rebuilder.tick() == "entity_cleanup"
     assert [c["org"] for c in store.cleanups] == ["org-8", "org-9"]
     assert f"{PENDING_DIRECTORY}org-9/gone/r" not in config.kv
+
+
+async def test_a_delete_recorded_while_the_reconcile_cleans_stays_pending() -> None:
+    _, store, config, rebuilder = _setup({"orgId": "org-9", "connectorId": "gone", "requestedAt": 0})
+    clean, later = store.delete_entities_by_connector, f"{PENDING_DIRECTORY}org-9/gone/later"
+
+    async def cleaning(*a: Any, **kw: Any) -> Any:  # noqa: ANN401
+        config.kv[later] = {"orgId": "org-9", "connectorId": "gone", "requestedAt": 5}
+        return await clean(*a, **kw)
+
+    store.delete_entities_by_connector = cleaning
+    assert await rebuilder.tick() == "entity_cleanup"
+    assert list(config.kv) == [later]

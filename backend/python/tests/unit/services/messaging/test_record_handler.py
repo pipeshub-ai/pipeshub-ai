@@ -499,6 +499,26 @@ class TestDeleteConnectorEntitiesEvent:
         handler.config_service.delete_config.assert_awaited_once_with("/services/entityCleanup/pending/o/c/r")
 
     @pytest.mark.asyncio
+    async def test_a_delete_recorded_while_the_cleanup_runs_stays_pending(self) -> None:
+        prefix = "/services/entityCleanup/pending/o/c/"
+        kv = {f"{prefix}first": {"orgId": "o", "connectorId": "c", "requestedAt": 1}}
+
+        async def clean(**_kw: object) -> None:
+            kv[f"{prefix}second"] = {"orgId": "o", "connectorId": "c", "requestedAt": 2}
+
+        store = AsyncMock()
+        store.delete_entities_by_connector = AsyncMock(side_effect=clean)
+        handler = self._handler_with_store(store)
+        config = handler.config_service
+        config.list_keys_in_directory = AsyncMock(side_effect=lambda directory: [k for k in kv if k.startswith(directory)])
+        config.get_config = AsyncMock(side_effect=lambda key, *_a, **_k: kv.get(key))
+        config.delete_config = AsyncMock(side_effect=lambda key: kv.pop(key, None) is not None)
+        await _collect_events(
+            handler, EventTypes.DELETE_CONNECTOR_ENTITIES.value, {"orgId": "o", "connectorId": "c"},
+        )
+        assert list(kv) == [f"{prefix}second"]
+
+    @pytest.mark.asyncio
     async def test_a_failed_cleanup_keeps_its_pending_intent(self) -> None:
         from app.exceptions.indexing_exceptions import IndexingError
 

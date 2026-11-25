@@ -292,3 +292,18 @@ async def test_a_release_whose_intent_cannot_be_cleared_is_held_back_not_run_aga
     )
     [kept] = config.kv.values()
     assert kept["nextAttemptAt"] > NOW
+
+
+async def test_a_delete_recorded_while_the_release_runs_stays_pending(monkeypatch: pytest.MonkeyPatch) -> None:
+    ids = iter(["first", "second"])
+    monkeypatch.setattr("app.connectors.services.connector_intents.uuid4", lambda: SimpleNamespace(hex=next(ids)))
+    config = Config()
+    await record_pending_storage_release(config, org_id=ORG, connector_id=KB, now_ms=1)
+
+    async def release(*_a: object) -> SimpleNamespace:
+        await record_pending_storage_release(config, org_id=ORG, connector_id=KB, now_ms=2)
+        return SimpleNamespace(completed=True)
+
+    helper = SimpleNamespace(release_connector_storage=release)
+    assert await storage_release.release_connector_storage(MagicMock(), helper, config, org_id=ORG, connector_id=KB)
+    assert [i["requestedAt"] for i in await storage_release.list_pending_storage_releases(config)] == [2]

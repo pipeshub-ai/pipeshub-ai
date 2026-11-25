@@ -336,3 +336,17 @@ async def test_another_orgs_pending_sweep_is_neither_replaced_nor_merged() -> No
     await record_pending_late_write_sweep(config, Graph(), org_id="org2", connector_id=CONNECTOR, now_ms=NOW)
     assert config.kv[KEY] == theirs
     assert config.kv[f"{PENDING_DIRECTORY}org2/{CONNECTOR}/r"]["recordGroupIds"] == []
+
+
+@pytest.mark.asyncio
+async def test_a_delete_recorded_while_a_sweep_runs_stays_pending(monkeypatch: pytest.MonkeyPatch) -> None:
+    config = await recorded(age_ms=QUIET_MS + 1)
+    monkeypatch.setattr("app.connectors.services.connector_intents.uuid4", lambda: SimpleNamespace(hex="r2"))
+
+    class Deleting(Graph):
+        async def sweep_deleted_connector_writes(self, connector_id: str, record_group_ids: object = ()) -> tuple[int, int]:
+            await record_pending_late_write_sweep(config, Graph(), org_id=ORG, connector_id=CONNECTOR, now_ms=NOW)
+            return 0, 0
+
+    assert await sweeper(Deleting(), config).tick() == {"cleared": 1}
+    assert [i["requestedAt"] for i in await list_pending_late_write_sweeps(config)] == [NOW]
