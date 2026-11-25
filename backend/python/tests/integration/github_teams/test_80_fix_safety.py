@@ -72,9 +72,9 @@ async def test_sweep_failing_halfway_removes_nothing(world, org) -> None:
     await world.sync()
     gh.delete_issue(issues[0])
     # The issue-number sweep needs two GraphQL pages; the second one keeps failing.
-    # GraphQL requests this sync: the issue total, sweep page 1, sweep page 2 (fails, as
-    # does every retry and everything after it).
-    fail_from_nth(world, "api.github.com/graphql", 3, 502, method="POST")
+    # GraphQL requests this sync: the members' verified emails, the issue total, sweep
+    # page 1, sweep page 2 (fails, as does every retry and everything after it).
+    fail_from_nth(world, "api.github.com/graphql", 4, 502, method="POST")
     await world.sync(expect_error=True)
     assert len(await world.names("TICKET")) == 150
     gh.faults.clear()
