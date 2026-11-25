@@ -542,6 +542,23 @@ export function ShareSidebar({
                 }
                 onEmailSubmit={handleEmailSubmit}
               />
+              {adapter.notice && (
+                <Flex
+                  align="start"
+                  gap="2"
+                  style={{
+                    marginTop: 8,
+                    padding: '8px 10px',
+                    borderRadius: 'var(--radius-2)',
+                    background: 'var(--amber-a3)',
+                  }}
+                >
+                  <MaterialIcon name="info" size={16} color="var(--amber-11)" />
+                  <Text size="1" style={{ color: 'var(--slate-12)' }}>
+                    {adapter.notice}
+                  </Text>
+                </Flex>
+              )}
             </Box>
 
             {/* Scrollable body */}
