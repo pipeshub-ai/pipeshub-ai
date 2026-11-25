@@ -1906,8 +1906,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 "RETURN name, labelsOrTypes AS labels, properties"
             )
         except Exception as e:
-            error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False, level=logging.WARNING,
-                                    op="ensure_schema", step="list_existence_constraints")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, level=logging.WARNING,
+                                    op="_drop_obsolete_existence_constraints")
             return
         obsolete = []
         for row in rows or []:

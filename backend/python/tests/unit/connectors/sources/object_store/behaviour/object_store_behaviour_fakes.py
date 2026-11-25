@@ -300,6 +300,10 @@ class FakeRecordsDb:
         if self.seen is not None:
             self.seen.add(collection, node_id)
 
+    def note_kept_records(self, connector_id: str, record_ids: list[str]) -> None:
+        for record_id in record_ids:
+            self._note_seen("records", record_id)
+
     def _check(self, method: str) -> None:
         if method in self.failing:
             raise RuntimeError(f"database unavailable ({method})")
