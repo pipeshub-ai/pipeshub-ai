@@ -26,6 +26,7 @@ import time
 from dataclasses import dataclass, field, replace
 from typing import IO, TYPE_CHECKING, Any, cast
 
+from app.agent_loop_lib.sandbox.capacity import broker_detail
 from app.agent_loop_lib.sandbox.coding.egress_firewall import (
     build_firewall_rules_script,
     new_firewall_token,
@@ -115,6 +116,7 @@ if TYPE_CHECKING:
         Sequence,
     )
 
+    from app.agent_loop_lib.sandbox.capacity import SandboxCapacity
     from app.harness.sandbox.docker_client import DockerClientProvider
     from app.harness.sandbox.docker_egress import DockerEgressWiring
     from app.harness.sandbox.engine_images import EngineImageAvailability
@@ -411,6 +413,7 @@ class DockerSandboxBroker:
         workspace_quota_mb: int | None = None,
         workspace_check_s: float = WORKSPACE_CHECK_S,
         max_sandboxes: int | None = None,
+        capacity: SandboxCapacity | None = None,
         metrics: BrokerMetrics = NOOP_BROKER_METRICS,
         monotonic: Callable[[], float] = time.monotonic,
         withheld_runtimes: frozenset[str] = frozenset(),
@@ -492,7 +495,10 @@ class DockerSandboxBroker:
         self.pool = WarmPool(self, warm_pool or WarmPoolConfig(ceiling=0), clock=clock, log=self._log, metrics=metrics)
         # BU-04: each sandbox's seconds from its bind to a run until the run (or the broker) lets it go.
         self.meter = SandboxMeter(metrics, monotonic=monotonic, log=self._log)
-        self._cap = SandboxCap(max_sandboxes, self._live_sandboxes)
+        # The install's ceiling, sized from this daemon as the app sizes its own (ADR-CAP-02); ``max_sandboxes`` is a
+        # fixed one.
+        self._capacity = capacity
+        self._cap = SandboxCap(capacity.ceiling if capacity is not None else max_sandboxes, self._live_sandboxes)
 
     @classmethod
     async def create(
@@ -522,6 +528,7 @@ class DockerSandboxBroker:
         workspace_quota_mb: int | None = None,
         workspace_check_s: float = WORKSPACE_CHECK_S,
         max_sandboxes: int | None = None,
+        capacity: SandboxCapacity | None = None,
         metrics: BrokerMetrics = NOOP_BROKER_METRICS,
         monotonic: Callable[[], float] = time.monotonic,
         withheld_runtimes: frozenset[str] = frozenset(),
@@ -554,6 +561,7 @@ class DockerSandboxBroker:
             workspace_quota_mb=workspace_quota_mb,
             workspace_check_s=workspace_check_s,
             max_sandboxes=max_sandboxes,
+            capacity=capacity,
             metrics=metrics,
             monotonic=monotonic,
             write_bound=write_bound,
@@ -629,6 +637,8 @@ class DockerSandboxBroker:
             PERSISTENT_MOUNTS: str(bool(self._data_volume)).lower(),
             ENGINE_SANDBOX: ENGINE_SANDBOX_READY if self._egress is not None else ENGINE_SANDBOX_MISSING,
         }
+        if self._capacity is not None:
+            detail.update(broker_detail(self._capacity))
         if self.pool.enabled and caps.reachable:
             detail.update(self.pool.detail(await self.pool.capacity()))
         if self._engine_images is not None and caps.reachable:

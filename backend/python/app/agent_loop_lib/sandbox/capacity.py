@@ -20,9 +20,11 @@ limit). It is clamped to ``SANDBOX_MIN_TOTAL`` (2) below and to the slot file
 count above. ``SANDBOX_MAX_TOTAL`` replaces it. The machine is read once at
 startup: in docker mode from the daemon's ``/info`` (through the Docker
 proxy, which answers a filtered copy), or from ``SANDBOX_HOST_*`` when a
-deployment passes the sandbox runner's limits in; in local mode from this
-container's cgroup. E2B runs elsewhere and has a fixed ceiling of 100. Until
-the machine answers, the ceiling is the minimum.
+deployment passes the sandbox runner's limits in; in broker mode from the
+sandbox broker, which sizes its own ceiling from its daemon with these same
+functions and reports the machine and that ceiling (``broker_detail``); in
+local mode from this container's cgroup. E2B runs elsewhere and has a fixed
+ceiling of 100. Until the machine answers, the ceiling is the minimum.
 """
 
 from __future__ import annotations
@@ -58,12 +60,17 @@ __all__ = [
     "MachineSize",
     "RunSize",
     "SandboxCapacity",
+    "broker_detail",
+    "build_daemon_capacity",
+    "build_sandbox_capacity",
     "compute_plan",
     "fingerprint_same_machine",
     "get_sandbox_capacity",
     "hold_reason",
+    "machine_from_broker",
     "max_per_request",
     "org_tag",
+    "read_broker_machine_size",
     "read_machine_size",
     "reset_sandbox_capacity",
     "run_size",
@@ -305,7 +312,7 @@ class DockerInfo:
         )
 
 
-MachineSource = Literal["docker_info", "proc_fallback", "helm_env", "app_cgroup", "fixed", "unknown"]
+MachineSource = Literal["docker_info", "proc_fallback", "helm_env", "app_cgroup", "broker", "fixed", "unknown"]
 
 
 @dataclass(frozen=True)
@@ -318,6 +325,9 @@ class MachineSize:
     source: MachineSource
     # fingerprint_same_machine(); None when not checked.
     same_machine: bool | None = None
+    # The ceiling the sandbox broker enforces on every sandbox of its daemon
+    # (source "broker"): this process's share of it is one more term.
+    ceiling: int | None = None
 
 
 UNKNOWN_MACHINE = MachineSize(None, None, None, "unknown")
@@ -329,9 +339,10 @@ class CapacityPlan:
     floor: int
     slot_files: int
     explicit: bool
-    # "memory", "cpu", "pids": each term after the divisor, None when unknown.
+    # "memory", "cpu", "pids" (and "broker" in broker mode): each term after
+    # the divisor, None when unknown.
     terms: Mapping[str, int | None] = field(default_factory=dict)
-    # memory | cpu | pids | explicit | fixed | unknown
+    # memory | cpu | pids | broker | explicit | fixed | unknown
     binding: str = "unknown"
     machine: MachineSize = UNKNOWN_MACHINE
     run: RunSize | None = None
@@ -364,6 +375,8 @@ def compute_plan(
         "cpu": _term(machine.cpus, settings.cpu_factor, run and run.cpus, divisor),
         "pids": _term(machine.pid_limit, PID_SHARE, run and run.pids, divisor),
     }
+    if machine.ceiling is not None:
+        terms["broker"] = machine.ceiling // divisor
     known = {name: value for name, value in terms.items() if value is not None}
     min_total = settings.min_total
     if explicit is not None:
@@ -494,6 +507,92 @@ async def read_machine_size(
         info.mem_total_bytes, float(info.ncpus) if info.ncpus else None, pid_limit, "docker_info", same,
     )
     return machine, info
+
+
+# What the sandbox broker reports about its ceiling on its health answer
+# (``broker_detail``), and the app reads back (``machine_from_broker``).
+BROKER_CEILING = "sandboxCeiling"
+BROKER_MEASURED = "sandboxMeasured"
+BROKER_MEMORY_BYTES = "sandboxHostMemoryBytes"
+BROKER_CPUS = "sandboxHostCpus"
+BROKER_PID_LIMIT = "sandboxHostPidLimit"
+
+
+def broker_detail(capacity: SandboxCapacity) -> dict[str, str]:
+    """The broker's ceiling and the machine it was sized from, for its health
+    answer. The machine is left out until it has been read."""
+    plan = capacity.plan
+    detail = {BROKER_CEILING: str(plan.ceiling), BROKER_MEASURED: str(capacity.measured).lower()}
+    if not capacity.measured:
+        return detail
+    machine = plan.machine
+    if machine.memory_bytes is not None:
+        detail[BROKER_MEMORY_BYTES] = str(machine.memory_bytes)
+    if machine.cpus is not None:
+        detail[BROKER_CPUS] = f"{machine.cpus:g}"
+    if machine.pid_limit is not None:
+        detail[BROKER_PID_LIMIT] = str(machine.pid_limit)
+    return detail
+
+
+def _detail_float(detail: Mapping[str, str], key: str) -> float | None:
+    """A positive machine size from the broker's answer; anything else is unknown."""
+    try:
+        value = float(detail.get(key) or "nan")
+    except ValueError:
+        return None
+    return value if 0 < value <= _MAX_HOST_VALUE else None
+
+
+def _detail_int(detail: Mapping[str, str], key: str) -> int | None:
+    value = _detail_float(detail, key)
+    return int(value) if value is not None and value == int(value) else None
+
+
+def machine_from_broker(detail: Mapping[str, str]) -> MachineSize | None:
+    """The machine the broker's sandboxes run on and the broker's ceiling, from
+    its health answer; ``None`` when the broker does not report them (a release
+    before it). Raises ``DockerUnreachable`` while the broker has not read its
+    daemon yet."""
+    ceiling = _detail_int(detail, BROKER_CEILING)
+    if ceiling is None:
+        return None
+    if detail.get(BROKER_MEASURED) != "true":
+        raise DockerUnreachable("the sandbox broker has not read its Docker daemon yet")
+    return MachineSize(
+        _detail_int(detail, BROKER_MEMORY_BYTES),
+        _detail_float(detail, BROKER_CPUS),
+        _detail_int(detail, BROKER_PID_LIMIT),
+        "broker",
+        ceiling=ceiling,
+    )
+
+
+async def _broker_health_detail() -> Mapping[str, str]:
+    from app.harness.sandbox.client import process_broker_client
+
+    provider = await process_broker_client.get()
+    return (await provider.health()).detail
+
+
+async def read_broker_machine_size(
+    mode: Mode,
+    settings: CapacitySettings,
+    *,
+    health_detail: Callable[[], Awaitable[Mapping[str, str]]] | None = None,
+) -> tuple[MachineSize, DockerInfo | None]:
+    """In broker mode the broker alone reaches the daemon that runs the
+    sandboxes, so the machine comes from it. A broker that does not report it
+    leaves the machine to ``read_machine_size``, as before it did. Raises
+    ``DockerUnreachable`` while the broker does not answer."""
+    try:
+        detail = await (health_detail or _broker_health_detail)()
+    except Exception as exc:
+        raise DockerUnreachable(f"the sandbox broker did not answer ({type(exc).__name__})") from exc
+    machine = machine_from_broker(detail)
+    if machine is None:
+        return await read_machine_size(mode, settings)
+    return machine, None
 
 
 _UNREAD = object()
@@ -769,18 +868,47 @@ def _docker_mode(env: Mapping[str, str]) -> Mode:
     return "compose"
 
 
-def _resolve_mode() -> Mode:
+def _resolve_backend() -> str | None:
     try:
         from app.agent_loop_lib.sandbox.coding.settings import resolve_sandbox_mode
 
-        backend = resolve_sandbox_mode()
+        return resolve_sandbox_mode()
     except Exception:
-        return "compose"
+        return None
+
+
+def _resolve_mode(backend: str | None = None) -> Mode:
     if backend == "e2b":
         return "e2b"
     if backend == "local":
         return "local"
     return _docker_mode(os.environ)
+
+
+def build_sandbox_capacity(backend: str | None, env: Mapping[str, str] | None = None) -> SandboxCapacity:
+    """The capacity for *backend* (a ``SANDBOX_MODE`` backend name) from *env*."""
+    env = os.environ if env is None else env
+    mode = _resolve_mode(backend)
+    settings = CapacitySettings.from_env(env)
+    reader: Callable[[], Awaitable[tuple[MachineSize, DockerInfo | None]]] | None = None
+    if backend == "broker":
+        reader = lambda: read_broker_machine_size(mode, settings)
+    return SandboxCapacity(mode, settings, slot_files=slot_file_count(env), machine_reader=reader)
+
+
+def build_daemon_capacity(
+    docker_info: Callable[[], Awaitable[Mapping[str, Any]]], env: Mapping[str, str] | None = None,
+) -> SandboxCapacity:
+    """The capacity of the daemon *docker_info* reads, from *env*: the sandbox
+    broker's, which starts every sandbox there. The same variables, defaults and
+    sizing as the app's, so one ``SANDBOX_MAX_TOTAL`` means one thing."""
+    env = os.environ if env is None else env
+    mode = _docker_mode(env)
+    settings = CapacitySettings.from_env(env)
+    return SandboxCapacity(
+        mode, settings, slot_files=slot_file_count(env),
+        machine_reader=lambda: read_machine_size(mode, settings, docker_info=docker_info),
+    )
 
 
 _capacity: SandboxCapacity | None = None
@@ -793,7 +921,7 @@ def get_sandbox_capacity() -> SandboxCapacity:
     if _capacity is None:
         with _capacity_lock:
             if _capacity is None:
-                _capacity = SandboxCapacity(_resolve_mode(), CapacitySettings.from_env())
+                _capacity = build_sandbox_capacity(_resolve_backend())
     return _capacity
 
 

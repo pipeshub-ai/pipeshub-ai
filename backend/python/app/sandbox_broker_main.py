@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING, cast
 from aiohttp import web
 
 import app.utils.runtime_threads  # noqa: F401 - must precede all ML library imports
+from app.agent_loop_lib.sandbox.capacity import build_daemon_capacity
 from app.agent_loop_lib.sandbox.coding.egress_firewall import (
     open_egress_pool,
     parse_cidrs,
@@ -83,6 +84,7 @@ from harness_engines.release import (
 check_runtime_settings()
 
 if TYPE_CHECKING:
+    from app.agent_loop_lib.sandbox.capacity import SandboxCapacity
     from app.config.configuration_service import ConfigurationService
     from harness_core.clock import Clock
     from harness_core.ids import IdSource
@@ -106,10 +108,8 @@ _ENV_WARM_POOL_MAX = "SANDBOX_WARM_POOL_MAX"
 # How much a session's persistent workspace may hold on the host's disk (SEC-ISO-06); twice the sync's archive limit.
 _ENV_WORKSPACE_QUOTA_MB = "SANDBOX_WORKSPACE_QUOTA_MB"
 DEFAULT_WORKSPACE_QUOTA_MB = 4096
-# The install's ceiling on live sandboxes (C2.19): the legacy governor's variable and default, now counted across
-# every broker process of the namespace instead of per process.
-_ENV_MAX_TOTAL = "SANDBOX_MAX_TOTAL"
-DEFAULT_MAX_SANDBOXES = 50
+# How long start-up waits for the daemon's size before the ceiling is its minimum until the daemon answers.
+CAPACITY_SIZING_WAIT_S = 10.0
 # Runtimes the daemon has that the broker must not offer (a runsc after a bad upgrade, a runc test lane on a gVisor
 # host): the release floor still refuses engines without gVisor unless the dev override is on.
 _ENV_WITHHOLD_RUNTIMES = "SANDBOX_WITHHOLD_RUNTIMES"
@@ -211,21 +211,15 @@ def write_bound() -> WriteBound | None:
         raise InvalidWriteBound(f"{_ENV_DATA_DEVICE}={device!r} {_ENV_WRITE_MBPS}={raw!r} is not a write bound") from None
 
 
-class InvalidMaxSandboxes(ValueError):
-    reason_code = "invalid_max_sandboxes"
-
-
-def max_sandboxes() -> int | None:
-    """``SANDBOX_MAX_TOTAL``: unset or blank is the default; zero or less is no ceiling, as the legacy governor reads
-    it; anything but an integer refuses to start."""
-    raw = (os.getenv(_ENV_MAX_TOTAL) or "").strip()
-    if not raw:
-        return DEFAULT_MAX_SANDBOXES
-    try:
-        value = int(raw)
-    except ValueError as exc:
-        raise InvalidMaxSandboxes(f"{_ENV_MAX_TOTAL}={raw!r} is not an integer") from exc
-    return value if value > 0 else None
+async def sandbox_capacity(provider: DockerClientProvider) -> SandboxCapacity:
+    """The install's ceiling on live sandboxes (C2.19, ADR-CAP-02), counted across every broker process of the
+    namespace: ``SANDBOX_MAX_TOTAL`` and the sizing variables read and sized exactly as the app reads them, from this
+    broker's daemon, the one that runs the sandboxes. Waits a little for the daemon's size, then keeps sizing in the
+    background."""
+    capacity = build_daemon_capacity(lambda: provider.run_blocking(lambda: provider.client.info()))
+    capacity.start_sizing()
+    await capacity.wait_measured(CAPACITY_SIZING_WAIT_S)
+    return capacity
 
 
 class InvalidWithheldRuntimes(ValueError):
@@ -329,7 +323,7 @@ async def docker_backend(context: BrokerBackendContext) -> DockerSandboxBroker:
         farewells={"claude_code": CLAUDE_CODE_FAREWELL},
         workspace_quota_mb=workspace_quota_mb(),
         write_bound=write_bound(),
-        max_sandboxes=max_sandboxes(),
+        capacity=await sandbox_capacity(provider),
         metrics=BackendBrokerMetrics(),
         withheld_runtimes=withheld,
         egress=await broker_egress_wiring(

@@ -19,26 +19,32 @@ if TYPE_CHECKING:
 
 
 class SandboxCap:
-    """``limit`` None is no ceiling."""
+    """``limit`` None is no ceiling. A callable is read at each admission: a ceiling sized from the daemon starts at
+    its minimum and rises once the daemon has been read."""
 
-    def __init__(self, limit: int | None, live: Callable[[], Awaitable[int]]) -> None:
-        if limit is not None and limit <= 0:
+    def __init__(self, limit: int | Callable[[], int] | None, live: Callable[[], Awaitable[int]]) -> None:
+        if isinstance(limit, int) and limit <= 0:
             raise ValueError("a sandbox ceiling is a positive number; None is none")
-        self.limit = limit
+        self._limit = limit
         self._live = live
         self._inflight = 0
         self._lock = asyncio.Lock()
 
+    @property
+    def limit(self) -> int | None:
+        return self._limit() if callable(self._limit) else self._limit
+
     @contextlib.asynccontextmanager
     async def admit(self) -> AsyncGenerator[None]:
         """One more live sandbox, or ``BrokerUnavailable``: capacity, which a run waits out (QA31F)."""
-        if self.limit is None:
+        limit = self.limit
+        if limit is None:
             yield
             return
         async with self._lock:
             live = await self._live() + self._inflight
-            if live >= self.limit:
-                raise BrokerUnavailable(f"sandbox capacity reached: {live} of {self.limit} live")
+            if live >= limit:
+                raise BrokerUnavailable(f"sandbox capacity reached: {live} of {limit} live")
             self._inflight += 1
         try:
             yield
