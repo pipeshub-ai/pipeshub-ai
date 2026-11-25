@@ -14,6 +14,10 @@ import { idString, readBatches } from './mongo-read';
 import type { MigrationRuntime } from './runtime';
 import { SourceReport, toNeutral } from './source';
 import type { CollectionProgress, JobState } from './state';
+import { carriersFor, copyCarried } from './carry/run';
+import { recordKeys } from './keyed-rows';
+import { carryMongo, carryPg } from './carry/steps';
+import { putRefusals } from './refusals';
 
 export type Log = (event: string, data?: Record<string, unknown>) => void;
 
@@ -41,7 +45,7 @@ export function repositoryFor(m: CollectionMapping): Importable {
   return repo;
 }
 
-/** Skipped documents kept by id in the job state (64 KB budget); a verify that needs more says so. */
+/** Skipped documents the job state lists by id for the operator (64 KB budget); the complete list is `platform.docstore_refused`. */
 export const MAX_SKIPPED_LISTED = 300;
 
 export class StoppedForTest extends Error {}
@@ -131,7 +135,15 @@ export async function bulk(
         const stats = docs.length
           ? await rt.jobs(async (tx, k) => {
               await js.guardWrite(k);
-              return repo.importBatch(m.collection, docs, tx);
+              const st = await repo.importBatch(m.collection, docs, tx);
+              await putRefusals(k, m.collection, st.skipped);
+              await recordKeys(
+                k,
+                m,
+                docs,
+                new Set(st.skipped.map((x) => x.id)),
+              );
+              return st;
             })
           : { skipped: [], inserted: {}, followUps: [] };
         await runFollowUps(rt, stats.followUps);
@@ -186,6 +198,34 @@ export async function bulk(
       collection: m.collection,
       copied: p.copied,
       skipped: p.skipped,
+    });
+  }
+  // the carriers after the generic copy: a carried field hangs on a user, an org or a chat copied above
+  for (const c of carriersFor(opts.only)) {
+    const key = `carry:${c.name}`;
+    const p = (js.progress.collections[key] ??= {
+      state: 'pending',
+      last: null,
+      copied: 0,
+      skipped: 0,
+      rows: {},
+    });
+    if (p.state === 'done') continue;
+    p.state = 'running';
+    opts.log('collection_start', { collection: key, after: null });
+    const read = await copyCarried(
+      carryPg(rt, js),
+      carryMongo(rt),
+      [c],
+      opts.log,
+    );
+    p.copied = Object.values(read).reduce((a, n) => a + n, 0);
+    p.state = 'done';
+    await js.checkpoint();
+    opts.log('collection_done', {
+      collection: key,
+      copied: p.copied,
+      skipped: 0,
     });
   }
   if (!opts.only) {

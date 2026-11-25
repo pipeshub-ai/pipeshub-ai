@@ -28,6 +28,12 @@ from app.agents.actions.knowledge_graph.ops.entity_records import (
     resolve_entity_virtual_ids,
 )
 from app.agents.actions.knowledge_graph.ops.fetch import FETCH_RECORD_TOOL_NAME
+from app.agents.actions.knowledge_graph.ops.index_pending import (
+    pending_lines,
+    pending_records,
+    targeted_records,
+    with_pending,
+)
 from app.agents.actions.knowledge_graph.ops.outside_dates import (
     OUTSIDE_DATES_SEARCH_LIMIT,
     OutsideDatesRecord,
@@ -44,9 +50,15 @@ from app.agents.actions.knowledge_graph.ops.results import (
     tool_output,
 )
 from app.agents.actions.knowledge_graph.ops.scope import KnowledgeScope, search_scope
+from app.agents.actions.knowledge_graph.ops.search_budget import (
+    response_format_error,
+    run_response_format,
+    search_budget,
+)
 from app.agents.agent_loop.answer_rules import READ_RECORDS_IN_FULL_STATE_KEY
 from app.agents.agent_loop.protocol.run_usage import grep_generation_usage_reporter
 from app.core.org_context import spawn_in_request
+from app.harness.knowledge.caller import caller_user_id_of
 from app.modules.agents.qna.chat_state import (
     remember_record_ids,
     remember_shown_results,
@@ -60,9 +72,7 @@ from app.modules.retrieval.context.targeted import (
     cap_passages_per_record,
     more_passages_list,
     more_passages_note,
-    passages_per_record,
     remember_shown,
-    search_max_chars,
     targeted_retrieval_enabled,
 )
 from app.modules.retrieval.context.units import unit_children
@@ -508,6 +518,19 @@ async def _outside_dates_found(
     )
 
 
+def unknown_sources_error(requested: list[str], scope: KnowledgeScope) -> str:
+    """KN-04: none of the ``source_ids`` is one of the scope's sources; the error names the ones it has."""
+    known = [*scope.app_ids, *scope.kb_ids]
+    return json.dumps({
+        "status": "error",
+        "message": (
+            f"None of the source_ids {requested} is one of this agent's knowledge sources, so nothing was "
+            f"searched. Use IDs from the Knowledge Sources section ({', '.join(known)}), or omit source_ids "
+            "to search all of them."
+        ),
+    })
+
+
 def normalize_source_ids(value: Any) -> list[str] | None:
     """Normalize source_ids parameter (a string or list of strings)."""
     if value is None:
@@ -533,9 +556,13 @@ async def execute_search(
     entity_ids: list[str] | None = None,
     scope_virtual_record_ids: list[str] | None = None,
     preamble: str = "",
+    response_format: str | None = None,
 ) -> str | list[Part]:
     """Run semantic search over the agent's knowledge scope (see
     `_execute_search`).
+
+    ``response_format`` (``ops/search_budget``): ``concise`` (the default) or
+    ``detailed``; anything else is an actionable error and searches nothing.
 
     ``scope_virtual_record_ids`` is a scope the caller already resolved and
     permission-checked (``search_by_entities``): the search runs inside it, an
@@ -552,6 +579,10 @@ async def execute_search(
     agent's own today or later is not applied
     (``ops/time_range.upper_bounds_before_today``).
     """
+    format_error = response_format_error(response_format)
+    if format_error is not None:
+        return format_error
+    response_format = run_response_format(state, response_format)  # type: ignore[arg-type]
     if state:
         from app.agents.actions.knowledge_graph.ops.time_range import (
             agent_today_start,
@@ -581,6 +612,7 @@ async def execute_search(
         created_after=created_after, created_before=created_before,
         modified_after=modified_after, modified_before=modified_before,
         entity_ids=entity_ids, scope_virtual_record_ids=scope_virtual_record_ids, preamble=preamble,
+        response_format=response_format,
     )
     return with_json_preamble(result, preamble)
 
@@ -611,6 +643,7 @@ async def _execute_search(
     entity_ids: list[str] | None = None,
     scope_virtual_record_ids: list[str] | None = None,
     preamble: str = "",
+    response_format: str | None = None,
 ) -> str | list[Part]:
     """Run semantic search over the agent's knowledge scope.
 
@@ -691,6 +724,9 @@ async def _execute_search(
             candidate = base_scope.narrow_to(source_ids_norm)
             if candidate is not base_scope:
                 narrowed_scope = candidate
+        if explicit_ids and narrowed_scope is None and not base_scope.has_selection and not base_scope.is_empty():
+            # KN-04: searching the whole scope instead would answer as if the named sources had been searched.
+            return unknown_sources_error(source_ids_norm or [], base_scope)
         resolved_scope = narrowed_scope if narrowed_scope is not None else base_scope
 
         total_sources = len(base_scope.app_ids) + len(base_scope.kb_ids)
@@ -834,25 +870,30 @@ async def _execute_search(
             remember_record_ids(state, [m.record_id for m in shown], names={m.record_id: m.name for m in shown})
             note_retrieved_by(state, "entity", [(m.virtual_record_id, m.record_id, m.name) for m in shown])
 
-        def _no_content_result() -> str:
-            """``_empty_result``, unless records matched by name: those are an answer too."""
-            if not unindexed:
-                return _empty_result()
-            max_chars = search_max_chars() if targeted_retrieval_enabled() else DEFAULT_MAX_RESULT_CHARS
-            head = (
-                preamble
-                + _search_gap_notes(failed_sources=failed_sources, search_incomplete=search_incomplete)
-                + "No content blocks matched, but "
-                + (f"{len(unindexed)} records match" if len(unindexed) != 1 else "1 record matches")
-                + " by name.\n\n"
-            )
-            block, shown = render_title_block(
-                unindexed, max_chars - len(head), get_record_id_shortener_if_enabled(state),
-            )
-            if not shown:
-                return _empty_result()
-            _remember_by_name(shown)
-            return head + block
+        async def _no_content_result() -> str:
+            """Records matched by name are an answer too; otherwise ``_empty_result``, saying which records the
+            search named are still indexing (KN-09): they have no content to find yet."""
+            if unindexed:
+                max_chars = search_budget(
+                    response_format, targeted=targeted_retrieval_enabled(), limit=adjusted_limit,
+                    cap=DEFAULT_MAX_RESULT_CHARS,
+                ).max_chars
+                head = (
+                    preamble
+                    + _search_gap_notes(failed_sources=failed_sources, search_incomplete=search_incomplete)
+                    + "No content blocks matched, but "
+                    + (f"{len(unindexed)} records match" if len(unindexed) != 1 else "1 record matches")
+                    + " by name.\n\n"
+                )
+                block, shown = render_title_block(
+                    unindexed, max_chars - len(head), get_record_id_shortener_if_enabled(state),
+                )
+                if shown:
+                    _remember_by_name(shown)
+                    return head + block
+            targets = targeted_records(agent_filters)
+            pending = await pending_records(state, targets)
+            return with_pending(_empty_result(), pending, every=len(pending) == len(targets))
 
         # Retrieval treats this key as a control flag, not a filter: with it, an
         # empty scope searches nothing instead of everything the user can reach.
@@ -928,6 +969,7 @@ async def _execute_search(
                 filter_groups=filter_groups_for_call,
                 time_range=bounds,
                 virtual_record_ids_from_tool=vrids,
+                caller_user_id=caller_user_id_of(state.get("user_info")),
             )
 
         async def _attempt(
@@ -1120,7 +1162,7 @@ async def _execute_search(
             unindexed = found_by_name or []
 
         if not search_results and not raw_pattern_records:
-            return _no_content_result()
+            return await _no_content_result()
 
         blob_store = BlobStorage(
             logger=logger_instance,
@@ -1190,13 +1232,15 @@ async def _execute_search(
         # Grep hits can all be dropped by the merge (permissions, time range);
         # that is still an empty search and must answer like one.
         if not knowledge.ranked and not pm_record_entries:
-            return _no_content_result()
+            return await _no_content_result()
 
         # TARGETED_RETRIEVAL: a smaller result, a few passages per record, and
         # what an earlier search of this request showed giving way to new text.
         targeted = targeted_retrieval_enabled()
-        result_max_chars = search_max_chars() if targeted else DEFAULT_MAX_RESULT_CHARS
-        per_record = passages_per_record(adjusted_limit) if targeted else 0
+        budget = search_budget(
+            response_format, targeted=targeted, limit=adjusted_limit, cap=DEFAULT_MAX_RESULT_CHARS,
+        )
+        result_max_chars, per_record = budget.max_chars, budget.per_record
         passage_cap: PassageCap | None = None
         if targeted and knowledge.ranked:
             passage_cap = cap_passages_per_record(
@@ -1248,7 +1292,9 @@ async def _execute_search(
 
         pm_shown, pm_hint = keyword_hint(Selection(ranked=knowledge.ranked))
         if not has_semantic_blocks and not pm_shown:
-            return _no_content_result()
+            return await _no_content_result()
+        # WP100-FU-3: results from one picked record must not hide that another picked one is still being indexed.
+        pending = await pending_records(state, targeted_records(agent_filters))
         entity_notes = _search_gap_notes(
             failed_sources=failed_sources, search_incomplete=search_incomplete,
             titles_failed=title_lookup_failed,
@@ -1382,6 +1428,12 @@ async def _execute_search(
             if shown_by_name:
                 text += block
                 _remember_by_name(shown_by_name)
+        if pending:
+            # A record re-indexing still shows its earlier content: only one the result does not show is pending.
+            _, content_record_ids = shown_ids(final_results, shown_records)
+            still_indexing = [record for record in pending if record["recordId"] not in content_record_ids]
+            if still_indexing:
+                text += f"\n\n{pending_lines(still_indexing)}"
         return tool_output(text + outside_dates_text, rendered.images, state)
 
     except Exception as exc:

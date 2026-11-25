@@ -38,7 +38,14 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from app.agent_loop_lib.tools.base import ParameterType, Tool, ToolOutput, ToolParameter
+from app.agent_loop_lib.tools.base import (
+    ParameterType,
+    Tag,
+    Tool,
+    ToolOutput,
+    ToolParameter,
+)
+from app.agent_loop_lib.tools.tags import TAG_EFFECT_READ
 from app.agents.agent_loop.answer_rules import READ_RECORDS_IN_FULL_STATE_KEY
 from app.agents.agent_loop.hooks._tool_naming import INTERNAL_SEARCH_TOOL_NAMES
 
@@ -46,6 +53,7 @@ if TYPE_CHECKING:
     from app.agent_loop_lib.agent.spec import AgentSpec
     from app.agent_loop_lib.hooks.middleware.context import ToolResultContext
     from app.agent_loop_lib.hooks.middleware.pipeline import Middleware, Next
+    from app.agent_loop_lib.tools.registry import ToolRegistry
     from app.agents.agent_loop.context import AgentContext
 
 from app.agents.actions.knowledge_graph.ops.fetch import (
@@ -113,6 +121,15 @@ _FETCH_FULL_RECORD_DESCRIPTION = (
     "exactly as shown (it may be a short label like 'R3') and never invent "
     "IDs. Large records return a continuation hint giving the start_block for "
     "the next slice."
+)
+
+# Only a request that can query a database hears about tables. The chat bridges set its SQL connectors before the
+# first turn, so the description stays fixed for the request.
+_ILLUSTRATIONS_END = "whatever was actually asked.\n"
+_SQL_TABLE_CASE = (
+    "A database table is the exception: fetching one gives its schema and the "
+    "rows indexed for search, not necessarily all of its rows. Answer counts, "
+    "lists, and values about it with a SQL query.\n"
 )
 
 # THOROUGH_RETRIEVAL's full-read policy swaps the skip case above; a test fails
@@ -235,7 +252,7 @@ class _FetchFullRecordTool(Tool):
 
     @property
     def display_name(self) -> str | None:
-        return "Fetching additional data"
+        return "Read the full record"
 
     @property
     def short_description(self) -> str:
@@ -248,6 +265,8 @@ class _FetchFullRecordTool(Tool):
         description = _FETCH_FULL_RECORD_DESCRIPTION
         if self._context.tool_state.get(READ_RECORDS_IN_FULL_STATE_KEY):
             description = description.replace(_SKIP_CASE, _FULL_READ_SKIP_CASE)
+        if self._context.tool_state.get("allowed_sql_connector_ids"):
+            description = description.replace(_ILLUSTRATIONS_END, _ILLUSTRATIONS_END + _SQL_TABLE_CASE, 1)
         if self._focused_reads():
             description += _focused_read_description()
         return description
@@ -255,6 +274,11 @@ class _FetchFullRecordTool(Tool):
     @property
     def path(self) -> str:
         return "/dynamic/dynamic/fetch_full_record"
+
+    @property
+    def tags(self) -> list[Tag]:
+        # Reads records from the graph and blob store into this run's state.
+        return [TAG_EFFECT_READ]
 
     @property
     def parameters(self) -> list[ToolParameter]:
@@ -344,7 +368,12 @@ class _FetchFullRecordTool(Tool):
         return records
 
     async def execute(self, **kwargs: Any) -> ToolOutput:  # noqa: ANN401
-        from app.agents.actions.knowledge_graph.ops.fetch import execute_fetch_record
+        from app.harness.knowledge.knowledge_service import (
+            FetchRequest,
+            KnowledgeCall,
+            KnowledgeService,
+            backends_of,
+        )
 
         # Not forwarded as `**kwargs`: a model sending `record_id=` (singular)
         # must get a correctable error, not a silent empty fetch.
@@ -374,34 +403,56 @@ class _FetchFullRecordTool(Tool):
         except ValueError as exc:
             return ToolOutput(success=False, error=str(exc))
 
-        # One offset cannot continue several records: applied to all of them it
-        # re-reads whichever stopped later and skips the start of the others.
-        # Continuation is therefore one record at a time.
+        groups: list[tuple[list[str], int]] = [(list(record_ids), start_block)]
         if start_block > 0 and len(record_ids) > 1:
-            return ToolOutput(
-                success=False,
-                error=(
-                    "start_block continues one record at a time — it would be applied "
-                    f"to all {len(record_ids)} ids. Call again with a single record_id "
-                    "(the one named in the truncation hint) plus its start_block."
+            from app import edition_services
+
+            planned = edition_services.split_record_continuation(
+                list(record_ids), start_block, self._context.tool_state
+            )
+            if planned is None:
+                return ToolOutput(
+                    success=False,
+                    error=(
+                        "start_block continues one record at a time — it would be applied "
+                        f"to all {len(record_ids)} ids. Call again with a single record_id "
+                        "(the one named in the truncation hint) plus its start_block."
+                    ),
+                )
+            groups = [(ids, start) for ids, start in planned if ids]
+
+        # Through the stateless knowledge service (C3.17), as the run's principal and scope, into its citation state.
+        self._live_virtual_records()
+        state = self._context.tool_state
+        outputs = [
+            await KnowledgeService(backends_of(self._context)).fetch(
+                KnowledgeCall.from_context(self._context),
+                FetchRequest(
+                    record_ids=ids,
+                    reason=kwargs.get("reason") or _DEFAULT_FETCH_REASON,
+                    start_block=start,
+                    max_blocks=kwargs.get("max_blocks"),
+                    # A group read from the beginning was not sent an offset.
+                    start_block_sent=kwargs.get("start_block") not in (None, "") and start == start_block,
+                    query=query,
                 ),
             )
+            for ids, start in groups
+        ]
+        self._context.full_records_fetched.update(state.get("full_records_fetched") or ())
+        return outputs[0] if len(outputs) == 1 else _joined(outputs)
 
-        ref_mapper_in = self._collector.citation_ref_mapper
-        output, ref_mapper = await execute_fetch_record(
-            context=self._context,
-            virtual_records=self._live_virtual_records(),
-            citation_ref_mapper=ref_mapper_in,
-            record_ids=record_ids,
-            reason=kwargs.get("reason") or _DEFAULT_FETCH_REASON,
-            start_block=start_block,
-            max_blocks=kwargs.get("max_blocks"),
-            start_block_sent=kwargs.get("start_block") not in (None, ""),
-            query=query,
-        )
-        if ref_mapper is not ref_mapper_in:
-            self._context.tool_state["citation_ref_mapper"] = ref_mapper
-        return output
+
+def _joined(outputs: list[ToolOutput]) -> ToolOutput:
+    """One fetch's outputs read as several groups, as one result: every group's text and sources, in order."""
+    failed = [o for o in outputs if not o.success]
+    if len(failed) == len(outputs):
+        return failed[0]
+    parts = [o.data if isinstance(o.data, str) else str(o.data) for o in outputs if o.success and o.data is not None]
+    parts += [f"[{o.error}]" for o in failed if o.error]
+    return ToolOutput(
+        success=True, data="\n\n".join(parts), sources=[s for o in outputs for s in o.sources]
+    )
 
 
 def _grant(spec: "AgentSpec | None", *, require_internal_search_reference: bool) -> None:
@@ -481,6 +532,19 @@ def citation_tracking(
     return _middleware
 
 
+def full_record_reader(context: AgentContext, registry: ToolRegistry) -> Tool | None:
+    """The run's `fetch_record` tool for a delegate that is not an `AgentSpec` (an engine run), when
+    the run has internal search: the same gate `_grant` applies to the root agent."""
+    if not any(registry.has(name) for name in INTERNAL_SEARCH_TOOL_NAMES):
+        return None
+    return _FetchFullRecordTool(CitationCollector(context), context)
+
+
+def register_fetch_full_record(context: AgentContext, registry: object) -> None:
+    """Register ``_FetchFullRecordTool`` on ``registry`` without granting it to any spec."""
+    registry.register_tool_if_absent(_FetchFullRecordTool(CitationCollector(context), context))  # type: ignore[attr-defined]
+
+
 def ensure_fetch_full_record_available(
     context: AgentContext,
     *,
@@ -498,12 +562,17 @@ def ensure_fetch_full_record_available(
     responsible for ensuring the tool is visible (e.g. via ``_grant``
     directly).  When provided they mirror ``citation_tracking``'s behaviour.
     """
-    collector = CitationCollector(context)
     if registry is not None:
-        registry.register_tool_if_absent(_FetchFullRecordTool(collector, context))
+        register_fetch_full_record(context, registry)
     if run_scope is not None and hasattr(run_scope, "spec"):
         _grant(run_scope.spec, require_internal_search_reference=False)
     _grant(context.root_agent_spec, require_internal_search_reference=False)
 
 
-__all__ = ["CitationCollector", "citation_tracking", "ensure_fetch_full_record_available"]
+__all__ = [
+    "CitationCollector",
+    "citation_tracking",
+    "ensure_fetch_full_record_available",
+    "full_record_reader",
+    "register_fetch_full_record",
+]

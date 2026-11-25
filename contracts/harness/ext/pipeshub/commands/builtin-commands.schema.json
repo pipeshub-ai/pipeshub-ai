@@ -1,0 +1,206 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/ext/pipeshub/commands/builtin-commands.schema.json",
+  "title": "BuiltinCommands",
+  "description": "PipesHub's built-in /commands (SLASH2 §2.4): the one registry the composer's menu, the reserved command names (Python and TypeScript) and the docs are generated from. A built-in is a shortcut to a PipesHub feature; none ever reaches an executor as /text (S0). Generated as BUILTIN_COMMANDS in every target.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "description",
+    "commands",
+    "reservedWords"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "description": {
+      "type": "string"
+    },
+    "commands": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/BuiltinCommand"
+      }
+    },
+    "reservedWords": {
+      "description": "Words no user command may take, though PipesHub has no command for them: terminal-only commands and vendor commands with no PipesHub feature. Never listed; typing one shows a hint (O8).",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/ReservedWord"
+      }
+    }
+  },
+  "$defs": {
+    "CommandName": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+      "maxLength": 32
+    },
+    "BuiltinCommand": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "aliases",
+        "kind",
+        "package",
+        "shipped",
+        "executors",
+        "needs",
+        "duringRun",
+        "args",
+        "i18n"
+      ],
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/CommandName"
+        },
+        "aliases": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CommandName"
+          }
+        },
+        "kind": {
+          "description": "client: the browser does it with the APIs the UI already uses; server: it calls a route that reads or changes run, session or workspace state; prompt: a PipesHub-owned template expanded into the turn's text.",
+          "enum": [
+            "client",
+            "server",
+            "prompt"
+          ]
+        },
+        "group": {
+          "description": "The menu group (SLASH3 §3.9): general is Built-in; sandbox is the Sandbox group, listed whole after Built-in. Absent means general.",
+          "enum": [
+            "general",
+            "sandbox"
+          ]
+        },
+        "package": {
+          "description": "The package that builds it: SLASH2 (C0–C4, §4) or SLASH3 (SB0–SB4, the sandbox commands), or GIT-FLOW (GF1, WP-26: `/repo`).",
+          "enum": [
+            "C0",
+            "C1",
+            "C2",
+            "C3",
+            "C4",
+            "SB0",
+            "SB1",
+            "SB2",
+            "SB3",
+            "SB4",
+            "GF1"
+          ]
+        },
+        "shipped": {
+          "description": "Listed in the menu. A planned command is reserved but not listed, so the menu never offers what does nothing.",
+          "type": "boolean"
+        },
+        "executors": {
+          "description": "Where it works: any (it never touches the executor), else the durable loop, opencode, Codex, Claude Code and the classic chat path.",
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "any",
+              "loop",
+              "opencode",
+              "codex",
+              "claude_code",
+              "legacy"
+            ]
+          }
+        },
+        "needs": {
+          "description": "What must hold for it to apply; otherwise the menu greys it out with the reason (O8). runCode: the chat may run code (`pipeshub@sandbox/run_code` granted and not denied); owner: the viewer owns the chat; engineChoice: the chat can choose its coding engine (Agent mode, or an agent whose profile lists several).",
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "run",
+              "answer",
+              "conversation",
+              "workspace",
+              "harness",
+              "agentEditor",
+              "runCode",
+              "owner",
+              "engineChoice"
+            ]
+          }
+        },
+        "duringRun": {
+          "description": "While a reply is running (O7): now acts at once; next applies to the next message; wait is greyed out until the run ends.",
+          "enum": [
+            "now",
+            "next",
+            "wait"
+          ]
+        },
+        "args": {
+          "description": "The argument hint shown for the active row; empty when it takes none.",
+          "type": "string",
+          "maxLength": 40
+        },
+        "i18n": {
+          "description": "The translation key prefix: <i18n>.description, and <i18n>.reason.* for its greyed-out reasons.",
+          "type": "string",
+          "pattern": "^slashCommands\\.builtin\\.[a-z]+$"
+        }
+      }
+    },
+    "ReservedWord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "why"
+      ],
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/CommandName"
+        },
+        "why": {
+          "enum": [
+            "terminal",
+            "unmapped"
+          ]
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "schemaVersion": 1,
+      "description": "one command",
+      "commands": [
+        {
+          "name": "new",
+          "aliases": [
+            "clear"
+          ],
+          "kind": "client",
+          "package": "C0",
+          "shipped": true,
+          "executors": [
+            "any"
+          ],
+          "needs": [],
+          "duringRun": "now",
+          "args": "",
+          "i18n": "slashCommands.builtin.new"
+        }
+      ],
+      "reservedWords": [
+        {
+          "name": "login",
+          "why": "terminal"
+        }
+      ]
+    }
+  ]
+}

@@ -358,7 +358,7 @@ function OnboardingPageInner() {
                   cursor: !isLlmCompleted || submitting || isFinishing ? 'not-allowed' : 'pointer',
                   backgroundColor:
                     !isLlmCompleted || submitting || isFinishing ? 'var(--gray-4)' : 'var(--accent-9)',
-                  color: !isLlmCompleted || submitting || isFinishing ? 'var(--gray-9)' : 'white',
+                  color: !isLlmCompleted || submitting || isFinishing ? 'var(--gray-11)' : 'white',
                 }}
                 title={!isLlmCompleted ? t('onboarding.nav.saveLlmFirst') : undefined}
               >

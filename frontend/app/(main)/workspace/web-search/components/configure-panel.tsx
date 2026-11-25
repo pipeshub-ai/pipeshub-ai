@@ -268,7 +268,7 @@ export function ConfigurePanel({
                   disabled={isSaving || isDeleting}
                 >
                   <TextField.Slot>
-                    <MaterialIcon name="key" size={16} color="var(--slate-9)" />
+                    <MaterialIcon name="key" size={16} color="var(--slate-11)" />
                   </TextField.Slot>
                   <TextField.Slot side="right">
                     <span
@@ -278,13 +278,13 @@ export function ConfigurePanel({
                       <MaterialIcon
                         name={showKey ? 'visibility_off' : 'visibility'}
                         size={16}
-                        color="var(--slate-9)"
+                        color="var(--slate-11)"
                       />
                     </span>
                   </TextField.Slot>
                 </SecretTextField>
                 {field.helperText && (
-                  <Text size="1" style={{ color: 'var(--slate-10)' }}>
+                  <Text size="1" style={{ color: 'var(--slate-11)' }}>
                     {field.helperText}
                   </Text>
                 )}
@@ -302,11 +302,11 @@ export function ConfigurePanel({
                   disabled={isSaving || isDeleting}
                 >
                   <TextField.Slot>
-                    <MaterialIcon name="link" size={16} color="var(--slate-9)" />
+                    <MaterialIcon name="link" size={16} color="var(--slate-11)" />
                   </TextField.Slot>
                 </TextField.Root>
                 {field.helperText && (
-                  <Text size="1" style={{ color: 'var(--slate-10)' }}>
+                  <Text size="1" style={{ color: 'var(--slate-11)' }}>
                     {field.helperText}
                   </Text>
                 )}
@@ -390,7 +390,7 @@ export function ConfigurePanel({
         message={
           <Flex direction="column" gap="2">
             {isCheckingUsage && (
-              <Text size="2" style={{ color: 'var(--slate-10)', fontStyle: 'italic' }}>
+              <Text size="2" style={{ color: 'var(--slate-11)', fontStyle: 'italic' }}>
                 Checking agent usage…
               </Text>
             )}
@@ -414,7 +414,7 @@ export function ConfigurePanel({
                     <Text key={agent._key} size="1" style={{ color: 'var(--slate-12)' }}>
                       • <Text weight="medium" size="1">{agent.name}</Text>
                       {agent.creatorName && (
-                        <Text size="1" style={{ color: 'var(--slate-10)' }}>
+                        <Text size="1" style={{ color: 'var(--slate-11)' }}>
                           {' '}(created by {agent.creatorName})
                         </Text>
                       )}

@@ -115,7 +115,7 @@ describe('DOC_STORE switch', () => {
     it('boot waits for the schema of each repository that is not kept on Mongo', () => {
       const { schemaRequirements } = require('../../../src/libs/repositories/doc-store') as typeof import('../../../src/libs/repositories/doc-store')
       delete process.env.DOC_STORE_MONGO_REPOS
-      const all = ['content', 'conversation', 'identity', 'integrations', 'oauth', 'platform', 'platform_data']
+      const all = ['content', 'conversation', 'harness', 'identity', 'integrations', 'oauth', 'platform', 'platform_data']
       expect(Object.keys(schemaRequirements()).sort()).to.deep.equal(all)
       process.env.DOC_STORE_MONGO_REPOS = '*'
       expect(Object.keys(schemaRequirements()).sort()).to.deep.equal(all) // every repository has a PostgreSQL implementation: none is kept
@@ -126,11 +126,13 @@ describe('DOC_STORE switch', () => {
       process.env.DOC_STORE_MONGO_REPOS = 'oauth-app,oauth-token,identity-lookup,delegation,agent-call-event'
       expect(Object.keys(schemaRequirements()).sort()).to.deep.equal(all.filter((b) => b !== 'oauth'))
       process.env.DOC_STORE_MONGO_REPOS = 'slack-thread'
+      expect(Object.keys(schemaRequirements()).sort()).to.deep.equal(all) // the Slack account links still need their table
+      process.env.DOC_STORE_MONGO_REPOS = 'slack-thread,slack-user-link'
       expect(Object.keys(schemaRequirements()).sort()).to.deep.equal(all.filter((b) => b !== 'integrations'))
       process.env.DOC_STORE_MONGO_REPOS = 'identity,credential,user,group,org,org-auth-config,activity,picture,reset-link,org-metrics-job'
       expect(Object.keys(schemaRequirements())).to.include('identity') // an OAuth app takes its slug number from the identity tables
-      process.env.DOC_STORE_MONGO_REPOS = 'conversation,semantic-search,document,project,notification,mail-log,outbox,connectors-config,oauth-app,oauth-token,identity-lookup,delegation,agent-call-event,slack-thread,identity,credential,user,group,org,org-auth-config,activity,picture,reset-link,org-metrics-job'
-      expect(Object.keys(schemaRequirements())).to.deep.equal(['platform'])
+      process.env.DOC_STORE_MONGO_REPOS = 'conversation,semantic-search,document,project,notification,mail-log,outbox,connectors-config,oauth-app,oauth-token,identity-lookup,delegation,agent-call-event,slack-thread,slack-user-link,identity,credential,user,group,org,org-auth-config,activity,picture,reset-link,org-metrics-job,session-family'
+      expect(Object.keys(schemaRequirements())).to.deep.equal(['platform', 'harness']) // the harness has no per-store fallback: its branch is needed under postgres
     })
 
     it('does nothing under DOC_STORE=mongo', () => {

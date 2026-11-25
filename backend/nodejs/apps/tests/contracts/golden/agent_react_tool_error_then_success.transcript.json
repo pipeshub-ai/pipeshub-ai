@@ -1,0 +1,127 @@
+{
+  "conversation": {
+    "sessionType": "agent",
+    "nextSeq": 2,
+    "userId": "oid-1",
+    "orgId": "oid-2",
+    "title": "What is the status of ticket T-42?",
+    "initiator": "oid-1",
+    "isShared": false,
+    "isDeleted": false,
+    "isArchived": false,
+    "lastActivityAt": "<clock>",
+    "status": "Complete",
+    "modelInfo": {
+      "chatMode": "react"
+    },
+    "agentKey": "agent-1",
+    "conversationSource": "agent_chat",
+    "_id": "oid-3",
+    "sharedWith": [],
+    "conversationErrors": [],
+    "createdAt": "<timestamp>",
+    "updatedAt": "<timestamp>",
+    "__v": 0
+  },
+  "messages": [
+    {
+      "sessionId": "oid-3",
+      "orgId": "oid-2",
+      "seq": 1,
+      "messageType": "user_query",
+      "content": "What is the status of ticket T-42?",
+      "contentFormat": "MARKDOWN",
+      "modelInfo": {
+        "chatMode": "react"
+      },
+      "appliedFilters": {
+        "apps": [],
+        "kb": [],
+        "recordGroups": [],
+        "records": [],
+        "recordsExact": []
+      },
+      "parts": [],
+      "_id": "oid-4",
+      "createdAt": "<timestamp>",
+      "updatedAt": "<timestamp>",
+      "citations": [],
+      "followUpQuestions": [],
+      "feedback": [],
+      "attachments": [],
+      "referenceData": [],
+      "tools": [],
+      "reasoning": []
+    },
+    {
+      "sessionId": "oid-3",
+      "orgId": "oid-2",
+      "seq": 2,
+      "messageType": "bot_response",
+      "content": "Ticket T-42 is resolved and Priya owns it.",
+      "contentFormat": "MARKDOWN",
+      "citations": [],
+      "confidence": null,
+      "followUpQuestions": [],
+      "modelInfo": {
+        "chatMode": "react"
+      },
+      "appliedFilters": {
+        "apps": [],
+        "kb": [],
+        "recordGroups": [],
+        "records": [],
+        "recordsExact": []
+      },
+      "parts": [
+        {
+          "type": "text",
+          "content": "",
+          "runId": "uuid-1"
+        },
+        {
+          "type": "tool_call",
+          "toolCallId": "call-bad",
+          "toolName": "goldendocs__lookup_ticket",
+          "args": "{\"ticket_id\": \"T-4\"}",
+          "status": "failed",
+          "runId": "uuid-1",
+          "argsSummary": "Lookup Ticket — ticket_id: \"T-4\"",
+          "resultPreview": "",
+          "errorCode": "failed",
+          "nothingSent": true
+        },
+        {
+          "type": "text",
+          "content": "",
+          "runId": "uuid-1"
+        },
+        {
+          "type": "tool_call",
+          "toolCallId": "call-good",
+          "toolName": "goldendocs__lookup_ticket",
+          "args": "{\"ticket_id\": \"T-42\"}",
+          "status": "completed",
+          "runId": "uuid-1",
+          "argsSummary": "Lookup Ticket — ticket_id: \"T-42\"",
+          "resultPreview": "{\"id\": \"T-42\", \"status\": \"resolved\", \"owner\": \"Priya\"}",
+          "resultSummary": "Completed successfully"
+        },
+        {
+          "type": "text",
+          "content": "Ticket T-42 is resolved and Priya owns it.",
+          "runId": "uuid-1",
+          "isFinal": true
+        }
+      ],
+      "_id": "oid-5",
+      "createdAt": "<timestamp>",
+      "updatedAt": "<timestamp>",
+      "feedback": [],
+      "attachments": [],
+      "referenceData": [],
+      "tools": [],
+      "reasoning": []
+    }
+  ]
+}

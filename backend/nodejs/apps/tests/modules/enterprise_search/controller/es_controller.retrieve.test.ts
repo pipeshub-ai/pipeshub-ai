@@ -15,6 +15,8 @@ import { createMockRequest, createMockResponse, createMockNext } from '../../../
 
 describe('retrieve controller', () => {
   const appConfig: any = { aiBackend: 'http://ai.test' }
+  // The handler is typed for Express's Response; the mock carries only what retrieve uses.
+  const handle = retrieve(appConfig) as unknown as (req: unknown, res: unknown, next: unknown) => Promise<void>
   let seen: { uri?: string; body?: any }
 
   const arm = (statusCode: number, data: Record<string, unknown>) => {
@@ -33,7 +35,7 @@ describe('retrieve controller', () => {
       body: { query: 'rollback', limit: 5, filters: { kb: ['kb1'] }, modifiedAfter: '2026-01-01' },
       user: { userId: 'u1', orgId: 'o1' },
     })
-    await retrieve(appConfig)(req, createMockResponse(), createMockNext())
+    await handle(req, createMockResponse(), createMockNext())
 
     expect(seen.uri).to.equal('http://ai.test/api/v1/retrieve')
     expect(seen.body).to.deep.equal({
@@ -51,7 +53,7 @@ describe('retrieve controller', () => {
     const res = createMockResponse()
     const next = createMockNext()
 
-    await retrieve(appConfig)(req, res, next)
+    await handle(req, res, next)
 
     expect(next.called).to.be.false
     expect(res.status.calledWith(200)).to.be.true
@@ -126,7 +128,7 @@ describe('retrieve controller', () => {
     const error = sinon.stub(Logger.prototype, 'error')
     const warn = sinon.stub(Logger.prototype, 'warn')
     const next = createMockNext()
-    await retrieve(appConfig)(
+    await handle(
       createMockRequest({ body: { query: 'q' }, user: { userId: 'u1', orgId: 'o1' } }),
       createMockResponse(),
       next,
@@ -140,7 +142,7 @@ describe('retrieve controller', () => {
   it('passes an AI service failure on as an error with its status', async () => {
     arm(503, { message: 'index unreachable' })
     const next = createMockNext()
-    await retrieve(appConfig)(
+    await handle(
       createMockRequest({ body: { query: 'q' }, user: { userId: 'u1', orgId: 'o1' } }),
       createMockResponse(),
       next,
@@ -155,7 +157,7 @@ describe('retrieve controller', () => {
     sinon.stub(Logger.prototype, 'error')
     sinon.stub(AIServiceCommand.prototype, 'execute').rejects(error)
     const next = createMockNext()
-    await retrieve(appConfig)(
+    await handle(
       createMockRequest({ body: { query: 'q' }, user: { userId: 'u1', orgId: 'o1' } }),
       createMockResponse(),
       next,

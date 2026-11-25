@@ -12,6 +12,7 @@ still answers like a missing one.
 """
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -43,6 +44,7 @@ from app.utils.fetch_full_record import (
     UNAVAILABLE,
     _fetch_multiple_records_impl,
 )
+from tests.support.record_access import InMemoryRecordAccess
 
 PR_ID = "6c1d3a52-2f0e-4c8e-9d7a-3b5f0e1a2c44"
 PR_URL = "https://github.com/acme/app/pull/3758"
@@ -92,9 +94,8 @@ def _typed_pr() -> PullRequestRecord:
 def _graph(*, access: bool = True, status: str = OFF, typed: Any = None) -> MagicMock:  # noqa: ANN401
     graph = MagicMock()
     graph.config_service = None
-    graph.check_record_access_with_details = AsyncMock(return_value={"_key": PR_ID} if access else None)
-    graph.get_user_by_user_id = AsyncMock(return_value={"_key": "user-1"})
-    graph.check_access = AsyncMock(return_value=SimpleNamespace(node_ids={PR_ID} if access else set(), placeholder_ids=frozenset()))
+    records = InMemoryRecordAccess().user("user-1", "org-1")
+    (records.readable("user-1", "org-1", PR_ID) if access else records).serve(graph)
     graph.get_document = AsyncMock(return_value=_doc(status))
     graph.get_record_by_id = AsyncMock(return_value=typed)
     return graph
@@ -234,7 +235,8 @@ class TestHttpRecordContent:
         with patch.object(connector_router, "_fetch_multiple_records_impl", fetch):
             await self._content(graph)
 
-        graph.check_record_access_with_details.assert_not_called()
+        # The shared fake records every access question it answers, whichever method asked it: one, once.
+        assert graph.check_access.__self__.asked_about == [("user-1", "org-1", PR_ID)]
         assert fetch.await_args.kwargs["accessible"] == {PR_ID}
 
     async def test_a_record_the_caller_may_not_read_is_still_refused(self) -> None:
@@ -309,8 +311,11 @@ class TestFetchRecordTool:
                 context=_context(graph), virtual_records={}, citation_ref_mapper=None, record_ids=[PR_ID],
             )
 
-        assert "(status: QUEUED)" in output.error
-        assert "asking again shortly may work" in output.error
+        # KN-09: a pending record is the typed index_not_ready answer, not a failure; its note is unchanged.
+        assert output.success is True
+        message = json.loads(output.data)["message"]
+        assert "(status: QUEUED)" in message
+        assert "asking again shortly may work" in message
 
 
 class TestFetchRecordToolParsesOnDemand:
@@ -388,7 +393,10 @@ class TestFetchRecordToolParsesOnDemand:
                 context=context, virtual_records={}, citation_ref_mapper=None, record_ids=[PR_ID],
             )
 
-        assert "asking again shortly may work" in output.error and "being prepared" not in output.error
+        # No parse could start, so the record reads as today's not-indexed one. The harness answers that as its typed
+        # index-not-ready outcome (WP-100 KN-09), whose message carries the same words.
+        assert output.success is True and '"status": "index_not_ready"' in output.data
+        assert "asking again shortly may work" in output.data and "being prepared" not in output.data
 
     @pytest.mark.parametrize(("start_block", "wired"), [(0, True), (40, False)])
     async def test_only_the_first_page_can_start_a_parse(self, start_block: int, wired: bool) -> None:

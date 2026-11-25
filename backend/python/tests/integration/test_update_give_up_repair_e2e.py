@@ -73,6 +73,7 @@ from tests.integration.real_graph import (
     connect_arango,
     connect_neo4j,
 )
+from tests.support import it_backends
 from tests.support.vector_db import make_config_service
 from tests.unit.modules.pipeline.fakes import RecordingProducer
 
@@ -89,7 +90,7 @@ async def world(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setattr(run_module, "EMPTY_CONFIRM_DELAY_SECONDS", 0)
     monkeypatch.setattr(membership_module, "EMPTY_CONFIRM_DELAY_SECONDS", 0)
     async with contextlib.AsyncExitStack() as cleanup:
-        qdrant = QdrantService(QdrantConfig(host=os.environ.get("QDRANT_IT_HOST", "localhost"),
+        qdrant = QdrantService(QdrantConfig(host=it_backends.endpoint("QDRANT_IT_HOST"),
                                             port=int(os.environ.get("QDRANT_IT_PORT", "6343")), prefer_grpc=False, timeout=30))
         await qdrant.connect()
         cleanup.push_async_callback(qdrant.disconnect)

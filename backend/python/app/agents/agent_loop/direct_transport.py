@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Any
 from app.agent_loop_lib.transport.prompt_cache import (
     REJECTED_CACHE_PARAMS,
     CacheScope,
+    cache_params_allowed,
     openai_cache_plan,
 )
 from app.agents.agent_loop.prompt_cache import cache_target
@@ -57,7 +58,11 @@ def build_direct_transport(
     class_name = type(llm).__name__
     target = cache_target(llm, model_name)
     refused = REJECTED_CACHE_PARAMS.refused(target.model, target.base_url)
-    caching = cache_settings is not None and cache_settings.enabled and "*" not in refused
+    # `cache_params_allowed`: no capability row says the endpoint takes none (C13.03), and it has not refused
+    # every one in this process.
+    caching = cache_settings is not None and cache_settings.enabled and cache_params_allowed(
+        target.model, target.base_url,
+    )
 
     # The LangChain model's own client when identity forwarding is enabled on its
     # connection, so a direct request carries the same identity (and egress guard)

@@ -34,17 +34,29 @@ from app.edition_config import (
 from app.services.model_identity.principal import service_principal
 from app.services.model_identity.runtime import call_scope
 from app.services.model_identity.workload import Workload
+from app.utils.env_flags import (
+    AGENT_HARNESS_WORKER_ENABLED,
+    env_flag,
+    validate_env_flags,
+)
 from app.utils.log_redaction import log_safe_validation_errors
 from app.utils.logger import install_log_redaction
 from app.utils.request_context import set_service_suffix
 
 set_service_suffix("-qs")
+from app.agent_loop_lib import composition as agent_loop_composition  # noqa: E402 - after set_service_suffix(), like the imports around it
 from app.api.routes.code_graph import router as code_graph_router  # noqa: E402 - after set_service_suffix(), like the imports around it
+from app.api.routes.control_plane_drivers import router as control_plane_drivers_router  # noqa: E402
 from app.api.routes.entity_tools import router as entity_tools_router  # noqa: E402 - after set_service_suffix(), like the imports around it
 from app.api.routes.graph_view import router as graph_view_router  # noqa: E402
+from app.api.routes.harness import router as harness_router  # noqa: E402 - after set_service_suffix(), like the imports around it
 from app.api.routes.health import router as health_router
+from app.api.routes.knowledge_publications import (  # noqa: E402 - after set_service_suffix(), like the imports around it
+    router as knowledge_publications_router,
+)
 from app.api.routes.knowledge_search import router as knowledge_search_router  # noqa: E402 - after set_service_suffix(), like the imports around it
 from app.api.routes.openai_models import router as openai_models_router
+from app.api.routes.record_access import router as record_access_router  # noqa: E402 - after set_service_suffix(), like the imports around it
 from app.api.routes.skills import router as skills_router
 from app.api.routes.speech import router as speech_router
 from app.api.routes.toolsets import router as toolsets_router
@@ -71,6 +83,10 @@ from app.utils.user_lookup import (  # noqa: E402 - after set_service_suffix(), 
 from app.utils.validation_messages import friendly_validation_errors
 from app.utils.worker_scaling import set_process_worker_count
 
+# The legacy chat path binds its kernel seams here, not as a side effect of
+# whichever module happens to import app.agent_loop_lib first. Durable runs
+# never read these: RunDriver scopes each attempt to its own bindings.
+agent_loop_composition.install()
 # Stop at load on a store setting this edition does not run.
 check_runtime_settings()
 
@@ -189,6 +205,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     mark_process_non_dumpable()
     install_log_redaction()
 
+    # A malformed harness flag stops the service here, not on the first request that reads it.
+    validate_env_flags()
     # Before anything builds a pool or semaphore off a per-process budget.
     set_process_worker_count(configured_worker_count())
 
@@ -442,6 +460,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     app.state.sandbox_warmup_task = spawn_detached(_warmup_coding_sandbox())
 
+    # The code-execution tools leave each run's files in a temp folder for the artifact upload; this removes them
+    # once they are older than ARTIFACT_TEMP_TTL_HOURS (CLEANUP-2).
+    from app.sandbox.artifact_cleanup import start_cleanup_task, stop_cleanup_task
+
+    start_cleanup_task()
+
     # Admin alerts when code runs keep waiting for a sandbox; one worker of
     # the container evaluates, the others wait to take over.
     from app.services.sandbox_alerts.loop import run_sandbox_alert_loop
@@ -475,6 +499,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.state.mcp_registry = mcp_registry
     logger.info(f"✅ Loaded {len(mcp_registry.list_templates())} MCP server templates in memory")
 
+    # The MCP admission policy's background work, once per process (none where no admin approves MCP tools).
+    from app.harness.mcp_hub.tool_admission import mcp_tool_admission
+    from app.utils.time_conversion import get_epoch_timestamp_in_ms
+
+    _ = mcp_tool_admission().start(app_container.config_service(), app.state, at_ms=get_epoch_timestamp_in_ms())
+
+    from app.harness.inline import drain_on_termination
+
+    drain_on_termination(app.state)
     # Each answer allocates and drops many short-lived objects; a gen-0 threshold
     # of 10,000 (default 700) makes young collections rarer while generations 1
     # and 2 keep their default ratios.
@@ -484,8 +517,30 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Shutdown
     logger.info("🔄 Shutting down application")
 
+    from app.harness.inline import InlineClaimer
+
+    inline_claimer = getattr(app.state, "harness_inline", None)
+    if isinstance(inline_claimer, InlineClaimer):
+        # Running inline attempts yield at their next boundary (drain).
+        await inline_claimer.aclose()
+
+    from app.harness.mcp_hub.hub import process_mcp_hub
+    from app.harness.mcp_runner.process import process_mcp_runner
+
+    try:
+        # Pooled sessions first: a pooled STDIO session holds its runner open.
+        await process_mcp_hub.aclose()
+    except Exception as e:
+        logger.error(f"Error closing pooled MCP sessions: {type(e).__name__}")
+    try:
+        await process_mcp_runner.aclose()
+    except Exception as e:
+        logger.error(f"Error stopping MCP runners: {type(e).__name__}")
+
     if telemetry.pusher is not None:
         await telemetry.pusher.stop()
+
+    stop_cleanup_task()
 
     # Cancel background warmup tasks if still running.
     for _warmup_attr in (
@@ -588,7 +643,8 @@ app = FastAPI(
 )
 configure_app(app, "query")
 
-EXCLUDE_PATHS = ["/health"]  # Exclude health endpoint from authentication for monitoring purposes
+# /health for monitoring; /api/v1/harness authenticates with the worker credential itself.
+EXCLUDE_PATHS = ["/health", "/api/v1/harness/"]
 
 
 class AuthenticateRequests:
@@ -677,6 +733,12 @@ app.include_router(code_graph_router, prefix="/api/v1")
 app.include_router(graph_view_router, prefix="/api/v1")
 # These routes call whatever provider URL the body names, so only admins may reach them.
 app.include_router(health_router, prefix="/api/v1", dependencies=[Depends(require_admin_caller)])
+# The in-process claimer of durable runs exists only with the agent harness switched on (ADR-OPS-06).
+if env_flag(AGENT_HARNESS_WORKER_ENABLED):
+    app.include_router(harness_router, prefix="/api/v1/harness")
+app.include_router(record_access_router, prefix="/api/v1")
+app.include_router(control_plane_drivers_router, prefix="/api/v1/control-plane/drivers")
+app.include_router(knowledge_publications_router, prefix="/api/v1")
 app.include_router(ai_models_registry_router, prefix="/api/v1")
 # OpenAI clients call ``{base}/models``. Base may be ``{origin}/v1`` or the
 # query service's ``{origin}/api/v1``.

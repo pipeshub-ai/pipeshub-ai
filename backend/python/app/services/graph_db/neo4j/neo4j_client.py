@@ -36,6 +36,7 @@ from app.services.resource_governor.feedback import get_default_downstream_feedb
 from app.utils import error_class
 from app.utils.db_query_log import query_logged
 from app.utils.logging_fields import log_event
+from harness_core.deadline import CONNECT_TIMEOUT_S, bounded_read
 
 if TYPE_CHECKING:
     from neo4j import AsyncResult, AsyncSession
@@ -359,6 +360,8 @@ class Neo4jClient:
                 max_connection_pool_size=self._max_connection_pool_size,
                 connection_acquisition_timeout=self._connection_acquisition_timeout,
                 liveness_check_timeout=self._liveness_check_timeout,
+                # The driver's default is 30 s: an unroutable server held each connect that long (ERR-UX).
+                connection_timeout=CONNECT_TIMEOUT_S,
                 # A query naming a property, label or relationship type no node has held yet (an optional field most
                 # graphs never set) gets this notification on every run, and the driver logs it with the whole query.
                 # The other classifications (deprecation, performance, hint, ...) are kept.
@@ -743,6 +746,24 @@ class Neo4jClient:
 
     @_logged("execute_query")
     async def execute_query(
+        self,
+        query: str,
+        parameters: dict[str, Any] | None = None,
+        txn_id: str | None = None,
+        *,
+        plain: bool = False,
+        timeout: float | None = None,
+        bulk: str | None = None,
+        size: int = 0,
+    ) -> list[dict[str, Any]]:
+        """``_execute_query``, bounded on a run's tool call by the call's remaining time (ERR-UX); the driver has
+        no client-side read timeout, so a server that accepts and never answers would otherwise hold it."""
+        return await bounded_read(
+            "graph",
+            self._execute_query(query, parameters, txn_id, plain=plain, timeout=timeout, bulk=bulk, size=size),
+        )
+
+    async def _execute_query(
         self,
         query: str,
         parameters: dict[str, Any] | None = None,

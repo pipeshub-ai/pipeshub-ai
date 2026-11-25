@@ -27,6 +27,11 @@ from app.agent_loop_lib.tools.base import (
     ToolParameter,
     error_data,
 )
+from app.agent_loop_lib.tools.tags import (
+    TAG_EFFECT_READ,
+    TAG_EFFECT_WRITE,
+    TAG_SINK_NONE,
+)
 
 if TYPE_CHECKING:
     from app.agent_loop_lib.core.types import ToolResult as CoreToolResult
@@ -157,6 +162,10 @@ class SkillsListTool(Tool):
         return "/toolsets/skills/skills_list"
 
     @property
+    def tags(self) -> list[Tag]:
+        return [TAG_EFFECT_READ]
+
+    @property
     def parameters(self) -> list[ToolParameter]:
         return [
             ToolParameter(name="category", type=ParameterType.STRING, required=False, description="Filter by top-level category."),
@@ -248,6 +257,10 @@ class SkillSearchTool(Tool):
         return "/toolsets/skills/skill_search"
 
     @property
+    def tags(self) -> list[Tag]:
+        return [TAG_EFFECT_READ]
+
+    @property
     def parameters(self) -> list[ToolParameter]:
         return [
             ToolParameter(name="query", type=ParameterType.STRING, required=True, description="Search keywords."),
@@ -327,6 +340,10 @@ class LoadSkillTool(Tool):
     @property
     def path(self) -> str:
         return "/toolsets/skills/load_skill"
+
+    @property
+    def tags(self) -> list[Tag]:
+        return [TAG_EFFECT_READ]
 
     @property
     def parameters(self) -> list[ToolParameter]:
@@ -436,6 +453,10 @@ class LoadSkillResourceTool(Tool):
         return "/toolsets/skills/load_skill_resource"
 
     @property
+    def tags(self) -> list[Tag]:
+        return [TAG_EFFECT_READ]
+
+    @property
     def parameters(self) -> list[ToolParameter]:
         return [
             ToolParameter(name="name", type=ParameterType.STRING, required=True, description="The skill's exact name."),
@@ -532,7 +553,8 @@ class SkillManageTool(Tool):
 
     @property
     def tags(self) -> list[Tag]:
-        return [Tag("category", "write")]
+        # The org's own skill library: it stays in the deployment (UX1).
+        return [Tag("category", "write"), TAG_EFFECT_WRITE, TAG_SINK_NONE]
 
     @property
     def parameters(self) -> list[ToolParameter]:

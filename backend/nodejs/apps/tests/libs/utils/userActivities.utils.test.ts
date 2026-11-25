@@ -53,8 +53,8 @@ describe('userActivities.utils', () => {
       expect(userActivitiesType.ACCOUNT_DELETED).to.equal('ACCOUNT DELETED')
     })
 
-    it('should have exactly 12 activity types', () => {
-      expect(Object.keys(userActivitiesType)).to.have.length(12)
+    it('should have exactly 14 activity types', () => {
+      expect(Object.keys(userActivitiesType)).to.have.length(14)
     })
 
     it('should have unique values for all activity types', () => {
@@ -73,6 +73,7 @@ describe('userActivities.utils', () => {
         userActivitiesType.ACCOUNT_BLOCKED,
         userActivitiesType.ACCOUNT_DELETED,
         userActivitiesType.ACCOUNT_RESTORED,
+        userActivitiesType.ACCOUNT_DISABLED,
       ])
     })
 
@@ -84,6 +85,7 @@ describe('userActivities.utils', () => {
         userActivitiesType.REFRESH_TOKEN,
         userActivitiesType.WRONG_OTP,
         userActivitiesType.WRONG_PASSWORD,
+        userActivitiesType.ACCOUNT_ENABLED,
       ]
       const invalidating: readonly string[] = SESSION_INVALIDATING_ACTIVITIES
       kept.forEach((activity) => {
@@ -106,6 +108,13 @@ describe('userActivities.utils', () => {
     it('gives other activities a one-second allowance', () => {
       expect(activityEndsSession({ activityType: 'PASSWORD CHANGED', createdAt: at(500) }, issuedAt)).to.be.false
       expect(activityEndsSession({ activityType: 'PASSWORD CHANGED', createdAt: at(1500) }, issuedAt)).to.be.true
+    })
+
+    it('DEACT-5 (SEC-AZ-08): a deactivation ends every token issued in its second or before, so a reactivation resumes none', () => {
+      expect(activityEndsSession({ activityType: 'ACCOUNT DISABLED', createdAt: at(500) }, issuedAt)).to.be.true
+      expect(activityEndsSession({ activityType: 'ACCOUNT DISABLED', createdAt: at(-1) }, issuedAt)).to.be.false
+      expect(SESSION_INVALIDATING_ACTIVITIES).to.include('ACCOUNT DISABLED')
+      expect(SESSION_INVALIDATING_ACTIVITIES).to.not.include('ACCOUNT ENABLED')
     })
 
     it('counts a restore as session-ending', () => {

@@ -1,0 +1,96 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/ext/pipeshub/events/x.pipeshub.run.handoff.schema.json",
+  "title": "PipeshubRunHandoffEvent",
+  "description": "DEEPROUTE: a loop run hands its work to the coding engine (CTL-6 code_task), journaled with the turn boundary that asks for it. `upfront`: the goal step judged the request bigger than a chat reply; `escalation`: the run crossed a threshold (tool calls, model turns, context, spend) while still gathering. Node puts it on the code_task child that follows, and the chat names the engine group with the reason (\"Handed to Claude Code: this needs research across many sources\"). Presentation only (non-critical); folds ignore it.",
+  "x-writer": [
+    "worker"
+  ],
+  "allOf": [
+    {
+      "$ref": "../../../core/envelope.schema.json#/$defs/InlineEnvelope"
+    }
+  ],
+  "properties": {
+    "type": {
+      "const": "x.pipeshub.run.handoff"
+    },
+    "writer": {
+      "const": "worker"
+    },
+    "data": {
+      "$ref": "#/$defs/PipeshubRunHandoffData"
+    }
+  },
+  "$defs": {
+    "PipeshubRunHandoffData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "trigger",
+        "reason"
+      ],
+      "properties": {
+        "trigger": {
+          "description": "When the run was handed off: before its first model turn, or mid-run.",
+          "enum": [
+            "upfront",
+            "escalation"
+          ]
+        },
+        "reason": {
+          "description": "Why; the chat words it.",
+          "enum": [
+            "research",
+            "analysis",
+            "planning",
+            "long_report",
+            "many_steps",
+            "context",
+            "budget"
+          ]
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 9,
+      "runId": "run_1",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-22T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "type": "x.pipeshub.run.handoff",
+      "data": {
+        "trigger": "upfront",
+        "reason": "research"
+      },
+      "attemptId": "att_1",
+      "fence": 1
+    },
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 41,
+      "runId": "run_1",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-22T12:01:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "type": "x.pipeshub.run.handoff",
+      "data": {
+        "trigger": "escalation",
+        "reason": "many_steps"
+      },
+      "attemptId": "att_1",
+      "fence": 1
+    }
+  ]
+}

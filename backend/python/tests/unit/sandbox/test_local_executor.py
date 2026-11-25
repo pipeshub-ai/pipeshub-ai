@@ -2,19 +2,17 @@
 
 import asyncio
 import os
-import shutil
-import tempfile
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from app.sandbox.local_executor import LocalExecutor, _SANDBOX_ROOT
+from app.sandbox.local_executor import LocalExecutor
 from app.sandbox.models import ExecutionResult, SandboxLanguage
 
 
 class TestLocalExecutorInit:
     def test_creates_sandbox_root(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("app.sandbox.local_executor._SANDBOX_ROOT", str(tmp_path / "sandbox"))
+        monkeypatch.setattr("app.sandbox.local_executor._sandbox_root", lambda: str(tmp_path / "sandbox"))
         executor = LocalExecutor()
         assert os.path.isdir(str(tmp_path / "sandbox"))
 
@@ -23,7 +21,7 @@ class TestLocalExecutorExecute:
     @pytest.fixture
     def executor(self, tmp_path, monkeypatch):
         root = str(tmp_path / "sandbox")
-        monkeypatch.setattr("app.sandbox.local_executor._SANDBOX_ROOT", root)
+        monkeypatch.setattr("app.sandbox.local_executor._sandbox_root", lambda: root)
         return LocalExecutor()
 
     @pytest.mark.asyncio
@@ -57,7 +55,7 @@ class TestLocalExecutorPython:
     @pytest.fixture
     def executor(self, tmp_path, monkeypatch):
         root = str(tmp_path / "sandbox")
-        monkeypatch.setattr("app.sandbox.local_executor._SANDBOX_ROOT", root)
+        monkeypatch.setattr("app.sandbox.local_executor._sandbox_root", lambda: root)
         return LocalExecutor()
 
     @pytest.mark.asyncio
@@ -239,7 +237,7 @@ class TestLocalExecutorTypescript:
     @pytest.fixture
     def executor(self, tmp_path, monkeypatch):
         root = str(tmp_path / "sandbox")
-        monkeypatch.setattr("app.sandbox.local_executor._SANDBOX_ROOT", root)
+        monkeypatch.setattr("app.sandbox.local_executor._sandbox_root", lambda: root)
         return LocalExecutor()
 
     @pytest.mark.asyncio
@@ -296,7 +294,7 @@ class TestLocalExecutorSQLite:
     @pytest.fixture
     def executor(self, tmp_path, monkeypatch):
         root = str(tmp_path / "sandbox")
-        monkeypatch.setattr("app.sandbox.local_executor._SANDBOX_ROOT", root)
+        monkeypatch.setattr("app.sandbox.local_executor._sandbox_root", lambda: root)
         return LocalExecutor()
 
     @pytest.mark.asyncio
@@ -311,7 +309,7 @@ class TestLocalExecutorPostgreSQL:
     @pytest.fixture
     def executor(self, tmp_path, monkeypatch):
         root = str(tmp_path / "sandbox")
-        monkeypatch.setattr("app.sandbox.local_executor._SANDBOX_ROOT", root)
+        monkeypatch.setattr("app.sandbox.local_executor._sandbox_root", lambda: root)
         return LocalExecutor()
 
     @pytest.mark.asyncio
@@ -456,7 +454,7 @@ class TestCollectArtifacts:
 
 class TestCleanup:
     def test_cleanup_execution(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("app.sandbox.local_executor._SANDBOX_ROOT", str(tmp_path))
+        monkeypatch.setattr("app.sandbox.local_executor._sandbox_root", lambda: str(tmp_path))
         exec_dir = tmp_path / "test-exec-id"
         exec_dir.mkdir()
         (exec_dir / "file.txt").write_text("data")
@@ -465,5 +463,5 @@ class TestCleanup:
         assert not exec_dir.exists()
 
     def test_cleanup_nonexistent(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("app.sandbox.local_executor._SANDBOX_ROOT", str(tmp_path))
+        monkeypatch.setattr("app.sandbox.local_executor._sandbox_root", lambda: str(tmp_path))
         LocalExecutor.cleanup_execution("nonexistent")  # should not raise

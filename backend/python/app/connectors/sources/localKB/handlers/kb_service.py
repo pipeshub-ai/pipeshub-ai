@@ -47,6 +47,7 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
 from app.core.org_context import current_org_id
 from app.connectors.sources.localKB.handlers.delete_lease import hold_delete_lease
 from app.connectors.sources.localKB.push.contract import is_pushed_revision
+from app.harness.knowledge.service import KnowledgePublications, container_id
 from app.models.entities import FileRecord, RecordType, SourcePerson
 from app.models.source_dates import (
     UPLOAD_SOURCE_CREATED_FIELD,
@@ -1311,6 +1312,7 @@ class KnowledgeBaseService:
                     f"event(s) for KB {kb_id}; some embeddings were not cleaned up"
                 )
             await free_lane_of_deleted_connector(self.logger, kb_id)
+            await self._erase_publications(org_id, kb_id)
             return {
                 "success": True,
                 "reason": "Knowledge base and all contents deleted successfully",
@@ -1328,6 +1330,15 @@ class KnowledgeBaseService:
         _BACKGROUND_TASKS.add(task)
         task.add_done_callback(_BACKGROUND_TASKS.discard)
 
+    async def _erase_publications(self, org_id: str, kb_id: str) -> None:
+        """A deleted knowledge base takes its publications with it (P2.13, C-14 rule), flag on or off. A failure
+        here leaves orphans that grant nothing (their container is gone) and are pruned at the next read."""
+        try:
+            await KnowledgePublications(self.graph_provider, self.config_service).erase_container(
+                org_id, container_id("kb", kb_id)
+            )
+        except Exception as e:
+            self.logger.warning("publications.erase_failed errorType=%s choice=prune_on_read", type(e).__name__)
     async def _schedule_upload_removal(
         self,
         kb_id: str,

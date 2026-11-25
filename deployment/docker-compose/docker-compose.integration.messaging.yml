@@ -5,9 +5,30 @@
 #
 # Ports are deliberately non-standard so this can run beside a dev stack
 # without clashing with it.
+
+# Every service that runs an image the base file runs keeps the base file's
+# baseline (ADR-OPS-02): no capability but those its image proves it needs, with
+# the reason beside each, no privilege gain, and memory and process limits.
+# tests/unit/harness/security/test_container_baseline.py checks it.
+x-hardened: &hardened
+  cap_drop: [ALL]
+  security_opt:
+    - no-new-privileges:true
+
+# A service whose image writes only to its volumes also gets a read-only root.
+x-read-only-root: &read-only-root
+  read_only: true
+  tmpfs:
+    - /tmp:size=64m,mode=1777
+
 services:
   kafka-messaging-it:
-    image: confluentinc/cp-kafka:7.9.0
+    <<: *hardened
+    image: confluentinc/cp-kafka:7.9.0@sha256:02170e46da5c36b1581cd42ebfbf2a55edae6348c62bc772bc2166841db745b2
+    ulimits:
+      nofile:
+        soft: 100000
+        hard: 100000
     container_name: kafka-messaging-it
     depends_on:
       - zookeeper-messaging-it
@@ -34,16 +55,39 @@ services:
       interval: 5s
       timeout: 10s
       retries: 20
+    deploy:
+      resources:
+        limits:
+          memory: 3G
+          pids: 4096
 
   zookeeper-messaging-it:
-    image: confluentinc/cp-zookeeper:7.9.0
+    <<: *hardened
+    image: confluentinc/cp-zookeeper:7.9.0@sha256:5ae28c2f45b89e12e8ba27bd0cfbe6488ef7082a17f01c878ab7f1841a58874b
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
     container_name: zookeeper-messaging-it
     environment:
       - ZOOKEEPER_CLIENT_PORT=2181
       - ZOOKEEPER_TICK_TIME=2000
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          pids: 4096
 
   redis-messaging-it:
-    image: redis:7.2-alpine
+    <<: [*hardened, *read-only-root]
+    # The image entrypoint drops to the redis user (SETUID, SETGID); with no volume
+    # an earlier redis wrote, there is nothing to hand over.
+    cap_add: [SETUID, SETGID]
+    image: redis:7.2-alpine@sha256:82403a0812a51faf6779f8d0dbe25ea85279ec7d49d24a3c78a65e9d8a87fa5f
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
     container_name: redis-messaging-it
     ports:
       - "6389:6379"
@@ -53,3 +97,8 @@ services:
       interval: 5s
       timeout: 5s
       retries: 20
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          pids: 4096

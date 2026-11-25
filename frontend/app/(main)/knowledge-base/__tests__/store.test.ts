@@ -14,7 +14,7 @@ vi.mock('@/config', async () => {
   return { useAuthStore: auth.useAuthStore, logoutAndRedirect: vi.fn() };
 });
 
-const { useAuthStore } = await import('@/lib/store/auth-store');
+const { useAuthStore } = await import('@/config');
 const { fakeApi } = await import('@/lib/api/__tests__/fake-api');
 const { useToastStore } = await import('@/lib/store/toast-store');
 const { useKnowledgeBaseStore } = await import('../store');
@@ -32,7 +32,7 @@ function tableWith(...ids: string[]) {
 }
 
 beforeEach(() => {
-  useAuthStore.setState({ accessToken: jwtExpiringIn(3600), refreshToken: 'r' });
+  useAuthStore.setState({ accessToken: jwtExpiringIn(3600) });
   store().reset();
   useToastStore.setState({ toasts: [] });
   vi.spyOn(console, 'error').mockImplementation(() => {});

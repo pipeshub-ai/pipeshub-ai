@@ -259,6 +259,7 @@ def test_a_link_to_a_device_or_a_fifo_is_unreadable_and_never_blocks(tmp_path: P
     os.mkfifo(fifo)
     started = time.monotonic()
     merged = read_cells(claim.directory, 2)
+    # wall-clock-ok: a hang guard: reading a FIFO or /dev/zero cell would block for ever, skipping it takes ms
     assert time.monotonic() - started < 2
     assert not merged.healthy
     assert [c["reason"] for c in merged.cells] == ["unreadable", "unreadable"]

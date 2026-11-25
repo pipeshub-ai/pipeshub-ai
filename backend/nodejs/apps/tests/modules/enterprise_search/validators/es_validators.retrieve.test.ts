@@ -41,9 +41,9 @@ describe('enterpriseSearchRetrieveSchema', () => {
   })
 
   it('refuses a field it does not take, by name, instead of ignoring it', () => {
-    const [[, message]] = refusal({ query: 'q', maxChunkPerRecord: 1 })
-    expect(message).to.include('maxChunkPerRecord')
-    expect(refusal({ query: 'q', foo: 'bar' })[0][1]).to.include('foo')
+    const [maxChunk] = refusal({ query: 'q', maxChunkPerRecord: 1 })
+    expect(maxChunk?.[1]).to.include('maxChunkPerRecord')
+    expect(refusal({ query: 'q', foo: 'bar' })[0]?.[1]).to.include('foo')
   })
 
   it('says filters.apps takes connector instance ids when given a connector type', () => {

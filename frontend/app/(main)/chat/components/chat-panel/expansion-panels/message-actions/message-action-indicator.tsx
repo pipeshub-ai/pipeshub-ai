@@ -111,6 +111,7 @@ export function MessageActionIndicator({
         </Box>
 
         <IconButton
+          aria-label={t('common.close')}
           variant="ghost"
           color="gray"
           size="1"

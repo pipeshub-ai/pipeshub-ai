@@ -1,7 +1,7 @@
 """`ScopedSkillManager`: a per-agent read-scoping decorator over
 `SkillManager` (Open/Closed — `agent_loop_lib` itself is untouched; this is
 purely an adapter-layer wrapper, same spirit as `GraphSkillStore`'s
-`visibility_scope` but for a DIFFERENT axis: "which skills is THIS agent
+`SkillVisibility` but for a DIFFERENT axis: "which skills is THIS agent
 allowed to see this turn" rather than "which skills did THIS user create").
 
 Only wraps the read/activation surface the prompt builder and the 5 skill
@@ -17,6 +17,8 @@ Assignment semantics (see the plan's Phase 4): an agent with an EMPTY
 catalog unfiltered (today's behavior, unchanged) — wrapping only ever
 narrows, so `PipesHubAgentFactory` only bothers constructing this wrapper
 when `context.agent_skills` is non-empty (see `skills_wiring.build_skill_manager`).
+An assignment narrows the person's own skills away, never the org's builtin
+packs: the same offer (`skills.offer`) an engine run of the agent mounts.
 """
 
 from __future__ import annotations
@@ -45,17 +47,22 @@ class ScopedSkillManager:
     def __getattr__(self, item: str) -> Any:  # noqa: ANN401 - transparent delegation
         return getattr(self._manager, item)
 
+    def _shown(self, metadata: "SkillMetadata") -> bool:
+        from app.agent_loop_lib.modules.providers.skills.base import SkillSource
+
+        return metadata.name in self._allowed or metadata.source == SkillSource.BUILTIN
+
     def _visible(self, name: str) -> bool:
-        return name in self._allowed
+        return name in self._allowed or any(m.name == name and self._shown(m) for m in self._manager.catalog_snapshot())
 
     # ---- Tier 1: catalog -----------------------------------------------
 
     def catalog_snapshot(self) -> "list[SkillMetadata]":
-        return [m for m in self._manager.catalog_snapshot() if self._visible(m.name)]
+        return [m for m in self._manager.catalog_snapshot() if self._shown(m)]
 
     async def list_skills(self, filter: "SkillFilter | None" = None) -> "list[SkillMetadata]":
         metadatas = await self._manager.list_skills(filter)
-        return [m for m in metadatas if self._visible(m.name)]
+        return [m for m in metadatas if self._shown(m)]
 
     async def search(
         self,
@@ -75,7 +82,7 @@ class ScopedSkillManager:
             query, category=category, subcategory=subcategory, tags=tags,
             status=status, source=source, limit=max(limit * 4, limit),
         )
-        return [m for m in matches if self._visible(m.skill.name)][:limit]
+        return [m for m in matches if self._shown(m.skill)][:limit]
 
     # ---- Tier 2/3: activation + resources --------------------------------
 

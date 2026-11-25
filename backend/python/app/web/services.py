@@ -7,7 +7,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
 from app.web.budget import WebBudget
-from app.web.chain import ChainOutcome, Cooldowns, run_chain
+from app.web.chain import ChainOutcome, Cooldowns, InFlight, run_chain
 from app.web.deadline import Deadline
 from app.web.errors import AccessDenied, InvalidUrl, WebError
 from app.web.fetch.images import fetch_image_data_uri
@@ -66,11 +66,13 @@ class WebSearchService(_Guarded):
         cooldowns: Cooldowns,
         budget: WebBudget | None = None,
         clock: Callable[[], float] = time.monotonic,
+        in_flight: InFlight | None = None,
     ) -> None:
         super().__init__(gate, budget)
         self._providers = tuple(providers)
         self._cooldowns = cooldowns
         self._clock = clock
+        self._in_flight = in_flight
 
     async def search(self, query: str, caller: CallerContext) -> SearchOutcome:
         """Results from the first provider that answers, deduplicated by page, without any the
@@ -84,6 +86,7 @@ class WebSearchService(_Guarded):
             Deadline.after(SEARCH_DEADLINE_S, self._clock),
             attempt_s=SEARCH_ATTEMPT_S,
             cooldowns=self._cooldowns,
+            in_flight=self._in_flight,
         )
         return SearchOutcome(query, await self._visible(outcome.value, caller), outcome.served_by, outcome.attempts)
 

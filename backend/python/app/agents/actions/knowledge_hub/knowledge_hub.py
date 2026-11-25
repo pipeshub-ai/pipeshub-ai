@@ -16,7 +16,11 @@ from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
 from app.agent_loop_lib.tools.decorators import tool
 from app.agents.actions.util.tool_summaries import bullet_list, parse_json_maybe
 from app.connectors.core.registry.auth_builder import AuthBuilder
-from app.connectors.core.registry.tool_builder import ToolsetBuilder, ToolsetCategory
+from app.connectors.core.registry.tool_builder import (
+    ToolProvider,
+    ToolsetBuilder,
+    ToolsetCategory,
+)
 from app.connectors.sources.localKB.api.knowledge_hub_models import (
     KnowledgeHubNodesResponse,
     NodeItem,
@@ -128,7 +132,7 @@ def _list_files_result_summary(args: dict[str, Any], result: "ToolResult") -> st
     return header + "\n" + bullet_list(names, total=len(items))
 
 
-@ToolsetBuilder("KnowledgeHub")\
+@ToolsetBuilder("KnowledgeHub", provider=ToolProvider.PLATFORM)\
     .in_group("Internal Tools")\
     .with_description("Browse and search files in the Knowledge Hub")\
     .with_category(ToolsetCategory.UTILITY)\
@@ -171,7 +175,7 @@ class KnowledgeHub:
             ToolParameter(name="sort_by", type=ParameterType.STRING, description="Sort field: 'name', 'createdAt', 'updatedAt', 'size', 'type'.", required=False, default="updatedAt"),
             ToolParameter(name="sort_order", type=ParameterType.STRING, description="Sort order: 'asc' or 'desc'.", required=False, default="desc"),
         ],
-        tags=[Tag(key="category", value="knowledge"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="knowledge"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
         args_summary=_list_files_args_summary,
         result_summary=_list_files_result_summary,
     )

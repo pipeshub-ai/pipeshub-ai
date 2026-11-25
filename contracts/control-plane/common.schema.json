@@ -1,0 +1,110 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/control-plane/v1/common.schema.json",
+  "title": "ControlPlaneCommon",
+  "description": "Shared definitions for control-plane contracts (02-lld §1.3). Not an instance schema.",
+  "$defs": {
+    "OrgId": {
+      "description": "The org an object belongs to; always the caller's, taken from the token.",
+      "$ref": "https://schemas.pipeshub.com/harness/v2/core/common.schema.json#/$defs/Id"
+    },
+    "ScopeRef": {
+      "description": "A layer of the precedence chain with its id: `org:o1`, `team:t9`, `agent:a7`, `user:u3`; `deployment` and `release` have none.",
+      "type": "string",
+      "pattern": "^(?:deployment|release|(?:org|team|agent|user):[A-Za-z0-9][A-Za-z0-9_.:-]{0,127})$"
+    },
+    "ItemRef": {
+      "description": "A catalog item version, `{kind}:{publisher}/{name}@{version}`. `publisher` is `pipeshub` (release), `org`, `user` or a plugin publisher; `kind` is validated against the registered domain modules, not here.",
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]{0,31}:[a-z0-9][a-z0-9._-]{0,63}/[a-z0-9][a-z0-9._-]{0,127}@[0-9A-Za-z][0-9A-Za-z.+-]{0,63}$"
+    },
+    "InstallationRef": {
+      "description": "`inst_` and a ULID; toolset and MCP instance ids from before the control plane are kept verbatim (02-lld §11.2).",
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^inst_[0-9A-HJKMNP-TV-Z]{26}$"
+        },
+        {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$"
+        }
+      ]
+    },
+    "BindingRef": {
+      "description": "`bnd_` and a ULID.",
+      "type": "string",
+      "pattern": "^bnd_[0-9A-HJKMNP-TV-Z]{26}$"
+    },
+    "Revision": {
+      "description": "An object's revision: compare-and-set on writes, bumped once per committed write.",
+      "$ref": "https://schemas.pipeshub.com/harness/v2/core/common.schema.json#/$defs/UInt"
+    },
+    "ActorRef": {
+      "description": "Who made a change: a user, a service (by its name), or the system (migrations, release data).",
+      "type": "string",
+      "pattern": "^(?:user:[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}|service:[a-z0-9][a-z0-9_.-]{0,63}|system)$"
+    },
+    "Digest": {
+      "$ref": "https://schemas.pipeshub.com/harness/v2/core/common.schema.json#/$defs/Digest"
+    },
+    "LayerName": {
+      "description": "A layer of the precedence chain (02-lld §3.1), top to bottom: the harness policy's, re-exported as this module's LAYERS.",
+      "x-constant": "LAYERS",
+      "$ref": "https://schemas.pipeshub.com/harness/v2/core/policy/policy-layer.schema.json#/$defs/LayerName"
+    },
+    "ApproverLevel": {
+      "description": "Who approves a configuration change, from the loosest up: the harness policy's, re-exported as this module's APPROVER_LEVELS.",
+      "x-constant": "APPROVER_LEVELS",
+      "$ref": "https://schemas.pipeshub.com/harness/v2/core/policy/policy-layer.schema.json#/$defs/ApproverLevel"
+    },
+    "DelegableAction": {
+      "description": "A control-plane action an org may delegate to team admins: the harness policy's, re-exported as this module's DELEGABLE_ACTIONS.",
+      "x-constant": "DELEGABLE_ACTIONS",
+      "$ref": "https://schemas.pipeshub.com/harness/v2/core/policy/policy-layer.schema.json#/$defs/DelegableAction"
+    },
+    "RemediationActor": {
+      "description": "Who can resolve a refusal: the person who asked, an org or team admin, the admin of the layer above, the agent's builder, the binding's owner, an approver, or the operator.",
+      "x-constant": "REMEDIATION_ACTORS",
+      "enum": [
+        "self",
+        "admin",
+        "team_admin",
+        "layer_admin",
+        "builder",
+        "binding_owner",
+        "approver",
+        "operator"
+      ]
+    },
+    "ApprovalRef": {
+      "description": "`apr_` and a ULID.",
+      "type": "string",
+      "pattern": "^apr_[0-9A-HJKMNP-TV-Z]{26}$"
+    },
+    "ItemKind": {
+      "description": "A catalog kind (`toolset`, `mcp`, `skill`, `engine`, `plugin`, …): open, validated against the registered domain modules.",
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]{0,31}$"
+    },
+    "SubjectRef": {
+      "description": "Who a grant is for: the org (its built-in assistant), a team, an agent or a user.",
+      "type": "string",
+      "pattern": "^(?:org|(?:team|agent|user):[A-Za-z0-9][A-Za-z0-9_.:-]{0,127})$"
+    },
+    "InstallationOwnerRef": {
+      "description": "Who owns an installation: the org, a team or a user.",
+      "type": "string",
+      "pattern": "^(?:org|(?:team|user):[A-Za-z0-9][A-Za-z0-9_.:-]{0,127})$"
+    },
+    "BindingOwnerRef": {
+      "description": "Whose credential a binding holds: the org's, an agent's (a service account) or a user's.",
+      "type": "string",
+      "pattern": "^(?:org|(?:agent|user):[A-Za-z0-9][A-Za-z0-9_.:-]{0,127})$"
+    },
+    "Timestamp": {
+      "description": "Milliseconds since the epoch.",
+      "$ref": "https://schemas.pipeshub.com/harness/v2/core/common.schema.json#/$defs/UInt"
+    }
+  }
+}

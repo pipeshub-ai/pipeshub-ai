@@ -39,6 +39,8 @@ export interface User {
 
   /** Account blocked (credentials); from GET /api/v1/users?isBlocked=true merge */
   isBlocked?: boolean;
+  /** Account deactivated by an admin (SEC-AZ-08); from GET /api/v1/users */
+  isDisabled?: boolean;
 }
 
 /**

@@ -139,7 +139,7 @@ def test_eight_workers_stepping_and_admitting_lose_no_charge(tmp_path: Path) -> 
         assert sum(size for _, size in record.charges) == 4 * M
 
 
-def test_a_stopped_lock_holder_never_blocks_the_others(tmp_path: Path) -> None:
+def test_a_stopped_lock_holder_never_blocks_the_others(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from app.agent_loop_lib.sandbox.capacity import HoldReason
 
     reader_file = tmp_path / "host.json"
@@ -157,34 +157,27 @@ def test_a_stopped_lock_holder_never_blocks_the_others(tmp_path: Path) -> None:
         os.kill(holder.pid, signal.SIGSTOP)
         time.sleep(0.15)
 
-        async def on_loop() -> tuple[float, float, Any]:
-            lags: list[float] = []
+        async def on_loop() -> tuple[float, list[str], Any]:
+            from tests.unit.agent_loop_lib.sandbox.qa_live.test_live_edges import (
+                loop_blocking_calls,
+            )
 
-            async def ticker() -> None:
-                last = time.perf_counter()
-                for _ in range(200):
-                    await asyncio.sleep(0.001)
-                    now = time.perf_counter()
-                    lags.append(now - last)
-                    last = now
-
-            tick = asyncio.create_task(ticker())
+            blocking = loop_blocking_calls(monkeypatch)
             t0 = time.perf_counter()
             reason = await live.admit_and_charge(held=0)
             admit_s = time.perf_counter() - t0
-            t0 = time.perf_counter()
             live.view(fresh=True)
             live.waiting(HoldReason.SLOTS_FULL, 1.0)
-            loop_s = time.perf_counter() - t0
-            await tick
-            return admit_s, max(loop_s, max(lags)), reason
+            return admit_s, list(blocking), reason
 
-        admit_s, loop_s, reason = asyncio.run(on_loop())
-        # Admitted (fail open) after about the 50 ms budget, loop never held.
+        admit_s, blocking, reason = asyncio.run(on_loop())
+        # Admitted (fail open) after about the 50 ms budget, and nothing on the loop waited for the lock.
+        # wall-clock-ok: the stopped holder keeps the lock forever; 0.5 s is ten times the 50 ms admission budget
         assert reason is None and 0.04 <= admit_s < 0.5
-        assert loop_s < 0.03
+        assert blocking == []
         t0 = time.perf_counter()
         assert live.sample_once() is None
+        # wall-clock-ok: the stopped holder keeps the lock forever; 0.3 s is fifteen times the 20 ms step budget
         assert time.perf_counter() - t0 < 0.3
         assert live.view(fresh=True).limit == first.limit
 

@@ -84,7 +84,7 @@ describe('insertRows', () => {
     expect(n).to.equal(3)
     expect(log).to.have.length(2)
     expect(log.every((c) => c.sql.includes('ON CONFLICT DO NOTHING'))).to.equal(true)
-    expect(JSON.parse(log[0].params[0] as string)).to.have.length(2)
+    expect(JSON.parse(log[0]!.params[0] as string)).to.have.length(2)
   })
 
   it('replaces rows in place only for the tables named in withUpsert', async () => {

@@ -23,7 +23,6 @@ import traceback
 import weakref
 from collections.abc import Iterator
 
-from app.agent_loop_lib.core.exceptions import RunCancelled, TransportError
 from app.services.base_client import ServiceAuthRefusedError
 from app.services.messaging.error_classifier import CONTENT_ERRORS, extract_status_code
 from app.utils.log_redaction import (
@@ -36,6 +35,10 @@ from app.utils.oauth_errors import (
     CLIENT_REJECTED_ERROR_CODES,
     is_permanent_grant_rejection,
 )
+
+# The kernel module itself, not the legacy app.agent_loop_lib path: that package installs the agent loop's
+# composition, and the harness worker imports this module while it must stay free of the loop stack (D-7).
+from harness_core.kernel.core.exceptions import RunCancelled, TransportError
 
 ERROR_CLASSES: frozenset[str] = frozenset({
     "auth_expired", "forbidden", "not_found", "rate_limited", "timeout", "upstream_5xx",
@@ -413,7 +416,8 @@ def hide_record_text(record: logging.LogRecord) -> None:
 
 def log_failure(
     logger: logging.Logger, event: str, exc: BaseException, /, *,
-    level: int | None = None, error_class: str | None = None, include_error_text: bool = True, **fields: object,
+    level: int | None = None, error_class: str | None = None, include_error_text: bool = True, stacklevel: int = 1,
+    **fields: object,
 ) -> None:
     """The one failure line, at the layer that handles ``exc``.
 
@@ -425,7 +429,9 @@ def log_failure(
     whose text can echo what was sent (tool arguments in an MCP or OpenAPI server's answer); the
     stack written at ERROR then keeps its frames but shows each exception as ``Type: <message omitted>``, and the record
     carries that stack as ``exc_text`` only, with no ``exc_info``. A chain that :func:`mark_error` stamped with
-    ``hide_text`` (a database driver's error) is always logged that way. Never raises: it runs inside ``except`` blocks.
+    ``hide_text`` (a database driver's error) is always logged that way. ``stacklevel`` is ``logging``'s: a
+    wrapper that logs for its caller (``harness_core.log_lines``) passes how many frames up the caller is.
+    Never raises: it runs inside ``except`` blocks.
     """
     try:
         include_error_text = include_error_text and not _hides_text(exc)
@@ -445,7 +451,7 @@ def log_failure(
                 redact_error_for_log(_chain_text(exc), max_len=_MAX_ERROR_MESSAGE) if include_error_text else None
             ),
         })
-        filename, lineno, func, _ = logger.findCaller(stacklevel=2)
+        filename, lineno, func, _ = logger.findCaller(stacklevel=1 + stacklevel)
         # Without error text, no exc_info: a handler or formatter that reads it would print the raw message.
         exc_info = (type(exc), exc, exc.__traceback__) if with_stack and include_error_text else None
         record = logger.makeRecord(logger.name, emitted, filename, lineno, event, (), exc_info, func, extra)
@@ -459,7 +465,7 @@ def log_failure(
     except Exception:
         # Text-free on purpose: this path skips the masking and include_error_text.
         with contextlib.suppress(Exception):
-            logger.log(level or logging.ERROR, event, extra={"error_type": type(exc).__name__}, stacklevel=2)
+            logger.log(level or logging.ERROR, event, extra={"error_type": type(exc).__name__}, stacklevel=1 + stacklevel)
 
 
 def log_unit_end(

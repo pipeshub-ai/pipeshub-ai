@@ -1,0 +1,318 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/core/events/interaction.explained.schema.json",
+  "title": "InteractionExplainedEvent",
+  "description": "Why the worker asks a person about a held call (UX1), journaled in the same commit as its interaction.requested: the rule that holds it and the layer that set the rule (QA6-F6), and, for a rule that reads them, how sensitive the run's context is, the sources that made it so (titled, at most ten, the rest counted), where the call would send its content, and whether the person may allow that destination for the rest of the conversation. Presentation for the approval card and evidence for a conversation grant; folds ignore it.",
+  "x-writer": [
+    "worker"
+  ],
+  "allOf": [
+    {
+      "$ref": "../envelope.schema.json#/$defs/InlineEnvelope"
+    }
+  ],
+  "properties": {
+    "type": {
+      "const": "interaction.explained"
+    },
+    "writer": {
+      "const": "worker"
+    },
+    "data": {
+      "$ref": "#/$defs/InteractionExplainedData"
+    }
+  },
+  "$defs": {
+    "ExplainedSource": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "recordId": {
+          "$ref": "../common.schema.json#/$defs/Id"
+        },
+        "url": {
+          "type": "string",
+          "pattern": "^https?://",
+          "maxLength": 2048
+        }
+      }
+    },
+    "HoldRule": {
+      "description": "The rule that holds the call; flow_external_write: a call that would send data outside the organization (an external write, or a read whose request carries chosen data to an outside host, FG2) after the run read private content; engine_writes: an engine run asks before a write that leaves the user's own space (UX2, UX4); writes, effect_class, tool: a layer's approval rules (approval-rules.schema.json) ask before a write or execute call (its `writes` switch or `classes`), before a call of another effect class (`classes`), or before this tool (`tools`); An edition may add its own rules (x-extensible-enum), each with its reason's own field (x-extensible). plan_approval: the run's plan gate asks a person to approve the plan the run submitted before it may act (G-04); never answered by a conversation grant. external_policy: the org's external policy webhook answered `ask` for a call that writes outside the organization (G-40); never answered by a conversation grant, never decided in a batch, and written only to a journal whose claim names external_policy_asks. site_upload: the site card (WP-63, SEC-A-01): a website held after the run read private data asks once per run and site whether the run may reach it with requests that could carry that data (tool pipeshub@egress/site_upload, the host as the destination); a person may allow it for the conversation, as a fetch_url card offers, and it is written only to a journal whose claim names site_upload_asks.",
+      "x-constant": "HOLD_RULES",
+      "enum": [
+        "flow_external_write",
+        "engine_writes",
+        "writes",
+        "effect_class",
+        "tool",
+        "plan_approval",
+        "external_policy",
+        "site_upload"
+      ],
+      "x-extensible-enum": true
+    },
+    "RuleLayer": {
+      "description": "Whose rule it is: deployment (the operator's default for every org, or an approvals document nobody could read), org, agent (the agent's rules, the org's for it included), engine (an engine run's default or its profile), flow (the flow rule, whichever layer switched it on). The first layer that asks, in that order of precedence. Absent from an event written before layers were named.",
+      "x-constant": "RULE_LAYERS",
+      "enum": [
+        "deployment",
+        "org",
+        "agent",
+        "engine",
+        "flow"
+      ]
+    },
+    "InteractionExplainedData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "interactionId",
+        "rule",
+        "toolId",
+        "conversationGrant"
+      ],
+      "properties": {
+        "interactionId": {
+          "$ref": "../common.schema.json#/$defs/Id"
+        },
+        "rule": {
+          "$ref": "#/$defs/HoldRule"
+        },
+        "layer": {
+          "$ref": "#/$defs/RuleLayer"
+        },
+        "toolId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "sensitivity": {
+          "description": "private: the run read named sources; unknown: content whose origin nobody can name reached it (a connector or MCP result). Written by a rule that reads the run's context (flow_external_write, engine_writes), and beside a layer's own rule on a run whose context is followed.",
+          "enum": [
+            "public",
+            "private",
+            "unknown"
+          ]
+        },
+        "sources": {
+          "type": "array",
+          "maxItems": 10,
+          "items": {
+            "$ref": "#/$defs/ExplainedSource"
+          }
+        },
+        "moreSources": {
+          "$ref": "../common.schema.json#/$defs/UInt"
+        },
+        "destination": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "label",
+            "key"
+          ],
+          "properties": {
+            "label": {
+              "description": "The destination as a person names it (#sales, an address).",
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            },
+            "key": {
+              "$ref": "../common.schema.json#/$defs/Digest"
+            }
+          }
+        },
+        "argsDigest": {
+          "$ref": "../common.schema.json#/$defs/Digest",
+          "description": "The held call's arguments digest (R38-AUTHZ): what a person's decline covers when the ask names no destination (interaction.declined). Written only to a journal whose claim names approval_args_digest."
+        },
+        "conversationGrant": {
+          "description": "The person may allow this tool and destination for the rest of the conversation.",
+          "type": "boolean"
+        },
+        "editable": {
+          "description": "The person the run acts for may edit the call's arguments before approving it (AP-06): the edited arguments run instead, and the decision journals them (interaction.resolved answerRef on an approved approval, with its hash). Offered only for a write whose arguments are an object, never for an edition's rule, and only to a journal whose claim names approval_edits.",
+          "type": "boolean"
+        },
+        "fieldOrder": {
+          "description": "With editable (WP-56): the tool's argument names in its input schema's order, so the edit card lists the values as the tool declares them (names the call has but the list does not follow, in the call's order). Written only to a journal whose claim names approval_edit_order.",
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        },
+        "ruleGrant": {
+          "description": "The person may save their answer as their own rule for this tool (main's \"Don't ask again\", BUGS-B): the MCP server instance and the tool's name as the person's rules key it. Written only where main's default rule for the person's own (MCP) tool asks, and only to a journal whose claim names approval_rule_grants.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "instanceId",
+            "toolName"
+          ],
+          "properties": {
+            "instanceId": {
+              "$ref": "../common.schema.json#/$defs/Id"
+            },
+            "toolName": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            }
+          }
+        }
+      },
+      "x-extensible": true
+    }
+  },
+  "examples": [
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 8,
+      "runId": "run_1",
+      "type": "interaction.explained",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-09T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "data": {
+        "interactionId": "ix.approve.t2.0",
+        "rule": "flow_external_write",
+        "layer": "flow",
+        "toolId": "slack@default/send_message",
+        "sensitivity": "private",
+        "sources": [
+          {
+            "title": "Q3 plan",
+            "recordId": "rec_1"
+          }
+        ],
+        "moreSources": 0,
+        "destination": {
+          "label": "#sales",
+          "key": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "conversationGrant": true
+      },
+      "attemptId": "att_1",
+      "fence": 3
+    },
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 8,
+      "runId": "run_1",
+      "type": "interaction.explained",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-09T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "data": {
+        "interactionId": "ix.approve.t2.0",
+        "rule": "engine_writes",
+        "layer": "engine",
+        "toolId": "github@default/open_pull_request",
+        "sensitivity": "public",
+        "sources": [],
+        "moreSources": 0,
+        "destination": {
+          "label": "acme/web",
+          "key": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "conversationGrant": true
+      },
+      "attemptId": "att_1",
+      "fence": 3
+    },
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 8,
+      "runId": "run_1",
+      "type": "interaction.explained",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-09T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "data": {
+        "interactionId": "ix.approve.t2.0",
+        "rule": "writes",
+        "layer": "org",
+        "toolId": "jira@default/create_issue",
+        "conversationGrant": false
+      },
+      "attemptId": "att_1",
+      "fence": 3
+    },
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 8,
+      "runId": "run_1",
+      "type": "interaction.explained",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-09T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "data": {
+        "interactionId": "ix.approve.t2.0",
+        "rule": "flow_external_write",
+        "toolId": "slack@default/send_message",
+        "sensitivity": "private",
+        "sources": [
+          {
+            "title": "Q3 plan",
+            "recordId": "rec_1"
+          }
+        ],
+        "moreSources": 0,
+        "destination": {
+          "label": "#sales",
+          "key": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "conversationGrant": true
+      },
+      "attemptId": "att_1",
+      "fence": 3
+    },
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 8,
+      "runId": "run_1",
+      "type": "interaction.explained",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-09T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "data": {
+        "interactionId": "ix_plan",
+        "rule": "plan_approval",
+        "toolId": "harness@gate/submit_plan",
+        "conversationGrant": false
+      },
+      "attemptId": "att_1",
+      "fence": 3
+    }
+  ]
+}

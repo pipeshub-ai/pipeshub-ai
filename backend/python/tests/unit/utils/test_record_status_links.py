@@ -22,6 +22,7 @@ from app.utils.chat_helpers import (
     record_to_text,
     status_summary_from_graph,
 )
+from tests.support.record_access import InMemoryRecordAccess
 
 MERGED = 1790379000000  # 2026-09-25 23:30 UTC
 RESOLVED = 1780876800000  # 2026-06-08 00:00 UTC
@@ -49,10 +50,14 @@ TYPE_DOCS = {
 }
 
 
-def _graph(links: dict, readable: set[str]) -> AsyncMock:
+def _graph(links: dict, readable: set[str], *, failure: BaseException | None = None) -> AsyncMock:
     graph = AsyncMock()
+    # The shared record-access fake (C-27): user-1 of org-1 reads ``readable``; ``failure`` is a graph outage.
+    access = InMemoryRecordAccess().user("user-1", "org-1")
+    if readable:
+        access.readable("user-1", "org-1", *sorted(readable))
+    access.fail_with(failure).serve(graph)
     graph.get_address_links_batch = AsyncMock(return_value=links)
-    graph.filter_accessible_record_ids = AsyncMock(return_value=readable)
     graph.get_records_by_record_ids = AsyncMock(
         side_effect=lambda ids, org_id: [BASE_DOCS[i] for i in ids if i in BASE_DOCS]
     )
@@ -291,8 +296,7 @@ class TestSearchRecords:
     @pytest.mark.asyncio
     async def test_links_fail_closed_when_access_cannot_be_checked(self) -> None:
         records = [dict(BASE_DOCS["pr-1"])]
-        graph = _graph({"pr-1": {"mentioned_in": ["slack-1"], "links_to": []}}, {"slack-1"})
-        graph.filter_accessible_record_ids = AsyncMock(side_effect=RuntimeError("down"))
+        graph = _graph({"pr-1": {"mentioned_in": ["slack-1"], "links_to": []}}, {"slack-1"}, failure=RuntimeError("down"))
 
         await describe_search_records(records, graph, "org-1", user_id="user-1")
 

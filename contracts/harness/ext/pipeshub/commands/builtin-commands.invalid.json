@@ -1,0 +1,46 @@
+[
+  {
+    "description": "a command takes a lowercase name",
+    "instance": {
+      "schemaVersion": 1,
+      "description": "x",
+      "commands": [
+        {
+          "name": "New",
+          "aliases": [],
+          "kind": "client",
+          "package": "C0",
+          "shipped": true,
+          "executors": ["any"],
+          "needs": [],
+          "duringRun": "now",
+          "args": "",
+          "i18n": "slashCommands.builtin.new"
+        }
+      ],
+      "reservedWords": []
+    }
+  },
+  {
+    "description": "while a run goes, a command acts now, next or waits",
+    "instance": {
+      "schemaVersion": 1,
+      "description": "x",
+      "commands": [
+        {
+          "name": "new",
+          "aliases": [],
+          "kind": "client",
+          "package": "C0",
+          "shipped": true,
+          "executors": ["any"],
+          "needs": [],
+          "duringRun": "later",
+          "args": "",
+          "i18n": "slashCommands.builtin.new"
+        }
+      ],
+      "reservedWords": []
+    }
+  }
+]

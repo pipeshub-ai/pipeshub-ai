@@ -31,6 +31,7 @@ from app.agents.mcp import cimd
 from app.agents.mcp import oauth_client as oauth_client_module
 from app.agents.mcp.url_guard import MCPUrlPolicy
 from app.config.configuration_service import ConfigurationService
+from app.harness.credentials.read_through import credentials_switch_on
 from app.utils.credential_refresh_log import (
     EVENT_DEAUTHENTICATE_FAILED,
     EVENT_STRIKE,
@@ -242,6 +243,7 @@ async def refresh_credential_record(
     config_service: ConfigurationService,
     *,
     stale_access_token: Optional[str] = None,
+    org_id: str | None = None,
 ) -> OAuthTokens:
     """Refresh the OAuth tokens stored at `/services/mcp/credentials/{instance_id}/{owner_id}`
     and persist the result back to the same record.
@@ -258,6 +260,8 @@ async def refresh_credential_record(
             the refresh token (re-authentication required) — subclass of MCPOAuthError.
         oauth_client_module.MCPOAuthError: the token endpoint request failed otherwise.
     """
+    if org_id is not None and credentials_switch_on():
+        return await _refresh_binding(instance_id, owner_id, config_service, org_id)
     # A provider that rotates refresh tokens has spent the old one once it answers, so a caller
     # that gives up (Stop, a listing's deadline) must not abandon the save halfway.
     # The task copies the context here: its `end` line keeps the ids, trigger and org after a caller that left.
@@ -281,6 +285,26 @@ async def _refresh_credential_record_under_locks(
             return await _refresh_credential_record_locked(
                 instance_id, owner_id, config_service, stale_access_token, attempt,
             )
+
+
+async def _refresh_binding(
+    instance_id: str, owner_id: str, config_service: ConfigurationService, org_id: str
+) -> OAuthTokens:
+    """With CONTROL_PLANE_CREDENTIALS on (CPD-8) the record is the owner's binding, renewed by the one refresher;
+    the old credential path is read-only."""
+    from app.connectors.core.base.token_service.token_refresher import (
+        binding_refresher_for,
+    )
+
+    refresher = await binding_refresher_for(config_service)
+    for owner in (f"user:{owner_id}", f"agent:{owner_id}"):
+        record = await refresher.refresh_owner(org_id, instance_id, owner)
+        tokens = record.get("oauthTokens") if record is not None else None
+        if isinstance(tokens, dict):
+            return oauth_client_module.parse_tokens(tokens)
+    raise MCPTokenRefreshError(
+        f"The connection to MCP instance {instance_id} could not be renewed; re-authentication is required"
+    )
 
 
 def _retrieve_exception(task: "asyncio.Future[OAuthTokens]") -> None:

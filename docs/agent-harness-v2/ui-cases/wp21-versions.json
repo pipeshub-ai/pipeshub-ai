@@ -1,0 +1,180 @@
+{
+  "workPackage": "WP-21",
+  "decision": "OWD-14",
+  "title": "Agent versions: publish, draft, version list and rollback in the builder; schedule pins; the version that answered",
+  "mock": "Approved mock: https://claude.ai/artifact/Xy6NUjcoxy5Vb2LJcWVBqH (sections 1-5)",
+  "spec": "frontend/tests/e2e/harness/wp21-agent-versions.spec.ts",
+  "unitTests": [
+    "frontend/app/(main)/agents/agent-builder/__tests__/wp21-agent-versions.test.tsx",
+    "frontend/app/(main)/agents/agent-builder/__tests__/wp21-versions-helpers.test.ts",
+    "frontend/app/(main)/agents/__tests__/wp21-versions-api.test.ts",
+    "frontend/app/(main)/workspace/schedules/__tests__/wp21-schedule-version.test.tsx",
+    "frontend/app/(main)/chat/components/message-area/__tests__/wp21-run-version-label.test.tsx"
+  ],
+  "looks": [
+    {
+      "id": "desktop-light",
+      "viewport": "1440x900",
+      "theme": "light"
+    },
+    {
+      "id": "desktop-dark",
+      "viewport": "1440x900",
+      "theme": "dark"
+    },
+    {
+      "id": "phone-light",
+      "viewport": "375x812",
+      "theme": "light"
+    },
+    {
+      "id": "phone-dark",
+      "viewport": "375x812",
+      "theme": "dark"
+    }
+  ],
+  "screenshotPattern": "wp21-<case>-<look>.png",
+  "translationNote": "Every string is in all 10 locales. en-US and en-IN are the source wording; de-DE, es-ES, hi-IN, ko-KR, zh-CN, zh-SG, zh-TW and cs-CZ are machine-translated and need a translator's review.",
+  "cases": [
+    {
+      "id": "01-no-versions",
+      "title": "No versions yet",
+      "steps": [
+        "Open Agents and start a new agent (/agents/new).",
+        "Type a name in the Create agent dialog; do not create it yet."
+      ],
+      "expected": "The builder header behind the dialog says \"Not published yet\". There is no Save draft or Publish button: creating the agent is its first publish.",
+      "screenshots": [
+        "wp21-01-no-versions-desktop-light.png",
+        "wp21-01-no-versions-desktop-dark.png",
+        "wp21-01-no-versions-phone-light.png",
+        "wp21-01-no-versions-phone-dark.png"
+      ]
+    },
+    {
+      "id": "02-first-publish",
+      "title": "First publish",
+      "steps": [
+        "Click Create agent.",
+        "In the builder, click Versions."
+      ],
+      "expected": "The header says \"Live: version 1\" with no unpublished changes, and Publish is disabled (nothing to publish). The Versions panel lists one row, \"Version 1\", marked Live, with who published it and when. The live version offers no rollback.",
+      "screenshots": [
+        "wp21-02-first-publish-desktop-light.png",
+        "wp21-02-first-publish-desktop-dark.png",
+        "wp21-02-first-publish-phone-light.png",
+        "wp21-02-first-publish-phone-dark.png"
+      ]
+    },
+    {
+      "id": "03-draft-unpublished",
+      "title": "Draft with unpublished changes",
+      "steps": [
+        "Close the panel and rename the agent.",
+        "Click Save draft."
+      ],
+      "expected": "A toast says \"Draft saved. Chats keep running version 1 until you publish.\" The header shows \"Live: version 1\" and an amber \"Unpublished changes\" badge. Save draft is disabled again; Publish is enabled. The API still reports version 1 as the latest, with unpublishedChanges true.",
+      "screenshots": [
+        "wp21-03-draft-unpublished-desktop-light.png",
+        "wp21-03-draft-unpublished-desktop-dark.png",
+        "wp21-03-draft-unpublished-phone-light.png",
+        "wp21-03-draft-unpublished-phone-dark.png"
+      ]
+    },
+    {
+      "id": "04-version-list",
+      "title": "Version list",
+      "steps": [
+        "Click Publish. The dialog asks \"Publish version 2?\"; type a note under \"What changed (optional)\" and confirm.",
+        "Click Continue editing in the \"Version 2 published\" dialog.",
+        "Rename the agent again and click Save draft.",
+        "Click Versions."
+      ],
+      "expected": "The panel lists Version 2 (Live, with the note, the publisher's name and the time) above Version 1. An amber callout says \"You have unpublished changes. Rolling back to an earlier version discards them.\" with a \"Publish as version 3\" button. Version 1 offers \"Roll back to this version\" and \"What this version does\" (collapsed).",
+      "screenshots": [
+        "wp21-04-version-list-desktop-light.png",
+        "wp21-04-version-list-desktop-dark.png",
+        "wp21-04-version-list-phone-light.png",
+        "wp21-04-version-list-phone-dark.png"
+      ]
+    },
+    {
+      "id": "05-rollback-confirm",
+      "title": "Rollback confirm",
+      "steps": [
+        "On Version 1, click \"Roll back to this version\".",
+        "Type a reason under \"Why (optional)\"."
+      ],
+      "expected": "A dialog asks \"Roll back to version 1?\" and says the agent is set back to version 1 and published as version 3. An amber callout says \"Your unpublished changes will be discarded.\" Cancel and Roll back are offered.",
+      "screenshots": [
+        "wp21-05-rollback-confirm-desktop-light.png",
+        "wp21-05-rollback-confirm-desktop-dark.png",
+        "wp21-05-rollback-confirm-phone-light.png",
+        "wp21-05-rollback-confirm-phone-dark.png"
+      ]
+    },
+    {
+      "id": "06-after-rollback",
+      "title": "After rollback",
+      "steps": [
+        "Click Roll back.",
+        "Close the panel."
+      ],
+      "expected": "The panel says \"Rolled back to version 1. It is live as version 3. Your unpublished changes were discarded.\" Version 3 is Live, marked \"Rolled back from version 1\", with the reason; versions 2 and 1 stay in the list (history only grows). The unpublished-changes callout is gone. After closing, the builder shows version 1's name again, the header says \"Live: version 3\" with no unpublished changes, and the API reports versions 3 (rollback from 1), 2 and 1 with unpublishedChanges false.",
+      "screenshots": [
+        "wp21-06-after-rollback-desktop-light.png",
+        "wp21-06-after-rollback-desktop-dark.png",
+        "wp21-06-after-rollback-phone-light.png",
+        "wp21-06-after-rollback-phone-dark.png"
+      ]
+    },
+    {
+      "id": "07-chat-version-label",
+      "title": "The chat says which version answered",
+      "steps": [
+        "After the rollback (version 3 live), open a chat with the agent and send a message.",
+        "Wait for the answer."
+      ],
+      "expected": "The answer's activity line shows a plain grey label \"<agent name> · version 3\" next to \"View activity\". No ids. While the answer streams there is no label; an assistant answer never has one.",
+      "screenshots": [
+        "wp21-07-chat-version-label-desktop-light.png",
+        "wp21-07-chat-version-label-desktop-dark.png",
+        "wp21-07-chat-version-label-phone-light.png",
+        "wp21-07-chat-version-label-phone-dark.png"
+      ]
+    },
+    {
+      "id": "08-schedule-pin",
+      "title": "A schedule keeps its version until its owner moves it",
+      "needs": "Labs ENABLE_SCHEDULED_RUNS on (the spec turns it on when the signed-in user is an admin)",
+      "steps": [
+        "Have an agent whose live version is 3, and a schedule of it pinned to version 1.",
+        "Open Workspace > Schedules and find the schedule.",
+        "Click \"Change version\" and pick \"Move to version 3\"."
+      ],
+      "expected": "The row says \"Runs version 1\" with an amber \"Version 3 is live\" badge. The choices are \"Keep version 1\" (selected; \"Each run uses exactly what you tested.\"), \"Move to version 3\" (\"From the next run. You can move back.\") and \"Always use the live version\" (\"Each run uses whatever was published last.\"). Save is disabled until the choice changes. An admin looking at another person's schedule sees the version read-only: \"Only the schedule's owner can change it.\"",
+      "screenshots": [
+        "wp21-08-schedule-pin-desktop-light.png",
+        "wp21-08-schedule-pin-desktop-dark.png",
+        "wp21-08-schedule-pin-phone-light.png",
+        "wp21-08-schedule-pin-phone-dark.png"
+      ]
+    },
+    {
+      "id": "09-schedule-moved",
+      "title": "Schedule moved to the live version",
+      "needs": "as 08",
+      "steps": [
+        "Click Save."
+      ],
+      "expected": "The row says \"Runs version 3\"; the \"is live\" badge and the choices are gone. The API lists the schedule with agentVersion 3. A new schedule of an agent offers \"The version live now\" (default) or \"Always the live version\" in the New schedule dialog.",
+      "screenshots": [
+        "wp21-09-schedule-moved-desktop-light.png",
+        "wp21-09-schedule-moved-desktop-dark.png",
+        "wp21-09-schedule-moved-phone-light.png",
+        "wp21-09-schedule-moved-phone-dark.png"
+      ]
+    }
+  ],
+  "screenshotDir": "UI_CASE_SHOTS (not kept in git)"
+}

@@ -90,7 +90,7 @@ export function SendImagesRow({
           >
             {t('workspace.webSearch.sendImages')}
           </Text>
-          <Text size="1" style={{ color: 'var(--slate-10)', display: 'block', marginTop: 2, fontWeight: 300 }}>
+          <Text size="1" style={{ color: 'var(--slate-11)', display: 'block', marginTop: 2, fontWeight: 300 }}>
             {t('workspace.webSearch.sendImagesDescription')}
           </Text>
         </Box>
@@ -142,7 +142,7 @@ export function SendImagesRow({
             id={helpId}
             size="1"
             role={invalid ? 'alert' : undefined}
-            style={{ color: invalid ? 'var(--red-10)' : 'var(--slate-10)', fontWeight: 300 }}
+            style={{ color: invalid ? 'var(--red-11)' : 'var(--slate-11)', fontWeight: 300 }}
           >
             {invalid ? t('workspace.webSearch.maxImagesInvalid') : t('workspace.webSearch.maxImagesHelp')}
           </Text>
