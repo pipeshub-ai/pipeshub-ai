@@ -2930,6 +2930,8 @@ async def run_full_sync(connector: OneDriveConnector, db: FakeRecordsDb, checkpo
         "begin_full_sync_run": lambda connector_id: seen,
         "end_full_sync_run": lambda connector_id, run: None,
     }
+    # A fault a test installed on the instance stays in place after the run.
+    overridden = {name: db.__dict__[name] for name in patches if name in db.__dict__}
     for name, patch in patches.items():
         setattr(db, name, patch)
     graph = AsyncMock()
@@ -2941,6 +2943,8 @@ async def run_full_sync(connector: OneDriveConnector, db: FakeRecordsDb, checkpo
     finally:
         for name in patches:
             delattr(db, name)
+        for name, value in overridden.items():
+            setattr(db, name, value)
     if not graph.unlink_nodes_missed_by_full_sync.await_count:
         return set()
     by_collection = graph.unlink_nodes_missed_by_full_sync.await_args.args[1]
