@@ -521,6 +521,48 @@ class TestVerifiedDomainEmails:
         persisted = c.data_entities_processor.on_new_app_users.call_args.args[0]
         assert sorted(u.source_user_id for u in persisted) == ["30", "31"]
 
+    async def test_a_cached_member_keeps_the_email_they_are_bound_to_and_lists_every_other(self) -> None:
+        """The cached email is one address of the member's: the listing also names the rest."""
+        c = make_mock_connector()
+        c.runtime.ds_call.side_effect = _ds_call_by_method(c, {
+            "list_org_members": ok_response([make_named_user(user_id=16, login="erin")]),
+            "graphql_query": ok_response(
+                {"u0": {"organizationVerifiedDomainEmails": ["erin@corp.com", "erin@corp.io"]}}
+            ),
+        })
+        c.data_entities_processor.get_all_app_users.return_value = [
+            SimpleNamespace(source_user_id="16", email="erin@gmail.com"),
+        ]
+
+        sync = UsersSync(c)
+        sync._resolve_target_orgs = MagicMock_async((["acme"], True))
+
+        await sync.sync_users()
+
+        persisted = c.data_entities_processor.on_new_app_users.call_args.args[0]
+        assert [(u.source_user_id, u.email) for u in persisted] == [("16", "erin@gmail.com")]
+        assert sync.listing.emails == {"erin@gmail.com", "erin@corp.com", "erin@corp.io"}
+
+    async def test_a_member_is_asked_about_in_the_orgs_that_list_them(self) -> None:
+        c = make_mock_connector()
+        listed = {"acme": [make_named_user(user_id=17, login="finn")], "beta": [make_named_user(user_id=18, login="gwen")]}
+
+        def dispatch(method: object, *args: object, **kwargs: object) -> object:
+            if method is c.data_source.list_org_members:
+                return ok_response(listed[args[0]])
+            if method is c.data_source.graphql_query:
+                return ok_response({"u0": {"organizationVerifiedDomainEmails": []}})
+            return failed_response("unmocked")
+
+        c.runtime.ds_call.side_effect = dispatch
+        sync = UsersSync(c)
+        sync._resolve_target_orgs = MagicMock_async((["acme", "beta"], True))
+
+        await sync.sync_users()
+
+        queries = [call.args[1] for call in _graphql_dispatches(c)]
+        assert [("finn" in q, "gwen" in q) for q in queries] == [(True, False), (False, True)]
+
     async def test_login_outside_github_charset_is_never_interpolated(self) -> None:
         """Logins are dropped, not escaped: a value that could break out of the
         GraphQL string literal must never reach the query builder."""

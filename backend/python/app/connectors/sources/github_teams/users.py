@@ -116,9 +116,13 @@ class UsersSync:
         self._collab_resolution_attempted: set[int] = set()
         # GitHub user id -> the email this run bound it to, the one its grants carry.
         self._resolved_emails: dict[int, str] = {}
-        # The last sync_users' listing of every principal (org members and outside collaborators,
-        # by their resolved email), for the authenticator's link. Finished only once every org's
-        # listings were read to their end and what they found was stored.
+        # Every verified-domain email GitHub showed for a user this run.
+        self._verified_emails: dict[int, list[str]] = {}
+        # The members each organization listed this run.
+        self._org_member_ids: dict[str, set[int]] = {}
+        # The last sync_users' listing of every principal (org members and outside collaborators, by
+        # every email GitHub shows for them), for the authenticator's link. Finished only once every
+        # org's listings were read to their end and what they found was stored.
         self._listing = SourceUserListing(includes_inactive=True)
 
     @property
@@ -190,12 +194,11 @@ class UsersSync:
         # 100 members vs 1 call per member) and better: it returns the member's
         # corporate address — the one the PipesHub directory knows — where a
         # public profile email is often a personal one that matches nobody.
-        if unresolved_ids:
-            phase_b = await self._resolve_via_verified_domains(
-                dict_member, unresolved_ids, orgs
-            )
-            resolved_email.update(phase_b)
-            unresolved_ids -= set(phase_b.keys())
+        # Members resolved from the cache are asked about too, for the listing: the cached
+        # email is only one address of theirs, and stays the one they are bound to.
+        phase_b = await self._resolve_via_verified_domains(dict_member, set(dict_member), orgs)
+        resolved_email.update({uid: email for uid, email in phase_b.items() if uid in unresolved_ids})
+        unresolved_ids -= set(phase_b.keys())
 
         # ---- Phase C: public profile emails ----
         # Read what the listing already carries before paying for a fetch. Org
@@ -223,8 +226,10 @@ class UsersSync:
         self._resolved_emails = dict(resolved_email)
         # A principal whose email stays unknown is an unidentified row: it may be the authenticator,
         # and GitHub has no lookup by a private email to settle it.
-        for uid in dict_member:
-            self._listing.add_row(resolved_email.get(uid), str(uid))
+        for uid, member in dict_member.items():
+            shown = {resolved_email.get(uid), self._plain_email_attr(member), *self._verified_emails.get(uid, [])}
+            for email in shown - {None} or {None}:
+                self._listing.add_row(email, str(uid))
         self._listing.finish()
         member_ids = getattr(self, "_member_ids", set())
         self._org_member_emails = {
@@ -255,20 +260,27 @@ class UsersSync:
         c = self.c
         principals: dict[int, Any] = {}
         self._member_ids: set[int] = set()
+        self._org_member_ids = {}
         self._collab_resolution_attempted = set()
         any_success = False
 
-        def collect(rows: Any, *, is_member: bool) -> int:
+        def collect(rows: Any, org: str, *, is_member: bool) -> int:
             kept = 0
             for row in rows or []:
                 rid = getattr(row, "id", None)
+                kind = getattr(row, "type", "User")
                 # Bots hold no PipesHub identity; enumerating them costs a
                 # profile fetch to learn nothing.
-                if rid is not None and getattr(row, "type", "User") == "User":
-                    principals[rid] = row
-                    if is_member:
-                        self._member_ids.add(rid)
-                    kept += 1
+                if kind is not None and kind != "User":
+                    continue
+                if rid is None or kind is None:
+                    self._listing.row_failed("a listed account has no id or no type")
+                    continue
+                principals[rid] = row
+                if is_member:
+                    self._member_ids.add(rid)
+                    self._org_member_ids.setdefault(org, set()).add(rid)
+                kept += 1
             return kept
 
         for org in orgs:
@@ -293,7 +305,7 @@ class UsersSync:
                 self._listing.cut(f"the members of {org} could not be listed")
                 continue
             any_success = True
-            member_count = collect(res.data, is_member=True)
+            member_count = collect(res.data, org, is_member=True)
 
             outside_res = await c.runtime.ds_call(
                 c.data_source.list_org_outside_collaborators, org
@@ -307,7 +319,7 @@ class UsersSync:
                 continue
             self.logger.info(
                 "Org %s: %s member(s), %s outside collaborator(s)",
-                org, member_count, collect(outside_res.data, is_member=False),
+                org, member_count, collect(outside_res.data, org, is_member=False),
             )
 
         self._principal_ids = set(principals)
@@ -440,8 +452,12 @@ class UsersSync:
         belongs to an org owner AND the org has a verified domain. Any failure
         (missing scope, no verified domain, unknown login in the chunk) stops
         this org's sweep and later phases take over — never the sync.
+
+        Returns the first email found for each member, in the order of ``orgs``; every
+        email found is kept in ``_verified_emails``.
         """
         c = self.c
+        self._verified_emails = {}
         member_ids = getattr(self, "_member_ids", set())
         candidates: list[tuple[int, str]] = []
         for uid in sorted(unresolved_ids & member_ids):
@@ -455,12 +471,11 @@ class UsersSync:
         for org in orgs:
             if not _GITHUB_LOGIN_RE.fullmatch(org):
                 continue
-            remaining = [(uid, login) for uid, login in candidates if uid not in resolved]
-            if not remaining:
-                break
+            listed = self._org_member_ids.get(org)
+            asked = [(uid, login) for uid, login in candidates if listed is None or uid in listed]
             earlier_chunk_read = False
-            for start in range(0, len(remaining), VERIFIED_DOMAIN_EMAIL_BATCH):
-                chunk = remaining[start : start + VERIFIED_DOMAIN_EMAIL_BATCH]
+            for start in range(0, len(asked), VERIFIED_DOMAIN_EMAIL_BATCH):
+                chunk = asked[start : start + VERIFIED_DOMAIN_EMAIL_BATCH]
                 query = self._verified_domain_query(org, [login for _, login in chunk])
                 res = await c.runtime.ds_call(c.data_source.graphql_query, query)
                 if not res.success:
@@ -491,8 +506,8 @@ class UsersSync:
                             and email.strip()
                             and not _is_noreply_email(email)
                         ):
-                            resolved[uid] = email.strip()
-                            break
+                            resolved.setdefault(uid, email.strip())
+                            self._verified_emails.setdefault(uid, []).append(email.strip())
         return resolved
 
     @staticmethod
