@@ -1,0 +1,529 @@
+{
+ "scenario": "agent_truncated_response_continued",
+ "query": "How much paid leave do I get?",
+ "runId": "run-golden",
+ "sessionId": "ses-1",
+ "events": [
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 1,
+   "type": "run.admitted",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "node",
+   "visibility": "owner",
+   "data": {
+    "runKind": "interactive",
+    "principalRef": "p_user"
+   },
+   "runId": "run-golden"
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 2,
+   "type": "run.claimed",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "node",
+   "visibility": "owner",
+   "data": {
+    "attempt": 1,
+    "fence": 1,
+    "leaseMs": 30000
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 3,
+   "type": "run.spec_pinned",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "node",
+   "visibility": "owner",
+   "data": {
+    "specDigest": "sha256:2f57d0816eae42c1ed12263b802d8b8ce009d669271e6d707a781f11cdbdee46",
+    "spec": {
+     "schemaVersion": 2,
+     "harnessMajor": 2,
+     "foldVersion": 1,
+     "runKind": "interactive",
+     "principalRef": "p_user-1",
+     "model": {
+      "policy": [
+       {
+        "provider": "openai",
+        "model": "gpt-x"
+       }
+      ],
+      "promptVersion": "pipeshub-agent-2026-09"
+     },
+     "grants": {
+      "tools": [],
+      "sandboxProfile": "none",
+      "egress": "none"
+     },
+     "budgets": {
+      "maxTurns": 15,
+      "maxTokens": 1000000,
+      "maxCostUsd": 5.0,
+      "activeTimeS": 3600,
+      "calendarDeadline": "2027-01-01T00:00:00Z",
+      "maxChildren": 0
+     },
+     "capabilitiesDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+     "extensions": {
+      "x.pipeshub": {
+       "model": {
+        "modelKey": "model-1",
+        "modelName": "gpt-x"
+       },
+       "knowledge": {
+        "apps": [],
+        "kb": [],
+        "strictScope": true
+       },
+       "mcp": [],
+       "skills": [],
+       "mounts": [],
+       "via": "session",
+       "agent": {
+        "agentKey": "agent-1",
+        "definitionVersion": 7,
+        "mode": "quick"
+       }
+      }
+     }
+    }
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 4,
+   "type": "loop.state_saved",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "slots": {
+     "capabilities.observed": {}
+    }
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 5,
+   "type": "loop.state_saved",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "slots": {
+     "pre_run.goal": {
+      "description": "How much paid leave do I get?",
+      "requirements": [],
+      "successCriteria": [],
+      "constraints": [
+       "<original_query>How much paid leave do I get?</original_query>"
+      ],
+      "gaps": [],
+      "mode": "quick",
+      "loopKind": "react",
+      "composeDomainAgents": false,
+      "wholeDocument": false,
+      "clarifyingQuestions": []
+     }
+    }
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 6,
+   "type": "x.pipeshub.goal.presented",
+   "schemaVersion": 1,
+   "critical": false,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "description": "How much paid leave do I get?"
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 7,
+   "type": "message.completed",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "role": "user",
+    "textRef": {
+     "ref": "inline:SG93IG11Y2ggcGFpZCBsZWF2ZSBkbyBJIGdldD8=",
+     "hash": "sha256:92edaade48c54b2420baa708ecc07cb978a510ad1f492ffb4fb93e2a99c77ade",
+     "size": 29
+    },
+    "isFinal": false
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 8,
+   "type": "turn.started",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "turn": 1
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 9,
+   "type": "model.request",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "contextDigest": "sha256:524e9fc193d50b09c60383086a030e0aa8ede4632dbb079a72b568773ed61349",
+    "route": {
+     "provider": "openai",
+     "model": "scripted-model"
+    },
+    "modelAttempt": 1
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 10,
+   "type": "model.response",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "messageRef": {
+     "ref": "inline:eyJ0ZXh0IjoiVGhlIGxlYXZlIHBvbGljeSBnaXZlcyBldmVyeSBmdWxsLXRpbWUgZW1wbG95ZWUgdHdlbnR5IiwidG9vbENhbGxzIjpbXSwidHJ1bmNhdGVkIjp0cnVlfQ==",
+     "hash": "sha256:cd1a59512d207abb931d7bc225afcb2daacad9f1f28b7b9ae29f3906f2d70415",
+     "size": 97
+    },
+    "toolCalls": [],
+    "usage": {
+     "inputTokens": 0,
+     "outputTokens": 0,
+     "cacheReadTokens": 0,
+     "cacheWriteTokens": 0
+    },
+    "provider": "openai",
+    "transport": "scripted",
+    "rawRef": {
+     "ref": "inline:eyJyb2xlIjoiYXNzaXN0YW50IiwiY29udGVudCI6W3sidHlwZSI6InRleHQiLCJ0ZXh0IjoiVGhlIGxlYXZlIHBvbGljeSBnaXZlcyBldmVyeSBmdWxsLXRpbWUgZW1wbG95ZWUgdHdlbnR5In1dLCJ0b29sX2NhbGxzIjpudWxsLCJ0cnVuY2F0ZWQiOnRydWV9",
+     "hash": "sha256:d7bb70a6bab805d190f740cc0f85ae2402ed7d88b3f6f13f487e534e5a0bd498",
+     "size": 147
+    }
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 11,
+   "type": "x.pipeshub.message.presented",
+   "schemaVersion": 1,
+   "critical": false,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "text": "The leave policy gives every full-time employee twenty",
+    "truncated": true
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 12,
+   "type": "turn.completed",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "turn": 1
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 13,
+   "type": "message.completed",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "role": "user",
+    "textRef": {
+     "ref": "inline:W1N5c3RlbTogeW91ciBwcmV2aW91cyByZXNwb25zZSB3YXMgY3V0IG9mZiBhdCB0aGUgbWF4aW11bSBvdXRwdXQtdG9rZW4gbGltaXQgYW5kIGlzIGluY29tcGxldGUuIENvbnRpbnVlIGZyb20gd2hlcmUgeW91IHN0b3BwZWQsIGtlZXBpbmcgdGhlIHJlbWFpbmRlciBjb25jaXNlLl0=",
+     "hash": "sha256:c901424d47085a33a7298dfb865411adc67ee3fad1461e9807f7c849b04b587a",
+     "size": 161
+    },
+    "isFinal": false,
+    "injected": true
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 14,
+   "type": "turn.started",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "turn": 2
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 15,
+   "type": "model.request",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "contextDigest": "sha256:02fb9e8da6e2cbd28ad40394990e448884373417e3330f92612071c5e2d202dc",
+    "route": {
+     "provider": "openai",
+     "model": "scripted-model"
+    },
+    "modelAttempt": 2
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 16,
+   "type": "model.response",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "messageRef": {
+     "ref": "inline:eyJ0ZXh0IjoiLWZpdmUgZGF5cyBvZiBwYWlkIGxlYXZlIGEgeWVhci4iLCJ0b29sQ2FsbHMiOltdfQ==",
+     "hash": "sha256:3dfb2e2a897769e6386ca6ad5d750f0f5aff0f2d48e0ff5e1609affba902f167",
+     "size": 58
+    },
+    "toolCalls": [],
+    "usage": {
+     "inputTokens": 0,
+     "outputTokens": 0,
+     "cacheReadTokens": 0,
+     "cacheWriteTokens": 0
+    },
+    "provider": "openai",
+    "transport": "scripted",
+    "rawRef": {
+     "ref": "inline:eyJyb2xlIjoiYXNzaXN0YW50IiwiY29udGVudCI6W3sidHlwZSI6InRleHQiLCJ0ZXh0IjoiLWZpdmUgZGF5cyBvZiBwYWlkIGxlYXZlIGEgeWVhci4ifV0sInRvb2xfY2FsbHMiOm51bGwsInRydW5jYXRlZCI6ZmFsc2V9",
+     "hash": "sha256:341ef0978623fcbd4fc7af93e5191d8d1874ac9e12838bb55f612de57040a99e",
+     "size": 126
+    }
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 17,
+   "type": "x.pipeshub.message.presented",
+   "schemaVersion": 1,
+   "critical": false,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "text": "-five days of paid leave a year."
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 18,
+   "type": "turn.completed",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "turn": 2
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 19,
+   "type": "message.completed",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "role": "assistant",
+    "textRef": {
+     "ref": "inline:VGhlIGxlYXZlIHBvbGljeSBnaXZlcyBldmVyeSBmdWxsLXRpbWUgZW1wbG95ZWUgdHdlbnR5LWZpdmUgZGF5cyBvZiBwYWlkIGxlYXZlIGEgeWVhci4=",
+     "hash": "sha256:b116cf0a36f86afd06198f5e599959a996c8bd9e1eca03bc4ceafe0003f6c29d",
+     "size": 86
+    },
+    "isFinal": true
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 20,
+   "type": "x.pipeshub.answer.finalized",
+   "schemaVersion": 1,
+   "critical": false,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "outcome": "answered",
+    "answer": "The leave policy gives every full-time employee twenty-five days of paid leave a year.",
+    "partTexts": [
+     "The leave policy gives every full-time employee twenty-five days of paid leave a year."
+    ],
+    "citations": [],
+    "confidence": null
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 21,
+   "type": "run.completed",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "node",
+   "visibility": "owner",
+   "data": {
+    "outcome": "answered"
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  }
+ ],
+ "live": []
+}

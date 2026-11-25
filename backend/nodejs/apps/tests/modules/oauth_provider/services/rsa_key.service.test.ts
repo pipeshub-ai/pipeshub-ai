@@ -81,7 +81,7 @@ describe('RSAKeyService', () => {
       const jwks = service.getJWKS()
       expect(jwks.keys).to.be.an('array')
       expect(jwks.keys).to.have.lengthOf(1)
-      expect(jwks.keys[0].kty).to.equal('RSA')
+      expect(jwks.keys[0]!.kty).to.equal('RSA')
     })
   })
 

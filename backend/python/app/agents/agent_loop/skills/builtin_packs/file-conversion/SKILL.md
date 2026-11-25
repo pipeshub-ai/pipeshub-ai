@@ -10,7 +10,7 @@ metadata:
     status: active
     source: builtin
     pack_name: file-conversion
-    pack_version: 1.1.0
+    pack_version: 1.2.0
 ---
 
 # File format conversion
@@ -24,6 +24,7 @@ metadata:
 | json (tabular/list-of-records shape) | csv / xlsx | `JSON.parse` → `papaparse.unparse` (csv) / `exceljs` (xlsx) | `pandas.read_json` → `.to_csv` / `.to_excel` |
 | image (png/jpg/webp/etc.) | different image format, resize, basic edits | `sharp` (`.toFormat(...)`, `.resize(...)`) | `Pillow` (`Image.open(...).save(new_path)`) |
 | docx | plain text | — (no solid Node equivalent for structured docx parsing) | `python-docx` / `docx2python` — extract paragraph and table text |
+| pdf | png (one per page) | — | `pypdfium2` — `pdf[i].render(scale=2).to_pil().save(...)`; `office-utils/scripts/check_layout.py` does this for every page |
 | pdf | plain text / csv (tables) | — (no solid Node equivalent for table-aware extraction) | `pdfplumber` — `extract_text()` / `extract_tables()` → build a DataFrame if tabular |
 
 For plain csv/xlsx/json reshuffling, **default to the Node path** (an array of plain objects is the common intermediate, playing the same role `pandas.DataFrame` plays on the Python side) per this environment's Node-first policy — reach for `pandas` only when the conversion needs real data reshaping along the way. docx/pdf extraction and structure-aware parsing have no solid Node equivalent here, so those stay Python regardless of format on the other end.
@@ -36,7 +37,7 @@ These all require a document-rendering engine (LibreOffice) that is not installe
 - `pptx` → `pdf`
 - `doc` (legacy binary Word format) → `docx`
 - `xlsx` → `pdf`
-- Any conversion that requires rendering/rasterizing a document (visual layout to image)
+- Rendering a docx, pptx or xlsx to an image (a PDF's pages can be rendered: see above)
 
 ## Choosing between "extract data" and "convert format"
 

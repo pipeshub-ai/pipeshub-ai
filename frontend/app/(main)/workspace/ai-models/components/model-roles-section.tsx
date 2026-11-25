@@ -183,7 +183,7 @@ export function ModelRolesSection({
             transition: 'background 0.2s',
           }}
         >
-          <MaterialIcon name="tune" size={15} style={{ color: 'var(--gray-10)' }} />
+          <MaterialIcon name="tune" size={15} style={{ color: 'var(--gray-11)' }} />
           <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
             {t('workspace.aiModels.roles.onboardingTitle')}
           </Text>
@@ -224,7 +224,7 @@ export function ModelRolesSection({
                 <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
                   {t('workspace.aiModels.roles.queryRole')}
                 </Text>
-                <Text size="1" style={{ color: 'var(--gray-10)' }}>
+                <Text size="1" style={{ color: 'var(--gray-11)' }}>
                   {t('workspace.aiModels.roles.queryRoleSubtitle')}
                 </Text>
               </Flex>
@@ -241,7 +241,7 @@ export function ModelRolesSection({
                 border: '1px solid var(--gray-4)',
               }}
             >
-              <MaterialIcon name="check_circle" size={14} style={{ color: 'var(--green-9)' }} />
+              <MaterialIcon name="check_circle" size={14} style={{ color: 'var(--green-11)' }} />
               <Text size="2" style={{ color: 'var(--gray-12)', flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                 {defaultLlm ? modelLabel(defaultLlm) : t('workspace.aiModels.roles.queryRoleDefault')}
               </Text>
@@ -250,7 +250,7 @@ export function ModelRolesSection({
               </Badge>
             </Flex>
 
-            <Text size="1" style={{ color: 'var(--gray-10)', lineHeight: '1.5' }}>
+            <Text size="1" style={{ color: 'var(--gray-11)', lineHeight: '1.5' }}>
               {t('workspace.aiModels.roles.queryRoleDescription')}
             </Text>
           </Flex>
@@ -283,7 +283,7 @@ export function ModelRolesSection({
                 <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
                   {t('workspace.aiModels.roles.indexingRole')}
                 </Text>
-                <Text size="1" style={{ color: 'var(--gray-10)' }}>
+                <Text size="1" style={{ color: 'var(--gray-11)' }}>
                   {t('workspace.aiModels.roles.indexingRoleSubtitle')}
                 </Text>
               </Flex>
@@ -296,15 +296,15 @@ export function ModelRolesSection({
 
             {highlighted && !acknowledged && (
               <Flex align="center" gap="1">
-                <MaterialIcon name="error_outline" size={13} style={{ color: 'var(--amber-10)' }} />
-                <Text size="1" style={{ color: 'var(--amber-10)' }}>
+                <MaterialIcon name="error_outline" size={13} style={{ color: 'var(--amber-11)' }} />
+                <Text size="1" style={{ color: 'var(--amber-11)' }}>
                   {t('workspace.aiModels.roles.requiredHint')}
                 </Text>
               </Flex>
             )}
 
             {acknowledged && (
-              <Text size="1" style={{ color: 'var(--gray-10)', lineHeight: '1.5' }}>
+              <Text size="1" style={{ color: 'var(--gray-11)', lineHeight: '1.5' }}>
                 {assignedIndexingModel
                   ? t('workspace.aiModels.roles.indexingRoleAssigned', { model: modelLabel(assignedIndexingModel) })
                   : t('workspace.aiModels.roles.indexingRoleFallback')}
@@ -327,7 +327,7 @@ export function ModelRolesSection({
           <MaterialIcon
             name="lightbulb"
             size={13}
-            style={{ color: highlighted ? 'var(--amber-10)' : 'var(--gray-10)' }}
+            style={{ color: highlighted ? 'var(--amber-11)' : 'var(--gray-11)' }}
           />
           <Text size="1" style={{ color: highlighted ? 'var(--amber-11)' : 'var(--gray-11)', lineHeight: '1.5' }}>
             {t('workspace.aiModels.roles.onboardingTip')}
@@ -357,11 +357,11 @@ export function ModelRolesSection({
           background: 'var(--gray-2)',
         }}
       >
-        <MaterialIcon name="tune" size={16} style={{ color: 'var(--gray-10)' }} />
+        <MaterialIcon name="tune" size={16} style={{ color: 'var(--gray-11)' }} />
         <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
           {t('workspace.aiModels.roles.sectionTitle')}
         </Text>
-        <Text size="1" style={{ color: 'var(--gray-10)', marginLeft: 4 }}>
+        <Text size="1" style={{ color: 'var(--gray-11)', marginLeft: 4 }}>
           {t('workspace.aiModels.roles.sectionDescription')}
         </Text>
       </Flex>
@@ -395,7 +395,7 @@ export function ModelRolesSection({
               <Text
                 size="1"
                 style={{
-                  color: 'var(--gray-10)',
+                  color: 'var(--gray-11)',
                   lineHeight: '1.5',
                   overflow: 'hidden',
                   textOverflow: 'ellipsis',

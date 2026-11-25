@@ -15,14 +15,21 @@ import asyncio
 import logging
 import os
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import aiohttp
 
 from app.config.constants.arangodb import CollectionNames, Connectors, RecordTypes
-from app.models.entities import ArtifactType, ArtifactVisibility, deserialize_artifact_versions
+from app.models.entities import (
+    ArtifactType,
+    ArtifactVisibility,
+    LifecycleStatus,
+    deserialize_artifact_versions,
+)
+from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 from .access import AccessDeniedError, AccessPolicy, ArtifactNotFoundError
+from .limits import input_max_bytes
 from .lineage import LineageTracker
 from .models import Actor, ArtifactCopy, ArtifactMetadata, ArtifactVersion, UploadGrant
 from .signed_urls import GrantVerificationError, SignedUrlBroker
@@ -35,9 +42,21 @@ from .versioning import (
     to_metadata_from_docs,
 )
 
+if TYPE_CHECKING:
+    from .models import ArtifactProvenance
+
 logger = logging.getLogger(__name__)
 
-__all__ = ["ArtifactRegistryService", "ArtifactStorageError", "ConversationArtifactsDeletion", "MAX_ARTIFACT_BYTES"]
+__all__ = [
+    "DRAFT_DISCARDED_REASON",
+    "MAX_ARTIFACT_BYTES",
+    "ArtifactRegistryService",
+    "ArtifactStorageError",
+    "ConversationArtifactsDeletion",
+]
+
+# The records' `reason` for a discarded draft; T5 collects them after a grace (E7).
+DRAFT_DISCARDED_REASON = "ARTIFACT_DRAFT_DISCARDED"
 
 
 @dataclass
@@ -51,8 +70,9 @@ class ArtifactStorageError(RuntimeError):
     """Storage could not remove an artifact's file. Nothing in the graph was
     changed, so the delete can simply be retried."""
 
-# Same cap the legacy sandbox pipeline enforces (`app/sandbox/artifact_upload.py`)
-# — kept in sync there via a re-export so there is exactly one number.
+# What the legacy pipelines read into memory before they register a file (`run_code` outputs,
+# Confluence attachments). The registry itself keeps files as large as the deployment takes as
+# a run's input (`limits.input_max_bytes`, J-26), so any artifact it holds fits as an input.
 MAX_ARTIFACT_BYTES = 25 * 1024 * 1024
 
 # `list_for_conversation` filters visibility in Python, so a page can be
@@ -82,7 +102,9 @@ _MAX_VERSION_CONFLICT_RETRIES = 1
 
 
 class ArtifactRegistryService:
-    def __init__(self, graph_provider: Any, blob_store: Any, *, max_bytes: int = MAX_ARTIFACT_BYTES) -> None:
+    def __init__(self, graph_provider: Any, blob_store: Any, *, max_bytes: int | None = None) -> None:
+        if max_bytes is None:
+            max_bytes = input_max_bytes()
         self._graph_provider = graph_provider
         self._blob_store = blob_store
         self._access = AccessPolicy(graph_provider)
@@ -98,6 +120,10 @@ class ArtifactRegistryService:
     @property
     def lineage(self) -> LineageTracker:
         return self._lineage
+
+    @property
+    def max_bytes(self) -> int:
+        return self._max_bytes
 
     # ------------------------------------------------------------------
     # Create / version
@@ -127,6 +153,7 @@ class ArtifactRegistryService:
         content: bytes, conversation_id: str, description: str = "",
         source_tool: str | None = None, visibility: ArtifactVisibility = ArtifactVisibility.VISIBLE,
         connector_name: Connectors = Connectors.CODING_SANDBOX,
+        artifact_id: str | None = None, lifecycle_status: LifecycleStatus | None = None,
     ) -> tuple[ArtifactMetadata, ArtifactVersion | None]:
         """The `run_code`/`image_generator`/etc. output path: resolve `name`
         against existing artifacts IN THIS CONVERSATION first — a re-run
@@ -134,7 +161,11 @@ class ArtifactRegistryService:
         version instead of creating a new, disconnected one (Design
         Decision #2 in the plan). Returns `(metadata, version)`; `version`
         is `None` when a brand-new artifact was created (there is no
-        "version bump" event for version 1)."""
+        "version bump" event for version 1).
+
+        `artifact_id` names a new artifact (the publisher derives it from its
+        intent, so a retry finds what it made); `lifecycle_status` is written
+        on create and on a real (non-deduplicated) bump."""
         self._check_size(content)
         existing = await self.resolve_by_logical_name(actor, name, conversation_id=conversation_id)
         if existing is None:
@@ -142,6 +173,7 @@ class ArtifactRegistryService:
                 actor=actor, name=name, artifact_type=artifact_type, mime_type=mime_type,
                 content=content, conversation_id=conversation_id, description=description,
                 source_tool=source_tool, visibility=visibility, connector_name=connector_name,
+                artifact_id=artifact_id, lifecycle_status=lifecycle_status or LifecycleStatus.PUBLISHED,
             )
             return await self._reconcile_create_race(
                 actor=actor, name=name, conversation_id=conversation_id,
@@ -153,7 +185,25 @@ class ArtifactRegistryService:
             expected_version=existing.version,
         )
         metadata = await self._reconcile_visibility(actor=actor, metadata=metadata, requested=visibility)
+        if lifecycle_status is not None and version is not None and not version.deduplicated:
+            metadata = await self.set_lifecycle(
+                actor=actor, artifact_id=metadata.artifact_id, lifecycle_status=lifecycle_status,
+            )
         return metadata, version
+
+    async def register_copy(
+        self, *, actor: Actor, source: ArtifactMetadata, content: bytes, conversation_id: str, artifact_id: str,
+    ) -> ArtifactMetadata:
+        """A new version-1 artifact in `conversation_id` holding one version of
+        `source` (SS3, "continue privately"): its own record, blob document and
+        owner edge, so erasing either conversation leaves the other's whole."""
+        self._check_size(content)
+        return await self._versions.create(
+            actor=actor, name=source.name, artifact_type=source.artifact_type, mime_type=source.mime_type,
+            content=content, conversation_id=conversation_id, description=source.description,
+            logical_name=source.logical_name, source_tool=source.source_tool, visibility=source.visibility,
+            result_schema=source.result_schema, artifact_id=artifact_id,
+        )
 
     async def _reconcile_visibility(
         self, *, actor: Actor, metadata: ArtifactMetadata, requested: ArtifactVisibility,
@@ -632,6 +682,36 @@ class ArtifactRegistryService:
         logger.info("Artifact %s promoted from STAGING to VISIBLE by user=%s", artifact_id, actor.user_id)
         return await self._with_lineage(to_metadata_from_docs(record, artifact_doc))
 
+    async def set_lifecycle(
+        self, *, actor: Actor, artifact_id: str, lifecycle_status: LifecycleStatus,
+    ) -> ArtifactMetadata:
+        """Draft → published (a task completed) or any other lifecycle move; owner only."""
+        record = await self._access.authorize_write(actor, artifact_id)
+        artifact_doc = await self._graph_provider.get_document(artifact_id, CollectionNames.ARTIFACTS.value)
+        if not artifact_doc:
+            from .access import ArtifactNotFoundError
+            raise ArtifactNotFoundError(f"Artifact metadata missing for: {artifact_id}")
+        if artifact_doc.get("lifecycleStatus") != lifecycle_status.value:
+            await self._graph_provider.update_node(
+                artifact_id, CollectionNames.ARTIFACTS.value, {"lifecycleStatus": lifecycle_status.value},
+            )
+            artifact_doc = {**artifact_doc, "lifecycleStatus": lifecycle_status.value}
+        return await self._with_lineage(to_metadata_from_docs(record, artifact_doc))
+
+    async def discard(self, *, actor: Actor, artifact_id: str) -> None:
+        """Remove a draft a cancelled task created: the record is marked
+        deleted (as a create-race loser is) and the lifecycle rejected, so
+        neither name lookup nor `stream_record` serves it again."""
+        await self._access.authorize_write(actor, artifact_id)
+        await self._graph_provider.update_node(
+            artifact_id, CollectionNames.ARTIFACTS.value, {"lifecycleStatus": LifecycleStatus.REJECTED.value},
+        )
+        await self._graph_provider.update_node(
+            artifact_id, CollectionNames.RECORDS.value,
+            {"isDeleted": True, "reason": DRAFT_DISCARDED_REASON, "updatedAtTimestamp": get_epoch_timestamp_in_ms()},
+        )
+        logger.info("Artifact %s discarded (draft of a cancelled task) by user=%s", artifact_id, actor.user_id)
+
     # ------------------------------------------------------------------
     # Delete
     # ------------------------------------------------------------------
@@ -707,12 +787,16 @@ class ArtifactRegistryService:
     # Lineage
     # ------------------------------------------------------------------
 
-    async def record_derivation(self, *, output_artifact_id: str, code_artifact_id: str, code_version: int, output_version: int) -> None:
+    async def record_derivation(
+        self, *, output_artifact_id: str, output_version: int,
+        code_artifact_id: str | None = None, code_version: int | None = None,
+        provenance: ArtifactProvenance | None = None,
+    ) -> None:
         """Harness-only entry point (never exposed as an LLM tool) — see
         `LineageTracker.record_derivation`."""
         await self._lineage.record_derivation(
-            output_artifact_id=output_artifact_id, code_artifact_id=code_artifact_id,
-            code_version=code_version, output_version=output_version,
+            output_artifact_id=output_artifact_id, output_version=output_version,
+            code_artifact_id=code_artifact_id, code_version=code_version, provenance=provenance,
         )
 
     async def _with_lineage(self, metadata: ArtifactMetadata) -> ArtifactMetadata:

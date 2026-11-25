@@ -18,6 +18,7 @@ import {
   resetPassword,
   sandboxCapacityAlert,
   sandboxCapacityAlertText,
+  scheduledRunEnded,
   supportRequest,
   suspiciousLoginAttempt,
 } from './emailTemplates';
@@ -67,6 +68,9 @@ export function getEmailContent(
 
     case EmailTemplateType.JoinRequestDecision:
       return joinRequestDecision(templateData);
+
+    case EmailTemplateType.ScheduledRunEnded as string:
+      return scheduledRunEnded(templateData);
 
     case EmailTemplateType.SandboxCapacityAlert as string:
       if (!isSandboxCapacityAlertData(templateData)) {

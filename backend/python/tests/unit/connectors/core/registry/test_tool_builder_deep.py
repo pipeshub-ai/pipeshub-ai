@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field
 
 from app.connectors.core.registry.tool_builder import (
     ToolDefinition,
+    ToolProvider,
     ToolsetBuilder,
     ToolsetCategory,
     ToolsetCommonFields,
@@ -205,70 +206,70 @@ class TestToolsetConfigBuilder:
 
 class TestToolsetBuilder:
     def test_in_group(self):
-        builder = ToolsetBuilder("test")
+        builder = ToolsetBuilder("test", provider=ToolProvider.CONNECTOR)
         result = builder.in_group("MyGroup")
         assert result is builder
         assert builder.app_group == "MyGroup"
 
     def test_with_description(self):
-        builder = ToolsetBuilder("test")
+        builder = ToolsetBuilder("test", provider=ToolProvider.CONNECTOR)
         builder.with_description("A description")
         assert builder.description == "A description"
 
     def test_with_category(self):
-        builder = ToolsetBuilder("test")
+        builder = ToolsetBuilder("test", provider=ToolProvider.CONNECTOR)
         builder.with_category(ToolsetCategory.WEB_SEARCH)
         assert builder.category == ToolsetCategory.WEB_SEARCH
 
     def test_as_internal(self):
-        builder = ToolsetBuilder("test")
+        builder = ToolsetBuilder("test", provider=ToolProvider.CONNECTOR)
         result = builder.as_internal()
         assert result is builder
         assert builder.is_internal is True
 
     def test_configure(self):
-        builder = ToolsetBuilder("test")
+        builder = ToolsetBuilder("test", provider=ToolProvider.CONNECTOR)
         builder.configure(lambda b: b.with_icon("/custom.svg"))
         assert builder.config_builder.config["iconPath"] == "/custom.svg"
 
     def test_with_supported_auth_types_string(self):
-        builder = ToolsetBuilder("test")
+        builder = ToolsetBuilder("test", provider=ToolProvider.CONNECTOR)
         builder.with_supported_auth_types("NONE")
         assert builder.supported_auth_types == ["NONE"]
 
     def test_with_supported_auth_types_empty_raises(self):
-        builder = ToolsetBuilder("test")
+        builder = ToolsetBuilder("test", provider=ToolProvider.CONNECTOR)
         with pytest.raises(ValueError, match="cannot be empty"):
             builder.with_supported_auth_types([])
 
     def test_with_supported_auth_types_invalid_raises(self):
-        builder = ToolsetBuilder("test")
+        builder = ToolsetBuilder("test", provider=ToolProvider.CONNECTOR)
         with pytest.raises(ValueError):
             builder.with_supported_auth_types(42)  # type: ignore
 
     def test_add_supported_auth_type(self):
-        builder = ToolsetBuilder("test")
+        builder = ToolsetBuilder("test", provider=ToolProvider.CONNECTOR)
         builder.add_supported_auth_type("OAUTH")
         assert "OAUTH" in builder.supported_auth_types
 
     def test_add_supported_auth_type_no_duplicate(self):
-        builder = ToolsetBuilder("test")
+        builder = ToolsetBuilder("test", provider=ToolProvider.CONNECTOR)
         builder.add_supported_auth_type("API_TOKEN")  # Already default
         assert builder.supported_auth_types.count("API_TOKEN") == 1
 
     def test_with_auth_empty_raises(self):
-        builder = ToolsetBuilder("test")
+        builder = ToolsetBuilder("test", provider=ToolProvider.CONNECTOR)
         with pytest.raises(ValueError, match="cannot be empty"):
             builder.with_auth([])
 
     def test_with_tools(self):
-        builder = ToolsetBuilder("test")
+        builder = ToolsetBuilder("test", provider=ToolProvider.CONNECTOR)
         tools = [ToolDefinition(name="t1", description="Test")]
         builder.with_tools(tools)
         assert builder.tools == tools
 
     def test_with_tools_empty(self):
-        builder = ToolsetBuilder("test")
+        builder = ToolsetBuilder("test", provider=ToolProvider.CONNECTOR)
         builder.with_tools([])
         assert builder.tools == []
 

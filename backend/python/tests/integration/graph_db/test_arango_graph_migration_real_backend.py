@@ -4,7 +4,8 @@ so deletes that list edge collections from the graph remove its edges.
 
   docker compose -f deployment/docker-compose/docker-compose.integration.graph-db.yml \\
     up -d --wait arango-graph-it
-  cd backend/python && pytest tests/integration/graph_db/test_arango_graph_migration_real_backend.py -m integration
+  cd backend/python && ARANGO_IT_URL=http://localhost:18529 \\
+    pytest tests/integration/graph_db/test_arango_graph_migration_real_backend.py -m integration
 """
 from __future__ import annotations
 
@@ -17,10 +18,10 @@ import pytest
 
 from app.config.constants.arangodb import CollectionNames, GraphNames
 from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
+from tests.support import it_backends
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(300)]
 
-ARANGO_URL = os.environ.get("ARANGO_IT_URL", "http://localhost:18529")
 ARANGO_PASSWORD = os.environ.get("ARANGO_IT_PASSWORD", "ensure-it-pass")
 ARANGO_DB = "graph_migration_it"
 GRAPH = GraphNames.KNOWLEDGE_GRAPH.value
@@ -30,16 +31,17 @@ logger = logging.getLogger("arango-graph-migration-it")
 
 
 async def _open() -> ArangoHTTPProvider:
+    arango_url = it_backends.endpoint("ARANGO_IT_URL")
     config_service = MagicMock()
     config_service.get_config = AsyncMock(return_value={
-        "url": ARANGO_URL, "username": "root", "password": ARANGO_PASSWORD, "db": ARANGO_DB,
+        "url": arango_url, "username": "root", "password": ARANGO_PASSWORD, "db": ARANGO_DB,
     })
     provider = ArangoHTTPProvider(logger, config_service)
     try:
         if not await asyncio.wait_for(provider.connect(), timeout=60):
             raise ConnectionError("connect returned False")
     except Exception as exc:
-        pytest.skip(f"ArangoDB not available at {ARANGO_URL}: {exc}")
+        pytest.skip(f"ArangoDB not available at {arango_url}: {exc}")
     assert await provider.ensure_schema()
     return provider
 

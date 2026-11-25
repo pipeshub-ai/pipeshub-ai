@@ -41,6 +41,7 @@ export function ConnectorsCollectionsPanel({
           {t('chat.connectorsCollectionsTitle', { defaultValue: 'Connectors and Collections' })}
         </Text>
         <IconButton
+          aria-label={viewMode === 'overlay' ? t('recordView.exitFullscreen') : t('recordView.openFullscreen')}
           variant="ghost"
           color="gray"
           size="1"
@@ -58,7 +59,7 @@ export function ConnectorsCollectionsPanel({
           <MaterialIcon
             name={viewMode === 'overlay' ? 'close_fullscreen' : 'open_in_full'}
             size={16}
-            color="var(--slate-9)"
+            color="var(--slate-11)"
           />
         </IconButton>
       </Flex>

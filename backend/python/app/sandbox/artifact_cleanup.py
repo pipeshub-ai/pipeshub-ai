@@ -19,6 +19,8 @@ import shutil
 import time
 from typing import Any
 
+from app.sandbox import roots
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_TTL_HOURS = 1
@@ -197,14 +199,17 @@ async def _cleanup_loop(graph_provider: Any = None, blob_store: Any = None) -> N
             total_removed = 0
 
             # Clean both local and docker sandbox roots
-            from app.sandbox.local_executor import _SANDBOX_ROOT as local_root
-            total_removed += _cleanup_temp_directories(local_root, ttl)
+            from app.sandbox.local_executor import _sandbox_root as local_root
+            total_removed += _cleanup_temp_directories(local_root(), ttl)
 
             try:
-                from app.sandbox.docker_executor import _SANDBOX_ROOT as docker_root
-                total_removed += _cleanup_temp_directories(docker_root, ttl)
+                from app.sandbox.docker_executor import _sandbox_root as docker_root
+                total_removed += _cleanup_temp_directories(docker_root(), ttl)
             except ImportError:
                 pass
+
+            # SANDBOX_MODE=broker (the shipped default) keeps each run's output here until it is uploaded (CLEANUP-2).
+            total_removed += _cleanup_temp_directories(roots.sandbox_root(roots.BROKER), ttl)
 
             if total_removed > 0:
                 logger.info("Artifact cleanup: removed %d expired directories", total_removed)

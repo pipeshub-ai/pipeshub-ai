@@ -31,6 +31,7 @@ from app.connectors.core.registry.auth_builder import (
 from app.connectors.core.constants import IconPaths
 from app.connectors.core.registry.connector_builder import CommonFields
 from app.connectors.core.registry.tool_builder import (
+    ToolProvider,
     ToolsetBuilder,
     ToolsetCategory,
 )
@@ -415,7 +416,7 @@ def _confluence_user_label(user: dict[str, Any]) -> str:
 
 
 # Register Confluence toolset
-@ToolsetBuilder("Confluence")\
+@ToolsetBuilder("Confluence", provider=ToolProvider.CONNECTOR)\
     .in_group("Atlassian")\
     .with_description("Confluence integration for wiki pages, documentation, and knowledge management")\
     .with_category(ToolsetCategory.APP)\
@@ -792,7 +793,7 @@ class Confluence:
             attachment_record_ids_parameter(required=False),
             attachment_display_parameter(inline_note=CONFLUENCE_INLINE_NOTE),
         ],
-        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
         args_summary=args_template('Creating Confluence page "{page_title}"', "page_title"),
         result_summary=entity_summary(lambda e: f"Created page: {_confluence_page_label(e)}"),
     )
@@ -1008,7 +1009,7 @@ class Confluence:
                 default=True,
             ),
         ],
-        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
         args_summary=args_template("Fetching Confluence page {page_id}", "page_id"),
         result_summary=entity_summary(lambda e: f"Fetched page: {_confluence_page_label(e)}"),
     )
@@ -1227,7 +1228,7 @@ class Confluence:
                 default=25,
             ),
         ],
-        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
         args_summary=args_template("Listing attachments on page {page_id}", "page_id"),
         result_summary=list_summary("results", lambda a: a.get("title") or a.get("id") or "?", "attachment"),
     )
@@ -1294,7 +1295,7 @@ class Confluence:
                 required=True,
             ),
         ],
-        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
         args_summary=args_template("Fetching attachment metadata {attachment_id}", "attachment_id"),
         result_summary=entity_summary(lambda e: f"Attachment: {e.get('title') or e.get('id') or '?'}"),
     )
@@ -1335,7 +1336,7 @@ class Confluence:
             ToolParameter(name="page_id", type=ParameterType.STRING, description="Page ID that owns the attachment.", required=True),
             ToolParameter(name="attachment_id", type=ParameterType.STRING, description="Attachment ID (from list_page_attachments).", required=True),
         ],
-        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="read"), Tag(key="effect", value="write")],
         args_summary=args_template("Downloading attachment {attachment_id}", "attachment_id"),
         result_summary=entity_summary(lambda e: f"Attachment artifact: {e.get('name') or e.get('artifact_id') or '?'}"),
     )
@@ -1461,7 +1462,7 @@ class Confluence:
             ToolParameter(name="sort_by", type=ParameterType.STRING, description="Optional v2-API sort. Allowed: 'id', 'title', 'created-date', 'modified-date'. Prefix with '-' for descending.", required=False),
             ToolParameter(name="limit", type=ParameterType.INTEGER, description="Max pages per page of results (Confluence v2 caps at 250).", required=False),
         ],
-        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
         args_summary=args_template("Listing pages in Confluence space {space_id}", "space_id"),
         result_summary=list_summary("results", _confluence_page_label, "page"),
     )
@@ -1554,7 +1555,7 @@ class Confluence:
             ToolParameter(name="page_id", type=ParameterType.STRING, description="Page ID", required=True),
             ToolParameter(name="new_title", type=ParameterType.STRING, description="New title", required=True),
         ],
-        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
     )
     async def update_page_title(self, page_id: str, new_title: str) -> tuple[bool, str]:
         """Update the title of a page.
@@ -1599,7 +1600,7 @@ class Confluence:
             ToolParameter(name="sort_by", type=ParameterType.STRING, description="Optional v2-API sort. Allowed: 'id', 'title', 'created-date', 'modified-date'. Prefix with '-' for descending.", required=False),
             ToolParameter(name="limit", type=ParameterType.INTEGER, description="Max child pages per page of results (Confluence v2 caps at 250).", required=False),
         ],
-        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_child_pages(
         self,
@@ -1715,7 +1716,7 @@ class Confluence:
             ToolParameter(name="labels", type=ParameterType.ARRAY, description="List of label names. Maps to CQL `label in (...)`.", required=False, items={"type": "string"}),
             ToolParameter(name="order_by", type=ParameterType.STRING, description="CQL ORDER BY clause, e.g. `'lastmodified desc'`. Set when the user asks for explicit ordering. Direction defaults to asc when omitted.", required=False),
         ],
-        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
         args_summary=args_template('Searching Confluence pages: "{title}"', "title"),
         result_summary=list_summary("results", _confluence_page_label, "page"),
     )
@@ -1955,7 +1956,7 @@ class Confluence:
             ToolParameter(name="labels", type=ParameterType.ARRAY, description="List of label names. Matches pages tagged with ANY of the given labels (CQL `label in (...)`).", required=False, items={"type": "string"}),
             ToolParameter(name="order_by", type=ParameterType.STRING, description="CQL ORDER BY clause. Examples: 'lastmodified desc', 'created desc', 'title asc'. Direction defaults to asc when omitted.", required=False),
         ],
-        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
         args_summary=lambda args: (
             f'Searching Confluence: "{args["query"]}"' if args.get("query") else "Searching Confluence content"
         ),
@@ -2190,7 +2191,7 @@ class Confluence:
             ToolParameter(name="query", type=ParameterType.STRING, description="Display name, email, or accountId.", required=True),
             ToolParameter(name="max_results", type=ParameterType.INTEGER, description="Max users to return (1-50). Default 10.", required=False, default=10),
         ],
-        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
         args_summary=args_template('Searching Confluence users: "{query}"', "query"),
         result_summary=list_summary(("results",), _confluence_user_label, "user"),
     )
@@ -2394,7 +2395,7 @@ class Confluence:
             "known from conversation history."
         ),
         parameters=[],
-        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
         args_summary=lambda _args: "Fetching Confluence spaces",
         result_summary=list_summary("results", _confluence_space_label, "space"),
     )
@@ -2447,7 +2448,7 @@ class Confluence:
         parameters=[
             ToolParameter(name="space_id", type=ParameterType.STRING, description="Space ID", required=True),
         ],
-        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_space(self, space_id: str) -> tuple[bool, str]:
         """Get details of a specific space.
@@ -2508,7 +2509,7 @@ class Confluence:
             attachment_record_ids_parameter(required=False),
             attachment_display_parameter(inline_note=CONFLUENCE_INLINE_NOTE),
         ],
-        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
         args_summary=args_template("Updating Confluence page {page_id}", "page_id"),
         result_summary=entity_summary(lambda e: f"Updated page: {_confluence_page_label(e)}"),
     )
@@ -2555,7 +2556,7 @@ class Confluence:
             attachment_record_ids_parameter(required=True),
             attachment_display_parameter(inline_note=CONFLUENCE_INLINE_NOTE),
         ],
-        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
         args_summary=args_template("Attaching files to Confluence page {page_id}", "page_id"),
     )
     async def add_attachments(
@@ -2730,7 +2731,7 @@ class Confluence:
         parameters=[
             ToolParameter(name="page_id", type=ParameterType.STRING, description="The page ID", required=True),
         ],
-        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_page_versions(self, page_id: str) -> tuple[bool, str]:
         """Get version history of a page.
@@ -2776,7 +2777,7 @@ class Confluence:
             attachment_record_ids_parameter(required=False),
             attachment_display_parameter(inline_note="In a comment, 'inline' lists the attached file names."),
         ],
-        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
     )
     async def comment_on_page(
         self,

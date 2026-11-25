@@ -126,7 +126,7 @@ describe('StorageController purge', () => {
       await controller.purgeDocumentById(
         request({ documentId: String(new mongoose.Types.ObjectId()) }),
         res,
-        sinon.stub(),
+        sinon.stub<unknown[]>(),
       )
 
       expect(res.body).to.deep.equal({ purged: 0 })
@@ -148,7 +148,7 @@ describe('StorageController purge', () => {
       const doc = row({ orgId: otherOrg })
       const res = makeRes()
 
-      await controller.purgeDocumentById(request({ documentId: String(doc._id) }), res, sinon.stub())
+      await controller.purgeDocumentById(request({ documentId: String(doc._id) }), res, sinon.stub<unknown[]>())
 
       expect(res.body).to.deep.equal({ purged: 0 })
       expect(rows).to.deep.equal([doc])
@@ -163,7 +163,7 @@ describe('StorageController purge', () => {
       const elsewhere = row({ orgId: otherOrg, documentPath: `${otherOrg}/PipesHub/records/vr-1` })
       const res = makeRes()
 
-      await controller.purgeVirtualRecordDocuments(request({ virtualRecordId: 'vr-1' }), res, sinon.stub())
+      await controller.purgeVirtualRecordDocuments(request({ virtualRecordId: 'vr-1' }), res, sinon.stub<unknown[]>())
 
       expect(res.body).to.deep.equal({ purged: 2 })
       expect(rows).to.deep.equal([neighbour, elsewhere])
@@ -181,14 +181,14 @@ describe('StorageController purge', () => {
       })
       const res = makeRes()
 
-      await controller.purgeVirtualRecordDocuments(request({ virtualRecordId: 'vr-1' }), res, sinon.stub())
+      await controller.purgeVirtualRecordDocuments(request({ virtualRecordId: 'vr-1' }), res, sinon.stub<unknown[]>())
 
       expect(res.body).to.deep.equal({ purged: 2 })
       expect(rows).to.deep.equal([sibling, otherOrgsTwin])
     })
 
     it('looks documents up only in ways an index answers', async () => {
-      await controller.purgeVirtualRecordDocuments(request({ virtualRecordId: 'vr-1' }), makeRes(), sinon.stub())
+      await controller.purgeVirtualRecordDocuments(request({ virtualRecordId: 'vr-1' }), makeRes(), sinon.stub<unknown[]>())
 
       const filter = (DocumentModel.find as unknown as sinon.SinonStub).firstCall.args[0]
       const indexed = DocumentModel.schema.indexes().map(([keys]) => Object.keys(keys))
@@ -209,7 +209,7 @@ describe('StorageController purge', () => {
     it('answers purged 0 when nothing is filed there', async () => {
       const res = makeRes()
 
-      await controller.purgeVirtualRecordDocuments(request({ virtualRecordId: 'vr-9' }), res, sinon.stub())
+      await controller.purgeVirtualRecordDocuments(request({ virtualRecordId: 'vr-9' }), res, sinon.stub<unknown[]>())
 
       expect(res.body).to.deep.equal({ purged: 0 })
       expect(adapter.deleteObject.called).to.be.false
@@ -252,13 +252,13 @@ describe('StorageController purge', () => {
     it('answers purged 0 for a chat with no files', async () => {
       const res = makeRes()
 
-      await controller.purgeConversationDocuments(request({ conversationId }), res, sinon.stub())
+      await controller.purgeConversationDocuments(request({ conversationId }), res, sinon.stub<unknown[]>())
 
       expect(res.body).to.deep.equal({ purged: 0 })
     })
 
     it('looks documents up through the documentPath index', async () => {
-      await controller.purgeConversationDocuments(request({ conversationId }), makeRes(), sinon.stub())
+      await controller.purgeConversationDocuments(request({ conversationId }), makeRes(), sinon.stub<unknown[]>())
 
       const filter = (DocumentModel.find as unknown as sinon.SinonStub).firstCall.args[0]
       expect(filter).to.have.property('documentPath')

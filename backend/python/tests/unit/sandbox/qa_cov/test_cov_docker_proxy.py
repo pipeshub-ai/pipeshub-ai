@@ -30,11 +30,15 @@ from app.sandbox.docker_proxy import (
     parse_sidecar_stats,
     resolve_instance,
 )
+from tests.support.settle import settle
+from tests.unit.sandbox.test_docker_proxy import TOKEN, with_token
 
 IMAGE = "pipeshubai/pipeshub-sandbox:latest"
 EGRESS = "pipeshub_sandbox_egress"
 Responses = Callable[[str, str], Awaitable[tuple[int, Any]]]
 _LIMITS: dict[str, int] = {"Memory": 512 * 1024 * 1024, "NanoCpus": 500_000_000, "PidsLimit": 256}
+# The rest of the sandbox floor (SEC-A-04) a raw create body needs, beside a non-root ``User``.
+_FLOOR: dict[str, Any] = {"CapDrop": ["ALL"], "SecurityOpt": ["no-new-privileges:true"], "ReadonlyRootfs": True}
 
 
 @pytest.fixture
@@ -49,7 +53,7 @@ class TestEndpointsConfigShape:
     @pytest.mark.parametrize("endpoints", [["x"], "x", 5])
     def test_endpoints_config_must_be_an_object(self, policy: DockerApiPolicy, endpoints: object) -> None:
         body = {
-            "Image": IMAGE, "HostConfig": {"NetworkMode": EGRESS, **_LIMITS},
+            "Image": IMAGE, "User": "sandbox", "HostConfig": {"NetworkMode": EGRESS, **_LIMITS, **_FLOOR},
             "NetworkingConfig": {"EndpointsConfig": endpoints},
         }
         with pytest.raises(PolicyDenied, match="EndpointsConfig must be an object"):
@@ -57,7 +61,7 @@ class TestEndpointsConfigShape:
 
     def test_an_empty_endpoints_config_is_admitted(self, policy: DockerApiPolicy) -> None:
         body = {
-            "Image": IMAGE, "HostConfig": {"NetworkMode": EGRESS, **_LIMITS},
+            "Image": IMAGE, "User": "sandbox", "HostConfig": {"NetworkMode": EGRESS, **_LIMITS, **_FLOOR},
             "NetworkingConfig": {"EndpointsConfig": None},
         }
         assert policy.check_container_create(body)["Labels"][MANAGED_LABEL] == "true"
@@ -160,7 +164,7 @@ class TestSidecarRing:
 
 
 def _proxy_with(responses: Responses, policy: DockerApiPolicy) -> DockerSocketProxy:
-    proxy = DockerSocketProxy(policy, "/nonexistent.sock", instance="stack-a")
+    proxy = DockerSocketProxy(policy, "/nonexistent.sock", caller_token=TOKEN, instance="stack-a")
 
     async def call(method: str, path: str, timeout: float = 30.0) -> tuple[int, Any]:
         return await responses(method, path)
@@ -217,7 +221,7 @@ class TestContainersUsage:
 
         block, _ = await _proxy_with(responses, policy)._containers_usage(1.0)
         assert block is not None and block["partial"] is True and block["running"] == 1
-        await asyncio.wait_for(cancelled.wait(), 1)
+        await settle(cancelled.wait())
 
     async def test_cpu_cores_need_two_readings(self, policy: DockerApiPolicy) -> None:
         usage = {"n": 0}
@@ -242,12 +246,12 @@ async def test_host_route_without_a_boot_id_is_a_502(
     policy: DockerApiPolicy, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(dp, "boot_id_hash", lambda path=None: None)
-    proxy = DockerSocketProxy(policy, "/nonexistent.sock")
+    proxy = DockerSocketProxy(policy, "/nonexistent.sock", caller_token=TOKEN)
     server = await asyncio.start_server(proxy.handle, "127.0.0.1", 0)
     port = server.sockets[0].getsockname()[1]
     try:
         reader, writer = await asyncio.open_connection("127.0.0.1", port)
-        writer.write(b"GET /_pipeshub/host HTTP/1.1\r\nHost: x\r\n\r\n")
+        writer.write(with_token(b"GET /_pipeshub/host HTTP/1.1\r\nHost: x\r\n\r\n"))
         await writer.drain()
         resp = await reader.read()
         writer.close()
@@ -288,12 +292,12 @@ async def _through_proxy(tmp_path, policy: DockerApiPolicy, raw: bytes) -> tuple
     daemon = _ChunkDaemon()
     sock = str(tmp_path / "d.sock")
     upstream = await asyncio.start_unix_server(daemon.handle, sock)
-    proxy = DockerSocketProxy(policy, sock, instance="stack-a")
+    proxy = DockerSocketProxy(policy, sock, caller_token=TOKEN, instance="stack-a")
     server = await asyncio.start_server(proxy.handle, "127.0.0.1", 0)
     port = server.sockets[0].getsockname()[1]
     try:
         reader, writer = await asyncio.open_connection("127.0.0.1", port)
-        writer.write(raw)
+        writer.write(with_token(raw))
         await writer.drain()
         resp = await asyncio.wait_for(reader.read(), 5)
         writer.close()
@@ -479,7 +483,7 @@ async def test_serve_starts_and_stops_on_a_signal(
         await asyncio.sleep(3600)
 
     monkeypatch.setattr(Reaper, "run", fake_run)
-    task = asyncio.create_task(dp.serve("127.0.0.1", 0, "/x.sock", policy,
+    task = asyncio.create_task(dp.serve("127.0.0.1", 0, "/x.sock", {TOKEN: policy},
                                         reaper=ReaperSettings(reap_after_s=None, interval_s=60)))
     await asyncio.wait_for(reaper_ran.wait(), 5)
     assert len(handlers) == 2

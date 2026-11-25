@@ -87,8 +87,8 @@ def _context(toolsets: list[dict], logger: Any = None) -> AgentContext:  # noqa:
 def _catalogue() -> "AbstractContextManager[MagicMock]":
     fake = MagicMock()
     fake.get_all_toolsets.return_value = {
-        "drive": {"class": _GoogleDrive, "isInternal": False, "description": "Google Drive"},
-        "onedrive": {"class": _OneDrive, "isInternal": False, "description": "OneDrive"},
+        "drive": {"class": _GoogleDrive, "isInternal": False, "provider": "connector", "description": "Google Drive"},
+        "onedrive": {"class": _OneDrive, "isInternal": False, "provider": "connector", "description": "OneDrive"},
     }
     return patch("app.agents.registry.toolset_registry.get_toolset_registry", return_value=fake)
 

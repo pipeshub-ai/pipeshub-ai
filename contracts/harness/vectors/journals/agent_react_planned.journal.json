@@ -1,0 +1,1470 @@
+{
+ "scenario": "agent_react_planned",
+ "query": "Summarize the leave policy",
+ "runId": "run-golden",
+ "sessionId": "ses-1",
+ "events": [
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 1,
+   "type": "run.admitted",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "node",
+   "visibility": "owner",
+   "data": {
+    "runKind": "interactive",
+    "principalRef": "p_user"
+   },
+   "runId": "run-golden"
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 2,
+   "type": "run.claimed",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "node",
+   "visibility": "owner",
+   "data": {
+    "attempt": 1,
+    "fence": 1,
+    "leaseMs": 30000
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 3,
+   "type": "run.spec_pinned",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "node",
+   "visibility": "owner",
+   "data": {
+    "specDigest": "sha256:2f57d0816eae42c1ed12263b802d8b8ce009d669271e6d707a781f11cdbdee46",
+    "spec": {
+     "schemaVersion": 2,
+     "harnessMajor": 2,
+     "foldVersion": 1,
+     "runKind": "interactive",
+     "principalRef": "p_user-1",
+     "model": {
+      "policy": [
+       {
+        "provider": "openai",
+        "model": "gpt-x"
+       }
+      ],
+      "promptVersion": "pipeshub-agent-2026-09"
+     },
+     "grants": {
+      "tools": [],
+      "sandboxProfile": "none",
+      "egress": "none"
+     },
+     "budgets": {
+      "maxTurns": 15,
+      "maxTokens": 1000000,
+      "maxCostUsd": 5.0,
+      "activeTimeS": 3600,
+      "calendarDeadline": "2027-01-01T00:00:00Z",
+      "maxChildren": 0
+     },
+     "capabilitiesDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+     "extensions": {
+      "x.pipeshub": {
+       "model": {
+        "modelKey": "model-1",
+        "modelName": "gpt-x"
+       },
+       "knowledge": {
+        "apps": [],
+        "kb": [],
+        "strictScope": true
+       },
+       "mcp": [],
+       "skills": [],
+       "mounts": [],
+       "via": "session",
+       "agent": {
+        "agentKey": "agent-1",
+        "definitionVersion": 7,
+        "mode": "quick"
+       }
+      }
+     }
+    }
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 4,
+   "type": "loop.state_saved",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "slots": {
+     "capabilities.observed": {}
+    }
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 5,
+   "type": "loop.state_saved",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "slots": {
+     "pre_run.composition": {
+      "delegates": [],
+      "topLevel": [
+       "internaltools__ask_user_question",
+       "artifacts__get_artifact_content",
+       "artifacts__get_artifact_download_url",
+       "artifacts__get_record_download_url",
+       "artifacts__list_artifacts",
+       "artifacts__promote_artifact",
+       "artifacts__save_artifact",
+       "artifacts__update_artifact",
+       "goldendocs__export_report",
+       "goldendocs__lookup_ticket",
+       "goldendocs__search_docs",
+       "list_toolsets",
+       "fetch_tools",
+       "call_tool",
+       "search_tools",
+       "retrieve_artifact_content",
+       "write_todos"
+      ],
+      "claims": {}
+     },
+     "pre_run.goal": {
+      "description": "Find the paid leave policy and summarize it.",
+      "userMessage": "Summarize the leave policy",
+      "interpretation": "Find the paid leave policy and summarize it.",
+      "attachmentText": "",
+      "requirements": [],
+      "successCriteria": [],
+      "constraints": [],
+      "gaps": [],
+      "mode": "react",
+      "loopKind": "react",
+      "composeDomainAgents": true,
+      "wholeDocument": true,
+      "clarifyingQuestions": []
+     }
+    }
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 6,
+   "type": "x.pipeshub.goal.presented",
+   "schemaVersion": 1,
+   "critical": false,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "description": "Find the paid leave policy and summarize it."
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 7,
+   "type": "message.completed",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "role": "user",
+    "textRef": {
+     "ref": "inline:U3VtbWFyaXplIHRoZSBsZWF2ZSBwb2xpY3k=",
+     "hash": "sha256:948e4c8f0ebe9dfe04440038216bf9bfae81929e91e162479baa2f2ceef61f24",
+     "size": 26
+    },
+    "isFinal": false
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 8,
+   "type": "turn.started",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "turn": 1
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 9,
+   "type": "loop.state_saved",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "slots": {
+     "session.toolLists": {
+      "react": {
+       "ref": {
+        "ref": "sealed:memory/1",
+        "hash": "sha256:afe54c734813dbad51cf200c6baef9b3d02a494dab19f516fc821e69808ced2a",
+        "size": 18409
+       },
+       "digest": "sha256:de666827205e38714f6db5a57b3884450e3d4ed485907dd32ba34fe27f107170",
+       "count": 15
+      }
+     }
+    }
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 10,
+   "type": "loop.state_saved",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "slots": {
+     "prompt.shown": {
+      "stableDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "stableChars": 0,
+      "sources": [
+       {
+        "label": "Live service tools (Knowledgegraph)",
+        "via": []
+       }
+      ]
+     }
+    }
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 11,
+   "type": "model.request",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "contextDigest": "sha256:dd99e07f4b564bc0db40eba4acafcf441caf4fa609998171bec9b91ff7f242a0",
+    "route": {
+     "provider": "openai",
+     "model": "scripted-model"
+    },
+    "modelAttempt": 1
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 12,
+   "type": "model.response",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "messageRef": {
+     "ref": "inline:eyJ0ZXh0IjoiIiwidG9vbENhbGxzIjpbeyJhcmdzIjp7InRvZG9zIjpbeyJjb250ZW50IjoiRmluZCB0aGUgbGVhdmUgcG9saWN5Iiwic3RhdHVzIjoiaW5fcHJvZ3Jlc3MiLCJ0b29scyI6WyJnb2xkZW5kb2NzX19zZWFyY2hfZG9jcyJdfSx7ImNvbnRlbnQiOiJTdW1tYXJpemUgaXQiLCJzdGF0dXMiOiJwZW5kaW5nIn1dfSwiaWQiOiJjYWxsLXBsYW4tMSIsIm5hbWUiOiJ3cml0ZV90b2RvcyJ9XX0=",
+     "hash": "sha256:6362e9faa76e3a0ae178a75d9b18ce4ef46f4e4b9549df534b82af0b67ae7f52",
+     "size": 227
+    },
+    "toolCalls": [
+     {
+      "callId": "call-plan-1",
+      "modelName": "write_todos",
+      "argsDigest": "sha256:54e7046937ca3ce0372c737c6459f9ef7625acdcebf03cd66c715bd0a2f52928"
+     }
+    ],
+    "usage": {
+     "inputTokens": 0,
+     "outputTokens": 0,
+     "cacheReadTokens": 0,
+     "cacheWriteTokens": 0
+    },
+    "provider": "openai",
+    "transport": "scripted",
+    "rawRef": {
+     "ref": "inline:eyJyb2xlIjoiYXNzaXN0YW50IiwiY29udGVudCI6W10sInRvb2xfY2FsbHMiOlt7ImlkIjoiY2FsbC1wbGFuLTEiLCJuYW1lIjoid3JpdGVfdG9kb3MiLCJhcmd1bWVudHMiOnsidG9kb3MiOlt7ImNvbnRlbnQiOiJGaW5kIHRoZSBsZWF2ZSBwb2xpY3kiLCJzdGF0dXMiOiJpbl9wcm9ncmVzcyIsInRvb2xzIjpbImdvbGRlbmRvY3NfX3NlYXJjaF9kb2NzIl19LHsiY29udGVudCI6IlN1bW1hcml6ZSBpdCIsInN0YXR1cyI6InBlbmRpbmcifV19fV0sInRydW5jYXRlZCI6ZmFsc2V9",
+     "hash": "sha256:8fee63dd4506c7792b8982d262aadf9fc032193307be326053f4bd4bbd674b40",
+     "size": 273
+    }
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 13,
+   "type": "x.pipeshub.message.presented",
+   "schemaVersion": 1,
+   "critical": false,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "text": ""
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 14,
+   "type": "x.pipeshub.tool.call_presented",
+   "schemaVersion": 1,
+   "critical": false,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "callId": "call-plan-1",
+    "toolName": "write_todos",
+    "argsJson": "{\"todos\": [{\"content\": \"Find the leave policy\", \"status\": \"in_progress\", \"tools\": [\"goldendocs__search_docs\"]}, {\"content\": \"Summarize it\", \"status\": \"pending\"}]}",
+    "hidden": true,
+    "argsSummary": "Write Todos — todos: [2 items]"
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 15,
+   "type": "tool.intent",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "invocationId": "t1.0",
+    "toolId": "pipeshub@builtin/write_todos",
+    "argsDigest": "sha256:54e7046937ca3ce0372c737c6459f9ef7625acdcebf03cd66c715bd0a2f52928",
+    "effect": "read",
+    "sink": {
+     "egress": "self",
+     "argsLeaveBoundary": false
+    }
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 16,
+   "type": "tool.outcome",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "invocationId": "t1.0",
+    "status": "ok",
+    "resultRef": {
+     "ref": "inline:eyJjb250ZW50Ijoie1wiY291bnRcIjogMn0iLCJpc0Vycm9yIjpmYWxzZX0=",
+     "hash": "sha256:5764cc9bb254b674037c8d724c2eb121db08032b82cf3a69db21d0fdbde7407e",
+     "size": 44
+    },
+    "labels": {
+     "integrity": "internal"
+    }
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 17,
+   "type": "task.created",
+   "schemaVersion": 1,
+   "critical": false,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "taskId": "task-1",
+    "title": "Find the leave policy",
+    "status": "in_progress",
+    "deps": [],
+    "asksFirst": false
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 18,
+   "type": "task.created",
+   "schemaVersion": 1,
+   "critical": false,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "taskId": "task-2",
+    "title": "Summarize it",
+    "status": "pending",
+    "deps": []
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 19,
+   "type": "x.pipeshub.tool.result_presented",
+   "schemaVersion": 1,
+   "critical": false,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "callId": "call-plan-1",
+    "status": "completed",
+    "content": "{\"count\": 2}",
+    "resultSummary": "Completed successfully"
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 20,
+   "type": "x.pipeshub.provenance.recorded",
+   "schemaVersion": 1,
+   "critical": false,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "invocationId": "t1.0",
+    "toolId": "pipeshub@builtin/write_todos",
+    "rule": "no_content",
+    "provenance": {
+     "readers": "public",
+     "integrity": "first_party",
+     "sources": []
+    }
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 21,
+   "type": "loop.state_saved",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "slots": {
+     "plan.tasks": [
+      {
+       "taskId": "task-1",
+       "title": "Find the leave policy",
+       "status": "in_progress",
+       "deps": [],
+       "asksFirst": false
+      },
+      {
+       "taskId": "task-2",
+       "title": "Summarize it",
+       "status": "pending",
+       "deps": []
+      }
+     ]
+    }
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 22,
+   "type": "turn.completed",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "turn": 1
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 23,
+   "type": "turn.started",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "turn": 2
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 24,
+   "type": "model.request",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "contextDigest": "sha256:d0da0b9f36728238ad7bf69ce178c0e28deebe52795bb8dae1980be8efec6528",
+    "route": {
+     "provider": "openai",
+     "model": "scripted-model"
+    },
+    "modelAttempt": 2
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 25,
+   "type": "model.response",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "messageRef": {
+     "ref": "inline:eyJ0ZXh0IjoiIiwidG9vbENhbGxzIjpbeyJhcmdzIjp7InF1ZXJ5IjoicGFpZCBsZWF2ZSJ9LCJpZCI6ImNhbGwtc2VhcmNoIiwibmFtZSI6ImdvbGRlbmRvY3NfX3NlYXJjaF9kb2NzIn1dfQ==",
+     "hash": "sha256:20a66bb0ae5a4b70567696462895f585fc637c6fb282c9ced1683ff133149ab6",
+     "size": 109
+    },
+    "toolCalls": [
+     {
+      "callId": "call-search",
+      "modelName": "goldendocs__search_docs",
+      "argsDigest": "sha256:38905961dcb60d90700f46c38c4e67a28e4c16f42712ecf599138cf2e3d2a3f1"
+     }
+    ],
+    "usage": {
+     "inputTokens": 0,
+     "outputTokens": 0,
+     "cacheReadTokens": 0,
+     "cacheWriteTokens": 0
+    },
+    "provider": "openai",
+    "transport": "scripted",
+    "rawRef": {
+     "ref": "inline:eyJyb2xlIjoiYXNzaXN0YW50IiwiY29udGVudCI6W10sInRvb2xfY2FsbHMiOlt7ImlkIjoiY2FsbC1zZWFyY2giLCJuYW1lIjoiZ29sZGVuZG9jc19fc2VhcmNoX2RvY3MiLCJhcmd1bWVudHMiOnsicXVlcnkiOiJwYWlkIGxlYXZlIn19XSwidHJ1bmNhdGVkIjpmYWxzZX0=",
+     "hash": "sha256:2add6c8daa11fef1731b7fd02b755363a04faa8f03a83caaeeb7a04fd9125bd0",
+     "size": 155
+    }
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 26,
+   "type": "x.pipeshub.message.presented",
+   "schemaVersion": 1,
+   "critical": false,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "text": ""
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 27,
+   "type": "x.pipeshub.tool.call_presented",
+   "schemaVersion": 1,
+   "critical": false,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "callId": "call-search",
+    "toolName": "goldendocs__search_docs",
+    "argsJson": "{\"query\": \"paid leave\"}",
+    "argsSummary": "Search Docs: \"paid leave\""
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 28,
+   "type": "tool.intent",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "invocationId": "t2.0",
+    "toolId": "pipeshub@goldendocs/search_docs",
+    "argsDigest": "sha256:38905961dcb60d90700f46c38c4e67a28e4c16f42712ecf599138cf2e3d2a3f1",
+    "effect": "write",
+    "sink": {
+     "egress": "external",
+     "argsLeaveBoundary": true
+    }
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 29,
+   "type": "tool.outcome",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "invocationId": "t2.0",
+    "status": "ok",
+    "resultRef": {
+     "ref": "inline:eyJjb250ZW50Ijoie1wicXVlcnlcIjogXCJwYWlkIGxlYXZlXCIsIFwiaGl0c1wiOiBbe1widGl0bGVcIjogXCJMZWF2ZSBwb2xpY3lcIiwgXCJleGNlcnB0XCI6IFwiMjUgZGF5cyBvZiBwYWlkIGxlYXZlLlwifV19IiwiaXNFcnJvciI6ZmFsc2V9",
+     "hash": "sha256:d7fc9f8e9fe0c6378b8c0de7af64e9be4e6de35f2d94c83a443c04699cb56c1a",
+     "size": 141
+    },
+    "labels": {
+     "integrity": "internal"
+    }
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 30,
+   "type": "x.pipeshub.tool.result_presented",
+   "schemaVersion": 1,
+   "critical": false,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "callId": "call-search",
+    "status": "completed",
+    "content": "{\"query\": \"paid leave\", \"hits\": [{\"title\": \"Leave policy\", \"excerpt\": \"25 days of paid leave.\"}]}",
+    "resultSummary": "Completed successfully"
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 31,
+   "type": "x.pipeshub.provenance.recorded",
+   "schemaVersion": 1,
+   "critical": false,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "invocationId": "t2.0",
+    "toolId": "pipeshub@goldendocs/search_docs",
+    "rule": "opaque",
+    "provenance": {
+     "readers": "unknown",
+     "integrity": "first_party",
+     "sources": []
+    }
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 32,
+   "type": "turn.completed",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "turn": 2
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 33,
+   "type": "turn.started",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "turn": 3
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 34,
+   "type": "model.request",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "contextDigest": "sha256:85c2c852bb9a8013693ae9d28765cfdedf354eec2e540879c6f46fa63a96b35b",
+    "route": {
+     "provider": "openai",
+     "model": "scripted-model"
+    },
+    "modelAttempt": 3
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 35,
+   "type": "model.response",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "messageRef": {
+     "ref": "inline:eyJ0ZXh0IjoiIiwidG9vbENhbGxzIjpbeyJhcmdzIjp7InRvZG9zIjpbeyJjb250ZW50IjoiRmluZCB0aGUgbGVhdmUgcG9saWN5Iiwic3RhdHVzIjoiY29tcGxldGVkIiwidG9vbHMiOlsiZ29sZGVuZG9jc19fc2VhcmNoX2RvY3MiXX0seyJjb250ZW50IjoiU3VtbWFyaXplIGl0Iiwic3RhdHVzIjoiaW5fcHJvZ3Jlc3MifV19LCJpZCI6ImNhbGwtcGxhbi0yIiwibmFtZSI6IndyaXRlX3RvZG9zIn1dfQ==",
+     "hash": "sha256:3a89c740864c881a999a6548bf0c75363137645b5edbd3a957f86a051c024cf0",
+     "size": 229
+    },
+    "toolCalls": [
+     {
+      "callId": "call-plan-2",
+      "modelName": "write_todos",
+      "argsDigest": "sha256:8178d12df01231e227829b825ea225276ddcb19dc49971b66a0c8780fc8a1ea3"
+     }
+    ],
+    "usage": {
+     "inputTokens": 0,
+     "outputTokens": 0,
+     "cacheReadTokens": 0,
+     "cacheWriteTokens": 0
+    },
+    "provider": "openai",
+    "transport": "scripted",
+    "rawRef": {
+     "ref": "inline:eyJyb2xlIjoiYXNzaXN0YW50IiwiY29udGVudCI6W10sInRvb2xfY2FsbHMiOlt7ImlkIjoiY2FsbC1wbGFuLTIiLCJuYW1lIjoid3JpdGVfdG9kb3MiLCJhcmd1bWVudHMiOnsidG9kb3MiOlt7ImNvbnRlbnQiOiJGaW5kIHRoZSBsZWF2ZSBwb2xpY3kiLCJzdGF0dXMiOiJjb21wbGV0ZWQiLCJ0b29scyI6WyJnb2xkZW5kb2NzX19zZWFyY2hfZG9jcyJdfSx7ImNvbnRlbnQiOiJTdW1tYXJpemUgaXQiLCJzdGF0dXMiOiJpbl9wcm9ncmVzcyJ9XX19XSwidHJ1bmNhdGVkIjpmYWxzZX0=",
+     "hash": "sha256:aa7c4ace1c4911954d2198b2b560b89298f3c5492445c2ddbf3adc1518f566b9",
+     "size": 275
+    }
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 36,
+   "type": "x.pipeshub.message.presented",
+   "schemaVersion": 1,
+   "critical": false,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "text": ""
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 37,
+   "type": "x.pipeshub.tool.call_presented",
+   "schemaVersion": 1,
+   "critical": false,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "callId": "call-plan-2",
+    "toolName": "write_todos",
+    "argsJson": "{\"todos\": [{\"content\": \"Find the leave policy\", \"status\": \"completed\", \"tools\": [\"goldendocs__search_docs\"]}, {\"content\": \"Summarize it\", \"status\": \"in_progress\"}]}",
+    "hidden": true,
+    "argsSummary": "Write Todos — todos: [2 items]"
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 38,
+   "type": "tool.intent",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "invocationId": "t3.0",
+    "toolId": "pipeshub@builtin/write_todos",
+    "argsDigest": "sha256:8178d12df01231e227829b825ea225276ddcb19dc49971b66a0c8780fc8a1ea3",
+    "effect": "read",
+    "sink": {
+     "egress": "self",
+     "argsLeaveBoundary": false
+    }
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 39,
+   "type": "tool.outcome",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "invocationId": "t3.0",
+    "status": "ok",
+    "resultRef": {
+     "ref": "inline:eyJjb250ZW50Ijoie1wiY291bnRcIjogMn0iLCJpc0Vycm9yIjpmYWxzZX0=",
+     "hash": "sha256:5764cc9bb254b674037c8d724c2eb121db08032b82cf3a69db21d0fdbde7407e",
+     "size": 44
+    },
+    "labels": {
+     "integrity": "internal"
+    }
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 40,
+   "type": "task.updated",
+   "schemaVersion": 1,
+   "critical": false,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "taskId": "task-1",
+    "title": "Find the leave policy",
+    "status": "completed",
+    "deps": [],
+    "asksFirst": false
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 41,
+   "type": "task.updated",
+   "schemaVersion": 1,
+   "critical": false,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "taskId": "task-2",
+    "title": "Summarize it",
+    "status": "in_progress",
+    "deps": []
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 42,
+   "type": "x.pipeshub.tool.result_presented",
+   "schemaVersion": 1,
+   "critical": false,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "callId": "call-plan-2",
+    "status": "completed",
+    "content": "{\"count\": 2}",
+    "resultSummary": "Completed successfully"
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 43,
+   "type": "x.pipeshub.provenance.recorded",
+   "schemaVersion": 1,
+   "critical": false,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "invocationId": "t3.0",
+    "toolId": "pipeshub@builtin/write_todos",
+    "rule": "no_content",
+    "provenance": {
+     "readers": "public",
+     "integrity": "first_party",
+     "sources": []
+    }
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 44,
+   "type": "loop.state_saved",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "slots": {
+     "plan.tasks": [
+      {
+       "taskId": "task-1",
+       "title": "Find the leave policy",
+       "status": "completed",
+       "deps": [],
+       "asksFirst": false
+      },
+      {
+       "taskId": "task-2",
+       "title": "Summarize it",
+       "status": "in_progress",
+       "deps": []
+      }
+     ]
+    }
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 45,
+   "type": "turn.completed",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "turn": 3
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 46,
+   "type": "turn.started",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "turn": 4
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 47,
+   "type": "model.request",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "contextDigest": "sha256:5e3a0935d4d9f94478766cb095f345753124cf067a8404c8916b2e6dd5990953",
+    "route": {
+     "provider": "openai",
+     "model": "scripted-model"
+    },
+    "modelAttempt": 4
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 48,
+   "type": "model.response",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "messageRef": {
+     "ref": "inline:eyJ0ZXh0IjoiWW91IGdldCAyNSBkYXlzIG9mIHBhaWQgbGVhdmUgYSB5ZWFyLiIsInRvb2xDYWxscyI6W119",
+     "hash": "sha256:59bee8f3b1f17f045cf6049a972b7027aa640cec89f282122a33f72990c5326f",
+     "size": 63
+    },
+    "toolCalls": [],
+    "usage": {
+     "inputTokens": 0,
+     "outputTokens": 0,
+     "cacheReadTokens": 0,
+     "cacheWriteTokens": 0
+    },
+    "provider": "openai",
+    "transport": "scripted",
+    "rawRef": {
+     "ref": "inline:eyJyb2xlIjoiYXNzaXN0YW50IiwiY29udGVudCI6W3sidHlwZSI6InRleHQiLCJ0ZXh0IjoiWW91IGdldCAyNSBkYXlzIG9mIHBhaWQgbGVhdmUgYSB5ZWFyLiJ9XSwidG9vbF9jYWxscyI6bnVsbCwidHJ1bmNhdGVkIjpmYWxzZX0=",
+     "hash": "sha256:94f13e71d30415d0dd5f2b3f709fc0c0907e2aed45c733c100e13704178207c0",
+     "size": 131
+    }
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 49,
+   "type": "x.pipeshub.message.presented",
+   "schemaVersion": 1,
+   "critical": false,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "text": "You get 25 days of paid leave a year."
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 50,
+   "type": "message.completed",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "role": "assistant",
+    "textRef": {
+     "ref": "inline:WW91IGdldCAyNSBkYXlzIG9mIHBhaWQgbGVhdmUgYSB5ZWFyLg==",
+     "hash": "sha256:5217db8910ea6ad77d8d9512762f16987f6c6668a38d7fc96ce09d9b4e9fd5e5",
+     "size": 37
+    },
+    "isFinal": true
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 51,
+   "type": "turn.completed",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "turn": 4
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 52,
+   "type": "x.pipeshub.answer.finalized",
+   "schemaVersion": 1,
+   "critical": false,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "outcome": "answered",
+    "answer": "You get 25 days of paid leave a year.",
+    "partTexts": [
+     "",
+     "",
+     "",
+     "You get 25 days of paid leave a year."
+    ],
+    "citations": [],
+    "confidence": null,
+    "label": {
+     "complete": false,
+     "sources": [],
+     "integrity": "first_party"
+    }
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 53,
+   "type": "x.pipeshub.outcome.recorded",
+   "schemaVersion": 1,
+   "critical": false,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "facts": [
+     {
+      "kind": "source_gathered",
+      "ref": "invocation:t1.0",
+      "tool": "write_todos"
+     },
+     {
+      "kind": "step_completed",
+      "turn": 1
+     },
+     {
+      "kind": "source_gathered",
+      "ref": "invocation:t2.0",
+      "tool": "search_docs"
+     },
+     {
+      "kind": "step_completed",
+      "turn": 2
+     },
+     {
+      "kind": "source_gathered",
+      "ref": "invocation:t3.0",
+      "tool": "write_todos"
+     },
+     {
+      "kind": "step_completed",
+      "turn": 3
+     }
+    ]
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 54,
+   "type": "run.completed",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "node",
+   "visibility": "owner",
+   "data": {
+    "outcome": "answered"
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  }
+ ],
+ "live": [
+  {
+   "afterSeq": 6,
+   "frameId": "d:run-golden:1:1:1",
+   "frame": {
+    "runId": "run-golden",
+    "fence": 1,
+    "modelAttempt": 1,
+    "n": 1,
+    "kind": "tool_call",
+    "data": {
+     "text": "arguments"
+    }
+   }
+  },
+  {
+   "afterSeq": 21,
+   "frameId": "d:run-golden:1:2:1",
+   "frame": {
+    "runId": "run-golden",
+    "fence": 1,
+    "modelAttempt": 2,
+    "n": 1,
+    "kind": "tool_call",
+    "data": {
+     "text": "arguments"
+    }
+   }
+  },
+  {
+   "afterSeq": 31,
+   "frameId": "d:run-golden:1:3:1",
+   "frame": {
+    "runId": "run-golden",
+    "fence": 1,
+    "modelAttempt": 3,
+    "n": 1,
+    "kind": "tool_call",
+    "data": {
+     "text": "arguments"
+    }
+   }
+  },
+  {
+   "afterSeq": 44,
+   "frameId": "d:run-golden:1:4:1",
+   "frame": {
+    "runId": "run-golden",
+    "fence": 1,
+    "modelAttempt": 4,
+    "n": 1,
+    "kind": "text_delta",
+    "data": {
+     "text": "You get 25 days ",
+     "answer": "You get 25 days ",
+     "citations": []
+    }
+   }
+  },
+  {
+   "afterSeq": 44,
+   "frameId": "d:run-golden:1:4:2",
+   "frame": {
+    "runId": "run-golden",
+    "fence": 1,
+    "modelAttempt": 4,
+    "n": 2,
+    "kind": "text_delta",
+    "data": {
+     "text": "of paid leave a year."
+    }
+   }
+  }
+ ]
+}

@@ -75,11 +75,19 @@ describe('withWriteWindow', () => {
   it('U5: an end that stalls does not hold a successful response past the budget, and does not change the outcome', async () => {
     const { repo } = fakeRepo({ endWrite: () => new Promise(() => undefined) })
     writeWindowHooks.repo = () => repo
-    const t0 = Date.now()
-    const out = await withWriteWindow(doc, async () => 'ok')
-    expect(out).to.equal('ok')
-    expect(Date.now() - t0).to.be.within(END_BUDGET_MS - 100, END_BUDGET_MS + 1500)
-  }).timeout(8000)
+    const clock = sinon.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
+    try {
+      let answered = false
+      const out = withWriteWindow(doc, async () => 'ok').then((v) => { answered = true; return v })
+      await clock.tickAsync(END_BUDGET_MS - 1)
+      expect(answered, 'answered before the end budget ran out').to.equal(false)
+      await clock.tickAsync(1)
+      expect(answered, 'answered once the end budget ran out').to.equal(true)
+      expect(await out).to.equal('ok')
+    } finally {
+      clock.restore()
+    }
+  })
 
   it('U6: an end whose first attempt fails is retried once and the write still succeeds', async () => {
     let n = 0
@@ -94,11 +102,18 @@ describe('withWriteWindow', () => {
     let renews = 0
     const { repo } = fakeRepo({ renewWrite: async () => { renews++; throw new Error('db blip') } })
     writeWindowHooks.repo = () => repo
-    expect(await withWriteWindow(doc, async () => { await wait(200); return 'ok' })).to.equal('ok')
-    const during = renews
-    expect(during).to.be.greaterThan(2)
-    await wait(120)
-    expect(renews).to.equal(during)
+    const clock = sinon.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
+    try {
+      const out = withWriteWindow(doc, async () => { await wait(200); return 'ok' })
+      await clock.tickAsync(200)
+      expect(await out).to.equal('ok')
+      const during = renews
+      expect(during).to.be.greaterThan(2)
+      await clock.tickAsync(120)
+      expect(renews).to.equal(during)
+    } finally {
+      clock.restore()
+    }
   })
 
   it('manual heartbeat mode never renews by itself and announces the token', async () => {

@@ -8,6 +8,8 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+from tests.support.edition_defaults import parser_identity_writers_extra
+
 APP = Path(__file__).resolve().parents[4] / "app"
 
 #: (file, enclosing function) -> the builder its body must call.
@@ -28,6 +30,7 @@ NEEDS_NONE = {
     ("services/graph_db/arango/arango_http_provider.py", "ArangoHTTPProvider.compare_and_set_record_fields"): "a stage status by revision: the copy and its timestamp are not changed",
     ("services/graph_db/neo4j/neo4j_provider.py", "Neo4jProvider.compare_and_set_record_fields"): "a stage status by revision: the copy and its timestamp are not changed",
     ("services/graph_db/postgres/codegraph.py", "CodeGraphMixin.compare_and_set_record_fields"): "a stage status by revision: the copy and its timestamp are not changed",
+    **parser_identity_writers_extra(),
 }
 
 

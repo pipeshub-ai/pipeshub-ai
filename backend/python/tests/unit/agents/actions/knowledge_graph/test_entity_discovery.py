@@ -467,6 +467,7 @@ class TestATypeFilterThatMatchesNoName:
 
         payload = json.loads((await execute_search_entities(state, "SAAS Launch", entity_types=["record_group"]))[1])
 
+        # wall-clock-ok: a hang guard: the fallback search is instant, a stuck one waits out its 30 s budget
         assert asyncio.get_running_loop().time() - started < 2
         assert [r["entityId"] for r in payload["results"]] == ["rg-sd", "rg-es"]
         assert payload["incomplete"] is True

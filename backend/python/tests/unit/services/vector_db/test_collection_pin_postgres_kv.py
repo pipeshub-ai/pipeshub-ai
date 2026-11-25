@@ -75,6 +75,10 @@ def _process(runtime: _Runtime):  # noqa: ANN202
     store = PostgresKeyValueStore(lambda v: json.dumps(v).encode(), lambda b: json.loads(b), runtime=runtime)
     with patch.object(postgres_store, "listen_dsn", return_value=None):  # no direct address: NOTIFY is never heard
         config = ConfigurationService(log, store)
+        # The watch thread clears the cache once its subscription is set up; let it finish before the test caches
+        # anything, so that clear cannot land mid-test and stand in for a notification this process never hears.
+        config.watch_thread.join(timeout=10)
+    assert not config.watch_thread.is_alive()
     return config, CollectionPinStore(config, log)
 
 

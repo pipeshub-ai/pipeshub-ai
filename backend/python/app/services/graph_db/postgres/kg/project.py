@@ -10,6 +10,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from app.services.graph_db.postgres.kg import grant_marks
 from app.services.graph_db.postgres.kg.dependents import (
     children_of,
     held_apps,
@@ -274,6 +275,8 @@ async def _project(tx: Tx, org: str, focus: set[Key], *, lock_for: set[str] | No
     if stamps:
         flips, st.shallow = await _grant_flags(tx, org, leaf_only, {k for k in grant_only & focus if k[0] != "apps"} - reached, snap.sk, d)
 
+    # the nodes whose rows the marks of grants read change here (``grant_marks``): read before the rows are written
+    marked = await grant_marks.changed(tx, org, sorted(d.records), d.records)
     if d.records:
         await w.records_upsert([{"sk": sk, **cols} for sk, cols in sorted(d.records.items())])
         await w.listing_set([(sk, c["coll"], c["id"], c["kind"], c["folder"], c["hide_children"], c["alien"], c["name_sort"]) for sk, c in sorted(d.records.items())])
@@ -317,6 +320,9 @@ async def _project(tx: Tx, org: str, focus: set[Key], *, lock_for: set[str] | No
     if new_g:
         await w.grants_set(new_g)
     st.grants = len(drop_g) + len(new_g)
+    # after the rows they read: the grants on what this unit wrote, and on the children of the nodes whose rows or grants changed
+    regranted = {g[1] for g in drop_g} | {g[1] for g in new_g}
+    await grant_marks.refresh(tx, org, set(d.records) | regranted, marked | set(d.gone) | regranted)
     drop_c = sorted(k for k in cur_closure if k not in d.closure)
     if drop_c:
         await w.closure_delete(drop_c)

@@ -171,6 +171,11 @@ from app.services.graph_db.common.team_grant_role import (
     cypher_team_grant_role,
 )
 from app.services.graph_db.common.utils import (
+    AGENT_ENGINE_FIELDS,
+    AGENT_ENVIRONMENT_FIELD,
+    AGENT_GATES_FIELD,
+    AGENT_OWNER_TEAM_FIELD,
+    AGENT_ROLE_MODELS_FIELD,
     CANONICAL_PARENT_RELATION_TYPES,
     CONTAINER_INHERIT_MAX_DEPTH,
     CONTAINMENT_MAX_DEPTH,
@@ -187,9 +192,11 @@ from app.services.graph_db.common.utils import (
     build_connector_stats_response,
     cleans_taxonomy_points,
     collapse_repeated_records,
+    decode_agent_json_fields,
     dedupe_agents_by_id,
     deleted_record_taxonomy_refs,
     empty_soft_delete_result,
+    encode_agent_json_fields,
     is_full_address,
     jira_issue_browse_url_regex,
     merge_same_id_record_docs,
@@ -236,6 +243,7 @@ from app.services.graph_db.interface.graph_db_provider import (
     DUPLICATE_RECONCILE_PENDING_FIELD,
     KH_LISTING_STATE_FLAG,
     KH_SKIP_READS,
+    MAX_INDEXED_COPIES_PER_ITEM,
     REF_LINKS_PER_DOC,
     STRICT_SCOPE_FILTER_KEY,
     UNSUPPORTED_PAGE_FIELDS,
@@ -330,6 +338,12 @@ SCHEMA_MIGRATION_LABEL = "SchemaMigration"
 _ALIAS_HEAL_BATCH = 1000
 # Ids a connector delete must report, kept while its batches run; see
 # _stash_connector_delete_handles. Deleted with the connector node.
+# A type node's label -> its collection, for every record type. Keyed by label because the
+# reverse is not unique by spelling: collection_to_label("sqlTables") is "SqlTable".
+_TYPE_LABEL_TO_COLLECTION = {
+    collection_to_label(collection): collection for collection in set(RECORD_TYPE_COLLECTION_MAPPING.values())
+}
+
 _CONNECTOR_DELETE_HANDLE_LABEL = "ConnectorDeleteHandle"
 _CONNECTOR_DELETE_HANDLE_CHUNK = 5000
 
@@ -974,6 +988,10 @@ def _cypher_expectations(expected: dict[str, Any], parameters: dict[str, Any], n
     return conditions
 
 
+def _existence_constraint_name(label: str, field: str) -> str:
+    return f"{label.lower()}_{field}_exists".replace(".", "_")
+
+
 class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
     """
     Neo4j implementation of IGraphDBProvider.
@@ -1417,6 +1435,13 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             )
 
 
+        # AgentVersionStore lists an agent's versions by (orgId, agentKey).
+        versions_label = collection_to_label(CollectionNames.AGENT_VERSIONS.value)
+        indexes.append(
+            f"CREATE INDEX {versions_label.lower()}_org_agent IF NOT EXISTS "
+            f"FOR (n:{versions_label}) ON (n.orgId, n.agentKey)"
+        )
+
         # ==================== RECORD INDEXES (Highest Priority) ====================
         # Records are the most queried entity, especially in permission checks
 
@@ -1859,7 +1884,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     continue
 
                 # Create a safe constraint name (Neo4j constraint names can't have special chars)
-                constraint_name = f"{label.lower()}_{field}_exists".replace(".", "_")
+                constraint_name = _existence_constraint_name(label, field)
 
                 # Neo4j 4.4+ syntax for property existence constraints
                 # Note: Property existence constraints require Neo4j Enterprise Edition
@@ -1871,6 +1896,33 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 constraints.append(constraint_query)
 
         return constraints
+
+    async def _drop_obsolete_existence_constraints(self) -> None:
+        """Drop the existence constraints an earlier version created for fields no longer required.
+
+        ``IF NOT EXISTS`` only adds them, so a database set up before a field became optional refused
+        every write without it, at commit, failing the whole batch. Only a constraint this provider
+        names (``<label>_<field>_exists`` on one label and field of its own) is dropped."""
+        wanted = {statement.split()[2] for statement in self._generate_required_field_constraints()}
+        try:
+            rows = await self.client.execute_query(
+                "SHOW CONSTRAINTS YIELD name, type, entityType, labelsOrTypes, properties "
+                "WHERE entityType = 'NODE' AND type CONTAINS 'PROPERTY_EXISTENCE' "
+                "RETURN name, labelsOrTypes AS labels, properties"
+            )
+        except Exception as e:
+            error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False, level=logging.WARNING,
+                                    op="ensure_schema", step="list_existence_constraints")
+            return
+        obsolete = []
+        for row in rows or []:
+            name, labels, fields = row.get("name"), row.get("labels") or [], row.get("properties") or []
+            if len(labels) != 1 or len(fields) != 1 or labels[0] not in _LABEL_TO_COLLECTION or name in wanted:
+                continue
+            if name == _existence_constraint_name(labels[0], fields[0]):
+                obsolete.append(f"DROP CONSTRAINT `{name}` IF EXISTS")
+        if obsolete:
+            await self._apply_schema(obsolete, "obsolete property existence constraints dropped")
 
     async def _apply_schema(
         self, statements: list[str], what: str, *, failure_level: int = logging.WARNING,
@@ -1934,6 +1986,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             # Property existence constraints need Enterprise Edition. On Community each
             # one is refused, and Neo4j logs every refusal as an error on every start.
             if await self._supports_existence_constraints():
+                await self._drop_obsolete_existence_constraints()
                 await self._apply_schema(
                     self._generate_required_field_constraints(),
                     "property existence constraints",
@@ -4807,6 +4860,40 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
     # ==================== Record Operations ====================
 
+    async def get_records_by_external_ids(
+        self,
+        org_id: str,
+        external_record_ids: list[str],
+        connector_names: list[str],
+    ) -> list[dict[str, str]]:
+        external_ids = list(dict.fromkeys(external_record_ids))
+        if not external_ids or not connector_names:
+            return []
+        # The existence predicate lets the (externalRecordId, connectorId) index serve the lookup.
+        query = """
+        UNWIND $external_ids AS xid
+        MATCH (r:Record {externalRecordId: xid})
+        WHERE r.connectorId IS NOT NULL
+          AND r.orgId = $org_id
+          AND r.connectorName IN $connector_names
+          AND coalesce(r.isDeleted, false) = false
+        RETURN r.id AS id, r.externalRecordId AS externalRecordId, r.connectorName AS connectorName
+        LIMIT $limit
+        """
+        try:
+            results = await self.client.execute_query(
+                query,
+                parameters={
+                    "external_ids": external_ids,
+                    "org_id": org_id,
+                    "connector_names": list(dict.fromkeys(connector_names)),
+                    "limit": len(external_ids) * MAX_INDEXED_COPIES_PER_ITEM,
+                },
+            )
+        except Exception as e:
+            # re-raised without a log line or the driver's text (main #6061): the caller logs it once
+            raise GraphQueryError("Could not look up records by external id") from e
+        return [dict(row) for row in results or []]
     async def get_records_by_file_path(
         self,
         connector_id: str,
@@ -8715,6 +8802,16 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             if marked < batch_size:
                 return total
 
+    async def _asking_user(self, user_id: str, org_id: str, *, raise_on_error: bool = False) -> dict[str, Any] | None:
+        """The user node a virtual-record-id read is for. Extension point: a subclass that keeps one user node
+        per org resolves it in ``org_id``."""
+        return await self.get_user_by_user_id(user_id, raise_on_error=raise_on_error)
+
+    def _user_anchor(self, var: str) -> str:
+        """The match a virtual-record-id query anchors on the asking user (``$userId``; ``$orgId`` is bound
+        too). Extension point: a subclass that keeps one user node per org narrows it to the org."""
+        return f"MATCH ({var}:User {{userId: $userId}})"
+
     async def _get_virtual_ids_for_connector(
         self,
         user_id: str,
@@ -8765,7 +8862,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             live_record = cypher_live_record("r")
             query = f"""
-            MATCH (u:User {{userId: $userId}})
+            {self._user_anchor("u")}
             {self._kh_gate_cypher(org="$orgId")}
             WITH u AS caller, $connectorId IN gatedApps AS appGranted
 
@@ -8903,7 +9000,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             live_record = cypher_live_record("r")
             query = f"""
-            MATCH (userDoc:User {{userId: $userId}})
+            {self._user_anchor("userDoc")}
 
             CALL {{
                 WITH userDoc
@@ -9572,7 +9669,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
         try:
             # Step 1: Get user and accessible apps (with type information)
-            user = await self.get_user_by_user_id(user_id, raise_on_error=raise_on_error)
+            user = await self._asking_user(user_id, org_id, raise_on_error=raise_on_error)
             if not user:
                 self.logger.warning(f"User not found for userId: {user_id}")
                 return {}
@@ -10651,6 +10748,28 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             RETURN count(key) AS keys
         """)
         return int(rows[0].get("keys") or 0) if rows else 0
+
+    async def list_sync_points(
+        self,
+        org_id: str,
+        collection: str,
+        *,
+        after_key: str | None = None,
+        limit: int = 500,
+    ) -> list[dict]:
+        """One org's sync points in syncPointKey order; see the interface."""
+        label = collection_to_label(collection)
+        query = f"""
+        MATCH (sp:{label})
+        WHERE sp.orgId = $org AND sp.syncPointKey IS NOT NULL AND ($after IS NULL OR sp.syncPointKey > $after)
+        RETURN sp
+        ORDER BY sp.syncPointKey
+        LIMIT $limit
+        """
+        results = await self.client.execute_query(
+            query, parameters={"org": org_id, "after": after_key, "limit": limit}
+        )
+        return [self._neo4j_to_arango_node(dict(row["sp"]), collection) for row in results or []]
 
     async def upsert_sync_point(
         self,
@@ -11936,12 +12055,14 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         if not self.client:
             raise RuntimeError("Neo4j client not connected")
 
+        # Every record type's label, and the target named by its collection: a fixed list here
+        # missed the newer types, and a label is not a collection the delete can address.
         query = """
         MATCH (record:Record {connectorId: $connector_id})-[:IS_OF_TYPE]->(typeNode)
-        WITH DISTINCT typeNode, labels(typeNode) AS nodeLabels
-        WHERE any(label IN nodeLabels WHERE label IN ['File', 'Mail', 'Webpage', 'Comment', 'Ticket', 'Link', 'Project', 'Meeting', 'Codefiles', 'Prs', 'Message', 'Artifact', 'Deals', 'Products'])
+        WITH DISTINCT typeNode, [label IN labels(typeNode) WHERE label IN $type_labels] AS typeLabels
+        WHERE size(typeLabels) > 0
         RETURN {
-          collection: head([label IN nodeLabels WHERE label IN ['File', 'Mail', 'Webpage', 'Comment', 'Ticket', 'Link', 'Project', 'Meeting', 'Codefiles', 'Prs', 'Message', 'Artifact', 'Deals', 'Products']]),
+          label: head(typeLabels),
           key: typeNode.id,
           full_id: typeNode.id
         } AS target
@@ -11950,11 +12071,18 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         try:
             results = await self.client.execute_query(
                 query,
-                parameters={"connector_id": connector_id},
+                parameters={"connector_id": connector_id, "type_labels": sorted(_TYPE_LABEL_TO_COLLECTION)},
                 txn_id=transaction
             )
 
-            targets = [result["target"] for result in results] if results else []
+            targets = [
+                {
+                    "collection": _TYPE_LABEL_TO_COLLECTION[result["target"]["label"]],
+                    "key": result["target"]["key"],
+                    "full_id": result["target"]["full_id"],
+                }
+                for result in results or []
+            ]
 
             self.logger.debug(f"📋 Collected {len(targets)} isOfType target nodes")
 
@@ -26865,6 +26993,19 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="get_team_with_users")
             return None
 
+    async def get_user_team_roles(self, user_key: str, org_id: str) -> list[dict]:
+        team_label = collection_to_label(CollectionNames.TEAMS.value)
+        user_label = collection_to_label(CollectionNames.USERS.value)
+        permission_rel = edge_collection_to_relationship(CollectionNames.PERMISSION.value)
+        query = f"""
+        MATCH (u:{user_label} {{id: $user_key}})-[p:{permission_rel}]->(team:{team_label})
+        WHERE team.orgId = $org_id
+        RETURN team.id AS teamId, p.role AS role
+        ORDER BY teamId
+        """
+        results = await self.client.execute_query(query, parameters={"user_key": user_key, "org_id": org_id})
+        return [{"teamId": row["teamId"], "role": row["role"]} for row in results or []]
+
     async def get_user_teams(
         self,
         user_key: str,
@@ -27982,7 +28123,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 )
             agent["shareWithOrg"] = bool(org_share_result)
 
-            return agent
+            return decode_agent_json_fields(agent)
 
         except Exception as e:
             error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="get_agent")
@@ -28295,6 +28436,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     ag["toolsets"] = proj["toolsets"]
                     ag["knowledge"] = proj["knowledge"]
                     ag["mcpServers"] = mcp_projection.get(ag.get("_key"), [])
+                    decode_agent_json_fields(ag)
                     if mcp_unavailable:
                         ag["mcpServersUnavailable"] = True
                 return agent_list
@@ -28344,10 +28486,11 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             }
 
             # Add only schema-allowed fields
-            allowed_fields = ["name", "description", "startMessage", "systemPrompt", "tags", "isActive", "instructions", "isServiceAccount", "serviceAccountUserId", "sendUserContext", "webSearch", "defaultReasoningEffort", "apiToolsetTools"]
+            allowed_fields = ["name", "description", "startMessage", "systemPrompt", "tags", "isActive", "instructions", "isServiceAccount", "serviceAccountUserId", "sendUserContext", "webSearch", "defaultReasoningEffort", "apiToolsetTools", *AGENT_ENGINE_FIELDS, AGENT_OWNER_TEAM_FIELD, AGENT_ROLE_MODELS_FIELD, AGENT_GATES_FIELD, AGENT_ENVIRONMENT_FIELD]
             for field in allowed_fields:
                 if field in agent_updates:
                     update_data[field] = agent_updates[field]
+            encode_agent_json_fields(update_data)
 
             # Handle models specially - convert model objects to model keys and deduplicate
             if "models" in agent_updates:

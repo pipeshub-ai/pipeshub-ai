@@ -27,6 +27,9 @@ import { registerAppUpstreams } from '../../../src/modules/tokens_manager/config
 import { registerUpstreams } from '../../../src/libs/http/upstream-call'
 import { captureLogRecords, inRequestContext, newRequestId, recordsOf, type LogRecord } from '../../helpers/log-capture'
 import { FakeBackend, buildConfig } from '../tokens_manager/routes/connectors-http-harness'
+import { CONTROL_PLANE_DEPLOYMENT_REVISION, CONTROL_PLANE_TRANSACTION } from '../../../src/modules/agent-harness/composition'
+import { testControlPlane } from '../control-plane/support/in-memory'
+import { InMemoryHeadRevisions } from '../control-plane/support/head-revisions-contract'
 
 // Every admin config write is one INFO `config.<section>.update|delete` line on the `audit` logger, with the admin as
 // `actor`, written after the store accepted it. Service-token (`/internal/`) writes, refused writes and failed writes
@@ -84,6 +87,10 @@ async function serve(kv: unknown, backendUrl: string): Promise<Served> {
   container.bind('SyncEventProducer').toConstantValue(events())
   container.bind('ConfigService').toConstantValue({ updateConfig: sinon.stub().resolves({ statusCode: 200 }) })
   container.bind('AuthMiddleware').toConstantValue({ authenticate: signedIn, scopedTokenValidator: () => serviceToken })
+  // An AI-model or platform-settings save is a control-plane write (an AI-model save also moves the deployment
+  // revision); the app uses the real stores, here in-memory ones.
+  container.bind(CONTROL_PLANE_TRANSACTION).toConstantValue(testControlPlane())
+  container.bind(CONTROL_PLANE_DEPLOYMENT_REVISION).toConstantValue(new InMemoryHeadRevisions())
   const app = express()
   app.use(requestContextMiddleware)
   app.use(accessLog())
@@ -117,7 +124,7 @@ describe('Configuration audit events', function () {
   let savedSecretKey: string | undefined
   before(() => {
     savedSecretKey = process.env.SECRET_KEY
-    process.env.SECRET_KEY = process.env.SECRET_KEY || 'config-audit-secret'
+    process.env.SECRET_KEY = process.env.SECRET_KEY || '5cb4705285c05446326184a38387e7091ebf91ba776c58724a2fa4543d34193b'
   })
   after(() => {
     if (savedSecretKey === undefined) delete process.env.SECRET_KEY

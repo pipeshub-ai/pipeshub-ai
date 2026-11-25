@@ -19,7 +19,7 @@ trap cleanup EXIT
 pw() { head -c 12 /dev/urandom | od -An -tx1 | tr -d ' \n'; }
 fail=0
 check() { if [ "$2" = "$3" ]; then echo "ok   $1"; else echo "FAIL $1: got '$2', wanted '$3'"; fail=1; fi; }
-stores='^(mongodb|qdrant|redis|neo4j|arango|etcd|zookeeper|kafka-1)$'
+stores='^(mongodb|qdrant|redis|neo4j|arango|etcd|etcd-tls|zookeeper|kafka-1|kafka-init)$'
 migrate_image="${MIGRATE_IMAGE:-pmcompose/migrate:pmc}"
 if [ -z "${MIGRATE_IMAGE:-}" ]; then $DOCKER build -q -f ../../backend/db/Dockerfile -t "$migrate_image" ../.. >/dev/null; fi
 for major in ${PG_MAJORS:-17 18}; do

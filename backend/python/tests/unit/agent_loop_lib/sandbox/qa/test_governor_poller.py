@@ -24,6 +24,7 @@ from app.agent_loop_lib.sandbox.governor import (
     SandboxResourceGovernor,
 )
 from app.services.resource_governor.shared_slots import SharedSlots, SlotDenied
+from tests.support.settle import settle
 
 if TYPE_CHECKING:
     from collections import Counter
@@ -157,7 +158,7 @@ async def test_a_freed_slot_skips_a_waiter_held_by_its_org_share(tmp_path: Path,
     second = asyncio.ensure_future(governor.acquire(org_id="c", wait_s=5))  # held back by the total
     await asyncio.sleep(0.05)
     await other.release(blockers[1])  # freed in another worker: seen by the poll
-    lease = await asyncio.wait_for(second, 1)
+    lease = await settle(second)
     assert not first.done()
     first.cancel()
     await asyncio.gather(first, return_exceptions=True)
@@ -174,7 +175,7 @@ async def test_a_woken_waiter_that_is_cancelled_passes_its_turn(tmp_path: Path, 
     await asyncio.sleep(0.01)
     await governor.release(held)
     first.cancel()  # woken, but cancelled before it ran again
-    lease = await asyncio.wait_for(second, 1)
+    lease = await settle(second)
     await governor.release(lease)
     assert governor.held_total() == 0
 
@@ -211,7 +212,7 @@ async def test_a_busy_mutex_wait_is_not_a_wait_at_the_limit(tmp_path: Path, open
     waiter = asyncio.ensure_future(governor.acquire(wait_s=5))
     await asyncio.sleep(0.1)
     slots.busy = False  # the poll finds free slots and wakes it
-    lease = await asyncio.wait_for(waiter, 1)
+    lease = await settle(waiter)
     assert recorder.events == [("outcome", "granted", None)]
     assert provider.waits == []
     await governor.release(lease)

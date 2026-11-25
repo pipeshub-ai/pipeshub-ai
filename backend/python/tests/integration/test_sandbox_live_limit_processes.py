@@ -102,14 +102,29 @@ def _write(path: Path, avail_gib: float) -> None:
     tmp.replace(path)
 
 
+def _drain(outs: list[Queue], events: list[tuple[str, int, float, int]]) -> None:
+    import queue
+
+    for out in outs:
+        while True:
+            try:
+                events.append(out.get_nowait())
+            except queue.Empty:
+                break
+
+
 def test_workers_step_once_per_interval_and_agree(tmp_path: Path) -> None:
     reader_file = tmp_path / "host.json"
     _write(reader_file, 7.0)
     ctx = multiprocessing.get_context("spawn")
-    stop, out = ctx.Event(), ctx.Queue()
+    stop = ctx.Event()
+    # A queue per worker: a Queue's feeder holds the queue's write lock until after the reader has the item, so a
+    # worker SIGKILLed while it reported a step could leave a shared queue's lock held and the survivors' "done"
+    # would never arrive.
+    outs = [ctx.Queue() for _ in range(4)]
     procs = [
         ctx.Process(target=_sampler, args=(str(tmp_path / "state"), str(reader_file), stop, out))
-        for _ in range(4)
+        for out in outs
     ]
     for proc in procs:
         proc.start()
@@ -117,13 +132,13 @@ def test_workers_step_once_per_interval_and_agree(tmp_path: Path) -> None:
     try:
         deadline = time.monotonic() + 30
         while not any(e[0] == "step" for e in events) and time.monotonic() < deadline:
-            events.append(out.get(timeout=30))
+            _drain(outs, events)
+            time.sleep(0.05)
         time.sleep(3.0)
         _write(reader_file, 4.0)
         time.sleep(3.0)
         # The worker that stepped last dies; the others carry on.
-        while not out.empty():
-            events.append(out.get())
+        _drain(outs, events)
         last_stepper = max((e for e in events if e[0] == "step"), key=lambda e: e[2])[1]
         victim = next(p for p in procs if p.pid == last_stepper)
         os.kill(last_stepper, signal.SIGKILL)
@@ -131,12 +146,12 @@ def test_workers_step_once_per_interval_and_agree(tmp_path: Path) -> None:
         victim.join(10)
         time.sleep(4.0)
         stop.set()
-        survivors = [p for p in procs if p is not victim]
-        done = 0
-        while done < len(survivors):
-            event = out.get(timeout=30)
+        for proc, out in zip(procs, outs):
+            if proc is victim:
+                continue
+            while (event := out.get(timeout=30))[0] != "done":
+                events.append(event)
             events.append(event)
-            done += event[0] == "done"
     finally:
         stop.set()
         for proc in procs:

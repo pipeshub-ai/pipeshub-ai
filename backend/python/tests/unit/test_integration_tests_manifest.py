@@ -39,6 +39,11 @@ def test_integration_tests_install_this_package_from_the_checkout(integration: d
     assert (INTEGRATION_MANIFEST.parent / source["path"]).resolve() == BACKEND_MANIFEST.parent
 
 
+# Named in both on purpose: uv takes a dependency's index (the CPU wheels) only from the manifest that names it, and
+# test_torch_pins holds the two pins to the image's.
+DECLARED_IN_BOTH = frozenset({"torch", "torchvision"})
+
+
 def test_integration_tests_do_not_pin_a_backend_dependency_again(integration: dict) -> None:
     backend = _manifest(BACKEND_MANIFEST)
-    assert _names(integration) & _names(backend) == set()
+    assert _names(integration) & _names(backend) == DECLARED_IN_BOTH

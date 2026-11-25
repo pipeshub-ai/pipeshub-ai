@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -15,7 +15,18 @@ from app.agents.openapi import service
 from app.agents.openapi.models import ApiToolsetCredentials
 from app.agents.openapi.store import ApiToolsetStore
 from app.api.routes.agent import create_agent, update_agent
+from tests.support.bound_org import bind_test_org
 from tests.support.in_memory_config import InMemoryConfigService
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
+
+@pytest.fixture(autouse=True)
+def _bound_org() -> Iterator[str]:
+    """``authMiddleware`` binds the caller's org; these tests call the route functions directly, as that caller."""
+    yield from bind_test_org("o1")
+
 
 ACME_SPEC = (Path(__file__).resolve().parents[6] / "integration-tests" / "openapi_fixture" / "openapi.yaml").read_bytes()
 PER_MEMBER, SHARED = "a" * 32, "b" * 32

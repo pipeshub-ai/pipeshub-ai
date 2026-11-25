@@ -87,6 +87,7 @@ from app.connectors.api.router import (
 )
 from app.connectors.core.registry.connector_builder import ConnectorScope
 from app.models.entities import RecordType
+from tests.support.record_access import InMemoryRecordAccess
 
 _ROUTER = "app.connectors.api.router"
 _TEAM_CONNECTOR = "app.connectors.sources.google.drive.team.connector"
@@ -287,7 +288,7 @@ class TestDeleteRecordGaps:
         """When result has no eventData, no kafka publish but still returns success."""
         req = _mock_request()
         gp = AsyncMock()
-        gp.check_record_access_with_details = AsyncMock(return_value={"record": {"origin": "UPLOAD"}})
+        InMemoryRecordAccess().readable("user-1", "org-1", "rec-1", origin="UPLOAD").serve(gp)
         gp.delete_record = AsyncMock(return_value={"success": True, "connector": "c1", "timestamp": 123})
         kafka = AsyncMock()
 
@@ -300,7 +301,7 @@ class TestDeleteRecordGaps:
         """eventData present but no payload key -- skip publish."""
         req = _mock_request()
         gp = AsyncMock()
-        gp.check_record_access_with_details = AsyncMock(return_value={"record": {"origin": "UPLOAD"}})
+        InMemoryRecordAccess().readable("user-1", "org-1", "rec-1", origin="UPLOAD").serve(gp)
         gp.delete_record = AsyncMock(
             return_value={"success": True, "eventData": {"eventType": "x"}, "connector": "c1"}
         )
@@ -314,7 +315,7 @@ class TestDeleteRecordGaps:
         """Non-HTTP exception becomes a 500."""
         req = _mock_request()
         gp = AsyncMock()
-        gp.check_record_access_with_details = AsyncMock(return_value={"record": {"origin": "UPLOAD"}})
+        InMemoryRecordAccess().readable("user-1", "org-1", "rec-1", origin="UPLOAD").serve(gp)
         gp.delete_record = AsyncMock(side_effect=RuntimeError("db down"))
         kafka = AsyncMock()
 
@@ -327,7 +328,7 @@ class TestDeleteRecordGaps:
         """Kafka publish failure is logged but doesn't raise."""
         req = _mock_request()
         gp = AsyncMock()
-        gp.check_record_access_with_details = AsyncMock(return_value={"record": {"origin": "UPLOAD"}})
+        InMemoryRecordAccess().readable("user-1", "org-1", "rec-1", origin="UPLOAD").serve(gp)
         gp.delete_record = AsyncMock(return_value={
             "success": True,
             "eventData": {"eventType": "deleted", "payload": {"id": "rec-1"}, "topic": "t"},
@@ -955,7 +956,7 @@ class TestStreamRecordOrgMismatch:
             None,  # re-fetch with record's org_id
         ])
         gp.get_record_by_id = AsyncMock(return_value=record)
-        gp.check_record_access_with_details = AsyncMock(return_value=True)
+        InMemoryRecordAccess().readable("user-1", "org-1", "rec-1").serve(gp)
 
         container = MagicMock()
         container.logger = MagicMock(return_value=logging.getLogger("test"))
@@ -979,7 +980,7 @@ class TestGetRecordByIdGaps:
     async def test_no_access_raises_404(self):
         """When has_access is falsy, it raises 404."""
         gp = AsyncMock()
-        gp.check_record_access_with_details = AsyncMock(return_value=None)
+        InMemoryRecordAccess().user("user-1", "org-1").record("rec-1", "org-1").serve(gp)
         req = _mock_request()
 
         with pytest.raises(HTTPException) as exc_info:
@@ -992,7 +993,7 @@ class TestGetRecordByIdGaps:
         # An unexpected failure after the access check; a failed access check or record read is a 503
         # (test_record_read_outage.py, test_record_gate_reads.py).
         gp = AsyncMock()
-        gp.check_record_access_with_details = AsyncMock(return_value={"record": {}})
+        InMemoryRecordAccess().readable("user-1", "org-1", "rec-1").serve(gp)
         gp.get_document = AsyncMock(return_value={})
         req = _mock_request()
 
@@ -1004,12 +1005,13 @@ class TestGetRecordByIdGaps:
     @pytest.mark.asyncio
     async def test_has_access_returns_data(self):
         gp = AsyncMock()
-        access_data = {"recordId": "rec-1", "hasAccess": True}
-        gp.check_record_access_with_details = AsyncMock(return_value=access_data)
+        access = InMemoryRecordAccess().readable("user-1", "org-1", "rec-1")
+        access.serve(gp)
         req = _mock_request()
 
         result = await get_record_by_id("rec-1", req, graph_provider=gp)
-        assert result == access_data
+        # No revision on the record, so no stage states (main #3270).
+        assert result == {**await access.check_record_access_with_details("user-1", "org-1", "rec-1"), "stageStates": []}
 
 
 # ============================================================================
@@ -2755,7 +2757,7 @@ class TestDeleteRecordEventPublish:
     async def test_success_with_event_data_published(self):
         req = _mock_request()
         gp = AsyncMock()
-        gp.check_record_access_with_details = AsyncMock(return_value={"record": {"origin": "UPLOAD"}})
+        InMemoryRecordAccess().readable("user-1", "org-1", "rec-1", origin="UPLOAD").serve(gp)
         gp.delete_record = AsyncMock(return_value={
             "success": True,
             "eventData": {"eventType": "deleted", "payload": {"id": "rec-1"}, "topic": "t"},
@@ -2773,7 +2775,7 @@ class TestDeleteRecordEventPublish:
     async def test_failure_result_raises_http_exception(self):
         req = _mock_request()
         gp = AsyncMock()
-        gp.check_record_access_with_details = AsyncMock(return_value={"record": {"origin": "UPLOAD"}})
+        InMemoryRecordAccess().readable("user-1", "org-1", "rec-1", origin="UPLOAD").serve(gp)
         gp.delete_record = AsyncMock(return_value={
             "success": False, "reason": "not found", "code": 404,
         })
@@ -3579,7 +3581,7 @@ class TestStreamRecordAccessDenied:
         gp.get_document = AsyncMock(return_value={"_key": "org-1"})
         record = _mock_record(org_id="org-1")
         gp.get_record_by_id = AsyncMock(return_value=record)
-        gp.check_record_access_with_details = AsyncMock(return_value=None)
+        InMemoryRecordAccess().user("user-1", "org-1").record("rec-1", "org-1").serve(gp)
 
         req = _mock_request(graph_provider=gp)
         config_service = AsyncMock()

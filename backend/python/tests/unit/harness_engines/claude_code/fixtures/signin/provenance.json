@@ -1,0 +1,12 @@
+{
+ "version": "2.1.319",
+ "binaryDigest": "sha256:dabafec82ca1319fa43d8be36a10fc61b1d11821cb98ad5df04ad95e199b8eed",
+ "recorded": "2026-11-14, R50-CC319 (first recorded 2026-10-19 by SIGNIN-1 on 2.1.294): python -m tests.unit.harness_engines.claude_code.signin_lab.lab pxh-claude-code-tools:2.1.319-ph7 (from backend/python)",
+ "source": "The unmodified Claude Code binary in the admin-built image pxh-claude-code-tools:2.1.319-ph7, run in a container on an --internal Docker network whose only peer is signin_lab/fake_anthropic.py. Anthropic's hosts (api.anthropic.com, claude.ai, claude.com, platform.claude.com, console.anthropic.com) resolve to the fake (--add-host) and the binary trusts the lab's throwaway CA through NODE_EXTRA_CA_CERTS. No real account, no real Anthropic host, no network beyond the fake. Each step runs over plain pipes, as the sandbox broker's exec gives them: `claude auth status` (JSON and --text), `claude auth login` (the pasted line is `<code>#<state>`, the state read from the printed link), `claude auth logout`, and `claude -p 'say hi' --output-format stream-json --verbose --max-turns 1` with the fake answering 200, 401 (expired OAuth token) or 429 (plan limit).",
+ "redaction": "Stream-json output keeps only the lines the adapter reads on failure (rate_limit_event, api_retry, the assistant's error and text blocks, the result's error fields); the init line is dropped. The credentials file is kept as its shape (keys and value types). Tokens and codes are the fake's own (sk-ant-oat01-FAKE..., FAKECODE123) and never appear in what the binary printed. Requests are reduced to host, method, path, body keys and grant_type.",
+ "notes": {
+  "hosts": "The binary's production OAuth configuration (read from its strings): authorize https://claude.com/cai/oauth/authorize, token https://platform.claude.com/v1/oauth/token, manual redirect https://platform.claude.com/oauth/code/callback, profile and roles on https://api.anthropic.com. The link the person opens is on claude.com, not claude.ai.",
+  "logout": "Logout posts the refresh token to platform.claude.com/v1/oauth/token/revoke and deletes .credentials.json; it prints success and exits 0 even when the revoke fails (SP-5).",
+  "code": "A pasted code without its #state is refused locally ('Invalid code...') and the prompt waits on; a wrong code exits 1 (SP-2)."
+ }
+}

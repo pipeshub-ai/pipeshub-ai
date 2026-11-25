@@ -115,8 +115,13 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+      # The provisioning helpers' packages, from their hashed lock in a venv of their own (SEC-SC-07).
+      - name: Install the provisioning helpers
+        run: |
+          python3 -m venv "$RUNNER_TEMP/sdk-helpers"
+          "$RUNNER_TEMP/sdk-helpers/bin/python" -m pip install --disable-pip-version-check --quiet \
+            --require-hashes --no-deps --only-binary=:all: -r integration-tests/sdk_tests/requirements/helpers.lock
+          echo "SDK_HELPERS_PYTHON=$RUNNER_TEMP/sdk-helpers/bin/python" >> "$GITHUB_ENV"
 
       # Same Go as generate-sdks.yml: Speakeasy lints the Go SDK with staticcheck v0.6.1, which
       # cannot read packages built by a newer Go. GOTOOLCHAIN=auto still lets a go.mod ask for more.
@@ -134,10 +139,18 @@ jobs:
       # The CLI version comes from generate-sdks.yml at OPEN_API_REF, so the two cannot drift.
       - name: Install Speakeasy CLI
         run: |
-          pip install --quiet pyyaml
+          backend/python/requirements/install.sh tools -- --quiet
           version=$(python3 -c 'import sys, yaml; print(yaml.safe_load(open(sys.argv[1]))["env"]["SPEAKEASY_VERSION"])' \
             open-api/.github/workflows/generate-sdks.yml)
+          # The checksum of each CLI version this job has accepted: a version open-api moves to fails here until
+          # its speakeasy_linux_amd64.zip sha256 (the release's checksums.txt) is added, so a replaced release asset
+          # never runs with this job's secrets (SEC-D-11).
+          case "$version" in
+            v1.801.0) sha256=431da5f9b558d18bd93af4d8ab6fea58dc70c7ee6a6e8e4a9de60254653f4532 ;;
+            *) echo "::error::Speakeasy ${version} has no pinned checksum in sdk-tests.yml. Add its speakeasy_linux_amd64.zip sha256 from the release's checksums.txt."; exit 1 ;;
+          esac
           curl -fsSL -o /tmp/speakeasy.zip "https://github.com/speakeasy-api/speakeasy/releases/download/${version}/speakeasy_linux_amd64.zip"
+          echo "${sha256}  /tmp/speakeasy.zip" | sha256sum -c -
           sudo unzip -o /tmp/speakeasy.zip -d /usr/local/bin speakeasy
           speakeasy --version
           echo "SPEAKEASY_VERSION=${version}" >> "$GITHUB_ENV"
@@ -252,7 +265,7 @@ jobs:
           TEST_AZURE_OPENAI_EMBEDDING_MODEL: ${{ secrets.TEST_AZURE_OPENAI_EMBEDDING_MODEL || vars.TEST_AZURE_OPENAI_EMBEDDING_MODEL }}
         run: |
           set -o pipefail
-          uv run --no-project --with requests --with pydantic python sdk_tests/provision_sdk_test_env.py 2>&1 \
+          "$SDK_HELPERS_PYTHON" sdk_tests/provision_sdk_test_env.py 2>&1 \
             | tee "$SDK_REPORTS_DIR/provision.log"
 
       # with_oauth_app.py gives each run a new OAuth app and a session JWT in its environment only,
@@ -264,7 +277,7 @@ jobs:
           PIPESHUB_TEST_USER_EMAIL: ${{ secrets.PIPESHUB_TEST_USER_EMAIL }}
           PIPESHUB_TEST_USER_PASSWORD: ${{ secrets.PIPESHUB_TEST_USER_PASSWORD }}
         run: |
-          uv run --no-project --with requests --with pydantic python integration-tests/sdk_tests/with_oauth_app.py \
+          "$SDK_HELPERS_PYTHON" integration-tests/sdk_tests/with_oauth_app.py \
             integration-tests/sdk_tests/run_sdk_tests.sh current "$SDK_WORK_DIR" "$SDK_REPORTS_DIR"
 
       - name: 'Previous run: last released SDKs'
@@ -280,7 +293,7 @@ jobs:
             exit 0
           fi
           integration-tests/sdk_tests/checkout_released_sdks.sh .github/sdk-test-matrix.yaml "$SDK_RELEASED_DIR" "${passed[@]}"
-          uv run --no-project --with requests --with pydantic python integration-tests/sdk_tests/with_oauth_app.py \
+          "$SDK_HELPERS_PYTHON" integration-tests/sdk_tests/with_oauth_app.py \
             integration-tests/sdk_tests/run_sdk_tests.sh previous "$SDK_RELEASED_DIR" "$SDK_REPORTS_DIR" "${passed[@]}"
 
       - name: Report

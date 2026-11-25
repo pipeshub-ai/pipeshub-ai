@@ -12,13 +12,16 @@ import contextlib
 import logging
 import os
 import tempfile
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from typing import Any
 
 from pydantic import AliasChoices, BaseModel, Field, ValidationError
 
 from app.config.configuration_service import ConfigurationService
 from app.core.org_context import spawn_in_request
+from app.sources.client.http.send_ambiguity import note_dbapi_failure
 from app.sources.client.iclient import IClient
 from app.utils.url_fetcher import HostCheckError, vetted_addresses
 
@@ -27,6 +30,9 @@ logger = logging.getLogger(__name__)
 READ_ONLY_TIMEOUT_S = 120
 
 _DEFAULT_MAX_POOL_SIZE = 10
+# Seconds a connect may take, the server's greeting included. Short: a server that is down should fail the query,
+# not hold a pooled acquire (SR-O4).
+DEFAULT_CONNECT_TIMEOUT_S = 5
 # The async driver has no read timeout: a stalled server is bounded on our side,
 # this long after the server's own statement limit should have fired.
 READ_TIMEOUT_MARGIN_S = 5.0
@@ -47,6 +53,48 @@ try:
     import mariadb
 except ImportError:
     mariadb = None
+
+
+class _ConnectFailed(BaseException):
+    """Carries a failed connect past mariadb_pool's ``except Exception``. Its acquire loop (mariadb-pool 2.0.0rc2)
+    retries a failed connect without checking the acquire deadline, and Connector/Python's connect does not yield to
+    the event loop, so a server that refuses connections held the loop, and every tool on it, forever (SR-F3)."""
+
+    def __init__(self, cause: Exception) -> None:
+        super().__init__(str(cause))
+        self.cause = cause
+
+
+# Set only while ``MariaDBClient`` acquires for a query; the pool's background refill keeps its own handling.
+_FAIL_FAST: ContextVar[bool] = ContextVar("mariadb_connect_fail_fast", default=False)
+
+
+def _off_loop_connect(timeout_s: float) -> Callable[..., Awaitable[Any]]:
+    """Connects with Connector/Python's pure-Python async client, under ``timeout_s``.
+
+    The binary implementation the driver selects by default connects with a blocking ``mysql_real_connect`` on the
+    event loop: a server that accepts and never answers stalled every run on the worker for the whole connect timeout
+    (SR-O4). Its connection also registers its socket with the calling thread's loop, so it cannot simply be made on a
+    worker thread. The pure-Python client in the same package connects with ``asyncio`` and yields while it waits.
+    """
+    async def connect(**params: Any) -> Any:  # noqa: ANN401 - the driver's connection
+        from mariadb.async_connection import AsyncConnection  # type: ignore
+
+        return await asyncio.wait_for(AsyncConnection.connect(**params), timeout_s)
+
+    return connect
+
+
+def _fail_fast(factory: Callable[..., Awaitable[Any]]) -> Callable[..., Awaitable[Any]]:
+    async def connect(**params: Any) -> Any:  # noqa: ANN401 - the driver's connection
+        try:
+            return await factory(**params)
+        except Exception as exc:
+            if _FAIL_FAST.get():
+                raise _ConnectFailed(exc) from exc
+            raise
+
+    return connect
 
 
 class MariaDBClient:
@@ -78,7 +126,7 @@ class MariaDBClient:
         password: str,
         database: str | None = None,
         port: int = 3306,
-        timeout: int = 30,
+        timeout: int = DEFAULT_CONNECT_TIMEOUT_S,
         ssl_ca: str | None = None,
         charset: str = "utf8mb4",
         pool_acquire_timeout: float = 60.0,
@@ -143,8 +191,9 @@ class MariaDBClient:
                 # surfaces a wrong password or an unreachable host as an error.
                 await asyncio.to_thread(_open_and_close, connect_kwargs)
 
+                # No pre-fill: create_async_pool would open it with the driver's default connect.
                 self._pool = await mariadb.create_async_pool(
-                    min_size=1,
+                    min_size=0,
                     max_size=self._max_pool_size,
                     acquire_timeout=self.pool_acquire_timeout,
                     reset_connection=True,
@@ -153,6 +202,8 @@ class MariaDBClient:
                     write_timeout=POOL_READ_TIMEOUT_S,
                     **connect_kwargs,
                 )
+                if hasattr(self._pool, "connection_factory"):
+                    self._pool.connection_factory = _fail_fast(_off_loop_connect(self.timeout))
 
                 logger.info("🔧 [MariaDBClient] MariaDB async connection pool ready")
                 return self
@@ -229,6 +280,23 @@ class MariaDBClient:
         finally:
             self._remove_ca_file()
 
+    @asynccontextmanager
+    async def _connection(self) -> AsyncIterator[Any]:
+        """A pooled connection, or ``ConnectionError`` as soon as a connect to the server fails."""
+        if self._pool is None:
+            raise RuntimeError("MariaDB pool not initialized")
+        token = _FAIL_FAST.set(True)
+        try:
+            async with self._pool.connection() as conn:
+                _FAIL_FAST.reset(token)
+                token = None
+                yield conn
+        except _ConnectFailed as exc:
+            raise ConnectionError(f"Failed to connect to MariaDB: {exc.cause}") from exc.cause
+        finally:
+            if token is not None:
+                _FAIL_FAST.reset(token)
+
     def is_connected(self) -> bool:
         """Check if the pool is initialized."""
         return self._pool is not None
@@ -263,7 +331,7 @@ class MariaDBClient:
             raise RuntimeError("MariaDB pool not initialized")
 
         try:
-            async with self._pool.connection() as conn:
+            async with self._connection() as conn:
                 cursor = None
                 try:
                     # The driver buffers the whole result by default, so a capped read must stream.
@@ -285,7 +353,8 @@ class MariaDBClient:
                             results = [{"affected_rows": cursor.rowcount}]
                     await conn.commit()
                     return results
-                except Exception:
+                except Exception as exc:
+                    note_dbapi_failure(exc, driver=mariadb, statement=query)
                     try:
                         await conn.rollback()
                     except Exception:
@@ -324,7 +393,7 @@ class MariaDBClient:
             raise RuntimeError("MariaDB pool not initialized")
 
         try:
-            async with self._pool.connection() as conn:
+            async with self._connection() as conn:
                 cursor = None
                 try:
                     cursor = conn.cursor(buffered=not max_rows)
@@ -350,7 +419,8 @@ class MariaDBClient:
 
                     await conn.commit()
                     return (columns, rows)
-                except Exception:
+                except Exception as exc:
+                    note_dbapi_failure(exc, driver=mariadb, statement=query)
                     try:
                         await conn.rollback()
                     except Exception:
@@ -548,7 +618,7 @@ class MariaDBClient:
                 database=str(database) if database not in (None, "") else None,
                 user=str(user),
                 password=password_value,
-                timeout=30,
+                timeout=DEFAULT_CONNECT_TIMEOUT_S,
                 ssl_ca=None,
                 charset="utf8mb4",
             )
@@ -622,7 +692,7 @@ class MariaDBConfig(BaseModel):
         validation_alias=AliasChoices("username", "user"),
     )
     password: str = Field(default="", description="Password for authentication")
-    timeout: int = Field(default=30, description="Connection timeout in seconds", gt=0)
+    timeout: int = Field(default=DEFAULT_CONNECT_TIMEOUT_S, description="Connection timeout in seconds", gt=0)
     ssl_ca: str | None = Field(
         default=None, description="Path to CA certificate for SSL"
     )
@@ -673,7 +743,7 @@ class MariaDBConnectorConfig(BaseModel):
     """Configuration model for MariaDB connector from services."""
 
     auth: AuthConfig = Field(..., description="Authentication configuration")
-    timeout: int = Field(default=30, description="Connection timeout in seconds", gt=0)
+    timeout: int = Field(default=DEFAULT_CONNECT_TIMEOUT_S, description="Connection timeout in seconds", gt=0)
 
 
 class MariaDBClientBuilder(IClient):
