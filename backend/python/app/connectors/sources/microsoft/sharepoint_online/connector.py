@@ -105,6 +105,10 @@ from app.connectors.core.registry.types import (
 )
 from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
 from app.connectors.sources.microsoft.common.apps import SharePointOnlineApp
+from app.connectors.sources.microsoft.common.expired_group_delta import (
+    GROUPS_READ_AGAIN,
+    remove_groups_gone_from_directory,
+)
 from app.connectors.sources.microsoft.common.graph_people import source_person
 from app.connectors.sources.microsoft.common.msgraph_client import (
     MSGraphClient,
@@ -3554,7 +3558,7 @@ class SharePointConnector(BaseConnector):
         delta_link = (sync_point.get('deltaLink') or sync_point.get('nextLink')) if sync_point else None
 
         read_every_group = delta_link is None or self._refresh_all_groups
-        caught_up = True
+        caught_up, expired = True, False
         if delta_link is not None:
             # Only the stored link reports the groups deleted since it was taken: the full read below lists
             # the groups that exist, and the new link starts after the deletions.
@@ -3564,7 +3568,7 @@ class SharePointConnector(BaseConnector):
                 if is_expired_delta_link_error(e):
                     # Kept, the link would fail every later run: no run can catch up on it any more.
                     self.logger.error("The saved Entra group delta link has expired; reading every group again")
-                    read_every_group = True
+                    read_every_group = expired = True
                 elif read_every_group:
                     caught_up = False
                     self._health.skipped("Entra group changes", e)
@@ -3575,11 +3579,29 @@ class SharePointConnector(BaseConnector):
             # The delta link is taken before the groups are read, so no change made meanwhile is missed.
             new_delta_link = await self._get_initial_delta_link()
             complete = await self._perform_initial_full_sync()
+            if expired:
+                try:
+                    await remove_groups_gone_from_directory(
+                        self.data_entities_processor, self.connector_id, self.msgraph_client,
+                        self._handle_delete_group, self.logger,
+                    )
+                except Exception as e:
+                    # The expired link stays, so the next run looks for them again.
+                    caught_up = False
+                    self._health.skipped("Entra groups deleted at the source", e)
             if new_delta_link and complete and caught_up:
                 await self.user_group_sync_point.update_sync_point(
                     sync_point_key,
                     {"nextLink": None, "deltaLink": new_delta_link}
                 )
+                if expired:
+                    await self.notify(
+                        type=NotificationType.CONNECTOR_WARNING,
+                        severity=NotificationSeverity.WARNING,
+                        title="Every Microsoft group was read again",
+                        message=GROUPS_READ_AGAIN,
+                        recipient_user_ids=[self.created_by],
+                    )
                 if self._listing_trusted:
                     await self.user_sync_point.update_sync_point(
                         INACTIVE_USERS_SYNC_POINT_KEY, sync_point_data={"emails": sorted(self._inactive_emails)}

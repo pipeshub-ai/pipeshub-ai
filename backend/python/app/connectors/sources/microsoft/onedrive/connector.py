@@ -79,6 +79,10 @@ from app.connectors.core.registry.filters import (
 from app.connectors.core.registry.types import FileContentValidationRule, ValidationRuleType
 from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
 from app.connectors.sources.microsoft.common.apps import OneDriveApp
+from app.connectors.sources.microsoft.common.expired_group_delta import (
+    GROUPS_READ_AGAIN,
+    remove_groups_gone_from_directory,
+)
 from app.connectors.sources.microsoft.common.graph_people import source_person
 from app.connectors.sources.microsoft.common.msgraph_client import (
     MSGraphClient,
@@ -1644,18 +1648,29 @@ class OneDriveConnector(BaseConnector):
         except ODataError as e:
             if not is_expired_delta_link_error(e):
                 raise
-            # Kept, the link would fail every later run. What changed since is read with every group; the groups
-            # deleted since are reported by no link any more.
+            # Kept, the link would fail every later run.
             self.logger.error("The saved group delta link has expired; reading every group again")
-            await self._start_group_sync_over(sync_point_key)
+            await self._start_group_sync_over(sync_point_key, expired=True)
+            await self.notify(
+                type=NotificationType.CONNECTOR_WARNING,
+                severity=NotificationSeverity.WARNING,
+                title="Every Microsoft group was read again",
+                message=GROUPS_READ_AGAIN,
+                recipient_user_ids=[self.created_by],
+            )
 
-    async def _start_group_sync_over(self, sync_point_key: str) -> None:
-        """Read every group and save a new delta link."""
+    async def _start_group_sync_over(self, sync_point_key: str, *, expired: bool = False) -> None:
+        """Read every group and save a new delta link, in place of one that expired or for the first time."""
         # IMPORTANT: Get delta link BEFORE full sync to avoid missing changes
         # that occur during the sync
         delta_link = await self._get_initial_delta_link()
 
         all_groups_read = await self._perform_initial_full_sync()
+        if expired:
+            # Before the link is saved: if this fails, the expired one stays and the next run starts over again.
+            await remove_groups_gone_from_directory(
+                self.data_entities_processor, self.connector_id, self.msgraph_client, self.handle_delete_group, self.logger,
+            )
 
         # The link is saved even when some groups could not be read: only a delta
         # from before the full sync reports groups deleted since. The marker makes

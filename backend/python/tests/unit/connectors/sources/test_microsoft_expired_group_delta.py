@@ -1,12 +1,16 @@
 """Graph refuses a groups delta link older than 30 days. Kept, the link failed every later run of the connector."""
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from msgraph.generated.models.o_data_errors.main_error import MainError
 from msgraph.generated.models.o_data_errors.o_data_error import ODataError
 
+from app.connectors.sources.microsoft.common.expired_group_delta import (
+    remove_groups_gone_from_directory,
+)
 from app.connectors.sources.microsoft.common.outlook_constants import (
     is_expired_delta_link_error,
 )
@@ -51,6 +55,7 @@ def _connector(cls: type, sync_point: dict, delta: object) -> MagicMock:
     c._perform_delta_sync = AsyncMock(side_effect=[delta])
     c._get_initial_delta_link = AsyncMock(return_value=NEW)
     c._perform_initial_full_sync = AsyncMock(return_value=True)
+    c.data_entities_processor.get_all_user_groups = AsyncMock(return_value=[])
     c._refresh_all_groups = False
     c._inactive_emails = set()
     for name in ("_apply_group_changes", "_start_group_sync_over"):
@@ -73,6 +78,7 @@ async def test_an_expired_link_is_replaced_and_every_group_read(cls: type) -> No
     await _sync(cls, c)
     c._perform_initial_full_sync.assert_awaited_once()
     assert NEW in _saved_links(c)
+    assert "read again" in c.notify.await_args.kwargs["title"]
 
 
 @pytest.mark.parametrize("cls", [OneDriveConnector, SharePointConnector])
@@ -104,3 +110,54 @@ async def test_sharepoint_leaves_an_expired_link_when_every_group_is_read_anyway
     await _sync(SharePointConnector, c)
     assert (NEW in _saved_links(c)) is saved
     assert c._health.skipped.called is not saved
+
+
+ID = "00000000-0000-4000-8000-00000000000{}".format
+MS_SITE_GROUP, EVERYONE = "host,site,web-5", "sharepoint-everyone"
+
+
+async def _remove(lookups: dict[str, int | None], *, listed: tuple[str, ...] = (), deleted: bool = True) -> tuple[int, list[str]]:
+    """``lookups``: the status Graph answers for a group that is stored and not listed; None is found."""
+    async def look_up(group_id: str) -> object:
+        status = lookups[group_id]
+        if status:
+            raise _error("no", status)
+        return MagicMock()
+
+    stored = [*listed, *lookups, MS_SITE_GROUP, EVERYONE]
+    processor, graph = MagicMock(), MagicMock()
+    processor.get_all_user_groups = AsyncMock(return_value=[MagicMock(source_user_group_id=g) for g in stored])
+    graph.get_all_user_groups = AsyncMock(return_value=[MagicMock(id=g) for g in listed])
+    graph.rate_limiter = asyncio.Semaphore(1)
+    graph.client.groups.by_group_id = lambda g: MagicMock(get=lambda: look_up(g))
+    gone: list[str] = []
+
+    async def delete(group_id: str) -> bool:
+        gone.append(group_id)
+        return deleted
+
+    return await remove_groups_gone_from_directory(processor, "c1", graph, delete, MagicMock()), gone
+
+
+async def test_only_a_group_the_directory_confirms_is_gone_is_removed() -> None:
+    lookups = {ID(1): 404, ID(2): None, ID(3): 403, ID(4): 503}
+    assert await _remove(lookups, listed=(ID(9),)) == (1, [ID(1)])
+
+
+async def test_a_removal_that_fails_raises() -> None:
+    with pytest.raises(RuntimeError, match="could not be removed"):
+        await _remove({ID(1): 404}, deleted=False)
+
+
+@pytest.mark.parametrize("cls", [OneDriveConnector, SharePointConnector])
+async def test_the_expired_link_stays_when_the_deleted_groups_could_not_be_found(cls: type) -> None:
+    c = _connector(cls, {"deltaLink": OLD}, _expired())
+    c.data_entities_processor.get_all_user_groups = AsyncMock(side_effect=ConnectionError("graph down"))
+    if cls is OneDriveConnector:
+        with pytest.raises(ConnectionError):
+            await _sync(cls, c)
+    else:
+        await _sync(cls, c)
+        c._health.skipped.assert_called()
+    assert NEW not in _saved_links(c)
+    c.notify.assert_not_awaited()
