@@ -30,6 +30,22 @@ class EventBuffer:
             self._events = []
             return events
 
+    def take(self, limit: int) -> list[dict[str, Any]]:
+        """Remove and return the oldest ``limit`` events; the rest stay buffered."""
+        with self._lock:
+            taken = self._events[:limit]
+            self._events = self._events[limit:]
+            return taken
+
+    def requeue(self, events: list[dict[str, Any]]) -> None:
+        """Put events that were taken but not delivered back in front, in their order.
+
+        Not subject to ``MAX_EVENTS``: they were admitted once already, and a
+        take is at most one batch.
+        """
+        with self._lock:
+            self._events = list(events) + self._events
+
     def size(self) -> int:
         with self._lock:
             return len(self._events)

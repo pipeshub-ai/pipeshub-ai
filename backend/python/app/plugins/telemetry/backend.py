@@ -61,6 +61,14 @@ class MetricsBackend(ABC):
         """Drop all recorded series."""
         ...
 
+    def snapshot(self) -> list[tuple[str, str, dict[str, str], float]]:
+        """Current counters and gauges as ``(sample name, "counter" | "gauge", labels, value)``.
+
+        A counter's name ends in ``_total`` and its value is cumulative.
+        Histograms are left out. Read by the usage telemetry v3 sender.
+        """
+        return []
+
 
 class _PromCounter:
     def __init__(self, metric: Counter) -> None:
@@ -119,6 +127,17 @@ class PrometheusBackend(MetricsBackend):
 
     def serialize(self) -> str:
         return generate_latest(self._registry).decode("utf-8")
+
+    def snapshot(self) -> list[tuple[str, str, dict[str, str], float]]:
+        samples: list[tuple[str, str, dict[str, str], float]] = []
+        for family in self._registry.collect():
+            if family.type not in ("counter", "gauge"):
+                continue
+            for sample in family.samples:
+                if family.type == "counter" and not sample.name.endswith("_total"):
+                    continue  # the ``_created`` timestamp
+                samples.append((sample.name, family.type, dict(sample.labels), float(sample.value)))
+        return samples
 
     def reset(self) -> None:
         for metric in self._instruments:
