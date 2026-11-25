@@ -288,7 +288,11 @@ class Dropbox(Source):
     can = frozenset({
         Can.EMPTY_PAGE_WITH_CURSOR, Can.MORE_WITHOUT_CURSOR, Can.INACTIVE, Can.SECOND_ADDRESS,
     })
-    malformed = (SimpleNamespace(members=None, has_more=False, cursor=None), None)
+    malformed = (
+        SimpleNamespace(members=None, has_more=False, cursor=None),
+        SimpleNamespace(members=[], has_more=None, cursor=None),
+        None,
+    )
     broken = (SimpleNamespace(profile=None),)
 
     def wire(self) -> MagicMock:
