@@ -3641,10 +3641,7 @@
         "createError": "Konektor se nepodařilo vytvořit",
         "createSuccess": "Instance konektoru '{{name}}' byla úspěšně vytvořena",
         "authSaveError": "Konfiguraci ověřování se nepodařilo uložit",
-        "configSaveError": "Konfiguraci se nepodařilo uložit",
-        "oauthAppUnavailableTitle": "Pro tento konektor nejsou k dispozici žádné OAuth aplikace",
-        "oauthAppUnavailableDescription": "Požádejte správce pracovního prostoru, aby nejprve vytvořil OAuth aplikaci pro {{name}}, a poté to zkuste znovu.",
-        "thisConnectorFallback": "tento konektor"
+        "configSaveError": "Konfiguraci se nepodařilo uložit"
       },
       "tabs": {
         "authenticate": "Ověřit instanci",
@@ -3780,6 +3777,8 @@
         "oauthAppNameLabel": "Název OAuth aplikace",
         "oauthAppNamePlaceholder": "např. {{name}} OAuth",
         "oauthAppNameHelper": "Tento název se uloží spolu s registrací OAuth a zobrazí se, když uživatelé vybírají uloženou aplikaci pro jiné instance.",
+        "oauthAppNameHelperPersonal": "Tuto aplikaci OAuth vidíte a používáte jen vy. Můžete ji znovu vybrat pro své další konektory tohoto typu.",
+        "oauthAppYours": "{{name}} · Vaše",
         "oauthAppNameRequired": "Zadejte název nové OAuth aplikace.",
         "oauthAppChangeReauthWarning": "Po změně OAuth aplikace nebo jejích přihlašovacích údajů bude nutné konektor znovu ověřit."
       },
@@ -4379,6 +4378,10 @@
           "other": "Na oprávnění tohoto konektoru se musí někdo podívat.",
           "unreadable": "Seznam složek čekajících na aktualizaci nelze přečíst. Požádejte provozovatele PipesHub o opětovné vytvoření indexu oprávnění tohoto konektoru. Vyhledávání mezitím kontroluje každý výsledek."
         }
+      },
+      "enterprise": {
+        "userOAuthAppsTitle": "Vlastní aplikace OAuth uživatelů",
+        "userOAuthAppsDescription": "Zkontrolujte a odeberte aplikace OAuth, které si lidé ve vaší organizaci přidali pro své vlastní konektory."
       },
       "userAccess": {
         "connect": "Připojit",

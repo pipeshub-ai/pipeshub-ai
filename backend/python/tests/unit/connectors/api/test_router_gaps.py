@@ -1849,7 +1849,9 @@ class TestCreateConnectorInstanceConfigAuthMissing:
             is_admin=True,
         )
 
-        with patch(f"{_ROUTER}.check_beta_connector_access", new_callable=AsyncMock):
+        # The named app is checked before the connector exists; this test is about storing its config.
+        with patch(f"{_ROUTER}.check_beta_connector_access", new_callable=AsyncMock), \
+                patch(f"{_ROUTER}._validate_oauth_app_before_creation", new_callable=AsyncMock):
             with patch(f"{_ROUTER}._prepare_connector_config", new_callable=AsyncMock, return_value={"auth": {}, "sync": {}, "filters": {}}):
                 result = await create_connector_instance(req, graph_provider=gp)
         assert result["success"] is True
@@ -2980,7 +2982,7 @@ class TestHandleOAuthConfigCreation:
             oauth_config_id=None, auth_type="API_TOKEN",
             base_url="", logger=logging.getLogger("test"),
         )
-        assert result is None
+        assert result.app_id is None
 
     @pytest.mark.asyncio
     async def test_no_credentials_with_oauth_app_id_returns_id(self):
@@ -2996,7 +2998,7 @@ class TestHandleOAuthConfigCreation:
                 oauth_config_id="oid-1", auth_type="OAUTH",
                 base_url="", logger=logging.getLogger("test"),
             )
-        assert result == "oid-1"
+        assert result.app_id == "oid-1"
 
     @pytest.mark.asyncio
     async def test_no_credentials_no_oauth_id_returns_none(self):
@@ -3012,7 +3014,7 @@ class TestHandleOAuthConfigCreation:
                 oauth_config_id=None, auth_type="OAUTH",
                 base_url="", logger=logging.getLogger("test"),
             )
-        assert result is None
+        assert result.app_id is None
 
 
 # ============================================================================
@@ -5074,7 +5076,9 @@ class TestCreateConnectorInstanceConfigAuthMissingCoverage:
             is_admin=True,
         )
 
-        with patch(f"{_ROUTER}.check_beta_connector_access", new_callable=AsyncMock):
+        # The named app is checked before the connector exists; this test is about storing its config.
+        with patch(f"{_ROUTER}.check_beta_connector_access", new_callable=AsyncMock), \
+                patch(f"{_ROUTER}._validate_oauth_app_before_creation", new_callable=AsyncMock):
             with patch(f"{_ROUTER}._prepare_connector_config", new_callable=AsyncMock, return_value={"auth": {}, "sync": {}, "filters": {}}):
                 result = await create_connector_instance(req, graph_provider=gp)
         assert result["success"] is True
@@ -6205,7 +6209,7 @@ class TestHandleOAuthConfigCreationCoverage:
             oauth_config_id=None, auth_type="API_TOKEN",
             base_url="", logger=logging.getLogger("test"),
         )
-        assert result is None
+        assert result.app_id is None
 
     @pytest.mark.asyncio
     async def test_no_credentials_with_oauth_app_id_returns_id(self):
@@ -6221,7 +6225,7 @@ class TestHandleOAuthConfigCreationCoverage:
                 oauth_config_id="oid-1", auth_type="OAUTH",
                 base_url="", logger=logging.getLogger("test"),
             )
-        assert result == "oid-1"
+        assert result.app_id == "oid-1"
 
     @pytest.mark.asyncio
     async def test_no_credentials_no_oauth_id_returns_none(self):
@@ -6237,7 +6241,7 @@ class TestHandleOAuthConfigCreationCoverage:
                 oauth_config_id=None, auth_type="OAUTH",
                 base_url="", logger=logging.getLogger("test"),
             )
-        assert result is None
+        assert result.app_id is None
 
 
 # ============================================================================

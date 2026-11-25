@@ -550,10 +550,12 @@ async def test_a_failed_connector_check_keeps_the_arms_and_only_a_statement_time
         sizer = dense.Sizer(db, t)
         with org_context.bind(org_context.OrgContext(ORG, None, "service", "t", "-")):
             assert await sizer.connectors(ORG, 1) is None
-            await asyncio.sleep(0.05)
+            await asyncio.wait_for(asyncio.gather(*sizer._connectors_inflight.values()), 10)     # the first check has finished
             assert await sizer.connectors(ORG, 1) is None                              # fails closed: the arms stay on
-            await asyncio.sleep(0.05)
-            assert db.runs == (2 if again else 1), fail                                # a busy pool is asked again soon; a big org is not
+            # a busy pool or a lost connection is asked again soon (a second check runs); a big org is not (none is scheduled)
+            assert bool(sizer._connectors_inflight) is again, fail
+            await asyncio.wait_for(asyncio.gather(*sizer._connectors_inflight.values()), 10)
+            assert db.runs == (2 if again else 1), fail
 
 
 # ---- the lexical leg -------------------------------------------------------------------------------------------------------------------

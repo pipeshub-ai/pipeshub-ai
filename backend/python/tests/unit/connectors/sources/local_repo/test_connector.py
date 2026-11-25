@@ -22,6 +22,7 @@ from tests.unit.connectors.sources.local_folder.harness import (
     FilterCollection,
     Graph,
     User,
+    full_sync_unlinks,
     mod,
 )
 
@@ -462,3 +463,42 @@ async def test_the_sync_summary_counts_the_credential_files_and_no_log_line_carr
         await env.c.run_sync()  # a later sync over the same files still counts them
     assert caplog.text.count("1 credential files left out") == 2
     assert "PLACEHOLDER-BODY" not in caplog.text
+
+
+async def test_a_full_sync_keeps_the_links_of_a_committed_file_it_could_not_read_and_unlinks_only_what_is_gone(env):
+    push(env.repo, **{"src/app.py": "def run():\n    return 1\n", "lib/util.py": "u = 1\n", "gone.py": "g = 1\n"})
+    await env.c.run_sync()
+    assert set(env.graph.records) == {"src", "src/app.py", "lib", "lib/util.py", "gone.py"}
+    env.repo.diff([], False, ["gone.py"])
+    env.repo.commit()
+    real = scan.safe_open
+
+    def flaky(root, rel, max_links=1):
+        if rel == "lib/util.py":
+            raise scan.PathRefused("cannot open: Permission denied")
+        return real(root, rel, max_links)
+
+    with patch.object(scan, "safe_open", flaky):
+        unlinked = await full_sync_unlinks(env.c, env.graph)
+    assert "gone.py" in env.graph.deleted and "gone.py" not in env.graph.records
+    assert unlinked & {"lib", "lib/util.py"} == set()  # committed and still in the mirror: unreadable this run is not gone
+
+
+async def test_a_full_sync_does_not_keep_a_file_the_extension_filter_now_excludes_even_if_another_is_unreadable(env):
+    push(env.repo, **REPO_FILES)
+    await env.c.run_sync()
+    excluded_id = env.graph.records[EXCLUDABLE].id
+    held = {env.graph.records[r].id for r in ("src", "src/app.py")}
+    excluded = ext_filter(MultiselectOperator.NOT_IN, [EXCLUDABLE.rsplit(".", 1)[1]])
+    real = scan.safe_open
+
+    def flaky(root, rel, max_links=1):
+        if rel == "src/app.py":
+            raise scan.PathRefused("cannot open: Permission denied")
+        return real(root, rel, max_links)
+
+    with patch.object(mod, "load_connector_filters", AsyncMock(return_value=(excluded, FilterCollection()))), \
+            patch.object(scan, "safe_open", flaky):
+        unlinked = await full_sync_unlinks(env.c, env.graph)
+    assert EXCLUDABLE in env.graph.deleted and excluded_id not in env.graph.kept
+    assert held <= set(env.graph.kept) and unlinked & {"src", "src/app.py"} == set()

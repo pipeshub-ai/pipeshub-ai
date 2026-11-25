@@ -48,12 +48,15 @@ for v in ADMIN NODE CONNECTORS INDEXING QUERY KV JOBS MIGRATE BACKUP; do pass[$v
 # fixed host ports: an ephemeral one would change when a fault restarts the container
 free_port() { python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])'; }
 pg_port="$(free_port)"; pgb_port="$(free_port)"
+# the whole image reference: Compose would build "<PG_IMAGE>:<major>-<rev>", which a custom reference such as local/postgres:test is not
 cat > "$work/soak.yml" <<YML
 services:
   postgres:
+    image: "$image"
     command: ["postgres", "-c", "jit=off"]
     ports: ["127.0.0.1:$pg_port:5432"]
   pgbouncer:
+    image: "$image"
     ports: ["127.0.0.1:$pgb_port:6432"]
 YML
 
