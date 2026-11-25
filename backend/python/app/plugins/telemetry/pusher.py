@@ -1,4 +1,18 @@
-"""Background task that pushes this service's metrics to the collector gateway."""
+"""Background task that pushes this service's usage data to the collector.
+
+Two contracts, chosen each tick by :class:`~app.plugins.telemetry.v3.sender.UsageV3Sender`
+from ``USAGE_TELEMETRY_CONTRACT`` (``auto`` by default, ``v3``, or ``legacy``):
+
+* legacy: the whole registry as Prometheus text to ``.../collect-metrics`` and
+  the event buffer to ``.../collect-events``, as always.
+* v3: catalogued counters (as deltas) and gauges to ``.../v3/metrics`` and
+  catalogued events to ``.../v3/events``, with the install's credential.
+
+``app.plugins.telemetry.v3`` describes the setting and lists what the legacy
+contract carries that v3 does not. Whether anything is sent at all is decided,
+as before, by ``TELEMETRY_COLLECTION_FLAG`` and the install's
+``enableMetricCollection``.
+"""
 
 import asyncio
 import json
@@ -16,6 +30,16 @@ from app.plugins.telemetry.event_buffer import event_buffer
 from app.plugins.telemetry.flag import TELEMETRY_COLLECTION_FLAG, telemetry_enabled
 from app.plugins.telemetry.modules.collection_metrics import (
     set_metric_collection_enabled,
+)
+from app.plugins.telemetry.v3 import INSTALL_SECRET_FIELD
+from app.plugins.telemetry.v3.http import AiohttpUsagePort
+from app.plugins.telemetry.v3.sender import (
+    Route,
+    Secret,
+    UsageHttpPort,
+    UsageV3Sender,
+    V3Target,
+    contract_mode,
 )
 from app.utils.request_context import (
     HEADER_REQUEST_ID,
@@ -84,10 +108,22 @@ _PROCESS_ID = f"{os.getpid()}-{uuid.uuid4().hex[:8]}"
 class MetricsPusher:
     """Periodically serializes the registry and POSTs it to the gateway."""
 
-    def __init__(self, config_service, service_name: str, logger) -> None:
+    def __init__(
+        self, config_service, service_name: str, logger, usage_http: Optional[UsageHttpPort] = None
+    ) -> None:
         self._config_service = config_service
         self._service_name = service_name
         self._logger = logger
+        self._usage = UsageV3Sender(
+            mode=contract_mode(),
+            service=service_name,
+            process_id=_PROCESS_ID,
+            http=usage_http or AiohttpUsagePort(),
+            # Looked up at call time: the backend is a module global that tests replace.
+            snapshot=lambda: METRICS_BACKEND.snapshot(),
+            events=event_buffer,
+            logger=logger,
+        )
         self._task: Optional[asyncio.Task] = None
         self._waiting_for_config_logged = False
 
@@ -142,8 +178,11 @@ class MetricsPusher:
                     # Reflect current consent locally each tick (not pushed while off).
                     set_metric_collection_enabled(self._service_name, cfg["enabled"])
                     if cfg["enabled"]:
-                        await self._push(cfg)
-                        await self._ship_events(cfg)
+                        # v3 sends its own batches inside tick(); LEGACY means this
+                        # tick is for the legacy endpoints; HOLD means send nothing.
+                        if await self._usage.tick(self._v3_target(cfg)) is Route.LEGACY:
+                            await self._push(cfg)
+                            await self._ship_events(cfg)
             except asyncio.CancelledError:
                 raise
             except Exception as e:
@@ -156,6 +195,7 @@ class MetricsPusher:
         raw = _as_dict(await self._config_service.get_config(METRICS_CONFIG_KEY, default={}))
         if any(raw.get(field) in (None, "") for field in REQUIRED_CONFIG_FIELDS):
             return None
+        secret = raw.get(INSTALL_SECRET_FIELD)
         return {
             "url": raw["serverUrl"],
             "token": raw["apiKey"],
@@ -164,7 +204,19 @@ class MetricsPusher:
             "install_id": raw["installId"],
             # Node owns appVersion; every service reports the same value.
             "version": raw["appVersion"],
+            # Optional, written by Node once it has registered the install for v3.
+            # Wrapped so that a dump of this dict cannot show it.
+            "install_secret": Secret(secret) if isinstance(secret, str) and secret else None,
         }
+
+    def _v3_target(self, cfg: dict) -> V3Target:
+        return V3Target(
+            metrics_url=self._collector_url(cfg["url"], "v3/metrics"),
+            events_url=self._collector_url(cfg["url"], "v3/events"),
+            install_id=str(cfg["install_id"]),
+            secret=cfg.get("install_secret"),
+            version=cfg["version"] if isinstance(cfg["version"], str) else None,
+        )
 
     def _has_samples(self, metrics_text: str) -> bool:
         return any(
