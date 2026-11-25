@@ -803,6 +803,7 @@ class BoxDataSource:
         usemarker: Optional[bool] = None,
         marker: Optional[str] = None,
         user_type: Optional[str] = None,
+        fields: Optional[List[str]] = None,
         **kwargs,
     ) -> BoxResponse:
         """Get all users in the enterprise
@@ -816,6 +817,7 @@ class BoxDataSource:
             usemarker (bool, optional): Page by marker instead of offset
             marker (str, optional): The next_marker of the previous page
             user_type (str, optional): all, managed or external
+            fields (list, optional): The only fields to return
 
         Returns:
             BoxResponse: SDK response
@@ -833,7 +835,7 @@ class BoxDataSource:
                 pass
             response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.get_users(
                 limit=limit, offset=offset, usemarker=usemarker, marker=marker,
-                user_type=GetUsersUserType(user_type) if user_type else None,
+                user_type=GetUsersUserType(user_type) if user_type else None, fields=fields,
             ))
             return BoxResponse(success=True, data=response)
         except Exception as e:

@@ -58,7 +58,8 @@ class FakeBoxApi(BaseAdapter):
 
     Content is owned by users and is visible only to its owner or to a
     collaborator on it or on a folder above it, which is how Box answers an
-    ``As-User`` request. Listing endpoints page the way Box does (offset/limit
+    ``As-User`` request. Content owned by an inactive user is hidden from its
+    collaborators unless the admin kept it available (``deactivate``). Listing endpoints page the way Box does (offset/limit
     with Box's default page of 100, or a marker for file collaborations), and
     ``fail`` queues error responses for the next matching requests.
     """
@@ -90,6 +91,19 @@ class FakeBoxApi(BaseAdapter):
         user = {"type": "user", "id": user_id, "login": login, "name": name or login.split("@")[0], "status": status}
         self.users[user_id] = user
         return user
+
+    def deactivate(self, user_id: str, keep_content_available: bool = False) -> None:
+        """Make a user Inactive. By default Box hides the content they own from all collaborators; the admin may
+        instead keep it available (https://docs.box.com/en/box-admin-tools/managing-box-users-and-admins/
+        understanding-user-management/users-groups-settings), which the API reads as
+        ``is_collaborated_content_available_when_owner_inactive`` (https://developer.box.com/reference/resources/user--full/)."""
+        self.users[user_id].update(
+            status="inactive", is_collaborated_content_available_when_owner_inactive=keep_content_available
+        )
+
+    def reactivate(self, user_id: str) -> None:
+        """Box: "When you reactivate a user, this setting is reset"."""
+        self.users[user_id].update(status="active", is_collaborated_content_available_when_owner_inactive=False)
 
     def add_group(self, group_id: str, name: str, member_ids: tuple[str, ...] = ()) -> None:
         self.groups[group_id] = {"type": "group", "id": group_id, "name": name, "group_type": "managed_group"}
@@ -229,7 +243,13 @@ class FakeBoxApi(BaseAdapter):
             case ["users", "me"]:
                 return self._json(request, {"type": "user", "id": SERVICE_ACCOUNT_ID, "login": "svc@boxdevedition.com", "name": "PipesHub"})
             case ["users"]:
-                users = list(self.users.values())
+                # Box's ``fields``: only the fields named, which may include the full-only availability field.
+                wanted = {*q["fields"].split(","), "type", "id"} if q.get("fields") else None
+                users = [
+                    {k: v for k, v in u.items() if k in wanted} if wanted
+                    else {k: v for k, v in u.items() if k != "is_collaborated_content_available_when_owner_inactive"}
+                    for u in self.users.values()
+                ]
                 return self._json(request, self._marker_page(users, q) if q.get("usemarker", "").lower() == "true" else self._offset_page(users, q))
             case ["users", user_id]:
                 user = self.users.get(user_id)
@@ -256,7 +276,8 @@ class FakeBoxApi(BaseAdapter):
                     children = [
                         self._render(i, viewer) for i in self.items.values()
                         if (i["parent"] == ROOT_ID and i["owner"] == viewer)
-                        or (i["type"] == "folder" and i["owner"] != viewer and self._collaborator(i["id"], viewer))
+                        or (i["type"] == "folder" and i["owner"] != viewer and self._collaborator(i["id"], viewer)
+                            and not self._hidden(i, viewer))
                     ]
                 else:
                     children = [self._render(i, viewer) for i in self.items.values() if i["parent"] == folder_id]
@@ -286,9 +307,17 @@ class FakeBoxApi(BaseAdapter):
     def _collaborator(self, item_id: str, viewer: str) -> bool:
         return any(c["accessible_by"]["id"] == viewer for c in self.collaborations.get(item_id, []))
 
+    def _hidden(self, item: dict[str, Any], viewer: str) -> bool:
+        """Content of an inactive owner that the admin did not keep available, seen by anyone but that owner."""
+        owner = self.users.get(item["owner"]) or {}
+        return (
+            item["owner"] != viewer and owner.get("status") == "inactive"
+            and owner.get("is_collaborated_content_available_when_owner_inactive") is not True
+        )
+
     def _visible(self, item_id: str, viewer: str) -> bool:
         item = self.items.get(item_id)
-        if item is None:
+        if item is None or self._hidden(item, viewer):
             return False
         node: dict[str, Any] | None = item
         while node is not None:
@@ -597,6 +626,20 @@ class FakeBoxRecordsDb:
         deleted = [self.records.pop(k).id for k in sorted(doomed)]
         self.deleted_records.extend(deleted)
         return {"success": True, "deleted_records": deleted, "failed_records": [], "successfully_deleted": len(deleted), "failed_count": 0}
+
+    async def get_records_in_record_group(
+        self, connector_id: str, external_group_id: str, limit: int, after_key: str | None = None, **_: object,
+    ) -> list[Any]:
+        self._check("get_records_in_record_group")
+        rows = sorted(
+            (r for r in self.records.values() if r.external_record_group_id == external_group_id), key=lambda r: r.id
+        )
+        return [r for r in rows if after_key is None or r.id > after_key][:limit]
+
+    async def on_updated_record_permissions(self, record: Any, permissions: list[Any]) -> None:
+        """Replaces the record's stored grants with ``permissions``, as the real processor does."""
+        self._check("on_updated_record_permissions")
+        self.permissions[record.external_record_id] = {f"{p.entity_type.value}:{p.external_id}": p for p in permissions}
 
     async def reindex_existing_records(self, records: list[Any]) -> None:
         self.reindexed.extend(records)
