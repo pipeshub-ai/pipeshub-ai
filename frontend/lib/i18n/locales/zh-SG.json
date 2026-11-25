@@ -3490,10 +3490,7 @@
         "createError": "创建连接器失败",
         "createSuccess": "连接器实例“{{name}}”创建成功",
         "authSaveError": "保存认证配置失败",
-        "configSaveError": "保存配置失败",
-        "oauthAppUnavailableTitle": "此连接器暂无可用的 OAuth 应用",
-        "oauthAppUnavailableDescription": "请先让您的工作区管理员为 {{name}} 创建一个 OAuth 应用，然后重试。",
-        "thisConnectorFallback": "此连接器"
+        "configSaveError": "保存配置失败"
       },
       "tabs": {
         "authenticate": "认证实例",
@@ -3629,6 +3626,8 @@
         "oauthAppNameLabel": "OAuth 应用名称",
         "oauthAppNamePlaceholder": "例如：{{name}} OAuth",
         "oauthAppNameHelper": "此名称会随 OAuth 注册一起保存，当用户为其他实例选择已保存的应用时会显示。",
+        "oauthAppNameHelperPersonal": "只有你可以查看和使用此 OAuth 应用。你可以在同类型的其他连接器中再次选择它。",
+        "oauthAppYours": "{{name}} · 我的",
         "oauthAppNameRequired": "请为新的 OAuth 应用输入名称。",
         "oauthAppChangeReauthWarning": "更改 OAuth 应用或其凭证后，您需要重新认证连接器。"
       },
@@ -4223,6 +4222,10 @@
           "other": "此连接器的权限需要有人查看。",
           "unreadable": "无法读取等待更新的文件夹列表。请让运行 PipesHub 的人员重建此连接器的权限索引。在此期间，搜索会逐条检查结果。"
         }
+      },
+      "enterprise": {
+        "userOAuthAppsTitle": "成员自己的 OAuth 应用",
+        "userOAuthAppsDescription": "查看并移除组织成员为自己的连接器添加的 OAuth 应用。"
       },
       "userAccess": {
         "connect": "连接",
