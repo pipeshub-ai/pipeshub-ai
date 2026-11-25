@@ -19,6 +19,7 @@ The checks render the chart (skipped when helm is not on PATH).
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -175,6 +176,7 @@ class HelmSecurityProfile(unittest.TestCase):
 # The release to upgrade from, named by whoever fetched it (helm-chart.yml sets it to the newest remote tag). Unset,
 # the newest tag in this checkout is used, which can be older than the newest release when local tags are stale.
 ENV_UPGRADE_BASELINE = "HELM_UPGRADE_BASELINE"
+STABLE_RELEASE = re.compile(r"v[0-9]+\.[0-9]+\.[0-9]+")
 
 
 def _upstream_base() -> str | None:
@@ -187,7 +189,8 @@ def _upstream_base() -> str | None:
         return named
     out = subprocess.run(["git", "tag", "--list", "v[0-9]*", "--sort=-v:refname"],
                          cwd=REPO, capture_output=True, text=True)
-    tags = out.stdout.split()
+    # Stable releases only: a vX.Y.Z-rc.N prerelease sorts above the release before it.
+    tags = [tag for tag in out.stdout.split() if STABLE_RELEASE.fullmatch(tag)]
     return tags[0] if tags else None
 
 

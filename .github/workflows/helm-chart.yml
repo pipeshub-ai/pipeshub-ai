@@ -53,7 +53,8 @@ jobs:
       - name: Fetch the newest release tag
         run: |
           set -euo pipefail
-          tag=$(git ls-remote --tags --refs origin 'v[0-9]*' | sed 's#.*refs/tags/##' | sort -V | tail -1)
+          # Stable releases only: a vX.Y.Z-rc.N prerelease sorts above the release before it.
+          tag=$(git ls-remote --tags --refs origin 'v[0-9]*' | sed 's#.*refs/tags/##' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)
           git fetch --no-tags --depth=1 origin "+refs/tags/$tag:refs/tags/$tag"
           echo "HELM_UPGRADE_BASELINE=$tag" >> "$GITHUB_ENV"
 
