@@ -252,6 +252,14 @@ def _mutation_succeeded(result: object) -> bool:
     return bool(result)
 
 
+def _deleted() -> dict:
+    return {
+        "success": True,
+        "reason": "Knowledge base and all contents deleted successfully",
+        "code": 200,
+    }
+
+
 def _people_gone() -> dict:
     return {
         "success": False,
@@ -1270,6 +1278,14 @@ class KnowledgeBaseService:
                 await notify_principals_changed(org_id)
 
             if not result or not result.get("success"):
+                # "Could not confirm", not "still there": a rival delete finished the KB first, or the store
+                # applied the delete and its answer was lost. Every store removes the app last, after checking
+                # nothing of the KB remains, so a KB that reads as gone is deleted; its cleanup is the reconcilers'.
+                if await self.graph_provider.get_document(
+                    kb_id, CollectionNames.APPS.value, raise_on_error=True
+                ) is None:
+                    self.logger.warning("Knowledge base %s is already deleted from the graph", kb_id)
+                    return _deleted()
                 # the provider's "error" can be exception text, so it stays in the log
                 self.logger.warning(
                     "⚠️ Failed to delete knowledge base %s: %s",
@@ -1313,11 +1329,7 @@ class KnowledgeBaseService:
                 )
             await free_lane_of_deleted_connector(self.logger, kb_id)
             await self._erase_publications(org_id, kb_id)
-            return {
-                "success": True,
-                "reason": "Knowledge base and all contents deleted successfully",
-                "code": 200,
-            }
+            return _deleted()
 
     def _start_storage_cleanup(self, org_id: str, kb_id: str) -> None:
         # Fire-and-forget: etcd config + blob storage cleanup runs in the
