@@ -566,10 +566,9 @@ class TestLifespan:
             patch("app.query_main.stop_kafka_consumers", new_callable=AsyncMock),
             patch("app.query_main.container", mock_container),
             patch("app.services.sandbox_alerts.loop.run_sandbox_alert_loop", _loop),
-            patch.dict("sys.modules", {
-                "app.agents.registry.toolset_registry": MagicMock(get_toolset_registry=MagicMock(return_value=mock_registry)),
-                "app.agents.tools.registry": MagicMock(_global_tools_registry=MagicMock()),
-            }),
+            # The attribute the lifespan reads, not a module swapped in sys.modules: the lifespan imports modules of its own while
+            # it runs, and replacing sys.modules around that drops them again (the guard fails a test that does).
+            patch("app.agents.registry.toolset_registry.get_toolset_registry", return_value=mock_registry),
         ):
             async with lifespan(app):
                 await asyncio.wait_for(started.wait(), 5)
