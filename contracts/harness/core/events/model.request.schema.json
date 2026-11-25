@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/core/events/model.request.schema.json",
+  "title": "ModelRequestEvent",
+  "description": "Model request issued (compiled context digest).",
+  "x-writer": [
+    "worker"
+  ],
+  "allOf": [
+    {
+      "$ref": "../envelope.schema.json#/$defs/InlineEnvelope"
+    }
+  ],
+  "properties": {
+    "type": {
+      "const": "model.request"
+    },
+    "writer": {
+      "const": "worker"
+    },
+    "data": {
+      "$ref": "#/$defs/ModelRequestData"
+    }
+  },
+  "$defs": {
+    "ModelRequestData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contextDigest",
+        "route"
+      ],
+      "properties": {
+        "contextDigest": {
+          "$ref": "../common.schema.json#/$defs/Digest"
+        },
+        "route": {
+          "$ref": "../common.schema.json#/$defs/ModelRef"
+        },
+        "modelAttempt": {
+          "$ref": "../common.schema.json#/$defs/PosInt"
+        },
+        "cacheStats": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "cacheableTokens",
+            "breakpoints"
+          ],
+          "properties": {
+            "cacheableTokens": {
+              "$ref": "../common.schema.json#/$defs/UInt"
+            },
+            "breakpoints": {
+              "$ref": "../common.schema.json#/$defs/UInt"
+            }
+          }
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "type": "model.request",
+      "schemaVersion": 1,
+      "critical": true,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "data": {
+        "contextDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "route": {
+          "provider": "anthropic",
+          "model": "claude-x"
+        },
+        "modelAttempt": 1,
+        "cacheStats": {
+          "cacheableTokens": 12000,
+          "breakpoints": 2
+        }
+      },
+      "attemptId": "att_1",
+      "fence": 3
+    }
+  ]
+}

@@ -708,15 +708,13 @@ class TestDeletePoints:
 class TestQueryNearestPoints:
     @pytest.mark.asyncio
     async def test_query_success(self, connected_service):
-        mock_point = MagicMock()
-        mock_point.id = "p1"
-        mock_point.score = 0.95
-        mock_point.payload = {"metadata": {"orgId": "org1"}, "page_content": "hello"}
-
-        mock_batch = MagicMock()
-        mock_batch.points = [mock_point]
-
-        connected_service.client.query_batch_points.return_value = [mock_batch]
+        dense_hit = MagicMock(id="p1", score=0.95)
+        sparse_hit = MagicMock(id="p1", score=3.2)
+        connected_service.client.query_batch_points.return_value = [
+            MagicMock(points=[dense_hit]), MagicMock(points=[sparse_hit]),
+        ]
+        stored = MagicMock(id="p1", payload={"metadata": {"orgId": "org1"}, "page_content": "hello"})
+        connected_service.client.retrieve.return_value = [stored]
 
         request = HybridSearchRequest(
             dense_query=[0.1, 0.2, 0.3],
@@ -728,7 +726,11 @@ class TestQueryNearestPoints:
         assert len(result) == 1
         assert len(result[0]) == 1
         assert result[0][0].id == "p1"
-        assert result[0][0].score == 0.95
+        # First in both legs: 1/2 + 1/2, the RRF score Qdrant gives.
+        assert result[0][0].score == 1.0
+        assert result[0][0].payload == {"metadata": {"orgId": "org1"}, "page_content": "hello"}
+        legs = connected_service.client.query_batch_points.call_args.kwargs["requests"]
+        assert [leg.using for leg in legs] == ["dense", "sparse"]
 
     @pytest.mark.asyncio
     async def test_query_not_connected(self, service):

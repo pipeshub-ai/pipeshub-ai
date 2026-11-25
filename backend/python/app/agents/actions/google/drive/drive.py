@@ -7,6 +7,12 @@ from typing import Any, Dict, Optional
 from googleapiclient.http import MediaIoBaseDownload
 from pydantic import BaseModel, Field
 
+from app.agents.actions.util.live_record import (
+    LiveCitations,
+    live_connector_id,
+    live_file_record,
+    toolset_instance_of,
+)
 from app.agents.actions.util.parse_file import FileContentParser
 from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
 from app.agent_loop_lib.tools.decorators import tool
@@ -16,7 +22,7 @@ from app.agents.actions.util.tool_summaries import (
     list_summary,
     parse_json_maybe,
 )
-from app.config.constants.arangodb import Connectors, OriginTypes
+from app.config.constants.arangodb import Connectors
 from app.connectors.core.registry.auth_builder import (
     AuthBuilder,
     AuthType,
@@ -25,12 +31,12 @@ from app.connectors.core.registry.auth_builder import (
 from app.connectors.core.constants import IconPaths
 from app.connectors.core.registry.connector_builder import CommonFields
 from app.connectors.core.registry.tool_builder import (
+    ToolProvider,
     ToolsetBuilder,
     ToolsetCategory,
 )
 from app.connectors.core.registry.types import DocumentationLink
 from app.connectors.sources.google.common.scopes import GOOGLE_TOOLSET_SCOPES
-from app.models.entities import FileRecord, RecordType
 from app.modules.agents.qna.chat_state import ChatState
 from app.sources.client.google.google import GoogleClient
 from app.sources.external.google.drive.drive import GoogleDriveDataSource
@@ -204,7 +210,7 @@ class GetFileContentInput(BaseModel):
 
 
 # Register Google Drive toolset
-@ToolsetBuilder("Drive")\
+@ToolsetBuilder("Drive", provider=ToolProvider.CONNECTOR)\
     .in_group("Google Workspace")\
     .with_description("Google Drive integration for file management, search, and collaboration")\
     .with_category(ToolsetCategory.APP)\
@@ -308,7 +314,7 @@ class GoogleDrive:
                 required=False,
             ),
         ],
-        tags=[Tag(key="category", value="file_storage"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="file_storage"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
         args_summary=lambda args: (
             f'Searching Drive: "{args["query"]}"' if args.get("query") else "Listing Drive files"
         ),
@@ -475,7 +481,7 @@ class GoogleDrive:
             ToolParameter(name="acknowledge_abuse", type=ParameterType.BOOLEAN, description="Whether to acknowledge risk of downloading malware", required=False),
             ToolParameter(name="supports_all_drives", type=ParameterType.BOOLEAN, description="Whether requesting app supports both My Drives and shared drives", required=False),
         ],
-        tags=[Tag(key="category", value="file_storage"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="file_storage"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_file_details(
         self,
@@ -532,7 +538,7 @@ class GoogleDrive:
                 required=False,
             ),
         ],
-        tags=[Tag(key="category", value="file_storage"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="file_storage"), Tag(key="type", value="write"), Tag(key="effect", value="write"), Tag(key="sink", value="self")],
     )
     async def create_folder(
         self,
@@ -606,7 +612,7 @@ class GoogleDrive:
             ToolParameter(name="order_by", type=ParameterType.STRING, description="Sort order", required=False),
             ToolParameter(name="page_token", type=ParameterType.STRING, description="Token from a previous response's nextPageToken, to fetch the next page", required=False),
         ],
-        tags=[Tag(key="category", value="file_storage"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="file_storage"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
         args_summary=args_template('Searching Google Drive: "{query}"', "query"),
         result_summary=list_summary(("files",), _drive_file_label, "file"),
     )
@@ -662,7 +668,7 @@ class GoogleDrive:
             "max upload size, user profile, and supported export/import formats."
         ),
         parameters=[],
-        tags=[Tag(key="category", value="file_storage"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="file_storage"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_drive_info(self) -> tuple[bool, str]:
         """Get information about the user's Drive"""
@@ -695,7 +701,7 @@ class GoogleDrive:
             ToolParameter(name="query", type=ParameterType.STRING, description="Search query for shared drives", required=False),
             ToolParameter(name="page_token", type=ParameterType.STRING, description="Token from a previous response's nextPageToken, to fetch the next page", required=False),
         ],
-        tags=[Tag(key="category", value="file_storage"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="file_storage"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_shared_drives(
         self,
@@ -738,7 +744,7 @@ class GoogleDrive:
             ToolParameter(name="page_size", type=ParameterType.INTEGER, description="Maximum number of permissions to return", required=False),
             ToolParameter(name="page_token", type=ParameterType.STRING, description="Token from a previous response's nextPageToken, to fetch the next page", required=False),
         ],
-        tags=[Tag(key="category", value="file_storage"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="file_storage"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_file_permissions(
         self,
@@ -785,7 +791,7 @@ class GoogleDrive:
         parameters=[
             ToolParameter(name="file_id", type=ParameterType.STRING, description="The ID of the file to read", required=True),
         ],
-        tags=[Tag(key="category", value="file_storage"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="file_storage"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
         args_summary=args_template("Fetching content for Drive file {file_id}", "file_id"),
         result_summary=_get_file_content_result_summary,
     )
@@ -858,27 +864,21 @@ class GoogleDrive:
                     "detail": str(raw)[:500],
                 })
 
-            org_id = state.get("org_id") or ""
-            tool_to_toolset_map = state.get("tool_to_toolset_map") or {}
-            connector_id = tool_to_toolset_map.get("drive.get_file_content")
-            if not connector_id:
+            instance_id = toolset_instance_of(self)
+            if not live_connector_id(state, "drive.get_file_content", instance_id):
                 return False, json.dumps({
                     "error": "Toolset mapping for drive.get_file_content is not available in agent state"
                 })
 
-            record_name = file_name if file_name else f"document.{ext}"
-            file_record = FileRecord(
-                org_id=org_id,
-                record_name=record_name,
-                record_type=RecordType.FILE,
+            file_record = live_file_record(
+                state,
+                tool="drive.get_file_content",
+                instance_id=instance_id,
+                connector=Connectors.GOOGLE_DRIVE,
                 external_record_id=file_id,
-                version=1,
-                origin=OriginTypes.CONNECTOR,
-                connector_name=Connectors.GOOGLE_DRIVE,
-                connector_id=connector_id,
-                mime_type=effective_mime or "application/octet-stream",
+                record_name=file_name if file_name else f"document.{ext}",
+                mime_type=effective_mime,
                 extension=ext,
-                is_file=True,
             )
 
             parser = FileContentParser(logger=logger, config_service=configuration_service)
@@ -888,6 +888,7 @@ class GoogleDrive:
                 model_name,
                 model_key,
                 configuration_service,
+                citations=LiveCitations(self.state),
             )
             serialized = [item.model_dump() for item in payload]
             if status:

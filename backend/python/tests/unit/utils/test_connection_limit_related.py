@@ -27,6 +27,7 @@ from app.utils.fetch_full_record import (
     _apply_live_ticket_context_metadata,
     _enrich_sql_table_with_fk_relations,
 )
+from tests.support.record_access import InMemoryRecordAccess
 
 OUTSIDE = "app.modules.retrieval.selection_scope.outside_connection"
 FILE_LIMIT = {"apps": [], "recordGroups": [], "records": ["hit"]}
@@ -163,7 +164,7 @@ def _links_graph() -> AsyncMock:
     graph.get_address_links_batch = AsyncMock(return_value={
         "hit": {"mentioned_in": ["slack-in", "slack-out"], "links_to": ["jira-out"]},
     })
-    graph.filter_accessible_record_ids = AsyncMock(side_effect=lambda ids, _u, _o: set(ids))
+    InMemoryRecordAccess().readable("u", "o", "slack-in", "slack-out", "jira-out").serve(graph)
     graph.get_records_by_record_ids = AsyncMock(side_effect=lambda ids, _o: [
         {"id": i, "recordName": f"name of {i}", "connectorName": "X"} for i in ids
     ])

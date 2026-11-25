@@ -1,0 +1,110 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/core/approval-rules.schema.json",
+  "title": "ApprovalRules",
+  "description": "One layer of a run's approval policy (P2.6c): a decision per effect class and per tool id; anything absent is allow. Layers only narrow one another (deny > ask > allow). `writes` is the one switch: it sets both write and execute. Never null: a layer says nothing about a class by omitting it. `flow` is the layer's flow rule (SEC1, per org since SEC2): an external write after the run read data above `above` is asked for or denied; the effective rule is the strictest of the deployment's and every layer's, and `off` never widens another layer.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [],
+  "properties": {
+    "writes": {
+      "$ref": "engine-profile.schema.json#/$defs/ApprovalLevel"
+    },
+    "classes": {
+      "$ref": "#/$defs/ClassRules"
+    },
+    "tools": {
+      "type": "object",
+      "maxProperties": 500,
+      "propertyNames": {
+        "minLength": 1,
+        "maxLength": 256,
+        "not": {
+          "const": "__proto__"
+        }
+      },
+      "additionalProperties": {
+        "$ref": "engine-profile.schema.json#/$defs/ApprovalLevel"
+      }
+    },
+    "flow": {
+      "$ref": "#/$defs/LayerFlow"
+    }
+  },
+  "$defs": {
+    "ClassRules": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [],
+      "properties": {
+        "read": {
+          "$ref": "engine-profile.schema.json#/$defs/ApprovalLevel"
+        },
+        "workspace": {
+          "$ref": "engine-profile.schema.json#/$defs/ApprovalLevel"
+        },
+        "write": {
+          "$ref": "engine-profile.schema.json#/$defs/ApprovalLevel"
+        },
+        "execute": {
+          "$ref": "engine-profile.schema.json#/$defs/ApprovalLevel"
+        }
+      }
+    },
+    "LayerFlow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "level"
+      ],
+      "description": "`level` for an external write once the run's context is above `above` (default `public`: any private or unknown source).",
+      "properties": {
+        "level": {
+          "$ref": "#/$defs/FlowLevel"
+        },
+        "above": {
+          "$ref": "#/$defs/FlowThreshold"
+        }
+      }
+    },
+    "FlowLevel": {
+      "description": "What an external write gets once the run's context is above the threshold: nothing (`off`), a question, or a refusal.",
+      "x-constant": "FLOW_LEVELS",
+      "enum": [
+        "off",
+        "ask",
+        "deny"
+      ]
+    },
+    "FlowThreshold": {
+      "description": "The context sensitivity above which the flow rule applies.",
+      "x-constant": "FLOW_THRESHOLDS",
+      "enum": [
+        "public",
+        "private"
+      ]
+    }
+  },
+  "examples": [
+    {},
+    {
+      "writes": "ask"
+    },
+    {
+      "classes": {
+        "read": "allow",
+        "execute": "deny"
+      },
+      "tools": {
+        "jira.create_issue": "deny"
+      }
+    },
+    {
+      "writes": "ask",
+      "flow": {
+        "level": "deny",
+        "above": "private"
+      }
+    }
+  ]
+}

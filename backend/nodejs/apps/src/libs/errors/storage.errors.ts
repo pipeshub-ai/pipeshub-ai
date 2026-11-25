@@ -2,13 +2,21 @@ import { BaseError, ErrorMetadata } from './base.error';
 
 // Base class for all storage-related errors
 export class StorageError extends BaseError {
+  /**
+   * The vendor's own words (they can quote buckets, paths, file names), from a provider wrap's
+   * `originalError`: for the admin's S3 settings check only. Never in metadata, so never logged.
+   */
+  public readonly vendorText?: string;
+
   constructor(
     code: string,
     message: string,
     statusCode = 500,
     metadata?: ErrorMetadata,
   ) {
-    super(`STORAGE_${code}`, message, statusCode, metadata);
+    const { originalError, ...rest } = metadata ?? {};
+    super(`STORAGE_${code}`, message, statusCode, metadata && rest);
+    if (typeof originalError === 'string') this.vendorText = originalError;
   }
 }
 

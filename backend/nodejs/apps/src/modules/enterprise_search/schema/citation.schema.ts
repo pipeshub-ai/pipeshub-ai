@@ -18,6 +18,13 @@ export interface ICitationMetadata {
   connector?: string;
   /** Connector instance the record came from; `connector` is only its kind. */
   connectorId?: string;
+  /**
+   * Set to `live` (P1b C-18) for a file a tool read straight from a connector:
+   * `recordId` is then a temporary id, never a record, and the item is
+   * `externalRecordId` in the `connector` kind's source system.
+   */
+  sourceKind?: string;
+  externalRecordId?: string;
   /** Name the connector instance had when the answer was written. */
   connectorInstanceName?: string;
   recordType?: string;
@@ -79,6 +86,8 @@ const citationMetadataSchema = new Schema<ICitationMetadata>({
   departments: [{ type: String }],
   connector: { type: String },
   connectorId: { type: String },
+  sourceKind: { type: String },
+  externalRecordId: { type: String },
   connectorInstanceName: { type: String },
   recordType: { type: String },
   orgId: { type: String, required: true },

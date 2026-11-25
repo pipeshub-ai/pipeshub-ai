@@ -158,11 +158,10 @@ export class PatService {
     )
 
     this.logger.info('Personal access token created', {
-      orgId,
-      userId,
-      name: request.name,
+      org_id: orgId,
+      user_id: userId,
       scopes,
-      expiryDays: request.expiryDays ?? DEFAULT_EXPIRY_DAYS,
+      expiry_days: request.expiryDays ?? DEFAULT_EXPIRY_DAYS,
     })
 
     return {
@@ -235,9 +234,9 @@ export class PatService {
     }
 
     this.logger.info('Personal access token revoked', {
-      orgId,
-      userId,
-      tokenId,
+      org_id: orgId,
+      user_id: userId,
+      pat_id: tokenId,
     })
   }
 
@@ -271,11 +270,11 @@ export class PatService {
     }
 
     this.logger.info('Personal access token knowledge limit changed', {
-      orgId,
-      userId,
-      tokenId,
+      org_id: orgId,
+      user_id: userId,
+      pat_id: tokenId,
       limited: knowledgeLimit !== null,
-      itemCount: knowledgeLimitSize(knowledgeLimit),
+      item_count: knowledgeLimitSize(knowledgeLimit),
     });
 
     return {
@@ -379,9 +378,9 @@ export class PatService {
     }
 
     this.logger.info('Personal access token revoked by admin', {
-      orgId,
-      adminUserId,
-      tokenId,
+      org_id: orgId,
+      user_id: adminUserId,
+      pat_id: tokenId,
     })
   }
 }

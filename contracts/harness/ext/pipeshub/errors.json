@@ -1,0 +1,1722 @@
+{
+  "description": "The harness wire codes Node answers with, without their AGENT_HARNESS_ prefix: its internal (worker, gateway) routes, and the public refusals the frontend and the worker key on (decision, memory and workspace groups; QA-7). R3 D18: Node's HarnessConflictCode and the Python journal client each kept a copy. Node's error types, the Python clients' classification and the frontend's refusal maps derive from this file.",
+  "wirePrefix": "AGENT_HARNESS_",
+  "codes": [
+    {
+      "code": "IDEMPOTENCY_CONFLICT",
+      "status": 409,
+      "retryable": false,
+      "group": "conflict",
+      "meaning": "The same idempotency key was used for a different command.",
+      "nextAction": {
+        "kind": "internal",
+        "text": "Nothing to do: the client sent two different requests under one key and must send the new one under a new key."
+      }
+    },
+    {
+      "code": "RUN_ACTIVE",
+      "status": 409,
+      "retryable": false,
+      "group": "conflict",
+      "meaning": "The session already has an active run.",
+      "nextAction": {
+        "kind": "wait_then_retry",
+        "text": "Wait for the agent to finish, or stop it, then send your message again."
+      }
+    },
+    {
+      "code": "RUN_ID_CONFLICT",
+      "status": 409,
+      "retryable": false,
+      "group": "conflict",
+      "meaning": "A run with this id exists with different content.",
+      "nextAction": {
+        "kind": "internal",
+        "text": "Nothing to do: the client reused a run id and must start the run under a new one."
+      }
+    },
+    {
+      "code": "RUN_NOT_CLAIMABLE",
+      "status": 409,
+      "retryable": false,
+      "group": "conflict",
+      "meaning": "The run cannot be claimed now (not queued, or leased by another attempt).",
+      "nextAction": {
+        "kind": "internal",
+        "text": "Nothing to do: another worker holds the run, or it is not waiting to start."
+      }
+    },
+    {
+      "code": "STALE_ATTEMPT",
+      "status": 409,
+      "retryable": false,
+      "group": "conflict",
+      "meaning": "The attempt no longer holds the run: a newer attempt or fence superseded it.",
+      "nextAction": {
+        "kind": "internal",
+        "text": "Nothing to do: a newer attempt carries the run on and this one stops."
+      }
+    },
+    {
+      "code": "REVISION_CONFLICT",
+      "status": 409,
+      "retryable": false,
+      "group": "conflict",
+      "meaning": "The run's revision moved since the caller read it.",
+      "nextAction": {
+        "kind": "reload",
+        "text": "Reload to see the latest version, then make your change again."
+      }
+    },
+    {
+      "code": "INVALID_TRANSITION",
+      "status": 409,
+      "retryable": false,
+      "group": "conflict",
+      "meaning": "The requested status transition is not allowed from the run's state.",
+      "nextAction": {
+        "kind": "internal",
+        "text": "Nothing to do: the run already moved on, so the step that asked is dropped."
+      }
+    },
+    {
+      "code": "DEADLINE_EXCEEDED",
+      "status": 409,
+      "retryable": false,
+      "group": "conflict",
+      "meaning": "The run's deadline passed.",
+      "nextAction": {
+        "kind": "retry",
+        "text": "The run took too long and stopped. Send your message again to try once more."
+      }
+    },
+    {
+      "code": "INVALID_COMMIT",
+      "status": 409,
+      "retryable": false,
+      "group": "conflict",
+      "meaning": "A commit the run's state cannot accept.",
+      "nextAction": {
+        "kind": "internal",
+        "text": "Nothing to do: the worker stops this attempt and the run is retried or failed."
+      }
+    },
+    {
+      "code": "WORKSPACE_CONFLICT",
+      "status": 409,
+      "retryable": false,
+      "group": "conflict",
+      "meaning": "A workspace commit was based on a revision that is no longer the head.",
+      "nextAction": {
+        "kind": "retry",
+        "text": "Someone changed the files at the same time. Try again to work on the latest version."
+      }
+    },
+    {
+      "code": "SPEC_UNRESOLVABLE",
+      "status": 409,
+      "retryable": false,
+      "group": "conflict",
+      "meaning": "The run's pinned spec cannot be resolved.",
+      "nextAction": {
+        "kind": "ask_admin",
+        "text": "This run's settings can no longer be loaded. Start the task again; if it keeps happening, ask your admin."
+      }
+    },
+    {
+      "code": "SPEC_UNSUPPORTED",
+      "status": 409,
+      "retryable": false,
+      "group": "conflict",
+      "meaning": "The run's spec needs something this deployment does not support.",
+      "nextAction": {
+        "kind": "ask_admin",
+        "text": "This server cannot run what the task needs. Ask your admin to check the deployment."
+      }
+    },
+    {
+      "code": "SPEC_NOT_PINNED",
+      "status": 409,
+      "retryable": false,
+      "group": "conflict",
+      "meaning": "The run has no pinned spec.",
+      "nextAction": {
+        "kind": "internal",
+        "text": "Nothing to do: the worker waits for the run's settings to be pinned."
+      }
+    },
+    {
+      "code": "INTERACTION_NOT_OPEN",
+      "status": 409,
+      "retryable": false,
+      "group": "conflict",
+      "meaning": "The interaction is not open.",
+      "nextAction": {
+        "kind": "reload",
+        "text": "This request was already answered or closed. Reload the conversation to see where it stands."
+      }
+    },
+    {
+      "code": "CONVERSATION_GRANT_NOT_OFFERED",
+      "status": 409,
+      "retryable": false,
+      "group": "conflict",
+      "meaning": "\"Allow for this conversation\" on a call the worker did not offer it for (UX1).",
+      "nextAction": {
+        "kind": "change_request",
+        "text": "Choose Allow once or Deny for this action; allowing it for the whole conversation is not offered here."
+      }
+    },
+    {
+      "code": "EDIT_NOT_OFFERED",
+      "status": 409,
+      "retryable": false,
+      "group": "conflict",
+      "meaning": "An approval with edited arguments on a call the worker did not offer editing for (AP-06).",
+      "nextAction": {
+        "kind": "change_request",
+        "text": "This action can only be approved as it is. Choose Allow once or Deny."
+      }
+    },
+    {
+      "code": "EDIT_HAS_SECRET",
+      "status": 422,
+      "retryable": false,
+      "group": "conflict",
+      "meaning": "Edited arguments in which the shared pasted-input rules find a secret (SEC-CR-07, AP-06): nothing is decided and nothing journaled; the secret is never masked silently into what the call sends.",
+      "nextAction": {
+        "kind": "change_request",
+        "text": "Your change looks like it has a password, key or token in it. Take it out and save it as a credential on your Actions page instead."
+      }
+    },
+    {
+      "code": "INTERACTION_RESOLVED",
+      "status": 409,
+      "retryable": false,
+      "group": "conflict",
+      "meaning": "A suspend for approval while nothing is left open: a decision landed during the hold (P2.6c).",
+      "nextAction": {
+        "kind": "internal",
+        "text": "Nothing to do: a decision arrived while the run paused, so it carries on."
+      }
+    },
+    {
+      "code": "RUN_CANCELLING",
+      "status": 409,
+      "retryable": false,
+      "group": "conflict",
+      "meaning": "A decision on a run being cancelled: cancel wins (P2.6c).",
+      "nextAction": {
+        "kind": "none",
+        "text": "Nothing to do: the task is being stopped, so this answer is no longer needed."
+      }
+    },
+    {
+      "code": "RUN_ENDED",
+      "status": 410,
+      "retryable": false,
+      "group": "conflict",
+      "meaning": "A decision on an interaction nobody decided, of a run that has ended: there is nothing left to approve (DECIDE409).",
+      "nextAction": {
+        "kind": "none",
+        "text": "Nothing to do: the task already ended, so there is nothing left to approve."
+      }
+    },
+    {
+      "code": "BATCH_PATTERN_MISMATCH",
+      "status": 409,
+      "retryable": false,
+      "group": "conflict",
+      "meaning": "A batch decision across sessions names a call its run never asked, one decided only on its own card, or one that differs from the others in tool, arguments or destination (G-13, GA-08). Nothing was decided.",
+      "nextAction": {
+        "kind": "reload",
+        "text": "These requests are not all the same. Reload the inbox and decide them again."
+      }
+    },
+    {
+      "code": "INPUT_PENDING",
+      "status": 409,
+      "retryable": false,
+      "group": "conflict",
+      "meaning": "A completion while the user has queued input the run has not taken (T2).",
+      "nextAction": {
+        "kind": "internal",
+        "text": "Nothing to do: the run takes the message you sent before it finishes."
+      }
+    },
+    {
+      "code": "RUN_NOT_ACTIVE",
+      "status": 409,
+      "retryable": false,
+      "group": "conflict",
+      "meaning": "A message meant for the running task found none running (T2).",
+      "nextAction": {
+        "kind": "retry",
+        "text": "The task already finished. Send your message again as a new turn."
+      }
+    },
+    {
+      "code": "NOTHING_TO_COMPACT",
+      "status": 409,
+      "retryable": false,
+      "group": "conflict",
+      "meaning": "/compact named a conversation no new-harness run was ever admitted in: there is no context to compact (SLASH2 C2).",
+      "nextAction": {
+        "kind": "none",
+        "text": "Nothing to do: this conversation has no agent history to compact yet."
+      }
+    },
+    {
+      "code": "REGENERATE_NOT_LAST",
+      "status": 409,
+      "retryable": false,
+      "group": "conflict",
+      "meaning": "Regenerate named something other than the conversation's last answer (UX3).",
+      "nextAction": {
+        "kind": "reload",
+        "text": "Only the latest answer can be regenerated. Reload the conversation and try again."
+      }
+    },
+    {
+      "code": "SESSION_HISTORY_TOO_LARGE",
+      "status": 409,
+      "retryable": false,
+      "group": "conflict",
+      "meaning": "The conversation's history does not fit the content a run may import (T3).",
+      "nextAction": {
+        "kind": "new_conversation",
+        "text": "This conversation is too long to continue. Start a new chat to keep going."
+      }
+    },
+    {
+      "code": "WORKER_INCOMPATIBLE",
+      "status": 409,
+      "retryable": false,
+      "group": "conflict",
+      "meaning": "The claiming worker cannot run this run; it waits for one that can (RU-2).",
+      "nextAction": {
+        "kind": "internal",
+        "text": "Nothing to do: the run waits for a worker that can run it."
+      }
+    },
+    {
+      "code": "RUN_NOT_LEASED",
+      "status": 409,
+      "retryable": false,
+      "group": "conflict",
+      "meaning": "A gateway token was asked for an attempt that no longer holds the run's lease (E2).",
+      "nextAction": {
+        "kind": "internal",
+        "text": "Nothing to do: the attempt lost the run, so its tools are refused and it stops."
+      }
+    },
+    {
+      "code": "GRANT_NOT_PINNED",
+      "status": 409,
+      "retryable": false,
+      "group": "conflict",
+      "meaning": "A gateway token binds a pinned grant; this run has none (a v1 run) (E2).",
+      "nextAction": {
+        "kind": "internal",
+        "text": "Nothing to do: an older run has no pinned grant, so it uses its own tools only."
+      }
+    },
+    {
+      "code": "CHILDREN_NOT_GRANTED",
+      "status": 409,
+      "retryable": false,
+      "group": "conflict",
+      "meaning": "Child admission (P6.1/P6.3): the run's spec grants no child runs.",
+      "nextAction": {
+        "kind": "internal",
+        "text": "Nothing to do: the agent is told it cannot hand work to sub-agents and carries on itself."
+      }
+    },
+    {
+      "code": "CHILD_OPERATOR_STOPPED",
+      "status": 409,
+      "retryable": false,
+      "group": "conflict",
+      "meaning": "An operator control (ADR-OPS-01) covers the child the run asked for: its conversation, agent or org is stopped, or its engine version is stopped or retired; nothing was started.",
+      "nextAction": {
+        "kind": "ask_admin",
+        "text": "Your admin stopped this kind of work for now. Ask your admin."
+      }
+    },
+    {
+      "code": "CHILD_LIMIT_REACHED",
+      "status": 409,
+      "retryable": false,
+      "group": "conflict",
+      "meaning": "The run admitted as many children as `budgets.maxChildren` allows.",
+      "nextAction": {
+        "kind": "internal",
+        "text": "Nothing to do: the agent is told it started as many sub-agents as it may and carries on itself."
+      }
+    },
+    {
+      "code": "CHILD_GRANT_TOO_LARGE",
+      "status": 409,
+      "retryable": false,
+      "group": "conflict",
+      "meaning": "The child asked for more than its parent holds in one grant dimension.",
+      "nextAction": {
+        "kind": "internal",
+        "text": "Nothing to do: the agent is told to ask a sub-agent for less than it holds itself."
+      }
+    },
+    {
+      "code": "CHILD_DEPTH_EXCEEDED",
+      "status": 409,
+      "retryable": false,
+      "group": "conflict",
+      "meaning": "A child at the deepest level may not delegate further.",
+      "nextAction": {
+        "kind": "internal",
+        "text": "Nothing to do: the agent is told a sub-agent this deep cannot delegate further."
+      }
+    },
+    {
+      "code": "CHILD_BUDGET_EXCEEDS_REMAINING",
+      "status": 409,
+      "retryable": false,
+      "group": "conflict",
+      "meaning": "A child's budget is more than its parent has left (P6.5): its share, or nothing left to draw on.",
+      "nextAction": {
+        "kind": "ask_admin",
+        "text": "Not enough budget was left to start this sub-task. Ask your admin to raise the spending limit."
+      }
+    },
+    {
+      "code": "BUDGET_EXHAUSTED",
+      "status": 409,
+      "retryable": false,
+      "group": "budget",
+      "meaning": "Budget ledger (P6.5): the account has nothing left.",
+      "nextAction": {
+        "kind": "ask_admin",
+        "text": "The spending limit is used up. Ask your admin to raise it, then send your message again."
+      }
+    },
+    {
+      "code": "BUDGET_INSUFFICIENT",
+      "status": 409,
+      "retryable": false,
+      "group": "budget",
+      "meaning": "Budget ledger: the account has less than the reservation asks.",
+      "nextAction": {
+        "kind": "ask_admin",
+        "text": "Too little budget is left for the next step. Ask your admin to raise the spending limit, then try again."
+      }
+    },
+    {
+      "code": "BUDGET_ACCOUNT_MISSING",
+      "status": 409,
+      "retryable": false,
+      "group": "budget",
+      "meaning": "Budget ledger: the run's account does not exist.",
+      "nextAction": {
+        "kind": "ask_admin",
+        "text": "This run has no spending account set up. Ask your admin to check the budget settings."
+      }
+    },
+    {
+      "code": "BUDGET_ACCOUNT_CLOSED",
+      "status": 409,
+      "retryable": false,
+      "group": "budget",
+      "meaning": "Budget ledger: the run's account is closed.",
+      "nextAction": {
+        "kind": "ask_admin",
+        "text": "This run's spending account is closed. Ask your admin to reopen it or set a new limit."
+      }
+    },
+    {
+      "code": "BUDGET_RESERVATION_MISSING",
+      "status": 409,
+      "retryable": false,
+      "group": "budget",
+      "meaning": "Budget ledger: the reservation does not exist.",
+      "nextAction": {
+        "kind": "internal",
+        "text": "Nothing to do: the worker reserves its budget again before the next step."
+      }
+    },
+    {
+      "code": "BUDGET_RESERVATION_SETTLED",
+      "status": 409,
+      "retryable": false,
+      "group": "budget",
+      "meaning": "Budget ledger: the reservation was already committed or released.",
+      "nextAction": {
+        "kind": "internal",
+        "text": "Nothing to do: the reservation was already settled, so nothing is charged twice."
+      }
+    },
+    {
+      "code": "BUDGET_SHARE_EXCEEDS_REMAINING",
+      "status": 409,
+      "retryable": false,
+      "group": "budget",
+      "meaning": "Budget ledger: a child's share is more than the parent has left.",
+      "nextAction": {
+        "kind": "internal",
+        "text": "Nothing to do: the agent is told to give a sub-agent no more than it has left."
+      }
+    },
+    {
+      "code": "JOIN_READY",
+      "status": 409,
+      "retryable": false,
+      "group": "conflict",
+      "meaning": "A `join` suspension when every child already ended: fold and go on.",
+      "nextAction": {
+        "kind": "internal",
+        "text": "Nothing to do: every sub-agent already finished, so the run carries on at once."
+      }
+    },
+    {
+      "code": "INPUT_ARTIFACTS_REQUIRE_ENGINE",
+      "status": 409,
+      "retryable": false,
+      "group": "conflict",
+      "meaning": "Input artifacts named for a run no engine executes: the loop would drop them (E1b).",
+      "nextAction": {
+        "kind": "change_request",
+        "text": "Attached files need an agent with a coding engine. Pick such an agent, or ask without the files."
+      }
+    },
+    {
+      "code": "ENGINE_UNAVAILABLE",
+      "status": 409,
+      "retryable": false,
+      "group": "conflict",
+      "meaning": "The run's engine has no image the sandbox broker can find or pull (H1; E9 availability).",
+      "nextAction": {
+        "kind": "ask_admin",
+        "text": "This agent's coding engine cannot run on this server right now. Ask your admin."
+      }
+    },
+    {
+      "code": "ENGINE_OFF",
+      "status": 409,
+      "retryable": false,
+      "group": "conflict",
+      "meaning": "WP-111 ENGINEOFF: the coding engine a run was pinned to is turned off for the org now (the engine profile ceiling's engines) or for the actor's groups (G-41); a code_task child is not admitted and an engine run is not claimed, so no new engine session starts.",
+      "nextAction": {
+        "kind": "ask_admin",
+        "text": "Your admin turned this coding engine off. Ask your admin to turn it back on, or choose another coding engine."
+      }
+    },
+    {
+      "code": "RUN_PLACEMENT_REFUSED",
+      "status": 409,
+      "retryable": false,
+      "group": "conflict",
+      "meaning": "The org's runs may not be placed on this deployment, or on this worker (OWD-12): the run placement bound to the deployment refused it at admission, or the run was placed for another worker; nothing was started or stored.",
+      "nextAction": {
+        "kind": "ask_admin",
+        "text": "This agent can't run on this server for your organization. Ask your admin."
+      }
+    },
+    {
+      "code": "ENGINE_ISOLATION_UNAVAILABLE",
+      "status": 409,
+      "retryable": false,
+      "group": "conflict",
+      "meaning": "The run's engine needs a sandbox runtime this server does not offer: gVisor (runsc) on a production install (policy/release.json engineIsolation); an admin installs it.",
+      "nextAction": {
+        "kind": "ask_admin",
+        "text": "Coding engines need a sandbox runtime this server does not have. Ask your admin to install it."
+      }
+    },
+    {
+      "code": "ENGINE_SANDBOX_MISSING",
+      "status": 409,
+      "retryable": false,
+      "group": "conflict",
+      "meaning": "Coding engines need the engine sandbox add-on (the egress proxy their gateways are reached through; agent-sandbox on Kubernetes, P5.3), which this deployment does not have: Helm today (recs2).",
+      "nextAction": {
+        "kind": "ask_admin",
+        "text": "Coding engines need the sandbox add-on, which is not installed here. Ask your admin."
+      }
+    },
+    {
+      "code": "REPOSITORY_NEEDS_ENGINE",
+      "status": 409,
+      "retryable": false,
+      "group": "conflict",
+      "meaning": "A chat works on a repository only through a coding engine (GIT-FLOW, WP-26): the chat, the person and the org chose none, so nothing would clone or push it.",
+      "nextAction": {
+        "kind": "change_request",
+        "text": "Pick a coding engine for this chat first, then choose the repository."
+      }
+    },
+    {
+      "code": "REPOSITORY_TOOLSET_MISSING",
+      "status": 409,
+      "retryable": false,
+      "group": "conflict",
+      "meaning": "The GitHub toolset instance a repository names is not one the person can use, or it has no sign-in (checked against the toolset store, never trusted from the client).",
+      "nextAction": {
+        "kind": "reconnect",
+        "text": "Connect GitHub under Your actions, then choose the repository again."
+      }
+    },
+    {
+      "code": "REPOSITORY_NOT_GITHUB",
+      "status": 400,
+      "retryable": false,
+      "group": "conflict",
+      "meaning": "A chat's repository is a GitHub repository's https URL (https://github.com/owner/name) in v1; any other host or shape is refused.",
+      "nextAction": {
+        "kind": "change_request",
+        "text": "Choose a GitHub repository."
+      }
+    },
+    {
+      "code": "REPOSITORY_LOCKED",
+      "status": 409,
+      "retryable": false,
+      "group": "conflict",
+      "meaning": "The chat's workspace already holds a copy of its repository, so the chat cannot change or drop it: another repository needs a new chat.",
+      "nextAction": {
+        "kind": "new_conversation",
+        "text": "Start a new chat to work on another repository."
+      }
+    },
+    {
+      "code": "GATES_NEED_RUNTIME",
+      "status": 409,
+      "retryable": false,
+      "group": "conflict",
+      "meaning": "The turn would be served by today's loop, which holds no run gates, but it answers a run held to gates (a dry run, plan approval or checks) or runs an agent whose safety settings set them (WP-64). Refused, never run ungated.",
+      "nextAction": {
+        "kind": "ask_admin",
+        "text": "This agent's safety settings need the agent runtime, which is turned off for this workspace. Ask an admin to turn it on."
+      }
+    },
+    {
+      "code": "JOURNAL_UNKNOWN_EVENT_TYPE",
+      "status": 422,
+      "retryable": false,
+      "group": "journal_rejected",
+      "meaning": "An appended event's type is in no catalog. Nothing in the batch was written.",
+      "nextAction": {
+        "kind": "internal",
+        "text": "Nothing to do: the worker's write is refused whole and the run is retried or failed."
+      }
+    },
+    {
+      "code": "JOURNAL_WRITER_NOT_ALLOWED",
+      "status": 422,
+      "retryable": false,
+      "group": "journal_rejected",
+      "meaning": "The writer may not append this event type. Nothing in the batch was written.",
+      "nextAction": {
+        "kind": "internal",
+        "text": "Nothing to do: the worker's write is refused whole and the run is retried or failed."
+      }
+    },
+    {
+      "code": "JOURNAL_VISIBILITY_NOT_ALLOWED",
+      "status": 422,
+      "retryable": false,
+      "group": "journal_rejected",
+      "meaning": "The event's visibility is not allowed for its type. Nothing in the batch was written.",
+      "nextAction": {
+        "kind": "internal",
+        "text": "Nothing to do: the worker's write is refused whole and the run is retried or failed."
+      }
+    },
+    {
+      "code": "JOURNAL_INVALID_EVENT",
+      "status": 422,
+      "retryable": false,
+      "group": "journal_rejected",
+      "meaning": "An appended event does not validate against its schema. Nothing in the batch was written.",
+      "nextAction": {
+        "kind": "internal",
+        "text": "Nothing to do: the worker's write is refused whole and the run is retried or failed."
+      }
+    },
+    {
+      "code": "JOURNAL_PAYLOAD_MISSING",
+      "status": 409,
+      "retryable": false,
+      "group": "journal_payload",
+      "meaning": "A claim-checked payload is gone or does not match its hash; the run was failed and the worker stops.",
+      "nextAction": {
+        "kind": "internal",
+        "text": "Nothing to do: the run is failed and its chat says so with its own next step."
+      }
+    },
+    {
+      "code": "SESSION_ERASED",
+      "status": 410,
+      "retryable": false,
+      "group": "session_erased",
+      "meaning": "The session was erased (E7); what was asked for is gone on purpose.",
+      "nextAction": {
+        "kind": "new_conversation",
+        "text": "This conversation was deleted on purpose. Start a new chat to keep going."
+      }
+    },
+    {
+      "code": "CONVERSATION_DELETED",
+      "status": 410,
+      "retryable": false,
+      "group": "session_erased",
+      "meaning": "The run's conversation was deleted while it ran; its transcript has nowhere to go and the run stops (QA21-F4).",
+      "nextAction": {
+        "kind": "new_conversation",
+        "text": "The conversation was deleted while the agent worked. Start a new chat to ask again."
+      }
+    },
+    {
+      "code": "CONTENT_TOO_LARGE",
+      "status": 413,
+      "retryable": false,
+      "group": "content",
+      "meaning": "Run content larger than a run may store.",
+      "nextAction": {
+        "kind": "change_request",
+        "text": "What was sent is larger than a run may keep. Send a smaller file or a shorter message."
+      }
+    },
+    {
+      "code": "CONTENT_MEDIA_TYPE",
+      "status": 415,
+      "retryable": false,
+      "group": "content",
+      "meaning": "Run content not sent as application/octet-stream.",
+      "nextAction": {
+        "kind": "internal",
+        "text": "Nothing to do: the client must upload run content as raw bytes."
+      }
+    },
+    {
+      "code": "WORKER_CREDENTIAL",
+      "status": 401,
+      "retryable": false,
+      "group": "attempt_authority",
+      "meaning": "The worker credential was refused.",
+      "nextAction": {
+        "kind": "internal",
+        "text": "Nothing to do: the worker's call is refused and an operator checks the worker's credentials."
+      }
+    },
+    {
+      "code": "ATTEMPT_MALFORMED",
+      "status": 401,
+      "retryable": false,
+      "group": "attempt_authority",
+      "meaning": "The attempt token was refused: malformed.",
+      "nextAction": {
+        "kind": "internal",
+        "text": "Nothing to do: the worker's call is refused and an operator checks the worker's credentials."
+      }
+    },
+    {
+      "code": "ATTEMPT_ALGORITHM",
+      "status": 401,
+      "retryable": false,
+      "group": "attempt_authority",
+      "meaning": "The attempt token was refused: algorithm.",
+      "nextAction": {
+        "kind": "internal",
+        "text": "Nothing to do: the worker's call is refused and an operator checks the worker's credentials."
+      }
+    },
+    {
+      "code": "ATTEMPT_UNKNOWN_KEY",
+      "status": 401,
+      "retryable": false,
+      "group": "attempt_authority",
+      "meaning": "The attempt token was refused: unknown key.",
+      "nextAction": {
+        "kind": "internal",
+        "text": "Nothing to do: the worker's call is refused and an operator checks the worker's credentials."
+      }
+    },
+    {
+      "code": "ATTEMPT_SIGNATURE",
+      "status": 401,
+      "retryable": false,
+      "group": "attempt_authority",
+      "meaning": "The attempt token was refused: signature.",
+      "nextAction": {
+        "kind": "internal",
+        "text": "Nothing to do: the worker's call is refused and an operator checks the worker's credentials."
+      }
+    },
+    {
+      "code": "ATTEMPT_ISSUER",
+      "status": 401,
+      "retryable": false,
+      "group": "attempt_authority",
+      "meaning": "The attempt token was refused: issuer.",
+      "nextAction": {
+        "kind": "internal",
+        "text": "Nothing to do: the worker's call is refused and an operator checks the worker's credentials."
+      }
+    },
+    {
+      "code": "ATTEMPT_AUDIENCE",
+      "status": 401,
+      "retryable": false,
+      "group": "attempt_authority",
+      "meaning": "The attempt token was refused: audience.",
+      "nextAction": {
+        "kind": "internal",
+        "text": "Nothing to do: the worker's call is refused and an operator checks the worker's credentials."
+      }
+    },
+    {
+      "code": "ATTEMPT_EXPIRED",
+      "status": 401,
+      "retryable": false,
+      "group": "attempt_authority",
+      "meaning": "The attempt token was refused: expired.",
+      "nextAction": {
+        "kind": "internal",
+        "text": "Nothing to do: the worker asks for a fresh token and calls again."
+      }
+    },
+    {
+      "code": "ATTEMPT_CLAIMS",
+      "status": 401,
+      "retryable": false,
+      "group": "attempt_authority",
+      "meaning": "The attempt token was refused: claims.",
+      "nextAction": {
+        "kind": "internal",
+        "text": "Nothing to do: the worker's call is refused and an operator checks the worker's credentials."
+      }
+    },
+    {
+      "code": "ATTEMPT_SUPERSEDED",
+      "status": 401,
+      "retryable": false,
+      "group": "attempt_authority",
+      "meaning": "The attempt token was refused: superseded.",
+      "nextAction": {
+        "kind": "internal",
+        "text": "Nothing to do: a newer attempt carries the run on and this one stops."
+      }
+    },
+    {
+      "code": "APPROVER_REQUIRED",
+      "status": 403,
+      "retryable": false,
+      "group": "decision",
+      "meaning": "Only the person this run acts for may approve this interaction.",
+      "nextAction": {
+        "kind": "ask_admin",
+        "text": "Only the person this run acts for can approve this. Ask them, or your admin."
+      }
+    },
+    {
+      "code": "NOT_ALLOWED_TO_DECIDE",
+      "status": 403,
+      "retryable": false,
+      "group": "decision",
+      "meaning": "The person may not decide on this run's interactions.",
+      "nextAction": {
+        "kind": "ask_owner",
+        "text": "You cannot decide on this task. Ask the person who started it."
+      }
+    },
+    {
+      "code": "CONNECT_OWNER_REQUIRED",
+      "status": 403,
+      "retryable": false,
+      "group": "decision",
+      "meaning": "Saying an item is connected for a run that waits on it (G-12) is the run's actor's: the credential is theirs. Anyone who may deny may still decline it.",
+      "nextAction": {
+        "kind": "ask_owner",
+        "text": "Only the person who started it can connect this. Ask them to connect it, or decline it."
+      }
+    },
+    {
+      "code": "OPERATOR_REQUIRED",
+      "status": 403,
+      "retryable": false,
+      "group": "decision",
+      "meaning": "An effect that may have happened is not re-called from the conversation (P2.9): the person says whether it happened.",
+      "nextAction": {
+        "kind": "change_request",
+        "text": "This action may already have happened, so it is not retried from here. Confirm whether it happened."
+      }
+    },
+    {
+      "code": "DECISION_NOT_APPLICABLE",
+      "status": 403,
+      "retryable": false,
+      "group": "decision",
+      "meaning": "\"It happened\" answers only an unknown effect.",
+      "nextAction": {
+        "kind": "reload",
+        "text": "That answer does not fit this request. Reload the conversation and answer what it asks now."
+      }
+    },
+    {
+      "code": "EDIT_NOT_ALLOWED",
+      "status": 403,
+      "retryable": false,
+      "group": "decision",
+      "meaning": "Only the person the run acts for may edit a call's arguments before approving it (AP-06); an approver approves or denies it as asked.",
+      "nextAction": {
+        "kind": "ask_owner",
+        "text": "Only the person who started it can change what it sends. Approve or deny it as it is, or ask the person who started it."
+      }
+    },
+    {
+      "code": "MEMORY_NOT_FOUND",
+      "status": 404,
+      "retryable": false,
+      "group": "memory",
+      "meaning": "The memory does not exist for this person (P7.3).",
+      "nextAction": {
+        "kind": "reload",
+        "text": "This memory no longer exists. Reload your memories to see the current list."
+      }
+    },
+    {
+      "code": "MEMORY_INVALID",
+      "status": 400,
+      "retryable": false,
+      "group": "memory",
+      "meaning": "The memory's content or scope is not one the policy accepts.",
+      "nextAction": {
+        "kind": "change_request",
+        "text": "Your organization's rules do not accept this memory. Change its text or scope and save again."
+      }
+    },
+    {
+      "code": "MEMORY_WRITE_NOT_GRANTED",
+      "status": 403,
+      "retryable": false,
+      "group": "memory",
+      "meaning": "The run's pin grants no memory writes in this scope.",
+      "nextAction": {
+        "kind": "internal",
+        "text": "Nothing to do: the agent is told it may not save memories here and carries on."
+      }
+    },
+    {
+      "code": "MEMORY_LIMIT",
+      "status": 429,
+      "retryable": false,
+      "group": "memory",
+      "meaning": "A run keeps at most its share of memories.",
+      "nextAction": {
+        "kind": "change_request",
+        "text": "This task saved as many memories as it may. Remove some memories you no longer need."
+      }
+    },
+    {
+      "code": "MEMORY_REPLACE_UNKNOWN",
+      "status": 400,
+      "retryable": false,
+      "group": "memory",
+      "meaning": "A proposal replaces a memory the run was not given in that scope (FIX-R2 C2).",
+      "nextAction": {
+        "kind": "internal",
+        "text": "Nothing to do: the agent is told it can only replace memories it was given."
+      }
+    },
+    {
+      "code": "MEMORY_NOT_REVIEWABLE",
+      "status": 409,
+      "retryable": false,
+      "group": "memory",
+      "meaning": "The memory is not pending review.",
+      "nextAction": {
+        "kind": "reload",
+        "text": "This memory was already reviewed. Reload to see its current state."
+      }
+    },
+    {
+      "code": "MEMORY_POLICY_INVALID",
+      "status": 400,
+      "retryable": false,
+      "group": "memory",
+      "meaning": "The org's memory policy does not validate.",
+      "nextAction": {
+        "kind": "change_request",
+        "text": "The memory settings are not valid. Fix the fields shown and save again."
+      }
+    },
+    {
+      "code": "WORKSPACE_REVISION_NOT_FOUND",
+      "status": 404,
+      "retryable": false,
+      "group": "workspace",
+      "meaning": "The workspace has no such revision.",
+      "nextAction": {
+        "kind": "reload",
+        "text": "That version of the files no longer exists. Reload to see the versions you can open."
+      }
+    },
+    {
+      "code": "WORKSPACE_FORK_CONFLICT",
+      "status": 409,
+      "retryable": false,
+      "group": "workspace",
+      "meaning": "A fork's merge conflicts with its parent's head.",
+      "nextAction": {
+        "kind": "change_request",
+        "text": "Your copy and the original changed the same files. Pick which version to keep, then merge again."
+      }
+    },
+    {
+      "code": "WORKSPACE_NOT_A_FORK",
+      "status": 409,
+      "retryable": false,
+      "group": "workspace",
+      "meaning": "The workspace is not a fork.",
+      "nextAction": {
+        "kind": "reload",
+        "text": "These files are not a copy of another conversation's, so there is nothing to merge. Reload to see where they stand."
+      }
+    },
+    {
+      "code": "WORKSPACE_FORBIDDEN",
+      "status": 403,
+      "retryable": false,
+      "group": "workspace",
+      "meaning": "The run may not reach this workspace.",
+      "nextAction": {
+        "kind": "ask_owner",
+        "text": "You cannot reach these files. Ask the conversation's owner to share it with you."
+      }
+    },
+    {
+      "code": "WORKSPACE_INVALID_CHANGE",
+      "status": 422,
+      "retryable": false,
+      "group": "workspace",
+      "meaning": "The change set does not validate.",
+      "nextAction": {
+        "kind": "change_request",
+        "text": "This change cannot be applied as it is. Fix the file names or content and try again."
+      }
+    },
+    {
+      "code": "WORKSPACE_TOO_LARGE",
+      "status": 413,
+      "retryable": false,
+      "group": "workspace",
+      "meaning": "The workspace would exceed its file or byte limit.",
+      "nextAction": {
+        "kind": "change_request",
+        "text": "The files would go over their size limit. Remove some files, or upload smaller ones."
+      }
+    },
+    {
+      "code": "WORKSPACE_KEY_DESTROYED",
+      "status": 410,
+      "retryable": false,
+      "group": "workspace",
+      "meaning": "The session's workspace key was destroyed (erasure).",
+      "nextAction": {
+        "kind": "new_conversation",
+        "text": "These files were erased with their conversation. Start a new chat to begin again."
+      }
+    },
+    {
+      "code": "WORKSPACE_WRITER_BUSY",
+      "status": 409,
+      "retryable": true,
+      "group": "workspace",
+      "meaning": "A task is writing to the workspace; try again when it is done.",
+      "nextAction": {
+        "kind": "wait_then_retry",
+        "text": "A task is changing these files now. Wait until it is done, then try again."
+      }
+    },
+    {
+      "code": "WORKSPACE_PATH_NOT_FOUND",
+      "status": 404,
+      "retryable": false,
+      "group": "workspace",
+      "meaning": "The workspace revision has no file or folder at this path (SLASH3 `/open`, `/download`).",
+      "nextAction": {
+        "kind": "change_request",
+        "text": "No file or folder has that name here. Check the path and try again."
+      }
+    },
+    {
+      "code": "WORKSPACE_PATH_EXISTS",
+      "status": 409,
+      "retryable": false,
+      "group": "workspace",
+      "meaning": "An upload would replace files the person did not confirm replacing (SLASH3 `/upload`).",
+      "nextAction": {
+        "kind": "change_request",
+        "text": "Files with these names already exist. Confirm you want to replace them, or rename yours."
+      }
+    },
+    {
+      "code": "QUOTA_EXCEEDED",
+      "status": 429,
+      "retryable": true,
+      "group": "quota",
+      "meaning": "The org's or the user's run quota is used up for now; retry after `retryAfter` seconds.",
+      "nextAction": {
+        "kind": "wait_then_retry",
+        "text": "You sent a lot in a short time. Wait a minute, then send again."
+      }
+    },
+    {
+      "code": "RUN_CONFIG_UNAVAILABLE",
+      "status": 503,
+      "retryable": true,
+      "group": "run_config",
+      "meaning": "The run's configuration could not be resolved (`CONTROL_PLANE_PIN=on` while a store the pin reads is unreachable); nothing was started and no other path answers. Retry: it clears when the store returns.",
+      "nextAction": {
+        "kind": "wait_then_retry",
+        "text": "Your organization's settings could not be loaded, so nothing started. Wait a moment, then send again."
+      }
+    },
+    {
+      "code": "VIEWER_READ_ONLY",
+      "status": 403,
+      "retryable": false,
+      "group": "turn",
+      "meaning": "The person views this shared conversation and may not send turns in it.",
+      "nextAction": {
+        "kind": "new_conversation",
+        "text": "This conversation was shared with you to read. Use Continue privately or start a new chat to ask."
+      }
+    },
+    {
+      "code": "COLLABORATOR_TURNS_DISABLED",
+      "status": 403,
+      "retryable": false,
+      "group": "turn",
+      "meaning": "The conversation's owner has not allowed collaborators to send turns.",
+      "nextAction": {
+        "kind": "new_conversation",
+        "text": "People this conversation is shared with cannot send messages in it. Use Continue privately to ask in your own copy."
+      }
+    },
+    {
+      "code": "SHARED_SESSION_ENGINE",
+      "status": 403,
+      "retryable": false,
+      "group": "turn",
+      "meaning": "An engine agent's conversation takes turns from its owner only.",
+      "nextAction": {
+        "kind": "new_conversation",
+        "text": "Only the owner can message this coding agent. Use Continue privately or start a new chat to ask."
+      }
+    },
+    {
+      "code": "VENDOR_RULES_INVALID",
+      "status": 503,
+      "retryable": false,
+      "group": "model_access",
+      "meaning": "The deployment's signed vendor rules are missing or do not verify; no model route can be decided.",
+      "nextAction": {
+        "kind": "ask_admin",
+        "text": "No AI model can be used until this server's model rules are fixed. Ask your admin."
+      }
+    },
+    {
+      "code": "VENDOR_RULE_MISSING",
+      "status": 403,
+      "retryable": false,
+      "group": "model_access",
+      "meaning": "No vendor rule covers this model route.",
+      "nextAction": {
+        "kind": "change_request",
+        "text": "This model is not available here. Pick another model, or ask your admin."
+      }
+    },
+    {
+      "code": "VENDOR_PROHIBITED",
+      "status": 403,
+      "retryable": false,
+      "group": "model_access",
+      "meaning": "The vendor's rules forbid this model route.",
+      "nextAction": {
+        "kind": "change_request",
+        "text": "The model's vendor does not allow this use. Pick another model, or ask your admin."
+      }
+    },
+    {
+      "code": "VENDOR_PENDING",
+      "status": 403,
+      "retryable": false,
+      "group": "model_access",
+      "meaning": "The vendor has not yet decided on this model route.",
+      "nextAction": {
+        "kind": "change_request",
+        "text": "The model's vendor has not approved this use yet. Pick another model for now."
+      }
+    },
+    {
+      "code": "OFFERING_NOT_PERMITTED",
+      "status": 403,
+      "retryable": false,
+      "group": "model_access",
+      "meaning": "This offering of PipesHub may not use this model route.",
+      "nextAction": {
+        "kind": "change_request",
+        "text": "This edition of PipesHub cannot use this model. Pick another model, or ask your admin."
+      }
+    },
+    {
+      "code": "ORG_POLICY_REFUSED",
+      "status": 403,
+      "retryable": false,
+      "group": "model_access",
+      "meaning": "The org's model access policy turns this route off.",
+      "nextAction": {
+        "kind": "change_request",
+        "text": "Your organization's AI rules turn this model off. Pick another model, or ask your admin."
+      }
+    },
+    {
+      "code": "ACCESS_POLICY_UNAVAILABLE",
+      "status": 503,
+      "retryable": true,
+      "group": "model_access",
+      "meaning": "The org's model access policy could not be read.",
+      "nextAction": {
+        "kind": "wait_then_retry",
+        "text": "Your organization's AI rules could not be read just now. Wait a moment, then try again."
+      }
+    },
+    {
+      "code": "ACCOUNT_NOT_OWNED",
+      "status": 403,
+      "retryable": false,
+      "group": "model_access",
+      "meaning": "The model account named is not the caller's or the org's.",
+      "nextAction": {
+        "kind": "change_request",
+        "text": "That AI account is not yours or your organization's. Pick one of your own accounts."
+      }
+    },
+    {
+      "code": "ACCOUNT_REQUIRES_INTERACTIVE",
+      "status": 403,
+      "retryable": false,
+      "group": "model_access",
+      "meaning": "A person's own plan sign-in is used only for turns they start themselves in the web app: never for scheduled or triggered runs, service accounts, connected apps, Slack or MCP (SIGNIN).",
+      "nextAction": {
+        "kind": "change_request",
+        "text": "Your own AI sign-in works only for messages you send yourself. Pick an organization model for scheduled or shared work."
+      }
+    },
+    {
+      "code": "ACCOUNT_SHARED_SESSION",
+      "status": 403,
+      "retryable": false,
+      "group": "model_access",
+      "meaning": "A person's own plan sign-in is not used in a conversation shared with anyone else (SIGNIN).",
+      "nextAction": {
+        "kind": "change_request",
+        "text": "Your own AI sign-in is not used in shared conversations. Pick an organization model, or use Continue privately."
+      }
+    },
+    {
+      "code": "ENGINE_SIGNIN_OFF",
+      "status": 403,
+      "retryable": false,
+      "group": "model_access",
+      "meaning": "The organization has not allowed people to use their own Claude account in Claude Code (SIGNIN; off by default).",
+      "nextAction": {
+        "kind": "ask_admin",
+        "text": "Your organization has not allowed your own Claude account here. Use the organization's model, or ask your admin."
+      }
+    },
+    {
+      "code": "ENGINE_SIGNIN_UNAVAILABLE",
+      "status": 409,
+      "retryable": false,
+      "group": "model_access",
+      "meaning": "This server cannot carry a person's own vendor sign-in (Claude in Claude Code): no live worker advertises `vendor_signin`, which needs the sign-in add-on (the egress proxy's CONNECT tunnels, EGRESS_CONNECT_TUNNELS) and the release's signed host list (SIGNGAP). Turning it on is refused; turning it off never is.",
+      "nextAction": {
+        "kind": "ask_admin",
+        "text": "This server cannot use your own AI sign-in yet. Use the organization's model, or ask your admin."
+      }
+    },
+    {
+      "code": "ACCOUNT_MISSING",
+      "status": 403,
+      "retryable": false,
+      "group": "model_access",
+      "meaning": "The route needs a model account and none is set up.",
+      "nextAction": {
+        "kind": "ask_admin",
+        "text": "Ask your admin to set up a model for this engine under AI Models, then send again."
+      }
+    },
+    {
+      "code": "ACCOUNT_PROVIDER_MISMATCH",
+      "status": 403,
+      "retryable": false,
+      "group": "model_access",
+      "meaning": "The model account belongs to another provider than the route's.",
+      "nextAction": {
+        "kind": "change_request",
+        "text": "That AI account belongs to another provider. Pick an account from the model's provider."
+      }
+    },
+    {
+      "code": "ACCOUNT_REQUIRES_ENGINE",
+      "status": 403,
+      "retryable": false,
+      "group": "model_access",
+      "meaning": "This model account can be used by an engine agent only.",
+      "nextAction": {
+        "kind": "change_request",
+        "text": "This AI account works only with coding agents. Pick another account or another agent."
+      }
+    },
+    {
+      "code": "ACCOUNT_MODEL_REQUIRED",
+      "status": 403,
+      "retryable": false,
+      "group": "model_access",
+      "meaning": "The model account needs a model named for this route.",
+      "nextAction": {
+        "kind": "change_request",
+        "text": "This AI account needs a model chosen. Pick a model and try again."
+      }
+    },
+    {
+      "code": "ROUTE_UNAVAILABLE",
+      "status": 403,
+      "retryable": false,
+      "group": "model_access",
+      "meaning": "No route to the chosen model is available here.",
+      "nextAction": {
+        "kind": "change_request",
+        "text": "No way to reach the chosen model is available here. Pick another model, or ask your admin."
+      }
+    },
+    {
+      "code": "ROUTE_NOT_CONFIGURED",
+      "status": 403,
+      "retryable": false,
+      "group": "model_access",
+      "meaning": "The chosen model route is not configured on this deployment.",
+      "nextAction": {
+        "kind": "ask_admin",
+        "text": "The chosen model is not set up on this server. Pick another model, or ask your admin to add it."
+      }
+    },
+    {
+      "code": "ACCESS_POLICY_INVALID",
+      "status": 400,
+      "retryable": false,
+      "group": "model_access",
+      "meaning": "The org's model access policy does not validate.",
+      "nextAction": {
+        "kind": "change_request",
+        "text": "These AI access rules are not valid. Fix the fields shown and save again."
+      }
+    },
+    {
+      "code": "MODEL_ACCOUNT_INVALID",
+      "status": 400,
+      "retryable": false,
+      "group": "model_account",
+      "meaning": "The model account's fields do not validate (`field` names which).",
+      "nextAction": {
+        "kind": "change_request",
+        "text": "Some account fields are not valid. Fix the fields shown and save again."
+      }
+    },
+    {
+      "code": "MODEL_ACCOUNT_NOT_FOUND",
+      "status": 404,
+      "retryable": false,
+      "group": "model_account",
+      "meaning": "No such model account.",
+      "nextAction": {
+        "kind": "change_request",
+        "text": "This AI account no longer exists. Pick another account or model."
+      }
+    },
+    {
+      "code": "MODEL_ACCOUNT_FORBIDDEN",
+      "status": 403,
+      "retryable": false,
+      "group": "model_account",
+      "meaning": "The caller may not manage this model account.",
+      "nextAction": {
+        "kind": "ask_admin",
+        "text": "You cannot manage this AI account. Ask its owner or your admin."
+      }
+    },
+    {
+      "code": "APPROVALS_CHANGED",
+      "status": 409,
+      "retryable": true,
+      "group": "approvals",
+      "meaning": "The approvals settings changed since they were read; read them again (becomes CP_REVISION_CONFLICT, which aliases it).",
+      "nextAction": {
+        "kind": "reload",
+        "text": "Someone else changed the approval settings. Reload them, then make your change again."
+      }
+    },
+    {
+      "code": "APPROVALS_DOCUMENT_INVALID",
+      "status": 409,
+      "retryable": false,
+      "group": "approvals",
+      "meaning": "The stored approvals settings do not validate; an admin must save them again.",
+      "nextAction": {
+        "kind": "ask_admin",
+        "text": "The saved approval settings are damaged. Ask your admin to save them again."
+      }
+    },
+    {
+      "code": "APPROVAL_RULES_INVALID",
+      "status": 400,
+      "retryable": false,
+      "group": "approvals",
+      "meaning": "The approval rules do not validate.",
+      "nextAction": {
+        "kind": "change_request",
+        "text": "Some approval rules are not valid. Fix the rules shown and save again."
+      }
+    },
+    {
+      "code": "PUBLICATION_FORBIDDEN",
+      "status": 403,
+      "retryable": false,
+      "group": "publication",
+      "meaning": "The caller may not publish or read this publication.",
+      "nextAction": {
+        "kind": "ask_admin",
+        "text": "You cannot publish or open this. Ask its owner or your admin for access."
+      }
+    },
+    {
+      "code": "PUBLICATION_INVALID",
+      "status": 422,
+      "retryable": false,
+      "group": "publication",
+      "meaning": "The publication request does not validate.",
+      "nextAction": {
+        "kind": "change_request",
+        "text": "Some publication fields are not valid. Fix the fields shown and try again."
+      }
+    },
+    {
+      "code": "PUBLICATION_NOT_FOUND",
+      "status": 404,
+      "retryable": false,
+      "group": "publication",
+      "meaning": "No such publication.",
+      "nextAction": {
+        "kind": "reload",
+        "text": "This publication no longer exists. Reload to see the current list."
+      }
+    },
+    {
+      "code": "PUBLICATIONS_DISABLED",
+      "status": 404,
+      "retryable": false,
+      "group": "publication",
+      "meaning": "Knowledge publications are turned off for this org.",
+      "nextAction": {
+        "kind": "ask_admin",
+        "text": "Knowledge publications are turned off for your organization. Ask your admin to turn them on."
+      }
+    },
+    {
+      "code": "PUBLICATIONS_UNAVAILABLE",
+      "status": 503,
+      "retryable": true,
+      "group": "publication",
+      "meaning": "The knowledge service could not be reached; try again.",
+      "nextAction": {
+        "kind": "wait_then_retry",
+        "text": "The knowledge service could not be reached. Wait a moment, then try again."
+      }
+    },
+    {
+      "code": "PUBLICATION_ANSWER_ONLY",
+      "status": 403,
+      "retryable": false,
+      "group": "publication",
+      "meaning": "This publication answers questions only; its records cannot be opened.",
+      "nextAction": {
+        "kind": "change_request",
+        "text": "This publication answers questions but does not open its records. Ask it a question instead."
+      }
+    },
+    {
+      "code": "PUBLICATION_REFUSED",
+      "status": 403,
+      "retryable": false,
+      "group": "publication",
+      "meaning": "The knowledge service refused the publication request.",
+      "nextAction": {
+        "kind": "ask_admin",
+        "text": "The knowledge service refused this request. Ask your admin to check the publication."
+      }
+    },
+    {
+      "code": "PUBLICATIONS_INVALID_RESPONSE",
+      "status": 502,
+      "retryable": true,
+      "group": "publication",
+      "meaning": "The knowledge service answered with something Node could not read.",
+      "nextAction": {
+        "kind": "wait_then_retry",
+        "text": "The knowledge service sent an answer that could not be read. Wait a moment, then try again; if it keeps happening, ask your admin."
+      }
+    },
+    {
+      "code": "SCHEDULED_RUNS_DISABLED",
+      "status": 404,
+      "retryable": false,
+      "group": "schedule",
+      "meaning": "Scheduled runs are turned off for this org.",
+      "nextAction": {
+        "kind": "ask_admin",
+        "text": "Scheduled tasks are turned off for your organization. Ask your admin to turn them on."
+      }
+    },
+    {
+      "code": "SCHEDULED_RUNS_UNAVAILABLE",
+      "status": 409,
+      "retryable": false,
+      "group": "schedule",
+      "meaning": "Scheduled runs cannot run on this deployment now.",
+      "nextAction": {
+        "kind": "ask_admin",
+        "text": "Scheduled tasks cannot run on this server now. Ask your admin."
+      }
+    },
+    {
+      "code": "SCHEDULE_INVALID",
+      "status": 400,
+      "retryable": false,
+      "group": "schedule",
+      "meaning": "The schedule does not validate (`field` names which).",
+      "nextAction": {
+        "kind": "change_request",
+        "text": "Some schedule fields are not valid. Fix the fields shown and save again."
+      }
+    },
+    {
+      "code": "SCHEDULE_NOT_FOUND",
+      "status": 404,
+      "retryable": false,
+      "group": "schedule",
+      "meaning": "No such schedule.",
+      "nextAction": {
+        "kind": "reload",
+        "text": "This schedule no longer exists. Reload to see your current schedules."
+      }
+    },
+    {
+      "code": "SCHEDULE_FORBIDDEN",
+      "status": 403,
+      "retryable": false,
+      "group": "schedule",
+      "meaning": "The caller may not manage this schedule.",
+      "nextAction": {
+        "kind": "ask_owner",
+        "text": "You cannot change this schedule. Ask its owner or your admin."
+      }
+    },
+    {
+      "code": "SCHEDULE_DISABLED",
+      "status": 409,
+      "retryable": false,
+      "group": "schedule",
+      "meaning": "The schedule is turned off.",
+      "nextAction": {
+        "kind": "change_request",
+        "text": "This schedule is turned off. Turn it on, then run it again."
+      }
+    },
+    {
+      "code": "SCHEDULE_LIMIT",
+      "status": 409,
+      "retryable": false,
+      "group": "schedule",
+      "meaning": "The org has as many schedules as it may keep.",
+      "nextAction": {
+        "kind": "change_request",
+        "text": "Your organization has as many schedules as it may keep. Delete one you no longer need."
+      }
+    },
+    {
+      "code": "SCHEDULE_BUDGET_EXCEEDS_CEILING",
+      "status": 400,
+      "retryable": false,
+      "group": "schedule",
+      "meaning": "The schedule's budget is above the org's ceiling.",
+      "nextAction": {
+        "kind": "change_request",
+        "text": "This schedule's budget is above your organization's limit. Lower it and save again."
+      }
+    },
+    {
+      "code": "SCHEDULE_TRIGGER_TOKEN_INVALID",
+      "status": 401,
+      "retryable": false,
+      "group": "schedule",
+      "meaning": "The webhook's trigger token or signature does not match, or its signed time is too far from now.",
+      "nextAction": {
+        "kind": "change_request",
+        "text": "The webhook's credential does not match. Copy the current secret from the schedule into the caller, and sign with the current time."
+      }
+    },
+    {
+      "code": "TRIGGER_PAYLOAD_TOO_LARGE",
+      "status": 413,
+      "retryable": false,
+      "group": "trigger",
+      "meaning": "A webhook trigger's body is larger than the org accepts (`triggers.webhookMaxBytes`).",
+      "nextAction": {
+        "kind": "change_request",
+        "text": "This webhook sent more than your organization accepts. Send a smaller body."
+      }
+    },
+    {
+      "code": "TRIGGER_RATE_LIMITED",
+      "status": 429,
+      "retryable": true,
+      "group": "trigger",
+      "meaning": "A webhook trigger took as many deliveries this minute as the org allows (`triggers.webhookPerMinute`); retry after `retryAfter` seconds.",
+      "nextAction": {
+        "kind": "wait_then_retry",
+        "text": "This webhook was called too often. Wait a minute, then call it again."
+      }
+    },
+    {
+      "code": "ENGINE_PROFILE_WIDENING",
+      "status": 400,
+      "retryable": false,
+      "group": "engine_profile",
+      "meaning": "An engine profile layer (org ceiling, agent or request) asks for more than the layer above allows; `dimension` and `layer` name where.",
+      "nextAction": {
+        "kind": "ask_admin",
+        "text": "This agent's settings ask for more than your organization allows. Ask your admin to check the engine profile."
+      }
+    },
+    {
+      "code": "ENGINE_PROFILE_INVALID",
+      "status": 400,
+      "retryable": false,
+      "group": "engine_profile",
+      "meaning": "An engine profile layer does not validate; `layer` names which.",
+      "nextAction": {
+        "kind": "ask_admin",
+        "text": "This engine profile is not valid. Ask your admin to fix the fields shown and save it again."
+      }
+    },
+    {
+      "code": "ACTIVITY_PANEL_DISABLED",
+      "status": 404,
+      "retryable": false,
+      "group": "activity",
+      "meaning": "The org turned the activity panel off (Labs `ENABLE_AGENT_ACTIVITY_PANEL`).",
+      "nextAction": {
+        "kind": "ask_admin",
+        "text": "Your organization turned the activity panel off. Ask your admin to turn it on."
+      }
+    },
+    {
+      "code": "RUN_NOT_COMPLETED",
+      "status": 409,
+      "retryable": false,
+      "group": "activity",
+      "meaning": "Follow-up questions are kept for a run that completed only.",
+      "nextAction": {
+        "kind": "wait_then_retry",
+        "text": "Suggested follow-ups come once the task completes. Wait for it to finish."
+      }
+    },
+    {
+      "code": "HARNESS_GROUP_REQUIRED",
+      "status": 403,
+      "retryable": false,
+      "group": "group_access",
+      "meaning": "The org lets only some of its user groups use the agent harness (G-41, the access section's harness list), and the actor is in none of them now; nothing was started.",
+      "nextAction": {
+        "kind": "ask_admin",
+        "text": "Your organization lets only some groups use agents. Ask your admin to add you to one of them."
+      }
+    },
+    {
+      "code": "ENGINE_GROUP_REQUIRED",
+      "status": 403,
+      "retryable": false,
+      "group": "group_access",
+      "meaning": "The org lets only some of its user groups use this coding engine (G-41, the access section's engines), and the actor is in none of them now.",
+      "nextAction": {
+        "kind": "ask_admin",
+        "text": "Your organization lets only some groups use this coding engine. Pick another one, or ask your admin to add you."
+      }
+    },
+    {
+      "code": "OPERATOR_STOPPED",
+      "status": 403,
+      "retryable": false,
+      "group": "operator_control",
+      "meaning": "An operator control (ADR-OPS-01) stops the conversation or agent this turn is for; nothing was started. The details name the scope and the reason.",
+      "nextAction": {
+        "kind": "ask_admin",
+        "text": "Your admin stopped agent work here for now. Ask your admin."
+      }
+    },
+    {
+      "code": "OPERATOR_SCOPE_FORBIDDEN",
+      "status": 403,
+      "retryable": false,
+      "group": "operator_control",
+      "meaning": "An engine version, instance or egress control is set only by the instance operator: the admin of the deployment's only org (ADR-OPS-01 D3).",
+      "nextAction": {
+        "kind": "ask_admin",
+        "text": "Only the admin who runs this server can change this control."
+      }
+    },
+    {
+      "code": "OPERATOR_TARGET_NOT_FOUND",
+      "status": 404,
+      "retryable": false,
+      "group": "operator_control",
+      "meaning": "The conversation, agent, run or engine version a control names is not one of the caller's org (or not an engine this release ships).",
+      "nextAction": {
+        "kind": "change_request",
+        "text": "That is not something your organization has here. Pick another and try again."
+      }
+    },
+    {
+      "code": "OPERATOR_CONTROLS_FULL",
+      "status": 409,
+      "retryable": false,
+      "group": "operator_control",
+      "meaning": "The deployment holds the most operator controls it keeps (MAX_OPERATOR_CONTROLS); clear one before setting another.",
+      "nextAction": {
+        "kind": "change_request",
+        "text": "Too many things are stopped at once. Remove a stop you no longer need, then try again."
+      }
+    },
+    {
+      "code": "MODEL_GROUP_REQUIRED",
+      "status": 403,
+      "retryable": false,
+      "group": "group_access",
+      "meaning": "The org lets only some of its user groups use this configured model (G-41, the access section's models), and the actor is in none of them now; nothing was started.",
+      "nextAction": {
+        "kind": "change_request",
+        "text": "Your organization lets only some groups use this model. Pick another model, or ask your admin to add you."
+      }
+    }
+  ]
+}

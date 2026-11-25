@@ -79,9 +79,20 @@ spec:
         {{- include "pipeshub-ai.labels" . | nindent 8 }}
         app.kubernetes.io/component: mongodb
     spec:
+      # Store pods never call the Kubernetes API: no service-account token to steal (SEC-D-10).
+      automountServiceAccountToken: false
       securityContext:
         fsGroup: 999
         fsGroupChangePolicy: OnRootMismatch
+        {{- if include "pipeshub-ai.mongodbNonRoot" . }}
+        # mongod runs as the image's mongodb user from the start (SEC-D-10); the
+        # volumes are group 999, so it needs no root to take them over.
+        runAsUser: 999
+        runAsGroup: 999
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+        {{- end }}
       affinity:
         podAntiAffinity:
           requiredDuringSchedulingIgnoredDuringExecution:
@@ -108,8 +119,17 @@ spec:
       initContainers:
         # Secret mounts are mode 0644. mongod refuses a keyfile that is group-readable.
         - name: keyfile
-          image: "{{ .Values.mongodb.builtin.image.repository }}:{{ .Values.mongodb.builtin.image.tag }}"
+          image: {{ include "pipeshub-ai.image" (dict "image" .Values.mongodb.builtin.image "global" .Values.global) | quote }}
           imagePullPolicy: {{ .Values.mongodb.builtin.image.pullPolicy }}
+          {{- if include "pipeshub-ai.mongodbNonRoot" . }}
+          # The copy is made as the mongodb user, so it owns it without a chown.
+          {{- include "pipeshub-ai.restrictedContainer" . | nindent 10 }}
+          command:
+            - /bin/sh
+            - -c
+            - rm -f /keyfile/keyfile && cp /secret/keyfile /keyfile/keyfile && chmod 400 /keyfile/keyfile
+          {{- else }}
+          # The pod runs mongod as root, whose entrypoint drops to the mongodb user: the copy is handed to that user.
           securityContext:
             runAsUser: 0
             runAsNonRoot: false
@@ -117,6 +137,7 @@ spec:
             - /bin/sh
             - -c
             - cp /secret/keyfile /keyfile/keyfile && chown 999:999 /keyfile/keyfile && chmod 400 /keyfile/keyfile
+          {{- end }}
           volumeMounts:
             - name: keyfile-secret
               mountPath: /secret
@@ -125,8 +146,11 @@ spec:
               mountPath: /keyfile
       containers:
         - name: mongodb
-          image: "{{ .Values.mongodb.builtin.image.repository }}:{{ .Values.mongodb.builtin.image.tag }}"
+          image: {{ include "pipeshub-ai.image" (dict "image" .Values.mongodb.builtin.image "global" .Values.global) | quote }}
           imagePullPolicy: {{ .Values.mongodb.builtin.image.pullPolicy }}
+          {{- if include "pipeshub-ai.mongodbNonRoot" . }}
+          {{- include "pipeshub-ai.restrictedContainer" . | nindent 10 }}
+          {{- end }}
           ports:
             - name: mongo
               containerPort: 27017
@@ -149,6 +173,7 @@ spec:
             - -c
             - |
               set -euo pipefail
+              {{- include "pipeshub-ai.raiseOpenFiles" .Values.mongodb.builtin.openFiles | nindent 14 }}
               common=(--bind_ip_all --replSet {{ .Values.mongodb.replicaSetName | quote }} --keyFile /keyfile/keyfile --wiredTigerCacheSizeGB {{ .Values.mongodb.builtin.cacheSizeGB | quote }})
               if [ "${HOSTNAME##*-}" = "0" ]; then
                 exec docker-entrypoint.sh mongod "${common[@]}"
@@ -232,10 +257,19 @@ spec:
         app.kubernetes.io/component: mongodb-initiate
     spec:
       restartPolicy: OnFailure
+      # Store pods never call the Kubernetes API: no service-account token to steal (SEC-D-10).
+      automountServiceAccountToken: false
+      securityContext:
+        runAsUser: 999
+        runAsGroup: 999
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: initiate
-          image: "{{ .Values.mongodb.builtin.image.repository }}:{{ .Values.mongodb.builtin.image.tag }}"
+          image: {{ include "pipeshub-ai.image" (dict "image" .Values.mongodb.builtin.image "global" .Values.global) | quote }}
           imagePullPolicy: {{ .Values.mongodb.builtin.image.pullPolicy }}
+          {{- include "pipeshub-ai.restrictedContainer" . | nindent 10 }}
           env:
             - name: MONGO_USER
               valueFrom:

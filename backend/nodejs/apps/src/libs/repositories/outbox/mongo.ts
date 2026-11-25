@@ -1,4 +1,5 @@
-import type { QueryFilter } from 'mongoose';
+import type { QueryFilter, Types } from 'mongoose';
+import { escapeRegExp } from '../../../utils/escape-regexp';
 import { sessionOf } from '../mongo';
 import { toPlain } from '../plain';
 import type { Tx } from '../uow';
@@ -97,6 +98,24 @@ export class MongoOutboxRepository implements OutboxRepository {
         $unset: { claimedAt: '' },
       },
     ).exec();
+  }
+
+  /** A row here names its org only in its value (every writer's payload carries `orgId`). */
+  async eraseDeliveredForOrg(orgId: string, limit: number): Promise<number> {
+    if (limit <= 0) return 0;
+    const filter = {
+      status: { $in: ['published', 'failed'] as OutboxStatus[] },
+      value: { $regex: `"orgId":"${escapeRegExp(orgId)}"` },
+    };
+    const batch = await OutboxEvent.find(filter, { _id: 1 })
+      .limit(limit)
+      .lean<Array<{ _id: Types.ObjectId }>>();
+    if (batch.length === 0) return 0;
+    const deleted = await OutboxEvent.deleteMany({
+      ...filter,
+      _id: { $in: batch.map((row) => row._id) },
+    });
+    return deleted.deletedCount;
   }
 
   async statusCounts(): Promise<Record<OutboxStatus, number>> {

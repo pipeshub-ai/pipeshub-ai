@@ -7,6 +7,7 @@ import { Flex, Text, Badge } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '@/config';
 import { useToastStore } from '@/lib/store/toast-store';
+import { useNewestRequest } from '@/lib/hooks/use-newest-request';
 import { useUserStore, selectIsAdmin, selectIsProfileInitialized } from '@/lib/store/user-store';
 import { formatDate } from '@/lib/utils/formatters';
 import { FilterDropdown, DateRangePicker } from '@/app/components/ui';
@@ -98,7 +99,9 @@ function TeamsPageContent() {
   });
 
   // ── Fetch teams (server-paginated + server-filtered) ──
+  const beginRequest = useNewestRequest();
   const fetchTeams = useCallback(async () => {
+    const isStale = beginRequest();
     setLoading(true);
     setError(null);
     try {
@@ -121,14 +124,16 @@ function TeamsPageContent() {
       }
 
       const result = await TeamsApi.listTeams(params);
+      if (isStale()) return;
       setTeams(result.teams, result.totalCount);
     } catch (err: unknown) {
+      if (isStale()) return;
       const message = err instanceof Error ? err.message : 'Failed to load teams';
       setError(message);
     } finally {
-      setLoading(false);
+      if (!isStale()) setLoading(false);
     }
-  }, [page, limit, searchQuery, filters, setTeams, setLoading, setError]);
+  }, [beginRequest, page, limit, searchQuery, filters, setTeams, setLoading, setError]);
 
   useEffect(() => {
     if (isProfileInitialized) {
@@ -411,7 +416,7 @@ function TeamsPageContent() {
         render: (team) => {
           const creator = team.createdByUser;
           if (!creator) {
-            return <Text size="2" style={{ color: 'var(--slate-9)' }}>-</Text>;
+            return <Text size="2" style={{ color: 'var(--slate-11)' }}>-</Text>;
           }
           const currentUserId = (profile?.userId ?? currentUser?.id ?? '').trim();
           return (
@@ -569,11 +574,11 @@ function TeamsPageContent() {
                 gap="2"
                 style={{ flex: 1, padding: 'var(--space-6)' }}
               >
-                <MaterialIcon name="filter_list_off" size={32} color="var(--slate-8)" />
+                <MaterialIcon name="filter_list_off" size={32} color="var(--slate-11)" />
                 <Text size="2" weight="medium" style={{ color: 'var(--slate-11)' }}>
                   {t('workspace.teams.noFilterResults', 'No teams match the applied filters')}
                 </Text>
-                <Text size="1" style={{ color: 'var(--slate-9)' }}>
+                <Text size="1" style={{ color: 'var(--slate-11)' }}>
                   {t('workspace.teams.noFilterResultsHint', 'Try adjusting or clearing the filters above')}
                 </Text>
               </Flex>
@@ -589,6 +594,7 @@ function TeamsPageContent() {
                   renderRowActions={renderRowActions}
                   isLoading={isLoading}
                   onRowClick={(team) => navigateToDetailPanel(team)}
+                  ariaLabel={t('workspace.teams.title')}
                 />
 
                 {/* Pagination */}

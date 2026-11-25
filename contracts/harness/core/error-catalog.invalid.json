@@ -1,0 +1,38 @@
+[
+  {
+    "description": "a lower-case code",
+    "instance": {"description": "x", "codes": [{"code": "revision_conflict", "status": 409, "retryable": true, "meaning": "m", "nextAction": {"kind": "reload", "text": "t"}}]}
+  },
+  {
+    "description": "a status that is not an error status",
+    "instance": {"description": "x", "codes": [{"code": "OK", "status": 200, "retryable": false, "meaning": "m", "nextAction": {"kind": "reload", "text": "t"}}]}
+  },
+  {
+    "description": "an entry without its meaning",
+    "instance": {"description": "x", "codes": [{"code": "A_CODE", "status": 409, "retryable": false, "nextAction": {"kind": "reload", "text": "t"}}]}
+  },
+  {
+    "description": "an unknown field on an entry",
+    "instance": {"description": "x", "codes": [{"code": "A_CODE", "status": 409, "retryable": false, "meaning": "m", "httpStatus": 409, "nextAction": {"kind": "reload", "text": "t"}}]}
+  },
+  {
+    "description": "an empty catalogue",
+    "instance": {"description": "x", "codes": []}
+  },
+  {
+    "description": "a wire prefix without its separator",
+    "instance": {"description": "x", "wirePrefix": "SERVICE", "codes": [{"code": "A_CODE", "status": 409, "retryable": false, "meaning": "m", "nextAction": {"kind": "reload", "text": "t"}}]}
+  },
+  {
+    "description": "an entry without its next action",
+    "instance": {"description": "x", "codes": [{"code": "A_CODE", "status": 409, "retryable": false, "meaning": "m"}]}
+  },
+  {
+    "description": "a next action of no known kind",
+    "instance": {"description": "x", "codes": [{"code": "A_CODE", "status": 409, "retryable": false, "meaning": "m", "nextAction": {"kind": "call_support", "text": "t"}}]}
+  },
+  {
+    "description": "a next action without its words",
+    "instance": {"description": "x", "codes": [{"code": "A_CODE", "status": 409, "retryable": false, "meaning": "m", "nextAction": {"kind": "retry"}}]}
+  }
+]

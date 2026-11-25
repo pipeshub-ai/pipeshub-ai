@@ -10,6 +10,7 @@ from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
 from app.agent_loop_lib.tools.decorators import tool
 from app.connectors.core.registry.auth_builder import AuthBuilder, AuthType
 from app.connectors.core.registry.tool_builder import (
+    ToolProvider,
     ToolsetBuilder,
     ToolsetCategory,
 )
@@ -79,7 +80,7 @@ class GetTablesSchemaInput(BaseModel):
     tables: list[str] = Field(..., description="List of table names to fetch schema for")
 
 
-@ToolsetBuilder("Redshift")\
+@ToolsetBuilder("Redshift", provider=ToolProvider.CONNECTOR)\
     .in_group("Database")\
     .with_description("Amazon Redshift toolset for schema introspection and SQL execution")\
     .with_category(ToolsetCategory.DATABASE)\
@@ -173,7 +174,7 @@ class Redshift:
         short_description="List all schemas in the Redshift database",
         description="List all schemas in the connected Redshift database. Returns a JSON list of schema names.",
         parameters=[],
-        tags=[Tag(key="category", value="database"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="database"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def list_schemas(self) -> tuple[bool, str]:
         """List all schemas in the connected Redshift database."""
@@ -208,7 +209,7 @@ class Redshift:
             "Returns a JSON object with schemas, each containing their list of tables."
         ),
         parameters=[],
-        tags=[Tag(key="category", value="database"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="database"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def list_schemas_and_tables(self) -> tuple[bool, str]:
         """List all schemas and tables in the Redshift database in one call."""
@@ -270,7 +271,7 @@ class Redshift:
                 required=True,
             ),
         ],
-        tags=[Tag(key="category", value="database"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="database"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_table_ddl(
         self,
@@ -321,7 +322,7 @@ class Redshift:
                 required=True,
             ),
         ],
-        tags=[Tag(key="category", value="database"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="database"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_schema_ddl(
         self,
@@ -396,7 +397,7 @@ class Redshift:
                 required=True,
             ),
         ],
-        tags=[Tag(key="category", value="database"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="database"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_tables_schema(
         self,
@@ -471,7 +472,7 @@ class Redshift:
                 required=False,
             ),
         ],
-        tags=[Tag(key="category", value="database"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="database"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def fetch_db_schema(
         self,
@@ -589,7 +590,7 @@ class Redshift:
                 required=True,
             ),
         ],
-        tags=[Tag(key="category", value="database"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="database"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
     )
     async def execute_query(
         self,
@@ -699,7 +700,7 @@ class Redshift:
                 required=True,
             ),
         ],
-        tags=[Tag(key="category", value="database"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="database"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def list_tables(
         self,

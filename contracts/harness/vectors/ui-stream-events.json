@@ -1,0 +1,578 @@
+{
+  "description": "Everything the durable harness sends the web app (UX-01, WP-18): the chat stream's AG-UI frame types (Node projection/frames.ts AGUI), its CUSTOM frame names (AGUI_CUSTOM) and STATE_SNAPSHOT statuses, and the activity stream's events (application/run-activity-service.ts). Node checks it sends nothing else; the web app renders each entry or hides it on purpose, with the reason. An example is a frame as Node sends it, for the web app's test to feed.",
+  "chat": {
+    "frames": {
+      "RUN_STARTED": {
+        "description": "A run (the turn's, or a sub-agent's under it) started.",
+        "example": {
+          "type": "RUN_STARTED",
+          "threadId": "ses-1",
+          "runId": "run-1"
+        }
+      },
+      "RUN_FINISHED": {
+        "description": "The run ended; the root run's frame carries the saved conversation.",
+        "example": {
+          "type": "RUN_FINISHED",
+          "result": {
+            "conversation": {
+              "_id": "ses-1",
+              "messages": []
+            },
+            "meta": {
+              "requestId": "r",
+              "timestamp": "t",
+              "duration": 0
+            }
+          }
+        }
+      },
+      "RUN_ERROR": {
+        "description": "The run failed; `code` is a RUN_ERROR code (run-error-codes.json) or a budget stop. With `mcp_tool_withdrawn`, `servers` lists the labels of the servers that withdrew a tool, which the reader's words name (WP-84). A sub-agent's (with `parentRunId`) has `code` agent_error, a plain `message`, and its machine reason in `errorType`. For the owner's client that reads the outcome frames (X-PipesHub-Frames: 2, WP-100), the root RUN_ERROR also carries `runOutcome`, the typed failure the saved message keeps, which the web app words; every other client gets the legacy frame.",
+        "example": {
+          "type": "RUN_ERROR",
+          "message": "The run failed.",
+          "code": "sandbox_unavailable"
+        }
+      },
+      "STATE_SNAPSHOT": {
+        "description": "The run's status (snapshotStatuses), or with `final` the settled answer.",
+        "example": {
+          "type": "STATE_SNAPSHOT",
+          "runId": "run-1",
+          "snapshot": {
+            "run_id": "run-1",
+            "status": "calling_llm",
+            "current_tool": null
+          }
+        }
+      },
+      "STATE_DELTA": {
+        "description": "A JSON patch of the answer (its text, citations) or an artifact card appended at /artifacts/-.",
+        "example": {
+          "type": "STATE_DELTA",
+          "runId": "ses-1",
+          "delta": [
+            {
+              "op": "add",
+              "path": "/artifacts/-",
+              "value": {
+                "artifactId": "art-1",
+                "fileName": "report.md",
+                "mimeType": "text/markdown",
+                "sizeBytes": 64,
+                "downloadUrl": "",
+                "artifactType": "DOCUMENT",
+                "isTemporary": false,
+                "recordId": "art-1"
+              }
+            }
+          ]
+        }
+      },
+      "STEP_STARTED": {
+        "description": "A step started; `sub_agent:<role>` is a sub-agent taking over.",
+        "example": {
+          "type": "STEP_STARTED",
+          "stepName": "sub_agent:research",
+          "runId": "run-1"
+        }
+      },
+      "STEP_FINISHED": {
+        "description": "The step STEP_STARTED opened ended.",
+        "example": {
+          "type": "STEP_FINISHED",
+          "stepName": "sub_agent:research",
+          "runId": "run-1"
+        }
+      },
+      "CUSTOM": {
+        "description": "A named frame; `name` is one of `custom`."
+      },
+      "TEXT_MESSAGE_START": {
+        "description": "A model turn's text starts.",
+        "example": {
+          "type": "TEXT_MESSAGE_START",
+          "messageId": "msg-1",
+          "role": "assistant",
+          "runId": "run-1"
+        }
+      },
+      "TEXT_MESSAGE_CONTENT": {
+        "description": "A piece of that text.",
+        "example": {
+          "type": "TEXT_MESSAGE_CONTENT",
+          "messageId": "msg-1",
+          "delta": "Hello",
+          "runId": "run-1"
+        }
+      },
+      "TEXT_MESSAGE_END": {
+        "description": "The turn's text ended.",
+        "example": {
+          "type": "TEXT_MESSAGE_END",
+          "messageId": "msg-1",
+          "runId": "run-1"
+        }
+      },
+      "REASONING_START": {
+        "description": "The model's reasoning starts; its message frames follow.",
+        "example": {
+          "type": "REASONING_START",
+          "runId": "run-1"
+        }
+      },
+      "REASONING_MESSAGE_START": {
+        "description": "A reasoning message starts.",
+        "example": {
+          "type": "REASONING_MESSAGE_START",
+          "messageId": "rsn-1",
+          "role": "assistant",
+          "runId": "run-1"
+        }
+      },
+      "REASONING_MESSAGE_CONTENT": {
+        "description": "A piece of the reasoning.",
+        "example": {
+          "type": "REASONING_MESSAGE_CONTENT",
+          "messageId": "rsn-1",
+          "delta": "Thinking it through",
+          "runId": "run-1"
+        }
+      },
+      "REASONING_MESSAGE_END": {
+        "description": "The reasoning message ended.",
+        "example": {
+          "type": "REASONING_MESSAGE_END",
+          "messageId": "rsn-1",
+          "runId": "run-1"
+        }
+      },
+      "REASONING_END": {
+        "description": "The reasoning ended.",
+        "example": {
+          "type": "REASONING_END",
+          "runId": "run-1"
+        }
+      },
+      "TOOL_CALL_START": {
+        "description": "A tool call starts.",
+        "example": {
+          "type": "TOOL_CALL_START",
+          "toolCallId": "call-1",
+          "toolCallName": "jira__search",
+          "runId": "run-1"
+        }
+      },
+      "TOOL_CALL_ARGS": {
+        "description": "The call's arguments, with a plain summary.",
+        "example": {
+          "type": "TOOL_CALL_ARGS",
+          "toolCallId": "call-1",
+          "delta": "{\"q\": \"open bugs\"}",
+          "argsSummary": "Search: \"open bugs\"",
+          "runId": "run-1"
+        }
+      },
+      "TOOL_CALL_END": {
+        "description": "The call's arguments are complete; its result follows.",
+        "example": {
+          "type": "TOOL_CALL_END",
+          "toolCallId": "call-1",
+          "runId": "run-1"
+        }
+      },
+      "TOOL_CALL_RESULT": {
+        "description": "The call's result, with a plain summary.",
+        "example": {
+          "type": "TOOL_CALL_RESULT",
+          "toolCallId": "call-1",
+          "content": "{\"count\": 3}",
+          "role": "tool",
+          "status": "completed",
+          "resultSummary": "Found 3",
+          "runId": "run-1"
+        }
+      }
+    },
+    "custom": {
+      "conversation_created": {
+        "description": "The conversation the turn runs in (sent first).",
+        "example": {
+          "type": "CUSTOM",
+          "name": "conversation_created",
+          "value": {
+            "conversationId": "ses-1",
+            "title": "Open bugs",
+            "runId": "run-1"
+          },
+          "runId": "run-1"
+        }
+      },
+      "user_input": {
+        "description": "A message the person sent while the run worked, now taken by it.",
+        "example": {
+          "type": "CUSTOM",
+          "name": "user_input",
+          "value": {
+            "messageSeq": 1,
+            "content": "Only the open ones."
+          },
+          "runId": "run-1"
+        }
+      },
+      "ask_user_question": {
+        "description": "The agent asks the person a question.",
+        "example": {
+          "type": "CUSTOM",
+          "name": "ask_user_question",
+          "value": {
+            "status": "pending",
+            "toolData": {
+              "questions": [
+                {
+                  "question": "Which project?",
+                  "options": [
+                    {
+                      "label": "Web"
+                    },
+                    {
+                      "label": "API"
+                    }
+                  ]
+                }
+              ]
+            }
+          },
+          "runId": "run-1"
+        }
+      },
+      "tool_unavailable": {
+        "description": "A tool the agent found but cannot call here (not attached, not connected, MCP down).",
+        "example": {
+          "type": "CUSTOM",
+          "name": "tool_unavailable",
+          "value": {
+            "tool": "create_issue",
+            "toolset": "jira",
+            "reason": "not_authenticated",
+            "message": "Jira is not connected."
+          },
+          "runId": "run-1"
+        }
+      },
+      "approval_requested": {
+        "description": "An action waits for the person's approval.",
+        "example": {
+          "type": "CUSTOM",
+          "name": "approval_requested",
+          "value": {
+            "interactionId": "ix-1",
+            "toolCallId": "call-2",
+            "toolName": "jira_create_issue",
+            "args": "{}",
+            "argsSummary": null
+          },
+          "runId": "run-1"
+        }
+      },
+      "approval_resolved": {
+        "description": "An approval was decided.",
+        "example": {
+          "type": "CUSTOM",
+          "name": "approval_resolved",
+          "value": {
+            "interactionId": "ix-1",
+            "decision": "approved"
+          },
+          "runId": "run-1"
+        }
+      },
+      "unknown_effect": {
+        "description": "An action may or may not have happened; the run waits for a person.",
+        "example": {
+          "type": "CUSTOM",
+          "name": "unknown_effect",
+          "value": {
+            "interactionId": "ix-2",
+            "toolCallId": "call-3",
+            "toolName": "slack_send_message"
+          },
+          "runId": "run-1"
+        }
+      },
+      "unknown_effect_resolved": {
+        "description": "Someone said whether that action happened.",
+        "example": {
+          "type": "CUSTOM",
+          "name": "unknown_effect_resolved",
+          "value": {
+            "interactionId": "ix-2",
+            "decision": "happened"
+          },
+          "runId": "run-1"
+        }
+      },
+      "connect_requested": {
+        "description": "A call waits for the run's owner to connect the item it needs (G-12): the item in words and where to connect it.",
+        "example": {
+          "type": "CUSTOM",
+          "name": "connect_requested",
+          "value": {
+            "interactionId": "ix.connect.t1.0",
+            "toolCallId": "call-3",
+            "toolName": "jira_search_issues",
+            "item": "Jira",
+            "itemKind": "toolset",
+            "connectPath": "/workspace/actions",
+            "status": "pending"
+          },
+          "runId": "run-1"
+        }
+      },
+      "connect_resolved": {
+        "description": "The owner connected the item, or the wait was declined, expired or closed.",
+        "example": {
+          "type": "CUSTOM",
+          "name": "connect_resolved",
+          "value": {
+            "interactionId": "ix.connect.t1.0",
+            "status": "connected"
+          },
+          "runId": "run-1"
+        }
+      },
+      "interaction_waiting": {
+        "description": "How many approvals wait, and whether the run paused on them.",
+        "example": {
+          "type": "CUSTOM",
+          "name": "interaction_waiting",
+          "value": {
+            "count": 1,
+            "paused": false
+          },
+          "runId": "run-1"
+        }
+      },
+      "engine_progress": {
+        "description": "A coding engine's progress line.",
+        "example": {
+          "type": "CUSTOM",
+          "name": "engine_progress",
+          "value": {
+            "tool": "code_task",
+            "taskId": "run-1",
+            "kind": "started",
+            "text": "Write the report",
+            "data": {}
+          },
+          "runId": "run-1"
+        }
+      },
+      "plan": {
+        "description": "The run's whole plan after it changed.",
+        "example": {
+          "type": "CUSTOM",
+          "name": "plan",
+          "value": {
+            "runId": "run-1",
+            "steps": [
+              {
+                "id": "t1",
+                "title": "Find the open bugs",
+                "status": "in_progress"
+              }
+            ]
+          },
+          "runId": "run-1"
+        }
+      },
+      "notice": {
+        "description": "Something the person should know beside the steps.",
+        "example": {
+          "type": "CUSTOM",
+          "name": "notice",
+          "value": {
+            "code": "engine_on_org_access",
+            "text": "The coding engine runs on your organization's access."
+          },
+          "runId": "run-1"
+        }
+      },
+      "slash_command": {
+        "description": "The /command the run started from.",
+        "example": {
+          "type": "CUSTOM",
+          "name": "slash_command",
+          "value": {
+            "command": "/compact",
+            "text": "/compact"
+          },
+          "runId": "run-1"
+        }
+      },
+      "context_compacted": {
+        "description": "What /compact did before the run's first turn.",
+        "example": {
+          "type": "CUSTOM",
+          "name": "context_compacted",
+          "value": {
+            "turnsBefore": 12,
+            "turnsAfter": 1
+          },
+          "runId": "run-1"
+        }
+      },
+      "message_discarded": {
+        "description": "A model call failed mid-stream; the text it streamed is withdrawn.",
+        "example": {
+          "type": "CUSTOM",
+          "name": "message_discarded",
+          "value": {
+            "messageId": "msg-1"
+          },
+          "runId": "run-1"
+        }
+      },
+      "retrieval_context": {
+        "description": "A measurement frame for runs admitted with includeRetrievalContext: what reached the model.",
+        "example": {
+          "type": "CUSTOM",
+          "name": "retrieval_context",
+          "value": {
+            "records": []
+          },
+          "runId": "run-1"
+        }
+      },
+      "run_usage": {
+        "description": "A measurement frame for runs admitted with includeRetrievalContext: the run's token totals.",
+        "example": {
+          "type": "CUSTOM",
+          "name": "run_usage",
+          "value": {
+            "inputTokens": 10,
+            "outputTokens": 5
+          },
+          "runId": "run-1"
+        }
+      },
+      "approval_counted": {
+        "description": "WP-100: one more approval was counted on an ask that needs several and still waits; the card says how many it has of how many it needs. Counts only, never who.",
+        "example": {
+          "type": "CUSTOM",
+          "name": "approval_counted",
+          "value": {
+            "interactionId": "ix-1",
+            "approvals": {
+              "counted": 1,
+              "required": 2
+            }
+          },
+          "runId": "run-1"
+        }
+      },
+      "run_cost": {
+        "description": "WP-100 (C10.05): the run's spend from the budget ledger, pushed to the owner's client that reads the outcome frames (X-PipesHub-Frames: 2) when the run journals and the ledger moved; `budget` is null for a run with no ledger account. The first is sent as the stream opens.",
+        "example": {
+          "type": "CUSTOM",
+          "name": "run_cost",
+          "value": {
+            "runId": "run-1",
+            "budget": {
+              "cap": {
+                "usdMicros": 5000000
+              },
+              "committed": {
+                "usdMicros": 420000
+              },
+              "reserved": {
+                "usdMicros": 0
+              },
+              "available": {
+                "usdMicros": 4580000
+              },
+              "exhausted": false,
+              "estimated": 0
+            }
+          },
+          "runId": "run-1"
+        }
+      }
+    },
+    "snapshotStatuses": {
+      "queued": {
+        "description": "The run waits to start."
+      },
+      "starting": {
+        "description": "The run is starting."
+      },
+      "calling_llm": {
+        "description": "The model is called."
+      },
+      "running_tool": {
+        "description": "A tool runs; `current_tool` names it."
+      },
+      "waiting_provider": {
+        "description": "The model provider limits requests; the run retries at `retry_at`."
+      },
+      "waiting_sandbox": {
+        "description": "The run waits for a free sandbox; it retries at `retry_at`."
+      },
+      "waiting_store": {
+        "description": "The run waits for a store it saves to (file storage) to come back; it retries at `retry_at`."
+      },
+      "running": {
+        "description": "A sub-agent runs (its snapshot names its parent)."
+      },
+      "completed": {
+        "description": "The run or sub-agent completed."
+      },
+      "failed": {
+        "description": "The run or sub-agent failed."
+      },
+      "cancelled": {
+        "description": "The run or sub-agent was stopped."
+      }
+    }
+  },
+  "activity": {
+    "events": {
+      "snapshot": {
+        "description": "The activity panel's whole view of the run.",
+        "example": {
+          "runId": "run-1",
+          "status": "running",
+          "commands": [],
+          "tools": [],
+          "tasks": [],
+          "files": []
+        }
+      },
+      "command": {
+        "description": "A sandbox command started or changed.",
+        "example": {
+          "commandId": "cmd-1",
+          "source": "run_code",
+          "command": "print(1)",
+          "status": "running",
+          "startedAt": 1759320000000
+        }
+      },
+      "output": {
+        "description": "Output of a running command.",
+        "example": {
+          "commandId": "cmd-1",
+          "stream": "stdout",
+          "text": "1\n"
+        }
+      },
+      "end": {
+        "description": "The run ended; the panel stops following it.",
+        "example": {
+          "status": "completed"
+        }
+      }
+    }
+  }
+}

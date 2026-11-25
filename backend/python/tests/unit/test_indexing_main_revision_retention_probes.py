@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import collections
+import functools
 import os
 import random
 import time
@@ -23,6 +24,8 @@ from app.modules.artifacts.retention import RevisionRetentionSweep
 from app.modules.artifacts.store import NodeArtifactStore
 from app.modules.transformers import blob_storage as blob_module
 from app.modules.transformers.blob_storage import close_shared_session
+from app.utils.loop_share import LoopShare
+from harness_core.testing.virtual_time import run_on_virtual_time
 from tests.unit.modules.artifacts.test_retention import FakeGraph, FakeStore
 from tests.unit.test_indexing_main_revision_retention_budget import _blob
 
@@ -174,13 +177,32 @@ def _graph(n: int) -> FakeGraph:
 async def _tick(origin: str, graph: FakeGraph) -> float:
     container = MagicMock()
     container.blob_storage = MagicMock(return_value=_blob(origin))
-    started = time.perf_counter()
+    started = asyncio.get_running_loop().time()
     await m._sweep_retired_revisions(app_container=container, graph_provider=graph, logger=MagicMock(),
                                      lease_held=lambda: True)
-    return time.perf_counter() - started
+    return asyncio.get_running_loop().time() - started
 
 
-async def test_slow_deletes_stay_inside_the_tick_budget(monkeypatch) -> None:
+def _on_virtual_time(monkeypatch: pytest.MonkeyPatch, body: Any) -> Any:
+    """Runs ``body`` on a virtual-time loop with the tick's budget read off that loop's clock. The storage stand-in's
+    slowness and every timeout are the loop's timers, so a tick's length is exact, not the host's load."""
+
+    async def main() -> Any:
+        loop = asyncio.get_running_loop()
+        clock = types.SimpleNamespace(monotonic=loop.time)
+        monkeypatch.setattr(m, "time", clock)
+        monkeypatch.setattr(retention_module, "time", clock)
+        monkeypatch.setattr(m, "LoopShare", functools.partial(LoopShare, clock=loop.time))
+        try:
+            return await body()
+        finally:
+            # The shared session belongs to this loop; the autouse fixture's close runs on another.
+            await close_shared_session()
+
+    return run_on_virtual_time(main)
+
+
+def test_slow_deletes_stay_inside_the_tick_budget(monkeypatch) -> None:
     """Listing is fast; each vrid has 20 old revisions and a tree delete takes 0.5 s. Budget 2 s."""
     monkeypatch.setenv("REVISION_RETENTION_TICK_BUDGET_SECONDS", "2")
 
@@ -194,16 +216,19 @@ async def test_slow_deletes_stay_inside_the_tick_budget(monkeypatch) -> None:
         await asyncio.sleep(0.5)
         return web.json_response({"purged": 3})
 
-    runner, origin = await _server([("GET", LIST, listing), ("DELETE", DELETE, delete)])
-    try:
-        took = await _tick(origin, _graph(200))
-    finally:
-        await runner.cleanup()
+    async def tick() -> float:
+        runner, origin = await _server([("GET", LIST, listing), ("DELETE", DELETE, delete)])
+        try:
+            return await _tick(origin, _graph(200))
+        finally:
+            await runner.cleanup()
+
+    took = _on_virtual_time(monkeypatch, tick)
     print(f"tick with slow deletes took {took:.1f}s against a 2 s budget")
     assert took < 2 + 2, f"tick took {took:.1f}s against a 2 s budget"
 
 
-async def test_a_hung_delete_is_bounded_like_a_hung_listing(monkeypatch) -> None:
+def test_a_hung_delete_is_bounded_like_a_hung_listing(monkeypatch) -> None:
     """Listing fast, DELETE never answers. sock_read scaled 120 s -> 0.5 s; list timeout is 10 s
     shipped, so the scaled equivalent of the listing bound is min(10, 0.5) = 0.5 s per vrid."""
     monkeypatch.setenv("REVISION_RETENTION_TICK_BUDGET_SECONDS", "20")
@@ -241,11 +266,14 @@ async def test_a_hung_delete_is_bounded_like_a_hung_listing(monkeypatch) -> None
 
     monkeypatch.setattr(store_module, "get_shared_session", lambda: Recording(real_session()))
 
-    runner, origin = await _server([("GET", LIST, listing), ("DELETE", DELETE, delete)])
-    try:
-        took = await _tick(origin, _graph(200))
-    finally:
-        await runner.cleanup()
+    async def tick() -> float:
+        runner, origin = await _server([("GET", LIST, listing), ("DELETE", DELETE, delete)])
+        try:
+            return await _tick(origin, _graph(200))
+        finally:
+            await runner.cleanup()
+
+    took = _on_virtual_time(monkeypatch, tick)
     print(f"tick with hung deletes took {took:.1f}s = {took / 0.5:.1f} x sock_read, {max(attempts.values(), default=0)} attempt(s) per document")
     # A hung listing ends the page after ~1 listing timeout; a hung delete should not cost 3 attempts.
     # Attempts are counted, not timed: a loaded host stretches the clock but not the count.
@@ -360,32 +388,37 @@ async def test_the_walk_advances_when_page_reads_take_longer_than_the_budget(mon
 
 # --- F: measurements at shipped constants ----------------------------------------------------
 
-async def test_measure_slow_storage_tick_at_shipped_budget() -> None:
+def test_measure_slow_storage_tick_at_shipped_budget(monkeypatch) -> None:
     """Every listing answers in 1 s; budget 20 s, list timeout 10 s, 4 pages of 200, as shipped."""
     async def listing(request: web.Request) -> web.Response:
         await asyncio.sleep(1.0)
         return web.json_response({"revisions": []})
 
-    runner, origin = await _server([("GET", LIST, listing)])
-    graph = _graph(5000)
-    try:
-        took = await _tick(origin, graph)
-    finally:
-        await runner.cleanup()
+    async def tick() -> float:
+        runner, origin = await _server([("GET", LIST, listing)])
+        try:
+            return await _tick(origin, _graph(5000))
+        finally:
+            await runner.cleanup()
+
+    took = _on_virtual_time(monkeypatch, tick)
     print(f"MEASURE slow-storage tick {took:.1f}s cursor={m._retention_cursor}")
     assert took < 20 + 10 + 2
 
 
-async def test_measure_hung_storage_tick_at_shipped_timeouts() -> None:
+def test_measure_hung_storage_tick_at_shipped_timeouts(monkeypatch) -> None:
     """Listings never answer; shipped 10 s one-attempt listing."""
     async def listing(request: web.Request) -> web.Response:
         await asyncio.sleep(3600)
         return web.json_response({"revisions": []})
 
-    runner, origin = await _server([("GET", LIST, listing)])
-    try:
-        took = await _tick(origin, _graph(5000))
-    finally:
-        await runner.cleanup()
+    async def tick() -> float:
+        runner, origin = await _server([("GET", LIST, listing)])
+        try:
+            return await _tick(origin, _graph(5000))
+        finally:
+            await runner.cleanup()
+
+    took = _on_virtual_time(monkeypatch, tick)
     print(f"MEASURE hung-storage tick {took:.1f}s cursor={m._retention_cursor}")
     assert took < 10 + 2

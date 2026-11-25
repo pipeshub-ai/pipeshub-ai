@@ -1,0 +1,89 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/core/events/interaction.grant_revoked.schema.json",
+  "title": "InteractionGrantRevokedEvent",
+  "description": "The conversation's owner took back an \"allow for this conversation\" (ADR-GRANT-01 D8, UI-B1 G5): from this event on, the grant for this tool and destination answers no ask of the run, whatever sensitivity it was given for, until a person allows it again (a later interaction.granted). Node writes it on every open run of the conversation and on the conversation's root stream, so a run admitted later reads it too, and a child pinned the grant at its spawn (inheritedGrants) drops it. Folds ignore it.",
+  "x-writer": [
+    "node"
+  ],
+  "allOf": [
+    {
+      "$ref": "../envelope.schema.json#/$defs/InlineEnvelope"
+    }
+  ],
+  "properties": {
+    "type": {
+      "const": "interaction.grant_revoked"
+    },
+    "writer": {
+      "const": "node"
+    },
+    "data": {
+      "$ref": "#/$defs/InteractionGrantRevokedData"
+    }
+  },
+  "$defs": {
+    "InteractionGrantRevokedData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "toolId",
+        "key",
+        "by"
+      ],
+      "properties": {
+        "toolId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512,
+          "description": "The tool the revoked grant allowed."
+        },
+        "key": {
+          "$ref": "../common.schema.json#/$defs/Digest",
+          "description": "The destination the revoked grant allowed (the grant's key)."
+        },
+        "by": {
+          "$ref": "../common.schema.json#/$defs/PrincipalRef",
+          "description": "Who took it back: the conversation's owner."
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 21,
+      "runId": "run_1",
+      "type": "interaction.grant_revoked",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-11-09T09:00:00.000Z",
+      "writer": "node",
+      "visibility": "owner",
+      "data": {
+        "toolId": "web@searxng/fetch_url",
+        "key": "sha256:4c5c0f51fdaf2b50038b8c674f654f5407e153408d5688d5b5fbcf38395aa0c3",
+        "by": "p_user_1"
+      }
+    },
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 22,
+      "type": "interaction.grant_revoked",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-11-09T09:00:00.000Z",
+      "writer": "node",
+      "visibility": "owner",
+      "data": {
+        "toolId": "web@searxng/fetch_url",
+        "key": "sha256:4c5c0f51fdaf2b50038b8c674f654f5407e153408d5688d5b5fbcf38395aa0c3",
+        "by": "p_user_1"
+      }
+    }
+  ]
+}

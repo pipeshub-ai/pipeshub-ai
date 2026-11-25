@@ -50,6 +50,8 @@ import * as oauthTokenRepo from '../../../src/libs/repositories/oauth-token';
 import { ProjectService } from '../../../src/modules/projects/services/project.service';
 import { registerUpstreams } from '../../../src/libs/http/upstream-call';
 import { registerAppUpstreams } from '../../../src/modules/tokens_manager/config/config';
+import { recordOrgHarnessReader } from '../../../src/modules/agent-harness/config';
+import { setSlackUserLinkRepository } from '../../../src/libs/repositories/slack-user-link';
 
 const JWT_SECRET = 'user-audit-jwt-secret';
 const SCOPED_SECRET = 'user-audit-scoped-secret';
@@ -68,6 +70,21 @@ const mkUser = (fullName: string, email: string, role: string, extra: Row = {}):
 });
 
 describe('user and group audit lines (HTTP)', function () {
+  // An upstream suite: it runs as a release without the agent harness does (compatibility profile, Labs off).
+  let savedHardened: string | undefined;
+  beforeEach(() => {
+    savedHardened = process.env.PIPESHUB_HARDENED;
+    delete process.env.PIPESHUB_HARDENED;
+    recordOrgHarnessReader(() => Promise.resolve(false));
+    // A delete also drops the Slack accounts the user linked (ADR-SLACKID-01).
+    setSlackUserLinkRepository({ removeForUser: async () => 0 } as never);
+  });
+  afterEach(() => {
+    setSlackUserLinkRepository();
+    if (savedHardened === undefined) delete process.env.PIPESHUB_HARDENED;
+    else process.env.PIPESHUB_HARDENED = savedHardened;
+  });
+
   this.timeout(20000);
 
   let server: Server;
@@ -206,7 +223,8 @@ describe('user and group audit lines (HTTP)', function () {
       listByEmails: async (o: string, es: string[]) => users.filter((u) => u.orgId === o && es.includes(u.email)).map((u) => ({ ...u })),
       // Like both stores: restores the removed rows as members, then returns every live row at the addresses.
       restoreByEmails: async (o: string, es: string[]) => { for (const u of users) if (u.orgId === o && es.includes(u.email) && u.isDeleted) Object.assign(u, { isDeleted: false, role: 'member' }); return users.filter((u) => u.orgId === o && es.includes(u.email) && !u.isDeleted).map((u) => ({ ...u })); },
-      promoteToAdmin: async (_o: string, ids: string[]) => { for (const u of users) if (ids.includes(u._id)) u.role = 'admin'; },
+      // Like both stores: live accounts only.
+      promoteToAdmin: async (_o: string, ids: string[]) => { for (const u of users) if (ids.includes(u._id) && !u.isDeleted) u.role = 'admin'; },
       countActiveAdmins: async (o: string) => users.filter((u) => u.orgId === o && !u.isDeleted && u.role === 'admin').length,
       setRole: async (o: string, id: string, role: string) => { const u = live(o, id); if (u) u.role = role; },
       serviceAccountIdsAmong: async () => [],

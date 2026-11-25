@@ -655,7 +655,7 @@ class KernelDB:
             return LockTimeout(str(e))
         if prologue and state == "55000":
             return ProfileEpochMismatch(str(e))
-        lost = isinstance(e, asyncpg.InterfaceError) or (
+        lost = isinstance(e, asyncpg.InterfaceError) or _broken_protocol(e) or (
             not isinstance(e, TimeoutError) and isinstance(e, (OSError, asyncio.IncompleteReadError))
         ) or lost_state(state)
         if lost:
@@ -664,6 +664,14 @@ class KernelDB:
         if prologue:
             return PrologueFailed(f"{type(e).__name__}: {e}")
         return e
+
+
+def _broken_protocol(e: Exception) -> bool:
+    """The driver's protocol state is broken ("failed", another operation in progress, not connected), as a connection the server
+    or the pooler dropped mid-operation leaves it: the connection cannot be used again. asyncpg raises the same InternalClientError
+    type for a missing codec, which is a bug and is not a lost connection, so the messages of asyncpg's protocol state checks
+    (protocol/coreproto.pyx ``_set_state``, ``_ensure_connected``) are matched."""
+    return isinstance(e, asyncpg.InternalClientError) and str(e).startswith(("cannot switch to state", "not connected"))
 
 
 def _class_of_state(state: str) -> str:

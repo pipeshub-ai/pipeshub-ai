@@ -94,6 +94,7 @@ describe('OAuthProviderController', () => {
       createAuthorization: sinon.stub(),
       getConsentData: sinon.stub(),
       approve: sinon.stub(),
+      allowedScopesOf: sinon.stub().callsFake((a: any) => a.allowedScopes),
     }
     controller = new OAuthProviderController(
       mockLogger,
@@ -172,7 +173,7 @@ describe('OAuthProviderController', () => {
 
       expect(mockRes.json.firstCall.args[0].consentData.app.registeredBy).to.equal('Mallory')
       // Looked up in the signed-in person's org.
-      const filter = usersFind.firstCall.args[0] as Record<string, unknown>
+      const filter = usersFind.firstCall.args[0] as unknown as Record<string, unknown>
       expect(String(filter.orgId)).to.equal('507f1f77bcf86cd799439012')
     })
 
@@ -335,6 +336,8 @@ describe('OAuthProviderController', () => {
       await controller.authorizeConsent(req, mockRes, mockNext)
       const response = mockRes.json.firstCall.args[0]
       expect(response.redirectUrl).to.include('code=auth-code-123')
+      // AuthorizationCodeService / OAuthTokenService log the event; the controller adds no twin.
+      expect(mockLogger.info.called).to.be.false
     })
 
     it('should issue a code for any authenticated user (not limited to app creator)', async () => {
@@ -582,6 +585,9 @@ describe('OAuthProviderController', () => {
 
       await controller.token(req, mockRes, mockNext)
       expect(mockRes.setHeader.calledWith('Cache-Control', 'no-store')).to.be.true
+      expect(mockRes.json.firstCall.args[0].access_token).to.equal('at')
+      // AuthorizationCodeService / OAuthTokenService log the event; the controller adds no twin.
+      expect(mockLogger.info.called).to.be.false
     })
 
     it('records oauth_token_issued with the grant, client and channel', async () => {
@@ -601,7 +607,7 @@ describe('OAuthProviderController', () => {
 
       const events = eventBuffer.drain().filter((e) => e.event === 'oauth_token_issued')
       expect(events).to.have.length(1)
-      expect(events[0].props).to.deep.equal({
+      expect(events[0]!.props).to.deep.equal({
         grant_type: 'authorization_code', client_id: 'cid', user_agent: 'cursor/1.2', channel: 'docs',
       })
       expect(JSON.stringify(events[0])).to.not.include('secret-at')
@@ -1048,6 +1054,8 @@ describe('OAuthProviderController', () => {
       const response = mockRes.json.firstCall.args[0]
       expect(response.access_token).to.equal('new-at')
       expect(response.refresh_token).to.equal('new-rt')
+      // AuthorizationCodeService / OAuthTokenService log the event; the controller adds no twin.
+      expect(mockLogger.info.called).to.be.false
     })
 
     it('should require client_secret for confidential clients on refresh', async () => {
@@ -1092,6 +1100,26 @@ describe('OAuthProviderController', () => {
       await controller.token(req, mockRes, mockNext)
       const args = mockOAuthTokenService.refreshTokens.firstCall.args
       expect(args[2]).to.deep.equal(['org:read'])
+    })
+
+    it('refreshes against the scopes the app may grant now (the agent app is cut to MCP_SCOPES), not its stored list', async () => {
+      const agent = { clientId: 'pipeshub-agent', orgId: 'o1', isConfidential: false, allowedScopes: ['user:read', 'code:write'] }
+      mockOAuthAppService.getAppByClientId.resolves(agent)
+      mockOAuthAppService.isGrantTypeAllowed.returns(true)
+      mockOAuthDeviceService.allowedScopesOf.callsFake(() => ['user:read'])
+      mockOAuthTokenService.refreshTokens.resolves({
+        accessToken: 'at', tokenType: 'Bearer', expiresIn: 3600, scope: 'user:read',
+      })
+      const req = {
+        body: { grant_type: 'refresh_token', client_id: 'pipeshub-agent', refresh_token: 'rt' },
+        headers: {},
+      } as any
+
+      await controller.token(req, mockRes, mockNext)
+      const [app] = mockOAuthTokenService.refreshTokens.firstCall.args
+      expect(app.allowedScopes).to.deep.equal(['user:read'])
+      expect(app.clientId).to.equal('pipeshub-agent')
+      expect(agent.allowedScopes).to.deep.equal(['user:read', 'code:write']) // the stored app is left as it is
     })
   })
 
@@ -1460,6 +1488,9 @@ describe('OAuthProviderController', () => {
       const args = mockOAuthTokenService.generateTokens.firstCall.args
       expect(args[5]).to.equal('Creator Name')
       expect(args[6]).to.equal('premium')
+      expect(mockRes.json.firstCall.args[0].access_token).to.equal('at')
+      // AuthorizationCodeService / OAuthTokenService log the event; the controller adds no twin.
+      expect(mockLogger.info.called).to.be.false
     })
   })
 

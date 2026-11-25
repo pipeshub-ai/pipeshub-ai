@@ -166,6 +166,9 @@ describe('docstore-migrate source preparation', () => {
   it('the configuration names the variable that is missing; json is stored with keys in one order; hashes are SHA-256', () => {
     expect(() => loadConfig({})).to.throw('MONGO_URI is not set')
     expect(loadConfig({ MONGO_URI: 'mongodb://x' }).mongoUri).to.equal('mongodb://x')
+    // the tool signs in with its own login when given one; the application's URI still bounds the fence wait
+    expect(loadConfig({ MONGO_URI: 'mongodb://app', MIGRATE_MONGO_URI: 'mongodb://tool' })).to.include({ mongoUri: 'mongodb://tool', appMongoUri: 'mongodb://app' })
+    expect(loadConfig({ MONGO_URI: 'mongodb://app', MIGRATE_MONGO_URI: '' }).mongoUri).to.equal('mongodb://app')
     expect(canon({ b: 1, a: { d: 1, c: 2 } })).to.equal(canon({ a: { c: 2, d: 1 }, b: 1 }))
     expect(sha256('abc')).to.equal('ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad')
   })

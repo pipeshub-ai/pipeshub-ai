@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+from types import SimpleNamespace
+from typing import TYPE_CHECKING
 
 import pytest
 
@@ -13,6 +15,9 @@ from app.services.vector_db.pgvector.errors import PgVectorError
 from app.services.vector_db.pgvector.tuning import Tuning
 from app.services.vector_db.pgvector.visibility import Scope
 from tests.support.eventually import done_without_waiting
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 T = Tuning()
 N = T.n_e0
@@ -388,9 +393,9 @@ def test_the_statements_the_search_builds_from_parts_are_exactly_these() -> None
             found[(path.name, fn)] = count
     # the four statements of the dense path, and the fragments they and the filters are made of (membership probes and the payload
     # conditions and the scope filter's condition in its two forms, admitting and deferring: fixed text, every value a ``$n``)
-    assert found == {("dense.py", "exact_sql"): 1, ("dense.py", "index_sql"): 1, ("dense.py", "bounded_sql"): 1, ("dense.py", "count_sql"): 1,
+    assert found == {("dense.py", "exact_sql"): 1, ("dense.py", "index_sql"): 1, ("dense.py", "bounded_sql"): 1, ("dense.py", "count_sql"): 4,
                      ("lexical.py", "lexical_sql"): 1, ("scope_filter.py", "predicate"): 2, ("sql_filters.py", "_match"): 2,
-                     ("visibility.py", "candidates"): 1, ("visibility.py", "probe"): 1}, found
+                     ("visibility.py", "admitted"): 1, ("visibility.py", "probe"): 1}, found
 
 
 @pytest.mark.asyncio
@@ -483,7 +488,7 @@ class _SlowPoolDb:
     and the statements together (a wait longer than it is a timeout). The checked org has one connector and no unconnected point."""
 
     def __init__(self, wait_s: float, *, fail: Exception | None = None) -> None:
-        self.wait_s, self.fail, self.runs, self.budgets = wait_s, fail, 0, []
+        self.wait_s, self.fail, self.runs, self.budgets, self.waited = wait_s, fail, 0, [], 0
 
     async def run(self, fn, **opts: object) -> object:
         import asyncio
@@ -492,6 +497,7 @@ class _SlowPoolDb:
 
         self.runs += 1
         await asyncio.sleep(self.wait_s)
+        self.waited += 1
         timeout_ms = opts.get("timeout_ms")
         if timeout_ms is not None and self.wait_s * 1000 >= timeout_ms:
             raise DbTimeout("the statement ran out of the budget the pool wait used up")
@@ -534,10 +540,12 @@ async def test_a_failed_connector_check_keeps_the_arms_and_only_a_statement_time
     import asyncio
 
     from app.core import org_context
-    from app.core.db import DbTimeout, PoolTimeout
+    from app.core.db import ConnectionLost, DbTimeout, PoolTimeout
 
     t = dataclasses.replace(T, connector_ttl_s=0.0, connector_fail_ttl_s=300.0)
-    for fail, again in ((PoolTimeout("no pooled connection"), True), (DbTimeout("canceling statement due to statement timeout"), False)):
+    # a connection the server dropped (a restart, a failover) says nothing about the org's size either: asked again soon, as a busy pool is
+    for fail, again in ((PoolTimeout("no pooled connection"), True), (ConnectionLost("connection was closed in the middle of operation", retry_safe=True), True),
+                        (DbTimeout("canceling statement due to statement timeout"), False)):
         db = _SlowPoolDb(0.0, fail=fail)
         sizer = dense.Sizer(db, t)
         with org_context.bind(org_context.OrgContext(ORG, None, "service", "t", "-")):
@@ -761,3 +769,65 @@ async def test_a_lexical_leg_for_a_filter_that_trusts_nothing_asks_nothing_and_i
     tx = _LexTx(5000, lambda i: False)
     rows, degraded = await lexical.search(_LexDb(tx), ORG, 7, SparseVector([4], [1.0]), Scope(scope_filter=live), 20, T)
     assert tx.calls and degraded == "partial"
+
+
+# ---- leg latency by tier ------------------------------------------------------------------------------------------------------------------
+class _AnswersDb:
+    """``run`` answers the scripted values in order (an exception is raised): the sizing read, then the leg's read."""
+
+    def __init__(self, *answers: object) -> None:
+        self.answers = list(answers)
+
+    async def run(self, fn: object, **_: object) -> object:
+        answer = self.answers.pop(0)
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+
+@pytest.fixture
+def leg_seconds(monkeypatch: pytest.MonkeyPatch) -> Callable[[str], float]:
+    from app.telemetry.backend import PrometheusBackend
+    from app.telemetry.modules import pgvector_search_metrics
+
+    backend = PrometheusBackend()
+    monkeypatch.setattr(pgvector_search_metrics, "LEG_SECONDS", backend.histogram("t_leg_seconds", "t", ["tier", "leg_band"], (0.1, 1.0)))
+
+    def count(tier: str) -> float:
+        line = f't_leg_seconds_count{{leg_band="40",tier="{tier}"}} '
+        return next((float(x.split()[-1]) for x in backend.serialize().splitlines() if x.startswith(line)), 0.0)
+
+    return count
+
+
+async def test_a_dense_leg_is_timed_under_the_tier_that_answered_it(leg_seconds) -> None:
+    db = _AnswersDb((None, 10, False, 0), [(1, "p1")])          # ten candidates: the exact tier
+    leg, _ = await dense.search(db, dense.Sizer(db, T), query(), T)
+    assert leg.plan.tier is dense.Tier.E0 and leg.rows == [(1, "p1")]
+    assert (leg_seconds("e0"), leg_seconds("degraded")) == (1, 0)
+
+
+@pytest.mark.parametrize("answers", [
+    pytest.param((DbError("sizing"), []), id="sizing-failed"),
+    pytest.param(((None, 10, False, 0), DbTimeout("busy"), []), id="tier-timed-out"),
+    pytest.param(((None, 10, False, 0), DbTimeout("busy"), DbError("no slot")), id="overload"),
+])
+async def test_a_degraded_dense_leg_is_timed_as_degraded_not_under_its_tier(leg_seconds, answers) -> None:
+    db = _AnswersDb(*answers)
+    leg, _ = await dense.search(db, dense.Sizer(db, T), query(), T)
+    assert leg.degraded in ("sizing", "timeout", "overload")
+    assert (leg_seconds("degraded"), leg_seconds("e0")) == (1, 0)
+
+
+async def test_a_lexical_leg_is_timed_whether_it_answers_or_runs_out_of_time(leg_seconds) -> None:
+    from app.services.vector_db.models import SparseVector
+    from app.services.vector_db.pgvector import lexical
+
+    await lexical.search(_LexDb(_LexTx(5, lambda i: True)), ORG, 7, SparseVector([4], [1.0]), Scope(), 20, T)
+    await lexical.search(_LexDb(raises=DbTimeout("busy")), ORG, 7, SparseVector([4], [1.0]), Scope(), 20, T)
+    nothing = dataclasses.replace(Scope(), scope_filter=SimpleNamespace(matches_nothing=True))
+    db = _LexDb(raises=AssertionError("a scope that matches nothing asks the database nothing"))
+    assert await lexical.search(db, ORG, 7, SparseVector([4], [1.0]), nothing, 20, T) == ([], None)
+    with pytest.raises(ConnectionLost):
+        await lexical.search(_LexDb(raises=_lost()), ORG, 7, SparseVector([4], [1.0]), Scope(), 20, T)
+    assert leg_seconds("lexical") == 4 and db.opts == []

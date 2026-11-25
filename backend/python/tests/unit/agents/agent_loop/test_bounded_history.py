@@ -26,6 +26,7 @@ from app.agent_loop_lib.core.tokens import count_tokens
 from app.agents.agent_loop.context import AgentContext
 from app.agents.agent_loop.factory import PipesHubAgentFactory
 from app.agents.agent_loop.hooks.attachment_resolver import resolve_attachments_for_goal
+from tests.support.record_access import InMemoryRecordAccess
 
 if TYPE_CHECKING:
     from app.agent_loop_lib.context.manager import ContextManager
@@ -54,7 +55,7 @@ class _FakeAgent:
 def _readable_graph() -> MagicMock:
     graph = MagicMock()
     graph.get_records_by_virtual_record_id = AsyncMock(return_value=["rec-1"])
-    graph.check_record_access_with_details = AsyncMock(return_value={"id": "rec-1"})
+    InMemoryRecordAccess().readable("user", "org", "rec-1").serve(graph)
     return graph
 
 

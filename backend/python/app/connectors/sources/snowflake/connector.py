@@ -1018,7 +1018,7 @@ class SnowflakeConnector(SyncLifecycleMixin, BaseConnector):
         """Backward-compatible wrapper for scope-aware app-edge creation."""
         await self._ensure_scope_app_edges()
 
-    async def _get_permissions(self) -> list[Permission]:
+    async def _get_permissions(self) -> list[Permission] | None:
         return await database_permissions(self)
 
     async def _record_identity(self, external_id: str) -> tuple[str, Record | None]:

@@ -14,6 +14,7 @@ from app.connectors.core.registry.auth_builder import (
 from app.connectors.core.registry.connector_builder import CommonFields
 from app.connectors.core.registry.tool_builder import (
     ToolDefinition,
+    ToolProvider,
     ToolsetBuilder,
     ToolsetCategory,
 )
@@ -102,7 +103,7 @@ tools: List[ToolDefinition] = [
 
 
 # Register Discord toolset
-@ToolsetBuilder("Discord")\
+@ToolsetBuilder("Discord", provider=ToolProvider.CONNECTOR)\
     .in_group("Communication")\
     .with_description("Discord integration for messaging and server management")\
     .with_category(ToolsetCategory.APP)\
@@ -207,7 +208,7 @@ class Discord:
                 description="The content of the message to send (required)"
             ),
         ],
-        tags=[Tag(key="category", value="communication"), Tag(key="type", value="create")],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="create"), Tag(key="effect", value="write")],
     )
     async def send_message(self, channel_id: int, content: str) -> Tuple[bool, str]:
         try:
@@ -230,7 +231,7 @@ class Discord:
                 description="The ID of the channel to retrieve (required)"
             ),
         ],
-        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_channel(self, channel_id: int) -> Tuple[bool, str]:
         try:
@@ -262,7 +263,7 @@ class Discord:
                 required=False,
             ),
         ],
-        tags=[Tag(key="category", value="communication"), Tag(key="type", value="create")],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="create"), Tag(key="effect", value="write")],
     )
     async def create_channel(
         self,
@@ -294,7 +295,7 @@ class Discord:
                 description="The ID of the channel to delete (required)"
             ),
         ],
-        tags=[Tag(key="category", value="communication"), Tag(key="type", value="delete")],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="delete"), Tag(key="effect", value="write")],
     )
     async def delete_channel(self, channel_id: int) -> Tuple[bool, str]:
         try:
@@ -333,7 +334,7 @@ class Discord:
                 required=False,
             ),
         ],
-        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_messages(
         self,
@@ -361,7 +362,7 @@ class Discord:
         short_description="Get all guilds (servers) the bot has access to",
         description="Get all guilds (servers) that the bot currently has access to.",
         parameters=[],
-        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_guilds(self) -> Tuple[bool, str]:
         try:
@@ -388,7 +389,7 @@ class Discord:
                 required=False,
             ),
         ],
-        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_guild_channels(
         self,
@@ -423,7 +424,7 @@ class Discord:
                 description="The content of the direct message (required)"
             ),
         ],
-        tags=[Tag(key="category", value="communication"), Tag(key="type", value="create")],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="create"), Tag(key="effect", value="write")],
     )
     async def send_direct_message(self, user_id: int, content: str) -> Tuple[bool, str]:
         try:
@@ -452,7 +453,7 @@ class Discord:
                 required=False,
             ),
         ],
-        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_guild_members(
         self,
@@ -484,7 +485,7 @@ class Discord:
                 description="The name of the role to create (required)"
             ),
         ],
-        tags=[Tag(key="category", value="communication"), Tag(key="type", value="create")],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="create"), Tag(key="effect", value="write")],
     )
     async def create_role(self, guild_id: int, name: str) -> Tuple[bool, str]:
         try:

@@ -276,10 +276,10 @@ export class DelegationService {
     });
 
     this.logger.info('Delegation granted', {
-      orgId,
-      serviceAccountId: account.id,
-      subjectUserId: subject.userId,
-      grantedBy: actingUserId,
+      org_id: orgId,
+      service_account_id: account.id,
+      subject_user_id: subject.userId,
+      granted_by: actingUserId,
     });
 
     return this.toListItem(row, subject);
@@ -414,10 +414,10 @@ export class DelegationService {
     });
 
     this.logger.info('Delegation revoked', {
-      orgId,
-      serviceAccountId,
-      subjectUserId,
-      revokedBy: actingUserId,
+      org_id: orgId,
+      service_account_id: serviceAccountId,
+      subject_user_id: subjectUserId,
+      revoked_by: actingUserId,
     });
   }
 
@@ -439,8 +439,8 @@ export class DelegationService {
     );
     if (deletedCount > 0) {
       this.logger.info('Removed every delegation held by a service account', {
-        orgId,
-        serviceAccountId,
+        org_id: orgId,
+        service_account_id: serviceAccountId,
         removed: deletedCount,
       });
     }
@@ -468,8 +468,8 @@ export class DelegationService {
       // also the thing this feature promises, so a failure is logged loudly
       // rather than swallowed.
       this.logger.error('Failed to write a delegation audit record', {
-        orgId: event.orgId,
-        serviceAccountId: event.serviceAccountId,
+        org_id: event.orgId,
+        service_account_id: event.serviceAccountId,
         outcome: event.outcome,
         error: error instanceof Error ? error.message : 'Unknown error',
       });

@@ -20,6 +20,7 @@ from app.connectors.core.registry.auth_builder import (
 from app.connectors.core.constants import IconPaths
 from app.connectors.core.registry.connector_builder import CommonFields
 from app.connectors.core.registry.tool_builder import (
+    ToolProvider,
     ToolsetBuilder,
     ToolsetCategory,
 )
@@ -245,7 +246,7 @@ class CreateMeetLinkInput(BaseModel):
 
 
 # Register Google Calendar toolset
-@ToolsetBuilder("Calendar")\
+@ToolsetBuilder("Calendar", provider=ToolProvider.CONNECTOR)\
     .in_group("Google Workspace")\
     .with_description("Google Calendar integration for event management and scheduling")\
     .with_category(ToolsetCategory.APP)\
@@ -320,7 +321,7 @@ class GoogleCalendar:
             ToolParameter(name="show_deleted", type=ParameterType.BOOLEAN, description="Include deleted events", required=False),
             ToolParameter(name="time_zone", type=ParameterType.STRING, description="Time zone used in the response", required=False),
         ],
-        tags=[Tag(key="category", value="calendar"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="calendar"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
         args_summary=lambda args: (
             f'Searching calendar: "{args["query"]}"' if args.get("query") else "Fetching calendar events"
         ),
@@ -402,7 +403,7 @@ class GoogleCalendar:
             ToolParameter(name="event_timezone", type=ParameterType.STRING, description="The timezone for the event", required=False, default="UTC"),
             ToolParameter(name="event_all_day", type=ParameterType.BOOLEAN, description="Whether the event is an all-day event", required=False, default=False),
         ],
-        tags=[Tag(key="category", value="calendar"), Tag(key="type", value="destructive")],
+        tags=[Tag(key="category", value="calendar"), Tag(key="type", value="destructive"), Tag(key="effect", value="write")],
         args_summary=lambda args: (
             f'Creating calendar event "{args["event_title"]}"' if args.get("event_title") else "Creating calendar event"
         ),
@@ -510,7 +511,7 @@ class GoogleCalendar:
             ToolParameter(name="event_timezone", type=ParameterType.STRING, description="The new timezone for the event", required=False, default="UTC"),
             ToolParameter(name="event_all_day", type=ParameterType.BOOLEAN, description="Whether the event should be an all-day event", required=False, default=False),
         ],
-        tags=[Tag(key="category", value="calendar"), Tag(key="type", value="destructive")],
+        tags=[Tag(key="category", value="calendar"), Tag(key="type", value="destructive"), Tag(key="effect", value="write")],
     )
     async def update_calendar_event(
         self,
@@ -624,7 +625,7 @@ class GoogleCalendar:
             ToolParameter(name="event_attendees_emails", type=ParameterType.LIST, description="List of email addresses for event attendees", required=False),
             ToolParameter(name="event_timezone", type=ParameterType.STRING, description="The timezone for the event", required=False, default="UTC"),
         ],
-        tags=[Tag(key="category", value="calendar"), Tag(key="type", value="destructive")],
+        tags=[Tag(key="category", value="calendar"), Tag(key="type", value="destructive"), Tag(key="effect", value="write")],
     )
     async def create_meet_link(
         self,
@@ -710,7 +711,7 @@ class GoogleCalendar:
         parameters=[
             ToolParameter(name="event_id", type=ParameterType.STRING, description="The actual event ID from Google Calendar", required=True),
         ],
-        tags=[Tag(key="category", value="calendar"), Tag(key="type", value="destructive")],
+        tags=[Tag(key="category", value="calendar"), Tag(key="type", value="destructive"), Tag(key="effect", value="write")],
     )
     async def delete_calendar_event(
         self,
@@ -741,7 +742,7 @@ class GoogleCalendar:
         short_description="List all calendars",
         description="Retrieve the list of all available Google Calendars for the authenticated user.",
         parameters=[],
-        tags=[Tag(key="category", value="calendar"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="calendar"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_calendar_list(self) -> tuple[bool, str]:
         """Get the list of available calendars"""
@@ -763,7 +764,7 @@ class GoogleCalendar:
         parameters=[
             ToolParameter(name="calendar_id", type=ParameterType.STRING, description="The ID of the calendar to get (default: 'primary')", required=False),
         ],
-        tags=[Tag(key="category", value="calendar"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="calendar"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_calendar_list_by_id(
         self,

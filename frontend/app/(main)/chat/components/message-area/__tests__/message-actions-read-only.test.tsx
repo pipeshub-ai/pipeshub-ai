@@ -18,7 +18,10 @@ vi.mock('@/app/components/ui/MaterialIcon', () => ({
 vi.mock('@/lib/hooks/use-chat-speech-synthesis', () => ({
   useChatSpeechSynthesis: () => ({ isSupported: false, isSpeaking: false, speak: vi.fn(), stop: vi.fn() }),
 }));
-vi.mock('@/lib/store/command-store', () => ({ useCommandStore: { getState: () => ({ dispatch: vi.fn() }) } }));
+// The last answer also registers the /copy and /feedback commands (our side).
+vi.mock('@/lib/store/command-store', () => ({
+  useCommandStore: { getState: () => ({ dispatch: vi.fn(), register: vi.fn(), unregister: vi.fn() }) },
+}));
 vi.mock('@/lib/store/toast-store', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 vi.mock('@/app/(main)/agents/api', () => ({ AgentsApi: {} }));
 vi.mock('../../../api', () => ({ ChatApi: {} }));
@@ -26,6 +29,8 @@ vi.mock('../../../store', () => {
   const state = () => ({
     activeSlotId: 's1',
     slots: { s1: h.slot },
+    // Our MessageActions reads the model catalog for the answer's model badge.
+    settings: { availableModels: [] },
     bumpConversationsVersion: vi.fn(),
   });
   const useChatStore = Object.assign((selector: (s: ReturnType<typeof state>) => unknown) => selector(state()), {
@@ -77,6 +82,8 @@ describe('message actions on a shared agent chat (read-only for recipients)', ()
     h.slot.isOwner = false;
     renderActions();
     expect(document.querySelector('[data-icon="content_copy"]')).not.toBeNull();
+    // BGUI8-FU-4: the icon-only button has a name (axe button-name).
+    expect(document.querySelector('[data-icon="content_copy"]')?.closest('button')?.getAttribute('aria-label')).toBeTruthy();
   });
 
   it('keeps rating and regenerate while ownership is still loading', () => {

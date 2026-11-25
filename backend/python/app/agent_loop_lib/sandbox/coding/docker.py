@@ -5,6 +5,7 @@ import io
 import logging
 import math
 import os
+import posixpath
 import re
 import shlex
 import shutil
@@ -14,14 +15,17 @@ import tempfile
 import threading
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
 from app.agent_loop_lib.sandbox.base import SandboxInfo
+from app.agent_loop_lib.sandbox.coding import credentials
 from app.agent_loop_lib.sandbox.coding import egress_firewall as _egress_firewall
 from app.agent_loop_lib.sandbox.coding.base import (
+    WORKSPACE_DIR_NAME,
+    CodeOutOfMemory,
     CodeRequest,
     CodeResult,
     CodingLanguage,
@@ -40,6 +44,11 @@ from app.agent_loop_lib.sandbox.coding.cleanup import (
     register_sandbox_dir,
     unregister_sandbox_dir,
 )
+from app.agent_loop_lib.sandbox.coding.credentials import (
+    ProxiedRegistry,
+    Registry,
+    credentialed_needs_broker,
+)
 from app.agent_loop_lib.sandbox.coding.docker_client import (
     DockerClientProvider,
     get_default_provider,
@@ -51,6 +60,7 @@ from app.agent_loop_lib.sandbox.coding.egress_firewall import (
     deadline_command,
     firewall_unavailable,
     firewalled_container_kwargs,
+    limited,
     new_firewall_token,
     parse_cidrs,
 )
@@ -68,6 +78,7 @@ from app.agent_loop_lib.sandbox.coding.validation import (
     validate_package_spec,
 )
 from app.core.org_context import spawn_in_request
+from app.utils.private_dirs import ensure_private_dir
 
 """`DockerCodingSandbox`: a `CodingSandboxBackend` implementation that runs
 code inside ephemeral Docker containers instead of as a host subprocess
@@ -157,6 +168,41 @@ def _snapshot_mtimes(root: str) -> dict[str, float]:
                 continue
     return snapshot
 
+# Every container carries its sandbox and owning process, so leftovers from a
+# crashed process can be found (and tests can tell their own containers apart).
+SANDBOX_ID_LABEL = "io.pipeshub.sandbox.id"
+SANDBOX_OWNER_PID_LABEL = "io.pipeshub.sandbox.owner-pid"
+
+
+# Prints each requirement the image does not already provide. Only a bare name is
+# skipped (a version or extras may differ from what the image has).
+_PIP_ALREADY_INSTALLED = """
+import re, sys
+from importlib import metadata
+for spec in sys.argv[1:]:
+    if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", spec):
+        try:
+            metadata.version(spec)
+            continue
+        except metadata.PackageNotFoundError:
+            pass
+    print(spec)
+"""
+
+# `sh -c SCRIPT FILTER INDEX REQ...`: reinstalling what the image ships (pandas)
+# into /deps, with pip staging under the 100 MB /tmp tmpfs, failed with ENOSPC.
+# pip stages on the install mount instead, and removes its staging on exit.
+_PIP_INSTALL_SCRIPT = (
+    # `set -f`: `$need` is split into words but never globbed (a spec like `lodash@4.*`).
+    'set -f; filter="$0"; index="$1"; shift; '
+    "export TMPDIR=/deps/.pip-tmp; "
+    'mkdir -p "$TMPDIR"; '
+    "trap 'rm -rf \"$TMPDIR\"' EXIT; "
+    'need=$(python3 -c "$filter" "$@") || exit $?; '
+    '[ -z "$need" ] && exit 0; '
+    'pip install --quiet --no-cache-dir --target /deps --index-url "$index" $need'
+)
+
 _NETWORK_UNAVAILABLE_NOTE = (
     "[sandbox] Network access is unavailable for this run: the egress "
     "firewall could not be installed, so the code ran with no network.\n"
@@ -231,6 +277,8 @@ class _RunOutcome:
     disk_unchecked: str | None = None
     # What collecting its files left out ("" when nothing).
     collection_note: str = ""
+    # Why a networked run went offline ("" when it did not).
+    network_note: str = ""
 
 
 def _parse_docker_time(value: object) -> float | None:
@@ -394,8 +442,9 @@ def _disk_watch_limit_for(client: Any) -> int:
         return limit
 
 
-def _env_seconds(name: str, default: float) -> float:
-    raw = (os.environ.get(name) or "").strip()
+def _env_seconds(name: str, raw: str | None, default: float) -> float:
+    """``raw``, the value of ``name`` (read by the caller, so every name read stays literal), as positive seconds."""
+    raw = (raw or "").strip()
     if not raw:
         return default
     try:
@@ -408,8 +457,9 @@ def _env_seconds(name: str, default: float) -> float:
     return value
 
 
-def _env_count(name: str, default: int) -> int:
-    raw = (os.environ.get(name) or "").strip()
+def _env_count(name: str, raw: str | None, default: int) -> int:
+    """``raw``, the value of ``name`` (read by the caller), as a positive count."""
+    raw = (raw or "").strip()
     if not raw:
         return default
     try:
@@ -460,8 +510,12 @@ class _DiskWatch:
         self.exceeded_bytes: int | None = None
         # Why the run was stopped without its size being known, or None.
         self.unchecked_reason: str | None = None
-        self._check_timeout = _env_seconds(_ENV_DISK_WATCH_CHECK_TIMEOUT, _DISK_WATCH_CHECK_TIMEOUT_S)
-        self._max_failures = _env_count(_ENV_DISK_WATCH_MAX_FAILURES, _DISK_WATCH_MAX_FAILURES)
+        self._check_timeout = _env_seconds(
+            _ENV_DISK_WATCH_CHECK_TIMEOUT, os.environ.get(_ENV_DISK_WATCH_CHECK_TIMEOUT), _DISK_WATCH_CHECK_TIMEOUT_S,
+        )
+        self._max_failures = _env_count(
+            _ENV_DISK_WATCH_MAX_FAILURES, os.environ.get(_ENV_DISK_WATCH_MAX_FAILURES), _DISK_WATCH_MAX_FAILURES,
+        )
         self._thread = threading.Thread(target=self._run, name="sandbox-disk-watch", daemon=True)
 
     @classmethod
@@ -621,7 +675,7 @@ def _bounded_log_config(level: int) -> dict[str, Any] | None:
     if not _parse_size(size_raw):
         logger.warning("Ignoring %s=%r: not a size; using %s", _ENV_LOG_MAX_SIZE, size_raw, _DEFAULT_LOG_MAX_SIZE)
         size_raw = _DEFAULT_LOG_MAX_SIZE
-    files = _env_count(_ENV_LOG_MAX_FILES, _DEFAULT_LOG_MAX_FILES)
+    files = _env_count(_ENV_LOG_MAX_FILES, os.environ.get(_ENV_LOG_MAX_FILES), _DEFAULT_LOG_MAX_FILES)
     return {"type": _LOG_DRIVER, "config": {"max-size": size_raw, "max-file": str(files)}}
 
 
@@ -701,6 +755,7 @@ class DockerCodingSandbox(CodingSandboxBackend):
         working_dir: str | None = None,
         memory_limit_mb: int = 512,
         cpu_limit: float = 0.5,
+        pids_limit: int = 128,
         egress_network: str = "sandbox_egress",
         network_disabled: bool = True,
         allow_network: bool = False,
@@ -729,11 +784,12 @@ class DockerCodingSandbox(CodingSandboxBackend):
         self._image = image
         self._memory_limit_mb = memory_limit_mb
         self._cpu_limit = cpu_limit
+        self._pids_limit = pids_limit
         self._egress_network = egress_network
         self._network_disabled = network_disabled
         self._allow_network = allow_network
-        self._pip_index_url = pip_index_url
-        self._npm_registry = npm_registry
+        self._pip = credentials.registry(pip_index_url)
+        self._npm = credentials.registry(npm_registry)
         self._allowlist = set(package_allowlist) if package_allowlist else None
         self._denylist = set(package_denylist or [])
         self._image_node_modules = image_node_modules
@@ -741,7 +797,7 @@ class DockerCodingSandbox(CodingSandboxBackend):
         self._sandbox_user = sandbox_user
         self._installed: dict[str, set[str]] = {"typescript": set(), "python": set()}
         self._reflection = ReflectionEngine(
-            memory_limit_mb=memory_limit_mb, process_limit=CONTAINER_HARDENING["pids_limit"],
+            memory_limit_mb=memory_limit_mb, process_limit=pids_limit,
         )
         self._provisioned = False
         # Bytes and files this sandbox has kept from its runs (see
@@ -786,7 +842,8 @@ class DockerCodingSandbox(CodingSandboxBackend):
 
     async def provision(self) -> SandboxInfo:
         if not self._provisioned:
-            _make_private_dir(self._working_dir)
+            # 0700 and this user's own: the folder sits under the shared temp folder (R13-ROOT).
+            _ = ensure_private_dir(self._working_dir, "coding sandbox folder")
             os.makedirs(self._output_dir, exist_ok=True)
             register_sandbox_dir(self._working_dir)
             self._provisioned = True
@@ -830,6 +887,8 @@ class DockerCodingSandbox(CodingSandboxBackend):
         os.makedirs(os.path.dirname(entry_path), exist_ok=True)
         with open(entry_path, "w", encoding="utf-8") as f:
             f.write(request.code)
+        # `$WORKSPACE_DIR` (/src/workspace) exists before the program's first write into it.
+        os.makedirs(os.path.join(src_dir, WORKSPACE_DIR_NAME), exist_ok=True)
 
         run_cmd = deadline_command(
             ["sh", "-c", _RUN_COMMANDS[request.language].format(file=shlex.quote(entry))],
@@ -864,43 +923,21 @@ class DockerCodingSandbox(CodingSandboxBackend):
         )
 
         network_enabled = self._allow_network and request.allow_network
-        # Resolved here rather than inside the blocking helper: both are
-        # async, both are cached per process, and doing them once up front
-        # keeps the image pull out of the per-run critical path.
-        await self._ensure_image()
-        egress_network = None
-        egress_cidrs: list[str] = []
-        network_note = ""
-        if network_enabled:
-            egress_network = self._egress_network
-            try:
-                egress_cidrs = await self._provider.egress_network_cidrs(egress_network)
-                if not egress_cidrs:
-                    logger.error("egress network %s has no readable IPv4 subnet", egress_network)
-            except EgressNetworkUnsafe as exc:
-                # The run goes offline; an install on that network still refuses.
-                logger.error("%s", exc)
-            if not egress_cidrs:
-                network_enabled, egress_network = False, None
-                network_note = _NETWORK_UNAVAILABLE_NOTE
-        handle = _RunHandle()
-        fut = spawn_in_request(self._provider.run_blocking(
-            self._run_container_sync,
-            run_cmd, src_dir, request.timeout, network_enabled,
-            staged_inputs, self._provider.client, egress_network,
-            egress_cidrs, handle,
-        ))
+        # Resolved here rather than inside the run: both are cached per
+        # process, and doing them up front keeps the image pull out of the
+        # per-run critical path (and out of the run's timeout).
         try:
-            # Shielded: a cancel or the host-side timeout must not abandon the
-            # worker thread, which still owns a running container.
-            outcome = await asyncio.wait_for(asyncio.shield(fut), timeout=request.timeout + 30)
-        except asyncio.CancelledError:
-            # Never turn a cancel into a result. The caller's slot is released
-            # when this raises, so the container has to be gone first.
-            await self._stop_run(handle, fut)
-            raise
+            egress_network = await self._prepare_container(network=network_enabled)
+        except EgressNetworkUnsafe as exc:
+            # The run goes offline; an install on that network still refuses.
+            logger.error("%s", exc)
+            egress_network = None
+        try:
+            outcome = await self._run_in_container(
+                run_cmd, src_dir, request.timeout, network_enabled, staged_inputs, egress_network,
+            )
+        # A cancelled run (Stop, drain, lost lease) propagates, its container gone first; only a timeout is a result.
         except asyncio.TimeoutError:
-            await self._stop_run(handle, fut)
             duration_ms = (time.monotonic() - start) * 1000
             result = CodeResult(
                 stdout="",
@@ -910,6 +947,11 @@ class DockerCodingSandbox(CodingSandboxBackend):
                 duration_ms=duration_ms,
             )
             return result.model_copy(update={"error_analysis": self._reflection.analyze(result)})
+        except CodeOutOfMemory as exc:
+            # The code met the sandbox's memory limit: a failed run the model reads and can change, never a tool failure.
+            logger.warning("DockerCodingSandbox.execute: out of memory, limit=%dMB", exc.memory_mb)
+            result = exc.result(request.language, (time.monotonic() - start) * 1000)
+            return result.model_copy(update={"artifacts": sorted(self._list_output_artifacts(output_before))})
         except CodingSandboxError:
             raise
         except Exception as exc:
@@ -924,7 +966,7 @@ class DockerCodingSandbox(CodingSandboxBackend):
         artifacts = self._list_output_artifacts(output_before)
         artifacts.extend(self._promote_src_artifacts(src_dir, entry, staged_inputs))
         artifacts.sort()
-        return self._classify(outcome, request, duration_ms, artifacts, network_note)
+        return self._classify(outcome, request, duration_ms, artifacts, outcome.network_note)
 
     def _classify(
         self, outcome: _RunOutcome, request: CodeRequest, duration_ms: float,
@@ -984,6 +1026,8 @@ class DockerCodingSandbox(CodingSandboxBackend):
         result = CodeResult(
             stdout=outcome.stdout, stderr=stderr, exit_code=exit_code,
             language=request.language, duration_ms=duration_ms, artifacts=artifacts,
+            # The limit, for the step line and the run's answer (R32SECCOMP-FU-1).
+            out_of_memory_mb=self._memory_limit_mb if outcome.oom_killed and exit_code != 0 else None,
         )
         if result.success:
             return result
@@ -1014,20 +1058,11 @@ class DockerCodingSandbox(CodingSandboxBackend):
         if not to_install:
             return InstallResult(success=True, installed=[])
 
-        await self._ensure_image()
-        network_name = self._egress_network
+        network_name = await self._prepare_container(network=True)
         try:
-            egress_cidrs = await self._provider.egress_network_cidrs(network_name)
-            handle = _RunHandle()
-            fut = spawn_in_request(self._provider.run_blocking(
-                self._install_packages_sync, to_install, language,
-                self._provider.client, network_name, egress_cidrs, handle,
-            ))
-            try:
-                success, stdout, stderr = await asyncio.shield(fut)
-            except asyncio.CancelledError:
-                await self._stop_run(handle, fut)
-                raise
+            success, stdout, stderr = await self._install_in_sandbox(
+                to_install, language, network_name,
+            )
         except CodingSandboxError:
             raise
         except Exception as exc:
@@ -1068,7 +1103,7 @@ class DockerCodingSandbox(CodingSandboxBackend):
             # The removal (and its wait for a control thread) counts against
             # the same bound as the worker thread.
             removal = spawn_in_request(self._provider.run_control(
-                self._provider.client.api.remove_container, container_id, force=True,
+                self._provider.client.api.remove_container, container_id, force=True, v=True,
             ))
 
             def removed(task: asyncio.Future[Any], cid: str = container_id) -> None:
@@ -1257,14 +1292,138 @@ class DockerCodingSandbox(CodingSandboxBackend):
         logger.info("_list_output_artifacts: found %d file(s): %s", len(results), sorted(results))
         return sorted(results)
 
+    # -- where a run happens: a subclass that reaches containers another way
+    # -- (the sandbox broker) overrides the three async ones and keeps the rest --
+
+    async def _prepare_container(self, *, network: bool) -> str | None:
+        """Ensure the image, and the egress bridge when ``network``; returns its name. Raises
+        ``EgressNetworkUnsafe`` when the bridge exists in a form a networked run must not join."""
+        await self._ensure_image()
+        if not network:
+            return None
+        # Creates the bridge and caches its subnets, so the run reads them without a daemon call.
+        await self._provider.egress_network_cidrs(self._egress_network)
+        return self._egress_network
+
+    async def _run_in_container(
+        self,
+        command: list[str],
+        src_dir: str,
+        timeout: float,
+        network_enabled: bool,
+        staged_inputs: dict[str, _StagedFile],
+        egress_network: str | None,
+    ) -> _RunOutcome:
+        """One run in a fresh container, bounded on the host at ``timeout`` + 30 s (``TimeoutError``). A cancel or that
+        timeout removes the container before it propagates: the caller's slot is released when this raises."""
+        egress_cidrs: list[str] = []
+        network_note = ""
+        if network_enabled:
+            if egress_network is not None:
+                try:
+                    egress_cidrs = await self._provider.egress_network_cidrs(egress_network)
+                    if not egress_cidrs:
+                        logger.error("egress network %s has no readable IPv4 subnet", egress_network)
+                except EgressNetworkUnsafe as exc:
+                    # The run goes offline; an install on that network still refuses.
+                    logger.error("%s", exc)
+            if not egress_cidrs:
+                network_enabled, egress_network = False, None
+                network_note = _NETWORK_UNAVAILABLE_NOTE
+        handle = _RunHandle()
+        fut = spawn_in_request(self._provider.run_blocking(
+            self._run_container_sync,
+            command, src_dir, timeout, network_enabled,
+            staged_inputs, self._provider.client, egress_network,
+            egress_cidrs, handle,
+        ))
+        try:
+            # Shielded: a cancel or the host-side timeout must not abandon the
+            # worker thread, which still owns a running container.
+            outcome = await asyncio.wait_for(asyncio.shield(fut), timeout=timeout + 30)
+        except (asyncio.CancelledError, asyncio.TimeoutError):
+            # Never turn a cancel into a result. The caller's slot is released
+            # when this raises, so the container has to be gone first.
+            await self._stop_run(handle, fut)
+            raise
+        outcome.network_note = network_note
+        return outcome
+
+    async def _install_in_sandbox(
+        self, to_install: list[str], language: CodingLanguage, network_name: str | None,
+    ) -> tuple[bool, str, str]:
+        egress_cidrs = await self._provider.egress_network_cidrs(network_name) if network_name else []
+        handle = _RunHandle()
+        fut = spawn_in_request(self._provider.run_blocking(
+            self._install_packages_sync, to_install, language,
+            self._provider.client, network_name, egress_cidrs, handle,
+        ))
+        try:
+            return await asyncio.shield(fut)
+        except asyncio.CancelledError:
+            await self._stop_run(handle, fut)
+            raise
+
+    def _run_env(self, *, has_py_deps: bool, has_node_deps: bool) -> dict[str, str]:
+        env = {"OUTPUT_DIR": "/output", "WORKSPACE_DIR": f"/src/{WORKSPACE_DIR_NAME}"}
+        if has_py_deps:
+            env["PYTHONPATH"] = "/deps"
+        node_paths: list[str] = []
+        if has_node_deps:
+            node_paths.append("/node_modules")
+        if self._image_node_modules:
+            node_paths.append(self._image_node_modules)
+        if node_paths:
+            env["NODE_PATH"] = ":".join(node_paths)
+        return env
+
+    def _registry(self, language: CodingLanguage) -> Registry:
+        return self._pip if language == "python" else self._npm
+
+    def _install_command(
+        self, to_install: list[str], language: CodingLanguage, proxied: ProxiedRegistry | None = None
+    ) -> tuple[list[str], str, str]:
+        """The install command, the container path it fills, and the host dir that path lands in. ``proxied``: the
+        registry is reached through the egress proxy, which adds its credential (OWD-1)."""
+        if language == "python":
+            index = proxied.pip_url() if proxied is not None else self._pip.url
+            cmd = ["sh", "-c", _PIP_INSTALL_SCRIPT, _PIP_ALREADY_INSTALLED, index, *to_install]
+            return (proxied.command(cmd) if proxied else cmd), "/deps", self._deps_python_dir
+        auth = f"{proxied.npm_auth_flag()} " if proxied is not None else ""
+        cmd = [
+            "sh", "-c",
+            "mkdir -p /install && npm install --prefix /install --no-save "
+            f"--loglevel=error --registry={self._npm.url} {auth}"
+            + _shell_words(to_install),
+        ]
+        return (proxied.command(cmd) if proxied else cmd), "/install/node_modules", self._deps_node_dir
+
+    def _has_deps(self) -> tuple[bool, bool]:
+        has_py = os.path.isdir(self._deps_python_dir) and bool(os.listdir(self._deps_python_dir))
+        has_node = os.path.isdir(self._deps_node_dir) and bool(os.listdir(self._deps_node_dir))
+        return has_py, has_node
+
+    def _hardening(self) -> dict[str, Any]:
+        """Every container's limits; this sandbox's own pids budget wins over the shared default."""
+        return {
+            **CONTAINER_HARDENING,
+            "pids_limit": self._pids_limit,
+            "init": True,
+            "tmpfs": {"/tmp": "size=100M,mode=1777,noexec,nosuid,nodev"},
+            "labels": self._labels(),
+        }
+
     def _firewalled(self, command: list[str], egress_cidrs: list[str], token: str) -> dict[str, Any]:
-        return firewalled_container_kwargs(
-            command,
-            network_cidrs=egress_cidrs,
-            allowed_cidrs=self._egress_allow_cidrs,
-            run_as=self._sandbox_user,
-            token=token,
-        )
+        return {
+            **firewalled_container_kwargs(
+                command,
+                network_cidrs=egress_cidrs,
+                allowed_cidrs=self._egress_allow_cidrs,
+                run_as=self._sandbox_user,
+                token=token,
+            ),
+            "pids_limit": self._pids_limit,
+        }
 
     # -- blocking docker-py calls: only ever invoked via
     # -- DockerClientProvider.run_blocking, on its dedicated executor --
@@ -1316,31 +1475,20 @@ class DockerCodingSandbox(CodingSandboxBackend):
         handle = handle or _RunHandle()
         container = None
         try:
-            has_py_deps = os.path.isdir(self._deps_python_dir) and bool(os.listdir(self._deps_python_dir))
-            has_node_deps = os.path.isdir(self._deps_node_dir) and bool(os.listdir(self._deps_node_dir))
-            env = {"OUTPUT_DIR": "/output"}
-            if has_py_deps:
-                env["PYTHONPATH"] = "/deps"
-            node_paths: list[str] = []
-            if has_node_deps:
-                node_paths.append("/node_modules")
-            if self._image_node_modules:
-                node_paths.append(self._image_node_modules)
-            if node_paths:
-                env["NODE_PATH"] = ":".join(node_paths)
+            has_py_deps, has_node_deps = self._has_deps()
+            env = self._run_env(has_py_deps=has_py_deps, has_node_deps=has_node_deps)
 
             mem_bytes = self._memory_limit_mb * 1024 * 1024
             nano_cpus = int(self._cpu_limit * 1e9)
             container_kwargs: dict[str, Any] = {
+                **self._hardening(),
                 "image": self._image,
                 "command": command,
                 "environment": env,
                 "working_dir": "/src",
-                "mem_limit": mem_bytes,
+                **limited(mem_bytes),
                 "nano_cpus": nano_cpus,
-                "tmpfs": {"/tmp": "size=100M"},
                 "detach": True,
-                **CONTAINER_HARDENING,
             }
             if network_enabled:
                 container_kwargs["network"] = egress_network
@@ -1355,12 +1503,13 @@ class DockerCodingSandbox(CodingSandboxBackend):
                 raise _RunCancelled
             logger.info(
                 "_run_container_sync: container created id=%.12s image=%s "
-                "network_enabled=%s mem_limit=%dMB cpu=%.1f env=%s",
+                "network_enabled=%s mem_limit=%dMB cpu=%.1f env_keys=%s",
                 container.id, self._image, network_enabled,
-                self._memory_limit_mb, self._cpu_limit, env,
+                self._memory_limit_mb, self._cpu_limit, sorted(env),
             )
 
-            container.put_archive("/", _tar_empty_dir("src", mode=0o777))
+            # The root is read-only (SEC-A-04): /src, /output, /deps and /node_modules are the container's own
+            # volumes (``limited``), so files go straight in.
             if staged_inputs:
                 tar_size = _put_tar(
                     container, "/src",
@@ -1374,7 +1523,6 @@ class DockerCodingSandbox(CodingSandboxBackend):
             else:
                 logger.info("_run_container_sync: no staged_inputs to archive")
             _put_directory(container, "/src", src_dir)
-            container.put_archive("/", _tar_empty_dir("output", mode=0o777))
             # Restore what earlier calls on this sandbox left in $OUTPUT_DIR.
             # Every execute() gets a fresh container, so without this the
             # deliverable directory silently resets between calls while the
@@ -1386,10 +1534,8 @@ class DockerCodingSandbox(CodingSandboxBackend):
             if os.path.isdir(self._output_dir) and os.listdir(self._output_dir):
                 _put_directory(container, "/output", self._output_dir)
             if has_py_deps:
-                container.put_archive("/", _tar_empty_dir("deps", mode=0o755))
                 _put_directory(container, "/deps", self._deps_python_dir)
             if has_node_deps:
-                container.put_archive("/", _tar_empty_dir("node_modules", mode=0o755))
                 _put_directory(container, "/node_modules", self._deps_node_dir)
 
             logger.info(
@@ -1429,12 +1575,12 @@ class DockerCodingSandbox(CodingSandboxBackend):
             if timed_out:
                 stderr = f"Execution timed out after {timeout}s\n{stderr}".strip()
 
+            # Sizes only: a run's output is the user's content (CLEANUP).
             logger.info(
                 "_run_container_sync: container %.12s finished exit_code=%d "
-                "timed_out=%s oom_killed=%s stdout_len=%d stderr_len=%d stderr_preview=%.500s",
+                "timed_out=%s oom_killed=%s stdout_len=%d stderr_len=%d",
                 container.id, exit_code, timed_out, oom_killed,
                 len(stdout), len(stderr),
-                stderr[:500] if stderr else "",
             )
 
             os.makedirs(self._output_dir, exist_ok=True)
@@ -1452,7 +1598,7 @@ class DockerCodingSandbox(CodingSandboxBackend):
         finally:
             if container is not None:
                 try:
-                    container.remove(force=True)
+                    container.remove(force=True, v=True)
                 except Exception:
                     pass
 
@@ -1538,28 +1684,18 @@ class DockerCodingSandbox(CodingSandboxBackend):
                 f"could not be pulled: {exc}"
             ) from exc
 
+    def _labels(self) -> dict[str, str]:
+        return {SANDBOX_ID_LABEL: self._sandbox_id, SANDBOX_OWNER_PID_LABEL: str(os.getpid())}
+
     def _install_packages_sync(
         self, to_install: list[str], language: CodingLanguage,
         client: Any, network_name: str, egress_cidrs: list[str] | None = None,
         handle: _RunHandle | None = None,
     ) -> tuple[bool, str, str]:
-        if language == "python":
-            cmd = [
-                "sh", "-c",
-                "pip install --quiet --no-cache-dir --target /deps "
-                f"--index-url {self._pip_index_url} " + _shell_words(to_install),
-            ]
-            extract_path = "/deps"
-            host_target = self._deps_python_dir
-        else:
-            cmd = [
-                "sh", "-c",
-                "mkdir -p /install && npm install --prefix /install --no-save "
-                f"--loglevel=error --registry={self._npm_registry} "
-                + _shell_words(to_install),
-            ]
-            extract_path = "/install/node_modules"
-            host_target = self._deps_node_dir
+        if self._registry(language).credential is not None:
+            logger.error("_install_packages_sync: a credentialed registry needs the egress proxy (SANDBOX_MODE=broker)")
+            return False, "", f"[sandbox] Package install refused: {credentialed_needs_broker('package registry')}\n"
+        cmd, extract_path, host_target = self._install_command(to_install, language)
 
         logger.info(
             "_install_packages_sync: language=%s to_install=%s image=%s "
@@ -1596,21 +1732,16 @@ class DockerCodingSandbox(CodingSandboxBackend):
             purpose="install",
             image=self._image,
             environment={},
-            mem_limit=self._memory_limit_mb * 1024 * 1024,
+            **limited(self._memory_limit_mb * 1024 * 1024),
             nano_cpus=int(self._cpu_limit * 1e9),
             network=network_name,
             network_disabled=False,
             detach=True,
-            **command_kwargs,
+            **{**self._hardening(), **command_kwargs},
         )
         handle.container_id = container.id
         try:
-            if handle.cancelled.is_set():
-                raise _RunCancelled
-            if extract_path == "/deps":
-                container.put_archive("/", _tar_empty_dir("deps", mode=0o777))
-            else:
-                container.put_archive("/", _tar_empty_dir("install", mode=0o777))
+            # The root is read-only (SEC-A-04): /deps and /install are the container's own volumes (``limited``).
             if handle.cancelled.is_set():
                 raise _RunCancelled
             container.start()
@@ -1646,10 +1777,8 @@ class DockerCodingSandbox(CodingSandboxBackend):
             elif oom_killed and exit_code != 0:
                 stderr = _INSTALL_OOM_NOTE.format(limit=self._memory_limit_mb) + stderr
             logger.info(
-                "_install_packages_sync: container %.12s exit_code=%d "
-                "stdout_len=%d stderr_preview=%.500s",
-                container.id, exit_code, len(stdout),
-                stderr[:500] if stderr else "",
+                "_install_packages_sync: container %.12s exit_code=%d stdout_len=%d stderr_len=%d",
+                container.id, exit_code, len(stdout), len(stderr),
             )
             if exit_code != 0:
                 logger.warning(
@@ -1680,7 +1809,7 @@ class DockerCodingSandbox(CodingSandboxBackend):
             return exit_code, stdout, stderr
         finally:
             try:
-                container.remove(force=True)
+                container.remove(force=True, v=True)
             except Exception:
                 pass
 
@@ -1739,6 +1868,21 @@ def _read_file_nofollow(path: str) -> bytes | None:
         return None
 
 
+def _tar_directory(src_dir: str) -> bytes:
+    """In-memory tar of every entry directly under `src_dir` (flat, no
+    wrapping directory entry)."""
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tar:
+        for fname in os.listdir(src_dir):
+            tar.add(
+                os.path.join(src_dir, fname),
+                arcname=fname,
+                filter=_sandbox_tar_owner,
+            )
+    buf.seek(0)
+    return buf.read()
+
+
 def _collect_working_dir_inputs(working_dir: str) -> dict[str, bytes]:
     """Every file under `working_dir` EXCEPT the reserved, separately-
     archived subtrees (`_RESERVED_WORKING_DIR_SUBDIRS`) — i.e. whatever
@@ -1775,24 +1919,19 @@ def _tar_files(files: dict[str, bytes]) -> bytes:
     caller already read."""
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w") as tar:
+        _add_staged_directories(tar, files)
         for rel_path, content in files.items():
-            info = tarfile.TarInfo(name=rel_path)
+            normalized = posixpath.normpath(rel_path.replace("\\", "/"))
+            info = tarfile.TarInfo(name=normalized)
             info.size = len(content)
-            tar.addfile(info, io.BytesIO(content))
+            read_only = _is_read_only_staged_path(normalized)
+            info.mode = 0o444 if read_only else 0o640
+            tar.addfile(_staged_tar_owner(info, read_only=read_only), io.BytesIO(content))
     buf.seek(0)
     return buf.read()
 
 
-def _tar_empty_dir(name: str, *, mode: int = 0o755) -> bytes:
-    """In-memory tar containing a single empty directory entry."""
-    buf = io.BytesIO()
-    with tarfile.open(fileobj=buf, mode="w") as tar:
-        info = tarfile.TarInfo(name=name)
-        info.type = tarfile.DIRTYPE
-        info.mode = mode
-        tar.addfile(info)
-    buf.seek(0)
-    return buf.read()
+
 
 
 # Archives up to this size are sent from memory; larger ones from an
@@ -1819,7 +1958,7 @@ def _put_directory(container: Any, path: str, src_dir: str) -> int:
     wrapping directory entry), streamed from disk."""
     def _add(tar: tarfile.TarFile) -> None:
         for fname in os.listdir(src_dir):
-            tar.add(os.path.join(src_dir, fname), arcname=fname)
+            tar.add(os.path.join(src_dir, fname), arcname=fname, filter=_sandbox_tar_owner)
     return _put_tar(container, path, _add)
 
 
@@ -1876,7 +2015,9 @@ def _add_staged_inputs(
 ) -> None:
     """Write the staged files into ``tar`` from disk, without following a
     symlink swapped in since the scan. ``staged`` is updated to what was
-    actually written."""
+    actually written. Inputs, skill bundles and policy projections are read-only to the code; the rest is the
+    sandbox user's (`_staged_tar_owner`)."""
+    _add_staged_directories(tar, staged)
     for rel in list(staged):
         full = os.path.join(working_dir, rel)
         try:
@@ -1893,8 +2034,29 @@ def _add_staged_inputs(
             info = tarfile.TarInfo(name=rel)
             info.size = st.st_size
             info.mtime = int(st.st_mtime)
-            tar.addfile(info, fh)
+            read_only = _is_read_only_staged_path(rel)
+            info.mode = 0o444 if read_only else 0o640
+            tar.addfile(_staged_tar_owner(info, read_only=read_only), fh)
             staged[rel] = _StagedFile.from_stat(st)
+
+
+def _add_staged_directories(tar: tarfile.TarFile, paths: Iterable[str]) -> None:
+    """The parent directories of ``paths``, shallowest first, each with the owner and mode of what it holds."""
+    directories: set[str] = set()
+    for rel_path in paths:
+        normalized = posixpath.normpath(rel_path.replace("\\", "/"))
+        if normalized.startswith(("../", "/")) or normalized in {"..", "."}:
+            raise ValueError(f"Unsafe sandbox archive path: {rel_path!r}")
+        parent = posixpath.dirname(normalized)
+        while parent:
+            directories.add(parent)
+            parent = posixpath.dirname(parent)
+    for directory in sorted(directories, key=lambda item: (item.count("/"), item)):
+        info = tarfile.TarInfo(name=directory)
+        info.type = tarfile.DIRTYPE
+        read_only = _is_read_only_staged_path(directory)
+        info.mode = 0o555 if read_only else 0o750
+        tar.addfile(_staged_tar_owner(info, read_only=read_only))
 
 
 def _same_as_host_file(path: str, member: tarfile.TarInfo) -> bool:
@@ -2026,16 +2188,6 @@ def _capped_logs(container: Any, *, stdout: bool) -> str:
     return read_capped_stream(stream)
 
 
-def _make_private_dir(path: str) -> None:
-    """Create `path` readable only by this user (0700), whatever the umask:
-    other local users must not read another chat's inputs and outputs."""
-    os.makedirs(path, mode=0o700, exist_ok=True)
-    try:
-        os.chmod(path, 0o700)
-    except OSError as exc:
-        logger.warning("could not make sandbox dir %s private: %s", path, exc)
-
-
 def read_local_file_head(full_path: str, max_bytes: int) -> tuple[bytes, bool]:
     """At most `max_bytes` of a host file, and whether it has more. Reads
     only what it returns (plus one byte)."""
@@ -2043,3 +2195,39 @@ def read_local_file_head(full_path: str, max_bytes: int) -> tuple[bytes, bool]:
     with open(full_path, "rb") as f:
         data = f.read(max_bytes + 1)
     return data[:max_bytes], len(data) > max_bytes
+
+
+def extract_archive_chunks(
+    chunks: Iterable[bytes], container_path: str, local_dir: str, *,
+    allow_symlinks: bool = False, budget: ExtractBudget | None = None,
+) -> ExtractBudget:
+    """Extract a ``get_archive``-shaped stream of ``container_path`` into ``local_dir``, merging, within ``budget`` (a
+    fresh output budget when none is given), for a backend that reads archives without a docker-py container (the
+    sandbox broker). The same extraction as `_extract_container_dir`."""
+    budget = budget or ExtractBudget.for_output()
+    extract_tar_stream(chunks, container_path, local_dir, budget, allow_symlinks=allow_symlinks)
+    return budget
+
+
+def _sandbox_tar_owner(info: tarfile.TarInfo) -> tarfile.TarInfo:
+    """Make daemon-extracted inputs writable only by the sandbox identity."""
+    info.uid = 1000
+    info.gid = 1000
+    info.uname = "sandbox"
+    info.gname = "sandbox"
+    return info
+
+
+def _is_read_only_staged_path(path: str) -> bool:
+    """Inputs, skill bundles, and policy projections are immutable in code."""
+    return path.split("/", 1)[0] in {"artifacts", "input", "skills", "system"}
+
+
+def _staged_tar_owner(info: tarfile.TarInfo, *, read_only: bool) -> tarfile.TarInfo:
+    if not read_only:
+        return _sandbox_tar_owner(info)
+    info.uid = 0
+    info.gid = 0
+    info.uname = "root"
+    info.gname = "root"
+    return info

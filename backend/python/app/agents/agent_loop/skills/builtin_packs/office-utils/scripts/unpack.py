@@ -22,6 +22,10 @@ def unpack(input_path: str, output_dir: str) -> None:
 
     with zipfile.ZipFile(input_path, "r") as zf:
         for info in zf.infolist():
+            # Some writers (pptxgenjs) store folder entries such as "_rels/"; they hold no part, and pack.py
+            # recreates folders from the files in them.
+            if info.is_dir():
+                continue
             manifest["entry_order"].append({
                 "name": info.filename,
                 "compress_type": info.compress_type,

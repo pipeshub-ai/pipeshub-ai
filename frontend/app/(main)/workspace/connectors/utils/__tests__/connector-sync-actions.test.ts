@@ -16,7 +16,7 @@ vi.mock('@/config', async () => {
   return { useAuthStore: auth.useAuthStore, logoutAndRedirect: vi.fn() };
 });
 
-const { useAuthStore } = await import('@/lib/store/auth-store');
+const { useAuthStore } = await import('@/config');
 const { fakeApi } = await import('@/lib/api/__tests__/fake-api');
 const { useConnectorsStore } = await import('../../store');
 const { startConnectorSync, runConnectorResync, toggleConnectorSyncOn, assertLocalFsRootPathAvailable } =
@@ -57,7 +57,7 @@ function installDesktop(overrides: Record<string, unknown> = {}) {
 }
 
 beforeEach(() => {
-  useAuthStore.setState({ accessToken: jwtExpiringIn(3600), refreshToken: 'r' });
+  useAuthStore.setState({ accessToken: jwtExpiringIn(3600) });
   useConnectorsStore.getState().reset();
   useConnectorsStore.getState().setActiveConnectors([instance()]);
   vi.spyOn(console, 'warn').mockImplementation(() => {});

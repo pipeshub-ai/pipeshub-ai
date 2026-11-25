@@ -2,12 +2,12 @@
 from __future__ import annotations
 
 import base64
-import time
 
 import pytest
 
 from app.exceptions.indexing_exceptions import DocumentProcessingError
 from app.modules.parsers.image_parser.image_parser import ImageParser
+from tests.support.cpu_budget import thread_cpu
 
 
 def _b64(svg: str) -> str:
@@ -43,10 +43,9 @@ def test_a_hostile_svg_is_refused_quickly_by_the_static_checks(name: str) -> Non
     """The refusal itself, in this process: no renderer start-up in the timing.
     Half a second here; the bound is half the render deadline, so it still shows
     the refusal comes long before a render could, on a slow shared runner too."""
-    start = time.process_time()
-    with pytest.raises(DocumentProcessingError):
+    with thread_cpu() as cpu, pytest.raises(DocumentProcessingError):
         ImageParser._svg_to_png_in_process(_b64(HOSTILE[name]))
-    assert time.process_time() - start < 5.0
+    assert cpu.seconds < 5.0
 
 
 def test_refusing_too_many_elements_costs_the_same_however_many_there_are(monkeypatch: pytest.MonkeyPatch) -> None:

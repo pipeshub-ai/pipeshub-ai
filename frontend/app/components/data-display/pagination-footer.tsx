@@ -52,7 +52,7 @@ export function PaginationFooter({
         flexShrink: 0,
       }}
     >
-      <Text size="1" style={{ color: 'var(--slate-10)' }}>
+      <Text size="1" style={{ color: 'var(--slate-11)' }}>
         {t(pagination.totalCapped ? 'common.pagination.showingAtLeast' : 'common.pagination.showing', { start, end, total: totalCount })}
       </Text>
       <Flex gap="2" align="center">

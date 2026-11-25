@@ -2,6 +2,7 @@
 
 import { forwardRef } from 'react';
 import { TextField } from '@radix-ui/themes';
+import { useFormFieldControl } from '@/app/(main)/workspace/components/form-field';
 
 /**
  * Field for a secret that is not the user's own sign-in password: an API key, a token,
@@ -46,8 +47,10 @@ export type SecretTextFieldProps = Omit<TextField.RootProps, 'type'> & {
 
 export const SecretTextField = forwardRef<HTMLInputElement, SecretTextFieldProps>(
   function SecretTextField({ masked = true, className, ...rest }, ref) {
+    // Inside a FormField the field's label and help name this input, as FormFieldTextField does; empty elsewhere.
+    const control = useFormFieldControl();
     const { className: maskClass, ...secretProps } = secretInputProps(masked);
     const classes = [className, maskClass].filter(Boolean).join(' ') || undefined;
-    return <TextField.Root ref={ref} {...rest} {...secretProps} className={classes} />;
+    return <TextField.Root ref={ref} {...control} {...rest} {...secretProps} className={classes} />;
   },
 );

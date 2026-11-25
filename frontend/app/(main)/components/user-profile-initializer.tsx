@@ -14,7 +14,7 @@
  */
 
 import { useEffect } from 'react';
-import { useInitializeUserProfile } from '@/lib/hooks/use-initialize-user-profile';
+import { useInitializeUserProfile } from '@/config';
 import { selectAdminRoleNeedsRetry, useUserStore } from '@/lib/store/user-store';
 import { getUserIdFromToken } from '@/lib/utils/jwt';
 

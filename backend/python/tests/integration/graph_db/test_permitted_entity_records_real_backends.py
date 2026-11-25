@@ -20,7 +20,8 @@ from the gated record-level App and the record from the group.
 
   docker compose -f deployment/docker-compose/docker-compose.integration.graph-db.yml \\
     up -d --wait neo4j-graph-it arango-graph-it
-  cd backend/python && pytest tests/integration/graph_db/test_permitted_entity_records_real_backends.py -m integration
+  cd backend/python && NEO4J_IT_URI=bolt://localhost:17687 ARANGO_IT_URL=http://localhost:18529 \\
+    pytest tests/integration/graph_db/test_permitted_entity_records_real_backends.py -m integration
 """
 from __future__ import annotations
 
@@ -47,6 +48,7 @@ from app.modules.retrieval.entity_permissions import (
 )
 from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
+from tests.support import it_backends
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -55,9 +57,7 @@ if TYPE_CHECKING:
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(300)]
 
-NEO4J_URI = os.environ.get("NEO4J_IT_URI", "bolt://localhost:17687")
 NEO4J_PASSWORD = os.environ.get("NEO4J_IT_PASSWORD", "ensure-it-pass")
-ARANGO_URL = os.environ.get("ARANGO_IT_URL", "http://localhost:18529")
 ARANGO_PASSWORD = os.environ.get("ARANGO_IT_PASSWORD", "ensure-it-pass")
 ARANGO_DB = "entity_graph_it"
 # The connector ids are App keys, so each run takes its own: the stores are shared.
@@ -114,7 +114,8 @@ def _connector(keys: dict[str, Any], record_key: str) -> str:
 
 
 async def _open_neo4j(monkeypatch: pytest.MonkeyPatch) -> Neo4jProvider:
-    monkeypatch.setenv("NEO4J_URI", NEO4J_URI)
+    neo4j_uri = it_backends.endpoint("NEO4J_IT_URI")
+    monkeypatch.setenv("NEO4J_URI", neo4j_uri)
     monkeypatch.setenv("NEO4J_USERNAME", "neo4j")
     monkeypatch.setenv("NEO4J_PASSWORD", NEO4J_PASSWORD)
     monkeypatch.setenv("NEO4J_DATABASE", "neo4j")
@@ -229,9 +230,10 @@ async def _close_neo4j(provider: Neo4jProvider, org_id: str) -> None:
 
 
 async def _open_arango(monkeypatch: pytest.MonkeyPatch) -> ArangoHTTPProvider:
+    arango_url = it_backends.endpoint("ARANGO_IT_URL")
     config_service = MagicMock()
     config_service.get_config = AsyncMock(return_value={
-        "url": ARANGO_URL, "username": "root", "password": ARANGO_PASSWORD, "db": ARANGO_DB,
+        "url": arango_url, "username": "root", "password": ARANGO_PASSWORD, "db": ARANGO_DB,
     })
     provider = ArangoHTTPProvider(logger, config_service)
     if not await asyncio.wait_for(provider.connect(), timeout=60):

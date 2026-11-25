@@ -62,7 +62,10 @@ from app.models.entities import (
     User,
 )
 from app.models.permission import EntityType, Permission, PermissionType
-from app.modules.parsers.code_parser.file_role import should_index_code_file
+from app.modules.parsers.code_parser.file_role import (
+    is_sensitive_path,
+    should_index_code_file,
+)
 from app.modules.parsers.code_parser.lang_config import detect_language
 from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -420,7 +423,14 @@ class FolderConnector(BaseConnector):
         # A directory counts only if a file survived; those are known after the loop,
         # so files are collected and written in a second pass.
         pending: list[tuple[scan.Entry, str]] = []
+        left_out = 0
         for e in entries:
+            if is_sensitive_path(e.rel):
+                # A credential file never gets a record, whatever its type, and is never read; a record it had is retired below as gone.
+                manifest[e.rel] = (e.mtime_ns, e.size, "")
+                self._left_out(e.rel, "sensitive")
+                left_out += 1
+                continue
             old = prev.get(e.rel)
             if old and old[0] == e.mtime_ns and old[1] == e.size:
                 manifest[e.rel] = old
@@ -479,8 +489,8 @@ class FolderConnector(BaseConnector):
         deleted_fail += len(await self._prune_unseen(keep, stored))
 
         self.logger.info(
-            "Folder sync of %s: %d walked, %d changed, %d removed, %d unreadable, %d delete failures",
-            self.root, len(entries), changed, len(gone) + len(gone_dirs) - deleted_fail, failed, deleted_fail,
+            "Folder sync of %s: %d walked, %d changed, %d removed, %d unreadable, %d delete failures, %d credential files left out",
+            self.root, len(entries), changed, len(gone) + len(gone_dirs) - deleted_fail, failed, deleted_fail, left_out,
         )
         await self._sync_finished({r: manifest[r][1] for r in live if r in manifest}, set(manifest))
         await self.record_sync_point.update_sync_point(self._sync_key(), {
@@ -498,6 +508,9 @@ class FolderConnector(BaseConnector):
     def _may_index_code(self, entry: scan.Entry, name: str) -> tuple[bool, Any]:  # noqa: ANN401, RUF100
         """Whether a code file gets a record, and its role; a connector with more to go on than the path overrides it."""
         return should_index_code_file(entry.rel, name)
+
+    def _left_out(self, rel: str, why: str) -> None:
+        """A file the sync gives no record on purpose, and why; a connector that reports these overrides it."""
 
     def _in_index_order(self, pending: list[tuple[scan.Entry, str]]) -> list[tuple[scan.Entry, str]]:
         return pending

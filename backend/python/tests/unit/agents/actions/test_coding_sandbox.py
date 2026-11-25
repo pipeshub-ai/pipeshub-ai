@@ -528,6 +528,23 @@ class TestScheduleArtifactUploadException:
         }
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tool", ["execute_python", "execute_typescript"])
+async def test_cleanup_a_runs_output_never_reaches_the_logs(tool: str, caplog: pytest.LogCaptureFixture) -> None:
+    """CLEANUP: stdout and stderr are the user's content; the logs carry their sizes and the exit code only."""
+    import logging
+
+    from app.agents.actions.coding_sandbox.coding_sandbox import CodingSandbox
+
+    result = ExecutionResult(success=False, stdout="OUT-CANARY-7", stderr="ERR-CANARY-7", exit_code=1)
+    with patch("app.agents.actions.coding_sandbox.coding_sandbox.get_executor") as mock_get:
+        mock_get.return_value = AsyncMock(execute=AsyncMock(return_value=result))
+        with caplog.at_level(logging.DEBUG):
+            await getattr(CodingSandbox(_make_state()), tool)("code")
+    assert "CANARY" not in caplog.text
+    assert "stdout_len=12" in caplog.text
+
+
 class TestArtifactOwner:
     @pytest.mark.asyncio
     async def test_outputs_belong_to_the_artifact_owner(self) -> None:
