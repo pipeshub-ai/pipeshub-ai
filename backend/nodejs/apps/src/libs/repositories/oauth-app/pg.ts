@@ -513,6 +513,42 @@ export class PgOAuthAppRepository implements OAuthAppRepository, Importable {
     );
   }
 
+  listClientSecrets(
+    orgId: string,
+  ): Promise<Array<{ id: string; clientSecretEncrypted: string }>> {
+    return inOrgUnit(orgId, undefined, false, async (k) => {
+      const { rows } = await k.query<{
+        id: string;
+        client_secret_encrypted: string;
+      }>(
+        `/* pipeshub:oauth.app_client_secrets */ SELECT id, client_secret_encrypted FROM oauth.apps WHERE org_id = $1 ORDER BY id`,
+        [k.orgId],
+      );
+      return rows.map((r) => ({
+        id: r.id,
+        clientSecretEncrypted: r.client_secret_encrypted,
+      }));
+    });
+  }
+
+  async replaceClientSecret(
+    orgId: string,
+    id: string,
+    expected: string,
+    next: string,
+  ): Promise<boolean> {
+    const appId = oidOf(id);
+    if (appId === undefined) return false;
+    return inOrgUnit(orgId, undefined, true, async (k) => {
+      const { rowCount } = await k.query(
+        `/* pipeshub:oauth.app_replace_client_secret */ UPDATE oauth.apps SET client_secret_encrypted = $4
+           WHERE org_id = $1 AND id = $2::text AND client_secret_encrypted = $3`,
+        [k.orgId, appId, expected, next],
+      );
+      return rowCount === 1;
+    });
+  }
+
   async transferCreatedBy(
     orgId: string,
     fromUserId: string,

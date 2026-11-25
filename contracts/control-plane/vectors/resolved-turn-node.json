@@ -1,0 +1,115 @@
+{
+  "description": "CPD-10 cross-language vector: X-PipesHub-Resolved headers as Node's signer makes them from a pin (resolvedTurnClaims, ResolvedTurnAuthority.header) with resolved-turn.json's active key at its nowSeconds. Each token must verify in the query service for `request` and read back as `claims`. Written by backend/nodejs/apps/tests/modules/agent-harness/resolved-turn.test.ts (UPDATE_GOLDENS=1); read by backend/python/tests/unit/harness/legacy/test_resolved_turn_vectors.py.",
+  "nowSeconds": 1790000001,
+  "cases": [
+    {
+      "id": "agent-turn",
+      "request": {
+        "orgId": "org-1",
+        "userId": "user-1",
+        "agentKey": "agent-a",
+        "conversationId": "conv-1"
+      },
+      "claims": {
+        "iss": "pipeshub-node/agent-harness",
+        "aud": "pipeshub-query/resolved-turn",
+        "iat": 1790000001,
+        "exp": 1790000061,
+        "ver": 1,
+        "org": "org-1",
+        "sub": "user-1",
+        "agent": "agent-a",
+        "cid": "conv-1",
+        "pin": {
+          "digest": "sha256:3ad1d2e8a900da72517b927004aa71a2df177ea4bca3948ba05aa2f2db9db7b9",
+          "head": 7,
+          "routing": {
+            "path": "legacy",
+            "reason": "chat_mode_not_supported"
+          },
+          "scope": {
+            "agentKey": "agent-a",
+            "projectId": null
+          }
+        },
+        "stages": {
+          "ENABLE_AGENT_HARNESS": true,
+          "AGENT_HARNESS_KILL_SWITCH": false,
+          "ENABLE_MCP": true,
+          "ENABLE_USER_CONTEXT": false
+        },
+        "flow": [
+          {
+            "level": "ask",
+            "above": "public"
+          },
+          {
+            "level": "deny",
+            "above": "private"
+          }
+        ],
+        "access": {
+          "run": true
+        },
+        "bindings": [
+          {
+            "installation": "inst_01J9ZQ5Y8K3M4N5P6Q7R8S0001",
+            "owner": "user:user-1",
+            "ref": "bnd_01J9ZQ5Y8K3M4N5P6Q7R8S0001"
+          },
+          {
+            "installation": "inst_01J9ZQ5Y8K3M4N5P6Q7R8S0002",
+            "owner": "agent:agent-a",
+            "ref": "bnd_01J9ZQ5Y8K3M4N5P6Q7R8S0002"
+          }
+        ]
+      },
+      "token": "eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCIsImtpZCI6Imhna19JcjJFZzhPbFpWczlsVF9QRnM5VklJIn0.eyJpc3MiOiJwaXBlc2h1Yi1ub2RlL2FnZW50LWhhcm5lc3MiLCJhdWQiOiJwaXBlc2h1Yi1xdWVyeS9yZXNvbHZlZC10dXJuIiwiaWF0IjoxNzkwMDAwMDAxLCJleHAiOjE3OTAwMDAwNjEsInZlciI6MSwib3JnIjoib3JnLTEiLCJzdWIiOiJ1c2VyLTEiLCJhZ2VudCI6ImFnZW50LWEiLCJjaWQiOiJjb252LTEiLCJwaW4iOnsiZGlnZXN0Ijoic2hhMjU2OjNhZDFkMmU4YTkwMGRhNzI1MTdiOTI3MDA0YWE3MWEyZGYxNzdlYTRiY2EzOTQ4YmEwNWFhMmYyZGI5ZGI3YjkiLCJoZWFkIjo3LCJyb3V0aW5nIjp7InBhdGgiOiJsZWdhY3kiLCJyZWFzb24iOiJjaGF0X21vZGVfbm90X3N1cHBvcnRlZCJ9LCJzY29wZSI6eyJhZ2VudEtleSI6ImFnZW50LWEiLCJwcm9qZWN0SWQiOm51bGx9fSwic3RhZ2VzIjp7IkVOQUJMRV9BR0VOVF9IQVJORVNTIjp0cnVlLCJBR0VOVF9IQVJORVNTX0tJTExfU1dJVENIIjpmYWxzZSwiRU5BQkxFX01DUCI6dHJ1ZSwiRU5BQkxFX1VTRVJfQ09OVEVYVCI6ZmFsc2V9LCJmbG93IjpbeyJsZXZlbCI6ImFzayIsImFib3ZlIjoicHVibGljIn0seyJsZXZlbCI6ImRlbnkiLCJhYm92ZSI6InByaXZhdGUifV0sImFjY2VzcyI6eyJydW4iOnRydWV9LCJiaW5kaW5ncyI6W3siaW5zdGFsbGF0aW9uIjoiaW5zdF8wMUo5WlE1WThLM000TjVQNlE3UjhTMDAwMSIsIm93bmVyIjoidXNlcjp1c2VyLTEiLCJyZWYiOiJibmRfMDFKOVpRNVk4SzNNNE41UDZRN1I4UzAwMDEifSx7Imluc3RhbGxhdGlvbiI6Imluc3RfMDFKOVpRNVk4SzNNNE41UDZRN1I4UzAwMDIiLCJvd25lciI6ImFnZW50OmFnZW50LWEiLCJyZWYiOiJibmRfMDFKOVpRNVk4SzNNNE41UDZRN1I4UzAwMDIifV19.tetyE_eXDYZ3BIf11HbvZqoKLFVxkIIcQZFrCm0Fs8EnUgvuinAXvUpbEMpKDvYM6bsygyurFGmFlV_4bTy2Dg"
+    },
+    {
+      "id": "assistant-turn",
+      "request": {
+        "orgId": "org-1",
+        "userId": "user-1",
+        "agentKey": null,
+        "conversationId": "conv-1"
+      },
+      "claims": {
+        "iss": "pipeshub-node/agent-harness",
+        "aud": "pipeshub-query/resolved-turn",
+        "iat": 1790000001,
+        "exp": 1790000061,
+        "ver": 1,
+        "org": "org-1",
+        "sub": "user-1",
+        "agent": null,
+        "cid": "conv-1",
+        "pin": {
+          "digest": "sha256:5b91aaaa0c1e7714c8c8699d822b354610855ec23e1c8b2193a0e74096fb0fe4",
+          "head": 7,
+          "routing": {
+            "path": "legacy",
+            "reason": "not_served_durably"
+          },
+          "scope": {
+            "agentKey": null,
+            "projectId": "project-1"
+          }
+        },
+        "stages": {
+          "ENABLE_AGENT_HARNESS": true,
+          "AGENT_HARNESS_KILL_SWITCH": false,
+          "ENABLE_MCP": true,
+          "ENABLE_USER_CONTEXT": false
+        },
+        "flow": [
+          {
+            "level": "deny",
+            "above": "private"
+          }
+        ]
+      },
+      "token": "eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCIsImtpZCI6Imhna19JcjJFZzhPbFpWczlsVF9QRnM5VklJIn0.eyJpc3MiOiJwaXBlc2h1Yi1ub2RlL2FnZW50LWhhcm5lc3MiLCJhdWQiOiJwaXBlc2h1Yi1xdWVyeS9yZXNvbHZlZC10dXJuIiwiaWF0IjoxNzkwMDAwMDAxLCJleHAiOjE3OTAwMDAwNjEsInZlciI6MSwib3JnIjoib3JnLTEiLCJzdWIiOiJ1c2VyLTEiLCJhZ2VudCI6bnVsbCwiY2lkIjoiY29udi0xIiwicGluIjp7ImRpZ2VzdCI6InNoYTI1Njo1YjkxYWFhYTBjMWU3NzE0YzhjODY5OWQ4MjJiMzU0NjEwODU1ZWMyM2UxYzhiMjE5M2EwZTc0MDk2ZmIwZmU0IiwiaGVhZCI6Nywicm91dGluZyI6eyJwYXRoIjoibGVnYWN5IiwicmVhc29uIjoibm90X3NlcnZlZF9kdXJhYmx5In0sInNjb3BlIjp7ImFnZW50S2V5IjpudWxsLCJwcm9qZWN0SWQiOiJwcm9qZWN0LTEifX0sInN0YWdlcyI6eyJFTkFCTEVfQUdFTlRfSEFSTkVTUyI6dHJ1ZSwiQUdFTlRfSEFSTkVTU19LSUxMX1NXSVRDSCI6ZmFsc2UsIkVOQUJMRV9NQ1AiOnRydWUsIkVOQUJMRV9VU0VSX0NPTlRFWFQiOmZhbHNlfSwiZmxvdyI6W3sibGV2ZWwiOiJkZW55IiwiYWJvdmUiOiJwcml2YXRlIn1dfQ.Vc8s7BteS7eoeGh_f6KqaOLLe0OorrMwyCpezyFa2449nIDdfoaKkffMF1lblW7KhW1gvXI-8TerSrGIj1ZaCw"
+    }
+  ]
+}

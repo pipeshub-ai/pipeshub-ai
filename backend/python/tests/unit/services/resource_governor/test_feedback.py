@@ -67,6 +67,45 @@ class TestWindow:
         assert feedback.drain().timeouts == {"neo4j": 2000}
 
 
+def _mixed_window() -> FeedbackWindow:
+    # Built per test so a mutating ``without`` cannot leak into another test.
+    return FeedbackWindow(
+        throttles={"DoclingService": 1, "ParsingService": 2},
+        timeouts={"DoclingService": 3, "neo4j": 1},
+        pool_exhaustions={"redis": 1},
+        unavailable={"DoclingService": 4},
+    )
+
+
+class TestWindowWithout:
+
+    def test_drops_the_services_from_every_counter_and_keeps_the_rest(self) -> None:
+        assert _mixed_window().without({"DoclingService"}).as_dict() == {
+            "throttles": {"ParsingService": 2},
+            "timeouts": {"neo4j": 1},
+            "pool_exhaustions": {"redis": 1},
+            "unavailable": {},
+        }
+
+    def test_an_empty_set_returns_the_same_window(self) -> None:
+        window = _mixed_window()
+        assert window.without(frozenset()) is window
+
+    def test_a_window_of_only_those_services_becomes_empty(self) -> None:
+        window = FeedbackWindow(unavailable={"DoclingService": 2}, timeouts={"DoclingService": 5})
+        rest = window.without({"DoclingService"})
+        assert rest.is_empty
+        assert not rest.incident
+        assert rest.timeout_count == 0
+
+    def test_the_source_is_unchanged_and_an_absent_service_is_a_no_op(self) -> None:
+        window = _mixed_window()
+        before = window.as_dict()
+        window.without({"DoclingService"})
+        assert window.as_dict() == before
+        assert window.without({"qdrant"}).as_dict() == before
+
+
 class TestDefaultInstance:
     def test_default_is_created_once_and_can_be_reset(self) -> None:
         set_default_downstream_feedback(None)

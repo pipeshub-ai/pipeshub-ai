@@ -103,13 +103,36 @@ export interface PlatformFeatureFlagDef {
    */
   hidden?: boolean;
   /**
+   * The release default before this one, when it changed (UX1). Settings saved
+   * before overrides were recorded stored every flag, so a stored previous
+   * default may not be a choice: it is kept, and the admin is asked once.
+   */
+  previousDefault?: boolean;
+  /**
    * When true, Labs keeps the flag off the main list and shows it only after
    * the admin opens "Show advanced feature flags".
    */
   advanced?: boolean;
+  /**
+   * A switch of the agent harness (ADR-OPS-06): while the install's harness switch
+   * (AGENT_HARNESS_WORKER_ENABLED) is off, Labs neither lists nor saves it and the
+   * effective flags leave it out, as a release without the harness.
+   */
+  requiresAgentHarness?: boolean;
 }
 
 export const PLATFORM_FEATURE_FLAGS: PlatformFeatureFlagDef[] = [
+  {
+    key: 'ENABLE_AGENT_HARNESS',
+    label: 'Agent harness',
+    description:
+      "Run agent chats on the agent harness: answers survive a reload or a restart, show their steps and plan as they work, can ask before they write, and offer suggested next questions. The default chat's Agent mode runs on it, and people a conversation is shared with for editing can send messages in it. Turn off to send every new chat to the standard path; chats already running finish where they are.",
+    // Off by default (BETA, 2026-11-20): the harness is in beta, so an admin turns it on for the org. On by default
+    // from DUR3 until then; an org that never saved a choice follows the new default and is off after the upgrade.
+    defaultEnabled: false,
+    previousDefault: true,
+    requiresAgentHarness: true,
+  },
   {
     key: 'ENABLE_BETA_CONNECTORS',
     label: 'Enable Beta Connectors',
@@ -224,6 +247,22 @@ export const PLATFORM_FEATURE_FLAGS: PlatformFeatureFlagDef[] = [
     advanced: true,
   },
   {
+    key: 'ENABLE_SCHEDULED_RUNS',
+    label: 'Scheduled and Triggered Agent Runs (Experimental)',
+    description:
+      'Let people run an agent on a schedule (for example every Monday at 9:00) or when a webhook or a connector event arrives. Each run acts as the person who created the schedule, with their access checked again every time; a run that needs an approval waits for them until its deadline. Needs the durable agent harness.',
+    defaultEnabled: false,
+    requiresAgentHarness: true,
+  },
+  {
+    key: 'ENABLE_KNOWLEDGE_PUBLICATIONS',
+    label: 'Knowledge Publications (Experimental)',
+    description:
+      'Let owners of a knowledge base or record group publish it to chosen people, teams or the whole organization, for answers only or with full access, until an expiry. Searches and agents then use what is published to the reader as well as what the reader can open; content published for answers only can be quoted in an answer but never opened, downloaded or shared beyond the audience. Service-account agents then answer each caller only from what that caller can read or was published to them.',
+    defaultEnabled: false,
+    requiresAgentHarness: true,
+  },
+  {
     key: 'ENABLE_RECORD_PREVIEW_CACHE',
     label: 'Reuse Record Previews in the Browser',
     description:
@@ -239,3 +278,9 @@ export const PLATFORM_FEATURE_FLAGS: PlatformFeatureFlagDef[] = [
     defaultEnabled: false,
   },
 ];
+
+/** The Labs flags that exist only with the agent harness switched on (ADR-OPS-06). */
+export const AGENT_HARNESS_LABS_FLAGS: readonly string[] =
+  PLATFORM_FEATURE_FLAGS.filter(
+    (flag) => flag.requiresAgentHarness === true,
+  ).map((flag) => flag.key);

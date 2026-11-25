@@ -1,13 +1,21 @@
-"""pgvector search: which tier answered, what was degraded, how long searches waited for a slot, and the online recall sample.
+"""pgvector search: which tier answered and how long it took, what was degraded, how long searches waited for a slot, and the online recall sample.
 
 Labels are small closed sets (tier, reason, size or share band); no org, query or collection is ever a label.
 """
+
+import time
 
 from app.telemetry.backend import METRICS_BACKEND
 
 _RECALL_BUCKETS = (0.0, 0.5, 0.8, 0.9, 0.95, 0.98, 0.99, 1.0)
 _WAIT_BUCKETS = (0.001, 0.0025, 0.005, 0.01, 0.025, 0.05)
+# around the per-tier latency targets (exact tier 150 ms, index tiers 100-750 ms by leg) and the tier timeouts (up to 2 s)
+_LEG_BUCKETS = (0.005, 0.01, 0.025, 0.05, 0.1, 0.15, 0.25, 0.5, 0.75, 1.0, 2.0, 5.0)
 
+LEG_SECONDS = METRICS_BACKEND.histogram(
+    "pipeshub_pgvector_leg_seconds",
+    "Search leg duration by the tier that answered it (e0, e0x, h, h_deep; degraded: the bounded exact path; lexical)",
+    ["tier", "leg_band"], _LEG_BUCKETS)
 TIER = METRICS_BACKEND.counter(
     "pipeshub_pgvector_search_tier_total", "Dense legs by the tier that served them (e0, e0x, h, h_deep)", ["tier", "leg_band"])
 DEGRADED = METRICS_BACKEND.counter(
@@ -35,3 +43,8 @@ QUANTIZATION_RECALL = METRICS_BACKEND.histogram(
 
 def leg_band(leg: int) -> str:
     return "40" if leg <= 40 else "120" if leg <= 120 else "600"
+
+
+def observe_leg(tier: str, leg: int, started: float) -> None:
+    """``started`` is a ``time.monotonic()`` reading taken when the leg began."""
+    LEG_SECONDS.observe(tier, leg_band(leg), value=time.monotonic() - started)

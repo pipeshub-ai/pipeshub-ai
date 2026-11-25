@@ -3,6 +3,7 @@
 import json
 import time
 import uuid
+from collections.abc import Iterator
 
 import pytest
 
@@ -100,7 +101,7 @@ async def test_producer_signs_only_when_the_flag_and_a_key_are_on(monkeypatch) -
     from app.core.org_context import bind
 
     flat = {"eventType": "T", "payload": {"orgId": "org_b", "n": 1}, "requestId": "r"}
-    envelope.configure(None, None, KEY)
+    envelope.configure(None, KEY)
     try:
         with bind(CTX_B):
             plain = envelope.sign_message(TOPIC, flat)
@@ -157,21 +158,98 @@ async def test_malformed_ctx_is_rejected() -> None:
 
 
 class _Inbox:
-    def __init__(self) -> None:
-        self.ids = set()
+    """In memory, keyed like platform.consumer_inbox: (org, consumer, event id)."""
 
-    async def claim(self, topic, event_id, org_id) -> bool:
-        if (topic, event_id) in self.ids:
-            return False
-        self.ids.add((topic, event_id))
-        return True
+    def __init__(self, fail: str = "") -> None:
+        self.ids: set[tuple[str, str, str]] = set()
+        self.fail = fail
+
+    async def seen(self, consumer, ctx) -> bool:
+        if self.fail == "seen":
+            raise ConnectionError("down")
+        return (ctx.org_id, consumer, ctx.event_id) in self.ids
+
+    async def record(self, consumer, ctx) -> None:
+        if self.fail == "record":
+            raise ConnectionError("down")
+        self.ids.add((ctx.org_id, consumer, ctx.event_id))
 
 
-async def test_replay_is_skipped_via_the_durable_inbox_not_redis() -> None:
+@pytest.fixture
+def configured_key() -> Iterator[None]:
+    async def keys() -> tuple[bytes, ...]:
+        return (KEY,)
+
+    envelope.configure(keys)
+    yield
+    envelope.configure(None)
+
+
+async def _consume(inbox, m, consumer="g") -> envelope.Opened:
+    """One delivery through the consumer path: open (inbox check), then record once the handler succeeded."""
+    opened = await envelope.open_configured(TOPIC, m, inbox=inbox, consumer=consumer)
+    await envelope.record_processed(inbox, consumer, opened.ctx)
+    return opened
+
+
+async def test_the_same_envelope_delivered_twice_is_processed_once(configured_key) -> None:
     inbox, m = _Inbox(), _msg()
-    await _open(m, inbox=inbox)
+    await _consume(inbox, m)
     with pytest.raises(DuplicateEnvelope):
-        await _open(m, inbox=inbox)
+        await envelope.open_configured(TOPIC, json.loads(json.dumps(m)), inbox=inbox, consumer="g")
+
+
+async def test_a_replayed_envelope_is_rejected_by_any_later_delivery(configured_key) -> None:
+    inbox, m = _Inbox(), _msg()
+    await _consume(inbox, m)
+    for _ in range(3):
+        with pytest.raises(DuplicateEnvelope):
+            await envelope.open_configured(TOPIC, m, inbox=inbox, consumer="g")
+
+
+async def test_a_message_whose_handler_failed_is_not_recorded_and_runs_again(configured_key) -> None:
+    inbox, m = _Inbox(), _msg()
+    await envelope.open_configured(TOPIC, m, inbox=inbox, consumer="g")   # the handler failed: nothing recorded
+    assert inbox.ids == set()
+    await _consume(inbox, m)                                               # the retry runs
+    assert len(inbox.ids) == 1
+
+
+async def test_each_consumer_group_and_org_keeps_its_own_record(configured_key) -> None:
+    inbox, m = _Inbox(), _msg()
+    await _consume(inbox, m, consumer="g1")
+    await _consume(inbox, m, consumer="g2")   # another group on the topic still gets the event
+    other_org = _msg(payload={"orgId": "org_c"}, ctx=OrgContext("org_c", None, "service", "jwt", "r"))
+    await _consume(inbox, other_org, consumer="g1")
+    assert {(o, c) for o, c, _ in inbox.ids} == {("org_b", "g1"), ("org_b", "g2"), ("org_c", "g1")}
+
+
+async def test_an_unsigned_message_is_matched_by_its_event_id_and_one_without_an_id_never(configured_key) -> None:
+    inbox = _Inbox()
+    unsigned = {"eventType": "x", "payload": {"orgId": "org_b"}, "eventId": "e-1"}
+    await _consume(inbox, unsigned)
+    with pytest.raises(DuplicateEnvelope):
+        await envelope.open_configured(TOPIC, unsigned, inbox=inbox, consumer="g")
+    old_producer = {"eventType": "x", "payload": {"orgId": "org_b"}}
+    await _consume(inbox, old_producer)
+    await _consume(inbox, old_producer)   # nothing to match on: runs each time, as before
+    assert len(inbox.ids) == 1
+
+
+async def test_an_inbox_that_cannot_answer_lets_the_message_run_and_is_counted(configured_key) -> None:
+    for op in ("seen", "record"):
+        before = envelope.INBOX_ERRORS._metric.labels(op)._value.get()
+        opened = await _consume(_Inbox(fail=op), _msg())
+        assert opened.ctx.org_id == "org_b"
+        assert envelope.INBOX_ERRORS._metric.labels(op)._value.get() == before + 1
+
+
+def test_the_inbox_keeps_an_id_as_long_as_any_copy_could_still_be_accepted(monkeypatch) -> None:
+    monkeypatch.setenv("ENVELOPE_MAX_AGE_SECONDS", "900")
+    monkeypatch.setenv("ENVELOPE_ADMITTED_MAX_AGE_SECONDS", "60")
+    assert envelope.replay_window_seconds() == 900 + envelope.MAX_FUTURE_SKEW_SECONDS
+    monkeypatch.setenv("ENVELOPE_ADMITTED_MAX_AGE_SECONDS", "86400")
+    assert envelope.replay_window_seconds() == 86400 + envelope.MAX_FUTURE_SKEW_SECONDS
 
 
 async def test_n_minus_1_message_without_ctx_is_accepted_and_counted_before_the_flag() -> None:
@@ -244,7 +322,7 @@ async def test_event_type_is_signed() -> None:
 async def test_producer_signs_the_event_type(monkeypatch) -> None:
     from app.core.org_context import bind
 
-    envelope.configure(None, None, KEY)
+    envelope.configure(None, KEY)
     monkeypatch.setenv("ENVELOPE_SIGN", "true")
     try:
         with bind(CTX_B):
@@ -258,7 +336,7 @@ async def test_producer_signs_the_event_type(monkeypatch) -> None:
 
 async def test_stale_signature_follows_the_mode(monkeypatch, caplog) -> None:
     old = _msg(issued_at=int(time.time()) - 901)
-    monkeypatch.delenv("ORG_CONTEXT_MODE", raising=False)
+    monkeypatch.setenv("ORG_CONTEXT_MODE", "shadow")
     monkeypatch.setattr(logging_fields, "_log_once_last", {})
     before = envelope.STALE._metric.labels(TOPIC)._value.get()
     with caplog.at_level("ERROR"):
@@ -276,6 +354,43 @@ async def test_stale_signature_follows_the_mode(monkeypatch, caplog) -> None:
             envelope.max_age_seconds()
 
 
+async def test_a_dropped_stale_control_message_names_its_event_type_and_record(monkeypatch) -> None:
+    """A stale message dropped in enforce mode is counted by reason and event type and says which record it was about."""
+    monkeypatch.setenv("ORG_CONTEXT_MODE", "enforce")
+    old = _msg({"orgId": "org_b", "recordId": "rec-lost"}, issued_at=int(time.time()) - 901, event_type="purgePaidResults")
+    counter = envelope.REJECTED._metric.labels(TOPIC, "stale", "purgePaidResults")
+    by_type = envelope.STALE_BY_TYPE._metric.labels(TOPIC, "purgePaidResults")
+    before, before_type = counter._value.get(), by_type._value.get()
+    with pytest.raises(EnvelopeRejected) as dropped:
+        await _open(old)
+    assert counter._value.get() == before + 1 and by_type._value.get() == before_type + 1
+    assert (dropped.value.event_type, dropped.value.record_id) == ("purgePaidResults", "rec-lost")
+    assert dropped.value.facts() == {"event_type": "purgePaidResults", "record_id": "rec-lost"}
+    assert "reason=stale" in dropped.value.describe() and "age_seconds=9" in dropped.value.describe()
+
+
+async def test_a_dropped_future_message_names_its_event_type_and_record() -> None:
+    future = _msg({"orgId": "org_b", "recordId": "rec-early"}, issued_at=int(time.time()) + 3600, event_type="purgePaidResults")
+    counter = envelope.REJECTED._metric.labels(TOPIC, "future", "purgePaidResults")
+    before = counter._value.get()
+    with pytest.raises(EnvelopeRejected) as dropped:
+        await _open(future)
+    assert dropped.value.facts() == {"event_type": "purgePaidResults", "record_id": "rec-early"}
+    assert counter._value.get() == before + 1
+
+
+async def test_a_rejection_before_the_signature_verified_never_names_an_event_type(monkeypatch) -> None:
+    """The event type of a message that failed verification is the sender's claim: it is not a metric label or a log field."""
+    forged = _msg(issued_at=int(time.time()) - 901, event_type="purgePaidResults")
+    forged["eventType"] = "attacker-chosen"
+    counter = envelope.REJECTED._metric.labels(TOPIC, "bad_signature", "")
+    before = counter._value.get()
+    with pytest.raises(EnvelopeRejected) as dropped:
+        await _open(forged)
+    assert dropped.value.reason == "bad_signature" and dropped.value.facts() == {}
+    assert counter._value.get() == before + 1
+
+
 async def test_stripped_ctx_is_counted_as_stripped_while_signing_is_on(monkeypatch) -> None:
     legacy = {"eventType": "x", "payload": {"orgId": "org_b"}}
     stripped, missing = envelope.STRIPPED._metric.labels(TOPIC), envelope.CTX_MISSING._metric.labels(TOPIC)
@@ -284,7 +399,7 @@ async def test_stripped_ctx_is_counted_as_stripped_while_signing_is_on(monkeypat
     await _open(legacy)  # producer flag off: plain v1
     assert (stripped._value.get(), missing._value.get()) == (s0, m0 + 1)
     monkeypatch.setenv("ENVELOPE_SIGN", "true")
-    monkeypatch.delenv("ORG_CONTEXT_MODE", raising=False)
+    monkeypatch.setenv("ORG_CONTEXT_MODE", "shadow")
     assert (await _open(legacy)).ctx.source == "legacy-payload"  # shadow: counted, accepted
     assert (stripped._value.get(), missing._value.get()) == (s0 + 1, m0 + 1)
     monkeypatch.setenv("ORG_CONTEXT_MODE", "enforce")
@@ -312,7 +427,7 @@ async def test_wire_org_ctx_key_is_dropped() -> None:
 
 async def test_no_key_while_signing_is_never_silent(monkeypatch, caplog) -> None:
     monkeypatch.setenv("ENVELOPE_SIGN", "true")
-    monkeypatch.delenv("ORG_CONTEXT_MODE", raising=False)
+    monkeypatch.setenv("ORG_CONTEXT_MODE", "shadow")
     before = envelope.UNVERIFIED._metric.labels(TOPIC)._value.get()
     monkeypatch.setattr(logging_fields, "_log_once_last", {})
     with caplog.at_level("ERROR"):
@@ -332,7 +447,7 @@ async def test_producer_without_a_key_is_counted_and_fails_closed_in_enforce(mon
     counter = envelope.UNSIGNED._metric.labels(TOPIC, "no_key")
     before = counter._value.get()
     with bind(CTX_B):
-        monkeypatch.delenv("ORG_CONTEXT_MODE", raising=False)
+        monkeypatch.setenv("ORG_CONTEXT_MODE", "shadow")
         sent = envelope.sign_message(TOPIC, flat)
         assert {k: v for k, v in sent.items() if k != "eventId"} == flat and sent["eventId"]
         assert counter._value.get() == before + 1

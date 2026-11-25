@@ -46,3 +46,17 @@ def test_an_unknown_attribute_still_raises() -> None:
 
     with pytest.raises(AttributeError):
         c.no_such_router  # noqa: B018
+
+
+def test_an_attribute_error_inside_a_router_import_names_its_cause(tmp_path, monkeypatch) -> None:
+    import app.edition_config as c
+
+    (tmp_path / "pxh_broken_router.py").write_text(
+        "import types\ntypes.ModuleType('dep').HiddenContent\n", encoding="utf-8"
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+    monkeypatch.setitem(c._LAZY_ATTRS, "broken_router", "pxh_broken_router")
+    monkeypatch.delitem(sys.modules, "pxh_broken_router", raising=False)
+    # `from ... import` would report an AttributeError as "cannot import name" and drop the cause.
+    with pytest.raises(ImportError, match="pxh_broken_router failed: AttributeError.*HiddenContent"):
+        exec("from app.edition_config import broken_router", {})

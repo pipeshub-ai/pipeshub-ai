@@ -12,6 +12,7 @@ import { extractStorageSaveErrorMessage } from '../utils/storage-save-error';
 import { resolveS3Credentials } from '../utils/s3-credentials';
 import { toast } from '@/lib/store/toast-store';
 import type { StorageFormData, StorageProviderType, OnboardingStepId } from '../types';
+import { SecretTextField } from '@/app/components/ui/secret-text-field';
 
 
 const selectStyle: React.CSSProperties = {
@@ -184,7 +185,7 @@ export function StepStorage({
         <Text
           as="div"
           size="1"
-          style={{ color: 'var(--gray-9)', marginBottom: '4px', letterSpacing: '0.02em' }}
+          style={{ color: 'var(--gray-11)', marginBottom: '4px', letterSpacing: '0.02em' }}
         >
           {t('onboarding.systemConfig')}
         </Text>
@@ -242,8 +243,8 @@ export function StepStorage({
               </Flex>
               <Flex direction="column" gap="1" style={{ flex: 1 }}>
                 <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>{t('onboarding.stepStorage.secretKeyLabel')}</Text>
-                <TextField.Root
-                  type={showSecret ? 'text' : 'password'}
+                <SecretTextField
+                  masked={!showSecret}
                   placeholder={t('onboarding.stepStorage.secretKeyPlaceholder')}
                   value={form.s3SecretAccessKey ?? ''}
                   onChange={(e) => handleChange('s3SecretAccessKey', e.target.value)}
@@ -255,18 +256,18 @@ export function StepStorage({
                       onClick={() => setShowSecret((v) => !v)}
                       style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '0', display: 'flex', alignItems: 'center' }}
                     >
-                      <span className="material-icons-outlined" style={{ fontSize: '14px', color: 'var(--gray-9)' }}>
+                      <span className="material-icons-outlined" style={{ fontSize: '14px', color: 'var(--gray-11)' }}>
                         {showSecret ? 'visibility_off' : 'visibility'}
                       </span>
                     </button>
                   </TextField.Slot>
-                </TextField.Root>
+                </SecretTextField>
               </Flex>
             </Flex>
             <Text
               size="1"
               style={{
-                color: s3Credentials.kind === 'partial' ? 'var(--red-11)' : 'var(--gray-9)',
+                color: s3Credentials.kind === 'partial' ? 'var(--red-11)' : 'var(--gray-11)',
                 marginTop: '-16px',
               }}
             >
@@ -327,8 +328,8 @@ export function StepStorage({
             </Flex>
             <Flex direction="column" gap="1">
               <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>{t('onboarding.stepStorage.accountKeyLabel')}</Text>
-              <TextField.Root
-                type={showAccountKey ? 'text' : 'password'}
+              <SecretTextField
+                masked={!showAccountKey}
                 placeholder={t('onboarding.stepStorage.accountKeyPlaceholder')}
                 value={form.accountKey ?? ''}
                 onChange={(e) => handleChange('accountKey', e.target.value)}
@@ -340,12 +341,12 @@ export function StepStorage({
                     onClick={() => setShowAccountKey((v) => !v)}
                     style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '0', display: 'flex', alignItems: 'center' }}
                   >
-                    <span className="material-icons-outlined" style={{ fontSize: '14px', color: 'var(--gray-9)' }}>
+                    <span className="material-icons-outlined" style={{ fontSize: '14px', color: 'var(--gray-11)' }}>
                       {showAccountKey ? 'visibility_off' : 'visibility'}
                     </span>
                   </button>
                 </TextField.Slot>
-              </TextField.Root>
+              </SecretTextField>
             </Flex>
             <Flex direction="column" gap="1">
               <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>{t('onboarding.stepStorage.containerLabel')}</Text>
@@ -394,7 +395,7 @@ export function StepStorage({
           style={{
             width: '100%',
             backgroundColor: submitting || !isFormValid ? 'var(--gray-4)' : 'var(--accent-9)',
-            color: submitting || !isFormValid ? 'var(--gray-9)' : 'white',
+            color: submitting || !isFormValid ? 'var(--gray-11)' : 'white',
             cursor: submitting || !isFormValid ? 'not-allowed' : 'pointer',
             height: '40px',
             opacity: 1,

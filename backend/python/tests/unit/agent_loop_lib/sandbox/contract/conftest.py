@@ -21,7 +21,8 @@ import os
 import shutil
 import tarfile
 import tempfile
-from collections.abc import Iterator
+import uuid
+from typing import TYPE_CHECKING
 from unittest.mock import MagicMock
 
 import pytest
@@ -30,10 +31,10 @@ from app.agent_loop_lib.sandbox.coding.docker import DockerCodingSandbox
 from app.agent_loop_lib.sandbox.coding.docker_client import DockerClientProvider
 from app.agent_loop_lib.sandbox.coding.local import LocalCodingSandbox
 
-# Contract tests run real sandbox processes (node, npm install, containers).
-# `pytest-timeout`'s default signal method fires inside asyncio's selector on
-# macOS/Linux and breaks them, so the whole directory uses the thread method.
-pytestmark = pytest.mark.timeout(180, method="thread")
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
+    from app.agent_loop_lib.sandbox.coding.base import CodingSandboxBackend
 
 # An image that already carries node + python3 + a baked node_modules.
 # `deployment/sandbox/Dockerfile` builds `pipeshub/sandbox:latest`; a local
@@ -61,6 +62,38 @@ def docker_available() -> tuple[bool, str]:
     finally:
         client.close()
     return True, ""
+
+
+# CI's Docker lane sets it: a missing daemon or sandbox image then fails the lane instead of skipping it, so a
+# broken lane cannot read green. Unset (a developer's machine), those tests skip.
+REQUIRE_DOCKER_ENV = "PXH_REQUIRE_DOCKER"
+
+
+def docker_required() -> bool:
+    return os.environ.get(REQUIRE_DOCKER_ENV, "").strip().lower() in {"1", "true", "yes"}
+
+
+def skip_without_docker() -> None:
+    """Skips the calling test or fixture without a daemon and the sandbox image, or fails it when required."""
+    available, reason = docker_available()
+    if available:
+        return
+    if docker_required():
+        pytest.fail(f"{REQUIRE_DOCKER_ENV} is set, but the Docker lane cannot run: {reason}")
+    pytest.skip(reason)
+
+
+# The security gate's gVisor stage sets it (C6.42): a daemon without runsc then fails the gVisor lane instead of
+# skipping it, so a host that lost its runtime cannot pass the stage on runc alone.
+REQUIRE_GVISOR_ENV = "PXH_REQUIRE_GVISOR"
+NO_RUNSC = "runsc is not a runtime of this Docker daemon"
+
+
+def skip_without_runsc() -> None:
+    """The gVisor lane's skip on a daemon without runsc, or its failure when the gate requires gVisor."""
+    if os.environ.get(REQUIRE_GVISOR_ENV, "").strip().lower() in {"1", "true", "yes"}:
+        pytest.fail(f"{REQUIRE_GVISOR_ENV} is set, but {NO_RUNSC}")
+    pytest.skip(NO_RUNSC)
 
 
 def _tar(files: dict[str, bytes]) -> bytes:
@@ -119,6 +152,9 @@ class FakeDockerProvider:
     async def ensure_image(self, image: str) -> bool:
         return True
 
+    async def image_labels(self, _: str) -> dict[str, str]:
+        return {}
+
     async def pull_image(self, image: str) -> None:
         return None
 
@@ -162,9 +198,7 @@ async def local_sandbox(short_tmp_dir):
 
 @pytest.fixture
 async def docker_real_sandbox(tmp_path):
-    available, reason = docker_available()
-    if not available:
-        pytest.skip(reason)
+    skip_without_docker()
     sb = DockerCodingSandbox(
         working_dir=str(tmp_path / "docker-real"),
         image=DOCKER_TEST_IMAGE,
@@ -177,22 +211,56 @@ async def docker_real_sandbox(tmp_path):
     sb._provider.close()
 
 
-@pytest.fixture(params=["local", "docker_real"])
+async def _broker_real_sandbox(working_dir: str) -> CodingSandboxBackend:
+    """`BrokerCodingSandbox` over an in-process Docker broker in its own label namespace (LG-1)."""
+    from app.agent_loop_lib.sandbox.coding.broker import BrokerCodingSandbox
+    from app.harness.sandbox.docker_broker import DockerSandboxBroker
+    from harness_core.clock import SystemClock
+    from harness_core.ids import RandomIds
+
+    suffix = uuid.uuid4().hex[:8]
+    provider = DockerClientProvider(max_workers=8)
+    broker = await DockerSandboxBroker.create(
+        provider=provider,
+        clock=SystemClock(),
+        ids=RandomIds(),
+        allowed_images=frozenset({DOCKER_TEST_IMAGE}),
+        label_namespace=f"io.pipeshub.p51test.{suffix}",
+        volume_prefix=f"p51test-{suffix}",
+    )
+
+    async def source() -> DockerSandboxBroker:
+        return broker
+
+    sandbox = BrokerCodingSandbox(
+        broker=source,
+        working_dir=working_dir,
+        image=DOCKER_TEST_IMAGE,
+        image_node_modules="/home/sandbox/node_modules",
+        provider=provider,
+    )
+    # A run cut off by a test timeout never reaches its release; teardown reaps it.
+    sandbox.test_broker = broker  # type: ignore[attr-defined]
+    return sandbox
+
+
+@pytest.fixture(params=["local", "docker_real", "broker_real"])
 async def backend(request, short_tmp_dir, tmp_path):
     """Every backend the environment can actually run.
 
-    `docker_real` skips without a daemon; `local` skips without node. At
-    least one always runs, and CI with Docker runs both.
+    `docker_real` and `broker_real` skip without a daemon; `local` skips
+    without node. At least one always runs, and CI with Docker runs all.
     """
     if request.param == "local":
         if shutil.which("node") is None:
             pytest.skip("node not on PATH")
         # Short path: see `short_tmp_dir` for why pytest's own is unusable.
         sb = LocalCodingSandbox(working_dir=os.path.join(short_tmp_dir, "l"))
+    elif request.param == "broker_real":
+        skip_without_docker()
+        sb = await _broker_real_sandbox(str(tmp_path / "broker-real"))
     else:
-        available, reason = docker_available()
-        if not available:
-            pytest.skip(reason)
+        skip_without_docker()
         sb = DockerCodingSandbox(
             working_dir=str(tmp_path / "docker-real"),
             image=DOCKER_TEST_IMAGE,
@@ -202,6 +270,9 @@ async def backend(request, short_tmp_dir, tmp_path):
     await sb.provision()
     yield sb
     await sb.destroy()
+    test_broker = getattr(sb, "test_broker", None)
+    if test_broker is not None:
+        await test_broker.reap(labels={}, older_than_s=0)
     provider = getattr(sb, "_provider", None)
     if provider is not None:
         provider.close()

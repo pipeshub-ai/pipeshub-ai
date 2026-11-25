@@ -4,9 +4,11 @@ import { expect } from 'chai';
 import { Decimal128, Long, MongoClient, ObjectId } from 'mongodb';
 import sinon from 'sinon';
 import { Census, judgeCensus } from '../../../src/scripts/docstore-migrate/census';
+import { org as orgMapping } from '../../../src/scripts/docstore-migrate/mapping/identity';
 import { compareDocs } from '../../../src/scripts/docstore-migrate/compare';
 import { decodeDoc } from '../../../src/scripts/docstore-migrate/decode';
 import type { CollectionMapping } from '../../../src/scripts/docstore-migrate/mapping/types';
+import { MAPPINGS } from '../../../src/scripts/docstore-migrate/mapping';
 import { SourceReport, prepareSource } from '../../../src/scripts/docstore-migrate/source';
 import { loadConfig, redact } from '../../../src/scripts/docstore-migrate/config';
 import { importLoginShut } from '../../../src/scripts/docstore-migrate/preflight';
@@ -78,6 +80,22 @@ describe('docstore-migrate engine', () => {
       expect(d.code).to.equal('ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad');
       expect(d.members).to.deep.equal([]);
       expect(rep.applied.get('absent array members read as []')).to.equal(1);
+    });
+  });
+
+  describe('a field stored with its default value', () => {
+    it('reads as absent, as the PostgreSQL side decodes it (an uploaded document keeps writers [] after its write)', () => {
+      const docs = MAPPINGS.find((x) => x.collection === 'documents')!;
+      const rep = new SourceReport();
+      const d = prepareSource(docs, { _id: oid, orgId: oid, documentName: 'a', writeSeq: 0, writers: [] }, rep) as Record<string, unknown>;
+      expect(d).to.not.have.property('writers');
+      expect(d).to.not.have.property('writeSeq');
+      expect(rep.applied.get('writers equal to its default read as absent')).to.equal(1);
+      const held = prepareSource(docs, { _id: oid, orgId: oid, documentName: 'a', writeSeq: 2, writers: [{ t: 'x', until: 1 }] }, new SourceReport()) as Record<string, unknown>;
+      expect(held.writers).to.deep.equal([{ t: 'x', until: 1 }]);
+      expect(held.writeSeq).to.equal(2);
+      const chats = MAPPINGS.find((x) => x.collection === 'chatSessions')!;
+      expect(prepareSource(chats, { _id: oid, orgId: oid, isPinned: false }, new SourceReport())).to.not.have.property('isPinned');
     });
   });
 
@@ -154,6 +172,11 @@ describe('docstore-migrate engine', () => {
       expect(f.filter((x) => x.kind === 'unmapped_path')).to.deep.equal([]);
       expect(f.filter((x) => x.kind === 'null_in_omit_field').map((x) => x.path)).to.deep.equal(['title']);
     });
+    it('an org left holding an admin-role lease (a crashed holder) is no finding: the lease is a dropped path', () => {
+      const c = new Census();
+      c.add({ _id: 1, registeredName: 'Acme', adminRoleLease: { holder: 'h', until: new Date() } });
+      expect(judgeCensus(orgMapping, c).filter((x) => x.kind === 'unmapped_path')).to.deep.equal([]);
+    });
     it('counts documents that hold U+0000 by path', () => {
       const c = new Census();
       c.add({ title: 'a\u0000', metadata: { 'k\u0000': 1 } });
@@ -185,11 +208,16 @@ describe('docstore-migrate engine', () => {
   describe('runtime and state', () => {
     it('refuses one PostgreSQL URL without opening MongoDB', async () => {
       const cfg = { mongoUri: 'mongodb://127.0.0.1:1/', pgImportUrl: 'postgresql://j@127.0.0.1:1/db' } as never;
-      const t = Date.now();
       const store = process.env.DOC_STORE;
-      const err = await MigrationRuntime.open(cfg).then(() => undefined, (e: Error) => e);
+      const connect = sinon.stub(MongoClient.prototype, 'connect').rejects(new Error('must not connect'));
+      let err: Error | undefined;
+      try {
+        err = await MigrationRuntime.open(cfg).then(() => undefined, (e: Error) => e);
+      } finally {
+        connect.restore();
+      }
       expect(err?.message).to.include('both needed');
-      expect(Date.now() - t).to.be.lessThan(2000);
+      expect(connect.called, 'MongoDB was opened').to.equal(false);
       // a refused open must not switch the process to the PostgreSQL repositories (later tests in the same process would use them)
       expect(process.env.DOC_STORE).to.equal(store);
     });

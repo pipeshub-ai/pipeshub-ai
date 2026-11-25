@@ -11,17 +11,22 @@ threads `allow_network` into the `CodeRequest` the backend receives.
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 
 from app.agent_loop_lib.core.types import ToolResult
-from app.agent_loop_lib.sandbox.coding.base import CodeRequest, CodeResult, InstallResult
+from app.agent_loop_lib.sandbox.coding.base import (
+    CodeRequest,
+    CodeResult,
+    InstallResult,
+)
 from app.agent_loop_lib.sandbox.manager import SandboxManager, SandboxType
+from app.agent_loop_lib.tools.builtin.sandbox import input_staging
 from app.agent_loop_lib.tools.builtin.sandbox.coding_sandbox import (
     CodingSandboxTool,
     InstallPackagesTool,
     detect_language_mismatch,
 )
-from app.agent_loop_lib.tools.builtin.sandbox import input_staging
 from app.agent_loop_lib.tools.builtin.sandbox.input_staging import (
     PARENT_RESULTS_INPUT_PATH,
     add_staged_skill_resources,
@@ -476,3 +481,321 @@ def test_install_packages_reports_a_failed_install_as_failed() -> None:
 
     assert tool.result_failed({}, _ran(InstallResult(success=False, stderr="no such package").model_dump())) is True
     assert tool.result_failed({}, _ran(InstallResult(success=True, installed=["numpy"]).model_dump())) is False
+
+
+class _TimeoutBackend(_CapturingBackend):
+    """Records the request and reports a wall-clock timeout."""
+
+    async def execute(self, request: CodeRequest) -> CodeResult:
+        from app.agent_loop_lib.sandbox.coding.reflection import ReflectionEngine
+
+        self.last_request = request
+        result = CodeResult(
+            stdout="", stderr=f"Execution timed out after {request.timeout}s", exit_code=-1,
+            language=request.language, duration_ms=1.0,
+        )
+        return result.model_copy(update={"error_analysis": ReflectionEngine().analyze(result)})
+
+
+def _capped_tool(
+    backend_cls: type = _CapturingBackend, cap: float | None = 300.0,
+) -> tuple[CodingSandboxTool, _CapturingBackend]:
+    from app.agent_loop_lib.sandbox.manager import SandboxLimits
+
+    backend = backend_cls()
+    manager = SandboxManager()
+    manager.register_backend_factory(
+        SandboxType.CODING, lambda: backend, limits=SandboxLimits(max_run_timeout_s=cap),
+    )
+    return CodingSandboxTool(manager), backend
+
+
+class TestRunTimeoutCap:
+    async def test_timeout_above_the_cap_is_lowered_with_a_note(self) -> None:
+        tool, backend = _capped_tool()
+        result = await tool.execute(code="print(1)", language="python", timeout=900)
+        assert backend.last_request.timeout == 300
+        assert result.data["timeout_note"] == (
+            "Requested timeout of 900s is above this deployment's maximum of 300s; "
+            "the run was given 300s."
+        )
+
+    async def test_timeout_below_the_cap_is_kept(self) -> None:
+        tool, backend = _capped_tool()
+        result = await tool.execute(code="print(1)", language="python", timeout=60)
+        assert backend.last_request.timeout == 60
+        assert "timeout_note" not in result.data
+
+    async def test_omitted_timeout_uses_the_default(self) -> None:
+        tool, backend = _capped_tool()
+        await tool.execute(code="print(1)", language="python")
+        assert backend.last_request.timeout == 30
+
+    async def test_zero_and_negative_become_one_second(self) -> None:
+        for value in (0, -5):
+            tool, backend = _capped_tool()
+            await tool.execute(code="print(1)", language="python", timeout=value)
+            assert backend.last_request.timeout == 1
+
+    async def test_nan_uses_the_default_and_inf_the_cap(self) -> None:
+        tool, backend = _capped_tool()
+        await tool.execute(code="print(1)", language="python", timeout=float("nan"))
+        assert backend.last_request.timeout == 30
+        tool, backend = _capped_tool()
+        result = await tool.execute(code="print(1)", language="python", timeout=float("inf"))
+        assert backend.last_request.timeout == 300
+        assert "timeout_note" in result.data
+
+    async def test_timeout_at_the_cap_replaces_the_suggestion(self) -> None:
+        tool, _backend = _capped_tool(_TimeoutBackend)
+        result = await tool.execute(code="while True: pass", language="python", timeout=900)
+        suggestion = result.data["error_analysis"]["suggestion"]
+        assert suggestion.startswith("The run hit the maximum run time of 300s.")
+
+    async def test_timeout_below_the_cap_keeps_the_suggestion(self) -> None:
+        tool, _backend = _capped_tool(_TimeoutBackend)
+        result = await tool.execute(code="while True: pass", language="python", timeout=60)
+        assert "increase the timeout" in result.data["error_analysis"]["suggestion"]
+
+    async def test_no_cap_leaves_the_timeout_alone(self) -> None:
+        tool, backend = _capped_tool(cap=None)
+        result = await tool.execute(code="print(1)", language="python", timeout=900)
+        assert backend.last_request.timeout == 900
+        assert "timeout_note" not in result.data
+
+    def test_parameter_description_states_the_cap(self) -> None:
+        tool, _backend = _capped_tool()
+        timeout = next(p for p in tool.parameters if p.name == "timeout")
+        assert "at most 300" in timeout.description
+
+    async def test_finished_run_logs_its_outcome(self, caplog) -> None:
+        import logging
+
+        tool, _backend = _capped_tool(_TimeoutBackend)
+        with caplog.at_level(logging.INFO):
+            await tool.execute(code="while True: pass", language="python", timeout=900)
+        assert "run_code finished: outcome=timeout exit_code=-1" in caplog.text
+        assert "timeout_s=300 timeout_capped=True" in caplog.text
+
+
+def test_manager_reports_the_registered_run_timeout_cap() -> None:
+    from app.agent_loop_lib.sandbox.manager import SandboxLimits
+
+    manager = SandboxManager()
+    assert manager.run_timeout_cap(SandboxType.CODING) is None
+    manager.register_backend_factory(
+        SandboxType.CODING, _CapturingBackend, limits=SandboxLimits(max_run_timeout_s=120),
+    )
+    assert manager.run_timeout_cap(SandboxType.CODING) == 120
+
+
+class _BlockingBackend(_UploadCapturingBackend):
+    """Not metered (like Docker). `execute` and `install_packages` block
+    until cancelled, then take a moment to clean up, as 1.4's container
+    removal does."""
+
+    class capabilities:  # stands in for SandboxCapabilities
+        is_metered = False
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.started = asyncio.Event()
+        self.saw_cancel = False
+        self.cleaned_up = False
+
+    async def _block(self) -> None:
+        self.started.set()
+        try:
+            await asyncio.sleep(60)
+        except asyncio.CancelledError:
+            self.saw_cancel = True
+            await asyncio.sleep(0.05)
+            self.cleaned_up = True
+            raise
+
+    async def execute(self, request: CodeRequest) -> CodeResult:
+        self.last_request = request
+        await self._block()
+        raise AssertionError("unreachable")
+
+    async def install_packages(self, packages: list[str], language: str) -> InstallResult:
+        await self._block()
+        raise AssertionError("unreachable")
+
+    async def destroy(self) -> None:
+        return None
+
+
+def _stoppable(backend_cls: type = _BlockingBackend, **manager_kwargs: object) -> tuple:
+    from app.agent_loop_lib.core.context import CancellationToken
+    from app.agent_loop_lib.sandbox.governor import (
+        GovernorLimits,
+        SandboxResourceGovernor,
+    )
+
+    token = CancellationToken()
+    gov = SandboxResourceGovernor.in_process(GovernorLimits(max_total_sandboxes=5))
+    backends: list = []
+
+    def make() -> object:
+        backends.append(backend_cls())
+        return backends[-1]
+
+    manager = SandboxManager(governor=gov, stop_token=token, slot_wait_s=5, **manager_kwargs)
+    manager.register_backend_factory(SandboxType.CODING, make)
+    return manager, token, gov, backends
+
+
+async def _stop_when_started(token: object, backends: list, count: int = 1) -> None:
+    for _ in range(200):
+        if len(backends) >= count and all(b.started.is_set() for b in backends[:count]):
+            break
+        await asyncio.sleep(0.01)
+    token.cancel()
+
+
+class TestStopInterruptsSandboxCalls:
+    async def test_run_code_stopped_mid_run(self, caplog) -> None:
+        import logging
+        from unittest.mock import patch
+
+        manager, token, gov, backends = _stoppable()
+        tool = CodingSandboxTool(manager, artifact_output_dir="/tmp/unused")
+        with patch(
+            "app.agent_loop_lib.tools.builtin.sandbox.coding_sandbox._save_artifacts",
+        ) as save, caplog.at_level(logging.INFO):
+            stopper = asyncio.ensure_future(_stop_when_started(token, backends))
+            result = await tool.execute(code="while True: pass", language="python", timeout=60)
+            await stopper
+
+        assert result.success is False
+        assert result.error.startswith("Stopped by the user")
+        assert dict(result.end_fields) == {"reason": "stopped", "error_class": "cancelled"}
+        assert backends[0].cleaned_up
+        save.assert_not_called()
+        assert gov.snapshot()["total"] == 0
+        assert "run_code finished: outcome=stopped" in caplog.text
+
+    async def test_install_packages_stopped(self) -> None:
+        manager, token, gov, backends = _stoppable()
+        tool = InstallPackagesTool(manager)
+        stopper = asyncio.ensure_future(_stop_when_started(token, backends))
+        result = await tool.execute(packages=["pandas"], language="python")
+        await stopper
+
+        assert result.success is False
+        assert result.error.startswith("Stopped by the user")
+        assert backends[0].saw_cancel
+        assert gov.snapshot()["total"] == 0
+
+    async def test_stop_while_the_sandbox_is_being_created(self) -> None:
+        provisioning = asyncio.Event()
+
+        class _SlowProvision(_BlockingBackend):
+            async def provision(self) -> None:
+                provisioning.set()
+                await asyncio.sleep(60)
+
+        manager, token, _gov, backends = _stoppable(_SlowProvision)
+        tool = CodingSandboxTool(manager)
+        task = asyncio.ensure_future(tool.execute(code="print(1)", language="python"))
+        await provisioning.wait()
+        token.cancel()
+        result = await task
+
+        assert result.error.startswith("Stopped by the user")
+        assert backends[0].last_request is None
+
+    async def test_stop_before_the_call_takes_no_slot_and_uploads_nothing(self) -> None:
+        manager, token, gov, backends = _stoppable()
+        token.cancel()
+        tool = CodingSandboxTool(manager)
+        with stage_input_files({PARENT_RESULTS_INPUT_PATH: b"{}"}):
+            result = await tool.execute(code="print(1)", language="python")
+
+        assert result.error.startswith("Stopped by the user")
+        assert backends == []
+        assert gov.snapshot()["total"] == 0
+
+    async def test_parallel_calls_all_stop_and_free_their_slots(self) -> None:
+        manager, token, gov, backends = _stoppable()
+        tool = CodingSandboxTool(manager)
+        stopper = asyncio.ensure_future(_stop_when_started(token, backends, count=3))
+        results = await asyncio.gather(*(
+            tool.execute(code="while True: pass", language="python") for _ in range(3)
+        ))
+        await stopper
+
+        assert all(r.error.startswith("Stopped by the user") for r in results)
+        assert all(b.cleaned_up for b in backends)
+        assert gov.snapshot()["total"] == 0
+
+
+class TestDeniedSlotDropsAFreshSandbox:
+    """A sandbox a call created but could not run on (no free slot) is torn
+    down: its id is never returned, so nothing could reuse it."""
+
+    @staticmethod
+    def _full_manager() -> tuple:
+        from app.agent_loop_lib.sandbox.governor import (
+            GovernorLimits,
+            SandboxResourceGovernor,
+        )
+
+        gov = SandboxResourceGovernor.in_process(GovernorLimits(max_total_sandboxes=1))
+        backends: list = []
+
+        def make() -> object:
+            backends.append(_BlockingBackend())
+            return backends[-1]
+
+        manager = SandboxManager(governor=gov, slot_wait_s=0)
+        manager.register_backend_factory(SandboxType.CODING, make)
+        return manager, gov, backends
+
+    async def _hold_the_only_slot(self, manager: SandboxManager, backends: list) -> asyncio.Future:
+        """A fresh sandbox running until cancelled: it holds the governor's one slot."""
+        before = len(backends)
+        busy = asyncio.ensure_future(CodingSandboxTool(manager).execute(code="while True: pass", language="python"))
+        for _ in range(200):
+            if len(backends) > before and backends[before].started.is_set():
+                break
+            await asyncio.sleep(0.01)
+        return busy
+
+    async def test_run_code(self) -> None:
+        manager, gov, backends = self._full_manager()
+        busy = await self._hold_the_only_slot(manager, backends)
+
+        result = await CodingSandboxTool(manager).execute(code="print(1)", language="python")
+
+        assert result.success is False
+        assert manager.active_count(SandboxType.CODING) == 1
+        assert backends[1].last_request is None
+        busy.cancel()
+        await asyncio.gather(busy, return_exceptions=True)
+        assert gov.snapshot()["total"] == 0
+
+    async def test_install_packages(self) -> None:
+        manager, gov, backends = self._full_manager()
+        busy = await self._hold_the_only_slot(manager, backends)
+
+        result = await InstallPackagesTool(manager).execute(packages=["pandas"], language="python")
+
+        assert result.success is False
+        assert manager.active_count(SandboxType.CODING) == 1
+        busy.cancel()
+        await asyncio.gather(busy, return_exceptions=True)
+
+    async def test_a_reused_sandbox_is_kept(self) -> None:
+        manager, gov, backends = self._full_manager()
+        tool = CodingSandboxTool(manager)
+        sandbox_id, _ = await manager.get_or_create(SandboxType.CODING, None)
+        busy = await self._hold_the_only_slot(manager, backends)
+
+        result = await tool.execute(code="print(1)", language="python", sandbox_id=sandbox_id)
+
+        assert result.success is False
+        assert manager.get(SandboxType.CODING, sandbox_id) is not None
+        busy.cancel()
+        await asyncio.gather(busy, return_exceptions=True)

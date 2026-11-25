@@ -6,6 +6,7 @@ from typing import Any, Optional
 
 from app.agents.mcp import service as mcp_service
 from app.config.configuration_service import ConfigurationService
+from app.core.org_context import org_of
 
 
 async def load_mcp_instances(
@@ -25,6 +26,20 @@ async def get_mcp_instance(
 ) -> Optional[dict[str, Any]]:
     """Single MCP instance by ID: an org instance, or `user_id`'s own personal one."""
     return await mcp_service.get_instance(instance_id, config_service, org_id, user_id)
+
+
+async def mcp_instance_visible_to_org(
+    instance: dict[str, Any],
+    org_id: str,
+    config_service: ConfigurationService,
+) -> bool:
+    """Whether ``org_id`` may see ``instance``: only its own org's here (no inheritance).
+
+    The instance key names no org, so this is the only thing keeping one org's instance from
+    another's where a store holds several. An edition that shares instances answers True for
+    each instance the org legitimately inherits.
+    """
+    return bool(org_id) and org_of(instance) == org_id
 
 
 def mask_mcp_instance_for_response(
@@ -51,7 +66,7 @@ async def resolve_mcp_instances_with_inheritance(
 
 
 async def resolve_instance_owner_config_service(
-    instance_id: str,  # noqa: ARG001
+    instance_id: str,
     config_service: ConfigurationService,
 ) -> ConfigurationService:
     """Config service for the org that owns an instance."""

@@ -26,6 +26,7 @@ from app.agents.openapi.models import (
     ParameterLocation,
 )
 from app.agents.openapi.spec_compiler import compile_spec
+from tests.support.loopback_client import loopback_client
 
 BASE = "https://api.acme.test"
 _FIXTURE_DIR = Path(__file__).resolve().parents[6] / "integration-tests" / "openapi_fixture"
@@ -297,7 +298,7 @@ async def test_oauth_sign_in_tokens_call_the_api_and_refresh(acme: tuple[str, An
     base_url, state = acme
     redirect, verifier = "https://pipeshub.test/api-toolsets/oauth/callback/", "v" * 64
     challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
-    async with httpx.AsyncClient() as browser:
+    async with loopback_client() as browser:
         allowed = await browser.post(f"{base_url}/oauth/authorize", data={
             "client_id": "acme-client", "redirect_uri": redirect, "state": "s", "code_challenge": challenge,
             "code_challenge_method": "S256", "username": "acme", "password": "acme-demo-password", "decision": "allow",

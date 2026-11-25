@@ -48,11 +48,9 @@ export function createOAuthRedirectMiddleware(
 
       // If no token, redirect to frontend OAuth page
       if (!token) {
-        const redirectUrl = buildFrontendOAuthUrl(req, frontendUrl)
-        logger.info('No auth token, redirecting to frontend OAuth page', {
-          redirectUrl,
-        })
-        res.redirect(redirectUrl)
+        // The query is unvalidated client input (login_hint is an email): never log it.
+        logger.info('No auth token, redirecting to frontend OAuth page')
+        res.redirect(buildFrontendOAuthUrl(req, frontendUrl))
         return
       }
 

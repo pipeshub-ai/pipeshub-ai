@@ -27,6 +27,7 @@ from app.agent_loop_lib.events.base import AgentEvent, EventType
 from app.agent_loop_lib.runtime.runtime import AgentRuntime
 from app.agent_loop_lib.tools.registry import ToolRegistry
 from app.agent_loop_lib.transport.registry import TransportRegistry
+from harness_core.models.output_bound import shortened
 from tests.unit.agents.adapter.support.scripted_transport import ScriptedTransport
 
 if TYPE_CHECKING:
@@ -80,6 +81,8 @@ class _TokenStream(ScriptedTransport):
         thinking_budget: int | None = None,
         effort: str | None = None,
         system_blocks: list[str] | None = None,
+        *,
+        tool_choice: object = None,
     ) -> AsyncIterator[StreamEvent]:
         self.calls.append({"messages": messages})
         for event in self._turns.pop(0):
@@ -158,7 +161,8 @@ class TestCutOffReplyIsReturnedWhole:
         result = await agent.run(_GOAL)
 
         assert result.success is True
-        assert result.output == "Part one of the summary runs long, and part two keeps going"
+        # P4.17 UX-6: still cut when the turns ran out, so the answer says it was shortened.
+        assert result.output == shortened("Part one of the summary runs long, and part two keeps going")
 
 
 class TestContinuationIsMarkedOnTheLiveStream:

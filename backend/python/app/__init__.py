@@ -1,10 +1,14 @@
 import warnings
 
-from app.utils.process_hardening import disable_vendor_telemetry
+from app.utils.process_hardening import (
+    disable_vendor_telemetry,
+    use_bundled_tiktoken_encodings,
+)
 from app.utils.store_umbrella import apply_store_umbrella
 
 # Every service imports this package before any dependency that can load onnxruntime.
 disable_vendor_telemetry()
+use_bundled_tiktoken_encodings()
 
 # PIPESHUB_STORE=postgres fills in the per-store settings before anything reads them.
 apply_store_umbrella()

@@ -45,7 +45,9 @@ from app.utils.embedding_gate import (
 )
 from app.utils.embedding_server_client import EmbeddingServerEmbeddings
 from app.utils.indexing_workers import indexing_worker_count
+from harness_core.testing.virtual_time import on_virtual_time
 from tests.support.loop_clock import virtual_loop_time
+from tests.support.settle import settle
 from tests.unit.modules.transformers.test_vectorstore_deep import _make_vectorstore
 from tests.unit.modules.transformers.test_vectorstore_point_ids import (
     _reconciling_store,
@@ -121,6 +123,9 @@ class FakeServer(EmbeddingServerEmbeddings):
             finally:
                 self.oldest_started = None
 
+    async def aembed_documents_witnessed(self, texts: list[str], **kwargs: Any) -> tuple[list[list[float]], str, bool]:
+        return await self.aembed_documents(texts, **kwargs), "fp32", False
+
     async def aembed_documents(self, texts: list[str], **_kwargs: Any) -> list[list[float]]:
         # The real server cannot cancel an encode that is running: the slot is held until it ends,
         # whatever the client does.
@@ -189,6 +194,7 @@ class TestWhatIsGated:
             openai_cls.return_value = inner
             client = Client(max_retries=3)
         client.bulk_gate = lambda: gate  # type: ignore[method-assign]
+        client.announces_precision = AsyncMock(return_value=False)  # an older server: fp32, no header to read
         # asyncio.sleep is one object for both loops, so tell them apart by the delay: 7.7 is the client's.
         with (
             patch("app.utils.embedding_retry.retry_delay_seconds", return_value=7.7),
@@ -331,7 +337,7 @@ class TestCancellation:
         waiter.cancel()
         with pytest.raises(asyncio.CancelledError):
             await waiter
-        await asyncio.wait_for(third_entered.wait(), 1.0)
+        await settle(third_entered.wait())
         third_release.set()
         await third
         assert gate._s.holders == 0 and not gate._s.waiters
@@ -359,7 +365,7 @@ class TestCancellation:
         await asyncio.sleep(0.01)
         release.set()
         await holder
-        await asyncio.wait_for(live_entered.wait(), 1.0)
+        await settle(live_entered.wait())
         live_release.set()
         await live
         assert gate._s.holders == 0
@@ -617,7 +623,7 @@ class TestWidth:
         now[0] += 61
         health.body = encode_gate(2)
         await gate._current_width()
-        await asyncio.wait_for(second_entered.wait(), 1.0)
+        await settle(second_entered.wait())
         release.set()
         await asyncio.gather(holder, second)
 
@@ -685,6 +691,8 @@ class TestHealthRead:
         assert BulkGate("http://h:8002").health_url == "http://h:8002/health"
 
 
+# The budget, the stall timer and the waits are all on the loop's clock: on virtual time they are read exactly.
+@on_virtual_time
 class TestTheRecordBudget:
     """A real ``RecordProgress`` and a real ``asyncio.timeout``: the pause must survive the next batch's re-arm."""
 
@@ -919,7 +927,7 @@ class TestGrantsAndFairness:
         assert not late_entered.is_set()
         release.set()
         first_release.set()
-        await asyncio.wait_for(late_entered.wait(), 1.0)
+        await settle(late_entered.wait())
         late_release.set()
         await asyncio.gather(holder, first, late)
 
@@ -988,6 +996,7 @@ class TestOverlappingWaits:
         assert not budget.expired()
 
 
+@on_virtual_time
 class TestBudgetPause:
     async def test_one_wait_longer_than_the_whole_budget_does_not_cut_a_record_that_is_only_queued(self) -> None:
         progress, budget = await TestTheRecordBudget().run_record(cap=0.3, floor=5.0, waits=[0.5])
@@ -1050,8 +1059,10 @@ class TestReconciliationEmbedIsPlanned:
     ) -> None:
         # The loop clock moves only inside the gate wait. On the wall clock, a pause outside it (a full GC in a
         # long worker, a busy runner) is budget time too, and at 1 s it cut this test in CI before the wait began.
+        # It starts at a fixed value, not the runner's uptime: from a start just under a power of two (511.x s after
+        # boot) start + 1.5 rounds, and the wait read back as 1.4999999999999432.
         loop = asyncio.get_running_loop()
-        now = [loop.time()]
+        now = [1000.0]
         monkeypatch.setattr(loop, "time", lambda: now[0])
         store, _ = _reconciling_store()
         member = object()

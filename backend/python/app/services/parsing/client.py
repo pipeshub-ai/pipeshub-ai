@@ -29,11 +29,15 @@ from app.services.base_client import (
     BaseServiceClient,
     ServiceBackpressureError,
     ServiceCallError,
+    earlier_attempt_delivered,
 )
+from app.services.docling.client import DoclingNotServing, DoclingUnavailableError
 from app.services.messaging.backpressure import get_default_backpressure_coordinator
 from app.services.messaging.config import messaging_env
+from app.services.paid_cache.orphan import RecordGone, RecordHandBack, current_guard
 from app.services.paid_cache.run import current_run
 from app.services.parsing.interface import (
+    DOCLING_UNAVAILABLE_REASON,
     ParseErrorCode,
     ParseResult,
     ParserProvider,
@@ -150,7 +154,52 @@ class ParsingClient(BaseServiceClient):
         skip_table_enrichment: bool = False,
         file_path: str | None = None,
     ) -> ParseResult:
-        """Parse *file_content* by calling the Parsing Service.
+        """Parse *file_content* by calling the Parsing Service. A 410 (``RECORD_GONE``: the service saw the record's delete
+        marker change) is never taken at its word: the record is read first (``orphan.DeliveryGuard.confirm_gone``). Gone:
+        ``RecordGone``. Live: the parse is sent again with the markers just read, at most twice (the third request disables
+        the service's stop). The read fails: ``RecordHandBack`` (the delivery is handed back; no drain, no immediate re-parse).
+        """
+        guard = current_guard()
+        while True:
+            try:
+                return await self._parse_once(
+                    file_content, record_name, mime_type, extension, org_id, provider,
+                    skip_table_enrichment=skip_table_enrichment, file_path=file_path,
+                    extra_fields=guard.request_fields() if guard is not None else {},
+                )
+            except ParsingClientError as exc:
+                if exc.code != ParseErrorCode.RECORD_GONE or guard is None:
+                    raise
+                backend = None
+                if guard.backend_of is not None:
+                    try:
+                        backend = await guard.backend_of()
+                    except Exception:
+                        backend = None
+                verdict = await guard.confirm_gone(backend)
+                if verdict == "live":
+                    continue
+                if verdict == "gone":
+                    raise RecordGone(guard.record_id, "the parsing service refused its parse") from exc
+                raise RecordHandBack(
+                    f"{guard.record_id}: the parsing service refused a deleted record and the record could not be read",
+                    delay_s=15.0,
+                ) from exc
+
+    async def _parse_once(
+        self,
+        file_content: bytes,
+        record_name: str,
+        mime_type: str,
+        extension: str,
+        org_id: str | None,
+        provider: ParserProvider | None,
+        *,
+        skip_table_enrichment: bool,
+        file_path: str | None,
+        extra_fields: dict[str, str],
+    ) -> ParseResult:
+        """One request to the Parsing Service.
 
         Returns a :class:`ParseResult` on success.
         Raises :class:`ParsingClientError` on expected failures, including
@@ -159,10 +208,7 @@ class ParsingClient(BaseServiceClient):
         — this is retryable, unlike the other error codes.
         Raises :class:`ServiceCallError` on connection / retry exhaustion.
         """
-        if not extension:
-            extension = file_types.extension_for_mime(mime_type)
-            if not extension and "." in record_name:
-                extension = record_name.rsplit(".", 1)[-1]
+        extension = file_types.service_extension(mime_type, extension, record_name)
 
         form_data: dict[str, str] = {
             "record_name": record_name,
@@ -176,6 +222,7 @@ class ParsingClient(BaseServiceClient):
             form_data["provider"] = provider.value
         if file_path:
             form_data["file_path"] = file_path
+        form_data.update(extra_fields)
         # The record budget this call waits under: the service bounds its stage (and its late writes) by it.
         form_data["record_budget_s"] = str(messaging_env.record_processing_timeout_for(extension, mime_type))
         run = current_run()
@@ -222,16 +269,24 @@ class ParsingClient(BaseServiceClient):
                 code = ParseErrorCode(code_str)
             except ValueError:
                 code = ParseErrorCode.PARSE_FAILED
+            details = error.get("details") or {}
+            if code == ParseErrorCode.PARSE_BACKPRESSURE and details.get("reason") == DOCLING_UNAVAILABLE_REASON:
+                message = error.get("message", "Docling is not serving")
+                if earlier_attempt_delivered(response):
+                    # An earlier answer of this call (a 5xx) may have been Docling failing on the file: counted.
+                    raise DoclingUnavailableError(message)
+                # The service's Docling never received the file: wait for it, as the in-process path does.
+                raise DoclingNotServing(message)
             if code == ParseErrorCode.PASSWORD_REQUIRED:
                 # The typed error the legacy pipeline raises for the same file.
                 raise PasswordProtectedError(
                     error.get("message", "The file is password-protected"),
-                    details=error.get("details", {}),
+                    details=details,
                 )
             raise ParsingClientError(
                 code=code,
                 message=error.get("message", "Parsing failed"),
-                details=error.get("details", {}),
+                details=details,
             )
 
         try:

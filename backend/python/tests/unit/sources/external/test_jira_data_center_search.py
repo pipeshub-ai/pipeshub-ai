@@ -14,28 +14,11 @@ explicitly opts in (it remains a Cloud-only property and is therefore omitted
 from the default DC payload).
 """
 
-import sys
-import types
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-
-# The production import chain
-#   app.sources.external.jira.jira
-#     -> app.sources.client.jira.jira (JiraClient)
-#        -> app.api.routes.toolsets
-#           -> app.containers.connector / etcd3 / kafka / ...
-# pulls in the entire connector container subtree just to satisfy a type hint.
-# This unit test only needs ``JiraDataSource`` itself, so we short-circuit the
-# chain at ``app.api.routes.toolsets`` with a stub exposing ``get_toolset_by_id``
-# *before* the real module is imported. Anything that doesn't actually touch
-# the toolset registry inside ``JiraDataSource`` is unaffected.
-_toolsets_stub = types.ModuleType("app.api.routes.toolsets")
-_toolsets_stub.get_toolset_by_id = lambda *_a, **_kw: None  # type: ignore[attr-defined]
-sys.modules.setdefault("app.api.routes.toolsets", _toolsets_stub)
-
-from app.sources.external.jira.jira import JiraDataSource  # noqa: E402
+from app.sources.external.jira.jira import JiraDataSource
 
 
 @pytest.fixture

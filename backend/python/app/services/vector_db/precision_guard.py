@@ -1,0 +1,784 @@
+"""Checks, in front of a write, that the vectors have the precision of the index they go into.
+
+The witnessed precision of a batch comes from the embedding server's response. It is compared with the
+index's pin immediately before ``upsert_points``. An index with no pin takes its pin from the facts in the
+index (tagged points, then legacy points) and from the first writer only when it is empty. Every predicate is
+positive: it asks for points with a given tag, never for points without one, so image points and the NULL
+semantics of a SQL store play no part.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import json
+from contextlib import ExitStack
+from dataclasses import dataclass
+
+from app.config.configuration_service import delete_config_confirmed
+from app.core.db.errors import DbTimeout
+from app.core.org_context import spawn_in_request
+from app.services.messaging.precision_flip import (
+    CLEANUP_HINT,
+    FenceMoved,
+    PinAbsent,
+    PrecisionFlip,
+    setting_for,
+)
+from app.services.vector_db.collection_epoch import (
+    DEBT_MAX_AGE_SECONDS,
+    POINT_EPOCH,
+    Fence,
+    sweep_window_seconds,
+)
+from app.services.vector_db.collection_pin import (
+    FP32,
+    IMAGE_TAG,
+    INT8,
+    STALE_PIN_SKEW_SECONDS,
+    STAMP_TAG,
+    CollectionPinStore,
+    Pin,
+)
+from app.services.vector_db.errors import OrgRequired
+from app.services.vector_db.filters import org_for_filter
+from app.utils.precision_witness import get_precision_witness
+
+# The counts that derive an index's precision are unindexed scans on a store with one space per organisation; they
+# are bounded so that a large space cannot hold a consumer or a claim.
+DERIVE_TIMEOUT_SECONDS = 3.0
+# A record end sweeps the points of retired epochs; a space is swept at most this often by one process.
+SWEEP_INTERVAL_SECONDS = 60.0
+TAG_FIELD = "embedPrecision"
+_ORG_FIELD = "orgId"
+
+
+class PrecisionUnreadable(Exception):
+    """The pin or the facts behind it could not be read; the write must not go ahead."""
+
+
+class PrecisionDerivationTimeout(PrecisionUnreadable):
+    """The counts that derive an index's precision did not finish in time: nothing is known, which is not "legacy"."""
+
+
+# A write that was refused, or whose precision could not be confirmed (the pin or the epoch could not be read), is
+# not known to be right. Only a *definite* verdict (the pin holds the other precision, or the epoch moved) removes what
+# the batch wrote: every point of this batch's records at this precision and epoch is then invalid, whoever wrote it.
+# Anything else (an unreadable pin, a missing pin, a cancellation) removes nothing and leaves a debt entry that a later
+# drain settles by reading the pin and the epoch again. The error is raised either way (a flip is handed back to the
+# queue as it is; an unreadable pin takes the ordinary retry path).
+UNCONFIRMED_WRITE = (PrecisionFlip, PrecisionUnreadable)
+
+
+def is_definite(exc: BaseException) -> bool:
+    """Whether *exc* says, for certain, that the points of the batch are of the wrong precision or of a moved epoch."""
+    return isinstance(exc, PrecisionFlip) and not isinstance(exc, PinAbsent)
+
+
+# What the pin and the epoch say about a written batch right now.
+DEFINITE, VALID, UNKNOWN = "definite", "valid", "unknown"
+# Re-confirmations of a pin that could not be read, and the waits before the attempts at a removal that failed.
+RECONFIRM_DELAYS: tuple[float, ...] = (0.2, 1.0)
+DELETE_DELAYS: tuple[float, ...] = (0.2, 1.0)
+# One removal attempt; one that outlives it is not repeated (it may still be applied), it becomes debt.
+DELETE_TIMEOUT_SECONDS = 10.0
+# A cancelled writer records its debt with a key-value write only, shielded and bounded; it deletes nothing.
+CANCELLED_NOTE_TIMEOUT_SECONDS = 2.0
+DEBT_IDS_PER_ENTRY = 200
+DRAIN_INTERVAL_SECONDS = 60.0
+# One drain pass settles at most this many entries, for at most this long (the rest wait for the next pass): the drain runs on the end of a
+# record, which must not wait on a backlog of debt or on a store that hangs. One removal of an entry is bounded by DELETE_TIMEOUT_SECONDS.
+DRAIN_MAX_ENTRIES = 50
+DRAIN_PASS_SECONDS = 20.0
+
+
+async def run_despite_cancellation(awaitable, timeout: float = CANCELLED_NOTE_TIMEOUT_SECONDS) -> None:  # noqa: ANN001
+    """Await *awaitable* to its end within *timeout*, even though the calling task has been cancelled and may be cancelled again."""
+    await asyncio.wait_for(asyncio.shield(spawn_in_request(awaitable, name="unconfirmed-write-debt")), timeout)
+
+
+def _bound_org_or_none() -> str | None:
+    try:
+        return org_for_filter()
+    except OrgRequired:
+        return None
+
+
+def _is_timeout(exc: BaseException) -> bool:
+    if isinstance(exc, TimeoutError | DbTimeout):
+        return True
+    return type(exc).__name__ in {"QueryCanceledError", "LexicalSearchTimeout"}
+
+
+@dataclass(frozen=True)
+class Standing:
+    """What an index is: its precision, and whether that is a claim, a pin, or only the legacy default."""
+
+    precision: str | None
+    source: str  # "pin", "derived", "legacy", "none"
+
+
+class PrecisionGuard:
+    def __init__(self, pins: CollectionPinStore, vector_db_service, logger) -> None:  # noqa: ANN001
+        self._pins = pins
+        self._db = vector_db_service
+        self._logger = logger
+        self._swept_at: dict[tuple[str, str | None], float] = {}
+        self._drained_at: dict[tuple[str, str | None], float] = {}
+        self._drain_cursor: dict[tuple[str, str | None], int] = {}
+
+    # -- facts about the points ------------------------------------------------------------------------------
+
+    async def _count(self, collection: str, org: str | None, tag: str, epochs: list[str] | None = None) -> int:
+        must: dict = {TAG_FIELD: [tag]}
+        if epochs:
+            must[POINT_EPOCH] = list(epochs)
+        if org:
+            must[_ORG_FIELD] = org
+        expression = await self._db.filter_collection(must=must)
+        return int(await self._db.count_points(collection, expression))
+
+    async def tag_counts(self, collection: str, org: str | None) -> dict[str, int]:
+        """Every tagged point by tag, dead ones included."""
+        return {tag: await self._count(collection, org, tag) for tag in (INT8, FP32, IMAGE_TAG, STAMP_TAG)}
+
+    async def _dead_counts(self, collection: str, org: str | None, tokens: list[str]) -> dict[str, int]:
+        """The points of the retired tokens by precision: read after the totals, so a sweep between them only lowers a live count."""
+        return {tag: await self._count(collection, org, tag, tokens) for tag in (INT8, FP32)}
+
+    async def _points_count(self, collection: str) -> int:
+        info = await self._db.get_collection_info(collection)
+        return int(info.points_count) if info.exists else 0
+
+    def _per_org_spaces(self) -> bool:
+        """Whether the store keeps one space per organisation (its counts need the org bound and are unindexed scans)."""
+        try:
+            return getattr(self._db.get_capabilities(), "spaces_per_org", False) is True
+        except Exception:  # a store that does not say is not one
+            return False
+
+    def per_org_spaces(self) -> bool:
+        return self._per_org_spaces()
+
+    def scope(self, org: str | None) -> str | None:
+        """The org that names an index: the org on a store with one space per organisation, none on any other.
+
+        A store with one collection for everyone has one pin and one set of counts for that collection, whatever
+        organisation a writer or the verdict poll happens to carry; keying them by org would give one collection
+        several pins, and compare an org's tag counts with the collection's whole point count.
+        """
+        return org if self._per_org_spaces() else None
+
+    async def derive(self, collection: str, org: str | None) -> Standing:
+        """The precision of an index without a pin, from positive facts, and nothing written.
+
+        On a store with one space per organisation the reads run for that org (bound for the block) under a
+        statement timeout; running out of time raises ``PrecisionDerivationTimeout``: nothing was derived, and
+        the caller decides what that means (refuse a claimant, or no derivation at read time).
+        """
+        org = self.scope(org)
+        if not self._per_org_spaces():
+            return await self._derive(collection, org)
+        if not org:
+            raise PrecisionUnreadable(f"the precision of '{collection}' is derived per organisation and none was given")
+        from app.services.vector_db.pgvector.scope import org_scope, statement_timeout
+
+        try:
+            with ExitStack() as stack:
+                stack.enter_context(org_scope(org))
+                stack.enter_context(statement_timeout(int(DERIVE_TIMEOUT_SECONDS * 1000)))
+                async with asyncio.timeout(DERIVE_TIMEOUT_SECONDS + 1.0):
+                    return await self._derive(collection, org)
+        except PrecisionUnreadable:
+            raise
+        except Exception as exc:
+            if _is_timeout(exc):
+                raise PrecisionDerivationTimeout(f"counting the points of '{collection}' took too long") from exc
+            raise
+
+    async def _derive(self, collection: str, org: str | None) -> Standing:
+        counts = await self.tag_counts(collection, org)
+        dead = await self._pins.epochs.dead(collection, org)
+        live = dict(counts)
+        if dead and (counts[INT8] or counts[FP32]):
+            gone = await self._dead_counts(collection, org, [d.token for d in dead])
+            live[INT8] = max(0, counts[INT8] - gone[INT8])
+            live[FP32] = max(0, counts[FP32] - gone[FP32])
+        if live[INT8] and live[FP32]:
+            raise PrecisionUnreadable(f"collection '{collection}' holds points of both precisions")
+        # Text points with no tag were written before the tags existed, by weights that were never int8: fp32.
+        # Every tagged point is taken out of the total, the dead ones too: a dead int8 point is not a legacy one.
+        untagged = await self._points_count(collection) - counts[INT8] - counts[FP32] - counts[IMAGE_TAG] - counts[STAMP_TAG]
+        if live[INT8]:
+            if untagged > 0:
+                raise PrecisionUnreadable(f"collection '{collection}' holds int8 points and untagged (fp32) points")
+            return Standing(INT8, "derived")
+        if live[FP32]:
+            return Standing(FP32, "derived")
+        if untagged > 0:
+            return Standing(FP32, "legacy")
+        return Standing(None, "none")
+
+    # -- leaks at the end of a record ------------------------------------------------------------------------
+
+    @staticmethod
+    def leak_tag(pin_precision: str) -> str:
+        """The tag a point must not carry in an index of this precision. Positive on purpose: a tag, not an absence."""
+        return INT8 if pin_precision == FP32 else FP32
+
+    async def _record_filter(self, org: str | None, virtual_record_id: str, tag: str):  # noqa: ANN202
+        must: dict = {"virtualRecordId": virtual_record_id, TAG_FIELD: [tag]}
+        if org:
+            must[_ORG_FIELD] = org
+        return await self._db.filter_collection(must=must)
+
+    async def leaked(self, collection: str, org: str | None, virtual_record_id: str, pin_precision: str) -> int:
+        expression = await self._record_filter(org, virtual_record_id, self.leak_tag(pin_precision))
+        return int(await self._db.count_points(collection, expression))
+
+    async def delete_leaked(self, collection: str, org: str | None, virtual_record_id: str, pin_precision: str) -> None:
+        """Delete only the points of the record that carry the other precision's tag, never the whole record."""
+        expression = await self._record_filter(org, virtual_record_id, self.leak_tag(pin_precision))
+        await self._db.delete_points(collection, expression)
+
+    # -- the fence -------------------------------------------------------------------------------------------
+
+    async def capture(self, collection: str) -> Fence:
+        """The epoch a batch is accepted under: read before the batch is embedded, so before anything is known about it."""
+        try:
+            return await self._pins.epochs.capture(collection)
+        except Exception as exc:
+            raise PrecisionUnreadable(f"could not read the epoch of '{collection}': {type(exc).__name__}") from exc
+
+    async def _require_fence(self, fence: Fence) -> None:
+        try:
+            moved = await self._pins.epochs.moved(fence)
+        except Exception as exc:
+            raise PrecisionUnreadable(f"could not read the epoch of '{fence.collection}': {type(exc).__name__}") from exc
+        if moved:
+            raise FenceMoved(f"collection '{fence.collection}' was reset while this batch was being embedded; it is embedded again")
+
+    async def sweep_dead(self, collection: str, org: str | None, *, throttle: bool = False) -> None:
+        """Delete the points written under retired tokens, and mark a token swept for the space this sweep covered.
+
+        Every store deletes for one organisation, so the delete names the writer's (the argument, else the bound
+        one) and covers that organisation's points only. On a store with one space per organisation that is the
+        whole space, and the token is swept for it. On a shared store the token is swept only once no point of
+        it is left anywhere in the collection. Without an organisation nothing can be deleted and nothing is marked.
+
+        With *throttle* (the sweep at the end of a record) a space already swept in this process less than
+        ``SWEEP_INTERVAL_SECONDS`` ago is left alone: one organisation that has not yet written must not make every
+        record end of every other organisation repeat the reads and the count.
+
+        Never raises: a sweep that cannot run is repeated at the end of the next record.
+        """
+        try:
+            scope = self.scope(org)
+            if throttle:
+                now = self._pins.epochs.now()
+                last = self._swept_at.get((collection, scope))
+                if last is not None and now - last < SWEEP_INTERVAL_SECONDS:
+                    return
+                self._swept_at[(collection, scope)] = now
+            await self.drain_debt(collection, org)
+            dead = await self._pins.epochs.dead(collection, scope)
+            if not dead:
+                return
+            delete_org = org or _bound_org_or_none()
+            if not delete_org:
+                return
+            tokens = [d.token for d in dead]
+            must: dict = {POINT_EPOCH: tokens, _ORG_FIELD: delete_org}
+            await self._db.delete_points(collection, await self._db.filter_collection(must=must))
+            window = sweep_window_seconds()
+            for item in dead:
+                if not self._pins.epochs.expired(item, window):
+                    continue
+                if scope is None and await self._remaining(collection, item.token):
+                    continue  # another organisation's points of the token are still there
+                await self._pins.epochs.mark_swept(collection, item.token, scope)
+        except Exception:
+            self._logger.warning("could not sweep the points of retired epochs of '%s'", collection, exc_info=True)
+
+    async def _remaining(self, collection: str, token: str) -> int:
+        expression = await self._db.filter_collection(must={POINT_EPOCH: [token]})
+        return int(await self._db.count_points(collection, expression))
+
+    # -- the pin ---------------------------------------------------------------------------------------------
+
+    async def standing(self, collection: str, org: str | None, *, fresh: bool = False, derive: bool = True) -> Standing:
+        org = self.scope(org)
+        try:
+            pin = await self._pins.get(collection, org, fresh=fresh)
+            if pin is not None:
+                return Standing(pin.precision, "pin")
+            if not derive:
+                return Standing(None, "none")
+            return await self.derive(collection, org)
+        except PrecisionUnreadable:
+            raise
+        except Exception as exc:
+            if _is_timeout(exc):
+                raise PrecisionDerivationTimeout(f"counting the points of '{collection}' took too long") from exc
+            raise PrecisionUnreadable(f"could not read the precision of '{collection}': {type(exc).__name__}") from exc
+
+    async def standing_for_read(self, collection: str, org: str | None) -> Standing:
+        """What the read-time check learns about an index: a derivation that timed out is "no derivation", never legacy."""
+        org = self.scope(org)
+        try:
+            fence = await self.capture(collection)
+            standing = await self.standing(collection, org)
+            if standing.source == "derived" and standing.precision:
+                standing = await self._restored(collection, org, standing, fence)
+            return standing
+        except PrecisionDerivationTimeout:
+            self._logger.warning("The precision of '%s' could not be derived in time; the read-time check does not use it", collection)
+            return Standing(None, "unknown")
+        except FenceMoved:  # the index was reset while it was being read: what was derived is gone, and a read claims nothing
+            return Standing(None, "unknown")
+
+    async def restore(self, collection: str, org: str | None, precision: str, fence: Fence | None = None) -> Pin | None:
+        """Write a pin derived from tags, from facts read now: never from cached ones.
+
+        The pin key is read again and the tag is counted again immediately before the write; the pin is created
+        only if it is still absent and the count is non-zero. The creation is a fenced claim: a reset since the
+        fence was taken (the points counted are gone) makes it raise ``FenceMoved`` and creates nothing. Returns the
+        pin that stands afterwards, or None when there is none.
+        """
+        org = self.scope(org)
+        fence = fence or await self.capture(collection)
+        current = await self._pins.get(collection, org, fresh=True)
+        if current is not None:
+            return current
+        if await self._count(collection, org, precision) == 0:
+            return None
+        return await self._claim(collection, org, precision, fence, derived=True, counted=True)
+
+    async def _restored(self, collection: str, org: str | None, standing: Standing, fence: Fence | None = None) -> Standing:
+        """The standing after a derived one is restored as a pin: the pin as it stands now, not the derivation.
+
+        A pin written or replaced since the derivation was read (another writer's, a replacement of a stale one)
+        is what the next write must be judged against.
+        """
+        try:
+            current = await self.restore(collection, org, standing.precision or "", fence)
+        except PrecisionFlip:
+            raise
+        except Exception:
+            self._logger.warning("could not restore the precision pin of '%s'", collection, exc_info=True)
+            return standing
+        return Standing(current.precision, "pin") if current is not None else standing
+
+    async def _claim(
+        self, collection: str, org: str | None, precision: str, fence: Fence, *, derived: bool, counted: bool = False,
+        writer_org: str | None = None,
+    ) -> Pin:
+        """The one place a pin is created.
+
+        The epoch is checked before and after. Unless the caller has just counted the points (a restore) or the
+        index is known to have had no reset or release (``counted``), the points are made visible and counted
+        first, and a point of another precision refuses the claim: create-if-absent then decides between
+        concurrent claimants, so no pin is made on a count that could not see a writer's points.
+        """
+        org = self.scope(org)
+        await self._require_fence(fence)
+        if not counted:
+            await self._db.make_searchable(collection)
+            found = await self.derive(collection, org)
+            if found.precision not in (None, precision):
+                raise PrecisionFlip(
+                    f"collection '{collection}' holds {found.precision} vectors and the embedding server now produces {precision}; "
+                    f"set {setting_for(found.precision)} and restart the embedding server, {CLEANUP_HINT}",
+                )
+        try:
+            pin, created = await self._pins._try_create(collection, precision, org, derived=derived)
+        except Exception as exc:
+            raise PrecisionUnreadable(f"could not claim the precision of '{collection}': {type(exc).__name__}") from exc
+        if not created:
+            return pin
+        try:
+            moved = await self._pins.epochs.moved(fence)
+        except Exception:
+            moved = True
+        if moved:
+            await delete_config_confirmed(self._pins._config, self._pins.key(collection, org))
+            raise FenceMoved(f"collection '{collection}' was reset while this batch was being embedded; it is embedded again")
+        await self.sweep_dead(collection, writer_org or org)
+        return pin
+
+    async def release_stale_derived(self, collection: str, org: str | None) -> bool:
+        """Delete a derived pin whose collection has no points left (exact count after the index is searchable)."""
+        org = self.scope(org)
+        pin = await self._pins.get(collection, org, fresh=True)
+        if pin is None or not pin.derived:
+            return False
+        await self._db.make_searchable(collection)
+        if await self._points_count(collection) > 0:
+            return False
+        await self._pins.release(collection, org)
+        return True
+
+    async def confirm_after_write(self, collection: str, org: str | None, precision: str, fence: Fence) -> None:
+        """Raise ``PrecisionFlip`` (or ``PrecisionUnreadable`` if the pin or epoch cannot be read) unless, once a batch is written, the epoch is the batch's and the pin is the batch's precision.
+
+        The check in front of the write cannot see a reset, or a pin released and claimed again, between it and
+        the write. This never claims or restores a pin from the points the batch wrote. The caller removes what it wrote.
+        """
+        org = self.scope(org)
+        try:
+            current, moved = await asyncio.gather(
+                self._pins.get(collection, org, fresh=True), self._pins.epochs.moved(fence),
+            )
+        except Exception as exc:
+            raise PrecisionUnreadable(f"could not confirm the precision of '{collection}': {type(exc).__name__}") from exc
+        if moved:
+            raise FenceMoved(f"collection '{collection}' was reset while a batch was being written; it is embedded again")
+        if current is None:
+            raise PinAbsent(f"collection '{collection}' had no precision pin when a batch was written to it; it is embedded again")
+        if current.precision != precision:
+            raise PrecisionFlip(
+                f"collection '{collection}' holds {current.precision} vectors and a batch of {precision} was written to it; "
+                f"set {setting_for(current.precision)} and restart the embedding server, {CLEANUP_HINT}",
+            )
+
+    async def verdict(self, collection: str, org: str | None, precision: str, fence: Fence) -> str:
+        """``DEFINITE`` (the points of this precision and epoch are invalid), ``VALID`` (the pin and the epoch are the batch's) or ``UNKNOWN``."""
+        try:
+            await self.confirm_after_write(collection, org, precision, fence)
+        except PrecisionUnreadable:
+            return UNKNOWN
+        except PinAbsent:
+            return UNKNOWN
+        except PrecisionFlip:
+            return DEFINITE
+        return VALID
+
+    async def settle_unconfirmed(
+        self, collection: str, org: str | None, precision: str, fence: Fence, extras: list[dict], exc: BaseException,
+    ) -> BaseException | None:
+        """What follows a written batch that did not confirm: None when it confirms after all, else the error to raise.
+
+        An unreadable pin is confirmed again (twice, after short waits). On a definite verdict the batch's records' points at this
+        precision and epoch are removed (each attempt reads the pin and the epoch again first, so a removal that is repeated, or
+        that comes late, only goes ahead while the verdict still stands). Otherwise nothing is removed and a debt entry is left.
+        """
+        try:
+            return await self._settle(collection, org, precision, fence, extras, exc)
+        except asyncio.CancelledError:
+            # Cancelled while confirming again or removing: what is not known to be settled is recorded (a key-value write, shielded and bounded).
+            for extra in extras:
+                try:
+                    await run_despite_cancellation(self.note_debt(collection, org, precision, fence, extra))
+                except BaseException:
+                    self._logger.error("Could not record the points of a cancelled batch in '%s' as debt", collection, exc_info=True)
+            raise
+
+    async def _settle(
+        self, collection: str, org: str | None, precision: str, fence: Fence, extras: list[dict], exc: BaseException,
+    ) -> BaseException | None:
+        if isinstance(exc, PrecisionUnreadable):
+            for delay in RECONFIRM_DELAYS:
+                await asyncio.sleep(delay)
+                try:
+                    await self.confirm_after_write(collection, org, precision, fence)
+                    return None
+                except UNCONFIRMED_WRITE as again:
+                    exc = again
+                    if not isinstance(again, PrecisionUnreadable):
+                        break
+        for extra in extras:
+            if is_definite(exc):
+                await self._remove_on_verdict(collection, org, precision, fence, extra)
+            else:
+                await self.note_debt(collection, org, precision, fence, extra)
+        return exc
+
+    async def _remove_on_verdict(self, collection: str, org: str | None, precision: str, fence: Fence, extra: dict) -> None:
+        for wait in (0.0, *DELETE_DELAYS):
+            if wait:
+                await asyncio.sleep(wait)
+            verdict = await self.verdict(collection, org, precision, fence)
+            if verdict == VALID:
+                return  # the pin and the epoch are the batch's now: its points are right
+            if verdict == UNKNOWN:
+                await self.note_debt(collection, org, precision, fence, extra)
+                return
+            try:
+                await asyncio.wait_for(self.delete_written(collection, org, precision, fence, extra), DELETE_TIMEOUT_SECONDS)
+                return
+            except TimeoutError:
+                # It may still be applied, so it is not repeated; the drain settles it.
+                self._logger.warning("The removal of an unconfirmed batch from '%s' did not finish in time", collection)
+                await self.note_debt(collection, org, precision, fence, extra)
+                return
+            except OrgRequired:
+                self._logger.error("The points of a rejected batch in '%s' were not removed: no organisation", collection)
+                return
+            except Exception:
+                self._logger.warning("Could not remove the points of an unconfirmed batch from '%s'", collection, exc_info=True)
+        self._logger.error("Could not remove the points of an unconfirmed batch from '%s'; it is left as debt", collection)
+        await self.note_debt(collection, org, precision, fence, extra)
+
+    # -- debt: a removal that is not (yet) known to be right ------------------------------------------------------------
+
+    @staticmethod
+    def _entry_chunks(extra: dict) -> list[dict]:
+        longest = max(extra, key=lambda k: len(extra[k]) if isinstance(extra[k], list) else 0)
+        values = extra.get(longest)
+        if not isinstance(values, list) or len(values) <= DEBT_IDS_PER_ENTRY:
+            return [extra]
+        return [{**extra, longest: values[i:i + DEBT_IDS_PER_ENTRY]} for i in range(0, len(values), DEBT_IDS_PER_ENTRY)]
+
+    async def note_debt(self, collection: str, org: str | None, precision: str, fence: Fence, extra: dict) -> None:
+        """Remember the points of a batch that could not be settled. The key is a function of what it names, so a retry adds nothing."""
+        debt_org = org or _bound_org_or_none()
+        if not debt_org:
+            self._logger.error("The points of an unconfirmed batch in '%s' were not recorded as debt: no organisation", collection)
+            return
+        try:
+            for chunk in self._entry_chunks(extra):
+                key = hashlib.sha256(
+                    json.dumps([debt_org, precision, fence.token, chunk], sort_keys=True).encode(),
+                ).hexdigest()[:32]
+                value = {"org": debt_org, "precision": precision, "epoch": fence.token, "extra": chunk}
+                await self._pins.epochs.note_debt(collection, self.scope(debt_org), key, value)
+        except Exception:
+            self._logger.error(
+                "Could not record the points of an unconfirmed batch in '%s'; a retry or the leak check removes them", collection,
+                exc_info=True,
+            )
+
+    async def drain_debt(self, collection: str, org: str | None, *, throttle: bool = False) -> None:
+        """Settle the debt of this organisation's unconfirmed batches: remove the points only on a definite verdict.
+
+        A collection that is gone, an entry past its age, or points the pin and epoch say are right, end an entry; a verdict that
+        cannot be read, a pin that is missing, or a removal that fails, keep it, and the pass goes on with the next entry. A pass
+        looks at no more than ``DRAIN_MAX_ENTRIES`` entries (a different window each time, so one that cannot be settled does not
+        starve the others), reads the pin and epoch once for the entries of one precision and epoch, bounds every removal by
+        ``DELETE_TIMEOUT_SECONDS`` and the whole pass by ``DRAIN_PASS_SECONDS``. Entries of another organisation are skipped.
+        Never raises.
+        """
+        try:
+            scope = self.scope(org)
+            bound = org or _bound_org_or_none()
+            if not bound:
+                return
+            if throttle:
+                now = self._pins.epochs.now()
+                last = self._drained_at.get((collection, scope))
+                if last is not None and now - last < DRAIN_INTERVAL_SECONDS:
+                    return
+                self._drained_at[(collection, scope)] = now
+            await asyncio.wait_for(self._drain(collection, org, scope, bound), DRAIN_PASS_SECONDS)
+        except TimeoutError:
+            self._logger.warning("the settling of the debt of unconfirmed batches of '%s' took too long; it goes on at the next pass", collection)
+        except Exception:
+            self._logger.warning("could not settle the debt of unconfirmed batches of '%s'", collection, exc_info=True)
+
+    async def _drain(self, collection: str, org: str | None, scope: str | None, bound: str) -> None:
+        window = self._drain_cursor.get((collection, scope), 0)
+        entries = await self._pins.epochs.debts(collection, scope, limit=DRAIN_MAX_ENTRIES, start=window)
+        self._drain_cursor[(collection, scope)] = window + DRAIN_MAX_ENTRIES
+        if not entries:
+            return
+        info = await self._db.get_collection_info(collection)
+        verdicts: dict[tuple[str, str], str] = {}
+        for path, entry in entries:
+            try:
+                await self._settle_entry(collection, org, bound, info, verdicts, path, entry)
+            except Exception:
+                self._logger.warning("could not settle one record of unconfirmed points in '%s'; it is kept", collection, exc_info=True)
+
+    async def _settle_entry(
+        self, collection: str, org: str | None, bound: str, info, verdicts: dict, path: str, entry,  # noqa: ANN001
+    ) -> None:
+        if not isinstance(entry, dict) or not isinstance(entry.get("extra"), dict):
+            await self._pins.epochs.drop_debt(path)
+            return
+        if entry.get("org") != bound:
+            return
+        if not info.exists:
+            await self._pins.epochs.drop_debt(path)
+            return
+        if self._pins.epochs.now() - float(entry.get("at", 0)) / 1000.0 > DEBT_MAX_AGE_SECONDS:
+            self._logger.warning("Dropping an old record of unconfirmed points in '%s'", collection)
+            await self._pins.epochs.drop_debt(path)
+            return
+        precision, fence = str(entry.get("precision")), Fence(collection, str(entry.get("epoch")))
+        key = (precision, fence.token)
+        if key not in verdicts:
+            verdicts[key] = await self.verdict(collection, org, precision, fence)
+        verdict = verdicts[key]
+        if verdict == UNKNOWN:
+            return
+        if verdict == DEFINITE:
+            await asyncio.wait_for(self.delete_written(collection, org, precision, fence, entry["extra"]), DELETE_TIMEOUT_SECONDS)
+        await self._pins.epochs.drop_debt(path)
+
+    async def count_of(self, collection: str, org: str | None, precision: str) -> int:
+        """How many points carry this precision's tag in the index."""
+        return await self._count(collection, self.scope(org), precision)
+
+    async def delete_written(
+        self, collection: str, org: str | None, precision: str, fence: Fence, extra: dict | None = None,
+    ) -> None:
+        """Remove the points at this precision and epoch that *extra* pins (the batch's records, or its entity ids).
+
+        Only for a definite verdict (see ``is_definite``): every such point is then wrong, whoever wrote it, so no lease or lock is
+        needed. ``settle_unconfirmed`` and ``drain_debt`` read the verdict again right before each call.
+
+        The delete always carries the writer's organisation: a shared store refuses a delete without one, and an
+        organisation's own space needs it. Only the derivation of an index's precision is collection-wide.
+        """
+        must: dict = {TAG_FIELD: [precision], POINT_EPOCH: [fence.token], **(extra or {})}
+        delete_org = org or _bound_org_or_none()
+        if not delete_org:
+            raise OrgRequired("the points of a rejected batch are removed for one organisation, and none was given")
+        must[_ORG_FIELD] = delete_org
+        await self._db.delete_points(collection, await self._db.filter_collection(must=must))
+
+    # -- replacing a pin left by a crash -------------------------------------------------------------------
+
+    async def replace_stale(
+        self, collection: str, precision: str, observed_empty_at: float, org: str | None = None,
+        skew: float = STALE_PIN_SKEW_SECONDS,
+    ) -> bool:
+        """Remove a pin left by a crash, if it predates *observed_empty_at* by more than *skew* and the index is empty.
+
+        No pin of the new precision is installed: the pin is released, the points are made visible and counted,
+        and a pin is made again (through the fenced claim) only from points that exist. A writer of the old
+        precision either wrote before its own confirmation, which precedes the release and so the count, or
+        finds no pin at its confirmation and removes what it wrote. Returns True when the stale pin is gone and
+        nothing is in the index.
+        """
+        org = self.scope(org)
+        fence = await self.capture(collection)
+        pin = await self._pins.get(collection, org, fresh=True)
+        if pin is None or pin.precision == precision:
+            return False
+        if pin.pinned_at / 1000.0 >= observed_empty_at - skew:
+            return False
+        if await self._pins.get(collection, org, fresh=True) != pin:  # changed under us: leave it
+            return False
+        await self._pins.release(collection, org)
+        await self.sweep_dead(collection, org)
+        await self._db.make_searchable(collection)
+        found = await self.derive(collection, org)
+        if found.precision is None:
+            return True
+        restored = await self._claim(collection, org, found.precision, fence, derived=True, counted=True)
+        if restored.precision != found.precision:
+            raise PrecisionFlip(
+                f"collection '{collection}' holds {found.precision} vectors but a pin of {restored.precision} was made meanwhile",
+            )
+        return False
+
+    async def replace_stale_for_writer(self, collection: str, model: str | None, observed_at: float, org: str | None = None) -> bool:
+        """The creator-site form of :meth:`replace_stale`: the writer's precision is what this process last saw the model serve.
+
+        Nothing is replaced without a witness, or under a fallback (a pin is never claimed from a fallback), and a
+        store that cannot be read leaves the pin alone: the claim in front of the first write then decides.
+        """
+        witness = get_precision_witness().latest(model) if model else None
+        if witness is None or witness.fallback:
+            return False
+        try:
+            return await self.replace_stale(collection, witness.precision, observed_at, org)
+        except Exception:
+            self._logger.warning("could not check for a stale precision pin of '%s'", collection, exc_info=True)
+            return False
+
+    async def _replaced_if_empty(self, collection: str, org: str | None, precision: str, standing: Standing) -> Standing:
+        """A pin of the other precision over an index that holds no point is a leftover: replace it, as a creator would.
+
+        The check in front of a write would otherwise refuse the batch that is to clear the leftover, on every
+        retry. The pin is replaced only under the rules of ``replace_stale``; an index with any point keeps its pin.
+        """
+        try:
+            if (await self.derive(collection, org)).precision is not None:
+                return standing
+            if not await self.replace_stale(collection, precision, self._pins.now(), org):
+                return standing
+            current = await self._pins.get(collection, org, fresh=True)
+        except PrecisionFlip:
+            raise
+        except Exception:  # unreadable facts are not an empty index: the pin stands and the batch is refused
+            self._logger.warning("could not check whether '%s' is empty under a stale pin", collection, exc_info=True)
+            return standing
+        return Standing(current.precision, "pin") if current is not None else Standing(None, "none")
+
+    # -- the check -------------------------------------------------------------------------------------------
+
+    async def verify_batch(
+        self, collection: str, org: str | None, precision: str, *, fallback: bool, intent: str | None = None,
+        claim: bool = True, derive: bool = True, fence: Fence | None = None,
+    ) -> Pin | None:
+        """Raise ``PrecisionFlip`` unless a batch of this precision may be written to the collection.
+
+        Claims the pin when the collection is empty and the writer is not under a fallback. *fence* is the epoch
+        the batch was accepted under (``capture``, before it was embedded); a claim is made only under it.
+        """
+        writer_org = org
+        org = self.scope(org)
+        if claim and fence is None:
+            fence = await self.capture(collection)
+        # The pin is read from the store on every batch, never from this process's cache: another process may have
+        # released it and claimed it again since, and a cached answer would let this batch land beside the other
+        # precision's points.
+        standing = await self.standing(collection, org, fresh=True, derive=False)
+        if standing.precision is None and derive:
+            # On a store with one space per organisation the derivation is a scan. A writer that serves fp32 on
+            # purpose (no fallback) claims without it while no pin of the index was ever released and no reset
+            # is inside its window: int8 weights did not exist before the pins did, so such an index cannot hold
+            # them. Any other writer derives (an int8 writer is probed, and refused when the probe times out).
+            skip = (
+                claim and not fallback and precision == FP32 and self._per_org_spaces() and await self._quiet(collection, org)
+            )
+            if not skip:
+                # The points are made visible first: a count taken before a writer's points can be seen would
+                # let a claim be made over an index that is not empty.
+                if claim:
+                    await self._db.make_searchable(collection)
+                standing = await self.standing(collection, org, fresh=True)
+        if standing.precision is None:
+            if not claim:
+                return None
+            if fallback:
+                raise PrecisionFlip(
+                    f"the embedding server fell back to {precision} where {intent or INT8} was asked for; "
+                    f"nothing is written to '{collection}' until it serves what was asked",
+                )
+            pin = await self._claim(collection, org, precision, fence, derived=False, counted=True, writer_org=writer_org)
+            standing = Standing(pin.precision, "pin")
+        elif standing.source == "derived":
+            standing = await self._restored(collection, org, standing, fence)
+        elif standing.source == "legacy" and claim and standing.precision == precision:
+            # Points written before pins existed are fp32. An accepted batch is confirmed against a pin, so the index gets one
+            # from that evidence now, under the fence, before any batch is accepted.
+            pin = await self._claim(collection, org, standing.precision or FP32, fence, derived=True, writer_org=writer_org)
+            standing = Standing(pin.precision, "pin")
+        if standing.source == "pin" and standing.precision != precision and not fallback:
+            standing = await self._replaced_if_empty(collection, org, precision, standing)
+            if standing.precision is None:
+                if not claim:  # a check that claims nothing has nothing more to say about an index that is now empty
+                    return None
+                pin = await self._claim(collection, org, precision, fence, derived=False, writer_org=writer_org)
+                standing = Standing(pin.precision, "pin")
+        self._judged(collection, standing, precision, fallback=fallback)
+        return None
+
+    async def _quiet(self, collection: str, org: str | None) -> bool:
+        try:
+            return await self._pins.epochs.quiet(collection, org)
+        except Exception:
+            return False
+
+    @staticmethod
+    def _judged(collection: str, standing: Standing, precision: str, *, fallback: bool) -> None:
+        if standing.precision != precision:
+            raise PrecisionFlip(
+                f"collection '{collection}' holds {standing.precision} vectors and the embedding server now produces {precision}; "
+                f"set {setting_for(standing.precision)} and restart the embedding server, {CLEANUP_HINT}",
+            )
+        if fallback and standing.precision != FP32:
+            raise PrecisionFlip(f"the embedding server fell back to {precision}; '{collection}' holds {standing.precision}")

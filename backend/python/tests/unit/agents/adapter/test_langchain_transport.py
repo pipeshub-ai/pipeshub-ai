@@ -12,7 +12,7 @@ import pytest
 from langchain_core.messages import AIMessage, AIMessageChunk
 
 from app.agent_loop_lib.core.context import CancellationToken
-from app.agent_loop_lib.core.exceptions import TransportError
+from app.agent_loop_lib.core.exceptions import TOOLS_UNSUPPORTED_CODE, TransportError
 from app.agent_loop_lib.core.messages import (
     ImagePart,
     ImageSource,
@@ -355,6 +355,44 @@ class TestBindToolsRaisesOnFailure:
             await transport.complete([UserMessage(content="hi")], tools=[schema])
         assert exc_info.value.retryable is False
         assert "this provider can't bind tools" in str(exc_info.value)
+        # Callers that fall back to a tool-free path read the code: the run's error carries no provider text.
+        assert exc_info.value.code == TOOLS_UNSUPPORTED_CODE
+
+    async def test_a_run_whose_model_cannot_bind_tools_ends_with_the_code(self) -> None:
+        from app.agent_loop_lib.agent import Agent
+        from app.agent_loop_lib.agent.loops import ReActLoop
+        from app.agent_loop_lib.agent.spec import AgentSpec, ModelSpec
+        from app.agent_loop_lib.core.types import Goal
+        from app.agent_loop_lib.runtime.runtime import AgentRuntime
+        from app.agent_loop_lib.tools.base import Tool, ToolOutput
+        from app.agent_loop_lib.tools.registry import ToolRegistry
+        from app.agent_loop_lib.transport.registry import TransportRegistry
+
+        class _NoBindModel(_FakeModel):
+            def bind_tools(self, tools: list[Any]) -> "_NoBindModel":
+                raise RuntimeError("this provider can't bind tools")
+
+        class _Probe(Tool):
+            name = property(lambda self: "probe")
+            short_description = property(lambda self: "probe")
+            description = property(lambda self: "probe")
+            path = property(lambda self: "/toolsets/test/probe")
+            parameters = property(lambda self: [])
+
+            async def execute(self, **kwargs: object) -> ToolOutput:
+                return ToolOutput(success=True, data="ran")
+
+        transports = TransportRegistry()
+        transports.register("lc", lambda: LangChainTransport(_NoBindModel(AIMessage(content="x"))))
+        registry = ToolRegistry()
+        registry.register_tool(_Probe())
+        spec = AgentSpec(name="a", system_prompt="s", tool_names=["probe"], model=ModelSpec(provider="lc", model="m"),
+                         loop=ReActLoop(), max_turns=2)
+
+        result = await Agent(spec, AgentRuntime(transport_registry=transports, tool_registry=registry)).run(Goal(description="q"))
+
+        assert (result.success, result.end_event, result.error_code) == (False, "llm_call_failed", TOOLS_UNSUPPORTED_CODE)
+        assert "can't bind tools" not in (result.error or "")
 
 
 class TestCompleteStructured:
@@ -1545,7 +1583,8 @@ class TestToolImageRelocationRespectsTheCap:
 
         assert isinstance(retry[-1], HumanMessage)
         assert retry[-1].content[0]["type"] == "text"
-        assert RELOCATED_IMAGES_NOTE in retry[-1].content[0]["text"]
+        # The note names the calls the images came from: "Images returned by the tool results above (ids):".
+        assert RELOCATED_IMAGES_NOTE[:-1] in retry[-1].content[0]["text"]
         assert all(isinstance(m.content, str) for m in retry if isinstance(m, LCToolMessage))
 
     def test_no_retry_when_the_cap_already_removed_every_tool_image(self) -> None:

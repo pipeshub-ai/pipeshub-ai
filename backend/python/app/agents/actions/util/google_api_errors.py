@@ -8,6 +8,7 @@ from http import HTTPStatus
 from google.auth.exceptions import RefreshError
 from googleapiclient.errors import HttpError
 
+from app.agents.actions.util.sign_in_rejected import note_sign_in_rejected
 from app.connectors.sources.google.common.connector_google_exceptions import (
     is_missing_scope_error,
 )
@@ -48,6 +49,7 @@ def google_error_message(error: Exception, action: str, wording: GoogleToolWordi
         wait = f"Wait {retry_after} seconds" if retry_after.isdigit() else "Wait a minute"
         return f"{wording.product} is receiving too many requests right now, so it could not {action}. {wait} and try again."
     if status == HTTPStatus.UNAUTHORIZED:
+        note_sign_in_rejected()
         return f"Could not {action}: Google did not accept the saved sign-in. {reconnect}"
     if is_missing_scope_error(error):
         return (

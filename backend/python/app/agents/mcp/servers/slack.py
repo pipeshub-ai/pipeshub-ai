@@ -1,7 +1,13 @@
 """Slack community MCP server template — run over STDIO with a bot token. Replaced by Slack's
 own hosted server (`slack_official`): the package is archived and npm marks it unsupported."""
 from app.agents.mcp.mcp_server_decorator import mcp_server
-from app.agents.mcp.models import AuthHint, MCPAuthMode, MCPServerTemplate, MCPTransport
+from app.agents.mcp.models import (
+    AuthHint,
+    MCPAuthMode,
+    MCPCategory,
+    MCPServerTemplate,
+    MCPTransport,
+)
 
 
 @mcp_server(
@@ -28,6 +34,12 @@ from app.agents.mcp.models import AuthHint, MCPAuthMode, MCPServerTemplate, MCPT
             ),
         ),
         tags=["chat", "collaboration"],
+        category=MCPCategory.COMMUNICATION,
+        capabilities=[
+            "Search messages",
+            "Read channels",
+            "Post a message",
+        ],
         replaced_by="slack_official",
     )
 )

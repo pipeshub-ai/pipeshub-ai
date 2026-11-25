@@ -38,6 +38,7 @@ from app.services.llm_gateway.gateway import (
     provider_key,
 )
 from app.services.model_identity.errors import policy_error_from_exception
+from app.utils import error_class
 from app.utils.aimodels import INDEXING_SDK_RETRIES, coerce_message_content_to_text
 from app.utils.image_utils import to_llm_image_format
 from app.utils.llm import (
@@ -46,7 +47,10 @@ from app.utils.llm import (
     get_llm_for_role,
 )
 from app.utils.opik import get_llm_invoke_config
-from app.utils.streaming import invoke_with_structured_output_and_reflection
+from app.utils.streaming import (
+    answer_error_class,
+    invoke_with_structured_output_and_reflection,
+)
 from app.utils.user_errors import provider_error_code
 
 if TYPE_CHECKING:
@@ -365,6 +369,38 @@ class ExtractionLLMError(Exception):
     code = "LLM_FAILED"
 
 
+class ExtractionContentFilteredError(ExtractionLLMError):
+    """The provider's content filter refused the document, as it would on every retry."""
+
+    code = "LLM_CONTENT_FILTERED"
+
+    def __init__(self) -> None:
+        super().__init__("The AI provider's content filter refused this document, so it was not classified")
+
+
+# The machine codes only: a provider's message, or a model answer quoted in a schema error, can hold the document's text.
+_CONTENT_FILTER_CODES = frozenset({"content_filter", "content_policy_violation", "responsibleaipolicyviolation"})
+
+
+def _call_failed(call: str, exc: Exception) -> ExtractionLLMError:
+    if (error_class.provider_code(exc) or "").lower() in _CONTENT_FILTER_CODES:
+        return ExtractionContentFilteredError()
+    return ExtractionLLMError(f"{call} call failed: {exc}")
+
+
+def extraction_error_class(exc: BaseException) -> str | None:
+    """The class of a classification failure for its log line; None lets ``classify_error`` read the chain.
+
+    A cause that is an answer not fitting the schema is ``bad_request``. Without a cause there is no provider error
+    to read: an ``LLMUnavailableError`` is then an open circuit, and an ``ExtractionLLMError`` a model that twice
+    gave nothing usable. None of these is a bug of ours."""
+    if exc.__cause__ is not None:
+        return answer_error_class(exc.__cause__)
+    if isinstance(exc, LLMUnavailableError):
+        return "unavailable"
+    return "bad_request" if isinstance(exc, ExtractionLLMError) else None
+
+
 # A closed set, enforced by the schema rather than only by the prompt: an open
 # string lets the model drift across "Service" / "Backend Service" / "Services"
 # for the same file, which makes the field useless as a filter.
@@ -496,7 +532,10 @@ class DocumentExtraction(Transformer):
         except (ExtractionLLMError, LLMUnavailableError) as e:
             # The record is already searchable: an LLM failure fails extraction only
             # (no metadata → extractionStatus FAILED), not the record.
-            self.logger.error("❌ Document extraction failed for record %s: %s", record.id, e)
+            error_class.log_failure(
+                self.logger, "document_extraction.failed", e, include_error_text=False,
+                error_class=extraction_error_class(e), record_id=record.id,
+            )
             record.semantic_metadata = None
             return
         self.logger.debug("🎯 Document extraction completed successfully")
@@ -768,7 +807,7 @@ class DocumentExtraction(Transformer):
                 # document to the same model, doubling every record's cost while
                 # it is down; only a reply that did not fit the schema earns one.
                 # Not None: that reads as nothing to classify, which is final.
-                raise ExtractionLLMError(f"Document classification call failed: {e}") from e
+                raise _call_failed("Document classification", e) from e
 
         try:
             parsed_response = await classify(document)
@@ -782,7 +821,8 @@ class DocumentExtraction(Transformer):
             if not dropped or not has_text or not _images_rejected(e):
                 raise
             self.logger.warning(
-                "⚠️ Model rejected the document with %d image(s); classifying its text alone: %s", dropped, e,
+                "Model rejected the document with %d image(s); classifying its text alone", dropped,
+                extra={"error_type": type(e).__name__},
             )
             document = text_only
             parsed_response = await classify(document)
@@ -849,7 +889,7 @@ class DocumentExtraction(Transformer):
             # An outage is the provider's, not the document's: the caller waits instead of failing it.
             raise
         except Exception as e:
-            self.logger.error(f"❌ Fallback summary call failed: {e}")
+            error_class.log_failure(self.logger, "extraction.fallback_failed", e, include_error_text=False, kind="document")
             return None
 
     async def process_document(
@@ -946,7 +986,7 @@ class DocumentExtraction(Transformer):
         except (NonRetryableError, LLMUnavailableError):
             raise
         except Exception as e:
-            raise ExtractionLLMError(f"Code classification call failed: {e}") from e
+            raise _call_failed("Code classification", e) from e
         if parsed is not None:
             self.logger.debug("✅ Code classification parsed successfully")
             return semantic_metadata_from_code(parsed)
@@ -1097,6 +1137,6 @@ class DocumentExtraction(Transformer):
         except (NonRetryableError, LLMUnavailableError):
             raise
         except Exception as e:
-            self.logger.error(f"❌ Code fallback summary call failed: {e}")
+            error_class.log_failure(self.logger, "extraction.fallback_failed", e, include_error_text=False, kind="code")
             return None
 

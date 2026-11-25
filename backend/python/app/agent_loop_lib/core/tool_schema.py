@@ -1,31 +1,8 @@
-"""Typed tool-calling schema, replacing the untyped `dict[str, Any]` that
-used to flow from `Tool.to_schema()` through `ToolRegistry.schemas()` into
-`Model.complete(tools=...)` — every producer and consumer of "a tool
-schema" now shares one explicit shape instead of an implicit dict
-convention (`{"name", "description", "input_schema"}`) that nothing
-enforced.
-"""
+"""Legacy import path; this module lives in ``harness_core.kernel.core.tool_schema``."""
 
-from __future__ import annotations
+import sys
 
-from typing import Any, Literal
+from harness_core.kernel.core import tool_schema as _moved
+from harness_core.kernel.core.tool_schema import *  # noqa: F403
 
-from pydantic import BaseModel
-
-# "none" asks for a reply without tool calls while the tool list is still sent:
-# providers reject tool-call history without the definitions it refers to.
-ToolChoice = Literal["auto", "none"]
-
-
-class ToolSchema(BaseModel):
-    """Provider-agnostic function-calling schema for one tool. Transports
-    translate this into their own wire shape (e.g. OpenAI's
-    `{"type": "function", "function": {...}}` wrapper) — this type itself
-    stays provider-neutral, matching the Anthropic-shaped fields the rest
-    of the framework already standardized on."""
-
-    name: str
-    description: str
-    input_schema: dict[str, Any]
-
-    model_config = {"frozen": True}
+sys.modules[__name__] = _moved

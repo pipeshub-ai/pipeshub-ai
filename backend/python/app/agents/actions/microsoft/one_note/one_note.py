@@ -36,7 +36,7 @@ class OneNote:
                 required=False
             )
         ],
-        tags=[Tag(key="category", value="documentation"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="documentation"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_notebooks(self, top: Optional[int] = None) -> Tuple[bool, str]:
         """Get OneNote notebooks"""
@@ -75,7 +75,7 @@ class OneNote:
                 required=True
             )
         ],
-        tags=[Tag(key="category", value="documentation"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="documentation"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_notebook(self, notebook_id: str) -> Tuple[bool, str]:
         """Get a specific OneNote notebook"""
@@ -110,7 +110,7 @@ class OneNote:
                 required=True
             )
         ],
-        tags=[Tag(key="category", value="documentation"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="documentation"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_sections(self, notebook_id: str) -> Tuple[bool, str]:
         """Get sections from a OneNote notebook"""
@@ -156,7 +156,7 @@ class OneNote:
                 required=True
             )
         ],
-        tags=[Tag(key="category", value="documentation"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="documentation"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_pages(self, notebook_id: str, section_id: str) -> Tuple[bool, str]:
         """Get pages from a OneNote section"""
@@ -198,7 +198,7 @@ class OneNote:
                 required=True
             )
         ],
-        tags=[Tag(key="category", value="documentation"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="documentation"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_page(self, page_id: str) -> Tuple[bool, str]:
         """Get a specific OneNote page"""
@@ -250,7 +250,7 @@ class OneNote:
                 required=True
             )
         ],
-        tags=[Tag(key="category", value="documentation"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="documentation"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
     )
     def create_page(
         self,
@@ -308,7 +308,7 @@ class OneNote:
                 required=True
             )
         ],
-        tags=[Tag(key="category", value="documentation"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="documentation"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
     )
     def update_page(
         self,
@@ -358,7 +358,7 @@ class OneNote:
                 required=True
             )
         ],
-        tags=[Tag(key="category", value="documentation"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="documentation"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
     )
     async def delete_page(self, notebook_id: str, section_id: str, page_id: str) -> Tuple[bool, str]:
         """Delete a OneNote page"""

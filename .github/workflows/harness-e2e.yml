@@ -1,0 +1,274 @@
+name: Harness E2E
+
+# The agent harness in a real browser on the Compose stack (test plan QA-5, lane Es-PR on stack ST-1):
+# deployment/e2e/run.sh brings the stack up from this tree (Neo4j, a MongoDB replica set, Redis for KV and
+# streams, the durable worker, the scripted model and SaaS), seeds an org, and runs the `harness` Playwright
+# project with no retries; a skipped spec fails the job. Nightly (and on demand) the `durable` lane adds a
+# real engine run (opencode in a broker sandbox) with the `harness-engine` project. The nightly also runs that flow
+# with the document store on PostgreSQL behind PgBouncer (`pg`, WP114-FU-E2E, then the rows, erasure and the org's
+# deletion checked in PostgreSQL) and on Docker networks with no route out (`airgap`, C15.04).
+#
+# Runs on pull_request, not pull_request_target: no repository secret is used, the model is scripted (no live
+# spend), and every credential is generated for the run inside run.sh. Pull requests from forks are skipped
+# because the runner is self-hosted (as e2e-smoke.yml).
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'backend/nodejs/apps/src/modules/agent-harness/**'
+      - 'backend/nodejs/apps/src/libs/repositories/agent-harness/**'
+      - 'backend/nodejs/apps/src/libs/repositories/control-plane/**'
+      - 'backend/nodejs/apps/src/modules/enterprise_search/**'
+      - 'backend/python/app/harness/**'
+      - 'backend/python/app/harness_main.py'
+      - 'backend/python/harness_core/**'
+      - 'backend/python/harness_engines/**'
+      - 'backend/python/app/modules/agents/**'
+      - 'contracts/harness/**'
+      - 'frontend/app/(main)/chat/**'
+      - 'frontend/app/(main)/workspace/**'
+      - 'frontend/tests/e2e/**'
+      - 'frontend/playwright.config.ts'
+      - 'deployment/e2e/**'
+      - '.github/workflows/harness-e2e.yml'
+  schedule:
+    - cron: '0 19 * * *'
+    # Es-weekly (QA-6): every covering-array row on every stack.
+    - cron: '0 2 * * 6'
+  workflow_dispatch:
+    inputs:
+      lane:
+        description: 'Lane'
+        type: choice
+        options: [all, harness, durable, pg, airgap, matrix]
+        default: all
+      stacks:
+        description: 'Options-matrix stacks (comma-separated, e.g. ST-1,ST-3; empty = the night''s rotation)'
+        type: string
+        default: 
+
+permissions:
+  contents: read
+
+concurrency:
+  group: harness-e2e-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  e2e:
+    name: ${{ matrix.lane == 'harness' && 'es-pr' || 'es-engine-nightly' }} (run.sh ${{ matrix.lane }})
+    if: >-
+      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+      && github.event.schedule != '0 2 * * 6' && github.event.inputs.lane != 'matrix'
+    runs-on: runs-on=${{ github.run_id }}/runner=4cpu-linux-x64/volume=100gb
+    timeout-minutes: ${{ matrix.lane == 'harness' && 45 || 120 }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Pull requests run the Es-PR lane; the nightly and a manual run add the engine lane.
+        lane: ${{ fromJSON((github.event_name == 'pull_request' && '["harness"]') || (github.event.inputs.lane == 'harness' && '["harness"]') || (github.event.inputs.lane == 'durable' && '["durable"]') || (github.event.inputs.lane == 'pg' && '["pg"]') || (github.event.inputs.lane == 'airgap' && '["airgap"]') || '["harness","durable","pg","airgap"]') }}
+    env:
+      E2E_MONGO_CONTAINER: pxh-ci-mongo-${{ github.run_id }}-${{ matrix.lane }}
+      E2E_REDIS_CONTAINER: pxh-ci-redis-${{ github.run_id }}-${{ matrix.lane }}
+      E2E_SANDBOX_IMAGE: pipeshubai/pipeshub-sandbox:e2e
+      E2E_PLAYWRIGHT_IMAGE: mcr.microsoft.com/playwright:v1.64.1-jammy
+      # The run's directory (logs, JUnit, traces) is kept for upload; its credentials file is removed at teardown.
+      E2E_KEEP_WORK: '1'
+      CI: 'true'
+    steps:
+      # The runner context is not available in job-level env, so the paths under RUNNER_TEMP are set here.
+      - name: Set the run's state directories
+        run: |
+          echo "E2E_STATE_DIR=$RUNNER_TEMP/e2e" >> "$GITHUB_ENV"
+
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+
+      - name: Install Node dependencies (API and UI)
+        run: |
+          (cd backend/nodejs/apps && npm ci --ignore-scripts)
+          (cd frontend && npm ci --ignore-scripts)
+          echo "E2E_NODE_HOME=$(dirname "$(dirname "$(command -v node)")")" >> "$GITHUB_ENV"
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+
+      # The stack's Python processes run this tree in python:3.12-slim with this venv's site-packages mounted.
+      - name: Install Python dependencies into a venv
+        working-directory: backend/python
+        run: |
+          python -m venv venv
+          PYTHON=venv/bin/python requirements/install.sh dev --project . --editable
+          echo "E2E_SITE_PACKAGES=$PWD/venv/lib/python3.12/site-packages" >> "$GITHUB_ENV"
+
+      - name: Pull the stack's images and build the sandbox image
+        run: |
+          for image in python:3.12-slim neo4j:5.26.0 qdrant/qdrant:v1.15.5 mongo:8.0.17 redis:7.4.12-bookworm "$E2E_PLAYWRIGHT_IMAGE"; do
+            docker pull "$image"
+          done
+          SANDBOX_DOCKER_IMAGE="$E2E_SANDBOX_IMAGE" docker compose --file deployment/docker-compose/docker-compose.yml \
+            --profile sandbox build sandbox-image
+
+      - name: Build the engine image (engine lanes)
+        if: matrix.lane != 'harness'
+        run: sh deployment/sandbox-images/opencode/build.sh
+
+      # The PostgreSQL lane's store image and the migration tool's own packages (pg_migrate.sh runs them).
+      - name: Pull PostgreSQL and install the migration tool (pg lane)
+        if: matrix.lane == 'pg'
+        run: |
+          docker pull pgvector/pgvector:pg17
+          python -m venv "$RUNNER_TEMP/migrate-venv"
+          "$RUNNER_TEMP/migrate-venv/bin/pip" install --require-hashes --no-deps -r backend/db/requirements.lock
+          echo "E2E_PG_MIGRATE_SITE=$RUNNER_TEMP/migrate-venv/lib/python3.12/site-packages" >> "$GITHUB_ENV"
+
+      # run.sh attaches these to the stack's networks as `mongodb` and `redis`, as the shared containers on a dev host.
+      - name: Start a MongoDB replica set and Redis
+        run: |
+          docker run -d --name "$E2E_MONGO_CONTAINER" --label pipeshub.harness.owner=x-lead mongo:8.0.17 --replSet rs0 --bind_ip_all
+          docker run -d --name "$E2E_REDIS_CONTAINER" --label pipeshub.harness.owner=x-lead redis:7.4.12-bookworm
+          for _ in $(seq 1 60); do
+            docker exec "$E2E_MONGO_CONTAINER" mongosh --quiet --eval 'try { rs.status().ok } catch (e) { rs.initiate().ok }' && break
+            sleep 2
+          done
+          docker exec "$E2E_MONGO_CONTAINER" mongosh --quiet --eval 'rs.status().ok' | grep -qx 1
+
+      - name: Run the lane
+        run: bash deployment/e2e/run.sh "${{ matrix.lane }}"
+
+      - name: Upload JUnit, traces and the stack's logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: harness-e2e-${{ matrix.lane }}
+          path: |
+            ${{ runner.temp }}/e2e/kept-*/logs
+            ${{ runner.temp }}/e2e/kept-*/pw
+          retention-days: 14
+
+      # run.sh removes everything labelled with its run; these are the job's own two containers.
+      - name: Remove MongoDB and Redis
+        if: always()
+        run: docker rm -f "$E2E_MONGO_CONTAINER" "$E2E_REDIS_CONTAINER" >/dev/null 2>&1 || true
+
+  # QA-6 options-matrix runner (integration-tests/harness/e2e): one result line per covering-array row, the oracle's
+  # route, executor, card, outcome and effects plus 04 §4.4's checks, on the scripted model. Nightly: ST-1 and two
+  # stacks in rotation (rotation.py); weekly (Saturday): every stack. The Compose stacks come up from this tree with
+  # run.sh matrix-up; a Helm stack (ST-2, ST-6, ST-7) is reported blocked until the kind lane attaches it (QA6-F3).
+  es-matrix:
+    name: es-matrix (${{ github.event.schedule == '0 2 * * 6' && 'weekly' || 'nightly' }})
+    if: >-
+      github.event_name == 'schedule'
+      || (github.event_name == 'workflow_dispatch' && (github.event.inputs.lane == 'matrix' || github.event.inputs.lane == 'all'))
+    runs-on: runs-on=${{ github.run_id }}/runner=4cpu-linux-x64/volume=100gb
+    timeout-minutes: ${{ github.event.schedule == '0 2 * * 6' && 360 || 120 }}
+    env:
+      E2E_MONGO_CONTAINER: pxh-ci-mongo-${{ github.run_id }}-matrix
+      E2E_REDIS_CONTAINER: pxh-ci-redis-${{ github.run_id }}-matrix
+      E2E_SANDBOX_IMAGE: pipeshubai/pipeshub-sandbox:e2e
+      E2E_PLAYWRIGHT_IMAGE: mcr.microsoft.com/playwright:v1.64.1-jammy
+      E2E_KEEP_WORK: '1'
+      CI: 'true'
+    steps:
+      # The runner context is not available in job-level env, so the paths under RUNNER_TEMP are set here.
+      - name: Set the run's state directories
+        run: |
+          echo "E2E_STATE_DIR=$RUNNER_TEMP/e2e" >> "$GITHUB_ENV"
+          echo "QA6_RESULTS_DIR=$RUNNER_TEMP/qa6" >> "$GITHUB_ENV"
+
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+
+      - name: Install Node dependencies (API and UI)
+        run: |
+          (cd backend/nodejs/apps && npm ci --ignore-scripts)
+          (cd frontend && npm ci --ignore-scripts)
+          echo "E2E_NODE_HOME=$(dirname "$(dirname "$(command -v node)")")" >> "$GITHUB_ENV"
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Python dependencies into a venv
+        working-directory: backend/python
+        run: |
+          python -m venv venv
+          PYTHON=venv/bin/python requirements/install.sh dev --project . --editable
+          echo "E2E_SITE_PACKAGES=$PWD/venv/lib/python3.12/site-packages" >> "$GITHUB_ENV"
+
+      - name: Pick the stacks
+        id: stacks
+        # Dispatch inputs reach the script as data, never as script text (SEC-D-12).
+        env:
+          STACKS_INPUT: ${{ github.event.inputs.stacks }}
+          SCHEDULE: ${{ github.event.schedule }}
+        run: |
+          if [[ -n "$STACKS_INPUT" ]]; then
+            if [[ ! "$STACKS_INPUT" =~ ^[A-Za-z0-9_,.:-]+$ ]]; then
+              echo "::error::stacks may hold only letters, digits and , . : _ - (got: $STACKS_INPUT)"
+              exit 1
+            fi
+            echo "stacks=$STACKS_INPUT" >> "$GITHUB_OUTPUT"
+          elif [[ "$SCHEDULE" == '0 2 * * 6' ]]; then
+            echo "stacks=$(python3 integration-tests/harness/e2e/rotation.py weekly)" >> "$GITHUB_OUTPUT"
+          else
+            echo "stacks=$(python3 integration-tests/harness/e2e/rotation.py nightly)" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Pull the stacks' images and build the sandbox and engine images
+        run: |
+          for image in python:3.12-slim neo4j:5.26.0 qdrant/qdrant:v1.15.5 mongo:8.0.17 redis:7.4.12-bookworm \
+                       arangodb:3.12.4 apache/kafka:3.9.1 quay.io/coreos/etcd:v3.5.17 "$E2E_PLAYWRIGHT_IMAGE"; do
+            docker pull "$image"
+          done
+          SANDBOX_DOCKER_IMAGE="$E2E_SANDBOX_IMAGE" docker compose --file deployment/docker-compose/docker-compose.yml \
+            --profile sandbox build sandbox-image
+          for engine in opencode codex claude-code; do sh "deployment/sandbox-images/$engine/build.sh"; done
+
+      - name: Start a MongoDB replica set and Redis
+        run: |
+          docker run -d --name "$E2E_MONGO_CONTAINER" --label pipeshub.harness.owner=x-lead mongo:8.0.17 --replSet rs0 --bind_ip_all
+          docker run -d --name "$E2E_REDIS_CONTAINER" --label pipeshub.harness.owner=x-lead redis:7.4.12-bookworm
+          for _ in $(seq 1 60); do
+            docker exec "$E2E_MONGO_CONTAINER" mongosh --quiet --eval 'try { rs.status().ok } catch (e) { rs.initiate().ok }' && break
+            sleep 2
+          done
+          docker exec "$E2E_MONGO_CONTAINER" mongosh --quiet --eval 'rs.status().ok' | grep -qx 1
+
+      - name: Run the rows (one result line per row)
+        working-directory: integration-tests/harness/e2e
+        run: |
+          PYTHONPATH=../../../backend/python ../../../backend/python/venv/bin/python -m pytest -q \
+            --stacks="${{ steps.stacks.outputs.stacks }}" --results="$QA6_RESULTS_DIR/rows.txt" \
+            --junitxml="$QA6_RESULTS_DIR/junit.xml" ${{ github.event.schedule == '0 2 * * 6' && '--mcp-hub' || '' }}
+
+      - name: Upload the row results, JUnit and the stacks' logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: harness-e2e-matrix
+          path: |
+            ${{ runner.temp }}/qa6
+            ${{ runner.temp }}/e2e/kept-*/logs
+          retention-days: 14
+
+      - name: Remove MongoDB and Redis
+        if: always()
+        run: docker rm -f "$E2E_MONGO_CONTAINER" "$E2E_REDIS_CONTAINER" >/dev/null 2>&1 || true

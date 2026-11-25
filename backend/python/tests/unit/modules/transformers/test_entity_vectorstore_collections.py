@@ -47,7 +47,7 @@ ORG_A, ORG_B = "org_a_entities", "org_b_entities"
 @pytest.fixture(autouse=True)
 def lock_server() -> Iterator[fakeredis.FakeServer]:
     models = {"text-embedding-3-small": SMALL, "text-embedding-ada-002": ADA}
-    with embedding_models(models), patch.object(module, "get_default_embedding_model", return_value=BGE), \
+    with embedding_models(models), patch("app.utils.llm.get_default_embedding_model", return_value=BGE), \
             recreate_lock_redis() as server:
         yield server
 

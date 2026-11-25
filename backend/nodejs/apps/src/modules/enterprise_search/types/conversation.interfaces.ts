@@ -1,6 +1,11 @@
 import { Document, Types, Model } from 'mongoose';
 import { ConfidenceLevel, ReasoningEffort } from '../constants/constants';
 import { ICitation } from '../schema/citation.schema';
+import type { PipeshubTurnLabel } from '../../agent-harness/contracts/generated/ext/pipeshub';
+import type { RunCommand } from '../../agent-harness/domain/commands';
+import type { CutShortReason } from '../../agent-harness/contracts/generated/core/enums';
+import type { OutcomeView } from '../../agent-harness/projection/outcome-view';
+import type { CouldNotDoView, NotFoundView } from '../../agent-harness/projection/timeline';
 
 export interface AiSearchResponse {
   searchResults: ICitation[];
@@ -44,6 +49,10 @@ export interface IFeedback {
   unusedFollowUpQuestions?: string[];
   source?: 'user' | 'system' | 'admin' | 'auto';
   feedbackProvider?: Types.ObjectId;
+  /** G-15: the durable run that wrote the answer, and the agent version it ran. */
+  runId?: string;
+  agentKey?: string;
+  agentVersion?: number;
   timestamp?: Date;
   revisions?: Array<{
     updatedFields?: string[];
@@ -112,6 +121,8 @@ export interface IChatAttachmentRef {
    * analytics/UX once the upload pipeline threads this through explicitly.
    */
   source?: 'upload' | 'paste-text';
+  /** The upload was erased with another conversation that carried it (QA-15G); set by the server only. */
+  removed?: boolean;
 }
 export interface IToolCallItem {
   toolName: string;
@@ -144,8 +155,28 @@ export interface IReasoningTurn {
  * never the full tool payload.
  */
 export interface IMessagePart {
-  type: 'text' | 'reasoning' | 'tool_call' | 'sub_agent' | 'mcp_sign_in';
+  /** `user_input`: a message the user sent while the run worked, where the run took it (steering). */
+  /**
+   * `engine_task`: a durable engine run's progress lines (`frames`), for the task card after a reload;
+   * `approval`: a call held for a person's approval and what became of it (U3);
+   * `mcp_sign_in`: MCP servers to sign in to again, for more permission.
+   */
+  type:
+    | 'text'
+    | 'reasoning'
+    | 'tool_call'
+    | 'sub_agent'
+    | 'user_input'
+    | 'engine_task'
+    | 'approval'
+    | 'mcp_sign_in'
+    | 'context_compacted';
   content?: string;
+  /** `user_input`: the message's number in its run; `consumed: false` if the run never took it. */
+  messageSeq?: number;
+  consumed?: boolean;
+  /** `user_input`: the files the message named, as the chat request named them. */
+  attachments?: IChatAttachmentRef[];
   toolCallId?: string;
   toolName?: string;
   /** Human-readable past-tense label for this tool call, computed server-side (see `Tool.display_name`); falls back to a generic humanized `toolName` on the frontend when absent (e.g. chats persisted before this field existed). */
@@ -157,19 +188,45 @@ export interface IMessagePart {
   approved?: boolean;
   /** How a call that waited for approval was settled (Python `tool_approvals.Outcome.answer`). */
   approvalAnswer?: 'allowed' | 'declined' | 'expired';
-  status?: 'running' | 'completed' | 'failed' | 'blocked' | 'awaiting_approval';
+  /** `approval` parts: `pending`, `approved`, `denied`, `closed` or `expired`. */
+  status?:
+    | 'running'
+    | 'completed'
+    | 'failed'
+    | 'blocked'
+    | 'awaiting_approval'
+    | 'pending'
+    | 'approved'
+    | 'denied'
+    | 'closed'
+    | 'expired';
   resultPreview?: string;
+  /** A failed call's `ToolErrorCode`: the web app words it; its detail is never on the part (ERR-UX). */
+  errorCode?: string;
+  /** A failed write or execute whose outcome is definite: nothing was sent. */
+  nothingSent?: boolean;
   /** A call waiting for a person's approval: what the approval card shows (Python `tool_approvals.py`). */
   approval?: Record<string, unknown>;
   /** Human-readable summary of the tool result, computed server-side from the full (untruncated) output. */
   resultSummary?: string;
   /** A small table or field list of the result for the tool card (Python `result_view.py`); the UI checks its shape. */
   resultView?: unknown;
+  /** `tool_call`: which page, query, pattern or file the step used, and what came of it (harness `tool-step` contract). */
+  step?: Record<string, unknown>;
   /** Blob-backed artifact ID for the full tool result (recoverable on follow-up turns). */
   artifactId?: string;
   runId?: string;
   roleName?: string;
   parts?: IMessagePart[];
+  /** `sub_agent` of a durable child: its parent run, and why it did not complete. */
+  parentRunId?: string;
+  errorType?: string;
+  /** `approval`: the interaction the decision route takes. */
+  interactionId?: string;
+  /** `engine_task`: the task (a durable engine run's id) and its progress lines. */
+  taskId?: string;
+  frames?: Array<Record<string, unknown>>;
+  truncated?: boolean;
   /** On an `mcp_sign_in` part: the MCP servers to sign in to again, for more permission (Python `mcp_sign_in.py`). */
   servers?: Array<{
     instanceId: string;
@@ -177,6 +234,14 @@ export interface IMessagePart {
     scopes: string[];
     agentKey?: string;
   }>;
+  /** On a `context_compacted` part: the reduction the chat's row shows (today's loop saves it, QAFIX4). */
+  compacted?: {
+    executor: string;
+    outcome: 'compacted' | 'nothing_to_compact' | 'unsupported' | 'failed';
+    beforeTokens: number | null;
+    afterTokens: number | null;
+    userMessagesKept: boolean;
+  };
 }
 
 export interface IMessage {
@@ -195,6 +260,8 @@ export interface IMessage {
   modelInfo?: IAIModel;
   appliedFilters?: IAppliedFilters;
   attachments?: IChatAttachmentRef[];
+  /** `user_query`: the /command `content` was expanded from (SLASH1); `content` is what was sent, or what was typed (`storedQuestion`). */
+  command?: RunCommand;
   // Reference data for follow-up queries (IDs from tool responses)
   referenceData?: IReferenceDataItem[];
   // Tool call data for tool_call messageType
@@ -203,6 +270,38 @@ export interface IMessage {
   reasoning?: IReasoningTurn[];
   /** Ordered agent-activity transcript for this bot_response turn — see IMessagePart. */
   parts?: IMessagePart[];
+  /**
+   * Who sent this turn when it was not the conversation's owner (SS2): a
+   * collaborator's question and the answer their run wrote. Absent: the owner's.
+   */
+  senderId?: Types.ObjectId | string;
+  /** A private copy's stub for another participant's turn (SS3). */
+  foreignTurn?: boolean;
+  /** Copied from another conversation by a fork: it names none of that conversation's runs (FORKFIX). */
+  copied?: boolean;
+  /** The durable run that wrote this answer (UX5). */
+  runId?: string;
+  /** An error answer's code (`messageType: 'error'`), worded by the web app (ERR-UX). */
+  errorCode?: string;
+  /** With errorCode `mcp_tool_withdrawn`: the servers' labels the web app's words name (WP-84). */
+  errorServers?: string[];
+  /** With errorCode `operator_stopped`: the operator control's scope and reason, which the web app words (ADR-OPS-01 D5). */
+  errorStop?: { scope: string; reason: string };
+  /** An answer a limit cut short: `budget`, `turns` or `time` (BUDGETEND); the web app shows a notice. */
+  truncatedBy?: CutShortReason;
+  /** With `truncatedBy` `budget`: which shared budget ran out (C9.06), opaque here; absent: the run's own. */
+  budgetScope?: string;
+  /** WP-89: the run's settled outcome; the content is then only the model's prose (see `OutcomeView`). */
+  runOutcome?: OutcomeView;
+  /** ANSWER-CONTRACT-FU-2: the subject was not found; the web app words it, the content starts with its `line`. */
+  notFound?: NotFoundView;
+  /** R32REPO-FU-1: what the run tried and could not do; the web app words it, the content starts with its `line`. */
+  limits?: CouldNotDoView;
+  /**
+   * A durable run's answer: the turn's confidentiality label (P2.5a). Never
+   * read unless selected by name (it names sources a reader may not see).
+   */
+  label?: PipeshubTurnLabel;
 }
 
 export interface IConversation {
@@ -300,6 +399,10 @@ export interface IChatSession {
   }>;
   isDeleted?: boolean;
   deletedBy?: Types.ObjectId;
+  /** When a delete of this release asked for erasure (E7B); absent on deletions from before it. */
+  erasureRequestedAt?: number;
+  /** ADR-UI-01 D2: when each person last opened the session, by user id (ms); never selected with the session. */
+  harnessSeen?: Record<string, number>;
   isArchived?: boolean;
   archivedBy?: Types.ObjectId;
   lastActivityAt?: Number;
@@ -326,6 +429,16 @@ export interface IChatSession {
   sessionType: 'chat' | 'agent';
   /** Seq allocation counter. Internal (`select: false` in the schema) — never returned in a response. */
   nextSeq?: number;
+  /** Execution implementation pinned when the first run is admitted. Internal only. */
+  harnessVersion?: 'legacy' | 'durable-v1';
+  /** What the durable harness has accounted for of the messages (P1b T3). Internal only. */
+  harnessLedger?: { seq: number; digest: string; diverged?: boolean };
+  /** This chat's coding engine (SLASH3 `/engine`): a kind or `none`. Internal only. */
+  codingEngine?: string;
+  /** The engine version (`kind@version`) the chat's engine turns run on (C14.01). Internal only. */
+  codingEnginePin?: string;
+  /** GIT-FLOW (WP-26): the repository the chat's engine works on. */
+  repository?: { url: string; baseRef?: string; toolsetInstanceId: string };
 
   // ---- Agent-only fields, present only when sessionType === 'agent' ----
   agentKey?: string;
@@ -388,6 +501,8 @@ export type AnswerMatchType =
 
 export interface IAIResponse {
   answer: string;
+  /** What today's loop's turn read (FG2), P2.5a's label; recorded on the answer, absent is unknown. */
+  label?: unknown;
   citations: ICitation[];
   confidence?: ConfidenceLevel;
   /** Set by Python's `AnswerFinalizer` cancelled branch (Phase 3) — `RUN_FINISHED`/
@@ -423,6 +538,16 @@ export interface IAIResponse {
   parts?: IMessagePart[];
   /** Set by Python `classify_error` on a graceful failure answer (`auth_error`, …). */
   errorCode?: string;
+  /** Set when a limit cut the run's work short and it answered from what it had gathered (BUDGETEND). */
+  truncatedBy?: string;
+  /** With `truncatedBy` `budget`: which shared budget ran out (C9.06, WP-51), opaque here. */
+  budgetScope?: string;
+  /** WP-89: a durable run's settled outcome, worded by the web app; the answer is then only the prose. */
+  runOutcome?: OutcomeView;
+  /** ANSWER-CONTRACT-FU-2: a durable run's not-found fact, worded by the web app. */
+  notFound?: NotFoundView;
+  /** R32REPO-FU-1: a durable run's "could not do" fact, worded by the web app. */
+  limits?: CouldNotDoView;
 }
 
 export interface IAIModel {

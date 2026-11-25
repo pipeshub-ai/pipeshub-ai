@@ -92,7 +92,6 @@ _DASHES = "-−‒–—"
 _NEGATIVE = re.compile(rf"^\s*(?:[{_DASHES}]\s*(?P<rest>.+)|\((?P<paren>.+)\))\s*$", re.DOTALL)
 # Beyond this an amount is an identifier or noise, and its float would be inf.
 _MAX_DIGITS = 18
-_VERSION = re.compile(r"v?\d+(?:\.\d+)+", re.IGNORECASE)
 _SYMBOL = "|".join(re.escape(symbol) for symbol in sorted(SYMBOLS, key=len, reverse=True))
 _NUM = r"\d[\d.,'’]*"
 # Upper-case ISO codes, or the common lower-case ones: never a word such as "per".
@@ -182,6 +181,14 @@ def _unheadered(text: str) -> str | None:
     return f"{sign}{header.group('label').strip()} {rest}"
 
 
+def _is_version(text: str) -> bool:
+    """Whether ``text`` is a version number ("v2.1", "10.0.3"), never an amount: what
+    ``re.fullmatch(r"v?\\d+(?:\\.\\d+)+", text, re.IGNORECASE)`` accepts, without the
+    retries that pattern makes on a long run of digits."""
+    parts = (text[1:] if text[:1] in ("v", "V") else text).split(".")
+    return len(parts) > 1 and all(part.isdecimal() for part in parts)
+
+
 def normalize_money(surface: str) -> MoneyValue | None:
     text = _unheadered((surface or "").strip())
     if text is None:
@@ -191,7 +198,7 @@ def normalize_money(surface: str) -> MoneyValue | None:
     if negative:
         sign = Decimal(-1)
         text = (negative.group("rest") or negative.group("paren") or "").strip()
-    if not text or _VERSION.fullmatch(text):
+    if not text or _is_version(text):
         return None
     ends = _RANGE.match(text)
     if ends and not (ends.group("scale") or ends.group("currency")):

@@ -31,6 +31,7 @@ from app.services.parsing.remote_concurrency import (
 )
 from app.services.resource_governor.controller import ResourceGovernor
 from app.services.resource_governor.models import ParseTier, ResourceSnapshot
+from tests.support.settle import SETTLE_S
 
 
 class _TwoCpuProbe:
@@ -370,7 +371,7 @@ async def test_acquire_parsing_slot_gives_the_priority_lane_the_queue_jump(monke
     interactive = asyncio.create_task(concurrency.acquire_parsing_slot(lane_host, ParseTier.LIGHT, 1, timeout=2))
     await asyncio.sleep(0.01)
     first._release()
-    got = await asyncio.wait_for(interactive, 1)
+    got = await asyncio.wait_for(interactive, SETTLE_S)
     assert not queued_bulk.done()
     got._release()
-    (await asyncio.wait_for(queued_bulk, 1))._release()
+    (await asyncio.wait_for(queued_bulk, SETTLE_S))._release()

@@ -6,7 +6,6 @@ import {
   Background,
   ReactFlow,
   Controls,
-  getViewportForBounds,
   useReactFlow,
   type FitViewOptions,
   type Connection,
@@ -25,11 +24,13 @@ import type { Connector } from '@/app/(main)/workspace/connectors/types';
 import { FlowNode } from './flow-node';
 import CustomEdge from './custom-edge';
 import { addNodeAtViewportCenter, handleFlowCanvasDrop } from './canvas-drop-handler';
+import { InitialFlowFraming } from './initial-flow-framing';
 import { useCanHover } from '@/lib/hooks/use-can-hover';
 import { useIsBelowDesktop, useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { FLOW_EDGE } from '../flow-theme';
+import { useThemeAppearance } from '@/app/components/theme-provider';
 
-/** Framing when the flow first loads (existing agents start from an empty graph, then hydrate). */
+/** The fit-view control: the whole flow, however small (the editor opens with `InitialFlowFraming`). */
 const AGENT_BUILDER_FLOW_FIT = {
   padding: 0.08,
   minZoom: 0.25,
@@ -40,9 +41,6 @@ const AGENT_BUILDER_FLOW_FIT = {
 /** A phone is too narrow for the default framing: allow a smaller zoom so every node fits whole. */
 const AGENT_BUILDER_FLOW_FIT_MOBILE = { ...AGENT_BUILDER_FLOW_FIT, padding: 0.12, minZoom: 0.1 } as const;
 const flowFit = (isMobile: boolean) => (isMobile ? AGENT_BUILDER_FLOW_FIT_MOBILE : AGENT_BUILDER_FLOW_FIT);
-
-/** Below this zoom node text is too small to read, so the first fit frames the agent node alone. */
-const READABLE_FIT_ZOOM = 0.5;
 
 /** Fit options; `insetLeft` keeps the framed nodes clear of a palette floating over the canvas. */
 function fitOptions(isMobile: boolean, insetLeft: number): FitViewOptions<Node<FlowNodeData>> {
@@ -136,6 +134,7 @@ export function AgentBuilderCanvas(props: {
   } = props;
 
   const { t } = useTranslation();
+  const { appearance } = useThemeAppearance();
   const rfRef = useRef<ReactFlowInstance<Node<FlowNodeData>> | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   // Touch screens pan with one finger; a mouse keeps drag-to-select.
@@ -147,8 +146,6 @@ export function AgentBuilderCanvas(props: {
     sidebarOpen && isBelowDesktop && !isMobile && typeof window !== 'undefined'
       ? Math.min(sidebarWidth, window.innerWidth * 0.85) + 16
       : 0;
-  /** After `nodes` hydrate from the server, fit once (initial `fitView` on an empty graph does not update). */
-  const needsInitialFlowFitRef = useRef(true);
 
   const onDeleteRef = useRef(onNodeDelete);
   useEffect(() => {
@@ -255,61 +252,6 @@ export function AgentBuilderCanvas(props: {
     t,
     tapAddRef,
   ]);
-
-  useEffect(() => {
-    if (nodes.length === 0) {
-      needsInitialFlowFitRef.current = true;
-      return;
-    }
-    if (!needsInitialFlowFitRef.current) return;
-    const inst = rfRef.current;
-    if (!inst) return;
-
-    let cancelled = false;
-    let didFit = false;
-    const run = () => {
-      if (cancelled) return;
-      const options = fitOptions(isMobile, paletteInset);
-      const el = containerRef.current;
-      const all = inst.getNodes();
-      const { zoom } = getViewportForBounds(
-        inst.getNodesBounds(all),
-        el?.clientWidth ?? 0,
-        el?.clientHeight ?? 0,
-        options.minZoom ?? 0.1,
-        options.maxZoom ?? 1,
-        options.padding ?? 0
-      );
-      const agentNode = all.find((n) => n.data?.type === 'agent-core');
-      // Too wide to read whole (always on a phone): open on the agent; the fit button still shows everything.
-      inst.fitView(
-        zoom < READABLE_FIT_ZOOM && agentNode
-          ? {
-              ...options,
-              nodes: [{ id: agentNode.id }],
-              maxZoom: 1,
-              // Phones: keep the node's bottom clear of the zoom controls and the add button.
-              padding: isMobile ? { x: '16px', top: '16px', bottom: '88px' } : options.padding,
-            }
-          : options
-      );
-      didFit = true;
-      needsInitialFlowFitRef.current = false;
-    };
-    // Wait one extra frame so node dimensions are measured before bounds are computed.
-    let innerRaf = 0;
-    const outerRaf = requestAnimationFrame(() => {
-      innerRaf = requestAnimationFrame(run);
-    });
-    return () => {
-      cancelled = true;
-      cancelAnimationFrame(outerRaf);
-      if (innerRaf) cancelAnimationFrame(innerRaf);
-      if (!didFit) needsInitialFlowFitRef.current = true;
-    };
-    // paletteInset is read once for the first fit; toggling the palette must not refit.
-  }, [nodes.length, isMobile]);
-
   return (
     <Box
       ref={containerRef}
@@ -352,6 +294,9 @@ export function AgentBuilderCanvas(props: {
         nodesDraggable={!readOnly}
         nodesConnectable={!readOnly}
         proOptions={{ hideAttribution: true }}
+        // React Flow puts its colour mode on its root as a class, `light` by default, and Radix Themes redeclares
+        // every colour scale on `.light`: left at the default, the whole canvas reads light tokens in dark mode.
+        colorMode={appearance}
       >
         <Background
           id="agent-builder-dots"
@@ -361,6 +306,7 @@ export function AgentBuilderCanvas(props: {
           bgColor="var(--agent-flow-canvas-bg)"
         />
         <CanvasControlsInner insetLeft={paletteInset} />
+        <InitialFlowFraming insetLeft={paletteInset} />
       </ReactFlow>
       {loadingLabel ? (
         <Flex

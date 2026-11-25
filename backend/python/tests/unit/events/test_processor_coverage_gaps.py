@@ -908,6 +908,26 @@ class TestBlockGroupHtmlAndImages:
         assert len(result.blocks) == 1
 
 
+    @pytest.mark.asyncio
+    async def test_a_failing_block_group_is_noted_as_a_block_group_not_a_page(self) -> None:
+        from app.utils import indexing_timing as timing
+
+        proc = _make_processor()
+        proc.parsers = {"md": MagicMock()}
+        bg = BlockGroup(index=3, type=GroupType.TEXT_SECTION, data="<p>hi</p>", format=DataFormat.HTML,
+                        requires_processing=True)
+        container = BlocksContainer(blocks=[], block_groups=[bg])
+        timeline, token = timing.begin_record("rec")
+        try:
+            with patch.object(proc, "_process_single_blockgroup_html", new_callable=AsyncMock,
+                              side_effect=RuntimeError("bad group")), pytest.raises(RuntimeError):
+                await proc._process_blockgroups(container, "rec", allow_remote_fetch=True)
+            noted = dict(timeline.facts)
+        finally:
+            timing.end_record(timeline, token, outcome="failed")
+        assert noted.get("block_group") == 3 and "page" not in noted
+
+
 # ---------------------------------------------------------------------------
 # _build_updated_blocks_container edges
 # ---------------------------------------------------------------------------
@@ -969,7 +989,9 @@ class TestHtmlMdDocumentGaps:
                 "a.html", "r1", "1", "web", "o1", b"   \n", "vr1"
             )
         )
-        proc._mark_record.assert_awaited_once_with("r1", ProgressStatus.EMPTY)
+        proc._mark_record.assert_awaited_once_with(
+            "r1", ProgressStatus.EMPTY, event_type=None, prev_virtual_record_id=None
+        )
         assert any(e.event == IndexingEvent.PARSING_COMPLETE for e in events)
         assert any(e.event == IndexingEvent.INDEXING_COMPLETE for e in events)
 
@@ -1158,7 +1180,9 @@ class TestProcessStructuredDocument:
             )
             parser.parse.assert_awaited_once()
             assert isinstance(parser.parse.await_args.args[0], bytes)
-            proc._mark_record.assert_awaited_once_with("r1", ProgressStatus.EMPTY)
+            proc._mark_record.assert_awaited_once_with(
+                "r1", ProgressStatus.EMPTY, event_type=None, prev_virtual_record_id=None
+            )
             assert any(e.event == IndexingEvent.INDEXING_COMPLETE for e in events)
 
     @pytest.mark.asyncio

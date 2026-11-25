@@ -307,6 +307,7 @@ class CifsConnector(BaseConnector):
             data_source=self.data_source,
             record=record,
             display_name=self.display_name,
+            logger=self.logger,
         )
 
     async def run_sync(self) -> None:

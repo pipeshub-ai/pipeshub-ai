@@ -7,6 +7,11 @@ export { default as OnboardingPage } from '@/app/(main)/onboarding/onboardingPag
 export { default as AiModelsPage } from '@/app/(main)/workspace/ai-models/aiModelsPage';
 export { default as AuthenticationPage } from '@/app/(main)/workspace/authentication/authenticationPage';
 export { default as GroupsPage } from '@/app/(main)/workspace/groups/groupsEnterprisePlaceholder';
+export {
+  ScimPlaceholderPage,
+  AuditLogsPlaceholderPage,
+  UsagePlaceholderPage,
+} from '@/app/(main)/workspace/enterprise/enterprise-feature-pages';
 export { default as ConnectorsTeamPage } from '@/app/(main)/workspace/connectors/team/connectorsTeamPage';
 export { default as ConnectorsPersonalPage } from '@/app/(main)/workspace/connectors/personal/connectorsPersonalPage';
 export { default as ActionsTeamPage } from '@/app/(main)/workspace/actions/team/actionsTeamPage';
@@ -26,3 +31,5 @@ export { notFound as GithubAuthCallbackPage } from 'next/navigation';
 export { notFound as SamlSsoSuccessPage } from 'next/navigation';
 export { notFound as OAuthAuthCallbackPage } from 'next/navigation';
 export { notFound as AuthSignInErrorPage } from 'next/navigation';
+export { notFound as ApprovalsInboxPage } from 'next/navigation';
+export { notFound as ApprovalLinkPage } from 'next/navigation';

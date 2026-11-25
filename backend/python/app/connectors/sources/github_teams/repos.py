@@ -76,7 +76,11 @@ from app.models.entities import (
     RecordType,
 )
 from app.modules.code_graph.synced_commit import record_synced_commit
-from app.modules.parsers.code_parser.file_role import FileRole, classify_file_role
+from app.modules.parsers.code_parser.file_role import (
+    FileRole,
+    classify_file_role,
+    is_sensitive_path,
+)
 from app.modules.parsers.code_parser.gitattributes import (
     LinguistExclusions,
     parse_linguist_exclusions,
@@ -287,8 +291,10 @@ class ReposSync:
         renames: list[tuple[str, str, str]],
     ) -> tuple[dict[str, str], dict[str, str], dict[str, str], list[tuple[str, str, str]]]:
         """Filter a compare delta. A move out of an excluded tree is a fresh add;
-        a move into one deletes the old record."""
+        a move into one deletes the old record. A modified credential file's
+        record is deleted: it may predate the rule that now excludes the path."""
         deletes = dict(deletes)
+        deletes.update({p: "" for p in modifies if is_sensitive_path(p)})
         kept_renames: list[tuple[str, str, str]] = []
         for old_path, new_path, sha in renames:
             if not self._keeps_file(new_path):

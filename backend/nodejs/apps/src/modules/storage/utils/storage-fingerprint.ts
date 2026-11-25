@@ -47,6 +47,11 @@ export function normalizeEtag(raw: string | null | undefined): string {
   return t;
 }
 
+/** The ETag as an `If-Match` value: exactly one pair of quotes around the normalized tag. */
+export function quoteEtag(raw: string): string {
+  return `"${normalizeEtag(raw)}"`;
+}
+
 /** The deployment epoch: bumped by an operator after a restore or a store migration, so every stored value stops matching. */
 export function fingerprintEpoch(): string {
   const raw = (process.env.STORAGE_FINGERPRINT_EPOCH ?? '').trim();

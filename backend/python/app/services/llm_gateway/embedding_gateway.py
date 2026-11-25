@@ -39,7 +39,7 @@ from app.services.spend_guard.retry_policy import (
     decide_retry,
     process_retry_budget,
 )
-from app.utils.embedding_retry import is_retriable_embedding_error
+from app.utils.embedding_retry import is_quota_exhausted, is_retriable_embedding_error
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -135,7 +135,10 @@ class EmbeddingGateway:
     @staticmethod
     def retry_kind(exc: BaseException) -> RetryKind | None:
         """A throttle (429), a transient failure (5xx, a dropped connection, an attempt's own deadline), or None for a
-        failure that comes back unchanged however often it is sent."""
+        failure that comes back unchanged however often it is sent. An account out of credit is the last kind, although
+        OpenAI answers it with a 429: no wait refills a balance."""
+        if is_quota_exhausted(exc):
+            return None
         status = _status_of(exc)
         if isinstance(exc, openai.RateLimitError) or status == _TOO_MANY_REQUESTS:
             return RetryKind.THROTTLE

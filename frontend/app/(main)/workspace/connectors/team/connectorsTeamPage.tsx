@@ -11,6 +11,7 @@ import { useFeatureFlagsStore, selectVectorStoreRebuildEnabled } from '@/lib/sto
 import { useToastStore } from '@/lib/store/toast-store';
 import { isProcessedError } from '@/lib/api';
 import { ServiceGate } from '@/app/components/ui/service-gate';
+import { EnterpriseFeatureNotice } from '@/config';
 import useSWR from 'swr';
 import { SWR_NS, SWR_POLICY, writeSwrKey } from '@/lib/api/swr-cache';
 import { useConnectorsStore } from '../store';
@@ -437,7 +438,7 @@ function TeamConnectorsPageContent() {
             return;
           }
         } else {
-          await ConnectorsApi.toggleConnector(instance._key, 'sync');
+          await ConnectorsApi.toggleConnector(instance._key, 'sync', false);
         }
         await refreshConnectorRowQuiet(instance._key);
         addToast({
@@ -584,6 +585,14 @@ function TeamConnectorsPageContent() {
         onAddInstance={handleAddInstanceFromCatalog}
         onCardClick={handleCardClick}
         isLoading={isLoading}
+        footer={
+          isLoading ? null : (
+            <EnterpriseFeatureNotice
+              title={t('workspace.connectors.enterprise.userOAuthAppsTitle')}
+              description={t('workspace.connectors.enterprise.userOAuthAppsDescription')}
+            />
+          )
+        }
       />
       <ConnectorPanel />
       <AdminAccessRequiredDialog

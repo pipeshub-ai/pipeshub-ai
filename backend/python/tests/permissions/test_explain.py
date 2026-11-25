@@ -19,6 +19,7 @@ from app.services.permissions import explain as ex
 from app.services.permissions.explain import ExplainNotFound, ExplainService
 
 from .graph import Namespace, compile_world
+from .layers import world_org
 from .model import Node, World, WorldBuilder
 from .runner import OracleLayer, targets
 from .scenario import load_all
@@ -63,6 +64,12 @@ def expected_code(reason: str, node: str) -> str:
                 return ex.ITEM_RESTRICTED if reason.endswith(f"@{node}") else ex.RESTRICTED_CONTAINER
             return code
     raise AssertionError(f"oracle reason {reason!r} has no explanation code")
+
+
+async def _explain(service: ExplainService, ns: Namespace, *args: object, **kwargs: object) -> object:
+    """The explain route of the asker's org: that org bound, as the route's request binds it."""
+    with world_org(ns):
+        return await service.explain(ns.org, *args, **kwargs)
 
 
 def _oracle_reasons() -> set[str]:
@@ -119,7 +126,7 @@ async def test_the_verdict_equals_check_access_and_the_code_maps_from_the_oracle
                     for node in nodes:
                         want = expected_code(truth[node].reason, node)
                         try:
-                            got = await service.explain(ns.org, ns.id(viewer), ns.id(node), asker_key=ns.id(viewer))
+                            got = await _explain(service, ns, ns.id(viewer), ns.id(node), asker_key=ns.id(viewer))
                         except ExplainNotFound:
                             assert want == NOT_FOUND, (layer.name, viewer, node, truth[node].reason)
                             continue
@@ -172,7 +179,7 @@ async def test_a_container_the_asking_admin_cannot_read_is_a_restricted_area(gra
         service = ExplainService(layer._provider)  # type: ignore[arg-type]
         # the asker holds the container: it is named; the asker does not: it is not
         for asker, named in (("boss", True), ("dana", False)):
-            got = await service.explain(ns.org, ns.id("dana"), ns.id("doc"), asker_key=ns.id(asker))
+            got = await _explain(service, ns, ns.id("dana"), ns.id("doc"), asker_key=ns.id(asker))
             assert (got.admitted, got.code) == (False, ex.RESTRICTED_CONTAINER), layer.name
             assert got.container is not None and got.container.id in (ns.id("hr"), None)
             assert got.container.restricted is (not named), (layer.name, asker)
@@ -186,17 +193,17 @@ async def test_a_record_open_to_the_person_is_granted_and_an_unknown_person_or_r
     for layer in graph_layers:
         _, ns = await _load(layer)
         service = ExplainService(layer._provider)  # type: ignore[arg-type]
-        got = await service.explain(ns.org, ns.id("dana"), ns.id("openrec"), asker_key=ns.id("boss"))
+        got = await _explain(service, ns, ns.id("dana"), ns.id("openrec"), asker_key=ns.id("boss"))
         assert (got.admitted, got.code) == (True, ex.GRANTED)
         assert len(got.reference) == 8
         for viewer, record in (("nobody", "openrec"), ("dana", "nothing")):
             with pytest.raises(ExplainNotFound):
-                await service.explain(ns.org, ns.id(viewer), ns.id(record), asker_key=ns.id("boss"))
+                await _explain(service, ns, ns.id(viewer), ns.id(record), asker_key=ns.id("boss"))
         with pytest.raises(ExplainNotFound):
-            await service.explain(ns.org, "", ns.id("openrec"), asker_key=ns.id("boss"))
+            await _explain(service, ns, "", ns.id("openrec"), asker_key=ns.id("boss"))
         with pytest.raises(ExplainNotFound):  # a record of another connector than the route's
-            await service.explain(ns.org, ns.id("dana"), ns.id("openrec"), asker_key=ns.id("boss"), connector_id="other")
-        assert (await service.explain(ns.org, ns.id("dana"), ns.id("openrec"), asker_key=ns.id("boss"), connector_id=ns.id("A"))).admitted
+            await _explain(service, ns, ns.id("dana"), ns.id("openrec"), asker_key=ns.id("boss"), connector_id="other")
+        assert (await _explain(service, ns, ns.id("dana"), ns.id("openrec"), asker_key=ns.id("boss"), connector_id=ns.id("A"))).admitted
 
 
 @pytest.mark.integration
@@ -207,12 +214,12 @@ async def test_a_walk_that_disagrees_with_the_graph_keeps_the_graphs_verdict_and
         _, ns = await _load(layer)
         service = ExplainService(layer._provider)  # type: ignore[arg-type]
         monkeypatch.setattr(ex, "_walk", lambda f, t, a: ex._Walk(True, ex.GRANTED))
-        got = await service.explain(ns.org, ns.id("dana"), ns.id("doc"), asker_key=ns.id("boss"))
+        got = await _explain(service, ns, ns.id("dana"), ns.id("doc"), asker_key=ns.id("boss"))
         monkeypatch.setattr(ex, "_walk", real)
         assert (got.admitted, got.code, got.container) == (False, ex.UNEXPLAINED, None), layer.name
         (m,) = service.export_mismatches()
         monkeypatch.setattr(ex, "_walk", lambda f, t, a: ex._Walk(False, ex.NO_GRANT))
-        up = await service.explain(ns.org, ns.id("dana"), ns.id("openrec"), asker_key=ns.id("boss"))  # graph admits, walk denies
+        up = await _explain(service, ns, ns.id("dana"), ns.id("openrec"), asker_key=ns.id("boss"))  # graph admits, walk denies
         monkeypatch.setattr(ex, "_walk", real)
         assert (up.admitted, up.code) == (True, ex.GRANTED)
         assert len(service.export_mismatches()) == 2
@@ -234,9 +241,9 @@ async def test_a_denial_under_a_pending_root_says_the_subtree_is_being_updated(g
             return roots
 
         monkeypatch.setattr(provider, "permission_hierarchy_view", lambda: type("V", (), {"pending_scopes": staticmethod(pending)})())
-        got = await service.explain(ns.org, ns.id("dana"), ns.id("doc"), asker_key=ns.id("boss"))
+        got = await _explain(service, ns, ns.id("dana"), ns.id("doc"), asker_key=ns.id("boss"))
         assert (got.admitted, got.code) == (False, ex.PENDING_REWRITE), layer.name
-        other = await service.explain(ns.org, ns.id("dana"), ns.id("openrec"), asker_key=ns.id("boss"))
+        other = await _explain(service, ns, ns.id("dana"), ns.id("openrec"), asker_key=ns.id("boss"))
         assert other.code == ex.GRANTED  # a pending root never turns an admit into a denial
         monkeypatch.undo()
         assert view is not None
@@ -257,8 +264,8 @@ async def test_a_person_of_another_organisation_is_not_found_while_one_of_this_o
         assert theirs.org != ns.org
         service = ExplainService(layer._provider)  # type: ignore[arg-type]
         with pytest.raises(ExplainNotFound):
-            await service.explain(ns.org, theirs.id("eve"), ns.id("openrec"), asker_key=ns.id("boss"))
-        assert (await service.explain(ns.org, ns.id("dana"), ns.id("openrec"), asker_key=ns.id("boss"))).admitted
+            await _explain(service, ns, theirs.id("eve"), ns.id("openrec"), asker_key=ns.id("boss"))
+        assert (await _explain(service, ns, ns.id("dana"), ns.id("openrec"), asker_key=ns.id("boss"))).admitted
 
 
 def _vault_world() -> World:
@@ -298,7 +305,7 @@ async def test_an_admin_who_cannot_read_a_record_learns_the_verdict_and_nothing_
         assert before == set(), layer.name  # the admin cannot read either
 
         service = ExplainService(provider)  # type: ignore[arg-type]
-        got = await service.explain(ns.org, ns.id("hrer"), ns.id("salary-sheet"), asker_key=ns.id("admin"))
+        got = await _explain(service, ns, ns.id("hrer"), ns.id("salary-sheet"), asker_key=ns.id("admin"))
         wire = json.dumps(got.as_dict())
 
         assert got.admitted is True  # the person can read it: the verdict is given
@@ -312,7 +319,7 @@ async def test_an_admin_who_cannot_read_a_record_learns_the_verdict_and_nothing_
         # asking about it granted nothing
         assert await layer.admitted(world, "admin", ["vault", "salary-sheet"]) == before, layer.name
 
-        denied = await service.explain(ns.org, ns.id("admin"), ns.id("salary-sheet"), asker_key=ns.id("admin"))
+        denied = await _explain(service, ns, ns.id("admin"), ns.id("salary-sheet"), asker_key=ns.id("admin"))
         wire = json.dumps(denied.as_dict())
         assert denied.admitted is False and "vault" not in wire and "salary-sheet" not in wire
         assert json.loads(wire)["container"] == {"name": None, "restricted": True}

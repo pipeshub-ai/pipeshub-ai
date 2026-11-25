@@ -65,6 +65,8 @@ class DuckDuckGoHtml:
     id = "duckduckgo"
     name = "DuckDuckGo"
     cooldown_key = "duckduckgo"  # a block is against this server's address, whoever asks
+    # One page request at a time from this server: a burst is what it blocks (WP62-SRCH).
+    max_in_flight = 1
 
     async def search(self, query: str, deadline: Deadline) -> list[WebResult]:
         url = f"https://html.duckduckgo.com/html/?{urlencode({'q': query, 'kl': 'wt-wt'})}"

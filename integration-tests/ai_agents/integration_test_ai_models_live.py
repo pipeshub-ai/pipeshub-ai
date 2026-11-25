@@ -2,7 +2,7 @@
 
 CTO list, AI Models: model friendly name, health check, change default model,
 indexing model vs query models, reasoning effort, and context length. Runs
-against whichever provider the run has (Azure OpenAI in CI; the weekly Ollama
+against the run's provider (TEST_AI_MODEL_PROVIDER in CI; the weekly Ollama
 job runs this same file against a local model with ``-m ai_models``).
 
 Model calls are kept to a handful: one pinned chat serves the friendly name
@@ -42,7 +42,12 @@ pytestmark = [pytest.mark.integration, pytest.mark.ai_agents, pytest.mark.ai_mod
 
 # Node refuses a new chat's query past this many characters (es_validators.ts).
 _QUERY_MAX_CHARS = 100_000
-_PROVIDER_NAMES = {"azureOpenAI": "Azure OpenAI", "ollama": "Ollama"}
+_PROVIDER_NAMES = {
+    "openAI": "OpenAI",
+    "azureOpenAI": "Azure OpenAI",
+    "openAICompatible": "OpenAI Compatible",
+    "ollama": "Ollama",
+}
 _ENRICHMENT_TIMEOUT = 300
 
 

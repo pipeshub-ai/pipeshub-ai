@@ -202,7 +202,7 @@ class TestPermissionMap:
         provider = _neo4j()
         await provider._get_virtual_ids_for_connector("u1", "o1", "c1", raise_on_error=True)
         (query,) = _neo4j_queries(provider)
-        paths = query.count("RETURN r.virtualRecordId AS virtualId, r.id AS recordId")
+        paths = query.count("RETURN collect([r.virtualRecordId, r.id]) AS pairs")
         assert paths == 1
         assert query.count(cypher_searchable_record("r")) == paths
         assert query.count(f"AND {cypher_live_record('r')}") == paths
@@ -350,22 +350,34 @@ class TestNeo4jKnowledgeHubListing:
     lists the trash: every arm that collects nodes drops deleted ones, and a row
     counts only its live children."""
 
+    @pytest.fixture(autouse=True)
+    def _legacy_browse(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # The browse statement pinned here is the legacy browse's (split's live tests: test_kh_split_browse.py); split is the default.
+        monkeypatch.setenv("KH_BROWSE_MODE", "legacy")
+
     @staticmethod
     def _live(var: str) -> str:
         # Null-safe: a node written before soft delete has no isDeleted.
         return f"NOT coalesce({var}.isDeleted, false)"
 
     @staticmethod
-    async def _listing(**page: object) -> str:
+    async def _listing(*, arrows: bool = False, **page: object) -> str:
+        """The listing statement; with ``arrows``, beside it the statement a flat page reads its rows' arrows with."""
         provider = _neo4j()
 
         async def answer(query: str, **_: object) -> list[dict]:
             # A folder or group start resolves its connector first.
-            return [{"connectorId": "app1", "belonging": 0}] if "AS belonging" in query else []
+            if "AS belonging" in query:
+                return [{"connectorId": "app1", "belonging": 0}]
+            if arrows and "AS rows" in query and "nRecord" in query:
+                return [{"rows": [{"id": "r1", "sortKey": "r1", "nullRank": 0}], "total": 1, "nRecord": 1, "nFolder": 0, "nGroup": 0}]
+            return []
 
         provider.client.execute_query = AsyncMock(side_effect=answer)
         await provider.get_knowledge_hub_connector_page_v3("app1", "o1", ["uk1"], ["app1"], ["g1"], **page)
         (listing,) = [q for q in _neo4j_queries(provider) if "AS rows" in q and "nRecord" in q]
+        if arrows:
+            listing += "".join(q for q in _neo4j_queries(provider) if "AS has" in q)
         return listing
 
     async def test_the_children_of_an_app(self) -> None:
@@ -393,7 +405,7 @@ class TestNeo4jKnowledgeHubListing:
 
     @pytest.mark.parametrize("page", [{"flatten": False}, {"flatten": True}, {"start_id": "f1", "start_type": "folder"}])
     async def test_a_row_counts_only_its_live_children(self, page) -> None:
-        listing = await self._listing(**page)
+        listing = await self._listing(arrows=True, **page)
         assert listing.count(self._live("kh_ch")) >= 1, "hierarchy children"
         assert listing.count(self._live("kh_bc")) == 1, "belonging records"
 

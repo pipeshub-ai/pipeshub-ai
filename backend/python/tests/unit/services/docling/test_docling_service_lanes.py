@@ -168,6 +168,7 @@ async def test_service_lease_wait_beyond_30s_is_backpressure(rig: SimpleNamespac
     # The lane wait the service asked for, not an upper bound on the wall time (which a busy runner stretches).
     assert lease_waits == [0.3]
     assert time.monotonic() - started >= 0.25  # and it did wait for it
+    assert rig.budget.held_count()[0] == 1, "the answer came while the blocker still holds the lane"
     assert rig.converter.calls == 0
     blocker.release()
 

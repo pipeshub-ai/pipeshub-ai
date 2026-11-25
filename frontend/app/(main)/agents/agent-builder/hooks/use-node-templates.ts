@@ -6,6 +6,7 @@ import type { Connector } from '@/app/(main)/workspace/connectors/types';
 import type { KnowledgeBaseForBuilder, AgentToolsListRow, SkillForBuilder } from '../../types';
 import type { AvailableLlmModel } from '@/chat/types';
 import type { NodeTemplate } from '../types';
+import { skillDisplayName } from '@/chat/utils/tool-display';
 import {
   normalizeDisplayName,
   truncateText,
@@ -166,7 +167,7 @@ export function useAgentBuilderNodeTemplates(
       })),
       ...availableSkills.map((skill) => ({
         type: `skill-${skill.name}`,
-        label: normalizeDisplayName(skill.name),
+        label: skillDisplayName(skill.name),
         description: skill.description || t('agentBuilder.skillNodeTemplateDescription'),
         icon: 'psychology',
         defaultConfig: {

@@ -105,6 +105,104 @@ class TestMCPRegistry:
         assert "granola" in type_ids
         assert "fireflies" in type_ids
         assert "fathom" in type_ids
+        assert "miro" in type_ids
+        assert "canva" in type_ids
+        assert "instantly" in type_ids
+        assert "apollo" in type_ids
+        assert "zapmail" in type_ids
+
+    def test_apollo_catalog_entry(self) -> None:
+        registry = MCPRegistry()
+        registry.auto_discover_templates()
+        apollo = registry.get_template("apollo")
+
+        assert apollo is not None
+        assert apollo.default_url == "https://mcp.apollo.io/mcp"
+        assert apollo.transport == MCPTransport.STREAMABLE_HTTP
+        assert apollo.supported_auth_modes == [MCPAuthMode.OAUTH]
+        assert apollo.supports_dcr
+        assert not apollo.require_oauth_client
+        assert not apollo.url_editable
+        assert apollo.default_scopes == [
+            "read_user_profile",
+            "mcp_scope",
+            "mixed_people_api_search",
+            "mixed_companies_search",
+        ]
+        assert apollo.icon == "/icons/connectors/apollo.svg"
+
+    def test_zapmail_catalog_entry(self) -> None:
+        registry = MCPRegistry()
+        registry.auto_discover_templates()
+        zapmail = registry.get_template("zapmail")
+
+        assert zapmail is not None
+        assert zapmail.default_url == "https://mcp.zapmail.ai/mcp"
+        assert zapmail.transport == MCPTransport.STREAMABLE_HTTP
+        assert zapmail.supported_auth_modes == [MCPAuthMode.OAUTH]
+        assert zapmail.supports_dcr
+        assert not zapmail.require_oauth_client
+        assert zapmail.default_scopes == ["mailboxes", "inbox"]
+        assert zapmail.icon == "/icons/connectors/zapmail.svg"
+
+    def test_miro_catalog_entry(self) -> None:
+        registry = MCPRegistry()
+        registry.auto_discover_templates()
+        miro = registry.get_template("miro")
+
+        assert miro is not None
+        assert miro.display_name == "Miro"
+        assert miro.transport == MCPTransport.STREAMABLE_HTTP
+        assert miro.default_url == "https://mcp.miro.com/"
+        assert miro.default_auth_mode == MCPAuthMode.OAUTH
+        assert miro.supported_auth_modes == [MCPAuthMode.OAUTH]
+        assert miro.supports_dcr is True
+        assert miro.require_oauth_client is False
+        assert miro.url_editable is False
+        assert miro.authorization_url == "https://mcp.miro.com/authorize"
+        assert miro.token_url == "https://mcp.miro.com/token"
+        assert miro.default_scopes == []
+        assert miro.icon == "/icons/connectors/miro.svg"
+        assert miro.documentation_url == "https://developers.miro.com/docs/mcp-intro"
+
+    def test_canva_catalog_entry(self) -> None:
+        registry = MCPRegistry()
+        registry.auto_discover_templates()
+        canva = registry.get_template("canva")
+
+        assert canva is not None
+        assert canva.display_name == "Canva"
+        assert canva.transport == MCPTransport.STREAMABLE_HTTP
+        assert canva.default_url == "https://mcp.canva.com/mcp"
+        assert canva.default_auth_mode == MCPAuthMode.OAUTH
+        assert canva.supported_auth_modes == [MCPAuthMode.OAUTH]
+        assert canva.supports_dcr is True
+        assert canva.require_oauth_client is False
+        assert canva.url_editable is False
+        assert canva.authorization_url == "https://mcp.canva.com/authorize"
+        assert canva.token_url == "https://mcp.canva.com/token"
+        assert canva.default_scopes == []
+        assert canva.icon == "/icons/connectors/canva.svg"
+        assert canva.documentation_url == "https://www.canva.dev/docs/apps/mcp/"
+    def test_instantly_catalog_entry(self) -> None:
+        registry = MCPRegistry()
+        registry.auto_discover_templates()
+        instantly = registry.get_template("instantly")
+
+        assert instantly is not None
+        assert instantly.display_name == "Instantly"
+        assert instantly.transport == MCPTransport.STREAMABLE_HTTP
+        assert instantly.default_url == "https://mcp.instantly.ai/mcp"
+        assert instantly.default_auth_mode == MCPAuthMode.OAUTH
+        assert instantly.supported_auth_modes == [MCPAuthMode.OAUTH, MCPAuthMode.API_TOKEN]
+        assert instantly.supports_dcr is True
+        assert instantly.require_oauth_client is False
+        assert instantly.url_editable is False
+        assert instantly.authorization_url == "https://api.instantly.ai/oauth/authorize"
+        assert instantly.token_url == "https://api.instantly.ai/oauth/token"
+        assert instantly.default_scopes == []
+        assert instantly.icon == "/icons/connectors/instantly.svg"
+        assert instantly.documentation_url == "https://developer.instantly.ai/mcp/introduction"
 
     def test_lucid_catalog_entry(self) -> None:
         registry = MCPRegistry()
@@ -349,7 +447,7 @@ class TestMCPRegistry:
         assert template.icon == icon
         assert template.documentation_url == docs
 
-    @pytest.mark.parametrize("type_id", ["intercom", "granola", "fireflies", "fathom"])
+    @pytest.mark.parametrize("type_id", ["intercom", "granola", "fireflies", "fathom", "instantly"])
     def test_new_catalog_entry_logo_file_exists(self, type_id: str) -> None:
         """The template's `icon` path must point at a file the frontend actually serves."""
         registry = MCPRegistry()

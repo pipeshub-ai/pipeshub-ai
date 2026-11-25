@@ -224,6 +224,25 @@ describe('HTML preview citation bridge', () => {
     expect(onHighlightClick).toHaveBeenCalledExactlyOnceWith('c2');
   });
 
+  it('jumps to the active citation instead of animating, so a second message cannot carry the frame past it', () => {
+    const doc = buildPreviewDocument({ sanitizedHtml: sanitizePreviewHtml('<p>Revenue grew.</p>'), nonce: 'n0', dark: false, citations: CITATIONS });
+    const start = doc.indexOf('>', doc.indexOf('<script nonce=')) + 1;
+    const bridge = doc.slice(start, doc.indexOf('</script>', start));
+    const iframe = document.createElement('iframe');
+    document.body.appendChild(iframe);
+    const frameWindow = iframe.contentWindow as Window & typeof globalThis;
+    frameWindow.document.body.innerHTML = doc.slice(doc.indexOf('<body>') + 6, doc.indexOf('<script nonce='));
+    const highlight = frameWindow.document.querySelector('.highlight-c1') as HTMLElement;
+    const scrollIntoView = vi.fn();
+    highlight.scrollIntoView = scrollIntoView;
+    new Function('window', 'document', bridge)(frameWindow, frameWindow.document);
+
+    frameWindow.dispatchEvent(new frameWindow.MessageEvent('message', { data: { type: SET_ACTIVE_CITATION, id: 'c1' }, source: frameWindow.parent }));
+
+    expect(scrollIntoView).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ behavior: 'instant', block: 'center' }));
+    iframe.remove();
+  });
+
   it('parseCitationClick rejects malformed payloads', () => {
     const known = new Set(['c1']);
     expect(parseCitationClick({ type: CITATION_CLICK, id: 'c1' }, known)).toBe('c1');

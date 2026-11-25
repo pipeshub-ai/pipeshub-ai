@@ -1765,10 +1765,10 @@ class TestDeleteTeamMemberEdges:
         assert result == []
 
     @pytest.mark.asyncio
-    async def test_exception(self, connected_provider):
+    async def test_a_failed_write_raises(self, connected_provider):
         connected_provider.execute_query = AsyncMock(side_effect=Exception("fail"))
-        result = await connected_provider.delete_team_member_edges("t1", ["u1"])
-        assert result == []
+        with pytest.raises(Exception, match="fail"):
+            await connected_provider.delete_team_member_edges("t1", ["u1"])
 
 
 class TestBatchUpdateTeamMemberRoles:
@@ -1781,10 +1781,10 @@ class TestBatchUpdateTeamMemberRoles:
         assert len(result) == 1
 
     @pytest.mark.asyncio
-    async def test_exception(self, connected_provider):
+    async def test_a_failed_write_raises(self, connected_provider):
         connected_provider.execute_query = AsyncMock(side_effect=Exception("fail"))
-        result = await connected_provider.batch_update_team_member_roles("t1", [], 123)
-        assert result == []
+        with pytest.raises(Exception, match="fail"):
+            await connected_provider.batch_update_team_member_roles("t1", [], 123)
 
 
 class TestDeleteAllTeamPermissions:
@@ -2055,10 +2055,10 @@ class TestGetAgentsByWebSearchProvider:
         assert result == []
 
     @pytest.mark.asyncio
-    async def test_exception(self, connected_provider):
+    async def test_exception_raises(self, connected_provider):
         connected_provider.execute_query = AsyncMock(side_effect=Exception("fail"))
-        result = await connected_provider.get_agents_by_web_search_provider("org1", "BRAVE")
-        assert result == []
+        with pytest.raises(Exception, match="fail"):
+            await connected_provider.get_agents_by_web_search_provider("org1", "BRAVE")
 
 
 class TestGetAgentsByModelKey:
@@ -2077,7 +2077,7 @@ class TestGetAgentsByModelKey:
         assert result == []
 
     @pytest.mark.asyncio
-    async def test_exception(self, connected_provider):
+    async def test_exception_raises(self, connected_provider):
         connected_provider.execute_query = AsyncMock(side_effect=Exception("fail"))
-        result = await connected_provider.get_agents_by_model_key("org1", "gpt-4")
-        assert result == []
+        with pytest.raises(Exception, match="fail"):
+            await connected_provider.get_agents_by_model_key("org1", "gpt-4")

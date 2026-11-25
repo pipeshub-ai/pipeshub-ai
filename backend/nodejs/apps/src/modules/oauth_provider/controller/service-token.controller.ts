@@ -7,6 +7,7 @@ import {
   ServiceTokenService,
 } from '../services/service-token.service';
 import { ScopeValidatorService } from '../services/scope.validator.service';
+import { auditUserRefusal } from '../../user_management/utils/user-audit';
 
 @injectable()
 export class ServiceTokenController {
@@ -35,6 +36,11 @@ export class ServiceTokenController {
         token,
       });
     } catch (error) {
+      auditUserRefusal('service_account.token.create', error, {
+        target: (req.body as Partial<CreateServiceTokenRequest>)
+          .serviceAccountId,
+        targetIsUser: true,
+      });
       next(error);
     }
   }
@@ -90,6 +96,11 @@ export class ServiceTokenController {
       );
       res.status(204).send();
     } catch (error) {
+      auditUserRefusal('service_account.token.revoke', error, {
+        target: req.query.serviceAccountId as string,
+        targetIsUser: true,
+        key: req.params.tokenId as string,
+      });
       next(error);
     }
   }

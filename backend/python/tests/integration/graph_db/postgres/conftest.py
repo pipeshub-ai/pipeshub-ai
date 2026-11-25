@@ -15,9 +15,6 @@ if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable
     from contextlib import AbstractContextManager
 
-pytestmark = pytest.mark.integration
-
-
 @pytest.fixture(autouse=True)
 def _provider_contract_tests_skip_schema_validation(monkeypatch: pytest.MonkeyPatch) -> None:
     """These tests exercise the provider's mechanics (deletes, hierarchy, trash, access, projection) on hand-built
@@ -33,9 +30,14 @@ def _no_background_sample(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture
-async def pg_db() -> AsyncIterator[KernelDB]:
+def pg_required() -> None:
+    """Skips a test that builds its own ``KernelDB`` where no database is configured; ``pg_db`` has it too."""
     if not os.environ.get("PG_CORE_URL"):
         pytest.skip("PG_CORE_URL is not set")
+
+
+@pytest.fixture
+async def pg_db(pg_required: None) -> AsyncIterator[KernelDB]:
     db = KernelDB(DbConfig.from_env("connectors"))
     await db.start()
     yield db

@@ -4,6 +4,7 @@ import {
   isAskUserQuestionToolName,
   type AskUserQuestionEvent,
 } from "./ask-user-format";
+import { escapeSlackText } from './slack-escape';
 
 export interface AGUIJsonPatchOp {
   op: string;
@@ -53,8 +54,57 @@ export interface SlackConversationComplete {
     content?: string;
     citations?: unknown[];
     messageType?: string;
+    /** Which limit cut the answer short (BUDGETEND): `budget`, `turns` or `time`. */
+    truncatedBy?: string;
+    /** With `truncatedBy` `budget`: which shared budget ran out (C9.06), as `budgetStopNotice` reads it. */
+    budgetScope?: string;
   }>;
   [key: string]: unknown;
+}
+
+/** What the bot tells the thread when the run hands off to PipesHub: the conversation, its link, what waits. */
+export interface SlackHandOff {
+  conversationId: string;
+  /** The conversation's app path (`/chat/?…`); absent from an older Node. */
+  link?: string;
+  /** The calls the run waits on, named as its tool frames name them. */
+  waitingOn: Array<{ toolName: string; displayName?: string }>;
+  /** R35SLACK-FU-3: the person's new message joined the parked run; it is read once the run goes on. */
+  queued?: boolean;
+}
+
+/** The hand-off a finished frame's `result` carries, or null when the run ended. */
+export function handOffOf(result: unknown): SlackHandOff | null {
+  if (!result || typeof result !== 'object') return null;
+  const meta = (result as Record<string, unknown>).meta;
+  if (!meta || typeof meta !== 'object') return null;
+  const m = meta as Record<string, unknown>;
+  if (m.awaiting !== 'approval') return null;
+  const conversation = extractConversation(result);
+  if (conversation === null) return null;
+  return {
+    conversationId: conversation._id,
+    ...(typeof m.link === 'string' && m.link.startsWith('/')
+      ? { link: m.link }
+      : {}),
+    ...(m.queued === true ? { queued: true } : {}),
+    waitingOn: Array.isArray(m.waitingOn)
+      ? m.waitingOn.flatMap((w: unknown) => {
+          const call =
+            w && typeof w === 'object' ? (w as Record<string, unknown>) : {};
+          if (typeof call.toolName !== 'string' || call.toolName === '')
+            return [];
+          return [
+            {
+              toolName: call.toolName,
+              ...(typeof call.displayName === 'string'
+                ? { displayName: call.displayName }
+                : {}),
+            },
+          ];
+        })
+      : [],
+  };
 }
 
 export interface SlackAGUICallbacks {
@@ -81,6 +131,8 @@ export interface SlackAGUICallbacks {
   onArtifact?: (artifact: SlackArtifactPayload) => void;
   onConversationCreated?: (conversationId: string) => void;
   onComplete?: (conversation: SlackConversationComplete) => void;
+  /** The run waits on a person's approval in PipesHub; the stream ends here (ADR-OWD-09 D-SLACK-ASK). */
+  onHandOff?: (handOff: SlackHandOff) => void;
   onError?: (message: string) => void;
 }
 
@@ -89,14 +141,6 @@ interface AGUIStreamState {
   normalizedAnswer: string;
   confidence?: string;
   rawLength: number;
-}
-
-/** A third party's text kept plain in Slack mrkdwn, where `<…>` is a link or a mention. */
-function slackPlainText(text: string): string {
-  return text
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
 }
 
 /**
@@ -109,7 +153,7 @@ export function toolProgressText(snapshot: Record<string, unknown>): string {
     typeof snapshot.progress_message === 'string'
       ? snapshot.progress_message.trim()
       : '';
-  if (note !== '') return ` ${slackPlainText(note)}`;
+  if (note !== '') return ` ${escapeSlackText(note)}`;
   const { progress, total } = snapshot;
   if (
     typeof progress !== 'number' ||
@@ -455,6 +499,11 @@ export function createSlackAGUIEventHandler(
           if (role) {
             callbacks.onSubAgent?.(role, "completed");
           }
+          break;
+        }
+        const handOff = handOffOf(data?.result);
+        if (handOff) {
+          callbacks.onHandOff?.(handOff);
           break;
         }
         const conversation = extractConversation(data?.result);

@@ -6,7 +6,6 @@ Covers:
 - ``markdown_parser`` shim:  MarkdownParser defaults to MarkdownItParser
 """
 
-import importlib
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -18,6 +17,7 @@ from app.modules.parsers.markdown.docling_markdown_parser import (
     DoclingMarkdownParser,
 )
 from app.modules.parsers.markdown.markdown_it_parser import MarkdownItParser
+from tests.support.fresh_module import fresh_copy
 
 _DOCLING_MOCKS = {
     "docling": MagicMock(),
@@ -305,18 +305,10 @@ class TestMarkdownItParserImageExtraction:
 class TestMarkdownParserShim:
     def test_markdown_parser_defaults_to_markdownit(self):
         with patch.dict("os.environ", {"PARSER_BACKEND": "markdownit"}, clear=False):
-            import importlib
+            shim = fresh_copy(markdown_parser)
 
-            import app.modules.parsers.markdown.markdown_parser as markdown_parser_module
-
-            importlib.reload(markdown_parser_module)
-            MarkdownParser = markdown_parser_module.MarkdownParser
-
-        assert MarkdownParser.__name__ == "MarkdownItParser"
-        assert MarkdownParser.__module__ == (
-            "app.modules.parsers.markdown.markdown_it_parser"
-        )
-        assert "MarkdownParser" in markdown_parser_module.__all__
+        assert shim.MarkdownParser is MarkdownItParser
+        assert "MarkdownParser" in shim.__all__
 
     def test_markdown_parser_protocol_exported(self):
         from app.modules.parsers.markdown import markdown_parser as mp
@@ -345,15 +337,14 @@ class TestMarkdownParserShim:
         assert result is None
 
     def test_markdown_parser_can_select_docling_backend(self):
+        shared = markdown_parser.MarkdownParser
         with patch.dict("os.environ", {"PARSER_BACKEND": "docling"}, clear=False):
             with patch.dict("sys.modules", _DOCLING_MOCKS):
-                importlib.reload(markdown_parser)
-                MarkdownParser = markdown_parser.MarkdownParser
+                shim = fresh_copy(markdown_parser)
 
-        assert MarkdownParser.__name__ == "DoclingMarkdownParser"
-        assert MarkdownParser.__module__ == (
-            "app.modules.parsers.markdown.docling_markdown_parser"
-        )
+        assert shim.MarkdownParser is DoclingMarkdownParser
+        # A reload here used to leave the shared shim on Docling for every later test in the process.
+        assert markdown_parser.MarkdownParser is shared
 
     @pytest.mark.asyncio
     async def test_markdown_parser_has_parse_to_blocks(self):
