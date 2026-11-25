@@ -145,7 +145,7 @@ class FlatStorageMigration:
         log(
             "Flat storage migration for org %s finished: %d moved, %d with no record to own them, "
             "%d failed%s",
-            org_id, int(done.get("moved") or 0), int(done.get("unowned") or 0), failed,
+            org_id, moved_in_all, int(done.get("unowned") or 0), failed,
             f": {self._reason_text()}; those are relocated when their records are indexed again" if failed else "",
         )
         return True

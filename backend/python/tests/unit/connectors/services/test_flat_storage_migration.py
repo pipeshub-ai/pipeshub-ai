@@ -142,7 +142,8 @@ async def test_failures_left_after_others_moved_are_given_up_on_after_the_last_p
         await m.run_org("org-1")
     assert move.await_count == MAX_PASSES + 1
     assert kv.data[KEY]["done"] is True and kv.data[KEY]["failed"] == 1
-    m.logger.error.assert_called_once()
+    [call] = m.logger.error.call_args_list
+    assert "finished: 1 moved, 0 with no record to own them, 1 failed" in call.args[0] % call.args[1:]
 
 
 @pytest.mark.asyncio
