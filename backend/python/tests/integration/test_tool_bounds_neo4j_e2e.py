@@ -27,7 +27,11 @@ from app.connectors.sources.localKB.handlers.knowledge_hub_service import (
     KnowledgeHubService,
 )
 from app.models.entities import FileRecord, RecordType
-from app.services.graph_db.neo4j.neo4j_provider import FOLDER_MIME_TYPES, LISTED
+from app.services.graph_db.neo4j.neo4j_provider import (
+    FOLDER_MIME_TYPES,
+    LISTED,
+    Neo4jProvider,
+)
 from app.services.graph_db.neo4j.permission_stamps import Neo4jStampGraph
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from tests.integration.real_graph import backend_unavailable, connect_neo4j
@@ -306,6 +310,7 @@ def _calls(w: W) -> dict[str, Any]:
                              **{"flattened": False, "depth": 1, "limit": 50, **kw})
     return {
         "browse a folder": lambda: browse(w.n("BIG"), "folder"),
+        "a folder read in windows": lambda: browse(w.n("BIG"), "folder"),
         "a later page": lambda: browse(w.n("BIG"), "folder", page=3),
         "browse the App": lambda: browse(w.app, "app"),
         "browse a group": lambda: browse(w.n("G3"), "recordGroup"),
@@ -322,7 +327,7 @@ def _calls(w: W) -> dict[str, Any]:
 
 
 @pytest.mark.parametrize("call", [
-    "browse a folder", "a later page", "browse the App", "browse a group", "flatten the App", "records by id", "selection", "node access",
+    "browse a folder", "a folder read in windows", "a later page", "browse the App", "browse a group", "flatten the App", "records by id", "selection", "node access",
     "stamp nodes", "stamp subtree", "uploads under a folder", "purge failure"])
 async def test_a_statement_seeks_nodes_by_id_on_the_unique_id_index(w, monkeypatch, call: str) -> None:
     """Every statement these reads run seeks a record or group it has the id of on the label's unique id index, never on an index that
@@ -339,6 +344,8 @@ async def test_a_statement_seeks_nodes_by_id_on_the_unique_id_index(w, monkeypat
         return await execute(query, parameters, *args, **kwargs)
 
     monkeypatch.setattr(w.g.client, "execute_query", capture)
+    if call == "a folder read in windows":      # as a folder wider than the split browse holds whole is read
+        monkeypatch.setattr(Neo4jProvider, "_KH_SPLIT_START_MAX", 1)
     await _calls(w)[call]()
     monkeypatch.setattr(w.g.client, "execute_query", execute)
     assert ran
