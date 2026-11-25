@@ -73,6 +73,10 @@ describe('McpServerIcon', () => {
     expect(logo(<McpServerIcon typeId="hubspot" name="HubSpot" />)).toBe('hubspot icon');
   });
 
+  it("shows Dropbox's catalog logo, not Box's", () => {
+    expect(logo(<McpServerIcon typeId="dropbox" name="Dropbox" />)).toBe('dropbox icon');
+  });
+
   it('goes by the catalog type when the server was renamed', () => {
     expect(logo(<McpServerIcon typeId="linear" name="Team tracker" />)).toBe('linear icon');
   });

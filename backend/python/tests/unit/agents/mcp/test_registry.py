@@ -84,6 +84,7 @@ class TestMCPRegistry:
         assert "slack" in type_ids
         assert "exa" in type_ids
         assert "box" in type_ids
+        assert "dropbox" in type_ids
         assert "clickup" in type_ids
         assert "stripe" in type_ids
         assert "context7" in type_ids
