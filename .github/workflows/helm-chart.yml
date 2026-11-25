@@ -55,6 +55,7 @@ jobs:
           set -euo pipefail
           tag=$(git ls-remote --tags --refs origin 'v[0-9]*' | sed 's#.*refs/tags/##' | sort -V | tail -1)
           git fetch --no-tags --depth=1 origin "+refs/tags/$tag:refs/tags/$tag"
+          echo "HELM_UPGRADE_BASELINE=$tag" >> "$GITHUB_ENV"
 
       - name: Set up Helm
         uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
