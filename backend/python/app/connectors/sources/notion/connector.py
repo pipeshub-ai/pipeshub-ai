@@ -317,6 +317,10 @@ class _DatabaseGone(Exception):
     """Notion returned a definitive 404/trash for a database container."""
 
 
+class _DatabaseArchived(_DatabaseGone):
+    """The database reads, and Notion says it is archived or in the trash."""
+
+
 class _DatabaseUnavailable(RuntimeError):
     """Notion could not answer for a database right now (429, 5xx, unusable payload)."""
 
@@ -1936,6 +1940,8 @@ class NotionConnector(BaseConnector):
             self.logger.error(
                 "Could not load leftover Notion database containers: %s", e, exc_info=True
             )
+            # The stored containers are unknown, so they cannot be noted kept.
+            self._sync_incomplete = True
             return
 
         if not leftovers:
@@ -1951,6 +1957,7 @@ class NotionConnector(BaseConnector):
                     "Leaving Notion database container %s for the next sync: %s",
                     record.external_record_id, e,
                 )
+                self.data_entities_processor.note_kept_records(self.connector_id, [record.id])
         self.logger.info(
             "Leftover database pass: retired %d of %d container(s)",
             retired, len(leftovers),
@@ -3315,11 +3322,12 @@ class NotionConnector(BaseConnector):
         attachment and comment-attachment files.
 
         None: nothing to sync (its database is gone, or a rechecked page whose comments did not
-        change). ``[]``: it failed this run (transform, its
-        database, attachments or comments) and is not saved, so its stored revision stays old and
-        the next sync reads it again. A page whose last_edited_time is unchanged keeps its stored
-        revision and skips the block walk, unless ``recheck_comments``. ``rows_changed``: a data
-        source whose rows changed gets a new revision, so its table is indexed again.
+        change); a data source whose database answers 404 is noted kept. ``[]``: it failed this
+        run (transform, its database, attachments or comments) and is not saved, so its stored
+        revision stays old and the next sync reads it again. A page whose last_edited_time is
+        unchanged keeps its stored revision and skips the block walk, unless ``recheck_comments``.
+        ``rows_changed``: a data source whose rows changed gets a new revision, so its table is
+        indexed again.
         """
         obj_id = obj_data.get("id")
         database_parent_id = None
@@ -3333,10 +3341,14 @@ class NotionConnector(BaseConnector):
                         await self._get_database_parent_ref(database_id)
                     )
                     # None is valid when database parent is workspace
-                except _DatabaseGone:
+                except _DatabaseGone as e:
                     self.logger.info(
                         "Skipping data source %s: parent database %s is gone", obj_id, database_id,
                     )
+                    # Notion also answers 404 for a database not shared with the integration, so
+                    # it is unreadable, not known deleted; archived/trashed is a deletion.
+                    if not isinstance(e, _DatabaseArchived):
+                        await self._note_stored_record_kept(obj_id)
                     return None
                 except Exception as e:
                     if self._is_unauthorized(e):
@@ -3473,6 +3485,16 @@ class NotionConnector(BaseConnector):
         if existing is not None:
             await self._prune_removed_files(obj_id, {f.external_record_id for f in files})
         return out
+
+    async def _note_stored_record_kept(self, external_id: Optional[str]) -> None:
+        """During a full sync, note a stored record this run leaves unwritten as kept."""
+        if not external_id or not self.data_entities_processor.full_sync_running(self.connector_id):
+            return
+        stored = await self.data_entities_processor.get_record_by_external_id(
+            self.connector_id, external_id,
+        )
+        if stored is not None:
+            self.data_entities_processor.note_kept_records(self.connector_id, [stored.id])
 
     async def _note_stored_files_kept(self, page_id: str) -> None:
         """During a full sync, note a page's stored file records as kept: a page whose blocks are
@@ -5573,7 +5595,7 @@ class NotionConnector(BaseConnector):
                 f"Invalid database payload for {database_id}: expected object"
             )
         if database_data.get("archived") or database_data.get("in_trash"):
-            raise _DatabaseGone(f"database {database_id} is archived")
+            raise _DatabaseArchived(f"database {database_id} is archived")
         return database_data
 
     async def _parent_ref_from_database_payload(
