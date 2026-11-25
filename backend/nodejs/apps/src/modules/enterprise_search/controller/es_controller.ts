@@ -655,7 +655,10 @@ export const resolveChatAttachmentMimeType = (
   if (dot < 0) return null;
   const extension = name.slice(dot + 1).toLowerCase();
   // Own keys only: a file named "x.constructor" would otherwise resolve to Object.
-  return Object.prototype.hasOwnProperty.call(CHAT_ATTACHMENT_MIME_BY_EXTENSION, extension)
+  return Object.prototype.hasOwnProperty.call(
+    CHAT_ATTACHMENT_MIME_BY_EXTENSION,
+    extension,
+  )
     ? (CHAT_ATTACHMENT_MIME_BY_EXTENSION[extension] ?? null)
     : null;
 };
@@ -4938,6 +4941,45 @@ export const search =
   };
 
 /**
+ * A record page link (`/record/<id>`) as a full URL on the web app. The AI
+ * service links uploaded files and records without a source URL to their page
+ * in the web app by path; a retrieve caller is not the web app and cannot open
+ * a bare path. Full URLs and anything else are returned as they are.
+ */
+const absoluteRecordUrl = (
+  url: unknown,
+  frontendUrl: string | undefined,
+): unknown => {
+  if (typeof url !== 'string' || !url.startsWith('/') || url.startsWith('//')) {
+    return url;
+  }
+  const base = (frontendUrl ?? '').trim().replace(/\/+$/, '');
+  return /^https?:\/\//i.test(base) ? `${base}${url}` : url;
+};
+
+const withAbsoluteRecordUrls = (
+  chunks: unknown[],
+  frontendUrl: string | undefined,
+): unknown[] =>
+  chunks.map((chunk) => {
+    if (chunk === null || typeof chunk !== 'object') return chunk;
+    const citation = (chunk as { citation?: unknown }).citation;
+    if (citation === null || typeof citation !== 'object') return chunk;
+    const { url, recordUrl } = citation as {
+      url?: unknown;
+      recordUrl?: unknown;
+    };
+    return {
+      ...chunk,
+      citation: {
+        ...citation,
+        url: absoluteRecordUrl(url, frontendUrl),
+        recordUrl: absoluteRecordUrl(recordUrl, frontendUrl),
+      },
+    };
+  });
+
+/**
  * POST /api/v1/retrieve: ranked chunks with citations, for a developer's own
  * RAG or agent. Unlike `search`, nothing is stored: no citation documents and
  * no search history, since an app may call this on every request it serves.
@@ -4995,7 +5037,18 @@ export const retrieve =
           'Retrieve',
         );
       }
-      res.status(HTTP_STATUS.OK).json({ requestId, ...data });
+      res.status(HTTP_STATUS.OK).json({
+        requestId,
+        ...data,
+        ...(Array.isArray(data.chunks)
+          ? {
+              chunks: withAbsoluteRecordUrls(
+                data.chunks,
+                appConfig.frontendUrl,
+              ),
+            }
+          : {}),
+      });
     } catch (error: unknown) {
       logger[logLevelFor(error)]('Error retrieving chunks', {
         requestId,

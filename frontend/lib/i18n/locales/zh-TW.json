@@ -5769,6 +5769,8 @@
     "mcpServerNodeSubtitle": "來自 MCP 伺服器的工具",
     "webSearchLocked": "此代理程式的網路搜尋無法變更",
     "webSearchLoading": "正在載入網路搜尋供應商…",
+    "webSearchNotSetUp": "網頁搜尋尚未設定。請聯絡管理員在 Workspace → 網頁搜尋 中選擇供應商。",
+    "webSearchLoadFailed": "無法載入網路搜尋供應商。",
     "webSearchConfigureFirst": "請先設定 {{name}}",
     "webSearch": "網路搜尋",
     "toolsetOAuthServerError": "驗證失敗。請重試或聯絡您的管理員。",

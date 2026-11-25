@@ -1054,8 +1054,10 @@ class TestReconciliationEmbedIsPlanned:
     ) -> None:
         # The loop clock moves only inside the gate wait. On the wall clock, a pause outside it (a full GC in a
         # long worker, a busy runner) is budget time too, and at 1 s it cut this test in CI before the wait began.
+        # It starts at a fixed value, not the runner's uptime: from a start just under a power of two (511.x s after
+        # boot) start + 1.5 rounds, and the wait read back as 1.4999999999999432.
         loop = asyncio.get_running_loop()
-        now = [loop.time()]
+        now = [1000.0]
         monkeypatch.setattr(loop, "time", lambda: now[0])
         store, _ = _reconciling_store()
         member = object()

@@ -113,6 +113,7 @@ export type ConnectorType =
   | 'fathom'
   | 'lucid'
   | 'miro'
+  | 'canva'
   | 'instantly'
   | 'apollo'
   | 'zapmail'
@@ -234,6 +235,7 @@ export const CONNECTOR_ICONS: Record<ConnectorType, { svg: string | null; fallba
   'fathom': { svg: svg('fathom'), fallback: 'videocam' },
   'lucid': { svg: svg('lucid'), fallback: 'schema', needDarkModeInvert: true },
   'miro': { svg: svg('miro'), fallback: 'dashboard', needDarkModeInvert: true },
+  'canva': { svg: svg('canva'), fallback: 'palette' },
   'instantly': { svg: svg('instantly'), fallback: 'mail' },
   'apollo': { svg: svg('apollo'), fallback: 'search' },
   'zapmail': { svg: svg('zapmail'), fallback: 'mail', needDarkModeInvert: true },
@@ -318,6 +320,7 @@ const FUZZY_MATCH_RULES: Array<[string, ConnectorType, boolean?]> = [
   ['fathom', 'fathom', true],
   ['lucid', 'lucid'],
   ['miro', 'miro'],
+  ['canva', 'canva'],
   ['instantly', 'instantly', true],
   ['apollo', 'apollo', true],
   ['zapmail', 'zapmail', true],
