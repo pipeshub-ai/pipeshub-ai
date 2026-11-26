@@ -666,12 +666,13 @@ STUB
 # Every variable the installer reads before it first sets it (so a value from the caller's environment counts) is in the list it keeps
 # across sudo. Not inputs: bash's own variables, internal flags read inside functions defined before they are set (the platform
 # probes, IMAGE_SOURCE, SANDBOX_PLAN), and the secrets the installer reads from .env or generates (SECRET_KEY, SECRET_KEY_PREVIOUS,
-# the PostgreSQL passwords set with printf -v), never from the environment.
+# the PostgreSQL passwords set with printf -v), never from the environment. Nor the login account names: USER, and USERNAME, which
+# only the Git Bash .env ACL step reads (the sudo re-exec runs on Linux only).
 _read="$(awk '
   { a=""; rest=$0
     if (match($0, /^[[:space:]]*(export |local |readonly )?[A-Z][A-Z0-9_]*=/)) { a=substr($0, RSTART, RLENGTH); sub(/^[[:space:]]*(export |local |readonly )?/, "", a); sub(/=$/, "", a); rest=substr($0, RSTART+RLENGTH) }
     s=rest; while (match(s, /\$\{?[A-Z][A-Z0-9_]*/)) { n=substr(s, RSTART, RLENGTH); gsub(/[${]/, "", n); if (!(n in set)) print n; s=substr(s, RSTART+RLENGTH) }
-    if (a != "") set[a]=1 }' "$INNER_INSTALLER" | grep -vE '^(BASH_[A-Z_]+|EUID|SECONDS|USER|IS_MACOS|IS_WINDOWS|IS_LINUX|IS_WSL|ARCH|IMAGE_SOURCE|SANDBOX_PLAN|SECRET_KEY|SECRET_KEY_PREVIOUS|TOTAL_RAM_MB|PG_[A-Z]+_PASSWORD)$' | sort -u)"
+    if (a != "") set[a]=1 }' "$INNER_INSTALLER" | grep -vE '^(BASH_[A-Z_]+|EUID|SECONDS|USER|USERNAME|IS_MACOS|IS_WINDOWS|IS_LINUX|IS_WSL|ARCH|IMAGE_SOURCE|SANDBOX_PLAN|SECRET_KEY|SECRET_KEY_PREVIOUS|TOTAL_RAM_MB|PG_[A-Z]+_PASSWORD)$' | sort -u)"
 _kept="$(awk '/^    _keep=""/{g=1} g&&/; do$/{print; exit} g{print}' "$INNER_INSTALLER" | grep -oE '\b[A-Z][A-Z0-9_]*\b' | sort -u)"
 check_exact "the sudo re-exec list covers every setting the installer reads" "$(comm -23 <(printf '%s\n' "$_read") <(printf '%s\n' "$_kept"))" ""
 check "the guard finds settings without the PIPESHUB_ prefix" "$_read" "HEALTH_WAIT_SECS"
