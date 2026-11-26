@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import {
+  exportedNames,
   findLibraryMentions,
   findVerifyCalls,
   unlistedLibraryMentions,
@@ -114,18 +115,34 @@ describe('contract: no jsonwebtoken verify outside the allowlist', function () {
   it('exports none of the removed signature-only validators', () => {
     const offenders: string[] = [];
     for (const f of sourceFiles(SRC)) {
-      const text = fs.readFileSync(f, 'utf8');
+      const names = exportedNames(fs.readFileSync(f, 'utf8'));
       for (const name of REMOVED_EXPORTS) {
-        if (
-          new RegExp(
-            `export\\s+(?:const|function|async function)\\s+${name}\\b`,
-          ).test(text)
-        ) {
+        if (names.includes(name)) {
           offenders.push(`${path.relative(SRC, f)}: ${name}`);
         }
       }
     }
     expect(offenders).to.deep.equal([]);
+  });
+
+  it('sees an exported name however it is exported, and not a local one', () => {
+    expect(
+      exportedNames(
+        [
+          'export const a = 1;',
+          'export async function b() {}',
+          'const c = 1;',
+          'export { c };',
+          'const local = 1;',
+          'export { local as d };',
+          "export { e } from './e';",
+          "export { x as f } from './x';",
+          'const g = 1;',
+          'export { g as default };',
+          'const notExported = 1;',
+        ].join('\n'),
+      ).sort(),
+    ).to.deep.equal(['a', 'b', 'c', 'd', 'default', 'e', 'f']);
   });
 
   describe('the scanner sees every spelling of a verify call', () => {
@@ -186,6 +203,31 @@ describe('contract: no jsonwebtoken verify outside the allowlist', function () {
         expect(findVerifyCalls(source)).to.have.length.greaterThan(0);
       });
     }
+    it('reports the key jws.verify takes as its third argument', () => {
+      for (const source of [
+        "import jws from 'jws';\nexport const f = (t: string, k: string) => jws.verify(t, 'HS256', k);",
+        "import { verify } from 'jws';\nexport const f = (t: string, k: string) => verify(t, 'HS256', k);",
+        "import jws from 'jws';\nexport const f = (t: string, k: string) => jws.verify.call(null, t, 'HS256', k);",
+      ]) {
+        expect(findVerifyCalls(source).map((c) => c.key)).to.deep.equal(['k']);
+      }
+    });
+    it('reports .call on an imported verify function in a file that may name the library', () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'jwt-scan-'));
+      try {
+        fs.writeFileSync(
+          path.join(dir, 'auth.middleware.ts'),
+          "import { verify } from 'jsonwebtoken';\nexport const f = (t: string, k: string) => verify.call(null, t, k);",
+        );
+        expect(
+          unlistedVerifyCalls(dir, dir, {}).concat(
+            unlistedLibraryMentions(dir, dir, ['auth.middleware.ts'], {}),
+          ),
+        ).to.deep.equal(['auth.middleware.ts:2 verifies with k']);
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
     it('ignores decode, sign and a verify of something else', () => {
       expect(
         findVerifyCalls(

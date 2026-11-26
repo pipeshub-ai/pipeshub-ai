@@ -20,6 +20,9 @@ const VERIFY_NAMES: Record<string, ReadonlySet<string>> = {
   ]),
 };
 
+/** The argument that holds the key: `jws.verify(signature, algorithm, key)` takes it third. */
+const KEY_ARG: Record<string, number> = { jsonwebtoken: 1, jws: 2, jose: 1 };
+
 /**
  * Finds every place a source file checks a JWT signature, whatever its spelling:
  * `jwt.verify(...)`, `jwt['verify'](...)`, a line-broken `jwt\n.verify(...)`, named, renamed,
@@ -36,8 +39,8 @@ export function findVerifyCalls(source: string): VerifyCall[] {
     ts.ScriptTarget.Latest,
     true,
   );
-  const modules = new Map<string, ReadonlySet<string>>(); // local name -> names that verify
-  const verifiers = new Set<string>(); // local names bound to a verify function
+  const modules = new Map<string, string>(); // local name -> package it refers to
+  const verifiers = new Map<string, string>(); // local name of a verify function -> its package
 
   const packageOf = (n: ts.Node | undefined): string | undefined => {
     if (
@@ -70,15 +73,19 @@ export function findVerifyCalls(source: string): VerifyCall[] {
     }
     return n;
   };
-  // The verify-names of the module an expression refers to, if it refers to one.
-  const moduleOf = (
-    n: ts.Expression | undefined,
-  ): ReadonlySet<string> | undefined => {
+  // The package an expression refers to, if it refers to one.
+  const moduleOf = (n: ts.Expression | undefined): string | undefined => {
     const e = unwrap(n);
     if (!e) return undefined;
     if (ts.isIdentifier(e)) return modules.get(e.text);
-    const pkg = packageOf(e);
-    return pkg ? VERIFY_NAMES[pkg] : undefined;
+    return packageOf(e);
+  };
+  // The package whose verify function a member access picks (`jwt.verify`), if it picks one.
+  const verifyMemberOf = (e: ts.Expression): string | undefined => {
+    if (!isMember(e)) return undefined;
+    const pkg = moduleOf(e.expression);
+    const m = memberName(e);
+    return pkg && m && VERIFY_NAMES[pkg]?.has(m) ? pkg : undefined;
   };
   // The name a member access picks, when it is a literal; `undefined` for a computed key.
   const memberName = (e: ts.Expression): string | undefined => {
@@ -105,13 +112,13 @@ export function findVerifyCalls(source: string): VerifyCall[] {
       const names = VERIFY_NAMES[pkg];
       const clause = node.importClause;
       if (names && clause) {
-        if (clause.name) modules.set(clause.name.text, names);
+        if (clause.name) modules.set(clause.name.text, pkg);
         const nb = clause.namedBindings;
-        if (nb && ts.isNamespaceImport(nb)) modules.set(nb.name.text, names);
+        if (nb && ts.isNamespaceImport(nb)) modules.set(nb.name.text, pkg);
         if (nb && ts.isNamedImports(nb)) {
           for (const el of nb.elements) {
             if (names.has((el.propertyName ?? el.name).text))
-              verifiers.add(el.name.text);
+              verifiers.set(el.name.text, pkg);
           }
         }
       }
@@ -122,30 +129,27 @@ export function findVerifyCalls(source: string): VerifyCall[] {
       ts.isStringLiteral(node.moduleReference.expression) &&
       node.moduleReference.expression.text in VERIFY_NAMES
     ) {
-      const names = VERIFY_NAMES[node.moduleReference.expression.text];
-      if (names) modules.set(node.name.text, names);
+      modules.set(node.name.text, node.moduleReference.expression.text);
     }
     if (ts.isVariableDeclaration(node) && node.initializer) {
       const init = unwrap(node.initializer);
-      const names = moduleOf(init);
-      if (names && ts.isIdentifier(node.name))
-        modules.set(node.name.text, names);
-      if (names && ts.isObjectBindingPattern(node.name)) {
+      const pkg = moduleOf(init);
+      const names = pkg ? VERIFY_NAMES[pkg] : undefined;
+      if (pkg && ts.isIdentifier(node.name)) modules.set(node.name.text, pkg);
+      if (pkg && names && ts.isObjectBindingPattern(node.name)) {
         for (const el of node.name.elements) {
           const original =
             el.propertyName && ts.isIdentifier(el.propertyName)
               ? el.propertyName.text
               : undefined;
           const local = ts.isIdentifier(el.name) ? el.name.text : '';
-          if (names.has(original ?? local) && local) verifiers.add(local);
+          if (names.has(original ?? local) && local) verifiers.set(local, pkg);
         }
       }
       // const v = jwt.verify
-      if (init && isMember(init) && ts.isIdentifier(node.name)) {
-        const names2 = moduleOf(init.expression);
-        const m = memberName(init);
-        if (names2 && m && names2.has(m)) verifiers.add(node.name.text);
-      }
+      const picked = init && verifyMemberOf(init);
+      if (picked && ts.isIdentifier(node.name))
+        verifiers.set(node.name.text, picked);
     }
     ts.forEachChild(node, bindOnce);
   };
@@ -160,32 +164,36 @@ export function findVerifyCalls(source: string): VerifyCall[] {
       key: key.replace(/\s+/g, ' '),
     });
   };
-  // `jwt.verify(t, k)` and `jwt.verify.call(null, t, k)` both carry the key one argument after the token.
-  const keyOf = (call: ts.CallExpression, viaCall: boolean): string =>
-    call.arguments[viaCall ? 2 : 1]?.getText() ?? '';
+  // The key argument of a verify call into `pkg`; `.call(thisArg, ...)` shifts it by one.
+  const keyOf = (
+    call: ts.CallExpression,
+    pkg: string,
+    viaCall: boolean,
+  ): string =>
+    call.arguments[(KEY_ARG[pkg] ?? 1) + (viaCall ? 1 : 0)]?.getText() ?? '';
 
   const visit = (node: ts.Node): void => {
     if (ts.isCallExpression(node)) {
       const callee = unwrap(node.expression);
-      if (callee && ts.isIdentifier(callee) && verifiers.has(callee.text)) {
-        report(node, keyOf(node, false));
+      const direct =
+        callee && ts.isIdentifier(callee)
+          ? verifiers.get(callee.text)
+          : undefined;
+      if (direct) {
+        report(node, keyOf(node, direct, false));
       } else if (callee && isMember(callee)) {
-        const names = moduleOf(callee.expression);
+        const pkg = verifyMemberOf(callee);
+        if (pkg) report(node, keyOf(node, pkg, false));
+        // jwt.verify.call(null, t, k) / verify.call(null, t, k) / .apply(null, [t, k])
         const m = memberName(callee);
-        if (names && m && names.has(m)) report(node, keyOf(node, false));
-        // jwt.verify.call(null, t, k) / .apply(null, [t, k])
         const inner = unwrap(callee.expression);
-        if (
-          (m === 'call' || m === 'apply') &&
+        const innerPkg =
           inner &&
-          isMember(inner) &&
-          (() => {
-            const n2 = moduleOf(inner.expression);
-            const m2 = memberName(inner);
-            return !!n2 && !!m2 && n2.has(m2);
-          })()
-        ) {
-          report(node, m === 'call' ? keyOf(node, true) : '(apply)');
+          (ts.isIdentifier(inner)
+            ? verifiers.get(inner.text)
+            : verifyMemberOf(inner));
+        if ((m === 'call' || m === 'apply') && innerPkg) {
+          report(node, m === 'call' ? keyOf(node, innerPkg, true) : '(apply)');
         }
       }
     }
@@ -310,4 +318,40 @@ export function unlistedLibraryMentions(
     if (lines.length) found.push(`${rel}:${lines[0]} names a JWT library`);
   }
   return found;
+}
+
+/**
+ * The names a source file exports: exported declarations, export lists (`export { a }`,
+ * `export { a as b }`) and named re-exports (`export { a } from './x'`), by exported name.
+ */
+export function exportedNames(source: string): string[] {
+  const file = ts.createSourceFile(
+    'x.ts',
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+  );
+  const names: string[] = [];
+  for (const st of file.statements) {
+    if (ts.isExportDeclaration(st)) {
+      if (st.exportClause && ts.isNamedExports(st.exportClause)) {
+        for (const el of st.exportClause.elements) names.push(el.name.text);
+      }
+    } else if (
+      ts.canHaveModifiers(st) &&
+      ts.getModifiers(st)?.some((m) => m.kind === ts.SyntaxKind.ExportKeyword)
+    ) {
+      if (ts.isVariableStatement(st)) {
+        for (const d of st.declarationList.declarations) {
+          if (ts.isIdentifier(d.name)) names.push(d.name.text);
+        }
+      } else if (
+        (ts.isFunctionDeclaration(st) || ts.isClassDeclaration(st)) &&
+        st.name
+      ) {
+        names.push(st.name.text);
+      }
+    }
+  }
+  return names;
 }
