@@ -26,7 +26,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
-from app.core.db import ConnectionLost, DbError, DbTimeout, PoolTimeout
+from app.core.db import ConnectionLost, DbError, DbTimeout, LockTimeout, PoolTimeout
 from app.core.org_context import spawn_in_request
 from app.services.vector_db.pgvector.errors import PgVectorError
 from app.telemetry.modules import pgvector_search_metrics as telemetry
@@ -71,6 +71,7 @@ class Sizing:
     own_leaf: bool
     leaf_rows: int
     tombstones: int = 0          # the org's tombstones, counted up to tombstone_hash_max + 1
+    assumed: bool = False        # not counted: the count ran out of its budget, so n_hat is the cap it could not reach
 
     @property
     def share(self) -> float:
@@ -303,7 +304,7 @@ class Sizer:
 
     def __init__(self, db: KernelDB, t: Tuning) -> None:
         self._db, self._t = db, t
-        self._counts: dict[tuple, tuple[float, int, bool, int]] = {}
+        self._counts: dict[tuple, tuple[float, int, bool, int, bool]] = {}
         self._leaves: dict[tuple, tuple[float, bool, int]] = {}
         self._connectors: dict[tuple, tuple[float, frozenset[str] | None]] = {}
         self._inflight: dict[tuple, asyncio.Future] = {}
@@ -323,7 +324,7 @@ class Sizer:
                 if leaf is None or count is None:
                     raise
                 telemetry.TIMEOUT.inc("sizing", "stale")
-        return Sizing(count[1], count[2], leaf[1], leaf[2], count[3])
+        return Sizing(count[1], count[2], leaf[1], leaf[2], count[3], count[4])
 
     async def _shared_measure(self, q: Query, lkey: tuple, ckey: tuple, now: float) -> tuple[tuple, tuple]:
         task = self._inflight.get(ckey)
@@ -348,12 +349,25 @@ class Sizer:
             tomb = await tx.fetchval(_TOMBSTONES, q.org, self._t.tombstone_hash_max + 1)
             return leaf, n, n >= cap, tomb
 
-        leaf_row, n, capped, tomb = await self._db.run(read, custom_plan=True, timeout_ms=self._t.e0_timeout_ms * 3)
         if len(self._counts) > 4096:
             self._counts.clear()
+        try:
+            leaf_row, n, capped, tomb = await self._db.run(read, custom_plan=True, timeout_ms=self._t.e0_timeout_ms * 3)
+        except (PoolTimeout, LockTimeout):
+            raise                       # busy, not big: nothing is learnt about the filter
+        except DbTimeout:
+            # The count could not reach its cap within its budget: too many candidates to count, so far too many for an exact scan,
+            # which reads each of them. Remembered as capped, so the index serves the filter and the next queries of the minute do not
+            # pay for the same count again (each one used to, and then took the degraded path). The leaf, unread, keeps what is known.
+            telemetry.TIMEOUT.inc("sizing", "assumed")
+            leaf = self._leaves.setdefault(lkey, (now + self._t.estimate_ttl_s, False, 0))
+            known = leaf if leaf[2] > 0 else None
+            count = self._counts[ckey] = (now + self._t.estimate_ttl_s, count_cap(self._t, known and (known[1], known[2])), True,
+                                          self._t.tombstone_hash_max + 1, True)
+            return leaf, count
         leaf = self._leaves[lkey] = (now + self._t.leaf_ttl_s, bool(leaf_row and leaf_row[0].startswith("points_o_")),
                                      leaf_row[1] if leaf_row else 0)
-        count = self._counts[ckey] = (now + self._t.estimate_ttl_s, n, capped, tomb)
+        count = self._counts[ckey] = (now + self._t.estimate_ttl_s, n, capped, tomb, False)
         return leaf, count
 
     async def connectors(self, org: str, collection_id: int) -> frozenset[str] | None:
@@ -428,6 +442,12 @@ async def search(db: KernelDB, sizer: Sizer, q: Query, t: Tuning, *, bq_ok: bool
     narrow = sz.n_hat <= t.n_e0 and not sz.capped
     try:
         rows = await db.run(lambda tx: _run(tx, q, plan, t), timeout_ms=plan.timeout_ms, custom_plan=True)
+        if sz.assumed and len(rows) < q.leg:
+            # An index answer short of the leg means few rows pass the filter: the count was slow for another reason (many admitted
+            # groups holding few points). The exact path by groups reads just those candidates.
+            leg = await _degrade(db, q, t, plan, sz, "sizing", narrow=True, band=band)
+            telemetry.observe_leg("degraded", q.leg, started)
+            return leg, sz
         telemetry.observe_leg(plan.tier.value, q.leg, started)
         return Leg(rows, plan, plan.flag), sz
     except Rejected:

@@ -9,7 +9,13 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from app.core.db import ConnectionLost, DbError, DbTimeout, TooManyConnections
+from app.core.db import (
+    ConnectionLost,
+    DbError,
+    DbTimeout,
+    PoolTimeout,
+    TooManyConnections,
+)
 from app.services.vector_db.pgvector import dense, fusion, validate
 from app.services.vector_db.pgvector.errors import PgVectorError
 from app.services.vector_db.pgvector.tuning import Tuning
@@ -687,7 +693,7 @@ def _lost() -> ConnectionLost:
     return ConnectionLost("cannot connect", retry_safe=True)
 
 
-@pytest.mark.parametrize("first", [None, DbTimeout("busy")], ids=["sizing-read", "degraded-read"])
+@pytest.mark.parametrize("first", [None, PoolTimeout("busy")], ids=["sizing-read", "degraded-read"])
 async def test_a_dense_leg_that_cannot_reach_the_database_fails_instead_of_answering_an_empty_degraded_leg(first) -> None:
     db = _ScriptedDb(*([first] if first else []), _lost())
     with pytest.raises(ConnectionLost):
@@ -695,9 +701,45 @@ async def test_a_dense_leg_that_cannot_reach_the_database_fails_instead_of_answe
 
 
 async def test_a_dense_leg_that_hits_another_database_failure_still_answers_an_empty_overload_leg() -> None:
-    db = _ScriptedDb(DbTimeout("busy"), DbError("no slot"))
+    db = _ScriptedDb(PoolTimeout("busy"), DbError("no slot"))
     leg, _ = await dense.search(db, dense.Sizer(db, T), query(), T)
     assert leg.rows == [] and leg.degraded == "overload"
+
+
+def _rows(n: int) -> list[tuple[int, str]]:
+    return [(i, f"p{i}") for i in range(n)]
+
+
+async def test_a_count_that_runs_out_of_its_budget_is_remembered_as_too_many_and_the_index_serves_the_filter() -> None:
+    """At 10M points a broad filter's count never fit its budget: every query spent it again, then took the degraded path, and
+    under load that path failed too and the search answered nothing."""
+    q = query()
+    db = _AnswersDb(DbTimeout("canceling statement due to statement timeout"), _rows(q.leg), _rows(q.leg))
+    sizer = dense.Sizer(db, T)
+    for _ in range(2):
+        leg, sz = await dense.search(db, sizer, q, T)
+        assert leg.degraded is None and leg.plan.tier is dense.Tier.H and leg.rows == _rows(q.leg)
+        assert sz.assumed and sz.capped and sz.tombstones > T.tombstone_hash_max      # tombstones unread: the anti-join, safe at any count
+    assert db.answers == []                                                           # one count for both queries
+
+
+async def test_a_short_index_answer_after_an_assumed_count_is_read_exactly_by_groups() -> None:
+    q = query()
+    db = _AnswersDb(DbTimeout("statement timeout"), _rows(2), _rows(5))          # the count, the index tier, the exact path
+    leg, _ = await dense.search(db, dense.Sizer(db, T), q, T)
+    assert leg.rows == _rows(5) and leg.degraded == "sizing"                          # flagged: the size was never counted
+    assert db.answers == []
+    assert "p.group_key IN (" in dense.bounded_sql(q, narrow=True)                    # by groups: only the few candidates are read
+
+
+@pytest.mark.parametrize("busy", [PoolTimeout("no connection"), DbError("other")], ids=["pool", "error"])
+async def test_a_count_that_could_not_run_is_not_remembered(busy) -> None:
+    db = _AnswersDb(busy, _rows(3), busy, _rows(3))
+    sizer = dense.Sizer(db, T)
+    for _ in range(2):
+        leg, _ = await dense.search(db, sizer, query(), T)
+        assert leg.degraded == "sizing"
+    assert db.answers == []                                                           # asked again: a busy pool says nothing about the filter
 
 
 async def test_a_pgvector_search_that_cannot_reach_the_database_ends_unavailable_after_one_retry() -> None:
