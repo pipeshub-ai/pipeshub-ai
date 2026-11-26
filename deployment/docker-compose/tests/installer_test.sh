@@ -1075,6 +1075,24 @@ echo "== In-tree installer: --upgrade honours --version / PIPESHUB_VERSION =="
     check "--reconfigure keeps ${kv%%=*}" "$(cat "$work/.env")" $'\n'"$kv"$'\n'
   done
 
+  # PostgreSQL sizing exported for a scripted fresh install is written to .env;
+  # a value already saved in .env still wins over the environment.
+  pg_sizing=(PG_MEMORY_LIMIT=16G PG_SHARED_BUFFERS=4GB PG_SHM=2g)
+  rm -f "$work/.env"
+  run_installer "a fresh install with PostgreSQL sizing exported" PIPESHUB_DEPLOY_TYPE=slim \
+    PIPESHUB_IMAGE_SOURCE=prebuilt PIPESHUB_VERSION=0.7.0-slim PIPESHUB_PROJECT=installer-test-pg \
+    PIPESHUB_GVISOR=skip "${pg_sizing[@]}" -- --yes
+  for kv in "${pg_sizing[@]}"; do
+    check "a fresh install writes the exported ${kv%%=*}" "$(cat "$work/.env")" $'\n'"$kv"$'\n'
+  done
+  seed_env "0.6.0-slim"
+  printf '%s\n' "${pg_sizing[@]}" >>"$work/.env"
+  run_installer "--reconfigure with PostgreSQL sizing in .env and the environment" \
+    PG_MEMORY_LIMIT=2G PG_SHARED_BUFFERS=512MB PG_SHM=256m -- --reconfigure --yes
+  for kv in "${pg_sizing[@]}"; do
+    check "the saved ${kv%%=*} wins over the environment" "$(cat "$work/.env")" $'\n'"$kv"$'\n'
+  done
+
   seed_env "0.6.0-slim"
   printf 'DATA_STORE=neo4j\nNEO4J_HEAP_INITIAL=2G\nNEO4J_HEAP_MAX=1G\n' >>"$work/.env"
   status=0
