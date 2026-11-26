@@ -131,3 +131,11 @@ def test_features_of_a_lattice_candidate_read_from_a_pdf() -> None:
     assert (c.f["rows"], c.f["cols"]) == (5, 3)
     assert c.f["cov"] == 1.0 and c.f["xcross"] == 0.0 and not c.f["list"]
     assert tq.quality(c.f) > 0.9
+
+
+def test_a_line_on_the_edge_of_two_rows_counts_once_as_a_split_line() -> None:
+    xs = [0.0, 100.0, 200.0]
+    c = tq.Cand("t", 2, [(0.0, 10.0), (10.0, 20.0)], [[(0.0, 100.0, "a"), (100.0, 200.0, "b")]] * 2, 2,
+                [["a", "b"], ["a", "b"]], (xs[0], 0.0, xs[-1], 20.0))
+    words = [word("straddling", 90.0, 6.0, 20.0)]  # centre 10: on the edge of both rows, across the cut at 100
+    assert tq.defects(c, words, [], [], c.bbox)["word_split"] == 1

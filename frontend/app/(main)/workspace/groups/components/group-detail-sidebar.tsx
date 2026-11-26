@@ -497,7 +497,7 @@ export function GroupDetailSidebar({
                   defaultValue: `Delete '${detailGroup?.name}' Group`,
                 })}
               </Text>
-              <Text size="1" style={{ color: 'var(--slate-10)' }}>
+              <Text size="1" style={{ color: 'var(--slate-11)' }}>
                 {t(
                   'workspace.groups.edit.deleteDescription',
                   'Permanently remove this group from the workspace'

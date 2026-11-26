@@ -34,10 +34,19 @@ def page_of(draw: Callable[[canvas.Canvas], None]) -> tuple[pdfplumber.PDF, pdfp
 
 
 def evidence_tables(page: pdfplumber.page.Page, box: tuple[float, float, float, float], monkeypatch) -> list:
+    """The tables of the page in evidence mode; the box's decision must be tier 2 (not the legacy fallback)."""
     monkeypatch.setenv(tr.ENV_MODE, "evidence")
     model = {"table": [((box[0] / W, box[1] / H, box[2] / W, box[3] / H), 0.98)], "picture": []}
-    with patch.object(ola, "_detect_model_boxes", return_value=model):
+    decisions: list = []
+    real = tr.reconcile
+
+    def recording(*args, **kwargs) -> list:
+        decisions.extend(out := real(*args, **kwargs))
+        return out
+
+    with patch.object(ola, "_detect_model_boxes", return_value=model), patch.object(tr, "reconcile", recording):
         rs = ola.extract_layout_regions(page)
+    assert [d.kind for d in decisions] == ["ruled_rows"], [(d.kind, d.reason) for d in decisions]
     return sorted((r for r in rs if r.type == LayoutRegionType.TABLE), key=lambda r: r.bbox[1])
 
 
@@ -185,3 +194,50 @@ def test_a_header_with_no_rule_above_it_does_not_swallow_the_first_body_row(monk
         assert g[0][0].startswith("Quantity") and g[1][0] == "R0" and g[2][0] == "R1", g
     finally:
         pdf.close()
+
+
+def test_a_repaired_cut_passes_the_same_gap_check_as_the_cut_it_replaces() -> None:
+    from app.modules.parsers.pdf import table_tiers
+    from app.modules.parsers.pdf.table_rows import band_lines
+
+    def w(text: str, x0: float, x1: float) -> dict:
+        return {"text": text, "x0": x0, "x1": x1, "top": 0.0, "bottom": 10.0}
+
+    body = band_lines([w("left", 0.0, 10.0), w("right", 15.0, 25.0)])  # a 5 pt gap: under the 8 pt minimum
+    assert table_tiers.repair_cuts([13.0], body, 0.0, 100.0) is None
+    wide = band_lines([w("left", 0.0, 10.0), w("right", 30.0, 40.0)])
+    assert table_tiers.repair_cuts([12.0], wide, 0.0, 100.0) == [12.0]
+
+
+def test_with_the_header_above_the_first_rule_the_first_band_is_checked_like_the_body() -> None:
+    from app.modules.parsers.pdf import table_tiers
+    from app.modules.parsers.pdf.table_rows import band_lines
+
+    def w(text: str, x0: float, x1: float, top: float) -> dict:
+        return {"text": text, "x0": x0, "x1": x1, "top": top, "bottom": top + 8.0}
+
+    words = [w("Name", 2, 30, 6), w("Value", 100, 130, 6),  # the header, above the first rule (y=20)
+             w("Alpha", 2, 30, 22), w("one", 100, 120, 22),
+             w("Beta", 2, 30, 46), w("two", 100, 120, 46),
+             w("Gamma", 2, 30, 66), w("three", 100, 125, 66)]
+    ys = [20.0, 40.0, 60.0, 80.0]
+    for band_top in (31.0, 51.0):  # a word across the column cut, in the first body band and in the second
+        cand, why = table_tiers.ruled_rows((0, 0, 200, 80), ys, band_lines([*words, w("spanning", 20, 110, band_top)]), [])
+        assert cand is None and why == "cut through words", band_top
+
+
+def test_a_line_centred_near_a_row_rule_is_in_one_row_only() -> None:
+    from app.modules.parsers.pdf import table_tiers
+    from app.modules.parsers.pdf.table_rows import band_lines
+
+    def w(text: str, x0: float, x1: float, top: float) -> dict:
+        return {"text": text, "x0": x0, "x1": x1, "top": top, "bottom": top + 8.0}
+
+    words = [w("Name", 2, 30, 6), w("Value", 100, 130, 6),
+             w("Alpha", 2, 30, 26), w("one", 100, 120, 26),
+             w("Beta", 2, 30, 36.5), w("two", 100, 120, 36.5),  # centre 40.5: half a point below the rule at 40
+             w("Gamma", 2, 30, 66), w("three", 100, 125, 66)]
+    cand, why = table_tiers.ruled_rows((0, 0, 200, 80), [20.0, 40.0, 60.0, 80.0], band_lines(words), [])
+    assert cand is not None, why
+    flat = [c for row in cand.grid for c in row if c]
+    assert sum(c.count("Beta") for c in flat) == 1

@@ -64,10 +64,10 @@ def _compile(schema: dict) -> Validator:
 
 
 #: Properties a backend keeps on a node or edge for its own bookkeeping: the listing sort name and
-#: scope, and the transient lock and created markers one statement sets and removes. No schema
-#: declares them; they are stripped before validation, never rejected.
+#: scope, a hierarchy edge's children order stamps, and the transient lock and created markers one
+#: statement sets and removes. No schema declares them; they are stripped before validation, never rejected.
 INTERNAL_PROPERTIES = frozenset({
-    "khSortName", "khScope",
+    "khSortName", "khScope", "khFrom", "khOrd", "khChild",
     "matchLock", "moveLock", "purgeLock", "_aliasLock",
     "createdMark", "__created", "edgeNew",
 })

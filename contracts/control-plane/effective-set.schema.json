@@ -1,0 +1,109 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/control-plane/v1/effective-set.schema.json",
+  "title": "EffectiveSet",
+  "description": "The items one run may use (02-lld §2.8, §5.2): grant ∩ visible ∩ enabled ∩ approved ∩ ceilings, each ready with its pinned tools and binding reference, or unavailable with the first failing reason. Pinned in the run's resolved config; the Python runtime loads only ready items and never a secret (bindings by reference). `digest` is the canonical digest of the items sorted by installation id.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["items", "digest"],
+  "properties": {
+    "items": { "type": "array", "maxItems": 2000, "items": { "$ref": "#/$defs/EffectiveItem" } },
+    "digest": { "$ref": "common.schema.json#/$defs/Digest" }
+  },
+  "$defs": {
+    "UnavailableReason": {
+      "description": "Why a granted item is not usable, in the order the resolver checks (FR-3).",
+      "x-constant": "UNAVAILABLE_REASONS",
+      "enum": [
+        "not_installed",
+        "disabled",
+        "not_approved",
+        "policy_ceiling",
+        "not_visible",
+        "not_granted",
+        "credential_missing",
+        "credential_expired",
+        "credential_revoked"
+      ]
+    },
+    "PinnedTool": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["toolId", "descriptorDigest"],
+      "properties": {
+        "toolId": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "descriptorDigest": { "$ref": "common.schema.json#/$defs/Digest" }
+      }
+    },
+    "PinnedBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ref", "owner", "versionDigest"],
+      "properties": {
+        "ref": { "$ref": "common.schema.json#/$defs/BindingRef" },
+        "owner": { "$ref": "common.schema.json#/$defs/BindingOwnerRef" },
+        "versionDigest": { "$ref": "common.schema.json#/$defs/Digest" }
+      }
+    },
+    "EffectiveItem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["installation", "item", "kind", "state", "reason", "tools", "binding", "provenance"],
+      "properties": {
+        "installation": { "$ref": "common.schema.json#/$defs/InstallationRef" },
+        "item": {
+          "description": "Null when the granted installation does not exist (`not_installed`).",
+          "anyOf": [{ "type": "null" }, { "$ref": "common.schema.json#/$defs/ItemRef" }]
+        },
+        "kind": { "anyOf": [{ "type": "null" }, { "$ref": "common.schema.json#/$defs/ItemKind" }] },
+        "state": { "enum": ["ready", "unavailable"] },
+        "reason": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/UnavailableReason" }] },
+        "tools": { "type": "array", "maxItems": 2000, "items": { "$ref": "#/$defs/PinnedTool" } },
+        "binding": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/PinnedBinding" }] },
+        "provenance": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["grantedBy", "visibleVia", "approvedBy"],
+          "properties": {
+            "grantedBy": { "$ref": "common.schema.json#/$defs/SubjectRef" },
+            "visibleVia": { "anyOf": [{ "type": "null" }, { "enum": ["owner", "team", "org"] }] },
+            "approvedBy": { "anyOf": [{ "type": "null" }, { "$ref": "common.schema.json#/$defs/ApprovalRef" }] }
+          }
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "items": [
+        {
+          "installation": "inst_01J9ZQ5Y8K3M4N5P6Q7R8S9T0V",
+          "item": "mcp:pipeshub/linear@3",
+          "kind": "mcp",
+          "state": "ready",
+          "reason": null,
+          "tools": [
+            { "toolId": "mcp@inst_01J9ZQ5Y8K3M4N5P6Q7R8S9T0V/list_issues", "descriptorDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222" }
+          ],
+          "binding": {
+            "ref": "bnd_01J9ZQ5Y8K3M4N5P6Q7R8S9T0V",
+            "owner": "user:u3",
+            "versionDigest": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+          },
+          "provenance": { "grantedBy": "agent:a7", "visibleVia": "team", "approvedBy": "apr_01J9ZQ5Y8K3M4N5P6Q7R8S9T0V" }
+        },
+        {
+          "installation": "jira-instance-1",
+          "item": "toolset:pipeshub/jira@c.0123456789ab",
+          "kind": "toolset",
+          "state": "unavailable",
+          "reason": "credential_missing",
+          "tools": [],
+          "binding": null,
+          "provenance": { "grantedBy": "agent:a7", "visibleVia": "org", "approvedBy": null }
+        }
+      ],
+      "digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555"
+    }
+  ]
+}

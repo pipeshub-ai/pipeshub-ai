@@ -154,7 +154,7 @@ export function ProviderGrid({
       }
     >
       <TextField.Slot>
-        <MaterialIcon name="search" size={16} color="var(--gray-9)" />
+        <MaterialIcon name="search" size={16} color="var(--gray-11)" />
       </TextField.Slot>
     </TextField.Root>
   );
@@ -330,7 +330,7 @@ export function ProviderGrid({
                     padding: '10px 16px',
                     border: 'none',
                     background: 'transparent',
-                    color: active ? 'var(--gray-12)' : 'var(--gray-10)',
+                    color: active ? 'var(--gray-12)' : 'var(--gray-11)',
                     fontWeight: active ? 600 : 500,
                     fontSize: 14,
                     borderBottom: active ? '2px solid var(--accent-9)' : '2px solid transparent',
@@ -351,7 +351,7 @@ export function ProviderGrid({
       {mainSection === 'providers' ? (
         isLoading ? (
           <Flex align="center" justify="center" style={{ width: '100%', paddingTop: 80 }}>
-            <Text size="2" style={{ color: 'var(--gray-9)' }}>
+            <Text size="2" style={{ color: 'var(--gray-11)' }}>
               {t('workspace.aiModels.loadingProviders')}
             </Text>
           </Flex>
@@ -363,7 +363,7 @@ export function ProviderGrid({
             gap="2"
             style={{ width: '100%', paddingTop: 80 }}
           >
-            <MaterialIcon name="smart_toy" size={48} color="var(--gray-9)" />
+            <MaterialIcon name="smart_toy" size={48} color="var(--gray-11)" />
             <Text size="2" style={{ color: 'var(--gray-11)' }}>
               {t('workspace.aiModels.emptyProviders')}
             </Text>

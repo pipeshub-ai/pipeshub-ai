@@ -41,6 +41,7 @@ A cell is covered when a scenario carries the tag `cell:<group>/<kind>`. Gaps ar
 | `azure_files` | container | container | the whole app | `app/connectors/sources/azure_files/connector.py::AzureFilesConnector` | writer read |
 | `dropbox_individual` | container | container | the whole app | `app/connectors/sources/dropbox_individual/connector.py::DropboxIndividualConnector` | writer read |
 | `google_cloud_storage` | container | container | the whole app | `app/connectors/sources/google_cloud_storage/connector.py::GCSConnector` | writer read |
+| `cloudflare_r2` | container | container | the whole app | `app/connectors/sources/cloudflare_r2/connector.py::CloudflareR2Connector` | writer read |
 | `minio` | container | container | the whole app | `app/connectors/sources/minio/connector.py::MinIOConnector` | writer read |
 | `s3` | container | container | the whole app | `app/connectors/sources/s3/connector.py::S3Connector` | writer read |
 | `nextcloud` | container | container | the whole app | `app/connectors/sources/nextcloud/connector.py::NextcloudConnector` | writer read |
@@ -69,8 +70,8 @@ A cell is covered when a scenario carries the tag `cell:<group>/<kind>`. Gaps ar
 | `atlassian/confluence_cloud` | 2 | 2 | 5 | - | 2 | 1 | 1 | - | - | - | gap |
 | `atlassian/confluence_datacenter` | 2 | 2 | 5 | - | 2 | 1 | 1 | - | - | - | gap |
 | `atlassian/confluence_datacenter_personal` | gap | 6 | - | - | - | 3 | - | - | 3 | - | - |
-| `atlassian/jira_cloud` | gap | gap | gap | - | gap | - | gap | - | - | gap | - |
-| `atlassian/jira_data_center` | gap | gap | gap | - | gap | - | gap | - | - | gap | - |
+| `atlassian/jira_cloud` | gap | 2 | gap | - | gap | - | gap | - | - | gap | - |
+| `atlassian/jira_data_center` | gap | 2 | gap | - | gap | - | gap | - | - | gap | - |
 | `atlassian/jira_cloud_personal` | gap | 6 | - | - | - | 3 | - | - | 3 | - | - |
 | `atlassian/jira_data_center_personal` | gap | 6 | - | - | - | 3 | - | - | 3 | - | - |
 | `microsoft/sharepoint_online` | 3 | 1 | - | 2 | 2 | - | - | 3 | - | - | - |
@@ -100,6 +101,7 @@ A cell is covered when a scenario carries the tag `cell:<group>/<kind>`. Gaps ar
 | `azure_files` | gap | 6 | - | - | - | 3 | - | - | 3 | - | - |
 | `dropbox_individual` | gap | 6 | - | - | - | 3 | - | - | 3 | - | - |
 | `google_cloud_storage` | gap | 6 | - | - | - | 3 | - | - | 3 | - | - |
+| `cloudflare_r2` | gap | 6 | - | - | - | 3 | - | - | 3 | - | - |
 | `minio` | gap | 6 | - | - | - | 3 | - | - | 3 | - | - |
 | `s3` | gap | 6 | - | - | - | 3 | - | - | 3 | - | - |
 | `nextcloud` | gap | 6 | - | - | - | 3 | - | - | 3 | - | - |
@@ -141,7 +143,7 @@ A cell is covered when a scenario carries the tag `cell:<group>/<kind>`. Gaps ar
 | confluence | user-removed | change | CONF-C-11 |
 | confluence | audit-event | change | **gap** |
 | jira | no-level | static | **gap** |
-| jira | level-holder | static | **gap** |
+| jira | level-holder | static | REGR-14, REGR-15, REGR-16 |
 | jira | browse-less-holder | static | **gap** |
 | jira | reporter-holder | static | **gap** |
 | jira | sub-task | static | **gap** |
@@ -153,7 +155,7 @@ A cell is covered when a scenario carries the tag `cell:<group>/<kind>`. Gaps ar
 | jira | placeholder-parent | static | **gap** |
 | jira | scheme-change | change | **gap** |
 | jira | role-actor-change | change | **gap** |
-| jira | level-members-change | change | **gap** |
+| jira | level-members-change | change | REGR-14, REGR-15 |
 | jira | level-set | change | **gap** |
 | jira | level-cleared | change | **gap** |
 | jira | reporter-assignee-change | change | **gap** |
@@ -225,4 +227,4 @@ A cell is covered when a scenario carries the tag `cell:<group>/<kind>`. Gaps ar
 | item-acl | shared | static | **gap** |
 | item-acl | not-shared | static | **gap** |
 
-37 gaps of 101 cells.
+35 gaps of 101 cells.

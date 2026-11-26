@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from app.connectors.services import storage_release
 from app.connectors.services.storage_release import (
     GRACE_MS,
     StorageReleaseReconciler,
@@ -16,6 +17,12 @@ from app.connectors.services.storage_release import (
     retry_delay_ms,
 )
 from app.core.org_context import ambient_org, current_org_id
+
+
+@pytest.fixture(autouse=True)
+def _one_request_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keys these tests can name: each delete request's entry is stored as ``r``."""
+    monkeypatch.setattr("app.connectors.services.connector_intents.uuid4", lambda: SimpleNamespace(hex="r"))
 
 NOW = 10 * 24 * 60 * 60 * 1000
 ORG, KB = "org1", "kb1"
@@ -51,7 +58,7 @@ async def reconciler(app: dict | None, *, age_ms: int, finish=None, lease=None, 
     config = Config()
     await record_pending_storage_release(config, org_id=ORG, connector_id=KB, now_ms=NOW - age_ms)
     if attempts:
-        key = f"/services/storageRelease/pending/{KB}"
+        key = f"/services/storageRelease/pending/{ORG}/{KB}/r"
         config.kv[key] = {**config.kv[key], "attempts": attempts}
     lock = SimpleNamespace(try_acquire=AsyncMock(return_value=leader), refresh=AsyncMock(return_value=True))
     return StorageReleaseReconciler(
@@ -240,9 +247,63 @@ async def test_the_connector_finisher_runs_the_graph_delete_and_publishes_the_ve
 
 
 @pytest.mark.asyncio
-async def test_the_connector_finisher_fails_while_the_graph_delete_fails_and_succeeds_when_the_app_is_gone(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_the_connector_finisher_fails_while_the_graph_delete_fails_and_publishes_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+    import app.connectors.services.storage_release as sr
     finish, _, kafka = finisher_with(monkeypatch, {"success": False, "partial": True, "error": "x"})
     assert await finish(ORG, KB) == {"success": False}
+    kafka.publish_event.assert_not_awaited()
+    sr.free_lane_of_deleted_connector.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_the_connector_finisher_of_an_app_that_is_gone_publishes_the_cleanup(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Its answer was lost (or a redelivery finished it): the cleanup goes out without the answer's ids."""
+    import app.connectors.services.storage_release as sr
     finish, _, kafka = finisher_with(monkeypatch, {"success": False, "error": "not found"}, gone=True)
     assert await finish(ORG, KB) == {"success": True}
+    assert [(c.args[1]["eventType"], c.args[1]["payload"]) for c in kafka.publish_event.await_args_list] == [
+        ("deleteConnectorEmbeddings", {"orgId": ORG, "connectorId": KB, "connectorName": None, "recordGroupIds": []}),
+        ("deleteConnectorEntities", {"orgId": ORG, "connectorId": KB, "connectorName": None, "recordGroupIds": None}),
+    ]
+    sr.free_lane_of_deleted_connector.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_a_finisher_whose_reread_fails_publishes_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+    import app.connectors.services.storage_release as sr
+    finish, graph, kafka = finisher_with(monkeypatch, {"success": False, "error": "reply lost"})
+    graph.get_document = AsyncMock(side_effect=ConnectionError("store down"))
+    assert await finish(ORG, KB) == {"success": False}
     kafka.publish_event.assert_not_awaited()
+    sr.free_lane_of_deleted_connector.assert_not_awaited()
+
+
+async def test_a_release_whose_intent_cannot_be_cleared_is_held_back_not_run_again_at_once() -> None:
+    class Keeps(Config):
+        async def delete_config(self, key: str) -> bool:
+            return False
+
+    config = Keeps()
+    await record_pending_storage_release(config, org_id=ORG, connector_id=KB, now_ms=1)
+    helper = SimpleNamespace(release_connector_storage=AsyncMock(return_value=SimpleNamespace(completed=True)))
+    [intent] = await storage_release.list_pending_storage_releases(config)
+    assert not await storage_release.release_connector_storage(
+        MagicMock(), helper, config, org_id=ORG, connector_id=KB, intent=intent, now_ms=lambda: NOW,
+    )
+    [kept] = config.kv.values()
+    assert kept["nextAttemptAt"] > NOW
+
+
+async def test_a_delete_recorded_while_the_release_runs_stays_pending(monkeypatch: pytest.MonkeyPatch) -> None:
+    ids = iter(["first", "second"])
+    monkeypatch.setattr("app.connectors.services.connector_intents.uuid4", lambda: SimpleNamespace(hex=next(ids)))
+    config = Config()
+    await record_pending_storage_release(config, org_id=ORG, connector_id=KB, now_ms=1)
+
+    async def release(*_a: object) -> SimpleNamespace:
+        await record_pending_storage_release(config, org_id=ORG, connector_id=KB, now_ms=2)
+        return SimpleNamespace(completed=True)
+
+    helper = SimpleNamespace(release_connector_storage=release)
+    assert await storage_release.release_connector_storage(MagicMock(), helper, config, org_id=ORG, connector_id=KB)
+    assert [i["requestedAt"] for i in await storage_release.list_pending_storage_releases(config)] == [2]

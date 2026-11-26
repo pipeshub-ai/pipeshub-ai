@@ -164,11 +164,13 @@ class _WedgedSession:
         self.entered = 0
         self.closed = threading.Event()
         self.closed_mid_request = False
+        self.returned = False
         self.curl_options: dict = {}
 
     def get(self, url: str, **kwargs: object) -> object:
         self.entered += 1
         self.release.wait(30)
+        self.returned = True
         self.closed_mid_request = self.closed.is_set()
         raise ConnectionError("released")
 
@@ -191,12 +193,12 @@ async def test_a_curl_request_that_never_returns_gives_up_at_its_deadline(
     caplog.set_level(logging.WARNING)
 
     try:
-        started = time.monotonic()
         result = await asyncio.wait_for(
             _hops_curl_cffi(_walk("http://site.test/"), 5, logging.getLogger("test_deadline")), 10,
         )
         assert result is None
-        assert time.monotonic() - started < 5
+        # Given up on while the wedged request still runs: its own end comes only from the release.
+        assert (session.entered, session.returned) == (1, False)
         assert "Gave up on http://site.test/ after 1 seconds" in caplog.text
         # The session is closed only once its request ends, never under it.
         assert not session.closed.is_set()
@@ -352,6 +354,7 @@ async def test_a_cloudscraper_tls_handshake_that_trickles_ends_at_requests_timeo
     url = f"https://site.test:{slow_handshake.port}/page"
 
     started = time.monotonic()
+    # Under the 30 s hop deadline: a handshake that outlived requests' 1 s timeout ends this wait instead.
     result = await asyncio.wait_for(
         _hops_cloudscraper(_walk(url), 1, logging.getLogger("test_deadline")), 10,
     )
@@ -375,13 +378,11 @@ def test_curl_ends_a_tls_handshake_that_trickles_at_its_own_timeout(slow_handsha
     url, options = _curl_pinned_request(f"https://site.test:{slow_handshake.port}/", pin)
     session = Session(impersonate="chrome", timeout=1, trust_env=False)
     session.curl_options = options
-    started = time.monotonic()
     try:
         with pytest.raises(Exception, match="(?i)timed? ?out"):
             fetch_strategy._curl_hop(session, threading.Lock(), url, {}, 1, None, pin)
     finally:
         session.close()
-    assert time.monotonic() - started < 5
     assert slow_handshake.hung_up.wait(3)
 
 
@@ -613,6 +614,14 @@ async def test_a_page_goes_to_aiohttp_once_no_fetch_thread_comes_free(
     held = threading.Event()
     one_fetch_thread.submit(held.wait, 30)
     caplog.set_level(logging.WARNING)
+    queued: list[str] = []
+    hop_in_thread = fetch_strategy._hop_in_thread
+
+    async def counted(url: str, *args: object, **kwargs: object) -> object:
+        queued.append(url)
+        return await hop_in_thread(url, *args, **kwargs)
+
+    monkeypatch.setattr(fetch_strategy, "_hop_in_thread", counted)
 
     try:
         async with aiohttp.ClientSession() as session:
@@ -629,6 +638,7 @@ async def test_a_page_goes_to_aiohttp_once_no_fetch_thread_comes_free(
     # It waited the queue cap once: the single "gave up" line below proves "once", where an upper wall-clock bound
     # (it was "< 3 * cap") also measured how busy the runner was.
     assert elapsed > cap
+    assert len(queued) == 1, "a later profile, attempt or strategy queued for the held thread again"
     assert len(trickle.agents) == 1 and "aiohttp" in trickle.agents[0]
     assert caplog.text.count("Gave up waiting for a thread to fetch") == 1
 

@@ -12,6 +12,7 @@ import sys
 import threading
 import time
 from collections import Counter
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 import pytest
@@ -22,6 +23,7 @@ from app.capacity.member_budget import AdmissionTimeout, CancelToken, MemberBudg
 from tests.support import ledger_procs as lp
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from pathlib import Path
     from types import FrameType
 
@@ -98,15 +100,53 @@ def test_reserve_requires_a_deadline_or_a_cancel_token(ledger: Path) -> None:
         asyncio.run(b.reserve(Demand(Family.PARSE, 1)))
 
 
-def test_a_wait_ends_at_the_deadline_and_leaves_no_waiter(ledger: Path) -> None:
+def _soon(predicate: Callable[[], bool]) -> bool:
+    end = time.monotonic() + 10
+    while not predicate() and time.monotonic() < end:
+        time.sleep(0.005)
+    return predicate()
+
+
+def test_a_wait_ends_at_the_deadline_and_leaves_no_waiter(ledger: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The wait's clock is frozen and moved by the test: it must still wait a hair before the deadline, and stop at it."""
     b = open_budget(ledger, c=4)
     first = b.try_reserve(Demand(Family.PARSE, 4, 0, "small"))
     assert first is not None
-    t = time.monotonic()
-    with pytest.raises(AdmissionTimeout):
-        b.reserve_blocking(Demand(Family.PARSE, 1, 0, "small"), deadline_s=0.2)
-    assert 0.18 <= time.monotonic() - t < 1.0
-    assert b.snapshot()["families"]["parse"]["waiting"] == 0
+    now = [1000.0]
+    monkeypatch.setattr(mb, "time", SimpleNamespace(monotonic=lambda: now[0], time=time.time, sleep=time.sleep))
+    checks = [0]
+    real_check = MemberBudget._check_stop
+
+    def counted(*args: object) -> None:
+        checks[0] += 1
+        real_check(*args)
+
+    monkeypatch.setattr(MemberBudget, "_check_stop", staticmethod(counted))
+    raised: list[AdmissionTimeout] = []
+    stop = CancelToken()  # ends the wait at teardown when a broken deadline would not
+
+    def wait() -> None:
+        with contextlib.suppress(mb.Cancelled):
+            try:
+                b.reserve_blocking(Demand(Family.PARSE, 1, 0, "small"), deadline_s=0.2, cancel=stop)
+            except AdmissionTimeout as exc:
+                raised.append(exc)
+
+    waiter = threading.Thread(target=wait, daemon=True)
+    waiter.start()
+    try:
+        assert _soon(lambda: b.snapshot()["families"]["parse"]["waiting"] == 1)
+        now[0] = 1000.0 + 0.199
+        seen = checks[0]
+        assert _soon(lambda: checks[0] >= seen + 3 or not waiter.is_alive())  # it has looked at the clock since it moved
+        assert waiter.is_alive() and not raised, "the wait ended before its deadline"
+        now[0] = 1000.0 + 0.2
+        waiter.join(10)
+        assert raised, "the wait ran past its deadline"
+        assert b.snapshot()["families"]["parse"]["waiting"] == 0
+    finally:
+        stop.cancel()
+        waiter.join(1)  # cancel ends a healthy waiter at once; a deadlocked one must not push the test past pytest's timeout
 
 
 def test_a_wait_stops_on_cancel_and_a_waiter_is_granted_when_capacity_frees(ledger: Path) -> None:
@@ -125,6 +165,7 @@ def test_a_wait_stops_on_cancel_and_a_waiter_is_granted_when_capacity_frees(ledg
         assert permit.cpu == 1
         return time.monotonic() - t
 
+    # wall-clock-ok: the release lands at 0.1 s; the 1 s ceiling is ten times that, far under the 5 s deadline it must beat
     assert 0.08 <= asyncio.run(run()) < 1.0
 
 
@@ -283,6 +324,7 @@ def test_death_reclaim(ledger: Path) -> None:
     proc.join()
     t = time.monotonic()
     p = b.reserve_blocking(Demand(Family.PARSE, 1, 0, "small"), deadline_s=3)
+    # wall-clock-ok: a dead holder's share is taken back at once (ms); the failure is waiting out the 3 s deadline
     assert p is not None and time.monotonic() - t < 1.0
     snap = b.snapshot()
     assert snap["used"] == 1 and snap["processes"] == 1

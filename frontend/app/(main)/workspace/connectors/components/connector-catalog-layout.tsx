@@ -63,6 +63,8 @@ interface ConnectorCatalogLayoutProps {
   extraTabCounts?: Record<string, number>;
   /** Custom content for a tab, replacing the default connector card grid. */
   tabContent?: React.ReactNode;
+  /** Optional content under the connector grid (e.g. an Enterprise Edition notice). */
+  footer?: React.ReactNode;
 }
 
 // ========================================
@@ -88,6 +90,7 @@ export function ConnectorCatalogLayout({
   setupPermissionDenied = false,
   onCardClick,
   isLoading = false,
+  footer,
   extraTabCounts,
   tabContent,
 }: ConnectorCatalogLayoutProps) {
@@ -230,7 +233,7 @@ export function ConnectorCatalogLayout({
             style={{ width: '100%' }}
           >
             <TextField.Slot>
-              <MaterialIcon name="search" size={16} color="var(--gray-9)" />
+              <MaterialIcon name="search" size={16} color="var(--gray-11)" />
             </TextField.Slot>
           </TextField.Root>
         </Box>
@@ -269,7 +272,7 @@ export function ConnectorCatalogLayout({
           gap="2"
           style={{ width: '100%', paddingTop: 80 }}
         >
-          <MaterialIcon name="hub" size={48} color="var(--gray-9)" />
+          <MaterialIcon name="hub" size={48} color="var(--gray-11)" />
           <Text size="2" style={{ color: 'var(--gray-11)' }}>
             {t('workspace.connectors.emptyState')}
           </Text>
@@ -295,6 +298,7 @@ export function ConnectorCatalogLayout({
           ))}
         </Grid>
       )}
+      {footer}
     </Flex>
   );
 }

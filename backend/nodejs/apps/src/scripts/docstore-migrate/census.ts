@@ -79,13 +79,23 @@ export function knownPaths(m: CollectionMapping): Known {
     if (f.type === 'json') prefixes.push(p);
     if (f.type === 'text_array' || f.type === 'oid_array') exact.add(`${p}[]`);
   };
-  for (const f of m.fields) addField('', f);
+  for (const f of m.fields) {
+    if (f.spread && f.path === '') {
+      for (const k of f.spread) {
+        exact.add(k);
+        if (f.type === 'json') prefixes.push(k);
+      }
+      continue;
+    }
+    addField('', f);
+  }
   for (const c of m.children ?? []) {
     exact.add(c.path);
     exact.add(`${c.path}[]`);
     for (const f of c.fields) addField(`${c.path}[]`, f);
   }
   for (const d of m.dropped ?? []) prefixes.push(d.path);
+  for (const h of m.held ?? []) prefixes.push(h.path);
   for (const p of m.censusKnown ?? []) exact.add(p);
   return { exact, prefixes };
 }

@@ -76,7 +76,7 @@ BAND_ABOVE = 1.5  # a column-aligned line above/below the first/last rule joins 
 
 BULLET = re.compile(r"^[•●▪◦‣∙·–—\-\*■□⁃]$")
 ENUM = re.compile(r"^\(?([0-9]{1,2}|[a-z])[.)]$")
-NOTES = re.compile(r"^\s*(NOTES?\s*:?|\d+\.\s|\*|[†‡§])", re.I)
+NOTES = re.compile(r"^\s*(NOTES?\b\s*:?|\d+\.\s|\*|[†‡§])", re.I)
 DOTS = re.compile(r"\.{4,}|(\. ){3,}")
 PAGENO = re.compile(r"^[A-Z]{0,3}-?\d{1,4}$")
 TAG = re.compile(r"^[A-Z][A-Z0-9_]{1,11}$")
@@ -142,13 +142,15 @@ def segments(ln: dict[str, Any]) -> list[tuple[float, float, list[dict[str, Any]
 def _merge(segs: list[list[float]]) -> list[list[float]]:
     out: list[list[float]] = []
     for p, a, b in sorted(segs):
-        for o in out:
-            if abs(o[0] - p) <= SNAP and a <= o[2] + SNAP and b >= o[1] - SNAP:
-                o[1] = min(o[1], a)
-                o[2] = max(o[2], b)
-                break
-        else:
+        hit = [o for o in out if abs(o[0] - p) <= SNAP and a <= o[2] + SNAP and b >= o[1] - SNAP]
+        if not hit:
             out.append([p, a, b])
+            continue
+        # a segment that bridges two spans joins them all
+        keep = hit[0]
+        keep[1] = min(a, *(o[1] for o in hit))
+        keep[2] = max(b, *(o[2] for o in hit))
+        out = [o for o in out if not any(o is h for h in hit[1:])]
     return out
 
 
@@ -395,7 +397,10 @@ def _trailing_rows_cut(
         mine = [g for g, r in zip(grid, row_of) if r == keep - 1]
         texts = [str(v) for g in mine for v in g if v is not None and str(v).strip()]
         row_top = min(c[1] for c in cells)
-        below = row_top >= box[3] - 1 and not any(o[1] - 1 <= row_top + 1 <= o[3] and o is not box for o in others)
+        row_x0, row_x1 = min(c[0] for c in cells), max(c[2] for c in cells)
+        below = row_top >= box[3] - 1 and not any(
+            o[1] - 1 <= row_top + 1 <= o[3] and o[0] < row_x1 and o[2] > row_x0 and o is not box for o in others
+        )
         if below:
             pass
         elif len(cells) == 1 and len(texts) == 1 and (cells[0][2] - cells[0][0]) >= 0.9 * width and NOTES.match(texts[0]):
@@ -416,7 +421,7 @@ def drop_title_line(
     running across two or more of its cells, above a line of labels, that line is the table's title (a caption set
     inside the top band), not a label; the row is read again without it."""
     if not row_of or row_of[0] != 0 or (len(row_of) > 1 and row_of[1] == 0):
-        return grid
+        return grid, []
     top, bot = _row_boxes(t)[0]
     cells = [c for c in t.rows[0].cells if c is not None]
     words = [w for w in own if top - 1 <= (float(w["top"]) + float(w["bottom"])) / 2 <= bot + 1]
@@ -549,6 +554,9 @@ def decide_box(
     # a ruled table inside another one (a shaded cell the finder boxes) is part of that table, not a second table
     lattices = [t for t in lattices if not any(o is not t and ola._overlap_ratio(_bbox(t), _bbox(o)) >= GROUP_INSIDE and ola._overlap_ratio(_bbox(o), _bbox(t)) < GROUP_INSIDE for o in lattices)]
     inside = [t for t in lattices if ola._overlap_ratio(_bbox(t), box) >= GROUP_INSIDE]
+    if len(inside) >= 2 and any(id(t) in claimed for t in inside):
+        # a table of the group is another box's decision; the rest keep their legacy regions
+        return Decision(box, "none", reason="a table of the group is used by another box")
     if len(inside) >= 2:
         parts = [ruled_table(t, words, vrules, _bbox(t), (), hrules) for t in inside]
         if all(r is not None for r, _, _ in parts):

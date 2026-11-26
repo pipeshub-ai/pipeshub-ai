@@ -156,7 +156,7 @@ export function TextPreviewDialog({
           }}
         >
           <Flex align="center" gap="2" style={{ overflow: 'hidden' }}>
-            <MaterialIcon name="content_paste" size={ICON_SIZES.PRIMARY} color="var(--slate-9)" />
+            <MaterialIcon name="content_paste" size={ICON_SIZES.PRIMARY} color="var(--slate-11)" />
             <Text
               size="2"
               weight="medium"
@@ -220,7 +220,7 @@ export function TextPreviewDialog({
           {loading && (
             <Flex align="center" justify="center" gap="2" style={{ padding: 'var(--space-7)' }}>
               <Spinner size="2" />
-              <Text size="1" style={{ color: 'var(--slate-9)' }}>
+              <Text size="1" style={{ color: 'var(--slate-11)' }}>
                 {t('chat.attachments.loadingPreview', { defaultValue: 'Loading…' })}
               </Text>
             </Flex>
@@ -241,7 +241,7 @@ export function TextPreviewDialog({
                 style={{
                   margin: 0,
                   padding: 'var(--space-3) var(--space-2)',
-                  color: 'var(--slate-8)',
+                  color: 'var(--slate-11)',
                   textAlign: 'right',
                   userSelect: 'none',
                   borderRight: '1px solid var(--slate-5)',

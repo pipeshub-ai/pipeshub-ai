@@ -661,6 +661,7 @@ def test_a_box_shifted_down_over_a_ruled_table_never_merges_records_or_takes_the
         for t in tables:
             for row in norm(t.table_grid):
                 assert sum(1 for c in row if c.startswith("K")) <= 1 and not any("K0 K1" in c for c in row)
+                assert not any("NOTELINE" in c for c in row)
     finally:
         pdf.close()
 
@@ -1005,11 +1006,11 @@ def test_region_of_a_ruled_grid_is_the_grid_padded_by_the_rule_tolerance() -> No
     own = (60.0, 100.0, 300.0, 200.0)
     box = (50.0, 90.0, 310.0, 260.0)
     assert ola._region_bbox(own, box) == (58.0, 90.0, 302.0, 202.0)
-    # half way to a neighbour at most: two tables 3 pt apart do not overlap
+    # toward a neighbour, a third of the distance past the merge gap at most (none within it)
     below = (60.0, 203.0, 300.0, 300.0)
     left = (10.0, 100.0, 59.0, 200.0)
     padded = ola._region_bbox(own, box, [below, left])
-    assert padded == (59.5, 90.0, 302.0, 201.5)
+    assert padded == pytest.approx((60.0, 90.0, 302.0, 200.0 + 1.0 / 3.0))
     assert ola._region_bbox(None, box) == box
 
 
@@ -1551,11 +1552,11 @@ def test_a_note_merged_into_the_table_region_is_kept_as_text() -> None:
 
 # --- pins for the review fixes (each fails when the named guard is removed) ----------------
 
-def test_the_region_padding_stops_half_way_to_a_box_on_the_right() -> None:
+def test_the_region_padding_stops_short_of_a_box_on_the_right() -> None:
     own = (60.0, 100.0, 300.0, 200.0)
     box = (50.0, 90.0, 310.0, 260.0)
     right = (303.0, 100.0, 400.0, 200.0)
-    assert ola._region_bbox(own, box, [right]) == (58.0, 90.0, 301.5, 202.0)
+    assert ola._region_bbox(own, box, [right]) == pytest.approx((58.0, 90.0, 300.0 + 1.0 / 3.0, 202.0))
     far = (330.0, 100.0, 400.0, 200.0)  # farther than the padding: unchanged
     assert ola._region_bbox(own, box, [far]) == (58.0, 90.0, 302.0, 202.0)
     above = (60.0, 0.0, 300.0, 80.0)  # a neighbour above never shortens the top (it reaches the box)
@@ -1753,3 +1754,35 @@ def test_column_for_puts_a_gap_word_in_the_nearest_column_and_is_the_splitters_d
     lines = band_lines([_word("Aaa", 2.0, 10.0), _word("Selects.", 52.0, 10.0),
                         _word("K", 38.75, 19.0), _word("Chooses.", 52.0, 19.0)])
     assert [len(g) for g in split_band_records(lines, cols, ruled_cell=True)] == [1, 1]
+
+
+@pytest.mark.parametrize("gap", [2.5, 3.0, 4.5, 5.0, 5.9])
+@pytest.mark.parametrize("side", ["below", "right"])
+def test_padding_never_brings_two_ruled_tables_within_the_merge_distance(gap: float, side: str) -> None:
+    a = (60.0, 100.0, 300.0, 200.0)
+    b = (60.0, 200.0 + gap, 300.0, 300.0) if side == "below" else (300.0 + gap, 100.0, 500.0, 200.0)
+    ra = ola._region_bbox(a, a, [b])
+    rb = ola._region_bbox(b, b, [a])
+    assert max(rb[1] - ra[3], rb[0] - ra[2]) > ola._PROXIMITY_MERGE_GAP
+    regions = [LayoutRegion(type=LayoutRegionType.TABLE, bbox=r, text="t", table_grid=[["a", "b"], ["c", "d"]]) for r in (ra, rb)]
+    assert len(ola._resolve_overlaps(regions)) == 2
+
+
+def test_a_targeted_read_that_cannot_read_its_words_gives_no_grid() -> None:
+    from unittest.mock import MagicMock
+
+    table = MagicMock()
+    table.extract.return_value = [["left", "right"], ["a", "b"]]
+    region = MagicMock()
+    region.extract_words.side_effect = RuntimeError("unreadable")
+    # targeted: the unrestricted grid would hold text outside the target, so there is none
+    assert ola._table_grid_and_band(table, region, (0.0, 0.0, 10.0, 10.0)) == ([], [])
+    # untargeted: the character-level grid stays the fallback
+    assert ola._table_grid_and_band(table, region) == ([], [["left", "right"], ["a", "b"]])
+
+
+def test_a_key_opening_with_an_underscore_after_a_blank_line_starts_a_record() -> None:
+    cols = [(0.0, 50.0), (50.0, 300.0)]
+    specs = [("REG1", 2.0, 10.0), ("Enabled.", 52.0, 10.0),
+             ("_MODE2", 2.0, 30.0), ("Disabled.", 52.0, 30.0)]  # a blank line between them
+    assert _groups(specs, cols) == [1, 1]

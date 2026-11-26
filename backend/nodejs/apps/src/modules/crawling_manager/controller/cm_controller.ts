@@ -1,7 +1,7 @@
 import { NextFunction, Response } from 'express';
 import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
 import { CrawlingSchedulerService } from '../services/crawling_service';
-import { Logger } from '../../../libs/services/logger.service';
+import { bindLogContext } from '../../../libs/context/request-context';
 import { HTTP_STATUS } from '../../../libs/enums/http-status.enum';
 import { CrawlingJobData } from '../schema/interface';
 import { Job } from 'bullmq';
@@ -13,8 +13,6 @@ import {
 import { executeConnectorCommand, handleBackendError } from '../../tokens_manager/utils/connector.utils';
 import { HttpMethod } from '../../../libs/enums/http-methods.enum';
 import { AppConfig } from '../../tokens_manager/config/config';
-
-const logger = Logger.getInstance({ service: 'CrawlingManagerController' });
 
 export const handleConnectorResponse = (
   connectorResponse: any,
@@ -49,6 +47,8 @@ const validateConnectorAccess = async (req: AuthenticatedUserRequest, connectorI
   if (connector.scope === 'personal' && connector.createdBy !== userId) {
     throw new ForbiddenError('You are not authorized to schedule this connector');
   }
+  // Bound once access is decided: every later line of the request, the access line included, names the connector.
+  bindLogContext({ connector_id: connectorId, connector_type: connector.type });
   return connector;
 };
 
@@ -72,15 +72,6 @@ export const scheduleCrawlingJob =
         throw new BadRequestError('Connector type is missing for this connector');
       }
 
-      logger.info('Scheduling crawling job', {
-        connector: connectorType,
-        connectorId,
-        orgId,
-        userId,
-        scheduleType: scheduleConfig.scheduleType,
-        isEnabled: scheduleConfig.isEnabled,
-      });
-
       const job: Job<CrawlingJobData> = await crawlingService.scheduleJob(
         connectorType,
         connectorId,
@@ -92,14 +83,6 @@ export const scheduleCrawlingJob =
           maxRetries,
         },
       );
-
-      logger.info('Crawling job scheduled successfully', {
-        jobId: job.id,
-        connector: connectorType,
-        connectorId,
-        orgId,
-        userId,
-      });
 
       res.status(HTTP_STATUS.CREATED).json({
         success: true,
@@ -113,13 +96,6 @@ export const scheduleCrawlingJob =
         },
       });
     } catch (error) {
-      logger.error('Failed to schedule crawling job', {
-        error: error instanceof Error ? error.message : 'Unknown error',
-        connector: req.params.connector,
-        connectorId,
-        orgId,
-        userId,
-      });
       next(error);
     }
   };
@@ -154,12 +130,6 @@ export const getCrawlingJobStatus =
         data: jobStatus,
       });
     } catch (error) {
-      logger.error('Failed to get job status', {
-        error: error instanceof Error ? error.message : 'Unknown error',
-        connector: req.params.connector,
-        connectorId,
-        orgId,
-      });
       next(error);
     }
   };
@@ -174,23 +144,11 @@ export const removeCrawlingJob =
       await validateConnectorAccess(req, connectorId, appConfig);
       await crawlingService.removeJob(connector, connectorId, orgId);
 
-      logger.info('Crawling job removed successfully', {
-        connector,
-        connectorId,
-        orgId,
-      });
-
       res.status(HTTP_STATUS.OK).json({
         success: true,
         message: 'Crawling job removed successfully',
       });
     } catch (error) {
-      logger.error('Failed to remove crawling job', {
-        error: error instanceof Error ? error.message : 'Unknown error',
-        connector: req.params.connector,
-        connectorId,
-        orgId,
-      });
       next(error);
     }
   };
@@ -209,10 +167,6 @@ export const getAllCrawlingJobStatus =
         data: jobStatuses,
       });
     } catch (error) {
-      logger.error('Failed to get all crawling job statuses', {
-        error: error instanceof Error ? error.message : 'Unknown error',
-        orgId,
-      });
       next(error);
     }
   };
@@ -225,17 +179,11 @@ export const removeAllCrawlingJob =
     try {
       await crawlingService.removeAllJobs(orgId);
 
-      logger.info('All crawling jobs removed successfully', { orgId });
-
       res.status(HTTP_STATUS.OK).json({
         success: true,
         message: 'All crawling jobs removed successfully',
       });
     } catch (error) {
-      logger.error('Failed to remove all crawling jobs', {
-        error: error instanceof Error ? error.message : 'Unknown error',
-        orgId,
-      });
       next(error);
     }
   };
@@ -250,12 +198,6 @@ export const pauseCrawlingJob =
       await validateConnectorAccess(req, connectorId, appConfig);
       await crawlingService.pauseJob(connector, connectorId, orgId);
 
-      logger.info('Crawling job paused successfully', {
-        connector,
-        connectorId,
-        orgId,
-      });
-
       res.status(HTTP_STATUS.OK).json({
         success: true,
         message: 'Crawling job paused successfully',
@@ -266,12 +208,6 @@ export const pauseCrawlingJob =
         },
       });
     } catch (error) {
-      logger.error('Failed to pause crawling job', {
-        error: error instanceof Error ? error.message : 'Unknown error',
-        connector: req.params.connector,
-        connectorId,
-        orgId,
-      });
       next(error);
     }
   };
@@ -286,12 +222,6 @@ export const resumeCrawlingJob =
       await validateConnectorAccess(req, connectorId, appConfig);
       await crawlingService.resumeJob(connector, connectorId, orgId);
 
-      logger.info('Crawling job resumed successfully', {
-        connector,
-        connectorId,
-        orgId,
-      });
-
       res.status(HTTP_STATUS.OK).json({
         success: true,
         message: 'Crawling job resumed successfully',
@@ -302,12 +232,6 @@ export const resumeCrawlingJob =
         },
       });
     } catch (error) {
-      logger.error('Failed to resume crawling job', {
-        error: error instanceof Error ? error.message : 'Unknown error',
-        connector: req.params.connector,
-        connectorId,
-        orgId,
-      });
       next(error);
     }
   };
@@ -325,9 +249,6 @@ export const getQueueStats =
         data: stats,
       });
     } catch (error) {
-      logger.error('Failed to get queue statistics', {
-        error: error instanceof Error ? error.message : 'Unknown error',
-      });
       next(error);
     }
   };

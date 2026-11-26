@@ -22,7 +22,7 @@ CONTEXT_FIELDS: tuple[str, ...] = ("org_id", "user_id", "ctx_kind", "ctx_source"
 
 LOG_FIELD_NAMES: frozenset[str] = frozenset({
     "conversation_id", "agent_id", "run_id", "parent_run_id", "agent_run_id", "attempt", "connector_id", "connector_type",
-    "record_id", "kb_id", "tool", "tool_call_id", "mcp_server_id", "toolset_id", "job",
+    "record_id", "kb_id", "tool", "tool_call_id", "mcp_server_id", "toolset_id", "job", "template_id",
     "refresh_kind", "trigger", "provider", "scheduled_by", "owner_id", "topic", "message_id", "event_type",
     # The user a step acts on, never an email (docs/logging.md, "Personal data"): a PipesHub user id, or an opaque provider id.
     "target_user_id", "source_user_id",

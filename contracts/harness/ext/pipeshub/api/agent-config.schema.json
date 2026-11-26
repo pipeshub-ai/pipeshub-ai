@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/ext/pipeshub/api/agent-config.schema.json",
+  "title": "AgentConfigDocument",
+  "description": "`GET /api/v1/agents/{agentKey}/export` and the body of `POST /api/v1/agents/import` (C4.08): an agent, its engine profile and its own policy layer, to promote between environments. Secrets and bindings are never in it (see PortableAgent); the policy holds only the sections the agent's editors set themselves. An import creates a new agent owned by the importer in the importer's organization and is held to that organization's ceilings.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["format", "schemaVersion", "exportedAt", "source", "agent", "policy", "excluded"],
+  "properties": {
+    "format": {"const": "pipeshub.agent-config"},
+    "schemaVersion": {
+      "description": "Bumped on any change an older importer could misread; an importer refuses a version it does not know. 2 (WP-56): the agent carries its own gates (`agent.gates`). 1: before they travelled; its agent has no `gates` and an importer reads it as none.",
+      "enum": [1, 2]
+    },
+    "exportedAt": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+    "source": {
+      "title": "AgentConfigSource",
+      "description": "Which definition was exported: a published version (`agentVersion`, with its digest), or the draft (both null). Informational: an import never looks it up.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["agentVersion", "digest"],
+      "properties": {
+        "agentVersion": {"anyOf": [{"type": "integer", "minimum": 1, "maximum": 9007199254740991}, {"type": "null"}]},
+        "digest": {"anyOf": [{"$ref": "../../../core/common.schema.json#/$defs/Digest"}, {"type": "null"}]}
+      }
+    },
+    "agent": {"$ref": "portable-agent.schema.json"},
+    "policy": {
+      "title": "AgentConfigPolicy",
+      "description": "The agent's own policy layer: the sections its editors set on it (budgets, model routes, durable rollout, catalog approval, tool disclosure, snapshots, locks; and any section an edition adds that its editors set). The org's rules for the agent (approvals) are its admins' and are not carried.",
+      "type": "object",
+      "additionalProperties": false,
+      "x-extensible": true,
+      "properties": {
+        "budgets": {"$ref": "../../../core/policy/policy-layer.schema.json#/$defs/BudgetPolicy"},
+        "models": {"$ref": "../../../core/policy/policy-layer.schema.json#/$defs/ModelPolicy"},
+        "rollout": {"$ref": "../../../core/policy/policy-layer.schema.json#/$defs/RolloutPolicy"},
+        "catalog": {"$ref": "../../../core/policy/policy-layer.schema.json#/$defs/CatalogPolicy"},
+        "toolDisclosure": {"$ref": "../../../core/policy/policy-layer.schema.json#/$defs/ToolDisclosurePolicy"},
+        "snapshots": {"$ref": "../../../core/policy/policy-layer.schema.json#/$defs/SnapshotPolicy"},
+        "locks": {
+          "type": "array",
+          "maxItems": 500,
+          "uniqueItems": true,
+          "items": {"type": "string", "pattern": "^[a-z][A-Za-z0-9]*(?:\\.[A-Za-z][A-Za-z0-9_]*){0,7}$"}
+        }
+      }
+    },
+    "excluded": {
+      "description": "What the source agent had that the document leaves out, so the importer knows to set it: a model account (a credential), sharing, an owner team, running as a service account, and the org's approval rules for it. `gates` appears only in version 1 documents, made before an agent's own gates travelled.",
+      "type": "array",
+      "maxItems": 8,
+      "uniqueItems": true,
+      "items": {"enum": ["modelAccount", "sharing", "ownerTeam", "serviceAccount", "approvals", "gates"]}
+    }
+  },
+  "examples": [
+    {
+      "format": "pipeshub.agent-config",
+      "schemaVersion": 2,
+      "exportedAt": 1793404800000,
+      "source": {"agentVersion": 3, "digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"},
+      "agent": {
+        "name": "Support triage",
+        "description": "Sorts new tickets",
+        "startMessage": "Hi! Paste a ticket.",
+        "systemPrompt": "You triage support tickets.",
+        "instructions": null,
+        "tags": [],
+        "sendUserContext": true,
+        "webSearch": null,
+        "defaultReasoningEffort": null,
+        "engineProfile": null,
+        "models": [],
+        "roleModels": {},
+        "toolsets": [],
+        "mcpServers": [],
+        "knowledge": [],
+        "skills": [],
+        "gates": {"planApproval": "required"}
+      },
+      "policy": {"budgets": {"maxTurns": 20}, "locks": ["budgets.maxTurns"]},
+      "excluded": ["sharing"]
+    }
+  ]
+}

@@ -243,7 +243,8 @@ def split_band_records(
                   and not prose_cont)
             key_top, key_bottom = key_box(ln)
             key_gap = key_top - prev_key_bottom if prev_key_bottom is not None else 0.0
-            c_ = (bool(others) and key_gap >= max(1.0, key_bottom - key_top)
+            blank_above = key_gap >= max(1.0, key_bottom - key_top)
+            c_ = (bool(others) and blank_above
                   and not k[3][:1].islower() and not lower_cont)
             d_ = id(ln) in runs and bool(others) and len(fresh) >= 1 and not lower_cont and not prose_wrap
             start = a_ or b_ or c_ or d_
@@ -252,8 +253,9 @@ def split_band_records(
                 start = False
             # A key line that continues the one above is never a record: the typesetter broke
             # the line after a comma (an operand list), or in the middle of a token (the line
-            # above fills its cell and has no separator at its end, or this one opens with "_").
-            if prev_key_text.endswith(",") or key_text(ln).startswith("_") or (
+            # above fills its cell and has no separator at its end, or this one opens with "_"
+            # right below it; after a blank line it is a key of its own).
+            if prev_key_text.endswith(",") or (key_text(ln).startswith("_") and not blank_above) or (
                 prev_key_text and " " not in prev_key_text and prev_key_width >= TOKEN_FILL * (key_w - 2)
                 and prev_key_text[-1].isalnum() and broken_tokens(prev) >= 2
             ):

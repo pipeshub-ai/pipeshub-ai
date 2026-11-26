@@ -23,6 +23,7 @@ from .kg_fresh import differences
 from .pg_support import new_org
 from .test_kg_derivation import ctx, held, prov
 from .test_kg_projection_races import OPS, world2
+from .test_kg_read import _admin
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(120)]
 
@@ -110,11 +111,8 @@ async def test_rows_the_drain_cannot_read_are_left_aside_counted_and_removed_onl
     p, org = prov(pg_db), new_org()
     await world2(p, org)
 
-    async def poison(tx) -> None:
-        await tx.execute("/* pipeshub:test.poison */ INSERT INTO kg.graph_changes (org_id, ends, txid) VALUES ($1, ARRAY['x'], '1'::xid8), ($1, ARRAY['9:a'], '1'::xid8), "
-                         "($1, ARRAY['3:' || repeat('a', 300)], '1'::xid8), ($1, ARRAY['3:r1', 'nope'], '1'::xid8)", org)
-    with ctx(org):
-        await p._q(poison, None, write=True)
+    await _admin("INSERT INTO kg.graph_changes (org_id, ends, txid) VALUES ($1, ARRAY['x'], '1'::xid8), ($1, ARRAY['9:a'], '1'::xid8), "      # no service can log them (kg_0022)
+                 "($1, ARRAY['3:' || repeat('a', 300)], '1'::xid8), ($1, ARRAY['3:r1', 'nope'], '1'::xid8)", org)
     await drain_org(pg_db, org)
     assert await lag(pg_db, org) == 0                          # the readable rows were projected
     assert not await differences(p, org)

@@ -7,6 +7,7 @@ import json
 import re
 from collections import ChainMap, defaultdict
 from collections.abc import AsyncGenerator, Awaitable, Callable
+from collections.abc import Set as AbstractSet
 from datetime import datetime, timezone
 from logging import Logger
 from typing import Any, NamedTuple, Optional
@@ -85,6 +86,8 @@ from app.connectors.sources.atlassian.core.jira_issue_security import (
     apply_issue_access_settled,
     browse_issue_holders,
     classify_scheme_response,
+    close_kept_issues,
+    close_stored_issue,
     collect_paged_values,
     custom_field_ids_from_members,
     http_status_is_transient,
@@ -143,6 +146,7 @@ from app.models.entities import (
     get_epoch_timestamp_in_ms,
 )
 from app.models.permission import EntityType, Permission, PermissionType
+from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.services.notification.types import (
     NotificationSeverity,
     NotificationType,
@@ -266,7 +270,7 @@ def dc_rest_profile(version: tuple[int, ...] | None) -> DcRestProfile:
 
 
 class GroupMemberships(NamedTuple):
-    """Group id/name -> members for role resolution. None marks a group whose members are unknown.
+    """Group name -> members for role resolution. None marks a group whose members are unknown.
 
     ``cut_off`` when the group list stopped at the picker limit: a group missing from
     ``members`` may then exist past it, so its members are unknown too.
@@ -277,12 +281,15 @@ class GroupMemberships(NamedTuple):
 
 
 def _normalize_jira_dc_group_row(raw: dict[str, Any]) -> dict[str, Any] | None:
-    """Normalize a DC groups/picker row to ``{name, groupId}`` (name is the DC group key)."""
+    """Normalize a DC groups/picker row to ``{name, groupId}``, both the group's name. Data Center has no other group id:
+    GroupSuggestionBean holds ``name``, ``html`` and ``labels``, GET group/member takes "groupname: The group name", and
+    level and permission holders name a group by name (10.2, 10.7 and 11.3 specifications,
+    https://dac-static.atlassian.com/server/jira/platform/jira_software_dc_11003_swagger.v3.json). An id in a row would be a
+    second key space, in which one group's id can be another group's name."""
     name = raw.get("name")
     if not name:
         return None
-    gid = raw.get("groupId") or raw.get("id") or name
-    return {"name": str(name), "groupId": str(gid)}
+    return {"name": str(name), "groupId": str(name)}
 
 
 def _application_role_groups_from_dc_role(role: dict[str, Any]) -> list[dict[str, str]]:
@@ -617,6 +624,10 @@ class JiraDataCenterConnector(BaseConnector):
         # (from the checkpoint) and the ones this run holds, id -> (attempts, updated ms).
         self._failed_issue_attempts_before: dict[str, int] = {}
         self._held_issues: dict[str, tuple[int, int | None]] = {}
+        # This project's issues whose record or files this pass could not write: a full sync keeps them as stored.
+        self._issues_not_written: set[str] = set()
+        # Those of them whose build failed: a full sync closes them before it keeps them (``_keep_stored_records``).
+        self._issues_failed_to_build: set[str] = set()
         # Issues given up on, id -> the ``updated`` value seen then; skipped until it changes.
         self._given_up_issues: dict[str, str] = {}
         # Issue security per project id for the current sync, the level members of each scheme
@@ -785,21 +796,45 @@ class JiraDataCenterConnector(BaseConnector):
             groups = [group for group in groups if group.source_user_group_id in only]
         self.data_entities_processor.note_kept_user_groups(self.connector_id, groups)
 
-    async def _keep_stored_records(self, project_id: str) -> None:
+    async def _keep_stored_records(
+        self, project_id: str, issue_ids: set[str] | None = None, close: AbstractSet[str] = frozenset(),
+    ) -> None:
         """Note this project's stored records as seen by a full sync in progress: its issues
         could not be read, so they stay as stored and must survive the unlink after it. So does
-        the project's record group, even with no grants of its own, for the records' links into it."""
+        the project's record group, even with no grants of its own, for the records' links into it.
+        With ``issue_ids``, only those issues and the files filed under them, soft-deleted ones too (a restored issue must
+        come back with its edges): their sub-tasks are written when still in Jira. Those of them in ``close`` (whose build
+        failed) are first stored closed, as their access was not read again (``close_kept_issues``); one that cannot be
+        closed is not kept, nor are its files, so the unlink takes their edges."""
         await self.data_entities_processor.note_kept_record_group(self.connector_id, project_id)
         page_size = 1000
         after_key: Optional[str] = None
+        stored: list[Record] = []
         while True:
-            page = await self.data_entities_processor.get_records_in_record_group(
-                self.connector_id, project_id, page_size, after_key,
-            )
-            self.data_entities_processor.note_kept_records(self.connector_id, [record.id for record in page])
+            if issue_ids is None:
+                page = await self.data_entities_processor.get_records_in_record_group(
+                    self.connector_id, project_id, page_size, after_key,
+                )
+                self.data_entities_processor.note_kept_records(self.connector_id, [record.id for record in page])
+            else:
+                page = await self.data_entities_processor.get_records_in_record_group(
+                    self.connector_id, project_id, page_size, after_key, visibility=RecordVisibility.ALL,
+                )
+                stored += [
+                    record for record in page
+                    if record.external_record_id in issue_ids
+                    or (record.parent_external_record_id in issue_ids and record.record_type == RecordType.FILE)
+                ]
             if len(page) < page_size:
-                return
+                break
             after_key = page[-1].id
+        if issue_ids is None:
+            return
+        unclosed = await close_kept_issues(self.data_entities_processor, stored, close & issue_ids, self.logger)
+        self.data_entities_processor.note_kept_records(self.connector_id, [
+            record.id for record in stored
+            if record.external_record_id not in unclosed and record.parent_external_record_id not in unclosed
+        ])
 
     def _project_access_may_be_partial(self, project_key: str) -> bool:
         """Whether this project's access list may be partial: the user list was not read in
@@ -2432,11 +2467,8 @@ class JiraDataCenterConnector(BaseConnector):
                     if role_key and app_roles_mapping and role_key in app_roles_mapping:
                         role_groups = app_roles_mapping[role_key]
                         for group_info in role_groups:
-                            # Match the convention in ``_normalize_jira_dc_group_row``:
-                            # use ``groupId`` when the server returned a distinct id,
-                            # otherwise fall back to ``name``. This keeps the Permission's
-                            # ``external_id`` aligned with ``AppUserGroup.source_user_group_id``
-                            # so ``on_new_record_groups`` can resolve the edge.
+                            # The group's name, as ``AppUserGroup.source_user_group_id``
+                            # (``_normalize_jira_dc_group_row``), so ``on_new_record_groups`` resolves the edge.
                             group_key_value = group_info.get("groupId") or group_info.get("name")
                             if group_key_value:
                                 group_key = f"group:{group_key_value}"
@@ -2650,7 +2682,7 @@ class JiraDataCenterConnector(BaseConnector):
             user_by_key = {user.source_user_id: user for user in jira_users if user.source_user_id}
 
             user_groups_batch = []
-            # Mapping: group_id -> members, group_name -> members (for role actor lookup)
+            # Group name -> members, for role actor lookup (``_normalize_jira_dc_group_row``: the name is the group's id)
             groups_members_map: dict[str, Optional[list[AppUser]]] = {}
 
             for group in groups:
@@ -2681,7 +2713,6 @@ class JiraDataCenterConnector(BaseConnector):
                             "Keeping the stored members of group %s: its member list could not be read",
                             group_name,
                         )
-                        groups_members_map[group_id] = None
                         groups_members_map[group_name] = None
                         continue
 
@@ -2703,8 +2734,6 @@ class JiraDataCenterConnector(BaseConnector):
                             skipped_members,
                         )
 
-                    # Store mapping by both group_id and group_name for flexible lookup
-                    groups_members_map[group_id] = app_users
                     groups_members_map[group_name] = app_users
 
                     # Add group to batch (with or without members)
@@ -2719,9 +2748,8 @@ class JiraDataCenterConnector(BaseConnector):
                     self.logger.error(f"❌ Failed to process group {group.get('name')}: {group_error}")
                     # Unknown members, not no members: roles that include this group keep what is stored.
                     self._note_unread(None)
-                    for key in (group.get("groupId"), group.get("name")):
-                        if key:
-                            groups_members_map[key] = None
+                    if group.get("name"):
+                        groups_members_map[group["name"]] = None
                     continue
 
             if self._user_read_unfinished:
@@ -3071,31 +3099,26 @@ class JiraDataCenterConnector(BaseConnector):
                                     )
 
                             elif actor_type == "atlassian-group-role-actor":
-                                # Group actor - get group members from already-fetched groups
+                                # A group actor names its group by name (RoleActorBean: ``name``), the map's only key.
                                 group_name = actor.get("name") or actor.get("displayName")
-                                group_id = actor.get("groupId")
 
-                                # Try to find group members by group_id first, then by name
                                 group_members: Optional[list[AppUser]] = []
-                                if group_id and group_id in groups_members_map:
-                                    group_members = groups_members_map[group_id]
-                                elif group_name and group_name in groups_members_map:
+                                if group_name and group_name in groups_members_map:
                                     group_members = groups_members_map[group_name]
                                 elif groups_cut_off:
-                                    group_past_cap = group_name or group_id
+                                    group_past_cap = group_name
                                     break
                                 else:
                                     self.logger.debug(
-                                        f"  {project_key}/{role_name}: Group actor '{group_name}' "
-                                        f"(id: {group_id}) not found in synced groups"
+                                        f"  {project_key}/{role_name}: Group actor '{group_name}' not found in synced groups"
                                     )
 
                                 if group_members is None:
-                                    unreadable_group = group_name or group_id
+                                    unreadable_group = group_name
                                     break
 
                                 self.logger.debug(
-                                    f"  {project_key}/{role_name}: Group actor '{group_name}' (id: {group_id}) "
+                                    f"  {project_key}/{role_name}: Group actor '{group_name}' "
                                     f"found {len(group_members)} members"
                                 )
                                 # Add all group members directly to role members (USER->ROLE, not GROUP->ROLE)
@@ -3672,6 +3695,8 @@ class JiraDataCenterConnector(BaseConnector):
         self._issue_id_to_key_cache.clear()
         self._failed_issue_attempts_before = _stored_map((project_sync_data or {}).get("failed_issue_attempts"))
         self._held_issues = {}
+        self._issues_not_written = set()
+        self._issues_failed_to_build = set()
         self._given_up_issues = _stored_map((project_sync_data or {}).get("given_up_issues"))
 
         # Issue security. No issue's `updated` moves when a level gains or loses a member, so the
@@ -3885,6 +3910,9 @@ class JiraDataCenterConnector(BaseConnector):
             if not self._issue_build_failures:
                 self._people_read_due.append(project_key)
         self._retry_given_up = False
+        if self._issues_not_written and self.data_entities_processor.full_sync_running(self.connector_id) is True:
+            # Scanned rather than looked up where the write failed: that lookup is often what failed.
+            await self._keep_stored_records(project_id, self._issues_not_written, close=self._issues_failed_to_build)
 
         if total_issues_processed == 0:
             self.logger.info(f"ℹ️ No new/updated issues for project {project_key}")
@@ -5111,15 +5139,12 @@ class JiraDataCenterConnector(BaseConnector):
 
     async def _close_stored_issue(self, issue_id: str) -> None:
         """Close a stored issue that a pass for a change of its access could not rebuild: its stored grants may name
-        people Jira no longer lets read it. It opens again once it can be built."""
+        people Jira no longer lets read it. It opens again once it can be built (``close_stored_issue``)."""
         stored = await self.data_entities_processor.get_record_by_external_id(
             connector_id=self.connector_id, external_record_id=issue_id
         )
-        if stored is None or stored.is_placeholder:
-            return
-        stored.access_rule = AccessRule.RESTRICTED
-        stored.rewrite_permissions = True
-        await self.data_entities_processor.on_new_records([(stored, [])])
+        if stored is not None:
+            await close_stored_issue(self.data_entities_processor, stored)
 
     def _users_with_usernames(self, user_by_key: dict[str, AppUser]) -> dict[str, AppUser]:
         """The synced users by key, and also by username: a level names its user holders either way. A username that
@@ -5723,8 +5748,13 @@ class JiraDataCenterConnector(BaseConnector):
                 except Exception as e:
                     self.logger.error(f"❌ Failed to fetch attachments for issue {issue_key}: {e}")
             except Exception as e:
+                if isinstance(issue, dict) and (failed_id := str(issue.get("id") or "")):
+                    self._issues_not_written.add(failed_id)
+                    self._issues_failed_to_build.add(failed_id)
                 if self._note_failed_issue(issue, e):
                     await self._close_stored_issue(str(issue.get("id") or ""))
+            else:
+                self._issues_failed_to_build.discard(str(issue_id))
 
         # Log summary only if there were skipped issues
         if skipped_unchanged_count > 0:
@@ -5821,6 +5851,7 @@ class JiraDataCenterConnector(BaseConnector):
 
         except Exception as e:
             self.logger.error(f"Failed to fetch attachments for issue {issue_key}: {e}", exc_info=True)
+            self._issues_not_written.add(str(issue_id))
             return []
 
     # ============================================================================

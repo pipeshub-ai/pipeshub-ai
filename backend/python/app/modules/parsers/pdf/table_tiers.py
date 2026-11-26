@@ -8,6 +8,7 @@ a rule that closes a cell of one column has cut it first.
 """
 from __future__ import annotations
 
+import bisect
 import statistics
 from typing import TYPE_CHECKING, Any
 
@@ -86,25 +87,27 @@ def repair_cuts(cuts: Sequence[float], body: list[Line], lo: float, hi: float) -
     if not body:
         return list(cuts)
     chans = proj_cuts(body, channels=True, strict=True)
-    out: list[float] = []
-    for i, c in enumerate(cuts):
-        bad = False
+
+    def clean(c: float) -> bool:
         for ln in body:
             ws = ln["w"]
             if any(float(w["x0"]) < c - 0.5 and float(w["x1"]) > c + 0.5 for w in ws):
-                bad = True
-                break
+                return False
             left = [w for w in ws if float(w["x1"]) <= c + 0.5]
             right = [w for w in ws if float(w["x0"]) >= c - 0.5]
             if left and right and float(right[0]["x0"]) - float(left[-1]["x1"]) < CUT_GAP_NARROW * ln["h"]:
-                bad = True
-                break
-        if not bad:
+                return False
+        return True
+
+    out: list[float] = []
+    for i, c in enumerate(cuts):
+        if clean(c):
             out.append(c)
             continue
         a = out[-1] if out else lo
         b = cuts[i + 1] if i + 1 < len(cuts) else hi
-        opts = [m for m, _, _ in chans if a < m < b]
+        # a replacement passes the same check as the cut it replaces
+        opts = [m for m, _, _ in chans if a < m < b and clean(m)]
         if not opts:
             return None
         out.append(min(opts, key=lambda m: abs(m - c)))
@@ -149,11 +152,15 @@ def ruled_rows(
     """Tier 2: the candidate for ``extent`` whose rows are the bands between the row rules ``ys`` (three or more), or
     None and why not."""
     bands = [(-1e9, ys[0]), *zip(ys, ys[1:]), (ys[-1], 1e9)]
-    body_l = [ln for ln in lines if ln["top"] >= ys[1] - 1]
+    # each line is in one band: the one its centre falls in, a centre on a rule going to the band below it
+    band_of = {id(ln): bisect.bisect_right(ys, ln["cy"]) for ln in lines}
+    # no rule above the header means the first rule is under it: band 1 is body then
+    head_band = 0 if any(ln["cy"] < ys[0] for ln in lines) else 1
+    body_l = [ln for ln in lines if band_of[id(ln)] > head_band]
     col_lines = lines
     if len(body_l) >= 2:
         bch = proj_cuts(body_l, channels=True, strict=True)
-        group = [ln for ln in lines if ln["top"] < ys[1] - 1 and any(s0 < a and s1 > b for s0, s1, _ in segments(ln) for _, a, b in bch)]
+        group = [ln for ln in lines if band_of[id(ln)] <= head_band and any(s0 < a and s1 > b for s0, s1, _ in segments(ln) for _, a, b in bch)]
         col_lines = [ln for ln in lines if ln not in group] or lines
     cuts = snap_hints(proj_cuts(col_lines, channels=True), hints)
     repaired = repair_cuts(cuts, body_l, extent[0], extent[2]) if cuts else cuts
@@ -166,10 +173,8 @@ def ruled_rows(
     groups: list[list[Line]] = []
     nhead = 0
     kx1 = cuts[0]
-    # no rule above the header means the first rule is under it: band 1 is body then
-    head_band = 0 if any(ln["cy"] < ys[0] for ln in lines) else 1
     for bi, (a, b) in enumerate(bands):
-        bl = [ln for ln in lines if a - 1 <= ln["cy"] <= b + 1]
+        bl = [ln for ln in lines if band_of[id(ln)] == bi]
         if not bl:
             continue
         if bi <= head_band and all(ln["cy"] < ys[1] for ln in bl):

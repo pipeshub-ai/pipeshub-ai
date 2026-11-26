@@ -392,6 +392,7 @@ async def test_folder_checks_know_membership_trash_names_depth_and_height(w: Wor
     assert await w.p.get_and_validate_folder_in_kb("kb2", "top") is None
 
 
+@pytest.mark.pg_table_lock           # changes the planner statistics or storage settings of shared tables
 async def test_a_folder_name_check_reads_the_parent_and_not_the_whole_organisation(w: World, pg_db, monkeypatch: pytest.MonkeyPatch) -> None:
     """Creating a folder asks whether its name is taken under the parent (or at the collection's root). The check reads that parent's children or that
     collection's records, so its cost does not grow with the records of the organisation's other connectors."""
@@ -477,13 +478,17 @@ async def test_the_upload_validation_lets_in_writers_only_and_hides_a_collection
     assert (await w.p._validate_folder_creation("kb1", "uid-rd"))["code"] == 403
     for who in ("none", "tn"):                                                         # no role: the collection's existence is not told
         r = await v("kb1", f"uid-{who}", w.org)
-        assert (r["valid"], r["code"], r["reason"]) == (False, 404, "Knowledge base kb1 not found")
+        assert (r["valid"], r["code"], r["reason"]) == (False, 404, "Knowledge base not found")
         assert (await w.p._validate_folder_creation("kb1", f"uid-{who}"))["code"] == 404
     assert (await v("kb1", "uid-nobody", w.org))["reason"] == "User not found: uid-nobody"
-    assert (await v("missing", "uid-own", w.org))["code"] == 404
-    r = await v("kb1", "uid-wr", w.org, "nope")
-    assert r["code"] == 404 and "was not found in knowledge base 'Docs' (kb1)" in r["reason"]
-    assert (await v("kb1", "uid-wr", w.org, "other"))["code"] == 404                  # a folder of another collection
+    r = await v("ada@example.com", "uid-own", w.org)                               # no such collection: the id is not quoted
+    assert (r["code"], r["reason"]) == (404, "Knowledge base not found")
+    missing = ("The folder was not found in knowledge base 'Docs' (kb1). "
+               "The folder may not exist or may belong to a different knowledge base.")
+    r = await v("kb1", "uid-wr", w.org, "nope")                                     # the id the client sent is not quoted
+    assert (r["code"], r["reason"]) == (404, missing)
+    r = await v("kb1", "uid-wr", w.org, "other")                                    # a folder of another collection: not named
+    assert (r["code"], r["reason"]) == (404, missing)
     r = await v("kb1", "uid-wr", w.org, "trashed")
     assert (r["valid"], r["code"]) == (False, 409) and "Recently deleted" in r["reason"]
     with other_org():                                                               # the same names in another org: nothing
@@ -535,7 +540,7 @@ async def test_uploaded_document_ids_are_the_files_of_the_connector_under_the_ro
 
 # ---- no org ---------------------------------------------------------------------------------------------------------------------------------
 
-NAMES = sorted(n for n, f in vars(KbMixin).items() if not n.startswith("__") and callable(f) and n not in ("_fetch_kb_name", "_fetch_record_name", "_kb_writer"))
+NAMES = sorted(n for n, f in vars(KbMixin).items() if not n.startswith("__") and callable(f) and n not in ("_fetch_kb_name", "_kb_writer"))
 CALLS = {
     "kb_exists": ("k",), "list_user_knowledge_bases": ("u", "o", 0, 1), "create_kb_permissions": ("k", "r", [], [], "READER"), "update_kb_permission": ("k", "r", ["u"], [], "READER"),
     "remove_kb_permission": ("k", [], []), "list_kb_permissions": ("k",), "get_kb_permissions": ("k", ["u"]), "count_kb_owners": ("k",), "validate_folder_exists_in_kb": ("k", "f"),

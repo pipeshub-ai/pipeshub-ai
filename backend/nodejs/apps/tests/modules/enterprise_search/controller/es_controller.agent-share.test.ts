@@ -7,6 +7,8 @@ import * as conversationArtifacts from '../../../../src/modules/artifacts/servic
 import { ProjectService } from '../../../../src/modules/projects/services/project.service'
 import { Users } from '../../../../src/modules/user_management/schema/users.schema'
 import { FakeAIBackend, FakeSSEResponse, InMemoryChatStore, oid, settle } from './chat-test-harness'
+import { registerUpstreams } from '../../../../src/libs/http/upstream-call'
+import { registerAppUpstreams } from '../../../../src/modules/tokens_manager/config/config'
 
 /**
  * Sharing an agent conversation is read-only: the owner shares, a recipient can
@@ -160,6 +162,9 @@ const sharedWithOf = (s: Setup): string[] =>
 const share = (userIds: unknown, accessLevel?: string) => ({ userIds, ...(accessLevel ? { accessLevel } : {}) })
 
 describe('es_controller agent-chat sharing: read-only for recipients, owner-only to change', () => {
+  beforeEach(() => registerAppUpstreams(appConfig))
+  afterEach(() => registerUpstreams({}))
+
   // The users of the caller's organisation, and every filter the recipient lookup was asked with.
   let orgUsers: Set<string>
   let userLookups: Array<Record<string, any>>
@@ -520,7 +525,7 @@ describe('es_controller agent-chat sharing: read-only for recipients, owner-only
       const conversation = (out.body as { conversation: Record<string, unknown> }).conversation
       expect(conversation.title).to.equal('Roadmap review')
       expect(conversation.messages).to.have.length(2)
-      expect(conversation.access).to.deep.equal({ isOwner: false, accessLevel: 'read' })
+      expect(conversation.access).to.deep.equal({ isOwner: false, accessLevel: 'read', role: 'viewer' })
       expect(conversation.sharedWith, 'other recipients stay private').to.equal(undefined)
       expect((conversation.sharedBy as { userId: string }).userId).to.equal(String(OWNER))
     })
@@ -550,7 +555,7 @@ describe('es_controller agent-chat sharing: read-only for recipients, owner-only
       const out = await callJson(getHandler(), request(owner, agentParams(s)))
 
       const conversation = (out.body as { conversation: Record<string, unknown> }).conversation
-      expect(conversation.access).to.deep.equal({ isOwner: true, accessLevel: 'read' })
+      expect(conversation.access).to.deep.equal({ isOwner: true, accessLevel: 'read', role: 'owner' })
       expect((conversation.sharedWith as unknown[]).length).to.equal(1)
       expect(conversation.sharedBy).to.equal(undefined)
       expect(s.ai.calls).to.deep.equal([])

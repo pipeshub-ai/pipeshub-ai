@@ -18,18 +18,14 @@ from app.api.routes.extraction import router as extraction_router
 from app.models.blocks import SemanticMetadata
 from app.modules.transformers.document_extraction import (
     DocumentClassification,
+    ExtractionContentFilteredError,
     ExtractionLLMError,
     SubCategories,
     semantic_metadata_from_classification,
 )
 from app.utils.llm import LLMNotConfiguredError, LLMUnavailableError
-from tests.support.provider_errors import (
-    MARK,
-    assert_text_free,
-    failure_line,
-    openai_error,
-    with_cause,
-)
+from tests.support.log_capture import assert_text_free, failure_line
+from tests.support.provider_errors import MARK, SENTINELS, openai_error, with_cause
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -590,6 +586,7 @@ def test_classify_without_a_configured_llm_returns_422_with_error_code() -> None
     [
         (LLMUnavailableError("connection refused"), "LLM_UNAVAILABLE"),
         (ExtractionLLMError("no usable output"), "LLM_FAILED"),
+        (ExtractionContentFilteredError(), "LLM_CONTENT_FILTERED"),
     ],
 )
 def test_model_failures_answer_424_with_a_code(error: Exception, code: str) -> None:
@@ -792,6 +789,6 @@ def test_a_model_failure_is_one_text_free_line_with_the_org(caplog, error, error
     )
 
     assert response.status_code == 424
-    fields = failure_line(caplog.records, "document_classify.failed", error_class, level)
+    fields = failure_line(caplog.records, "document_classify.failed", error_class, level, *SENTINELS)
     assert fields["org_id"] == "org-123"
-    assert_text_free(caplog.records)
+    assert_text_free(caplog.records, *SENTINELS)

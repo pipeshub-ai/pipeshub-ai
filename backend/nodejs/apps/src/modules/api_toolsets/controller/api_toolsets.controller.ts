@@ -19,6 +19,7 @@ import {
   handleBackendError,
   handleConnectorResponse,
 } from '../../tokens_manager/utils/connector.utils';
+import { auditSettingsChange } from '../../configuration_manager/utils/config-audit';
 
 const logger = Logger.getInstance({ service: 'ApiToolsetsController' });
 
@@ -71,12 +72,18 @@ const instancePath =
     return `/instances/${encodeURIComponent(String(req.params.instanceId))}${suffix}${query ? `?${query}` : ''}`;
   };
 
-/** `sendsOnce`: never resent, because a repeat could create a second toolset or reuse a sign-in. */
+/**
+ * `sendsOnce`: never resent, because a repeat could create a second toolset or reuse a sign-in.
+ * `audit`: for a settings save, writes its audit line once the service answered 2xx.
+ */
 function proxy(
   method: HttpMethodValue,
   pathBuilder: PathBuilder,
   action: string,
-  { sendsOnce = method !== HttpMethod.GET }: { sendsOnce?: boolean } = {},
+  {
+    sendsOnce = method !== HttpMethod.GET,
+    audit,
+  }: { sendsOnce?: boolean; audit?: () => void } = {},
 ) {
   return (appConfig: AppConfig) =>
     async (
@@ -91,7 +98,6 @@ function proxy(
         }
         // The OAuth callback's query carries the authorization code and state.
         logger.debug(`API toolsets proxy: ${action}`, {
-          userId,
           path: redactSensitiveQueryParams(pathBuilder(req)),
         });
         const connectorResponse = await executeConnectorCommand(
@@ -110,11 +116,8 @@ function proxy(
           action,
           `${action} failed`,
         );
+        audit?.();
       } catch (error: unknown) {
-        logger.error(`Error in API toolsets proxy: ${action}`, {
-          error: error instanceof Error ? error.message : String(error),
-          userId: req.user?.userId as unknown,
-        });
         next(handleBackendError(error, action));
       }
     };
@@ -136,6 +139,11 @@ export const createApiToolset = proxy(
   HttpMethod.POST,
   () => '/instances',
   'Create API toolset',
+  {
+    audit: () => {
+      auditSettingsChange('api_toolset', 'create');
+    },
+  },
 );
 
 export const getApiToolset = proxy(
@@ -154,12 +162,22 @@ export const updateApiToolset = proxy(
   HttpMethod.PUT,
   instancePath(),
   'Update API toolset',
+  {
+    audit: () => {
+      auditSettingsChange('api_toolset', 'update', { reason: 'settings' });
+    },
+  },
 );
 
 export const deleteApiToolset = proxy(
   HttpMethod.DELETE,
   instancePath(),
   'Delete API toolset',
+  {
+    audit: () => {
+      auditSettingsChange('api_toolset', 'delete');
+    },
+  },
 );
 
 export const saveApiToolsetCredentials = proxy(
@@ -178,12 +196,26 @@ export const saveApiToolsetSharedCredentials = proxy(
   HttpMethod.PUT,
   instancePath('/shared-credentials'),
   'Save API toolset shared credential',
+  {
+    audit: () => {
+      auditSettingsChange('api_toolset', 'update', {
+        reason: 'shared_credential_set',
+      });
+    },
+  },
 );
 
 export const deleteApiToolsetSharedCredentials = proxy(
   HttpMethod.DELETE,
   instancePath('/shared-credentials'),
   'Delete API toolset shared credential',
+  {
+    audit: () => {
+      auditSettingsChange('api_toolset', 'update', {
+        reason: 'shared_credential_removed',
+      });
+    },
+  },
 );
 
 export const testApiToolset = proxy(

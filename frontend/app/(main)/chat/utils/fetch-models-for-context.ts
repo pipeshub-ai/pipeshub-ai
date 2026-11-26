@@ -81,6 +81,8 @@ export interface FetchModelsOptions {
  * that actually happened on the organization models endpoint.
  */
 export class OrgModelsFetchError extends Error {
+  readonly cause: unknown;
+
   constructor(cause: unknown) {
     super('Failed to fetch organization-wide AI models');
     this.name = 'OrgModelsFetchError';

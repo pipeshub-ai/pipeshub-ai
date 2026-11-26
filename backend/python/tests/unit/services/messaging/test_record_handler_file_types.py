@@ -8,13 +8,16 @@ from unittest.mock import AsyncMock
 import pytest
 
 from app.config import file_types
-from app.utils.user_errors import file_too_large_to_read
+from app.utils import indexing_timing
+from app.utils.user_errors import file_too_large_to_read, unsupported_file_type
 from tests.unit.config.file_types import gen_pinned_decisions as gen
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+
     from app.services.messaging.kafka.handlers.record import RecordEventHandler
 
-_NEW = ("msg", "odt", "rtf", "xlsm", "log", "cfg", "docm", "dotx", "potx")
+_NEW = ("msg", "odt", "rtf", "xlsm", "log", "cfg", "docm", "dotx", "potx", "pptm")
 _MIMES = {
     "msg": ("application/vnd.ms-outlook",),
     "odt": ("application/vnd.oasis.opendocument.text",),
@@ -23,6 +26,7 @@ _MIMES = {
     "docm": ("application/vnd.ms-word.document.macroEnabled.12",),
     "dotx": ("application/vnd.openxmlformats-officedocument.wordprocessingml.template",),
     "potx": ("application/vnd.openxmlformats-officedocument.presentationml.template",),
+    "pptm": ("application/vnd.ms-powerpoint.presentation.macroEnabled.12",),
 }
 
 
@@ -45,7 +49,7 @@ async def test_every_mime_spelling_passes_the_gate_without_an_extension(mime: st
         assert await gen.gate(None, form, name, "FILE") == "ok", form
 
 
-@pytest.mark.parametrize("ext", ["zip", "pptm", "dotm", "xltx", "eml", "ods"])
+@pytest.mark.parametrize("ext", ["zip", "dotm", "xltx", "eml", "ods"])
 async def test_types_still_not_indexed_are_refused(ext: str) -> None:
     decision = await gen.gate(ext, "application/octet-stream", f"f.{ext}", "FILE")
     assert decision.startswith("FILE_TYPE_NOT_SUPPORTED|"), decision
@@ -65,12 +69,15 @@ def _handler_with_config(config: object, record: dict[str, Any]) -> RecordEventH
     return handler
 
 
-async def _gate_with(handler: RecordEventHandler, record: dict[str, Any], ext: str, mime: str | None) -> str:
+async def _gate_with(
+    handler: RecordEventHandler, record: dict[str, Any], ext: str, mime: str | None, **fields: object,
+) -> str:
     from app.services.messaging.config import IndexingEvent
 
     payload = {
         "recordId": "r1", "orgId": "org-1", "virtualRecordId": "vr1", "connectorId": "conn-1",
         "recordName": f"f.{ext}", "extension": ext, "mimeType": mime, "signedUrl": "https://example.invalid/f",
+        **fields,
     }
     gen_ = handler.process_event("newRecord", payload)
     try:
@@ -96,6 +103,70 @@ async def test_a_type_turned_off_is_refused_and_the_others_are_not() -> None:
     assert decision.startswith("FILE_TYPE_NOT_SUPPORTED|")
     record = _record("docm")
     assert await _gate_with(_handler_with_config({"disabled": ["msg"]}, record), record, "docm", None) == "ok"
+
+
+@pytest.mark.parametrize(("off", "refused"), [({"docx"}, False), ({"yaml"}, True)])
+async def test_the_off_switch_names_the_mime_not_the_name(off: set[str], refused: bool) -> None:
+    # A YAML file named like a document: YAML reads it, so only turning off yaml refuses it.
+    record = _record("yaml", recordName="Report.DOCX")
+    handler = _handler_with_config({"disabled": sorted(off)}, record)
+    decision = await _gate_with(handler, record, "unknown", "application/x-yaml", recordName="Report.DOCX")
+    assert decision.startswith("FILE_TYPE_NOT_SUPPORTED|") is refused, decision
+
+
+@pytest.mark.parametrize(("off", "refused"), [({"log"}, True), ({"docx"}, False)])
+async def test_the_gate_reads_the_path_the_dispatch_reads(off: set[str], refused: bool) -> None:
+    # The dispatch reads the path before the name: this file is read as a log, so the log switch decides.
+    record = _record("log", recordName="Report.docx")
+    handler = _handler_with_config({"disabled": sorted(off)}, record)
+    decision = await _gate_with(
+        handler, record, "unknown", "application/octet-stream", recordName="Report.docx", filePath="x/app.log",
+    )
+    assert decision.startswith("FILE_TYPE_NOT_SUPPORTED|") is refused, decision
+
+
+_PDF = "application/pdf"
+
+
+# (record fields, event extension, event mime, event fields, type turned off, extension the reason names)
+_OFF_SWITCH_SOURCES = {
+    "the event's mime": ({}, "docx", _PDF, {}, "pdf", "pdf"),
+    "the stored mime": ({"mimeType": _PDF}, "docx", None, {}, "pdf", "pdf"),
+    "a mime whose type has two extensions": ({}, "bin", "image/jpeg", {}, "jpeg", "jpg"),
+    "the path": ({"recordName": "Report.docx"}, "unknown", "application/octet-stream",
+                 {"recordName": "Report.docx", "filePath": "x/app.log"}, "log", "log"),
+    "a mime no extension names": ({}, "docx", "application/vnd.google-apps.document", {}, "google_docs", None),
+    "the extension": ({}, "docm", "text/plain", {}, "docm", "docm"),
+    "a deck's extension with no mime of its own": ({}, "pptm", "application/octet-stream", {}, "pptm", "pptm"),
+    "a deck's mime": ({}, "pptm", "application/vnd.ms-powerpoint.presentation.macroEnabled.12", {}, "pptm", "pptm"),
+    "the extension, spelt as the record spells it": ({}, "yml", "application/x-yaml", {}, "yaml", "yml"),
+    "the extension the mime implies": ({}, "unknown", _PDF, {}, "pdf", "pdf"),
+    "a code file's name": ({"recordType": "CODE_FILE"}, "py", "application/pdf", {}, "py", "py"),
+}
+
+
+@pytest.mark.parametrize("source", list(_OFF_SWITCH_SOURCES))
+async def test_a_type_turned_off_is_reported_as_that_type(source: str) -> None:
+    """The reason names the type the off switch refused, whichever label decided it: the record's own
+    extension when that type owns it, else the type's."""
+    stored, ext, mime, fields, off, named = _OFF_SWITCH_SOURCES[source]
+    record = _record(ext, **stored)
+    handler = _handler_with_config({"disabled": [off]}, record)
+    assert await _gate_with(handler, record, ext, mime, **fields) == (
+        f"FILE_TYPE_NOT_SUPPORTED|{unsupported_file_type(named)}"
+    )
+
+
+async def test_the_index_end_line_names_the_type_turned_off() -> None:
+    record = _record("docx", mimeType=_PDF)
+    handler = _handler_with_config({"disabled": ["pdf"]}, record)
+    timeline, token = indexing_timing.begin_record("r1")
+    try:
+        await _gate_with(handler, record, "docx", None)
+        facts = dict(timeline.facts)
+    finally:
+        indexing_timing.end_record(timeline, token, outcome="ok")
+    assert (facts["reason"], facts["extension"], facts["mime_type"]) == ("unsupported_type", "pdf", _PDF)
 
 
 async def test_turning_off_a_type_the_extension_decides_wins_over_a_text_plain_mime() -> None:
@@ -174,3 +245,53 @@ def test_the_off_switch_reads_only_registry_keys() -> None:
     assert file_types.disabled_keys(None) == frozenset()
     assert file_types.disabled_from_env("") is None
     assert file_types.disabled_from_env(" msg ,, rtf") == {"disabled": ["msg", "rtf"]}
+
+
+@pytest.mark.parametrize("signed_url", [True, False], ids=["signed-url", "connector-stream"])
+@pytest.mark.parametrize(
+    ("ext", "mime", "record_type", "route"),
+    [
+        ("css", "text/css", "CODE_FILE", file_types.Dispatch(file_types.Route.CODE, None)),
+        ("pdf", "application/pdf", "FILE", None),
+    ],
+)
+async def test_the_handler_hands_the_gate_route_to_the_dispatch(
+    ext: str, mime: str, record_type: str, route: file_types.Dispatch | None, signed_url: bool,
+) -> None:
+    from unittest.mock import MagicMock, patch
+
+    from app.services.messaging.config import (
+        IndexingEvent,
+        PipelineEvent,
+        PipelineEventData,
+    )
+
+    record = {**_record(ext), "recordType": record_type}
+    handler = gen._gate_handler(record)
+    envelopes: list[dict[str, Any]] = []
+
+    def on_event(envelope: dict[str, Any]) -> AsyncIterator[PipelineEvent]:
+        envelopes.append(envelope)
+
+        async def events() -> AsyncIterator[PipelineEvent]:
+            yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id="r1"))
+            yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id="r1"))
+
+        return events()
+
+    handler.event_processor.on_event = MagicMock(side_effect=on_event)
+    handler.config_service.get_config = AsyncMock(return_value={"connectors": {"endpoint": "http://connector.invalid"}})
+    payload = {
+        "recordId": "r1", "orgId": "org-1", "virtualRecordId": "vr1", "connectorId": "conn-1",
+        "recordName": f"f.{ext}", "extension": ext, "mimeType": mime,
+        **({"signedUrl": "https://example.invalid/f"} if signed_url else {}),
+    }
+    module = "app.services.messaging.kafka.handlers.record"
+    with patch.object(handler, "_download_from_signed_url", new_callable=AsyncMock, return_value=b"bytes"), \
+         patch(f"{module}.generate_jwt", new_callable=AsyncMock, return_value="token"), \
+         patch(f"{module}.make_api_call", new_callable=AsyncMock, return_value={"data": b"bytes"}):
+        async for _ in handler.process_event("newRecord", payload):
+            pass
+    assert len(envelopes) == 1
+    assert envelopes[0]["gateRoute"] == route
+    assert envelopes[0]["payload"] is payload

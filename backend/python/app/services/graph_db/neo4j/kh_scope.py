@@ -156,6 +156,21 @@ async def _q(client: Neo4jClient, cypher: str, params: dict | None = None) -> li
 LISTS = "kh_lists"
 
 
+def by_id(v: str, labels: str, key: str) -> str:
+    """``MATCH (v:labels {id: key})`` alone in a subquery, so its only seek is the labels' unique id index. The statement tests ``v``'s
+    org or App after it: Neo4j moves a test written beside the match, or after a plain ``WITH``, into the seek, and a plan could then seek
+    the org or App index and test the id after, reading every node of the org or App once per id. ``key`` is a variable or a
+    ``$parameter``."""
+    imports = "" if key.startswith("$") else key
+    return f"CALL ({imports}) {{ MATCH ({v}:{labels} {{id: {key}}}) RETURN {v} }}"
+
+
+def by_ids(v: str, labels: str, ids: str) -> str:
+    """``MATCH (v:labels) WHERE v.id IN ids`` as `by_id`, each id once."""
+    key = f"kh_bid_{v}"
+    return f"UNWIND {ids} AS {key} WITH DISTINCT * {by_id(v, labels, key)}"
+
+
 @lru_cache(maxsize=512)
 def lists_in_map(query: str, names: tuple[str, ...]) -> str:
     """``query`` with each ``$name`` of ``names`` read from the one map parameter ``$kh_lists``. Neo4j keys a
@@ -295,14 +310,15 @@ async def reset_syncing(client: Neo4jClient, keep: Collection[str] | None = None
     """, {"seen": seen, "keep": list(keep or ())})
 
 
-async def stale_connectors(client: Neo4jClient) -> list[str]:
-    """Apps (not KBs) without a fresh stamp of this version."""
+async def stale_connectors(client: Neo4jClient, org_id: str) -> list[str]:
+    """The org's Apps (not KBs) without a fresh stamp of this version. An App with no orgId (not backfilled yet) is
+    taken by whichever org comes first: stamping is idempotent."""
     rows = await _q(client, """
-        MATCH (a:App) WHERE coalesce(a.type, '') <> 'KB'
+        MATCH (a:App) WHERE coalesce(a.type, '') <> 'KB' AND coalesce(a.orgId, $org) = $org
         OPTIONAL MATCH (m:KhScopeMeta {connectorId: a.id})
         WITH a, m WHERE m IS NULL OR NOT coalesce(m.fresh, false) OR coalesce(m.version, 0) <> $v
         RETURN a.id AS id
-    """, {"v": STAMP_VERSION})
+    """, {"v": STAMP_VERSION, "org": org_id})
     return [r["id"] for r in rows]
 
 

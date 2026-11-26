@@ -246,6 +246,7 @@ CLASSIFICATION: dict[str, str] = {
     **dict.fromkeys(["update_node", "batch_update_nodes", "update_node_fields_if_match", "update_node_fields_if", "update_knowledge_base", "compare_and_set_record_fields",
                      "write_attempt_start"], "update"),
     "update_node_if_match": "replace",
+    "update_record_fields_for_ids": "update", "update_queued_duplicates_status": "targeted",
     **dict.fromkeys(["batch_update_connector_status", "compare_and_set_indexing_status", "update_indexing_status_for_record_ids",
                      "stage_state_compare_and_set", "soft_delete_records", "restore_records", "record_purge_failure", "retag_push_record",
                      "claim_push_record", "take_back_kept_record_group", "update_kb_permission", "reset_indexing_status_for_connector",
@@ -267,7 +268,7 @@ CLASSIFICATION: dict[str, str] = {
     **dict.fromkeys([
         "backfill_block_name_folded", "backfill_indexed_copy_flags", "batch_delete_edges", "copy_document_relationships", "delete_all_edges_for_node",
         "delete_blocks_for_records", "delete_edges_between_collections", "delete_edges_by_relationship_types", "delete_edges_by_source_keys",
-        "delete_all_team_permissions", "remove_user_access_to_connector", "remove_kb_permission", "delete_kb_hub_app", "delete_connector_sync_edges", "reap_stale_external_app_relations", "delete_edges_from", "delete_edges_to", "delete_edges_to_groups", "delete_edges_touching_nodes", "delete_nodes", "delete_parent_child_edge_to_record",
+        "delete_all_team_permissions", "remove_user_access_to_connector", "remove_kb_permission", "delete_kb_hub_app", "delete_connector_sync_edges", "reap_stale_external_app_relations", "delete_edges_from", "delete_edges_to", "delete_edges_to_groups", "delete_edges_touching_nodes", "delete_nodes", "delete_node_if_match", "delete_parent_child_edge_to_record",
         "delete_connector_instance", "delete_record", "delete_records_and_relations", "delete_records_recursive", "delete_single_record", "delete_team_member_edges",
         "delete_record_entity_relations",
         "increment_node_field", "purge_trash_kept_record_groups", "purge_trashed_records", "remove_authenticated_as", "remove_nodes_by_field",
@@ -278,7 +279,8 @@ CLASSIFICATION: dict[str, str] = {
 }
 #: Targeted writers whose every value comes from a typed argument that no schema narrows (a count, a free string, a constant), so no caller
 #: input can be invalid; they are classified for completeness and exercised only by the valid-path matrix where that is cheap.
-TYPED_ONLY = {"restore_records", "record_purge_failure", "retag_push_record", "claim_push_record", "take_back_kept_record_group",
+TYPED_ONLY = {"update_queued_duplicates_status",   # its fields come from typed arguments and constants, validated when the copies are written
+              "restore_records", "record_purge_failure", "retag_push_record", "claim_push_record", "take_back_kept_record_group",
               "update_kb_permission",      # its role is checked against OWNER/WRITER/READER first and its timestamps are generated
               "update_drive_sync_state",   # drives have no schema
               "add_taxonomy_aliases",       # neither have the taxonomy collections
@@ -302,6 +304,7 @@ Case = tuple[str, tuple, dict]   # method, args, kwargs
 
 #: payloads a schema rejects: (id, method, args, kwargs)
 INVALID: list[tuple[str, str, tuple, dict]] = [
+    ("intent-only bad time", "update_record_fields_for_ids", (["r1"], {"refreshIntentAtMs": "not a number"}), {}),
     # create: full validation
     ("create bad enum", "create_node_if_absent", ("r1", "records", rec(recordType="NOT_A_TYPE")), {}),
     ("create missing required", "create_node_if_absent", ("r1", "records", without(rec(), "recordName")), {}),
@@ -371,6 +374,7 @@ INVALID: list[tuple[str, str, tuple, dict]] = [
 
 #: payloads the app legitimately writes: (id, method, args, kwargs)
 VALID: list[tuple[str, str, tuple, dict]] = [
+    ("intent-only fields", "update_record_fields_for_ids", (["r1"], {"refreshIntentId": "i1", "refreshIntentAtMs": 1}), {}),
     ("create", "create_node_if_absent", ("r1", "records", rec()), {}),
     ("create with nullables", "create_node_if_absent", ("r1", "records", rec(mimeType=None, externalParentId=None, webUrl=None)), {}),
     ("ensure_nodes", "ensure_nodes", ([rec("r1"), rec("r2")], "records"), {}),

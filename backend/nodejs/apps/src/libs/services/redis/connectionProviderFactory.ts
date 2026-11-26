@@ -14,8 +14,12 @@ import {
   RedisConnectionConfig,
   redisConnectionConfigFromEnv,
 } from './connectionConfig';
+import type { Cluster } from 'ioredis';
 import { ClusterRedisProvider } from './clusterRedisProvider';
-import { IRedisConnectionProvider } from './connectionProvider.interface';
+import {
+  IRedisConnectionProvider,
+  RedisClient,
+} from './connectionProvider.interface';
 import { StandaloneRedisProvider } from './standaloneRedisProvider';
 import { NoRedisProvider } from './noRedisProvider';
 import { Logger } from '../logger.service';
@@ -234,6 +238,96 @@ export async function closeAllRedisProviders(): Promise<void> {
       }
     }),
   );
+}
+
+/**
+ * Start-up check of the main Redis, which holds the key-value store, broker
+ * streams, leases and counters (caches may move to `REDIS_CACHE_URL`). Same
+ * rules as Python's `replay_set.check_eviction_policy`: `allkeys-*` can drop
+ * stored configuration and queued events (their keys have no TTL), so it
+ * throws; `volatile-*` only evicts expiring keys and is a warning. Reads
+ * `INFO memory` because managed Redis often blocks `CONFIG GET`; a Redis that
+ * cannot be read is not a reason to stop.
+ */
+async function withDeadline<T>(work: Promise<T>, ms: number): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      work,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error('Redis did not answer in time')),
+          ms,
+        );
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export async function checkRedisEvictionPolicy(
+  provider: IRedisConnectionProvider,
+  deadlineMs = 10_000,
+): Promise<void> {
+  if (provider instanceof NoRedisProvider) {
+    return;
+  }
+  const policies: string[] = [];
+  try {
+    const client = provider.getClient();
+    let nodes: RedisClient[] = [client];
+    if (provider.isCluster) {
+      // An untargeted INFO reaches one node, and any primary can hold any key. `nodes()` is the cached
+      // topology, empty until the cluster has connected; an empty list is unreadable, never safe.
+      const cluster = client as Cluster;
+      // With every endpoint down the ping never settles; start-up must not wait out the outage.
+      if (cluster.status !== 'ready') {
+        await withDeadline(cluster.ping(), deadlineMs);
+      }
+      nodes = cluster.nodes('master');
+      if (nodes.length === 0)
+        throw new Error('Redis Cluster reported no primaries');
+    }
+    // Each primary on its own, with its own deadline: one that fails or hangs must not hide another's answer.
+    const reads = await Promise.allSettled(
+      nodes.map((node) => withDeadline(node.info('memory'), deadlineMs)),
+    );
+    const failed = reads.filter((r) => r.status === 'rejected').length;
+    if (failed > 0) {
+      logger.warn('Redis eviction policy not read', { nodes: failed });
+    }
+    for (const read of reads) {
+      if (read.status === 'fulfilled') {
+        policies.push(
+          /^maxmemory_policy:(\S+)/m.exec(read.value)?.[1]?.toLowerCase() ?? '',
+        );
+      }
+    }
+  } catch (error) {
+    logger.warn('Redis eviction policy not read', {
+      error: (error as Error).name,
+    });
+    return;
+  }
+  const unsafe = policies.filter((p) => p && p !== 'noeviction');
+  const policy =
+    unsafe.find((p) => p.startsWith('allkeys-')) ?? unsafe[0] ?? '';
+  if (policy.startsWith('allkeys-')) {
+    throw new Error(
+      `Redis maxmemory-policy is '${policy}' on the Redis that holds the ` +
+        'key-value store, broker streams, leases and counters: it can drop ' +
+        "stored configuration and queued events. Set it to 'noeviction' (or a " +
+        'volatile-* policy), and put caches on their own Redis with ' +
+        'REDIS_CACHE_URL if they need an evicting policy.',
+    );
+  }
+  if (policy) {
+    logger.warn(
+      `Redis maxmemory-policy is '${policy}': Redis may evict leases and ` +
+        "other expiring keys under memory pressure. Use 'noeviction'.",
+    );
+  }
 }
 
 /** Test-only: drop cached singleton providers between test cases. */

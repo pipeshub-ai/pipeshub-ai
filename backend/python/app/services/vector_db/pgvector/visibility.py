@@ -105,16 +105,20 @@ class Scope:
         """Everything a statement adds to its WHERE besides org, collection, space and the membership arms."""
         return self.must() + self.extra_sql()[0]
 
+    @staticmethod
+    def admitted() -> str:
+        """The groups the arms admit, one row each (column ``group_key``)."""
+        return (f"SELECT m.group_key {_GM} AND m.kind = 1 AND m.member_id = ANY($5::text[]) "
+                f"UNION SELECT m.group_key {_GM} AND m.kind = 2 AND m.member_id = ANY($6::text[]) "
+                f"UNION SELECT m.group_key {_GM} AND m.kind = 3 AND m.member_id = ANY($7::text[]) "
+                "UNION SELECT unnest($8::text[])")
+
     def candidates(self) -> str:
         """For the exact tiers: ``AND p.group_key IN (the groups the arms admit)`` plus the narrowing list. Cheap when the arms are
         narrow (index probes), which is when this form is used."""
         if self.whole_org:
             return self.tail()
-        arms = (f"SELECT m.group_key {_GM} AND m.kind = 1 AND m.member_id = ANY($5::text[]) "
-                f"UNION SELECT m.group_key {_GM} AND m.kind = 2 AND m.member_id = ANY($6::text[]) "
-                f"UNION SELECT m.group_key {_GM} AND m.kind = 3 AND m.member_id = ANY($7::text[]) "
-                "UNION SELECT unnest($8::text[])")
-        return f" AND p.group_key IN ({arms}){self.tail()}"
+        return f" AND p.group_key IN ({self.admitted()}){self.tail()}"
 
     def keys(self) -> list[str]:
         """The arms as the membership keys a point row carries (``points.member_keys``, retrieval_0006: ``kind:member_id``)."""

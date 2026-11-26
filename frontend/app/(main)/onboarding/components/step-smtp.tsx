@@ -7,6 +7,7 @@ import { InfoBanner } from './info-banner';
 import { useOnboardingStore } from '../store';
 import { getSmtpConfig, saveSmtpConfig } from '../api';
 import type { SmtpFormData, OnboardingStepId } from '../types';
+import { SecretTextField } from '@/app/components/ui/secret-text-field';
 
 interface StepSmtpProps {
   onSuccess: (nextStep: OnboardingStepId | null) => void;
@@ -118,7 +119,7 @@ export function StepSmtp({
         <Text
           as="div"
           size="1"
-          style={{ color: 'var(--gray-9)', marginBottom: '4px', letterSpacing: '0.02em' }}
+          style={{ color: 'var(--gray-11)', marginBottom: '4px', letterSpacing: '0.02em' }}
         >
           {t('onboarding.systemConfig')}
         </Text>
@@ -194,8 +195,8 @@ export function StepSmtp({
             <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
               {t('onboarding.stepSmtp.passwordLabel')}
             </Text>
-            <TextField.Root
-              type={showPassword ? 'text' : 'password'}
+            <SecretTextField
+              masked={!showPassword}
               placeholder={t('onboarding.stepSmtp.passwordPlaceholder')}
               value={form.password}
               onChange={(e) => handleChange('password', e.target.value)}
@@ -216,13 +217,13 @@ export function StepSmtp({
                 >
                   <span
                     className="material-icons-outlined"
-                    style={{ fontSize: '14px', color: 'var(--gray-9)' }}
+                    style={{ fontSize: '14px', color: 'var(--gray-11)' }}
                   >
                     {showPassword ? 'visibility_off' : 'visibility'}
                   </span>
                 </button>
               </TextField.Slot>
-            </TextField.Root>
+            </SecretTextField>
           </Flex>
         </Flex>
 
@@ -237,7 +238,7 @@ export function StepSmtp({
           style={{
             width: '100%',
             backgroundColor: submitting || !isFormValid ? 'var(--gray-4)' : 'var(--accent-9)',
-            color: submitting || !isFormValid ? 'var(--gray-9)' : 'white',
+            color: submitting || !isFormValid ? 'var(--gray-11)' : 'white',
             cursor: submitting || !isFormValid ? 'not-allowed' : 'pointer',
             height: '40px',
             opacity: 1,

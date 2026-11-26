@@ -18,6 +18,7 @@ from app.connectors.sources.google.common.scopes import (
     GOOGLE_TOOLSET_SCOPES,
     SERVICES_WITH_PARSER_SCOPES,
 )
+from app.sources.client.google.send_safe_http import install_send_safe_http
 from app.sources.client.iclient import IClient
 from app.sources.client.utils.utils import merge_scopes
 
@@ -30,14 +31,6 @@ GOOGLE_HTTP_TIMEOUT_SECONDS = 300
 # Retries passed to googleapiclient's own execute() backoff so a timeout or
 # transient network error doesn't surface as an outright failure.
 GOOGLE_HTTP_NUM_RETRIES = 3
-
-
-def configure_google_http_timeout(client: object) -> object:
-    authorized_http = getattr(client, "_http", None)
-    http = getattr(authorized_http, "http", authorized_http)
-    if http is not None:
-        http.timeout = GOOGLE_HTTP_TIMEOUT_SECONDS
-    return client
 
 
 try:
@@ -72,7 +65,7 @@ class GoogleClient(IClient):
 
     def __init__(self, client: object) -> None:
         """Initialize with a Google Drive client object"""
-        self.client = configure_google_http_timeout(client)
+        self.client = install_send_safe_http(client, timeout=GOOGLE_HTTP_TIMEOUT_SECONDS)
 
     def get_client(self) -> object:
         """Return the Google Drive client object"""

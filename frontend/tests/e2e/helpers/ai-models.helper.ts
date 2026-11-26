@@ -28,8 +28,10 @@ export type AddedModel = { type: ModelType; modelKey: string };
  * is what CI runs on — then OpenAI, or, for local runs, any OpenAI-compatible
  * server at E2E_AI_ENDPOINT.
  *
- * Azure is tried first for the same reason the Python helper tries it first:
- * whichever key the org is given here is the one every answering test spends.
+ * TEST_AI_MODEL_PROVIDER (`openAI`, `azureOpenAI` or `openAICompatible`), which
+ * CI always sets, picks the provider outright, as it does for the Python helper:
+ * every provider's keys are passed, so only the named one may be used. Unset,
+ * Azure is tried first.
  */
 function modelConfig(type: ModelType): { provider: string; configuration: Record<string, string> } | null {
   const endpoint = process.env.E2E_AI_ENDPOINT;
@@ -44,8 +46,14 @@ function modelConfig(type: ModelType): { provider: string; configuration: Record
     };
   }
 
-  const azure = azureConfig(type);
-  if (azure) return azure;
+  const forced = process.env.TEST_AI_MODEL_PROVIDER?.trim();
+  if (forced === 'azureOpenAI') return azureConfig(type);
+  if (forced === 'openAICompatible') return openAICompatibleConfig(type);
+  if (forced && forced !== 'openAI') return null; // a provider this helper can't configure
+  if (!forced) {
+    const azure = azureConfig(type);
+    if (azure) return azure;
+  }
 
   const apiKey = process.env.TEST_OPENAI_API_KEY || process.env.OPENAI_API_KEY;
   if (!apiKey) return null;
@@ -54,6 +62,18 @@ function modelConfig(type: ModelType): { provider: string; configuration: Record
       ? process.env.TEST_OPENAI_LLM_MODEL || 'gpt-5.4-nano'
       : process.env.TEST_OPENAI_EMBEDDING_MODEL || 'text-embedding-3-small';
   return { provider: 'openAI', configuration: { model, apiKey } };
+}
+
+/** An OpenAI-compatible gateway (Bifrost, LiteLLM): its base URL, key and model ids. */
+function openAICompatibleConfig(type: ModelType): { provider: string; configuration: Record<string, string> } | null {
+  const endpoint = process.env.TEST_OPENAI_COMPATIBLE_ENDPOINT;
+  const apiKey = process.env.TEST_OPENAI_COMPATIBLE_API_KEY;
+  const model =
+    type === 'llm'
+      ? process.env.TEST_OPENAI_COMPATIBLE_LLM_MODEL
+      : process.env.TEST_OPENAI_COMPATIBLE_EMBEDDING_MODEL;
+  if (!endpoint || !apiKey || !model) return null;
+  return { provider: 'openAICompatible', configuration: { endpoint, apiKey, model } };
 }
 
 /**

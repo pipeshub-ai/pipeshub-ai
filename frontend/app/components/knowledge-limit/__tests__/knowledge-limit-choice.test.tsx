@@ -53,4 +53,22 @@ describe('Choosing what a connected app can see', () => {
       picked,
     ]);
   });
+
+  it('keeps a selection the parent fills in after mounting, when the user switches to everything and back', () => {
+    const onChange = vi.fn();
+    const saved: ChatKnowledgeFilters = { apps: [], kb: [], recordGroups: ['rg-1'], records: [] };
+    const view = (value: KnowledgeLimitValue) => (
+      <Theme>
+        <KnowledgeLimitChoice appName="App" idPrefix="t" value={value} onChange={onChange} />
+      </Theme>
+    );
+    const { rerender } = render(view(null));
+    rerender(view(saved));
+
+    fireEvent.click(document.getElementById('t-knowledge-limit-everything')!);
+    rerender(view(null));
+    fireEvent.click(document.getElementById('t-knowledge-limit-only')!);
+
+    expect(onChange.mock.calls.map(([next]) => next)).toEqual([null, saved]);
+  });
 });

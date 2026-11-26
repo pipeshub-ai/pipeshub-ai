@@ -2,7 +2,13 @@
 with a restricted-API-key fallback for clients that don't support OAuth.
 """
 from app.agents.mcp.mcp_server_decorator import mcp_server
-from app.agents.mcp.models import AuthHint, MCPAuthMode, MCPServerTemplate, MCPTransport
+from app.agents.mcp.models import (
+    AuthHint,
+    MCPAuthMode,
+    MCPCategory,
+    MCPServerTemplate,
+    MCPTransport,
+)
 
 
 @mcp_server(
@@ -34,6 +40,13 @@ from app.agents.mcp.models import AuthHint, MCPAuthMode, MCPServerTemplate, MCPT
             ),
         ),
         tags=["payments", "billing", "finance"],
+        category=MCPCategory.FINANCE,
+        capabilities=[
+            "Look up customers",
+            "Check payments and subscriptions",
+            "Issue refunds",
+            "Read invoices",
+        ],
     )
 )
 class StripeMCPServer:

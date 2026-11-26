@@ -1,5 +1,6 @@
 import 'reflect-metadata';
-import { configureEnvelope, deriveKey, sign } from '../../../src/libs/context/envelope';
+import { configureEnvelope, configureInbox, deriveKey, sign } from '../../../src/libs/context/envelope';
+import { MemInbox } from '../../helpers/memory-inbox';
 import { currentOrgContext, makeOrgContext, orgContextStorage, runWithOrgContext } from '../../../src/libs/context/orgContext';
 import { expect } from 'chai';
 import sinon from 'sinon';
@@ -25,6 +26,7 @@ class MockRedisClient extends EventEmitter {
   xack = sinon.stub().resolves(1);
   xgroup = sinon.stub().resolves();
   xautoclaim = sinon.stub().resolves(['0-0', [], []]);
+  xpending = sinon.stub().resolves([]);
   ping = sinon.stub().resolves('PONG');
   exists = sinon.stub().resolves(0);
   scan = sinon.stub().resolves(['0', []]);
@@ -732,6 +734,25 @@ describe('Redis Streams Service', () => {
         await drain(forged, handler);
         expect(handler.called).to.be.false;
         expect(mockRedis.xack.called).to.be.true;
+      });
+
+      it('an event delivered twice (a reclaimed entry and a replayed copy) runs once and both are acked', async () => {
+        const inbox = new MemInbox();
+        configureInbox(inbox);
+        try {
+          const handler = sinon.stub().resolves();
+          const m = sign(KEY, 'test-stream', { orgId: 'org_a' }, makeOrgContext({ orgId: 'org_a', userId: 'u', kind: 'user', source: 'jwt' }));
+          const fields = ['key', 'k', 'value', JSON.stringify(m)];
+          mockRedis.xautoclaim.onFirstCall().resolves(['0-0', [['1-0', fields], ['2-0', fields]], []]);
+          mockRedis.xreadgroup.callsFake(async () => { consumer.running = false; return null; });
+          await consumer.consume(handler);
+          await consumer.consumeLoopPromise;
+          expect(handler.callCount).to.equal(1);
+          expect(mockRedis.xack.args.map((a: unknown[]) => a[2])).to.include.members(['1-0', '2-0']);
+          expect([...inbox.rows]).to.deep.equal([`org_a|test-group|${m.ctx.eventId}`]);
+        } finally {
+          configureInbox(null);
+        }
       });
 
       it('the consume loop does not keep the caller org context', async () => {

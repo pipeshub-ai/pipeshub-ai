@@ -1,0 +1,23 @@
+{
+  "provider": {
+    "pipeshub": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "PipesHub",
+      "options": {
+        "baseURL": "http://127.0.0.1:18801/v1",
+        "apiKey": "{env:PH_MODEL_TOKEN}",
+        "headers": { "X-PipesHub-Run": "{env:PH_RUN_ID}" }
+      },
+      "models": { "fake-model": { "name": "Fake", "tool_call": true, "limit": { "context": 128000, "output": 4096 } } }
+    }
+  },
+  "model": "pipeshub/fake-model",
+  "mcp": {
+    "pipeshub": {
+      "type": "remote",
+      "url": "http://127.0.0.1:18802/mcp",
+      "headers": { "Authorization": "Bearer {env:PH_MCP_TOKEN}" },
+      "oauth": false
+    }
+  }
+}

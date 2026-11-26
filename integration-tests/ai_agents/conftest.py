@@ -48,6 +48,17 @@ from helper.stored_names import stored_name
 logger = logging.getLogger("ai-agents-it")
 
 
+# The keys each provider TEST_AI_MODEL_PROVIDER can name needs, for the skip message.
+_PROVIDER_SECRETS = {
+    "openAI": ["TEST_OPENAI_API_KEY"],
+    "azureOpenAI": ["TEST_AZURE_OPENAI_API_KEY", "TEST_AZURE_OPENAI_ENDPOINT", "TEST_AZURE_OPENAI_DEPLOYMENT_NAME"],
+    "openAICompatible": [
+        "TEST_OPENAI_COMPATIBLE_API_KEY", "TEST_OPENAI_COMPATIBLE_ENDPOINT", "TEST_OPENAI_COMPATIBLE_LLM_MODEL",
+    ],
+    "ollama": ["TEST_OLLAMA_ENDPOINT"],
+}
+
+
 @pytest.fixture(scope="session")
 def ai_provider(ai_models_configured) -> tuple[str, str, dict[str, Any]]:
     """The provider the run has credentials for, as ``(provider, model, configuration)``."""
@@ -56,7 +67,10 @@ def ai_provider(ai_models_configured) -> tuple[str, str, dict[str, Any]]:
     if resolved is None:
         source_unavailable(
             "no LLM provider credentials for the AI models suite",
-            secrets=["TEST_AZURE_OPENAI_API_KEY", "TEST_AZURE_OPENAI_ENDPOINT", "TEST_AZURE_OPENAI_DEPLOYMENT_NAME"],
+            # The workflows default the provider to openAI, as the model setup does.
+            secrets=_PROVIDER_SECRETS.get(
+                os.getenv("TEST_AI_MODEL_PROVIDER", "").strip() or "openAI", ["TEST_OPENAI_API_KEY"]
+            ),
             required=secrets_required(),
         )
     return resolved

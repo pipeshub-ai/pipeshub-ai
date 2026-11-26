@@ -1,0 +1,27 @@
+event: RUN_STARTED
+data: {"type": "RUN_STARTED", "threadId": "conv-golden", "runId": "uuid-1"}
+
+event: STATE_SNAPSHOT
+data: {"type": "STATE_SNAPSHOT", "runId": "uuid-1", "snapshot": {"run_id": "uuid-1", "agent_id": "uuid-2", "trace_id": "uuid-3", "parent_run_id": null, "role_name": "pipeshub-agent", "status": "starting", "current_turn": 0, "current_tool": null, "current_child_run_id": null, "hil_request_id": null, "goal_description": "Say hello.", "started_at": "<timestamp>", "updated_at": "<timestamp>"}}
+
+event: STATE_SNAPSHOT
+data: {"type": "STATE_SNAPSHOT", "runId": "uuid-1", "snapshot": {"run_id": "uuid-1", "agent_id": "uuid-2", "trace_id": "uuid-3", "parent_run_id": null, "role_name": "pipeshub-agent", "status": "calling_llm", "current_turn": 0, "current_tool": null, "current_child_run_id": null, "hil_request_id": null, "goal_description": "Say hello.", "started_at": "<timestamp>", "updated_at": "<timestamp>"}}
+
+event: TEXT_MESSAGE_START
+data: {"type": "TEXT_MESSAGE_START", "messageId": "msg-4", "role": "assistant", "runId": "uuid-1"}
+
+event: TEXT_MESSAGE_END
+data: {"type": "TEXT_MESSAGE_END", "messageId": "msg-4", "runId": "uuid-1"}
+
+event: STATE_SNAPSHOT
+data: {"type": "STATE_SNAPSHOT", "runId": "uuid-1", "snapshot": {"run_id": "uuid-1", "agent_id": "uuid-2", "trace_id": "uuid-3", "parent_run_id": null, "role_name": "pipeshub-agent", "status": "completed", "current_turn": 0, "current_tool": null, "current_child_run_id": null, "hil_request_id": null, "goal_description": "Say hello.", "started_at": "<timestamp>", "updated_at": "<timestamp>"}}
+
+event: STATE_DELTA
+data: {"type": "STATE_DELTA", "runId": "uuid-1", "delta": [{"op": "replace", "path": "/citations", "value": []}, {"op": "replace", "path": "/normalizedAnswer", "value": "Hello! No planning needed for that."}, {"op": "replace", "path": "/rawLength", "value": 35}]}
+
+event: STATE_SNAPSHOT
+data: {"type": "STATE_SNAPSHOT", "runId": "uuid-1", "snapshot": {"final": true, "parts": [{"type": "text", "content": "Hello! No planning needed for that.", "runId": "uuid-1", "isFinal": true}], "answer": "Hello! No planning needed for that.", "citations": [], "confidence": null, "succeeded_tool_names": [], "failed_tool_names": []}}
+
+event: RUN_FINISHED
+data: {"type": "RUN_FINISHED", "runId": "uuid-1", "threadId": "conv-golden", "result": {"parts": [{"type": "text", "content": "Hello! No planning needed for that.", "runId": "uuid-1", "isFinal": true}], "answer": "Hello! No planning needed for that.", "citations": [], "confidence": null, "succeeded_tool_names": [], "failed_tool_names": [], "label": {"complete": true, "sources": []}}}
+

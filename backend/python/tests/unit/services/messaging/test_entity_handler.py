@@ -14,7 +14,10 @@ from app.config.constants.arangodb import (
     CollectionNames,
     ConnectorScopes,
 )
-from app.connectors.core.base.connector.connector_service import connector_sync_lock
+from app.connectors.core.base.connector.connector_service import (
+    connector_sync_lock,
+    syncs_started,
+)
 from app.connectors.core.sync.sync_runner import _run_sync_alone
 from app.core.org_context import for_org
 from app.exceptions.non_retryable import NonRetryableError
@@ -35,7 +38,13 @@ def _make_entity_service(graph_provider=None, app_container=None, logger=None):
 
     logger = logger or MagicMock()
     graph_provider = graph_provider or AsyncMock()
-    app_container = app_container or MagicMock()
+    if app_container is None:
+        app_container = MagicMock()
+        # An empty store: a user's deletion removes their OAuth apps, and that step raises on failure.
+        store = app_container.config_service.return_value
+        store.list_keys_in_directory = AsyncMock(return_value=[])
+        # EE reads each org's keys through an org-scoped wrapper of the raw service.
+        store.get_raw_service.return_value = store
     app_container.messaging_producer = AsyncMock()
     app_container.messaging_producer.send_message = AsyncMock()
 
@@ -1920,6 +1929,106 @@ class TestUserAddedConnectorLink:
         async with connector_sync_lock("c1"):
             assert await svc._link_connector("c1") is False
         c.link_new_users.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_pass_moves_the_sync_start_time_and_rewrites_its_mark_until_it_ends(self, no_debounce: None) -> None:
+        """A reindex sees a sync by its start time, and a pass writes access too: it moves a pseudo-group's grants onto its user.
+        A reindex in another process sees the pass by its mark, which it rewrites while it runs and never clears: an
+        overlapping pass in a third process may share it."""
+        events: list[str] = []
+
+        async def link() -> None:
+            await asyncio.sleep(0.05)
+
+        c = _connector(link=link)
+        svc = _link_service({"c1": c})
+        written: list[dict] = []
+        svc.graph_provider.batch_upsert_nodes = AsyncMock(
+            side_effect=lambda nodes, collection: (events.append(collection), written.append(dict(nodes[0]))),
+        )
+        before = syncs_started("c1")
+        with patch("app.services.messaging.kafka.handlers.entity.USER_LINK_MARK_TTL_MS", 40):
+            assert await svc._link_connector("c1") is True
+        start, *refreshes = written
+        assert start["userLinkStartedAtTimestamp"] == start["lastSyncStartedAtTimestamp"]
+        assert refreshes and all(set(r) == {"id", "userLinkStartedAtTimestamp"} for r in refreshes)
+        assert all(r["userLinkStartedAtTimestamp"] >= start["userLinkStartedAtTimestamp"] for r in refreshes)
+        assert set(events) == {CollectionNames.APPS.value}
+        assert syncs_started("c1") == before + 1      # a reindex in this process sees it even when the store refuses both writes
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("answer", [RuntimeError("rejected"), False, None])
+    async def test_a_pass_whose_start_is_not_recorded_does_not_run(self, no_debounce: None, answer: object) -> None:
+        """A store may refuse by raising or by answering False (the interface allows both)."""
+        c = _connector()
+        svc = _link_service({"c1": c})
+        svc.graph_provider.batch_upsert_nodes = AsyncMock(
+            side_effect=answer if isinstance(answer, Exception) else None, return_value=answer,
+        )
+        assert await svc._link_connector("c1") is True
+        c.link_new_users.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("answer", [RuntimeError("rejected"), False])
+    async def test_a_pass_whose_mark_cannot_be_rewritten_stops(self, no_debounce: None, answer: object) -> None:
+        """Past its TTL a reindex in another process no longer sees the mark, so the pass must not run on unseen."""
+        stopped = asyncio.Event()
+
+        async def link() -> None:
+            try:
+                await asyncio.sleep(2)
+            except asyncio.CancelledError:
+                stopped.set()
+                raise
+
+        c = _connector(link=link)
+        svc = _link_service({"c1": c})
+        svc.graph_provider.batch_upsert_nodes = AsyncMock(side_effect=[True, answer])
+        loop = asyncio.get_running_loop()
+        began = loop.time()
+        with patch("app.services.messaging.kafka.handlers.entity.USER_LINK_MARK_TTL_MS", 40):
+            assert await svc._link_connector("c1") is True
+        # wall-clock-ok: stopped 10 ms in; without the stop the pass waits out the 5 s rewrite
+        assert loop.time() - began < 1      # stopped at the refused rewrite, 10 ms in
+        assert stopped.is_set() and svc.graph_provider.batch_upsert_nodes.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_a_pass_whose_mark_rewrite_stalls_stops_before_the_mark_expires(self, no_debounce: None) -> None:
+        """A rewrite that hangs (a stalled store) would leave the last mark to expire while the pass runs on unseen: each
+        write has a quarter of the TTL, so the pass stops before the mark it holds is older than the TTL."""
+        stopped = asyncio.Event()
+
+        async def link() -> None:
+            try:
+                await asyncio.sleep(5)
+            except asyncio.CancelledError:
+                stopped.set()
+                raise
+
+        async def write(nodes: list, collection: str) -> bool:
+            if written:
+                await asyncio.sleep(5)      # the rewrite never answers in time
+            written.append(nodes[0])
+            return True
+
+        written: list[dict] = []
+        c = _connector(link=link)
+        svc = _link_service({"c1": c})
+        svc.graph_provider.batch_upsert_nodes = AsyncMock(side_effect=write)
+        loop = asyncio.get_running_loop()
+        began = loop.time()
+        with patch("app.services.messaging.kafka.handlers.entity.USER_LINK_MARK_TTL_MS", 40):
+            assert await svc._link_connector("c1") is True
+        assert stopped.is_set() and len(written) == 1       # cancelled at the rewrite's deadline; the stalled rewrite never landed
+        # wall-clock-ok: a watchdog: without the deadline the pass waits out the 5 s rewrite
+        assert loop.time() - began < 1      # a watchdog only: without the deadline the pass waits out the 5 s rewrite
+
+    @pytest.mark.asyncio
+    async def test_a_pass_that_fails_partway_writes_nothing_after_it(self, no_debounce: None) -> None:
+        c = _connector(link=AsyncMock(side_effect=RuntimeError("source down")))
+        svc = _link_service({"c1": c})
+        assert await svc._link_connector("c1") is True
+        assert svc.graph_provider.batch_upsert_nodes.await_count == 1      # its mark goes stale
 
     @pytest.mark.asyncio
     async def test_a_sync_admitted_during_a_pass_runs_after_it(self, no_debounce: None) -> None:

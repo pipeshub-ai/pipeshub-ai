@@ -1,4 +1,4 @@
-"""msg, xlsm, log, cfg, docm, dotx and potx from real files, through both pipelines and the record handler.
+"""msg, xlsm, log, cfg, docm, dotx, potx and pptm from real files, through both pipelines and the record handler.
 
 odt and rtf need LibreOffice and are in ``test_realfile_libreoffice_types``.
 """
@@ -16,6 +16,7 @@ from tests.support import new_type_samples as samples
 from tests.support.office_samples import (
     encrypted_docm,
     encrypted_docx,
+    encrypted_pptm,
     encrypted_pptx,
     encrypted_xlsm,
 )
@@ -71,6 +72,50 @@ async def test_the_parsing_service_reads_each_type(ext: str) -> None:
 
 async def test_the_parsing_service_reads_a_mail() -> None:
     assert _MSG_TEXT in all_text(await service("msg", samples.msg_with_html_body()))
+
+
+_PPTM_MIME = "application/vnd.ms-powerpoint.presentation.macroEnabled.12"
+_PPTM = samples.make_pptm(SENTINEL)
+
+
+# Read by the pptx reader as it is, by its mime or by its .pptm extension whatever the stored mime;
+# python-pptx opens a macro-enabled deck, so nothing rewrites it first.
+@pytest.mark.parametrize(
+    ("ext", "mime", "name"),
+    [(None, _PPTM_MIME, "deck"), ("unknown", _PPTM_MIME, "deck"), ("pptm", _PPTM_MIME, "deck.pptm"),
+     ("pptm", None, "deck.pptm"), ("pptm", "application/octet-stream", "deck.pptm"),
+     ("pptm", "text/plain", "deck.pptm"), ("pptm", "text/plain; charset=utf-8", "deck.pptm"),
+     ("PPTM", "application/x-pdf", "deck.PPTM")],
+)
+async def test_the_legacy_pipeline_reads_a_macro_enabled_deck(ext: str | None, mime: str | None, name: str) -> None:
+    containers, docling_inputs, record = await legacy(ext, mime, _PPTM, name=name)
+    assert SENTINEL in _text(containers)
+    assert docling_inputs == [_PPTM]
+    assert record["indexingStatus"] == "COMPLETED"
+
+
+@pytest.mark.parametrize("mime", [_PPTM_MIME, None, "application/octet-stream", "text/plain; charset=utf-8"])
+async def test_a_macro_enabled_deck_passes_the_gate_with_or_without_its_mime(mime: str | None) -> None:
+    record, downloaded = await handler_run("pptm", mime, _PPTM, name="deck.pptm")
+    assert (record["indexingStatus"], downloaded) == ("COMPLETED", True)
+
+
+async def test_a_pptm_whose_bytes_are_text_fails_instead_of_being_read_as_text() -> None:
+    # Main read a .pptm stored as text/plain as text; it is now read as the deck its name says.
+    record, downloaded = await handler_run("pptm", "text/plain", b"plain notes, not a deck\n" * 20, name="notes.pptm")
+    assert downloaded
+    assert record["indexingStatus"] == "FAILED"
+
+
+async def test_the_parsing_service_reads_a_macro_enabled_deck() -> None:
+    assert file_types.parse_format(_PPTM_MIME, None) == "pptx"
+    assert SENTINEL in all_text(await service("pptm", _PPTM, mime=_PPTM_MIME))
+
+
+@pytest.mark.parametrize("mime", [_PPTM_MIME, "application/octet-stream"])
+async def test_a_password_protected_macro_enabled_deck_is_password_protected(mime: str) -> None:
+    record, _ = await handler_run("pptm", mime, encrypted_pptm(), name="deck.pptm")
+    assert record["indexingStatus"] == "PASSWORD_PROTECTED"
 
 
 @pytest.mark.parametrize("ext", ["docm", "dotx", "potx"])

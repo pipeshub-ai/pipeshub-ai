@@ -1,0 +1,47 @@
+- id: REGR-15
+  title: 'A Jira level group whose members were not read grants no one on their own: a reporter Jira took out of it gets no grant'
+  source: >-
+    Review of the level readers: a group read that fails keeps the group's stored members in the graph, but they are not used to grant the
+    issue to its reporter on their own. Jira shows a leveled issue only to someone in the level ("If someone isn't assigned to a security
+    scheme, they won't be able to view those work items", https://support.atlassian.com/jira-cloud-administration/docs/configure-issue-security-schemes/)
+  rule: intersection
+  world:
+    principals:
+      - {id: rep}
+      - {id: asg}
+      - {id: dev}
+      - {id: g:admins, kind: group}
+    nodes:
+      - {id: J, kind: app, app_type: JIRA}
+      - {id: P, kind: group, connector: J, rule: OPEN, parents: [J], belongs: [J]}
+      - {id: L, kind: group, connector: J, rule: RESTRICTED, access_only: true, parents: [P], inherits: [P], belongs: [P]}
+      - {id: i, kind: record, connector: J, rule: OPEN, parents: [P, L], inherits: [L], belongs: [P]}
+    grants:
+      - [dev, P]
+      - [g:admins, L]
+      - [rep, i]
+      - [asg, i]
+    memberships:
+      - [rep, g:admins]
+      - [asg, g:admins]
+      - [dev, g:admins]
+    gates:
+      - [rep, J]
+      - [asg, J]
+      - [dev, J]
+  mutations:
+    - {kind: grant_removed, node: i, ref: rep}
+  expect:
+    before:
+      rep: {i: admit}
+      asg: {i: admit}
+      dev: {i: admit}
+    verdicts:
+      rep: {i: deny}
+      asg: {i: admit}
+      dev: {i: admit}
+  tags: [regression, jira, "cell:jira/level-holder", "cell:jira/level-members-change"]
+  comment: >-
+    Jira took rep out of g:admins and the next read of the group failed: the graph keeps rep in it, as stored. The level's members are unknown
+    to the sync, so the issue is written without rep's own grant (LEVEL_MEMBERS_UNREAD). rep's stored membership alone does not open it: the
+    level asks for the project too, which rep cannot browse. asg's grant stays, so the issue keeps a grant of its own.

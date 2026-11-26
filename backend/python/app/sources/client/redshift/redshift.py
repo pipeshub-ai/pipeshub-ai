@@ -22,6 +22,7 @@ from typing import Any, Optional
 from pydantic import BaseModel, Field, ValidationError
 
 from app.config.configuration_service import ConfigurationService
+from app.sources.client.http.send_ambiguity import note_dbapi_failure
 from app.sources.client.iclient import IClient
 
 logger = logging.getLogger(__name__)
@@ -189,6 +190,14 @@ class RedshiftClient:
             self._connection = None
             return False
 
+    def _rollback_after_failure(self) -> None:
+        # On a lost connection the rollback fails too; its error must not replace the query's.
+        try:
+            self._connection.rollback()
+        except Exception as e:
+            logger.warning(f"[RedshiftClient] Rollback after a failed query failed: {e}")
+            self._connection = None
+
     @staticmethod
     def _set_statement_timeout(cursor: "redshift_connector.Cursor", timeout_s: int | None) -> None:
         # LOCAL: the commit or rollback that ends each call drops it, so later queries keep the session's limit.
@@ -246,7 +255,8 @@ class RedshiftClient:
                 return results
 
             except Exception as e:
-                self._connection.rollback()
+                note_dbapi_failure(e, driver=redshift_connector, statement=query)
+                self._rollback_after_failure()
                 logger.error(f"🔧 [RedshiftClient] Query execution failed: {e}")
                 raise RuntimeError(f"Query execution failed: {e}") from e
 
@@ -327,7 +337,8 @@ class RedshiftClient:
                 return (columns, rows)
 
             except Exception as e:
-                self._connection.rollback()
+                note_dbapi_failure(e, driver=redshift_connector, statement=query)
+                self._rollback_after_failure()
                 logger.error(f"🔧 [RedshiftClient] Query execution failed: {e}")
                 raise RuntimeError(f"Query execution failed: {e}") from e
 

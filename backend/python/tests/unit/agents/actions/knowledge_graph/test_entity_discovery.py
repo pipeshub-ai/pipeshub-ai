@@ -26,7 +26,8 @@ from app.modules.retrieval.entity_permissions import (
 )
 from app.modules.retrieval.selection_scope import SelectionScope
 from app.modules.retrieval.title_hits import TITLE_SEARCH_TOP_K
-from tests.support.provider_errors import assert_text_free, openai_error, with_cause
+from tests.support.log_capture import assert_text_free
+from tests.support.provider_errors import SENTINELS, openai_error, with_cause
 
 CONTEXT = EntityAccessContext(
     org_id="org-1",
@@ -184,6 +185,17 @@ class TestGuards:
         assert ok is True
         _, search_kwargs = patched[1].call_args_list[0]
         assert (search_kwargs["entity_types"], search_kwargs["kinds"]) == (["person", "named_entity"], ["person"])
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("entity_type", ["person", "organization"])
+    async def test_an_explicit_named_entity_search_is_not_narrowed_by_a_type_that_is_also_a_kind(
+        self, patched, monkeypatch, entity_type,
+    ) -> None:
+        monkeypatch.setattr(entity_discovery, "_named_entities_enabled", AsyncMock(return_value=True))
+        ok, _ = await execute_search_entities(_state(), "Mira", entity_types=[entity_type, "named_entity"])
+        assert ok is True
+        _, search_kwargs = patched[1].call_args_list[0]
+        assert (search_kwargs["entity_types"], search_kwargs["kinds"]) == ([entity_type, "named_entity"], None)
 
     @pytest.mark.asyncio
     async def test_access_failure_is_a_failed_call_not_empty_results(self, patched) -> None:
@@ -455,6 +467,7 @@ class TestATypeFilterThatMatchesNoName:
 
         payload = json.loads((await execute_search_entities(state, "SAAS Launch", entity_types=["record_group"]))[1])
 
+        # wall-clock-ok: a hang guard: the fallback search is instant, a stuck one waits out its 30 s budget
         assert asyncio.get_running_loop().time() - started < 2
         assert [r["entityId"] for r in payload["results"]] == ["rg-sd", "rg-es"]
         assert payload["incomplete"] is True
@@ -755,6 +768,15 @@ class TestWhereEntitySearchIsOffered:
         assert ok and "search_by_entities" in " ".join(payload["kindNotes"])
         assert (search.call_args_list[0].kwargs["entity_types"], search.call_args_list[0].kwargs["kinds"]) == (["person"], None)
 
+    @pytest.mark.asyncio
+    async def test_person_beside_an_explicit_named_entity_keeps_the_named_entity_search(self, patched) -> None:
+        _, search = patched
+        ok, _ = await self._offered(query="Sam", entity_types=["person", "named_entity"])
+        assert ok
+        assert (search.call_args_list[0].kwargs["entity_types"], search.call_args_list[0].kwargs["kinds"]) == (
+            ["person", "named_entity"], None,
+        )
+
 
 class TestWithoutEntitySearch:
     """Not offered: no kind check, no kind on hits, no note naming a tool the
@@ -903,4 +925,4 @@ async def test_a_failed_query_embedding_is_logged_by_type_without_the_provider_t
     assert (line.levelno, line.error_type, line.cause_type, line.exc_info) == (
         logging.WARNING, "EntityAccessError", "RateLimitError", None,
     )
-    assert_text_free(caplog.records)
+    assert_text_free(caplog.records, *SENTINELS)

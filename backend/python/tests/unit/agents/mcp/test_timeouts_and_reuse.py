@@ -4,7 +4,7 @@ and the assistant's MCP credentials read once."""
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -38,8 +38,13 @@ from app.agents.mcp.models import (
 )
 from app.api.routes import mcp_servers
 from app.api.routes.mcp_servers import create_instance, update_instance
+from harness_core.testing.virtual_time import run_on_virtual_time
+from tests.support.bound_org import bind_test_org
 from tests.unit.agents.adapter.conftest import make_context
 from tests.unit.api.routes.mcp_route_fakes import FakeConfigService, route_request
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 
 def _config(**overrides: Any) -> MCPServerConfig:  # noqa: ANN401
@@ -95,39 +100,40 @@ class TestInstanceTimeouts:
 
 
 class TestListingsDoNotWaitOnASlowServer:
-    async def test_a_slow_server_reports_a_timeout_and_the_rest_still_list(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        import time
+    def test_a_slow_server_reports_a_timeout_and_the_rest_still_list(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        async def main() -> None:
+            from app.agents.mcp.models import MCPToolInfo
+            from app.api.routes.mcp_servers import get_my_mcp_servers
 
-        from app.agents.mcp.models import MCPToolInfo
-        from app.api.routes.mcp_servers import get_my_mcp_servers
+            def _instance(instance_id: str, type_id: str) -> dict[str, Any]:
+                return {
+                    "_id": instance_id, "orgId": "org-1", "createdBy": "admin-1", "name": type_id, "typeId": type_id,
+                    "transport": "streamable_http", "authMode": "none", "url": "https://mcp.example.com",
+                    "createdAt": 1, "updatedAt": 1,
+                }
 
-        def _instance(instance_id: str, type_id: str) -> dict[str, Any]:
-            return {
-                "_id": instance_id, "orgId": "org-1", "createdBy": "admin-1", "name": type_id, "typeId": type_id,
-                "transport": "streamable_http", "authMode": "none", "url": "https://mcp.example.com",
-                "createdAt": 1, "updatedAt": 1,
-            }
+            store = FakeConfigService({
+                "/services/mcp/instances/fast": _instance("fast", "fast"),
+                "/services/mcp/instances/slow": _instance("slow", "slow"),
+            })
 
-        store = FakeConfigService({
-            "/services/mcp/instances/fast": _instance("fast", "fast"),
-            "/services/mcp/instances/slow": _instance("slow", "slow"),
-        })
+            async def _discover(instance: dict, auth: dict, owner: str, cfg: object, **kwargs: Any) -> tuple:  # noqa: ANN401
+                if instance["_id"] == "slow":
+                    await asyncio.sleep(5)
+                return [MCPToolInfo(name="t", namespaced_name=f"mcp_{instance['_id']}_t")], auth
 
-        async def _discover(instance: dict, auth: dict, owner: str, cfg: object, **kwargs: Any) -> tuple:  # noqa: ANN401
-            if instance["_id"] == "slow":
-                await asyncio.sleep(5)
-            return [MCPToolInfo(name="t", namespaced_name=f"mcp_{instance['_id']}_t")], auth
+            monkeypatch.setattr(mcp_servers, "LISTING_DISCOVERY_BUDGET_SECONDS", 0.05)
+            started = asyncio.get_running_loop().time()
+            with patch.object(mcp_servers, "discover_tools_for_owner", new=_discover),              patch.object(mcp_servers, "_check_user_is_admin", new=AsyncMock(return_value=False)):
+                listed = await get_my_mcp_servers(route_request(store, user_id="u1"), include_tools=True)
 
-        monkeypatch.setattr(mcp_servers, "LISTING_DISCOVERY_BUDGET_SECONDS", 0.05)
-        started = time.monotonic()
-        with patch.object(mcp_servers, "discover_tools_for_owner", new=_discover),              patch.object(mcp_servers, "_check_user_is_admin", new=AsyncMock(return_value=False)):
-            listed = await get_my_mcp_servers(route_request(store, user_id="u1"), include_tools=True)
+            assert asyncio.get_running_loop().time() - started == pytest.approx(0.05)
+            by_id = {i["_id"]: i for i in listed["instances"]}
+            assert by_id["fast"]["tools"] and not by_id["fast"]["toolsTimedOut"]
+            assert by_id["slow"]["toolsTimedOut"] and "longer than" in by_id["slow"]["toolsError"]
+            assert by_id["slow"]["toolsErrorCode"] == "timeout"
 
-        assert time.monotonic() - started < 2
-        by_id = {i["_id"]: i for i in listed["instances"]}
-        assert by_id["fast"]["tools"] and not by_id["fast"]["toolsTimedOut"]
-        assert by_id["slow"]["toolsTimedOut"] and "longer than" in by_id["slow"]["toolsError"]
-        assert by_id["slow"]["toolsErrorCode"] == "timeout"
+        run_on_virtual_time(main)
 
     def test_connect_timeout_tops_out_at_45_seconds(self) -> None:
         assert _payload(connect_timeout_seconds=45).connect_timeout_seconds == 45
@@ -201,41 +207,42 @@ class TestAListingDiscoversABoundedNumberOfServers:
                     budgets.append(budget)
         assert budgets == [10, 8.0, 1.5, 0]
 
-    async def test_servers_whose_turn_comes_after_the_deadline_are_reported_as_timed_out(
+    def test_servers_whose_turn_comes_after_the_deadline_are_reported_as_timed_out(
         self, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        import time
+        async def main() -> None:
+            from app.agents.mcp.models import MCPToolInfo
 
-        from app.agents.mcp.models import MCPToolInfo
+            discovered: list[str] = []
 
-        discovered: list[str] = []
+            async def _discover(instance: dict, auth: dict, owner: str, cfg: object, **kwargs: Any) -> tuple:  # noqa: ANN401
+                discovered.append(instance["_id"])
+                # The first two answer within the deadline; every later one would take 30 s, so a listing
+                # that waited for them instead of cutting at the deadline could not finish under the bound.
+                await asyncio.sleep(0.2 if len(discovered) <= 2 else 30)
+                return [MCPToolInfo(name="t", namespaced_name=f"mcp_{instance['_id']}_t")], auth
 
-        async def _discover(instance: dict, auth: dict, owner: str, cfg: object, **kwargs: Any) -> tuple:  # noqa: ANN401
-            discovered.append(instance["_id"])
-            # The first two answer within the deadline; every later one would take 30 s, so a listing
-            # that waited for them instead of cutting at the deadline could not finish under the bound.
-            await asyncio.sleep(0.2 if len(discovered) <= 2 else 30)
-            return [MCPToolInfo(name="t", namespaced_name=f"mcp_{instance['_id']}_t")], auth
+            monkeypatch.setattr(mcp_servers, "LISTING_DISCOVERY_CONCURRENCY", 2)
+            monkeypatch.setattr(mcp_servers, "LISTING_DISCOVERY_DEADLINE_SECONDS", 0.3)
+            monkeypatch.setattr(mcp_servers, "LISTING_DISCOVERY_MIN_SECONDS", 0.05)
+            # A server's own budget (20 s) is longer than the bound: only a wait clipped to what is left of
+            # the 0.3 s deadline, not the per-server budget, ends the slow servers in time.
+            monkeypatch.setattr(mcp_servers, "LISTING_DISCOVERY_BUDGET_SECONDS", 20)
+            started = asyncio.get_running_loop().time()
+            with patch.object(mcp_servers, "discover_tools_for_owner", new=_discover):
+                instances = await _list_my_servers(_listing_store(10))
 
-        monkeypatch.setattr(mcp_servers, "LISTING_DISCOVERY_CONCURRENCY", 2)
-        monkeypatch.setattr(mcp_servers, "LISTING_DISCOVERY_DEADLINE_SECONDS", 0.3)
-        monkeypatch.setattr(mcp_servers, "LISTING_DISCOVERY_MIN_SECONDS", 0.05)
-        # A server's own budget (20 s) is longer than the bound: only a wait clipped to what is left of
-        # the 0.3 s deadline, not the per-server budget, ends the slow servers in time.
-        monkeypatch.setattr(mcp_servers, "LISTING_DISCOVERY_BUDGET_SECONDS", 20)
-        started = time.monotonic()
-        with patch.object(mcp_servers, "discover_tools_for_owner", new=_discover):
-            instances = await _list_my_servers(_listing_store(10))
+            assert asyncio.get_running_loop().time() - started == pytest.approx(0.3)
+            listed = [entry for entry in instances if entry["tools"]]
+            late = [entry for entry in instances if entry["toolsTimedOut"]]
+            assert len(listed) == 2
+            assert len(late) == 8
+            assert all(entry["toolsErrorCode"] == "timeout" for entry in late)
+            assert all("limited to 0.3 seconds" in entry["toolsError"] for entry in late)
+            # Servers whose turn came with less than the minimum left were never contacted.
+            assert len(discovered) <= 4
 
-        assert time.monotonic() - started < 10
-        listed = [entry for entry in instances if entry["tools"]]
-        late = [entry for entry in instances if entry["toolsTimedOut"]]
-        assert len(listed) == 2
-        assert len(late) == 8
-        assert all(entry["toolsErrorCode"] == "timeout" for entry in late)
-        assert all("limited to 0.3 seconds" in entry["toolsError"] for entry in late)
-        # Servers whose turn came with less than the minimum left were never contacted.
-        assert len(discovered) <= 4
+        run_on_virtual_time(main)
 
     async def test_a_server_whose_turn_leaves_too_little_time_is_not_contacted(
         self, monkeypatch: pytest.MonkeyPatch,
@@ -440,3 +447,9 @@ class TestAssistantPrefetch:
 
         assert [s["instanceId"] for s in servers] == ["a"]
         assert resolved == {"a": {"instance": instances[0], "auth": auths["a"]}}
+
+
+@pytest.fixture(autouse=True)
+def _bound_org() -> Iterator[str]:
+    """The auth middleware binds the verified token's org; these tests call the route functions directly."""
+    yield from bind_test_org("org-1")

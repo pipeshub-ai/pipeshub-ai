@@ -26,6 +26,14 @@ export function safeLink(value: unknown): string | undefined {
   }
 }
 
+const MAILTO = /^mailto:[^\s@/?#]+@[^\s@/?#]+(?:\?[^\s]*)?$/i;
+
+/** A link a tool's text may carry: `safeLink`'s http(s), or a mailto to one address; else undefined. */
+export function safeHref(value: unknown): string | undefined {
+  if (typeof value === 'string' && value.length <= 2000 && MAILTO.test(value)) return value;
+  return safeLink(value);
+}
+
 export function toolResultView(value: unknown): ToolResultView | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const raw = value as Record<string, unknown>;

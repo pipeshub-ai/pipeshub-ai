@@ -14,6 +14,7 @@ import {
   forOrg,
   system,
   spawnDetached,
+  detachedInterval,
   MissingOrgContext,
   OrgMismatch,
   SystemContextNotAllowed,
@@ -105,6 +106,23 @@ describe('orgContext', () => {
     expect(await run(spawnDetached)).to.deep.equal(['MissingOrgContext', 'MissingOrgContext', 'MissingOrgContext'])
   })
 
+  it('detachedInterval ticks with no org even when started inside one, and does not hold the process open', async () => {
+    const seen: string[] = []
+    let timer!: NodeJS.Timeout
+    runWithOrgContext(user('org_a'), () => {
+      timer = detachedInterval(() => {
+        try { seen.push(currentOrgContext().orgId as string) } catch (e) { seen.push((e as Error).name) }
+      }, 1)
+    })
+    while (seen.length < 2) await sleep(2)
+    clearInterval(timer)
+    expect(seen.slice(0, 2)).to.deep.equal(['MissingOrgContext', 'MissingOrgContext'])
+    expect(timer.hasRef()).to.equal(false)
+    const kept = detachedInterval(() => undefined, 1000, { keepAlive: true })
+    expect(kept.hasRef()).to.equal(true)
+    clearInterval(kept)
+  })
+
   it('request-scoped child work keeps the caller context without any helper', async () => {
     await runWithOrgContext(user('org_a'), async () => {
       const child = new Promise<string>((r) => setImmediate(() => r(currentOrgContext().orgId as string)))
@@ -119,8 +137,8 @@ describe('orgContext', () => {
       else process.env.ORG_CONTEXT_MODE = prev
     })
 
-    it('shadow (default) counts missing and mismatched access and lets it through', () => {
-      delete process.env.ORG_CONTEXT_MODE
+    it('shadow counts missing and mismatched access and lets it through', () => {
+      process.env.ORG_CONTEXT_MODE = 'shadow'
       const n = (k: string) => orgContextViolations.get(k) ?? 0
       const m0 = n('missing:site-a'), x0 = n('mismatch:site-b')
       expect(ambientOrg('org_x', 'site-a')).to.equal('org_x')
@@ -131,6 +149,15 @@ describe('orgContext', () => {
       })
       expect(n('missing:site-a')).to.equal(m0 + 1)
       expect(n('mismatch:site-b')).to.equal(x0 + 1)
+    })
+
+    it('enforce is the default, also for an empty value', () => {
+      for (const unset of [undefined, '', ' ']) {
+        if (unset === undefined) delete process.env.ORG_CONTEXT_MODE
+        else process.env.ORG_CONTEXT_MODE = unset
+        expect(validateMode()).to.equal(true)
+        expect(() => ambientOrg('org_x', 's-default')).to.throw(MissingOrgContext)
+      }
     })
 
     it('rejects an unknown ORG_CONTEXT_MODE instead of falling back to shadow', () => {

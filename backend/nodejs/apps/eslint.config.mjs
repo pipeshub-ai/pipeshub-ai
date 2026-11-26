@@ -167,6 +167,14 @@ export default tseslint.config(
 
   // Ignore patterns
   {
-    ignores: ['dist/**', 'node_modules/**', '**/*.js', '**/*.mjs'],
+    ignores: [
+      'dist/**',
+      'node_modules/**',
+      '**/*.js',
+      '**/*.mjs',
+      'src/modules/agent-harness/contracts/generated/**',
+      'src/modules/agent-harness/contracts/vectors/**',
+      'src/modules/control-plane/**/*.generated.ts',
+    ],
   },
 );
