@@ -16,6 +16,11 @@ import pytest
 
 from app.core.db.uow import Tx
 from app.core.org_context import OrgContext, bind
+from app.services.graph_db.postgres.access import CHILDREN, CHILDREN_OPEN
+from app.services.graph_db.postgres.kg.reader import seeks
+from tests.support import plan_gate
+
+from .test_grants import in_org
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -188,3 +193,46 @@ async def test_a_batch_of_virtual_record_ids_is_read_by_index_probes_at_any_size
             plain = {r["id"] for r in await p._kh_v3_accessible_rows("u", org, asked, vrids, access=None, transaction=None)}
         live = {f"r{i}" for i in range(min(2 * n, 6000)) if i % 7 and (i % 11 or f"r{i}" in asked)}
         assert got == plain == live | {"r22"}, (n, len(got), len(plain), len(live))
+
+
+async def test_the_walk_down_reads_each_child_by_its_key_on_every_edges_leaf_the_statistics_do_not_know_the_org_in(pg_db) -> None:
+    """A hop of the walk down from a group with 2,000 children, half of them inheriting from it. On a leaf whose statistics put the org at a row (its rows
+    written after the last analyse) the joins of the hop read the org's nodes and scanned the group's edges once per node, then the org's inherit edges once
+    per child: ~2 million buffers (3 s) here, and past the statement timeout in CI, where the search scope then came back empty. One org per leaf, each
+    analysed before its rows are written: every edge and node is read by its key, a few buffers per child, with the same answer."""
+    kids = 2000
+    admin = await asyncpg.connect(os.environ["PG_ADMIN_URL"])
+    orgs: list[str] = []
+    try:
+        while len(orgs) < 16:           # graph.edges_def is HASH (org_id) with modulus 16: one org for each remainder
+            o = uuid.uuid4().hex[:24]
+            if await admin.fetchval("SELECT satisfies_hash_partition('graph.edges_def'::regclass, 16, $1, $2::text)", len(orgs), o):
+                orgs.append(o)
+        await admin.execute("ANALYZE graph.edges")
+        await admin.execute("ANALYZE graph.nodes")
+        for o in orgs:
+            await admin.execute("""INSERT INTO graph.nodes (org_id, coll, id, doc) SELECT $1, 'recordGroups', 'big', jsonb_build_object('orgId', $1::text, 'connectorId', 'app')
+                UNION ALL SELECT $1, 'records', 'c' || g, jsonb_build_object('orgId', $1::text, 'connectorId', 'app') FROM generate_series(1, $2::int) g""", o, kids)
+            await admin.execute("""INSERT INTO graph.edges (org_id, coll, from_coll, from_id, to_coll, to_id, ekey, doc)
+                SELECT $1, 'nodeRelations', 'recordGroups', 'big', 'records', 'c' || g, 'PARENT_CHILD', '{"relationshipType": "PARENT_CHILD"}'::jsonb FROM generate_series(1, $2::int) g
+                UNION ALL SELECT $1, 'inheritPermissions', 'records', 'c' || g, 'recordGroups', 'big', '', '{}'::jsonb FROM generate_series(1, $2::int / 2) g""", o, kids)
+        for o in orgs:
+            for sql, args, taken in ((CHILDREN, ("app", []), kids // 2), (CHILDREN_OPEN, (), kids)):
+                async def explain(tx: Tx, sql: str = sql, args: tuple = args, o: str = o) -> tuple[object, int]:
+                    async with seeks(tx):
+                        plan = await tx._con.fetchval("EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) " + sql, o, ["recordGroups"], ["big"], ["PARENT_CHILD", "ATTACHMENT"], *args)
+                        return plan, len(await tx.fetch(sql, o, ["recordGroups"], ["big"], ["PARENT_CHILD", "ATTACHMENT"], *args))
+                with in_org(o):
+                    ran, got = await pg_db.run(explain)
+                plan = plan_gate.root(ran)
+                leaf = next(n["Relation Name"] for n in plan_gate.scans(plan, "edges"))
+                assert got == taken, (leaf, got)
+                assert not (bad := plan_gate.unkeyed(plan, "nodes", r"\bid = ")), (leaf, bad)
+                assert not (bad := plan_gate.unkeyed(plan, "edges", r"\bfrom_id\b")), (leaf, bad)
+                assert plan.get("Shared Hit Blocks", 0) + plan.get("Shared Read Blocks", 0) < 8 * kids, (leaf, plan.get("Shared Hit Blocks"))
+    finally:
+        for o in orgs:
+            await admin.execute("DELETE FROM graph.edges WHERE org_id = $1", o)
+            await admin.execute("DELETE FROM graph.nodes WHERE org_id = $1", o)
+            await admin.execute("DELETE FROM kg.graph_changes WHERE org_id = $1", o)
+        await admin.close()

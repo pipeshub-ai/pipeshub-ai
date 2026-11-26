@@ -22401,11 +22401,13 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
     # Children a "lists something" question asks the check about per row and round, growing each round: most rows answer
     # with the first few; a row whose children are all refused is read to its end, a window at a time.
     _KH_SPLIT_FIRST_WINDOW = 64
-    # The children read per node, first by id. A browse whose start has more is answered by ``legacy`` (its rules decide in the
-    # database and its check is windowed with a budget and a resume cursor); a row's arrow asks about this many, as ``legacy``'s
-    # asks about ``_KH_UNDECIDED_MAX``.
-    # shortcut: read a wide start in windows of the page's order, with a resume cursor, instead of handing it to legacy.
+    # The children read per node, first by id: a row's arrow asks about this many, as ``legacy``'s asks about ``_KH_UNDECIDED_MAX``, and a
+    # start with more stubs than this is answered by ``legacy``.
     _KH_SPLIT_MAX_CHILDREN = 5_000
+    # The children of the start a browse decides whole. A wider start is read in windows of the page's order from its boundary, each asked of
+    # the check, until the page is decided or the budget is spent (`_kh_v3_browse_undecided`, legacy's windowing): a page costs its windows,
+    # not the folder, and its total is then a lower bound (``totalCapped``) with a resume cursor where the budget ended it.
+    _KH_SPLIT_START_MAX = 5_000
     # Stubs below stubs: a chain of them is followed this deep (the walks' hop cap).
     _KH_SPLIT_STUB_DEPTH = 50
     # Chain-top walks one arrow question runs at once (each is a few statements).
@@ -22490,12 +22492,13 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             len(ids_a - ids_b), len(ids_b - ids_a), not same_rows and ids_a == ids_b, arrows, totals,
             legacy.get("total"), split.get("total"))
 
-    def _kh_split_children_cypher(self) -> str:
+    def _kh_split_children_cypher(self, *, stubs_only: bool = False) -> str:
         """The live hierarchy children of the nodes ``$ids`` that belong to ``$app_id``, less a group that carries access only (never a row,
         `_cypher_read_by_app`), each with whether a group that hides its
         children holds it or lies above it (`kh_layer.hidden_by_navigation`): a display flag the check ignores and a browse honours.
         The children are read from the parent in a subquery and tested after: beside the pattern, the App test let a plan seek the App's
-        records and join them to the parent."""
+        records and join them to the parent. ``stubs_only``: the stubs among them alone."""
+        stubs = " AND coalesce(kh_c.isPlaceholder, false)" if stubs_only else ""
         return f"""
         {_cypher_by_ids("kh_p", "App|RecordGroup|Record", "$ids")}
         WITH kh_p WHERE kh_p.orgId = $org_id
@@ -22503,7 +22506,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             CALL (kh_p) {{ MATCH (kh_p)-[kh_r:NODE_RELATION]->(kh_c:Record|RecordGroup) RETURN kh_r, kh_c }}
             WITH *
             WHERE kh_r.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT'] AND kh_c.orgId = $org_id AND kh_c.connectorId = $app_id
-              AND NOT coalesce(kh_c.accessOnly, false) AND NOT coalesce(kh_c.isDeleted, false) AND kh_c.id IS NOT NULL AND kh_c <> kh_p
+              AND NOT coalesce(kh_c.accessOnly, false) AND NOT coalesce(kh_c.isDeleted, false) AND kh_c.id IS NOT NULL AND kh_c <> kh_p{stubs}
             WITH DISTINCT kh_c ORDER BY kh_c.id LIMIT $per_parent
             RETURN kh_c
         }}
@@ -22513,16 +22516,18 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         """
 
     async def _kh_split_children(
-        self, ids: Iterable[str], *, app_id: str, org_id: str, transaction: str | None,
+        self, ids: Iterable[str], *, app_id: str, org_id: str, transaction: str | None, most: int | None = None, stubs_only: bool = False,
     ) -> dict[str, list[dict[str, Any]]]:
-        """``{parent: [child rows]}`` for ``ids`` (`_kh_split_children_cypher`), every id present."""
+        """``{parent: [child rows]}`` for ``ids`` (`_kh_split_children_cypher`), every id present: up to one past ``most``
+        (``_KH_SPLIT_MAX_CHILDREN`` when None) each."""
         asked = sorted(set(ids))
         out: dict[str, list[dict[str, Any]]] = {i: [] for i in asked}
         if not asked:
             return out
         # One past the bound, so a caller can tell a node that has more.
-        rows = await self._kh_query(self._kh_split_children_cypher(), parameters={
-            "ids": asked, "app_id": app_id, "org_id": org_id, "per_parent": self._KH_SPLIT_MAX_CHILDREN + 1}, txn_id=transaction)
+        rows = await self._kh_query(self._kh_split_children_cypher(stubs_only=stubs_only), parameters={
+            "ids": asked, "app_id": app_id, "org_id": org_id, "per_parent": (self._KH_SPLIT_MAX_CHILDREN if most is None else most) + 1},
+            txn_id=transaction)
         for r in rows:
             out.setdefault(r["parent"], []).append(r)
         return out
@@ -22717,12 +22722,26 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
     async def _kh_split_listed(
         self, start_id: str, *, app_id: str, org_id: str, access: dict[str, Any], placed: list[str], transaction: str | None,
         memo: dict[str, bool],
-    ) -> list[str]:
-        """What a browse of ``start_id`` lists (the definition above), before filters, order and paging. ``_KhSplitUndecided`` when the
-        start has more children than ``_KH_SPLIT_MAX_CHILDREN``, or a stub it lists cannot be decided."""
-        kids = (await self._kh_split_children([start_id], app_id=app_id, org_id=org_id, transaction=transaction))[start_id]
-        if len(kids) > self._KH_SPLIT_MAX_CHILDREN:
-            raise _KhSplitUndecided("the start has more children than the split browse reads")
+    ) -> tuple[list[str], bool]:
+        """What a browse of ``start_id`` lists (the definition above), before filters, order and paging, and whether the start is wide (more
+        children than ``_KH_SPLIT_START_MAX``): then only its stubs and chain-tops are listed here, and its other children are read with the page
+        (`_kh_split_window`). ``_KhSplitUndecided`` when the start has more stubs than ``_KH_SPLIT_MAX_CHILDREN``, or a stub it lists cannot be
+        decided."""
+        # The start's hierarchy edges out bound its children, and counting them reads no child: the read by id orders every child, so a wide
+        # start is not read that way.
+        edges = await self._kh_query(f"""{_cypher_by_ids("kh_p", "App|RecordGroup|Record", "[$start_id]")}
+        RETURN COUNT {{ (kh_p)-[kh_d:NODE_RELATION]->() WHERE kh_d.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT'] }} AS n""",
+                                     parameters={"start_id": start_id}, txn_id=transaction)
+        wide = bool(edges) and edges[0]["n"] > self._KH_SPLIT_START_MAX
+        if not wide:
+            kids = (await self._kh_split_children([start_id], app_id=app_id, org_id=org_id, transaction=transaction,
+                                                  most=self._KH_SPLIT_START_MAX))[start_id]
+            # Children added between the count and the read: the read holds one past the bound, so the start is wide after all.
+            wide = len(kids) > self._KH_SPLIT_START_MAX
+        if wide:
+            kids = (await self._kh_split_children([start_id], app_id=app_id, org_id=org_id, transaction=transaction, stubs_only=True))[start_id]
+        if wide and len(kids) > self._KH_SPLIT_MAX_CHILDREN:
+            raise _KhSplitUndecided("the start has more stubs than the split browse reads")
         visible = [k for k in kids if not k["hidden"]]
         real = [k["id"] for k in visible if not k["stub"]]
         by_hop = await self._kh_split_admitted_by_hop(start_id, real, app_id=app_id, org_id=org_id, access=access, transaction=transaction)
@@ -22732,7 +22751,79 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                                            transaction=transaction, memo=memo)
         stubs = await self._kh_split_lists(sorted(opens), app_id=app_id, org_id=org_id, access=access, transaction=transaction, memo=memo)
         listed = [k["id"] for k in visible if k["id"] in admitted or k["id"] in stubs]
-        return list(dict.fromkeys([*listed, *(i for i in placed if i != start_id)]))
+        return list(dict.fromkeys([*listed, *(i for i in placed if i != start_id)])), wide
+
+    async def _kh_split_window(
+        self, start_id: str, *, app_id: str, org_id: str, order: str, listed: list[str], edge: dict[str, Any] | None, n: int,
+        transaction: str | None,
+    ) -> list[dict[str, Any]]:
+        """The first ``n`` children of a wide start past ``edge`` in the page's ``order`` (`_kh_v3_undecided`'s), as ``{id, sortKey, nullRank,
+        hidden}``: the children `_kh_split_listed` reads (no stub, none of ``listed``), ``hidden`` where a group that hides its children holds it
+        or lies above it. Hidden is read for the window alone, after the order: a page never walks up from every child of the start."""
+        if n <= 0:
+            return []
+        e = edge or {}
+        rows = await self._kh_query(f"""
+        {_cypher_by_ids("start", "App|RecordGroup|Record", "[$start_id]")}
+        WITH start WHERE start.orgId = $org_id
+        MATCH (app:App {{id: $app_id}})
+        CALL (start) {{ MATCH (start)-[kh_ur:NODE_RELATION]->(kh_u:Record|RecordGroup) RETURN kh_ur, kh_u }}
+        WITH *
+        WHERE kh_ur.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT'] AND kh_u.orgId = $org_id AND kh_u.connectorId = $app_id
+          AND NOT coalesce(kh_u.accessOnly, false) AND NOT coalesce(kh_u.isDeleted, false) AND NOT coalesce(kh_u.isPlaceholder, false)
+          AND kh_u.id IS NOT NULL AND kh_u <> start AND NOT kh_u.id IN $kh_listed
+        WITH DISTINCT kh_u AS node, app {order} LIMIT $kh_uread
+        WITH collect({{id: node.id, sortKey: sortKey, nullRank: nullRank}}) AS kh_win
+        CALL (kh_win) {{
+            UNWIND kh_win AS kh_w
+            WITH kh_w.id AS kh_wid
+            {_cypher_by_id("kh_c", "Record|RecordGroup", "kh_wid")}
+            WITH kh_c WHERE {self._kh_v3_hidden_above("kh_c", "a")} OR {self._kh_v3_in_hidden_group("kh_c", "g")}
+            RETURN collect(kh_c.id) AS hidden
+        }}
+        RETURN kh_win, hidden
+        """, parameters={"start_id": start_id, "app_id": app_id, "org_id": org_id, "kh_listed": listed, "kh_uread": n,
+                         "ku_null_rank": e.get("nullRank"), "ku_sort_key": e.get("sortKey"), "ku_id": e.get("id")}, txn_id=transaction)
+        row = (rows or [{}])[0]
+        hidden = set(row.get("hidden") or [])
+        return [{**u, "hidden": u["id"] in hidden} for u in row.get("kh_win") or []]
+
+    async def _kh_split_wide_page(
+        self, payload: dict[str, Any], query: str, params: dict[str, Any], start_id: str, *, order: str, sidebar: bool, state: bool,
+        after: dict[str, Any] | None, limit: int, descending: bool, direction: str, org_id: str, access: dict[str, Any],
+        transaction: str | None, memo: dict[str, bool],
+    ) -> tuple[dict[str, Any], dict[str, Any] | None]:
+        """The page of a wide start (`_kh_split_listed`): ``payload`` is the page statement's read of what that listed (its stubs and
+        chain-tops); the start's other children are read past the boundary in the page's order a window at a time and asked of the check
+        (`_kh_v3_browse_undecided`), and the page is read again with those it admits. The sidebar keeps an admitted record only where its arrow is
+        on, decided before the page is read. Returns the payload and the last child asked when some were left unasked."""
+        base, base_arrows = list(params["kh_listed"]), set(params["kh_arrows"])
+        lit: set[str] = set()
+        decided: set[str] = set()
+        first = [payload]
+
+        async def read(admitted: list[str], edge: dict[str, Any] | None, n: int) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+            if admitted or not first:
+                if sidebar:
+                    new = [i for i in admitted if i not in decided]
+                    decided.update(new)
+                    plain = await self._kh_split_plain_records(new, org_id=org_id, state=state, transaction=transaction)
+                    lit.update(await self._kh_split_lists(plain, app_id=params["app_id"], org_id=org_id, access=access, transaction=transaction,
+                                                          memo=memo))
+                params.update(kh_listed=[*base, *admitted], kh_arrows=sorted(base_arrows | lit))
+                got = (await self._kh_query(query, parameters=params, txn_id=transaction) or [{}])[0]
+                first.clear()
+            else:
+                got = first.pop()
+            window = await self._kh_split_window(start_id, app_id=params["app_id"], org_id=org_id, order=order, listed=base,
+                                                 edge=edge or after, n=n, transaction=transaction)
+            return got, window
+
+        got, cut = await self._kh_v3_browse_undecided(read, after=after, limit=limit, descending=descending, direction=direction, org_id=org_id,
+                                                      access=access, transaction=transaction)
+        for k in ("khUndecided", "khProbes"):
+            got.pop(k, None)
+        return got, cut
 
     async def get_knowledge_hub_connector_page_v3(
         self,
@@ -23829,11 +23920,12 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         # itself, read after them, decides afresh, so what it lists is as current as a page read alone.
         skip_reads = KH_SKIP_READS.get() if split and browse_mode == "split" else None
         decided_for = repr((start_id if scoped_start else app_id, app_id, org_id, split_access, placed_ids, sidebar, state)) if skip_reads is not None else ""
+        wide = False
         if skip_reads is not None and decided_for in skip_reads:
             params["kh_listed"], params["kh_arrows"] = skip_reads[decided_for]
         elif split:
             try:
-                listed = await self._kh_split_listed(
+                listed, wide = await self._kh_split_listed(
                     start_id if scoped_start else app_id, app_id=app_id, org_id=org_id, access=split_access, placed=placed_ids,
                     transaction=transaction, memo=split_memo)
                 params["kh_listed"] = listed
@@ -23846,7 +23938,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     params["kh_arrows"] = []
             except _KhSplitUndecided as undecided:
                 return await self._kh_split_answered_by_legacy(undecided, app_id, shadow_args, browse_mode)
-            if skip_reads is not None:
+            # A wide start's listing follows the boundary each read starts from, so no other read reuses it.
+            if skip_reads is not None and not wide:
                 skip_reads[decided_for] = (params["kh_listed"], params["kh_arrows"])
         if not use_scope:
             try:
@@ -23870,6 +23963,15 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             payload.pop("khUndecided", None)
             payload.pop("khProbes", None)
             cut = resume = None
+            if wide:
+                try:
+                    payload, cut = await self._kh_split_wide_page(
+                        payload, query, params, start_id if scoped_start else app_id, order=undecided_order, sidebar=sidebar, state=state,
+                        after=after, limit=limit, descending=descending, direction=direction, org_id=org_id, access=split_access,
+                        transaction=transaction, memo=split_memo)
+                except _KhSplitUndecided as undecided:
+                    return await self._kh_split_answered_by_legacy(undecided, app_id, shadow_args, browse_mode)
+                resume = self._kh_v3_end_at(payload, cut, limit=limit, descending=descending, direction=direction)
             rows_ = payload.get("rows") or []
             for r in rows_:
                 r.pop("khAsk", None)
