@@ -1,8 +1,8 @@
 /**
  * `drain` (migration design section 9 step 1, F1 to F3 for a compose install): asks the running application to take no new
- * chat turns, waits (bounded) for the turns in flight to finish, and reports. It is run inside the running stack; the next
- * step is `docker compose stop`, whose graceful stop ends the consumers and the outbox dispatcher (what is unsent is copied
- * with its state, section 7).
+ * chat turns, waits (bounded) for the turns in flight to finish, and reports. While the fence is `draining` the application's
+ * consumers and outbox dispatcher (fence on) take no new work either, until `drain --cancel`; what is unsent is copied with its
+ * state (section 7).
  */
 import type { MigrationRuntime } from './runtime';
 import { FENCED_APP_NAME } from '../../libs/repositories/fence';

@@ -1,0 +1,28 @@
+[
+  {
+    "description": "a pause both timed and until resumed",
+    "instance": {
+      "mutedSchedules": [],
+      "pause": {
+        "until": 1,
+        "untilResumed": true
+      },
+      "runNotices": {
+        "email": false,
+        "slack": false
+      }
+    }
+  },
+  {
+    "description": "a channel the notices cannot take",
+    "instance": {
+      "mutedSchedules": [],
+      "pause": null,
+      "runNotices": {
+        "email": false,
+        "slack": false,
+        "sms": true
+      }
+    }
+  }
+]

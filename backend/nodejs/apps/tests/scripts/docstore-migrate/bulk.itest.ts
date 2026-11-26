@@ -43,24 +43,24 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
       mongo = await startMongo(process.env.PG_TEST_WORK ?? '/tmp');
       const docs = identityDocs();
       // a source whose ids are upper-case hex strings (the importer stores them lower-case)
-      docs.users.push({
+      docs.users!.push({
         _id: UPPER_USER, slug: 'user-1090', orgId: ORG_A, fullName: 'Upper Case', email: 'upper@acme.example',
         createdAt: at('2026-01-08T00:00:00.000Z'), updatedAt: at('2026-01-08T00:00:00.000Z'), __v: 0,
       });
-      docs.userCredentials.push({
+      docs.userCredentials!.push({
         _id: UPPER_CRED, userId: String(UPPER_USER).toUpperCase(), orgId: String(ORG_A).toUpperCase(), ipAddress: '10.0.0.9',
         hashedPassword: '$2b$10$upperhash', createdAt: at('2026-01-08T00:00:00.000Z'), updatedAt: at('2026-01-08T00:00:00.000Z'), __v: 0,
       });
-      docs.users.push({
+      docs.users!.push({
         _id: MIXED_USER, slug: 'user-1091', orgId: ORG_A, fullName: 'Mixed Case', email: 'mixed@acme.example',
         createdAt: at('2026-01-09T00:00:00.000Z'), updatedAt: at('2026-01-09T00:00:00.000Z'), __v: 0,
       });
-      docs.userCredentials.push({
+      docs.userCredentials!.push({
         _id: MIXED_CRED, userId: MIXED_HEX, orgId: mixed(String(ORG_A)), ipAddress: '10.0.0.10',
         hashedPassword: '$2b$10$mixedhash', createdAt: at('2026-01-19T00:00:00.000Z'), updatedAt: at('2026-01-19T00:00:00.000Z'), __v: 0,
       });
       // the same account's older credential, stored in lower case: the newer mixed-case one must win
-      docs.userCredentials.push({
+      docs.userCredentials!.push({
         _id: MIXED_OLD, userId: MIXED_HEX.toLowerCase(), orgId: String(ORG_A), ipAddress: '10.0.0.11',
         hashedPassword: '$2b$10$olderhash', createdAt: at('2026-01-09T00:00:00.000Z'), updatedAt: at('2026-01-09T00:00:00.000Z'), __v: 0,
       });

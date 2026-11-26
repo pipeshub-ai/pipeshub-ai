@@ -45,6 +45,7 @@ from app.utils.aimodels import (
     openai_async_client_kwargs,
     require_public_endpoint,
 )
+from app.utils.embedding_model_name import normalize_embedding_model_name
 from app.utils.log_redaction import redact_error_for_log
 from app.utils.openai_hosts import (
     endpoint_path_problem,
@@ -71,6 +72,7 @@ from app.web.errors import (
     WebError,
 )
 from app.web.health import check_provider, provider_name
+from harness_core.models.capabilities import model_capabilities
 
 
 async def _bind_health_check_identity(request: Request) -> AsyncIterator[None]:
@@ -988,26 +990,6 @@ async def verify_embedding_health(dense_embeddings, logger) -> int:
 
     return embedding_size
 
-def normalize_embedding_model_name(name: str | None) -> str | None:
-    """Normalize an embedding model name so the *same* model is comparable across providers.
-
-    The identical underlying model is referenced differently depending on the
-    serving provider, e.g. ``nomic-ai/nomic-embed-text`` (sentence-transformers)
-    vs ``nomic-embed-text`` (Ollama), or ``models/text-embedding-004`` (Gemini).
-    These all produce the same embeddings/dimension, so switching the provider
-    for the same model must NOT be treated as a breaking model change.
-
-    We lowercase and strip any provider/org namespace prefix (the part before the
-    last ``/``, which also covers the ``models/`` prefix).
-    """
-    if name is None:
-        return None
-    normalized = name.strip().lower()
-    if "/" in normalized:
-        normalized = normalized.rsplit("/", 1)[-1]
-    return normalized
-
-
 def _identity_of(config: dict | None) -> str | None:
     """``provider:model`` of an embedding config, the way the entity store names what it embeds with (the first of a comma list)."""
     if not config or not config.get("provider"):
@@ -1720,6 +1702,14 @@ async def _check_one_llm(
     is_multimodal = bool(
         llm_config.get("isMultimodal", False) or configuration.get("isMultimodal", False)
     )
+    # A documented "no image input" (C13.03) is answered from the rows, without a call to the provider.
+    if is_multimodal and model_capabilities(model_name, configuration.get("endpoint")).image_input is False:
+        return _config_error(
+            "This model's endpoint does not accept image input.",
+            llm_config,
+            model_name,
+            hint="Uncheck Multimodal for this model, or choose a vision model.",
+        )
 
     llm_model = await asyncio.to_thread(
         get_generator_model, provider=provider, config=llm_config, model_name=model_name,

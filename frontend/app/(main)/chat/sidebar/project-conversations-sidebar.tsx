@@ -218,10 +218,10 @@ export const ProjectConversationsSidebar = React.memo(function ProjectConversati
         </Link>
 
         <SidebarItem
-          icon={<ChatStarIcon size={ICON_SIZE_DEFAULT} color="var(--accent-8)" />}
+          icon={<ChatStarIcon size={ICON_SIZE_DEFAULT} color="var(--accent-11)" />}
           label={t('chat.projects.newChatInProject')}
           onClick={handleNewProjectChat}
-          textColor="var(--accent-8)"
+          textColor="var(--accent-11)"
           fontWeight={500}
         />
 
@@ -237,7 +237,7 @@ export const ProjectConversationsSidebar = React.memo(function ProjectConversati
               ))}
             </Flex>
           ) : timeGroups.length === 0 && pendingProjectChats.length === 0 ? (
-            <Text size="1" style={{ padding: 'var(--space-2) var(--space-3)', color: 'var(--slate-10)' }}>
+            <Text size="1" style={{ padding: 'var(--space-2) var(--space-3)', color: 'var(--slate-11)' }}>
               {t('chat.projects.noChats')}
             </Text>
           ) : (
@@ -248,7 +248,7 @@ export const ProjectConversationsSidebar = React.memo(function ProjectConversati
               {timeGroups.map(([label, groupRows]) => (
                 <Flex direction="column" key={label}>
                   <Flex align="center" style={{ height: 28, padding: '0 var(--space-3)' }}>
-                    <Text size="1" style={{ color: 'var(--slate-10)' }}>
+                    <Text size="1" style={{ color: 'var(--slate-11)' }}>
                       {t(TIME_GROUP_I18N[label])}
                     </Text>
                   </Flex>

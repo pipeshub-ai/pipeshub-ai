@@ -3,15 +3,26 @@ import {
   ChatStreamError,
   MCP_SERVER_CONFIG_MISSING,
   mcpConfigMissingDetails,
+  NO_RESPONSE_CODE,
   streamErrorInfo,
 } from '../stream-error';
+import { DurableAdmissionError } from '../harness-errors';
 
 describe('streamErrorInfo', () => {
   it('keeps the code and details of a server error', () => {
     expect(streamErrorInfo(new ChatStreamError('x', 'mcp_server_config_missing', { servers: [] }))).toEqual({
       code: 'mcp_server_config_missing',
       details: { servers: [] },
+      source: 'run',
     });
+  });
+
+  it('UX-06: a refused turn keeps its code as an admission, and one that never reached the server says so', () => {
+    expect(streamErrorInfo(new DurableAdmissionError('HTTP_AGENT_HARNESS_SESSION_ERASED'))).toEqual({
+      code: 'HTTP_AGENT_HARNESS_SESSION_ERASED',
+      source: 'admission',
+    });
+    expect(streamErrorInfo(new DurableAdmissionError(null))).toEqual({ code: NO_RESPONSE_CODE, source: 'admission' });
   });
 
   it('has nothing for an error without a code', () => {

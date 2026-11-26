@@ -1,0 +1,1195 @@
+{
+  "description": "Stricter-only (QA-2): a lower layer may only narrow, for every row of policy-dimensions.json in every layer that may set it, through the one resolver in Node (domain/policy) and Python (harness_core.policy). `ladders` hold one ceiling row each: `top` set by the first layer the row is exposed to, `narrow` a narrower value a lower layer may set (`kept` is the effective value when it differs from `narrow`), `widen` a value wider than `narrow` (refused naming `at`, the row's path unless a member is named; a `meet` row keeps `kept` instead); `base` are layers every case of the row starts from, `hostOnly` rows have no key in an engine profile narrowing. `choices` hold one choice row each (`other` is a second value inside `ceiling`, which a lock refuses below it, C4.02); `operatorSample` is a value for any operator row, which no layer below the deployment may set. `release` is the profile the engine-profile resolver narrows on the `engineProfile.*` ladders, whose `top` values are its own. `efforts` are the requested efforts (run spec) against the profile's reasoningEffort ceiling: `narrowing` is what the request layer asks, `pinned` the profile's effort. `cases` are resolved like policy-resolve.json's. Ladders, choices, efforts and case layers are written by hand; each kept case's config and digest were computed by the Python resolver and reviewed.",
+  "release": {
+    "engine": {
+      "kind": "opencode",
+      "version": "1.18.34",
+      "binaryDigest": "sha256:4fa437184846977f1849ffb65fc19d32686dec85a455df3d37f69a2993f22182"
+    },
+    "mode": "build",
+    "isolationMin": "docker",
+    "egress": "allowlist:pypi",
+    "tools": {
+      "maxTools": 40,
+      "effects": [
+        "execute",
+        "read",
+        "workspace",
+        "write"
+      ]
+    },
+    "limits": {
+      "maxSteps": 50,
+      "maxWallS": 1800,
+      "maxTokens": 1000000,
+      "maxUsd": 5
+    },
+    "subAgents": {
+      "enabled": true,
+      "maxDepth": 2,
+      "maxConcurrent": 3
+    },
+    "reasoningEffort": "high",
+    "approvals": {
+      "read": "allow",
+      "workspace": "allow",
+      "write": "ask",
+      "execute": "ask"
+    },
+    "skills": [
+      "pdf",
+      "xlsx"
+    ],
+    "accountKinds": [
+      "org_api_key",
+      "org_cloud",
+      "user_api_key"
+    ]
+  },
+  "ladders": [
+    {
+      "path": "engineProfile.engine",
+      "base": [
+        {
+          "kind": "release",
+          "values": {
+            "engineProfile": {
+              "engine": {
+                "kind": "opencode",
+                "version": "1.18.34",
+                "binaryDigest": "sha256:4fa437184846977f1849ffb65fc19d32686dec85a455df3d37f69a2993f22182"
+              }
+            }
+          }
+        }
+      ],
+      "top": [
+        "opencode",
+        "codex"
+      ],
+      "narrow": [
+        "opencode@1.18.34"
+      ],
+      "kept": {
+        "kind": "opencode",
+        "version": "1.18.34",
+        "binaryDigest": "sha256:4fa437184846977f1849ffb65fc19d32686dec85a455df3d37f69a2993f22182"
+      },
+      "setBy": "release",
+      "widen": [
+        "codex"
+      ]
+    },
+    {
+      "path": "engineProfile.access",
+      "hostOnly": true,
+      "top": {
+        "routeId": "r1",
+        "digest": "d1"
+      },
+      "narrow": {
+        "routeId": "r1",
+        "digest": "d1"
+      },
+      "widen": {
+        "routeId": "r2",
+        "digest": "d2"
+      }
+    },
+    {
+      "path": "engineProfile.mode",
+      "top": "build",
+      "narrow": "plan",
+      "widen": "review"
+    },
+    {
+      "path": "engineProfile.isolationMin",
+      "top": "docker",
+      "narrow": "gvisor",
+      "widen": "docker"
+    },
+    {
+      "path": "engineProfile.egress",
+      "top": "allowlist:pypi",
+      "narrow": "none",
+      "widen": "allowlist:pypi"
+    },
+    {
+      "path": "engineProfile.tools.maxTools",
+      "top": 40,
+      "narrow": 10,
+      "widen": 11
+    },
+    {
+      "path": "engineProfile.tools.effects",
+      "top": [
+        "execute",
+        "read",
+        "workspace",
+        "write"
+      ],
+      "narrow": [
+        "read"
+      ],
+      "widen": [
+        "read",
+        "write"
+      ]
+    },
+    {
+      "path": "engineProfile.limits.maxSteps",
+      "top": 50,
+      "narrow": 20,
+      "widen": 21
+    },
+    {
+      "path": "engineProfile.limits.maxWallS",
+      "top": 1800,
+      "narrow": 600,
+      "widen": 601
+    },
+    {
+      "path": "engineProfile.limits.maxTokens",
+      "top": 1000000,
+      "narrow": 50000,
+      "widen": 50001
+    },
+    {
+      "path": "engineProfile.limits.maxUsd",
+      "top": 5,
+      "narrow": 1.5,
+      "widen": 2
+    },
+    {
+      "path": "engineProfile.subAgents",
+      "top": {
+        "enabled": true,
+        "maxDepth": 2,
+        "maxConcurrent": 3
+      },
+      "narrow": {
+        "enabled": true,
+        "maxDepth": 1,
+        "maxConcurrent": 2
+      },
+      "widen": {
+        "enabled": true,
+        "maxDepth": 2,
+        "maxConcurrent": 2
+      },
+      "at": "engineProfile.subAgents.maxDepth"
+    },
+    {
+      "path": "engineProfile.reasoningEffort",
+      "top": "high",
+      "narrow": "low",
+      "widen": "medium"
+    },
+    {
+      "path": "engineProfile.approvals.read",
+      "top": "allow",
+      "narrow": "ask",
+      "widen": "allow"
+    },
+    {
+      "path": "engineProfile.approvals.workspace",
+      "top": "allow",
+      "narrow": "deny",
+      "widen": "ask"
+    },
+    {
+      "path": "engineProfile.approvals.write",
+      "top": "ask",
+      "narrow": "deny",
+      "widen": "ask"
+    },
+    {
+      "path": "engineProfile.approvals.execute",
+      "top": "ask",
+      "narrow": "deny",
+      "widen": "allow"
+    },
+    {
+      "path": "engineProfile.skills",
+      "top": [
+        "pdf",
+        "xlsx"
+      ],
+      "narrow": [
+        "pdf"
+      ],
+      "widen": [
+        "pdf",
+        "xlsx"
+      ]
+    },
+    {
+      "path": "engineProfile.accountKinds",
+      "top": [
+        "org_api_key",
+        "org_cloud",
+        "user_api_key"
+      ],
+      "narrow": [
+        "org_cloud"
+      ],
+      "widen": [
+        "org_api_key",
+        "org_cloud"
+      ]
+    },
+    {
+      "path": "engineProfile.resultSchema",
+      "hostOnly": true,
+      "top": {
+        "type": "object"
+      },
+      "narrow": {
+        "type": "object"
+      },
+      "widen": {
+        "type": "string"
+      }
+    },
+    {
+      "path": "approvals",
+      "top": {
+        "writes": "allow"
+      },
+      "narrow": {
+        "writes": "ask"
+      },
+      "kept": {
+        "classes": {
+          "read": "allow",
+          "workspace": "allow",
+          "write": "ask",
+          "execute": "ask"
+        },
+        "tools": {}
+      },
+      "widen": {
+        "writes": "allow"
+      }
+    },
+    {
+      "path": "models.routes",
+      "top": [
+        "a",
+        "b",
+        "c"
+      ],
+      "narrow": [
+        "b"
+      ],
+      "widen": [
+        "a",
+        "b"
+      ]
+    },
+    {
+      "path": "models.roleCostCeilings",
+      "top": {
+        "default": 10
+      },
+      "narrow": {
+        "default": 10,
+        "researcher": 4
+      },
+      "widen": {
+        "default": 40,
+        "researcher": 4
+      }
+    },
+    {
+      "path": "rollout.ENABLE_AGENT_HARNESS",
+      "top": true,
+      "narrow": false,
+      "widen": true
+    },
+    {
+      "path": "rollout.AGENT_HARNESS_KILL_SWITCH",
+      "top": false,
+      "narrow": true,
+      "widen": false
+    },
+    {
+      "path": "rollout.ENABLE_SCHEDULED_RUNS",
+      "top": true,
+      "narrow": false,
+      "widen": true
+    },
+    {
+      "path": "rollout.ENABLE_KNOWLEDGE_PUBLICATIONS",
+      "top": true,
+      "narrow": false,
+      "widen": true
+    },
+    {
+      "path": "rollout.ENABLE_SKILLS",
+      "top": true,
+      "narrow": false,
+      "widen": true
+    },
+    {
+      "path": "rollout.ENABLE_USER_CONTEXT",
+      "top": true,
+      "narrow": false,
+      "widen": true
+    },
+    {
+      "path": "rollout.durable.modes",
+      "top": [
+        "auto",
+        "deep",
+        "quick"
+      ],
+      "narrow": [
+        "quick"
+      ],
+      "widen": [
+        "deep",
+        "quick"
+      ]
+    },
+    {
+      "path": "rollout.durable.assistantModes",
+      "top": [
+        "internal_search",
+        "web_search"
+      ],
+      "narrow": [
+        "web_search"
+      ],
+      "widen": [
+        "internal_search",
+        "web_search"
+      ]
+    },
+    {
+      "path": "rollout.durable.modelFamilies",
+      "top": [
+        "anthropic",
+        "openai"
+      ],
+      "narrow": [
+        "openai"
+      ],
+      "widen": [
+        "anthropic",
+        "openai"
+      ]
+    },
+    {
+      "path": "rollout.ENABLE_ACTIONS",
+      "top": true,
+      "narrow": false,
+      "widen": true
+    },
+    {
+      "path": "rollout.ENABLE_MCP",
+      "top": true,
+      "narrow": false,
+      "widen": true
+    },
+    {
+      "path": "rollout.ENABLE_NAMED_ENTITY_EXTRACTION",
+      "top": true,
+      "narrow": false,
+      "widen": true
+    },
+    {
+      "path": "rollout.CONTROL_PLANE_CAPABILITIES",
+      "top": true,
+      "narrow": false,
+      "widen": true
+    },
+    {
+      "path": "catalog.approval",
+      "top": {
+        "install:*": "owner"
+      },
+      "narrow": {
+        "install:*": "orgAdmin"
+      },
+      "widen": {
+        "install:*": "teamAdmin"
+      },
+      "at": "catalog.approval.install:*"
+    },
+    {
+      "path": "catalog.delegation",
+      "top": [
+        "approval.decide",
+        "grant.write"
+      ],
+      "narrow": [
+        "grant.write"
+      ],
+      "widen": [
+        "approval.decide",
+        "grant.write"
+      ]
+    },
+    {
+      "path": "toolDisclosure.modes",
+      "top": [
+        "eager",
+        "filesystem",
+        "lazy"
+      ],
+      "narrow": [
+        "lazy"
+      ],
+      "widen": [
+        "eager",
+        "lazy"
+      ]
+    },
+    {
+      "path": "snapshots.ttlDays",
+      "top": 7,
+      "narrow": 3,
+      "widen": 4
+    },
+    {
+      "path": "budgets.maxTurns",
+      "top": 50,
+      "narrow": 20,
+      "widen": 21
+    },
+    {
+      "path": "budgets.maxTokens",
+      "top": 1000000,
+      "narrow": 50000,
+      "widen": 50001
+    },
+    {
+      "path": "budgets.maxCostUsd",
+      "top": 5,
+      "narrow": 1.5,
+      "widen": 2
+    },
+    {
+      "path": "budgets.activeTimeS",
+      "top": 1800,
+      "narrow": 600,
+      "widen": 601
+    },
+    {
+      "path": "triggers.webhookMaxBytes",
+      "top": 131072,
+      "narrow": 65536,
+      "widen": 100000
+    },
+    {
+      "path": "triggers.webhookPerMinute",
+      "top": 20,
+      "narrow": 10,
+      "widen": 15
+    },
+    {
+      "path": "triggers.notifyChannels",
+      "top": [
+        "email",
+        "in_app"
+      ],
+      "narrow": [
+        "in_app"
+      ],
+      "widen": [
+        "email",
+        "in_app"
+      ]
+    },
+    {
+      "path": "quotas.activeRunsPerOrg",
+      "top": 100,
+      "narrow": 50,
+      "widen": 80
+    },
+    {
+      "path": "quotas.activeRunsPerUser",
+      "top": 8,
+      "narrow": 4,
+      "widen": 6
+    },
+    {
+      "path": "toolResults.maxChars",
+      "top": 20000,
+      "narrow": 10000,
+      "widen": 15000
+    },
+    {
+      "path": "toolResults.formats",
+      "top": [
+        "concise",
+        "detailed"
+      ],
+      "narrow": [
+        "concise"
+      ],
+      "widen": [
+        "concise",
+        "detailed"
+      ]
+    },
+    {
+      "path": "interactions.waitS",
+      "top": 7200,
+      "narrow": 3600,
+      "widen": 5000
+    },
+    {
+      "path": "interactions.conversationGrants",
+      "top": true,
+      "narrow": false,
+      "widen": true
+    },
+    {
+      "path": "recovery.autoResume",
+      "top": true,
+      "narrow": false,
+      "widen": true
+    },
+    {
+      "path": "sandbox.cpus",
+      "top": 2,
+      "narrow": 1,
+      "widen": 1.5
+    },
+    {
+      "path": "sandbox.memoryMb",
+      "top": 2048,
+      "narrow": 1024,
+      "widen": 1536
+    },
+    {
+      "path": "sandbox.pids",
+      "top": 512,
+      "narrow": 256,
+      "widen": 384
+    },
+    {
+      "path": "sandbox.scratchMb",
+      "top": 1024,
+      "narrow": 512,
+      "widen": 768
+    },
+    {
+      "path": "sandbox.inputMaxMb",
+      "top": 200,
+      "narrow": 50,
+      "widen": 80
+    },
+    {
+      "path": "ui.reasoning",
+      "top": true,
+      "narrow": false,
+      "widen": true
+    },
+    {
+      "path": "ui.terminal",
+      "top": true,
+      "narrow": false,
+      "widen": true
+    }
+  ],
+  "choices": [
+    {
+      "path": "models.primary",
+      "ceiling": [
+        "a",
+        "b"
+      ],
+      "narrowed": [
+        "b"
+      ],
+      "inside": "a",
+      "other": "b",
+      "outside": "c"
+    },
+    {
+      "path": "models.roles",
+      "ceiling": [
+        "a",
+        "b"
+      ],
+      "narrowed": [
+        "b"
+      ],
+      "inside": {
+        "researcher": "a"
+      },
+      "other": {
+        "researcher": "b"
+      },
+      "outside": {
+        "researcher": "c"
+      }
+    },
+    {
+      "path": "toolDisclosure.mode",
+      "ceiling": [
+        "filesystem",
+        "lazy"
+      ],
+      "narrowed": [
+        "filesystem"
+      ],
+      "inside": "lazy",
+      "other": "filesystem",
+      "outside": "eager"
+    },
+    {
+      "path": "toolResults.format",
+      "ceiling": [
+        "concise",
+        "detailed"
+      ],
+      "narrowed": [
+        "detailed"
+      ],
+      "inside": "concise",
+      "other": "detailed",
+      "outside": "verbose"
+    }
+  ],
+  "operatorSample": "set",
+  "efforts": [
+    {
+      "requested": null,
+      "narrowing": null,
+      "byCeiling": [
+        {
+          "ceiling": null,
+          "pinned": null
+        },
+        {
+          "ceiling": "low",
+          "pinned": "low"
+        },
+        {
+          "ceiling": "medium",
+          "pinned": "medium"
+        },
+        {
+          "ceiling": "high",
+          "pinned": "high"
+        }
+      ]
+    },
+    {
+      "requested": "minimal",
+      "narrowing": "low",
+      "byCeiling": [
+        {
+          "ceiling": null,
+          "pinned": "low"
+        },
+        {
+          "ceiling": "low",
+          "pinned": "low"
+        },
+        {
+          "ceiling": "medium",
+          "pinned": "low"
+        },
+        {
+          "ceiling": "high",
+          "pinned": "low"
+        }
+      ]
+    },
+    {
+      "requested": "low",
+      "narrowing": "low",
+      "byCeiling": [
+        {
+          "ceiling": null,
+          "pinned": "low"
+        },
+        {
+          "ceiling": "low",
+          "pinned": "low"
+        },
+        {
+          "ceiling": "medium",
+          "pinned": "low"
+        },
+        {
+          "ceiling": "high",
+          "pinned": "low"
+        }
+      ]
+    },
+    {
+      "requested": "medium",
+      "narrowing": "medium",
+      "byCeiling": [
+        {
+          "ceiling": null,
+          "pinned": "medium"
+        },
+        {
+          "ceiling": "low",
+          "refused": true
+        },
+        {
+          "ceiling": "medium",
+          "pinned": "medium"
+        },
+        {
+          "ceiling": "high",
+          "pinned": "medium"
+        }
+      ]
+    },
+    {
+      "requested": "high",
+      "narrowing": "high",
+      "byCeiling": [
+        {
+          "ceiling": null,
+          "pinned": "high"
+        },
+        {
+          "ceiling": "low",
+          "refused": true
+        },
+        {
+          "ceiling": "medium",
+          "refused": true
+        },
+        {
+          "ceiling": "high",
+          "pinned": "high"
+        }
+      ]
+    }
+  ],
+  "cases": [
+    {
+      "id": "QA2-9a",
+      "behaviour": "POL-20: the org lists its configured models, the agent lists none; a request for a model outside them is refused naming the request",
+      "layers": [
+        {
+          "kind": "org",
+          "values": {
+            "models": {
+              "routes": [
+                "anthropic:claude-b",
+                "openai:gpt-a"
+              ]
+            }
+          }
+        },
+        {
+          "kind": "agent",
+          "values": {}
+        },
+        {
+          "kind": "request",
+          "values": {
+            "models": {
+              "primary": "openai:gpt-z"
+            }
+          }
+        }
+      ],
+      "expect": {
+        "refusal": {
+          "code": "outside_ceiling",
+          "dimension": "models.primary",
+          "layer": "request"
+        }
+      }
+    },
+    {
+      "id": "QA2-9b",
+      "behaviour": "POL-20: a request for a configured model is the run's",
+      "layers": [
+        {
+          "kind": "org",
+          "values": {
+            "models": {
+              "routes": [
+                "anthropic:claude-b",
+                "openai:gpt-a"
+              ]
+            }
+          }
+        },
+        {
+          "kind": "agent",
+          "values": {}
+        },
+        {
+          "kind": "request",
+          "values": {
+            "models": {
+              "primary": "anthropic:claude-b"
+            }
+          }
+        }
+      ],
+      "expect": {
+        "config": {
+          "schemaVersion": 1,
+          "dimensions": {
+            "models.routes": {
+              "value": [
+                "anthropic:claude-b",
+                "openai:gpt-a"
+              ],
+              "setBy": "org",
+              "ceilings": [
+                {
+                  "layer": "org",
+                  "value": [
+                    "anthropic:claude-b",
+                    "openai:gpt-a"
+                  ]
+                }
+              ]
+            },
+            "models.primary": {
+              "value": "anthropic:claude-b",
+              "setBy": "request",
+              "ceilings": []
+            }
+          }
+        },
+        "digest": "sha256:1f9e171b8820aaeb036257b759c1f51a2b0eca04a70dbdef027f8f75b8fade1f"
+      }
+    },
+    {
+      "id": "QA2-9c",
+      "behaviour": "POL-20: an agent that lists models narrows the org's; a configured model the agent left out is refused",
+      "layers": [
+        {
+          "kind": "org",
+          "values": {
+            "models": {
+              "routes": [
+                "anthropic:claude-b",
+                "openai:gpt-a"
+              ]
+            }
+          }
+        },
+        {
+          "kind": "agent",
+          "values": {
+            "models": {
+              "routes": [
+                "openai:gpt-a"
+              ],
+              "primary": "openai:gpt-a"
+            }
+          }
+        },
+        {
+          "kind": "request",
+          "values": {
+            "models": {
+              "primary": "anthropic:claude-b"
+            }
+          }
+        }
+      ],
+      "expect": {
+        "refusal": {
+          "code": "outside_ceiling",
+          "dimension": "models.primary",
+          "layer": "request"
+        }
+      }
+    },
+    {
+      "id": "QA2-9d",
+      "behaviour": "POL-20: a user's default model outside the org's is refused naming the user",
+      "layers": [
+        {
+          "kind": "org",
+          "values": {
+            "models": {
+              "routes": [
+                "anthropic:claude-b",
+                "openai:gpt-a"
+              ]
+            }
+          }
+        },
+        {
+          "kind": "user",
+          "values": {
+            "models": {
+              "primary": "openai:gpt-z"
+            }
+          }
+        }
+      ],
+      "expect": {
+        "refusal": {
+          "code": "outside_ceiling",
+          "dimension": "models.primary",
+          "layer": "user"
+        }
+      }
+    },
+    {
+      "id": "QA2-9e",
+      "behaviour": "POL-20's precondition: with no routes from any layer a choice is unbounded, so the host must give the org's configured models as models.routes",
+      "layers": [
+        {
+          "kind": "agent",
+          "values": {}
+        },
+        {
+          "kind": "request",
+          "values": {
+            "models": {
+              "primary": "openai:gpt-z"
+            }
+          }
+        }
+      ],
+      "expect": {
+        "config": {
+          "schemaVersion": 1,
+          "dimensions": {
+            "models.primary": {
+              "value": "openai:gpt-z",
+              "setBy": "request",
+              "ceilings": []
+            }
+          }
+        },
+        "digest": "sha256:ee3948c5c7ca743077c89cfdbf224b874c18f63608c5dae457d6a75e46717d6c"
+      }
+    },
+    {
+      "id": "QA2-10a",
+      "behaviour": "MAC-13: the account kind a run is admitted on narrows accountKinds to that kind alone",
+      "layers": [
+        {
+          "kind": "deployment",
+          "values": {
+            "engineProfile": {
+              "accountKinds": [
+                "org_api_key",
+                "org_cloud",
+                "user_api_key"
+              ]
+            }
+          }
+        },
+        {
+          "kind": "request",
+          "values": {
+            "engineProfile": {
+              "accountKinds": [
+                "user_api_key"
+              ]
+            }
+          }
+        }
+      ],
+      "expect": {
+        "config": {
+          "schemaVersion": 1,
+          "dimensions": {
+            "engineProfile.accountKinds": {
+              "value": [
+                "user_api_key"
+              ],
+              "setBy": "request",
+              "ceilings": [
+                {
+                  "layer": "deployment",
+                  "value": [
+                    "org_api_key",
+                    "org_cloud",
+                    "user_api_key"
+                  ]
+                },
+                {
+                  "layer": "request",
+                  "value": [
+                    "user_api_key"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        "digest": "sha256:57fef6c20db5f8b176b60628ad46c7b6585dd9dfab86d3b5e785b3f349b0b94a"
+      }
+    },
+    {
+      "id": "QA2-10b",
+      "behaviour": "MAC-13: a kind the org removed is refused naming the request",
+      "layers": [
+        {
+          "kind": "deployment",
+          "values": {
+            "engineProfile": {
+              "accountKinds": [
+                "org_api_key",
+                "org_cloud",
+                "user_api_key"
+              ]
+            }
+          }
+        },
+        {
+          "kind": "org",
+          "values": {
+            "engineProfile": {
+              "accountKinds": [
+                "org_api_key"
+              ]
+            }
+          }
+        },
+        {
+          "kind": "request",
+          "values": {
+            "engineProfile": {
+              "accountKinds": [
+                "org_cloud"
+              ]
+            }
+          }
+        }
+      ],
+      "expect": {
+        "refusal": {
+          "code": "widening",
+          "dimension": "engineProfile.accountKinds",
+          "layer": "request"
+        }
+      }
+    },
+    {
+      "id": "QA2-10c",
+      "behaviour": "MAC-13: a child cannot ask back a kind its parent was not admitted on",
+      "layers": [
+        {
+          "kind": "deployment",
+          "values": {
+            "engineProfile": {
+              "accountKinds": [
+                "org_api_key",
+                "org_cloud",
+                "user_api_key"
+              ]
+            }
+          }
+        },
+        {
+          "kind": "parent",
+          "values": {
+            "engineProfile": {
+              "accountKinds": [
+                "org_cloud"
+              ]
+            }
+          }
+        },
+        {
+          "kind": "request",
+          "values": {
+            "engineProfile": {
+              "accountKinds": [
+                "org_api_key"
+              ]
+            }
+          }
+        }
+      ],
+      "expect": {
+        "refusal": {
+          "code": "widening",
+          "dimension": "engineProfile.accountKinds",
+          "layer": "request"
+        }
+      }
+    },
+    {
+      "id": "QA2-10d",
+      "behaviour": "MAC-13: a child on its parent's kind keeps it",
+      "layers": [
+        {
+          "kind": "deployment",
+          "values": {
+            "engineProfile": {
+              "accountKinds": [
+                "org_api_key",
+                "org_cloud",
+                "user_api_key"
+              ]
+            }
+          }
+        },
+        {
+          "kind": "parent",
+          "values": {
+            "engineProfile": {
+              "accountKinds": [
+                "org_cloud"
+              ]
+            }
+          }
+        },
+        {
+          "kind": "request",
+          "values": {
+            "engineProfile": {
+              "accountKinds": [
+                "org_cloud"
+              ]
+            }
+          }
+        }
+      ],
+      "expect": {
+        "config": {
+          "schemaVersion": 1,
+          "dimensions": {
+            "engineProfile.accountKinds": {
+              "value": [
+                "org_cloud"
+              ],
+              "setBy": "request",
+              "ceilings": [
+                {
+                  "layer": "deployment",
+                  "value": [
+                    "org_api_key",
+                    "org_cloud",
+                    "user_api_key"
+                  ]
+                },
+                {
+                  "layer": "parent",
+                  "value": [
+                    "org_cloud"
+                  ]
+                },
+                {
+                  "layer": "request",
+                  "value": [
+                    "org_cloud"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        "digest": "sha256:1381ff4ac817024073db9a9b8fe314c9595fda868656c6ddc9ff64565ca53cac"
+      }
+    }
+  ]
+}

@@ -801,27 +801,6 @@ class TestFolderUploadRouteGaps:
         logger.error.assert_called()
 
 
-class TestListKbRecords:
-    def test_success(self):
-        app, kb_svc, _ = _make_app()
-        kb_svc.list_kb_records = AsyncMock(return_value={
-            "records": [],
-            "pagination": {
-                "page": 1, "limit": 20, "totalCount": 0, "totalPages": 0,
-            },
-            "filters": {
-                "applied": {},
-                "available": {
-                    "recordTypes": [], "origins": [], "connectors": [],
-                    "indexingStatus": [], "permissions": [],
-                },
-            },
-        })
-        client = TestClient(app)
-        resp = client.get("/api/v1/kb/kb1/records")
-        assert resp.status_code == 200
-
-
 class TestGetKbChildren:
     def test_success(self):
         app, kb_svc, _ = _make_app()

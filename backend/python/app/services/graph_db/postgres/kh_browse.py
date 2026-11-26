@@ -19,11 +19,14 @@ from app.core.org_context import current_org_id
 from app.exceptions.graph_db_exceptions import KnowledgeHubListingTooLarge
 from app.services.graph_db.postgres import access as access_sql
 from app.services.graph_db.postgres.base import PgBase, _doc
+from app.services.graph_db.postgres.kg import grant_marks
 from app.services.graph_db.postgres.kg import listing as kgl
+from app.services.graph_db.postgres.kg import read as kg_read
 from app.services.graph_db.postgres.kg.model import CODE_COLL
 from app.services.graph_db.postgres.kh_listing import (
     ADMIT_CHUNK,
     ANY_GROUP,
+    APP_DOC,
     BUDGET_S,
     COUNT_CAP,
     COUNT_SCAN,
@@ -93,9 +96,14 @@ class KhBrowseMixin(PgBase):
         held = {g for ids in every.values() for g in ids}
         access = {"grantee_ids": grantee_ids, "gated_app_ids": gated_app_ids, "by_connector": every}
         tops: list[int] = []
-        if at_app or (start is not None and start["kind"] == 2):
+        top = await self._kh_top_grants(org, aid, user_key, set(granted), transaction) if granted else None
+        if top is not None and (at_app or (start is not None and start["kind"] == 2)):
             # The viewer's chain-tops placed here (granted rows whose hierarchy parents they may not open), by the rule every store shares: read beside the node's linked children.
-            placed = await self._kh_v3_chain_tops(aid, org, access, transaction, only_group=None if at_app else start_id)
+            # Of the grants that can be one, the walk is given those of the groups that can place one here: under the App, a chain-top of a group the viewer may open is
+            # listed under that group instead; under a group, only one of that group.
+            mine = await top.ids(top.groups - await self._kh_open_groups(org_id, top, access, transaction) if at_app else {start["sk"]})
+            by_groups = await self._kh_v3_chain_top_groups(aid, org, mine, None if at_app else start_id, transaction) if mine else []
+            placed = await self._kh_v3_chain_tops(aid, org, access, transaction, only_group=None if at_app else start_id, by_groups=by_groups) if by_groups else {}
             tops = [c["sk"] for c in placed.get(aid if at_app else start_id, [])]
 
         async def unit(tx: Tx) -> dict[str, Any] | str:
@@ -153,7 +161,8 @@ class KhBrowseMixin(PgBase):
                 # held whole with no placeholder to follow: the page and its rows in this read too
                 listed = [r for r in rows if r["id"] in ok]
                 page = self._kh_order(listed, sort_field, order, after, direction)[:limit + 1]
-                out, read = await self._kh_flat_rows(org, aid, app_doc, page, sort_field, transaction, also=lambda t: self._kh_arrows_read(t, org, page, hidden, sets, gs, access, tops=chain_tops_apply(app_doc)),
+                shown_tops = top if chain_tops_apply(app_doc) else None
+                out, read = await self._kh_flat_rows(org, aid, app_doc, page, sort_field, transaction, also=lambda t: self._kh_arrows_read(t, org, page, hidden, sets, gs, access, tops=shown_tops),
                                                      under=under, tx=tx)
                 u["done"] = (page, len(listed), self._kh_counts(listed), out, read)
             return u
@@ -171,7 +180,8 @@ class KhBrowseMixin(PgBase):
         where, links, p, trail, rows, opened = u["where"], u["links"], u["p"], u["trail"], u["rows"], u["opened"]
         gset = set(granted)
         admitted_of = self._kh_admitted_of(sets, gset, self._kh_admitter(org, access, transaction, served=served))
-        tops = self._kh_tops_under(org, app_id, access, gset, transaction, apply=chain_tops_apply(app_doc))
+        shown_tops = top if chain_tops_apply(app_doc) else None      # the grants whose chain-tops the arrows read
+        tops = self._kh_tops_under(org, app_id, access, top, transaction, apply=True) if shown_tops else None
         lead = LeadBudget()      # the request's placeholder walks: its page, its total and its arrows share one budget
         arrows = (hidden, admitted_of, org, transaction, tops, lead)      # what deciding a placeholder and an arrow reads
         on: dict[int, bool] = {}      # a record's arrow, once decided (never while a placeholder below it is undecided)
@@ -196,7 +206,7 @@ class KhBrowseMixin(PgBase):
             """The arrows of the records ``ask``, into ``on`` (or ``shown`` for ``head``), their children sampled ``bound`` rows at most in all (a record the bound cut and
             no child lights stays undecided; ``head`` is then read whole)."""
             cut: set[int] = set()
-            read = await self._kq(lambda tx: self._kh_arrows_read(tx, org, ask, hidden, sets, gset, access, tops=chain_tops_apply(app_doc), bound=bound, cut=cut), transaction)
+            read = await self._kq(lambda tx: self._kh_arrows_read(tx, org, ask, hidden, sets, gset, access, tops=shown_tops, bound=bound, cut=cut), transaction)
             scan["rows"] += len(read[1])
             unsure: set[int] = set()
             lit = await self._kh_arrows(read, ask, *arrows, undecided=unsure)
@@ -269,7 +279,7 @@ class KhBrowseMixin(PgBase):
         bound, cut = (max(0, SIDEBAR_SCAN_MAX - scan["rows"]) if side else None), set()
         if out is None:      # the rows and their arrows in one read
             out, read = await self._kh_flat_rows(org, app_id, app_doc, page, sort_field, transaction, also=lambda tx: self._kh_arrows_read(tx, org, fresh, hidden, sets, gset, access,
-                                                                                                                  tops=chain_tops_apply(app_doc), bound=bound, cut=cut),
+                                                                                                                  tops=shown_tops, bound=bound, cut=cut),
                                                  under=u["under"])
             scan["rows"] += len(read[1]) if read else 0
         lists = await self._kh_arrows(read, fresh, *arrows) | {sk for sk, lit in known.items() if lit}
@@ -474,10 +484,10 @@ class KhBrowseMixin(PgBase):
             return []
 
         async def read(tx: Tx) -> list[dict[str, Any]]:
-            app = await tx.fetchval("/* pipeshub:kg.chain_app */ SELECT doc FROM graph.nodes WHERE org_id = $1 AND coll = 'apps' AND id = $2", org, app_id)
+            app = await tx.fetchval(APP_DOC, org, app_id)
             if app is None or not chain_tops_apply(_doc(app)):
                 return []
-            rows = await tx.fetch(kgl.CHAIN_GRANTED, org, sorted(set(granted_ids)), app_id)
+            rows = await tx.fetch(grant_marks.CHAIN_GRANTED if kg_read.enabled() and await kg_read.serves(tx, org, app_id) else kgl.CHAIN_GRANTED, org, sorted(set(granted_ids)), app_id)
             nodes = await _chain_nodes(tx, org, rows)
             by: dict[tuple[str, ...], list[str]] = {}
             for n in nodes.values():

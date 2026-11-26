@@ -7,6 +7,7 @@ import pytest
 from app.agents.mcp import service as mcp_service
 from app.agents.mcp.models import MCPAuthMode
 from app.agents.mcp.service import (
+    MCPInstancesUnavailable,
     belongs_to_org,
     credentials_to_discovery_dict,
     get_authenticated_mcp_servers,
@@ -56,11 +57,11 @@ class TestLoadOrgInstances:
         assert len(result) == 1
 
     @pytest.mark.asyncio
-    async def test_list_failure_returns_empty(self) -> None:
+    async def test_list_failure_is_unavailable_never_empty(self) -> None:
         cfg = MagicMock()
         cfg.list_keys_in_directory = AsyncMock(side_effect=RuntimeError("etcd down"))
-        result = await load_org_instances(cfg, "org-1")
-        assert result == []
+        with pytest.raises(MCPInstancesUnavailable):
+            _ = await load_org_instances(cfg, "org-1")
 
     @pytest.mark.asyncio
     async def test_skips_keys_that_fail_to_load(self) -> None:
@@ -280,11 +281,12 @@ class TestGetAuthenticatedMcpServers:
         assert result == []
 
     @pytest.mark.asyncio
-    async def test_load_failure_returns_empty(self) -> None:
+    async def test_a_store_that_cannot_be_listed_is_unavailable_not_empty(self) -> None:
+        """CPD-7 FB-3: an outage must not read as "no MCP servers"."""
         cfg = MagicMock()
         cfg.list_keys_in_directory = AsyncMock(side_effect=RuntimeError("boom"))
-        result = await get_authenticated_mcp_servers("user-1", cfg, org_id="org-1")
-        assert result == []
+        with pytest.raises(MCPInstancesUnavailable):
+            _ = await get_authenticated_mcp_servers("user-1", cfg, org_id="org-1")
 
     @pytest.mark.asyncio
     async def test_load_org_instances_raising_returns_empty(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -431,3 +433,76 @@ class TestPrefixReadsAreBounded:
 
         assert len(records) == 40
         assert 1 < peak <= mcp_service._PREFIX_READ_CONCURRENCY
+
+
+class TestPopularOrgServers:
+    """`/popular` counts the people signed in to each org server, from one listing of every
+    server's credentials: on Redis each listing costs a scan of the whole keyspace."""
+
+    PERSON_A = "6b058936c3f8aa3127858410"
+    PERSON_B = "6b057e88c3f8aa31278573aa"
+
+    def _cfg(self, keys: list[str]) -> MagicMock:
+        cfg = MagicMock()
+        cfg.list_keys_in_directory = AsyncMock(return_value=keys)
+        return cfg
+
+    @pytest.mark.asyncio
+    async def test_counts_every_server_from_one_listing(self) -> None:
+        a, b = self.PERSON_A, self.PERSON_B
+        cfg = self._cfg([
+            f"/services/mcp/credentials/inst-1/{a}",
+            f"/services/mcp/credentials/inst-1/{a}/oauth-tokens",
+            f"/services/mcp/credentials/inst-1/{b}",
+            f"/services/mcp/credentials/inst-2/{b}",
+        ])
+        visible = [_instance(_id="inst-1", name="Atlassian"), _instance(_id="inst-2", name="Slack"), _instance(_id="inst-3", name="Zoom")]
+
+        rows = await mcp_service.popular_org_servers(cfg, visible)
+
+        cfg.list_keys_in_directory.assert_awaited_once_with("/services/mcp/credentials/")
+        assert [(r["instanceId"], r["people"]) for r in rows] == [("inst-1", 2), ("inst-2", 1)]
+
+    @pytest.mark.asyncio
+    async def test_counts_only_people(self) -> None:
+        # An agent's credential is keyed by its UUID and the shared one by `_shared`.
+        cfg = self._cfg([
+            "/services/mcp/credentials/inst-1/_shared",
+            "/services/mcp/credentials/inst-1/0f7d6c1e-8a49-4f0b-9a3e-2b1c5d6e7f80",
+            f"/services/mcp/credentials/inst-1/{self.PERSON_A}/dcr-client",
+        ])
+        rows = await mcp_service.popular_org_servers(cfg, [_instance(_id="inst-1")])
+        assert [(r["instanceId"], r["people"]) for r in rows] == [("inst-1", 1)]
+
+    @pytest.mark.asyncio
+    async def test_reads_keys_under_an_org_scope(self) -> None:
+        # A store scoped to one org returns its keys with the scope in front.
+        cfg = self._cfg([f"/orgs/org-1/services/mcp/credentials/inst-1/{self.PERSON_A}"])
+        rows = await mcp_service.popular_org_servers(cfg, [_instance(_id="inst-1")])
+        assert [(r["instanceId"], r["people"]) for r in rows] == [("inst-1", 1)]
+
+    @pytest.mark.asyncio
+    async def test_leaves_out_personal_servers_and_sorts_by_people_then_name(self) -> None:
+        a, b = self.PERSON_A, self.PERSON_B
+        cfg = self._cfg([
+            f"/services/mcp/credentials/zeta/{a}",
+            f"/services/mcp/credentials/alpha/{a}",
+            f"/services/mcp/credentials/most/{a}",
+            f"/services/mcp/credentials/most/{b}",
+            f"/services/mcp/credentials/mine/{a}",
+        ])
+        visible = [
+            _instance(_id="zeta", name="Zeta"), _instance(_id="alpha", name="alpha"),
+            _instance(_id="most", name="Most"), _instance(_id="mine", name="Mine", scope="personal"),
+        ]
+        rows = await mcp_service.popular_org_servers(cfg, visible)
+        assert [r["instanceId"] for r in rows] == ["most", "alpha", "zeta"]
+
+    @pytest.mark.asyncio
+    async def test_no_listing_without_org_servers_and_nothing_when_it_fails(self) -> None:
+        cfg = self._cfg([])
+        assert await mcp_service.popular_org_servers(cfg, []) == []
+        cfg.list_keys_in_directory.assert_not_awaited()
+
+        cfg.list_keys_in_directory = AsyncMock(side_effect=RuntimeError("redis down"))
+        assert await mcp_service.popular_org_servers(cfg, [_instance(_id="inst-1")]) == []

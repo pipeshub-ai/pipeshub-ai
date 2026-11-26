@@ -94,7 +94,7 @@ ps -eo pid=,ppid=,args= 2>/dev/null | awk '"'"'
   else if (a ~ /app[.]parsing_main/)     s = "parsing"
   else if (a ~ /app[.]extraction_main/)  s = "extraction"
   else if (a ~ /node .*slack-bot/)       s = "slack_bot"
-  else if (a ~ /node dist\/index[.]js/)  s = "node"
+  else if (a ~ /node .*dist\/index[.]js/) s = "node"
   if (s != "") root[pid] = s
   pids[pid] = 1 }
 END {

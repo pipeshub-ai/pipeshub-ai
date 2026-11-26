@@ -6,6 +6,7 @@ from app.agent_loop_lib.core.types import Goal, ToolCall, UserMessage
 from app.agent_loop_lib.core.types import ToolResult as CoreToolResult
 from app.agent_loop_lib.tools.base import ParameterType, Tool, ToolOutput, ToolParameter
 from app.agent_loop_lib.tools.special_route import RouteContext
+from app.utils.error_class import failure_reason
 
 if TYPE_CHECKING:
     from app.agent_loop_lib.models.base import SupportsStructuredComplete
@@ -59,7 +60,7 @@ async def classify_task(model: "SupportsStructuredComplete", goal: Goal, model_n
         result = response.data
         return {"route": result.get("route", "solo"), "reason": result.get("reason", "")}
     except Exception as exc:
-        return {"route": "solo", "reason": f"classification failed, defaulted to solo: {exc}"}
+        return {"route": "solo", "reason": f"classification failed, defaulted to solo: {failure_reason(exc)}"}
 
 
 class RouteTaskTool(Tool):

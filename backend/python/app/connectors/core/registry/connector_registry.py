@@ -1,3 +1,4 @@
+import contextlib
 import functools
 import json
 from collections.abc import Awaitable, Callable
@@ -24,7 +25,11 @@ from app.services.graph_db.common.utils import (
     org_id_from_app_edge,
 )
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
-from app.services.messaging.lanes.lifecycle import assign_lane_to_new_connector
+from app.services.messaging.lanes.lifecycle import (
+    assign_lane_to_new_connector,
+    free_lane_of_deleted_connector,
+)
+from app.utils.error_class import log_failure
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
@@ -143,6 +148,27 @@ def Connector(
 
         return cls
     return decorator
+
+
+def _org_app_edge(org_id: str, connector_id: str, timestamp: int) -> dict[str, Any]:
+    """The edge from an organisation to one of its connector instances, which the connector list follows."""
+    return {
+        "from_id": org_id,
+        "from_collection": CollectionNames.ORGS.value,
+        "to_id": connector_id,
+        "to_collection": CollectionNames.APPS.value,
+        "createdAtTimestamp": timestamp,
+    }
+
+
+class ConnectorInstanceNotDeletedError(RuntimeError):
+    """The graph answered that it did not delete the connector instance."""
+
+    # The providers answer an outage this way and log its cause themselves.
+    log_error_class = "unavailable"
+
+    def __init__(self, connector_id: str) -> None:
+        super().__init__(f"Connector instance {connector_id} was not deleted")
 
 
 class ConnectorRegistry:
@@ -514,6 +540,7 @@ class ConnectorRegistry:
         Returns:
             Created connector instance document or None if failed
         """
+        node_written = False
         try:
             graph_provider = await self._get_graph_provider()
 
@@ -608,18 +635,11 @@ class ConnectorRegistry:
                 raise Exception(
                     f"Failed to create connector instance for {connector_type}"
                 )
+            node_written = True
 
             # Create relationship edge between organization and instance
-            edge_document = {
-                "from_id": org_id,
-                "from_collection": CollectionNames.ORGS.value,
-                "to_id": instance_key,
-                "to_collection": CollectionNames.APPS.value,
-                "createdAtTimestamp": current_timestamp,
-            }
-
             created_edge = await graph_provider.batch_create_edges(
-                [edge_document],
+                [_org_app_edge(org_id, instance_key, current_timestamp)],
                 CollectionNames.ORG_APP_RELATION.value,
             )
 
@@ -642,13 +662,53 @@ class ConnectorRegistry:
             return instance_document
 
         except ValueError:
-            # Re-raise ValueError (name uniqueness) as-is
+            # Re-raise ValueError (name uniqueness, raised before the node is written) as-is
+            if node_written:
+                await self._discard_unfinished_instance(instance_key, org_id)
             raise
         except Exception as e:
             self.logger.error(
                 f"Error creating connector instance for {connector_type}: {e}"
             )
+            if node_written:
+                await self._discard_unfinished_instance(instance_key, org_id)
             return None
+
+    async def _discard_unfinished_instance(self, connector_id: str, org_id: str) -> None:
+        """Remove a node this create wrote but could not finish: alone it still holds the name, and without its org edge the
+        admin's list may not show it. Raises ConnectorInstanceNotDeletedError, logged once here, when it stays."""
+        try:
+            await self.discard_connector_instance(connector_id, org_id)
+        except Exception as undo_error:
+            log_failure(self.logger, "connector.route.failed", undo_error, include_error_text=False,
+                        op="rollback", step="instance", connector_id=connector_id)
+            raise ConnectorInstanceNotDeletedError(connector_id) from undo_error
+
+    async def discard_connector_instance(self, connector_id: str, org_id: str) -> None:
+        """Remove an instance this process just created, which nothing uses yet: the graph's full delete of it, then
+        its queue lane. Raises when the graph did not delete it."""
+        graph_provider = await self._get_graph_provider()
+        try:
+            result = await graph_provider.delete_connector_instance(connector_id=connector_id, org_id=org_id)
+            if not result.get("success"):
+                raise ConnectorInstanceNotDeletedError(connector_id)
+        except Exception:
+            await self._relink_to_org(graph_provider, connector_id, org_id)
+            raise
+        await free_lane_of_deleted_connector(self.logger, connector_id)
+
+    async def _relink_to_org(self, graph_provider: IGraphDBProvider, connector_id: str, org_id: str) -> None:
+        """Put back the org edge of an instance a failed delete left in place: some stores remove a connector's edges before
+        its node (ArangoDB, outside its transaction), and the list reaches an instance only through that edge. Best effort:
+        the caller logs the failed delete, and docs/logging.md says how to remove an instance left unlisted."""
+        with contextlib.suppress(Exception):
+            instance = await graph_provider.get_document(connector_id, self._collection_name)
+            # Only an instance of this org: a discard asked under another org must never link it there.
+            if instance is not None and await self.belongs_to_org(instance, org_id):
+                await graph_provider.batch_create_edges(
+                    [_org_app_edge(org_id, connector_id, get_epoch_timestamp_in_ms())],
+                    CollectionNames.ORG_APP_RELATION.value,
+                )
 
     async def _deactivate_connector_instance(self, connector_id: str) -> bool:
         """

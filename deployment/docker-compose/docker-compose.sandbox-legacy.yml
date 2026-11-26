@@ -1,0 +1,9 @@
+# Kept so commands that name it keep working; it adds nothing. docker-compose.yml
+# now carries SANDBOX_MODE=docker itself (R51-COMPAT, ADR-OPS-07): the app reaches
+# the Docker API policy proxy (#3782) on sandbox-control, never the socket, with
+# DOCKER_PROXY_TOKEN, which install.sh writes only in docker mode.
+#
+#   docker compose -f docker-compose.yml \
+#     -f docker-compose.sandbox-legacy.yml up -d    # same as without it
+
+services: {}

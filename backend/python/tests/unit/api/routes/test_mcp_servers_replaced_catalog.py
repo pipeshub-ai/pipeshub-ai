@@ -2,6 +2,7 @@
 servers already made from it keep working; its replacement is Slack's own hosted server."""
 from __future__ import annotations
 
+from collections.abc import Iterator
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, patch
 
@@ -12,6 +13,7 @@ from app.agents.mcp.models import MCPAuthMode, MCPServerInstanceConfig, MCPTrans
 from app.agents.mcp.registry import get_mcp_registry
 from app.api.routes import mcp_servers
 from app.api.routes.mcp_servers import create_instance, update_instance
+from tests.support.bound_org import bind_test_org
 from tests.unit.api.routes.mcp_route_fakes import FakeConfigService, route_request
 
 if TYPE_CHECKING:
@@ -115,3 +117,9 @@ class TestServersFromAReplacedEntry:
 
         assert record["url"] == "https://mcp.slack.com/mcp"
         assert record["authMode"] == "oauth"
+
+
+@pytest.fixture(autouse=True)
+def _bound_org() -> Iterator[str]:
+    """The auth middleware binds the verified token's org; these tests call the route functions directly."""
+    yield from bind_test_org("org-1")

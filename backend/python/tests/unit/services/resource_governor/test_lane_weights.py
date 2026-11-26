@@ -132,16 +132,38 @@ def test_weighted_holder_is_never_seen_partially(make_budget: Callable[..., Lane
     assert seen <= {0, 1, 3, 4}, seen  # 3 alone, or with the one light unit
 
 
-def test_weight3_is_not_starved_by_a_weight1_stream(make_budget: Callable[..., LaneBudget]) -> None:
-    """T61: weight-1 jobs of 0.2 s from three processes do not hold a weight-3 waiter off."""
+def test_weight3_is_not_starved_by_a_weight1_stream(
+    make_budget: Callable[..., LaneBudget], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """T61: weight-1 jobs of 0.2 s from three processes do not hold a weight-3 waiter off.
+
+    Counted in grants, not seconds: once the waiter's flag is on the ledger the streams defer, so the only weight-1
+    grants it waits behind are the ones already under way when it registered, at most one per stream thread.
+    """
     others = [real(make_budget, 3, 200 + i) for i in range(3)]
     waiter = real(make_budget, 3, 299)
     stop = threading.Event()
+    lock = threading.Lock()
+    grants = 0
+    grants_at_registration: int | None = None
+    original = lane_ledger.LedgerTxn.write
+
+    def noting_registration(self: lane_ledger.LedgerTxn, record: LedgerRecord) -> None:
+        nonlocal grants_at_registration
+        original(self, record)
+        if record.waiter_pid == 299 and grants_at_registration is None:
+            with lock:
+                grants_at_registration = grants
+
+    monkeypatch.setattr(lane_ledger.LedgerTxn, "write", noting_registration)
 
     def stream(budget: LaneBudget) -> None:
+        nonlocal grants
         while not stop.is_set():
             try:
                 with budget.acquire(timeout=5):
+                    with lock:
+                        grants += 1
                     time.sleep(0.2)
             except LaneWaitTimeout:
                 return
@@ -152,15 +174,16 @@ def test_weight3_is_not_starved_by_a_weight1_stream(make_budget: Callable[..., L
     try:
         # The contention case needs the streams to fill the limit before the waiter asks.
         assert wait_until(lambda: others[0].held_count()[0] >= 3)
-        started = time.monotonic()
         lease = waiter.acquire(weight=3, timeout=8)
-        waited = time.monotonic() - started
+        with lock:
+            grants_while_waiting = grants - (grants_at_registration or 0)
         lease.release()
     finally:
         stop.set()
         for t in threads:
             t.join()
-    assert waited < 0.2 + 1.0 + 0.8, waited
+    assert grants_at_registration is not None, "the waiter never put its flag on the ledger"
+    assert grants_while_waiting <= len(threads), grants_while_waiting
 
 
 @pytest.mark.parametrize("shape", ["second_process", "two_waiters", "same_process_as_holder"])
@@ -294,13 +317,7 @@ def test_waiter_flag_expires_when_the_waiter_dies(make_budget: Callable[..., Lan
         assert light.try_acquire() is None  # deferring to the waiter
         child.kill()
         child.wait(timeout=10)
-        started = time.monotonic()
-        got = None
-        while got is None and time.monotonic() - started < 6:
-            got = light.try_acquire()
-            time.sleep(0.02)
-        assert got is not None
-        assert time.monotonic() - started <= WAITER_FRESH_SECONDS + 0.6
+        _take_once_the_flag_is_stale(light).release()
     finally:
         child.kill()
         child.wait(timeout=10)
@@ -327,6 +344,26 @@ def test_waiter_flag_expires_when_its_owner_is_sigstopped(
     finally:
         child.kill()
         child.wait(timeout=10)
+
+
+def _take_once_the_flag_is_stale(light: LaneBudget) -> LaneLease:
+    """Weight-1 takes after the waiter stopped rewriting its stamp, with every refusal checked against that stamp.
+
+    A refusal is a fault only if the flag was already older than WAITER_FRESH_SECONDS when the call began: the clock
+    read before the call is no later than the one the call decides on, so a loaded host cannot make a correct refusal
+    look stale, and a flag that outlives its freshness is caught on the first late refusal.
+    """
+    stamp = flag(light).waiter_at
+    assert stamp > 0
+    end = time.monotonic() + 6
+    while time.monotonic() < end:
+        asked = time.monotonic()
+        got = light.try_acquire()
+        if got is not None:
+            return got
+        assert asked - stamp <= WAITER_FRESH_SECONDS + 0.1, f"refused on a flag {asked - stamp:.2f}s old"
+        time.sleep(0.02)
+    raise AssertionError("weight-1 acquisition never resumed")
 
 
 def test_a_process_stopped_while_counting_slots_holds_the_lanes_until_it_exits(

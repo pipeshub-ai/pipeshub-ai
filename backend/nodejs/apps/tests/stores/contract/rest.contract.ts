@@ -104,7 +104,7 @@ export function describeOrgContract(fx: OrgFixture): void {
       expect(mine.map((g) => g.type)).to.have.members(['everyone']);
       expect((await orgs.getLive(org._id))?.onBoardingStatus).to.equal('notConfigured');
       const cfg = await fx.orgAuth.getLive(org._id);
-      expect(cfg?.authSteps[0].allowedMethods[0].type).to.equal('password');
+      expect(cfg?.authSteps[0]!.allowedMethods[0]!.type).to.equal('password');
       const cred = await fx.credentials.find(adminUserId, org._id);
       expect(cred?.hashedPassword).to.equal('hash-value-1');
     });
@@ -350,7 +350,7 @@ export function describeRemainingContract(
         owner,
       );
       expect(a?.members.map((m) => `${m.principalType}:${m.principalId}`)).to.have.members([`user:${u}`, `team:${t}`]);
-      expect(a?.members[0].addedBy).to.equal(owner);
+      expect(a?.members[0]!.addedBy).to.equal(owner);
       const b = await projects.upsertMembers(p._id, [{ principalId: u, principalType: 'user', role: 'editor' }], owner);
       expect(b?.members.find((m) => m.principalId === u)?.role).to.equal('editor');
       expect(b?.members).to.have.length(2);
@@ -461,9 +461,9 @@ export function describeRemainingContract(
       await delegation.recordEvent({ orgId: org, serviceAccountId: sa2, requestedSubject: 'b@x.io', outcome: 'refused', refusedReason: 'not_on_allow_list' });
       const all = await delegation.listEvents(org, undefined, 10);
       expect(all.map((e) => e.outcome)).to.deep.equal(['refused', 'granted']);
-      expect(all[1].requestedSubject).to.have.length(320);
-      expect(all[1].scopes).to.deep.equal(['s']);
-      expect(all[0].scopes).to.deep.equal([]);
+      expect(all[1]!.requestedSubject).to.have.length(320);
+      expect(all[1]!.scopes).to.deep.equal(['s']);
+      expect(all[0]!.scopes).to.deep.equal([]);
       expect((await delegation.listEvents(org, sa1, 10)).map((e) => e.outcome)).to.deep.equal(['granted']);
       expect(await delegation.listEvents(org, undefined, 1)).to.have.length(1);
       expect(await delegation.listEvents(fx.newId(), undefined, 10)).to.deep.equal([]);
@@ -487,7 +487,7 @@ export function describeMetricsContract(fx: OrgFixture): void {
       expect(live.find((o) => o._id === org._id)).to.include({ accountType: 'business', domain: 'acme.example.com' });
       const cfgs = await metrics.listLiveAuthConfigs();
       const mine = cfgs.find((c) => c.orgId === org._id);
-      expect(mine?.authSteps?.[0].allowedMethods?.[0].type).to.equal('password');
+      expect(mine?.authSteps?.[0]!.allowedMethods?.[0]!.type).to.equal('password');
       await orgs.softDelete(org._id);
       expect((await metrics.listLiveOrgs()).some((o) => o._id === org._id)).to.equal(false);
       expect(adminUserId).to.be.a('string');

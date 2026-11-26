@@ -1,0 +1,175 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/core/events/tool.outcome.schema.json",
+  "title": "ToolOutcomeEvent",
+  "description": "Tool outcome with its item labels. Node writes one only when it ends a run itself (a cancel while no worker holds the run, the deadline sweeper): status cancelled, for each call whose intent has no outcome, so every call ends with exactly one outcome (EV-06).",
+  "x-writer": [
+    "node",
+    "worker"
+  ],
+  "allOf": [
+    {
+      "$ref": "../envelope.schema.json#/$defs/InlineEnvelope"
+    }
+  ],
+  "properties": {
+    "type": {
+      "const": "tool.outcome"
+    },
+    "writer": {
+      "enum": [
+        "node",
+        "worker"
+      ]
+    },
+    "data": {
+      "$ref": "#/$defs/ToolOutcomeData"
+    }
+  },
+  "$defs": {
+    "ToolOutcomeData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "invocationId",
+        "status",
+        "labels"
+      ],
+      "properties": {
+        "invocationId": {
+          "$ref": "../common.schema.json#/$defs/Id"
+        },
+        "status": {
+          "enum": [
+            "ok",
+            "error",
+            "timeout",
+            "cancelled"
+          ]
+        },
+        "resultRef": {
+          "$ref": "../common.schema.json#/$defs/ContentRef"
+        },
+        "receipt": {
+          "description": "Provider receipt used by reconciliation.",
+          "type": "object"
+        },
+        "labels": {
+          "$ref": "../labels.schema.json"
+        },
+        "shadow": {
+          "description": "Dry run (G-03): the call was not made; the outcome records what the run would have done (its arguments ride the model response that asked for it). wouldAsk: outside a dry run the call would have waited for a person's approval. Written only by a worker, only on a run whose spec pins gates.dryRun.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "wouldAsk"
+          ],
+          "properties": {
+            "wouldAsk": {
+              "type": "boolean"
+            }
+          }
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "type": "tool.outcome",
+      "schemaVersion": 1,
+      "critical": true,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "data": {
+        "invocationId": "inv_1",
+        "status": "ok",
+        "resultRef": {
+          "ref": "cas/o1",
+          "hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "size": 300
+        },
+        "receipt": {
+          "issueKey": "ENG-1"
+        },
+        "labels": {
+          "integrity": "internal"
+        }
+      },
+      "attemptId": "att_1",
+      "fence": 3
+    },
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "type": "tool.outcome",
+      "schemaVersion": 1,
+      "critical": true,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "data": {
+        "invocationId": "inv_2",
+        "status": "timeout",
+        "labels": {
+          "integrity": "external"
+        }
+      },
+      "attemptId": "att_1",
+      "fence": 3
+    },
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "type": "tool.outcome",
+      "schemaVersion": 1,
+      "critical": true,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "node",
+      "visibility": "owner",
+      "data": {
+        "invocationId": "inv_2",
+        "status": "cancelled",
+        "labels": {
+          "integrity": "internal"
+        }
+      }
+    },
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "type": "tool.outcome",
+      "schemaVersion": 1,
+      "critical": true,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "data": {
+        "invocationId": "inv_3",
+        "status": "ok",
+        "labels": {
+          "integrity": "internal"
+        },
+        "shadow": {
+          "wouldAsk": true
+        }
+      },
+      "attemptId": "att_1",
+      "fence": 3
+    }
+  ]
+}

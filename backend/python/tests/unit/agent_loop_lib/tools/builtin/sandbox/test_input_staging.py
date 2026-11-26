@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from typing import TYPE_CHECKING
 
 import pytest
 
@@ -11,9 +12,14 @@ from app.agent_loop_lib.tools.builtin.sandbox.input_staging import (
     add_staged_skill_resources,
     peek_staged_input_files,
     peek_staged_skill_resources,
+    peek_staged_workspace_files,
     set_staged_input_files_for_task,
+    set_staged_workspace_files_for_task,
     stage_input_files,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 
 @pytest.fixture(autouse=True)
@@ -35,6 +41,13 @@ def _reset_staged_input_files():
     token = input_staging._staged_input_files.set(None)
     yield
     input_staging._staged_input_files.reset(token)
+
+
+@pytest.fixture(autouse=True)
+def _reset_staged_workspace_files() -> Iterator[None]:
+    token = input_staging._staged_workspace_files.set(None)
+    yield
+    input_staging._staged_workspace_files.reset(token)
 
 
 class TestStageInputFiles:
@@ -235,3 +248,28 @@ class TestAddStagedSkillResources:
             assert peek_staged_skill_resources() == {"skills/a/x.py": b"1"}
         assert peek_staged_skill_resources() == {"skills/a/x.py": b"1"}
         assert peek_staged_input_files() is None
+
+
+class TestSetStagedWorkspaceFilesForTask:
+    def test_checkout_survives_pre_tool_pipeline_return(self) -> None:
+        set_staged_workspace_files_for_task({"workspace/state.json": b"{}"})
+        assert peek_staged_workspace_files() == {"workspace/state.json": b"{}"}
+
+    def test_new_authoritative_checkout_replaces_the_prior_one(self) -> None:
+        set_staged_workspace_files_for_task({"workspace/old.txt": b"old"})
+        set_staged_workspace_files_for_task({"workspace/new.txt": b"new"})
+        assert peek_staged_workspace_files() == {"workspace/new.txt": b"new"}
+
+    async def test_set_is_isolated_from_a_sibling_tool_task(self) -> None:
+        started = asyncio.Event()
+        seen: list[dict[str, bytes] | None] = []
+
+        async def sibling() -> None:
+            await started.wait()
+            seen.append(peek_staged_workspace_files())
+
+        task = asyncio.create_task(sibling())
+        set_staged_workspace_files_for_task({"workspace/state.json": b"{}"})
+        started.set()
+        await task
+        assert seen == [None]

@@ -117,7 +117,7 @@ function KBSidebarFromStore() {
       mobileOpen={isMobileOpen}
       onMobileClose={closeMobileSidebar}
     >
-      <Text size="1" style={{ color: 'var(--slate-9)', padding: 'var(--space-2)' }}>
+      <Text size="1" style={{ color: 'var(--slate-11)', padding: 'var(--space-2)' }}>
         {t('action.loading')}
       </Text>
     </SidebarBase>
@@ -352,7 +352,7 @@ function KBSidebarContent({
                   />
                 ))
               ) : (
-                <Text size="1" style={{ color: 'var(--slate-9)', padding: 'var(--space-2) var(--space-6)' }}>
+                <Text size="1" style={{ color: 'var(--slate-11)', padding: 'var(--space-2) var(--space-6)' }}>
                   No items
                 </Text>
               )
@@ -381,7 +381,7 @@ function KBSidebarContent({
                 />
               ))
             ) : (
-              <Text size="1" style={{ color: 'var(--slate-9)', padding: 'var(--space-2) var(--space-6)' }}>
+              <Text size="1" style={{ color: 'var(--slate-11)', padding: 'var(--space-2) var(--space-6)' }}>
                 No items
               </Text>
             )}
@@ -442,7 +442,7 @@ function KBSidebarContent({
             onChange={(e) => setSecondaryPanelSearchQuery(e.target.value)}
           >
             <TextField.Slot>
-              <MaterialIcon name="search" size={16} color="var(--slate-9)" />
+              <MaterialIcon name="search" size={16} color="var(--slate-11)" />
             </TextField.Slot>
           </TextField.Root>
         </Box>

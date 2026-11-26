@@ -817,3 +817,52 @@ class TestInitException:
         conn.logger.info = MagicMock(side_effect=Exception("unexpected"))
         result = await conn.init()
         assert result is False
+
+
+# ===================================================================
+# QAFIX3-8: the storage route's reply, told apart by the one rule blob_staging uses
+# ===================================================================
+
+
+class TestQafix3StoredJsonFile:
+    """Local storage answers the download route with the stored file itself, typed by its extension and sent as an
+    attachment. A stored ``.json`` file was taken for the cloud ``{signedUrl}`` reply, so a file holding a
+    ``signedUrl`` key handed back that URL as the record's download link. Over real HTTP: the file is the record's
+    own bytes (no signed URL; streamed with auth), and a real ``{signedUrl}`` reply is still followed."""
+
+    @staticmethod
+    async def _signed_url(headers: dict[str, str], body: bytes) -> str | None:
+        from aiohttp import web
+
+        async def download(request: web.Request) -> web.Response:
+            return web.Response(body=body, headers=headers)
+
+        app = web.Application()
+        app.router.add_get("/api/v1/document/internal/{document_id}/download", download)
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, "127.0.0.1", 0)
+        await site.start()
+        try:
+            port = site._server.sockets[0].getsockname()[1]  # type: ignore[union-attr]
+            conn = _make_connector_cov()
+            conn.config_service.get_config = AsyncMock(
+                return_value={"storage": {"endpoint": f"http://127.0.0.1:{port}"}}
+            )
+            with patch(
+                "app.connectors.sources.localKB.connector.generate_jwt", new_callable=AsyncMock, return_value="jwt"
+            ):
+                return await conn.get_signed_url(_make_record_cov(record_name="data.json", mime_type="application/json"))
+        finally:
+            await runner.cleanup()
+
+    @pytest.mark.asyncio
+    async def test_a_stored_json_file_is_the_file_not_a_signed_url_reply(self) -> None:
+        stored = b'{"signedUrl": "https://attacker.example/x"}'
+        headers = {"Content-Type": "application/json", "Content-Disposition": "attachment; filename*=UTF-8''data.json"}
+        assert await self._signed_url(headers, stored) is None
+
+    @pytest.mark.asyncio
+    async def test_a_cloud_signed_url_reply_is_still_followed(self) -> None:
+        reply = b'{"signedUrl": "https://bucket.example/obj?sig=1"}'
+        assert await self._signed_url({"Content-Type": "application/json"}, reply) == "https://bucket.example/obj?sig=1"

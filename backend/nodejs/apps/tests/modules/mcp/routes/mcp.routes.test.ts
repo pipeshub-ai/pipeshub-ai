@@ -142,7 +142,7 @@ describe('MCP Routes — createMCPRouter', () => {
       const postLayer = router.stack.find(
         (layer: any) => layer.route && layer.route.methods.post,
       )
-      expect(postLayer.route.path).to.equal('/')
+      expect(postLayer!.route!.path).to.equal('/')
     })
 
     it('should have GET route at path /', () => {
@@ -150,7 +150,7 @@ describe('MCP Routes — createMCPRouter', () => {
       const getLayer = router.stack.find(
         (layer: any) => layer.route && layer.route.methods.get,
       )
-      expect(getLayer.route.path).to.equal('/')
+      expect(getLayer!.route!.path).to.equal('/')
     })
   })
 
@@ -164,7 +164,7 @@ describe('MCP Routes — createMCPRouter', () => {
         (layer: any) => layer.route && layer.route.methods.post,
       )
       // route.stack contains the handler layers for that route
-      expect(postLayer.route.stack).to.have.length(7)
+      expect(postLayer!.route!.stack).to.have.length(7)
     })
 
     it('should guard GET with origin, limits, auth, the token check and the org access check before the 405 handler', () => {
@@ -172,7 +172,7 @@ describe('MCP Routes — createMCPRouter', () => {
       const getLayer = router.stack.find(
         (layer: any) => layer.route && layer.route.methods.get,
       )
-      expect(getLayer.route.stack).to.have.length(7)
+      expect(getLayer!.route!.stack).to.have.length(7)
     })
 
     it('should authenticate after the origin check and the rejected-token limit on POST', () => {
@@ -180,7 +180,7 @@ describe('MCP Routes — createMCPRouter', () => {
       const postLayer = router.stack.find(
         (layer: any) => layer.route && layer.route.methods.post,
       )
-      const firstHandler = postLayer.route.stack[2].handle
+      const firstHandler = postLayer!.route!.stack[2]!.handle
       expect(firstHandler).to.equal(mockAuthMiddleware.authenticate)
     })
 
@@ -189,7 +189,7 @@ describe('MCP Routes — createMCPRouter', () => {
       const getLayer = router.stack.find(
         (layer: any) => layer.route && layer.route.methods.get,
       )
-      const firstHandler = getLayer.route.stack[2].handle
+      const firstHandler = getLayer!.route!.stack[2]!.handle
       expect(firstHandler).to.equal(mockAuthMiddleware.authenticate)
     })
 
@@ -198,7 +198,7 @@ describe('MCP Routes — createMCPRouter', () => {
       const postLayer = router.stack.find(
         (layer: any) => layer.route && layer.route.methods.post,
       )
-      const secondHandler = postLayer.route.stack[6].handle
+      const secondHandler = postLayer!.route!.stack[6]!.handle
       // handleMCPRequest(appConfig) returns an async function
       expect(secondHandler).to.be.a('function')
       expect(secondHandler).to.not.equal(mockAuthMiddleware.authenticate)
@@ -209,7 +209,7 @@ describe('MCP Routes — createMCPRouter', () => {
       const getLayer = router.stack.find(
         (layer: any) => layer.route && layer.route.methods.get,
       )
-      const secondHandler = getLayer.route.stack[6].handle
+      const secondHandler = getLayer!.route!.stack[6]!.handle
       expect(secondHandler).to.be.a('function')
       expect(secondHandler).to.not.equal(mockAuthMiddleware.authenticate)
     })
@@ -228,7 +228,7 @@ describe('MCP Routes — createMCPRouter', () => {
       const postLayer = router.stack.find(
         (layer: any) => layer.route && layer.route.methods.post,
       )
-      expect(postLayer.route.stack[2].handle).to.equal(customAuth)
+      expect(postLayer!.route!.stack[2]!.handle).to.equal(customAuth)
     })
 
     it('should use same auth middleware for both routes', () => {
@@ -239,8 +239,8 @@ describe('MCP Routes — createMCPRouter', () => {
       const getLayer = router.stack.find(
         (layer: any) => layer.route && layer.route.methods.get,
       )
-      expect(postLayer.route.stack[2].handle).to.equal(
-        getLayer.route.stack[2].handle,
+      expect(postLayer!.route!.stack[2]!.handle).to.equal(
+        getLayer!.route!.stack[2]!.handle,
       )
     })
   })

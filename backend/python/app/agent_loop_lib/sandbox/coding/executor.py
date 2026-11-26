@@ -6,11 +6,17 @@ import sys
 import time
 from dataclasses import dataclass
 
-from app.agent_loop_lib.sandbox.coding.base import CodeRequest, CodeResult
+from app.agent_loop_lib.sandbox.coding.base import (
+    CodeRequest,
+    CodeResult,
+    validate_entry_file,
+)
 from app.agent_loop_lib.sandbox.coding.environment import (
     EnvironmentManager,
+    _kill_process_tree,
     sanitized_subprocess_env,
 )
+from app.agent_loop_lib.sandbox.coding.output_limits import read_stdio_capped
 from app.agent_loop_lib.sandbox.confinement import confine_command
 
 """`CodeExecutor`: runs one `CodeRequest` as a confined subprocess.
@@ -30,6 +36,8 @@ for `sandbox/confinement.py`).
 """
 
 __all__ = ["ExecutionLimits", "CodeExecutor"]
+
+_BUDGET_IN_OWN_NAMESPACE = sys.platform.startswith("linux")
 
 # `.npm` (HOME points into the sandbox dir, so npm's cache/config lands
 # here), `node-compile-cache` (Node's V8 compile cache, rewritten on nearly
@@ -61,16 +69,14 @@ class ExecutionLimits:
     """Config-driven `setrlimit` values applied to every executed process
     (and its children, via inheritance across exec).
 
-    `max_processes` (RLIMIT_NPROC) caveat: on macOS/BSD this limits the
-    total number of processes owned by the REAL UID **system-wide**, not
-    just this subprocess tree — it is not a precise per-sandbox budget.
-    Sizing it too close to what a normal desktop session already uses
-    (easily several hundred processes) makes ordinary tool invocations
-    fail with a confusing `EAGAIN` on `spawn()`/`fork()` that has nothing
-    to do with the sandboxed code itself. The default here is deliberately
-    generous — high enough to never collide with normal usage, still low
-    enough to bound a genuine fork bomb well below the OS default (macOS
-    ships `ulimit -u` around 4000).
+    `max_processes` is how many processes and threads one run may have.
+    RLIMIT_NPROC counts every task of the real UID (Linux counts threads
+    too; macOS/BSD processes), so on Linux each run gets a user namespace of
+    its own, where only the run's tasks count (`process_budget`): nothing the
+    account runs elsewhere spends the budget (H5, H10). Where no namespace
+    can be made, the limit is the account's tasks at spawn plus the budget,
+    which later work of the account still spends; elsewhere it is the budget
+    itself. Either way a fork bomb stops within the budget.
     """
 
     max_memory_bytes: int = 1536 * 1024 * 1024
@@ -103,8 +109,13 @@ def _rlimit_preexec_fn(limits: ExecutionLimits):
     this module still imports cleanly on Windows."""
     import resource
 
+    # On Linux the process budget is set by `process_budget`, inside the run's own user namespace.
+    process_limits = (
+        [] if _BUDGET_IN_OWN_NAMESPACE else [(resource.RLIMIT_NPROC, limits.max_processes, limits.max_processes)]
+    )
+
     def _preexec() -> None:
-        for res, value in (
+        for res, value, hard in (
             # RLIMIT_DATA, deliberately not RLIMIT_AS. A JIT reserves far
             # more VIRTUAL address space than it ever commits, and V8 sizes
             # that reservation from the limit it can see — so capping
@@ -121,34 +132,20 @@ def _rlimit_preexec_fn(limits: ExecutionLimits):
             # every limit tried. macOS enforces it loosely, but the local
             # backend is HOST isolation there anyway — these rlimits are
             # defence in depth, not the boundary.
-            (resource.RLIMIT_DATA, limits.max_memory_bytes),
-            (resource.RLIMIT_CPU, limits.max_cpu_seconds),
-            (resource.RLIMIT_FSIZE, limits.max_file_size_bytes),
-            (resource.RLIMIT_NPROC, limits.max_processes),
+            (resource.RLIMIT_DATA, limits.max_memory_bytes, limits.max_memory_bytes),
+            # The hard limit is one second above the soft one. With equal
+            # limits Linux sends SIGKILL instead of SIGXCPU, and the run would
+            # look like an out-of-memory kill instead of a CPU-time one.
+            (resource.RLIMIT_CPU, limits.max_cpu_seconds, limits.max_cpu_seconds + 1),
+            (resource.RLIMIT_FSIZE, limits.max_file_size_bytes, limits.max_file_size_bytes),
+            *process_limits,
         ):
             try:
-                resource.setrlimit(res, (value, value))
+                resource.setrlimit(res, (value, hard))
             except (ValueError, OSError):
                 continue  # best-effort — some rlimits are unavailable in containers/CI
 
     return _preexec
-
-
-async def _kill_process_tree(proc: asyncio.subprocess.Process) -> None:
-    """Kill the whole process group (not just `proc` itself) so a
-    fork-bombing or backgrounding script can't outlive the timeout."""
-    try:
-        if sys.platform != "win32":
-            import signal
-            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-        else:
-            proc.kill()
-    except ProcessLookupError:
-        pass
-    try:
-        await asyncio.wait_for(proc.wait(), timeout=5.0)
-    except asyncio.TimeoutError:
-        pass
 
 
 class CodeExecutor:
@@ -181,7 +178,9 @@ class CodeExecutor:
         else:
             await self._env.ensure_python_venv()
 
-        entry_name = request.entry_file or ("main.ts" if request.language == "typescript" else "main.py")
+        entry_name = validate_entry_file(
+            request.entry_file or ("main.ts" if request.language == "typescript" else "main.py")
+        )
 
         before = _snapshot_mtimes(self._working_dir)
         if request.language == "typescript":
@@ -209,8 +208,9 @@ class CodeExecutor:
         )
 
     async def _run_typescript(self, request: CodeRequest) -> tuple[str, str, int]:
-        entry = request.entry_file or "main.ts"
+        entry = validate_entry_file(request.entry_file or "main.ts")
         entry_path = os.path.join(self._working_dir, entry)
+        os.makedirs(os.path.dirname(entry_path), exist_ok=True)
         with open(entry_path, "w", encoding="utf-8") as f:
             f.write(request.code)
 
@@ -226,13 +226,18 @@ class CodeExecutor:
         return await self._run([self._env.tsx_binary, entry], request.timeout, allow_network=request.allow_network)
 
     async def _run_python(self, request: CodeRequest) -> tuple[str, str, int]:
-        entry = request.entry_file or "main.py"
+        entry = validate_entry_file(request.entry_file or "main.py")
         entry_path = os.path.join(self._working_dir, entry)
+        os.makedirs(os.path.dirname(entry_path), exist_ok=True)
         with open(entry_path, "w", encoding="utf-8") as f:
             f.write(request.code)
         return await self._run([self._env.python_bin, entry], request.timeout, allow_network=request.allow_network)
 
     async def _run(self, cmd: list[str], timeout: float, *, allow_network: bool) -> tuple[str, str, int]:
+        if _BUDGET_IN_OWN_NAMESPACE:
+            from app.agent_loop_lib.sandbox.coding.process_budget import budget_command
+
+            cmd = budget_command(cmd, self._limits.max_processes)
         confined_cmd = confine_command(cmd, self._working_dir, allow_network=allow_network)
         is_posix = sys.platform != "win32"
         proc = await asyncio.create_subprocess_exec(
@@ -245,12 +250,16 @@ class CodeExecutor:
             start_new_session=is_posix,
         )
         try:
-            stdout_bytes, stderr_bytes = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+            # Only the head and tail of each stream are kept: a program that
+            # prints gigabytes must not put them in this process's memory.
+            stdout, stderr = await asyncio.wait_for(read_stdio_capped(proc), timeout=timeout)
         except asyncio.TimeoutError:
             await _kill_process_tree(proc)
             return "", f"Timed out after {timeout}s", -1
-        return (
-            stdout_bytes.decode(errors="replace"),
-            stderr_bytes.decode(errors="replace"),
-            proc.returncode if proc.returncode is not None else -1,
-        )
+        except asyncio.CancelledError:
+            # The caller's slot is released when this raises, so the process
+            # group has to be gone first. Shielded so a second cancel cannot
+            # skip the kill.
+            await asyncio.shield(_kill_process_tree(proc))
+            raise
+        return stdout, stderr, proc.returncode if proc.returncode is not None else -1

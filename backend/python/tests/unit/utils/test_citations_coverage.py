@@ -264,11 +264,13 @@ class TestFindWebRecordByUrl:
 
 
 class TestRenumberCitationLinksDescriptive:
-    def test_descriptive_link_text_kept_before_numbered_badge(self):
+    def test_descriptive_link_text_stays_beside_the_numbered_badge(self):
+        """P4.11 CR-1: descriptive link text is the answer's prose, so it stays, followed by ``[N](full_url)``."""
         u = "https://example.com/doc#section"
         text = f"Read [Bellandur Restaurants]({u}) today."
         matches = list(re.finditer(citations_mod._MD_LINK_PATTERN, text))
         out = _renumber_citation_links(text, matches, {u: 1})
+        assert "[Bellandur Restaurants]" not in out
         assert out == f"Read Bellandur Restaurants [1]({u}) today."
 
 

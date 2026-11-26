@@ -80,6 +80,39 @@ const BADGES: Record<McpConnectionState, { color: 'green' | 'amber' | 'red' | 'g
   slow: { color: 'gray', key: 'workspace.mcpServers.status.slow' },
 };
 
+/** The list's filters: usable now, needs something from this person, or out of their hands. */
+export type McpStatusGroup = 'ready' | 'action' | 'unavailable';
+
+export function mcpStatusGroup(state: McpConnectionState | 'disabled'): McpStatusGroup {
+  switch (state) {
+    case 'ready':
+    case 'slow':
+      return 'ready';
+    case 'needs_connect':
+    case 'needs_reconnect':
+    case 'shared_credential_missing':
+    case 'needs_auth_mode':
+      return 'action';
+    default:
+      return 'unavailable';
+  }
+}
+
+/** The one button that fixes a state from a list row, if there is one. */
+export function mcpFixAction(state: McpConnectionState | 'disabled'): 'connect' | 'reconnect' | 'edit' | null {
+  switch (state) {
+    case 'needs_connect':
+    case 'shared_credential_missing':
+      return 'connect';
+    case 'needs_reconnect':
+      return 'reconnect';
+    case 'needs_auth_mode':
+      return 'edit';
+    default:
+      return null;
+  }
+}
+
 /** The colour and label key a state is shown with. */
 export function mcpStatusLook(state: McpConnectionState): { color: 'green' | 'amber' | 'red' | 'gray'; key: string } {
   return BADGES[state];

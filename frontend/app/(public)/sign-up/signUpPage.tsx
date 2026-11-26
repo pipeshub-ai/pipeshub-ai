@@ -4,10 +4,9 @@ import React, { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { Flex, Text, TextField, Button, Spinner, Select, AlertDialog, Box } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
-import { useAuthStore } from '@/config';
+import { useAuthStore, GuestGuard } from '@/config';
 import { isValidEmail, validatePassword } from '@/lib/utils/validators';
 import { toast } from '@/lib/store/toast-store';
-import { GuestGuard } from '@/app/components/ui/guest-guard';
 import { LoadingScreen } from '@/app/components/ui/auth-guard';
 import { getOrgExists } from '@/lib/api/org-exists-public';
 import { fetchAndSetCurrentUser } from '@/lib/auth/hydrate-user';
@@ -151,7 +150,7 @@ export default function SignUpPage() {
     try {
       await AuthApi.initAuth();
       const session = await AuthApi.signInWithPassword(email.trim(), password);
-      if (!session.accessToken || !session.refreshToken) {
+      if (!session.accessToken) {
         throw new Error('Sign-in returned no session');
       }
       setTokens(session.accessToken, session.refreshToken);
