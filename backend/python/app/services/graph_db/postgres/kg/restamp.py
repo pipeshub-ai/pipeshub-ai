@@ -156,9 +156,9 @@ async def enqueue_rows(tx: Tx, org: str, keys: set[Key], reason: str, *, skip_ap
     by_app: dict[int, list[tuple[int, int, str, int]]] = {}
     sks = sorted(sk_of.values())
     for i in range(0, len(sks), CAP):
-        # a row another job has marked is hidden already and restamped by that job from the graph as it is then; taking its mark over would lose a subtree job's walk below it
-        got = await tx.fetch("/* pipeshub:kg.hide_read */ SELECT sk, coll, id, kind, app_sk FROM kg.records WHERE org_id = $1 AND sk = ANY($2::bigint[]) AND fence_job IS NULL",
-                             org, sks[i:i + CAP])
+        # a row a subtree job has marked is hidden already and restamped by that job from the graph as it is then; taking its mark over would lose the job's walk below it
+        got = await tx.fetch("""/* pipeshub:kg.hide_read */ SELECT r.sk, r.coll, r.id, r.kind, r.app_sk FROM kg.records r WHERE r.org_id = $1 AND r.sk = ANY($2::bigint[])
+            AND NOT EXISTS (SELECT 1 FROM kg.restamp_queue q WHERE q.org_id = r.org_id AND q.id = r.fence_job AND q.kind = 'app' AND q.reason = $3)""", org, sks[i:i + CAP], SUBTREE)
         for r in got:
             by_app.setdefault(r["app_sk"] or 0, []).append((r["sk"], r["coll"], r["id"], r["kind"]))
     if locked is not None and not org_wide:
@@ -182,13 +182,15 @@ async def enqueue_rows(tx: Tx, org: str, keys: set[Key], reason: str, *, skip_ap
     return sum(len(r) for r in hid.values())
 
 
-# The rows of $2 (sks) with their connector's sk and whether that connector links records across connectors.
-HIDE_READ = """/* pipeshub:kg.hide_subtree_read */ SELECT r.sk, r.coll, r.id, r.kind, r.app_sk, r.fence_job, coalesce(s.cross_app, false) AS cross_app FROM kg.records r
-    LEFT JOIN kg.projection_state s ON s.org_id = r.org_id AND s.app_sk = r.app_sk WHERE r.org_id = $1 AND r.sk = ANY($2::bigint[])"""
+# The rows of $2 (sks), each a seek of records_pkey, with their connector's sk and whether that connector links records across connectors.
+HIDE_READ = """/* pipeshub:kg.hide_subtree_read */ SELECT r.sk, r.coll, r.id, r.kind, r.app_sk, r.fence_job, coalesce(s.cross_app, false) AS cross_app FROM unnest($2::bigint[]) AS q(sk)
+    CROSS JOIN LATERAL (SELECT * FROM (SELECT * FROM kg.records x WHERE x.org_id = $1 AND x.sk >= q.sk ORDER BY x.sk LIMIT 1) x WHERE x.sk = q.sk OFFSET 0) r
+    LEFT JOIN kg.projection_state s ON s.org_id = r.org_id AND s.app_sk = r.app_sk"""
 # Is there a row of no connector that kg holds a child of? No connector's fence hides what is below it.
 APPLESS_PARENT = """/* pipeshub:kg.appless_parent */ SELECT EXISTS (SELECT 1 FROM kg.records r WHERE r.org_id = $1 AND r.app_sk IS NULL AND (
-      EXISTS (SELECT 1 FROM kg.records c WHERE c.org_id = $1 AND c.parent_sk = r.sk) OR EXISTS (SELECT 1 FROM kg.records c WHERE c.org_id = $1 AND c.group_sk = r.sk)
-      OR EXISTS (SELECT 1 FROM kg.links l WHERE l.org_id = $1 AND l.parent_sk = r.sk)))"""
+      EXISTS (SELECT 1 FROM kg.records c WHERE c.org_id = $1 AND c.parent_sk >= r.sk AND c.parent_sk <= r.sk)
+      OR EXISTS (SELECT 1 FROM kg.records c WHERE c.org_id = $1 AND c.group_sk >= r.sk AND c.group_sk <= r.sk)
+      OR EXISTS (SELECT 1 FROM kg.links l WHERE l.org_id = $1 AND l.parent_sk >= r.sk AND l.parent_sk <= r.sk)))"""
 
 
 async def enqueue_subtree(tx: Tx, org: str, keys: set[Key], *, skip_apps: frozenset[int] = frozenset(), locked: set[str] | None = None, org_wide: bool = False) -> int | None:
