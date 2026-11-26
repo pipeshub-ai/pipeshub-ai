@@ -211,3 +211,57 @@ tests:
             exp_annotations:
               summary: "A database grew by more than half in a day"
               description: "pipeshub on a is 3.725GiB and grew over 50% in 24 hours. Check the free space of the data volume."
+
+  - name: connections on a server without reserved_connections (PostgreSQL 15 and older)
+    interval: 1m
+    input_series:
+      - series: 'pg_stat_activity_count{instance="old", job="postgres-exporter", backend_type="client backend", datname="pipeshub", state="active"}'
+        values: '90x10'
+      - series: 'pg_settings_max_connections{instance="old", job="postgres-exporter"}'
+        values: '100x10'
+      - series: 'pg_settings_superuser_reserved_connections{instance="old", job="postgres-exporter"}'
+        values: '3x10'
+    alert_rule_test:
+      - eval_time: 8m
+        alertname: PostgresConnectionsNearMax
+        exp_alerts:
+          - exp_labels: {severity: warning, instance: old, job: postgres-exporter}
+            exp_annotations:
+              summary: "PostgreSQL uses more than 80% of its connections"
+              description: "92.78% of the connections max_connections allows are in use on old. New logins are refused once it is full; look for a client that bypasses PgBouncer."
+
+  - name: replica without a streaming WAL receiver
+    interval: 1m
+    input_series:
+      # lag reads 0 when receive and replay positions are equal, which a disconnected receiver leaves them
+      - series: 'pg_replication_is_replica{instance="cut", job="postgres-exporter"}'
+        values: '1x10'
+      - series: 'pg_replication_lag_seconds{instance="cut", job="postgres-exporter"}'
+        values: '0x10'
+      - series: 'pg_replication_is_replica{instance="ok", job="postgres-exporter"}'
+        values: '1x10'
+      - series: 'pg_replication_lag_seconds{instance="ok", job="postgres-exporter"}'
+        values: '0x10'
+      - series: 'pg_stat_wal_receiver_last_msg_receipt_time{instance="ok", job="postgres-exporter", status="streaming", slot_name="s1", upstream_host="primary"}'
+        values: '0+60x10'
+      - series: 'pg_stat_wal_receiver_last_msg_receipt_time{instance="restarting", job="postgres-exporter", status="starting", slot_name="s1", upstream_host="primary"}'
+        values: '0x10'
+      - series: 'pg_replication_is_replica{instance="restarting", job="postgres-exporter"}'
+        values: '1x10'
+      - series: 'pg_replication_is_replica{instance="primary", job="postgres-exporter"}'
+        values: '0x10'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: PostgresReplicaNotStreaming
+        exp_alerts: []
+      - eval_time: 8m
+        alertname: PostgresReplicaNotStreaming
+        exp_alerts:
+          - exp_labels: {severity: warning, instance: cut, job: postgres-exporter}
+            exp_annotations:
+              summary: "A PostgreSQL replica is not streaming WAL from its primary"
+              description: "The replica cut has had no streaming WAL receiver for 5 minutes: it falls behind while the primary commits, though its replication lag can still read 0. Check primary_conninfo, the network and the primary's replication slots."
+          - exp_labels: {severity: warning, instance: restarting, job: postgres-exporter}
+            exp_annotations:
+              summary: "A PostgreSQL replica is not streaming WAL from its primary"
+              description: "The replica restarting has had no streaming WAL receiver for 5 minutes: it falls behind while the primary commits, though its replication lag can still read 0. Check primary_conninfo, the network and the primary's replication slots."
