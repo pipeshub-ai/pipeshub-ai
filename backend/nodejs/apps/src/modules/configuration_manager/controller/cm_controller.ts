@@ -1702,7 +1702,13 @@ export const createGoogleWorkspaceCredentials =
       switch (userType.toLowerCase()) {
         case googleWorkspaceTypes.INDIVIDUAL.toLowerCase():
           {
-            configData = req.body;
+            // The read masks the tokens; a client saving what it read sends the placeholder for the stored one.
+            configData = await restoreStoredAuthSecrets(
+              keyValueStoreService,
+              `${configPaths.connectors.googleWorkspace.credentials.individual}/${userId}`,
+              req.body,
+              GOOGLE_WORKSPACE_CREDENTIAL_SECRET_KEYS,
+            );
 
             // validate config schema
 

@@ -6696,6 +6696,31 @@ describe('ConfigurationManager Controller', () => {
       orgStub.restore()
     })
 
+    it('keeps the stored tokens when the client sends back the placeholders it read', async () => {
+      const orgStub = sinon.stub(Org, 'findOne').resolves({ accountType: 'individual', _id: 'org-1' } as any)
+      const stored = { access_token: 'at-stored', refresh_token: 'rt-stored', access_token_expiry_time: 1, refresh_token_expiry_time: 1 }
+      const kvs = createMockKeyValueStore({ get: sinon.stub().resolves(`encrypted:${JSON.stringify(stored)}`) })
+      const handler = createGoogleWorkspaceCredentials(kvs, 'user-1', '507f1f77bcf86cd799439011', createMockEventService())
+      const req = createMockRequest({
+        body: {
+          access_token: CONFIG_SECRET_PLACEHOLDER,
+          refresh_token: 'rt-new',
+          access_token_expiry_time: 9999,
+          refresh_token_expiry_time: 9999,
+          enableRealTimeUpdates: false,
+        },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(next.called).to.be.false
+      const saved = JSON.parse(String(kvs.set.firstCall.args[1]).replace(/^encrypted:/, ''))
+      expect(saved).to.include({ access_token: 'at-stored', refresh_token: 'rt-new' })
+      orgStub.restore()
+    })
+
     it('should call next when org not found', async () => {
       const orgStub = sinon.stub(Org, 'findOne').resolves(null)
 
