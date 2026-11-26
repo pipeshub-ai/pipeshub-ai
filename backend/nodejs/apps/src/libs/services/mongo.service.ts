@@ -9,7 +9,7 @@ import {
 import { ConnectionError } from '../errors/database.errors';
 import { BadRequestError, InternalServerError } from '../errors/http.errors';
 import { Logger } from './logger.service';
-import { setMongoMissingIndexes } from './telemetry/modules/mongo-index-metrics';
+import { setMongoMissingIndexes } from './telemetry/telemetry-impl';
 
 const logger = Logger.getInstance({
   service: 'MongoDB Service',

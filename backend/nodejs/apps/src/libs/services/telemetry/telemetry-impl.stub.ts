@@ -31,6 +31,10 @@ export const setMetricCollectionEnabled = (
   _enabled: boolean,
 ): void => {};
 
+export const setMongoMissingIndexes = (_count: number): void => {};
+
+export const recordRateLimitStoreFallback = (_prefix: string): void => {};
+
 const instrument = {
   inc(_labels?: Labels, _value?: number): void {},
   set(_labels: Labels, _value: number): void {},

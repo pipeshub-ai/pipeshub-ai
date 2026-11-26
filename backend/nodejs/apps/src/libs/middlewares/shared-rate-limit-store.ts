@@ -7,7 +7,7 @@ import {
 import { ICacheService } from '../services/cache/cacheService.interface';
 import { withTimeout } from '../services/cache/fail-fast-cache';
 import { Logger } from '../services/logger.service';
-import { recordRateLimitStoreFallback } from '../services/telemetry/modules/rate-limit-store-metrics';
+import { recordRateLimitStoreFallback } from '../services/telemetry/telemetry-impl';
 
 let sharedCache: ICacheService | undefined;
 
