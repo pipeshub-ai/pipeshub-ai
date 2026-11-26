@@ -704,3 +704,14 @@ def test_a_group_box_never_reuses_a_table_another_box_took() -> None:
         assert len(first) == 1
     finally:
         pdf.close()
+
+
+def test_a_not_table_box_drops_only_the_legacy_tables_it_mostly_covers() -> None:
+    from app.modules.parsers.pdf.opencv_layout_analyzer import LayoutRegion
+
+    # the box covers 30 % of the first table (and the table 75 % of the box): the table stays
+    beside = LayoutRegion(type=LayoutRegionType.TABLE, bbox=(50, 0, 150, 100), table_grid=[["a", "b"], ["c", "d"]])
+    inside = LayoutRegion(type=LayoutRegionType.TABLE, bbox=(41, 2, 79, 98), table_grid=[["e", "f"], ["g", "h"]])
+    d = tr.Decision((40, 0, 80, 100), "not_table", not_table="list")
+    out, suppressed = tr.apply([beside, inside], [d])
+    assert beside in out and inside not in out and suppressed == [(40, 0, 80, 100)]
