@@ -278,7 +278,7 @@ CODEQL_LANGUAGES = {
 
 IT_WORKFLOW = ".github/workflows/integration-tests.yml"
 
-# The connector shards' markers, as CONN_SHARD_1 .. CONN_SHARD_5 in
+# The connector shards' markers, as CONN_SHARD_1 .. CONN_SHARD_6 in
 # integration-tests.yml list them (test_pr_changes.py checks the two agree).
 CONNECTOR_SHARDS = {
     "connectors-1": (
@@ -291,7 +291,8 @@ CONNECTOR_SHARDS = {
     ),
     "connectors-3": ("notion", "confluence", "gcs", "zammad", "sharepoint_sim", "postgres", "salesforce"),
     "connectors-4": ("google_drive_individual", "gitlab", "azure_blob", "rss", "github_teams", "linear", "servicenow_sim"),
-    "connectors-5": ("google_drive_workspace", "s3", "jira_dc_sim"),
+    "connectors-5": ("google_drive_workspace", "s3"),
+    "connectors-6": ("jira_dc_sim",),
 }
 # The shards a pull request can run, in the workflow's order. Each one waits for
 # an approval and then takes about three hours, so these rules save the most.
