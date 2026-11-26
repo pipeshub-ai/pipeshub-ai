@@ -54,6 +54,7 @@ const uri = process.env.PCC_MONGO_URI;
       broker as never,
       logger as never,
       notificationService as unknown as NotificationService,
+      undefined,
       { dispatch },
     );
     await consumer.consume(async () => undefined);
@@ -181,6 +182,7 @@ const uri = process.env.PCC_MONGO_URI;
       broker as never,
       { info: sinon.stub(), error: sinon.stub(), warn: sinon.stub(), debug: sinon.stub() } as never,
       sinon.createStubInstance(NotificationService) as unknown as NotificationService,
+      undefined,
       { dispatch },
       { plan: async (_event, base) => ({ userIds: base, readFor: new Set([String(userA)]) }) },
     );
@@ -202,6 +204,7 @@ const uri = process.env.PCC_MONGO_URI;
         broker as never,
         { info: sinon.stub(), error: sinon.stub(), warn: sinon.stub(), debug: sinon.stub() } as never,
         sockets as unknown as NotificationService,
+        undefined,
         { dispatch },
         policy,
       );

@@ -41,6 +41,7 @@ export function describeNotificationDelivery(fx: DeliveryFixture): void {
         broker as never,
         logger as never,
         service as unknown as NotificationService,
+        undefined,
         { dispatch: emailed },
         policy,
       );

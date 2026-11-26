@@ -6,6 +6,7 @@ import { NotificationConsumer, notificationEventRefused } from '../../../../src/
 import { NotificationService } from '../../../../src/modules/notification/service/notification.service';
 import { getCurrentOrgId } from '../../../../src/libs/context/orgContext';
 import { configureInbox, runWithEnvelope } from '../../../../src/libs/context/envelope';
+import { setNotificationRepository } from '../../../../src/libs/repositories/notification';
 import { MemInbox } from '../../../helpers/memory-inbox';
 import { DocStoreFencedError, DocStoreReadOnlyError } from '../../../../src/libs/repositories/errors';
 import { GatewayTimeoutError, ServiceUnavailableError } from '../../../../src/libs/errors/http.errors';
@@ -48,6 +49,7 @@ describe('notification/service/notification.consumer', () => {
       mockConsumer,
       mockLogger,
       mockNotificationService as unknown as NotificationService,
+      undefined,
       mockDispatcher,
     );
   });
@@ -489,10 +491,13 @@ describe('notification/service/notification.consumer', () => {
     it('logs identifiers, never user-written text, for an invalid or failed event', async () => {
       const note = 'SECRET-NOTE-for-bob'
       await run(JSON.stringify({ orgId: 'nope', type: 'chat.shared', dedupeKey: 'k1', payload: { note } }))
-      expect(mockLogger.warn.firstCall.args[1]).to.deep.equal({ type: 'chat.shared', dedupeKey: 'k1', orgId: 'nope', invalidPaths: ['orgId'] })
+      // The message's facts (its type and size) beside the ids that name the event.
+      expect(mockLogger.warn.firstCall.args[1]).to.deep.include({ type: 'chat.shared', dedupeKey: 'k1', orgId: 'nope', invalidPaths: ['orgId'] })
+      expect(mockLogger.warn.firstCall.args[1].size_bytes).to.be.a('number')
       insertManyStub.rejects(new Error('connection lost'))
       await run(JSON.stringify(event({ type: 'chat.shared', dedupeKey: 'k2', payload: { note } })))
-      expect(mockLogger.error.firstCall.args[1]).to.include({ error: 'connection lost', type: 'chat.shared', dedupeKey: 'k2' })
+      expect(mockLogger.error.firstCall.args[1]).to.include({ type: 'chat.shared', dedupeKey: 'k2' })
+      expect(mockLogger.error.firstCall.args[1].error.message).to.equal('connection lost')
       expect(JSON.stringify([mockLogger.warn.args, mockLogger.error.args])).to.not.include(note)
     });
 
@@ -625,6 +630,7 @@ describe('notification/service/notification.consumer', () => {
         mockConsumer,
         mockLogger,
         mockNotificationService as unknown as NotificationService,
+        undefined,
         mockDispatcher,
         policy,
       );

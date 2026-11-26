@@ -35,7 +35,7 @@ import {
   deliverToRecipients,
 } from './notification-delivery.port';
 import { resolveNotificationRecipientUserIds } from '../utils/notification-recipient.resolver';
-import { notificationEventRefused } from './notification.delivery';
+import { messageFacts, notificationEventRefused } from './notification.delivery';
 import {
   PlatformAlertHandler,
   isPlatformAudience,
@@ -80,6 +80,30 @@ const isTransient = (error: unknown): boolean =>
 const sleep = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
 
+/**
+ * What a log line says about a message: its facts (`messageFacts`: the type when it is a plain token, and the
+ * size, never the value), and the ids that name the event and which of its fields were invalid.
+ */
+const logFacts = (value: unknown): Record<string, unknown> => {
+  const { type: _rawType, ...ids } = brokerMessageLogMeta(value);
+  return { ...ids, ...messageFacts(parsedValue(value)) };
+};
+
+/** A message value the broker handed over as JSON text, as an object; anything else as it is. */
+const parsedValue = (value: unknown): unknown => {
+  if (typeof value !== 'string') return value;
+  try {
+    return JSON.parse(value) as unknown;
+  } catch {
+    return value;
+  }
+};
+
+/** Sends nothing: a consumer built without the email port, as tests build it. */
+const noEmail: INotificationEmailDispatcher = {
+  dispatch: () => Promise.resolve(),
+};
+
 /** Tries at taking back rows whose recipient lost access since the plan, before giving up on it. */
 const TAKE_BACK_TRIES = 3;
 const TAKE_BACK_DELAY_MS = 200;
@@ -91,13 +115,14 @@ export class NotificationConsumer {
     @inject('Logger') private readonly logger: Logger,
     @inject(NotificationService)
     private readonly notificationService: NotificationService,
-    @inject(NOTIFICATION_EMAIL_DISPATCHER)
-    private readonly emailDispatcher: INotificationEmailDispatcher,
-    @inject(NOTIFICATION_DELIVERY_POLICY)
-    private readonly deliveryPolicy: INotificationDeliveryPolicy = deliverToRecipients,
+    // Fourth: the platform alert handler (#5959) is where its callers and tests pass it.
     @inject(PlatformAlertHandler)
     @optional()
     private readonly platformAlertHandler?: PlatformAlertHandler,
+    @inject(NOTIFICATION_EMAIL_DISPATCHER)
+    private readonly emailDispatcher: INotificationEmailDispatcher = noEmail,
+    @inject(NOTIFICATION_DELIVERY_POLICY)
+    private readonly deliveryPolicy: INotificationDeliveryPolicy = deliverToRecipients,
   ) {}
 
   /** An event for the installation's admins rather than one org's users. */
@@ -116,8 +141,8 @@ export class NotificationConsumer {
       // A refused event is the producer's fault (WARNING); anything else is ours.
       const level = error instanceof ValidationError ? 'warn' : 'error';
       this.logger[level]('Failed to process notification message', {
-        error: error instanceof Error ? error.message : String(error),
-        ...brokerMessageLogMeta(value),
+        ...logFacts(value),
+        error,
       });
     }
   }
@@ -160,7 +185,7 @@ export class NotificationConsumer {
             if (!event) {
               this.logger.warn(
                 'Notification event skipped: invalid orgId or type',
-                brokerMessageLogMeta(message.value),
+                logFacts(message.value),
               );
               return;
             }
@@ -208,10 +233,7 @@ export class NotificationConsumer {
           await sleep(waitMs);
           continue;
         }
-        const meta = {
-          error: error instanceof Error ? error.message : String(error),
-          ...brokerMessageLogMeta(event),
-        };
+        const meta = { ...logFacts(event), error };
         if (isTransient(error)) {
           await this.requeue(event, key, meta);
         } else {

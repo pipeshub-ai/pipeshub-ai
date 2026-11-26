@@ -422,16 +422,18 @@ describe('NotificationService over a real socket', () => {
     });
 
     it("logs why a user's last socket went away, so a proxy timeout can be told from a silent client", async () => {
-      const info = sinon.spy(
-        (internals() as unknown as { logger: { info: (msg: string) => void } }).logger,
-        'info',
+      // The structured line (#6249), with the reason as a field.
+      const debug = sinon.spy(
+        (internals() as unknown as { logger: { debug: (msg: string, meta?: Record<string, unknown>) => void } }).logger,
+        'debug',
       );
       const tab = await connectAs(alice);
       await tab.close();
       await waitFor(() => socketsInRoom(alice.userId) === 0);
-      await waitFor(() => info.getCalls().some((c) => c.args[0].startsWith('User disconnected')));
-      const line = info.getCalls().find((c) => c.args[0].startsWith('User disconnected'))!.args[0];
-      expect(line).to.match(/reason: \w[\w ]*$/);
+      await waitFor(() => debug.getCalls().some((c) => c.args[0] === 'Socket disconnected'));
+      const meta = debug.getCalls().find((c) => c.args[0] === 'Socket disconnected')!.args[1];
+      expect(meta?.target_user_id).to.equal(alice.userId);
+      expect(String(meta?.reason)).to.match(/^\w[\w ]*$/);
     });
 
   });
