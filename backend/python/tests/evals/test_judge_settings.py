@@ -23,7 +23,14 @@ ALL_VARS = (
     "JUDGE_AZURE_API_VERSION", "EVAL_PROVIDER", "EVAL_MODEL", "TEST_AZURE_OPENAI_API_KEY",
     "TEST_AZURE_OPENAI_ENDPOINT", "TEST_AZURE_OPENAI_DEPLOYMENT_NAME", "TEST_AZURE_OPENAI_MODEL",
     "TEST_OPENAI_API_KEY", "TEST_ANTHROPIC_API_KEY", "TEST_AI_MODEL_PROVIDER", "TEST_OPENAI_LLM_MODEL",
+    "TEST_OPENAI_COMPATIBLE_API_KEY", "TEST_OPENAI_COMPATIBLE_ENDPOINT", "TEST_OPENAI_COMPATIBLE_LLM_MODEL",
 )
+# An OpenAI-compatible gateway (Bifrost), set beside the other providers' keys.
+COMPATIBLE_MODEL = {
+    "TEST_OPENAI_COMPATIBLE_API_KEY": "gateway-key",
+    "TEST_OPENAI_COMPATIBLE_ENDPOINT": "https://gateway.example.invalid/v1",
+    "TEST_OPENAI_COMPATIBLE_LLM_MODEL": "openai/gpt-5.6-luna",
+}
 
 ANSWERING_MODEL = {
     "TEST_AZURE_OPENAI_API_KEY": "answer-key",
@@ -275,13 +282,42 @@ def test_the_judge_follows_the_run_s_provider_with_both_keys_set(
 
 @pytest.mark.parametrize(
     ("run_provider", "expected"),
-    [("openAI", "openai"), ("azureOpenAI", "azure_openai"), ("openai", "openai"), ("AzureOpenAI", "azure_openai")],
+    [("openAI", "openai"), ("azureOpenAI", "azure_openai"), ("openai", "openai"), ("AzureOpenAI", "azure_openai"),
+     ("openAICompatible", "openai_compatible")],
 )
 def test_the_eval_model_follows_the_run_s_provider(
     monkeypatch: pytest.MonkeyPatch, built: list[dict], run_provider: str, expected: str
 ) -> None:
     """With no EVAL_PROVIDER, resolve_model uses the run's provider (case aside)."""
-    _set(monkeypatch, ANSWERING_MODEL | {"TEST_OPENAI_API_KEY": "openai-key", "TEST_AI_MODEL_PROVIDER": run_provider})
+    _set(monkeypatch, ANSWERING_MODEL | COMPATIBLE_MODEL | {
+        "TEST_OPENAI_API_KEY": "openai-key", "TEST_AI_MODEL_PROVIDER": run_provider,
+    })
     provider, _, key = chat_models.resolve_model()
     assert provider == expected
-    assert key == ("openai-key" if expected == "openai" else "answer-key")
+    assert key == {"openai": "openai-key", "azure_openai": "answer-key", "openai_compatible": "gateway-key"}[expected]
+
+
+def test_the_judge_uses_the_gateway_when_the_run_names_it(monkeypatch: pytest.MonkeyPatch, built: list[dict]) -> None:
+    """openAICompatible sends the judge to the gateway with the gateway's key and model id."""
+    _set(monkeypatch, ANSWERING_MODEL | COMPATIBLE_MODEL | {
+        "TEST_OPENAI_API_KEY": "openai-key", "TEST_AI_MODEL_PROVIDER": "openAICompatible",
+    })
+    judge = judge_model_from_env()
+    assert not judge.dedicated and (judge.provider, judge.model) == ("openai_compatible", "openai/gpt-5.6-luna")
+    assert built[0]["api_key"] == "gateway-key"
+
+
+def test_the_gateway_client_is_pointed_at_its_base_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    for name in ALL_VARS:
+        monkeypatch.delenv(name, raising=False)
+    _set(monkeypatch, COMPATIBLE_MODEL)
+    chat = chat_models.build_chat_model("openai_compatible", "openai/gpt-5.6-luna", "gateway-key")
+    assert str(chat.openai_api_base).rstrip("/") == "https://gateway.example.invalid/v1"
+    assert chat.model_name == "openai/gpt-5.6-luna"
+
+
+def test_the_gateway_without_a_base_url_says_which_setting_is_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+    for name in ALL_VARS:
+        monkeypatch.delenv(name, raising=False)
+    with pytest.raises(MissingModelError, match="TEST_OPENAI_COMPATIBLE_ENDPOINT"):
+        chat_models.build_chat_model("openai_compatible", "openai/gpt-5.6-luna", "gateway-key")

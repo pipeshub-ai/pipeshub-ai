@@ -6,12 +6,16 @@ from __future__ import annotations
 import asyncio
 import logging
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from app.exceptions.graph_db_exceptions import RecordSchemaNarrowError
-from app.schema.arango.documents import RECORD_SCHEMA_GENERATION, record_schema
+from app.schema.arango.documents import (
+    APP_SCHEMA_GENERATION,
+    RECORD_SCHEMA_GENERATION,
+    record_schema,
+)
 from app.services.graph_db.arango import record_schema_guard as guard_module
 from app.services.graph_db.arango.arango_http_client import ArangoHTTPClient
 from app.services.graph_db.arango.record_schema_guard import RecordSchemaGuard
@@ -828,6 +832,77 @@ class TestApplyingTheRecordsSchemaAtStart:
 
         assert await self._provider(server)._apply_schema("records", record_schema) is True
         assert server.puts == []
+
+
+class TestTheAppsSchemaAtStart:
+    """``ensure_schema`` of a connected provider against a store that already holds an apps schema of some generation:
+    an older process (a rolling upgrade) must not put its narrower schema over a newer one, and a newer one widens it."""
+
+    async def _ensure(self, monkeypatch: pytest.MonkeyPatch, live_apps: int) -> tuple[bool, dict[str, int], list[str]]:
+        from app.services.graph_db.arango import arango_http_provider as module
+
+        live = {"apps": live_apps, "records": RECORD_SCHEMA_GENERATION}
+        puts: list[str] = []
+
+        async def put(name: str, schema: dict, timeout: float | None = None) -> bool:
+            puts.append(name)
+            live[name] = guard_module.generation_of_schema(schema)
+            return True
+
+        client = AsyncMock()
+        client.connect.return_value = True
+        client.database_exists.return_value = True
+        client.has_collection.return_value = True
+        client.has_graph.return_value = True
+        client.list_running_transactions.return_value = []
+        client.get_collection_schema.side_effect = lambda name: _schema(live.get(name, 0))
+        client.update_collection_schema.side_effect = put
+        monkeypatch.setattr(module, "ArangoHTTPClient", lambda **_: client)
+        monkeypatch.setattr(guard_module, "ArangoLock", lambda *_, **__: FreeLock())
+        config = MagicMock()
+        config.get_config = AsyncMock(return_value={"url": "http://x", "username": "u", "password": "p", "db": "d"})
+        provider = module.ArangoHTTPProvider(logger=logging.getLogger("test"), config_service=config)
+        assert await provider.connect()
+        try:
+            with patch.object(provider, "_ensure_departments_seed", new_callable=AsyncMock):
+                applied = await provider.ensure_schema()
+        finally:
+            await provider.disconnect()
+        return applied, live, puts
+
+    async def test_an_older_process_leaves_a_newer_apps_schema_in_place(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        applied, live, puts = await self._ensure(monkeypatch, APP_SCHEMA_GENERATION + 1)
+
+        assert applied is True
+        assert "apps" not in puts and live["apps"] == APP_SCHEMA_GENERATION + 1
+
+    async def test_a_newer_process_widens_an_older_apps_schema(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        applied, live, puts = await self._ensure(monkeypatch, 0)  # 0: every image before the marker
+
+        assert applied is True
+        assert puts.count("apps") == 1 and live["apps"] == APP_SCHEMA_GENERATION
+
+    async def test_an_equal_apps_schema_is_not_written_again(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        applied, _, puts = await self._ensure(monkeypatch, APP_SCHEMA_GENERATION)
+
+        assert applied is True and "apps" not in puts
+
+    async def test_an_apps_schema_that_cannot_be_read_is_not_written_over_and_fails_the_ensure(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(RecordSchemaGuard, "live_generation", _unreadable_apps_generation)
+
+        applied, live, puts = await self._ensure(monkeypatch, 0)
+
+        assert applied is False
+        assert "apps" not in puts and live["apps"] == 0
+
+
+_live_generation = RecordSchemaGuard.live_generation
+
+
+async def _unreadable_apps_generation(self: RecordSchemaGuard) -> int:
+    if self._collection == "apps":
+        raise ConnectionError("down")
+    return await _live_generation(self)
 
 
 class TestTheErrorClass:

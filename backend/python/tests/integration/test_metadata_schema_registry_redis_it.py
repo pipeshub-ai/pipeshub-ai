@@ -45,7 +45,7 @@ ORG_A, ORG_B = "org-a", "org-b"
 
 def _env() -> dict[str, str]:
     return {"REDIS_HOST": HOST, "REDIS_PORT": PORT, "REDIS_KV_PREFIX": PREFIX,
-            "SECRET_KEY": "registry-it-secret", "KV_STORE_TYPE": "redis"}
+            "SECRET_KEY": "282702aedb69a29e1851f1083a04a01bd55ed4a3edf27eb2201e0413aaa83a0d", "KV_STORE_TYPE": "redis"}
 
 
 def _config_service() -> ConfigurationService:

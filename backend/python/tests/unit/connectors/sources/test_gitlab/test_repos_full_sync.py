@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import json
 import time
+from contextlib import asynccontextmanager
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -19,6 +21,9 @@ from app.connectors.sources.gitlab import repos as repos_module
 from app.connectors.sources.gitlab.repos import ReposSync
 
 from .conftest import make_mock_connector, paged_res, failed_res
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
 
 
 @pytest.fixture(autouse=True)
@@ -85,6 +90,41 @@ def _error_graphql_res() -> MagicMock:
 # ===========================================================================
 # Checkpoint tests
 # ===========================================================================
+
+
+class TestKeepStoredCode:
+    @staticmethod
+    def _repos(tx: MagicMock) -> tuple[MagicMock, ReposSync]:
+        c = make_mock_connector()
+
+        @asynccontextmanager
+        async def transaction() -> AsyncIterator[MagicMock]:
+            yield tx
+
+        c.data_store_provider = MagicMock(transaction=transaction)
+        return c, ReposSync(c)
+
+    async def test_notes_only_this_projects_code(self) -> None:
+        tx = MagicMock(get_nodes_by_filters=AsyncMock(return_value=[{"_key": "r1"}, {"_key": "r2"}]))
+        c, repos = self._repos(tx)
+
+        await repos._keep_stored_code(_PROJECT_ID, _PROJECT_PATH)
+
+        kwargs = tx.get_nodes_by_filters.await_args.kwargs
+        assert kwargs["filters"] == {"connectorId": c.connector_id, "externalGroupId": f"{_PROJECT_ID}-code-repository"}
+        assert kwargs["raise_on_error"] is True
+        c.data_entities_processor.note_kept_records.assert_called_once_with(c.connector_id, ["r1", "r2"])
+        c.note_sync_problem.assert_not_called()
+
+    async def test_failed_lookup_is_a_sync_problem(self) -> None:
+        tx = MagicMock(get_nodes_by_filters=AsyncMock(side_effect=RuntimeError("graph down")))
+        c, repos = self._repos(tx)
+
+        await repos._keep_stored_code(_PROJECT_ID, _PROJECT_PATH)
+
+        [problem] = [call.args[0] for call in c.note_sync_problem.call_args_list]
+        assert _PROJECT_PATH in problem
+        c.data_entities_processor.note_kept_records.assert_not_called()
 
 
 class TestCodeRepoCheckpoints:
@@ -581,6 +621,119 @@ class TestFetchEntriesPageError:
 
         kind, trees, blobs, page_info = await repos._fetch_entries_page(_PROJECT_PATH, _PROJECT_ID, "")
         assert kind == "abort"
+
+
+def _tree_res(tree: dict | None, *, project: bool = True, repository: bool = True) -> MagicMock:
+    """A tree-page response; ``project``/``repository`` False null that level instead."""
+    body: dict = {"paginatedTree": tree}
+    body = {"repository": body if repository else None}
+    body = {"data": {"project": body if project else None}}
+    return MagicMock(success=True, error=None, data=json.dumps(body))
+
+
+def _blob_page(name: str, has_next: bool, cursor: str = "") -> dict:
+    return {
+        "nodes": [{"trees": {"nodes": []}, "blobs": {"nodes": [{
+            "name": name, "path": name, "sha": f"sha-{name}", "type": "blob",
+            "webPath": f"/ns/proj/-/blob/HEAD/{name}", "webUrl": "https://gitlab.com/y",
+        }]}}],
+        "pageInfo": {"hasNextPage": has_next, "endCursor": cursor},
+    }
+
+
+class TestTreeWalkCannotVouch:
+    """A walk whose answers cannot vouch for the whole tree never counts as complete,
+    so _remove_unwalked does not delete files GitLab still has."""
+
+    async def test_missing_project_in_tree_answer_aborts(self) -> None:
+        c = make_mock_connector()
+        repos = ReposSync(c)
+        c.runtime.ds_call_async = AsyncMock(return_value=_tree_res(None, project=False))
+        repos.build_code_file_records = AsyncMock()
+        repos._remove_unwalked = AsyncMock(return_value=True)
+
+        assert await repos._sync_repo_full(_PROJECT_ID, _PROJECT_PATH) is False
+        repos.build_code_file_records.assert_not_awaited()
+        repos._remove_unwalked.assert_not_awaited()
+
+    @pytest.mark.parametrize(
+        "res_kwargs",
+        [{"repository": False}, {}],
+        ids=["repository-null", "paginated-tree-null"],
+    )
+    async def test_missing_repository_or_tree_aborts(self, res_kwargs: dict) -> None:
+        c = make_mock_connector()
+        repos = ReposSync(c)
+        c.runtime.ds_call_async = AsyncMock(return_value=_tree_res(None, **res_kwargs))
+        repos._remove_unwalked = AsyncMock(return_value=True)
+
+        kind, *_ = await repos._fetch_entries_page_once(_PROJECT_PATH, _PROJECT_ID, "")
+        assert kind == "abort"
+        assert await repos._sync_repo_full(_PROJECT_ID, _PROJECT_PATH) is False
+        repos._remove_unwalked.assert_not_awaited()
+
+    async def test_missing_tree_on_a_later_page_aborts_before_removal(self) -> None:
+        c = make_mock_connector()
+        repos = ReposSync(c)
+        c.runtime.ds_call_async = AsyncMock(side_effect=[
+            _tree_res(_blob_page("a.py", True, "c1")),
+            _tree_res(None, project=False),
+        ])
+        repos.build_code_file_records = AsyncMock(return_value=True)
+        repos._remove_unwalked = AsyncMock(return_value=True)
+
+        assert await repos._sync_repo_full(_PROJECT_ID, _PROJECT_PATH) is False
+        repos._remove_unwalked.assert_not_awaited()
+
+    async def test_empty_page_with_more_to_follow_is_retried(self) -> None:
+        c = make_mock_connector()
+        repos = ReposSync(c)
+        c.runtime.ds_call_async = AsyncMock(side_effect=[
+            _tree_res(_blob_page("a.py", True, "c1")),
+            _tree_res({"nodes": [], "pageInfo": {"hasNextPage": True, "endCursor": "c2"}}),
+            _tree_res(_blob_page("b.py", False)),
+        ])
+        repos.build_code_file_records = AsyncMock(return_value=True)
+        repos._remove_unwalked = AsyncMock(return_value=True)
+
+        assert await repos._sync_repo_full(_PROJECT_ID, _PROJECT_PATH) is True
+        assert c.runtime.ds_call_async.await_count == 3
+        assert c.runtime.ds_call_async.await_args_list[2].kwargs["after_cursor"] == "c1"
+        persisted = [call.args[0][0]["path"] for call in repos.build_code_file_records.await_args_list]
+        assert persisted == ["a.py", "b.py"]
+        repos._remove_unwalked.assert_awaited_once_with(
+            _PROJECT_ID, {"/ns/proj/-/blob/HEAD/a.py", "/ns/proj/-/blob/HEAD/b.py"},
+        )
+
+    @pytest.mark.parametrize("end_cursor", ["c2", None])
+    async def test_empty_page_that_keeps_saying_more_follow_aborts(self, end_cursor: str | None) -> None:
+        c = make_mock_connector()
+        repos = ReposSync(c)
+        empty_more = _tree_res({"nodes": [], "pageInfo": {"hasNextPage": True, "endCursor": end_cursor}})
+        c.runtime.ds_call_async = AsyncMock(
+            side_effect=[_tree_res(_blob_page("a.py", True, "c1"))]
+            + [empty_more] * repos_module._GITLAB_TREE_PAGE_MAX_ATTEMPTS,
+        )
+        repos.build_code_file_records = AsyncMock(return_value=True)
+        repos._remove_unwalked = AsyncMock(return_value=True)
+
+        assert await repos._sync_repo_full(_PROJECT_ID, _PROJECT_PATH) is False
+        assert c.runtime.ds_call_async.await_count == 1 + repos_module._GITLAB_TREE_PAGE_MAX_ATTEMPTS
+        repos._remove_unwalked.assert_not_awaited()
+
+    async def test_empty_last_page_still_ends_the_walk(self) -> None:
+        c = make_mock_connector()
+        repos = ReposSync(c)
+        c.runtime.ds_call_async = AsyncMock(side_effect=[
+            _tree_res(_blob_page("a.py", True, "c1")),
+            _tree_res({"nodes": [], "pageInfo": {"hasNextPage": False, "endCursor": ""}}),
+        ])
+        repos.build_code_file_records = AsyncMock(return_value=True)
+        repos._remove_unwalked = AsyncMock(return_value=True)
+
+        assert await repos._sync_repo_full(_PROJECT_ID, _PROJECT_PATH) is True
+        assert c.runtime.ds_call_async.await_count == 2
+        repos._remove_unwalked.assert_awaited_once_with(_PROJECT_ID, {"/ns/proj/-/blob/HEAD/a.py"})
 
 
 # ===========================================================================

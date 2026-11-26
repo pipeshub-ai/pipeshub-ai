@@ -20,7 +20,7 @@ vi.mock('@/config', async () => {
 const push = vi.fn();
 vi.mock('next/navigation', () => ({ useRouter: () => ({ push }) }));
 
-const { useAuthStore } = await import('@/lib/store/auth-store');
+const { useAuthStore } = await import('@/config');
 const { fakeApi } = await import('@/lib/api/__tests__/fake-api');
 const { useChatStore } = await import('@/chat/store');
 const { clearRecordContent } = await import('@/lib/record-content');
@@ -129,7 +129,7 @@ describe('clicking a citation', () => {
   const createObjectURL = vi.fn(() => 'blob:preview-1');
 
   beforeEach(() => {
-    useAuthStore.setState({ accessToken: jwtExpiringIn(3600, { orgId: 'o1', userId: 'u1' }), refreshToken: 'r' });
+    useAuthStore.setState({ accessToken: jwtExpiringIn(3600, { orgId: 'o1', userId: 'u1' }) });
     clearRecordContent();
     useChatStore.setState({ previewFile: null, previewMode: 'sidebar' });
     push.mockReset();

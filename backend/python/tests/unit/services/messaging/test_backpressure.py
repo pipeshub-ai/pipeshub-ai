@@ -1,6 +1,8 @@
 import app.services.messaging.backpressure as backpressure_module
 from app.services.messaging.backpressure import (
+    BACKPRESSURE_CLEAR_SETTLE_SECONDS,
     BackpressureCoordinator,
+    BackpressureEpisode,
     get_default_backpressure_coordinator,
     set_default_backpressure_coordinator,
 )
@@ -114,3 +116,53 @@ class TestDefaultCoordinator:
         override = BackpressureCoordinator()
         set_default_backpressure_coordinator(override)
         assert get_default_backpressure_coordinator() is override
+
+
+SETTLE = BACKPRESSURE_CLEAR_SETTLE_SECONDS
+
+
+class TestBackpressureEpisode:
+    def test_only_the_first_engaged_turn_starts_an_episode(self) -> None:
+        episode = BackpressureEpisode()
+        assert episode.open is False
+        assert episode.engaged() is True
+        assert episode.engaged() is False
+        assert episode.open is True
+
+    def test_a_clear_turn_without_an_episode_ends_nothing(self) -> None:
+        episode = BackpressureEpisode()
+        assert episode.cleared(0.0) is False
+        assert episode.cleared(SETTLE * 10) is False
+        assert episode.open is False
+
+    def test_the_episode_ends_once_it_has_stayed_clear_for_the_settle_time(self) -> None:
+        episode = BackpressureEpisode()
+        episode.engaged()
+        assert episode.cleared(1024.0) is False
+        assert episode.cleared(1024.0 + SETTLE - 0.0625) is False
+        assert episode.cleared(1024.0 + SETTLE) is True
+        assert episode.open is False
+        assert episode.cleared(1024.0 + 2 * SETTLE) is False
+
+    def test_an_engaged_turn_restarts_the_settle_time(self) -> None:
+        episode = BackpressureEpisode()
+        episode.engaged()
+        assert episode.cleared(0.0) is False
+        assert episode.engaged() is False
+        assert episode.cleared(SETTLE - 0.0625) is False
+        assert episode.cleared(2 * SETTLE - 0.125) is False
+        assert episode.open is True
+
+    def test_reset_closes_an_open_episode(self) -> None:
+        episode = BackpressureEpisode()
+        episode.engaged()
+        episode.cleared(0.0)
+        episode.reset()
+        assert episode.open is False
+        assert episode.cleared(SETTLE) is False
+        assert episode.engaged() is True
+
+    def test_episodes_are_independent(self) -> None:
+        first, second = BackpressureEpisode(), BackpressureEpisode()
+        assert first.engaged() is True
+        assert second.engaged() is True

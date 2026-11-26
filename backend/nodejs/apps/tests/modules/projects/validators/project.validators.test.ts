@@ -65,7 +65,7 @@ describe('projects/validators/project.validators', () => {
         body: { name: 'a'.repeat(PROJECT_NAME_MAX_LENGTH - 1) + '\u{1F680}' },
       })
       expect(overByEmoji.success).to.equal(false)
-      expect(overByEmoji.error!.issues[0].code).to.equal('too_big')
+      expect(overByEmoji.error!.issues[0]!.code).to.equal('too_big')
 
       const exactlyFull = createProjectSchema.safeParse({
         body: { name: '\u{1F680}'.repeat(PROJECT_NAME_MAX_LENGTH / 2) },
@@ -418,7 +418,7 @@ describe('projects/validators/project.validators', () => {
         },
       })
       expect(result.success).to.equal(false)
-      expect(result.error!.issues[0].path).to.deep.equal(['body', 'members', 1, 'principalId'])
+      expect(result.error!.issues[0]!.path).to.deep.equal(['body', 'members', 1, 'principalId'])
     })
 
     it('treats a user and a team with different ids as different members', () => {
@@ -497,6 +497,24 @@ describe('projects/validators/project.validators', () => {
       const paths = result.error?.issues.map((i) => i.path.join('.'))
       expect(paths).to.include('body.members.0.principalId')
       expect(paths).to.include('body.members.0.role')
+    })
+
+    it('reports a null member row as an issue on that row, not a throw', () => {
+      const result = upsertProjectMembersSchema.safeParse({
+        params: { projectId: VALID_OID },
+        body: { members: [null, { principalId: VALID_OID, role: 'viewer' }] },
+      })
+      expect(result.success).to.equal(false)
+      expect(result.error?.issues.map((i) => i.path)).to.deep.equal([['body', 'members', 0]])
+    })
+
+    it('reports a non-object member row as an issue on that row, not a throw', () => {
+      const result = upsertProjectMembersSchema.safeParse({
+        params: { projectId: VALID_OID },
+        body: { members: [5] },
+      })
+      expect(result.success).to.equal(false)
+      expect(result.error?.issues.map((i) => i.path)).to.deep.equal([['body', 'members', 0]])
     })
 
     it('reports the same path on every parse', () => {

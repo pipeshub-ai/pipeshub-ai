@@ -9,6 +9,7 @@ from app.agent_loop_lib.modules.pipeline.planner.base import parse_confidence
 from app.agent_loop_lib.tools.base import ParameterType, Tag, Tool, ToolOutput, ToolParameter
 from app.agent_loop_lib.tools.special_route import RouteContext
 from app.agent_loop_lib.tools.tags import TAG_PLANNING_CREATE_PLAN
+from app.utils.error_class import failure_reason
 
 """`create_plan` — exposes `planner.default.DefaultPlanner` as a tool call
 instead of only a programmatic pre-loop step (see `.claude/rules/
@@ -280,7 +281,7 @@ class CreatePlanTool(Tool):
             content: object = plan.text
             is_error = False
         except Exception as e:
-            content = str(e)
+            content = failure_reason(e)
             is_error = True
 
         return CoreToolResult(tool_call_id=call.id, name=call.name, content=content, is_error=is_error)

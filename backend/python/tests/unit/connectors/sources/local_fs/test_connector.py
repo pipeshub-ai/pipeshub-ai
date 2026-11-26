@@ -4369,6 +4369,92 @@ class TestEventsLeavingScope:
         )
         assert retired == [folder_connector._external_record_id_for_rel_path("a/x.pdf")]
 
+    @staticmethod
+    def _full_sync(folder_connector, stored: dict[str, str]) -> MagicMock:
+        """A runner-driven full sync over the given stored records (relative path -> record id)."""
+        proc = folder_connector.data_entities_processor
+        by_ext = {folder_connector._external_record_id_for_rel_path(rel): rid for rel, rid in stored.items()}
+
+        async def get_record_by_external_id(_connector_id, external_id) -> MagicMock | None:
+            rid = by_ext.get(external_id)
+            return None if rid is None else MagicMock(id=rid)
+
+        proc.full_sync_running = MagicMock(return_value=True)
+        proc.get_record_by_external_id = AsyncMock(side_effect=get_record_by_external_id)
+        proc.note_kept_records = MagicMock()
+        return proc
+
+    async def test_a_file_without_a_hash_kept_by_a_full_run_is_noted_kept_with_its_stored_id(
+        self, folder_connector, tmp_path
+    ) -> None:
+        proc = self._full_sync(folder_connector, {"locked.pdf": "rec-locked"})
+        seen: set[str] = set()
+        _stats, retired = await self._apply(
+            folder_connector, tmp_path, [self._event("MODIFIED", "locked.pdf", sha256=None)],
+            seen_external_ids=seen,
+        )
+        proc.note_kept_records.assert_called_once_with(folder_connector.connector_id, ["rec-locked"])
+        assert folder_connector._external_record_id_for_rel_path("locked.pdf") in seen
+        assert retired == []
+        assert folder_connector.full_sync_coverage().complete
+
+    async def test_a_file_without_a_hash_and_no_stored_record_notes_nothing(self, folder_connector, tmp_path) -> None:
+        proc = self._full_sync(folder_connector, {})
+        seen: set[str] = set()
+        await self._apply(
+            folder_connector, tmp_path, [self._event("MODIFIED", "locked.pdf", sha256=None)],
+            seen_external_ids=seen,
+        )
+        proc.note_kept_records.assert_not_called()
+        assert folder_connector._external_record_id_for_rel_path("locked.pdf") in seen
+
+    async def test_a_file_without_a_hash_out_of_scope_is_retired_not_noted_kept(
+        self, folder_connector, tmp_path
+    ) -> None:
+        proc = self._full_sync(folder_connector, {"notes.txt": "rec-notes"})
+        _stats, retired = await self._apply(
+            folder_connector, tmp_path, [self._event("MODIFIED", "notes.txt", sha256=None)], self.PDF_ONLY,
+            seen_external_ids=set(),
+        )
+        proc.note_kept_records.assert_not_called()
+        assert retired == [folder_connector._external_record_id_for_rel_path("notes.txt")]
+
+    async def test_a_move_without_a_hash_does_not_keep_the_path_it_left(self, folder_connector, tmp_path) -> None:
+        proc = self._full_sync(folder_connector, {"a/x.pdf": "rec-old"})
+        _stats, retired = await self._apply(
+            folder_connector, tmp_path, [self._event("MOVED", "b/x.pdf", "a/x.pdf", sha256=None)],
+            seen_external_ids=set(),
+        )
+        assert retired == [folder_connector._external_record_id_for_rel_path("a/x.pdf")]
+        proc.note_kept_records.assert_not_called()
+
+    async def test_a_batch_without_a_seen_set_looks_nothing_up(self, folder_connector, tmp_path) -> None:
+        proc = self._full_sync(folder_connector, {"locked.pdf": "rec-locked"})
+        stats, _retired = await self._apply(
+            folder_connector, tmp_path, [self._event("MODIFIED", "locked.pdf", sha256=None)],
+        )
+        assert stats.skipped == 1
+        assert all(
+            call.args[1] != folder_connector._external_record_id_for_rel_path("locked.pdf")
+            for call in proc.get_record_by_external_id.await_args_list
+        )
+        proc.note_kept_records.assert_not_called()
+
+    async def test_a_run_outside_a_full_sync_looks_nothing_up(self, folder_connector, tmp_path) -> None:
+        proc = self._full_sync(folder_connector, {"locked.pdf": "rec-locked"})
+        proc.full_sync_running.return_value = False
+        seen: set[str] = set()
+        await self._apply(
+            folder_connector, tmp_path, [self._event("MODIFIED", "locked.pdf", sha256=None)],
+            seen_external_ids=seen,
+        )
+        assert all(
+            call.args[1] != folder_connector._external_record_id_for_rel_path("locked.pdf")
+            for call in proc.get_record_by_external_id.await_args_list
+        )
+        proc.note_kept_records.assert_not_called()
+        assert folder_connector._external_record_id_for_rel_path("locked.pdf") in seen
+
     async def test_an_event_in_scope_retires_nothing(self, folder_connector, tmp_path) -> None:
         _stats, retired = await self._apply(
             folder_connector, tmp_path, [self._event("RENAMED", "q2.pdf", "q1.pdf")], self.PDF_ONLY,
@@ -4409,3 +4495,96 @@ class TestPreparingPages:
         ):
             await folder_connector.run_sync()
         assert folder_connector._pull_with_retry.await_count == 26
+
+
+class TestFullSyncUnlink:
+    """What the sync runner unlinks after a FULL run: every stored record the run neither wrote nor noted kept."""
+
+    async def _full_run(self, c, tmp_path, *, lookup_fails: bool = False) -> tuple[dict[str, Record], set[str]]:
+        """Run a FULL sync over docs, docs/a.txt, docs/locked.pdf and gone.txt, where gone.txt is
+        gone and docs/locked.pdf comes without a hash. Returns the records left and what the runner unlinks."""
+        proc = c.data_entities_processor
+        ext = c._external_record_id_for_rel_path
+        records: dict[str, Record] = {}
+        for n, rel in enumerate(("docs", "docs/a.txt", "docs/locked.pdf", "gone.txt")):
+            rec = _file_record(ext(rel), path=rel)
+            rec.id = f"rec-{n}"
+            records[rec.external_record_id] = rec
+        stored = set(records)
+        seen: set[str] = set()
+
+        async def on_new_records(batch) -> None:
+            for rec, _perms in batch:
+                seen.add(rec.external_record_id)
+                records[rec.external_record_id] = rec
+
+        async def on_record_deleted(record_id: str) -> bool:
+            for key, rec in list(records.items()):
+                if rec.id == record_id:
+                    del records[key]
+            return False
+
+        async def get_records_by_status(connector_id, statuses, limit=None, offset=0, **kw) -> list[Record]:
+            return list(records.values())[offset : offset + limit]
+
+        async def get_record_by_external_id(connector_id, external_record_id) -> Record | None:
+            if lookup_fails and external_record_id == ext("docs/locked.pdf"):
+                raise RuntimeError("graph unavailable")
+            return records.get(external_record_id)
+
+        def note_kept_records(connector_id, record_ids) -> None:
+            by_id = {r.id: key for key, r in records.items()}
+            seen.update(by_id[i] for i in record_ids if i in by_id)
+
+        proc.on_new_records = AsyncMock(side_effect=on_new_records)
+        proc.on_record_deleted = AsyncMock(side_effect=on_record_deleted)
+        proc.get_records_by_status = AsyncMock(side_effect=get_records_by_status)
+        proc.get_record_by_external_id = AsyncMock(side_effect=get_record_by_external_id)
+        proc.note_kept_records = MagicMock(side_effect=note_kept_records)
+        proc.full_sync_running = MagicMock(return_value=True)
+        c.config_service.get_config = AsyncMock(return_value={"sync": {SYNC_ROOT_PATH_KEY: str(tmp_path)}})
+        c.record_sync_point.read_sync_point = AsyncMock(return_value={})  # event_service deleted the sync points
+        c.record_sync_point.update_sync_point = AsyncMock()
+        c._ensure_owner_and_record_group = AsyncMock(return_value=(
+            User(email="u@x.com", id="u1", org_id="org-1"), c._record_group_external_id(),
+        ))
+        # The desktop's full walk: docs/locked.pdf could not be read and changed since its last known hash, so it comes without one.
+        events = [
+            LocalFsFileEvent(type="DIR_CREATED", path="docs", timestamp=1000, isDirectory=True),
+            LocalFsFileEvent(type="CREATED", path="docs/a.txt", timestamp=1000, size=4, isDirectory=False, sha256="ab" * 32),
+            LocalFsFileEvent(type="CREATED", path="docs/locked.pdf", timestamp=1000, size=9, isDirectory=False, sha256=None),
+        ]
+        c._pull_with_retry = AsyncMock(return_value=LocalFsPullBatch(
+            connectorId=c.connector_id, runId="r", batchIndex=0, deviceId=OWNER_DEVICE_ID,
+            cursor="c1", hasMore=False, events=events,
+        ))
+        with patch(
+            "app.connectors.sources.local_fs.connector.load_connector_filters",
+            new=AsyncMock(return_value=(FilterCollection(filters=[]), FilterCollection(filters=[]))),
+        ):
+            await c.run_sync()
+
+        coverage = c.full_sync_coverage()
+        unlinked = set() if not coverage.complete or not coverage.lists_everything else {
+            key for key in stored if key in records and key not in seen
+        }
+        return records, unlinked
+
+    async def test_a_file_the_desktop_could_not_hash_keeps_its_links_and_only_what_is_gone_is_removed(
+        self, folder_connector, tmp_path
+    ) -> None:
+        ext = folder_connector._external_record_id_for_rel_path
+        records, unlinked = await self._full_run(folder_connector, tmp_path)
+        assert ext("gone.txt") not in records  # gone from the folder: retired
+        assert unlinked & {ext("docs"), ext("docs/a.txt"), ext("docs/locked.pdf")} == set()
+
+    async def test_a_full_run_whose_kept_record_lookup_fails_unlinks_nothing(self, folder_connector, tmp_path) -> None:
+        ext = folder_connector._external_record_id_for_rel_path
+        records, unlinked = await self._full_run(folder_connector, tmp_path, lookup_fails=True)
+        assert not folder_connector.full_sync_coverage().complete
+        assert unlinked == set()
+        assert ext("docs/locked.pdf") in records
+        assert ext("gone.txt") not in records  # the connector's own prune still retires what is gone
+
+        records, unlinked = await self._full_run(folder_connector, tmp_path)
+        assert folder_connector.full_sync_coverage().complete  # the next run starts complete again

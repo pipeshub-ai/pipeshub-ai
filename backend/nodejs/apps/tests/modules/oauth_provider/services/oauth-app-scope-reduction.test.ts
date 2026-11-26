@@ -26,7 +26,7 @@ function makeService() {
     } as any,
     tokens as any,
   );
-  return { service, tokens };
+  return { service, tokens, logger };
 }
 
 describe('updating the scopes of an OAuth app', () => {
@@ -52,12 +52,20 @@ describe('updating the scopes of an OAuth app', () => {
   afterEach(() => sinon.restore());
 
   it('revokes every token of the app when a scope is removed', async () => {
-    const { service, tokens } = makeService();
+    const { service, tokens, logger } = makeService();
 
     await service.updateApp(appId, orgId, userId, true, { allowedScopes: ['kb:read'] });
 
     expect(app.allowedScopes).to.deep.equal(['kb:read']);
     expect(tokens.revokeAllTokensForApp.calledOnceWith('client123')).to.equal(true);
+    expect(
+      logger.info.args.map(([message, meta]) => [message, { ...meta, app_id: String(meta.app_id) }]),
+    ).to.deep.equal([
+      ['OAuth app access changed; tokens revoked', {
+        app_id: appId, org_id: orgId, removed_scopes: ['conversation:chat'], limit_narrowed: false,
+      }],
+      ['OAuth app updated', { app_id: appId, org_id: orgId }],
+    ]);
   });
 
   it('revokes nothing when scopes are only added', async () => {

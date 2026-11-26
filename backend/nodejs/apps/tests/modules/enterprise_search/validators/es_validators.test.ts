@@ -11,6 +11,7 @@ import {
   conversationIdParamsSchema,
   conversationTitleParamsSchema,
   conversationShareParamsSchema,
+  conversationUnshareParamsSchema,
   agentConversationShareParamsSchema,
   agentConversationUnshareParamsSchema,
   forkConversationParamsSchema,
@@ -180,6 +181,25 @@ describe('enterprise_search/validators/es_validators', () => {
       const result = conversationIdParamsSchema.safeParse(data)
       expect(result.success).to.be.false
     })
+  })
+
+  describe('ASSIST1: the assistant routes declare the harness a turn asks for', () => {
+    const id = '507f1f77bcf86cd799439011'
+    const routes: Array<[string, (harness: unknown) => { success: boolean }]> = [
+      ['new chat', (harness) => enterpriseSearchStreamCreateSchema.safeParse({ body: { query: 'q', chatMode: 'agent', harness } })],
+      ['follow-up', (harness) => addMessageStreamParamsSchema.safeParse({ params: { conversationId: id }, body: { query: 'q', chatMode: 'agent', harness } })],
+      ['regenerate', (harness) => regenerateAnswersParamsSchema.safeParse({ params: { conversationId: id, messageId: id }, body: { chatMode: 'agent', harness } })],
+    ]
+    for (const [route, parse] of routes) {
+      it(`${route}: accepts durable, legacy or none, and refuses anything else`, () => {
+        for (const harness of ['durable', 'legacy', undefined]) {
+          expect(parse(harness).success, String(harness)).to.be.true
+        }
+        for (const harness of ['new', true, 1]) {
+          expect(parse(harness).success, String(harness)).to.be.false
+        }
+      })
+    }
   })
 
   describe('includeRetrievalContext', () => {
@@ -474,6 +494,35 @@ describe('enterprise_search/validators/es_validators', () => {
       }
       const result = conversationShareParamsSchema.safeParse(data)
       expect(result.success).to.be.false
+    })
+
+    // R38AUTHZ-FU-1: a write share (OWD-19) once lost its level to a stripping validator and was stored as read.
+    it('keeps accessLevel read or write, and refuses any other level or field rather than dropping it', () => {
+      const params = { conversationId: '507f1f77bcf86cd799439011' }
+      const userIds = ['507f1f77bcf86cd799439012']
+      for (const accessLevel of ['read', 'write'] as const) {
+        const result = conversationShareParamsSchema.safeParse({ params, body: { userIds, accessLevel } })
+        expect(result.success, accessLevel).to.be.true
+        expect(result.success && result.data.body.accessLevel).to.equal(accessLevel)
+      }
+      for (const body of [
+        { userIds, accessLevel: 'WRITE' },
+        { userIds, accessLevel: 'admin' },
+        { userIds, accessLevel: ' write' },
+        { userIds, accessLevel: true },
+        { userIds, accessLevel: 'write', role: 'owner' },
+      ]) {
+        expect(conversationShareParamsSchema.safeParse({ params, body }).success, JSON.stringify(body)).to.be.false
+      }
+    })
+
+    it('unshare takes only who to remove, and drops anything else', () => {
+      const result = conversationUnshareParamsSchema.safeParse({
+        params: { conversationId: '507f1f77bcf86cd799439011' },
+        body: { userIds: ['507f1f77bcf86cd799439012'], accessLevel: 'write' },
+      })
+      expect(result.success).to.be.true
+      expect(result.success && result.data.body).to.deep.equal({ userIds: ['507f1f77bcf86cd799439012'] })
     })
   })
 
@@ -886,7 +935,7 @@ describe('enterprise_search/validators/es_validators', () => {
       })
       expect(result.success).to.be.false
       if (!result.success) {
-        const message = result.error.issues[0].message
+        const message = result.error.issues[0]!.message
         expect(message).to.contain('Unknown filter key(s): allowedApps, status')
         for (const key of REQUEST_FILTER_KEYS) expect(message).to.contain(key)
       }
@@ -897,7 +946,7 @@ describe('enterprise_search/validators/es_validators', () => {
       const result = enterpriseSearchSearchSchema.safeParse({ body: { query: 'q', filters } })
       expect(result.success).to.be.false
       if (!result.success) {
-        expect(result.error.issues[0].message).to.contain('Unknown filter key(s): toString, constructor')
+        expect(result.error.issues[0]!.message).to.contain('Unknown filter key(s): toString, constructor')
       }
     })
 
@@ -1045,7 +1094,7 @@ describe('enterprise_search/validators/es_validators', () => {
           conversationId: '507f1f77bcf86cd799439011',
           messageId: '507f1f77bcf86cd799439012',
         },
-        body: { chatMode: 'agent:auto', filters: {} },
+        body: { chatMode: 'agent', filters: {} },
       }
       const result = regenerateAnswersParamsSchema.safeParse(data)
       expect(result.success).to.be.true
@@ -1328,16 +1377,19 @@ describe('enterprise_search/validators/es_validators', () => {
   describe('agentStreamCreateSchema — chatMode', () => {
     const validParams = { agentKey: 'slack-bot-agent' }
 
-    it('should expose quick as the only supported agent chat mode', () => {
-      expect(AGENT_CHAT_MODES).to.deep.equal(['quick'])
-      const result = agentStreamCreateSchema.safeParse({
-        params: validParams,
-        body: { query: 'hello', chatMode: 'quick' },
-      })
-      expect(result.success).to.be.true
+    // LAT1 OR-11: every agent mode on the existing routes; the server routes each.
+    it('should accept every agent chat mode', () => {
+      expect(AGENT_CHAT_MODES).to.deep.equal(['quick', 'auto', 'react', 'deep', 'planExecute', 'verification'])
+      for (const chatMode of AGENT_CHAT_MODES) {
+        const result = agentStreamCreateSchema.safeParse({
+          params: validParams,
+          body: { query: 'hello', chatMode },
+        })
+        expect(result.success, chatMode).to.be.true
+      }
     })
 
-    for (const chatMode of ['auto', 'deep', 'planExecute', 'verification', 'internal_search']) {
+    for (const chatMode of ['internal_search', 'web_search', 'agent', 'image', 'Quick']) {
       it(`should reject unsupported agent chatMode ${chatMode}`, () => {
         const result = agentStreamCreateSchema.safeParse({
           params: validParams,
@@ -1390,7 +1442,17 @@ describe('enterprise_search/validators/es_validators', () => {
       expect(result.success).to.be.true
     })
 
-    for (const chatMode of ['', 'auto', 'deep', 'planExecute', 'verification', 'agent:auto', 'internal_search']) {
+    for (const chatMode of ['auto', 'react', 'deep', 'planExecute', 'verification']) {
+      it(`should accept agent follow-up chatMode ${chatMode} (LAT1)`, () => {
+        const result = agentAddMessageParamsSchema.safeParse({
+          params: validParams,
+          body: { query: 'follow up', chatMode },
+        })
+        expect(result.success).to.be.true
+      })
+    }
+
+    for (const chatMode of ['', 'agent:auto', 'internal_search']) {
       it(`should reject unsupported agent follow-up chatMode ${chatMode || '(empty)'}`, () => {
         const result = agentAddMessageParamsSchema.safeParse({
           params: validParams,
@@ -1425,6 +1487,16 @@ describe('enterprise_search/validators/es_validators', () => {
     })
 
     for (const chatMode of ['auto', 'deep', 'planExecute', 'verification']) {
+      it(`should accept agent regenerate chatMode ${chatMode} (LAT1)`, () => {
+        const result = regenerateAgentAnswersParamsSchema.safeParse({
+          params,
+          body: { chatMode },
+        })
+        expect(result.success).to.be.true
+      })
+    }
+
+    for (const chatMode of ['internal_search', 'agent:auto']) {
       it(`should reject unsupported agent regenerate chatMode ${chatMode}`, () => {
         const result = regenerateAgentAnswersParamsSchema.safeParse({
           params,
@@ -2668,6 +2740,32 @@ describe('enterprise_search/validators/es_validators', () => {
         body: { name: 'Agent', models: [validModel], defaultReasoningEffort: 'extreme' },
       })
       expect(result.success).to.be.false
+    })
+
+    it('AG1 WV-10: passes an engine agent’s settings through to the agents module, on create and update', () => {
+      const engine = { engineProfile: { accountKinds: ['org_cloud'] }, modelAccountId: 'cloud/acc-1' }
+      const created = createAgentSchema.passthrough().parse({
+        body: { name: 'Agent', models: [validModel], ...engine },
+      })
+      expect(created.body).to.deep.include(engine)
+      const updated = updateAgentSchema.passthrough().parse({
+        params: { agentKey: 'agent-1' },
+        body: { engineProfile: null, modelAccountId: null },
+      })
+      expect(updated.body).to.deep.include({ engineProfile: null, modelAccountId: null })
+      const plain = createAgentSchema.parse({ body: { name: 'Agent', models: [validModel] } })
+      expect(plain.body).to.not.have.any.keys('engineProfile', 'modelAccountId')
+    })
+
+    it('AG1 WV-10: refuses an engine profile that is not an object, and an empty account id', () => {
+      for (const engineProfile of [['org_cloud'], 'plan', 3]) {
+        expect(
+          createAgentSchema.safeParse({ body: { name: 'Agent', models: [validModel], engineProfile } }).success,
+        ).to.be.false
+      }
+      expect(
+        updateAgentSchema.safeParse({ params: { agentKey: 'agent-1' }, body: { modelAccountId: '' } }).success,
+      ).to.be.false
     })
 
     it('should accept sendUserContext true and false', () => {

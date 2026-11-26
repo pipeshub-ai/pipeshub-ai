@@ -13,7 +13,7 @@ import pytest
 from fastapi import HTTPException
 
 from app.api.routes.agent import get_model_usage, get_web_search_provider_usage
-from app.core.org_context import OrgContext, bind
+from app.core.org_context import OrgContext, OrgMismatch, bind
 from tests.unit.services.graph_db.test_provider_failure_logs_no_driver_text import (
     _driver_error,
     _provider,
@@ -51,9 +51,12 @@ async def test_a_failed_usage_read_is_refused_not_answered_with_no_agents(backen
 
 
 @pytest.mark.asyncio
-async def test_on_postgres_another_org_reads_nothing_without_asking_the_store() -> None:
+async def test_on_postgres_another_org_reads_nothing_without_asking_the_store(monkeypatch) -> None:
     # A caller bug, not a failed read: the route always passes the token's org, which is the ambient one.
     provider = _provider("postgres", _driver_error(stamped=True))
+    with pytest.raises(OrgMismatch):                                          # enforce, the default, refuses it outright
+        await provider.get_agents_by_model_key("org-2", "model-1")
+    monkeypatch.setenv("ORG_CONTEXT_MODE", "shadow")                          # in shadow the provider's own guard answers nothing
     assert await provider.get_agents_by_model_key("org-2", "model-1") == []
     assert await provider.get_agents_by_web_search_provider("org-2", "serper") == []
     provider._q.assert_not_awaited()

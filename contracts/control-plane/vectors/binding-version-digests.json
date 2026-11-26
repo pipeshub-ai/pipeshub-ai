@@ -1,0 +1,25 @@
+{
+  "description": "CPD-8: a binding secret version's digest (`secret.versionDigest`, the pin's `binding.versionDigest`) is the canonical digest of {binding, version}, so a pin names one version of one binding and every later version of the same binding is checkable from the pin alone. Read by Node (control-plane/domain/bindings.ts bindingVersionDigestInput, binding-vault.test.ts VB-3) and Python (app.control_plane.runtime.bindings.binding_version_digest, tests/unit/harness/credentials/test_binding_source.py).",
+  "cases": [
+    {
+      "binding": "bnd_01J9ZQ5Y8K3M4N5P6Q7R8S9T0V",
+      "version": 1,
+      "digest": "sha256:e87c5a787f78171161482535899eb29995b08887837d4474f07c51d03e09e40a"
+    },
+    {
+      "binding": "bnd_01J9ZQ5Y8K3M4N5P6Q7R8S9T0V",
+      "version": 2,
+      "digest": "sha256:c65c24ded0fa46f257e9469680f6e6dad21a7271b93275b6ff4d3dd28db71fd1"
+    },
+    {
+      "binding": "bnd_01J9ZQ5Y8K3M4N5P6Q7R8S9T0V",
+      "version": 1000,
+      "digest": "sha256:946601778f777e8458f7e6ecbec6dc6f5395446683d8ee2494d69f1e710569ca"
+    },
+    {
+      "binding": "bnd_0000000000000000000000000Z",
+      "version": 1,
+      "digest": "sha256:5d117fe86fcf0cb9f5ec3a7343f5e070f638f856433dc7d26a3ce6718b5c198e"
+    }
+  ]
+}

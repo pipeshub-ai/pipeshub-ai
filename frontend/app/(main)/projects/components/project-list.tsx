@@ -133,8 +133,8 @@ function ProjectCard({ project, onOpen, onAction, isBusy = false }: ProjectCardP
             <MaterialIcon name="folder" size={18} color={project.color || 'var(--accent-11)'} />
           </Box>
           <Flex align="center" gap="2">
-            {project.isPinned && <MaterialIcon name="star" size={16} color="var(--amber-9)" />}
-            <Text size="1" style={{ color: 'var(--slate-10)' }}>
+            {project.isPinned && <MaterialIcon name="star" size={16} color="var(--amber-11)" />}
+            <Text size="1" style={{ color: 'var(--slate-11)' }}>
               {t(`chat.projects.roles.${project.role === 'none' ? 'viewer' : project.role}`)}
             </Text>
             {/* Reserves the slot the absolutely-positioned menu trigger sits over. */}
@@ -151,7 +151,7 @@ function ProjectCard({ project, onOpen, onAction, isBusy = false }: ProjectCardP
         <Text
           size="2"
           style={{
-            color: 'var(--slate-10)',
+            color: 'var(--slate-11)',
             overflow: 'hidden',
             textOverflow: 'ellipsis',
             display: '-webkit-box',
@@ -163,13 +163,13 @@ function ProjectCard({ project, onOpen, onAction, isBusy = false }: ProjectCardP
           {project.description?.trim() || t('chat.projects.workspace.noDescription')}
         </Text>
         <Flex align="center" justify="between" style={{ marginTop: 'auto' }}>
-          <Text size="1" style={{ color: 'var(--slate-9)' }}>
+          <Text size="1" style={{ color: 'var(--slate-11)' }}>
             {t(
               project.conversationCount === 1 ? 'projects.chatCount_one' : 'projects.chatCount_other',
               { count: project.conversationCount },
             )}
           </Text>
-          <Text size="1" style={{ color: 'var(--slate-9)' }}>
+          <Text size="1" style={{ color: 'var(--slate-11)' }}>
             {t('projects.lastActive', { date: formatRelativeTime(project.lastActivityAt) })}
           </Text>
         </Flex>
@@ -459,7 +459,7 @@ export function ProjectList() {
           style={{ maxWidth: 360 }}
         >
           <TextField.Slot>
-            <MaterialIcon name="search" size={16} color="var(--slate-9)" />
+            <MaterialIcon name="search" size={16} color="var(--slate-11)" />
           </TextField.Slot>
         </TextField.Root>
 
@@ -473,11 +473,11 @@ export function ProjectList() {
           </Text>
         ) : sorted.length === 0 && search.trim() ? (
           <Flex direction="column" align="center" gap="2" role="status" style={{ padding: 'var(--space-8) 0' }}>
-            <MaterialIcon name="search_off" size={40} color="var(--slate-8)" />
+            <MaterialIcon name="search_off" size={40} color="var(--slate-11)" />
             <Text size="3" weight="medium" style={{ color: 'var(--slate-11)', textAlign: 'center', overflowWrap: 'anywhere' }}>
               {t('projects.noSearchResults', { query: search.trim() })}
             </Text>
-            <Text size="2" style={{ color: 'var(--slate-9)' }}>
+            <Text size="2" style={{ color: 'var(--slate-11)' }}>
               {t('projects.noSearchResultsHint')}
             </Text>
             <LoadingButton variant="soft" color="gray" onClick={() => setSearch('')}>
@@ -486,7 +486,7 @@ export function ProjectList() {
           </Flex>
         ) : sorted.length === 0 ? (
           <Flex direction="column" align="center" gap="2" style={{ padding: 'var(--space-8) 0' }}>
-            <MaterialIcon name="folder_open" size={40} color="var(--slate-8)" />
+            <MaterialIcon name="folder_open" size={40} color="var(--slate-11)" />
             <Text size="3" weight="medium" style={{ color: 'var(--slate-11)' }}>
               {t(
                 activeTab === 'archived'
@@ -494,7 +494,7 @@ export function ProjectList() {
                   : 'projects.emptyState',
               )}
             </Text>
-            <Text size="2" style={{ color: 'var(--slate-9)' }}>
+            <Text size="2" style={{ color: 'var(--slate-11)' }}>
               {t(
                 activeTab === 'archived'
                   ? 'projects.archivedEmptyStateHint'

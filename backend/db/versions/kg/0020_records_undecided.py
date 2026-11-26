@@ -10,18 +10,18 @@ older_code_compatible = "adds an index only; an index changes no answer"
 
 # The live listing rows (kg_0009's predicate) that kg does not decide (``kg.listing.DECIDED``): the few a listing hands to the access check. Spelt as the listing spells them, so
 # that the predicate of its statement implies this one.
-INDEXES = [
-    ("records_undecided", "org_id, app_sk, sk",
-     "kind IN (2, 3) AND NOT deleted AND NOT placeholder AND NOT alien AND NOT (r13 IS FALSE AND path IS NOT NULL AND class_id IS NOT NULL AND fence_job IS NULL)"),
+ONLINE_INDEXES = [
+    {"table": "kg.records", "name": "records_undecided", "cols": "org_id, app_sk, sk",
+     "where": "kind IN (2, 3) AND NOT deleted AND NOT placeholder AND NOT alien AND NOT (r13 IS FALSE AND path IS NOT NULL AND class_id IS NOT NULL AND fence_job IS NULL)"},
 ]
 
 
 def upgrade():
-    # shortcut: built inside the upgrade's one transaction with the writers of kg.records waiting (as kg_0009): run this upgrade on an install whose typed graph is large in a maintenance window.
-    for name, cols, where in INDEXES:
-        ensure_partitioned_index(op.get_bind(), "kg.records", name, cols, where=where, blocking=True)
+    # db.migrate builds ONLINE_INDEXES before this transaction without blocking writers; here they are found valid (a new install builds it, empty)
+    for ix in ONLINE_INDEXES:
+        ensure_partitioned_index(op.get_bind(), **ix, blocking=True)
 
 
 def downgrade():
-    for name, *_ in INDEXES:
-        op.execute(f"DROP INDEX IF EXISTS kg.{name}")
+    for ix in ONLINE_INDEXES:
+        op.execute(f"DROP INDEX IF EXISTS kg.{ix['name']}")

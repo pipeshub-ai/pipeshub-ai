@@ -5,6 +5,7 @@ import {
   InternalServerError,
 } from '../../../libs/errors/http.errors';
 import { HttpError } from '../../../libs/errors/http.errors';
+import { withCause } from '../../../libs/errors/base.error';
 import {
   keepDeliberateWording,
   markClientSafe,
@@ -128,9 +129,11 @@ export class ConfigService {
         );
       }
       if (error instanceof HttpError) throw keepDeliberateWording(error);
-      this.logger.error('Updating the configuration failed', { error });
-      throw markClientSafe(
-        new InternalServerError(serverFailureMessage('save that setting')),
+      throw withCause(
+        markClientSafe(
+          new InternalServerError(serverFailureMessage('save that setting')),
+        ),
+        error,
       );
     }
   }

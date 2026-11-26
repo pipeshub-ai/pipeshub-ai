@@ -9,7 +9,6 @@ import {
   IconButton,
   Tabs,
   Text,
-  TextArea,
   TextField,
 } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
@@ -21,7 +20,7 @@ import {
   knowledgeLimitForApi,
   type KnowledgeLimitValue,
 } from '@/app/components/knowledge-limit';
-import { FormField, WorkspaceRightPanel } from '../../../components';
+import { FormField, FormFieldTextArea, FormFieldTextField, WorkspaceRightPanel } from '../../../components';
 import { useToastStore } from '@/lib/store/toast-store';
 import { Oauth2Api } from '../api';
 import { ServiceAccountsApi } from '../../../service-accounts/api';
@@ -841,7 +840,7 @@ export function CreateOAuthApplicationPanel({
                   required
                   error={generalErrors.name}
                 >
-                  <TextField.Root
+                  <FormFieldTextField
                     size="2"
                     placeholder={t('workspace.oauth2.create.appNamePlaceholder')}
                     value={name}
@@ -854,7 +853,7 @@ export function CreateOAuthApplicationPanel({
                     label={t('workspace.oauth2.create.descriptionLabel')}
                     optional
                   >
-                    <TextArea
+                    <FormFieldTextArea
                       size="2"
                       rows={2}
                       placeholder={t(
@@ -1093,7 +1092,7 @@ export function CreateOAuthApplicationPanel({
                     label={t('workspace.oauth2.create.homepageLabel')}
                     optional
                   >
-                    <TextField.Root
+                    <FormFieldTextField
                       type="url"
                       placeholder={t('workspace.oauth2.create.urlPlaceholder')}
                       value={homepageUrl}
@@ -1105,7 +1104,7 @@ export function CreateOAuthApplicationPanel({
                     label={t('workspace.oauth2.create.privacyLabel')}
                     optional
                   >
-                    <TextField.Root
+                    <FormFieldTextField
                       type="url"
                       value={privacyPolicyUrl}
                       onChange={(e) => setPrivacyPolicyUrl(e.target.value)}
@@ -1117,7 +1116,7 @@ export function CreateOAuthApplicationPanel({
                     label={t('workspace.oauth2.create.termsLabel')}
                     optional
                   >
-                    <TextField.Root
+                    <FormFieldTextField
                       type="url"
                       value={termsUrl}
                       onChange={(e) => setTermsUrl(e.target.value)}
@@ -1271,7 +1270,7 @@ export function CreateOAuthApplicationPanel({
                                 {scope.description}
                               </Text>
                               {scope.requiresUserConsent && (
-                                <Text size="1" style={{ color: 'var(--slate-10)' }}>
+                                <Text size="1" style={{ color: 'var(--slate-11)' }}>
                                   {t('workspace.oauth2.create.requiresConsent')}
                                 </Text>
                               )}

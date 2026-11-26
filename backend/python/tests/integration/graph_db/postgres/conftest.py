@@ -15,9 +15,6 @@ if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable
     from contextlib import AbstractContextManager
 
-pytestmark = pytest.mark.integration
-
-
 @pytest.fixture(autouse=True)
 def _provider_contract_tests_skip_schema_validation(monkeypatch: pytest.MonkeyPatch) -> None:
     """These tests exercise the provider's mechanics (deletes, hierarchy, trash, access, projection) on hand-built

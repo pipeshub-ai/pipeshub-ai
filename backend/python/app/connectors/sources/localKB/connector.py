@@ -32,11 +32,13 @@ from app.connectors.core.registry.connector_builder import (
     SyncStrategy,
 )
 from app.connectors.core.registry.filters import FilterOptionsResponse
+from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
 from app.models.entities import Record
 from app.services.storage_documents import StorageDocuments, StorageUploadError
 from app.utils.api_call import make_api_call
 from app.utils.content_tag import SERVED_VERSION_TIMEOUT_SECONDS
 from app.utils.jwt import generate_jwt
+from app.utils.storage_download import is_signed_url_reply
 from app.connectors.core.base.error.stream_errors import to_internal_service_error
 
 if TYPE_CHECKING:
@@ -170,10 +172,8 @@ class KnowledgeBaseConnector(BaseConnector):
                     headers={"Authorization": f"Bearer {storage_token}"}
                 ) as response:
                     if response.status == HttpStatusCode.OK.value:
-                        content_type = response.headers.get("Content-Type", "")
-
-                        # Check if response is JSON (cloud storage) or file (local storage)
-                        if "application/json" in content_type:
+                        # Cloud storage answers with {signedUrl}; local storage with the file itself
+                        if is_signed_url_reply(response.headers):
                             # Cloud storage: response contains signed URL
                             data = await response.json()
                             signed_url = data.get("signedUrl")
@@ -330,6 +330,12 @@ class KnowledgeBaseConnector(BaseConnector):
             # there is a deployment fault, and telling the user to reconnect a connector
             # would point them at something they cannot fix.
             raise to_internal_service_error(e) from e
+
+    def full_sync_coverage(self) -> FullSyncCoverage:
+        """A Collection has no source to re-read: its files arrive and leave only
+        through its own upload and delete routes, so a full sync sees none of them
+        and must unlink none, and a retry would see no more."""
+        return FullSyncCoverage(lists_everything=False)
 
     async def run_sync(self) -> None:
         """No-op for KB connector - KBs are local storage"""

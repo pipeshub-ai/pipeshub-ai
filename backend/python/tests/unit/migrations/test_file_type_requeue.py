@@ -301,12 +301,13 @@ async def test_only_what_the_old_gate_refused_and_the_new_one_reads_is_selected(
               reason="This file is too large to index"),
         _file("g-msg", "mail.msg", ext="msg"),
         _file("h-heic", "photo.heic", ext="heic"),
+        _file("i-pptm", "deck.pptm", ext="pptm"),
     ]
     graph = FakeGraph([DRIVE], records)
 
     _, _, kafka = await _run(graph)
 
-    assert sorted(kafka.ids()) == ["b-pdf", "c-gradle", "e-log", "g-msg"]
+    assert sorted(kafka.ids()) == ["b-pdf", "c-gradle", "e-log", "g-msg", "i-pptm"]
     # settings.gradle as text/plain was read before; a status it holds now is not this gate's.
     for untouched in ("a-zip", "c-gradle-text", "d-log-big", "f-code-big", "h-heic"):
         assert graph.status(untouched) == FTNS, untouched
@@ -721,3 +722,11 @@ def test_the_page_row_carries_the_reason_the_selection_reads() -> None:
     )
 
     assert "reason" in UNSUPPORTED_PAGE_FIELDS
+
+
+def test_a_pdf_refused_for_its_page_count_is_never_selected() -> None:
+    from app.migrations.file_type_requeue.migration import is_selected
+    from app.utils.user_errors import pdf_over_page_limit
+
+    record = _file("long", "big.pdf", ext="pdf", mime="application/pdf", reason=pdf_over_page_limit(900))
+    assert is_selected(record, {"mimeType": "application/pdf", "reason": pdf_over_page_limit(900)}, frozenset()) == (False, None)

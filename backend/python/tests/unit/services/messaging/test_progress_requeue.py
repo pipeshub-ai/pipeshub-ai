@@ -142,6 +142,7 @@ class TestAProductiveCut:
         loop = asyncio.get_running_loop()
         started = loop.time()
         await run(handler)
+        # wall-clock-ok: the processing timeout this must not wait for is 10 s; the stall cut is at 0.25 s
         assert loop.time() - started < 5.0
 
     @RUNNERS

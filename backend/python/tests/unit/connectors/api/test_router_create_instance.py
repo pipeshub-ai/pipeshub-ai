@@ -12,6 +12,7 @@ Covers:
 """
 
 import contextlib
+import copy
 import logging
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -20,8 +21,11 @@ import pytest
 from fastapi import HTTPException
 
 from app.config.constants.http_status_code import HttpStatusCode
-from app.connectors.api.router import create_connector_instance
-from app.connectors.core.base.data_processor.permission_sync_gate import PersonalConnectorCapUnavailableError
+from app.connectors.api.router import _OAuthAppSave, create_connector_instance
+from app.connectors.core.base.data_processor.permission_sync_gate import (
+    PERSONAL_CAP_CHECK_FAILED,
+    PersonalConnectorCapUnavailableError,
+)
 
 _ROUTER = "app.connectors.api.router"
 
@@ -104,10 +108,12 @@ def _default_graph_provider():
 
 def _base_body(**overrides):
     """Build a request body dict with required fields."""
+    # Team by default: these tests are about an admin's OAuth apps, which are the org's on a
+    # team connector (an admin's personal connector gets a personal app).
     b = {
         "connectorType": "GOOGLE_DRIVE",
         "instanceName": "My Drive",
-        "scope": "personal",
+        "scope": "team",
     }
     b.update(overrides)
     return b
@@ -261,7 +267,7 @@ class TestPreValidateOAuthConfig:
         ) as mock_conflict, patch(
             f"{_ROUTER}._handle_oauth_config_creation",
             new_callable=AsyncMock,
-            return_value="oauth-123",
+            return_value=_OAuthAppSave("oauth-123", written=True),
         ), patch(
             f"{_ROUTER}._prepare_connector_config",
             new_callable=AsyncMock,
@@ -314,7 +320,7 @@ class TestPreValidateOAuthConfig:
         ) as mock_conflict, patch(
             f"{_ROUTER}._handle_oauth_config_creation",
             new_callable=AsyncMock,
-            return_value="existing-id",
+            return_value=_OAuthAppSave("existing-id", written=True),
         ), patch(
             f"{_ROUTER}._prepare_connector_config",
             new_callable=AsyncMock,
@@ -364,7 +370,7 @@ class TestPreValidateOAuthConfig:
         ) as mock_conflict, patch(
             f"{_ROUTER}._handle_oauth_config_creation",
             new_callable=AsyncMock,
-            return_value="new-id",
+            return_value=_OAuthAppSave("new-id", written=True),
         ), patch(
             f"{_ROUTER}._prepare_connector_config",
             new_callable=AsyncMock,
@@ -406,7 +412,7 @@ class TestPreValidateOAuthConfig:
         ) as mock_conflict, patch(
             f"{_ROUTER}._handle_oauth_config_creation",
             new_callable=AsyncMock,
-            return_value="oauth-new",
+            return_value=_OAuthAppSave("oauth-new", written=True),
         ), patch(
             f"{_ROUTER}._prepare_connector_config",
             new_callable=AsyncMock,
@@ -444,7 +450,7 @@ class TestPreValidateOAuthConfig:
         ) as mock_conflict, patch(
             f"{_ROUTER}._handle_oauth_config_creation",
             new_callable=AsyncMock,
-            return_value=None,
+            return_value=_OAuthAppSave(None, written=False),
         ), patch(
             f"{_ROUTER}._prepare_connector_config",
             new_callable=AsyncMock,
@@ -491,7 +497,7 @@ class TestPreValidateOAuthConfig:
         ) as mock_conflict, patch(
             f"{_ROUTER}._handle_oauth_config_creation",
             new_callable=AsyncMock,
-            return_value="oauth-new",
+            return_value=_OAuthAppSave("oauth-new", written=True),
         ), patch(
             f"{_ROUTER}._prepare_connector_config",
             new_callable=AsyncMock,
@@ -534,7 +540,7 @@ class TestCreateInstanceInDB:
         """The cap could not be checked: nothing was created, and trying again is the fix -> 503."""
         registry = _default_registry()
         registry.create_connector_instance_on_configuration = AsyncMock(
-            side_effect=PersonalConnectorCapUnavailableError("Please try again in a moment."),
+            side_effect=PersonalConnectorCapUnavailableError("graph read failed: connection reset"),
         )
         req = _mock_request(body=_base_body(authType="NONE"), is_admin=True, connector_registry=registry)
 
@@ -542,7 +548,9 @@ class TestCreateInstanceInDB:
             with pytest.raises(HTTPException) as exc:
                 await create_connector_instance(req, _default_graph_provider())
         assert exc.value.status_code == HttpStatusCode.SERVICE_UNAVAILABLE.value
-        assert exc.value.detail == "Please try again in a moment."
+        # The person is told what failed and to try again, never the exception's own text.
+        assert exc.value.detail == PERSONAL_CAP_CHECK_FAILED
+        assert "connection reset" not in exc.value.detail
 
     @pytest.mark.asyncio
     async def test_taken_name_keeps_its_own_advice(self) -> None:
@@ -641,7 +649,7 @@ class TestStoreInitialConfig:
         ), patch(
             f"{_ROUTER}._handle_oauth_config_creation",
             new_callable=AsyncMock,
-            return_value="oauth-999",
+            return_value=_OAuthAppSave("oauth-999", written=True),
         ) as mock_handle, patch(
             f"{_ROUTER}._prepare_connector_config",
             new_callable=AsyncMock,
@@ -684,7 +692,7 @@ class TestStoreInitialConfig:
         ), patch(
             f"{_ROUTER}._handle_oauth_config_creation",
             new_callable=AsyncMock,
-            return_value=None,
+            return_value=_OAuthAppSave(None, written=False),
         ), patch(
             f"{_ROUTER}._prepare_connector_config",
             new_callable=AsyncMock,
@@ -696,10 +704,11 @@ class TestStoreInitialConfig:
         config_service.set_config.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_non_admin_with_auth_skips_oauth_creation(self) -> None:
-        """Non-admin with auth config -> skip OAuth creation, still store config."""
+    async def test_non_admin_auth_goes_through_the_same_oauth_app_handling(self) -> None:
+        """A member's personal connector: its auth reaches the OAuth app handling, as an admin's does."""
         body = _base_body(
             authType="OAUTH",
+            scope="personal",
             oauthConfigId="test-oauth-123",
             config={"auth": {"token": "abc"}},
         )
@@ -728,7 +737,8 @@ class TestStoreInitialConfig:
             result = await create_connector_instance(req, gp)
 
         assert result["success"] is True
-        mock_handle.assert_not_awaited()
+        assert mock_handle.await_args.kwargs["is_admin"] is False
+        assert mock_handle.await_args.kwargs["connector_scope"] == "personal"
         config_service.set_config.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -802,7 +812,8 @@ class TestStoreInitialConfig:
         )
         gp = _default_graph_provider()
 
-        with _common_patches(), patch(
+        # The named app is checked before the connector exists; this test is about what follows.
+        with _common_patches(), patch(f"{_ROUTER}._validate_oauth_app_before_creation", new_callable=AsyncMock), patch(
             f"{_ROUTER}._prepare_connector_config",
             new_callable=AsyncMock,
             return_value={"auth": {"oauthConfigId": "pre-existing-oauth"}},
@@ -832,11 +843,11 @@ class TestStoreInitialConfig:
         with _common_patches(), patch(
             f"{_ROUTER}.resolve_config_service", return_value=config_service
         ), patch(
-            f"{_ROUTER}._validate_admin_oauth_config_before_creation", new_callable=AsyncMock
+            f"{_ROUTER}._validate_oauth_app_before_creation", new_callable=AsyncMock
         ), patch(
             f"{_ROUTER}._handle_oauth_config_creation",
             new_callable=AsyncMock,
-            return_value="oauth-new",
+            return_value=_OAuthAppSave("oauth-new", written=True),
         ) as mock_handle, patch(
             f"{_ROUTER}._prepare_connector_config",
             new_callable=AsyncMock,
@@ -882,7 +893,7 @@ class TestSuccessResponse:
         assert connector["connectorType"] == "GOOGLE_DRIVE"
         assert connector["instanceName"] == "My Drive"
         assert connector["created"] is True
-        assert connector["scope"] == "personal"
+        assert connector["scope"] == "team"
         assert connector["createdBy"] == "user-1"
         assert connector["isAuthenticated"] is False
         assert connector["isConfigured"] is True
@@ -910,19 +921,31 @@ class TestOAuthBodyLevelConfigId:
 
     @pytest.mark.asyncio
     async def test_body_level_oauth_config_id_used_for_update(self) -> None:
-        """Body-level oauthConfigId is used; without name override conflict check is skipped."""
+        """Body-level oauthConfigId names the app the credentials update; without a new name
+        there is no name check, and the connector links that same app."""
+        from app.connectors.api import router as router_module
+
         body = _base_body(
             authType="OAUTH",
             oauthConfigId="body-level-id",
             config={"auth": {"clientId": "cid", "clientSecret": "csecret"}},
         )
-        existing_configs = [
-            {"_id": "body-level-id", "orgId": "org-1", "name": "Body OAuth"},
-        ]
+        apps_path = "/services/oauth/googledrive"
+        stored: dict[str, object] = {
+            apps_path: [{"_id": "body-level-id", "orgId": "org-1", "oauthInstanceName": "Body OAuth", "config": {}}],
+        }
+
+        async def get_config(path: str, default: object = None, **_: object) -> object:
+            return copy.deepcopy(stored.get(path, default))
+
+        async def set_config(path: str, value: object) -> bool:
+            stored[path] = copy.deepcopy(value)
+            return True
+
         registry = _default_registry()
         config_service = AsyncMock()
-        config_service.get_config = AsyncMock(return_value=existing_configs)
-        config_service.set_config = AsyncMock(return_value=True)
+        config_service.get_config = AsyncMock(side_effect=get_config)
+        config_service.set_config = AsyncMock(side_effect=set_config)
         req = _mock_request(
             body=body,
             is_admin=True,
@@ -935,23 +958,31 @@ class TestOAuthBodyLevelConfigId:
             f"{_ROUTER}._get_oauth_field_names_from_registry",
             return_value=["clientId", "clientSecret"],
         ), patch(
+            f"{_ROUTER}._get_required_oauth_field_names_from_registry",
+            return_value=["clientId", "clientSecret"],
+        ), patch(
             f"{_ROUTER}._get_oauth_config_path",
-            return_value="/services/oauth/googledrive",
+            return_value=apps_path,
         ), patch(
-            f"{_ROUTER}._check_oauth_name_conflict"
-        ) as mock_conflict, patch(
-            f"{_ROUTER}._handle_oauth_config_creation",
+            f"{_ROUTER}._update_oauth_infrastructure_fields",
             new_callable=AsyncMock,
-            return_value="body-level-id",
         ), patch(
+            f"{_ROUTER}._check_oauth_name_conflict",
+            wraps=router_module._check_oauth_name_conflict,
+        ) as mock_conflict, patch(
             f"{_ROUTER}._prepare_connector_config",
             new_callable=AsyncMock,
             return_value={"auth": {}},
-        ):
+        ) as mock_prepare:
             result = await create_connector_instance(req, gp)
 
         assert result["success"] is True
         mock_conflict.assert_not_called()
+        [app] = stored[apps_path]
+        assert app["_id"] == "body-level-id"
+        assert app["oauthInstanceName"] == "Body OAuth"
+        assert app["config"] == {"clientId": "cid", "clientSecret": "csecret"}
+        assert mock_prepare.await_args.kwargs["oauth_config_id"] == "body-level-id"
 
 
 class TestGenericExceptionHandling:

@@ -19,6 +19,8 @@ import uuid
 
 import pytest
 
+from tests.support import it_backends
+
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="module")]
 
 
@@ -33,7 +35,7 @@ async def neo4j_provider():
     from app.services.graph_db.neo4j.neo4j_client import Neo4jClient
     from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
 
-    uri = os.environ.get("NEO4J_IT_URI", "bolt://localhost:17687")
+    uri = it_backends.endpoint("NEO4J_IT_URI")
     password = os.environ.get("NEO4J_IT_PASSWORD", "ensure-it-pass")
     logger = _log()
     client = Neo4jClient(

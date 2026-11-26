@@ -1,7 +1,11 @@
 import { test as setup, expect } from '../fixtures/base.fixture';
 import { reachPasswordStep } from '../helpers/login.helper';
+import { accessTokenFromSession } from '../helpers/session.helper';
+import * as fs from 'fs';
 
 const AUTH_FILE = '.auth/user.json';
+// The API fixture's bearer token: the page keeps its own in memory only (ADR-WEB-02).
+const API_TOKEN_FILE = '.auth/api-token.json';
 
 // Tagged @smoke so the smoke run (which filters by title) still signs in first.
 setup('authenticate @smoke', async ({ page }) => {
@@ -28,6 +32,7 @@ setup('authenticate @smoke', async ({ page }) => {
   await page.waitForURL('**/chat/**', { timeout: 15_000 });
   await expect(page).toHaveURL(/\/chat\//);
 
-  // Save auth state (includes localStorage tokens at jwt_access_token / jwt_refresh_token)
+  // The session is the HttpOnly refresh cookie, which storage state keeps.
   await page.context().storageState({ path: AUTH_FILE });
+  fs.writeFileSync(API_TOKEN_FILE, JSON.stringify({ accessToken: await accessTokenFromSession(page) }));
 });

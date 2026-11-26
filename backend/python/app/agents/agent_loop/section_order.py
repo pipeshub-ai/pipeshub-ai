@@ -46,7 +46,7 @@ PIPESHUB_SECTION_ORDER: tuple[tuple[str, Volatility], ...] = (
     # real Agent Builder agent) that is linked to a project.
     ("project_instructions",       Volatility.STATIC),
     # Org-level "Custom Instructions" (workspace settings), mode-resolved by
-    # `chat_modes.bridge` — Chat Assistant only, never set for Agent Builder.
+    # `chat_modes.setup` — Chat Assistant only, never set for Agent Builder.
     ("custom_instructions",        Volatility.STATIC),
     ("operating_rules",            Volatility.STATIC),
     ("response_format",            Volatility.STATIC),
@@ -104,6 +104,8 @@ PIPESHUB_SECTION_ORDER: tuple[tuple[str, Volatility], ...] = (
     # The router's requirements, success criteria and gaps for this question.
     ("goal_brief",                 Volatility.TURN),
     ("time_context",               Volatility.TURN),
+    # G-52: the person's answer language, from their locale; beside the time so the cached prefix never holds it.
+    ("output_language",            Volatility.TURN),
     ("request_context",            Volatility.TURN),
     # Per request: a client can send a different entity filter on every turn.
     ("entity_filter",              Volatility.TURN),

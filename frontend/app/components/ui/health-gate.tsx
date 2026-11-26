@@ -104,18 +104,18 @@ function BackendUnavailableScreen() {
             backgroundColor: 'var(--amber-a3)',
           }}
         >
-          <MaterialIcon name="cloud_off" size={32} color="var(--amber-9)" />
+          <MaterialIcon name="cloud_off" size={32} color="var(--amber-11)" />
         </Flex>
 
         <Heading size="5" style={{ color: 'var(--slate-12)' }}>
           {t('healthGate.title')}
         </Heading>
 
-        <Text size="2" style={{ color: 'var(--slate-10)', lineHeight: 1.6 }}>
+        <Text size="2" style={{ color: 'var(--slate-11)', lineHeight: 1.6 }}>
           {t('healthGate.description')}
         </Text>
 
-        <Text size="2" style={{ color: 'var(--slate-10)', lineHeight: 1.6 }}>
+        <Text size="2" style={{ color: 'var(--slate-11)', lineHeight: 1.6 }}>
           {t('healthGate.contactAdmin')}
         </Text>
 

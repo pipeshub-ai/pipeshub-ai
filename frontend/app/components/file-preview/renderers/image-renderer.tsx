@@ -57,7 +57,7 @@ export function ImageRenderer({ fileUrl, fileName, citations, activeCitationId, 
   if (!fileUrl || fileUrl.trim() === '') {
     return (
       <Flex direction="column" align="center" justify="center" gap="3" style={{ height: '100%', padding: 'var(--space-6)' }}>
-        <span className="material-icons-outlined" style={{ fontSize: '48px', color: 'var(--slate-9)' }}>
+        <span className="material-icons-outlined" style={{ fontSize: '48px', color: 'var(--slate-11)' }}>
           image
         </span>
         <Text size="3" weight="medium" color="gray">
@@ -70,7 +70,7 @@ export function ImageRenderer({ fileUrl, fileName, citations, activeCitationId, 
   if (error) {
     return (
       <Flex direction="column" align="center" justify="center" gap="3" style={{ height: '100%', padding: 'var(--space-6)' }}>
-        <span className="material-icons-outlined" style={{ fontSize: '48px', color: 'var(--red-9)' }}>
+        <span className="material-icons-outlined" style={{ fontSize: '48px', color: 'var(--red-11)' }}>
           broken_image
         </span>
         <Text size="3" weight="medium" color="red">

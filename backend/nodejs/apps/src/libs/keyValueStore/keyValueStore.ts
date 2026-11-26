@@ -1,3 +1,4 @@
+import type { EtcdAuthAdmin } from './etcd-auth';
 export interface DistributedKeyValueStore<T> {
   createKey(key: string, value: T): Promise<void>;
   updateValue(key: string, value: T): Promise<void>;
@@ -9,4 +10,6 @@ export interface DistributedKeyValueStore<T> {
   compareAndSet(key: string, expectedValue: T | null, newValue: T): Promise<boolean>;
   healthCheck(): Promise<boolean>;
   publishCacheInvalidation(key: string): Promise<void>;
+  /** etcd only (R38IDENT-FU-9): its role-based auth, as this process's certificate's user. */
+  authAdmin?(): EtcdAuthAdmin | null;
 }

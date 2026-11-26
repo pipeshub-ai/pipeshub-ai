@@ -29,6 +29,8 @@ from app.agents.actions.util.attachment_upload import (
     IAttachmentUploader,
 )
 from app.services.record_content.models import ResolvedRecordContent
+from app.sources.client.http.send_ambiguity import note_aiohttp_failure, note_status
+from app.sources.client.http.send_safe_aiohttp import send_safe_session
 
 logger = logging.getLogger(__name__)
 
@@ -198,7 +200,7 @@ class OutlookAttachmentUploader:
         num_chunks = math.ceil(total_size / _UPLOAD_CHUNK_SIZE)
         last_response_data: dict = {}
 
-        async with aiohttp.ClientSession() as session:
+        async with send_safe_session() as session:
             for i in range(num_chunks):
                 start = i * _UPLOAD_CHUNK_SIZE
                 end = min(start + _UPLOAD_CHUNK_SIZE, total_size)
@@ -208,9 +210,13 @@ class OutlookAttachmentUploader:
                     "Content-Range": f"bytes {start}-{end - 1}/{total_size}",
                     "Content-Type": "application/octet-stream",
                 }
-                async with session.put(
-                    upload_url, data=chunk, headers=headers, timeout=_REQUEST_TIMEOUT,
-                ) as resp:
+                try:
+                    resp = await session.put(upload_url, data=chunk, headers=headers, timeout=_REQUEST_TIMEOUT)
+                except Exception as exc:
+                    note_aiohttp_failure(exc, unsafe=True)
+                    raise
+                async with resp:
+                    note_status("PUT", resp.status)
                     if resp.status not in (200, 201, 202):
                         detail = (await resp.text())[:300]
                         raise RuntimeError(

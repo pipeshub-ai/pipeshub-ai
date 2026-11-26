@@ -8,15 +8,16 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from app.agent_loop_lib.core.exceptions import RegistryError
+from app.agent_loop_lib.modules.providers.skills.base import SkillSource
 from app.agents.agent_loop.skills.scoped_manager import ScopedSkillManager
 
 
-def _metadata(name: str) -> SimpleNamespace:
-    return SimpleNamespace(name=name)
+def _metadata(name: str, source: SkillSource = SkillSource.MANUAL) -> SimpleNamespace:
+    return SimpleNamespace(name=name, source=source)
 
 
-def _match(name: str) -> SimpleNamespace:
-    return SimpleNamespace(skill=SimpleNamespace(name=name))
+def _match(name: str, source: SkillSource = SkillSource.MANUAL) -> SimpleNamespace:
+    return SimpleNamespace(skill=_metadata(name, source))
 
 
 class TestCatalogSnapshot:
@@ -28,6 +29,25 @@ class TestCatalogSnapshot:
         scoped = ScopedSkillManager(manager, {"pdf-extractor", "web-search"})
         result = scoped.catalog_snapshot()
         assert {m.name for m in result} == {"pdf-extractor", "web-search"}
+
+    def test_an_assignment_keeps_the_builtin_packs(self) -> None:
+        """FIX-SKILLS: an assignment narrows the person's own skills away, never the org's builtins."""
+        manager = MagicMock()
+        manager.catalog_snapshot = MagicMock(
+            return_value=[_metadata("pdf", SkillSource.BUILTIN), _metadata("mine"), _metadata("assigned")]
+        )
+        scoped = ScopedSkillManager(manager, {"assigned"})
+        assert {m.name for m in scoped.catalog_snapshot()} == {"pdf", "assigned"}
+
+    @pytest.mark.asyncio
+    async def test_a_builtin_loads_under_an_assignment(self) -> None:
+        manager = MagicMock()
+        manager.catalog_snapshot = MagicMock(return_value=[_metadata("pdf", SkillSource.BUILTIN), _metadata("mine")])
+        manager.activate_skill = AsyncMock(return_value="pdf-body")
+        scoped = ScopedSkillManager(manager, {"assigned"})
+        assert await scoped.activate_skill("pdf") == "pdf-body"
+        with pytest.raises(RegistryError):
+            await scoped.activate_skill("mine")
 
     def test_empty_allowlist_hides_everything(self) -> None:
         manager = MagicMock()

@@ -64,7 +64,6 @@ ALLOWED: dict[str, tuple[int, str]] = {
     "modules/transformers/document_extraction.py": (1, _IMAGES),
     "parsing_main.py": (1, _PINNED),
     "sandbox/artifact_upload.py": (2, _IMAGES),
-    "sandbox/models.py": (1, _IMAGES),
     "services/artifact_registry/registry.py": (1, _IMAGES),
     "services/storage_documents.py": (1, _IMAGES),
     "sources/external/microsoft/sharepoint/sharepoint.py": (1, _SOURCE),
