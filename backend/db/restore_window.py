@@ -159,8 +159,12 @@ def export_org(migrate: psycopg.Connection, backup: psycopg.Connection, org: str
             raise Refused(f"{org} has no rows in any table; nothing to export")
         directory.mkdir(parents=True, exist_ok=True)
         for t in ordered:
+            # generated columns are left out: an INSERT cannot set them, and the load computes them again
+            cols = [r[0] for r in backup.execute("SELECT attname FROM pg_attribute WHERE attrelid = %s::regclass AND attnum > 0 AND NOT attisdropped "
+                                                 "AND attgenerated = '' ORDER BY attnum", (t,))]
             with (directory / f"{t}.csv").open("wb") as f, backup.cursor().copy(
-                    sql.SQL("COPY (SELECT * FROM {} WHERE org_id = {}) TO STDOUT (FORMAT csv, HEADER, NULL '\\N')").format(sql.SQL(t), sql.Literal(org))) as cp:
+                    sql.SQL("COPY (SELECT {} FROM {} WHERE org_id = {}) TO STDOUT (FORMAT csv, HEADER, NULL '\\N')").format(
+                        sql.SQL(", ").join(map(sql.Identifier, cols)), sql.SQL(t), sql.Literal(org))) as cp:
                 for chunk in cp:
                     f.write(bytes(chunk))
     (directory / "order.txt").write_text("\n".join(ordered) + "\n", encoding="utf-8")
