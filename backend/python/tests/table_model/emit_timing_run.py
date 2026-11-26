@@ -59,7 +59,6 @@ def main() -> None:
 
     weights = sys.argv[1]
     pdf, boxes = fixture_pdf()
-    ola._detect_model_boxes = fake_boxes(boxes)
     client = SupervisorClient(weights)
     t_load = time.perf_counter()
     client._loop.run_until_complete(client.sup._start())  # child process start and model load, before any page
@@ -80,7 +79,9 @@ def main() -> None:
         pages.append(buf.getvalue())
     rows = []
     model_wall: list[float] = []
-    for pdf_page in pages:
+    for i, pdf_page in enumerate(pages):
+        # each page is parsed as a one-page PDF: its page number is 1, so it gets its own boxes under that number
+        ola._detect_model_boxes = fake_boxes({"1": boxes.get(str(i + 1), [])})
         walls: dict[str, list[float]] = {"evidence": [], "hybrid": []}
         cpu: dict[str, list[float]] = {"evidence": [], "hybrid": []}
         for rep in range(REPEATS + 1):
