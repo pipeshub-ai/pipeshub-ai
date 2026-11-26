@@ -458,7 +458,7 @@ describe('Team connectors page: turning sync on and off', () => {
     fireEvent.click(toggle);
 
     await waitFor(() => expect(api.toggleConnector).toHaveBeenCalledWith('conn-1', 'sync', true, undefined));
-    await waitFor(() => expect(toasts().map((t) => t.title)).toContain('Connector sync enabled'));
+    await waitFor(() => expect(toasts().map((t) => t.title)).toContain('Sync is on for Jira (Engineering)'));
   });
 
   it('disables sync and confirms it', async () => {
@@ -470,7 +470,7 @@ describe('Team connectors page: turning sync on and off', () => {
     await confirmDisable();
 
     await waitFor(() => expect(api.toggleConnector).toHaveBeenCalledWith('conn-1', 'sync', false));
-    await waitFor(() => expect(toasts().map((t) => t.title)).toContain('Connector sync disabled'));
+    await waitFor(() => expect(toasts().map((t) => t.title)).toContain('Sync is off for Jira (Engineering)'));
   });
 
   it('says it could not update the connector when the toggle fails outside the API', async () => {
@@ -482,8 +482,8 @@ describe('Team connectors page: turning sync on and off', () => {
     fireEvent.click(toggle);
     await confirmDisable();
 
-    await waitFor(() => expect(toasts().map((t) => t.title)).toContain('Could not update connector'));
-    expect(toasts().map((t) => t.title)).not.toContain('Connector sync disabled');
+    await waitFor(() => expect(toasts().map((t) => t.title)).toContain("Couldn't change sync for Jira (Engineering)"));
+    expect(toasts().map((t) => t.title)).not.toContain('Sync is off for Jira (Engineering)');
   });
 
   it('leaves the message to the API layer when the server refused the toggle', async () => {
@@ -511,6 +511,6 @@ describe('Team connectors page: turning sync on and off', () => {
 
     await waitFor(() => expect(api.getConnectorInstance).toHaveBeenCalledWith('conn-1'));
     await waitFor(() => expect(toggle.getAttribute('aria-checked')).toBe('true'));
-    expect(toasts().map((t) => t.title)).not.toContain('Connector sync enabled');
+    expect(toasts().map((t) => t.title)).not.toContain('Sync is on for Jira (Engineering)');
   });
 });

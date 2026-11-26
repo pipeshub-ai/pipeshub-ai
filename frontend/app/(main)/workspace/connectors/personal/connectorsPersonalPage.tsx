@@ -5,7 +5,6 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { useTranslation } from 'react-i18next';
 import { useToastStore } from '@/lib/store/toast-store';
 import { useUserStore, selectIsAdmin, selectIsProfileInitialized } from '@/lib/store/user-store';
-import { isProcessedError } from '@/lib/api';
 import { ServiceGate } from '@/app/components/ui/service-gate';
 import { isElectron } from '@/lib/electron';
 import { isLocalFsConnectorType, localFsDesktopToast } from '../utils/local-fs-helpers';
@@ -15,6 +14,7 @@ import {
   startConnectorSync,
   toggleConnectorSyncOn,
 } from '../utils/connector-sync-actions';
+import { runSyncToggleWithFeedback } from '../utils/sync-toggle-feedback';
 import { filterConnectorsForScope } from '../utils/filter-connectors-by-scope';
 import { fetchFilteredConnectorLists } from '../utils/fetch-filtered-connector-lists';
 import {
@@ -456,46 +456,51 @@ function PersonalConnectorsPageContent() {
   const handleToggleSyncActive = useCallback(
     async (instance: ConnectorInstance) => {
       if (!instance._key || instance.status === CONNECTOR_INSTANCE_STATUS.DELETING) return;
-      try {
-        if (!instance.isActive) {
-          const outcome = await toggleConnectorSyncOn(instance._key, instance.type);
-          if (outcome.kind === 'requires-desktop') {
-            addToast(localFsDesktopToast(outcome));
-            return;
+      const connectorId = instance._key;
+      const result = await runSyncToggleWithFeedback({
+        connectorId,
+        connectorName: instance.name?.trim() || instance.type,
+        sourceName: instance.type,
+        direction: instance.isActive ? 'off' : 'on',
+        t,
+        action: async () => {
+          if (!instance.isActive) {
+            const outcome = await toggleConnectorSyncOn(connectorId, instance.type);
+            if (outcome.kind === 'requires-desktop') {
+              addToast(localFsDesktopToast(outcome));
+              return 'handled';
+            }
+          } else {
+            await ConnectorsApi.toggleConnector(connectorId, 'sync', false);
           }
-        } else {
-          await ConnectorsApi.toggleConnector(instance._key, 'sync', false);
-        }
-        if (isLocalFsConnectorType(instance.type)) {
-          const fresh = await refreshConnectorRowQuiet(instance._key);
-          let config = instanceConfigs[instance._key];
-          if (!config) {
-            config = await ConnectorsApi.getConnectorConfig(instance._key);
-            setInstanceConfig(instance._key, config);
+          // The switch flips with the success toast, not after it.
+          if (isLocalFsConnectorType(instance.type)) {
+            const fresh = await refreshConnectorRowQuiet(connectorId);
+            let config = instanceConfigs[connectorId];
+            if (!config) {
+              config = await ConnectorsApi.getConnectorConfig(connectorId);
+              setInstanceConfig(connectorId, config);
+            }
+            await ensureLocalWatcherForInstance(fresh, config);
+          } else {
+            await refreshConnectorRowQuiet(connectorId);
           }
-          await ensureLocalWatcherForInstance(fresh, config);
-        } else {
-          await refreshConnectorRowQuiet(instance._key);
-        }
-        addToast({
-          variant: 'success',
-          title: instance.isActive ? 'Connector sync disabled' : 'Connector sync enabled',
-          duration: 2500,
-        });
-        try {
-          await refreshConnectorsListsQuiet();
-        } catch {
-          addToast({
-            variant: 'error',
-            title: t('workspace.connectors.toasts.refreshInstancesError'),
-          });
-        }
-      } catch (err: unknown) {
-        if (!isProcessedError(err)) {
-          addToast({ variant: 'error', title: 'Could not update connector' });
-        }
+          return 'done';
+        },
+      });
+      if (result === 'failed') {
         // A failed toggle may still have been committed server-side; show what's really there.
-        await refreshConnectorRowQuiet(instance._key).catch(() => {});
+        await refreshConnectorRowQuiet(connectorId).catch(() => {});
+        return;
+      }
+      if (result !== 'done') return;
+      try {
+        await refreshConnectorsListsQuiet();
+      } catch {
+        addToast({
+          variant: 'error',
+          title: t('workspace.connectors.toasts.refreshInstancesError'),
+        });
       }
     },
     [

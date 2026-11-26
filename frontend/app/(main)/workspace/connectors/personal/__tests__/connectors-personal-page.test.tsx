@@ -155,7 +155,7 @@ describe('Personal connectors page', () => {
     fireEvent.click(toggle);
 
     await waitFor(() => expect(api.toggleConnector).toHaveBeenCalledWith('conn-1', 'sync', true, undefined));
-    await waitFor(() => expect(toastTitles()).toContain('Connector sync enabled'));
+    await waitFor(() => expect(toastTitles()).toContain('Sync is on for Work mail'));
   });
 
   it('re-reads the connector after a failed toggle so the switch shows the real state', async () => {
@@ -173,7 +173,7 @@ describe('Personal connectors page', () => {
 
     await waitFor(() => expect(api.getConnectorInstance).toHaveBeenCalledWith('conn-1'));
     await waitFor(() => expect(toggle.getAttribute('aria-checked')).toBe('true'));
-    expect(toastTitles()).not.toContain('Connector sync enabled');
+    expect(toastTitles()).not.toContain('Sync is on for Work mail');
   });
 
   describe('a link to a connector that is not in the personal catalog', () => {
