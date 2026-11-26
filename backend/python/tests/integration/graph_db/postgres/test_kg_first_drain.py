@@ -218,7 +218,7 @@ async def test_the_walk_below_a_large_change_reads_by_keys_with_no_statistics_an
              "page by parent": (restamp.WALK_PAGE_PARENT, [folders, few], True), "page by group": (restamp.WALK_PAGE_GROUP, [[group], few], True),
              "page by links": (restamp.WALK_PAGE_LINKS, [folders, few], False), "one by parent": (restamp.WALK_ONE_PARENT, [folders[0], 0, few], True),
              "one by group": (restamp.WALK_ONE_GROUP, [group, 0, few], True), "one by links": (restamp.WALK_ONE_LINKS, [folders[0], 0, 0, few], False),
-             "hide read": (restamp.HIDE_READ, [folders], True), "rows of no connector": (restamp.APPLESS_PARENT, [], True)}
+             "hide read": (restamp.HIDE_READ, [folders], True), "rows of no connector": (restamp.APPLESS_PARENT, [restamp.APPLESS_SCAN], True)}
     for state in ("no statistics", "analysed"):
         await (no_stats() if state == "no statistics" else _admin(RESTORE))
         for name, (sql, args, rows) in wants.items():

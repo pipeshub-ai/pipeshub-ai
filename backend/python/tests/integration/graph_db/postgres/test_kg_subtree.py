@@ -7,11 +7,15 @@ from its last batch; a second change of that size joins the job and sends it bac
 """
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from app.services.graph_db.postgres.kg import drainer, restamp, stamp
 from app.services.graph_db.postgres.kg.drainer import drain_org
+from app.services.graph_db.postgres.kg.reader import seeks
 from app.services.graph_db.postgres.kg.writers import KgWriter
+from tests.support import plan_gate
 
 from .pg_support import new_org
 from .test_kg_backfill import run_in
@@ -251,7 +255,7 @@ async def test_a_large_reach_through_rows_of_no_connector_is_still_found_whole_i
         await p.batch_create_edges([edge("under", "records", "app1", "apps")], "belongsTo")
     await drain_org(pg_db, org)
     await restamp.run_jobs(pg_db, org, "w0", batch=50)
-    assert await run_in(pg_db, org, lambda tx: tx.fetchval(restamp.APPLESS_PARENT, org))
+    assert await run_in(pg_db, org, lambda tx: tx.fetchval(restamp.APPLESS_PARENT, org, restamp.APPLESS_SCAN))
     await share(p, org)
     await drain_org(pg_db, org)
     assert {(j.kind, j.reason) for j in await jobs(pg_db, org)} == {("rows", "reach")}
@@ -304,4 +308,52 @@ async def test_a_mark_on_an_apps_row_does_not_hold_the_job_or_its_connector(pg_d
         await KgWriter(tx).fence_rows([(r["sk"], r["coll"], r["id"], r["kind"])], job.id)
     await run_in(pg_db, org, mark, write=True)
     assert await restamp.run_jobs(pg_db, org, "w1", batch=50) == 1
+    await settled(p, pg_db, org, ids, {"u1": set(ids), "u2": set()})
+
+
+async def loose_records(p, pg_db, org: str, n: int) -> None:
+    """``n`` records of no connector, none with a child, drained into kg."""
+    with ctx(org):
+        await p.batch_upsert_nodes([{"_key": f"loose{i}", "recordName": f"loose{i}", "orgId": org, "recordType": "FILE", "origin": "UPLOAD"} for i in range(n)], "records")
+    await drain_org(pg_db, org)
+    await restamp.run_jobs(pg_db, org, "w0", batch=500)
+
+
+async def appless_rows_read(pg_db, org: str) -> float:
+    """The rows of no connector the check reads (EXPLAIN ANALYZE of it as the unit runs it, under reader.seeks)."""
+    async def go(tx) -> float:
+        async with seeks(tx):
+            ran = await tx.fetchval("EXPLAIN (ANALYZE, FORMAT JSON) " + restamp.APPLESS_PARENT, org, restamp.APPLESS_SCAN)
+        plan = (json.loads(ran) if isinstance(ran, str) else ran)[0]
+        return sum(n.get("Actual Rows", 0) * n.get("Actual Loops", 1) for n in plan_gate.scans(plan, ("records",)) if n.get("Index Name") == "records_app")
+    with ctx(org):
+        return await pg_db.run(go, custom_plan=True)
+
+
+async def test_the_check_for_rows_of_no_connector_reads_a_bounded_number_of_them_and_takes_the_safe_path_beyond(pg_db, small, monkeypatch) -> None:
+    """Many records of no connector and none with a child: the check reads at most ``APPLESS_SCAN`` + 1 of them, whatever their number (it ran once per row of no connector in
+    the organisation, in the writer's unit, and again on every retry). When there are more than that it cannot tell, so it takes the path that is always exact: the reach is
+    found whole in the unit and hidden row by row."""
+    monkeypatch.setattr(restamp, "APPLESS_SCAN", 20)
+    p, org = prov(pg_db), new_org()
+    ids = await world(p, pg_db, org)
+    await loose_records(p, pg_db, org, 120)
+    assert await appless_rows_read(pg_db, org) <= 21
+    await share(p, org)
+    await drain_org(pg_db, org)
+    assert {(j.kind, j.reason) for j in await jobs(pg_db, org)} == {("rows", "reach")}
+    await restamp.run_jobs(pg_db, org, "w1", batch=50)
+    await settled(p, pg_db, org, ids, {"u1": set(ids), "u2": set()})
+
+
+async def test_a_few_rows_of_no_connector_without_children_keep_the_subtree_job(pg_db, small, monkeypatch) -> None:
+    """Up to ``APPLESS_SCAN`` records of no connector, none with a child: nothing hangs below them, so hiding the connector whole hides the whole reach and the job walks it."""
+    monkeypatch.setattr(restamp, "APPLESS_SCAN", 20)
+    p, org = prov(pg_db), new_org()
+    ids = await world(p, pg_db, org)
+    await loose_records(p, pg_db, org, 20)
+    await share(p, org)
+    await drain_org(pg_db, org)
+    assert [(j.kind, j.reason) for j in await jobs(pg_db, org)] == [("app", restamp.SUBTREE)]
+    await restamp.run_jobs(pg_db, org, "w1", batch=50)
     await settled(p, pg_db, org, ids, {"u1": set(ids), "u2": set()})

@@ -186,18 +186,23 @@ async def enqueue_rows(tx: Tx, org: str, keys: set[Key], reason: str, *, skip_ap
 HIDE_READ = """/* pipeshub:kg.hide_subtree_read */ SELECT r.sk, r.coll, r.id, r.kind, r.app_sk, r.fence_job, coalesce(s.cross_app, false) AS cross_app FROM unnest($2::bigint[]) AS q(sk)
     CROSS JOIN LATERAL (SELECT * FROM (SELECT * FROM kg.records x WHERE x.org_id = $1 AND x.sk >= q.sk ORDER BY x.sk LIMIT 1) x WHERE x.sk = q.sk OFFSET 0) r
     LEFT JOIN kg.projection_state s ON s.org_id = r.org_id AND s.app_sk = r.app_sk"""
-# Is there a row of no connector that kg holds a child of? No connector's fence hides what is below it.
-APPLESS_PARENT = """/* pipeshub:kg.appless_parent */ SELECT EXISTS (SELECT 1 FROM kg.records r WHERE r.org_id = $1 AND r.app_sk IS NULL AND (
+# Could a row of no connector hide something below it from a fence by connector? True when one of the first $2 + 1 rows of no connector (records_app in its order) has a child
+# in kg, or there are more than $2 of them: the check reads at most $2 + 1 rows and three seeks each, whatever their number, and when it cannot tell it says so.
+APPLESS_PARENT = """/* pipeshub:kg.appless_parent */ SELECT count(*) > $2 OR coalesce(bool_or(
       EXISTS (SELECT 1 FROM kg.records c WHERE c.org_id = $1 AND c.parent_sk >= r.sk AND c.parent_sk <= r.sk)
       OR EXISTS (SELECT 1 FROM kg.records c WHERE c.org_id = $1 AND c.group_sk >= r.sk AND c.group_sk <= r.sk)
-      OR EXISTS (SELECT 1 FROM kg.links l WHERE l.org_id = $1 AND l.parent_sk >= r.sk AND l.parent_sk <= r.sk)))"""
+      OR EXISTS (SELECT 1 FROM kg.links l WHERE l.org_id = $1 AND l.parent_sk >= r.sk AND l.parent_sk <= r.sk)), false)
+    FROM (SELECT r.sk FROM kg.records r WHERE r.org_id = $1 AND r.app_sk IS NULL ORDER BY r.app_sk, r.sk LIMIT $2 + 1) r"""
+# shortcut: an org with more rows of no connector than this finds a large reach whole in the unit (exact, as before this job existed); keep a sticky per-org flag of "a row
+# of no connector has a child", written by the projection like cross_app, if such orgs are seen with large reaches
+APPLESS_SCAN = 10_000
 
 
 async def enqueue_subtree(tx: Tx, org: str, keys: set[Key], *, skip_apps: frozenset[int] = frozenset(), locked: set[str] | None = None, org_wide: bool = False) -> int | None:
     """Hide whole the connectors of the records of ``keys`` that kg holds, mark those records, and queue the walk below them (in the caller's unit): one job of kind ``app`` and
     reason :data:`SUBTREE` per connector, or the one it already has, sent back to the start of its walk. Returns how many rows were marked, or None, having written nothing, when
-    hiding the connectors whole would not hide everything below the marks: a row of no connector among them or with a child in kg, or a connector that links records to another
-    connector's (the walk would reach rows of connectors that are not hidden). ``skip_apps``: connectors (their sks) hidden whole by a job of their own.
+    hiding the connectors whole would not hide everything below the marks, or the check cannot tell (:data:`APPLESS_PARENT`): a row of no connector among them or with a child
+    in kg, or a connector that links records to another connector's (the walk would reach rows of connectors that are not hidden). ``skip_apps``: connectors (their sks) hidden whole by a job of their own.
 
     The marks are rows of their connectors: as in :func:`enqueue_rows`, the unit must hold their locks (``locked``, unless ``org_wide``) or :class:`NeedLocks` is raised first."""
     sk_of = await load_sks(tx, org, {k for k in keys if k[0] in COLL_CODE})
@@ -206,7 +211,7 @@ async def enqueue_subtree(tx: Tx, org: str, keys: set[Key], *, skip_apps: frozen
     async with seeks(tx):                  # each row by its key, each row of no connector by records_app and its children by their indexes, whatever the statistics
         for i in range(0, len(sks), CAP):
             rows += await tx.fetch(HIDE_READ, org, sks[i:i + CAP])
-        if any(r["app_sk"] is None or r["cross_app"] for r in rows) or await tx.fetchval(APPLESS_PARENT, org):
+        if any(r["app_sk"] is None or r["cross_app"] for r in rows) or await tx.fetchval(APPLESS_PARENT, org, APPLESS_SCAN):
             return None
     by_app: dict[int, list] = {}
     for r in rows:
