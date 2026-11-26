@@ -30,6 +30,7 @@ from app.connectors.core.base.token_service.oauth_service import RefreshTokenInv
 from app.connectors.core.base.error.stream_errors import extract_source_status
 from app.sources.client.github.github import GitHubResponse
 from app.utils.credential_refresh_log import EVENT_CHECK_FAILED, log_refresh_failure
+from app.utils.error_class import classify_error
 
 from .constants import (
     GITHUB_SEARCH_CONCURRENCY,
@@ -58,6 +59,7 @@ class RefreshOutcome(str, Enum):
     REFRESHED = "refreshed"
     CANNOT_REFRESH = "cannot_refresh"  # an API token, or no refresh token stored
     REJECTED = "rejected"  # GitHub rejected the refresh token
+    CLIENT_REJECTED = "client_rejected"  # GitHub refused the OAuth app itself: its settings need fixing, not the sign-in
     UNAVAILABLE = "unavailable"  # the refresh could not be tried or failed for a passing reason
 
     @property
@@ -245,6 +247,14 @@ class RuntimeHelper:
             return RefreshOutcome.REFRESHED
         except RefreshTokenInvalidError as e:
             log_refresh_failure(self.logger, EVENT_CHECK_FAILED, e)
+            # A refused OAuth client (invalid_client, incorrect_client_credentials, ...) raises the same error as a
+            # dead refresh token, but signing in again through the same app cannot fix it.
+            if classify_error(e) == "misconfigured":
+                self.logger.error(
+                    "GitHub refused this connector's OAuth app (client ID or secret) when refreshing the token; "
+                    "fix the OAuth app in the connector's settings."
+                )
+                return RefreshOutcome.CLIENT_REJECTED
             return RefreshOutcome.REJECTED
         except Exception as e:
             log_refresh_failure(self.logger, EVENT_CHECK_FAILED, e)

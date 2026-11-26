@@ -9,12 +9,13 @@ import pytest
 
 from app.connectors.core.base.connector.connector_service import ConnectorInitError
 from app.connectors.core.base.token_service.oauth_service import (
+    OAuthTokenRequestError,
     RefreshTokenInvalidError,
 )
 from app.connectors.sources.github.connector import GithubConnector
 from app.connectors.sources.github_teams.connector import GitHubTeamsConnector
 from app.connectors.sources.github_teams.constants import _GITHUB_MAX_RETRIES
-from app.connectors.sources.github_teams.runtime import RuntimeHelper
+from app.connectors.sources.github_teams.runtime import RefreshOutcome, RuntimeHelper
 from app.connectors.sources.github_teams.users import UsersSync
 from app.services.notification.types import NotificationType
 from app.sources.client.github.github import GitHubResponse
@@ -68,11 +69,39 @@ async def test_a_refused_api_token_is_refused_even_without_the_refresh_service()
     assert runtime.sign_in_refused is True
 
 
-async def test_a_rejected_refresh_token_is_a_refused_sign_in() -> None:
+def _refused_by_token_endpoint(code: str) -> RefreshTokenInvalidError:
+    """As refresh_access_token raises it: the token endpoint's refusal, with its OAuth code, is the cause."""
+    try:
+        raise RefreshTokenInvalidError(f"refused ({code})") from OAuthTokenRequestError("refused", status=200, error_code=code)
+    except RefreshTokenInvalidError as e:
+        return e
+
+
+@pytest.mark.parametrize("error", [
+    RefreshTokenInvalidError("invalid_grant"),
+    _refused_by_token_endpoint("bad_refresh_token"),
+    _refused_by_token_endpoint("invalid_grant"),
+], ids=["no-cause", "bad_refresh_token", "invalid_grant"])
+async def test_a_rejected_refresh_token_is_a_refused_sign_in(error: RefreshTokenInvalidError) -> None:
     _c, runtime = _runtime({"auth": {"authType": "OAUTH"}, "credentials": {"refresh_token": "r"}})
-    rejected = MagicMock(refresh_now=AsyncMock(side_effect=RefreshTokenInvalidError("invalid_grant")))
+    rejected = MagicMock(refresh_now=AsyncMock(side_effect=error))
     await _call(runtime, REFUSED, service=rejected)
     assert runtime.sign_in_refused is True
+
+
+@pytest.mark.parametrize("code", ["invalid_client", "unauthorized_client", "incorrect_client_credentials"])
+async def test_a_refused_oauth_app_is_not_a_refused_sign_in(code: str) -> None:
+    """Reconnecting with the same OAuth app cannot help: its client ID or secret has to be fixed."""
+    c, runtime = _runtime({"auth": {"authType": "OAUTH"}, "credentials": {"refresh_token": "r"}})
+    refused_app = MagicMock(refresh_now=AsyncMock(side_effect=_refused_by_token_endpoint(code)))
+
+    with patch(_SERVICE, return_value=refused_app):
+        assert await runtime.force_refresh_oauth_token() is RefreshOutcome.CLIENT_REJECTED
+    answer = await _call(runtime, REFUSED, service=refused_app)
+
+    assert answer is REFUSED
+    assert runtime.sign_in_refused is False
+    assert "OAuth app" in _logged(c)
 
 
 @pytest.mark.parametrize("service", [
