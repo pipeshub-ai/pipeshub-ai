@@ -37,6 +37,12 @@ if str(_BACKEND_PYTHON) not in sys.path:
 
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
+# The tests read the stack's stores through the providers directly (graph_provider, filter_accessible_record_ids), with no
+# request, message or job binding an org, so in enforce mode every such read is refused (MissingOrgContext). They keep shadow
+# mode in this process, as backend/python/tests/integration does since enforce became the default (#6412). The stack under
+# test runs in its own containers and is not affected.
+os.environ.setdefault("ORG_CONTEXT_MODE", "shadow")
+
 # Import after backend path is added to sys.path
 from helper.config_service_fixture import config_service  # noqa: F401, E402
 
