@@ -29,8 +29,8 @@ def _alive(pid: int) -> bool:
     try:
         with open(f"/proc/{pid}/stat") as fh:
             return fh.read().split(")")[-1].split()[0] != "Z"
-    except OSError:
-        return True
+    except (FileNotFoundError, ProcessLookupError):  # reaped between the kill(0) and the read
+        return False
 
 
 async def _eventually(predicate, timeout_s: float) -> bool:
