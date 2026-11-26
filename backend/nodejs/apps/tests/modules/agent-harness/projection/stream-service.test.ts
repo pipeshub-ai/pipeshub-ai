@@ -1,4 +1,5 @@
 import { expect } from 'chai';
+import sinon from 'sinon';
 import { InMemoryJournalTail } from '../../../../src/modules/agent-harness/adapters/in-memory-journal-tail';
 import { InMemoryPayloadStore } from '../../../../src/modules/agent-harness/adapters/in-memory-journal-store';
 import { InMemoryLiveBus } from '../../../../src/modules/agent-harness/adapters/in-memory-live-bus';
@@ -14,6 +15,9 @@ import { parseStreamId } from '../../../../src/modules/agent-harness/projection/
 import { GoldenJournal, liveSteps, normalizeFrames, parseSse, project, readJournal, rechunked } from '../../../contracts/support/durable';
 import { testCipher } from '../support/data-protection';
 import { InMemoryRecordReadAccess } from '../../../../src/modules/agent-harness/adapters/in-memory-record-access';
+import { RunConversationView } from '../../../../src/modules/agent-harness/ports/conversation-reader';
+import { redactRunConversationFor } from '../../../../src/modules/enterprise_search/utils/utils';
+import { AIServiceCommand } from '../../../../src/libs/commands/ai_service/ai.service.command';
 import { SharedCitationService } from '../../../../src/modules/agent-harness/application/shared-citations';
 import { InMemoryArtifactReadAccess } from '../../../../src/modules/agent-harness/adapters/in-memory-artifact-access';
 import { SharedArtifactService } from '../../../../src/modules/agent-harness/application/shared-artifacts';
@@ -73,6 +77,10 @@ class World {
   readonly records = new InMemoryRecordReadAccess();
   readonly artifacts = new InMemoryArtifactReadAccess();
   conversationReads = 0;
+  /** The finished conversation as stored, when a test says what it holds. */
+  stored: Record<string, unknown> | undefined;
+  /** What the watcher may read of the finished conversation: all of it, unless a test says otherwise. */
+  view: RunConversationView = (_viewer, conversation) => Promise.resolve(conversation);
   /** Journal events a Node's service was handed that it had not been handed before, summed over the Nodes. */
   eventsRead = 0;
   /** Events handed again to a Node that had them: at most its last one, a read (the reader's erasure check). */
@@ -130,12 +138,15 @@ class World {
           finishedConversation: () => {
             this.conversationReads += 1;
             return Promise.resolve(
-              conversationCited === null
-                ? { _id: recorded.sessionId, title: recorded.query, messages: [] }
-                : finishedConversation(recorded.sessionId, conversationCited),
+              this.stored ?? {
+                title: recorded.query,
+                ...finishedConversation(recorded.sessionId, conversationCited ?? [], recorded.runId),
+                initiator: 'user-1',
+              },
             );
           },
         },
+        conversationView: (viewer, conversation, opts) => this.view(viewer, conversation, opts),
         liveBus: liveBus ? this.bus : null,
         logger: this.log.logger,
         sharedCitations: new SharedCitationService(this.records, this.log.logger),
@@ -631,7 +642,7 @@ describe('agent-harness projection: RunStreamService', () => {
   it('L-7: a shared viewer\'s stream carries no tool arguments, results or narration', async () => {
     const world = new World('agent_artifact_marker_answer');
     const sink = new Sink();
-    const handle = world.service.open({ run: world.run, audience: 'shared' }, sink);
+    const handle = world.service.open({ run: world.run, audience: 'shared', viewerId: 'user-2' }, sink);
     await world.runWorker();
     await handle.done;
     expect(sink.body).to.not.include('TOOL_CALL');
@@ -647,6 +658,7 @@ describe('agent-harness projection: RunStreamService', () => {
     const shared = (world: World, extra: Record<string, unknown> = {}) => ({
       run: world.run,
       audience: 'shared' as const,
+      viewerId: 'user-2',
       authorization: 'Bearer viewer',
       requestId: 'req-share',
       ...extra,
@@ -761,10 +773,181 @@ describe('agent-harness projection: RunStreamService', () => {
     });
   });
 
+  describe('a run watched by someone else shows its answer only when every record behind it is theirs to read', () => {
+    const NOTICE = "This answer uses sources you don't have access to.";
+    const TOOL = 'TOOL-OUTPUT';
+    const FILE = '33333333-3333-4333-8333-333333333333';
+    const appConfig = { aiBackend: 'http://localhost:8000', jwtSecret: 'x'.repeat(32), scopedJwtSecret: 'y'.repeat(32) } as never;
+    const OTHER = 'Other answer about the board';
+    const conversation = (world: World, over: { question?: object; answer?: object; before?: object[] } = {}): Record<string, unknown> => ({
+      _id: world.run.sessionId,
+      initiator: 'user-1',
+      sharedWith: [{ userId: 'user-2' }, { userId: 'user-3' }],
+      compactedSummary: 'SUMMARY-of-everything',
+      messages: [
+        ...(over.before ?? []),
+        { messageType: 'user_query', content: 'q', ...over.question },
+        {
+          messageType: 'bot_response',
+          runId: world.run.runId,
+          content: 'STORED answer',
+          reasoning: [{ content: TOOL }],
+          tools: [{ toolName: 'read', toolResult: TOOL }],
+          parts: [
+            { type: 'text', content: `narration ${TOOL}` },
+            { type: 'tool_call', resultPreview: TOOL },
+            { type: 'text', content: 'STORED answer', isFinal: true },
+          ],
+          notFound: { subject: 's', hits: 0, line: 'l', near: [TOOL] },
+          ...over.answer,
+        },
+      ],
+    });
+    const readable = (ids: string[] | null): void => {
+      sinon.stub(AIServiceCommand.prototype, 'execute').callsFake(() =>
+        ids === null
+          ? Promise.reject(new Error('down'))
+          : Promise.resolve({ statusCode: 200, data: { accessible: ids, accessibleUrls: [], unmatchedUrls: [] }, msg: '' } as never),
+      );
+    };
+    const watch = async (
+      world: World,
+      stored: Record<string, unknown>,
+      request: Partial<Parameters<RunStreamService['open']>[0]> = {},
+    ): Promise<Sink> => {
+      world.stored = stored;
+      world.view = (viewer, read, opts) => redactRunConversationFor(appConfig, viewer, read, opts);
+      const sink = new Sink();
+      const handle = world.service.open(
+        { run: world.run, audience: 'shared', viewerId: 'user-2', authorization: 'Bearer viewer', ...request },
+        sink,
+      );
+      await world.runWorker();
+      await handle.done;
+      return sink;
+    };
+    const answerOf = async (world: World): Promise<string> => {
+      const sink = new Sink();
+      await world.service.open({ run: world.run, audience: 'owner' }, sink).done;
+      const snapshot = sink.frames().filter((f) => f.type === 'STATE_SNAPSHOT').map((f) => f['snapshot'] as Record<string, unknown>);
+      return String(snapshot.find((s) => s['final'] === true)!['answer']);
+    };
+    afterEach(() => sinon.restore());
+
+    it('withheld: no answer text, citation, step or earlier answer reaches the viewer', async () => {
+      const world = new World('agent_quick_tool_call');
+      readable([]);
+      const stored = conversation(world, {
+        question: { attachments: [{ recordId: FILE, recordName: 'secret.pdf' }] },
+        before: [
+          { messageType: 'user_query', content: 'before' },
+          { messageType: 'bot_response', content: OTHER, citations: [{ citationId: 'c', citationData: { content: OTHER, metadata: { recordId: FILE } } }] },
+        ],
+      });
+      const sink = await watch(world, stored);
+      const answer = await answerOf(world);
+
+      expect(answer.length).to.be.greaterThan(0);
+      for (const leaked of [JSON.stringify(answer).slice(1, -1), 'STORED answer', TOOL, OTHER, 'secret.pdf', FILE, 'SUMMARY-of-everything', 'user-3'])
+        expect(sink.body, leaked).to.not.include(leaked);
+      expect(sink.body).to.include(NOTICE);
+      const deltas = sink.frames().filter((f) => f.type === 'STATE_DELTA').flatMap((f) => f['delta'] as Array<{ path: string; value: unknown }>);
+      expect([...new Set(deltas.filter((op) => op.path === '/normalizedAnswer').map((op) => op.value))]).to.deep.equal([NOTICE]);
+      expect(sink.frames().at(-1)!.type).to.equal('RUN_FINISHED');
+    });
+
+    it('before the run ends, and its access is decided, no answer text is sent', async () => {
+      const world = new World('agent_quick_tool_call');
+      readable([]);
+      world.stored = conversation(world);
+      world.view = (viewer, read, opts) => redactRunConversationFor(appConfig, viewer, read, opts);
+      const sink = new Sink();
+      const handle = world.service.open({ run: world.run, audience: 'shared', viewerId: 'user-2', authorization: 'Bearer viewer' }, sink);
+      const end = world.journal.events.filter((e) => e.runId === world.run.runId && e.type.startsWith('run.')).at(-1)!.seq;
+      world.commit(end - 1);
+      await settle();
+      expect(sink.body).to.not.include('/normalizedAnswer');
+      world.commit(Number.MAX_SAFE_INTEGER);
+      await handle.done;
+      expect(sink.body).to.include(JSON.stringify(await answerOf(world)).slice(1, -1));
+    });
+
+    it('a failed access check withholds it, whatever it cites', async () => {
+      const world = new World('agent_quick_tool_call');
+      readable(null);
+      const sink = await watch(world, conversation(world, { question: { attachments: [{ recordId: FILE }] } }));
+      expect(sink.body).to.include(NOTICE);
+      expect(sink.body).to.not.include('STORED answer');
+    });
+
+    it('a citation check that cannot be made withholds it even when it cites nothing', async () => {
+      const world = new World('agent_quick_tool_call');
+      readable([]);
+      world.records.failWith = 'unavailable';
+      const sink = await watch(world, conversation(world, {
+        before: [
+          { messageType: 'user_query', content: 'before' },
+          { messageType: 'bot_response', content: OTHER, citations: [{ citationId: 'c', citationData: recordCitation('rec-open', 1) }] },
+        ],
+      }));
+      expect(sink.body).to.include(NOTICE);
+      for (const leaked of ['STORED answer', OTHER, 'NAME-rec-open']) expect(sink.body, leaked).to.not.include(leaked);
+    });
+
+    it('every source readable: the answer is shown, without reasoning, tool steps or narration', async () => {
+      const world = new World('agent_quick_tool_call');
+      readable([FILE]);
+      const sink = await watch(world, conversation(world, { question: { attachments: [{ recordId: FILE }] } }));
+      expect(sink.body).to.include(JSON.stringify(await answerOf(world)).slice(1, -1));
+      expect(sink.body).to.include('STORED answer');
+      expect(sink.body).to.not.include(NOTICE);
+      expect(sink.body).to.not.include(TOOL);
+    });
+
+    it('a viewer nobody named, or a run whose stored answer is gone, reads no answer', async () => {
+      for (const [request, rows] of [[{ viewerId: undefined }, undefined], [{}, []]] as const) {
+        const world = new World('agent_quick_tool_call');
+        const stored = conversation(world);
+        const sink = await watch(world, rows === undefined ? stored : { ...stored, messages: [...rows] }, request);
+        expect(sink.body).to.include(NOTICE);
+        expect(sink.body).to.not.include('STORED answer');
+        sinon.restore();
+      }
+    });
+
+    it("a collaborator's own run ends with their answer whole and the owner's turns as a viewer reads them", async () => {
+      const world = new World('agent_quick_tool_call');
+      readable([]);
+      world.run.actorId = 'user-2';
+      const stored = conversation(world, {
+        question: { senderId: 'user-2' },
+        answer: { senderId: 'user-2', content: 'MY answer', tools: [{ toolName: 'read', toolResult: 'MY-STEP' }] },
+        before: [
+          { messageType: 'user_query', content: 'before' },
+          { messageType: 'bot_response', content: OTHER, tools: [{ toolResult: TOOL }], citations: [{ citationId: 'c', citationData: { content: OTHER, metadata: { recordId: FILE } } }] },
+        ],
+      });
+      const sink = await watch(world, stored, { audience: 'owner' });
+      const last = JSON.stringify(sink.frames().at(-1));
+      expect(last).to.include('MY answer').and.to.include('MY-STEP');
+      for (const leaked of [OTHER, FILE, 'SUMMARY-of-everything', 'user-3']) expect(last, leaked).to.not.include(leaked);
+    });
+
+    it('someone whose own turns are all there is gets the conversation as stored, and no check is made', async () => {
+      const world = new World('agent_quick_tool_call');
+      const execute = sinon.stub(AIServiceCommand.prototype, 'execute').rejects(new Error('asked'));
+      const sink = await watch(world, conversation(world, { question: { attachments: [{ recordId: FILE }] } }), { audience: 'owner' });
+      sinon.assert.notCalled(execute);
+      const last = JSON.stringify(sink.frames().at(-1));
+      for (const kept of ['STORED answer', TOOL, 'SUMMARY-of-everything']) expect(last).to.include(kept);
+    });
+  });
+
   describe('SS0: artifacts reach a shared viewer only when their sources are readable to them', () => {
     const shared = (world: World) => ({
       run: world.run,
       audience: 'shared' as const,
+      viewerId: 'user-2',
       authorization: 'Bearer viewer',
       requestId: 'req-share',
     });

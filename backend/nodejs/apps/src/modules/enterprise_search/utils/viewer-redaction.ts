@@ -16,8 +16,16 @@
  * attachment, reference data, applied filter, search hit) in another user's
  * messages loses its id, name, link and text and shows as a placeholder.
  * A saved search of the viewer's own passes through.
+ *
+ * Another user's answers and tool rows never show a viewer their reasoning,
+ * tool steps or tool results, even when the answer is shown: those can name
+ * records the answer never cited, and carry no record ids to check them by.
+ * Only the answer text of the activity transcript reaches them, never what the
+ * model wrote between its steps. In a shared conversation a message belongs to
+ * who sent it (`messageActor`): a collaborator keeps the steps of their own turns.
  */
 import { withheldCitation } from '../../agent-harness/projection/citation-access';
+import { sharedNotFound } from '../../agent-harness/projection/audiences';
 import { LIVE_RECORD_ID_PREFIX } from '../../agent-harness/projection/citation-source';
 import { AuthTokenService } from '../../../libs/services/authtoken.service';
 import { TokenScopes } from '../../../libs/enums/token-scopes.enum';
@@ -207,15 +215,33 @@ interface RefEntry {
   webUrl?: string;
   metadata?: { recordId?: string } | Map<string, string>;
 }
+/** An entry of an answer's activity transcript: text, reasoning, a tool call, a delegate's own timeline. */
+interface PartEntry {
+  type?: string;
+  isFinal?: boolean;
+  notFound?: unknown;
+}
 export interface ViewerMessage {
   _id?: unknown;
   messageType?: string;
   content?: string;
+  senderId?: { toString(): string } | null;
+  runId?: string;
+  reasoning?: unknown[];
+  tools?: unknown[];
+  parts?: Array<PartEntry | null>;
+  notFound?: unknown;
   citations?: Array<CitationEntry | null>;
   attachments?: Array<AttachmentEntry | null>;
   referenceData?: Array<RefEntry | null>;
   appliedFilters?: object;
 }
+/** Whose turn a message is: its sender's, or the conversation's owner's when it names none. */
+export const messageActor = (message: unknown, owner: string): string => {
+  // An ObjectId as Mongo stores it, or its hex string.
+  const sender = (message as ViewerMessage | null)?.senderId;
+  return sender === undefined || sender === null ? owner : sender.toString();
+};
 export interface ViewerSearch {
   userId?: unknown;
   citationIds?: unknown[];
@@ -309,6 +335,8 @@ export interface RedactOptions<M> {
    * address, as on any other message.
    */
   citationsDecided?: (message: M) => boolean;
+  /** The harness's check could not be made: another person's answers are unconfirmed, as when this one's cannot. */
+  checkFailed?: boolean;
 }
 
 // A classified failure is stored as the turn's answer with type `error`, and still carries what it said.
@@ -342,6 +370,9 @@ const hiddenAnswer = (
   appliedFilters: undefined,
   metadata: undefined,
   confidence: undefined,
+  notFound: undefined,
+  limits: undefined,
+  runOutcome: undefined,
   answerHidden: { ...marker },
 });
 
@@ -535,7 +566,9 @@ export const redactMessagesFor = async <M extends ViewerMessage>(
     if (v !== null) return v;
     const unconfirmed =
       unreadTurn(t) ||
-      (readable.failed === true && isOthers(m) && fresh?.(m) !== true);
+      ((readable.failed === true || opts.checkFailed === true) &&
+        isOthers(m) &&
+        fresh?.(m) !== true);
     return unconfirmed ? ANSWER_UNCONFIRMED : null;
   });
   const turnVerdict = new Map<number, HiddenMarker>();
@@ -583,6 +616,20 @@ export const redactMessagesFor = async <M extends ViewerMessage>(
           ]),
         ),
       };
+    if (m.messageType !== 'user_query') {
+      if ('reasoning' in view) view.reasoning = [];
+      if ('tools' in view) view.tools = [];
+      if (m.messageType === 'tool_call') view.content = '';
+      if (m.parts)
+        view.parts = m.parts
+          .filter((part) => part?.type === 'text' && part.isFinal === true)
+          .map((part) =>
+            part && 'notFound' in part
+              ? { ...part, notFound: sharedNotFound(part.notFound) }
+              : part,
+          );
+      if (m.notFound !== undefined) view.notFound = sharedNotFound(m.notFound);
+    }
     return view as M;
   });
 };
@@ -631,7 +678,7 @@ export const redactConversationFor = async <C extends { messages?: unknown }>(
       appConfig,
       viewer,
       conversation.messages as ViewerMessage[],
-      () => viewer.userId,
+      (m) => messageActor(m, viewer.userId),
       {
         known: opts.known,
         fresh: (m) =>

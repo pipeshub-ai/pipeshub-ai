@@ -15,7 +15,13 @@ import {
   ownerHistoryTurns,
 } from '../../agent-harness/domain/session-audience';
 import type { AppConfig } from '../../tokens_manager/config/config';
-import { redactConversationFor, viewerOf } from './viewer-redaction';
+import {
+  messageActor,
+  redactConversationFor,
+  redactMessagesFor,
+  viewerOf,
+  type ViewerMessage,
+} from './viewer-redaction';
 import {
   AIServiceResponse,
   IAIModel,
@@ -482,6 +488,38 @@ export const withoutOwnerOnlyFields = <T extends object>(
     ...visible
   } = conversation as Record<string, unknown>;
   return visible as T;
+};
+
+/**
+ * The conversation the stream of a run ends with, as the person watching it may
+ * read it: whole for someone whose own turns are all there is, else with the
+ * hiding a fetch applies and, for anyone but the conversation's owner, without
+ * the owner-only fields. `ownAnswer`: the watcher's own run just produced it.
+ */
+export const redactRunConversationFor = async (
+  appConfig: AppConfig,
+  viewer: ReturnType<typeof viewerOf>,
+  conversation: Record<string, unknown>,
+  opts: {
+    ownAnswer?: string;
+    citationsDecided: boolean;
+    checkFailed: boolean;
+  },
+): Promise<Record<string, unknown>> => {
+  const owner = String(conversation.initiator);
+  const messages = (conversation.messages ?? []) as ViewerMessage[];
+  const ownerOf = (m: ViewerMessage): string => messageActor(m, owner);
+  if (messages.every((m) => ownerOf(m) === viewer.userId)) return conversation;
+  return {
+    ...(owner === viewer.userId
+      ? conversation
+      : { ...withoutOwnerOnlyFields(conversation), sharedWith: undefined }),
+    messages: await redactMessagesFor(appConfig, viewer, messages, ownerOf, {
+      fresh: (m) => opts.ownAnswer !== undefined && m.runId === opts.ownAnswer,
+      ...(opts.citationsDecided && { citationsDecided: () => true }),
+      checkFailed: opts.checkFailed,
+    }),
+  };
 };
 
 export const attachMessages = (session: any, messages: any[]): any => {

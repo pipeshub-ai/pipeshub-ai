@@ -3,6 +3,7 @@ import { expect } from 'chai'
 import sinon from 'sinon'
 import { Types } from 'mongoose'
 import { REDACTED, readableRecordIds, historyForModel, viewerOf, newReadable, redactMessagesFor, redactConversationFor } from '../../../../src/modules/enterprise_search/utils/viewer-redaction'
+import { CitationAccess } from '../../../../src/modules/agent-harness/projection/citation-access'
 import { addComputedFields, formatPreviousConversations } from '../../../../src/modules/enterprise_search/utils/utils'
 import {
   searchArchivedConversations,
@@ -101,10 +102,11 @@ const richAnswer = () => ({
   },
   followUpQuestions: [{ question: 'And the budget?', confidence: 'High' }],
   parts: [
-    { type: 'text', content: 'visible answer text' },
+    { type: 'text', content: 'visible answer text', isFinal: true },
     { type: 'reasoning', content: 'thinking prose' },
     { type: 'tool_call', toolName: 'read', status: 'completed', args: `{"record_id":"${R_NO}"}`, resultPreview: `{"id":"${R_NO}","title":"${TOOL_TEXT}"}`, resultSummary: TOOL_TEXT, resultView: { rows: [{ id: R_NO, name: TOOL_TEXT }] }, artifactId: R_NO },
     { type: 'sub_agent', roleName: 'worker', parts: [{ type: 'tool_call', toolName: 'read', resultPreview: TOOL_TEXT }] },
+    { type: 'text', content: 'narration between steps' },
   ],
 })
 
@@ -116,7 +118,7 @@ const expectRecordsOnlyRedacted = (message: any, readableToo = true, artifactsCh
   expect(message.content).to.equal('The answer [1][2]')
   expect(message.reasoning).to.deep.equal([{ content: 'I looked at the pages' }])
   expect(message.followUpQuestions).to.have.length(1)
-  expect(message.parts[0]).to.deep.equal({ type: 'text', content: 'visible answer text' })
+  expect(message.parts[0]).to.deep.equal({ type: 'text', content: 'visible answer text', isFinal: true })
   expect(message.parts[1]).to.deep.equal({ type: 'reasoning', content: 'thinking prose' })
   const hidden = { redacted: true, reason: 'no_access', name: 'Restricted source' }
   expect(message.referenceData[1]).to.deep.equal(hidden)
@@ -1171,5 +1173,159 @@ describe('a web page a search cited is judged by its address, never as a lost re
     expect(history[1].content).to.equal('Compared from the web and the FAQ [1][2][3]')
     const final: any = await redactConversationFor(appConfig, viewer, { messages: stored })
     expect(final.messages[1].answerHidden).to.equal(undefined)
+  })
+})
+
+describe("a viewer never sees another person's reasoning or tool steps", () => {
+  afterEach(() => sinon.restore())
+  const ALL = ['rec-ok', 'rec-no', 'att-ok', 'att-no', R_OK, R_NO, 'app-ok-not-checked', 'https://x/ok', SECRET_URL]
+  const unconfirmed = { redacted: true, reason: 'access_check_unavailable' }
+  const COLLABORATOR = '999999999999999999999999'
+  const HIDDEN = [TOOL_TEXT, 'thinking prose', 'I looked at the pages', 'narration between steps']
+  const fetchRows = async (userId: string) => {
+    const r = res()
+    await getConversationById(appConfig)(req(userId, { params: { conversationId: SESSION } }), r, sinon.stub() as any)
+    return r.json.firstCall.args[0].conversation.messages as any[]
+  }
+
+  it('an answer whose every source is readable stays, without reasoning or tool steps', async () => {
+    stubAccess(ALL)
+    stubConversation([{ ...richAnswer(), notFound: { subject: 'x', hits: 0, line: 'l', near: [TOOL_TEXT] } }])
+    const message = await fetchConversation(VIEWER)
+
+    expect(message.answerHidden).to.equal(undefined)
+    expect(message.content).to.equal('The answer [1][2]')
+    expect(message.followUpQuestions).to.have.length(1)
+    expect(message.reasoning).to.deep.equal([])
+    expect(message.tools).to.deep.equal([])
+    expect(message.notFound).to.deep.equal({ subject: 'x', hits: 0, line: 'l' })
+    // Tool output can name records the answer never cited, and so can what the model said between its steps.
+    expect(message.parts).to.deep.equal([{ type: 'text', content: 'visible answer text', isFinal: true }])
+    for (const leaked of HIDDEN) expect(JSON.stringify(message), leaked).to.not.contain(leaked)
+  })
+
+  it('the owner still gets reasoning and tool steps of their own answer', async () => {
+    stubAccess(ALL)
+    stubConversation([richAnswer()])
+    const message = await fetchConversation(OWNER)
+    expect(message.reasoning).to.have.length(1)
+    expect(message.tools).to.deep.equal(richAnswer().tools)
+    expect(message.parts).to.deep.equal(richAnswer().parts)
+  })
+
+  it('an agent conversation and the archive list drop them too', async () => {
+    stubAccess(ALL)
+    stubConversation([richAnswer()])
+    const r = res()
+    await getAgentConversationById(appConfig)(req(VIEWER, { params: { agentKey: 'agent-1', conversationId: SESSION } }), r, sinon.stub() as any)
+    const wire = JSON.stringify(r.json.firstCall.args[0])
+    expect(wire).to.contain('The answer [1][2]')
+    for (const leaked of HIDDEN) expect(wire, leaked).to.not.contain(leaked)
+    sinon.restore()
+
+    stubAccess(ALL)
+    sinon.stub(ProjectService, 'getAccessibleProjectIds').resolves([])
+    sinon.stub(ChatSession, 'find').returns(chain([{ _id: SESSION, title: 't', initiator: OWNER, isShared: true, sharedWith: [{ userId: VIEWER }] }]))
+    sinon.stub(ChatSession, 'countDocuments').resolves(1)
+    sinon.stub(ChatSessionMessage, 'find').returns(chain([{ sessionId: SESSION, ...richAnswer() }]))
+    const list = res()
+    await listAllArchivesConversation(appConfig)(req(VIEWER), list, sinon.stub() as any)
+    const listed = JSON.stringify(list.json.firstCall.args[0])
+    expect(listed).to.contain('The answer [1][2]')
+    for (const leaked of HIDDEN) expect(listed, leaked).to.not.contain(leaked)
+  })
+
+  it("another user's tool row that stays shown carries no tool output", async () => {
+    stubAccess([])
+    stubConversation([
+      { messageType: 'user_query', content: 'question' },
+      { messageType: 'bot_response', content: 'Plain answer', citations: [] },
+      { messageType: 'tool_call', content: SECRET, tools: [{ toolName: 'ask_user_question', toolResult: SECRET }] },
+    ])
+    const [, reply, row] = await fetchRows(VIEWER)
+    expect(reply.content).to.equal('Plain answer')
+    expect(row.answerHidden).to.equal(undefined)
+    expect(row.content).to.equal('')
+    expect(row.tools).to.deep.equal([])
+    expect(JSON.stringify([reply, row])).to.not.contain(SECRET)
+  })
+
+  it('in a shared conversation each person keeps the steps of their own turns only, the owner included', async () => {
+    const rows = [
+      { messageType: 'user_query', content: 'mine' },
+      { messageType: 'bot_response', content: 'owner answer', tools: [{ toolResult: 'OWNER-STEP' }] },
+      { messageType: 'user_query', content: 'theirs', senderId: COLLABORATOR },
+      { messageType: 'bot_response', content: 'collaborator answer', senderId: COLLABORATOR, tools: [{ toolResult: 'COLLAB-STEP' }] },
+    ]
+    for (const [reader, kept, dropped] of [
+      [OWNER, 'OWNER-STEP', 'COLLAB-STEP'],
+      [COLLABORATOR, 'COLLAB-STEP', 'OWNER-STEP'],
+    ] as const) {
+      stubAccess([])
+      stubConversation(rows)
+      const wire = JSON.stringify(await fetchRows(reader))
+      expect(wire).to.contain('owner answer').and.to.contain('collaborator answer').and.to.contain(kept)
+      expect(wire).to.not.contain(dropped)
+      sinon.restore()
+    }
+  })
+
+  it('the conversation a turn ends with drops them as a fetch does', async () => {
+    stubAccess([])
+    const final: any = await redactConversationFor(appConfig, viewerOf(OWNER, ORG), {
+      messages: [
+        { messageType: 'bot_response', content: 'a', tools: [{ toolResult: 'OWN-STEP' }] },
+        { messageType: 'bot_response', content: 'b', senderId: COLLABORATOR, tools: [{ toolResult: 'COLLAB-STEP' }] },
+      ],
+    })
+    expect(JSON.stringify(final)).to.contain('OWN-STEP').and.to.not.contain('COLLAB-STEP')
+  })
+
+  it('a hidden answer names nothing in its not-found, limits or outcome notes', async () => {
+    stubAccess([])
+    stubConversation([{ ...answer(), notFound: { subject: SECRET }, limits: { line: SECRET }, runOutcome: { closing: SECRET } }])
+    for (const reader of [VIEWER, OWNER]) {
+      const message = await fetchConversation(reader)
+      expect(message.answerHidden.reason).to.equal('no_longer_accessible')
+      expect(JSON.stringify(message)).to.not.contain(SECRET)
+    }
+  })
+
+  it("so does the harness's own citation check when it cannot be made", async () => {
+    stubAccess([])
+    const citations: any = {
+      checksRecords: () => true,
+      decide: () => Promise.resolve(CitationAccess.denyRecords(true)),
+    }
+    const rows = [
+      { messageType: 'bot_response', content: `cites ${SECRET}`, citations: [{ citationId: citation(CIT_NO, 'rec-no', SECRET) }] },
+      { messageType: 'user_query', content: 'question' },
+      { messageType: 'bot_response', content: `no sources ${SECRET}` },
+    ]
+    for (const get of [getConversationById, getAgentConversationById]) {
+      stubConversation(rows)
+      const r = res()
+      await get(appConfig, { citations })(req(VIEWER, { params: { conversationId: SESSION, agentKey: 'agent-1' } }), r, sinon.stub() as any)
+      const [first, , second] = r.json.firstCall.args[0].conversation.messages
+      expect(first.answerHidden).to.deep.equal(unconfirmed)
+      expect(second.answerHidden).to.deep.equal(unconfirmed)
+      expect(JSON.stringify([first, second])).to.not.contain(SECRET)
+      sinon.restore()
+      stubAccess([])
+    }
+  })
+
+  it("a failed access check hides another user's answer even when it names no record", async () => {
+    stubAccess(null)
+    stubConversation([
+      { messageType: 'user_query', content: 'question' },
+      { messageType: 'bot_response', content: `unchecked ${SECRET}`, citations: [{ citationId: citation(CIT_NO, 'rec-no', SECRET) }] },
+      { messageType: 'bot_response', content: `no sources ${SECRET}` },
+    ])
+    const [question, first, second] = await fetchRows(VIEWER)
+    expect(question.content).to.equal('question')
+    expect(first.answerHidden).to.deep.equal(unconfirmed)
+    expect(second.answerHidden).to.deep.equal(unconfirmed)
+    expect(JSON.stringify([first, second])).to.not.contain(SECRET)
   })
 })
