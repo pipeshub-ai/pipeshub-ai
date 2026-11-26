@@ -84,8 +84,8 @@ CREATOR_EMAIL = os.getenv("PIPESHUB_TEST_USER_EMAIL", "pipeshub-it@example.com")
 OUTSIDER_EMAIL = "outsider-no-jira-account@example.com"
 
 # Differences from Jira's rules the connector shows today, each fixed by an open pull request: type -> the number. They are
-# tolerated by ``assert_matches_source`` and nowhere else; ``jira_cloud_sim_gaps_test.py`` holds one strict expected failure
-# per type, so the day the pull request lands the test passes unexpectedly, fails, and the entry goes.
+# tolerated by ``assert_matches_source`` and nowhere else, and each needs a strict expected failure of its own, so the day
+# the pull request lands that test passes unexpectedly, fails, and the entry goes. None is open today.
 KNOWN_GAPS: dict[str, int] = {}
 # Switches every test starts from; the rest are the simulator's own defaults. ``anonymous_search``: a signed-out search is
 # answered when the site is public, as Jira answers it, and refused (401) when it is not.

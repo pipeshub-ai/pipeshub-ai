@@ -246,7 +246,7 @@ class TestJiraCloudSimAccessRefused:
     @pytest.mark.xfail(strict=True, raises=AssertionError,
                        reason="a 500 or a cut-short answer on the project's issue security scheme takes away reads that Jira "
                               "still shows (a 500: a sub-task of one person; a cut-short one: the leveled issues of everyone): "
-                              "jira_cloud/connector.py _load_issue_security (4771) / _reindex_level_readers (5216) do not keep "
+                              "jira_cloud/connector.py _load_issue_security / _reindex_level_readers do not keep "
                               "the stored readers; no open pull request")
     async def test_tc_jcsim_acc2_012_level_scheme_unread_loses_readers(self, jira_cloud_world: JiraCloudWorld, kind: str) -> None:
         w = jira_cloud_world

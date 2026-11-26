@@ -15,7 +15,8 @@ Jira Cloud on the simulator: every path of what a record streams
   TC-JCSIM-STRM-006  Every read of an issue's stream fails with 401, 403, 404, 429, 5xx, a drop or a cut body: the stream
                      fails, or serves what is safe
   TC-JCSIM-STRM-007  Every read of a restricted comment's stream fails the same way
-  TC-JCSIM-STRM-008  (xfail) a cut answer to the description read; STRM-009: not used; STRM-010 (xfail) a group-restricted comment
+  TC-JCSIM-STRM-008  (xfail) a cut answer to the description read; STRM-009: not used; STRM-010 a group-restricted comment is read by the group's members; STRM-011 one restricted
+                     to a group the connector skips (atlassian-addons) is read by nobody
 """
 
 import hashlib

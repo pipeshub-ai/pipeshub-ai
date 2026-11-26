@@ -461,9 +461,9 @@ class TestJiraCloudSimRound4Access:
         assert succeeded(await w.sync(full=True))
         await w.assert_matches_source("after the list showed them again")
 
-    @pytest.mark.xfail(strict=True, reason="jira_cloud/connector.py:2943-2954 holds many absent accounts until 3 syncs agree and tells "
+    @pytest.mark.xfail(strict=True, reason="jira_cloud/connector.py (the mass-withdrawal hold of the user read) holds many absent accounts until 3 syncs agree and tells "
                        "the administrator 'They keep their access', but it keeps their link only: _linked_not_read "
-                       "(connector.py:2973) is empty on a list read in full, so groups, roles, project grants and issue grants are "
+                       "is empty on a list read in full, so groups, roles, project grants and issue grants are "
                        "written without them by the first sync, incremental too")
     async def test_tc_jcsim_r4a_012b_held_accounts_keep_their_access(self, jira_cloud_world: JiraCloudWorld) -> None:
         w = jira_cloud_world
