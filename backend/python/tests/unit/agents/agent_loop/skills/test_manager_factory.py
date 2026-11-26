@@ -463,7 +463,9 @@ class TestReservedSkillNames:
     async def test_a_pack_that_fails_to_load_still_keeps_its_name(self, tmp_path, monkeypatch) -> None:
         """The packs failing validation must not free their names for a member's skill."""
         import app.agents.agent_loop.skills.manager_factory as mf
-        from app.agent_loop_lib.modules.providers.skills.base import SkillNameReservedError
+        from app.agent_loop_lib.modules.providers.skills.base import (
+            SkillNameReservedError,
+        )
         from tests.support.skill_stores import skill_store
         from tests.unit.agents.adapter.test_skills_graph_store import FakeGraphProvider
 
