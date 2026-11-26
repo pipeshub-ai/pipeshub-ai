@@ -77,7 +77,7 @@ Python refuses a Local FS sync with a 409 whose `detail` starts with a code (`DE
 - Use `executeConnectorCommand` and `handleConnectorResponse` from `tokens_manager/utils/connector.utils.ts`; do not write another response helper. `handleConnectorResponse` treats a 2xx with no body as not found, so a call whose service answers 204 checks `statusCode` and answers `res.status(204).end()` itself.
 - Catch with `next(handleBackendError(error, '<operation in plain words>'))`. No `logger.error` or `logger.warn` for a failure you pass on.
 - `encodeURIComponent` each path param in the service URL, add it to the router's `guardPathParams`, and bind its id with `bindPathLogFields` after the guard.
-- If the route saves a setting, call `auditSettingsChange` after `handleConnectorResponse` and add the event to the table in "Configuration audit events (Node)".
+- If the route saves a setting, call `auditSettingsChange` after the success answer (`handleConnectorResponse`, or your own 204) and add the event to the table in "Configuration audit events (Node)".
 - Keep `backend/nodejs/apps/src/modules/api-docs/pipeshub-openapi.yaml` in sync (root AGENTS.md).
 
 ### Adding a module

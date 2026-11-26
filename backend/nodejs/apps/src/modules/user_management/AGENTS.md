@@ -74,7 +74,7 @@ Refusals say "A user with this email already exists", not the address. A 4xx mes
 - Route it through the matching helper in `services/user-admin.service.ts`, passing `this.config.rsAvailable === 'true'`.
 - If no helper fits, add one there with both paths (transaction and lease), not in the controller.
 - Write `user.role.change` with `promote`, `demote` or `new_admin` after the write.
-- End the user's sessions as `updateUser` does: record `ROLE_CHANGED` for each live membership of the email (`listLiveMembershipsByEmail`), then `emitForceLogout(id, 'role_changed')` for each. Without it, issued tokens keep the old role.
+- End the user's sessions as `updateUser` does: record `ROLE_CHANGED` for each live membership of the email (`listLiveMembershipsByEmail`), then `emitForceLogout(id, 'role_changed')` for each. Without it, issued tokens keep the old role. It is best effort: `updateUser` logs a failed `recordMany` and sends no `force_logout`, and `activityEndsSession` spares a token issued up to a second before the activity (`SESSION_INVALIDATE_TOKEN_DELAY_MS`).
 - Add a race to `tests/stores/mongo-transactions.itest.ts` and `pg-identity-checks.itest.ts`.
 
 ### Adding an audit event or reason

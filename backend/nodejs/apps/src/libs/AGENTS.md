@@ -64,7 +64,7 @@ flowchart LR
 
 **The default axios instance retries reads only.** `RETRY_POLICY` retries GET, HEAD and OPTIONS (`isSafeRequestError`) up to 3 times with exponential backoff. It never retries a write, a call we cancelled, a timeout, or a 4xx other than a 429; a 429 is retried only when its `Retry-After` is 5 seconds or less. A replayed PUT writes a second revision and a replayed DELETE answers 404 for a delete that worked. `index.ts` is the only file allowed to install retries; `retry-policy.test.ts` fails when any other file under `src/` imports axios-retry's default export.
 
-**A service command's `fetchWithRetry` retries any attempt that threw, whatever the method.** `fetch` throws only when no answer came, so a write whose connection dropped can be sent again. It stops on an abort and on a refused URL. A command whose call must not repeat passes a `shouldRetry` predicate, as `ConnectorServiceCommand` does for timeouts.
+**A service command's `fetchWithRetry` retries any attempt that threw, whatever the method.** `fetch` throws only when no answer came, so a write whose connection dropped can be sent again. It stops on an abort and on a refused URL. A command class whose call must not repeat passes `fetchWithRetry` a `shouldRetry` predicate, as `ConnectorServiceCommand` does for timeouts; a caller cannot set one.
 
 ## Decisions
 
@@ -83,7 +83,7 @@ flowchart LR
 - [ ] The service's base URL is registered in `registerAppUpstreams`.
 - [ ] Path params pasted into the URL are guarded (middlewares guide).
 - [ ] On failure, `next(handleBackendError(error, '<what PipesHub tried to do>'))`, with no log line of your own.
-- [ ] A write that must not be repeated passes `retries: 1` (`ConnectorServiceCommand`, or `executeConnectorCommand(..., { retries: 1 })`). A timeout is not retried, but a dropped connection is, up to three attempts by default.
+- [ ] A write that must not be repeated passes `retries: 1` (`ConnectorServiceCommand`, or `executeConnectorCommand(..., { retries: 1 })`); it applies to `execute()` only, and `executeStream()` always tries three times. A timeout is not retried, but a dropped connection is, up to three attempts by default.
 
 ### Adding a call to a third party
 
