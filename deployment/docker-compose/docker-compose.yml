@@ -1114,6 +1114,7 @@ services:
       - --collector.long_running_transactions
       - --collector.database_wraparound
       - --collector.stat_activity_autovacuum
+      - --collector.stat_wal_receiver   # a replica's WAL receiver (PostgresReplicaNotStreaming); no rows on a primary
     environment:
       - DATA_SOURCE_URI=postgres:5432/pipeshub?sslmode=disable
       - DATA_SOURCE_USER=pipeshub_monitor

@@ -1,7 +1,8 @@
 # Alert rules for PostgreSQL and PgBouncer, read from the two exporters of the Compose `postgres-metrics` profile
-# (postgres-exporter v0.20.1 with --collector.long_running_transactions, --collector.database_wraparound and
-# --collector.stat_activity_autovacuum; pgbouncer-exporter v0.12.1) or the chart's postgresExporter. Prometheus loads
-# them with docker-compose.monitoring-postgres.yml. The last group reads the pg-backup service's own metrics. Thresholds are starting points an operator tunes for their install.
+# (postgres-exporter v0.20.1 with --collector.long_running_transactions, --collector.database_wraparound,
+# --collector.stat_activity_autovacuum and --collector.stat_wal_receiver; pgbouncer-exporter v0.12.1) or the chart's
+# postgresExporter. Prometheus loads them with docker-compose.monitoring-postgres.yml. The last group reads the pg-backup
+# service's own metrics. Thresholds are starting points an operator tunes for their install.
 groups:
   - name: pipeshub-postgres-availability
     rules:
@@ -40,11 +41,12 @@ groups:
   - name: pipeshub-postgres-connections
     rules:
       - alert: PostgresConnectionsNearMax
-        # Client backends against what max_connections leaves to ordinary logins.
+        # Client backends against what max_connections leaves to ordinary logins. reserved_connections exists from PostgreSQL 16;
+        # on an older server its series is absent and counts as 0, or the division would match nothing and never fire.
         expr: >-
           sum by (instance, job) (pg_stat_activity_count{backend_type="client backend"})
           / on (instance, job) (pg_settings_max_connections - pg_settings_superuser_reserved_connections
-          - pg_settings_reserved_connections) > 0.8
+          - (pg_settings_reserved_connections or 0 * pg_settings_max_connections)) > 0.8
         for: 5m
         labels:
           severity: warning
@@ -57,7 +59,7 @@ groups:
         expr: >-
           sum by (instance, job) (pg_stat_activity_count{backend_type="client backend"})
           / on (instance, job) (pg_settings_max_connections - pg_settings_superuser_reserved_connections
-          - pg_settings_reserved_connections) > 0.95
+          - (pg_settings_reserved_connections or 0 * pg_settings_max_connections)) > 0.95
         for: 2m
         labels:
           severity: critical
@@ -147,6 +149,26 @@ groups:
           description: >-
             The replica {{ $labels.instance }} last replayed a transaction {{ $value | humanizeDuration }} behind
             the primary.
+
+      - alert: PostgresReplicaNotStreaming
+        # pg_replication_lag_seconds reads 0 whenever the received and replayed positions are equal, which a disconnected
+        # receiver leaves them, so lag alone misses a replica cut off from its primary. pg_stat_wal_receiver has a row only
+        # while a receiver runs, and wal_receiver_timeout (60 s by default) ends a connection that stops receiving, so a
+        # replica that stops getting WAL loses its "streaming" row. postgres-exporter v0.20.1 exports that row only for a
+        # receiver with a replication slot (collector/pg_stat_walreceiver.go skips a null slot_name), so a replica streaming
+        # without a slot, or one fed only by restore_command, fires too: give it a slot (primary_slot_name) or silence it.
+        expr: >-
+          pg_replication_is_replica == 1
+          unless on (instance, job) pg_stat_wal_receiver_last_msg_receipt_time{status="streaming"}
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: A PostgreSQL replica is not streaming WAL from its primary
+          description: >-
+            The replica {{ $labels.instance }} has had no streaming WAL receiver for 5 minutes: it falls behind while the
+            primary commits, though its replication lag can still read 0. Check primary_conninfo, the network and the
+            primary's replication slots.
 
   - name: pipeshub-postgres-transactions
     rules:

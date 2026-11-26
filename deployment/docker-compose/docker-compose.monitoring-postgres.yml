@@ -9,7 +9,13 @@
 
 services:
   prometheus:
-    # Repeats docker-compose.monitoring.yml's baseline (ADR-OPS-02) so that this file read alone keeps it too.
+    # Repeats docker-compose.monitoring.yml's image, open-file limit and baseline (ADR-OPS-02), so that this file read
+    # alone runs the same service; tests/postgres_alert_rules_test.sh checks the image is the same.
+    image: ${PROMETHEUS_IMAGE:-prom/prometheus:v2.53.0@sha256:075b1ba2c4ebb04bc3a6ab86c06ec8d8099f8fda1c96ef6d104d9bb1def1d8bc}
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
     cap_drop: [ALL]
     security_opt:
       - no-new-privileges:true

@@ -1453,7 +1453,7 @@ parsing:
 # PG_MONITOR_PASSWORD set creates pipeshub_monitor, a member of pg_monitor that holds no privilege on any table of the application
 # (backend/db/README.md). Its password is read from an existing Secret. Metrics are served on port 9187 (/metrics) of the Service
 # <fullname>-postgres-exporter, unauthenticated over plain HTTP: let only your Prometheus reach it. The args add the collectors for
-# long transactions, transaction-id wraparound and running autovacuums to the exporter's defaults (connections, locks, replication,
+# long transactions, transaction-id wraparound, running autovacuums and a replica's WAL receiver to the exporter's defaults (connections, locks, replication,
 # WAL, table statistics such as dead rows and the last vacuum). Statement statistics (--collector.stat_statements) also need the
 # pg_stat_statements extension in the database, whose surface lines the migrate job must then be given (PG_MIGRATE_SURFACE_FILES).
 # Alerts: load deployment/monitoring/prometheus/postgres.rules.yml in that Prometheus; PostgresExporterDown matches a scrape job
@@ -1473,6 +1473,7 @@ postgresExporter:
     - --collector.long_running_transactions
     - --collector.database_wraparound
     - --collector.stat_activity_autovacuum
+    - --collector.stat_wal_receiver
   resources:
     requests:
       cpu: 10m

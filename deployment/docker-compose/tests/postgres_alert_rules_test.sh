@@ -6,6 +6,8 @@ set -euo pipefail
 cd "$(dirname "$0")/../../monitoring/prometheus"
 image="$(sed -nE 's/.*\$\{PROMETHEUS_IMAGE:-([^}]+)\}.*/\1/p' ../../docker-compose/docker-compose.monitoring.yml)"
 [ -n "$image" ] || { echo "no Prometheus image in docker-compose.monitoring.yml" >&2; exit 1; }
+overlay_image="$(sed -nE 's/.*\$\{PROMETHEUS_IMAGE:-([^}]+)\}.*/\1/p' ../../docker-compose/docker-compose.monitoring-postgres.yml)"
+[ "$overlay_image" = "$image" ] || { echo "docker-compose.monitoring-postgres.yml runs $overlay_image, not $image" >&2; exit 1; }
 work="$(mktemp -d)"; trap 'rm -rf "$work"' EXIT
 touch "$work/worker-credential"   # promtool check config stats the harness job's credential file
 chmod 755 "$work"; chmod 644 "$work/worker-credential"
