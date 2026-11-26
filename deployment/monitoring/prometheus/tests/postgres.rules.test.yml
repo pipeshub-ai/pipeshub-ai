@@ -388,3 +388,25 @@ tests:
             exp_annotations:
               summary: "No full backup has completed since the backup service started"
               description: "pg-backup on stuck started 2 times PG_BACKUP_FULL_DAYS ago and the repository holds no full backup: nothing can be restored. Read the pg-backup service's log; the first full backup may be failing or still running."
+
+  - name: first full backup check while the repository is unreadable
+    interval: 1m
+    input_series:
+      # the scheduler keeps exporting the last readable backup times (its state is on the persistent volume)
+      - series: 'pipeshub_pg_backup_scheduler_start_timestamp_seconds{instance="unreadable", job="pg-backup"}'
+        values: '-1209000x20'
+      - series: 'pipeshub_pg_backup_schedule_seconds{instance="unreadable", job="pg-backup", type="full"}'
+        values: '604800x20'
+      - series: 'pipeshub_pg_backup_repository_up{instance="unreadable", job="pg-backup"}'
+        values: '0x20'
+      - series: 'pipeshub_pg_backup_last_success_timestamp_seconds{instance="unreadable", job="pg-backup", stanza="pipeshub", repo="1", type="full"}'
+        values: '-3600x20'
+    alert_rule_test:
+      - {eval_time: 20m, alertname: PgBackupNoFullBackup, exp_alerts: []}
+      - eval_time: 20m
+        alertname: PgBackupRepositoryUnreadable
+        exp_alerts:
+          - exp_labels: {severity: warning, instance: unreadable, job: pg-backup}
+            exp_annotations:
+              summary: "The backup repository cannot be read"
+              description: "pgbackrest info has not read the repository on unreadable for 15 minutes (unreachable, wrong credentials, or the stanza in error), so no backup is scheduled. The backup times shown are the last known."

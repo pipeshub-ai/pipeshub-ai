@@ -18,6 +18,9 @@ case "$*" in
     cat "$STUB_INFO" ;;
   *backup*) # the first STUB_BACKUPS backups (default none) return; the next one ends the script
     echo "$*" >> "$STUB_LOG"; n=$(grep -c backup "$STUB_LOG")
+    if [ "${STUB_HANG:-}" = backup ]; then
+      trap 'kill $! 2>/dev/null; echo "backup got TERM" >> "$STUB_LOG.term"; exit 143' TERM; : > "$(dirname "$STUB_LOG")/hanging"; /bin/sleep 30 & wait $!; exit 0
+    fi
     if [ -e "$PG_BACKUP_OK_FILE" ]; then echo "healthy during backup" >> "$STUB_LOG.health"; else echo "unhealthy during backup" >> "$STUB_LOG.health"; fi
     [ -z "${STUB_DROP_DURING_BACKUP:-}" ] || : > "$STUB_DROP_DURING_BACKUP"
     # what Prometheus would read while this backup runs: the metrics file, and (STUB_SCRAPE_PORT) the served endpoint
@@ -45,6 +48,9 @@ EOF
 cat > "$work/sleep" <<'EOF'
 #!/bin/sh
 echo "sleep $1" >> "$STUB_LOG"
+if [ "${STUB_HANG:-}" = sleep ]; then
+  trap 'kill $! 2>/dev/null; echo "sleep got TERM" >> "$STUB_LOG.term"; exit 143' TERM; : > "$(dirname "$STUB_LOG")/hanging"; /bin/sleep 30 & wait $!; exit 0
+fi
 if [ "$(grep -c '^sleep' "$STUB_LOG")" -le "${STUB_SLEEPS:-0}" ]; then [ -z "${STUB_DROP_DURING_SLEEP:-}" ] || : > "$STUB_DROP_DURING_SLEEP"; exit 0; fi
 kill -TERM "$PPID"
 EOF
@@ -53,7 +59,7 @@ chmod +x "$work/pgbackrest" "$work/sleep"
 decide() { # info JSON -> what the loop did first
   printf '%s' "$1" > "$work/info.json"; : > "$work/log"
   PATH="$work:$PATH" PG_BACKUP_OK_FILE="$work/ok" PG_WAL_GAP_DIR="$work/gaps" PG_WAL_GAP_HOLDS="$work/holds" PG_BACKUP_LOCK="$work/lock" STUB_INFO="$work/info.json" STUB_LOG="$work/log" \
-    PG_BACKUP_METRICS_FILE="$work/metrics.prom" PG_BACKUP_STATE_DIR="$work/state" PG_BACKUP_STARTED_FILE="$work/socket/pg-backup-started" PG_BACKUP_FULL_DAYS="${FULL_DAYS:-7}" PG_BACKUP_INCR_HOURS=6 timeout 10 bash "$here/postgres/pg-backup.sh" >"$work/out" 2>&1 || true
+    PG_BACKUP_METRICS_FILE="$work/metrics.prom" PG_BACKUP_VOLUME_DIR="$work/socket" TMPDIR="$work/tmp" PG_BACKUP_FULL_DAYS="${FULL_DAYS:-7}" PG_BACKUP_INCR_HOURS=6 timeout 10 bash "$here/postgres/pg-backup.sh" >"$work/out" 2>&1 || true
   head -1 "$work/log"
 }
 now=$(date +%s)
@@ -82,14 +88,15 @@ check "restarted with an unreadable repository: not healthy" "$([ -e "$work/ok" 
 
 # the metrics (pg-backup-metrics.pl): written on every repository read, keeping the last readable backup times; each attempt recorded
 metric() { grep -E "^$1( |\{)" "$work/metrics.prom" | sed -E 's/.* //' || :; }
-rm -rf "$work/state" "$work/socket"; mkdir -p "$work/socket"; t0=$(date +%s); decide 'not json' >/dev/null 2>&1
+# the scheduler's state lives on the socket volume ($work/socket); recreating the container loses only /tmp ($work/tmp)
+rm -rf "$work/socket" "$work/tmp"; mkdir -p "$work/socket" "$work/tmp"; t0=$(date +%s); decide 'not json' >/dev/null 2>&1
 started="$(metric pipeshub_pg_backup_scheduler_start_timestamp_seconds)"
 check "metrics: the scheduler's start is exported from the first loop, before any backup or readable repository" \
   "$([ -n "$started" ] && [ "$started" -ge "$t0" ] && [ "$started" -le "$(date +%s)" ] && echo now)" now
 decide "$recent" >/dev/null 2>&1
 check "metrics: a restart keeps the first start, so a first full backup that never completes keeps ageing" \
   "$(metric pipeshub_pg_backup_scheduler_start_timestamp_seconds)" "$started"
-rm -rf "$work/state" "$work/metrics.prom"; /bin/sleep 1   # a later second, so a start written again would differ
+rm -rf "$work/tmp" "$work/metrics.prom"; mkdir -p "$work/tmp"; /bin/sleep 1   # a later second, so a start written again would differ
 decide "$recent" >/dev/null 2>&1   # a recreated container: a new /tmp, the same socket volume
 check "metrics: a recreated container keeps the first start (it is on the socket volume)" \
   "$(metric pipeshub_pg_backup_scheduler_start_timestamp_seconds)" "$started"
@@ -101,12 +108,42 @@ decide 'not json' >/dev/null 2>&1
 check "metrics: an unreadable repository is down" "$(metric pipeshub_pg_backup_repository_up)" 0
 check "metrics: and the last readable backup times stay, so they keep ageing" \
   "$(metric 'pipeshub_pg_backup_last_success_timestamp_seconds\{stanza="",repo="",type="incr"\}')" $((now - 3600))
+rm -rf "$work/tmp" "$work/metrics.prom"; mkdir -p "$work/tmp"; decide 'not json' >/dev/null 2>&1
+check "metrics: recreated while the repository is unreadable, the last readable full backup is still exported" \
+  "$(metric pipeshub_pg_backup_repository_up):$(metric 'pipeshub_pg_backup_last_success_timestamp_seconds\{stanza="",repo="",type="full"\}')" "0:$((now - 86400))"
 check "metrics: no attempt yet, no attempt metric" "$(metric pipeshub_pg_backup_last_attempt_success)" ""
 STUB_BACKUPS=1 decide "[{\"status\":{\"code\":0},\"backup\":[$(backup full 691200),$(backup incr 3600)]}]" >/dev/null 2>&1
 check "metrics: a backup that succeeded" "$(metric pipeshub_pg_backup_last_attempt_success)" 1
 STUB_BACKUP_RC=1 decide "[{\"status\":{\"code\":0},\"backup\":[$(backup full 691200),$(backup incr 3600)]}]" >/dev/null 2>&1
 check "metrics: a backup that failed" "$(metric pipeshub_pg_backup_last_attempt_success)" 0
-rm -rf "$work/state"
+# a socket volume the scheduler cannot write: it falls back to /tmp, says so, and still runs
+rm -rf "$work/socket"; mkdir -p "$work/socket"; chmod 555 "$work/socket"
+decide "$recent" >/dev/null 2>&1
+check "an unwritable volume: the state falls back to /tmp, logged" \
+  "$([ -s "$work/tmp/pg-backup.d/started" ] && echo tmp):$(grep -c 'cannot write .*socket/pg-backup.d.*using .*tmp/pg-backup.d' "$work/out")" "tmp:1"
+check "and the metrics are still written" "$(metric pipeshub_pg_backup_repository_up)" 1
+chmod 755 "$work/socket"; rm -rf "$work/socket" "$work/tmp"
+
+# docker stop sends TERM: the scheduler stops at once whatever it is waiting on, passes TERM to the running pgBackRest so it stops
+# cleanly, stops the metrics server, and exits 143. Without that, bash runs its trap only after the foreground command ends.
+term_during() { # what to hang (sleep | backup) -> "<exit status> <seconds to stop> <who got TERM> <server>"
+  local port t0 pid rc
+  port="$(perl -MIO::Socket::INET -e 'print IO::Socket::INET->new(Listen => 1, LocalPort => 0)->sockport')"
+  printf '%s' "$1" > "$work/info.json"; : > "$work/log"; rm -f "$work/log.term" "$work/hanging"; mkdir -p "$work/tmp"
+  env PATH="$work:$PATH" PG_BACKUP_OK_FILE="$work/ok" PG_WAL_GAP_DIR="$work/gaps" PG_WAL_GAP_HOLDS="$work/holds" PG_BACKUP_LOCK="$work/lock" \
+    STUB_INFO="$work/info.json" STUB_LOG="$work/log" STUB_HANG="$2" PG_BACKUP_METRICS_FILE="$work/metrics.prom" \
+    PG_BACKUP_VOLUME_DIR="$work/socket" TMPDIR="$work/tmp" PG_BACKUP_METRICS_PORT="$port" PG_BACKUP_FULL_DAYS=7 \
+    PG_BACKUP_INCR_HOURS=6 bash "$here/postgres/pg-backup.sh" >"$work/out" 2>&1 & pid=$!
+  for _ in $(seq 100); do [ -e "$work/hanging" ] && break; /bin/sleep 0.1; done
+  /bin/sleep 0.3; t0=$(date +%s%N); kill -TERM "$pid"; rc=0; wait "$pid" || rc=$?
+  /bin/sleep 0.3
+  echo "$rc $(( ($(date +%s%N) - t0) / 1000000000 ))s $(cat "$work/log.term" 2>/dev/null | tr '\n' ' ')$( (exec 3<>"/dev/tcp/127.0.0.1/$port") 2>/dev/null && echo server-running || echo server-gone)"
+}
+check "TERM while waiting (sleep): exits 143 at once, the wait got TERM, the server is gone" \
+  "$(term_during "$recent" sleep)" "143 0s sleep got TERM server-gone"
+check "TERM during a backup: exits 143 at once, pgBackRest got TERM to stop cleanly, the server is gone" \
+  "$(term_during '[{"status":{"code":2},"backup":[]}]' backup)" "143 0s backup got TERM server-gone"
+
 
 # a drop noticed between two repository reads: the loop's next turn starts a full backup without reading the repository again, and the
 # gap is in the metrics before that backup runs (it can run for hours, and its success clears the drop)

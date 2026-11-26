@@ -54,6 +54,9 @@ services:
         hard: 4096
     command: ["pg-backup.sh"]
     init: true   # the scheduler stops at once on `docker compose stop` instead of after the 10 s timeout
+    # On TERM the scheduler passes it to a running pgBackRest and waits for it to stop cleanly (pg-backup.sh, on_term) before the
+    # runtime's SIGKILL; 60 s leaves room for it to stop and release its lock (the next backup resumes a stopped one, --resume).
+    stop_grace_period: 60s
     restart: always
     env_file: ${PGBACKREST_ENV_FILE:-pgbackrest.env}
     environment:

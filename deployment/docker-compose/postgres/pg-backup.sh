@@ -24,19 +24,20 @@ full_s=$(( ${PG_BACKUP_FULL_DAYS:-7} * 86400 ))
 incr_s=$(( ${PG_BACKUP_INCR_HOURS:-6} * 3600 ))
 retry_s="${PG_BACKUP_RETRY_SECS:-300}"
 ok="${PG_BACKUP_OK_FILE:-/tmp/pg-backup.ok}"   # the healthcheck: present only while the last attempt succeeded and WAL has no gap
-gaps="${PG_WAL_GAP_DIR:-/var/run/postgresql/pgbackrest-wal-gap.d}"
+# The shared socket volume (pg_backup_socket) outlives the container: everything the scheduler must remember across a recreate lives there.
+volume="${PG_BACKUP_VOLUME_DIR:-/var/run/postgresql}"
+gaps="${PG_WAL_GAP_DIR:-$volume/pgbackrest-wal-gap.d}"
 drops() { ls -A "$gaps" 2>/dev/null; }   # one name per dropped segment, in WAL order
-holds="${PG_WAL_GAP_HOLDS:-/var/run/postgresql/pgbackrest-gap-hold.d}"   # one file per gap: <first dropped segment>, holding the label
+holds="${PG_WAL_GAP_HOLDS:-$volume/pgbackrest-gap-hold.d}"   # one file per gap: <first dropped segment>, holding the label
 held() { ls -A "$holds" 2>/dev/null; }
 hold_s=$(( ${PG_BACKUP_GAP_HOLD_DAYS:-14} * 86400 ))   # a hold's age is its file's modification time
 lock="${PG_BACKUP_LOCK:-/tmp/pg-backup.lock}"   # taken around each backup and its expire, and by clear-gap-hold
 # Prometheus metrics (pg-backup-metrics.pl): written after every repository read and backup attempt, served on PG_BACKUP_METRICS_PORT
 # when it is set. The backup times are exported as timestamps, so their age keeps growing in Prometheus even if this loop stops.
 metrics="${PG_BACKUP_METRICS_FILE:-/tmp/pg-backup.prom}"
-state="${PG_BACKUP_STATE_DIR:-/tmp/pg-backup.d}"   # the last readable `pgbackrest info` and the last attempt
-# when the scheduler first ran, on the shared socket volume beside the gap holds so that recreating the container keeps it (a new volume
-# starts it again); PgBackupNoFullBackup measures from it
-started="${PG_BACKUP_STARTED_FILE:-/var/run/postgresql/pg-backup-started}"
+# the last readable `pgbackrest info` (exported while the repository cannot be read), the last attempt, and when the scheduler first ran
+# (PgBackupNoFullBackup measures from it); a new volume starts them again
+state="${PG_BACKUP_STATE_DIR:-$volume/pg-backup.d}"
 metrics_pl="$(dirname "${BASH_SOURCE[0]}")/pg-backup-metrics.pl"
 
 if [ "${1:-}" = clear-gap-hold ]; then
@@ -122,9 +123,16 @@ serve_metrics() {   # (re)started when it is not running, so a crashed server co
   [ -n "${PG_BACKUP_METRICS_PORT:-}" ] || return 0
   if [ -z "$srv" ] || ! kill -0 "$srv" 2>/dev/null; then "$metrics_pl" serve "$PG_BACKUP_METRICS_PORT" "$metrics" "$gaps" 9>&- & srv=$!; fi
 }
-# the server goes with the scheduler, so a restart never finds the port taken by the previous one
+# Every command that can run long goes through fg: bash runs a trap only after a foreground command ends ("If Bash is waiting for a command
+# to complete and receives a signal for which a trap has been set, it will not execute the trap until the command completes",
+# https://www.gnu.org/software/bash/manual/html_node/Signals.html), but `wait` returns at once. On TERM (docker stop) the running command
+# gets TERM too (pgBackRest stops cleanly on it: "send TERM signals ... to effect a graceful but immediate shutdown",
+# https://pgbackrest.org/command.html, stop --force), the scheduler waits for it, stops the metrics server and exits 143.
+child=""
+fg() { "$@" & child=$!; local rc=0; wait "$child" || rc=$?; child=""; return "$rc"; }
+on_term() { if [ -n "$child" ]; then kill -TERM "$child" 2>/dev/null; wait "$child" 2>/dev/null; fi; exit 143; }
 trap '[ -z "$srv" ] || kill "$srv" 2>/dev/null' EXIT
-trap 'exit 143' TERM INT
+trap on_term TERM INT
 
 # "<seconds since newest full> <seconds since newest backup>" from the repository; a missing backup counts as infinitely old.
 ages() {
@@ -142,11 +150,16 @@ ages() {
     printf "%d %d\n", $full ? $now - $full : 1e15, $any ? $now - $any : 1e15;' < "$state/info.new"
 }
 
-mkdir -p "$state"; [ -s "$started" ] || date +%s > "$started" || echo "pg-backup: cannot record the start in $started" >&2
+if ! { mkdir -p "$state" && [ -w "$state" ]; } 2>/dev/null; then
+  echo "pg-backup: cannot write $state; using ${TMPDIR:-/tmp}/pg-backup.d, which a recreated container loses" >&2
+  state="${TMPDIR:-/tmp}/pg-backup.d"; mkdir -p "$state"
+fi
+started="$state/started"
+[ -s "$started" ] || date +%s > "$started"
 : > "$state/info.new"; refresh_metrics; serve_metrics
-until pgbackrest stanza-create && pgbackrest check; do
+until fg pgbackrest stanza-create && fg pgbackrest check; do
   : > "$state/info.new"; refresh_metrics
-  rm -f "$ok"; echo "pg-backup: the stanza could not be created or checked; retrying in ${retry_s}s" >&2; sleep "$retry_s"
+  rm -f "$ok"; echo "pg-backup: the stanza could not be created or checked; retrying in ${retry_s}s" >&2; fg sleep "$retry_s"
 done
 while :; do
   serve_metrics
@@ -163,14 +176,14 @@ while :; do
     gap_report >&2
     type=full
   elif ! read -r since_full since_any < <(ages); then
-    rm -f "$ok"; echo "pg-backup: could not read the repository; retrying in ${retry_s}s" >&2; sleep "$retry_s"; continue
+    rm -f "$ok"; echo "pg-backup: could not read the repository; retrying in ${retry_s}s" >&2; fg sleep "$retry_s"; continue
   elif [ "$since_full" -ge "$full_s" ]; then type=full
   elif [ "$since_any" -ge "$incr_s" ]; then type=incr
   else
     # nothing due: the repository holds backups within both intervals, which is healthy (also right after a restart)
     touch "$ok"
     # at most a minute, so a gap is noticed within one
-    left=$(( incr_s - since_any )); sleep $(( left > 60 ? 60 : left )); continue
+    left=$(( incr_s - since_any )); fg sleep $(( left > 60 ? 60 : left )); continue
   fi
   refresh_metrics   # before a backup that can run for hours: a drop noticed since the last read is published now
   echo "pg-backup: starting a $type backup"
@@ -178,7 +191,7 @@ while :; do
   if [ "${since_any:-0}" -ge "$full_s" ] && [ "${since_full:-0}" -ge 1000000000000000 ] && [ -z "$(drops)" ]; then touch "$ok"; fi
   covered="$(drops)"
   exec 9>"$lock"; flock 9
-  if pgbackrest backup --type="$type" --no-expire-auto; then
+  if fg pgbackrest backup --type="$type" --no-expire-auto; then
     if [ "$type" = full ] && [ -n "$covered" ]; then
       # the gap's hold first, if the repository could not be read while the drops were noticed; without it the drops stay
       if record_hold 2>/dev/null && [ -e "$holds/$(head -1 <<<"$covered")" ]; then
@@ -193,7 +206,7 @@ while :; do
     echo "pg-backup: $type backup done"
     # checked again now: a drop during the backup, or a held gap, keeps every backup
     if [ -z "$(drops)" ] && [ -z "$(held)" ]; then
-      pgbackrest expire || echo "pg-backup: expire failed; it runs again after the next backup" >&2
+      fg pgbackrest expire || echo "pg-backup: expire failed; it runs again after the next backup" >&2
     else
       echo "pg-backup: keeping every backup (no expire) while a WAL gap is held: $(held | tr '\n' ' ')"
     fi
@@ -201,5 +214,5 @@ while :; do
     failed=1; rm -f "$ok"; attempted 0; echo "pg-backup: the $type backup failed; retrying in ${retry_s}s" >&2
   fi
   flock -u 9
-  if [ "${failed:-0}" = 1 ]; then failed=0; sleep "$retry_s"; fi
+  if [ "${failed:-0}" = 1 ]; then failed=0; fg sleep "$retry_s"; fi
 done
