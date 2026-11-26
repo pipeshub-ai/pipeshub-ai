@@ -2295,7 +2295,12 @@ class StoragePatternMatch:
         everything: the empty set, which every check reads as "deny".
         """
         from app.agents.actions.knowledge_graph.ops.scope import derive_scope
+        from app.modules.retrieval.selection_scope import (
+            connection_sources_of,
+            names_below_apps,
+        )
         from app.services.graph_db.interface.graph_db_provider import (
+            SELECTION_APPS_FILTER_KEY,
             STRICT_SCOPE_FILTER_KEY,
             requested_scope_ids,
         )
@@ -2304,7 +2309,18 @@ class StoragePatternMatch:
         if filters.get(STRICT_SCOPE_FILTER_KEY):
             # Only what the request names, read as retrieval reads it: the
             # agent's own knowledge is no fallback here.
-            return frozenset(requested_scope_ids(filters) or ())
+            named = frozenset(requested_scope_ids(filters) or ())
+            limit = connection_sources_of(filters)
+            if limit is not None and not names_below_apps(limit):
+                # A connected app's limit names whole apps: one it does not
+                # name is never scanned, whatever the request names.
+                return named & frozenset(limit.get("apps") or ())
+            if limit is not None:
+                # A limit that names folders or files reaches the apps they
+                # sit in (recorded at the start of the turn, inside the limit);
+                # the record check holds each record to the folder or file.
+                return named | frozenset(filters.get(SELECTION_APPS_FILTER_KEY) or ())
+            return named
         scope = derive_scope(self.state)
         if scope.is_empty():
             return None
@@ -2357,6 +2373,7 @@ class StoragePatternMatch:
         namespace = (
             "storage_vrid_access", self.state.get("user_id", ""), self._org_id(),
             self._scope_connector_ids(),
+            self._row_limit_key(),
         )
         try:
             by_vrid = await memo_each(namespace, vrids, fetch)
@@ -2366,6 +2383,14 @@ class StoragePatternMatch:
 
     def _org_id(self) -> str:
         return self.state.get("org_id", "")
+
+    def _row_limit_key(self) -> tuple[tuple[str, tuple[str, ...]], ...]:
+        """What limits this turn's rows (its selection and every server-set
+        bound), as a key: two turns of one user under different limits must not
+        share a permission answer."""
+        from app.modules.retrieval.selection_scope import row_limit_key
+
+        return row_limit_key(self.state.get("filters") or {})
 
     async def _fetch_accessible_vrids(self, vrids: list[str]) -> dict[str, str] | None:
         user_id = self.state.get("user_id", "")
@@ -2385,9 +2410,16 @@ class StoragePatternMatch:
         try:
             # The same adjudicator semantic search uses, with no container trusted
             # and the agent's knowledge scope bounding which record may be cited.
+            # The turn's selection and every bound (a saved agent's sources, a
+            # project's, a connected app's limit) also bound which record may
+            # be cited, as in the pattern-match merge.
+            scopes = await self._turn_scopes(graph_provider, user_id, org_id)
+            if scopes is None:
+                return None
             accessible = await graph_provider.filter_accessible_virtual_record_ids(
                 list(dict.fromkeys(vrids)), user_id, org_id,
                 scope_connector_ids=self._scope_connector_ids(),
+                **({"scopes": scopes} if scopes else {}),
             )
         except Exception as exc:
             logger.warning(
@@ -2401,6 +2433,27 @@ class StoragePatternMatch:
         )
         logger.debug("[_check_accessible_vrids] map=%s", accessible)
         return accessible or {}
+
+    async def _turn_scopes(
+        self, graph_provider: Any, user_id: str, org_id: str,  # noqa: ANN401
+    ) -> list[Any] | None:
+        """The scopes a cited record must lie in (empty when the turn has
+        none), resolved as the pattern-match merge resolves them, or None when
+        they cannot be: callers fail closed."""
+        from app.modules.retrieval.selection_scope import (
+            allowed_filters,
+            has_selection,
+            resolve_request_scopes,
+            resolve_user_key,
+        )
+
+        filters = self.state.get("filters") or {}
+        if not (has_selection(filters) or allowed_filters(filters)):
+            return []
+        user_key = await resolve_user_key(graph_provider, user_id)
+        if not user_key:
+            return None
+        return (await resolve_request_scopes(graph_provider, user_key, org_id, filters))[1]
 
     async def _build_accessible_view(
         self, connector_dir: str, allowed_vrids: frozenset[str] | None = None,

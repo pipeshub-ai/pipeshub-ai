@@ -629,6 +629,7 @@ async def prepare_turn_scope(
     agent_sources: Mapping[str, Iterable[str]] | None = None,
     project_sources: Mapping[str, Iterable[str]] | None = None,
     connection_sources: Mapping[str, Iterable[str]] | None = None,
+    require_vector_ready: bool = True,
 ) -> dict[str, Any]:
     """A chat turn's filters with the server-set keys in place.
 
@@ -665,8 +666,15 @@ async def prepare_turn_scope(
     user_key = await resolve_user_key(graph_provider, user_id)
     scope = (await resolve_request_scopes(graph_provider, user_key, org_id, turn))[0] if user_key else None
     if scope is not None and not scope.is_empty:
-        await require_membership_ready(graph_provider, scope)
-        turn[SELECTION_APPS_FILTER_KEY] = sorted(scope.connector_ids - scope.app_ids)
+        if require_vector_ready:
+            await require_membership_ready(graph_provider, scope)
+        touched = scope.connector_ids - scope.app_ids
+        if connection_sources is not None:
+            # Only the apps the limit reaches: a folder the request names in
+            # another app must not send a scan there.
+            limit = await connection_bound_scope(graph_provider, user_key, org_id, turn)
+            touched &= limit.connector_ids if limit is not None else frozenset()
+        turn[SELECTION_APPS_FILTER_KEY] = sorted(touched)
     return turn
 
 
