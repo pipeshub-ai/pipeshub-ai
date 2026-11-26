@@ -67,9 +67,9 @@ async def _take(con: asyncpg.Connection, *, alone: bool) -> None:
     removing the rows its own test deleted or updated (dead index entries its plan gates then count). A marked test first holds the gate, so that the tests
     arriving meanwhile wait and it is not starved; the others take the gate shared only for a moment."""
     if alone:
-        while not await con.fetchval("SELECT pg_try_advisory_lock($1)", TABLE_LOCK_GATE):
+        while not await con.fetchval("SELECT pg_try_advisory_lock($1)", TABLE_LOCK_GATE):  # noqa: ASYNC110 -- polled on purpose: a blocking wait holds a snapshot
             await asyncio.sleep(_POLL_S)
-        while not await con.fetchval("SELECT pg_try_advisory_lock($1)", TABLE_LOCK_KEY):
+        while not await con.fetchval("SELECT pg_try_advisory_lock($1)", TABLE_LOCK_KEY):  # noqa: ASYNC110
             await asyncio.sleep(_POLL_S)
         return
     while True:
