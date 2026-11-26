@@ -132,7 +132,8 @@ def _not_seeks(plan: dict[str, Any]) -> list[str]:
         if node["Relation Name"] not in KG:
             continue
         bounds = plan_gate.bounds(node)
-        per = (node.get("Actual Rows", 0) + node.get("Rows Removed by Filter", 0) + node.get("Rows Removed by Index Recheck", 0)) / max(node.get("Actual Loops", 0), 1)
+        # already averages per loop (EXPLAIN reports a repeated node's rows, and its rows removed, per execution)
+        per = node.get("Actual Rows", 0) + node.get("Rows Removed by Filter", 0) + node.get("Rows Removed by Index Recheck", 0)
         if not bounds or any(i not in KEY_OF or "org_id = " not in c or not re.search(KEY_OF[i], c) for i, c in bounds):
             bad.append(f"{node['Node Type']} on {node['Relation Name']}: {bounds}")
         elif per > FILES + 1:
@@ -176,3 +177,12 @@ async def test_clearing_kg_statistics_is_undone_at_teardown(no_stats) -> None:
     """The fixture's own check (its teardown asserts the same for every test that uses it): cleared here, so the teardown has to bring them back."""
     await no_stats()
     assert "records" in await _unanalysed()
+
+
+def test_the_plan_gate_judges_rows_per_probe_as_explain_reports_them() -> None:
+    """EXPLAIN ANALYZE reports a node's rows (and its rows removed by a filter) as an average per loop, so the gate takes them as they are: a probe of the right index that
+    reads 5,000 rows each time, 100 times, is no seek."""
+    probe = {"Node Type": "Index Scan", "Relation Name": "records", "Index Name": "records_pkey", "Index Cond": "((org_id = 'o'::text) AND (sk >= p.sk))",
+             "Actual Rows": 5000, "Actual Loops": 100, "Rows Removed by Filter": 0}
+    assert _not_seeks({"Plan": probe}) == ["records_pkey: 5000 rows per probe"]
+    assert _not_seeks({"Plan": {**probe, "Actual Rows": 1}}) == []
