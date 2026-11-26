@@ -10,7 +10,8 @@ from pathlib import Path
 import asyncpg
 import pytest
 
-from .conftest import ALONE_TIMEOUT_S, TABLE_LOCK_KEY
+from . import conftest
+from .conftest import TABLE_LOCK_KEY
 
 pytestmark = pytest.mark.integration
 # statements whose lock blocks every reader or writer of the table, in every org
@@ -46,6 +47,14 @@ async def test_a_test_holds_the_folder_lock_shared(pg_required: None) -> None:
 
 
 @pytest.mark.pg_table_lock
-async def test_a_table_lock_test_holds_the_folder_lock_alone(pg_required: None, request: pytest.FixtureRequest) -> None:
+async def test_a_table_lock_test_holds_the_folder_lock_alone(pg_required: None) -> None:
     assert not await _other_may_take(shared=True)            # every other test waits for this one
-    assert request.node.get_closest_marker("timeout").args == (ALONE_TIMEOUT_S,)     # and its timeout leaves time to wait for those running
+
+
+def test_the_wait_for_the_folder_lock_is_not_counted_by_the_test_timeout(request: pytest.FixtureRequest) -> None:
+    """A test queued behind a marked one waits for it and for those running before it; pytest-timeout's timer must start only once the lock is held. Hook
+    wrappers run outermost last in the list."""
+    plugins = [i.plugin for i in request.config.pluginmanager.hook.pytest_runtest_protocol.get_hookimpls()]
+    timeout = request.config.pluginmanager.get_plugin("timeout")
+    assert timeout in plugins and conftest in plugins
+    assert plugins.index(conftest) > plugins.index(timeout)
