@@ -1,5 +1,5 @@
 class MetricsPusher:
-    def __init__(self, config_service, service_name: str, logger) -> None:
+    def __init__(self, config_service: object, service_name: str, logger: object) -> None:
         pass
 
     async def start(self) -> None:

@@ -13,15 +13,15 @@ def is_gateway_token_refusal(reason: str | None) -> bool:
 
 
 class BackendGatewayMetrics:
-    def request(self, observed) -> None:
+    def request(self, observed: object) -> None:
         return None
 
-    def tool_call(self, observed) -> None:
+    def tool_call(self, observed: object) -> None:
         return None
 
 
 class BackendReadCacheMetrics:
-    def lookup(self, observed) -> None:
+    def lookup(self, observed: object) -> None:
         return None
 
 

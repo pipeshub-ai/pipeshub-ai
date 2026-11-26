@@ -6,10 +6,10 @@ WARM_POOL_DEPTH = NOOP
 
 
 class BackendBrokerMetrics:
-    def metered(self, interval) -> None:
+    def metered(self, interval: object) -> None:
         return None
 
-    def warm_claim(self, outcome) -> None:
+    def warm_claim(self, outcome: object) -> None:
         return None
 
     def pool_depth(self, depth: int) -> None:

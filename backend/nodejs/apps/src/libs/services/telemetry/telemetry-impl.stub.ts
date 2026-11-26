@@ -38,7 +38,7 @@ export const metricsBackend = {
   createCounter: (_def: unknown): typeof instrument => instrument,
   createGauge: (_def: unknown): typeof instrument => instrument,
   createHistogram: (_def: unknown): typeof instrument => instrument,
-  serialize: async (): Promise<string> => '',
+  serialize: (): Promise<string> => Promise.resolve(''),
 };
 
 export type AuthAttemptMethod = string;
