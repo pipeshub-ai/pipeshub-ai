@@ -33,6 +33,8 @@ def _no_background_sample(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 TABLE_LOCK_KEY = 0x6B675F7461626C65       # the advisory lock that runs a ``pg_table_lock`` test alone
+TABLE_LOCK_GATE = TABLE_LOCK_KEY + 1        # held by the marked test that waits for the lock: no other test takes it shared meanwhile
+_POLL_S = 0.1
 _FOLDER = Path(__file__).parent
 LOCK_HOLDER = pytest.StashKey[int]()       # the backend that holds the lock for the test
 
@@ -52,12 +54,31 @@ def pytest_runtest_protocol(item: pytest.Item) -> Iterator[None]:
         try:
             alone = item.get_closest_marker("pg_table_lock") is not None
             item.stash[LOCK_HOLDER] = con.get_server_pid()
-            loop.run_until_complete(con.execute("SELECT pg_advisory_lock($1)" if alone else "SELECT pg_advisory_lock_shared($1)", TABLE_LOCK_KEY))
+            loop.run_until_complete(_take(con, alone=alone))
             yield
         finally:
             loop.run_until_complete(con.close())        # the session's advisory locks end with it
     finally:
         loop.close()
+
+
+async def _take(con: asyncpg.Connection, *, alone: bool) -> None:
+    """The folder lock, waited for by short tries: a session blocked in a statement holds a snapshot, and that snapshot would keep a marked test's VACUUM from
+    removing the rows its own test deleted or updated (dead index entries its plan gates then count). A marked test first holds the gate, so that the tests
+    arriving meanwhile wait and it is not starved; the others take the gate shared only for a moment."""
+    if alone:
+        while not await con.fetchval("SELECT pg_try_advisory_lock($1)", TABLE_LOCK_GATE):
+            await asyncio.sleep(_POLL_S)
+        while not await con.fetchval("SELECT pg_try_advisory_lock($1)", TABLE_LOCK_KEY):
+            await asyncio.sleep(_POLL_S)
+        return
+    while True:
+        if await con.fetchval("SELECT pg_try_advisory_lock_shared($1)", TABLE_LOCK_GATE):
+            got = await con.fetchval("SELECT pg_try_advisory_lock_shared($1)", TABLE_LOCK_KEY)
+            await con.execute("SELECT pg_advisory_unlock_shared($1)", TABLE_LOCK_GATE)
+            if got:
+                return
+        await asyncio.sleep(_POLL_S)
 
 
 @pytest.fixture
