@@ -147,6 +147,7 @@ import { AICommandOptions } from '../../../libs/commands/ai_service/ai.service.c
 import { AIServiceCommand } from '../../../libs/commands/ai_service/ai.service.command';
 import * as XLSX from 'xlsx';
 import { FileBufferInfo } from '../../../libs/middlewares/file_processor/fp.interface';
+import { SESSION_ONLY_MESSAGE } from '../../../libs/middlewares/require-session-auth.middleware';
 import {
   NotificationProducer,
   EventType as NotificationEventType,
@@ -1457,6 +1458,11 @@ export class UserController {
             (await isUserOrgAdmin(id, orgId))));
       const promotingAdmin =
         updateFields.role === 'admin' && previousRole !== 'admin';
+      // The route refuses a token that grants admin; taking admin away only shows here, once
+      // the target's current role is known. Sending someone's current role stays open.
+      if (roleChanging && req.user.isOAuth === true) {
+        throw new ForbiddenError(SESSION_ONLY_MESSAGE);
+      }
 
       if (demotingAdmin && (!id || !orgId)) {
         throw new BadRequestError('User or organization not found');
