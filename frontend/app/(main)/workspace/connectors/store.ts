@@ -30,6 +30,8 @@ import {
   isConnectorConfigAuthenticated,
 } from './utils/auth-helpers';
 
+export type SyncToggleDirection = 'on' | 'off';
+
 /** Rows from `GET` OAuth registrations list; shared by OAuthAppSelector and panel validation. */
 export type ConnectorOAuthAppListRow = {
   _id: string;
@@ -113,6 +115,12 @@ interface ConnectorsState {
   instanceStats: Record<string, ConnectorStatsResponse['data']>;
   /** Per-instance local sync watcher runtime status keyed by connector _key */
   localSyncStatuses: Record<string, LocalSyncStatus>;
+  /**
+   * Connectors whose sync is being turned on or off and the server has not answered yet.
+   * Turning sync on can take seconds (the connector connects to its source first), and the
+   * request may start from the card's switch or the setup dialog; the card reads this either way.
+   */
+  syncTogglePending: Record<string, SyncToggleDirection>;
   /** Currently selected instance for management panel */
   selectedInstance: ConnectorInstance | null;
   /** Is management panel open */
@@ -230,6 +238,8 @@ interface ConnectorsState {
   removeConnectorInstance: (connectorId: string) => void;
   setLocalSyncStatus: (connectorId: string, status: LocalSyncStatus) => void;
   clearLocalSyncStatus: (connectorId: string) => void;
+  setSyncTogglePending: (connectorId: string, direction: SyncToggleDirection) => void;
+  clearSyncTogglePending: (connectorId: string) => void;
   clearInstanceData: () => void;
   setSelectedInstance: (instance: ConnectorInstance | null) => void;
   openInstancePanel: (instance: ConnectorInstance) => void;
@@ -325,6 +335,7 @@ const initialState = {
   instanceConfigs: {} as Record<string, ConnectorConfig>,
   instanceStats: {} as Record<string, ConnectorStatsResponse['data']>,
   localSyncStatuses: {} as Record<string, LocalSyncStatus>,
+  syncTogglePending: {} as Record<string, SyncToggleDirection>,
   selectedInstance: null as ConnectorInstance | null,
   isInstancePanelOpen: false,
   instancePanelTab: 'overview' as InstancePanelTab,
@@ -873,6 +884,7 @@ export const useConnectorsStore = create<ConnectorsState>()(
           if (!connectorId) return;
           delete s.instanceConfigs[connectorId];
           delete s.instanceStats[connectorId];
+          delete s.syncTogglePending[connectorId];
         }),
 
       removeConnectorInstance: (connectorId) =>
@@ -884,6 +896,7 @@ export const useConnectorsStore = create<ConnectorsState>()(
           delete s.instanceConfigs[connectorId];
           delete s.instanceStats[connectorId];
           delete s.localSyncStatuses[connectorId];
+          delete s.syncTogglePending[connectorId];
           if (!s.deletedInstanceIds.includes(connectorId)) {
             s.deletedInstanceIds.push(connectorId);
           }
@@ -902,6 +915,16 @@ export const useConnectorsStore = create<ConnectorsState>()(
       clearLocalSyncStatus: (connectorId) =>
         set((s) => {
           delete s.localSyncStatuses[connectorId];
+        }),
+
+      setSyncTogglePending: (connectorId, direction) =>
+        set((s) => {
+          s.syncTogglePending[connectorId] = direction;
+        }),
+
+      clearSyncTogglePending: (connectorId) =>
+        set((s) => {
+          delete s.syncTogglePending[connectorId];
         }),
 
       // Configs stay, keyed by instance: reopening a type page within the SWR window shows them with no request.
