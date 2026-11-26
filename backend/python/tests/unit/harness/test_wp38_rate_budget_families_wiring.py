@@ -280,6 +280,8 @@ async def test_wp38_jira_and_confluence_init_pace_the_client_their_builder_share
     connector._cache_authenticated_confluence_email = AsyncMock()
     connector._cache_authenticated_jira_profile = MagicMock()
     connector._remember_configured_site = AsyncMock()
+    # A team-scope Jira init first withdraws the org's All team edge (projects open to anyone need a Jira account).
+    connector._withdraw_org_team_edge = AsyncMock()
     monkeypatch.setattr(__import__(cls.__module__, fromlist=[datasource]), datasource, MagicMock())
     assert await cls.init(connector) is True  # type: ignore[attr-defined]
     assert http.resilience is not None
