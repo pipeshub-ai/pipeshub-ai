@@ -1641,10 +1641,11 @@ def extract_layout_regions(
     }
     ordered = _page_tail(table_regions=table_regions, **tail)
     # The model grids must have come through the page pass whole, each in its own box; if not, this page is the evidence
-    # result (the tail is deterministic, so the rerun from the evidence regions is the evidence mode's page).
+    # result (the tail is deterministic, so the rerun from the evidence regions, with evidence mode's word ownership, is
+    # the evidence mode's page).
     if table_emitter is not None and table_emitter.page_swaps() and table_emitter.violations(ordered, all_words):
         table_emitter.tail_conflict()
-        ordered = _page_tail(table_regions=table_emitter.evidence_copy(), **tail)
+        ordered = _page_tail(table_regions=table_emitter.evidence_copy(), **{**tail, "exclusive_words": False})
     if table_emitter is not None:
         table_emitter.finalize_page()
     ordered = _split_side_by_side_tables(ordered, page, all_words, page_w, page_h)

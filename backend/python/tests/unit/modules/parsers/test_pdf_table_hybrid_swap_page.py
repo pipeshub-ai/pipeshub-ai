@@ -312,3 +312,25 @@ def test_hybrid_pages_do_not_emit_a_margin_word_twice(monkeypatch: pytest.Monkey
     hy = word_counter(parse_pdf_layout(pdf, None, cfg()))
     assert sum((ev - hy).values()) > 0, "the page must show the doubling in the evidence output"
     assert not (hy - ev) and sum(hy.values()) < sum(ev.values())
+
+
+def test_a_page_sent_back_to_the_evidence_result_gives_words_to_text_blocks_as_evidence_does(monkeypatch: pytest.MonkeyPatch) -> None:
+    real_resolve, real_classify = ola._resolve_overlaps, ola._classify_text_blocks
+    flags: list[bool] = []
+
+    def tamper(regions, *a, **k):  # noqa: ANN202
+        out = real_resolve(regions, *a, **k)
+        for r in out:
+            if r.from_model_grid and r.table_grid:
+                r.table_grid = [row[:-1] for row in r.table_grid]
+        return out
+
+    def classify(*a, exclusive_words: bool = False, **k):  # noqa: ANN202
+        flags.append(exclusive_words)
+        return real_classify(*a, exclusive_words=exclusive_words, **k)
+
+    monkeypatch.setattr(ola, "_resolve_overlaps", tamper)
+    monkeypatch.setattr(ola, "_classify_text_blocks", classify)
+    parse("hybrid", monkeypatch, FakeModelClient())
+    # the five table pages conflict: each rerun owns words as evidence does, every first pass as hybrid does
+    assert flags.count(False) == 5 and flags.count(True) == len(flags) - 5
