@@ -15,6 +15,7 @@ if TYPE_CHECKING:
         get_oauth_config_registry,
     )
     from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider  # noqa: F401
+    from app.services.graph_db.postgres.provider import PostgresGraphProvider  # noqa: F401
 
 # Which indexing lane a connector is given on Redis Streams, whether an
 # administrator may move it, and which pool of lanes an org belongs in. An
@@ -39,6 +40,7 @@ _LAZY_SERVICES = {
     "MCPTokenRefreshService": "app.connectors.core.base.token_service.mcp_token_refresh_service",
     "get_oauth_config_registry": "app.connectors.core.registry.oauth_config_registry",
     "Neo4jProvider": "app.services.graph_db.neo4j.neo4j_provider",
+    "PostgresGraphProvider": "app.services.graph_db.postgres.provider",
 }
 
 
