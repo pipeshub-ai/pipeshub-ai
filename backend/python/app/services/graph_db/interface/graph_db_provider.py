@@ -51,6 +51,8 @@ KH_SKIP_READS: ContextVar[dict[str, Any] | None] = ContextVar("kh_skip_reads", d
 
 # Set once `stamp_kh_listing_state` has covered every node written before.
 KH_LISTING_STATE_FLAG = "/migrations/kh_listing_state_v1"
+# Set once `stamp_kh_children_order` has covered every hierarchy edge written before.
+KH_CHILDREN_ORDER_FLAG = "/migrations/kh_children_order_v1"
 
 # The record fields a page of `list_unsupported_page` carries besides `_key`.
 UNSUPPORTED_PAGE_FIELDS = (
@@ -7835,6 +7837,12 @@ class IGraphDBProvider(ABC):
         the listing reads it once ``KH_LISTING_STATE_FLAG`` is set."""
         raise NotImplementedError
 
+    async def stamp_kh_children_order(self, batch_size: int = 5000) -> dict:
+        """Write, on every hierarchy edge written before the write paths kept it, the child's place in its parent's name order, so a browse
+        of a very wide node reads a page of its children in order instead of every child. Returns ``{"stamped": n}``; raises if any edge is
+        left disagreeing with its child. Only Neo4j keeps this; its browse reads it once ``KH_CHILDREN_ORDER_FLAG`` is set."""
+        raise NotImplementedError
+
     # Knowledge hub scopes: the global listing read from precomputed per-connector scopes, behind the
     # ENABLE_KH_SCOPE_LISTING flag. Only Neo4j keeps them; elsewhere these do nothing and the listing always
     # runs its full query.
@@ -7887,7 +7895,7 @@ class IGraphDBProvider(ABC):
     async def kh_scope_reset_syncing(self) -> None:
         """At startup, before any sync: clear marks a crash left behind."""
 
-    async def kh_scope_restamp_stale(self) -> list:
+    async def kh_scope_restamp_stale(self, org_id: str) -> list:
         return []
 
     async def check_access(

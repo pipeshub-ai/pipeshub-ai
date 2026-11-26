@@ -88,8 +88,12 @@ class RequeueResult:
     complete: bool = False
     requeued: int = 0
     parked: int = 0
-    skipped_disabled: set[str] = field(default_factory=set)
+    skipped_disabled: dict[str, set[str]] = field(default_factory=dict)  # by org
     events: int = 0
+
+    @property
+    def all_skipped(self) -> set[str]:
+        return set().union(*self.skipped_disabled.values())
 
 
 def _gate_inputs(record: Record, stored_mime: object) -> dict[str, Any]:
@@ -152,22 +156,46 @@ def _network_share(connector_type: str) -> bool:
     return bool(getattr(connector_class, "REQUEUE_PARKED", False))
 
 
-async def _disabled_types(config_service: ConfigurationService) -> frozenset[str]:
-    """The types turned off, read as the indexer reads them. Raises when the setting cannot be read."""
-    config = await config_service.get_config(file_types.FILE_TYPES_CONFIG_KEY, use_cache=False, raise_on_error=True)
-    if config is None:
-        config = file_types.disabled_from_env(os.environ.get("FILE_TYPES_DISABLED"))
-    return file_types.disabled_keys(config)
+async def _disabled_types(
+    config_service: ConfigurationService, org_ids: set[str], logger: Logger,
+) -> dict[str, frozenset[str]]:
+    """The types turned off, by org. Read as the indexer reads them, with the org bound, so the configuration service decides
+    whether an org has its own setting; with one shared setting every org gets the same set. An org whose setting cannot be read is
+    left out, so its records wait; raises when that is every org."""
+    failure: Exception | None = None
+    disabled: dict[str, frozenset[str]] = {}
+    for org_id in sorted(org_ids):
+        try:
+            with for_org(org_id, job=_JOB):
+                config = await config_service.get_config(file_types.FILE_TYPES_CONFIG_KEY, use_cache=False, raise_on_error=True)
+        except Exception as exc:
+            failure = exc
+            logger.warning("File-type re-queue: the types turned off could not be read org=%s error=%s", org_id, type(exc).__name__)
+            continue
+        if config is None:
+            config = file_types.disabled_from_env(os.environ.get("FILE_TYPES_DISABLED"))
+        disabled[org_id] = file_types.disabled_keys(config)
+    if failure is not None and not disabled:
+        raise failure
+    return disabled
 
 
-def _flag_wants_run(flag: object, disabled: frozenset[str]) -> bool:
+def _flag_wants_run(flag: object, disabled: dict[str, frozenset[str]]) -> bool:
     if not isinstance(flag, dict):
         return True
     version = flag.get("version")
     if not isinstance(version, int) or version < file_types.REGISTRY_VERSION:
         return True
-    held_back = {k for k in flag.get("skipped_disabled") or [] if isinstance(k, str)}
-    return bool(held_back - disabled)
+    by_org = flag.get("skipped_disabled_by_org")
+    if not isinstance(by_org, dict):  # written before the types were held back per org
+        by_org = dict.fromkeys(disabled, flag.get("skipped_disabled"))
+    return any(
+        {k for k in by_org.get(org_id) or [] if isinstance(k, str)} - off for org_id, off in disabled.items()
+    )
+
+
+def _org_of(app: dict[str, Any]) -> str | None:
+    return app.get("orgId")
 
 
 async def _list_apps(graph_provider: IGraphDBProvider) -> list[dict[str, Any]]:
@@ -240,7 +268,7 @@ async def _walk_connector(
                     continue
                 chosen, held_back = is_selected(record, row, disabled)
                 if held_back:
-                    result.skipped_disabled.add(held_back)
+                    result.skipped_disabled.setdefault(org_id, set()).add(held_back)
                 if chosen:
                     picks.append((record, row))
             to_park = [r.id for r, row in picks if manual or (files_off and row.get("recordType") == RecordTypes.FILE.value)]
@@ -463,7 +491,7 @@ class _LeaseLost(Exception):
 
 
 async def count_still_selected(
-    graph_provider: IGraphDBProvider, disabled: frozenset[str] = frozenset()
+    graph_provider: IGraphDBProvider, disabled: dict[str, frozenset[str]] | None = None
 ) -> int:
     """How many refused records the selection would still take, over every connector (0 after a full run)."""
     count = 0
@@ -478,7 +506,7 @@ async def count_still_selected(
                 if not page:
                     break
                 typed = await graph_provider.get_typed_records_batch([r["_key"] for r in page], raise_on_error=True)
-            count += sum(1 for row in page if (rec := typed.get(row["_key"])) and is_selected(rec, row, disabled)[0])
+            count += sum(1 for row in page if (rec := typed.get(row["_key"])) and is_selected(rec, row, (disabled or {}).get(str(org_id), frozenset()))[0])
             after = page[-1].get("_key")
             if len(page) < PAGE_SIZE or not after:
                 break
@@ -501,9 +529,10 @@ async def run_file_type_requeue(
         logger.info("File-type re-queue skipped: FILE_TYPE_REQUEUE is false")
         return result
     try:
-        disabled = await _disabled_types(config_service)
+        apps = await _list_apps(graph_provider)
+        disabled = await _disabled_types(config_service, {str(org) for org in map(_org_of, apps) if org}, logger)
     except Exception:
-        logger.warning("File-type re-queue skipped: the disabled file types could not be read", exc_info=True)
+        logger.warning("File-type re-queue skipped: the connectors or the disabled file types could not be read", exc_info=True)
         return result
     try:
         flag = await config_service.get_config(FLAG_KEY, use_cache=False, raise_on_error=True)
@@ -530,7 +559,7 @@ async def run_file_type_requeue(
         if walk:
             complete = await _walk_all(
                 config_service, graph_provider, kafka_service, lock, logger,
-                is_network_share=is_network_share, disabled=disabled, result=result, pause_seconds=pause_seconds,
+                apps=apps, is_network_share=is_network_share, disabled=disabled, result=result, pause_seconds=pause_seconds,
             ) and complete
             result.complete = complete
             if complete:
@@ -547,7 +576,7 @@ async def run_file_type_requeue(
 
     logger.info(
         "File-type re-queue: %d record(s) queued, %d left for manual indexing, %d event(s), types held back: %s",
-        result.requeued, result.parked, result.events, sorted(result.skipped_disabled) or "none",
+        result.requeued, result.parked, result.events, sorted(result.all_skipped) or "none",
     )
     return result
 
@@ -559,20 +588,24 @@ async def _walk_all(
     lock: LeaderLock,
     logger: Logger,
     *,
+    apps: list[dict[str, Any]],
     is_network_share: Callable[[str], bool],
-    disabled: frozenset[str],
+    disabled: dict[str, frozenset[str]],
     result: RequeueResult,
     pause_seconds: float,
 ) -> bool:
     complete = True
-    for app in await _list_apps(graph_provider):
-        org_id = app.get("orgId")
+    for app in apps:
+        org_id = _org_of(app)
         connector_id = app.get("_key") or app.get("id")
         connector_type = str(app.get("type") or "").replace(" ", "").lower()
         if not org_id or not connector_id or not connector_type:
             logger.warning("File-type re-queue: connector %s has no org or type; skipped", connector_id)
             continue
         if connector_state(app) in (ConnectorState.DELETING, ConnectorState.REMOVED):
+            continue
+        if str(org_id) not in disabled:
+            complete = False
             continue
         try:
             with for_org(org_id, job=_JOB):
@@ -581,7 +614,7 @@ async def _walk_all(
                 config_service, graph_provider, kafka_service, lock, logger,
                 org_id=org_id, connector_id=connector_id, connector_type=connector_type,
                 manual=manual, files_off=files_off, parked_connector=is_network_share(connector_type),
-                disabled=disabled, result=result, pause_seconds=pause_seconds,
+                disabled=disabled[str(org_id)], result=result, pause_seconds=pause_seconds,
             )
             complete = complete and sent_all
         except _LeaseLost:
@@ -595,7 +628,8 @@ async def _walk_all(
 async def _save_flag(config_service: ConfigurationService, result: RequeueResult, logger: Logger) -> None:
     saved = await _save_entry(config_service, FLAG_KEY, {
         "version": file_types.REGISTRY_VERSION,
-        "skipped_disabled": sorted(result.skipped_disabled),
+        "skipped_disabled": sorted(result.all_skipped),
+        "skipped_disabled_by_org": {org_id: sorted(types) for org_id, types in sorted(result.skipped_disabled.items())},
         "requeued": result.requeued,
         "parked": result.parked,
         "timestamp": get_epoch_timestamp_in_ms(),
@@ -604,7 +638,7 @@ async def _save_flag(config_service: ConfigurationService, result: RequeueResult
         logger.warning("File-type re-queue finished but its flag was not saved; the next start looks again")
 
 
-async def _log_left(graph_provider: IGraphDBProvider, disabled: frozenset[str], logger: Logger) -> None:
+async def _log_left(graph_provider: IGraphDBProvider, disabled: dict[str, frozenset[str]], logger: Logger) -> None:
     try:
         left = await count_still_selected(graph_provider, disabled)
         (logger.warning if left else logger.info)("File-type re-queue check: %d selectable record(s) left", left)

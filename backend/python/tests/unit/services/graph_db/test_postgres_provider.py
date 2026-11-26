@@ -188,6 +188,7 @@ def raising_defaults() -> set[str]:
 RAISING_DEFAULTS_NOT_ON_POSTGRES = {
     # data repairs of the other stores; their app/migrations/*_migration.py callers catch NotImplementedError and skip
     "backfill_app_org_ids", "split_link_edges", "backfill_hierarchy", "drop_redundant_group_edges", "normalize_folder_mime_types", "stamp_kh_listing_state",
+    "stamp_kh_children_order",
     # only the Neo4j and ArangoDB browse paths call these (_with_readable_children and _kh_v3_scoped_start_access); PostgreSQL browses in kh_browse.py
     "_kh_v3_child_ids", "_kh_v3_declared_scope", "_kh_v3_start_lineage",
     # only with ACL_SCOPE_FIELDS on or ACL_FILTER_MODE shadow/scopes (off by default); there a search fails at start and a vector point stays on the

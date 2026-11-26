@@ -56,9 +56,6 @@ _TARGETS_SQL = """/* pipeshub:graph.access_targets */ SELECT t.coll, t.id, t.doc
       AND t.coll IN ('records', 'recordGroups', 'apps') AND t.id = ANY($2::text[])"""
 _HIER_TYPES = ["PARENT_CHILD", "ATTACHMENT"]
 _CHUNK = 10_000
-# On a large org the planner prices these key lookups (an id list, a principal's edges filtered past the key) far above jit_above_cost, and compiling
-# each one (~100 ms) costs more than the read. Local to the transaction; it changes no answer, so it may outlive the walk in a caller's transaction.
-NO_JIT = "/* pipeshub:graph.access_no_jit */ SELECT set_config('jit', 'off', true)"
 
 
 async def _info(tx: Tx, org: str, nodes: list[tuple[str, str]]) -> dict[tuple[str, str], dict[str, Any]]:
@@ -403,7 +400,6 @@ async def probe_grants(tx: Tx, org: str, probe: dict[str, Any], cross: list[str]
 
 
 async def accessible_rows(tx: Tx, org: str, node_ids: list[str], vrids: list[str], access: dict[str, Any]) -> list[dict[str, Any]]:
-    await tx.fetchval(NO_JIT)
     if access.get("probe"):      # a browse that tests grants from the node: its grants are read here, by the test Neo4j makes on the node
         access = {**access, "by_connector": await probe_grants(tx, org, access["probe"], access.get("cross"))}
     gated = set(access["gated_app_ids"])

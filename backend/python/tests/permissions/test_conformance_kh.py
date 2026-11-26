@@ -281,13 +281,27 @@ async def test_a_page_that_ends_where_the_check_was_last_asked_names_no_child_th
             await layer.release([WIDE])
 
 
-@pytest.fixture
-def wide_starts(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.fixture(params=["every_child", "children_order"])
+async def wide_starts(request: pytest.FixtureRequest, graph_layers, monkeypatch: pytest.MonkeyPatch) -> None:
     """Neo4j's split browse reads every start with a child as one wider than it holds whole (`Neo4jProvider._KH_SPLIT_START_MAX`): its children
-    with the page, in the page's order, sixteen a read, each read asked of the check."""
+    with the page, in the page's order, sixteen a read, each read asked of the check. ``children_order``: the name order's windows read
+    from the children order index, its stamps written after each load (the loader writes the graph directly, as an older install holds it,
+    and the migration stamps it)."""
     monkeypatch.setenv("KH_BROWSE_MODE", "split")
     monkeypatch.setattr(Neo4jProvider, "_KH_SPLIT_START_MAX", 0)
     monkeypatch.setattr(Neo4jProvider, "_KH_UNDECIDED_WINDOW_MAX", 16)
+    if request.param == "children_order":
+        async def ready(_self: Neo4jProvider) -> bool:
+            return True
+
+        monkeypatch.setattr(Neo4jProvider, "_kh_children_order_ready", ready)
+        for layer in (layer for layer in graph_layers if layer.name == "neo4j"):
+            async def load_and_stamp(nodes: list, edges: list, _load=layer._load, _layer=layer) -> None:
+                await _load(nodes, edges)
+                await _layer._provider.stamp_kh_children_order()
+
+            monkeypatch.setattr(layer, "_load", load_and_stamp)
+            await layer._provider.stamp_kh_children_order()      # the worlds an earlier test left loaded
 
 
 async def test_a_start_read_in_windows_lists_what_the_viewer_may_read(graph_layers, wide_starts) -> None:
