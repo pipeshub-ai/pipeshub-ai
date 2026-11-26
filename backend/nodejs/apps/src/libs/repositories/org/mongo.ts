@@ -138,7 +138,13 @@ export class MongoOrgRepository implements OrgRepository {
     adminUserId: string;
     adminEmail: string;
   }> {
-    const org = new Org({ ...input.org, _id: input.ids.orgId });
+    // Written hidden and made live by the last write (below), so no write of a failed create can leave a live
+    // organisation, even one the server applies after the cleanup ran.
+    const org = new Org({
+      ...input.org,
+      _id: input.ids.orgId,
+      isDeleted: true,
+    });
     const adminUser = new Users({
       _id: input.ids.adminUserId,
       fullName: input.admin.fullName,
@@ -178,12 +184,12 @@ export class MongoOrgRepository implements OrgRepository {
     const session = sessionOf(tx);
     const opts = session ? { session } : undefined;
     const docs = [
+      org,
       authConfig,
       allUsersGroup,
       standardUsersGroup,
       adminUser,
       credentials,
-      org,
     ];
     let started = 0;
     try {
@@ -192,6 +198,13 @@ export class MongoOrgRepository implements OrgRepository {
         started += 1;
         await doc.save(opts);
       }
+      // Matches only the hidden row: applied after the cleanup removed it, it changes nothing.
+      await Org.updateOne(
+        { _id: org._id, isDeleted: true },
+        { $set: { isDeleted: false } },
+        opts,
+      );
+      org.isDeleted = false;
     } catch (error) {
       // Without a transaction nothing undoes the rows already written, so remove them: the organisation is created whole or not at all.
       if (!session) {

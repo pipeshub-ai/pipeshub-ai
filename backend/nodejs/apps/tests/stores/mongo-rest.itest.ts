@@ -131,6 +131,43 @@ describe('Org, project and remaining repositories against a real MongoDB', funct
       expect(await leftOf(ids)).to.deep.equal(none);
     });
 
+    // The driver can reject a write the server still applies later, after the cleanup ran: that write must not make the
+    // organisation live without its administrator.
+    const appliesLate = (real: (...a: unknown[]) => Promise<unknown>) =>
+      async function (this: unknown, ...args: unknown[]) {
+        setTimeout(() => void real.apply(this, args).catch(() => undefined), 300);
+        throw new Error('reply lost');
+      };
+    const settle = () => new Promise((r) => setTimeout(r, 600));
+
+    it('an organisation insert that applies after the cleanup never shows a live organisation', async () => {
+      // The bytes already sent: the server inserts the document as it was when save was called.
+      sinon.stub(Org.prototype, 'save').callsFake(async function (this: InstanceType<typeof Org>) {
+        const sent = this.toObject();
+        return appliesLate(() => Org.collection.insertOne(sent))();
+      });
+      const ids = orgs.allocateIds();
+      let message = '';
+      await create(ids).catch((e: Error) => (message = e.message));
+      await settle();
+      expect(message).to.equal('reply lost');
+      expect(await orgs.getLive(ids.orgId)).to.equal(null);
+      expect({ ...(await leftOf(ids)), orgs: 0 }).to.deep.equal(none);
+    });
+
+    it('the final write that applies after the cleanup never shows a live organisation', async () => {
+      // Every write of the create succeeds except the last one, which applies late.
+      const realUpdate = Org.updateOne.bind(Org);
+      sinon.stub(Org, 'updateOne').callsFake(appliesLate(realUpdate as never) as never);
+      const ids = orgs.allocateIds();
+      let message = '';
+      await create(ids).catch((e: Error) => (message = e.message));
+      await settle();
+      expect(message).to.equal('reply lost');
+      expect(await orgs.getLive(ids.orgId)).to.equal(null);
+      expect(await leftOf(ids)).to.deep.equal(none);
+    });
+
     it('logs each row it could not remove, by collection and id, and still throws the original error', async () => {
       sinon.stub(UserCredentials.prototype, 'save').rejects(new Error('credential write refused'));
       sinon.stub(Users.prototype, 'deleteOne').rejects(new Error('connection lost'));
